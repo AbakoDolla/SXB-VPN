@@ -17,9 +17,11 @@ import vouchersRouter from "./server/routes/vouchers";
 import analyticsRouter from "./server/routes/analytics";
 import serversRouter from "./server/routes/servers";
 import docsRouter from "./server/routes/docs";
+import vpnRouter from "./server/routes/vpn";
 
 async function startServer() {
   const app = express();
+  app.set("trust proxy", 1);
   const PORT = config.PORT;
 
   // 1. Security & Core Middleware
@@ -64,6 +66,7 @@ async function startServer() {
   app.use("/api/analytics", analyticsRouter);
   app.use("/api/servers", serversRouter);
   app.use("/api/docs", docsRouter);
+  app.use("/api/vpn", vpnRouter);
 
   // Global Error Handler with support for Multilingual Error i18n
   app.use((err: any, req: Request, res: Response, next: NextFunction) => {
