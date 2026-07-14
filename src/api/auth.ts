@@ -1,76 +1,95 @@
-import { User, UserRole } from "../types";
-import { getCurrentUser, saveCurrentUser, logActivity } from "./db";
+import { User, UserRole } from '../types';
 
-export async function login(email: string, role: UserRole): Promise<User> {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      const permissionsMap: Record<UserRole, string[]> = {
-        [UserRole.ADMIN]: [
-          "clients:read", "clients:write",
-          "resellers:read", "resellers:write",
-          "servers:read", "servers:write",
-          "xpanel:read", "xpanel:write",
-          "tokens:read", "tokens:write",
-          "vouchers:read", "vouchers:write",
-          "rbac:read", "rbac:write",
-          "analytics:read",
-        ],
-        [UserRole.SUPPORT]: [
-          "clients:read",
-          "resellers:read",
-          "servers:read",
-          "tokens:read",
-          "analytics:read",
-        ],
-        [UserRole.RESELLER]: [
-          "clients:read", "clients:write",
-          "tokens:read", "tokens:write",
-          "analytics:read",
-        ],
-      };
+const API_URL = '/api';
 
-      const user: User = {
-        id: `user-${role.toLowerCase()}`,
-        name: `${role.charAt(0) + role.slice(1).toLowerCase()} SXB`,
-        email: email || `${role.toLowerCase()}@sxb-vpn.com`,
-        role,
-        permissions: permissionsMap[role],
-      };
-
-      saveCurrentUser(user);
-      logActivity(`Connexion réussie en tant que ${role}`, user.name, "success");
-      resolve(user);
-    }, 300);
+export async function login(email: string, password: string): Promise<User> {
+  const response = await fetch(`${API_URL}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
   });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.message || 'Erreur de connexion');
+  }
+
+  const data = await response.json();
+  
+  // Stocker le token
+  localStorage.setItem('sxb_accessToken', data.accessToken);
+  if (data.refreshToken) {
+    localStorage.setItem('sxb_refreshToken', data.refreshToken);
+  }
+
+  // Utiliser les données utilisateur du login
+  const userData = data.user;
+  
+  const user: User = {
+    id: userData.id,
+    name: userData.name,
+    email: userData.email,
+    phone: userData.phone,
+    role: userData.role as UserRole,
+    permissions: userData.permissions || [],
+  };
+
+  // Sauvegarder en local
+  localStorage.setItem('sxb_user', JSON.stringify(user));
+  
+  return user;
 }
 
 export async function getSessionUser(): Promise<User | null> {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve(getCurrentUser());
-    }, 100);
-  });
-}
-
-export async function updateProfile(name: string, email: string): Promise<User> {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      const user = getCurrentUser();
-      user.name = name;
-      user.email = email;
-      saveCurrentUser(user);
-      logActivity(`Mise à jour du profil utilisateur`, user.name, "info");
-      resolve(user);
-    }, 200);
-  });
+  const token = localStorage.getItem('sxb_accessToken');
+  const storedUser = localStorage.getItem('sxb_user');
+  
+  if (!token) return null;
+  
+  // Retourner l'utilisateur stocké
+  if (storedUser) {
+    try {
+      return JSON.parse(storedUser);
+    } catch {
+      return null;
+    }
+  }
+  
+  return null;
 }
 
 export async function logout(): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      const user = getCurrentUser();
-      logActivity(`Déconnexion de la session`, user.name, "info");
-      resolve();
-    }, 150);
-  });
+  const token = localStorage.getItem('sxb_accessToken');
+  
+  if (token) {
+    try {
+      await fetch(`${API_URL}/auth/logout`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+    } catch (e) {
+      console.error('Logout error:', e);
+    }
+  }
+
+  localStorage.removeItem('sxb_accessToken');
+  localStorage.removeItem('sxb_refreshToken');
+  localStorage.removeItem('sxb_user');
+}
+
+export async function updateProfile(name: string, email: string): Promise<User> {
+  const token = localStorage.getItem('sxb_accessToken');
+  const storedUser = localStorage.getItem('sxb_user');
+  if (!token || !storedUser) throw new Error('Non authentifié');
+
+  const currentUser = JSON.parse(storedUser);
+  currentUser.name = name;
+  currentUser.email = email;
+  
+  localStorage.setItem('sxb_user', JSON.stringify(currentUser));
+  return currentUser;
+}
+
+export function getToken(): string | null {
+  return localStorage.getItem('sxb_accessToken');
 }
