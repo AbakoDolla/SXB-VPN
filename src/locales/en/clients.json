@@ -1,0 +1,25 @@
+{
+  "title": "Client Management",
+  "subtitle": "Supervise, suspend, and manage client accounts and bandwidth allocations.",
+  "add_client": "Add Client",
+  "fields": {
+    "name": "Full Name",
+    "email": "Email / Phone",
+    "token": "SXB Token",
+    "plan": "Plan / Subscription",
+    "quota_total": "Total Quota (GB)",
+    "consumption": "Consumption (GB)",
+    "expiration": "Expiration Date",
+    "status": "Status"
+  },
+  "actions": {
+    "view_details": "View details",
+    "suspend": "Suspend",
+    "activate": "Activate",
+    "renew": "Renew (+30 Days)",
+    "delete": "Delete",
+    "reset_access": "Reset Access"
+  },
+  "empty_state": "No VPN clients configured",
+  "empty_state_desc": "Add clients to assign them an SXB token and a VPN plan."
+}

@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  # SXB VPN Full-Stack Application Gateway
+  sxb-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sxb_vpn_backend
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://postgres:sxb_secure_db_pass_2026@sxb-postgres:5432/sxb_vpn?schema=public
+      - JWT_SECRET=sxb_prod_jwt_secret_652df6e082823a07b7bbf781e9d892742efea8380e9
+      - REFRESH_SECRET=sxb_prod_refresh_secret_3a8b23f2f0a8d6e32bcbf2011b9319e7a8de928422
+      - XPANEL_URL=https://xpanel.example.com
+      - XPANEL_TOKEN=xpanel_prod_secret_token_placeholder
+      - ENCRYPTION_KEY=sxb-vpn-32-byte-encryption-key-!
+    depends_on:
+      sxb-postgres:
+        condition: service_healthy
+
+  # Dedicated High-Availability PostgreSQL Database
+  sxb-postgres:
+    image: postgres:16-alpine
+    container_name: sxb_vpn_postgres
+    restart: always
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=sxb_secure_db_pass_2026
+      - POSTGRES_DB=sxb_vpn
+    ports:
+      - "5432:5432"
+    volumes:
+      - sxb_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d sxb_vpn"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  sxb_postgres_data:
+    driver: local

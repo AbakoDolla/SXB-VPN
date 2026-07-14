@@ -1,0 +1,150 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id           String      @id @default(uuid())
+  name         String
+  email        String      @unique
+  phone        String?
+  passwordHash String
+  roleId       String
+  role         Role        @relation(fields: [roleId], references: [id])
+  status       String      @default("active") // active, suspended
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  
+  vpnClients   VpnClient[]
+  resellerInfo Reseller?
+  auditLogs    AuditLog[]
+
+  @@map("users")
+}
+
+model Role {
+  id          String           @id @default(uuid())
+  name        String           @unique // ADMIN, SUPPORT, RESELLER
+  description String?
+  permissions RolePermission[]
+  users       User[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String           @id @default(uuid())
+  name        String           @unique // e.g. users.view, users.create
+  description String?
+  roles       RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model VpnClient {
+  id             String    @id @default(uuid())
+  userId         String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token          String    @unique // SXB-XXXX-XXXX-XXXX
+  quotaTotal     BigInt    // In Bytes
+  quotaUsed      BigInt    @default(0)
+  expireAt       DateTime
+  status         String    @default("active") // active, suspended, expired
+  xpanelUserId   String?   // ID inside external XPanel
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  
+  tokens         TokenSXB[]
+
+  @@map("vpn_clients")
+}
+
+model Reseller {
+  id         String   @id @default(uuid())
+  userId     String   @unique
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  commission Float    @default(0.0) // Percentage or fixed
+  status     String   @default("active")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("resellers")
+}
+
+model TokenSXB {
+  id          String    @id @default(uuid())
+  token       String    @unique // SXB-XXXX-XXXX-XXXX
+  clientId    String
+  client      VpnClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  quota       BigInt    // Quota allocated
+  expiration  DateTime
+  deviceLimit Int       @default(1)
+  status      String    @default("active") // active, used, expired
+  createdAt   DateTime  @default(now())
+
+  @@map("tokens")
+}
+
+model VPSServer {
+  id           String        @id @default(uuid())
+  name         String
+  ip           String
+  location     String
+  status       String        @default("online") // online, offline
+  xpanelId     String?       // ID inside XPanel for server management
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  xpanelConfigs XPanelConfig[]
+
+  @@map("servers")
+}
+
+model XPanelConfig {
+  id                    String    @id @default(uuid())
+  serverId              String
+  server                VPSServer @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  type                  String    // e.g. "ssh", "singbox"
+  configurationEncrypted String    // Encrypted config JSON
+  createdAt             DateTime  @default(now())
+
+  @@map("xpanel_configs")
+}
+
+model Voucher {
+  id           String   @id @default(uuid())
+  code         String   @unique // SXB-VOUCH-XXXX
+  quota        BigInt   // In Bytes/GB
+  durationDays Int
+  isRedeemed   Boolean  @default(false)
+  redeemedBy   String?  // User ID or Client ID who redeemed it
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("vouchers")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String
+  type      String   // info, warning, danger, success
+  ipAddress String?
+  timestamp DateTime @default(now())
+
+  @@map("audit_logs")
+}
