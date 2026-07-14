@@ -161,7 +161,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
           />
         </div>
 
-        <div className="flex gap-2 w-full md:w-auto">
+        <div className="flex flex-wrap gap-2 w-full md:w-auto">
           {["all", "active", "suspended", "expired"].map((filter) => (
             <button
               key={filter}
