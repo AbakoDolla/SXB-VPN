@@ -211,7 +211,7 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
                   </div>
 
                   {isAdmin && (
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
                       <button
                         onClick={() => handleTogglePower(s.id, s.status)}
                         className={`px-2 py-1 text-[10px] font-bold rounded border cursor-pointer ${
