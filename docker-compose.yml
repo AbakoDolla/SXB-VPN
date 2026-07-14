@@ -9,22 +9,44 @@ services:
     container_name: sxb_vpn_backend
     restart: always
     ports:
-      - "3000:3000"
+      - "4000:4000"
     environment:
-      - PORT=3000
+      - PORT=4000
       - NODE_ENV=production
-      - DATABASE_URL=postgresql://postgres:sxb_secure_db_pass_2026@sxb-postgres:5432/sxb_vpn?schema=public
+      - DATABASE_URL=postgresql://postgres:sxb_secure_db_pass_2026@postgres:5432/sxb_vpn?schema=public
+      - REDIS_URL=redis://redis:6379
+      - REDIS_PASSWORD=sxb_redis_pass_2026
       - JWT_SECRET=sxb_prod_jwt_secret_652df6e082823a07b7bbf781e9d892742efea8380e9
       - REFRESH_SECRET=sxb_prod_refresh_secret_3a8b23f2f0a8d6e32bcbf2011b9319e7a8de928422
-      - XPANEL_URL=https://xpanel.example.com
+      - XPANEL_URL=http://localhost:2080
       - XPANEL_TOKEN=xpanel_prod_secret_token_placeholder
       - ENCRYPTION_KEY=sxb-vpn-32-byte-encryption-key-!
     depends_on:
-      sxb-postgres:
+      postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - sxb-network
+
+  # SXB Dashboard Frontend
+  sxb-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: sxb_vpn_dashboard
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://localhost:4000/api
+    depends_on:
+      - sxb-backend
+    networks:
+      - sxb-network
 
   # Dedicated High-Availability PostgreSQL Database
-  sxb-postgres:
+  postgres:
     image: postgres:16-alpine
     container_name: sxb_vpn_postgres
     restart: always
@@ -41,7 +63,33 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - sxb-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: sxb_vpn_redis
+    restart: always
+    command: redis-server --appendonly yes --requirepass sxb_redis_pass_2026
+    ports:
+      - "6379:6379"
+    volumes:
+      - sxb_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "sxb_redis_pass_2026", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sxb-network
+
+networks:
+  sxb-network:
+    driver: bridge
 
 volumes:
   sxb_postgres_data:
+    driver: local
+  sxb_redis_data:
     driver: local
