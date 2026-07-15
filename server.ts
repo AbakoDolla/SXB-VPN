@@ -21,6 +21,7 @@ import vpnRouter from "./server/routes/vpn";
 import rbacRouter from "./server/routes/rbac";
 import dashboardRouter from "./server/routes/dashboard";
 import mobileRouter from "./server/routes/mobile";
+import adminTokensRouter from "./server/routes/admin-tokens";
 
 async function startServer() {
   const app = express();
@@ -97,6 +98,7 @@ async function startServer() {
   app.use("/api/rbac", rbacRouter);
   app.use("/api/dashboard", dashboardRouter);
   app.use("/api/mobile", mobileRouter);
+  app.use("/api/admin-tokens", adminTokensRouter);
 
   // Global Error Handler with support for Multilingual Error i18n
   app.use((err: any, req: Request, res: Response, next: NextFunction) => {

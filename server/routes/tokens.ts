@@ -34,7 +34,7 @@ function makeSxbToken(): string {
 }
 
 // GET /api/tokens — liste tous les tokens SXB (ADMIN/RESELLER)
-router.get("/", requireAuth, requirePermission("tokens.manage"), async (req: AuthenticatedRequest, res: Response) => {
+router.get("/", requireAuth, requirePermission("tokens.view"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     let tokens: any[] = [];
     if (prisma) {
@@ -57,7 +57,7 @@ router.get("/", requireAuth, requirePermission("tokens.manage"), async (req: Aut
 });
 
 // POST /api/tokens — crée un nouveau token (alias pour /generate)
-router.post("/", requireAuth, requirePermission("tokens.manage"), async (req: AuthenticatedRequest, res: Response) => {
+router.post("/", requireAuth, requirePermission("tokens.view"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const body = generateTokenSchema.parse(req.body);
     const tokenStr = makeSxbToken();
@@ -103,7 +103,7 @@ router.post("/", requireAuth, requirePermission("tokens.manage"), async (req: Au
 });
 
 // POST /api/tokens/:id/revoke — révoque un token
-router.post("/:id/revoke", requireAuth, requirePermission("tokens.manage"), async (req: AuthenticatedRequest, res: Response) => {
+router.post("/:id/revoke", requireAuth, requirePermission("tokens.view"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     let updated: any = null;
@@ -124,7 +124,7 @@ router.post("/:id/revoke", requireAuth, requirePermission("tokens.manage"), asyn
 });
 
 // DELETE /api/tokens/:id — révoque un token (alias)
-router.delete("/:id", requireAuth, requirePermission("tokens.manage"), async (req: AuthenticatedRequest, res: Response) => {
+router.delete("/:id", requireAuth, requirePermission("tokens.view"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     let updated: any = null;
@@ -145,7 +145,7 @@ router.delete("/:id", requireAuth, requirePermission("tokens.manage"), async (re
 });
 
 // POST /api/tokens/generate
-router.post("/generate", requireAuth, requirePermission("tokens.manage"), async (req: AuthenticatedRequest, res: Response) => {
+router.post("/generate", requireAuth, requirePermission("tokens.view"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const body = generateTokenSchema.parse(req.body);
     const tokenStr = makeSxbToken();

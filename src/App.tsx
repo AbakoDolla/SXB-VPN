@@ -8,6 +8,7 @@ import VouchersView from "./components/VouchersView";
 import SupportView from "./components/SupportView";
 import RBACView from "./components/RBACView";
 import SettingsView from "./components/SettingsView";
+import AccountsView from "./components/AccountsView";
 import Layout from "./components/Layout";
 import { useEffect, useState } from 'react';
 import { I18nProvider, useTranslation } from './contexts/I18nContext';
@@ -193,6 +194,13 @@ function MainApp() {
           <RBACView
             currentUserRole={role}
             onRolePermissionsUpdated={handleRolePermissionsUpdated}
+          />
+        );
+      case 'accounts':
+        return (
+          <AccountsView
+            currentUserRole={role}
+            currentUserId={currentUser.id}
           />
         );
       case 'settings':

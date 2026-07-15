@@ -1,10 +1,9 @@
+/**
+ * Tokens API — SXB-DATA-XXXX-XXXX-XXXX
+ * Les tokens sont TOUJOURS générés côté serveur. Ne jamais générer côté client.
+ */
 import { TokenSXB } from "../types";
 import { apiRequest } from "./client";
-
-export function generateTokenCode(): string {
-  const segment = () => Math.random().toString(36).substring(2, 6).toUpperCase();
-  return `SXB-${segment()}-${segment()}-${segment()}`;
-}
 
 export async function fetchTokens(): Promise<TokenSXB[]> {
   try {
@@ -27,10 +26,9 @@ export async function fetchTokenById(id: string): Promise<TokenSXB | null> {
 
 export async function createToken(tokenData: {
   clientId: string;
-  planName: string;
   quotaGb: number;
   durationDays: number;
-  price?: number;
+  deviceLimit?: number;
 }): Promise<TokenSXB> {
   return await apiRequest<TokenSXB>("/tokens", {
     method: "POST",
@@ -48,12 +46,5 @@ export async function updateToken(id: string, updates: Partial<TokenSXB>): Promi
 export async function revokeToken(id: string): Promise<TokenSXB> {
   return await apiRequest<TokenSXB>(`/tokens/${id}/revoke`, {
     method: "POST",
-  });
-}
-
-export async function assignTokenToClient(tokenId: string, clientId: string): Promise<TokenSXB> {
-  return await apiRequest<TokenSXB>(`/tokens/${tokenId}/assign`, {
-    method: "POST",
-    body: { clientId },
   });
 }

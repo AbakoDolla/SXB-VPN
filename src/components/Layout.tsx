@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
-import { User } from '../types';
+import { User, UserRole } from '../types';
 import {
   LayoutDashboard, Users, Server, Shield, Key, Ticket,
   Settings, ChevronRight, LogOut, PanelsLeftRight, UserCog,
-  Menu, X
+  Menu, X, UserPlus,
 } from 'lucide-react';
 
 interface LayoutProps {
@@ -20,46 +20,89 @@ export default function Layout({
   activeRoute,
   onNavigate,
   currentUser,
-  onLogout
+  onLogout,
 }: LayoutProps) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
-  // Close mobile nav on resize to desktop
   useEffect(() => {
     const handleResize = () => {
-      if (window.innerWidth >= 1024) {
-        setMobileNavOpen(false);
-      }
+      if (window.innerWidth >= 1024) setMobileNavOpen(false);
     };
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Prevent body scroll when mobile nav is open
   useEffect(() => {
-    if (mobileNavOpen) {
-      document.body.style.overflow = 'hidden';
-    } else {
-      document.body.style.overflow = '';
-    }
-    return () => {
-      document.body.style.overflow = '';
-    };
+    document.body.style.overflow = mobileNavOpen ? 'hidden' : '';
+    return () => { document.body.style.overflow = ''; };
   }, [mobileNavOpen]);
 
   const navItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'] },
-    { id: 'clients', label: 'Clients', icon: Users, roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'] },
-    { id: 'resellers', label: 'Revendeurs', icon: UserCog, roles: ['SUPER_ADMIN', 'ADMIN'] },
-    { id: 'servers', label: 'Serveurs', icon: Server, roles: ['SUPER_ADMIN', 'ADMIN'] },
-    { id: 'xpanel', label: 'XPanel', icon: PanelsLeftRight, roles: ['SUPER_ADMIN', 'ADMIN'] },
-    { id: 'tokens', label: 'Tokens', icon: Key, roles: ['SUPER_ADMIN', 'ADMIN', 'RESELLER'] },
-    { id: 'vouchers', label: 'Vouchers', icon: Ticket, roles: ['SUPER_ADMIN', 'ADMIN', 'RESELLER'] },
-    { id: 'rbac', label: 'RBAC', icon: Shield, roles: ['SUPER_ADMIN', 'ADMIN'] },
-    { id: 'settings', label: 'Paramètres', icon: Settings, roles: ['SUPER_ADMIN', 'ADMIN'] },
+    {
+      id: 'dashboard',
+      label: 'Dashboard',
+      icon: LayoutDashboard,
+      roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'],
+    },
+    {
+      id: 'clients',
+      label: 'Clients VPN',
+      icon: Users,
+      roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'],
+    },
+    {
+      id: 'tokens',
+      label: 'Tokens SXB',
+      icon: Key,
+      roles: ['SUPER_ADMIN', 'ADMIN', 'RESELLER'],
+    },
+    {
+      id: 'vouchers',
+      label: 'Vouchers',
+      icon: Ticket,
+      roles: ['SUPER_ADMIN', 'ADMIN', 'RESELLER'],
+    },
+    {
+      id: 'resellers',
+      label: 'Revendeurs',
+      icon: UserCog,
+      roles: ['SUPER_ADMIN', 'ADMIN'],
+    },
+    {
+      id: 'servers',
+      label: 'Serveurs',
+      icon: Server,
+      roles: ['SUPER_ADMIN', 'ADMIN'],
+    },
+    {
+      id: 'xpanel',
+      label: 'XPanel',
+      icon: PanelsLeftRight,
+      roles: ['SUPER_ADMIN', 'ADMIN'],
+    },
+    {
+      id: 'accounts',
+      label: 'Gestion des Comptes',
+      icon: UserPlus,
+      roles: ['SUPER_ADMIN', 'ADMIN'],
+    },
+    {
+      id: 'rbac',
+      label: 'Rôles & Permissions',
+      icon: Shield,
+      roles: ['SUPER_ADMIN', 'ADMIN'],
+    },
+    {
+      id: 'settings',
+      label: 'Paramètres',
+      icon: Settings,
+      roles: ['SUPER_ADMIN', 'ADMIN'],
+    },
   ];
 
-  const filteredNav = navItems.filter(item => item.roles.includes(currentUser.role));
+  const filteredNav = navItems.filter((item) =>
+    item.roles.includes(currentUser.role)
+  );
 
   function handleNavigate(route: string) {
     onNavigate(route);
@@ -71,9 +114,9 @@ export default function Layout({
       {/* Logo */}
       <div className="h-16 flex items-center justify-between px-6 border-b border-[#1a1f2e] shrink-0">
         <div className="flex items-center gap-3">
-          <img 
-            src="/assets/images/logo_sxb_2026.png" 
-            alt="SXB VPN Logo" 
+          <img
+            src="/assets/images/logo_sxb_2026.png"
+            alt="SXB VPN"
             className="w-8 h-8 rounded-lg object-contain shrink-0"
           />
           <span className="text-white font-bold text-lg">SXB VPN</span>
@@ -82,7 +125,6 @@ export default function Layout({
           <button
             onClick={onClose}
             className="lg:hidden text-gray-400 hover:text-white p-1.5 -mr-1.5 rounded-lg hover:bg-white/10 transition-colors"
-            aria-label="Fermer le menu"
           >
             <X className="w-5 h-5" />
           </button>
@@ -90,15 +132,19 @@ export default function Layout({
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
-        {filteredNav.map(item => {
+      <nav className="flex-1 py-4 px-3 space-y-0.5 overflow-y-auto">
+        {filteredNav.map((item) => {
           const Icon = item.icon;
           const isActive = activeRoute === item.id;
           return (
             <button
               key={item.id}
               onClick={() => handleNavigate(item.id)}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 ${isActive ? 'bg-cyan-500/20 text-cyan-400 border-l-2 border-cyan-400' : 'text-gray-400 hover:bg-white/5 hover:text-white'}`}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 ${
+                isActive
+                  ? 'bg-cyan-500/20 text-cyan-400 border-l-2 border-cyan-400 pl-[10px]'
+                  : 'text-gray-400 hover:bg-white/5 hover:text-white'
+              }`}
             >
               <Icon className="w-5 h-5 shrink-0" />
               <span className="text-sm font-medium">{item.label}</span>
@@ -132,16 +178,16 @@ export default function Layout({
     </div>
   );
 
-  const activeLabel = filteredNav.find(i => i.id === activeRoute)?.label ?? 'SXB VPN';
+  const activeLabel = filteredNav.find((i) => i.id === activeRoute)?.label ?? 'SXB VPN';
 
   return (
     <div className="min-h-screen bg-[#07090e] flex">
-      {/* ── Desktop Sidebar ── */}
+      {/* Desktop Sidebar */}
       <aside className="hidden lg:flex lg:w-72 bg-[#0a0d14] border-r border-[#1a1f2e] flex-col shrink-0 fixed top-0 left-0 h-full z-40">
         <SidebarContent />
       </aside>
 
-      {/* ── Main Content ── */}
+      {/* Main Content */}
       <div className="flex-1 min-w-0 flex flex-col lg:ml-72">
         {/* Mobile Header */}
         <header className="lg:hidden h-14 flex items-center justify-between gap-3 px-4 border-b border-[#1a1f2e] bg-[#0a0d14]/95 backdrop-blur-sm sticky top-0 z-30 shrink-0">
@@ -149,13 +195,11 @@ export default function Layout({
             <button
               onClick={() => setMobileNavOpen(true)}
               className="text-gray-300 hover:text-white p-1.5 -ml-1.5 rounded-lg hover:bg-white/10 transition-colors"
-              aria-label="Ouvrir le menu"
             >
               <Menu className="w-6 h-6" />
             </button>
             <span className="text-white font-semibold truncate">{activeLabel}</span>
           </div>
-          {/* Mobile Profile */}
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center shrink-0">
               <span className="text-white text-xs font-semibold">
@@ -165,26 +209,22 @@ export default function Layout({
           </div>
         </header>
 
-        {/* ── Mobile Drawer Overlay ── */}
+        {/* Mobile Drawer */}
         {mobileNavOpen && (
           <div className="fixed inset-0 z-50 lg:hidden">
-            {/* Backdrop */}
             <div
-              className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-fadeIn"
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
               onClick={() => setMobileNavOpen(false)}
             />
-            {/* Drawer Panel */}
-            <aside className="absolute left-0 top-0 h-full w-72 bg-[#0a0d14] border-r border-[#1a1f2e] shadow-2xl animate-slideIn">
+            <aside className="absolute left-0 top-0 h-full w-72 bg-[#0a0d14] border-r border-[#1a1f2e] shadow-2xl">
               <SidebarContent onClose={() => setMobileNavOpen(false)} />
             </aside>
           </div>
         )}
 
-        {/* ── Main Content Area ── */}
+        {/* Content Area */}
         <main className="flex-1 overflow-x-hidden">
-          <div className="p-4 sm:p-6 lg:p-8">
-            {children}
-          </div>
+          <div className="p-4 sm:p-6 lg:p-8">{children}</div>
         </main>
       </div>
     </div>

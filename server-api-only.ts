@@ -16,6 +16,7 @@ import analyticsRouter from './server/routes/analytics';
 import serversRouter from './server/routes/servers';
 import docsRouter from './server/routes/docs';
 import vpnRouter from './server/routes/vpn';
+import adminTokensRouter from './server/routes/admin-tokens';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -58,6 +59,7 @@ app.use('/api/analytics', analyticsRouter);
 app.use('/api/servers', serversRouter);
 app.use('/api/docs', docsRouter);
 app.use('/api/vpn', vpnRouter);
+app.use('/api/admin-tokens', adminTokensRouter);
 
 // Health check
 app.get('/api/health', (req, res) => {
