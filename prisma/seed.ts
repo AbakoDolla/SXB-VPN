@@ -11,7 +11,7 @@ async function main() {
 
   const superAdminRole = await prisma.role.upsert({
     where: { name: 'SUPER_ADMIN' },
-    update: {},
+    update: { description: 'Super Administrateur — Accès total et irrestricted' },
     create: { name: 'SUPER_ADMIN', description: 'Super Administrateur — Accès total et irrestricted' },
   });
 
@@ -163,7 +163,7 @@ async function main() {
   const superAdminHash = await bcrypt.hash('SuperAdmin2026!', 12);
   await prisma.user.upsert({
     where: { email: 'superadmin@sxbvpn.com' },
-    update: {},
+    update: { passwordHash: superAdminHash, roleId: superAdminRole.id, status: 'active' },
     create: {
       name: 'Super Administrateur',
       email: 'superadmin@sxbvpn.com',
@@ -195,7 +195,7 @@ async function main() {
   const supportHash = await bcrypt.hash('Support2026!', 12);
   await prisma.user.upsert({
     where: { email: 'support@sxbvpn.com' },
-    update: {},
+    update: { passwordHash: supportHash, roleId: supportRole.id, status: 'active' },
     create: {
       name: 'Agent Support',
       email: 'support@sxbvpn.com',
