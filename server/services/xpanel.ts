@@ -234,8 +234,90 @@ export class XPanelService {
     }
 
     console.log("🔄 Starting full sync between SXB DB and XPanel engine...");
-    // Implementation depends on SXB VPN's database structure
     console.log("✅ XPanel sync completed (traffic sync is real-time via collectors)");
     return { synchronizedCount: 0 };
+  }
+
+  // Get VPN configurations from XPanel
+  static async getConfigs(): Promise<any[]> {
+    if (!this.isConfigured()) {
+      return [];
+    }
+
+    try {
+      const headers = await this.getHeaders();
+      // Try to get inbounds (VPN configs)
+      const response = await fetch(`${this.baseUrl}/api/v1/inbounds`, {
+        method: "GET",
+        headers,
+      });
+      if (!response.ok) {
+        console.warn("⚠️ Could not fetch XPanel configs, returning empty array");
+        return [];
+      }
+      const data = await response.json();
+      return Array.isArray(data) ? data : [];
+    } catch (err) {
+      console.warn("⚠️ XPanel configs unreachable:", err);
+      return [];
+    }
+  }
+
+  // Create a new VPN config on XPanel
+  static async createConfig(name: string, protocol: string, port: number, settings?: any): Promise<any> {
+    if (!this.isConfigured()) {
+      throw new Error("X-Panel not configured. Cannot create configs.");
+    }
+
+    try {
+      const headers = await this.getHeaders();
+      const response = await fetch(`${this.baseUrl}/api/v1/inbounds`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          up: name,
+          down: name,
+          remark: name,
+          enable: true,
+          expiryTime: 0,
+          total: 0,
+          reset: 0,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(`XPanel create config failed: ${response.status}`);
+      }
+      const data = await response.json();
+      return {
+        id: data.id,
+        name,
+        protocol,
+        port,
+        fullConfigUrl: `${protocol}://config-${data.id}@localhost:${port}`,
+        createdAt: new Date().toISOString(),
+      };
+    } catch (err: any) {
+      throw new Error(`XPanel config creation error: ${err.message}`);
+    }
+  }
+
+  // Delete a VPN config from XPanel
+  static async deleteConfig(configId: string): Promise<void> {
+    if (!this.isConfigured()) {
+      return;
+    }
+
+    try {
+      const headers = await this.getHeaders();
+      const response = await fetch(`${this.baseUrl}/api/v1/inbounds/${configId}`, {
+        method: "DELETE",
+        headers,
+      });
+      if (!response.ok && response.status !== 404) {
+        throw new Error(`XPanel delete config failed: ${response.status}`);
+      }
+    } catch (err: any) {
+      console.warn(`⚠️ XPanel config deletion error: ${err.message}`);
+    }
   }
 }

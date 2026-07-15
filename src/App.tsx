@@ -43,11 +43,11 @@ function LoginForm({ onLogin }: { onLogin: () => void }) {
       <div className="w-full max-w-md">
         {/* Logo */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-cyan-500 to-blue-600 mb-4">
-            <svg className="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-            </svg>
-          </div>
+          <img 
+            src="/assets/images/logo_shield_1784022646518.jpg" 
+            alt="SXB VPN Logo" 
+            className="w-24 h-24 rounded-2xl mx-auto mb-4 object-contain"
+          />
           <h1 className="text-3xl font-bold text-white mb-2">SXB VPN</h1>
           <p className="text-gray-400">Plateforme de gestion VPN</p>
         </div>

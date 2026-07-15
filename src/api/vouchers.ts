@@ -1,5 +1,5 @@
 import { Voucher } from "../types";
-import { getVouchers, saveVouchers, getCurrentUser, logActivity } from "./db";
+import { apiRequest } from "./client";
 
 export function generateVoucherCode(): string {
   const segment = () => Math.random().toString(36).substring(2, 7).toUpperCase();
@@ -7,51 +7,30 @@ export function generateVoucherCode(): string {
 }
 
 export async function fetchVouchers(): Promise<Voucher[]> {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve(getVouchers());
-    }, 150);
-  });
+  try {
+    const data = await apiRequest<{ vouchers: Voucher[] }>("/vouchers");
+    return data.vouchers || [];
+  } catch (error) {
+    console.error("Error fetching vouchers:", error);
+    return [];
+  }
 }
 
-export async function createVoucher(data: Omit<Voucher, "id" | "code" | "status">): Promise<Voucher> {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      const vouchers = getVouchers();
-      const newVoucher: Voucher = {
-        ...data,
-        id: `voucher-${Date.now()}`,
-        code: generateVoucherCode(),
-        status: "active",
-      };
-      
-      saveVouchers([...vouchers, newVoucher]);
-      const actor = getCurrentUser().name;
-      logActivity(`Création du Voucher prépayé: ${newVoucher.code}`, actor, "success");
-      resolve(newVoucher);
-    }, 200);
+export async function createVoucher(data: {
+  quotaGb: number;
+  durationDays: number;
+  count?: number;
+}): Promise<Voucher[]> {
+  const response = await apiRequest<{ vouchers: Voucher[] }>("/vouchers", {
+    method: "POST",
+    body: data,
   });
+  return response.vouchers || [];
 }
 
-export async function useVoucher(code: string): Promise<Voucher> {
-  return new Promise((resolve, reject) => {
-    setTimeout(() => {
-      const vouchers = getVouchers();
-      const index = vouchers.findIndex((v) => v.code === code);
-      if (index === -1) return reject(new Error("Voucher invalide ou introuvable"));
-      
-      const voucher = vouchers[index];
-      if (voucher.status !== "active") {
-        return reject(new Error(`Ce voucher ne peut pas être activé car il est déjà ${voucher.status}`));
-      }
-      
-      voucher.status = "used";
-      vouchers[index] = voucher;
-      saveVouchers(vouchers);
-      
-      const actor = getCurrentUser().name;
-      logActivity(`Activation réussie du Voucher: ${code} (+${voucher.quota} Go)`, actor, "success");
-      resolve(voucher);
-    }, 250);
+export async function redeemVoucher(code: string): Promise<{ success: boolean; message: string; quotaAdded?: number }> {
+  return await apiRequest<{ success: boolean; message: string; quotaAdded?: number }>(`/vouchers/redeem`, {
+    method: "POST",
+    body: { code },
   });
 }

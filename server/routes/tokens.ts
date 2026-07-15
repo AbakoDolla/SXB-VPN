@@ -49,14 +49,81 @@ router.get("/", requireAuth, requirePermission("tokens.manage"), async (req: Aut
         return { ...t, client: client ? { ...client, user } : null };
       });
     }
-    return res.json(tokens.map(sanitizeToken));
+    return res.json({ tokens: tokens.map(sanitizeToken) });
   } catch (err) {
     console.error("Fetch tokens list error:", err);
     return res.status(500).json({ error: "errors.server", message: "Failed to fetch tokens" });
   }
 });
 
-// DELETE /api/tokens/:id — révoque un token
+// POST /api/tokens — crée un nouveau token (alias pour /generate)
+router.post("/", requireAuth, requirePermission("tokens.manage"), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const body = generateTokenSchema.parse(req.body);
+    const tokenStr = makeSxbToken();
+    const quotaBytes = BigInt(body.quotaGb) * BigInt(1024 * 1024 * 1024);
+    const expiration = new Date();
+    expiration.setDate(expiration.getDate() + body.durationDays);
+
+    let newToken: any = null;
+    if (prisma) {
+      newToken = await prisma.tokenSXB.create({
+        data: {
+          token: tokenStr,
+          clientId: body.clientId,
+          quota: quotaBytes,
+          expiration,
+          deviceLimit: body.deviceLimit,
+          status: "active",
+        },
+      });
+    } else {
+      newToken = {
+        id: `token-${Date.now()}`,
+        token: tokenStr,
+        clientId: body.clientId,
+        quota: quotaBytes,
+        expiration,
+        deviceLimit: body.deviceLimit,
+        status: "active",
+        createdAt: new Date(),
+      };
+      inMemoryDb.tokens.push(newToken);
+    }
+
+    await logDbActivity(req.user?.userId || null, `Created SXB Token: ${tokenStr}`, "success", req.ip);
+    return res.status(201).json(sanitizeToken(newToken));
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: "errors.validation", message: err.issues });
+    }
+    console.error("Token creation error:", err);
+    return res.status(500).json({ error: "errors.server", message: "Failed to create token" });
+  }
+});
+
+// POST /api/tokens/:id/revoke — révoque un token
+router.post("/:id/revoke", requireAuth, requirePermission("tokens.manage"), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    let updated: any = null;
+    if (prisma) {
+      updated = await prisma.tokenSXB.update({ where: { id }, data: { status: "revoked" } });
+    } else {
+      const index = inMemoryDb.tokens.findIndex((t) => t.id === id);
+      if (index === -1) return res.status(404).json({ error: "errors.tokens.not_found" });
+      inMemoryDb.tokens[index].status = "revoked";
+      updated = inMemoryDb.tokens[index];
+    }
+    await logDbActivity(req.user?.userId || null, `Revoked SXB Token ID: ${id}`, "warning", req.ip);
+    return res.json(sanitizeToken(updated));
+  } catch (err) {
+    console.error("Revoke token error:", err);
+    return res.status(500).json({ error: "errors.server", message: "Failed to revoke token" });
+  }
+});
+
+// DELETE /api/tokens/:id — révoque un token (alias)
 router.delete("/:id", requireAuth, requirePermission("tokens.manage"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;

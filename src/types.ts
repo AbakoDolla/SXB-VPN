@@ -14,15 +14,14 @@ export interface User {
 
 export interface Client {
   id: string;
-  name: string;
-  email: string;
+  userId: string;
   token: string;
-  plan: string;
-  quotaTotal: number; // in GB
-  consumption: number; // in GB
-  expiration: string; // ISO date string
+  quotaTotal: string | number; // BigInt as string from API, converted to bytes
+  quotaUsed: string | number;
+  expireAt: string;
   status: "active" | "suspended" | "expired";
-  resellerId?: string;
+  xpanelUserId?: string;
+  user?: User;
 }
 
 export interface Reseller {
@@ -48,12 +47,13 @@ export interface VPSServer {
 
 export interface TokenSXB {
   id: string;
-  code: string; // SXB-XXXX-XXXX-XXXX
-  owner: string;
-  quota: number; // GB
+  token: string; // SXB-XXXX-XXXX-XXXX
+  clientId: string;
+  quota: string | number;
   expiration: string;
   status: "active" | "expired" | "revoked";
-  device?: string;
+  deviceLimit: number;
+  createdAt?: string;
 }
 
 export interface Voucher {

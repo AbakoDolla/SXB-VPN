@@ -1,57 +1,59 @@
 import { TokenSXB } from "../types";
-import { getTokens, saveTokens, getCurrentUser, logActivity } from "./db";
+import { apiRequest } from "./client";
 
 export function generateTokenCode(): string {
-  // Returns a code in the exact format requested: SXB-XXXX-XXXX-XXXX
   const segment = () => Math.random().toString(36).substring(2, 6).toUpperCase();
   return `SXB-${segment()}-${segment()}-${segment()}`;
 }
 
 export async function fetchTokens(): Promise<TokenSXB[]> {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve(getTokens());
-    }, 200);
-  });
+  try {
+    const data = await apiRequest<{ tokens: TokenSXB[] }>("/tokens");
+    return data.tokens || [];
+  } catch (error) {
+    console.error("Error fetching tokens:", error);
+    return [];
+  }
 }
 
-export async function createToken(tokenData: Omit<TokenSXB, "id" | "code" | "status">): Promise<TokenSXB> {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      const tokens = getTokens();
-      const newToken: TokenSXB = {
-        ...tokenData,
-        id: `token-${Date.now()}`,
-        code: generateTokenCode(),
-        status: "active",
-      };
-      
-      saveTokens([...tokens, newToken]);
-      const actor = getCurrentUser().name;
-      logActivity(`Génération du token SXB: ${newToken.code}`, actor, "success");
-      resolve(newToken);
-    }, 250);
+export async function fetchTokenById(id: string): Promise<TokenSXB | null> {
+  try {
+    return await apiRequest<TokenSXB>(`/tokens/${id}`);
+  } catch (error) {
+    console.error("Error fetching token:", error);
+    return null;
+  }
+}
+
+export async function createToken(tokenData: {
+  clientId: string;
+  planName: string;
+  quotaGb: number;
+  durationDays: number;
+  price?: number;
+}): Promise<TokenSXB> {
+  return await apiRequest<TokenSXB>("/tokens", {
+    method: "POST",
+    body: tokenData,
   });
 }
 
 export async function updateToken(id: string, updates: Partial<TokenSXB>): Promise<TokenSXB> {
-  return new Promise((resolve, reject) => {
-    setTimeout(() => {
-      const tokens = getTokens();
-      const index = tokens.findIndex((t) => t.id === id);
-      if (index === -1) return reject(new Error("Token non trouvé"));
-      
-      const updated = { ...tokens[index], ...updates };
-      tokens[index] = updated;
-      saveTokens(tokens);
-      
-      const actor = getCurrentUser().name;
-      logActivity(`Mise à jour du token ${updated.code}`, actor, "info");
-      resolve(updated);
-    }, 200);
+  return await apiRequest<TokenSXB>(`/tokens/${id}`, {
+    method: "PATCH",
+    body: updates,
   });
 }
 
 export async function revokeToken(id: string): Promise<TokenSXB> {
-  return updateToken(id, { status: "revoked" });
+  return await apiRequest<TokenSXB>(`/tokens/${id}/revoke`, {
+    method: "POST",
+  });
+}
+
+export async function assignTokenToClient(tokenId: string, clientId: string): Promise<TokenSXB> {
+  return await apiRequest<TokenSXB>(`/tokens/${tokenId}/assign`, {
+    method: "POST",
+    body: { clientId },
+  });
 }

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useTranslation } from "../contexts/I18nContext";
-import { fetchClients, createClient, updateClient, deleteClient, renewClient, resetClientAccess, suspendClient, activateClient } from "../api/clients";
+import { fetchClients, createClient, updateClient, deleteClient, suspendClient, activateClient } from "../api/clients";
 import { Client, UserRole } from "../types";
 import { Search, UserPlus, Trash2, ShieldAlert, KeyRound, CalendarDays, Ban, CheckCircle, RefreshCcw, MoreHorizontal, HelpCircle } from "lucide-react";
 
@@ -20,13 +20,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
   const [showAddModal, setShowAddModal] = useState(false);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [plan, setPlan] = useState("SXB Premium High-Speed");
-  const [quotaTotal, setQuotaTotal] = useState(50);
-  const [expiration, setExpiration] = useState(() => {
-    const d = new Date();
-    d.setDate(d.getDate() + 30);
-    return d.toISOString().split("T")[0];
-  });
+  const [phone, setPhone] = useState("");
 
   const isSupport = currentUserRole === UserRole.SUPPORT;
 
@@ -48,24 +42,19 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name || !email) return;
+    if (!name) return;
 
     try {
-      // Generate secure initial Sing-box token
-      const token = `sxb-usr-${Math.random().toString(36).substring(2, 10)}`;
       await createClient({
         name,
-        email,
-        plan,
-        quotaTotal: Number(quotaTotal),
-        expiration: new Date(expiration).toISOString(),
-        status: "active",
-        token,
+        email: email || undefined,
+        phone: phone || undefined,
       });
       
       // Reset form
       setName("");
       setEmail("");
+      setPhone("");
       setShowAddModal(false);
       loadClients();
     } catch (err) {
@@ -193,7 +182,6 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                   <th className="py-3 px-4">{t("clients.fields.name")}</th>
                   <th className="py-3 px-4">{t("clients.fields.email")}</th>
                   <th className="py-3 px-4">{t("clients.fields.token")}</th>
-                  <th className="py-3 px-4">{t("clients.fields.plan")}</th>
                   <th className="py-3 px-4 text-center">Quota (Go)</th>
                   <th className="py-3 px-4">{t("clients.fields.expiration")}</th>
                   <th className="py-3 px-4 text-center">{t("clients.fields.status")}</th>
@@ -202,14 +190,19 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
               </thead>
               <tbody className="divide-y divide-gray-900 text-sm">
                 {filteredClients.map((client) => {
-                  const percent = Math.min(100, (client.consumption / client.quotaTotal) * 100);
+                  const quotaTotal = Number(client.quotaTotal) / (1024 * 1024 * 1024);
+                  const quotaUsed = Number(client.quotaUsed) / (1024 * 1024 * 1024);
+                  const percent = quotaTotal > 0 ? Math.min(100, (quotaUsed / quotaTotal) * 100) : 0;
                   const isSuspended = client.status === "suspended";
-                  const isExpired = client.status === "expired";
                   
                   return (
                     <tr key={client.id} className="hover:bg-gray-900/20 transition-colors">
-                      <td className="py-4 px-4 font-medium text-white">{client.name}</td>
-                      <td className="py-4 px-4 text-gray-400">{client.email}</td>
+                      <td className="py-4 px-4 font-medium text-white">
+                        {(client as any).user?.name || client.name || "-"}
+                      </td>
+                      <td className="py-4 px-4 text-gray-400">
+                        {(client as any).user?.email || client.email || "-"}
+                      </td>
                       <td className="py-4 px-4 font-mono text-xs">
                         {isSupport ? (
                           <span className="text-gray-600 flex items-center gap-1">
@@ -220,15 +213,10 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                         )}
                       </td>
                       <td className="py-4 px-4">
-                        <span className="text-xs bg-gray-900 border border-gray-800 text-gray-300 px-2 py-1 rounded font-medium">
-                          {client.plan}
-                        </span>
-                      </td>
-                      <td className="py-4 px-4">
                         <div className="space-y-1.5 max-w-[120px] mx-auto">
                           <div className="flex justify-between text-[11px] font-mono text-gray-500">
-                            <span>{client.consumption} Go</span>
-                            <span>{client.quotaTotal} Go</span>
+                            <span>{quotaUsed.toFixed(1)} Go</span>
+                            <span>{quotaTotal.toFixed(1)} Go</span>
                           </div>
                           <div className="w-full h-1 bg-gray-900 rounded-full overflow-hidden">
                             <div 
@@ -239,7 +227,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                         </div>
                       </td>
                       <td className="py-4 px-4 text-xs text-gray-400 font-mono">
-                        {new Date(client.expiration).toLocaleDateString()}
+                        {client.expireAt ? new Date(client.expireAt).toLocaleDateString() : "-"}
                       </td>
                       <td className="py-4 px-4 text-center">
                         <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold ${
@@ -340,7 +328,6 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                 <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">{t("clients.fields.email")}</label>
                 <input
                   type="email"
-                  required
                   placeholder="jean.dupont@gmail.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
@@ -349,40 +336,19 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">{t("clients.fields.plan")}</label>
-                <select
-                  value={plan}
-                  onChange={(e) => setPlan(e.target.value)}
-                  className="w-full px-3 py-2 text-sm bg-gray-900 border border-gray-800 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
-                >
-                  <option value="SXB Premium High-Speed">SXB Premium High-Speed (Sing-box/VLESS)</option>
-                  <option value="SXB Standard Tunnel">SXB Standard Tunnel (SSH Direct)</option>
-                  <option value="SXB Basic Bypass">SXB Basic Bypass (Trojan TLS)</option>
-                </select>
+                <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">Téléphone</label>
+                <input
+                  type="tel"
+                  placeholder="+225 07 XX XX XX XX"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  className="w-full px-3 py-2 text-sm bg-gray-900 border border-gray-800 rounded-lg text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
+                />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">Quota de Données</label>
-                  <input
-                    type="number"
-                    min="1"
-                    value={quotaTotal}
-                    onChange={(e) => setQuotaTotal(Number(e.target.value))}
-                    className="w-full px-3 py-2 text-sm bg-gray-900 border border-gray-800 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">Durée (jours)</label>
-                  <input
-                    type="date"
-                    value={expiration}
-                    onChange={(e) => setExpiration(e.target.value)}
-                    className="w-full px-3 py-2 text-sm bg-gray-900 border border-gray-800 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
-                  />
-                </div>
-              </div>
+              <p className="text-xs text-gray-500 mt-2">
+                Le quota sera défini lors de la création du token/forfait pour ce client.
+              </p>
 
               <div className="flex gap-2 justify-end mt-6 pt-4 border-t border-gray-900">
                 <button
