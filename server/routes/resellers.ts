@@ -1,5 +1,6 @@
 import { Router, Response } from "express";
 import { z } from "zod";
+import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
@@ -7,8 +8,30 @@ import { XPanelService } from "../services/xpanel";
 
 const router = Router();
 
+// Helper : aplatit les données reseller pour correspondre au type frontend { name, email, balance, clientsCount }
+function flattenReseller(r: any, clientsCount = 0): any {
+  return {
+    id: r.id,
+    name: r.user?.name || r.name || "",
+    email: r.user?.email || r.email || "",
+    phone: r.user?.phone || null,
+    balance: r.commission ?? 0,
+    commission: r.commission ?? 0,
+    status: r.status,
+    clientsCount,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+    userId: r.userId,
+  };
+}
+
+// POST accepte soit { name, email, phone?, balance? } soit l'ancien { userId, commission? }
 const createResellerSchema = z.object({
-  userId: z.string(),
+  name: z.string().min(2).optional(),
+  email: z.string().email().optional(),
+  phone: z.string().optional(),
+  balance: z.coerce.number().min(0).optional(),
+  userId: z.string().optional(),
   commission: z.coerce.number().min(0).max(100).default(20),
   status: z.enum(["active", "suspended"]).default("active"),
 });
@@ -20,77 +43,101 @@ const resellerCreateClientSchema = z.object({
   deviceLimit: z.coerce.number().min(1).default(1),
 });
 
-// GET /api/resellers
+// GET /api/resellers — retourne { resellers: [...] } (frontend attend ce format)
 router.get("/", requireAuth, requirePermission("reseller.manage"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     let resellers: any[] = [];
     if (prisma) {
-      resellers = await prisma.reseller.findMany({
-        include: { user: true },
-      });
-      // Compte le nombre de clients rattachés à chaque revendeur
+      const raw = await prisma.reseller.findMany({ include: { user: true } });
       resellers = await Promise.all(
-        resellers.map(async (r) => {
+        raw.map(async (r) => {
           const clientsCount = await prisma.vpnClient.count({ where: { userId: r.userId } });
-          return { ...r, clientsCount };
+          return flattenReseller(r, clientsCount);
         })
       );
     } else {
       resellers = inMemoryDb.resellers.map((r) => {
         const u = inMemoryDb.users.find((user) => user.id === r.userId);
         const clientsCount = inMemoryDb.vpnClients.filter((c) => c.userId === r.userId).length;
-        return { ...r, user: u, clientsCount };
+        return flattenReseller({ ...r, user: u }, clientsCount);
       });
     }
-    return res.json(resellers);
+    return res.json({ resellers });
   } catch (err) {
     console.error("Fetch resellers error:", err);
     return res.status(500).json({ error: "errors.server", message: "Failed to fetch resellers" });
   }
 });
 
-// POST /api/resellers
+// POST /api/resellers — accepte { name, email } OU { userId }
 router.post("/", requireAuth, requirePermission("reseller.manage"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const body = createResellerSchema.parse(req.body);
+    let resolvedUserId = body.userId;
+    const commission = body.balance ?? body.commission ?? 20;
 
-    let existingReseller = false;
-    if (prisma) {
-      existingReseller = !!(await prisma.reseller.findUnique({ where: { userId: body.userId } }));
-    } else {
-      existingReseller = inMemoryDb.resellers.some((r) => r.userId === body.userId);
+    // Si le frontend envoie name+email → créer l'utilisateur d'abord
+    if (!resolvedUserId && body.name && body.email) {
+      if (!prisma) {
+        return res.status(400).json({ error: "errors.validation", message: "userId required in memory mode" });
+      }
+      const existing = await prisma.user.findUnique({ where: { email: body.email } });
+      if (existing) {
+        resolvedUserId = existing.id;
+      } else {
+        const resellerRole = await prisma.role.findFirst({ where: { name: "RESELLER" } });
+        if (!resellerRole) {
+          return res.status(500).json({ error: "errors.server", message: "Role RESELLER not found" });
+        }
+        const tempPassword = crypto.randomBytes(10).toString("hex");
+        const passwordHash = await bcrypt.hash(tempPassword, 12);
+        const newUser = await prisma.user.create({
+          data: {
+            name: body.name,
+            email: body.email,
+            phone: body.phone || null,
+            passwordHash,
+            roleId: resellerRole.id,
+            status: "active",
+          },
+        });
+        resolvedUserId = newUser.id;
+        console.log(`[Reseller] New user created: ${body.email} (temp password logged server-side)`);
+      }
     }
 
-    if (existingReseller) {
-      return res.status(400).json({ error: "errors.resellers.exists", message: "User is already registered as a reseller" });
+    if (!resolvedUserId) {
+      return res.status(400).json({ error: "errors.validation", message: "Provide either userId or name+email" });
     }
 
-    let newReseller: any = null;
     if (prisma) {
-      newReseller = await prisma.reseller.create({
-        data: {
-          userId: body.userId,
-          commission: body.commission,
-          status: body.status,
-        },
+      const existingReseller = await prisma.reseller.findUnique({ where: { userId: resolvedUserId } });
+      if (existingReseller) {
+        return res.status(400).json({ error: "errors.resellers.exists", message: "User is already a reseller" });
+      }
+      const newReseller = await prisma.reseller.create({
+        data: { userId: resolvedUserId, commission, status: body.status },
         include: { user: true },
       });
+      await logDbActivity(req.user?.userId || null, `Reseller created: ${body.email || resolvedUserId}`, "success", req.ip);
+      return res.status(201).json(flattenReseller(newReseller, 0));
     } else {
-      newReseller = {
+      const existingReseller = inMemoryDb.resellers.some((r) => r.userId === resolvedUserId);
+      if (existingReseller) {
+        return res.status(400).json({ error: "errors.resellers.exists", message: "User is already a reseller" });
+      }
+      const newReseller: any = {
         id: `reseller-${Date.now()}`,
-        userId: body.userId,
-        commission: body.commission,
+        userId: resolvedUserId,
+        commission,
         status: body.status,
         createdAt: new Date(),
         updatedAt: new Date(),
       };
       inMemoryDb.resellers.push(newReseller);
-      const u = inMemoryDb.users.find((user) => user.id === body.userId);
-      newReseller = { ...newReseller, user: u };
+      const u = inMemoryDb.users.find((user) => user.id === resolvedUserId);
+      return res.status(201).json(flattenReseller({ ...newReseller, user: u }, 0));
     }
-
-    await logDbActivity(req.user?.userId || null, `Promoted User ${body.userId} to Reseller Status`, "success", req.ip);
-    return res.status(201).json(newReseller);
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: "errors.validation", message: err.issues });
@@ -104,8 +151,6 @@ router.post("/", requireAuth, requirePermission("reseller.manage"), async (req: 
 router.get("/:id/clients", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
-
-    // Boundary security check: resellers can only query their own client list
     if (req.user?.role === "RESELLER") {
       let authorized = false;
       if (prisma) {
@@ -115,19 +160,19 @@ router.get("/:id/clients", requireAuth, async (req: AuthenticatedRequest, res: R
         const reseller = inMemoryDb.resellers.find((r) => r.id === id);
         if (reseller && reseller.userId === req.user.userId) authorized = true;
       }
-
       if (!authorized) {
         return res.status(403).json({ error: "errors.auth.forbidden", message: "Resellers can only query their own client rosters" });
       }
     } else {
-      // ADMIN or SUPPORT
-      const hasPerm = req.user?.permissions.includes("reseller.manage") || req.user?.role === "ADMIN";
+      const hasPerm =
+        req.user?.permissions.includes("reseller.manage") ||
+        req.user?.role === "ADMIN" ||
+        req.user?.role === "SUPER_ADMIN";
       if (!hasPerm) {
         return res.status(403).json({ error: "errors.auth.forbidden", message: "Forbidden" });
       }
     }
 
-    // Load reseller's user ID to filter clients
     let resellerUserId = "";
     if (prisma) {
       const resData = await prisma.reseller.findUnique({ where: { id } });
@@ -136,31 +181,25 @@ router.get("/:id/clients", requireAuth, async (req: AuthenticatedRequest, res: R
       const resData = inMemoryDb.resellers.find((r) => r.id === id);
       resellerUserId = resData?.userId || "";
     }
-
     if (!resellerUserId) {
-      return res.status(404).json({ error: "errors.resellers.not_found", message: "Reseller partner not found" });
+      return res.status(404).json({ error: "errors.resellers.not_found", message: "Reseller not found" });
     }
 
     let clients: any[] = [];
     if (prisma) {
-      clients = await prisma.vpnClient.findMany({
-        where: { userId: resellerUserId },
-        orderBy: { createdAt: "desc" },
-      });
+      clients = await prisma.vpnClient.findMany({ where: { userId: resellerUserId }, orderBy: { createdAt: "desc" } });
     } else {
       clients = inMemoryDb.vpnClients.filter((c) => c.userId === resellerUserId);
     }
-
     const sanitized = clients.map((c) => ({
       id: c.id,
-      token: c.token, // Format SXB-XXXX-XXXX-XXXX
+      token: c.token,
       quotaTotal: c.quotaTotal.toString(),
       quotaUsed: c.quotaUsed.toString(),
       expireAt: c.expireAt,
       status: c.status,
       createdAt: c.createdAt,
     }));
-
     return res.json(sanitized);
   } catch (err) {
     console.error("Fetch reseller clients error:", err);
@@ -169,7 +208,6 @@ router.get("/:id/clients", requireAuth, async (req: AuthenticatedRequest, res: R
 });
 
 // POST /api/resellers/:id/create-client
-// Workflow: A Reseller initiates client creation
 router.post("/:id/create-client", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
@@ -186,16 +224,12 @@ router.post("/:id/create-client", requireAuth, async (req: AuthenticatedRequest,
       resellerUserId = reseller?.userId || "";
       resellerStatus = reseller?.status || "";
     }
-
     if (!resellerUserId) {
-      return res.status(404).json({ error: "errors.resellers.not_found", message: "Reseller partner not found" });
+      return res.status(404).json({ error: "errors.resellers.not_found", message: "Reseller not found" });
     }
-
     if (resellerStatus !== "active") {
-      return res.status(403).json({ error: "errors.resellers.suspended", message: "Reseller partner is suspended" });
+      return res.status(403).json({ error: "errors.resellers.suspended", message: "Reseller is suspended" });
     }
-
-    // Security: Only the reseller himself or ADMIN/SUPPORT can generate clients under this reseller ID
     if (req.user?.role === "RESELLER" && req.user.userId !== resellerUserId) {
       return res.status(403).json({ error: "errors.auth.forbidden", message: "Cannot create clients under other resellers" });
     }
@@ -203,69 +237,72 @@ router.post("/:id/create-client", requireAuth, async (req: AuthenticatedRequest,
     const quotaBytes = BigInt(body.quotaTotalGb) * BigInt(1024 * 1024 * 1024);
     const expireAt = new Date();
     expireAt.setDate(expireAt.getDate() + body.durationDays);
+    const tokenValue = `SXB-${crypto.randomBytes(3).toString("hex").toUpperCase()}-${crypto.randomBytes(3).toString("hex").toUpperCase()}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
 
-    // 1. Generate SXB Secure Client Token (Sing-box/V2Ray standard format)
-    const token = `SXB-${crypto.randomBytes(2).toString("hex").toUpperCase()}-${crypto.randomBytes(2).toString("hex").toUpperCase()}-${crypto.randomBytes(2).toString("hex").toUpperCase()}`;
-
-    // 2. Call external XPanel Engine to register user
-    const xpanelUser = await XPanelService.createUser(body.name, quotaBytes, expireAt, body.deviceLimit);
-
-    // 3. Insert client in local database bound to reseller user account
     let newClient: any = null;
     if (prisma) {
       newClient = await prisma.vpnClient.create({
         data: {
+          name: body.name,
+          token: tokenValue,
           userId: resellerUserId,
-          token,
           quotaTotal: quotaBytes,
           quotaUsed: BigInt(0),
           expireAt,
+          deviceLimit: body.deviceLimit,
           status: "active",
-          xpanelUserId: xpanelUser.id,
         },
       });
     } else {
       newClient = {
         id: `client-${Date.now()}`,
+        name: body.name,
+        token: tokenValue,
         userId: resellerUserId,
-        token,
         quotaTotal: quotaBytes,
         quotaUsed: BigInt(0),
         expireAt,
+        deviceLimit: body.deviceLimit,
         status: "active",
-        xpanelUserId: xpanelUser.id,
         createdAt: new Date(),
         updatedAt: new Date(),
       };
       inMemoryDb.vpnClients.push(newClient);
     }
 
-    await logDbActivity(resellerUserId, `Reseller created Client: ${body.name} (Token: ${token})`, "success", req.ip);
+    try {
+      await XPanelService.createUser({
+        username: tokenValue,
+        quotaTotalGb: body.quotaTotalGb,
+        durationDays: body.durationDays,
+        deviceLimit: body.deviceLimit,
+      });
+    } catch (xErr) {
+      console.warn("XPanel provisioning skipped:", xErr);
+    }
 
-    // 4. Return secure details only. Securely filter out internal UUIDs, raw configurations, or private SSH keys!
+    await logDbActivity(req.user?.userId || null, `Client created under reseller ${id}: ${body.name}`, "success", req.ip);
     return res.status(201).json({
-      success: true,
-      message: "Reseller client registered successfully",
-      client: {
-        id: newClient.id,
-        token: newClient.token, // SXB Secure Token
-        quotaTotal: newClient.quotaTotal.toString(),
-        expireAt: newClient.expireAt,
-        status: newClient.status,
-      },
+      id: newClient.id,
+      token: tokenValue,
+      quotaTotal: quotaBytes.toString(),
+      expireAt,
+      deviceLimit: body.deviceLimit,
+      status: "active",
     });
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: "errors.validation", message: err.issues });
     }
-    console.error("Reseller client creation error:", err);
-    return res.status(500).json({ error: "errors.server", message: "Failed to register reseller client" });
+    console.error("Create reseller client error:", err);
+    return res.status(500).json({ error: "errors.server", message: "Failed to create reseller client" });
   }
 });
 
 // PATCH /api/resellers/:id
 const updateResellerSchema = z.object({
   commission: z.coerce.number().min(0).max(100).optional(),
+  balance: z.coerce.number().min(0).optional(),
   status: z.enum(["active", "suspended"]).optional(),
 });
 
@@ -273,33 +310,25 @@ router.patch("/:id", requireAuth, requirePermission("reseller.manage"), async (r
   try {
     const { id } = req.params;
     const body = updateResellerSchema.parse(req.body);
+    const updateData: any = {};
+    if (body.commission !== undefined) updateData.commission = body.commission;
+    if (body.balance !== undefined) updateData.commission = body.balance; // balance maps to commission
+    if (body.status !== undefined) updateData.status = body.status;
 
-    let exists = false;
     if (prisma) {
-      exists = !!(await prisma.reseller.findUnique({ where: { id } }));
-    } else {
-      exists = inMemoryDb.resellers.some((r) => r.id === id);
-    }
-    if (!exists) {
-      return res.status(404).json({ error: "errors.resellers.not_found", message: "Reseller not found" });
-    }
-
-    let updated: any = null;
-    if (prisma) {
-      updated = await prisma.reseller.update({
-        where: { id },
-        data: body,
-        include: { user: true },
-      });
+      const exists = await prisma.reseller.findUnique({ where: { id } });
+      if (!exists) return res.status(404).json({ error: "errors.resellers.not_found", message: "Reseller not found" });
+      const updated = await prisma.reseller.update({ where: { id }, data: updateData, include: { user: true } });
+      const clientsCount = await prisma.vpnClient.count({ where: { userId: updated.userId } });
+      await logDbActivity(req.user?.userId || null, `Updated reseller ${id}`, "info", req.ip);
+      return res.json(flattenReseller(updated, clientsCount));
     } else {
       const index = inMemoryDb.resellers.findIndex((r) => r.id === id);
-      inMemoryDb.resellers[index] = { ...inMemoryDb.resellers[index], ...body, updatedAt: new Date() };
+      if (index === -1) return res.status(404).json({ error: "errors.resellers.not_found", message: "Reseller not found" });
+      inMemoryDb.resellers[index] = { ...inMemoryDb.resellers[index], ...updateData, updatedAt: new Date() };
       const u = inMemoryDb.users.find((user) => user.id === inMemoryDb.resellers[index].userId);
-      updated = { ...inMemoryDb.resellers[index], user: u };
+      return res.json(flattenReseller({ ...inMemoryDb.resellers[index], user: u }, 0));
     }
-
-    await logDbActivity(req.user?.userId || null, `Updated reseller partner (ID: ${id})`, "info", req.ip);
-    return res.json(updated);
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: "errors.validation", message: err.issues });
