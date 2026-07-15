@@ -67,7 +67,7 @@ async function setupSuperAdmin() {
 
     if (existingSuperAdmins.length === 0) {
       const email = process.env.SUPER_ADMIN_EMAIL || "superadmin@sxbvpn.com";
-      const password = process.env.SUPER_ADMIN_PASSWORD || "SuperAdmin@2026!";
+      const password = process.env.SUPER_ADMIN_PASSWORD || "SxBvpn2026";
       const name = process.env.SUPER_ADMIN_NAME || "Super Administrator";
 
       console.log("\n📧 Creating default SUPER_ADMIN user...");
