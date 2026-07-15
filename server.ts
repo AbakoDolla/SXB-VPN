@@ -2,7 +2,7 @@ import express, { Request, Response, NextFunction } from "express";
 import path from "path";
 import cors from "cors";
 import helmet from "helmet";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { createServer as createViteServer } from "vite";
 import { config } from "./server/config";
 
@@ -70,11 +70,9 @@ async function startServer() {
     keyGenerator: (req: Request) => {
       // Clean up the IP address - remove any backslash escape sequences
       const ip = req.ip?.replace(/\\/g, '') || 'unknown';
-      // Validate and normalize IP
-      if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
-        return ip;
-      }
-      return 'unknown';
+      // Use ipKeyGenerator for proper IPv6 handling
+      const cleanReq = { ...req, ip } as Request;
+      return ipKeyGenerator(cleanReq);
     },
     skip: (req: Request) => {
       // Skip rate limiting for health checks
