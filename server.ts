@@ -26,10 +26,22 @@ async function startServer() {
   const PORT = config.PORT;
 
   // 1. Security & Core Middleware
+  // CORS configuration - whitelist allowed origins for production
+  const allowedOrigins = config.NODE_ENV === "production" 
+    ? [
+        "https://vpnsxb.afrihall.com",
+        "https://sxbvpn.afrihall.com",
+        "https://api.sxbvpn.com",
+        "http://localhost:3000", // dev only
+        "http://localhost:5173", // dev only
+      ]
+    : "*"; // Allow all in development
+    
   app.use(cors({
-    origin: "*", // allow integration tests / mobile app connections
+    origin: allowedOrigins,
     methods: ["GET", "POST", "PATCH", "DELETE", "PUT", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
   }));
 
   // Configure Helmet securely, with exceptions for Swagger and scripts

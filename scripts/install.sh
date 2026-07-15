@@ -141,3 +141,23 @@ echo "1. Clone the repository: git clone <repo-url> /var/www/sxb-vpn"
 echo "2. Copy .env.example to .env and configure"
 echo "3. Run: ./scripts/deploy.sh"
 echo "========================================="
+
+# Prompt for SUPER ADMIN setup
+echo ""
+echo "========================================="
+echo "SUPER ADMIN SETUP"
+echo "========================================="
+read -p "Do you want to create a SUPER ADMIN account now? (y/n): " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    read -p "Enter SUPER ADMIN email: " SUPER_ADMIN_EMAIL
+    read -p "Enter SUPER ADMIN password: " -s SUPER_ADMIN_PASSWORD
+    echo
+    
+    export SUPER_ADMIN_EMAIL
+    export SUPER_ADMIN_PASSWORD
+    export SUPER_ADMIN_NAME="Super Administrator"
+    
+    cd /var/www/sxb-vpn
+    npx tsx scripts/setup-super-admin.js
+fi

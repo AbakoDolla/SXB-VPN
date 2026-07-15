@@ -23,10 +23,20 @@ const updateClientSchema = z.object({
 });
 
 // Helper to convert BigInt to string for client-safe JSON parsing
+// Also removes sensitive data like passwordHash
 function sanitizeVpnClient(client: any) {
   if (!client) return null;
+  
+  // Remove passwordHash from user object if present
+  let user = client.user;
+  if (user && user.passwordHash) {
+    user = { ...user };
+    delete user.passwordHash;
+  }
+  
   return {
     ...client,
+    user,
     quotaTotal: client.quotaTotal ? client.quotaTotal.toString() : "0",
     quotaUsed: client.quotaUsed ? client.quotaUsed.toString() : "0",
   };

@@ -1,5 +1,6 @@
 /**
  * RBAC Middleware - Role Based Access Control
+ * Supports: SUPER_ADMIN, ADMIN, SUPPORT, RESELLER
  */
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
@@ -20,7 +21,8 @@ export interface AuthRequest extends Request {
   user?: AuthUser;
 }
 
-export type RoleType = "ADMIN" | "SUPPORT" | "RESELLER";
+// Role hierarchy: SUPER_ADMIN > ADMIN > SUPPORT > RESELLER
+export type RoleType = "SUPER_ADMIN" | "ADMIN" | "SUPPORT" | "RESELLER";
 
 export async function authenticateUser(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -38,7 +40,14 @@ export async function authenticateUser(req: AuthRequest, res: Response, next: Ne
       });
       if (!user) { res.status(401).json({ error: "USER_NOT_FOUND", message: "Utilisateur non trouve" }); return; }
       if (user.status !== "active") { res.status(403).json({ error: "ACCOUNT_DISABLED", message: "Compte desactive" }); return; }
-      const permissions = user.role.permissions.map((rp: any) => rp.permission.name);
+      
+      // SUPER_ADMIN gets all permissions automatically
+      let permissions = user.role.permissions.map((rp: any) => rp.permission.name);
+      if (user.role.name === "SUPER_ADMIN") {
+        const allPerms = await prisma.permission.findMany();
+        permissions = allPerms.map(p => p.name);
+      }
+      
       req.user = { id: user.id, name: user.name, email: user.email, role: user.role.name, roleId: user.roleId, permissions, status: user.status };
       next();
     } catch (err) {
@@ -55,7 +64,17 @@ export async function authenticateUser(req: AuthRequest, res: Response, next: Ne
 export function authorizeRole(...allowedRoles: RoleType[]) {
   return (req: AuthRequest, res: Response, next: NextFunction): void => {
     if (!req.user) { res.status(401).json({ error: "UNAUTHORIZED", message: "Auth requise" }); return; }
-    if (!allowedRoles.includes(req.user.role as RoleType)) { res.status(403).json({ error: "FORBIDDEN", message: "Role insuffisant" }); return; }
+    
+    // SUPER_ADMIN can do everything
+    if (req.user.role === "SUPER_ADMIN") {
+      next();
+      return;
+    }
+    
+    if (!allowedRoles.includes(req.user.role as RoleType)) { 
+      res.status(403).json({ error: "FORBIDDEN", message: "Role insuffisant" }); 
+      return; 
+    }
     next();
   };
 }
@@ -63,6 +82,13 @@ export function authorizeRole(...allowedRoles: RoleType[]) {
 export function authorizePermission(...requiredPermissions: string[]) {
   return (req: AuthRequest, res: Response, next: NextFunction): void => {
     if (!req.user) { res.status(401).json({ error: "UNAUTHORIZED", message: "Auth requise" }); return; }
+    
+    // SUPER_ADMIN bypasses permission checks
+    if (req.user.role === "SUPER_ADMIN") {
+      next();
+      return;
+    }
+    
     const hasAll = requiredPermissions.every(perm => req.user!.permissions.includes(perm));
     if (!hasAll) { res.status(403).json({ error: "FORBIDDEN", message: "Permissions insuffisantes" }); return; }
     next();
