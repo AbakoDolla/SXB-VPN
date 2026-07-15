@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useTranslation } from "../contexts/I18nContext";
-import { fetchVouchers, createVoucher, useVoucher } from "../api/vouchers";
+import { fetchVouchers, createVoucher, redeemVoucher } from "../api/vouchers";
 import { Voucher, UserRole } from "../types";
 import { Ticket, Plus, Search, RefreshCw, Sparkles, Check, Copy } from "lucide-react";
 
@@ -65,9 +65,13 @@ export default function VouchersView({ currentUserRole }: VouchersViewProps) {
     if (!activationInput) return;
 
     try {
-      await useVoucher(activationInput.trim());
+      const result = await redeemVoucher(activationInput.trim());
       setActivationInput("");
-      alert(`Félicitations ! Le voucher ${activationInput} a bien été activé sur votre compte VPN !`);
+      if (result.success) {
+        alert(`Félicitations ! Le voucher a bien été activé !`);
+      } else {
+        alert(result.message);
+      }
       loadVouchers();
     } catch (err) {
       alert(err instanceof Error ? err.message : "Erreur lors de l'activation");
