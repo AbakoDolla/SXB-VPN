@@ -28,10 +28,18 @@ router.get("/", requireAuth, requirePermission("reseller.manage"), async (req: A
       resellers = await prisma.reseller.findMany({
         include: { user: true },
       });
+      // Compte le nombre de clients rattachés à chaque revendeur
+      resellers = await Promise.all(
+        resellers.map(async (r) => {
+          const clientsCount = await prisma.vpnClient.count({ where: { userId: r.userId } });
+          return { ...r, clientsCount };
+        })
+      );
     } else {
       resellers = inMemoryDb.resellers.map((r) => {
         const u = inMemoryDb.users.find((user) => user.id === r.userId);
-        return { ...r, user: u };
+        const clientsCount = inMemoryDb.vpnClients.filter((c) => c.userId === r.userId).length;
+        return { ...r, user: u, clientsCount };
       });
     }
     return res.json(resellers);
@@ -252,6 +260,52 @@ router.post("/:id/create-client", requireAuth, async (req: AuthenticatedRequest,
     }
     console.error("Reseller client creation error:", err);
     return res.status(500).json({ error: "errors.server", message: "Failed to register reseller client" });
+  }
+});
+
+// PATCH /api/resellers/:id
+const updateResellerSchema = z.object({
+  commission: z.coerce.number().min(0).max(100).optional(),
+  status: z.enum(["active", "suspended"]).optional(),
+});
+
+router.patch("/:id", requireAuth, requirePermission("reseller.manage"), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const body = updateResellerSchema.parse(req.body);
+
+    let exists = false;
+    if (prisma) {
+      exists = !!(await prisma.reseller.findUnique({ where: { id } }));
+    } else {
+      exists = inMemoryDb.resellers.some((r) => r.id === id);
+    }
+    if (!exists) {
+      return res.status(404).json({ error: "errors.resellers.not_found", message: "Reseller not found" });
+    }
+
+    let updated: any = null;
+    if (prisma) {
+      updated = await prisma.reseller.update({
+        where: { id },
+        data: body,
+        include: { user: true },
+      });
+    } else {
+      const index = inMemoryDb.resellers.findIndex((r) => r.id === id);
+      inMemoryDb.resellers[index] = { ...inMemoryDb.resellers[index], ...body, updatedAt: new Date() };
+      const u = inMemoryDb.users.find((user) => user.id === inMemoryDb.resellers[index].userId);
+      updated = { ...inMemoryDb.resellers[index], user: u };
+    }
+
+    await logDbActivity(req.user?.userId || null, `Updated reseller partner (ID: ${id})`, "info", req.ip);
+    return res.json(updated);
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: "errors.validation", message: err.issues });
+    }
+    console.error("Update reseller error:", err);
+    return res.status(500).json({ error: "errors.server", message: "Failed to update reseller" });
   }
 });
 
