@@ -137,12 +137,12 @@ export default function Layout({
   return (
     <div className="min-h-screen bg-[#07090e] flex">
       {/* ── Desktop Sidebar ── */}
-      <aside className="hidden lg:flex w-[280px] bg-[#0a0d14] border-r border-[#1a1f2e] flex-col shrink-0 fixed top-0 left-0 h-full z-40">
+      <aside className="hidden lg:flex lg:w-72 bg-[#0a0d14] border-r border-[#1a1f2e] flex-col shrink-0 fixed top-0 left-0 h-full z-40">
         <SidebarContent />
       </aside>
 
       {/* ── Main Content ── */}
-      <div className="flex-1 min-w-0 flex flex-col lg:ml-[280px]">
+      <div className="flex-1 min-w-0 flex flex-col lg:ml-72">
         {/* Mobile Header */}
         <header className="lg:hidden h-14 flex items-center justify-between gap-3 px-4 border-b border-[#1a1f2e] bg-[#0a0d14]/95 backdrop-blur-sm sticky top-0 z-30 shrink-0">
           <div className="flex items-center gap-3">
@@ -174,7 +174,7 @@ export default function Layout({
               onClick={() => setMobileNavOpen(false)}
             />
             {/* Drawer Panel */}
-            <aside className="absolute left-0 top-0 h-full w-[280px] max-w-[85vw] bg-[#0a0d14] border-r border-[#1a1f2e] shadow-2xl animate-slideIn">
+            <aside className="absolute left-0 top-0 h-full w-72 bg-[#0a0d14] border-r border-[#1a1f2e] shadow-2xl animate-slideIn">
               <SidebarContent onClose={() => setMobileNavOpen(false)} />
             </aside>
           </div>
