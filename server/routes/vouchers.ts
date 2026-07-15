@@ -180,4 +180,53 @@ router.post("/redeem", requireAuth, async (req: AuthenticatedRequest, res: Respo
   }
 });
 
+// POST /api/vouchers/use — activation simple par le compte connecté
+// (sans cibler un VpnClient précis - marque juste le code comme consommé
+// et l'associe à l'utilisateur connecté)
+const useVoucherSchema = z.object({
+  code: z.string().trim().toUpperCase(),
+});
+
+router.post("/use", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const body = useVoucherSchema.parse(req.body);
+    let voucher: any = null;
+
+    if (prisma) {
+      voucher = await prisma.voucher.findUnique({ where: { code: body.code } });
+    } else {
+      voucher = inMemoryDb.vouchers.find((v) => v.code === body.code);
+    }
+
+    if (!voucher) {
+      return res.status(404).json({ error: "errors.vouchers.not_found", message: "Code voucher introuvable" });
+    }
+    if (voucher.isRedeemed) {
+      return res.status(400).json({ error: "errors.vouchers.already_redeemed", message: "Ce voucher a déjà été utilisé" });
+    }
+
+    let updated: any = null;
+    if (prisma) {
+      updated = await prisma.voucher.update({
+        where: { id: voucher.id },
+        data: { isRedeemed: true, redeemedBy: req.user?.userId },
+      });
+    } else {
+      voucher.isRedeemed = true;
+      voucher.redeemedBy = req.user?.userId;
+      voucher.updatedAt = new Date();
+      updated = voucher;
+    }
+
+    await logDbActivity(req.user?.userId || null, `Activated voucher code: ${body.code}`, "success", req.ip);
+    return res.json(sanitizeVoucher(updated));
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: "errors.validation", message: err.issues });
+    }
+    console.error("Use voucher error:", err);
+    return res.status(500).json({ error: "errors.server", message: "Failed to activate voucher" });
+  }
+});
+
 export default router;
