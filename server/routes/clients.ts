@@ -117,6 +117,42 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
       targetUserId = req.user.userId;
     }
 
+    // For ADMIN/SUPER_ADMIN: auto-create user if userId not provided
+    if (!targetUserId && (req.user?.role === "ADMIN" || req.user?.role === "SUPER_ADMIN") && prisma) {
+      // Generate user credentials
+      const username = body.name.toLowerCase().replace(/\s+/g, "_");
+      const tempEmail = `${username}_${Date.now()}@vpn.local`;
+      const tempPassword = `client_${Date.now()}`;
+      const passwordHash = require("bcryptjs").hashSync(tempPassword, 10);
+
+      // Find or create CLIENT role
+      let clientRole = await prisma.role.findUnique({ where: { name: "CLIENT" } });
+      if (!clientRole) {
+        clientRole = await prisma.role.create({
+          data: { name: "CLIENT", description: "VPN Client" }
+        });
+      }
+
+      const newUser = await prisma.user.create({
+        data: {
+          name: body.name,
+          email: tempEmail,
+          phone: "+00000000000",
+          passwordHash,
+          roleId: clientRole.id,
+          status: "active",
+        },
+      });
+      targetUserId = newUser.id;
+
+      // Log the temp credentials for admin reference
+      console.log(`🔐 Created client user: ${tempEmail} / ${tempPassword}`);
+    }
+
+    if (!targetUserId) {
+      return res.status(400).json({ error: "errors.validation", message: "userId required for RESELLER role" });
+    }
+
     const quotaBytes = BigInt(body.quotaTotalGb) * BigInt(1024 * 1024 * 1024);
     const expireAt = new Date();
     expireAt.setDate(expireAt.getDate() + body.durationDays);
