@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { useTranslation } from "../contexts/I18nContext";
-import { fetchResellers, createReseller, updateReseller, addClientToReseller } from "../api/resellers";
-import { Reseller, UserRole } from "../types";
+import { fetchResellers, createReseller, updateReseller } from "../api/resellers";
+import { fetchClients, createClient } from "../api/clients";
+import { Reseller, Client, UserRole } from "../types";
 import { ShieldCheck, Plus, Search, RefreshCw, Key, Landmark, UserPlus, Coins, UserCheck } from "lucide-react";
 
 interface ResellersViewProps {
@@ -28,7 +29,6 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
   // Form states (Reseller Client)
   const [clientName, setClientName] = useState("");
   const [clientEmail, setClientEmail] = useState("");
-  const [clientQuota, setClientQuota] = useState(50);
 
   const isReseller = currentUserRole === UserRole.RESELLER;
   const isSupport = currentUserRole === UserRole.SUPPORT;
@@ -72,23 +72,16 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
 
   const handleCreateResellerClient = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedResellerId || !clientName || !clientEmail) return;
+    if (!selectedResellerId || !clientName) return;
 
     try {
-      const token = `sxb-usr-${Math.random().toString(36).substring(2, 10)}`;
-      await addClientToReseller(selectedResellerId, {
+      await createClient({
         name: clientName,
-        email: clientEmail,
-        plan: "SXB Reseller Plan VLESS",
-        quotaTotal: Number(clientQuota),
-        expiration: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-        status: "active",
-        token,
+        email: clientEmail || undefined,
       });
 
       setClientName("");
       setClientEmail("");
-      setClientQuota(50);
       setShowAddResellerClient(false);
       loadResellers();
     } catch (err) {
@@ -334,10 +327,9 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">Adresse Email / Tél</label>
+                <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">Adresse Email (optionnel)</label>
                 <input
                   type="email"
-                  required
                   placeholder="marie@gmail.com"
                   value={clientEmail}
                   onChange={(e) => setClientEmail(e.target.value)}
@@ -345,17 +337,9 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
                 />
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">Quota Go (Déduit du solde du revendeur)</label>
-                <input
-                  type="number"
-                  required
-                  min="1"
-                  value={clientQuota}
-                  onChange={(e) => setClientQuota(Number(e.target.value))}
-                  className="w-full px-3 py-2 text-sm bg-gray-900 border border-gray-800 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
-                />
-              </div>
+              <p className="text-xs text-gray-500 mt-2">
+                Le quota sera défini lors de la création du token/forfait pour ce client.
+              </p>
 
               <div className="flex gap-2 justify-end mt-6 pt-4 border-t border-gray-900">
                 <button
