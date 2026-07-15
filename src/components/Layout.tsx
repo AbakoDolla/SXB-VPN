@@ -48,15 +48,15 @@ export default function Layout({
   }, [mobileNavOpen]);
 
   const navItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['ADMIN', 'SUPPORT', 'RESELLER'] },
-    { id: 'clients', label: 'Clients', icon: Users, roles: ['ADMIN', 'SUPPORT', 'RESELLER'] },
-    { id: 'resellers', label: 'Revendeurs', icon: UserCog, roles: ['ADMIN'] },
-    { id: 'servers', label: 'Serveurs', icon: Server, roles: ['ADMIN'] },
-    { id: 'xpanel', label: 'XPanel', icon: PanelsLeftRight, roles: ['ADMIN'] },
-    { id: 'tokens', label: 'Tokens', icon: Key, roles: ['ADMIN', 'RESELLER'] },
-    { id: 'vouchers', label: 'Vouchers', icon: Ticket, roles: ['ADMIN', 'RESELLER'] },
-    { id: 'rbac', label: 'RBAC', icon: Shield, roles: ['ADMIN'] },
-    { id: 'settings', label: 'Paramètres', icon: Settings, roles: ['ADMIN'] },
+    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'] },
+    { id: 'clients', label: 'Clients', icon: Users, roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'] },
+    { id: 'resellers', label: 'Revendeurs', icon: UserCog, roles: ['SUPER_ADMIN', 'ADMIN'] },
+    { id: 'servers', label: 'Serveurs', icon: Server, roles: ['SUPER_ADMIN', 'ADMIN'] },
+    { id: 'xpanel', label: 'XPanel', icon: PanelsLeftRight, roles: ['SUPER_ADMIN', 'ADMIN'] },
+    { id: 'tokens', label: 'Tokens', icon: Key, roles: ['SUPER_ADMIN', 'ADMIN', 'RESELLER'] },
+    { id: 'vouchers', label: 'Vouchers', icon: Ticket, roles: ['SUPER_ADMIN', 'ADMIN', 'RESELLER'] },
+    { id: 'rbac', label: 'RBAC', icon: Shield, roles: ['SUPER_ADMIN', 'ADMIN'] },
+    { id: 'settings', label: 'Paramètres', icon: Settings, roles: ['SUPER_ADMIN', 'ADMIN'] },
   ];
 
   const filteredNav = navItems.filter(item => item.roles.includes(currentUser.role));
@@ -72,7 +72,7 @@ export default function Layout({
       <div className="h-16 flex items-center justify-between px-6 border-b border-[#1a1f2e] shrink-0">
         <div className="flex items-center gap-3">
           <img 
-            src="/assets/images/logo_shield_1784022646518.jpg" 
+            src="/assets/images/logo_sxb_2026.png" 
             alt="SXB VPN Logo" 
             className="w-8 h-8 rounded-lg object-contain shrink-0"
           />

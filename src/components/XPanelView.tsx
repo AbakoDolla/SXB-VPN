@@ -18,7 +18,7 @@ export default function XPanelView({ currentUserRole }: XPanelViewProps) {
   const [terminalLogs, setTerminalLogs] = useState<string[]>([]);
   const [showSensitive, setShowSensitive] = useState<Record<string, boolean>>({});
 
-  const isAdmin = currentUserRole === UserRole.ADMIN;
+  const isAdmin = currentUserRole === UserRole.ADMIN || currentUserRole === UserRole.SUPER_ADMIN;
   const isReseller = currentUserRole === UserRole.RESELLER;
 
   const loadXPanelData = async () => {

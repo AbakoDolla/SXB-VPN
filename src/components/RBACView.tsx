@@ -15,7 +15,7 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
   const [permissions, setPermissions] = useState<AppPermission[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const isAdmin = currentUserRole === UserRole.ADMIN;
+  const isAdmin = currentUserRole === UserRole.ADMIN || currentUserRole === UserRole.SUPER_ADMIN;
 
   const loadRBAC = async () => {
     setLoading(true);
@@ -108,7 +108,9 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
                 {roles.map((r) => (
                   <th key={r.id} className="py-4 px-6 text-center">
                     <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs font-bold font-mono border ${
-                      r.name === UserRole.ADMIN 
+                      r.name === UserRole.SUPER_ADMIN
+                        ? "bg-rose-950 text-rose-400 border-rose-800/40"
+                        : r.name === UserRole.ADMIN 
                         ? "bg-cyan-950 text-cyan-400 border-cyan-800/40" 
                         : r.name === UserRole.SUPPORT
                         ? "bg-blue-950 text-blue-400 border-blue-800/40"

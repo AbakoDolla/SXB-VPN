@@ -44,7 +44,7 @@ function LoginForm({ onLogin }: { onLogin: () => void }) {
         {/* Logo */}
         <div className="text-center mb-8">
           <img 
-            src="/assets/images/logo_shield_1784022646518.jpg" 
+            src="/assets/images/logo_sxb_2026.png" 
             alt="SXB VPN Logo" 
             className="w-24 h-24 rounded-2xl mx-auto mb-4 object-contain"
           />

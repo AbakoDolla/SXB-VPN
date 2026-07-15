@@ -20,7 +20,7 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
   const [location, setLocation] = useState("Paris, France 🇫🇷");
   const [ip, setIp] = useState("");
 
-  const isAdmin = currentUserRole === UserRole.ADMIN;
+  const isAdmin = currentUserRole === UserRole.ADMIN || currentUserRole === UserRole.SUPER_ADMIN;
   const isSupport = currentUserRole === UserRole.SUPPORT;
 
   const loadServers = async () => {
