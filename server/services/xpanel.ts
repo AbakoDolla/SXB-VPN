@@ -263,6 +263,51 @@ export class XPanelService {
     }
   }
 
+  // Get the real per-user subscription (VLESS/VMess/Trojan links) from XPanel/xnet
+  static async getSubscriptionLink(xpanelUserId: string): Promise<{ raw: string | null; links: string[] }> {
+    if (!this.isConfigured()) {
+      throw new Error("X-Panel not configured. Cannot fetch subscription.");
+    }
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      const response = await fetch(`${this.baseUrl}/api/v1/sub/${xpanelUserId}`, {
+        method: "GET",
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      if (!response.ok) {
+        throw new Error(`Subscription not available (${response.status})`);
+      }
+      const text = await response.text();
+      // xnet may return raw base64 subscription text or JSON with a "links" field
+      try {
+        const json = JSON.parse(text);
+        if (Array.isArray(json.links)) {
+          return { raw: text, links: json.links };
+        }
+      } catch {
+        // not JSON — treat as base64-encoded newline-separated links
+      }
+      let decoded = text;
+      try {
+        decoded = Buffer.from(text, "base64").toString("utf-8");
+      } catch {
+        // keep raw text as-is
+      }
+      const links = decoded
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => /^(vless|vmess|trojan|ss):\/\//.test(l));
+      return { raw: text, links };
+    } catch (err: any) {
+      if (err.name === "AbortError") {
+        throw new Error("X-Panel connection timeout");
+      }
+      throw err;
+    }
+  }
+
   // Create a new VPN config on XPanel
   static async createConfig(name: string, protocol: string, port: number, settings?: any): Promise<any> {
     if (!this.isConfigured()) {

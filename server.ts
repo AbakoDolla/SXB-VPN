@@ -20,6 +20,7 @@ import docsRouter from "./server/routes/docs";
 import vpnRouter from "./server/routes/vpn";
 import rbacRouter from "./server/routes/rbac";
 import dashboardRouter from "./server/routes/dashboard";
+import mobileRouter from "./server/routes/mobile";
 
 async function startServer() {
   const app = express();
@@ -95,6 +96,7 @@ async function startServer() {
   app.use("/api/vpn", vpnRouter);
   app.use("/api/rbac", rbacRouter);
   app.use("/api/dashboard", dashboardRouter);
+  app.use("/api/mobile", mobileRouter);
 
   // Global Error Handler with support for Multilingual Error i18n
   app.use((err: any, req: Request, res: Response, next: NextFunction) => {
