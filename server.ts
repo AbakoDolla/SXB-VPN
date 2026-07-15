@@ -18,6 +18,7 @@ import analyticsRouter from "./server/routes/analytics";
 import serversRouter from "./server/routes/servers";
 import docsRouter from "./server/routes/docs";
 import vpnRouter from "./server/routes/vpn";
+import rbacRouter from "./server/routes/rbac";
 
 async function startServer() {
   const app = express();
@@ -67,6 +68,7 @@ async function startServer() {
   app.use("/api/servers", serversRouter);
   app.use("/api/docs", docsRouter);
   app.use("/api/vpn", vpnRouter);
+  app.use("/api/rbac", rbacRouter);
 
   // Global Error Handler with support for Multilingual Error i18n
   app.use((err: any, req: Request, res: Response, next: NextFunction) => {
