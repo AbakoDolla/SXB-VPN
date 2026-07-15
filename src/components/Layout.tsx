@@ -113,7 +113,7 @@ export default function Layout({
   return (
     <div className="min-h-screen bg-[#07090e] flex">
       {/* ── Sidebar : toujours visible ── */}
-      <aside className="w-64 bg-[#0a0d14] border-r border-[#1a1f2e] flex-col shrink-0 hidden md:flex">
+      <aside className="w-64 bg-[#0a0d14] border-r border-[#1a1f2e] flex-col shrink-0">
         <SidebarContent />
       </aside>
 
