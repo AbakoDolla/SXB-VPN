@@ -55,7 +55,8 @@ async function startServer() {
 
   // Request logger middleware
   app.use((req: Request, res: Response, next: NextFunction) => {
-    console.log(`[${new Date().toISOString()}] 📡 ${req.method} ${req.url} - IP: ${req.ip}`);
+    const cleanIp = req.ip?.replace(/\\/g, '') || 'unknown';
+    console.log(`[${new Date().toISOString()}] 📡 ${req.method} ${req.url} - IP: ${cleanIp}`);
     next();
   });
 
@@ -66,6 +67,19 @@ async function startServer() {
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: "errors.rate_limit", message: "Too many requests. Please wait before retrying." },
+    keyGenerator: (req: Request) => {
+      // Clean up the IP address - remove any backslash escape sequences
+      const ip = req.ip?.replace(/\\/g, '') || 'unknown';
+      // Validate and normalize IP
+      if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
+        return ip;
+      }
+      return 'unknown';
+    },
+    skip: (req: Request) => {
+      // Skip rate limiting for health checks
+      return req.url === '/metrics' || req.url === '/health';
+    },
   });
   app.use("/api/", limiter);
 
