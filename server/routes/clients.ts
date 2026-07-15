@@ -8,7 +8,7 @@ const router = Router();
 
 // Zod Schema validations
 const createClientSchema = z.object({
-  userId: z.string(),
+  userId: z.string().optional(), // Optional for RESELLER (will use their own ID)
   name: z.string().min(2),
   quotaTotalGb: z.coerce.number().min(1).default(100), // In GB, parsed to bytes
   durationDays: z.coerce.number().min(1).default(30),
