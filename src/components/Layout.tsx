@@ -111,31 +111,16 @@ export default function Layout({
   const activeLabel = filteredNav.find(i => i.id === activeRoute)?.label ?? 'SXB VPN';
 
   return (
-    <div className="min-h-screen bg-[#07090e] lg:flex">
-      {/* ── Sidebar desktop (lg+) : fixe, toujours visible ── */}
-      <aside className="hidden lg:flex lg:w-64 bg-[#0a0d14] border-r border-[#1a1f2e] flex-col shrink-0">
+    <div className="min-h-screen bg-[#07090e] flex">
+      {/* ── Sidebar : toujours visible ── */}
+      <aside className="w-64 bg-[#0a0d14] border-r border-[#1a1f2e] flex-col shrink-0 hidden md:flex">
         <SidebarContent />
       </aside>
 
-      {/* ── Tiroir mobile/tablette (<lg) ── */}
-      {mobileNavOpen && (
-        <div className="fixed inset-0 z-50 lg:hidden">
-          {/* Fond assombri */}
-          <div
-            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-            onClick={() => setMobileNavOpen(false)}
-          />
-          {/* Panneau du tiroir */}
-          <aside className="absolute left-0 top-0 h-full w-72 max-w-[85vw] bg-[#0a0d14] border-r border-[#1a1f2e] flex flex-col shadow-2xl">
-            <SidebarContent />
-          </aside>
-        </div>
-      )}
-
       {/* ── Contenu principal ── */}
-      <div className="flex-1 min-w-0 flex flex-col min-h-screen lg:min-h-0">
-        {/* Topbar mobile/tablette — masquée sur desktop */}
-        <header className="lg:hidden h-14 flex items-center gap-3 px-4 border-b border-[#1a1f2e] bg-[#0a0d14]/95 backdrop-blur-sm sticky top-0 z-40 shrink-0">
+      <div className="flex-1 min-w-0 flex flex-col min-h-screen">
+        {/* Topbar mobile — visible seulement sur mobile */}
+        <header className="md:hidden h-14 flex items-center gap-3 px-4 border-b border-[#1a1f2e] bg-[#0a0d14]/95 backdrop-blur-sm sticky top-0 z-40 shrink-0">
           <button
             onClick={() => setMobileNavOpen(true)}
             className="text-gray-300 hover:text-white p-1.5 -ml-1.5"
@@ -145,6 +130,21 @@ export default function Layout({
           </button>
           <span className="text-white font-semibold truncate">{activeLabel}</span>
         </header>
+
+        {/* ── Tiroir mobile ── */}
+        {mobileNavOpen && (
+          <div className="fixed inset-0 z-50 md:hidden">
+            {/* Fond assombri */}
+            <div
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+              onClick={() => setMobileNavOpen(false)}
+            />
+            {/* Panneau du tiroir */}
+            <aside className="absolute left-0 top-0 h-full w-72 max-w-[85vw] bg-[#0a0d14] border-r border-[#1a1f2e] flex flex-col shadow-2xl">
+              <SidebarContent />
+            </aside>
+          </div>
+        )}
 
         <main className="flex-1 overflow-auto">
           <div className="p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto">
