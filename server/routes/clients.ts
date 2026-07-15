@@ -10,8 +10,10 @@ const router = Router();
 const createClientSchema = z.object({
   userId: z.string().optional(), // Optional for RESELLER (will use their own ID)
   name: z.string().min(2),
-  quotaTotalGb: z.coerce.number().min(1).default(100), // In GB, parsed to bytes
-  durationDays: z.coerce.number().min(1).default(30),
+  email: z.string().email().optional(),
+  phone: z.string().optional(),
+  quotaTotalGb: z.coerce.number().min(1).optional(), // Optional - can be set via token later
+  durationDays: z.coerce.number().min(1).optional(), // Optional - can be set via token later
   deviceLimit: z.coerce.number().min(1).default(1),
 });
 
@@ -153,15 +155,22 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
       return res.status(400).json({ error: "errors.validation", message: "userId required for RESELLER role" });
     }
 
-    const quotaBytes = BigInt(body.quotaTotalGb) * BigInt(1024 * 1024 * 1024);
-    const expireAt = new Date();
-    expireAt.setDate(expireAt.getDate() + body.durationDays);
-
     // Generate SXB Secure Client Token (Sing-box/V2Ray standard)
     const token = `sxb-usr-${Math.random().toString(36).substring(2, 10)}-${Math.random().toString(36).substring(2, 10)}`;
 
-    // Call XPanel integration engine to provision the remote VPN user account
-    const xpanelUser = await XPanelService.createUser(body.name, quotaBytes, expireAt, body.deviceLimit);
+    // Only call XPanel if quota is provided
+    let xpanelUserId: string | undefined;
+    if (body.quotaTotalGb && body.durationDays) {
+      const quotaBytes = BigInt(body.quotaTotalGb) * BigInt(1024 * 1024 * 1024);
+      const expireAt = new Date();
+      expireAt.setDate(expireAt.getDate() + body.durationDays);
+      try {
+        const xpanelUser = await XPanelService.createUser(body.name, quotaBytes, expireAt, body.deviceLimit);
+        xpanelUserId = xpanelUser.id;
+      } catch (err) {
+        console.warn("XPanel user creation failed:", err);
+      }
+    }
 
     let newClient: any = null;
     if (prisma) {
@@ -169,11 +178,11 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
         data: {
           userId: targetUserId,
           token,
-          quotaTotal: quotaBytes,
+          quotaTotal: body.quotaTotalGb ? BigInt(body.quotaTotalGb) * BigInt(1024 * 1024 * 1024) : null,
           quotaUsed: BigInt(0),
-          expireAt,
+          expireAt: body.durationDays ? new Date(Date.now() + body.durationDays * 24 * 60 * 60 * 1000) : null,
           status: "active",
-          xpanelUserId: xpanelUser.id,
+          xpanelUserId,
         },
         include: { user: true },
       });
@@ -182,11 +191,11 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
         id: `client-${Date.now()}`,
         userId: targetUserId,
         token,
-        quotaTotal: quotaBytes,
+        quotaTotal: body.quotaTotalGb ? BigInt(body.quotaTotalGb) * BigInt(1024 * 1024 * 1024) : null,
         quotaUsed: BigInt(0),
-        expireAt,
+        expireAt: body.durationDays ? new Date(Date.now() + body.durationDays * 24 * 60 * 60 * 1000) : null,
         status: "active",
-        xpanelUserId: xpanelUser.id,
+        xpanelUserId,
         createdAt: new Date(),
         updatedAt: new Date(),
       };
@@ -195,7 +204,7 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
       newClient = { ...newClient, user: u };
     }
 
-    await logDbActivity(req.user?.userId || null, `Created VPN account: ${body.name} (Quota: ${body.quotaTotalGb}GB)`, "success", req.ip);
+    await logDbActivity(req.user?.userId || null, `Created VPN account: ${body.name}`, "success", req.ip);
 
     return res.status(201).json(sanitizeVpnClient(newClient));
   } catch (err) {

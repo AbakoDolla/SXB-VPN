@@ -60,9 +60,9 @@ model VpnClient {
   userId         String
   user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   token          String    @unique // SXB-XXXX-XXXX-XXXX
-  quotaTotal     BigInt    // In Bytes
+  quotaTotal     BigInt?   // In Bytes - set when token is assigned
   quotaUsed      BigInt    @default(0)
-  expireAt       DateTime
+  expireAt       DateTime? // Set when token is assigned
   status         String    @default("active") // active, suspended, expired
   xpanelUserId   String?   // ID inside external XPanel
   createdAt      DateTime  @default(now())
