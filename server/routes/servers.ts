@@ -202,4 +202,34 @@ router.get("/:id/config", requireAuth, requirePermission("server.manage"), async
   }
 });
 
+// DELETE /api/servers/:id
+router.delete("/:id", requireAuth, requirePermission("server.manage"), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    let exists = false;
+    let serverName = "";
+    if (prisma) {
+      const srv = await prisma.vPSServer.findUnique({ where: { id } });
+      exists = !!srv;
+      serverName = srv?.name || "";
+      if (exists) await prisma.vPSServer.delete({ where: { id } });
+    } else {
+      const index = inMemoryDb.vpsServers.findIndex((s) => s.id === id);
+      exists = index !== -1;
+      if (exists) {
+        serverName = inMemoryDb.vpsServers[index].name;
+        inMemoryDb.vpsServers.splice(index, 1);
+      }
+    }
+    if (!exists) {
+      return res.status(404).json({ error: "errors.servers.not_found", message: "Server node not found" });
+    }
+    await logDbActivity(req.user?.userId || null, `Removed VPN node: ${serverName} (ID: ${id})`, "danger", req.ip);
+    return res.json({ message: "Server node removed successfully" });
+  } catch (err) {
+    console.error("Delete server error:", err);
+    return res.status(500).json({ error: "errors.server", message: "Failed to delete server" });
+  }
+});
+
 export default router;
