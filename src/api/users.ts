@@ -14,11 +14,11 @@ export async function fetchUsers(): Promise<User[]> {
 export async function createUser(userData: {
   name: string;
   email: string;
-  password: string;
+  password?: string; // optionnel — auto-généré par le backend si absent
   phone?: string;
   roleId?: string;
-}): Promise<User> {
-  return await apiRequest<User>("/users", {
+}): Promise<User & { generatedPassword?: string }> {
+  return await apiRequest<User & { generatedPassword?: string }>("/users", {
     method: "POST",
     body: userData,
   });

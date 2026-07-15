@@ -3,8 +3,9 @@ import { apiRequest } from "./client";
 
 export async function fetchRoles(): Promise<RBACRole[]> {
   try {
-    const data = await apiRequest<{ roles: RBACRole[] }>("/rbac/roles");
-    return data.roles || [];
+    const data = await apiRequest<RBACRole[] | { roles: RBACRole[] }>("/rbac/roles");
+    // L API retourne un tableau direct ou {roles:[]}
+    return Array.isArray(data) ? data : (data.roles || []);
   } catch (error) {
     console.error("Error fetching roles:", error);
     return [];

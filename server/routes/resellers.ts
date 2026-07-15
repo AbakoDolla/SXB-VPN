@@ -75,6 +75,7 @@ router.post("/", requireAuth, requirePermission("reseller.manage"), async (req: 
     const body = createResellerSchema.parse(req.body);
     let resolvedUserId = body.userId;
     const commission = body.balance ?? body.commission ?? 20;
+    let generatedPassword: string | undefined;
 
     // Si le frontend envoie name+email → créer l'utilisateur d'abord
     if (!resolvedUserId && body.name && body.email) {
@@ -90,6 +91,7 @@ router.post("/", requireAuth, requirePermission("reseller.manage"), async (req: 
           return res.status(500).json({ error: "errors.server", message: "Role RESELLER not found" });
         }
         const tempPassword = crypto.randomBytes(10).toString("hex");
+        generatedPassword = tempPassword;
         const passwordHash = await bcrypt.hash(tempPassword, 12);
         const newUser = await prisma.user.create({
           data: {
@@ -120,7 +122,9 @@ router.post("/", requireAuth, requirePermission("reseller.manage"), async (req: 
         include: { user: true },
       });
       await logDbActivity(req.user?.userId || null, `Reseller created: ${body.email || resolvedUserId}`, "success", req.ip);
-      return res.status(201).json(flattenReseller(newReseller, 0));
+      const resellerResponse: any = flattenReseller(newReseller, 0);
+      if (generatedPassword) resellerResponse.generatedPassword = generatedPassword;
+      return res.status(201).json(resellerResponse);
     } else {
       const existingReseller = inMemoryDb.resellers.some((r) => r.userId === resolvedUserId);
       if (existingReseller) {

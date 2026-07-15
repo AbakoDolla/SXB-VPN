@@ -3,11 +3,119 @@ import { useTranslation } from "../contexts/I18nContext";
 import { fetchResellers, createReseller, updateReseller } from "../api/resellers";
 import { fetchClients, createClient } from "../api/clients";
 import { Reseller, Client, UserRole } from "../types";
-import { ShieldCheck, Plus, Search, RefreshCw, Key, Landmark, UserPlus, Coins, UserCheck } from "lucide-react";
+import { ShieldCheck, Plus, Search, RefreshCw, Key, Landmark, UserPlus, Coins, UserCheck, Copy, CheckCheck, KeyRound } from "lucide-react";
 
 interface ResellersViewProps {
   currentUserRole: UserRole;
   actorName: string;
+}
+
+// Modal affichant les identifiants générés après création d'un compte
+function CredentialsModal({ credentials, onClose }: {
+  credentials: { name: string; email: string; password: string; role: string };
+  onClose: () => void;
+}) {
+  const [copiedEmail, setCopiedEmail] = useState(false);
+  const [copiedPass, setCopiedPass] = useState(false);
+  const [copiedAll, setCopiedAll] = useState(false);
+
+  const copy = (text: string, setter: (v: boolean) => void) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setter(true);
+      setTimeout(() => setter(false), 2000);
+    });
+  };
+
+  const copyAll = () => {
+    const text = `Dashboard SXB VPN\nURL: https://vpnsxb.afrihall.com\nNom: ${credentials.name}\nEmail: ${credentials.email}\nMot de passe: ${credentials.password}\nRôle: ${credentials.role}`;
+    copy(text, setCopiedAll);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+      <div className="w-full max-w-md p-6 bg-[#0a0d14] border border-[#1a2535] rounded-2xl shadow-2xl relative">
+        {/* Header */}
+        <div className="flex items-center gap-3 mb-5">
+          <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
+            <KeyRound className="h-5 w-5 text-emerald-400" />
+          </div>
+          <div>
+            <h2 className="text-base font-bold text-white">Compte créé avec succès</h2>
+            <p className="text-xs text-gray-400">Transmettez ces identifiants au revendeur</p>
+          </div>
+        </div>
+
+        {/* Warning */}
+        <div className="mb-4 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300">
+          ⚠️ Le mot de passe ne sera plus affiché après fermeture. Copiez-le maintenant.
+        </div>
+
+        {/* Credentials */}
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Nom</label>
+            <div className="px-3 py-2 bg-[#0f1218] border border-[#1a1f2e] rounded-lg text-sm text-white font-medium">
+              {credentials.name}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Email (identifiant)</label>
+            <div className="flex gap-2">
+              <div className="flex-1 px-3 py-2 bg-[#0f1218] border border-[#1a1f2e] rounded-lg text-sm text-cyan-400 font-mono">
+                {credentials.email}
+              </div>
+              <button
+                onClick={() => copy(credentials.email, setCopiedEmail)}
+                className="px-3 py-2 rounded-lg bg-[#0f1218] border border-[#1a1f2e] text-gray-400 hover:text-white transition-colors"
+              >
+                {copiedEmail ? <CheckCheck size={14} className="text-emerald-400" /> : <Copy size={14} />}
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Mot de passe</label>
+            <div className="flex gap-2">
+              <div className="flex-1 px-3 py-2 bg-[#0f1218] border border-emerald-500/30 rounded-lg text-sm text-emerald-400 font-mono font-bold tracking-wide">
+                {credentials.password}
+              </div>
+              <button
+                onClick={() => copy(credentials.password, setCopiedPass)}
+                className="px-3 py-2 rounded-lg bg-[#0f1218] border border-[#1a1f2e] text-gray-400 hover:text-white transition-colors"
+              >
+                {copiedPass ? <CheckCheck size={14} className="text-emerald-400" /> : <Copy size={14} />}
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">URL Dashboard</label>
+            <div className="px-3 py-2 bg-[#0f1218] border border-[#1a1f2e] rounded-lg text-sm text-gray-300 font-mono">
+              https://vpnsxb.afrihall.com
+            </div>
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div className="flex gap-2 mt-5">
+          <button
+            onClick={copyAll}
+            className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-[#5B8DEF] hover:bg-[#4a7de0] text-white text-sm font-semibold transition-colors"
+          >
+            {copiedAll ? <CheckCheck size={14} /> : <Copy size={14} />}
+            {copiedAll ? "Copié !" : "Tout copier"}
+          </button>
+          <button
+            onClick={onClose}
+            className="flex-1 px-4 py-2.5 rounded-lg bg-[#0f1218] border border-[#1a1f2e] text-gray-300 hover:text-white text-sm font-semibold transition-colors"
+          >
+            Fermer
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default function ResellersView({ currentUserRole, actorName }: ResellersViewProps) {
@@ -20,11 +128,12 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
   const [showAddReseller, setShowAddReseller] = useState(false);
   const [showAddResellerClient, setShowAddResellerClient] = useState(false);
   const [selectedResellerId, setSelectedResellerId] = useState<string | null>(null);
+  const [createdCredentials, setCreatedCredentials] = useState<{ name: string; email: string; password: string; role: string } | null>(null);
 
   // Form states (Reseller)
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [balance, setBalance] = useState(500); // 500 GB credits initial allocation
+  const [balance, setBalance] = useState(500);
 
   // Form states (Reseller Client)
   const [clientName, setClientName] = useState("");
@@ -54,12 +163,23 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
     if (!name || !email) return;
 
     try {
-      await createReseller({
+      const result = await createReseller({
         name,
         email,
         balance: Number(balance),
         status: "active",
-      });
+      }) as any;
+
+      // Afficher les identifiants si un mot de passe a été généré
+      if (result.generatedPassword) {
+        setCreatedCredentials({
+          name: result.name || name,
+          email: result.email || email,
+          password: result.generatedPassword,
+          role: "RESELLER",
+        });
+      }
+
       setName("");
       setEmail("");
       setBalance(500);
@@ -122,6 +242,14 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
 
   return (
     <div className="space-y-6">
+      {/* Credentials modal après création */}
+      {createdCredentials && (
+        <CredentialsModal
+          credentials={createdCredentials}
+          onClose={() => setCreatedCredentials(null)}
+        />
+      )}
+
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -140,7 +268,7 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
         )}
       </div>
 
-      {/* Filter and Search */}
+      {/* Search */}
       <div className="relative w-full md:w-80">
         <Search className="absolute left-3 top-2.5 h-4.5 w-4.5 text-gray-500" />
         <input
@@ -152,7 +280,7 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
         />
       </div>
 
-      {/* Table reseller */}
+      {/* Table */}
       {loading ? (
         <div className="flex flex-col items-center justify-center py-20 text-gray-400">
           <RefreshCw className="h-7 w-7 animate-spin text-cyan-400 mb-4" />
@@ -176,9 +304,11 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
               <tbody className="divide-y divide-gray-900 text-sm">
                 {filtered.map((r) => (
                   <tr key={r.id} className="hover:bg-gray-900/20 transition-colors">
-                    <td className="py-4 px-4 font-medium text-white flex items-center gap-2">
-                      <UserCheck className="h-4 w-4 text-cyan-400" />
-                      {r.name}
+                    <td className="py-4 px-4 font-medium text-white">
+                      <div className="flex items-center gap-2">
+                        <UserCheck className="h-4 w-4 text-cyan-400 shrink-0" />
+                        {r.name}
+                      </div>
                     </td>
                     <td className="py-4 px-4 text-gray-400">{r.email}</td>
                     <td className="py-4 px-4 font-mono font-semibold text-cyan-400">{r.balance} Go</td>
@@ -238,14 +368,15 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
         </div>
       )}
 
-      {/* Add Reseller Modal */}
+      {/* Modal Créer Revendeur */}
       {showAddReseller && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
           <div className="w-full max-w-md p-6 bg-gray-950 border border-gray-800 rounded-xl shadow-2xl relative">
-            <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
+            <h2 className="text-lg font-bold text-white mb-1 flex items-center gap-2">
               <Plus className="h-5 w-5 text-cyan-400" />
               {t("resellers.add_reseller")}
             </h2>
+            <p className="text-xs text-gray-500 mb-4">Un compte dashboard sera créé automatiquement avec un mot de passe généré.</p>
             
             <form onSubmit={handleCreateReseller} className="space-y-4">
               <div>
@@ -296,7 +427,7 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
                   type="submit"
                   className="px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black shadow-lg shadow-cyan-950/20 cursor-pointer"
                 >
-                  Créer
+                  Créer le compte
                 </button>
               </div>
             </form>
@@ -304,7 +435,7 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
         </div>
       )}
 
-      {/* Add Reseller Client Modal */}
+      {/* Modal Créer Client Revendeur */}
       {showAddResellerClient && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
           <div className="w-full max-w-md p-6 bg-gray-950 border border-gray-800 rounded-xl shadow-2xl relative">
