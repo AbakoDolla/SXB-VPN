@@ -33,6 +33,50 @@ function makeSxbToken(): string {
   return `SXB-${part()}-${part()}-${part()}`;
 }
 
+// GET /api/tokens — liste tous les tokens SXB (ADMIN/RESELLER)
+router.get("/", requireAuth, requirePermission("tokens.manage"), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    let tokens: any[] = [];
+    if (prisma) {
+      tokens = await prisma.tokenSXB.findMany({
+        include: { client: { include: { user: true } } },
+        orderBy: { createdAt: "desc" },
+      });
+    } else {
+      tokens = inMemoryDb.tokens.map((t) => {
+        const client = inMemoryDb.vpnClients.find((c) => c.id === t.clientId);
+        const user = client ? inMemoryDb.users.find((u) => u.id === client.userId) : null;
+        return { ...t, client: client ? { ...client, user } : null };
+      });
+    }
+    return res.json(tokens.map(sanitizeToken));
+  } catch (err) {
+    console.error("Fetch tokens list error:", err);
+    return res.status(500).json({ error: "errors.server", message: "Failed to fetch tokens" });
+  }
+});
+
+// DELETE /api/tokens/:id — révoque un token
+router.delete("/:id", requireAuth, requirePermission("tokens.manage"), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    let updated: any = null;
+    if (prisma) {
+      updated = await prisma.tokenSXB.update({ where: { id }, data: { status: "revoked" } });
+    } else {
+      const index = inMemoryDb.tokens.findIndex((t) => t.id === id);
+      if (index === -1) return res.status(404).json({ error: "errors.tokens.not_found" });
+      inMemoryDb.tokens[index].status = "revoked";
+      updated = inMemoryDb.tokens[index];
+    }
+    await logDbActivity(req.user?.userId || null, `Revoked SXB Token ID: ${id}`, "warning", req.ip);
+    return res.json(sanitizeToken(updated));
+  } catch (err) {
+    console.error("Revoke token error:", err);
+    return res.status(500).json({ error: "errors.server", message: "Failed to revoke token" });
+  }
+});
+
 // POST /api/tokens/generate
 router.post("/generate", requireAuth, requirePermission("tokens.manage"), async (req: AuthenticatedRequest, res: Response) => {
   try {
