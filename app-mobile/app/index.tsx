@@ -3,6 +3,7 @@ import { Animated, Image, Platform, StyleSheet, Text, View } from 'react-native'
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { useAuthContext } from '@/contexts/AuthContext';
+import { getLastCrash, clearLastCrash } from '@/services/crashLogger';
 
 const LOGO = require('@/assets/images/icon.png');
 const USE_NATIVE = Platform.OS !== 'web';
@@ -26,6 +27,13 @@ export default function SplashScreen() {
   const glowOpacity   = useRef(new Animated.Value(0)).current;
 
   const hasRedirected = useRef(false);
+  const [crashLog, setCrashLog] = React.useState<string | null>(null);
+
+  useEffect(() => {
+    getLastCrash().then((log) => {
+      if (log) setCrashLog(log);
+    });
+  }, []);
 
   useEffect(() => {
     // Pulsing ring animation
@@ -143,6 +151,20 @@ export default function SplashScreen() {
           <View style={[styles.dot, styles.dot3]} />
         </View>
       )}
+
+      {/* Crash précédent (si l'app a planté au lancement précédent) */}
+      {crashLog && (
+        <View style={styles.crashBox} pointerEvents="box-none">
+          <Text style={styles.crashTitle}>Dernier crash détecté :</Text>
+          <Text selectable style={styles.crashText}>{crashLog}</Text>
+          <Text
+            style={styles.crashDismiss}
+            onPress={() => { clearLastCrash(); setCrashLog(null); }}
+          >
+            [ Fermer ]
+          </Text>
+        </View>
+      )}
     </LinearGradient>
   );
 }
@@ -236,4 +258,20 @@ const styles = StyleSheet.create({
   dot1: {},
   dot2: { opacity: 0.4 },
   dot3: { opacity: 0.2 },
+
+  crashBox: {
+    position: 'absolute',
+    top: 60,
+    left: 16,
+    right: 16,
+    maxHeight: '55%',
+    backgroundColor: 'rgba(20,0,0,0.92)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#FF4444',
+    padding: 14,
+  },
+  crashTitle: { color: '#FF6666', fontWeight: '700', fontSize: 13, marginBottom: 8 },
+  crashText: { color: '#FFCCCC', fontSize: 10, fontFamily: 'monospace' },
+  crashDismiss: { color: '#FF9999', fontSize: 12, marginTop: 10, textAlign: 'right' },
 });
