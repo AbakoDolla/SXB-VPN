@@ -40,12 +40,12 @@ function SubModal({ url, onClose }: { url: string; onClose: () => void }) {
     <Modal transparent animationType="slide" onRequestClose={onClose}>
       <Pressable style={styles.overlay} onPress={onClose}>
         <Pressable style={styles.sheet} onPress={() => {}}>
-          <Text style={styles.sheetTitle}>Lien d'''Abonnement</Text>
+          <Text style={styles.sheetTitle}>Lien d'Abonnement</Text>
           <Text style={styles.sheetSub}>Importez dans Sing-box, V2Ray, NekoBox ou Clash</Text>
           <View style={styles.urlBox}><Text style={styles.urlText} numberOfLines={4}>{url}</Text></View>
           <View style={styles.sheetBtns}>
             <TouchableOpacity style={styles.btnPrimary} onPress={copy} activeOpacity={0.8}>
-              <Text style={styles.btnPrimaryText}>{copied ? '✓ Copié !' : 'Copier l'''URL'}</Text>
+              <Text style={styles.btnPrimaryText}>{copied ? '✓ Copié !' : "Copier l'URL"}</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.btnSecondary} onPress={share} activeOpacity={0.8}>
               <Text style={styles.btnSecondaryText}>Partager</Text>
