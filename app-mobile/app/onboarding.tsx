@@ -75,7 +75,7 @@ export default function OnboardingScreen() {
   const { t } = useTranslation();
   const [currentIndex, setCurrentIndex] = useState(0);
   const flatListRef = useRef<FlatList>(null);
-  const dotAnim = useRef(Animated.Value(0)).current;
+  const dotAnim = useRef(new Animated.Value(0)).current;
 
   const slides = [
     { title: t('onboarding_title_1'), desc: t('onboarding_desc_1'), Illus: Illustrations[0] },
