@@ -1,12 +1,5 @@
-import React, { useEffect } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
-import Animated, {
-  useAnimatedStyle,
-  useSharedValue,
-  withRepeat,
-  withSequence,
-  withTiming,
-} from 'react-native-reanimated';
+import React, { useEffect, useRef } from 'react';
+import { Animated, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useColors } from '@/hooks/useColors';
 import { useTranslation } from '@/localization';
@@ -19,26 +12,31 @@ interface VpnStatusCardProps {
 export default function VpnStatusCard({ isConnected, isConnecting }: VpnStatusCardProps) {
   const colors = useColors();
   const { t } = useTranslation();
-  const dotOpacity = useSharedValue(1);
+  const dotOpacity = useRef(new Animated.Value(1)).current;
+  const animRef = useRef<Animated.CompositeAnimation | null>(null);
 
   useEffect(() => {
+    if (animRef.current) {
+      animRef.current.stop();
+    }
+
     if (isConnected || isConnecting) {
-      dotOpacity.value = withRepeat(
-        withSequence(
-          withTiming(0.2, { duration: 700 }),
-          withTiming(1, { duration: 700 }),
-        ),
-        -1,
-        false,
+      animRef.current = Animated.loop(
+        Animated.sequence([
+          Animated.timing(dotOpacity, { toValue: 0.2, duration: 700, useNativeDriver: true }),
+          Animated.timing(dotOpacity, { toValue: 1, duration: 700, useNativeDriver: true }),
+        ])
       );
+      animRef.current.start();
     } else {
-      dotOpacity.value = withTiming(1, { duration: 300 });
+      animRef.current = Animated.timing(dotOpacity, {
+        toValue: 1,
+        duration: 300,
+        useNativeDriver: true,
+      });
+      animRef.current.start();
     }
   }, [isConnected, isConnecting]);
-
-  const dotStyle = useAnimatedStyle(() => ({
-    opacity: dotOpacity.value,
-  }));
 
   const statusColor = isConnecting
     ? colors.connecting
@@ -62,7 +60,7 @@ export default function VpnStatusCard({ isConnected, isConnecting }: VpnStatusCa
       <Text style={[styles.label, { color: colors.foreground }]}>{label}</Text>
       <View style={styles.indicator}>
         <Animated.View
-          style={[styles.dot, { backgroundColor: statusColor }, dotStyle]}
+          style={[styles.dot, { backgroundColor: statusColor, opacity: dotOpacity }]}
         />
         <Text style={[styles.status, { color: statusColor }]}>
           {isConnected ? 'ON' : 'OFF'}
