@@ -47,10 +47,10 @@ jobs:
           echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=512m" >> android/gradle.properties
           echo "org.gradle.daemon=false" >> android/gradle.properties
 
-      - name: Build APK
+      - name: Build APK (release, JS bundle embedded)
         working-directory: app-mobile/android
         run: |
-          ./gradlew :app:assembleDebug --no-daemon --stacktrace
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace
         env:
           NODE_ENV: production
           PATH: /usr/local/bin:/usr/bin:/bin
@@ -59,7 +59,7 @@ jobs:
         working-directory: app-mobile
         run: |
           mkdir -p build
-          APK=$(find android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          APK=$(find android/app/build/outputs/apk/release -name "*.apk" | head -n 1)
           if [ -z "$APK" ]; then
             echo "::error::Aucun APK trouvé"
             find android/app/build/outputs -type f 2>/dev/null || true
@@ -80,7 +80,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: apk-${{ github.run_number }}
+          tag_name: apk-${{ github.run_number }}-${{ github.run_attempt }}
           name: "SXB VPN APK #${{ github.run_number }}"
           body: |
             ## SXB VPN — APK Android
