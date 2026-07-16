@@ -8,7 +8,24 @@ const KEYS = {
   REFRESH: '@sxb_refresh_token',
   USER: '@sxb_user',
   ONBOARDING: '@sxb_onboarding_done',
+  DEVICE_ID: '@sxb_device_id',
 };
+
+// Generate a unique device ID stored permanently (survives app restarts)
+async function getOrCreateDeviceId(): Promise<string> {
+  try {
+    const stored = await AsyncStorage.getItem(KEYS.DEVICE_ID);
+    if (stored) return stored;
+    // Generate format: SXB + 15 random alphanumeric chars
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    const rand = Array.from({ length: 15 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+    const id = 'SXB' + rand;
+    await AsyncStorage.setItem(KEYS.DEVICE_ID, id);
+    return id;
+  } catch {
+    return 'SXB' + Math.random().toString(36).toUpperCase().slice(2, 17);
+  }
+}
 
 interface AuthContextType {
   isLoading: boolean;
@@ -16,6 +33,7 @@ interface AuthContextType {
   user: User | null;
   accountState: AccountState | null;
   hasSeenOnboarding: boolean;
+  deviceId: string;
   activateAccount: (token: string) => Promise<void>;
   activatePlan: (code: string) => Promise<void>;
   refreshAccountState: () => Promise<void>;
@@ -29,6 +47,7 @@ export const AuthContext = createContext<AuthContextType>({
   user: null,
   accountState: null,
   hasSeenOnboarding: false,
+  deviceId: '',
   activateAccount: async () => {},
   activatePlan: async () => {},
   refreshAccountState: async () => {},
@@ -42,9 +61,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [accountState, setAccountState] = useState<AccountState | null>(null);
   const [hasSeenOnboarding, setHasSeenOnboarding] = useState(false);
+  const [deviceId, setDeviceId] = useState<string>('');
 
   useEffect(() => {
     initSession();
+  }, []);
+
+  useEffect(() => {
+    getOrCreateDeviceId().then(setDeviceId);
   }, []);
 
   const initSession = async () => {
@@ -98,7 +122,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const activateAccount = useCallback(async (token: string) => {
-    const res = await apiClient.post('/mobile/auth/activate', { token });
+    const did = await getOrCreateDeviceId();
+    setDeviceId(did);
+    const res = await apiClient.post('/mobile/auth/activate', { token, deviceId: did });
     const { accessToken, refreshToken, user: u, accountState: as } = res.data;
     await AsyncStorage.multiSet([
       [KEYS.ACCESS, accessToken],
@@ -149,6 +175,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         user,
         accountState,
         hasSeenOnboarding,
+        deviceId,
         activateAccount,
         activatePlan,
         refreshAccountState,

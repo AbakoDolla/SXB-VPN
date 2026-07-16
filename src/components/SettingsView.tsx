@@ -118,7 +118,7 @@ export default function SettingsView({ currentUser, onUserUpdated }: SettingsVie
     try {
       const formData = new FormData();
       formData.append("avatar", file);
-      const token = localStorage.getItem("accessToken");
+      const token = localStorage.getItem("sxb_access_token");
       const res = await fetch("/api/users/me/avatar", {
         method: "POST",
         headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },

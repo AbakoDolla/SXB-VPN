@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useTranslation } from "../contexts/I18nContext";
-import { fetchVouchers, createVoucher, redeemVoucher } from "../api/vouchers";
+import { fetchVouchers, createVoucher, useVoucher } from "../api/vouchers";
 import { Voucher, UserRole } from "../types";
 import { Ticket, Plus, Search, RefreshCw, Sparkles, Check, Copy } from "lucide-react";
 
@@ -48,9 +48,11 @@ export default function VouchersView({ currentUserRole }: VouchersViewProps) {
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
+      const diffMs = new Date(expiration).getTime() - Date.now();
+      const durationDays = Math.max(1, Math.ceil(diffMs / 86400000));
       await createVoucher({
-        quota: Number(quota),
-        expiration: new Date(expiration).toISOString(),
+        quotaGb: Number(quota),
+        durationDays,
       });
       setQuota(50);
       setShowAddVoucher(false);
@@ -65,7 +67,7 @@ export default function VouchersView({ currentUserRole }: VouchersViewProps) {
     if (!activationInput) return;
 
     try {
-      const result = await redeemVoucher(activationInput.trim());
+      const result = await useVoucher(activationInput.trim());
       setActivationInput("");
       if (result.success) {
         alert(`Félicitations ! Le voucher a bien été activé !`);
@@ -153,9 +155,9 @@ export default function VouchersView({ currentUserRole }: VouchersViewProps) {
                               {copiedVchId === v.id ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
                             </button>
                           </td>
-                          <td className="py-4 px-4 font-mono font-semibold text-white">{v.quota} Go</td>
+                          <td className="py-4 px-4 font-mono font-semibold text-white">{Math.round(Number(v.quota) / (1024*1024*1024))} Go</td>
                           <td className="py-4 px-4 text-xs text-gray-500 font-mono">
-                            {new Date(v.expiration).toLocaleDateString()}
+                            {v.createdAt ? new Date(new Date(v.createdAt).getTime() + (v.durationDays ?? 0) * 86400000).toLocaleDateString() : "—"}
                           </td>
                           <td className="py-4 px-4 text-center">
                             <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold ${

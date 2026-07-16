@@ -24,6 +24,7 @@ import mobileRouter from "./server/routes/mobile";
 import adminTokensRouter from "./server/routes/admin-tokens";
 import supportRouter from "./server/routes/support";
 import auditLogsRouter from "./server/routes/audit-logs";
+import devicesRouter from "./server/routes/devices";
 
 async function startServer() {
   const app = express();
@@ -103,6 +104,7 @@ async function startServer() {
   app.use("/api/admin-tokens", adminTokensRouter);
   app.use("/api/support", supportRouter);
   app.use("/api/audit-logs", auditLogsRouter);
+  app.use("/api/devices", devicesRouter);
 
   // Global Error Handler with support for Multilingual Error i18n
   app.use((err: any, req: Request, res: Response, next: NextFunction) => {

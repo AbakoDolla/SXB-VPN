@@ -9,6 +9,7 @@ import SupportView from "./components/SupportView";
 import RBACView from "./components/RBACView";
 import SettingsView from "./components/SettingsView";
 import AccountsView from "./components/AccountsView";
+import DevicesView from "./components/DevicesView";
 import Layout from "./components/Layout";
 import { useEffect, useState } from 'react';
 import { I18nProvider, useTranslation } from './contexts/I18nContext';
@@ -252,6 +253,8 @@ function MainApp() {
         return <ServersView currentUserRole={role} />;
       case 'xpanel':
         return <XPanelView currentUserRole={role} />;
+      case 'devices':
+        return <DevicesView />;
       case 'tokens':
         return <TokensView currentUserRole={role} />;
       case 'vouchers':

@@ -80,15 +80,42 @@ function computeAccountState(client: any): {
 }
 
 // POST /api/mobile/auth/activate — first launch: pair the device with an account token
-const activateSchema = z.object({ token: z.string().min(5) });
+const activateSchema = z.object({ 
+  token: z.string().min(5),
+  deviceId: z.string().optional(),
+});
 router.post("/auth/activate", async (req, res: Response) => {
   try {
-    const { token } = activateSchema.parse(req.body);
+    const { token, deviceId: incomingDeviceId } = activateSchema.parse(req.body);
     const client: any = await findClientByAccountToken(token);
 
     if (!client) {
       return res.status(404).json({ error: "errors.mobile.invalid_token", message: "Token de compte invalide" });
     }
+    
+    // Check token expiration
+    if (client.expireAt && new Date(client.expireAt).getTime() < Date.now()) {
+      return res.status(403).json({ error: "errors.mobile.token_expired", message: "Ce token d'activation a expiré" });
+    }
+    
+    // Check and bind device ID
+    if (incomingDeviceId) {
+      if (client.deviceId && client.deviceId !== incomingDeviceId) {
+        return res.status(403).json({ 
+          error: "errors.mobile.wrong_device", 
+          message: "Ce token est lié à un autre appareil" 
+        });
+      }
+      if (!client.deviceId && prisma) {
+        try {
+          await (prisma as any).vpnClient.update({
+            where: { id: client.id },
+            data: { deviceId: incomingDeviceId, activatedAt: new Date() },
+          });
+        } catch (_) {}
+      }
+    }
+    
     if (client.status === "suspended") {
       return res.status(403).json({ error: "errors.mobile.suspended", message: "Ce compte est suspendu" });
     }

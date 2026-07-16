@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { User, UserRole } from '../types';
 import {
-  LayoutDashboard, Users, Server, Shield, Key, Ticket,
+  LayoutDashboard, Users, Server, Shield, Key, Ticket, Smartphone,
   Settings, LogOut, PanelsLeftRight, UserCog,
   Menu, X, UserPlus, HeadphonesIcon, FileText, BadgePercent,
 } from 'lucide-react';
@@ -39,6 +39,7 @@ export default function Layout({
     { id: 'dashboard',  label: 'Dashboard',           icon: LayoutDashboard,  roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
     { id: 'clients',    label: 'Clients VPN',          icon: Users,            roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
     { id: 'tokens',     label: 'Tokens SXB',           icon: Key,              roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
+    { id: 'devices',    label: 'Appareils',            icon: Smartphone,       roles: ['SUPER_ADMIN','ADMIN'] },
     { id: 'vouchers',   label: 'Vouchers',             icon: BadgePercent,     roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
     { id: 'support',    label: 'Support',              icon: HeadphonesIcon,   roles: ['SUPER_ADMIN','ADMIN','SUPPORT'] },
     { id: 'resellers',  label: 'Revendeurs',           icon: UserCog,          roles: ['SUPER_ADMIN','ADMIN'] },

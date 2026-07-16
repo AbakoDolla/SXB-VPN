@@ -26,10 +26,12 @@ export function clearTokens() {
 
 class ApiError extends Error {
   status: number;
+  responseData?: any;
   code?: string;
-  constructor(message: string, status: number, code?: string) {
+  constructor(message: string, status: number, code?: string, responseData?: any) {
     super(message);
     this.status = status;
+    this.responseData = responseData;
     this.code = code;
   }
 }
@@ -107,7 +109,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}, 
     const message = data?.message
       ? (Array.isArray(data.message) ? data.message.map((m: any) => m.message).join(", ") : data.message)
       : `Erreur ${res.status}`;
-    throw new ApiError(message, res.status, data?.error);
+    throw new ApiError(message, res.status, data?.error, data);
   }
 
   return data as T;

@@ -58,18 +58,24 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   const t = (path: string): string => {
     const dict = dictionaries[language];
-    const parts = path.split(".");
-    
-    let current: any = dict;
-    for (const part of parts) {
-      if (current && typeof current === "object" && part in current) {
-        current = current[part];
-      } else {
-        return path; // Fallback to path if not found
+
+    const resolve = (obj: any, keys: string[]): string | undefined => {
+      let cur: any = obj;
+      for (const k of keys) {
+        if (cur && typeof cur === "object" && k in cur) cur = cur[k];
+        else return undefined;
       }
-    }
-    
-    return typeof current === "string" ? current : path;
+      return typeof cur === "string" ? cur : undefined;
+    };
+
+    const parts = path.split(".");
+    // Direct lookup first (e.g. "common.sidebar.rbac")
+    const direct = resolve(dict, parts);
+    if (direct !== undefined) return direct;
+    // Fallback: prepend "common" namespace (e.g. "sidebar.rbac" → "common.sidebar.rbac")
+    const viaCommon = resolve(dict, ["common", ...parts]);
+    if (viaCommon !== undefined) return viaCommon;
+    return path; // Last resort: return key as-is
   };
 
   return (

@@ -53,3 +53,13 @@ export async function redeemVoucher(
     body: { code, clientId },
   });
 }
+
+// Activation simple d un voucher par l utilisateur connecte (sans clientId requis)
+export async function useVoucher(
+  code: string
+): Promise<{ success: boolean; message?: string }> {
+  return await apiRequest<{ success: boolean; message?: string }>("/vouchers/use", {
+    method: "POST",
+    body: { code },
+  });
+}
