@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build SXB VPN — Android APK
 
 on:
   push:
@@ -18,7 +18,7 @@ on:
 
 jobs:
   build-android:
-    name: Build Android APK
+    name: Build Android APK (EAS Cloud)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -36,26 +36,36 @@ jobs:
           cache-dependency-path: app-mobile/package-lock.json
 
       - name: Install dependencies
-        run: npm install
+        run: npm install --legacy-peer-deps
 
-      - name: Setup Expo & EAS
+      - name: Setup Expo & EAS CLI
         uses: expo/expo-github-action@v8
         with:
           expo-version: latest
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
 
-      - name: Build Android APK (EAS)
+      - name: Build Android APK via EAS Cloud
         run: |
           eas build \
             --platform android \
             --profile ${{ github.event.inputs.profile || 'preview' }} \
             --non-interactive \
-            --output ./build/sxb-vpn.apk
+            --wait
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
 
-      - name: Upload APK artifact
+      - name: Download APK from EAS
+        run: |
+          mkdir -p build
+          eas build:download \
+            --platform android \
+            --latest \
+            --output build/sxb-vpn.apk
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Upload APK as workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: sxb-vpn-android-apk
@@ -68,16 +78,23 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: apk-${{ github.run_number }}
-          name: SXB VPN APK build #${{ github.run_number }}
+          name: "SXB VPN Android — Build #${{ github.run_number }}"
           body: |
-            ## SXB VPN Android APK
+            ## 📱 SXB VPN — Android APK
+
             Build automatique depuis le commit `${{ github.sha }}`
-            
+
             ### Installation
-            1. Télécharger le fichier `.apk`
-            2. Activer "Sources inconnues" sur Android
+            1. Télécharger `sxb-vpn.apk` ci-dessous
+            2. Activer **"Sources inconnues"** sur Android
             3. Installer l'APK
-            4. Activer avec ton code `SXB-USER-XXXX`
+            4. Au premier lancement, entrer ton token `SXB-USER-XXXX`
+
+            ### Protocoles supportés
+            VLESS · VMess · Trojan · Shadowsocks · Hysteria2 · SSH · SSH+Payload
+
+            ---
+            *by StuffxBilal*
           files: app-mobile/build/sxb-vpn.apk
           draft: false
         env:

@@ -16,13 +16,15 @@ model User {
   roleId       String
   role         Role         @relation(fields: [roleId], references: [id])
   status       String       @default("active") // active, suspended
+  avatarUrl    String?
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
 
   vpnClients   VpnClient[]
   resellerInfo Reseller?
   auditLogs    AuditLog[]
-  adminTokens  AdminToken[]
+  adminTokens     AdminToken[]
+  supportTickets SupportTicket[]
 
   @@map("users")
 }
@@ -77,7 +79,8 @@ model VpnClient {
   quotaTotal   BigInt?
   quotaUsed    BigInt     @default(0)
   expireAt     DateTime?
-  status       String     @default("active") // active, suspended, expired
+  status       String       @default("active") // active, suspended
+  avatarUrl    String?
   xpanelUserId String?
   deviceLimit  Int        @default(1)
   createdAt    DateTime   @default(now())
@@ -162,4 +165,19 @@ model AuditLog {
   timestamp DateTime @default(now())
 
   @@map("audit_logs")
+}
+
+model SupportTicket {
+  id          String   @id @default(uuid())
+  title       String
+  clientName  String
+  description String?
+  priority    String   @default("medium") // low, medium, high
+  status      String   @default("open") // open, in_progress, resolved, closed
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("support_tickets")
 }

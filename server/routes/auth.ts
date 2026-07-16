@@ -242,4 +242,52 @@ router.post("/logout", async (req: AuthenticatedRequest, res: Response) => {
   return res.json({ message: "Logout successful" });
 });
 
+
+// POST /api/auth/token-login — Connexion via token admin SXB-ADMIN-XXXX-XXXX
+router.post("/token-login", async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { token } = req.body;
+    if (!token) {
+      return res.status(400).json({ error: "MISSING_TOKEN", message: "Token requis" });
+    }
+    if (!prisma) {
+      return res.status(503).json({ error: "DB_UNAVAILABLE", message: "Base de données indisponible" });
+    }
+    const adminToken = await (prisma as any).adminToken.findUnique({
+      where: { token },
+      include: { user: { include: { role: true } } },
+    });
+    if (!adminToken) {
+      return res.status(401).json({ error: "INVALID_TOKEN", message: "Token invalide" });
+    }
+    if (adminToken.status !== "active") {
+      return res.status(401).json({ error: "TOKEN_USED", message: "Token déjà utilisé ou révoqué" });
+    }
+    if (new Date() > adminToken.expiresAt) {
+      await (prisma as any).adminToken.update({ where: { id: adminToken.id }, data: { status: "revoked" } });
+      return res.status(401).json({ error: "TOKEN_EXPIRED", message: "Token expiré" });
+    }
+    await (prisma as any).adminToken.update({
+      where: { id: adminToken.id },
+      data: { status: "used", usedAt: new Date() },
+    });
+    const tokens = generateTokens({
+      userId: adminToken.user.id,
+      email: adminToken.user.email,
+      role: adminToken.user.role.name,
+    });
+    await logDbActivity(adminToken.user.id, `First login via admin token: ${token}`, "success", req.ip);
+    return res.json({
+      success: true,
+      ...tokens,
+      user: { id: adminToken.user.id, name: adminToken.user.name, email: adminToken.user.email, role: adminToken.user.role.name },
+      firstLogin: true,
+      message: "Connexion réussie. Définissez un mot de passe permanent.",
+    });
+  } catch (err) {
+    console.error("Token login error:", err);
+    return res.status(500).json({ error: "SERVER_ERROR", message: "Erreur de connexion par token" });
+  }
+});
+
 export default router;

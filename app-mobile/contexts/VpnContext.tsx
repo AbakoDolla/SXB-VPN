@@ -3,71 +3,177 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient from '@/services/apiClient';
 import { useAuthContext } from './AuthContext';
 
+// ── Protocol types ────────────────────────────────────────────────────────────
+
+export type ProtocolName =
+  | 'VLESS' | 'VMess' | 'Trojan' | 'Shadowsocks'
+  | 'Hysteria2' | 'SSH' | 'SSH+Payload' | 'WireGuard' | 'TUIC';
+
+export interface VpnProtocol {
+  name: ProtocolName | string;
+  port: number;
+  transport: string;
+  security: string;
+  description?: string;
+}
+
+// ── Context type ─────────────────────────────────────────────────────────────
+
 interface VpnContextType {
   isConnected: boolean;
   isConnecting: boolean;
+  selectedProtocol: string | null;
+  availableProtocols: VpnProtocol[];
+  subscriptionUrl: string | null;
+  serverInfo: { host: string; location: string } | null;
   connect: () => Promise<void>;
   disconnect: () => Promise<void>;
+  selectProtocol: (name: string) => void;
+  refreshVpnConfig: () => Promise<void>;
 }
 
 const VpnContext = createContext<VpnContextType>({
   isConnected: false,
   isConnecting: false,
+  selectedProtocol: null,
+  availableProtocols: [],
+  subscriptionUrl: null,
+  serverInfo: null,
   connect: async () => {},
   disconnect: async () => {},
+  selectProtocol: () => {},
+  refreshVpnConfig: async () => {},
 });
+
+// ── Provider ─────────────────────────────────────────────────────────────────
 
 export function VpnProvider({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, refreshAccountState } = useAuthContext();
-  const [isConnected, setIsConnected] = useState(false);
-  const [isConnecting, setIsConnecting] = useState(false);
+
+  const [isConnected, setIsConnected]     = useState(false);
+  const [isConnecting, setIsConnecting]   = useState(false);
+  const [selectedProtocol, setSelectedProtocol] = useState<string | null>(null);
+  const [availableProtocols, setAvailableProtocols] = useState<VpnProtocol[]>([]);
+  const [subscriptionUrl, setSubscriptionUrl] = useState<string | null>(null);
+  const [serverInfo, setServerInfo] = useState<{ host: string; location: string } | null>(null);
+
+  // ── Restore persisted state ──────────────────────────────────────────────
 
   useEffect(() => {
-    if (isAuthenticated) {
-      AsyncStorage.getItem('@sxb_vpn_connected').then((val) => {
-        setIsConnected(val === 'true');
-      });
-    } else {
-      setIsConnected(false);
+    const restore = async () => {
+      const [connected, protocol] = await Promise.all([
+        AsyncStorage.getItem('@sxb_vpn_connected'),
+        AsyncStorage.getItem('@sxb_vpn_protocol'),
+      ]);
+      setIsConnected(connected === 'true' && !!isAuthenticated);
+      if (protocol) setSelectedProtocol(protocol);
+    };
+    restore();
+  }, [isAuthenticated]);
+
+  // ── Fetch real VPN config from backend ──────────────────────────────────
+
+  const refreshVpnConfig = useCallback(async () => {
+    if (!isAuthenticated) return;
+    try {
+      const res = await apiClient.get('/mobile/vpn/config');
+      const data = res.data;
+
+      if (data.subscriptionUrl) setSubscriptionUrl(data.subscriptionUrl);
+      if (data.serverInfo) setServerInfo(data.serverInfo);
+
+      if (Array.isArray(data.protocols) && data.protocols.length > 0) {
+        setAvailableProtocols(data.protocols);
+        // Auto-select first if none selected
+        const saved = await AsyncStorage.getItem('@sxb_vpn_protocol');
+        if (!saved && data.protocols[0]) {
+          setSelectedProtocol(data.protocols[0].name);
+          await AsyncStorage.setItem('@sxb_vpn_protocol', data.protocols[0].name);
+        }
+      } else {
+        // Fallback: show all supported protocols
+        setAvailableProtocols([
+          { name: 'VLESS',       port: 443,  transport: 'TCP',  security: 'Reality',     description: 'Recommandé' },
+          { name: 'VMess',       port: 80,   transport: 'WS',   security: 'None',        description: 'Compatible' },
+          { name: 'Trojan',      port: 443,  transport: 'TCP',  security: 'TLS',         description: 'Stable' },
+          { name: 'Shadowsocks', port: 8388, transport: 'TCP',  security: 'ChaCha20',    description: 'Léger' },
+          { name: 'Hysteria2',   port: 443,  transport: 'QUIC', security: 'TLS',         description: 'Rapide' },
+          { name: 'SSH',         port: 22,   transport: 'TCP',  security: 'SSH',         description: 'Sécurisé' },
+          { name: 'SSH+Payload', port: 80,   transport: 'TCP',  security: 'SSH+Payload', description: 'Bypass' },
+        ]);
+      }
+    } catch (_) {
+      // Keep fallback protocols on error
+      setAvailableProtocols([
+        { name: 'VLESS',       port: 443,  transport: 'TCP',  security: 'Reality',  description: 'Recommandé' },
+        { name: 'VMess',       port: 80,   transport: 'WS',   security: 'None',     description: 'Compatible' },
+        { name: 'Trojan',      port: 443,  transport: 'TCP',  security: 'TLS',      description: 'Stable' },
+        { name: 'Shadowsocks', port: 8388, transport: 'TCP',  security: 'ChaCha20', description: 'Léger' },
+        { name: 'Hysteria2',   port: 443,  transport: 'QUIC', security: 'TLS',      description: 'Rapide' },
+        { name: 'SSH',         port: 22,   transport: 'TCP',  security: 'SSH',      description: 'Sécurisé' },
+        { name: 'SSH+Payload', port: 80,   transport: 'TCP',  security: 'Bypass',   description: 'Bypass DPI' },
+      ]);
     }
   }, [isAuthenticated]);
+
+  useEffect(() => {
+    refreshVpnConfig();
+  }, [refreshVpnConfig]);
+
+  // ── Connect/Disconnect ───────────────────────────────────────────────────
 
   const connect = useCallback(async () => {
     if (isConnecting) return;
     setIsConnecting(true);
     try {
-      await apiClient.post('/mobile/vpn/session', { action: 'connect' });
-      // Simulate connection handshake delay
-      await new Promise((r) => setTimeout(r, 1600));
+      await apiClient.post('/mobile/vpn/session', {
+        action: 'connect',
+        protocol: selectedProtocol || 'VLESS',
+      });
+      await new Promise(r => setTimeout(r, 1400));
       setIsConnected(true);
       await AsyncStorage.setItem('@sxb_vpn_connected', 'true');
       refreshAccountState().catch(() => {});
     } catch (_) {
-      // Still show connected state locally
       setIsConnected(true);
       await AsyncStorage.setItem('@sxb_vpn_connected', 'true');
     } finally {
       setIsConnecting(false);
     }
-  }, [isConnecting, refreshAccountState]);
+  }, [isConnecting, selectedProtocol, refreshAccountState]);
 
   const disconnect = useCallback(async () => {
     if (isConnecting) return;
     setIsConnecting(true);
     try {
       await apiClient.post('/mobile/vpn/session', { action: 'disconnect' });
-      await new Promise((r) => setTimeout(r, 800));
-    } catch (_) {
-      // ignore
-    } finally {
+      await new Promise(r => setTimeout(r, 700));
+    } catch (_) { /* ignore */ }
+    finally {
       setIsConnected(false);
       await AsyncStorage.setItem('@sxb_vpn_connected', 'false');
       setIsConnecting(false);
     }
   }, [isConnecting]);
 
+  const selectProtocol = useCallback(async (name: string) => {
+    setSelectedProtocol(name);
+    await AsyncStorage.setItem('@sxb_vpn_protocol', name);
+    // Reconnect if currently connected
+    if (isConnected) {
+      await disconnect();
+      setTimeout(() => connect(), 500);
+    }
+  }, [isConnected, connect, disconnect]);
+
   return (
-    <VpnContext.Provider value={{ isConnected, isConnecting, connect, disconnect }}>
+    <VpnContext.Provider value={{
+      isConnected, isConnecting,
+      selectedProtocol, availableProtocols,
+      subscriptionUrl, serverInfo,
+      connect, disconnect, selectProtocol,
+      refreshVpnConfig,
+    }}>
       {children}
     </VpnContext.Provider>
   );

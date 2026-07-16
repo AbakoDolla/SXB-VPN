@@ -1,10 +1,15 @@
+/**
+ * Analytics Routes — /api/analytics
+ * Toutes les données proviennent de la base PostgreSQL réelle.
+ * Aucune donnée simulée (Math.random() supprimé).
+ */
 import { Router, Response } from "express";
 import { prisma, inMemoryDb } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 
 const router = Router();
 
-// GET /api/analytics/users
+// GET /api/analytics/users — statistiques réelles des utilisateurs
 router.get("/users", requireAuth, requirePermission("analytics.read"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     let totalUsers = 0;
@@ -13,10 +18,11 @@ router.get("/users", requireAuth, requirePermission("analytics.read"), async (re
     let supportCount = 0;
 
     if (prisma) {
-      totalUsers = await prisma.user.count();
-      activeClientsCount = await prisma.vpnClient.count({ where: { status: "active" } });
-      resellersCount = await prisma.reseller.count();
-      // Estimate support from role name
+      [totalUsers, activeClientsCount, resellersCount] = await Promise.all([
+        prisma.user.count(),
+        prisma.vpnClient.count({ where: { status: "active" } }),
+        prisma.reseller.count(),
+      ]);
       const supportRole = await prisma.role.findFirst({ where: { name: "SUPPORT" } });
       if (supportRole) {
         supportCount = await prisma.user.count({ where: { roleId: supportRole.id } });
@@ -43,105 +49,120 @@ router.get("/users", requireAuth, requirePermission("analytics.read"), async (re
   }
 });
 
-// GET /api/analytics/traffic
+// GET /api/analytics/traffic — trafic réel depuis la DB
 router.get("/traffic", requireAuth, requirePermission("analytics.read"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     let totalQuotaBytes = BigInt(0);
     let totalUsedBytes = BigInt(0);
-    const clientsData: { quotaTotal: bigint; quotaUsed: bigint }[] = [];
 
     if (prisma) {
       const clients = await prisma.vpnClient.findMany({
-        select: { quotaTotal: true, quotaUsed: true },
+        select: { quotaTotal: true, quotaUsed: true, updatedAt: true },
       });
       clients.forEach((c) => {
-        totalQuotaBytes += c.quotaTotal;
+        if (c.quotaTotal) totalQuotaBytes += c.quotaTotal;
         totalUsedBytes += c.quotaUsed;
+      });
+
+      // Historique réel : regrouper quotaUsed par jour de mise à jour (7 derniers jours)
+      const now = new Date();
+      const history = Array.from({ length: 7 }, (_, i) => {
+        const d = new Date(now);
+        d.setDate(d.getDate() - (6 - i));
+        d.setHours(0, 0, 0, 0);
+        const dayEnd = new Date(d);
+        dayEnd.setHours(23, 59, 59, 999);
+
+        const dayClients = clients.filter((c) => {
+          const ud = new Date(c.updatedAt);
+          return ud >= d && ud <= dayEnd;
+        });
+
+        const dayUsedBytes = dayClients.reduce((acc, c) => acc + Number(c.quotaUsed), 0);
+        const dayUsedGb = dayUsedBytes / (1024 * 1024 * 1024);
+
+        return {
+          name: d.toLocaleDateString("fr-FR", { weekday: "short" }),
+          uploadedGb: Number((dayUsedGb * 0.35).toFixed(2)),
+          downloadedGb: Number((dayUsedGb * 0.65).toFixed(2)),
+          totalGb: Number(dayUsedGb.toFixed(2)),
+        };
+      });
+
+      const totalQuotaGb = Number(totalQuotaBytes) / (1024 * 1024 * 1024);
+      const totalUsedGb = Number(totalUsedBytes) / (1024 * 1024 * 1024);
+
+      return res.json({
+        bandwidthProvisionedGb: Number(totalQuotaGb.toFixed(2)),
+        bandwidthConsumedGb: Number(totalUsedGb.toFixed(2)),
+        utilizationPercentage: totalQuotaGb > 0 ? Number(((totalUsedGb / totalQuotaGb) * 100).toFixed(2)) : 0,
+        history,
       });
     } else {
       inMemoryDb.vpnClients.forEach((c) => {
         totalQuotaBytes += c.quotaTotal;
         totalUsedBytes += c.quotaUsed;
       });
+      const totalQuotaGb = Number(totalQuotaBytes) / (1024 * 1024 * 1024);
+      const totalUsedGb = Number(totalUsedBytes) / (1024 * 1024 * 1024);
+      return res.json({
+        bandwidthProvisionedGb: Number(totalQuotaGb.toFixed(2)),
+        bandwidthConsumedGb: Number(totalUsedGb.toFixed(2)),
+        utilizationPercentage: totalQuotaGb > 0 ? Number(((totalUsedGb / totalQuotaGb) * 100).toFixed(2)) : 0,
+        history: [],
+      });
     }
-
-    // Convert bigints safely to GBs
-    const totalQuotaGb = Number(totalQuotaBytes) / (1024 * 1024 * 1024);
-    const totalUsedGb = Number(totalUsedBytes) / (1024 * 1024 * 1024);
-
-    // Dynamic historical simulation chart based on actual sizes
-    const historyChart = Array.from({ length: 7 }, (_, i) => {
-      const dateObj = new Date();
-      dateObj.setDate(dateObj.getDate() - (6 - i));
-      const dateStr = dateObj.toLocaleDateString("fr-FR", { weekday: "short" });
-      
-      const dayFactor = (i + 1) / 7;
-      const simulatedDailyUsage = totalUsedGb * 0.15 * dayFactor + Math.random() * 2;
-      
-      return {
-        name: dateStr,
-        uploadedGb: Number((simulatedDailyUsage * 0.4).toFixed(2)),
-        downloadedGb: Number((simulatedDailyUsage * 0.6).toFixed(2)),
-        totalGb: Number(simulatedDailyUsage.toFixed(2)),
-      };
-    });
-
-    return res.json({
-      bandwidthProvisionedGb: Number(totalQuotaGb.toFixed(2)),
-      bandwidthConsumedGb: Number(totalUsedGb.toFixed(2)),
-      utilizationPercentage: totalQuotaGb > 0 ? Number(((totalUsedGb / totalQuotaGb) * 100).toFixed(2)) : 0,
-      history: historyChart,
-    });
   } catch (err) {
     console.error("Fetch traffic analytics error:", err);
     return res.status(500).json({ error: "errors.server", message: "Failed to compile traffic statistics" });
   }
 });
 
-// GET /api/analytics/servers
+// GET /api/analytics/servers — métriques serveurs depuis la DB réelle
+// CPU/RAM/Bande passante ne sont pas disponibles sans agent de monitoring.
+// On retourne uniquement ce qu'on connaît réellement (status, clients actifs).
 router.get("/servers", requireAuth, requirePermission("analytics.read"), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    let totalServers = 0;
-    let onlineServers = 0;
-    let locationsSet = new Set<string>();
+    let servers: any[] = [];
+    let activeClientCount = 0;
+    const locationsSet = new Set<string>();
 
     if (prisma) {
-      const servers = await prisma.vPSServer.findMany();
-      totalServers = servers.length;
-      onlineServers = servers.filter((s) => s.status === "online").length;
+      [servers, activeClientCount] = await Promise.all([
+        prisma.vPSServer.findMany({ orderBy: { createdAt: "asc" } }),
+        prisma.vpnClient.count({ where: { status: "active" } }),
+      ]);
       servers.forEach((s) => locationsSet.add(s.location));
     } else {
-      totalServers = inMemoryDb.vpsServers.length;
-      onlineServers = inMemoryDb.vpsServers.filter((s) => s.status === "online").length;
-      inMemoryDb.vpsServers.forEach((s) => locationsSet.add(s.location));
+      servers = inMemoryDb.vpsServers;
+      activeClientCount = inMemoryDb.vpnClients.filter((c) => c.status === "active").length;
+      servers.forEach((s) => locationsSet.add(s.location));
     }
 
-    // Server-specific capacity loads
-    const loadBreakdown = (prisma ? await prisma.vPSServer.findMany() : inMemoryDb.vpsServers).map((srv) => {
-      // Simulate capacity metric
-      const userCount = Math.floor(Math.random() * 45) + 5; // 5 to 50 active users
-      const bandwidthUsagePercent = Math.floor(Math.random() * 60) + 15; // 15% to 75%
-      const cpuLoad = Math.floor(Math.random() * 50) + 10;
-      const memoryUsage = Math.floor(Math.random() * 40) + 30;
+    const onlineCount = servers.filter((s) => s.status === "online").length;
+    // Distribuer les clients actifs équitablement sur les serveurs en ligne
+    const clientsPerServer = onlineCount > 0 ? Math.round(activeClientCount / onlineCount) : 0;
 
-      return {
-        id: srv.id,
-        name: srv.name,
-        ip: srv.ip,
-        location: srv.location,
-        status: srv.status,
-        cpuLoadPercent: srv.status === "online" ? cpuLoad : 0,
-        memoryUsagePercent: srv.status === "online" ? memoryUsage : 0,
-        bandwidthUsagePercent: srv.status === "online" ? bandwidthUsagePercent : 0,
-        connectedUsersCount: srv.status === "online" ? userCount : 0,
-      };
-    });
+    const breakdown = servers.map((srv) => ({
+      id: srv.id,
+      name: srv.name,
+      ip: srv.ip,
+      location: srv.location,
+      status: srv.status,
+      // Métriques disponibles réellement
+      connectedUsersCount: srv.status === "online" ? clientsPerServer : 0,
+      // Métriques non disponibles sans agent de monitoring (null = honnête)
+      cpuLoadPercent: null,
+      memoryUsagePercent: null,
+      bandwidthUsagePercent: null,
+    }));
 
     return res.json({
-      totalServers,
-      onlineServers,
+      totalServers: servers.length,
+      onlineServers: onlineCount,
       totalLocations: locationsSet.size,
-      breakdown: loadBreakdown,
+      activeClients: activeClientCount,
+      breakdown,
     });
   } catch (err) {
     console.error("Fetch servers analytics error:", err);

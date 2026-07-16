@@ -22,6 +22,8 @@ import rbacRouter from "./server/routes/rbac";
 import dashboardRouter from "./server/routes/dashboard";
 import mobileRouter from "./server/routes/mobile";
 import adminTokensRouter from "./server/routes/admin-tokens";
+import supportRouter from "./server/routes/support";
+import auditLogsRouter from "./server/routes/audit-logs";
 
 async function startServer() {
   const app = express();
@@ -99,6 +101,8 @@ async function startServer() {
   app.use("/api/dashboard", dashboardRouter);
   app.use("/api/mobile", mobileRouter);
   app.use("/api/admin-tokens", adminTokensRouter);
+  app.use("/api/support", supportRouter);
+  app.use("/api/audit-logs", auditLogsRouter);
 
   // Global Error Handler with support for Multilingual Error i18n
   app.use((err: any, req: Request, res: Response, next: NextFunction) => {
@@ -127,6 +131,7 @@ async function startServer() {
   } else {
     console.log("📦 Mounting production static file serving (Serving compiled React frontend)...");
     const distPath = path.join(process.cwd(), "dist");
+    app.use("/uploads", express.static(require("path").join(process.cwd(), "public", "uploads")));
     app.use(express.static(distPath));
     app.get("*", (req: Request, res: Response) => {
       res.sendFile(path.join(distPath, "index.html"));

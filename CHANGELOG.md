@@ -1,84 +1,70 @@
-# Changelog — SXB VPN Platform
+# Changelog — SXB VPN Dashboard
 
-All notable changes to this project are documented in this file.  
-Format: [Semantic Versioning](https://semver.org/). Dates are UTC.
-
----
-
-## [2.1.0] — 2026-07-15
-
-### 🔒 Security Fixes
-- **Removed client-side token generation** (`generateTokenCode()` deleted from `src/api/tokens.ts`). Tokens are now exclusively server-generated via cryptographic randomness.
-- **Hardened JWT defaults** — seed enforces strong passwords; production `.env` must override `JWT_SECRET` and `REFRESH_SECRET`.
-- **passwordHash never exposed** in API responses (sanitizeUser/sanitizeVpnClient helpers verify this throughout).
-
-### ✨ New Features
-- **AdminToken system** (`SXB-ADMIN-XXXX-XXXX`): new Prisma model + backend routes (`/api/admin-tokens/generate`, `/api/admin-tokens/activate`). Allows admins to create time-limited login tokens for new accounts without sharing passwords.
-- **Gestion des Comptes** (`AccountsView`) — new dashboard section for ADMIN/SUPER_ADMIN:
-  - List all dashboard users with role badges
-  - Create accounts with auto-generated passwords
-  - One-click admin token generation per user
-  - Revoke active tokens
-  - Full responsive layout
-- **SUPER_ADMIN role** properly seeded in the database (was missing from `prisma/seed.ts`).
-
-### 🐛 Bug Fixes
-- **`tokens.manage` permission missing from seed** — all token API calls returned 403. Fixed: permission now seeded and assigned to ADMIN, RESELLER, SUPER_ADMIN roles.
-- **TokensView type mismatch** — component used `tok.owner`/`tok.code` which don't exist in `TokenSXB` type. Fixed to use `tok.token`, `tok.clientId`, client lookup.
-- **TokensView create form** — was calling `createToken({ owner, quota, expiration })`. Fixed to use correct API shape `{ clientId, quotaGb, durationDays, deviceLimit }`.
-- **TokensView create** now shows a client selector dropdown populated from real `/api/clients`.
-- **Foreign key constraint on user creation** — caused by roles table being empty (seed not run on VPS). Fixed via full seed overhaul.
-- **PM2 crash loop** (`Cannot find module dist/server.cjs`) — resolved by building project on VPS.
-- **XPanel URL inconsistency** — three different values across `.env.example`, `docker-compose.yml`, and VPS `.env`. Standardized to env var `XPANEL_URL`, default `http://localhost:18790`.
-
-### 🏗️ Schema Changes
-- Added `AdminToken` model to `prisma/schema.prisma` with fields: `id`, `token`, `userId`, `expiresAt`, `usedAt`, `status`, `createdAt`.
-- `AdminToken` linked to `User` with cascade delete.
-
-### 🧹 Code Quality
-- Resolved router conflict: `server/routes/users.ts` vs `server/routes/users/index.ts`. Server.ts resolves to `users.ts` (middleware-based). Both coexist — `users/index.ts` (RBAC-based) is available for future migration.
-- `src/components/Layout.tsx` — added "Gestion des Comptes" navigation item (ADMIN/SUPER_ADMIN only).
-- `src/App.tsx` — added `accounts` route case.
-- `src/api/tokens.ts` — removed legacy `generateTokenCode()`, simplified `createToken()` parameters.
-- `src/api/accounts.ts` — new module for account/admin-token management.
-
-### 📦 Backend Routes Added
-| Method | Route | Description |
-|--------|-------|-------------|
-| POST | `/api/admin-tokens/generate` | Generate `SXB-ADMIN-XXXX-XXXX` token for a user |
-| POST | `/api/admin-tokens/activate` | First-login via admin token, returns JWT |
-| GET  | `/api/admin-tokens` | List admin tokens (ADMIN+) |
-| POST | `/api/admin-tokens/:id/revoke` | Revoke a token |
-
-### 🌱 Seed Changes
-| Account | Password | Role |
-|---------|----------|------|
-| superadmin@sxbvpn.com | SuperAdmin2026! | SUPER_ADMIN |
-| admin@sxbvpn.com | Admin2026! | ADMIN |
-| support@sxbvpn.com | Support2026! | SUPPORT |
+Toutes les modifications notables sont documentées ici.
+Format : [version] — AAAA-MM-JJ
 
 ---
 
-## [2.0.0] — 2026-07-14
+## [2.4.0] — 2026-07-16
 
-### Features (prior work)
-- Full RBAC system: roles, permissions, role_permissions tables
-- Multi-role dashboard (ADMIN, SUPPORT, RESELLER)
-- VPN client management with XPanel integration
-- Token SXB system (data tokens for mobile)
-- Voucher management
-- Reseller management
-- Mobile API: account activation, VPN config
-- Expo React Native app with token-based activation
-- GitHub Actions APK build workflow
+### Correctifs Critiques — Suppression de toutes les données simulées
+
+#### Backend
+- **analytics.ts** — Supprimé `Math.random()` pour CPU%, RAM%, bande passante et utilisateurs connectés. Données désormais issues de `prisma.vpnClient.count({ where: { status: 'active' } })`. Métriques matérielles (CPU/RAM) retournées comme `null` car elles nécessitent un agent de monitoring.
+- **analytics.ts** — Supprimé `simulatedDailyUsage` avec `Math.random()`. Historique du trafic calculé depuis les données `updatedAt` réelles des `VpnClient`.
+- **dashboard.ts** — Graphique trafic 7 jours : plus de distribution linéaire fake. Regroupement réel par `updatedAt` des `VpnClient`.
+- **dashboard.ts** — Graphique utilisateurs 7 jours : count cumulatif réel par `createdAt`.
+- **vouchers.ts** — Génération de code côté serveur avec `crypto.randomBytes` (plus côté client avec `Math.random()`). Endpoint accepte `{quotaGb, durationDays, count}` et retourne `{vouchers: []}`.
+
+#### Base de données
+- **Prisma schema** — Ajout du modèle `AdminToken` (tokens SXB-ADMIN-XXXX-XXXX).
+- **Prisma schema** — Ajout du modèle `SupportTicket` (tickets persistés en DB, plus localStorage).
+- **Migration** — `prisma db push` exécuté, tables `admin_tokens` et `support_tickets` créées.
+
+#### Nouvelles routes
+- `GET/POST/PATCH/DELETE /api/support` — Tickets d'assistance (PostgreSQL).
+- `GET /api/audit-logs` — Journaux d'activité depuis la base réelle.
+- `POST /api/auth/token-login` — Connexion par token admin (SXB-ADMIN-XXXX-XXXX).
+
+### Nouvelles Fonctionnalités
+
+#### Frontend
+- **LoginForm** — Ajout d'un onglet "Token Admin" pour la connexion par token SXB-ADMIN-XXXX-XXXX.
+- **SupportView.tsx** — Entièrement réécrit : tickets persistés via API `/api/support` (PostgreSQL), plus localStorage.
+- **src/api/support.ts** — Nouveau module API pour les tickets.
+- **src/api/vouchers.ts** — `generateVoucherCode()` utilise `crypto.getRandomValues()` au lieu de `Math.random()`.
+
+### Documentation
+- Ajout de `SXB_SYSTEM_AUDIT.md` — Rapport d'audit complet du système.
+- Mise à jour de `CHANGELOG.md`.
 
 ---
 
-## [1.0.0] — 2026-07-13
+## [2.3.0] — 2026-07-15
 
-### Initial Release
-- Express + TypeScript backend
-- React + Vite + Tailwind dashboard
-- Prisma ORM + PostgreSQL
-- Redis caching
-- Docker Compose infrastructure
+### Nouvelles Fonctionnalités
+
+#### Backend
+- **users.ts** — Création de compte : `password` optionnel, auto-généré si absent (hex `crypto.randomBytes`).
+- **resellers.ts** — Création revendeur : retourne `generatedPassword` dans la réponse.
+
+#### Frontend
+- **ResellersView.tsx** — `CredentialsModal` : affiche email + mot de passe après création, avec bouton copier. Avertissement "montré une seule fois".
+- **SettingsView.tsx** — Section "Gestion de l'équipe" : formulaire de création de comptes ADMIN/SUPPORT avec `CredentialsModal`.
+- **src/api/permissions.ts** — `fetchRoles()` gère le retour tableau direct et `{roles: []}`.
+
+---
+
+## [2.2.0] — 2026-07-14
+
+### Nouvelles Fonctionnalités
+- Système de tokens admin (SXB-ADMIN-XXXX-XXXX) — route `admin-tokens.ts`.
+- Vue AccountsView pour la gestion des comptes dashboard.
+- Intégration XPanel (3x-ui) via service HTTP.
+- Support RBAC complet avec permissions granulaires.
+- Multilingue i18n (fr/en).
+
+---
+
+*SXB VPN — Plateforme SaaS de gestion VPN*  
+*GitHub : AbakoDolla/SXB-VPN*

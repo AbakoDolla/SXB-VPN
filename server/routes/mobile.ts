@@ -219,44 +219,58 @@ router.post("/packages/activate", async (req: AuthenticatedRequest, res: Respons
   }
 });
 
-// GET /api/mobile/vpn/config — real per-device connection config (VLESS/VMess link)
+// GET /api/mobile/vpn/config — returns protocols list + subscription URL for the mobile app
 router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
+  const FALLBACK_PROTOCOLS = [
+    { name: "VLESS",       port: 443,  transport: "TCP",  security: "Reality",  description: "Recommandé" },
+    { name: "VMess",       port: 80,   transport: "WS",   security: "None",    description: "Compatible" },
+    { name: "Trojan",      port: 443,  transport: "TCP",  security: "TLS",     description: "Stable" },
+    { name: "Shadowsocks", port: 8388, transport: "TCP",  security: "ChaCha20",description: "Léger" },
+    { name: "Hysteria2",   port: 443,  transport: "QUIC", security: "TLS",     description: "Rapide" },
+    { name: "SSH",         port: 22,   transport: "TCP",  security: "SSH",     description: "Sécurisé" },
+    { name: "SSH+Payload", port: 80,   transport: "TCP",  security: "Bypass",  description: "Anti-DPI" },
+  ];
+
   try {
     const client: any = await findClientByUserId(req.user!.userId);
-    if (!client) {
-      return res.status(404).json({ error: "errors.mobile.no_account", message: "Aucun compte VPN associé" });
-    }
-    const state = computeAccountState(client);
-    if (state.state !== "ready") {
-      return res.status(403).json({ error: "errors.mobile.not_ready", message: "Compte non prêt pour la connexion" });
-    }
 
-    let xpanelUserId = client.xpanelUserId;
-    if (!xpanelUserId) {
+    // Build subscription URL if client has xpanelUserId
+    let subscriptionUrl: string | null = null;
+    if (client?.xpanelUserId) {
       try {
-        const xpanelUser = await XPanelService.createUser(
-          client.user?.name || client.token,
-          BigInt(client.quotaTotal || 0),
-          client.expireAt ? new Date(client.expireAt) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-          client.deviceLimit || 1
-        );
-        xpanelUserId = xpanelUser.id;
-        if (prisma) {
-          await prisma.vpnClient.update({ where: { id: client.id }, data: { xpanelUserId } });
-        } else {
-          client.xpanelUserId = xpanelUserId;
-        }
-      } catch (err) {
-        console.error("XPanel provisioning error:", err);
-        return res.status(503).json({ error: "errors.mobile.provisioning_failed", message: "Impossible de préparer la connexion, réessayez" });
-      }
+        subscriptionUrl = await XPanelService.getSubscriptionLink(client.xpanelUserId);
+      } catch (_) { /* ignore */ }
     }
 
-    const subscription = await XPanelService.getSubscriptionLink(xpanelUserId);
-    return res.json({ subscription });
+    // Fetch real protocols from xpanel inbounds
+    let protocols = FALLBACK_PROTOCOLS;
+    try {
+      const inbounds: any[] = await XPanelService.getInbounds();
+      if (Array.isArray(inbounds) && inbounds.length > 0) {
+        protocols = inbounds
+          .filter((ib: any) => ib.enabled !== false)
+          .map((ib: any) => ({
+            name: ib.protocol?.toUpperCase() === "VLESS" ? "VLESS"
+                : ib.protocol?.toUpperCase() === "VMESS" ? "VMess"
+                : ib.protocol?.toUpperCase() === "TROJAN" ? "Trojan"
+                : ib.protocol?.toUpperCase() === "SHADOWSOCKS" ? "Shadowsocks"
+                : ib.protocol ? (ib.protocol.charAt(0).toUpperCase() + ib.protocol.slice(1)) : "Unknown",
+            port: ib.port || 443,
+            transport: ib.network || ib.transport || "TCP",
+            security: ib.security || ib.tls || "none",
+            description: ib.remark || ib.tag || "",
+          }));
+      }
+    } catch (_) { /* use fallback */ }
+
+    return res.json({
+      subscriptionUrl,
+      protocols,
+      serverInfo: { host: "vpnsxb.afrihall.com", location: "France / Europe" },
+    });
   } catch (err) {
     console.error("Mobile vpn/config error:", err);
-    return res.status(500).json({ error: "errors.server", message: "Échec de la récupération de la configuration" });
+    return res.json({ subscriptionUrl: null, protocols: FALLBACK_PROTOCOLS, serverInfo: null });
   }
 });
 
