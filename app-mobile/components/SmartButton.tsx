@@ -1,13 +1,13 @@
-import React, { useCallback, useEffect } from 'react';
-import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
-import Animated, {
-  Easing,
-  useAnimatedStyle,
-  useSharedValue,
-  withRepeat,
-  withSequence,
-  withTiming,
-} from 'react-native-reanimated';
+import React, { useCallback, useEffect, useRef } from 'react';
+import {
+  ActivityIndicator,
+  Animated,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import { useColors } from '@/hooks/useColors';
@@ -28,120 +28,105 @@ export default function SmartButton({ state, onPress, disabled = false }: SmartB
   const colors = useColors();
   const { t } = useTranslation();
 
-  const pulseScale = useSharedValue(1);
-  const pulseOpacity = useSharedValue(0);
-  const buttonScale = useSharedValue(1);
-  const glowOpacity = useSharedValue(0);
+  const pulseScale = useRef(new Animated.Value(1)).current;
+  const pulseOpacity = useRef(new Animated.Value(0)).current;
+  const buttonScale = useRef(new Animated.Value(1)).current;
+  const glowOpacity = useRef(new Animated.Value(0)).current;
+  const pulseAnim = useRef<Animated.CompositeAnimation | null>(null);
 
   const isConnected = state === 'connected';
   const isAnimating = state === 'connecting' || state === 'disconnecting';
 
   useEffect(() => {
+    if (pulseAnim.current) {
+      pulseAnim.current.stop();
+    }
+
     if (isConnected) {
-      pulseScale.value = withRepeat(
-        withSequence(
-          withTiming(1, { duration: 0 }),
-          withTiming(1.25, { duration: 1100, easing: Easing.out(Easing.ease) }),
-        ),
-        -1,
-        false,
+      pulseAnim.current = Animated.loop(
+        Animated.parallel([
+          Animated.sequence([
+            Animated.timing(pulseScale, { toValue: 1, duration: 0, useNativeDriver: true }),
+            Animated.timing(pulseScale, { toValue: 1.25, duration: 1100, useNativeDriver: true }),
+          ]),
+          Animated.sequence([
+            Animated.timing(pulseOpacity, { toValue: 0.55, duration: 0, useNativeDriver: true }),
+            Animated.timing(pulseOpacity, { toValue: 0, duration: 1100, useNativeDriver: true }),
+          ]),
+        ])
       );
-      pulseOpacity.value = withRepeat(
-        withSequence(
-          withTiming(0.55, { duration: 0 }),
-          withTiming(0, { duration: 1100 }),
-        ),
-        -1,
-        false,
-      );
-      glowOpacity.value = withTiming(1, { duration: 600 });
+      pulseAnim.current.start();
+      Animated.timing(glowOpacity, { toValue: 1, duration: 600, useNativeDriver: true }).start();
     } else {
-      pulseScale.value = withTiming(1, { duration: 300 });
-      pulseOpacity.value = withTiming(0, { duration: 300 });
-      glowOpacity.value = withTiming(0, { duration: 400 });
+      Animated.parallel([
+        Animated.timing(pulseScale, { toValue: 1, duration: 300, useNativeDriver: true }),
+        Animated.timing(pulseOpacity, { toValue: 0, duration: 300, useNativeDriver: true }),
+        Animated.timing(glowOpacity, { toValue: 0, duration: 400, useNativeDriver: true }),
+      ]).start();
     }
   }, [isConnected]);
 
-  const pulseStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: pulseScale.value }],
-    opacity: pulseOpacity.value,
-  }));
-
-  const buttonPressStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: buttonScale.value }],
-  }));
-
-  const glowStyle = useAnimatedStyle(() => ({
-    opacity: glowOpacity.value,
-  }));
-
   const getColor = useCallback((): string => {
     switch (state) {
-      case 'no_account': return colors.muted;
-      case 'no_package': return colors.primary;
-      case 'connect': return colors.primary;
-      case 'connecting': return colors.connecting;
-      case 'connected': return colors.connected;
+      case 'no_account':    return colors.muted;
+      case 'no_package':   return colors.primary;
+      case 'connect':      return colors.primary;
+      case 'connecting':   return colors.connecting;
+      case 'connected':    return colors.connected;
       case 'disconnecting': return colors.connecting;
-      case 'expired': return colors.warning;
-      case 'suspended': return colors.destructive;
-      default: return colors.muted;
+      case 'expired':      return colors.warning;
+      case 'suspended':    return colors.destructive;
+      default:             return colors.muted;
     }
   }, [state, colors]);
 
   const getIcon = (): keyof typeof Ionicons.glyphMap => {
     switch (state) {
-      case 'no_account': return 'shield-outline';
-      case 'no_package': return 'add-circle-outline';
-      case 'connect': return 'shield';
-      case 'connecting': return 'shield';
-      case 'connected': return 'shield-checkmark';
+      case 'no_account':    return 'shield-outline';
+      case 'no_package':   return 'add-circle-outline';
+      case 'connect':      return 'shield';
+      case 'connecting':   return 'shield';
+      case 'connected':    return 'shield-checkmark';
       case 'disconnecting': return 'shield';
-      case 'expired': return 'refresh-circle-outline';
-      case 'suspended': return 'alert-circle-outline';
-      default: return 'shield-outline';
+      case 'expired':      return 'refresh-circle-outline';
+      case 'suspended':    return 'alert-circle-outline';
+      default:             return 'shield-outline';
     }
   };
 
   const getLabel = (): string => {
     switch (state) {
-      case 'no_account': return t('activate_account');
-      case 'no_package': return t('activate_plan');
-      case 'connect': return t('connect');
-      case 'connecting': return t('connecting');
-      case 'connected': return t('disconnect');
+      case 'no_account':    return t('activate_account');
+      case 'no_package':   return t('activate_plan');
+      case 'connect':      return t('connect');
+      case 'connecting':   return t('connecting');
+      case 'connected':    return t('disconnect');
       case 'disconnecting': return t('disconnecting');
-      case 'expired': return t('renew_plan');
-      case 'suspended': return t('contact_support');
-      default: return '';
+      case 'expired':      return t('renew_plan');
+      case 'suspended':    return t('contact_support');
+      default:             return '';
     }
   };
 
   const btnColor = getColor();
 
-  const handlePress = () => {
-    if (disabled) return;
-    buttonScale.value = withSequence(
-      withTiming(0.91, { duration: 90 }),
-      withTiming(1.03, { duration: 120 }),
-      withTiming(1, { duration: 100 }),
-    );
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    onPress();
-  };
-
   return (
     <View style={styles.wrapper}>
-      {/* Glow shadow */}
+      {/* Glow */}
       <Animated.View
         style={[
           styles.glow,
-          { width: BUTTON_SIZE + 60, height: BUTTON_SIZE + 60, borderRadius: (BUTTON_SIZE + 60) / 2, backgroundColor: btnColor },
-          glowStyle,
+          {
+            width: RING_SIZE + 40,
+            height: RING_SIZE + 40,
+            borderRadius: (RING_SIZE + 40) / 2,
+            backgroundColor: btnColor,
+            opacity: glowOpacity,
+          },
         ]}
       />
 
-      {/* Pulsing ring */}
+      {/* Pulse ring */}
       <Animated.View
         style={[
           styles.ring,
@@ -150,12 +135,13 @@ export default function SmartButton({ state, onPress, disabled = false }: SmartB
             height: RING_SIZE,
             borderRadius: RING_SIZE / 2,
             borderColor: btnColor,
+            transform: [{ scale: pulseScale }],
+            opacity: pulseOpacity,
           },
-          pulseStyle,
         ]}
       />
 
-      {/* Inner ring */}
+      {/* Inner static ring */}
       <View
         style={[
           styles.innerRing,
@@ -163,13 +149,29 @@ export default function SmartButton({ state, onPress, disabled = false }: SmartB
             width: BUTTON_SIZE + 16,
             height: BUTTON_SIZE + 16,
             borderRadius: (BUTTON_SIZE + 16) / 2,
-            borderColor: `${btnColor}55`,
+            borderColor: btnColor + '40',
           },
         ]}
       />
 
-      {/* Button */}
-      <Pressable onPress={handlePress} disabled={disabled || isAnimating}>
+      <Pressable
+        onPress={disabled ? undefined : onPress}
+        onPressIn={() => {
+          Animated.timing(buttonScale, {
+            toValue: 0.95,
+            duration: 100,
+            useNativeDriver: true,
+          }).start();
+          if (!disabled) Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+        }}
+        onPressOut={() => {
+          Animated.timing(buttonScale, {
+            toValue: 1,
+            duration: 100,
+            useNativeDriver: true,
+          }).start();
+        }}
+      >
         <Animated.View
           style={[
             styles.button,
@@ -178,9 +180,8 @@ export default function SmartButton({ state, onPress, disabled = false }: SmartB
               height: BUTTON_SIZE,
               borderRadius: BUTTON_SIZE / 2,
               backgroundColor: btnColor,
-              shadowColor: btnColor,
+              transform: [{ scale: buttonScale }],
             },
-            buttonPressStyle,
           ]}
         >
           {isAnimating ? (
@@ -205,7 +206,6 @@ const styles = StyleSheet.create({
   },
   glow: {
     position: 'absolute',
-    opacity: 0.12,
   },
   ring: {
     position: 'absolute',
