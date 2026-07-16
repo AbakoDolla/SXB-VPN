@@ -1,7 +1,6 @@
 import React, { useEffect } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { useFonts } from 'expo-font';
@@ -11,6 +10,7 @@ import { LanguageProvider } from '@/contexts/LanguageContext';
 import { ThemeProvider } from '@/contexts/ThemeContext';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { VpnProvider } from '@/contexts/VpnContext';
+import { ConfigProvider } from '@/contexts/ConfigContext';
 import { installCrashLogger } from '@/services/crashLogger';
 
 // Installé après les imports, avant tout provider, pour capturer
@@ -34,6 +34,10 @@ function RootLayoutNav() {
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen
         name="plan"
+        options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+      />
+      <Stack.Screen
+        name="import-config"
         options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
       />
       <Stack.Screen
@@ -83,11 +87,11 @@ export default function RootLayout() {
             <ThemeProvider>
               <AuthProvider>
                 <GestureHandlerRootView style={{ flex: 1 }}>
-                  <KeyboardProvider>
-                    <VpnProvider>
+                  <VpnProvider>
+                    <ConfigProvider>
                       <RootLayoutNav />
-                    </VpnProvider>
-                  </KeyboardProvider>
+                    </ConfigProvider>
+                  </VpnProvider>
                 </GestureHandlerRootView>
               </AuthProvider>
             </ThemeProvider>

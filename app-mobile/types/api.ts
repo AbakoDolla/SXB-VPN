@@ -42,7 +42,26 @@ export interface ActivatePlanResponse {
 }
 
 export interface VpnConfigResponse {
-  subscription: string;
+  subscription?: string;
+  subscriptionUrl?: string;
+  protocols?: VpnProtocolItem[];
+  serverInfo?: { host: string; location: string };
+}
+
+export interface VpnProtocolItem {
+  name: string;
+  port: number;
+  transport: string;
+  security: string;
+  description?: string;
+}
+
+export interface ImportConfigResponse {
+  subscriptionUrl?: string;
+  protocols?: VpnProtocolItem[];
+  serverInfo?: { host: string; location: string };
+  raw?: string;
+  message?: string;
 }
 
 export interface HistoryItem {

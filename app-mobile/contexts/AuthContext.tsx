@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient from '@/services/apiClient';
+import { clearStoredConfig } from '@/services/configService';
 import type { AccountState, User } from '@/types/api';
 
 const KEYS = {
@@ -61,14 +62,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setHasSeenOnboarding(!!onboardingDone);
 
       if (accessToken) {
+        // Charger les données en cache immédiatement (fonctionnement hors ligne)
         if (storedUser) {
           try {
             const parsed = JSON.parse(storedUser);
             setUser(parsed.user ?? null);
             setAccountState(parsed.accountState ?? null);
+            setIsAuthenticated(true); // Marquer comme authentifié dès qu'on a un token
           } catch (_) {}
+        } else {
+          // Token présent mais pas de données en cache — quand même authentifié
+          setIsAuthenticated(true);
         }
-        await validateSession();
+
+        // Tenter de synchroniser avec le serveur (best-effort, non bloquant)
+        validateSession().catch(() => {});
       }
     } catch (_) {
       // ignore
@@ -87,13 +95,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await AsyncStorage.setItem(KEYS.USER, JSON.stringify({ user: u, accountState: as }));
     } catch (err: any) {
       if (err?.response?.status === 401) {
-        const stillHasToken = await AsyncStorage.getItem(KEYS.ACCESS);
-        if (!stillHasToken) {
-          setIsAuthenticated(false);
-          setUser(null);
-          setAccountState(null);
-        }
+        // Token explicitement rejeté par le serveur → déconnecter
+        await AsyncStorage.multiRemove([KEYS.ACCESS, KEYS.REFRESH, KEYS.USER]);
+        setIsAuthenticated(false);
+        setUser(null);
+        setAccountState(null);
       }
+      // Pour toute autre erreur (réseau, timeout, etc.) : garder l'état en cache
     }
   };
 
@@ -126,11 +134,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(u);
       setAccountState(as);
       await AsyncStorage.setItem(KEYS.USER, JSON.stringify({ user: u, accountState: as }));
-    } catch (_) {}
+    } catch (_) {
+      // Silencieux : garder les données en cache
+    }
   }, []);
 
   const logout = useCallback(async () => {
     await AsyncStorage.multiRemove([KEYS.ACCESS, KEYS.REFRESH, KEYS.USER]);
+    // Effacer aussi la configuration VPN sécurisée
+    await clearStoredConfig().catch(() => {});
     setUser(null);
     setAccountState(null);
     setIsAuthenticated(false);

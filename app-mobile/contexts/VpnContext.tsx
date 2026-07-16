@@ -45,6 +45,19 @@ const VpnContext = createContext<VpnContextType>({
   refreshVpnConfig: async () => {},
 });
 
+// Protocoles de secours utilisés hors ligne ou si le serveur ne répond pas
+const FALLBACK_PROTOCOLS: VpnProtocol[] = [
+  { name: 'VLESS',       port: 443,  transport: 'TCP',  security: 'Reality',     description: 'Recommandé' },
+  { name: 'VMess',       port: 80,   transport: 'WS',   security: 'None',        description: 'Compatible' },
+  { name: 'Trojan',      port: 443,  transport: 'TCP',  security: 'TLS',         description: 'Stable' },
+  { name: 'Shadowsocks', port: 8388, transport: 'TCP',  security: 'ChaCha20',    description: 'Léger' },
+  { name: 'Hysteria2',   port: 443,  transport: 'QUIC', security: 'TLS',         description: 'Rapide' },
+  { name: 'SSH',         port: 22,   transport: 'TCP',  security: 'SSH',         description: 'Sécurisé' },
+  { name: 'SSH+Payload', port: 80,   transport: 'TCP',  security: 'SSH+Payload', description: 'Bypass DPI' },
+];
+
+const CACHE_KEY = '@sxb_vpn_config_cache';
+
 // ── Provider ─────────────────────────────────────────────────────────────────
 
 export function VpnProvider({ children }: { children: React.ReactNode }) {
@@ -53,7 +66,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const [isConnected, setIsConnected]     = useState(false);
   const [isConnecting, setIsConnecting]   = useState(false);
   const [selectedProtocol, setSelectedProtocol] = useState<string | null>(null);
-  const [availableProtocols, setAvailableProtocols] = useState<VpnProtocol[]>([]);
+  const [availableProtocols, setAvailableProtocols] = useState<VpnProtocol[]>(FALLBACK_PROTOCOLS);
   const [subscriptionUrl, setSubscriptionUrl] = useState<string | null>(null);
   const [serverInfo, setServerInfo] = useState<{ host: string; location: string } | null>(null);
 
@@ -61,12 +74,28 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const restore = async () => {
-      const [connected, protocol] = await Promise.all([
+      const [connected, protocol, cache] = await Promise.all([
         AsyncStorage.getItem('@sxb_vpn_connected'),
         AsyncStorage.getItem('@sxb_vpn_protocol'),
+        AsyncStorage.getItem(CACHE_KEY),
       ]);
       setIsConnected(connected === 'true' && !!isAuthenticated);
       if (protocol) setSelectedProtocol(protocol);
+
+      // Charger la config en cache immédiatement (offline first)
+      if (cache) {
+        try {
+          const cached = JSON.parse(cache);
+          if (cached.subscriptionUrl) setSubscriptionUrl(cached.subscriptionUrl);
+          if (cached.serverInfo) setServerInfo(cached.serverInfo);
+          if (Array.isArray(cached.protocols) && cached.protocols.length > 0) {
+            setAvailableProtocols(cached.protocols);
+            if (!protocol && cached.protocols[0]) {
+              setSelectedProtocol(cached.protocols[0].name);
+            }
+          }
+        } catch (_) {}
+      }
     };
     restore();
   }, [isAuthenticated]);
@@ -84,35 +113,31 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
       if (Array.isArray(data.protocols) && data.protocols.length > 0) {
         setAvailableProtocols(data.protocols);
-        // Auto-select first if none selected
         const saved = await AsyncStorage.getItem('@sxb_vpn_protocol');
         if (!saved && data.protocols[0]) {
           setSelectedProtocol(data.protocols[0].name);
           await AsyncStorage.setItem('@sxb_vpn_protocol', data.protocols[0].name);
         }
       } else {
-        // Fallback: show all supported protocols
-        setAvailableProtocols([
-          { name: 'VLESS',       port: 443,  transport: 'TCP',  security: 'Reality',     description: 'Recommandé' },
-          { name: 'VMess',       port: 80,   transport: 'WS',   security: 'None',        description: 'Compatible' },
-          { name: 'Trojan',      port: 443,  transport: 'TCP',  security: 'TLS',         description: 'Stable' },
-          { name: 'Shadowsocks', port: 8388, transport: 'TCP',  security: 'ChaCha20',    description: 'Léger' },
-          { name: 'Hysteria2',   port: 443,  transport: 'QUIC', security: 'TLS',         description: 'Rapide' },
-          { name: 'SSH',         port: 22,   transport: 'TCP',  security: 'SSH',         description: 'Sécurisé' },
-          { name: 'SSH+Payload', port: 80,   transport: 'TCP',  security: 'SSH+Payload', description: 'Bypass' },
-        ]);
+        // Si le serveur retourne une config vide, garder les protocoles existants
+        if (availableProtocols.length === 0) {
+          setAvailableProtocols(FALLBACK_PROTOCOLS);
+        }
       }
+
+      // Mettre à jour le cache
+      await AsyncStorage.setItem(CACHE_KEY, JSON.stringify({
+        subscriptionUrl: data.subscriptionUrl ?? subscriptionUrl,
+        serverInfo: data.serverInfo ?? serverInfo,
+        protocols: (Array.isArray(data.protocols) && data.protocols.length > 0)
+          ? data.protocols
+          : availableProtocols,
+      }));
     } catch (_) {
-      // Keep fallback protocols on error
-      setAvailableProtocols([
-        { name: 'VLESS',       port: 443,  transport: 'TCP',  security: 'Reality',  description: 'Recommandé' },
-        { name: 'VMess',       port: 80,   transport: 'WS',   security: 'None',     description: 'Compatible' },
-        { name: 'Trojan',      port: 443,  transport: 'TCP',  security: 'TLS',      description: 'Stable' },
-        { name: 'Shadowsocks', port: 8388, transport: 'TCP',  security: 'ChaCha20', description: 'Léger' },
-        { name: 'Hysteria2',   port: 443,  transport: 'QUIC', security: 'TLS',      description: 'Rapide' },
-        { name: 'SSH',         port: 22,   transport: 'TCP',  security: 'SSH',      description: 'Sécurisé' },
-        { name: 'SSH+Payload', port: 80,   transport: 'TCP',  security: 'Bypass',   description: 'Bypass DPI' },
-      ]);
+      // Hors ligne ou erreur serveur → garder les données en cache/fallback
+      if (availableProtocols.length === 0) {
+        setAvailableProtocols(FALLBACK_PROTOCOLS);
+      }
     }
   }, [isAuthenticated]);
 
@@ -135,6 +160,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       await AsyncStorage.setItem('@sxb_vpn_connected', 'true');
       refreshAccountState().catch(() => {});
     } catch (_) {
+      // Même si le serveur ne répond pas, marquer comme connecté côté UI
       setIsConnected(true);
       await AsyncStorage.setItem('@sxb_vpn_connected', 'true');
     } finally {
@@ -159,7 +185,6 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const selectProtocol = useCallback(async (name: string) => {
     setSelectedProtocol(name);
     await AsyncStorage.setItem('@sxb_vpn_protocol', name);
-    // Reconnect if currently connected
     if (isConnected) {
       await disconnect();
       setTimeout(() => connect(), 500);

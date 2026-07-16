@@ -8,6 +8,7 @@ import * as Haptics from 'expo-haptics';
 import { useColors } from '@/hooks/useColors';
 import { useAuthContext } from '@/contexts/AuthContext';
 import { useVpnContext } from '@/contexts/VpnContext';
+import { useConfigContext } from '@/contexts/ConfigContext';
 import { useTranslation } from '@/localization';
 
 function InfoRow({ icon, label, value, accent }: { icon: keyof typeof Ionicons.glyphMap; label: string; value: string; accent?: boolean }) {
@@ -32,6 +33,7 @@ export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const { user, accountState, logout } = useAuthContext();
   const { disconnect } = useVpnContext();
+  const { hasConfig, configTokenRef } = useConfigContext();
   const { t } = useTranslation();
   const version = Constants.expoConfig?.version ?? '1.0.0';
 
@@ -185,6 +187,20 @@ export default function ProfileScreen() {
           <Ionicons name="add-circle-outline" size={20} color={colors.connected} />
           <Text style={[styles.actionText, { color: colors.connected }]}>{t('activate_plan')}</Text>
           <Ionicons name="chevron-forward" size={16} color={colors.connected} />
+        </Pressable>
+
+        <Pressable
+          onPress={() => router.push('/import-config')}
+          style={[styles.actionBtn, { backgroundColor: `${colors.info}11`, borderColor: `${colors.info}33` }]}
+        >
+          <Ionicons name="download-outline" size={20} color={colors.info} />
+          <Text style={[styles.actionText, { color: colors.info }]}>
+            {hasConfig ? t('config_imported') : t('import_config_action')}
+          </Text>
+          {hasConfig && configTokenRef ? (
+            <Text style={{ fontSize: 11, color: colors.mutedForeground }}>{configTokenRef}</Text>
+          ) : null}
+          <Ionicons name="chevron-forward" size={16} color={colors.mutedForeground} />
         </Pressable>
 
         <Pressable

@@ -71,6 +71,18 @@ export const fr = {
   plan_success: 'Forfait activé avec succès !',
   quota_added: 'Quota ajouté',
 
+  // Import Config
+  import_config_title: 'Importer une configuration',
+  import_config_desc: 'Entrez votre Token de configuration SXB pour importer les paramètres VPN de votre abonnement.',
+  token_config_placeholder: 'SXB-CFG-XXXX-XXXX-XXXX',
+  import_config_btn: 'Importer la configuration',
+  import_config_success: 'Configuration importée et sécurisée !',
+  import_config_security_note: 'La configuration est chiffrée localement. Personne ne peut y accéder sans votre token d\'activation.',
+  import_config_action: 'Importer une config',
+  config_imported: 'Config importée',
+  config_imported_at: 'Importée le',
+  config_token_ref: 'Token utilisé',
+
   // Navigation
   home: 'Accueil',
 
@@ -154,6 +166,8 @@ export const fr = {
   error_server: 'Erreur serveur. Réessayez dans quelques instants.',
   error_generic: 'Une erreur s\'est produite. Réessayez.',
   error_quota_empty: 'Quota insuffisant.',
+  error_invalid_config_token: 'Token de configuration invalide. Vérifiez et réessayez.',
+  error_config_forbidden: 'Ce token de configuration n\'est pas autorisé pour votre compte.',
   retry: 'Réessayer',
   back: 'Retour',
 
