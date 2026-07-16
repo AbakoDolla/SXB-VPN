@@ -48,16 +48,19 @@ jobs:
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
         run: npm install --legacy-peer-deps
 
-      # Cache Gradle pour éviter de re-télécharger les dépendances Android
-      - name: Cache Gradle packages
+      # Cache UNIQUEMENT les dépendances Gradle téléchargées (modules + wrapper)
+      # NE PAS cacher ~/.gradle/caches/build-cache-* : le build cache Gradle
+      # réutiliserait l'ancien bundle JS même après un changement de source TS,
+      # car expo prebuild --clean regénère android/ identique à chaque fois.
+      - name: Cache Gradle dependencies
         uses: actions/cache@v4
         with:
           path: |
-            ~/.gradle/caches
+            ~/.gradle/caches/modules-2
             ~/.gradle/wrapper
-          key: gradle-${{ hashFiles('app-mobile/android/gradle/wrapper/gradle-wrapper.properties', 'app-mobile/android/build.gradle', 'app-mobile/android/app/build.gradle') }}
+          key: gradle-deps-${{ hashFiles('app-mobile/package.json') }}
           restore-keys: |
-            gradle-
+            gradle-deps-
 
       - name: Generate native Android project (Expo prebuild)
         run: npx expo prebuild --platform android --clean --no-install
@@ -73,7 +76,7 @@ jobs:
           org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=512m -XX:+HeapDumpOnOutOfMemoryError
           org.gradle.daemon=false
           org.gradle.parallel=true
-          org.gradle.caching=true
+          org.gradle.caching=false
           org.gradle.configuration-cache=false
           android.useAndroidX=true
           EOF
@@ -83,7 +86,7 @@ jobs:
         run: |
           ./gradlew :app:assembleRelease \
             --no-daemon \
-            --build-cache \
+            --no-build-cache \
             --stacktrace
         env:
           NODE_ENV: production
