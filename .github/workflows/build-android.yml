@@ -4,8 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - 'app-mobile/**'
-      - '.github/workflows/build-android.yml'
+      - "app-mobile/**"
+      - ".github/workflows/build-android.yml"
   workflow_dispatch:
 
 jobs:
@@ -23,18 +23,25 @@ jobs:
       - name: Setup Node.js 20
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          # Pas de cache npm : app-mobile n'a pas de package-lock.json committé
-          # (cache-dependency-path sur un fichier inexistant fait échouer cette étape)
+          node-version: "20"
 
       - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
       - name: Install dependencies
         run: npm install --legacy-peer-deps
+
+      - name: Ensure react-native-worklets-core is installed
+        run: |
+          if [ ! -d "node_modules/react-native-worklets-core" ]; then
+            echo "Installing react-native-worklets-core..."
+            npm install react-native-worklets-core --legacy-peer-deps
+          else
+            echo "react-native-worklets-core already installed"
+          fi
 
       - name: Generate native Android project (Expo prebuild)
         run: npx expo prebuild --platform android --clean --no-install
@@ -44,23 +51,30 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
-      - name: Build APK (release, debug-signed for direct install)
-        working-directory: app-mobile/android
-        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
+      - name: Tune Gradle properties
+        run: |
+          echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=512m" >> android/gradle.properties
+          echo "org.gradle.daemon=false" >> android/gradle.properties
 
-      - name: Locate built APK
+      - name: Build APK (debug — aucun keystore requis)
+        working-directory: app-mobile/android
+        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+        env:
+          PATH: /usr/local/bin:/usr/bin:/bin
+
+      - name: Locate and copy APK
         working-directory: app-mobile
         run: |
           mkdir -p build
-          APK_PATH=$(find android/app/build/outputs/apk -name "*.apk" | head -n 1)
-          if [ -z "$APK_PATH" ]; then
-            echo "::error::No APK found in build outputs"
-            find android/app/build/outputs -type f
+          APK=$(find android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          if [ -z "$APK" ]; then
+            echo "::error::Aucun APK trouvé"
+            find android/app/build/outputs -type f 2>/dev/null || true
             exit 1
           fi
-          cp "$APK_PATH" build/sxb-vpn.apk
-          echo "APK copied: $APK_PATH -> build/sxb-vpn.apk"
-          ls -la build/
+          cp "$APK" build/sxb-vpn.apk
+          echo "APK prêt : $APK"
+          ls -lh build/sxb-vpn.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -70,21 +84,22 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Create GitHub Release (on main push)
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      - name: Create GitHub Release
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: apk-${{ github.run_number }}
-          name: SXB VPN APK build #${{ github.run_number }}
+          name: "SXB VPN APK #${{ github.run_number }}"
           body: |
-            ## SXB VPN Android APK
+            ## SXB VPN — APK Android
+
             Build automatique depuis le commit `${{ github.sha }}`
 
-            ### Installation
-            1. Télécharger le fichier `.apk`
-            2. Activer "Sources inconnues" sur Android
-            3. Installer l'APK
-            4. Activer avec ton code `SXB-USER-XXXX`
+            ### Comment installer
+            1. Télécharger `sxb-vpn.apk` ci-dessous
+            2. Android : Paramètres → Sécurité → autoriser les sources inconnues
+            3. Ouvrir l'APK et installer
+            4. Se connecter avec ton code `SXB-USER-XXXX`
           files: app-mobile/build/sxb-vpn.apk
           draft: false
         env:
