@@ -23,31 +23,36 @@ const IMPORTS_TO_ADD = [
   'import java.util.Locale',
 ];
 
-const HANDLER_CODE = `
-    // ── Crash logger natif (injecté par withCrashLogger config plugin) ──
-    val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
-    Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
-      try {
-        val sw = StringWriter()
-        throwable.printStackTrace(PrintWriter(sw))
-        val timestamp = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(Date())
-        val dir = getExternalFilesDir(null)
-        if (dir != null) {
-          if (!dir.exists()) dir.mkdirs()
-          val file = File(dir, "crash_" + timestamp + ".txt")
-          FileWriter(file).use { writer ->
-            writer.write("=== SXB VPN CRASH LOG ===\n")
-            writer.write("Time: " + timestamp + "\n")
-            writer.write("Thread: " + thread.name + "\n\n")
-            writer.write(sw.toString())
-          }
-        }
-      } catch (e: Exception) {
-        // Ne jamais laisser le logger lui-même planter
-      }
-      defaultHandler?.uncaughtException(thread, throwable)
-    }
-`;
+// IMPORTANT: use \\n (escaped backslash-n) so that the generated Kotlin code
+// contains the literal two-char sequence \n, not a real newline inside a
+// Kotlin string literal (which is a syntax error in Kotlin).
+const HANDLER_CODE = [
+  '',
+  '    // Crash logger natif (injecte par withCrashLogger config plugin)',
+  '    val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()',
+  '    Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->',
+  '      try {',
+  '        val sw = StringWriter()',
+  '        throwable.printStackTrace(PrintWriter(sw))',
+  '        val timestamp = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(Date())',
+  '        val dir = getExternalFilesDir(null)',
+  '        if (dir != null) {',
+  '          if (!dir.exists()) dir.mkdirs()',
+  '          val file = File(dir, "crash_" + timestamp + ".txt")',
+  '          FileWriter(file).use { writer ->',
+  '            writer.write("=== SXB VPN CRASH LOG ===\\n")',
+  '            writer.write("Time: " + timestamp + "\\n")',
+  '            writer.write("Thread: " + thread.name + "\\n\\n")',
+  '            writer.write(sw.toString())',
+  '          }',
+  '        }',
+  '      } catch (e: Exception) {',
+  '        // Ne jamais laisser le logger lui-meme planter',
+  '      }',
+  '      defaultHandler?.uncaughtException(thread, throwable)',
+  '    }',
+  '',
+].join('\n');
 
 module.exports = function withCrashLogger(config) {
   return withMainApplication(config, (config) => {

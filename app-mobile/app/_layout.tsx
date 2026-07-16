@@ -1,9 +1,4 @@
 import React, { useEffect } from 'react';
-import { installCrashLogger } from '@/services/crashLogger';
-
-// Installé en tout premier, avant tout autre import/provider, pour
-// capturer les crashs le plus tôt possible dans le cycle de vie.
-installCrashLogger();
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
@@ -16,6 +11,11 @@ import { LanguageProvider } from '@/contexts/LanguageContext';
 import { ThemeProvider } from '@/contexts/ThemeContext';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { VpnProvider } from '@/contexts/VpnContext';
+import { installCrashLogger } from '@/services/crashLogger';
+
+// Installé après les imports, avant tout provider, pour capturer
+// les crashs JS le plus tôt possible dans le cycle de vie.
+installCrashLogger();
 
 SplashScreen.preventAutoHideAsync();
 

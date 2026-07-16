@@ -39,8 +39,7 @@
       "./plugins/withCrashLogger.js"
     ],
     "experiments": {
-      "typedRoutes": true,
-      "reactCompiler": true
+      "typedRoutes": true
     }
   }
 }
