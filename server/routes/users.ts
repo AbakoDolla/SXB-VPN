@@ -1,4 +1,7 @@
 import { Router, Response } from "express";
+import multer from "multer";
+import path from "path";
+import fs from "fs";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
@@ -69,6 +72,89 @@ router.get("/", requireAuth, requirePermission("users.view"), async (req: Authen
 });
 
 // GET /api/users/:id
+// ─── ROUTES PROFIL UTILISATEUR ───────────────────────────────────────────────
+
+// Setup Multer pour avatars
+const UPLOAD_DIR = path.join(process.cwd(), "public", "uploads", "avatars");
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+const avatarStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname) || '.jpg';
+    cb(null, "avatar_" + Date.now() + (path.extname(file.originalname) || ".jpg"));
+  },
+});
+const avatarUpload = multer({
+  storage: avatarStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('Seules les images sont acceptées'));
+  },
+});
+
+// GET /api/users/me — profil utilisateur courant
+router.get("/me", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (!prisma) return res.status(503).json({ error: "DB_UNAVAILABLE" });
+    const user = await prisma.user.findUnique({
+      where: { id: req.user!.userId },
+      include: { role: true },
+    });
+    if (!user) return res.status(404).json({ error: "errors.users.not_found" });
+    const { passwordHash, ...safe } = user as any;
+    return res.json(safe);
+  } catch (err) {
+    console.error("GET /me error:", err);
+    return res.status(500).json({ error: "errors.server" });
+  }
+});
+
+// PATCH /api/users/me — mise à jour profil
+router.patch("/me", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (!prisma) return res.status(503).json({ error: "DB_UNAVAILABLE" });
+    const { name, phone, password } = req.body;
+    const data: any = {};
+    if (name && typeof name === 'string') data.name = name;
+    if (phone !== undefined) data.phone = phone || null;
+    if (password && typeof password === 'string' && password.length >= 6) {
+      data.passwordHash = bcrypt.hashSync(password, 10);
+    }
+    const updated = await prisma.user.update({
+      where: { id: req.user!.userId },
+      data,
+      include: { role: true },
+    });
+    const { passwordHash, ...safe } = updated as any;
+    return res.json(safe);
+  } catch (err) {
+    console.error("PATCH /me error:", err);
+    return res.status(500).json({ error: "errors.server" });
+  }
+});
+
+// POST /api/users/me/avatar — upload photo profil
+router.post("/me/avatar", requireAuth, avatarUpload.single("avatar"), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "NO_FILE", message: "Aucun fichier reçu" });
+    if (!prisma) return res.status(503).json({ error: "DB_UNAVAILABLE" });
+    const avatarUrl = "/uploads/avatars/" + req.file.filename;
+    const updated = await prisma.user.update({
+      where: { id: req.user!.userId },
+      data: { avatarUrl },
+      include: { role: true },
+    });
+    const { passwordHash, ...safe } = updated as any;
+    return res.json({ success: true, avatarUrl, user: safe });
+  } catch (err) {
+    console.error("POST /me/avatar error:", err);
+    return res.status(500).json({ error: "errors.server" });
+  }
+});
+
+
 router.get("/:id", requireAuth, requirePermission("users.view"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
@@ -235,5 +321,6 @@ router.delete("/:id", requireAuth, requirePermission("users.delete"), async (req
     return res.status(500).json({ error: "errors.server", message: "Failed to delete user" });
   }
 });
+
 
 export default router;

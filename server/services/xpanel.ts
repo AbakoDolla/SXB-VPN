@@ -107,7 +107,7 @@ export class XPanelService {
   // Create a real user inside external XPanel API
   static async createUser(username: string, quotaTotalBytes: bigint, expireAt: Date, deviceLimit: number = 1): Promise<XPanelUser> {
     console.log(`📡 Provisioning user '${username}' on XPanel Engine...`);
-    console.log(`   Target URL: ${this.baseUrl}/api/v1/subscribers`);
+    console.log(`   Target URL: ${this.baseUrl}/api/subscribers`);
 
     if (!this.isConfigured()) {
       throw new Error("X-Panel not configured. Cannot create users.");
@@ -119,7 +119,7 @@ export class XPanelService {
       const timeout = setTimeout(() => controller.abort(), 15000);
 
       // Create subscriber in X-Panel
-      const response = await fetch(`${this.baseUrl}/api/v1/subscribers`, {
+      const response = await fetch(`${this.baseUrl}/api/subscribers`, {
         method: "POST",
         headers,
         body: JSON.stringify({
@@ -168,7 +168,7 @@ export class XPanelService {
     console.log(`📡 Deprovisioning user '${xpanelUserId}' from XPanel Engine...`);
     try {
       const headers = await this.getHeaders();
-      const response = await fetch(`${this.baseUrl}/api/v1/subscribers/${xpanelUserId}`, {
+      const response = await fetch(`${this.baseUrl}/api/subscribers/${xpanelUserId}`, {
         method: "DELETE",
         headers,
       });
@@ -189,7 +189,7 @@ export class XPanelService {
 
     try {
       const headers = await this.getHeaders();
-      const response = await fetch(`${this.baseUrl}/api/v1/subscribers/${xpanelUserId}`, {
+      const response = await fetch(`${this.baseUrl}/api/subscribers/${xpanelUserId}`, {
         method: "GET",
         headers,
       });
@@ -211,7 +211,7 @@ export class XPanelService {
 
     try {
       const headers = await this.getHeaders();
-      const response = await fetch(`${this.baseUrl}/api/v1/subscribers`, {
+      const response = await fetch(`${this.baseUrl}/api/subscribers`, {
         method: "GET",
         headers,
       });
@@ -247,7 +247,7 @@ export class XPanelService {
     try {
       const headers = await this.getHeaders();
       // Try to get inbounds (VPN configs)
-      const response = await fetch(`${this.baseUrl}/api/v1/inbounds`, {
+      const response = await fetch(`${this.baseUrl}/api/inbounds`, {
         method: "GET",
         headers,
       });
@@ -271,7 +271,7 @@ export class XPanelService {
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 10000);
-      const response = await fetch(`${this.baseUrl}/api/v1/sub/${xpanelUserId}`, {
+      const response = await fetch(`${this.baseUrl}/api/sub/${xpanelUserId}`, {
         method: "GET",
         signal: controller.signal,
       });
@@ -316,7 +316,7 @@ export class XPanelService {
 
     try {
       const headers = await this.getHeaders();
-      const response = await fetch(`${this.baseUrl}/api/v1/inbounds`, {
+      const response = await fetch(`${this.baseUrl}/api/inbounds`, {
         method: "POST",
         headers,
         body: JSON.stringify({
@@ -354,7 +354,7 @@ export class XPanelService {
 
     try {
       const headers = await this.getHeaders();
-      const response = await fetch(`${this.baseUrl}/api/v1/inbounds/${configId}`, {
+      const response = await fetch(`${this.baseUrl}/api/inbounds/${configId}`, {
         method: "DELETE",
         headers,
       });
