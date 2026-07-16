@@ -75,7 +75,6 @@ jobs:
           org.gradle.parallel=true
           org.gradle.caching=true
           org.gradle.configuration-cache=false
-          android.enableBuildCache=true
           android.useAndroidX=true
           EOF
 
