@@ -35,7 +35,8 @@
         }
       ],
       "expo-font",
-      "expo-web-browser"
+      "expo-web-browser",
+      "./plugins/withCrashLogger.js"
     ],
     "experiments": {
       "typedRoutes": true,
