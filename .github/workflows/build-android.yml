@@ -34,8 +34,30 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # Cache node_modules pour éviter de re-télécharger les dépendances à chaque build
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        id: cache-node-modules
+        with:
+          path: app-mobile/node_modules
+          key: node-modules-${{ hashFiles('app-mobile/package.json') }}
+          restore-keys: |
+            node-modules-
+
       - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
         run: npm install --legacy-peer-deps
+
+      # Cache Gradle pour éviter de re-télécharger les dépendances Android
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('app-mobile/android/gradle/wrapper/gradle-wrapper.properties', 'app-mobile/android/build.gradle', 'app-mobile/android/app/build.gradle') }}
+          restore-keys: |
+            gradle-
 
       - name: Generate native Android project (Expo prebuild)
         run: npx expo prebuild --platform android --clean --no-install
@@ -47,16 +69,25 @@ jobs:
 
       - name: Tune Gradle properties
         run: |
-          echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=512m" >> android/gradle.properties
-          echo "org.gradle.daemon=false" >> android/gradle.properties
+          cat >> android/gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=512m -XX:+HeapDumpOnOutOfMemoryError
+          org.gradle.daemon=false
+          org.gradle.parallel=true
+          org.gradle.caching=true
+          org.gradle.configuration-cache=false
+          android.enableBuildCache=true
+          android.useAndroidX=true
+          EOF
 
       - name: Build APK (release, JS bundle embedded)
         working-directory: app-mobile/android
         run: |
-          ./gradlew :app:assembleRelease --no-daemon --stacktrace
+          ./gradlew :app:assembleRelease \
+            --no-daemon \
+            --build-cache \
+            --stacktrace
         env:
           NODE_ENV: production
-          PATH: /usr/local/bin:/usr/bin:/bin
 
       - name: Locate and copy APK
         working-directory: app-mobile
