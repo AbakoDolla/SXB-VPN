@@ -2,78 +2,75 @@
  * secureConfig.ts
  *
  * Stockage chiffré des configurations VPN importées.
- * Utilise XOR-256 avec une clé dérivée par SHA-256 (via expo-crypto).
+ * Utilise la Web Crypto API (AES-GCM 256-bit) disponible nativement
+ * dans React Native 0.71+ avec Hermes — aucune dépendance native ajoutée.
  *
- * Structure en clair visible dans AsyncStorage :
+ * Structure stockée dans AsyncStorage (en clair pour montrer l'easter egg,
+ * données chiffrées inutilisables sans la clé) :
  * {
- *   "hint": "TU AS VRAIMENT CRU ...",   ← Easter egg visible en clair
- *   "iv": "<hex>",                       ← vecteur d'initialisation
- *   "data": "<base64_encrypted>"         ← données chiffrées
+ *   "hint": "TU AS VRAIMENT CRU ...",
+ *   "salt": "<base64>",
+ *   "iv":   "<base64>",
+ *   "data": "<base64_AES-GCM>"
  * }
- *
- * Sans le token source (clé de dérivation), le champ "data" est illisible.
  */
 
-import * as ExpoCrypto from 'expo-crypto';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // ─── Easter egg ────────────────────────────────────────────────────────────────
 const EASTER_EGG =
-  "TU AS VRAIMENT CRU QUE TU POUVAIS CRAQUER OU DÉCRYPTER MON APP ?" +
-  "LAISSE MOI RIRE 😂 — SXB VPN — Toute tentative de reverse-engineering " +
-  "est contraire aux CGU. Les données chiffrées ci-dessous sont inutilisables sans le token.";
+  'TU AS VRAIMENT CRU QUE TU POUVAIS CRAQUER OU DÉCRYPTER MON APP ?' +
+  'LAISSE MOI RIRE 😂 — SXB VPN — ' +
+  'Toute tentative de reverse-engineering est contraire aux CGU. ' +
+  'Les données chiffrées ci-dessous sont inutilisables sans votre token personnel.';
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 const STORAGE_KEY = '@sxb_secure_config_v2';
-const PEPPER = 'SXB-VPN-SECURE-PEPPER-v2-2024';
+const PEPPER = 'SXB-VPN-AES-GCM-PEPPER-v2-2024';
+const PBKDF2_ITERATIONS = 100_000;
 
-// ─── Key derivation ─────────────────────────────────────────────────────────────
+// ─── Helpers ────────────────────────────────────────────────────────────────────
 
-async function deriveKey(token: string, ivHex: string): Promise<Uint8Array> {
-  const hex = await ExpoCrypto.digestStringAsync(
-    ExpoCrypto.CryptoDigestAlgorithm.SHA256,
-    token + PEPPER + ivHex,
-    { encoding: ExpoCrypto.CryptoEncoding.HEX }
+function buf2b64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
+function b642buf(b64: string): ArrayBuffer {
+  const bin = atob(b64);
+  const buf = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+  return buf.buffer;
+}
+
+// ─── Key derivation via PBKDF2 ─────────────────────────────────────────────────
+
+async function deriveKey(token: string, salt: ArrayBuffer): Promise<CryptoKey> {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(token + PEPPER),
+    'PBKDF2',
+    false,
+    ['deriveKey'],
   );
-  const bytes = new Uint8Array(32);
-  for (let i = 0; i < 32; i++) {
-    bytes[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
-  }
-  return bytes;
+  return crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt,
+      iterations: PBKDF2_ITERATIONS,
+      hash: 'SHA-256',
+    },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
 }
 
-// ─── XOR cipher ─────────────────────────────────────────────────────────────────
-
-function xorBytes(input: Uint8Array, key: Uint8Array): Uint8Array {
-  const out = new Uint8Array(input.length);
-  for (let i = 0; i < input.length; i++) {
-    out[i] = input[i] ^ key[i % key.length];
-  }
-  return out;
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-}
-
-function base64ToBytes(b64: string): Uint8Array {
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
-}
-
-function hexToString(hex: string): string {
-  return hex.substring(0, 16); // Use first 16 chars as IV string
-}
-
-// ─── Public API ─────────────────────────────────────────────────────────────────
+// ─── Types ─────────────────────────────────────────────────────────────────────
 
 export interface SecureConfigPayload {
   subscriptionUrl?: string;
@@ -86,42 +83,43 @@ export interface SecureConfigPayload {
   }>;
   serverInfo?: { host: string; location: string };
   importedAt?: string;
-  raw?: string; // Raw config string for clipboard/share
+  raw?: string;
   [key: string]: unknown;
 }
 
+// ─── Public API ─────────────────────────────────────────────────────────────────
+
 /**
- * Chiffre et stocke la configuration VPN.
- * @param token  - Token utilisateur (sert de base à la clé de chiffrement)
- * @param config - Données de configuration à protéger
+ * Chiffre et stocke la configuration VPN avec AES-GCM 256-bit.
  */
 export async function saveSecureConfig(
   token: string,
   config: SecureConfigPayload,
 ): Promise<void> {
-  // Génère un IV aléatoire unique pour ce stockage
-  const ivBytes = await ExpoCrypto.getRandomBytesAsync(16);
-  const ivHex = Array.from(ivBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+  const salt = crypto.getRandomValues(new Uint8Array(16)).buffer;
+  const iv   = crypto.getRandomValues(new Uint8Array(12)).buffer;
 
-  const key = await deriveKey(token, ivHex);
-  const plaintext = JSON.stringify(config);
-
-  const encoder = new TextEncoder();
-  const encrypted = xorBytes(encoder.encode(plaintext), key);
+  const key = await deriveKey(token, salt);
+  const enc = new TextEncoder();
+  const encrypted = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    enc.encode(JSON.stringify(config)),
+  );
 
   const envelope = JSON.stringify({
     hint: EASTER_EGG,
-    iv: ivHex,
-    data: bytesToBase64(encrypted),
+    salt: buf2b64(salt),
+    iv:   buf2b64(iv),
+    data: buf2b64(encrypted),
   });
 
   await AsyncStorage.setItem(STORAGE_KEY, envelope);
 }
 
 /**
- * Déchiffre et retourne la configuration VPN stockée.
- * @param token - Token utilisateur (même que celui utilisé pour chiffrer)
- * @returns La configuration, ou null si absente ou token invalide
+ * Déchiffre et retourne la configuration VPN.
+ * Retourne null si absente ou si le token est invalide.
  */
 export async function loadSecureConfig(
   token: string,
@@ -130,26 +128,29 @@ export async function loadSecureConfig(
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
 
-    const envelope = JSON.parse(raw) as {
+    const { salt, iv, data } = JSON.parse(raw) as {
       hint?: string;
+      salt: string;
       iv: string;
       data: string;
     };
 
-    const key = await deriveKey(token, envelope.iv);
-    const encrypted = base64ToBytes(envelope.data);
-    const decrypted = xorBytes(encrypted, key);
+    const key = await deriveKey(token, b642buf(salt));
+    const decrypted = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: b642buf(iv) },
+      key,
+      b642buf(data),
+    );
 
-    const decoder = new TextDecoder();
-    const plaintext = decoder.decode(decrypted);
-    return JSON.parse(plaintext) as SecureConfigPayload;
+    const dec = new TextDecoder();
+    return JSON.parse(dec.decode(decrypted)) as SecureConfigPayload;
   } catch {
     return null;
   }
 }
 
 /**
- * Supprime la configuration stockée (ex : lors du logout).
+ * Supprime la configuration stockée (ex : logout).
  */
 export async function clearSecureConfig(): Promise<void> {
   await AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
