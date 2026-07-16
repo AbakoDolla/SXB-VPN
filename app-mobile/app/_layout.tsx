@@ -1,4 +1,9 @@
 import React, { useEffect } from 'react';
+import { installCrashLogger } from '@/services/crashLogger';
+
+// Installé en tout premier, avant tout autre import/provider, pour
+// capturer les crashs le plus tôt possible dans le cycle de vie.
+installCrashLogger();
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
