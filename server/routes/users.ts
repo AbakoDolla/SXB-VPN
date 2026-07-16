@@ -32,7 +32,7 @@ const createUserSchema = z.object({
   email: z.string().email(),
   password: z.string().min(6).optional(), // optionnel - auto-généré si absent
   phone: z.string().optional(),
-  roleId: z.string(),
+  roleId: z.string().uuid({ message: "Veuillez sélectionner un rôle valide" }),
   status: z.enum(["active", "suspended"]).default("active"),
 });
 
