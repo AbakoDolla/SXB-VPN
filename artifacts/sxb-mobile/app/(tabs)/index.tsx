@@ -18,11 +18,15 @@ const LOGO = require("../../assets/images/icon.png");
 type BtnState = "no_account" | "no_package" | "connect" | "connecting" | "connected" | "expired";
 
 function getButtonState(accountState: any, isConnected: boolean, isConnecting: boolean): BtnState {
-  if (!accountState) return "no_account";
+  if (!accountState || accountState.state === "no_package") {
+    if (isConnecting) return "connecting";
+    if (isConnected) return "connected";
+    if (!accountState) return "no_account";
+    return "no_package";
+  }
   if (isConnecting) return "connecting";
   if (isConnected) return "connected";
   const s = accountState.state;
-  if (s === "no_package") return "no_package";
   if (s === "expired") return "expired";
   return "connect";
 }
@@ -211,12 +215,12 @@ export default function HomeScreen() {
   }[btnState];
 
   const btnIcon = {
-    no_account:  "key",
-    no_package:  "gift",
-    connect:     "shield-checkmark",
-    connecting:  "shield",
+    no_account:  "power",
+    no_package:  "power",
+    connect:     "power",
+    connecting:  "power",
     connected:   "power",
-    expired:     "warning",
+    expired:     "power",
   }[btnState];
 
   const ringColor = isConnected
@@ -266,25 +270,45 @@ export default function HomeScreen() {
 
           {/* Big Button */}
           <View style={styles.btnWrap}>
-            {/* Rings */}
-            {(isConnected || isConnecting) && (
-              <>
-                <Animated.View style={[styles.ring, { borderColor: ringColor + "0.15)", transform: [{ scale: ring1 }] }]} />
-                <Animated.View style={[styles.ring, { borderColor: ringColor + "0.08)", transform: [{ scale: ring2 }], width: 240, height: 240 }]} />
-              </>
-            )}
+            {/* Outer ambient ring — always visible */}
+            <Animated.View style={[styles.ring, {
+              borderColor: ringColor + "0.10)",
+              width: 260, height: 260, borderRadius: 130,
+              transform: [{ scale: isConnected ? ring2 : 1 }],
+            }]} />
+
+            {/* Inner pulse ring */}
+            <Animated.View style={[styles.ring, {
+              borderColor: ringColor + (isConnected ? "0.22)" : "0.13)"),
+              transform: [{ scale: isConnected || isConnecting ? ring1 : 1 }],
+            }]} />
 
             {/* Glow */}
-            <Animated.View style={[styles.btnGlow, { backgroundColor: btnColor + "18", opacity: glowAnim }]} />
+            <Animated.View style={[styles.btnGlow, { backgroundColor: btnColor + "22", opacity: glowAnim }]} />
 
             {/* Main button */}
             <Pressable onPress={handleVpnButton} disabled={isConnecting}>
-              <Animated.View style={[styles.vpnBtn, { borderColor: btnColor + "60", transform: [{ scale: pulseAnim }] }]}>
+              <Animated.View style={[styles.vpnBtn, {
+                borderColor: btnColor + (isConnected ? "90" : "55"),
+                borderWidth: isConnected ? 3 : 2,
+                transform: [{ scale: pulseAnim }],
+                shadowColor: btnColor,
+                shadowOpacity: isConnected ? 0.6 : 0.3,
+                shadowRadius: isConnected ? 30 : 16,
+                shadowOffset: { width: 0, height: 0 },
+                elevation: isConnected ? 20 : 8,
+              }]}>
                 <LinearGradient
-                  colors={[btnColor + "30", btnColor + "10"]}
+                  colors={[btnColor + "35", btnColor + "10", "transparent"]}
                   style={styles.vpnBtnInner}
                 >
-                  <Ionicons name={btnIcon as any} size={44} color={btnColor} />
+                  {/* Outer power ring inside button */}
+                  <View style={[styles.powerRingOuter, { borderColor: btnColor + "40" }]} />
+                  <Ionicons
+                    name={isConnecting ? "hourglass-outline" : "power"}
+                    size={52}
+                    color={btnColor}
+                  />
                 </LinearGradient>
               </Animated.View>
             </Pressable>
@@ -301,14 +325,14 @@ export default function HomeScreen() {
               ? "Votre connexion est sécurisée"
               : isConnecting
               ? "Établissement du tunnel sécurisé..."
+              : btnState === "no_account"
+              ? "Appuyez pour activer votre compte"
+              : btnState === "no_package"
+              ? "Appuyez pour activer un forfait"
+              : btnState === "expired"
+              ? "Forfait expiré — appuyez pour renouveler"
               : "Appuyez pour activer la protection"}
           </Text>
-
-          {/* Action button */}
-          <Pressable onPress={handleVpnButton} disabled={isConnecting} style={[styles.actionBtn, { backgroundColor: btnColor }]}>
-            <Ionicons name={btnIcon as any} size={18} color={isConnected ? "#000" : "#000"} />
-            <Text style={[styles.actionBtnText, { color: "#000" }]}>{btnLabel}</Text>
-          </Pressable>
 
           {/* Logs link */}
           {(isConnecting || isConnected) && (
@@ -426,15 +450,14 @@ const styles = StyleSheet.create({
   statusBadge: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, borderWidth: 1 },
   statusDot: { width: 7, height: 7, borderRadius: 4 },
   statusText: { fontSize: 13, fontWeight: "600", fontFamily: "Inter_600SemiBold" },
-  btnWrap: { width: 200, height: 200, alignItems: "center", justifyContent: "center" },
-  ring: { position: "absolute", width: 190, height: 190, borderRadius: 95, borderWidth: 1 },
-  btnGlow: { position: "absolute", width: 170, height: 170, borderRadius: 85 },
-  vpnBtn: { width: 150, height: 150, borderRadius: 75, borderWidth: 2, overflow: "hidden" },
-  vpnBtnInner: { flex: 1, alignItems: "center", justifyContent: "center" },
-  timer: { fontSize: 32, fontWeight: "700", color: Colors.connected, fontFamily: "Inter_700Bold", letterSpacing: 2 },
-  btnHint: { fontSize: 13, color: Colors.textMuted, fontFamily: "Inter_400Regular", textAlign: "center" },
-  actionBtn: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 32, paddingVertical: 14, borderRadius: 16 },
-  actionBtnText: { fontSize: 15, fontWeight: "700", fontFamily: "Inter_700Bold" },
+  btnWrap: { width: 280, height: 280, alignItems: "center", justifyContent: "center" },
+  ring: { position: "absolute", width: 210, height: 210, borderRadius: 105, borderWidth: 1 },
+  btnGlow: { position: "absolute", width: 200, height: 200, borderRadius: 100 },
+  vpnBtn: { width: 175, height: 175, borderRadius: 88, overflow: "hidden" },
+  vpnBtnInner: { flex: 1, alignItems: "center", justifyContent: "center", position: "relative" },
+  powerRingOuter: { position: "absolute", width: 155, height: 155, borderRadius: 78, borderWidth: 1 },
+  timer: { fontSize: 30, fontWeight: "700", color: Colors.connected, fontFamily: "Inter_700Bold", letterSpacing: 2 },
+  btnHint: { fontSize: 13, color: Colors.textMuted, fontFamily: "Inter_400Regular", textAlign: "center", paddingHorizontal: 24 },
   logsLink: { flexDirection: "row", alignItems: "center", gap: 6 },
   logsLinkText: { fontSize: 12, color: Colors.primary, fontFamily: "Inter_500Medium" },
   statsCard: { backgroundColor: Colors.bgCard, borderRadius: 20, borderWidth: 1, borderColor: Colors.border, padding: 16, gap: 12 },
