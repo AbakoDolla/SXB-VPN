@@ -41,7 +41,7 @@ jobs:
           version: 9
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --no-frozen-lockfile --shamefully-hoist
 
       - name: Typecheck mobile app
         run: pnpm --filter @workspace/sxb-mobile run typecheck
@@ -85,8 +85,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pnpm-store-
 
-      - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+      - name: Install dependencies (hoisted for Metro bundler)
+        run: pnpm install --no-frozen-lockfile --shamefully-hoist
 
       - name: Generate native Android project (expo prebuild)
         working-directory: artifacts/sxb-mobile
