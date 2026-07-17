@@ -88,7 +88,7 @@ name: Build Android APK
         - name: Install dependencies
           run: pnpm install --no-frozen-lockfile
 
-        - name: Generate native Android project (expo prebuild)
+        - name: Generate native Android project
           working-directory: artifacts/sxb-mobile
           run: npx expo prebuild --platform android --no-install --clean
           env:
@@ -117,22 +117,21 @@ name: Build Android APK
             EXPO_PUBLIC_API_URL: https://vpnsxb.afrihall.com/api
             GRADLE_OPTS: "-Dorg.gradle.daemon=false -Xmx4g -XX:+HeapDumpOnOutOfMemoryError"
 
-        - name: Locate and rename APK
+        - name: Locate and copy APK
           id: find-apk
           working-directory: artifacts/sxb-mobile/android
           run: |
             APK_PATH=$(find . -name "*.apk" | grep -v test | head -1)
             echo "Found APK: $APK_PATH"
             ls -lh "$APK_PATH"
-            mkdir -p app/build/outputs/final
-            cp "$APK_PATH" app/build/outputs/final/sxb-vpn-android.apk
-            echo "APK_FINAL=app/build/outputs/final/sxb-vpn-android.apk" >> $GITHUB_OUTPUT
+            mkdir -p apk-output
+            cp "$APK_PATH" apk-output/sxb-vpn-android.apk
 
-        - name: Upload Android APK artifact
+        - name: Upload Android APK
           uses: actions/upload-artifact@v4
           with:
             name: sxb-vpn-android-${{ github.sha }}
-            path: artifacts/sxb-mobile/android/${{ steps.find-apk.outputs.APK_FINAL }}
+            path: artifacts/sxb-mobile/android/apk-output/sxb-vpn-android.apk
             retention-days: 30
 
     notify-vps:
