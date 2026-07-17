@@ -1,0 +1,23 @@
+{
+  "title": "Tableau de Bord SXB VPN",
+  "subtitle": "Vue d'ensemble de l'activité du réseau et de l'infrastructure en temps réel",
+  "stats": {
+    "active_users": "Utilisateurs Actifs",
+    "expired_accounts": "Comptes Expirés",
+    "consumed_traffic": "Trafic Consommé",
+    "active_servers": "Serveurs Actifs",
+    "active_resellers": "Revendeurs Actifs",
+    "total_revenue": "Chiffre d'Affaires"
+  },
+  "charts": {
+    "traffic_title": "Consommation de Trafic (Go)",
+    "users_title": "Nouveaux Utilisateurs VPN",
+    "activity_title": "Activité des Tunnels & Connexions",
+    "time": "Temps",
+    "data_limit": "Limite globale"
+  },
+  "activity": {
+    "title": "Flux d'activité globale",
+    "no_activity": "Aucun journal d'activité disponible"
+  }
+}
