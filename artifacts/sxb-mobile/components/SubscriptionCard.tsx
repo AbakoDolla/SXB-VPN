@@ -57,7 +57,7 @@ export default function SubscriptionCard({ accountState }: SubscriptionCardProps
     <View style={[styles.card, { backgroundColor: cardBg, borderColor: colors.border }]}>
       {/* Header */}
       <View style={styles.header}>
-        <Ionicons name="data-usage-sharp" size={18} color={colors.primary} />
+        <Ionicons name="analytics-outline" size={18} color={colors.primary} />
         <Text style={[styles.title, { color: colors.foreground }]}>{t('current_plan')}</Text>
         {isExpired && (
           <View style={[styles.badge, { backgroundColor: `${colors.destructive}22` }]}>
