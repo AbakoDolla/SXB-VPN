@@ -3,9 +3,9 @@
 /// rafraîchissement automatique en cas d'expiration, et normalise les
 /// erreurs.
 
-// Base URL — pointe directement vers la prod pour éviter le routage
-// Replit qui intercepte /api/* via l'artifact api-server local.
-const API_BASE = "https://vpnsxb.afrihall.com/api";
+// Base URL — utilise /xapi (proxifié par Vite → vpnsxb.afrihall.com/api)
+// On évite /api/* car l'artifact api-server Replit l'intercepte en priorité.
+const API_BASE = "/xapi";
 
 const ACCESS_TOKEN_KEY = "sxb_access_token";
 const REFRESH_TOKEN_KEY = "sxb_refresh_token";

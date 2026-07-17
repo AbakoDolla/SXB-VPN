@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import * as Haptics from "expo-haptics";
+import * as Clipboard from "expo-clipboard";
 import { useAuthContext } from "@/contexts/AuthContext";
 import Colors from "@/constants/colors";
 
@@ -21,6 +22,7 @@ export default function ActivateScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError]       = useState("");
   const [success, setSuccess]   = useState(false);
+  const [copied, setCopied]     = useState(false);
 
   const successScale = useRef(new Animated.Value(0)).current;
   const shakeAnim    = useRef(new Animated.Value(0)).current;
@@ -32,6 +34,14 @@ export default function ActivateScreen() {
       Animated.timing(shakeAnim, { toValue: 6, duration: 60, useNativeDriver: true }),
       Animated.timing(shakeAnim, { toValue: 0, duration: 60, useNativeDriver: true }),
     ]).start();
+  };
+
+  const copyDeviceId = async () => {
+    if (!deviceId) return;
+    await Clipboard.setStringAsync(deviceId);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   const handleActivate = async () => {
@@ -122,14 +132,26 @@ export default function ActivateScreen() {
           </LinearGradient>
         </Pressable>
 
-        {/* Device ID */}
+        {/* Device ID avec bouton copier */}
         {deviceId ? (
           <View style={styles.deviceBox}>
             <View style={styles.deviceBoxHeader}>
               <Ionicons name="phone-portrait-outline" size={13} color={Colors.primary} />
               <Text style={styles.deviceBoxLabel}>ID de votre appareil</Text>
+              <Pressable onPress={copyDeviceId} style={styles.copyBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Ionicons
+                  name={copied ? "checkmark" : "copy-outline"}
+                  size={15}
+                  color={copied ? Colors.connected : Colors.primary}
+                />
+                <Text style={[styles.copyText, copied && { color: Colors.connected }]}>
+                  {copied ? "Copié !" : "Copier"}
+                </Text>
+              </Pressable>
             </View>
-            <Text style={styles.deviceId} selectable>{deviceId}</Text>
+            <View style={styles.deviceIdRow}>
+              <Text style={styles.deviceId} selectable>{deviceId}</Text>
+            </View>
             <Text style={styles.deviceHint}>Communiquez cet ID à votre administrateur pour obtenir votre token.</Text>
           </View>
         ) : null}
@@ -165,9 +187,12 @@ const styles = StyleSheet.create({
   activateBtn: { borderRadius: 16, overflow: "hidden" },
   activateBtnGrad: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 16 },
   activateBtnText: { fontSize: 16, fontWeight: "700", color: "#000", fontFamily: "Inter_700Bold" },
-  deviceBox: { backgroundColor: Colors.bgCard, borderRadius: 14, borderWidth: 1, borderColor: Colors.border, padding: 14, gap: 6 },
+  deviceBox: { backgroundColor: Colors.bgCard, borderRadius: 14, borderWidth: 1, borderColor: Colors.border, padding: 14, gap: 8 },
   deviceBoxHeader: { flexDirection: "row", alignItems: "center", gap: 6 },
-  deviceBoxLabel: { fontSize: 12, color: Colors.primary, fontFamily: "Inter_600SemiBold" },
+  deviceBoxLabel: { fontSize: 12, color: Colors.primary, fontFamily: "Inter_600SemiBold", flex: 1 },
+  copyBtn: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, backgroundColor: Colors.primaryDim, borderWidth: 1, borderColor: Colors.primary + "40" },
+  copyText: { fontSize: 11, color: Colors.primary, fontFamily: "Inter_600SemiBold" },
+  deviceIdRow: { backgroundColor: Colors.bgInput, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10 },
   deviceId: { fontSize: 13, color: "#FFF", fontFamily: "Inter_700Bold", letterSpacing: 1 },
   deviceHint: { fontSize: 11, color: Colors.textMuted, fontFamily: "Inter_400Regular", lineHeight: 17 },
   sep: { flexDirection: "row", alignItems: "center", gap: 10 },
