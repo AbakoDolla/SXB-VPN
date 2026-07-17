@@ -12,8 +12,8 @@ router.get("/status", requireAuth, requirePermission("xpanel.view"), async (req:
     let isConnected = false;
     
     try {
-      const pingRes = await fetch(`${XPanelService["baseUrl"]}/api/system/info`, { signal: AbortSignal.timeout(2000) });
-      isConnected = pingRes.ok;
+      const connResult = await XPanelService.testConnection();
+      isConnected = connResult.success;
     } catch {
       isConnected = false;
     }
