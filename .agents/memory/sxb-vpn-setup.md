@@ -34,6 +34,7 @@ All API calls in both dashboard and mobile go to the production API. The `src/ap
 - XPANEL_ADMIN_PASSWORD: X-Panel admin password
 - JWT_SECRET: Backend JWT secret key
 - (EXPO_TOKEN was saved but is invalid — neutralized in dev script)
+- SESSION_SECRET: session signing key
 
 ### Mobile font loading
 The mobile app uses local font files (`assets/fonts/Inter_*.ttf`) loaded via `useFonts()` with `require()`. NOT using `@expo-google-fonts/inter` package imports. The `_layout.tsx` uses relative paths `../assets/fonts/` (not `@/assets/fonts/`) because the `@/` alias doesn't work with `require()` for binary assets.

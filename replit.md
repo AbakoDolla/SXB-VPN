@@ -18,7 +18,7 @@ Application SaaS VPN complète avec dashboard d'administration, app mobile Expo 
 - **X-Panel (IP)** : http://141.95.112.93:8080/kqUtkMEvgdtx/
 - **X-Panel (Domaine)** : https://xpanel.vpnsxb.afrihall.com/kqUtkMEvgdtx/
   - Username : `admin`
-  - Password : (stocké dans XPANEL_ADMIN_PASSWORD secret)
+  - Password : voir secret `XPANEL_ADMIN_PASSWORD`
 
 ### GitHub
 - Repo : https://github.com/AbakoDolla/SXB-VPN
