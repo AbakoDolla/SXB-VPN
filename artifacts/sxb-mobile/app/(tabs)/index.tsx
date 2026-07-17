@@ -12,7 +12,7 @@ import { useVpnContext } from "@/contexts/VpnContext";
 import Colors from "@/constants/colors";
 
 const { width } = Dimensions.get("window");
-const LOGO = require("@/assets/images/icon.png");
+const LOGO = require("../../assets/images/icon.png");
 
 // ── VPN Button States ─────────────────────────────────────────────────────────
 type BtnState = "no_account" | "no_package" | "connect" | "connecting" | "connected" | "expired";

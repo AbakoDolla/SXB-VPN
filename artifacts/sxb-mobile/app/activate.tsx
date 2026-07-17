@@ -12,7 +12,7 @@ import * as Clipboard from "expo-clipboard";
 import { useAuthContext } from "@/contexts/AuthContext";
 import Colors from "@/constants/colors";
 
-const LOGO = require("@/assets/images/icon.png");
+const LOGO = require("../assets/images/icon.png");
 
 export default function ActivateScreen() {
   const insets = useSafeAreaInsets();
