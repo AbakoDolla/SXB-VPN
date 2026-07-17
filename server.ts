@@ -85,6 +85,10 @@ async function startServer() {
     },
   });
   app.use("/api/", limiter);
+  // Health check endpoint
+  app.get("/api/health", (req: Request, res: Response) => {
+    res.json({ status: "ok", timestamp: new Date().toISOString(), service: "sxb-vpn-backend" });
+  });
 
   // 2. SaaS API Endpoints Gateway Routing
   app.use("/api/auth", authRouter);
