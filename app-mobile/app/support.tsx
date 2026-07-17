@@ -1,141 +1,175 @@
-import React, { useState } from 'react';
-import { Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
-import * as Haptics from 'expo-haptics';
-import { useColors } from '@/hooks/useColors';
-import { useTranslation } from '@/localization';
+import React, { useState } from "react";
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
+import { router } from "expo-router";
+import apiClient from "@/services/apiClient";
+import Colors from "@/constants/colors";
 
-interface FaqItem { q: string; a: string }
+const FAQ = [
+  { q: "Comment activer mon compte ?", a: "Entrez votre token SXB-USER dans l'écran d'activation. Vous l'obtenez auprès de votre administrateur." },
+  { q: "Mon VPN ne se connecte pas", a: "Vérifiez votre connexion internet, puis assurez-vous que votre forfait est actif et non expiré." },
+  { q: "Comment renouveler mon forfait ?", a: "Utilisez un token SXB-DATA fourni par votre administrateur dans la section Activer un forfait." },
+  { q: "Combien d'appareils puis-je utiliser ?", a: "Le nombre d'appareils autorisés dépend de votre forfait. Consultez votre profil pour voir la limite." },
+];
 
-function FaqAccordion({ item }: { item: FaqItem }) {
-  const colors = useColors();
+function FaqItem({ item }: { item: { q: string; a: string } }) {
   const [open, setOpen] = useState(false);
-
   return (
-    <Pressable
-      onPress={() => { setOpen(!open); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); }}
-      style={[styles.faqCard, { backgroundColor: colors.card, borderColor: colors.border }]}
-    >
-      <View style={styles.faqRow}>
-        <Text style={[styles.faqQ, { color: colors.foreground, flex: 1 }]}>{item.q}</Text>
-        <Ionicons
-          name={open ? 'chevron-up' : 'chevron-down'}
-          size={18}
-          color={colors.mutedForeground}
-        />
+    <Pressable onPress={() => setOpen(!open)} style={styles.faqItem}>
+      <View style={styles.faqQ}>
+        <Ionicons name="help-circle-outline" size={18} color={Colors.primary} />
+        <Text style={styles.faqQText}>{item.q}</Text>
+        <Ionicons name={open ? "chevron-up" : "chevron-down"} size={16} color={Colors.textMuted} />
       </View>
-      {open && (
-        <Text style={[styles.faqA, { color: colors.mutedForeground }]}>{item.a}</Text>
-      )}
+      {open && <Text style={styles.faqA}>{item.a}</Text>}
     </Pressable>
   );
 }
 
 export default function SupportScreen() {
-  const colors = useColors();
   const insets = useSafeAreaInsets();
-  const { t } = useTranslation();
-  const [subject, setSubject] = useState('');
-  const [message, setMessage] = useState('');
-  const [sent, setSent] = useState(false);
+  const [subject, setSubject] = useState("");
+  const [message, setMessage] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sent, setSent]       = useState(false);
 
-  const faqs: FaqItem[] = [
-    { q: t('faq_q1'), a: t('faq_a1') },
-    { q: t('faq_q2'), a: t('faq_a2') },
-    { q: t('faq_q3'), a: t('faq_a3') },
-    { q: t('faq_q4'), a: t('faq_a4') },
-  ];
-
-  const handleSend = () => {
-    if (!message.trim()) return;
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  const handleSend = async () => {
+    if (!subject.trim() || !message.trim()) return;
+    setSending(true);
+    try {
+      await apiClient.post("/mobile/support/ticket", { subject, message });
+    } catch (_) {}
     setSent(true);
-    setSubject('');
-    setMessage('');
+    setSending(false);
+    setSubject(""); setMessage("");
     setTimeout(() => setSent(false), 3000);
   };
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
+    <LinearGradient colors={["#060914", "#0A1025", "#060914"]} style={styles.container}>
       <ScrollView
-        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 32 }]}
+        contentContainerStyle={[styles.content, { paddingTop: 16, paddingBottom: insets.bottom + 40 }]}
         showsVerticalScrollIndicator={false}
       >
-        {/* FAQ */}
-        <Text style={[styles.section, { color: colors.foreground }]}>{t('faq')}</Text>
-        {faqs.map((item, i) => (
-          <FaqAccordion key={i} item={item} />
-        ))}
+        {/* Hero */}
+        <View style={styles.hero}>
+          <View style={styles.heroIcon}>
+            <Ionicons name="headset" size={40} color={Colors.primary} />
+          </View>
+          <Text style={styles.heroTitle}>Besoin d'aide ?</Text>
+          <Text style={styles.heroSub}>Notre équipe est disponible pour vous aider.</Text>
+          <Pressable onPress={handleSend} style={styles.heroBtn}>
+            <Ionicons name="create-outline" size={16} color="#000" />
+            <Text style={styles.heroBtnText}>Créer un ticket</Text>
+          </Pressable>
+        </View>
 
-        {/* Contact */}
-        <Text style={[styles.section, { color: colors.foreground }]}>{t('contact_us')}</Text>
+        {/* Quick contacts */}
         <View style={styles.contactRow}>
-          <Pressable
-            onPress={() => Linking.openURL('https://wa.me/+22507XXXXXXXX')}
-            style={[styles.contactBtn, { backgroundColor: `${colors.connected}22`, borderColor: colors.connected }]}
-          >
-            <Ionicons name="logo-whatsapp" size={22} color={colors.connected} />
-            <Text style={[styles.contactText, { color: colors.connected }]}>WhatsApp</Text>
-          </Pressable>
-          <Pressable
-            onPress={() => Linking.openURL('mailto:support@sxb-vpn.com')}
-            style={[styles.contactBtn, { backgroundColor: `${colors.primary}22`, borderColor: colors.primary }]}
-          >
-            <Ionicons name="mail-outline" size={22} color={colors.primary} />
-            <Text style={[styles.contactText, { color: colors.primary }]}>Email</Text>
-          </Pressable>
+          {[
+            { icon: "logo-whatsapp", label: "WhatsApp", color: "#25D366" },
+            { icon: "mail-outline",  label: "Email",    color: Colors.primary },
+            { icon: "logo-discord",  label: "Discord",  color: "#5865F2" },
+          ].map((c) => (
+            <Pressable key={c.label} style={[styles.contactBtn, { borderColor: c.color + "30", backgroundColor: c.color + "10" }]}>
+              <Ionicons name={c.icon as any} size={22} color={c.color} />
+              <Text style={[styles.contactLabel, { color: c.color }]}>{c.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+
+        {/* FAQ */}
+        <View style={styles.faqSection}>
+          <View style={styles.sectionHeader}>
+            <Ionicons name="help-circle-outline" size={18} color={Colors.primary} />
+            <Text style={styles.sectionTitle}>Questions fréquentes</Text>
+          </View>
+          <View style={styles.faqCard}>
+            {FAQ.map((item, i) => (
+              <View key={i}>
+                <FaqItem item={item} />
+                {i < FAQ.length - 1 && <View style={styles.divider} />}
+              </View>
+            ))}
+          </View>
         </View>
 
         {/* Ticket form */}
-        <Text style={[styles.section, { color: colors.foreground }]}>{t('create_ticket')}</Text>
-        <View style={[styles.form, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          <TextInput
-            style={[styles.input, { backgroundColor: colors.input, color: colors.foreground, borderColor: colors.border }]}
-            placeholder={t('ticket_subject')}
-            placeholderTextColor={colors.mutedForeground}
-            value={subject}
-            onChangeText={setSubject}
-          />
-          <TextInput
-            style={[styles.textarea, { backgroundColor: colors.input, color: colors.foreground, borderColor: colors.border }]}
-            placeholder={t('ticket_message')}
-            placeholderTextColor={colors.mutedForeground}
-            value={message}
-            onChangeText={setMessage}
-            multiline
-            numberOfLines={4}
-            textAlignVertical="top"
-          />
-          <Pressable
-            onPress={handleSend}
-            style={[styles.sendBtn, { backgroundColor: sent ? colors.connected : colors.primary }]}
-          >
-            <Ionicons name={sent ? 'checkmark' : 'send'} size={18} color="#FFF" />
-            <Text style={styles.sendText}>
-              {sent ? t('ticket_success') : t('ticket_submit')}
-            </Text>
-          </Pressable>
+        <View style={styles.formSection}>
+          <View style={styles.sectionHeader}>
+            <Ionicons name="create-outline" size={18} color={Colors.primary} />
+            <Text style={styles.sectionTitle}>Nous contacter</Text>
+          </View>
+          <View style={styles.formCard}>
+            <TextInput
+              style={styles.input}
+              placeholder="Sujet"
+              placeholderTextColor={Colors.textMuted}
+              value={subject}
+              onChangeText={setSubject}
+            />
+            <TextInput
+              style={[styles.input, styles.textarea]}
+              placeholder="Décrivez votre problème..."
+              placeholderTextColor={Colors.textMuted}
+              value={message}
+              onChangeText={setMessage}
+              multiline
+              numberOfLines={4}
+              textAlignVertical="top"
+            />
+            <Pressable onPress={handleSend} disabled={sending || !subject.trim() || !message.trim()} style={[styles.sendBtn, (sending || sent) && { backgroundColor: Colors.connected }]}>
+              {sending
+                ? <ActivityIndicator size="small" color="#000" />
+                : <>
+                    <Ionicons name={sent ? "checkmark" : "send"} size={16} color="#000" />
+                    <Text style={styles.sendBtnText}>{sent ? "Envoyé !" : "Envoyer"}</Text>
+                  </>
+              }
+            </Pressable>
+          </View>
         </View>
+
+        {/* Ticket history */}
+        <Pressable style={styles.historyBtn}>
+          <Ionicons name="ticket-outline" size={18} color={Colors.textSecondary} />
+          <Text style={styles.historyBtnText}>Voir mes tickets</Text>
+          <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+        </Pressable>
       </ScrollView>
-    </View>
+    </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  content: { paddingHorizontal: 20, paddingTop: 16, gap: 12 },
-  section: { fontSize: 18, fontWeight: '700' as const, marginTop: 8, marginBottom: 4, fontFamily: 'Inter_700Bold' },
-  faqCard: { borderRadius: 14, borderWidth: 1, padding: 16, gap: 10 },
-  faqRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  faqQ: { fontSize: 14, fontWeight: '500' as const, lineHeight: 20 },
-  faqA: { fontSize: 13, lineHeight: 20 },
-  contactRow: { flexDirection: 'row', gap: 12 },
-  contactBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, borderRadius: 14, borderWidth: 1 },
-  contactText: { fontSize: 15, fontWeight: '600' as const },
-  form: { borderRadius: 16, borderWidth: 1, padding: 16, gap: 12 },
-  input: { borderRadius: 12, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 12, fontSize: 14 },
-  textarea: { borderRadius: 12, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 12, fontSize: 14, minHeight: 100 },
-  sendBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderRadius: 12, paddingVertical: 14 },
-  sendText: { color: '#FFF', fontSize: 15, fontWeight: '600' as const },
+  content: { paddingHorizontal: 20, gap: 20 },
+  hero: { alignItems: "center", gap: 10, backgroundColor: Colors.bgCard, borderRadius: 20, borderWidth: 1, borderColor: Colors.border, padding: 24 },
+  heroIcon: { width: 80, height: 80, borderRadius: 40, backgroundColor: Colors.primaryDim, borderWidth: 1, borderColor: Colors.primary + "40", alignItems: "center", justifyContent: "center" },
+  heroTitle: { fontSize: 20, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold" },
+  heroSub: { fontSize: 13, color: Colors.textMuted, fontFamily: "Inter_400Regular", textAlign: "center" },
+  heroBtn: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: Colors.primary, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 12, marginTop: 4 },
+  heroBtnText: { fontSize: 14, fontWeight: "700", color: "#000", fontFamily: "Inter_700Bold" },
+  contactRow: { flexDirection: "row", gap: 10 },
+  contactBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 12, borderRadius: 14, borderWidth: 1 },
+  contactLabel: { fontSize: 12, fontWeight: "600", fontFamily: "Inter_600SemiBold" },
+  sectionHeader: { flexDirection: "row", alignItems: "center", gap: 8, paddingLeft: 4, marginBottom: 8 },
+  sectionTitle: { fontSize: 14, fontWeight: "600", color: "#FFF", fontFamily: "Inter_600SemiBold" },
+  faqSection: { gap: 0 },
+  faqCard: { backgroundColor: Colors.bgCard, borderRadius: 16, borderWidth: 1, borderColor: Colors.border, paddingHorizontal: 14 },
+  faqItem: { paddingVertical: 14, gap: 8 },
+  faqQ: { flexDirection: "row", alignItems: "center", gap: 8 },
+  faqQText: { flex: 1, fontSize: 13, fontWeight: "600", color: "#FFF", fontFamily: "Inter_600SemiBold" },
+  faqA: { fontSize: 13, color: Colors.textSecondary, fontFamily: "Inter_400Regular", lineHeight: 20, paddingLeft: 26 },
+  divider: { height: 1, backgroundColor: Colors.border },
+  formSection: { gap: 0 },
+  formCard: { backgroundColor: Colors.bgCard, borderRadius: 16, borderWidth: 1, borderColor: Colors.border, padding: 14, gap: 10 },
+  input: { backgroundColor: Colors.bgInput, borderWidth: 1, borderColor: Colors.border, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, fontSize: 14, color: "#FFF", fontFamily: "Inter_400Regular" },
+  textarea: { minHeight: 100 },
+  sendBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: Colors.primary, borderRadius: 12, paddingVertical: 13 },
+  sendBtnText: { fontSize: 14, fontWeight: "700", color: "#000", fontFamily: "Inter_700Bold" },
+  historyBtn: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: Colors.bgCard, borderRadius: 14, borderWidth: 1, borderColor: Colors.border, padding: 14 },
+  historyBtnText: { flex: 1, fontSize: 14, color: Colors.textSecondary, fontFamily: "Inter_500Medium" },
 });

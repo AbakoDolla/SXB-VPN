@@ -1,168 +1,137 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState } from "react";
 import {
-  Animated,
-  Dimensions,
-  FlatList,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
-import { router } from 'expo-router';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, { Circle, Path, Rect } from 'react-native-svg';
-import * as Haptics from 'expo-haptics';
-import { useColors } from '@/hooks/useColors';
-import { useAuthContext } from '@/contexts/AuthContext';
-import { useTranslation } from '@/localization';
+  Animated, Dimensions, Image, Pressable,
+  ScrollView, StyleSheet, Text, View,
+} from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
+import { router } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
+import { useAuthContext } from "@/contexts/AuthContext";
+import Colors from "@/constants/colors";
 
-const { width } = Dimensions.get('window');
+const { width } = Dimensions.get("window");
+const LOGO = require("@/assets/images/icon.png");
 
-function Shield1() {
-  return (
-    <Svg width={160} height={160} viewBox="0 0 160 160">
-      <Path d="M80 12 L148 40 L148 90 C148 124 116 148 80 156 C44 148 12 124 12 90 L12 40 Z" fill="none" stroke="#5B8DEF" strokeWidth={3} />
-      <Path d="M80 24 L136 48 L136 88 C136 118 110 140 80 148 C50 140 24 118 24 88 L24 48 Z" fill="rgba(91,141,239,0.1)" />
-      <Path d="M52 82 L72 102 L110 64" stroke="#00E5A0" strokeWidth={6} fill="none" strokeLinecap="round" strokeLinejoin="round" />
-    </Svg>
-  );
-}
-
-function Shield2() {
-  return (
-    <Svg width={160} height={160} viewBox="0 0 160 160">
-      <Rect x="20" y="30" width="120" height="100" rx="16" fill="rgba(91,141,239,0.1)" stroke="#5B8DEF" strokeWidth={2} />
-      <Rect x="40" y="60" width="80" height="12" rx="6" fill="#5B8DEF" opacity={0.5} />
-      <Rect x="40" y="82" width="55" height="10" rx="5" fill="#5B8DEF" opacity={0.3} />
-      <Circle cx="130" cy="50" r="20" fill="#00E5A0" opacity={0.9} />
-      <Path d="M122 50 L128 56 L138 44" stroke="white" strokeWidth={2.5} fill="none" strokeLinecap="round" strokeLinejoin="round" />
-    </Svg>
-  );
-}
-
-function Shield3() {
-  return (
-    <Svg width={160} height={160} viewBox="0 0 160 160">
-      <Rect x="30" y="20" width="100" height="120" rx="12" fill="rgba(91,141,239,0.08)" stroke="#5B8DEF" strokeWidth={2} />
-      <Path d="M30 60 L130 60" stroke="#1E2A4A" strokeWidth={1} />
-      <Circle cx="55" cy="85" r="14" fill="rgba(0,229,160,0.2)" stroke="#00E5A0" strokeWidth={1.5} />
-      <Path d="M50 85 L54 89 L61 80" stroke="#00E5A0" strokeWidth={2} fill="none" strokeLinecap="round" strokeLinejoin="round" />
-      <Rect x="75" y="79" width="42" height="8" rx="4" fill="#1E2A4A" />
-      <Rect x="75" y="91" width="28" height="7" rx="3.5" fill="#1E2A4A" />
-      <Circle cx="80" cy="40" r="16" fill="rgba(91,141,239,0.2)" stroke="#5B8DEF" strokeWidth={1.5} />
-      <Path d="M74 40 L79 45 L87 33" stroke="#5B8DEF" strokeWidth={2.5} fill="none" strokeLinecap="round" strokeLinejoin="round" />
-    </Svg>
-  );
-}
-
-function Shield4() {
-  return (
-    <Svg width={160} height={160} viewBox="0 0 160 160">
-      <Circle cx="80" cy="80" r="60" fill="rgba(0,229,160,0.08)" stroke="#00E5A0" strokeWidth={2} />
-      <Circle cx="80" cy="80" r="44" fill="rgba(0,229,160,0.12)" />
-      <Path d="M56 80 L72 96 L106 62" stroke="#00E5A0" strokeWidth={7} fill="none" strokeLinecap="round" strokeLinejoin="round" />
-    </Svg>
-  );
-}
-
-const Illustrations = [Shield1, Shield2, Shield3, Shield4];
+const SLIDES = [
+  {
+    icon: "shield-checkmark" as const,
+    color: Colors.primary,
+    title: "Sécurité totale",
+    subtitle: "Votre connexion chiffrée, votre identité protégée. Partout. Toujours.",
+    bg: "rgba(0,212,255,0.08)",
+  },
+  {
+    icon: "flash" as const,
+    color: Colors.connected,
+    title: "Un clic suffit",
+    subtitle: "Activez la protection VPN en une seconde. Aucune configuration technique nécessaire.",
+    bg: "rgba(0,229,160,0.08)",
+  },
+  {
+    icon: "lock-closed" as const,
+    color: Colors.purple,
+    title: "Données 100% privées",
+    subtitle: "Zero-log policy. Vos données ne sont jamais conservées ni partagées.",
+    bg: "rgba(139,92,246,0.08)",
+  },
+];
 
 export default function OnboardingScreen() {
-  const colors = useColors();
-  const insets = useSafeAreaInsets();
   const { markOnboardingDone } = useAuthContext();
-  const { t } = useTranslation();
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const flatListRef = useRef<FlatList>(null);
-  const dotAnim = useRef(Animated.Value(0)).current;
+  const [activeIndex, setActiveIndex] = useState(0);
+  const scrollX = useRef(new Animated.Value(0)).current;
+  const scrollRef = useRef<ScrollView>(null);
 
-  const slides = [
-    { title: t('onboarding_title_1'), desc: t('onboarding_desc_1'), Illus: Illustrations[0] },
-    { title: t('onboarding_title_2'), desc: t('onboarding_desc_2'), Illus: Illustrations[1] },
-    { title: t('onboarding_title_3'), desc: t('onboarding_desc_3'), Illus: Illustrations[2] },
-    { title: t('onboarding_title_4'), desc: t('onboarding_desc_4'), Illus: Illustrations[3] },
-  ];
-
-  const isLast = currentIndex === slides.length - 1;
-
-  const handleNext = async () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    if (isLast) {
-      await markOnboardingDone();
-      router.replace('/activate');
+  const goNext = () => {
+    if (activeIndex < SLIDES.length - 1) {
+      const next = activeIndex + 1;
+      scrollRef.current?.scrollTo({ x: next * width, animated: true });
+      setActiveIndex(next);
     } else {
-      const next = currentIndex + 1;
-      flatListRef.current?.scrollToIndex({ index: next, animated: true });
-      setCurrentIndex(next);
+      handleStart();
     }
   };
 
-  const handleSkip = async () => {
+  const handleStart = async () => {
     await markOnboardingDone();
-    router.replace('/activate');
+    router.replace("/activate");
   };
 
+  const isLast = activeIndex === SLIDES.length - 1;
+
   return (
-    <LinearGradient colors={['#080B14', '#0D1530', '#080B14']} style={styles.container}>
-      {/* Skip */}
-      <View style={[styles.topBar, { paddingTop: insets.top + 16 }]}>
-        {!isLast ? (
-          <Pressable onPress={handleSkip} style={styles.skipBtn}>
-            <Text style={[styles.skipText, { color: colors.mutedForeground }]}>{t('skip')}</Text>
-          </Pressable>
-        ) : (
-          <View />
-        )}
+    <LinearGradient colors={["#060914", "#0A1025", "#060914"]} style={styles.container}>
+      {/* Logo */}
+      <View style={styles.header}>
+        <Image source={LOGO} style={styles.headerLogo} resizeMode="contain" />
+        <Text style={styles.headerBrand}>SXB VPN</Text>
       </View>
 
       {/* Slides */}
-      <FlatList
-        ref={flatListRef}
-        data={slides}
-        keyExtractor={(_, i) => String(i)}
+      <ScrollView
+        ref={scrollRef}
         horizontal
         pagingEnabled
         showsHorizontalScrollIndicator={false}
         scrollEnabled={false}
-        renderItem={({ item }) => {
-          const { Illus } = item;
-          return (
-            <View style={[styles.slide, { width }]}>
-              <View style={styles.illusWrap}>
-                <Illus />
+        style={{ flex: 1 }}
+      >
+        {SLIDES.map((slide, i) => (
+          <View key={i} style={[styles.slide, { width }]}>
+            <View style={[styles.iconCircle, { backgroundColor: slide.bg, borderColor: slide.color + "40" }]}>
+              <View style={[styles.iconCircleInner, { backgroundColor: slide.bg }]}>
+                <Ionicons name={slide.icon} size={56} color={slide.color} />
               </View>
-              <Text style={styles.title}>{item.title}</Text>
-              <Text style={[styles.desc, { color: colors.mutedForeground }]}>{item.desc}</Text>
             </View>
-          );
-        }}
-      />
+            <Text style={styles.slideTitle}>{slide.title}</Text>
+            <Text style={styles.slideSubtitle}>{slide.subtitle}</Text>
+          </View>
+        ))}
+      </ScrollView>
 
       {/* Dots */}
-      <View style={styles.dotsRow}>
-        {slides.map((_, i) => (
+      <View style={styles.dots}>
+        {SLIDES.map((_, i) => (
           <View
             key={i}
             style={[
               styles.dot,
-              {
-                backgroundColor: i === currentIndex ? colors.primary : colors.border,
-                width: i === currentIndex ? 24 : 8,
-              },
+              i === activeIndex
+                ? { width: 24, backgroundColor: Colors.primary }
+                : { backgroundColor: Colors.border },
             ]}
           />
         ))}
       </View>
 
-      {/* CTA */}
-      <View style={[styles.footer, { paddingBottom: insets.bottom + 32 }]}>
+      {/* Buttons */}
+      <View style={styles.footer}>
         <Pressable
-          onPress={handleNext}
-          style={[styles.cta, { backgroundColor: isLast ? colors.connected : colors.primary }]}
+          onPress={goNext}
+          style={[styles.btnPrimary, isLast && { backgroundColor: Colors.connected }]}
         >
-          <Text style={styles.ctaText}>{isLast ? t('start') : t('next')}</Text>
+          <Text style={styles.btnPrimaryText}>{isLast ? "Commencer" : "Suivant"}</Text>
+          <Ionicons name={isLast ? "checkmark" : "arrow-forward"} size={18} color="#000" />
         </Pressable>
+        {!isLast && (
+          <Pressable onPress={handleStart} style={styles.btnSkip}>
+            <Text style={styles.btnSkipText}>Passer</Text>
+          </Pressable>
+        )}
+      </View>
+
+      {/* Features row */}
+      <View style={styles.featuresRow}>
+        {[
+          { icon: "lock-closed", label: "AES-256" },
+          { icon: "eye-off",     label: "No-Logs" },
+          { icon: "shield",      label: "Secure" },
+        ].map((f) => (
+          <View key={f.label} style={styles.featureChip}>
+            <Ionicons name={f.icon as any} size={12} color={Colors.primary} />
+            <Text style={styles.featureText}>{f.label}</Text>
+          </View>
+        ))}
       </View>
     </LinearGradient>
   );
@@ -170,60 +139,22 @@ export default function OnboardingScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  topBar: {
-    paddingHorizontal: 24,
-    alignItems: 'flex-end',
-  },
-  skipBtn: { padding: 8 },
-  skipText: { fontSize: 15 },
-  slide: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 36,
-    gap: 28,
-  },
-  illusWrap: {
-    width: 200,
-    height: 200,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  title: {
-    fontSize: 26,
-    fontWeight: '700' as const,
-    color: '#F0F4FF',
-    textAlign: 'center',
-    fontFamily: 'Inter_700Bold',
-    lineHeight: 34,
-  },
-  desc: {
-    fontSize: 15,
-    textAlign: 'center',
-    lineHeight: 24,
-    fontFamily: 'Inter_400Regular',
-  },
-  dotsRow: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 20,
-  },
-  dot: {
-    height: 8,
-    borderRadius: 4,
-  },
-  footer: {
-    paddingHorizontal: 24,
-  },
-  cta: {
-    borderRadius: 16,
-    paddingVertical: 18,
-    alignItems: 'center',
-  },
-  ctaText: {
-    color: '#FFFFFF',
-    fontSize: 17,
-    fontWeight: '600' as const,
-    fontFamily: 'Inter_600SemiBold',
-  },
+  header: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, paddingTop: 60, paddingBottom: 20 },
+  headerLogo: { width: 36, height: 36 },
+  headerBrand: { fontSize: 18, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold", letterSpacing: 1 },
+  slide: { alignItems: "center", justifyContent: "center", paddingHorizontal: 32, gap: 20 },
+  iconCircle: { width: 160, height: 160, borderRadius: 80, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  iconCircleInner: { width: 110, height: 110, borderRadius: 55, alignItems: "center", justifyContent: "center" },
+  slideTitle: { fontSize: 28, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold", textAlign: "center" },
+  slideSubtitle: { fontSize: 15, color: Colors.textSecondary, fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 24 },
+  dots: { flexDirection: "row", justifyContent: "center", gap: 8, paddingBottom: 24 },
+  dot: { height: 4, width: 8, borderRadius: 2 },
+  footer: { paddingHorizontal: 24, gap: 12, paddingBottom: 20 },
+  btnPrimary: { backgroundColor: Colors.primary, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, paddingVertical: 16, borderRadius: 16 },
+  btnPrimaryText: { fontSize: 16, fontWeight: "700", color: "#000", fontFamily: "Inter_700Bold" },
+  btnSkip: { alignItems: "center", paddingVertical: 10 },
+  btnSkipText: { fontSize: 14, color: Colors.textMuted, fontFamily: "Inter_500Medium" },
+  featuresRow: { flexDirection: "row", justifyContent: "center", gap: 12, paddingBottom: 32 },
+  featureChip: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.bgCard },
+  featureText: { fontSize: 11, color: Colors.textSecondary, fontFamily: "Inter_600SemiBold" },
 });

@@ -1,159 +1,152 @@
-import React from 'react';
-import { Linking, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
-import Constants from 'expo-constants';
-import { useColors } from '@/hooks/useColors';
-import { useTranslation } from '@/localization';
-import { useLanguageContext } from '@/contexts/LanguageContext';
-import { useThemeContext } from '@/contexts/ThemeContext';
-import type { Language } from '@/localization';
+import React, { useState } from "react";
+import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
+import { router } from "expo-router";
+import Constants from "expo-constants";
+import { useAuthContext } from "@/contexts/AuthContext";
+import Colors from "@/constants/colors";
 
-function SettingRow({
-  icon,
-  label,
-  children,
-}: {
-  icon: keyof typeof Ionicons.glyphMap;
+interface SettingRowProps {
+  icon: string;
   label: string;
-  children?: React.ReactNode;
-}) {
-  const colors = useColors();
+  value?: string;
+  toggle?: boolean;
+  toggleValue?: boolean;
+  onToggle?: (v: boolean) => void;
+  onPress?: () => void;
+  color?: string;
+  destructive?: boolean;
+}
+
+function SettingRow({ icon, label, value, toggle, toggleValue, onToggle, onPress, color, destructive }: SettingRowProps) {
+  const c = destructive ? Colors.disconnected : (color || Colors.primary);
   return (
-    <View style={[styles.row, { borderColor: colors.border }]}>
-      <View style={[styles.rowIcon, { backgroundColor: `${colors.primary}22` }]}>
-        <Ionicons name={icon} size={18} color={colors.primary} />
+    <Pressable onPress={onPress} style={styles.row} disabled={toggle && !onPress}>
+      <View style={[styles.rowIcon, { backgroundColor: c + "15" }]}>
+        <Ionicons name={icon as any} size={18} color={c} />
       </View>
-      <Text style={[styles.rowLabel, { color: colors.foreground, flex: 1 }]}>{label}</Text>
-      {children}
+      <Text style={[styles.rowLabel, destructive && { color: Colors.disconnected }]}>{label}</Text>
+      {toggle ? (
+        <Switch
+          value={toggleValue}
+          onValueChange={onToggle}
+          trackColor={{ false: Colors.border, true: c + "60" }}
+          thumbColor={toggleValue ? c : Colors.textMuted}
+        />
+      ) : value ? (
+        <Text style={styles.rowValue}>{value}</Text>
+      ) : onPress ? (
+        <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+      ) : null}
+    </Pressable>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <View style={styles.section}>
+      <Text style={styles.sectionLabel}>{title}</Text>
+      <View style={styles.sectionCard}>{children}</View>
     </View>
   );
 }
 
-function SectionHeader({ title }: { title: string }) {
-  const colors = useColors();
-  return <Text style={[styles.sectionTitle, { color: colors.mutedForeground }]}>{title.toUpperCase()}</Text>;
-}
-
 export default function SettingsScreen() {
-  const colors = useColors();
   const insets = useSafeAreaInsets();
-  const { t } = useTranslation();
-  const { language, setLanguage } = useLanguageContext();
-  const { themePreference, setThemePreference } = useThemeContext();
+  const { user, logout } = useAuthContext();
 
-  const version = Constants.expoConfig?.version ?? '1.0.0';
+  const [darkMode, setDarkMode]     = useState(true);
+  const [notifPush, setNotifPush]   = useState(true);
+  const [biometric, setBiometric]   = useState(false);
+  const [pinLock, setPinLock]       = useState(false);
+
+  const handleLogout = () => {
+    Alert.alert("Se déconnecter", "Votre session locale sera effacée.", [
+      { text: "Annuler", style: "cancel" },
+      { text: "Se déconnecter", style: "destructive", onPress: () => logout().then(() => router.replace("/activate")) },
+    ]);
+  };
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
+    <LinearGradient colors={["#060914", "#0A1025", "#060914"]} style={styles.container}>
       <ScrollView
-        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 32 }]}
+        contentContainerStyle={[styles.content, { paddingTop: 16, paddingBottom: insets.bottom + 40 }]}
         showsVerticalScrollIndicator={false}
       >
-        {/* Language */}
-        <SectionHeader title={t('language_section')} />
-        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          {(['fr', 'en'] as Language[]).map((lang, i) => (
-            <Pressable
-              key={lang}
-              onPress={() => setLanguage(lang)}
-              style={[
-                styles.selectRow,
-                { borderColor: colors.border },
-                i > 0 && { borderTopWidth: 1 },
-              ]}
-            >
-              <Text style={[styles.selectLabel, { color: colors.foreground }]}>
-                {lang === 'fr' ? t('french') : t('english')}
-              </Text>
-              {language === lang && (
-                <Ionicons name="checkmark-circle" size={20} color={colors.primary} />
-              )}
-            </Pressable>
-          ))}
+        {/* Account info */}
+        <View style={styles.accountCard}>
+          <View style={styles.accountAvatar}>
+            <Text style={styles.accountInitials}>
+              {(user?.name || "?").split(" ").map((w: string) => w[0]).join("").toUpperCase().slice(0, 2)}
+            </Text>
+          </View>
+          <View>
+            <Text style={styles.accountName}>{user?.name || "Utilisateur"}</Text>
+            <Text style={styles.accountEmail}>{user?.email || ""}</Text>
+          </View>
         </View>
 
         {/* Theme */}
-        <SectionHeader title={t('theme_section')} />
-        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          {(['system', 'dark', 'light'] as const).map((mode, i) => (
-            <Pressable
-              key={mode}
-              onPress={() => setThemePreference(mode)}
-              style={[
-                styles.selectRow,
-                { borderColor: colors.border },
-                i > 0 && { borderTopWidth: 1 },
-              ]}
-            >
-              <Ionicons
-                name={mode === 'dark' ? 'moon-outline' : mode === 'light' ? 'sunny-outline' : 'phone-portrait-outline'}
-                size={18}
-                color={colors.mutedForeground}
-              />
-              <Text style={[styles.selectLabel, { color: colors.foreground, flex: 1 }]}>
-                {mode === 'dark' ? t('theme_dark') : mode === 'light' ? t('theme_light') : t('theme_system')}
-              </Text>
-              {themePreference === mode && (
-                <Ionicons name="checkmark-circle" size={20} color={colors.primary} />
-              )}
-            </Pressable>
-          ))}
-        </View>
+        <Section title="APPARENCE">
+          <SettingRow icon="moon-outline" label="Thème sombre" toggle toggleValue={darkMode} onToggle={setDarkMode} />
+          <View style={styles.divider} />
+          <SettingRow icon="globe-outline" label="Langue" value="Français 🇫🇷" onPress={() => {}} />
+        </Section>
 
         {/* Security */}
-        <SectionHeader title={t('security_section')} />
-        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          <SettingRow icon="finger-print-outline" label={t('biometrics')}>
-            <Switch
-              value={false}
-              onValueChange={() => {}}
-              trackColor={{ false: colors.border, true: colors.primary }}
-              thumbColor="#FFFFFF"
-            />
-          </SettingRow>
-        </View>
+        <Section title="SÉCURITÉ">
+          <SettingRow icon="lock-closed-outline" label="Verrouillage par code" toggle toggleValue={pinLock} onToggle={setPinLock} color={Colors.warning} />
+          <View style={styles.divider} />
+          <SettingRow icon="finger-print-outline" label="Authentification biométrique" toggle toggleValue={biometric} onToggle={setBiometric} color={Colors.warning} />
+        </Section>
+
+        {/* Notifications */}
+        <Section title="NOTIFICATIONS">
+          <SettingRow icon="notifications-outline" label="Notifications push" toggle toggleValue={notifPush} onToggle={setNotifPush} />
+          <View style={styles.divider} />
+          <SettingRow icon="mail-outline" label="Alertes email" toggle toggleValue={false} onToggle={() => {}} />
+        </Section>
 
         {/* About */}
-        <SectionHeader title={t('about_section')} />
-        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          <SettingRow icon="information-circle-outline" label={t('version')}>
-            <Text style={[styles.valueText, { color: colors.mutedForeground }]}>{version}</Text>
-          </SettingRow>
-          <View style={[styles.sep, { backgroundColor: colors.border }]} />
-          <Pressable
-            onPress={() => Linking.openURL('https://sxb-vpn.com/terms')}
-            style={[styles.selectRow, { borderColor: colors.border }]}
-          >
-            <Ionicons name="document-text-outline" size={18} color={colors.mutedForeground} />
-            <Text style={[styles.selectLabel, { color: colors.foreground, flex: 1 }]}>{t('terms')}</Text>
-            <Ionicons name="chevron-forward" size={16} color={colors.mutedForeground} />
-          </Pressable>
-          <View style={[styles.sep, { backgroundColor: colors.border }]} />
-          <Pressable
-            onPress={() => Linking.openURL('https://sxb-vpn.com/privacy')}
-            style={styles.selectRow}
-          >
-            <Ionicons name="shield-outline" size={18} color={colors.mutedForeground} />
-            <Text style={[styles.selectLabel, { color: colors.foreground, flex: 1 }]}>{t('privacy_policy')}</Text>
-            <Ionicons name="chevron-forward" size={16} color={colors.mutedForeground} />
-          </Pressable>
-        </View>
+        <Section title="À PROPOS">
+          <SettingRow icon="information-circle-outline" label="Version" value={`v${Constants.expoConfig?.version ?? "1.0.0"}`} />
+          <View style={styles.divider} />
+          <SettingRow icon="document-text-outline" label="Conditions d'utilisation" onPress={() => {}} />
+          <View style={styles.divider} />
+          <SettingRow icon="shield-checkmark-outline" label="Politique de confidentialité" onPress={() => {}} />
+        </Section>
+
+        {/* Logout */}
+        <Pressable onPress={handleLogout} style={styles.logoutBtn}>
+          <Ionicons name="log-out-outline" size={18} color={Colors.disconnected} />
+          <Text style={styles.logoutText}>Se déconnecter</Text>
+        </Pressable>
+
+        <Text style={styles.footer}>SXB VPN — STUFF X BILAL</Text>
       </ScrollView>
-    </View>
+    </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  content: { paddingHorizontal: 20, paddingTop: 8, gap: 8 },
-  sectionTitle: { fontSize: 12, fontWeight: '600' as const, letterSpacing: 0.8, marginTop: 16, marginBottom: 4, paddingHorizontal: 4 },
-  card: { borderRadius: 16, borderWidth: 1, overflow: 'hidden' },
-  row: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14, gap: 12 },
-  rowIcon: { width: 34, height: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  rowLabel: { fontSize: 15 },
-  selectRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14, gap: 12 },
-  selectLabel: { fontSize: 15 },
-  sep: { height: 1, marginHorizontal: 16 },
-  valueText: { fontSize: 14 },
+  content: { paddingHorizontal: 20, gap: 20 },
+  accountCard: { flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: Colors.bgCard, borderRadius: 20, borderWidth: 1, borderColor: Colors.border, padding: 16 },
+  accountAvatar: { width: 52, height: 52, borderRadius: 26, backgroundColor: Colors.primaryDim, borderWidth: 1.5, borderColor: Colors.primary + "50", alignItems: "center", justifyContent: "center" },
+  accountInitials: { fontSize: 20, fontWeight: "700", color: Colors.primary, fontFamily: "Inter_700Bold" },
+  accountName: { fontSize: 16, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold" },
+  accountEmail: { fontSize: 12, color: Colors.textMuted, fontFamily: "Inter_400Regular", marginTop: 2 },
+  section: { gap: 8 },
+  sectionLabel: { fontSize: 10, fontWeight: "700", color: Colors.textMuted, letterSpacing: 1.5, fontFamily: "Inter_700Bold", paddingLeft: 4 },
+  sectionCard: { backgroundColor: Colors.bgCard, borderRadius: 16, borderWidth: 1, borderColor: Colors.border, paddingHorizontal: 14 },
+  row: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 14 },
+  rowIcon: { width: 36, height: 36, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  rowLabel: { flex: 1, fontSize: 14, color: "#FFF", fontFamily: "Inter_500Medium" },
+  rowValue: { fontSize: 13, color: Colors.textMuted, fontFamily: "Inter_400Regular" },
+  divider: { height: 1, backgroundColor: Colors.border },
+  logoutBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 14, borderRadius: 14, borderWidth: 1, borderColor: Colors.disconnected + "40", backgroundColor: Colors.disconnectedDim },
+  logoutText: { fontSize: 15, fontWeight: "600", color: Colors.disconnected, fontFamily: "Inter_600SemiBold" },
+  footer: { textAlign: "center", fontSize: 10, color: Colors.textMuted, fontFamily: "Inter_400Regular", letterSpacing: 2 },
 });

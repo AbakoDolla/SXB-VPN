@@ -6,7 +6,8 @@ import { requireAuth, requireRole, AuthenticatedRequest } from "../middleware/au
 const router = Router();
 
 const updateRolePermissionsSchema = z.object({
-  permissionIds: z.array(z.string()),
+  permissionIds: z.array(z.string()).optional(),
+  permissions: z.array(z.string()).optional(), // accepte aussi les codes/noms
 });
 
 // GET /api/rbac/roles — liste des rôles avec leurs permissions actuelles
@@ -44,9 +45,22 @@ router.get("/permissions", requireAuth, async (req: AuthenticatedRequest, res: R
   try {
     let permissions: any[] = [];
     if (prisma) {
-      permissions = await prisma.permission.findMany({ orderBy: { name: "asc" } });
+      const raw = await prisma.permission.findMany({ orderBy: { name: "asc" } });
+      permissions = raw.map((p: any) => ({
+        id: p.id,
+        code: p.name,
+        description: p.description || p.name,
+        category: p.name.includes(":") ? p.name.split(":")[0] :
+                  p.name.includes(".") ? p.name.split(".")[0] : "general",
+      }));
     } else {
-      permissions = inMemoryDb.permissions;
+      permissions = inMemoryDb.permissions.map((p: any) => ({
+        id: p.id,
+        code: p.name,
+        description: p.description || p.name,
+        category: p.name.includes(":") ? p.name.split(":")[0] :
+                  p.name.includes(".") ? p.name.split(".")[0] : "general",
+      }));
     }
     return res.json(permissions);
   } catch (err) {
@@ -63,10 +77,20 @@ router.patch("/roles/:id", requireAuth, requireRole(["ADMIN"]), async (req: Auth
 
     let updated: any = null;
     if (prisma) {
+      // Résoudre codes → IDs si permissions (codes) passés
+      let permIds: string[] = body.permissionIds || [];
+      if ((!permIds.length) && body.permissions && body.permissions.length > 0) {
+        const found = await prisma.permission.findMany({ where: { name: { in: body.permissions } } });
+        permIds = found.map((p: any) => p.id);
+      } else if (permIds.length > 0 && !permIds[0].includes("-")) {
+        // IDs passés mais ressemblent à des codes (pas des UUIDs) → résoudre
+        const found = await prisma.permission.findMany({ where: { name: { in: permIds } } });
+        if (found.length > 0) permIds = found.map((p: any) => p.id);
+      }
       await prisma.rolePermission.deleteMany({ where: { roleId: id } });
-      if (body.permissionIds.length > 0) {
+      if (permIds.length > 0) {
         await prisma.rolePermission.createMany({
-          data: body.permissionIds.map((permissionId) => ({ roleId: id, permissionId })),
+          data: permIds.map((permissionId) => ({ roleId: id, permissionId })),
         });
       }
       const role = await prisma.role.findUnique({

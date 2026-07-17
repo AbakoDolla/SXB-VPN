@@ -1,239 +1,110 @@
-import React, { useEffect, useRef } from 'react';
-import { Animated, Image, Platform, StyleSheet, Text, View } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
-import { router } from 'expo-router';
-import { useAuthContext } from '@/contexts/AuthContext';
+import React, { useEffect, useRef } from "react";
+import { Animated, Dimensions, Image, StyleSheet, Text, View } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
+import { router } from "expo-router";
+import { useAuthContext } from "@/contexts/AuthContext";
+import Colors from "@/constants/colors";
 
-const LOGO = require('@/assets/images/icon.png');
-const USE_NATIVE = Platform.OS !== 'web';
+const { width, height } = Dimensions.get("window");
+const LOGO = require("@/assets/images/icon.png");
 
 export default function SplashScreen() {
   const { isLoading, isAuthenticated, hasSeenOnboarding } = useAuthContext();
 
-  // Animation values
-  const logoOpacity   = useRef(new Animated.Value(0)).current;
-  const logoScale     = useRef(new Animated.Value(0.55)).current;
-  const titleOpacity  = useRef(new Animated.Value(0)).current;
-  const titleY        = useRef(new Animated.Value(24)).current;
-  const tagOpacity    = useRef(new Animated.Value(0)).current;
-  const brandOpacity  = useRef(new Animated.Value(0)).current;
-  const ring1Scale    = useRef(new Animated.Value(0.2)).current;
-  const ring1Opacity  = useRef(new Animated.Value(0)).current;
-  const ring2Scale    = useRef(new Animated.Value(0.2)).current;
-  const ring2Opacity  = useRef(new Animated.Value(0)).current;
-  const ring3Scale    = useRef(new Animated.Value(0.2)).current;
-  const ring3Opacity  = useRef(new Animated.Value(0)).current;
-  const glowOpacity   = useRef(new Animated.Value(0)).current;
-
-  const hasRedirected = useRef(false);
+  const logoOpacity = useRef(new Animated.Value(0)).current;
+  const logoScale   = useRef(new Animated.Value(0.7)).current;
+  const glowOpacity = useRef(new Animated.Value(0)).current;
+  const textOpacity = useRef(new Animated.Value(0)).current;
+  const ring1       = useRef(new Animated.Value(0.6)).current;
+  const ring2       = useRef(new Animated.Value(0.6)).current;
 
   useEffect(() => {
-    // Pulsing ring animation
-    const pulseRing = (scale: Animated.Value, opacity: Animated.Value, delay: number) => {
-      Animated.loop(
-        Animated.sequence([
-          Animated.delay(delay),
-          Animated.parallel([
-            Animated.timing(scale,   { toValue: 2.2, duration: 2400, useNativeDriver: USE_NATIVE }),
-            Animated.sequence([
-              Animated.timing(opacity, { toValue: 0.35, duration: 200, useNativeDriver: USE_NATIVE }),
-              Animated.timing(opacity, { toValue: 0,    duration: 2200, useNativeDriver: USE_NATIVE }),
-            ]),
-          ]),
-          Animated.parallel([
-            Animated.timing(scale,   { toValue: 0.2, duration: 0, useNativeDriver: USE_NATIVE }),
-          ]),
-        ])
-      ).start();
-    };
-
-    // Glow pulse
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(glowOpacity, { toValue: 0.18, duration: 1800, useNativeDriver: USE_NATIVE }),
-        Animated.timing(glowOpacity, { toValue: 0.06, duration: 1800, useNativeDriver: USE_NATIVE }),
-      ])
-    ).start();
-
-    // Main entry animation
     Animated.sequence([
-      // 1. Logo pops in
       Animated.parallel([
-        Animated.timing(logoOpacity, { toValue: 1, duration: 500, useNativeDriver: USE_NATIVE }),
-        Animated.spring(logoScale,   { toValue: 1, tension: 55, friction: 6, useNativeDriver: USE_NATIVE }),
+        Animated.timing(logoOpacity, { toValue: 1, duration: 600, useNativeDriver: true }),
+        Animated.spring(logoScale,   { toValue: 1, tension: 80, friction: 7, useNativeDriver: true }),
+        Animated.timing(glowOpacity, { toValue: 1, duration: 800, useNativeDriver: true }),
       ]),
-      // 2. Title slides up
       Animated.parallel([
-        Animated.timing(titleOpacity, { toValue: 1, duration: 450, useNativeDriver: USE_NATIVE }),
-        Animated.timing(titleY,       { toValue: 0, duration: 450, useNativeDriver: USE_NATIVE }),
+        Animated.timing(textOpacity, { toValue: 1, duration: 400, useNativeDriver: true }),
+        Animated.loop(
+          Animated.sequence([
+            Animated.timing(ring1, { toValue: 1.15, duration: 1800, useNativeDriver: true }),
+            Animated.timing(ring1, { toValue: 0.6,  duration: 1800, useNativeDriver: true }),
+          ])
+        ),
+        Animated.loop(
+          Animated.sequence([
+            Animated.delay(600),
+            Animated.timing(ring2, { toValue: 1.3, duration: 2000, useNativeDriver: true }),
+            Animated.timing(ring2, { toValue: 0.6, duration: 2000, useNativeDriver: true }),
+          ])
+        ),
       ]),
-      // 3. Tagline
-      Animated.timing(tagOpacity, { toValue: 1, duration: 350, useNativeDriver: USE_NATIVE }),
-      // 4. Brand
-      Animated.delay(300),
-      Animated.timing(brandOpacity, { toValue: 1, duration: 600, useNativeDriver: USE_NATIVE }),
     ]).start();
-
-    // Staggered rings
-    setTimeout(() => pulseRing(ring1Scale, ring1Opacity, 0),    300);
-    setTimeout(() => pulseRing(ring2Scale, ring2Opacity, 0),    1100);
-    setTimeout(() => pulseRing(ring3Scale, ring3Opacity, 0),    2000);
   }, []);
 
   useEffect(() => {
-    if (!isLoading && !hasRedirected.current) {
-      hasRedirected.current = true;
-      const delay = setTimeout(() => {
-        if (isAuthenticated) {
-          router.replace('/(tabs)/');
-        } else if (!hasSeenOnboarding) {
-          router.replace('/onboarding');
+    if (!isLoading) {
+      const timer = setTimeout(() => {
+        if (!isAuthenticated) {
+          router.replace(hasSeenOnboarding ? "/activate" : "/onboarding");
         } else {
-          router.replace('/activate');
+          router.replace("/(tabs)/");
         }
-      }, 2800);
-      return () => clearTimeout(delay);
+      }, 2200);
+      return () => clearTimeout(timer);
     }
   }, [isLoading, isAuthenticated, hasSeenOnboarding]);
 
   return (
-    <LinearGradient colors={['#050810', '#0A1530', '#050810']} style={styles.container}>
+    <LinearGradient colors={["#060914", "#0A1530", "#060914"]} style={styles.container}>
+      {/* Rings */}
+      <Animated.View style={[styles.ring, styles.ring1, { transform: [{ scale: ring1 }], opacity: glowOpacity }]} />
+      <Animated.View style={[styles.ring, styles.ring2, { transform: [{ scale: ring2 }], opacity: glowOpacity }]} />
 
-      {/* Glow orb behind logo */}
-      <Animated.View style={[styles.glow, { opacity: glowOpacity }]} />
-
-      {/* Pulse rings */}
-      <Animated.View style={[styles.ring, { opacity: ring1Opacity, transform: [{ scale: ring1Scale }] }]} />
-      <Animated.View style={[styles.ring, styles.ring2, { opacity: ring2Opacity, transform: [{ scale: ring2Scale }] }]} />
-      <Animated.View style={[styles.ring, styles.ring3, { opacity: ring3Opacity, transform: [{ scale: ring3Scale }] }]} />
-
-      {/* Content */}
-      <View style={styles.content}>
-        {/* Logo */}
-        <Animated.View style={[styles.logoWrap, { opacity: logoOpacity, transform: [{ scale: logoScale }] }]}>
-          <View style={styles.logoBg} />
-          <Image source={LOGO} style={styles.logo} resizeMode="contain" />
-        </Animated.View>
-
-        {/* SXB VPN title */}
-        <Animated.Text
-          style={[styles.title, { opacity: titleOpacity, transform: [{ translateY: titleY }] }]}
-        >
-          SXB VPN
-        </Animated.Text>
-
-        {/* Tagline */}
-        <Animated.Text style={[styles.tagline, { opacity: tagOpacity }]}>
-          Protection · Vitesse · Liberté
-        </Animated.Text>
-      </View>
-
-      {/* Bottom brand */}
-      <Animated.View style={[styles.brandWrap, { opacity: brandOpacity }]}>
-        <View style={styles.brandLine} />
-        <Text style={styles.brand}>by StuffxBilal</Text>
-        <View style={styles.brandLine} />
+      {/* Logo */}
+      <Animated.View style={[styles.logoWrap, { opacity: logoOpacity, transform: [{ scale: logoScale }] }]}>
+        <Animated.View style={[styles.glowBall, { opacity: glowOpacity }]} />
+        <Image source={LOGO} style={styles.logo} resizeMode="contain" />
       </Animated.View>
 
-      {/* Loading dots */}
-      {isLoading && (
-        <View style={styles.loadingWrap}>
-          <View style={[styles.dot, styles.dot1]} />
-          <View style={[styles.dot, styles.dot2]} />
-          <View style={[styles.dot, styles.dot3]} />
+      {/* Text */}
+      <Animated.View style={[styles.textWrap, { opacity: textOpacity }]}>
+        <Text style={styles.brand}>SXB VPN</Text>
+        <Text style={styles.tagline}>STUFF X BILAL</Text>
+        <View style={styles.badge}>
+          <View style={styles.badgeDot} />
+          <Text style={styles.badgeText}>Connexion sécurisée</Text>
         </View>
-      )}
+      </Animated.View>
     </LinearGradient>
   );
 }
 
-const RING_BASE = 220;
 const styles = StyleSheet.create({
-  container: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-
-  glow: {
-    position: 'absolute',
-    width: 280,
-    height: 280,
-    borderRadius: 140,
-    backgroundColor: '#0055CC',
-    alignSelf: 'center',
-    top: '50%',
-    marginTop: -140,
-  },
-
+  container: { flex: 1, alignItems: "center", justifyContent: "center" },
   ring: {
-    position: 'absolute',
-    width: RING_BASE,
-    height: RING_BASE,
-    borderRadius: RING_BASE / 2,
+    position: "absolute",
+    borderRadius: 999,
     borderWidth: 1,
-    borderColor: '#007AFF',
-    alignSelf: 'center',
-    top: '50%',
-    marginTop: -(RING_BASE / 2 + 30),
+    borderColor: "rgba(0,212,255,0.15)",
   },
-  ring2: { width: RING_BASE + 40, height: RING_BASE + 40, borderRadius: (RING_BASE + 40) / 2, borderColor: '#0055CC', marginTop: -(RING_BASE / 2 + 50) },
-  ring3: { width: RING_BASE - 30, height: RING_BASE - 30, borderRadius: (RING_BASE - 30) / 2, borderColor: '#00B4FF', marginTop: -(RING_BASE / 2 + 15) },
-
-  content: { alignItems: 'center', gap: 14 },
-
-  logoWrap: { alignItems: 'center', justifyContent: 'center', position: 'relative', marginBottom: 8 },
-  logoBg: {
-    position: 'absolute',
-    width: 180,
-    height: 180,
-    borderRadius: 90,
-    backgroundColor: '#003399',
-    opacity: 0.2,
+  ring1: { width: 280, height: 280 },
+  ring2: { width: 380, height: 380, borderColor: "rgba(0,212,255,0.08)" },
+  logoWrap: { alignItems: "center", justifyContent: "center", marginBottom: 32 },
+  glowBall: {
+    position: "absolute",
+    width: 160,
+    height: 160,
+    borderRadius: 80,
+    backgroundColor: "rgba(0,212,255,0.12)",
   },
-  logo: { width: 130, height: 130 },
-
-  title: {
-    fontSize: 42,
-    fontWeight: '800',
-    color: '#FFFFFF',
-    letterSpacing: 8,
-    fontFamily: 'Inter_700Bold',
-  },
-
-  tagline: {
-    fontSize: 13,
-    color: '#4B6A9A',
-    letterSpacing: 1.2,
-    fontFamily: 'Inter_400Regular',
-  },
-
-  brandWrap: {
-    position: 'absolute',
-    bottom: 50,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  brandLine: { width: 30, height: 0.5, backgroundColor: '#1E2E45' },
-  brand: {
-    fontSize: 11,
-    color: '#1E3050',
-    letterSpacing: 2,
-    fontFamily: 'Inter_400Regular',
-    textTransform: 'uppercase',
-  },
-
-  loadingWrap: {
-    position: 'absolute',
-    bottom: 100,
-    flexDirection: 'row',
-    gap: 6,
-  },
-  dot: {
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
-    backgroundColor: '#007AFF',
-    opacity: 0.6,
-  },
-  dot1: {},
-  dot2: { opacity: 0.4 },
-  dot3: { opacity: 0.2 },
+  logo: { width: 120, height: 120, zIndex: 1 },
+  textWrap: { alignItems: "center", gap: 6 },
+  brand: { fontSize: 28, fontWeight: "700", color: "#FFFFFF", fontFamily: "Inter_700Bold", letterSpacing: 2 },
+  tagline: { fontSize: 11, color: Colors.primary, fontFamily: "Inter_600SemiBold", letterSpacing: 4 },
+  badge: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 12, paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.bgCard },
+  badgeDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: Colors.connected },
+  badgeText: { fontSize: 12, color: Colors.textSecondary, fontFamily: "Inter_500Medium" },
 });
