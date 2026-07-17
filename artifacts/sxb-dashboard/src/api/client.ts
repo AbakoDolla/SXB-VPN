@@ -3,6 +3,10 @@
 /// rafraîchissement automatique en cas d'expiration, et normalise les
 /// erreurs.
 
+// Base URL — pointe directement vers la prod pour éviter le routage
+// Replit qui intercepte /api/* via l'artifact api-server local.
+const API_BASE = "https://vpnsxb.afrihall.com/api";
+
 const ACCESS_TOKEN_KEY = "sxb_access_token";
 const REFRESH_TOKEN_KEY = "sxb_refresh_token";
 
@@ -43,7 +47,7 @@ async function tryRefreshToken(): Promise<boolean> {
   if (!refreshToken) return false;
 
   if (!refreshPromise) {
-    refreshPromise = fetch("/api/auth/refresh", {
+    refreshPromise = fetch(`${API_BASE}/auth/refresh`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refreshToken }),
@@ -80,7 +84,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}, 
     if (token) headers["Authorization"] = `Bearer ${token}`;
   }
 
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
