@@ -2,7 +2,7 @@ import { useState } from "react";
 import { ExternalLink, Monitor, RefreshCw } from "lucide-react";
 
 const XPANEL_IP_URL = "http://141.95.112.93:8080/kqUtkMEvgdtx/";
-const XPANEL_DOMAIN_URL = "https://xpanel.vpnsxb.afrihall.com/kqUtkMEvgdtx/";
+const XPANEL_DOMAIN_URL = "https://vpnsxb.afrihall.com:8443/kqUtkMEvgdtx/";
 
 export default function XPanelView({ currentUserRole }: { currentUserRole: string }) {
   const [iframeKey, setIframeKey] = useState(0);
