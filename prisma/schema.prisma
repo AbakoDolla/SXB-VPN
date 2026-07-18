@@ -90,6 +90,7 @@ model VpnClient {
 
   tokens       TokenSXB[]
 
+  subscriptions   Subscription[]
   xrayAccounts    XrayAccount[]
   singboxAccounts SingboxAccount[]
   @@map("vpn_clients")
@@ -310,4 +311,76 @@ model VpnLog {
   timestamp   DateTime @default(now())
 
   @@map("vpn_logs")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SXB VPN OFFLINE-FIRST — VPN Profiles + Subscriptions
+// ═══════════════════════════════════════════════════════════════
+
+model VpnProfile {
+  id               String         @id @default(uuid())
+  name             String
+  description      String?
+  protocol         String         // ssh | vless | vmess | trojan | shadowsocks | singbox
+  host             String
+  port             Int
+  username         String?
+  password         String?        // AES-256-CBC encrypted
+  uuid             String?        @unique @default(uuid())
+  path             String?
+  network          String?        @default("ws")
+  tls              Boolean        @default(false)
+  sni              String?
+  dns              String?
+  payloadId        String?
+  offlineValidDays Int            @default(7)
+  method           String?
+  status           String         @default("active") // active | archived
+  createdBy        String?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  subscriptions    Subscription[]
+
+  @@map("vpn_profiles")
+}
+
+model Subscription {
+  id              String               @id @default(uuid())
+  name            String
+  clientId        String
+  client          VpnClient            @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  profileId       String
+  profile         VpnProfile           @relation(fields: [profileId], references: [id])
+  dataToken       String               @unique // SXB-DATA-XXXX-XXXX-XXXX
+  quotaBytes      BigInt               @default(0)
+  quotaUsed       BigInt               @default(0)
+  durationDays    Int
+  deviceLimit     Int                  @default(1)
+  startAt         DateTime             @default(now())
+  expireAt        DateTime?
+  status          String               @default("active") // active | expired | revoked | suspended
+  lastProvisionAt DateTime?
+  lastSyncAt      DateTime?
+  revokedAt       DateTime?
+  revokeReason    String?
+  createdBy       String?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  devices         SubscriptionDevice[]
+
+  @@map("subscriptions")
+}
+
+model SubscriptionDevice {
+  id             String       @id @default(uuid())
+  subscriptionId String
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  deviceId       String
+  activatedAt    DateTime     @default(now())
+  lastSeenAt     DateTime?
+
+  @@unique([subscriptionId, deviceId])
+  @@map("subscription_devices")
 }
