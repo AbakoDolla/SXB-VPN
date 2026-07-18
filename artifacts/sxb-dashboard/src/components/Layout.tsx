@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { User, UserRole } from '../types';
 import {
   LayoutDashboard, Users, Server, Shield, Key, Ticket, Smartphone,
-  Settings, LogOut, PanelsLeftRight, UserCog,
+  Settings, LogOut, PanelsLeftRight, UserCog, Terminal, Code2, Zap, Box,
   Menu, X, UserPlus, HeadphonesIcon, FileText, BadgePercent,
 } from 'lucide-react';
 
