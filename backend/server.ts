@@ -25,6 +25,10 @@ import adminTokensRouter from "./server/routes/admin-tokens";
 import supportRouter from "./server/routes/support";
 import auditLogsRouter from "./server/routes/audit-logs";
 import devicesRouter from "./server/routes/devices";
+import sshRouter from "./server/routes/ssh";
+import payloadRouter from "./server/routes/payload";
+import xrayRouter from "./server/routes/xray";
+import singboxRouter from "./server/routes/singbox";
 
 async function startServer() {
   const app = express();
@@ -109,6 +113,10 @@ async function startServer() {
   app.use("/api/support", supportRouter);
   app.use("/api/audit-logs", auditLogsRouter);
   app.use("/api/devices", devicesRouter);
+  app.use("/api/ssh", sshRouter);
+  app.use("/api/payload", payloadRouter);
+  app.use("/api/xray", xrayRouter);
+  app.use("/api/singbox", singboxRouter);
 
   // Global Error Handler with support for Multilingual Error i18n
   app.use((err: any, req: Request, res: Response, next: NextFunction) => {

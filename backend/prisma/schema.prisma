@@ -183,3 +183,129 @@ model SupportTicket {
 
   @@map("support_tickets")
 }
+
+// ═══════════════════════════════════════════════════════════════
+// SXB VPN CORE — NEW MODULES (added, existing tables preserved)
+// ═══════════════════════════════════════════════════════════════
+
+model SshAccount {
+  id              String      @id @default(uuid())
+  name            String
+  host            String
+  port            Int         @default(22)
+  username        String
+  password        String      // AES-256-CBC encrypted
+  mode            String      @default("create") // "create" | "import"
+  expireAt        DateTime?
+  quotaTotal      BigInt?
+  quotaUsed       BigInt      @default(0)
+  connectionLimit Int         @default(1)
+  compression     Boolean     @default(false)
+  tcpNodelay      Boolean     @default(true)
+  slowDns         Boolean     @default(false)
+  dns             String?
+  sni             String?
+  payloadId       String?
+  payload         SshPayload? @relation(fields: [payloadId], references: [id])
+  status          String      @default("active") // active | suspended | expired
+  createdBy       String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@map("ssh_accounts")
+}
+
+model SshPayload {
+  id          String       @id @default(uuid())
+  name        String
+  host        String?
+  sni         String?
+  port        Int?
+  headers     Json?
+  content     String?
+  status      String       @default("active")
+  sshAccounts SshAccount[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@map("ssh_payloads")
+}
+
+model XrayAccount {
+  id         String     @id @default(uuid())
+  name       String
+  protocol   String     // vless | vmess | trojan | shadowsocks
+  uuid       String     @unique @default(uuid())
+  host       String
+  port       Int
+  path       String?
+  tls        Boolean    @default(false)
+  sni        String?
+  network    String?    @default("ws")
+  password   String?
+  method     String?
+  quotaTotal BigInt?
+  quotaUsed  BigInt     @default(0)
+  expireAt   DateTime?
+  maxDevices Int        @default(1)
+  status     String     @default("active")
+  serverId   String?
+  clientId   String?
+  client     VpnClient? @relation(fields: [clientId], references: [id])
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  @@map("xray_accounts")
+}
+
+model SingboxAccount {
+  id         String     @id @default(uuid())
+  name       String
+  protocol   String     // vless | trojan | shadowsocks | hysteria2 | tuic
+  uuid       String     @unique @default(uuid())
+  host       String
+  port       Int
+  path       String?
+  tls        Boolean    @default(true)
+  sni        String?
+  network    String?    @default("ws")
+  password   String?
+  method     String?
+  quotaTotal BigInt?
+  quotaUsed  BigInt     @default(0)
+  expireAt   DateTime?
+  maxDevices Int        @default(1)
+  status     String     @default("active")
+  serverId   String?
+  clientId   String?
+  client     VpnClient? @relation(fields: [clientId], references: [id])
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  @@map("singbox_accounts")
+}
+
+model TrafficUsage {
+  id          String   @id @default(uuid())
+  clientId    String?
+  accountId   String?
+  accountType String?  // ssh | xray | singbox
+  download    BigInt   @default(0)
+  upload      BigInt   @default(0)
+  timestamp   DateTime @default(now())
+
+  @@map("traffic_usage")
+}
+
+model VpnLog {
+  id          String   @id @default(uuid())
+  clientId    String?
+  accountId   String?
+  protocol    String?
+  action      String   // connect | disconnect | error
+  ipAddress   String?
+  details     String?
+  timestamp   DateTime @default(now())
+
+  @@map("vpn_logs")
+}

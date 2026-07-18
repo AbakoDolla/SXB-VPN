@@ -80,7 +80,15 @@ async function main() {
     // Analytics
     { name: 'analytics.view', description: 'Voir les analytiques et logs' },
     // RBAC
-    { name: 'rbac.manage',    description: 'Gérer les rôles et permissions' },
+    { name: 'ssh.view',      description: 'Voir les comptes SSH' },
+    { name: 'ssh.manage',    description: 'Gérer les comptes SSH' },
+    { name: 'payload.view',  description: 'Voir les payloads SSH' },
+    { name: 'payload.manage',description: 'Gérer les payloads SSH' },
+    { name: 'xray.view',     description: 'Voir les comptes Xray' },
+    { name: 'xray.manage',   description: 'Gérer les comptes Xray' },
+    { name: 'singbox.view',  description: 'Voir les comptes Sing-box' },
+    { name: 'singbox.manage',description: 'Gérer les comptes Sing-box' },
+    { name: 'rbac.manage',   description: 'Gérer les rôles et permissions' },
     // Settings
     { name: 'settings.manage', description: 'Modifier les paramètres système' },
     // Config
