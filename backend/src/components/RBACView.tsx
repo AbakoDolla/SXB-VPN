@@ -10,10 +10,11 @@ interface RBACViewProps {
 }
 
 const ROLE_STYLES: Record<string, { badge: string; bg: string; dot: string }> = {
-  SUPER_ADMIN: { badge: "bg-rose-950/60 text-rose-300 border-rose-700/40",   bg: "bg-rose-500/10",   dot: "bg-rose-400" },
-  ADMIN:       { badge: "bg-cyan-950/60 text-cyan-300 border-cyan-700/40",   bg: "bg-cyan-500/10",   dot: "bg-cyan-400" },
-  SUPPORT:     { badge: "bg-blue-950/60 text-blue-300 border-blue-700/40",   bg: "bg-blue-500/10",   dot: "bg-blue-400" },
+  SUPER_ADMIN: { badge: "bg-rose-950/60 text-rose-300 border-rose-700/40",     bg: "bg-rose-500/10",   dot: "bg-rose-400" },
+  ADMIN:       { badge: "bg-cyan-950/60 text-cyan-300 border-cyan-700/40",     bg: "bg-cyan-500/10",   dot: "bg-cyan-400" },
+  SUPPORT:     { badge: "bg-blue-950/60 text-blue-300 border-blue-700/40",     bg: "bg-blue-500/10",   dot: "bg-blue-400" },
   RESELLER:    { badge: "bg-purple-950/60 text-purple-300 border-purple-700/40", bg: "bg-purple-500/10", dot: "bg-purple-400" },
+  CLIENT:      { badge: "bg-gray-900/60 text-gray-400 border-gray-700/40",    bg: "bg-gray-500/10",   dot: "bg-gray-400" },
 };
 
 function RolePill({ name }: { name: string }) {
