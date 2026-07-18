@@ -29,6 +29,7 @@ import sshRouter from "./server/routes/ssh";
 import payloadRouter from "./server/routes/payload";
 import xrayRouter from "./server/routes/xray";
 import singboxRouter from "./server/routes/singbox";
+import sessionsRouter from "./server/routes/sessions";
 import vpnProfilesRouter from "./server/routes/vpn-profiles";
 import subscriptionsRouter from "./server/routes/subscriptions";
 import provisionRouter from "./server/routes/provision";
@@ -125,6 +126,7 @@ async function startServer() {
   app.use("/api/payload", payloadRouter);
   app.use("/api/xray", xrayRouter);
   app.use("/api/singbox", singboxRouter);
+  app.use("/api/sessions", sessionsRouter);
   app.use("/api/vpn-profiles", vpnProfilesRouter);
   app.use("/api/subscriptions", subscriptionsRouter);
   app.use("/api/provision", provisionRouter);

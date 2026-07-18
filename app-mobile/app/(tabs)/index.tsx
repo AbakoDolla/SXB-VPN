@@ -17,10 +17,17 @@ const LOGO = require("@/assets/images/icon.png");
 // ── VPN Button States ─────────────────────────────────────────────────────────
 type BtnState = "no_account" | "no_package" | "connect" | "connecting" | "connected" | "expired";
 
-function getButtonState(accountState: any, isConnected: boolean, isConnecting: boolean): BtnState {
+function getButtonState(
+  accountState: any,
+  isConnected: boolean,
+  isConnecting: boolean,
+  subscriptionUrl: string | null,
+): BtnState {
   if (!accountState) return "no_account";
   if (isConnecting) return "connecting";
   if (isConnected) return "connected";
+  // Si une configuration est déjà importée → toujours permettre la connexion
+  if (subscriptionUrl) return "connect";
   const s = accountState.state;
   if (s === "no_package") return "no_package";
   if (s === "expired") return "expired";
@@ -113,7 +120,7 @@ export default function HomeScreen() {
   const ring1     = useRef(new Animated.Value(1)).current;
   const ring2     = useRef(new Animated.Value(1)).current;
 
-  const btnState = getButtonState(accountState, isConnected, isConnecting);
+  const btnState = getButtonState(accountState, isConnected, isConnecting, subscriptionUrl);
 
   // Pulse animation
   useEffect(() => {

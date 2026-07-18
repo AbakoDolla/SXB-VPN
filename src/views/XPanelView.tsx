@@ -1,13 +1,10 @@
 import { useState } from "react";
 import { ExternalLink, Monitor, RefreshCw } from "lucide-react";
 
-const XPANEL_IP_URL = "http://141.95.112.93:8080/kqUtkMEvgdtx/";
-const XPANEL_DOMAIN_URL = "https://xpanel.vpnsxb.afrihall.com/kqUtkMEvgdtx/";
+const XPANEL_URL = "https://vpnsxb.afrihall.com:8443/kqUtkMEvgdtx/";
 
 export default function XPanelView({ currentUserRole }: { currentUserRole: string }) {
   const [iframeKey, setIframeKey] = useState(0);
-  const [useIp, setUseIp] = useState(true);
-  const activeUrl = useIp ? XPANEL_IP_URL : XPANEL_DOMAIN_URL;
 
   return (
     <div className="space-y-4 h-full flex flex-col">
@@ -18,22 +15,6 @@ export default function XPanelView({ currentUserRole }: { currentUserRole: strin
           <p className="text-gray-400 text-sm mt-1">Panel d'administration VPN ({currentUserRole})</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Toggle IP vs Domaine */}
-          <div className="flex bg-[#0f1218] border border-[#1a1f2e] rounded-lg overflow-hidden text-xs">
-            <button
-              onClick={() => setUseIp(true)}
-              className={`px-3 py-2 transition-colors ${useIp ? "bg-[#5B8DEF] text-white" : "text-gray-400 hover:text-white"}`}
-            >
-              IP (141.95.112.93:8080)
-            </button>
-            <button
-              onClick={() => setUseIp(false)}
-              className={`px-3 py-2 transition-colors ${!useIp ? "bg-[#5B8DEF] text-white" : "text-gray-400 hover:text-white"}`}
-            >
-              Domaine
-            </button>
-          </div>
-
           {/* Reload */}
           <button
             onClick={() => setIframeKey(k => k + 1)}
@@ -46,7 +27,7 @@ export default function XPanelView({ currentUserRole }: { currentUserRole: strin
 
           {/* Ouvrir dans un nouvel onglet */}
           <a
-            href={activeUrl}
+            href={XPANEL_URL}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[#5B8DEF] hover:bg-[#4a7de0] text-white text-xs transition-colors"
@@ -60,14 +41,14 @@ export default function XPanelView({ currentUserRole }: { currentUserRole: strin
       {/* URL info */}
       <div className="bg-[#0f1218] border border-[#1a1f2e] rounded-lg px-4 py-2 flex items-center gap-2 text-xs text-gray-400">
         <Monitor size={13} className="text-[#5B8DEF] shrink-0" />
-        <span className="font-mono truncate">{activeUrl}</span>
+        <span className="font-mono truncate">{XPANEL_URL}</span>
       </div>
 
       {/* Iframe XPanel */}
       <div className="flex-1 bg-[#0f1218] border border-[#1a1f2e] rounded-xl overflow-hidden" style={{ minHeight: "600px" }}>
         <iframe
           key={iframeKey}
-          src={activeUrl}
+          src={XPANEL_URL}
           title="XPanel"
           className="w-full h-full border-0"
           style={{ height: "700px" }}
@@ -78,8 +59,7 @@ export default function XPanelView({ currentUserRole }: { currentUserRole: strin
 
       {/* Fallback note */}
       <p className="text-gray-600 text-xs text-center">
-        Si l'interface ne s'affiche pas, cliquer sur "Ouvrir XPanel" pour l'ouvrir directement.
-        Port 8080 requis (accès direct via IP VPS).
+        Si l'interface ne s'affiche pas, cliquer sur "Ouvrir XPanel" pour l'ouvrir dans un nouvel onglet.
       </p>
     </div>
   );

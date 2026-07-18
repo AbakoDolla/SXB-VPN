@@ -10,6 +10,12 @@ import RBACView from "./components/RBACView";
 import SettingsView from "./components/SettingsView";
 import AccountsView from "./components/AccountsView";
 import DevicesView from "./components/DevicesView";
+import SSHManagerView from "./components/SSHManagerView";
+import PayloadManagerView from "./components/PayloadManagerView";
+import XrayManagerView from "./components/XrayManagerView";
+import SingboxManagerView from "./components/SingboxManagerView";
+import VpnProfilesView from "./components/VpnProfilesView";
+import SubscriptionsView from "./components/SubscriptionsView";
 import Layout from "./components/Layout";
 import { useEffect, useState } from 'react';
 import { I18nProvider, useTranslation } from './contexts/I18nContext';
@@ -251,6 +257,18 @@ function MainApp() {
         return <ResellersView currentUserRole={role} actorName={currentUser.name} />;
       case 'servers':
         return <ServersView currentUserRole={role} />;
+      case 'ssh':
+        return <SSHManagerView currentUserRole={role} />;
+      case 'payload':
+        return <PayloadManagerView currentUserRole={role} />;
+      case 'xray':
+        return <XrayManagerView currentUserRole={role} />;
+      case 'vpn-profiles':
+        return <VpnProfilesView currentUserRole={role} />;
+      case 'subscriptions':
+        return <SubscriptionsView currentUserRole={role} />;
+      case 'singbox':
+        return <SingboxManagerView currentUserRole={role} />;
       case 'xpanel':
         return <XPanelView currentUserRole={role} />;
       case 'devices':

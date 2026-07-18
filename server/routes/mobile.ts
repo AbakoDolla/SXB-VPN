@@ -37,7 +37,7 @@ async function findClientByAccountToken(rawToken: string) {
 
 async function findClientByUserId(userId: string) {
   if (prisma) {
-    return prisma.vpnClient.findFirst({ where: { userId } });
+    return (prisma as any).vpnClient.findFirst({ where: { userId }, include: { user: true } });
   }
   return inMemoryDb.vpnClients.find((c) => c.userId === userId) || null;
 }
@@ -107,12 +107,12 @@ router.post("/auth/activate", async (req, res: Response) => {
         });
       }
       if (!client.deviceId && prisma) {
-        try {
-          await (prisma as any).vpnClient.update({
-            where: { id: client.id },
-            data: { deviceId: incomingDeviceId, activatedAt: new Date() },
-          });
-        } catch (_) {}
+        // FIX-005: No silent catch — propagate errors properly
+        await (prisma as any).vpnClient.update({
+          where: { id: client.id },
+          data: { deviceId: incomingDeviceId, activatedAt: new Date() },
+        });
+        client.deviceId = incomingDeviceId;
       }
     }
     
@@ -131,9 +131,36 @@ router.post("/auth/activate", async (req, res: Response) => {
 
     await logDbActivity(client.user.id, `Mobile device activated for account ${client.token}`, "success", req.ip);
 
+    // Create/update ActivationSession for persistent session tracking
+    if (incomingDeviceId && prisma) {
+      try {
+        await (prisma as any).activationSession.upsert({
+          where: { clientId_deviceId: { clientId: client.id, deviceId: incomingDeviceId } },
+          create: {
+            clientId: client.id,
+            deviceId: incomingDeviceId,
+            activationDate: new Date(),
+            expirationDate: client.expireAt || null,
+            lastSync: new Date(),
+            status: 'active',
+            ipAddress: req.ip || null,
+          },
+          update: {
+            activationDate: new Date(),
+            expirationDate: client.expireAt || null,
+            lastSync: new Date(),
+            status: 'active',
+            ipAddress: req.ip || null,
+          },
+        });
+      } catch (sessionErr) {
+        console.warn('Could not create ActivationSession:', sessionErr);
+      }
+    }
+
     return res.json({
       message: "Compte activé",
-      client: computeAccountState(client),
+      accountState: computeAccountState(client),
       user: { id: client.user.id, name: client.user.name },
       ...tokens,
     });
@@ -171,7 +198,7 @@ router.get("/me", async (req: AuthenticatedRequest, res: Response) => {
     if (!client) {
       return res.status(404).json({ error: "errors.mobile.no_account", message: "Aucun compte VPN associé" });
     }
-    return res.json({ client: computeAccountState(client), accountToken: client.token });
+    return res.json({ accountState: computeAccountState(client), user: client.user ? { id: client.user.id, name: client.user.name } : { id: req.user.userId, name: "Utilisateur" }, accountToken: client.token });
   } catch (err) {
     console.error("Mobile /me error:", err);
     return res.status(500).json({ error: "errors.server", message: "Échec du chargement du compte" });
@@ -217,7 +244,7 @@ router.post("/packages/activate", async (req: AuthenticatedRequest, res: Respons
       ]);
 
       await logDbActivity(req.user!.userId, `Package ${normalized} activated via mobile app`, "success", req.ip);
-      return res.json({ message: "Forfait activé", client: computeAccountState(updatedClient) });
+      return res.json({ message: "Forfait activé", accountState: computeAccountState(updatedClient) });
     }
 
     // In-memory fallback
@@ -236,7 +263,7 @@ router.post("/packages/activate", async (req: AuthenticatedRequest, res: Respons
     client.expireAt = baseExpiry;
     client.status = "active";
 
-    return res.json({ message: "Forfait activé", client: computeAccountState(client) });
+    return res.json({ message: "Forfait activé", accountState: computeAccountState(client) });
   } catch (err: any) {
     if (err?.issues) {
       return res.status(400).json({ error: "errors.validation", message: "Format de code invalide" });
@@ -310,6 +337,151 @@ router.post("/vpn/session", async (req: AuthenticatedRequest, res: Response) => 
     return res.json({ message: "ok" });
   } catch (err) {
     return res.status(400).json({ error: "errors.validation", message: "Action invalide" });
+  }
+});
+
+
+// GET /api/mobile/notifications — notifications basées sur l'état du compte
+router.get('/notifications', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const client: any = await findClientByUserId(req.user!.userId);
+    if (!client) return res.json([]);
+
+    const state = computeAccountState(client);
+    const notifications: any[] = [];
+    const now = new Date().toISOString();
+
+    if (state.state === 'expired') {
+      notifications.push({
+        id: 'notif-expired-' + Date.now(),
+        type: 'warning',
+        title: 'Forfait expiré',
+        message: 'Votre forfait VPN a expiré. Activez un nouveau code pour continuer.',
+        createdAt: now,
+        read: false,
+      });
+    } else if (state.quotaRemainingGb < 1 && state.state === 'ready') {
+      notifications.push({
+        id: 'notif-low-quota-' + Date.now(),
+        type: 'warning',
+        title: 'Quota presque épuisé',
+        message: 'Il vous reste moins de 1 GB. Rechargez votre forfait maintenant.',
+        createdAt: now,
+        read: false,
+      });
+    } else if (state.state === 'no_package') {
+      notifications.push({
+        id: 'notif-no-package-' + Date.now(),
+        type: 'info',
+        title: 'Aucun forfait actif',
+        message: 'Activez un code forfait SXB-DATA pour commencer à naviguer.',
+        createdAt: now,
+        read: false,
+      });
+    } else if (state.state === 'ready') {
+      if (state.expireAt) {
+        const daysLeft = Math.ceil((new Date(state.expireAt).getTime() - Date.now()) / 86400000);
+        if (daysLeft <= 5) {
+          notifications.push({
+            id: 'notif-expire-soon-' + Date.now(),
+            type: 'warning',
+            title: 'Forfait bientôt expiré',
+            message: 'Votre forfait expire bientôt. Pensez à le renouveler avant expiration.',
+            createdAt: now,
+            read: false,
+          });
+        }
+      }
+      notifications.push({
+        id: 'notif-welcome',
+        type: 'success',
+        title: 'Compte actif',
+        message: 'Votre compte est actif. Connexion VPN disponible.',
+        createdAt: now,
+        read: true,
+      });
+    } else if (state.state === 'suspended') {
+      notifications.push({
+        id: 'notif-suspended',
+        type: 'error',
+        title: 'Compte suspendu',
+        message: 'Votre compte a été suspendu. Contactez le support SXB.',
+        createdAt: now,
+        read: false,
+      });
+    }
+
+    // Ajouter les derniers logs d'audit si disponibles
+    if (prisma) {
+      try {
+        const logs = await prisma.auditLog.findMany({
+          where: { userId: req.user!.userId },
+          orderBy: { timestamp: 'desc' },
+          take: 5,
+        });
+        for (const log of logs) {
+          if (log.action.includes('VPN session')) {
+            notifications.push({
+              id: 'log-' + log.id,
+              type: log.type === 'success' ? 'info' : log.type,
+              title: log.action.includes('connect') ? 'Connexion VPN' : 'Déconnexion VPN',
+              message: log.action,
+              createdAt: log.timestamp.toISOString(),
+              read: true,
+            });
+          }
+        }
+      } catch (_) {}
+    }
+
+    return res.json(notifications);
+  } catch (err) {
+    console.error('Mobile notifications error:', err);
+    return res.json([]);
+  }
+});
+
+// GET /api/mobile/history — historique des sessions VPN
+router.get('/history', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const client: any = await findClientByUserId(req.user!.userId);
+    const history: any[] = [];
+
+    if (prisma) {
+      const logs = await prisma.auditLog.findMany({
+        where: { userId: req.user!.userId },
+        orderBy: { timestamp: 'desc' },
+        take: 100,
+      });
+
+      for (const log of logs) {
+        history.push({
+          id: log.id,
+          action: log.action,
+          type: log.type,
+          timestamp: log.timestamp.toISOString(),
+          ipAddress: log.ipAddress || null,
+        });
+      }
+    }
+
+    // Ajouter info quota si disponible
+    if (client) {
+      const state = computeAccountState(client);
+      history.unshift({
+        id: 'account-state-current',
+        action: 'Etat du compte : ' + state.state + ' | Quota restant : ' + Math.round(state.quotaRemainingGb) + ' GB',
+        type: 'info',
+        timestamp: new Date().toISOString(),
+        ipAddress: null,
+        isAccountSummary: true,
+      });
+    }
+
+    return res.json(history);
+  } catch (err) {
+    console.error('Mobile history error:', err);
+    return res.json([]);
   }
 });
 

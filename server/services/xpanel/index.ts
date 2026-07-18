@@ -154,6 +154,23 @@ class XPanelServiceClass {
     return Array.from({ length: 16 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
   }
 
+
+  async getInbounds(): Promise<any[]> {
+    try {
+      const r = await this.request<any[] | { data?: any[]; inbounds?: any[] }>('/api/inbounds');
+      if (Array.isArray(r)) return r;
+      return (r as any).data || (r as any).inbounds || [];
+    } catch { return []; }
+  }
+
+  async getSubscriptionLink(userId: string): Promise<string | null> {
+    try {
+      if (!userId) return null;
+      const r = await this.request<{ url?: string; link?: string; subUrl?: string }>(`/api/users/${userId}/subscription`);
+      return r.url || r.link || r.subUrl || null;
+    } catch { return null; }
+  }
+
   async syncUsers(users: Array<{ id: string; token: string; quotaTotal: bigint; expireAt: Date }>): Promise<void> {
     try {
       const xUsers = await this.getUsers();

@@ -93,6 +93,8 @@ model VpnClient {
   subscriptions   Subscription[]
   xrayAccounts    XrayAccount[]
   singboxAccounts SingboxAccount[]
+  activationSessions ActivationSession[]
+
   @@map("vpn_clients")
 }
 
@@ -383,4 +385,22 @@ model SubscriptionDevice {
 
   @@unique([subscriptionId, deviceId])
   @@map("subscription_devices")
+}
+
+model ActivationSession {
+  id             String    @id @default(uuid())
+  clientId       String
+  client         VpnClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  deviceId       String
+  activationDate DateTime  @default(now())
+  expirationDate DateTime?
+  lastSync       DateTime  @default(now())
+  status         String    @default("active")
+  ipAddress      String?
+  userAgent      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([clientId, deviceId])
+  @@map("activation_sessions")
 }
