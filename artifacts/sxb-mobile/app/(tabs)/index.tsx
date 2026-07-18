@@ -22,15 +22,18 @@ function getButtonState(
   isConnected: boolean,
   isConnecting: boolean,
   subscriptionUrl: string | null,
+  isAuthenticated: boolean,
 ): BtnState {
-  if (!accountState) return "no_account";
   if (isConnecting) return "connecting";
   if (isConnected) return "connected";
-  // Si une configuration est déjà importée → connexion directe sans forfait obligatoire
+  // Config VPN importée → connexion directe, pas besoin d'un forfait
   if (subscriptionUrl) return "connect";
-  const s = accountState.state;
-  if (s === "no_package") return "no_package";
-  if (s === "expired") return "expired";
+  // Pas de compte du tout → demander activation
+  if (!isAuthenticated) return "no_account";
+  // Authentifié mais accountState pas encore chargé ou sans forfait
+  if (!accountState || accountState.state === "no_package") return "no_package";
+  if (accountState.state === "expired") return "expired";
+  if (accountState.state === "suspended") return "expired";
   return "connect";
 }
 
@@ -109,7 +112,7 @@ function VpnLogsModal({
 // ── Main Home Screen ──────────────────────────────────────────────────────────
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
-  const { user, accountState, refreshAccountState } = useAuthContext();
+  const { user, accountState, refreshAccountState, isAuthenticated } = useAuthContext();
   const { isConnected, isConnecting, selectedProtocol, subscriptionUrl, connect, disconnect } = useVpnContext();
 
   const [logsVisible, setLogsVisible] = useState(false);
@@ -120,7 +123,14 @@ export default function HomeScreen() {
   const ring1     = useRef(new Animated.Value(1)).current;
   const ring2     = useRef(new Animated.Value(1)).current;
 
-  const btnState = getButtonState(accountState, isConnected, isConnecting, subscriptionUrl);
+  const btnState = getButtonState(accountState, isConnected, isConnecting, subscriptionUrl, isAuthenticated);
+
+  // Rafraîchir l'état du compte à chaque fois que la page devient active
+  useEffect(() => {
+    if (isAuthenticated) {
+      refreshAccountState();
+    }
+  }, [isAuthenticated]);
 
   // Pulse animation
   useEffect(() => {
