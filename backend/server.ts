@@ -29,6 +29,7 @@ import sshRouter from "./server/routes/ssh";
 import payloadRouter from "./server/routes/payload";
 import xrayRouter from "./server/routes/xray";
 import singboxRouter from "./server/routes/singbox";
+import sessionsRouter from "./server/routes/sessions";
 
 async function startServer() {
   const app = express();
@@ -117,6 +118,7 @@ async function startServer() {
   app.use("/api/payload", payloadRouter);
   app.use("/api/xray", xrayRouter);
   app.use("/api/singbox", singboxRouter);
+  app.use("/api/sessions", sessionsRouter);
 
   // Global Error Handler with support for Multilingual Error i18n
   app.use((err: any, req: Request, res: Response, next: NextFunction) => {

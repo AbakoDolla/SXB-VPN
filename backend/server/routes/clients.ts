@@ -156,7 +156,10 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
     }
 
     // Generate SXB Secure Client Token (Sing-box/V2Ray standard)
-    const token = `sxb-usr-${Math.random().toString(36).substring(2, 10)}-${Math.random().toString(36).substring(2, 10)}`;
+    // Generate SXB-USER-XXXX-XXXX-XXXX format token
+    const sxbChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    const sxbPart = () => Array.from({ length: 4 }, () => sxbChars[Math.floor(Math.random() * sxbChars.length)]).join('');
+    const token = `SXB-USER-${sxbPart()}-${sxbPart()}-${sxbPart()}`;
 
     // Only call XPanel if quota is provided
     let xpanelUserId: string | undefined;
@@ -273,7 +276,7 @@ router.patch("/:id", requireAuth, requirePermission("clients.create"), async (re
 });
 
 // POST /api/clients/:id/suspend
-router.post("/:id/suspend", requireAuth, requirePermission("clients.create"), async (req: AuthenticatedRequest, res: Response) => {
+router.post("/:id/suspend", requireAuth, requirePermission("clients.manage"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     let client: any = null;
@@ -427,7 +430,9 @@ router.post("/:id/reset-access", requireAuth, requirePermission("clients.create"
     }
 
     // Generate a brand new, random, completely secure access UUID token for the VPN clients config
-    const newToken = `sxb-usr-${Math.random().toString(36).substring(2, 10)}-${Math.random().toString(36).substring(2, 10)}`;
+    const sxbChars2 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    const sxbPart2 = () => Array.from({ length: 4 }, () => sxbChars2[Math.floor(Math.random() * sxbChars2.length)]).join('');
+    const newToken = `SXB-USER-${sxbPart2()}-${sxbPart2()}-${sxbPart2()}`;
 
     let updated: any = null;
     if (prisma) {
@@ -451,7 +456,7 @@ router.post("/:id/reset-access", requireAuth, requirePermission("clients.create"
 });
 
 // DELETE /api/clients/:id
-router.delete("/:id", requireAuth, requirePermission("clients.create"), async (req: AuthenticatedRequest, res: Response) => {
+router.delete("/:id", requireAuth, requirePermission("clients.delete"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     let client: any = null;

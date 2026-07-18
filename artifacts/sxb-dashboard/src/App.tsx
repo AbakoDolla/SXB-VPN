@@ -267,6 +267,8 @@ function MainApp() {
         return <XPanelView currentUserRole={role} />;
       case 'devices':
         return <DevicesView />;
+      case 'sessions':
+        return <SessionsView />;
       case 'tokens':
         return <TokensView currentUserRole={role} />;
       case 'vouchers':

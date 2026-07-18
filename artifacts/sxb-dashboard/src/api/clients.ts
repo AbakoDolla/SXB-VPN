@@ -3,8 +3,10 @@ import { apiRequest } from "./client";
 
 export async function fetchClients(): Promise<Client[]> {
   try {
-    const data = await apiRequest<{ clients: Client[] }>("/clients");
-    return data.clients || [];
+    // Backend returns a direct array (not { clients: [] })
+    const data = await apiRequest<Client[] | { clients: Client[] }>("/clients");
+    if (Array.isArray(data)) return data;
+    return (data as any).clients || [];
   } catch (error) {
     console.error("Error fetching clients:", error);
     return [];
@@ -39,7 +41,7 @@ export async function deleteClient(id: string): Promise<void> {
 }
 
 export async function suspendClient(id: string): Promise<Client> {
-  return updateClient(id, { status: "suspended" });
+  return await apiRequest<Client>(`/clients/${id}/suspend`, { method: "POST" });
 }
 
 export async function activateClient(id: string): Promise<Client> {
@@ -47,11 +49,9 @@ export async function activateClient(id: string): Promise<Client> {
 }
 
 export async function renewClient(id: string): Promise<Client> {
-  return updateClient(id, { 
-    status: "active" 
-  });
+  return updateClient(id, { status: "active" });
 }
 
 export async function resetClientAccess(id: string): Promise<Client> {
-  return updateClient(id, {});
+  return await apiRequest<Client>(`/clients/${id}/reset-token`, { method: "POST" });
 }

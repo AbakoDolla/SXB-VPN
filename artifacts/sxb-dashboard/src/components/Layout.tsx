@@ -3,7 +3,7 @@ import { User, UserRole } from '../types';
 import {
   LayoutDashboard, Users, Server, Shield, Key, Ticket, Smartphone,
   Settings, LogOut, PanelsLeftRight, UserCog, Terminal, Code2, Zap, Box,
-  Menu, X, UserPlus, HeadphonesIcon, FileText, BadgePercent,
+  Menu, X, UserPlus, HeadphonesIcon, FileText, BadgePercent, Activity,
 } from 'lucide-react';
 
 interface LayoutProps {
@@ -40,6 +40,7 @@ export default function Layout({
     { id: 'clients',    label: 'Clients VPN',          icon: Users,            roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
     { id: 'tokens',     label: 'Tokens SXB',           icon: Key,              roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
     { id: 'devices',    label: 'Appareils',            icon: Smartphone,       roles: ['SUPER_ADMIN','ADMIN'] },
+    { id: 'sessions',   label: 'Sessions actives',     icon: Activity,         roles: ['SUPER_ADMIN','ADMIN'] },
     { id: 'vouchers',   label: 'Vouchers',             icon: BadgePercent,     roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
     { id: 'support',    label: 'Support',              icon: HeadphonesIcon,   roles: ['SUPER_ADMIN','ADMIN','SUPPORT'] },
     { id: 'resellers',  label: 'Revendeurs',           icon: UserCog,          roles: ['SUPER_ADMIN','ADMIN'] },
