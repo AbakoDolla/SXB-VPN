@@ -293,7 +293,9 @@ function MainApp() {
             currentUserId={currentUser.id}
           />
         );
-      case 'settings':
+      case "analytics":
+        return <DashboardView onNavigate={(route) => setActiveRoute(route)} />;
+      case "settings":
         return <SettingsView currentUser={currentUser} onUserUpdated={handleUserChanged} />;
       default:
         return <DashboardView onNavigate={(route) => setActiveRoute(route)} />;
