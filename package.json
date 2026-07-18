@@ -39,5 +39,10 @@
       "esbuild>@esbuild/win32-ia32": "-",
       "esbuild>@esbuild/win32-x64": "-"
     }
-  }
+  },
+  "workspaces": [
+    "artifacts/*",
+    "lib/*",
+    "scripts"
+  ]
 }

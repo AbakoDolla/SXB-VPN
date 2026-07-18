@@ -1,0 +1,103 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app-mobile/**"
+      - ".github/workflows/build-android.yml"
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app-mobile
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Generate native Android project (Expo prebuild)
+        run: npx expo prebuild --platform android --clean --no-install
+        env:
+          EXPO_PUBLIC_API_URL: https://vpnsxb.afrihall.com/api
+
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
+      - name: Tune Gradle properties
+        run: |
+          echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=512m" >> android/gradle.properties
+          echo "org.gradle.daemon=false" >> android/gradle.properties
+
+      - name: Build APK (skip version-check tasks only)
+        working-directory: app-mobile/android
+        run: |
+          ./gradlew :app:assembleDebug \
+            --no-daemon \
+            --stacktrace \
+            -x :react-native-reanimated:assertWorkletsVersionTask \
+            -x :react-native-reanimated:assertMinimalReactNativeVersionTask \
+            -x :react-native-worklets:assertMinimalReactNativeVersionTask
+        env:
+          NODE_ENV: production
+          PATH: /usr/local/bin:/usr/bin:/bin
+
+      - name: Locate and copy APK
+        working-directory: app-mobile
+        run: |
+          mkdir -p build
+          APK=$(find android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          if [ -z "$APK" ]; then
+            echo "::error::Aucun APK trouvé"
+            find android/app/build/outputs -type f 2>/dev/null || true
+            exit 1
+          fi
+          cp "$APK" build/sxb-vpn.apk
+          ls -lh build/sxb-vpn.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sxb-vpn-android-apk
+          path: app-mobile/build/sxb-vpn.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-${{ github.run_number }}
+          name: "SXB VPN APK #${{ github.run_number }}"
+          body: |
+            ## SXB VPN — APK Android
+
+            Build automatique depuis le commit `${{ github.sha }}`
+
+            ### Comment installer
+            1. Télécharger `sxb-vpn.apk` ci-dessous
+            2. Android : Paramètres → Sécurité → autoriser les sources inconnues
+            3. Ouvrir l'APK et installer
+            4. Activer avec ton code `SXB-USER-XXXX`
+          files: app-mobile/build/sxb-vpn.apk
+          draft: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

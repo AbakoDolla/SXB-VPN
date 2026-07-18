@@ -1,0 +1,15 @@
+{
+  "title": "Réseau de Revendeurs",
+  "subtitle": "Gérez vos partenaires revendeurs, allouez-leur des crédits de tokens et suivez leur activité commerciale.",
+  "add_reseller": "Créer un Revendeur",
+  "fields": {
+    "name": "Nom du revendeur",
+    "email": "Adresse E-mail",
+    "balance": "Solde de Crédits (Go)",
+    "clients_count": "Clients Associés",
+    "status": "Statut de Partenariat",
+    "created_at": "Membre depuis"
+  },
+  "empty_state": "Aucun revendeur actif",
+  "empty_state_desc": "Invitez vos premiers partenaires revendeurs à rejoindre le réseau SXB VPN."
+}
