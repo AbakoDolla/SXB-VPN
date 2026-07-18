@@ -91,6 +91,10 @@ model VpnClient {
   tokens             TokenSXB[]
   activationSessions ActivationSession[]
 
+  xrayAccounts        XrayAccount[]
+  singboxAccounts     SingboxAccount[]
+  subscriptions       Subscription[]
+
   @@map("vpn_clients")
 }
 
@@ -327,4 +331,54 @@ model ActivationSession {
 
   @@unique([clientId, deviceId])
   @@map("activation_sessions")
+}
+
+model VpnProfile {
+  id               String         @id @default(uuid())
+  name             String
+  description      String?
+  protocol         String         // ssh | vless | vmess | trojan | shadowsocks | singbox
+  host             String
+  port             Int
+  username         String?
+  password         String?
+  uuid             String?
+  path             String?
+  network          String         @default("ws")
+  tls              Boolean        @default(false)
+  sni              String?
+  dns              String?
+  payloadId        String?
+  offlineValidDays Int            @default(7)
+  method           String?
+  status           String         @default("active")
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  subscriptions    Subscription[]
+
+  @@map("vpn_profiles")
+}
+
+model Subscription {
+  id           String      @id @default(uuid())
+  name         String?
+  clientId     String
+  client       VpnClient   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  profileId    String
+  profile      VpnProfile  @relation(fields: [profileId], references: [id])
+  deviceId     String?
+  dataToken    String      @unique
+  quotaBytes   BigInt
+  quotaUsed    BigInt      @default(0)
+  durationDays Int
+  deviceLimit  Int         @default(1)
+  startAt      DateTime    @default(now())
+  expireAt     DateTime
+  status       String      @default("active")
+  revokeReason String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@map("subscriptions")
 }

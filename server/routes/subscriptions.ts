@@ -50,9 +50,18 @@ router.get('/:id', requireAuth, requirePermission('subscription.view'), async (r
   try {
     const sub = await (prisma as any).subscription.findUnique({
       where: { id: req.params.id },
-      include: { client: { include: { user: true } }, profile: true },
+      include: { client: { include: { user: true } }, profile: true, devices: true },
     });
     if (!sub) return res.status(404).json({ error: 'Subscription not found' });
+    // Link subscription to a registered device if provided
+    if (deviceId) {
+      try {
+        await (prisma as any).subscriptionDevice.create({
+          data: { subscriptionId: sub.id, deviceId: String(deviceId) },
+        });
+      } catch (_e) { /* ignore if already exists */ }
+    }
+
     return res.json({ success: true, subscription: sub });
   } catch (err) {
     return res.status(500).json({ error: 'Failed to get subscription' });
@@ -63,7 +72,7 @@ router.get('/:id', requireAuth, requirePermission('subscription.view'), async (r
 // Creates a subscription and auto-generates a SXB-DATA token linked to the profile.
 router.post('/', requireAuth, requirePermission('subscription.manage'), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { clientId, profileId, name, quotaGB, durationDays, deviceLimit } = req.body;
+    const { clientId, profileId, name, quotaGB, durationDays, deviceLimit, deviceId } = req.body;
 
     if (!clientId || !profileId || !quotaGB || !durationDays) {
       return res.status(400).json({ error: 'clientId, profileId, quotaGB and durationDays are required' });
@@ -97,7 +106,7 @@ router.post('/', requireAuth, requirePermission('subscription.manage'), async (r
         status:       'active',
         createdBy:    req.user!.userId,
       },
-      include: { client: { include: { user: true } }, profile: true },
+      include: { client: { include: { user: true } }, profile: true, devices: true },
     });
 
     await logDbActivity(req.user!.userId, `Created subscription "${sub.name}" for client ${clientId}`, 'info', req.ip || '');
@@ -128,7 +137,7 @@ router.put('/:id', requireAuth, requirePermission('subscription.manage'), async 
         ...(deviceLimit !== undefined && { deviceLimit: Number(deviceLimit) }),
         ...(status      !== undefined && { status }),
       },
-      include: { client: { include: { user: true } }, profile: true },
+      include: { client: { include: { user: true } }, profile: true, devices: true },
     });
 
     await logDbActivity(req.user!.userId, `Updated subscription: ${updated.name}`, 'info', req.ip || '');

@@ -64,7 +64,7 @@ export const fetchSubscriptions = (): Promise<Subscription[]> =>
 
 export const createSubscription = (data: {
   clientId: string; profileId: string; name?: string;
-  quotaGB: number; durationDays: number; deviceLimit?: number;
+  quotaGB: number; durationDays: number; deviceLimit?: number; deviceId?: string;
 }): Promise<Subscription> =>
   apiRequest<any>('/subscriptions', { method: 'POST', body: data }).then(r => r.subscription);
 

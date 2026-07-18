@@ -70,7 +70,7 @@ router.get("/permissions", requireAuth, async (req: AuthenticatedRequest, res: R
 });
 
 // PATCH /api/rbac/roles/:id — remplace l'ensemble des permissions d'un rôle (ADMIN uniquement)
-router.patch("/roles/:id", requireAuth, requireRole(["ADMIN"]), async (req: AuthenticatedRequest, res: Response) => {
+router.patch("/roles/:id", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN"]), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     const body = updateRolePermissionsSchema.parse(req.body);

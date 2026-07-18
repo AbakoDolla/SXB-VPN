@@ -58,7 +58,6 @@ jobs:
             -x :react-native-worklets:assertMinimalReactNativeVersionTask
         env:
           NODE_ENV: production
-          PATH: /usr/local/bin:/usr/bin:/bin
 
       - name: Locate and copy APK
         working-directory: app-mobile
@@ -95,7 +94,7 @@ jobs:
             ### Comment installer
             1. Télécharger `sxb-vpn.apk` ci-dessous
             2. Android : Paramètres → Sécurité → autoriser les sources inconnues
-            3. Ouvrir l'APK et installer
+            3. Ouvrir l APK et installer
             4. Activer avec ton code `SXB-USER-XXXX`
           files: app-mobile/build/sxb-vpn.apk
           draft: false
