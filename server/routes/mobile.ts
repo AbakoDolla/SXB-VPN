@@ -277,11 +277,6 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
   const FALLBACK = [
     { name: "SSH",         port: 22,   transport: "TCP",  security: "SSH",     description: "Securise" },
     { name: "SSH+Payload", port: 80,   transport: "TCP",  security: "Bypass",  description: "Anti-DPI" },
-    { name: "VLESS",       port: 443,  transport: "TCP",  security: "Reality", description: "Recommande" },
-    { name: "VMess",       port: 80,   transport: "WS",   security: "None",    description: "Compatible" },
-    { name: "Trojan",      port: 443,  transport: "TCP",  security: "TLS",     description: "Stable" },
-    { name: "Shadowsocks", port: 8388, transport: "TCP",  security: "ChaCha20",description: "Leger" },
-    { name: "Hysteria2",   port: 443,  transport: "QUIC", security: "TLS",     description: "Rapide" },
   ];
   try {
     const client: any = await findClientByUserId(req.user!.userId);
@@ -307,19 +302,7 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
     if (profile) {
       if (proto === "ssh") {
         connectionUri = "ssh://" + (profile.username || "user") + "@" + profile.host + ":" + profile.port;
-      } else if (proto === "vless") {
-        const p = new URLSearchParams({ type: profile.network || "ws", security: profile.tls ? "tls" : "none" });
-        if (profile.sni) p.set("sni", profile.sni);
-        if (profile.path) p.set("path", profile.path);
-        connectionUri = "vless://" + (profile.uuid || "") + "@" + profile.host + ":" + profile.port + "?" + p.toString() + "#" + encodeURIComponent(sub?.name || profile.name);
-      } else if (proto === "vmess") {
-        const v = { v: "2", ps: sub?.name || profile.name, add: profile.host, port: String(profile.port), id: profile.uuid || "", aid: "0", net: profile.network || "ws", type: "none", host: profile.sni || profile.host, path: profile.path || "/", tls: profile.tls ? "tls" : "" };
-        connectionUri = "vmess://" + Buffer.from(JSON.stringify(v)).toString("base64");
-      } else if (proto === "trojan") {
-        connectionUri = "trojan://" + (profile.password || profile.uuid || "") + "@" + profile.host + ":" + profile.port + "?sni=" + (profile.sni || profile.host) + "#" + encodeURIComponent(sub?.name || profile.name);
-      } else if (proto === "shadowsocks") {
-        const ui = Buffer.from((profile.method || "aes-256-gcm") + ":" + (profile.password || "")).toString("base64");
-        connectionUri = "ss://" + ui + "@" + profile.host + ":" + profile.port + "#" + encodeURIComponent(sub?.name || profile.name);
+        if (profile.sni) connectionUri += "?sni=" + encodeURIComponent(profile.sni);
       }
     }
 

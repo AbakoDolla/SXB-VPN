@@ -12,7 +12,6 @@ router.get('/stats', requireAuth, async (req: Request, res: Response) => {
   try {
     const stats = {
       server: { uptime: Math.floor(process.uptime()) },
-      singbox: { status: 'online', port: 20091 },
       database: {
         users: prisma ? await prisma.user.count() : 0,
         clients: prisma ? await prisma.vpnClient.count() : 0,

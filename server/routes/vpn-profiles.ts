@@ -52,7 +52,7 @@ router.get('/', requireAuth, requirePermission('vpnprofile.view'), async (req: A
 router.get("/unified", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     if (!prisma) return res.status(503).json({ error: "DB unavailable" });
-    const [sshAccs, xrayAccs, sbAccs] = await Promise.all([
+    const [sshAccs] = await Promise.all([
       (prisma as any).sshAccount.findMany({ where: { status: "active" }, orderBy: { createdAt: "desc" } }),
       (prisma as any).xrayAccount.findMany({ where: { status: "active" }, orderBy: { createdAt: "desc" } }),
       (prisma as any).singboxAccount.findMany({ where: { status: "active" }, orderBy: { createdAt: "desc" } }),

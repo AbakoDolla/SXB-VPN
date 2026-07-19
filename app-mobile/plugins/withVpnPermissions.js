@@ -1,5 +1,5 @@
 /**
- * Expo Config Plugin — VPN natif Android (sing-box + tun2socks)
+ * Expo Config Plugin — VPN natif Android (SSH tunnel)
  *
  * Ce plugin fait trois choses lors de `expo prebuild` :
  *  1. Copie les fichiers Kotlin depuis modules/android-native/ dans android/

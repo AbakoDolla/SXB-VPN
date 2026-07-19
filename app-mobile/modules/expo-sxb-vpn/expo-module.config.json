@@ -1,0 +1,16 @@
+{
+  "platforms": [
+    "android",
+    "ios"
+  ],
+  "android": {
+    "modules": [
+      "expo.modules.sxbvpn.SxbVpnModule"
+    ]
+  },
+  "ios": {
+    "modules": [
+      "SxbVpnModule"
+    ]
+  }
+}

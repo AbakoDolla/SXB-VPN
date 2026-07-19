@@ -21,7 +21,7 @@ const updateServerSchema = z.object({
 });
 
 const saveConfigSchema = z.object({
-  type: z.enum(["ssh", "singbox"]),
+  type: z.enum(["ssh"]),
   configurationRaw: z.string().min(1),
 });
 

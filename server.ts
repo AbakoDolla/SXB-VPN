@@ -26,8 +26,6 @@ import auditLogsRouter from "./server/routes/audit-logs";
 import devicesRouter from "./server/routes/devices";
 import sshRouter from "./server/routes/ssh";
 import payloadRouter from "./server/routes/payload";
-import xrayRouter from "./server/routes/xray";
-import singboxRouter from "./server/routes/singbox";
 import sessionsRouter from "./server/routes/sessions";
 import vpnProfilesRouter from "./server/routes/vpn-profiles";
 import subscriptionsRouter from "./server/routes/subscriptions";
@@ -123,8 +121,6 @@ async function startServer() {
   app.use("/api/devices", devicesRouter);
   app.use("/api/ssh", sshRouter);
   app.use("/api/payload", payloadRouter);
-  app.use("/api/xray", xrayRouter);
-  app.use("/api/singbox", singboxRouter);
   app.use("/api/sessions", sessionsRouter);
   app.use("/api/vpn-profiles", vpnProfilesRouter);
   app.use("/api/subscriptions", subscriptionsRouter);
