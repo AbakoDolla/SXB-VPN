@@ -34,45 +34,21 @@ function getButtonState(
   return "connect";
 }
 
-// ── VPN Logs Modal ────────────────────────────────────────────────────────────
+// ── VPN Logs Modal — VRAIS LOGS du moteur sing-box ───────────────────────────
 function VpnLogsModal({
-  visible, onClose, isConnecting, isConnected, protocol,
+  visible, onClose,
 }: {
   visible: boolean; onClose: () => void;
-  isConnecting: boolean; isConnected: boolean; protocol: string | null;
 }) {
-  const [logs, setLogs] = useState<string[]>([]);
+  const { logs, isConnected, isConnecting, selectedProtocol } = useVpnContext();
   const scrollRef = useRef<ScrollView>(null);
 
+  // Auto-scroll when new logs arrive
   useEffect(() => {
-    if (!visible) { setLogs([]); return; }
-
-    const STEPS = isConnecting
-      ? [
-          "Initialisation du tunnel VPN...",
-          "Vérification du compte...",
-          "Validation du forfait...",
-          "Récupération de la configuration sécurisée...",
-          `Détection du protocole ${protocol || "VPN"}...`,
-          "Préparation du moteur tunnel...",
-          "Établissement de la connexion...",
-          "Authentification...",
-          isConnected ? "✅ Protection active" : "Connexion établie...",
-        ]
-      : ["✅ VPN connecté — trafic chiffré", `Protocole : ${protocol || "VPN"}`, "Votre identité est protégée."];
-
-    let i = 0;
-    const interval = setInterval(() => {
-      if (i < STEPS.length) {
-        setLogs((prev) => [...prev, STEPS[i]]);
-        i++;
-        setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
-      } else {
-        clearInterval(interval);
-      }
-    }, 420);
-    return () => clearInterval(interval);
-  }, [visible, isConnecting, isConnected, protocol]);
+    if (visible && logs.length > 0) {
+      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
+    }
+  }, [logs, visible]);
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -80,8 +56,8 @@ function VpnLogsModal({
         <View style={logStyles.sheet}>
           <View style={logStyles.handle} />
           <View style={logStyles.header}>
-            <View style={logStyles.statusDot} />
-            <Text style={logStyles.title}>Logs de connexion</Text>
+            <View style={[logStyles.statusDot, { backgroundColor: isConnected ? Colors.connected : isConnecting ? Colors.primary : Colors.textMuted }]} />
+            <Text style={logStyles.title}>Logs moteur VPN (sing-box)</Text>
             <Pressable onPress={onClose}>
               <Ionicons name="close" size={22} color={Colors.textSecondary} />
             </Pressable>
@@ -91,10 +67,19 @@ function VpnLogsModal({
             style={logStyles.logScroll}
             showsVerticalScrollIndicator={false}
           >
-            {logs.map((line, i) => (
+            {logs.length === 0 ? (
+              <View style={logStyles.logLine}>
+                <Text style={logStyles.logText}>En attente de connexion...</Text>
+              </View>
+            ) : logs.map((line, i) => (
               <View key={i} style={logStyles.logLine}>
                 <Text style={logStyles.logPrefix}>›</Text>
-                <Text style={[logStyles.logText, line.startsWith("✅") && { color: Colors.connected }]}>
+                <Text style={[
+                  logStyles.logText,
+                  line.startsWith("✅") && { color: Colors.connected },
+                  line.startsWith("❌") && { color: "#FF4444" },
+                  line.startsWith("[engine]") && { color: Colors.primary },
+                ]}>
                   {line}
                 </Text>
               </View>
@@ -401,9 +386,6 @@ export default function HomeScreen() {
       <VpnLogsModal
         visible={logsVisible}
         onClose={() => setLogsVisible(false)}
-        isConnecting={isConnecting}
-        isConnected={isConnected}
-        protocol={selectedProtocol}
       />
     </LinearGradient>
   );

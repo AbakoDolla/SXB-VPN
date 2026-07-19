@@ -45,10 +45,59 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
+      # ── Download sing-box binary for Android ─────────────────────────────────
+      - name: Download sing-box Android ARM64
+        run: |
+          mkdir -p android/app/src/main/assets
+          SINGBOX_VERSION="1.13.13"
+          SINGBOX_URL="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-android-arm64.tar.gz"
+          echo "Downloading sing-box ${SINGBOX_VERSION} for android-arm64..."
+          curl -L --retry 3 --retry-delay 5 -o /tmp/sing-box-arm64.tar.gz "$SINGBOX_URL"
+          tar -xzf /tmp/sing-box-arm64.tar.gz -C /tmp/
+          cp /tmp/sing-box-${SINGBOX_VERSION}-android-arm64/sing-box android/app/src/main/assets/sing-box-arm64-v8a
+          chmod +x android/app/src/main/assets/sing-box-arm64-v8a
+          echo "sing-box arm64 size: $(du -sh android/app/src/main/assets/sing-box-arm64-v8a | cut -f1)"
+
+      - name: Download sing-box Android ARM (32-bit fallback)
+        run: |
+          SINGBOX_VERSION="1.13.13"
+          SINGBOX_URL="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-android-arm.tar.gz"
+          echo "Downloading sing-box ${SINGBOX_VERSION} for android-arm..."
+          curl -L --retry 3 --retry-delay 5 -o /tmp/sing-box-arm.tar.gz "$SINGBOX_URL" || echo "ARM download failed (non-critical)"
+          if [ -f /tmp/sing-box-arm.tar.gz ]; then
+            tar -xzf /tmp/sing-box-arm.tar.gz -C /tmp/ || true
+            if [ -f "/tmp/sing-box-${SINGBOX_VERSION}-android-arm/sing-box" ]; then
+              cp /tmp/sing-box-${SINGBOX_VERSION}-android-arm/sing-box android/app/src/main/assets/sing-box-armeabi-v7a
+              chmod +x android/app/src/main/assets/sing-box-armeabi-v7a
+              echo "sing-box armeabi-v7a downloaded"
+            fi
+          fi
+
+      # ── Download tun2socks binary for Android ────────────────────────────────
+      - name: Download tun2socks Android ARM64
+        run: |
+          TUN2SOCKS_VERSION="v2.5.2"
+          TUN2SOCKS_URL="https://github.com/xjasonlyu/tun2socks/releases/download/${TUN2SOCKS_VERSION}/tun2socks-android-arm64.zip"
+          echo "Downloading tun2socks ${TUN2SOCKS_VERSION} for android-arm64..."
+          curl -L --retry 3 --retry-delay 5 -o /tmp/tun2socks-arm64.zip "$TUN2SOCKS_URL" || echo "tun2socks download failed (non-critical — fallback bridge will be used)"
+          if [ -f /tmp/tun2socks-arm64.zip ]; then
+            unzip -q /tmp/tun2socks-arm64.zip -d /tmp/tun2socks-arm64/ || true
+            T2S_BIN=$(find /tmp/tun2socks-arm64/ -name "tun2socks*" -type f | head -1)
+            if [ -n "$T2S_BIN" ]; then
+              cp "$T2S_BIN" android/app/src/main/assets/tun2socks-arm64-v8a
+              chmod +x android/app/src/main/assets/tun2socks-arm64-v8a
+              echo "tun2socks arm64 downloaded: $(du -sh android/app/src/main/assets/tun2socks-arm64-v8a | cut -f1)"
+            fi
+          fi
+
+      - name: List assets
+        run: ls -lah android/app/src/main/assets/ || true
+
       - name: Tune Gradle properties
         run: |
           echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=512m" >> android/gradle.properties
           echo "org.gradle.daemon=false" >> android/gradle.properties
+          echo "android.enableJetifier=true" >> android/gradle.properties
 
       - name: Build APK
         working-directory: app-mobile/android
@@ -74,7 +123,7 @@ jobs:
             exit 1
           fi
           cp "$APK" build/sxb-vpn.apk
-          ls -lh build/sxb-vpn.apk
+          echo "APK final: $(ls -lh build/sxb-vpn.apk)"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -89,19 +138,54 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: apk-${{ github.run_number }}
-          name: "SXB VPN APK #${{ github.run_number }}"
+          name: "SXB VPN APK #${{ github.run_number }} — VPN Réel (sing-box + tun2socks)"
           body: |
-            ## SXB VPN — APK Android
+            ## SXB VPN — APK Android avec VPN Réel
 
             Build automatique depuis le commit `${{ github.sha }}`
+
+            ### Nouveautés de cette version
+            - ✅ **Vrai moteur VPN** : sing-box v1.13.13 + tun2socks
+            - ✅ **Module natif Android** : SxbVpnService + VpnService Android
+            - ✅ **Multi-protocoles** : VLESS, VMess, Trojan, Shadowsocks, Hysteria2, WireGuard, TUIC
+            - ✅ **Vrais logs** depuis le moteur sing-box
+            - ✅ **Mode offline** : configuration persistée localement
+            - ✅ **Protection totale** : tout le trafic passe par le tunnel
 
             ### Comment installer
             1. Télécharger `sxb-vpn.apk` ci-dessous
             2. Android : Paramètres → Sécurité → autoriser les sources inconnues
             3. Ouvrir l APK et installer
-            4. Lancer l app — aucune connexion Metro nécessaire
+            4. Lancer l app — activer avec votre token SXB-USER-XXXX
+
+            ### Flux complet
+            `Token → Activation → Config backend → Stockage local → POWER → Tunnel réel`
           files: app-mobile/build/sxb-vpn.apk
           draft: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # ── Déployer l'APK sur le VPS pour distribution ───────────────────────
+      - name: Deploy APK to VPS
+        if: github.ref == 'refs/heads/main'
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: 141.95.112.93
+          username: ubuntu
+          password: ${{ secrets.VPS_PASSWORD }}
+          source: "app-mobile/build/sxb-vpn.apk"
+          target: "/tmp/"
+          strip_components: 2
+        continue-on-error: true
+
+      - name: Rename APK on VPS
+        if: github.ref == 'refs/heads/main'
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 141.95.112.93
+          username: ubuntu
+          password: ${{ secrets.VPS_PASSWORD }}
+          script: |
+            cp /tmp/sxb-vpn.apk /var/www/apk/sxbvpn-latest.apk 2>/dev/null || true
+            echo "APK deployed: $(ls -lh /var/www/apk/sxbvpn-latest.apk 2>/dev/null || echo 'not found')"
+        continue-on-error: true
