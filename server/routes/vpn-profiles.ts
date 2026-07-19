@@ -93,7 +93,6 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
         offlineValidDays: offlineValidDays ? Number(offlineValidDays) : 7,
         method: method || null,
         status: status || 'active',
-        createdBy: req.user!.userId,
       },
     });
 
