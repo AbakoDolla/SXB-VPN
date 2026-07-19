@@ -133,12 +133,6 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
           port:    profile.payload.port,
         };
       }
-    } else {
-      rawConfig.uuid     = profile.uuid;
-      rawConfig.method   = profile.method;
-      if (profile.protocol === 'trojan' || profile.protocol === 'shadowsocks') {
-        rawConfig.password = profile.password ? decrypt(profile.password) : '';
-      }
     }
 
     // Encrypt for this specific device

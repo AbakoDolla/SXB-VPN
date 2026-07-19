@@ -47,16 +47,11 @@ router.get('/', requireAuth, requirePermission('vpnprofile.view'), async (req: A
 });
 
 
-// GET /api/vpn-profiles/unified — agrège SSH + Xray + Singbox comme configs sélectionnables
-// Auto-synchronise chaque compte dans VpnProfile pour que les abonnements puissent les référencer
+// GET /api/vpn-profiles/unified — agrège les profils SSH SXB VPN
 router.get("/unified", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     if (!prisma) return res.status(503).json({ error: "DB unavailable" });
-    const [sshAccs] = await Promise.all([
-      (prisma as any).sshAccount.findMany({ where: { status: "active" }, orderBy: { createdAt: "desc" } }),
-      (prisma as any).xrayAccount.findMany({ where: { status: "active" }, orderBy: { createdAt: "desc" } }),
-      (prisma as any).singboxAccount.findMany({ where: { status: "active" }, orderBy: { createdAt: "desc" } }),
-    ]);
+    const sshAccs = await (prisma as any).sshAccount.findMany({ where: { status: "active" }, orderBy: { createdAt: "desc" } });
     const configs: any[] = [];
     async function syncProfile(data: any, namePrefix: string) {
       const profileName = namePrefix + data.name;

@@ -108,13 +108,11 @@ router.get('/config/:token', async (req: Request, res: Response) => {
       return res.status(403).json({ error: 'Account expired' });
     }
     const config = {
-      protocol: 'vmess',
-      server: 'vpnsxb.afrihall.com',
-      server_port: 443,
-      uuid: client.id.replace(/-/g, ''),
-      alterId: 0,
-      security: 'auto',
-      network: 'tcp',
+      protocol: 'ssh',
+      host: 'node05.mikosi.fr.eu.org',
+      port: 443,
+      username: 'bugsleuth',
+      sni: 'yamo.mtn.cm',
       remark: client.user?.name || 'SXB VPN Client',
       quota_used: Number(client.quotaUsed),
       quota_total: Number(client.quotaTotal),
