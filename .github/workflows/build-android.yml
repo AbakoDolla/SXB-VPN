@@ -42,20 +42,6 @@ jobs:
         env:
           EXPO_PUBLIC_API_URL: https://vpnsxb.afrihall.com/api
 
-      - name: Bundle JavaScript (embed dans l APK — no Metro needed)
-        run: |
-          mkdir -p android/app/src/main/assets
-          npx react-native bundle \
-            --platform android \
-            --dev false \
-            --entry-file node_modules/expo-router/entry.js \
-            --bundle-output android/app/src/main/assets/index.android.bundle \
-            --assets-dest android/app/src/main/res \
-            --reset-cache
-        env:
-          EXPO_PUBLIC_API_URL: https://vpnsxb.afrihall.com/api
-          NODE_ENV: production
-
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
@@ -75,6 +61,7 @@ jobs:
             -x :react-native-worklets:assertMinimalReactNativeVersionTask
         env:
           NODE_ENV: production
+          EXPO_PUBLIC_API_URL: https://vpnsxb.afrihall.com/api
 
       - name: Locate and copy APK
         working-directory: app-mobile
@@ -117,3 +104,4 @@ jobs:
           draft: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
