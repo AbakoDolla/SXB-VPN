@@ -47,7 +47,6 @@ export default function Layout({
     { id: 'resellers',  label: 'Revendeurs',           icon: UserCog,          roles: ['SUPER_ADMIN','ADMIN'] },
     { id: 'servers',    label: 'Serveurs',             icon: Server,           roles: ['SUPER_ADMIN','ADMIN','SUPPORT'] },
     { id: 'ssh',       label: 'SSH Manager',          icon: Terminal,         roles: ['SUPER_ADMIN','ADMIN','SUPPORT'] },
-    { id: 'payload',   label: 'Payload Manager',      icon: Code2,            roles: ['SUPER_ADMIN','ADMIN'] },
     { id: 'xray',      label: 'Xray Manager',         icon: Zap,              roles: ['SUPER_ADMIN','ADMIN'] },
     { id: 'singbox',   label: 'Sing-box Manager',     icon: Box,              roles: ['SUPER_ADMIN','ADMIN'] },
     { id: 'xpanel',    label: 'XPanel Engine',        icon: PanelsLeftRight,  roles: ['SUPER_ADMIN','ADMIN'] },

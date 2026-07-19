@@ -260,7 +260,7 @@ function MainApp() {
       case 'ssh':
         return <SSHManagerView currentUserRole={role} />;
       case 'payload':
-        return <PayloadManagerView currentUserRole={role} />;
+        return <SSHManagerView currentUserRole={role} />;
       case 'xray':
         return <XrayManagerView currentUserRole={role} />;
       case 'vpn-profiles':
