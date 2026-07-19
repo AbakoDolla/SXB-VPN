@@ -2,7 +2,6 @@ import DashboardView from "./components/DashboardView";
 import ClientsView from "./components/ClientsView";
 import ResellersView from "./components/ResellersView";
 import ServersView from "./components/ServersView";
-import XPanelView from "./components/XPanelView";
 import TokensView from "./components/TokensView";
 import VouchersView from "./components/VouchersView";
 import SupportView from "./components/SupportView";
@@ -269,8 +268,6 @@ function MainApp() {
         return <SubscriptionsView currentUserRole={role} />;
       case 'singbox':
         return <SingboxManagerView currentUserRole={role} />;
-      case 'xpanel':
-        return <XPanelView currentUserRole={role} />;
       case 'devices':
         return <DevicesView />;
       case 'tokens':

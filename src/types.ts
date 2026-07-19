@@ -21,7 +21,6 @@ export interface Client {
   quotaUsed: string | number;
   expireAt: string;
   status: "active" | "suspended" | "expired";
-  xpanelUserId?: string;
   deviceId?: string;
   lastSeenAt?: string;
   appRegisteredAt?: string;
@@ -67,14 +66,6 @@ export interface Voucher {
   status: "active" | "used" | "expired";
   quota: number; // GB
   expiration: string;
-}
-
-export interface XPanelStatus {
-  status: "online" | "offline" | "maintenance";
-  connectedServers: number;
-  synchronizedUsers: number;
-  availableConfigs: number;
-  isSyncing: boolean;
 }
 
 export interface RBACRole {

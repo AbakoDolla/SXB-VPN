@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { User, UserRole } from '../types';
 import {
   LayoutDashboard, Users, Server, Shield, Key, Ticket, Smartphone,
-  Settings, LogOut, PanelsLeftRight, UserCog, Terminal, Code2, Zap, Box, ShieldCheck, CreditCard,
+  Settings, LogOut, UserCog, Terminal, Code2, Zap, Box, ShieldCheck, CreditCard,
   Menu, X, UserPlus, HeadphonesIcon, FileText, BadgePercent,
 } from 'lucide-react';
 
@@ -50,7 +50,6 @@ export default function Layout({
     { id: 'payload',   label: 'Payload Manager',      icon: Code2,            roles: ['SUPER_ADMIN','ADMIN'] },
     { id: 'xray',      label: 'Xray Manager',         icon: Zap,              roles: ['SUPER_ADMIN','ADMIN'] },
     { id: 'singbox',   label: 'Sing-box Manager',     icon: Box,              roles: ['SUPER_ADMIN','ADMIN'] },
-    { id: 'xpanel',    label: 'XPanel Engine',        icon: PanelsLeftRight,  roles: ['SUPER_ADMIN','ADMIN'] },
     { id: 'accounts',   label: 'Gestion des Comptes',  icon: UserPlus,         roles: ['SUPER_ADMIN','ADMIN'] },
     { id: 'rbac',       label: 'Rôles & Permissions',  icon: Shield,           roles: ['SUPER_ADMIN','ADMIN'] },
     { id: 'analytics',  label: 'Analytiques',          icon: FileText,         roles: ['SUPER_ADMIN','ADMIN','SUPPORT'] },

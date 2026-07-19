@@ -72,11 +72,6 @@ async function main() {
     { name: 'servers.edit',   description: 'Modifier des serveurs' },
     { name: 'servers.delete', description: 'Supprimer des serveurs' },
     { name: 'server.manage',  description: 'Alias gestion serveur (legacy)' },
-    // XPanel
-    { name: 'xpanel.view',   description: 'Voir le panel XPanel' },
-    { name: 'xpanel.manage', description: 'Gérer XPanel' },
-    { name: 'xpanel.sync',   description: 'Synchroniser XPanel' },
-    { name: 'xpanel.access', description: 'Accès XPanel (legacy)' },
     // Analytics
     { name: 'analytics.view', description: 'Voir les analytiques et logs' },
     // RBAC

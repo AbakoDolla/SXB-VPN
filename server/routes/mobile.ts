@@ -2,7 +2,6 @@ import { Router, Response } from "express";
 import { z } from "zod";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { generateTokens, requireAuth, AuthenticatedRequest } from "../middleware/auth";
-import { XPanelService } from "../services/xpanel";
 
 const router = Router();
 
@@ -288,38 +287,9 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
   try {
     const client: any = await findClientByUserId(req.user!.userId);
 
-    // Build subscription URL if client has xpanelUserId
-    let subscriptionUrl: string | null = null;
-    if (client?.xpanelUserId) {
-      try {
-        subscriptionUrl = await XPanelService.getSubscriptionLink(client.xpanelUserId);
-      } catch (_) { /* ignore */ }
-    }
-
-    // Fetch real protocols from xpanel inbounds
-    let protocols = FALLBACK_PROTOCOLS;
-    try {
-      const inbounds: any[] = await XPanelService.getInbounds();
-      if (Array.isArray(inbounds) && inbounds.length > 0) {
-        protocols = inbounds
-          .filter((ib: any) => ib.enabled !== false)
-          .map((ib: any) => ({
-            name: ib.protocol?.toUpperCase() === "VLESS" ? "VLESS"
-                : ib.protocol?.toUpperCase() === "VMESS" ? "VMess"
-                : ib.protocol?.toUpperCase() === "TROJAN" ? "Trojan"
-                : ib.protocol?.toUpperCase() === "SHADOWSOCKS" ? "Shadowsocks"
-                : ib.protocol ? (ib.protocol.charAt(0).toUpperCase() + ib.protocol.slice(1)) : "Unknown",
-            port: ib.port || 443,
-            transport: ib.network || ib.transport || "TCP",
-            security: ib.security || ib.tls || "none",
-            description: ib.remark || ib.tag || "",
-          }));
-      }
-    } catch (_) { /* use fallback */ }
-
     return res.json({
-      subscriptionUrl,
-      protocols,
+      subscriptionUrl: null,
+      protocols: FALLBACK_PROTOCOLS,
       serverInfo: { host: "vpnsxb.afrihall.com", location: "France / Europe" },
     });
   } catch (err) {

@@ -11,7 +11,6 @@ import authRouter from "./server/routes/auth";
 import usersRouter from "./server/routes/users";
 import clientsRouter from "./server/routes/clients";
 import tokensRouter from "./server/routes/tokens";
-import xpanelRouter from "./server/routes/xpanel";
 import resellersRouter from "./server/routes/resellers";
 import vouchersRouter from "./server/routes/vouchers";
 import analyticsRouter from "./server/routes/analytics";
@@ -109,7 +108,6 @@ async function startServer() {
   app.use("/api/users", usersRouter);
   app.use("/api/clients", clientsRouter);
   app.use("/api/tokens", tokensRouter);
-  app.use("/api/xpanel", xpanelRouter);
   app.use("/api/resellers", resellersRouter);
   app.use("/api/vouchers", vouchersRouter);
   app.use("/api/analytics", analyticsRouter);

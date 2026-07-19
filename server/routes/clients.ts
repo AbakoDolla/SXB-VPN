@@ -2,7 +2,6 @@ import { Router, Response } from "express";
 import { z } from "zod";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
-import { XPanelService } from "../services/xpanel";
 
 const router = Router();
 
@@ -163,20 +162,6 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
     const _seg = () => Array.from({ length: 4 }, () => _chars[Math.floor(Math.random() * _chars.length)]).join('');
     const token = `SXB-USER-${_seg()}-${_seg()}-${_seg()}`;
 
-    // Only call XPanel if quota is provided
-    let xpanelUserId: string | undefined;
-    if (body.quotaTotalGb && body.durationDays) {
-      const quotaBytes = BigInt(body.quotaTotalGb) * BigInt(1024 * 1024 * 1024);
-      const expireAt = new Date();
-      expireAt.setDate(expireAt.getDate() + body.durationDays);
-      try {
-        const xpanelUser = await XPanelService.createUser(body.name, quotaBytes, expireAt, body.deviceLimit);
-        xpanelUserId = xpanelUser.id;
-      } catch (err) {
-        console.warn("XPanel user creation failed:", err);
-      }
-    }
-
     let newClient: any = null;
     if (prisma) {
       newClient = await prisma.vpnClient.create({
@@ -187,7 +172,6 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
           quotaUsed: BigInt(0),
           expireAt: body.durationDays ? new Date(Date.now() + body.durationDays * 24 * 60 * 60 * 1000) : null,
           status: "active",
-          xpanelUserId,
           deviceId: body.deviceId || undefined,
         },
         include: { user: true },
@@ -201,7 +185,6 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
         quotaUsed: BigInt(0),
         expireAt: body.durationDays ? new Date(Date.now() + body.durationDays * 24 * 60 * 60 * 1000) : null,
         status: "active",
-        xpanelUserId,
         createdAt: new Date(),
         updatedAt: new Date(),
       };
@@ -297,11 +280,6 @@ router.post("/:id/suspend", requireAuth, requirePermission("clients.manage"), as
       return res.status(403).json({ error: "errors.auth.forbidden" });
     }
 
-    // Call XPanel to suspend user
-    if (client.xpanelUserId) {
-      await XPanelService.deleteUser(client.xpanelUserId);
-    }
-
     let updated: any = null;
     if (prisma) {
       updated = await prisma.vpnClient.update({
@@ -340,11 +318,6 @@ router.post("/:id/activate", requireAuth, requirePermission("clients.create"), a
     // Secure reseller boundary
     if (req.user?.role === "RESELLER" && client.userId !== req.user?.userId) {
       return res.status(403).json({ error: "errors.auth.forbidden" });
-    }
-
-    // Provision back into XPanel
-    if (client.xpanelUserId) {
-      await XPanelService.createUser(`client-${client.id.substring(0, 5)}`, client.quotaTotal, client.expireAt);
     }
 
     let updated: any = null;
@@ -476,11 +449,6 @@ router.delete("/:id", requireAuth, requirePermission("clients.delete"), async (r
     // Secure reseller boundary
     if (req.user?.role === "RESELLER" && client.userId !== req.user?.userId) {
       return res.status(403).json({ error: "errors.auth.forbidden", message: "Access forbidden" });
-    }
-
-    // Deprovision from external XPanel Engine
-    if (client.xpanelUserId) {
-      await XPanelService.deleteUser(client.xpanelUserId);
     }
 
     if (prisma) {

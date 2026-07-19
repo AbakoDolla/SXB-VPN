@@ -11,7 +11,6 @@ const createServerSchema = z.object({
   ip: z.string().regex(/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/, "Invalid IP address"),
   location: z.string().min(2),
   status: z.enum(["online", "offline"]).default("online"),
-  xpanelId: z.string().optional(),
 });
 
 const updateServerSchema = z.object({
@@ -19,7 +18,6 @@ const updateServerSchema = z.object({
   ip: z.string().regex(/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/, "Invalid IP address").optional(),
   location: z.string().min(2).optional(),
   status: z.enum(["online", "offline"]).optional(),
-  xpanelId: z.string().optional(),
 });
 
 const saveConfigSchema = z.object({
@@ -129,7 +127,7 @@ router.post("/:id/config", requireAuth, requirePermission("server.manage"), asyn
 
     let configRecord: any = null;
     if (prisma) {
-      configRecord = await prisma.xPanelConfig.create({
+      configRecord = await prisma.serverConfig.create({
         data: {
           serverId: id,
           type: body.type,
@@ -144,7 +142,7 @@ router.post("/:id/config", requireAuth, requirePermission("server.manage"), asyn
         configurationEncrypted,
         createdAt: new Date(),
       };
-      inMemoryDb.xpanelConfigs.push(configRecord);
+      inMemoryDb.serverConfigs.push(configRecord);
     }
 
     await logDbActivity(req.user?.userId || null, `Securely saved and encrypted config for Server: ${id} (${body.type})`, "success", req.ip);
@@ -177,9 +175,9 @@ router.get("/:id/config", requireAuth, requirePermission("server.manage"), async
 
     let configRecords: any[] = [];
     if (prisma) {
-      configRecords = await prisma.xPanelConfig.findMany({ where: { serverId: id } });
+      configRecords = await prisma.serverConfig.findMany({ where: { serverId: id } });
     } else {
-      configRecords = inMemoryDb.xpanelConfigs.filter((c) => c.serverId === id);
+      configRecords = inMemoryDb.serverConfigs.filter((c) => c.serverId === id);
     }
 
     const decrypted = configRecords.map((c) => {

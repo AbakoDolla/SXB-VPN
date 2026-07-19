@@ -2,7 +2,7 @@ import { Router, type IRouter } from "express";
 import healthRouter from "./health.js";
 import authRouter from "./auth.js";
 import mobileRouter from "./mobile.js";
-import xpanelRouter from "./xpanel.js";
+
 import dashboardRouter from "./dashboard.js";
 import clientsRouter from "./clients.js";
 import usersRouter from "./users.js";
@@ -20,8 +20,6 @@ router.use("/auth", authRouter);
 // Mobile app API
 router.use("/mobile", mobileRouter);
 
-// XPanel / XNet
-router.use("/xpanel", xpanelRouter);
 
 // Dashboard stats
 router.use("/dashboard", dashboardRouter);

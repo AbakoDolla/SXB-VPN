@@ -81,7 +81,6 @@ model VpnClient {
   expireAt     DateTime?
   status       String       @default("active") // active, suspended
   avatarUrl    String?
-  xpanelUserId String?
   deviceLimit  Int        @default(1)
   deviceId     String?    @unique
   activatedAt  DateTime?
@@ -130,15 +129,14 @@ model VPSServer {
   ip            String
   location      String
   status        String         @default("online") // online, offline
-  xpanelId      String?
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
-  xpanelConfigs XPanelConfig[]
+  serverConfigs ServerConfig[]
 
   @@map("servers")
 }
 
-model XPanelConfig {
+model ServerConfig {
   id                     String    @id @default(uuid())
   serverId               String
   server                 VPSServer @relation(fields: [serverId], references: [id], onDelete: Cascade)

@@ -55,11 +55,6 @@ async function main() {
     { name: 'servers.edit', description: 'Modifier serveurs' },
     { name: 'servers.delete', description: 'Supprimer serveurs' },
     
-    // XPanel
-    { name: 'xpanel.view', description: 'Voir XPanel' },
-    { name: 'xpanel.manage', description: 'Gerer XPanel' },
-    { name: 'xpanel.sync', description: 'Synchroniser XPanel' },
-    
     // Tokens
     { name: 'tokens.view', description: 'Voir tokens' },
     { name: 'tokens.create', description: 'Creer tokens' },
@@ -107,7 +102,6 @@ async function main() {
     'clients.view', 'clients.view_own', 'clients.create', 'clients.edit', 'clients.delete',
     'vpn.view', 'vpn.manage',
     'servers.view', 'servers.create', 'servers.edit', 'servers.delete',
-    'xpanel.view', 'xpanel.manage', 'xpanel.sync',
     'tokens.view', 'tokens.create', 'tokens.revoke',
     'vouchers.view', 'vouchers.create', 'vouchers.redeem',
     'resellers.view', 'resellers.create', 'resellers.manage',

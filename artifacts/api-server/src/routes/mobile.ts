@@ -25,7 +25,6 @@ interface DevClient {
   expireAt: Date | null;
   status: string;
   deviceId: string | null;
-  xpanelUserId: string | null;
 }
 
 const devClients: DevClient[] = [
@@ -38,7 +37,6 @@ const devClients: DevClient[] = [
     expireAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
     status: "active",
     deviceId: null,
-    xpanelUserId: null,
   },
 ];
 

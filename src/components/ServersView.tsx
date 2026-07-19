@@ -239,7 +239,7 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
         <div className="border border-dashed border-gray-800 rounded-xl p-12 text-center bg-gray-950/10">
           <Server className="h-12 w-12 text-gray-700 mx-auto mb-4" />
           <h3 className="text-base font-semibold text-white">Aucun Serveur VPS Disponible</h3>
-          <p className="text-sm text-gray-400 max-w-sm mx-auto mt-1">Configurez vos nœuds techniques dans la liste pour les rendre accessibles via XPanel.</p>
+          <p className="text-sm text-gray-400 max-w-sm mx-auto mt-1">Configurez vos nœuds techniques dans la liste pour gérer vos serveurs VPN.</p>
           {isAdmin && (
             <button
               onClick={() => setShowAddServer(true)}

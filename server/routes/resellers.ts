@@ -4,7 +4,6 @@ import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
-import { XPanelService } from "../services/xpanel";
 
 const router = Router();
 
@@ -272,17 +271,6 @@ router.post("/:id/create-client", requireAuth, async (req: AuthenticatedRequest,
         updatedAt: new Date(),
       };
       inMemoryDb.vpnClients.push(newClient);
-    }
-
-    try {
-      await XPanelService.createUser({
-        username: tokenValue,
-        quotaTotalGb: body.quotaTotalGb,
-        durationDays: body.durationDays,
-        deviceLimit: body.deviceLimit,
-      });
-    } catch (xErr) {
-      console.warn("XPanel provisioning skipped:", xErr);
     }
 
     await logDbActivity(req.user?.userId || null, `Client created under reseller ${id}: ${body.name}`, "success", req.ip);
