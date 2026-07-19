@@ -76,3 +76,16 @@ export const deleteSubscription = (id: string): Promise<void> =>
 
 export const revokeSubscription = (id: string, reason?: string): Promise<void> =>
   apiRequest<any>(`/subscriptions/${id}/revoke`, { method: 'POST', body: { reason } });
+
+export interface UnifiedConfig {
+  id: string;
+  name: string;
+  protocol: string;
+  host: string;
+  port: number;
+  sourceType: string;
+  status: string;
+}
+
+export const fetchUnifiedConfigs = (): Promise<UnifiedConfig[]> =>
+  apiRequest<any>("/vpn-profiles/unified").then(r => r.configs || []);

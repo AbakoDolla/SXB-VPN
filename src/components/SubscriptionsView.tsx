@@ -3,7 +3,7 @@ import { UserRole } from "../types";
 import {
   fetchSubscriptions, createSubscription, updateSubscription,
   deleteSubscription, revokeSubscription, Subscription,
-  fetchVpnProfiles, VpnProfile,
+  fetchVpnProfiles, VpnProfile, fetchUnifiedConfigs, UnifiedConfig,
 } from "../api/vpnProfiles";
 import { fetchClients } from "../api/clients";
 import { fetchDevices, Device } from "../api/devices";
@@ -41,7 +41,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
     currentUserRole === UserRole.ADMIN || currentUserRole === UserRole.SUPER_ADMIN;
 
   const [subs, setSubs]         = useState<Subscription[]>([]);
-  const [profiles, setProfiles] = useState<VpnProfile[]>([]);
+  const [profiles, setProfiles] = useState<any[]>([]);
   const [clients, setClients]   = useState<Client[]>([]);
   const [devices, setDevices]   = useState<Device[]>([]);
   const [loading, setLoading]   = useState(true);
@@ -58,7 +58,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
     try {
       const [s, p, c, d] = await Promise.all([
         fetchSubscriptions(),
-        fetchVpnProfiles(),
+        fetchUnifiedConfigs(),
         fetchClients(),
         fetchDevices(),
       ]);
@@ -312,7 +312,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                   className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-blue-500">
                   <option value="">Selectionner une configuration...</option>
                   {profiles.filter((p) => p.status === "active").map((p) => (
-                    <option key={p.id} value={p.id}>{p.name} ({p.protocol.toUpperCase()})</option>
+                    <option key={p.id} value={p.id}>{p.name} [{String((p as any).sourceType || p.protocol || "")}]</option>
                   ))}
                 </select>
               </div>

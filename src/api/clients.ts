@@ -3,7 +3,8 @@ import { apiRequest } from "./client";
 
 export async function fetchClients(): Promise<Client[]> {
   try {
-    const data = await apiRequest<{ clients: Client[] }>("/clients");
+    const data = await apiRequest<any>("/clients");
+    if (Array.isArray(data)) return data;
     return data.clients || [];
   } catch (error) {
     console.error("Error fetching clients:", error);

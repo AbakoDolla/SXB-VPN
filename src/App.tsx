@@ -13,7 +13,6 @@ import SSHManagerView from "./components/SSHManagerView";
 import PayloadManagerView from "./components/PayloadManagerView";
 import XrayManagerView from "./components/XrayManagerView";
 import SingboxManagerView from "./components/SingboxManagerView";
-import VpnProfilesView from "./components/VpnProfilesView";
 import SubscriptionsView from "./components/SubscriptionsView";
 import Layout from "./components/Layout";
 import { useEffect, useState } from 'react';
@@ -262,8 +261,6 @@ function MainApp() {
         return <SSHManagerView currentUserRole={role} />;
       case 'xray':
         return <XrayManagerView currentUserRole={role} />;
-      case 'vpn-profiles':
-        return <VpnProfilesView currentUserRole={role} />;
       case 'subscriptions':
         return <SubscriptionsView currentUserRole={role} />;
       case 'singbox':

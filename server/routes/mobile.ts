@@ -272,29 +272,69 @@ router.post("/packages/activate", async (req: AuthenticatedRequest, res: Respons
   }
 });
 
-// GET /api/mobile/vpn/config — returns protocols list + subscription URL for the mobile app
+// GET /api/mobile/vpn/config — config VPN reelle depuis abonnement actif
 router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
-  const FALLBACK_PROTOCOLS = [
-    { name: "VLESS",       port: 443,  transport: "TCP",  security: "Reality",  description: "Recommandé" },
+  const FALLBACK = [
+    { name: "SSH",         port: 22,   transport: "TCP",  security: "SSH",     description: "Securise" },
+    { name: "SSH+Payload", port: 80,   transport: "TCP",  security: "Bypass",  description: "Anti-DPI" },
+    { name: "VLESS",       port: 443,  transport: "TCP",  security: "Reality", description: "Recommande" },
     { name: "VMess",       port: 80,   transport: "WS",   security: "None",    description: "Compatible" },
     { name: "Trojan",      port: 443,  transport: "TCP",  security: "TLS",     description: "Stable" },
-    { name: "Shadowsocks", port: 8388, transport: "TCP",  security: "ChaCha20",description: "Léger" },
+    { name: "Shadowsocks", port: 8388, transport: "TCP",  security: "ChaCha20",description: "Leger" },
     { name: "Hysteria2",   port: 443,  transport: "QUIC", security: "TLS",     description: "Rapide" },
-    { name: "SSH",         port: 22,   transport: "TCP",  security: "SSH",     description: "Sécurisé" },
-    { name: "SSH+Payload", port: 80,   transport: "TCP",  security: "Bypass",  description: "Anti-DPI" },
   ];
-
   try {
     const client: any = await findClientByUserId(req.user!.userId);
+    if (!client) return res.status(404).json({ error: "errors.mobile.no_account" });
+    const state = computeAccountState(client);
+
+    let sub: any = null;
+    if (prisma) {
+      sub = await (prisma as any).subscription.findFirst({
+        where: { clientId: client.id, status: "active" },
+        include: { profile: true },
+        orderBy: { createdAt: "desc" },
+      });
+    }
+
+    const profile = sub?.profile || null;
+    const proto = (profile?.protocol || "ssh").toLowerCase();
+    const protocols = profile
+      ? [{ name: proto.toUpperCase(), port: profile.port, transport: (profile.network || "tcp").toUpperCase(), security: profile.tls ? "TLS" : "None", description: "Actif \u2014 " + profile.name }]
+      : FALLBACK;
+
+    let connectionUri: string | null = null;
+    if (profile) {
+      if (proto === "ssh") {
+        connectionUri = "ssh://" + (profile.username || "user") + "@" + profile.host + ":" + profile.port;
+      } else if (proto === "vless") {
+        const p = new URLSearchParams({ type: profile.network || "ws", security: profile.tls ? "tls" : "none" });
+        if (profile.sni) p.set("sni", profile.sni);
+        if (profile.path) p.set("path", profile.path);
+        connectionUri = "vless://" + (profile.uuid || "") + "@" + profile.host + ":" + profile.port + "?" + p.toString() + "#" + encodeURIComponent(sub?.name || profile.name);
+      } else if (proto === "vmess") {
+        const v = { v: "2", ps: sub?.name || profile.name, add: profile.host, port: String(profile.port), id: profile.uuid || "", aid: "0", net: profile.network || "ws", type: "none", host: profile.sni || profile.host, path: profile.path || "/", tls: profile.tls ? "tls" : "" };
+        connectionUri = "vmess://" + Buffer.from(JSON.stringify(v)).toString("base64");
+      } else if (proto === "trojan") {
+        connectionUri = "trojan://" + (profile.password || profile.uuid || "") + "@" + profile.host + ":" + profile.port + "?sni=" + (profile.sni || profile.host) + "#" + encodeURIComponent(sub?.name || profile.name);
+      } else if (proto === "shadowsocks") {
+        const ui = Buffer.from((profile.method || "aes-256-gcm") + ":" + (profile.password || "")).toString("base64");
+        connectionUri = "ss://" + ui + "@" + profile.host + ":" + profile.port + "#" + encodeURIComponent(sub?.name || profile.name);
+      }
+    }
 
     return res.json({
-      subscriptionUrl: null,
-      protocols: FALLBACK_PROTOCOLS,
-      serverInfo: { host: "vpnsxb.afrihall.com", location: "France / Europe" },
+      state: state.state,
+      protocols,
+      serverInfo: { host: profile?.host || "vpnsxb.afrihall.com", location: profile ? "SXB" : "France / Europe" },
+      subscriptionUrl: connectionUri,
+      connectionUri,
+      profile: profile ? { id: profile.id, name: profile.name, protocol: proto, host: profile.host, port: profile.port, network: profile.network, tls: profile.tls, sni: profile.sni, uuid: profile.uuid, path: profile.path, username: profile.username } : null,
+      subscription: sub ? { id: sub.id, name: sub.name, dataToken: sub.dataToken, expireAt: sub.expireAt?.toISOString(), status: sub.status } : null,
     });
   } catch (err) {
     console.error("Mobile vpn/config error:", err);
-    return res.json({ subscriptionUrl: null, protocols: FALLBACK_PROTOCOLS, serverInfo: null });
+    return res.json({ subscriptionUrl: null, protocols: FALLBACK, serverInfo: null });
   }
 });
 

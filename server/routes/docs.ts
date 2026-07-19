@@ -249,3 +249,7 @@ const openApiSpec = {
         }
       }
     },
+  },
+};
+
+export default router;

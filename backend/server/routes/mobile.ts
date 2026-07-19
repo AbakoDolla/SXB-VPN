@@ -266,41 +266,77 @@ router.post("/packages/activate", async (req: AuthenticatedRequest, res: Respons
   }
 });
 
-// GET /api/mobile/vpn/config — VPN connection configuration
+// GET /api/mobile/vpn/config — VPN connection configuration (real data from subscription)
 router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
   try {
     const client: any = await findClientByUserId(req.user!.userId);
-    if (!client) {
-      return res.status(404).json({ error: "errors.mobile.no_account" });
-    }
-
+    if (!client) return res.status(404).json({ error: "errors.mobile.no_account" });
     const state = computeAccountState(client);
-    if (state.state !== "ready") {
-      return res.status(403).json({ error: "errors.mobile.not_ready", message: "Compte non éligible pour le VPN", state: state.state });
+
+    // Fetch active subscription with real VPN profile
+    let sub: any = null;
+    if (prisma) {
+      sub = await (prisma as any).subscription.findFirst({
+        where: { clientId: client.id, status: "active" },
+        include: { profile: true },
+        orderBy: { createdAt: "desc" },
+      });
     }
 
-    // Attempt to get real XPanel configuration
-    let config: any = null;
-    try {
-      if (client.xpanelUserId) {
-        const link = await XPanelService.getSubscriptionLink(client.xpanelUserId);
-        if (link) config = { type: "subscription", url: link };
+    const profile = sub?.profile || null;
+    const proto = (profile?.protocol || "ssh").toLowerCase();
+
+    // Build protocol list from subscription profile (or fallbacks)
+    const protocols = profile
+      ? [{ name: proto.toUpperCase(), port: profile.port, transport: (profile.network || "tcp").toUpperCase(), security: profile.tls ? "TLS" : "None", description: "Actif — " + profile.name }]
+      : [
+          { name: "SSH",    port: 22,   transport: "TCP",  security: "SSH",    description: "Sécurisé" },
+          { name: "VLESS",  port: 443,  transport: "TCP",  security: "Reality",description: "Recommandé" },
+          { name: "VMess",  port: 80,   transport: "WS",   security: "None",   description: "Compatible" },
+          { name: "Trojan", port: 443,  transport: "TCP",  security: "TLS",    description: "Stable" },
+          { name: "Shadowsocks", port: 8388, transport: "TCP", security: "ChaCha20", description: "Léger" },
+        ];
+
+    // Generate connection URI based on protocol
+    let connectionUri: string | null = null;
+    if (profile) {
+      if (proto === "ssh") {
+        connectionUri = `ssh://${profile.username || "user"}@${profile.host}:${profile.port}`;
+      } else if (proto === "vless") {
+        const params = new URLSearchParams({ type: profile.network || "ws", security: profile.tls ? "tls" : "none" });
+        if (profile.sni) params.set("sni", profile.sni);
+        if (profile.path) params.set("path", profile.path);
+        connectionUri = `vless://${profile.uuid || ""}@${profile.host}:${profile.port}?${params.toString()}#${encodeURIComponent(sub?.name || profile.name)}`;
+      } else if (proto === "vmess") {
+        const vmessObj = { v: "2", ps: sub?.name || profile.name, add: profile.host, port: String(profile.port), id: profile.uuid || "", aid: "0", net: profile.network || "ws", type: "none", host: profile.sni || profile.host, path: profile.path || "/", tls: profile.tls ? "tls" : "" };
+        connectionUri = `vmess://${Buffer.from(JSON.stringify(vmessObj)).toString("base64")}`;
+      } else if (proto === "trojan") {
+        connectionUri = `trojan://${profile.password || profile.uuid || ""}@${profile.host}:${profile.port}?sni=${profile.sni || profile.host}#${encodeURIComponent(sub?.name || profile.name)}`;
+      } else if (proto === "shadowsocks") {
+        const userInfo = Buffer.from(`${profile.method || "aes-256-gcm"}:${profile.password || ""}`).toString("base64");
+        connectionUri = `ss://${userInfo}@${profile.host}:${profile.port}#${encodeURIComponent(sub?.name || profile.name)}`;
       }
-    } catch (_) {}
-
-    if (!config) {
-      config = {
-        type: "singbox",
-        generated: new Date().toISOString(),
-        log: { disabled: false, level: "info" },
-        dns: { servers: [{ address: "8.8.8.8" }, { address: "1.1.1.1" }] },
-        inbounds: [{ type: "tun", interface_name: "tun0", mtu: 9000 }],
-        outbounds: [{ type: "direct" }],
-        route: { auto_detect_interface: true },
-      };
     }
 
-    return res.json({ config });
+    return res.json({
+      state: state.state,
+      protocols,
+      serverInfo: { host: profile?.host || "—", location: "SXB" },
+      subscriptionUrl: connectionUri,
+      connectionUri,
+      profile: profile ? {
+        id: profile.id, name: profile.name, protocol: proto,
+        host: profile.host, port: profile.port,
+        network: profile.network, tls: profile.tls, sni: profile.sni,
+        uuid: profile.uuid, path: profile.path,
+        username: profile.username,
+      } : null,
+      subscription: sub ? {
+        id: sub.id, name: sub.name, dataToken: sub.dataToken,
+        quotaBytes: sub.quotaBytes?.toString(), quotaUsed: sub.quotaUsed?.toString(),
+        expireAt: sub.expireAt?.toISOString(), status: sub.status,
+      } : null,
+    });
   } catch (err) {
     console.error("VPN config error:", err);
     return res.status(500).json({ error: "errors.server" });

@@ -15,7 +15,6 @@ const createClientSchema = z.object({
   durationDays: z.coerce.number().min(1).optional(), // Optional - can be set via token later
   deviceLimit: z.coerce.number().min(1).default(1),
   deviceId: z.string().optional(),
-  phone: z.string().optional(),
 });
 
 const updateClientSchema = z.object({
