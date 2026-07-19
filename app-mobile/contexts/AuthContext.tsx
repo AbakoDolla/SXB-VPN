@@ -137,7 +137,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const activatePlan = useCallback(async (code: string) => {
-    const res = await apiClient.post('/mobile/plans/activate', { code });
+    const res = await apiClient.post('/mobile/packages/activate', { code });
     const newState: AccountState = res.data.accountState ?? res.data;
     setAccountState(newState);
     if (user) {
