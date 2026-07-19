@@ -85,15 +85,17 @@ model VpnClient {
   deviceLimit  Int        @default(1)
   deviceId     String?    @unique
   activatedAt  DateTime?
+  lastSeenAt      DateTime?
+  appRegisteredAt DateTime?
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
   tokens             TokenSXB[]
   activationSessions ActivationSession[]
-
   xrayAccounts        XrayAccount[]
   singboxAccounts     SingboxAccount[]
   subscriptions       Subscription[]
+  appRegistrations    AppRegistration[]
 
   @@map("vpn_clients")
 }
@@ -381,4 +383,19 @@ model Subscription {
   updatedAt    DateTime    @updatedAt
 
   @@map("subscriptions")
+}
+
+model AppRegistration {
+  id          String     @id @default(uuid())
+  deviceId    String     @unique
+  phone       String?
+  platform    String?
+  appVersion  String?
+  clientId    String?
+  client      VpnClient? @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  status      String     @default("pending")
+  createdAt   DateTime   @default(now())
+  lastSeenAt  DateTime   @default(now())
+
+  @@map("app_registrations")
 }

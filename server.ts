@@ -32,6 +32,7 @@ import singboxRouter from "./server/routes/singbox";
 import sessionsRouter from "./server/routes/sessions";
 import vpnProfilesRouter from "./server/routes/vpn-profiles";
 import subscriptionsRouter from "./server/routes/subscriptions";
+import appRegisterRouter  from "./server/routes/app-register";
 import provisionRouter from "./server/routes/provision";
 
 async function startServer() {
@@ -129,6 +130,7 @@ async function startServer() {
   app.use("/api/sessions", sessionsRouter);
   app.use("/api/vpn-profiles", vpnProfilesRouter);
   app.use("/api/subscriptions", subscriptionsRouter);
+  app.use("/api/app",           appRegisterRouter);
   app.use("/api/provision", provisionRouter);
 
   // Global Error Handler with support for Multilingual Error i18n

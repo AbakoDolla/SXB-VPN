@@ -15,6 +15,8 @@ const createClientSchema = z.object({
   quotaTotalGb: z.coerce.number().min(1).optional(), // Optional - can be set via token later
   durationDays: z.coerce.number().min(1).optional(), // Optional - can be set via token later
   deviceLimit: z.coerce.number().min(1).default(1),
+  deviceId: z.string().optional(),
+  phone: z.string().optional(),
 });
 
 const updateClientSchema = z.object({
@@ -139,7 +141,7 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
         data: {
           name: body.name,
           email: tempEmail,
-          phone: "+00000000000",
+          phone: body.phone || "+00000000000",
           passwordHash,
           roleId: clientRole.id,
           status: "active",
@@ -186,6 +188,7 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
           expireAt: body.durationDays ? new Date(Date.now() + body.durationDays * 24 * 60 * 60 * 1000) : null,
           status: "active",
           xpanelUserId,
+          deviceId: body.deviceId || undefined,
         },
         include: { user: true },
       });

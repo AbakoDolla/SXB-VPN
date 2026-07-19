@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { UserRole } from "../types";
 import {
   fetchSubscriptions, createSubscription, updateSubscription,
@@ -10,7 +10,7 @@ import { fetchDevices, Device } from "../api/devices";
 import { Client } from "../types";
 import {
   CreditCard, Plus, Trash2, RefreshCw, Edit3, X, AlertTriangle,
-  Copy, Check, ShieldOff, Clock, HardDrive, Smartphone, Search,
+  Copy, Check, ShieldOff, Clock, HardDrive, Smartphone, Search, Lock,
 } from "lucide-react";
 
 interface Props { currentUserRole: UserRole }
@@ -67,6 +67,15 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
   };
 
   useEffect(() => { load(); }, []);
+
+  // Auto-fill deviceId from selected client
+  useEffect(() => {
+    if (!form.clientId) return;
+    const selectedClient = clients.find((c) => c.id === form.clientId);
+    if (selectedClient?.deviceId) {
+      setForm((f) => ({ ...f, deviceId: selectedClient.deviceId || "" }));
+    }
+  }, [form.clientId, clients]);
 
   const openCreate = () => {
     setEditId(null); setForm({ ...DEFAULT_FORM }); setError(""); setShowForm(true);
@@ -307,20 +316,45 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                   ))}
                 </select>
               </div>
-              <div>
-                <label className="block text-sm text-gray-400 mb-1.5">
-                  Appareil <span className="text-gray-600">(optionnel)</span>
-                </label>
-                <select value={form.deviceId} onChange={(e) => setForm((f) => ({ ...f, deviceId: e.target.value }))}
-                  className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-blue-500">
-                  <option value="">Aucun appareil specifique</option>
-                  {devices.filter((d) => d.status === "active").map((d) => (
-                    <option key={d.id} value={d.deviceId}>
-                      {d.label || d.deviceId} — {d.deviceId}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {/* Device ID — auto-filled from client, locked to their device */}
+              {(() => {
+                const sel = clients.find((c) => c.id === form.clientId);
+                const hasDeviceId = !!sel?.deviceId;
+                return (
+                  <div>
+                    <label className="block text-sm text-gray-400 mb-1.5 flex items-center gap-2">
+                      <Smartphone className="w-3.5 h-3.5" />
+                      Verrou appareil (Device ID)
+                      {hasDeviceId && (
+                        <span className="ml-auto flex items-center gap-1 text-[10px] text-violet-400 bg-violet-500/10 border border-violet-500/20 px-2 py-0.5 rounded-full">
+                          <Lock className="w-2.5 h-2.5" /> Verrouille automatiquement
+                        </span>
+                      )}
+                    </label>
+                    {hasDeviceId ? (
+                      <div className="flex items-center gap-2 px-3 py-2.5 bg-violet-500/5 border border-violet-500/20 rounded-xl">
+                        <Lock className="w-4 h-4 text-violet-400 shrink-0" />
+                        <code className="text-sm font-mono text-violet-400 flex-1 truncate">{sel?.deviceId}</code>
+                        <span className="text-[10px] text-gray-600">uniquement cet appareil</span>
+                      </div>
+                    ) : (
+                      <input
+                        type="text"
+                        value={form.deviceId}
+                        onChange={(e) => setForm((f) => ({ ...f, deviceId: e.target.value }))}
+                        placeholder="Laisser vide pour tous les appareils, ou entrer un Device ID manuellement"
+                        className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm font-mono placeholder-gray-700 focus:outline-none focus:border-violet-500"
+                      />
+                    )}
+                    {!form.clientId && (
+                      <p className="text-xs text-gray-600 mt-1">Selectionnez un client pour verrouiller automatiquement sur son appareil.</p>
+                    )}
+                    {form.clientId && !hasDeviceId && (
+                      <p className="text-xs text-amber-600 mt-1">Ce client n a pas encore de Device ID enregistre. Il sera lie automatiquement a son premier lancement de l app.</p>
+                    )}
+                  </div>
+                );
+              })()}
               <div>
                 <label className="block text-sm text-gray-400 mb-1.5">Nom du forfait</label>
                 <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}

@@ -22,6 +22,10 @@ export interface Client {
   expireAt: string;
   status: "active" | "suspended" | "expired";
   xpanelUserId?: string;
+  deviceId?: string;
+  lastSeenAt?: string;
+  appRegisteredAt?: string;
+  activatedAt?: string;
   user?: User;
 }
 
