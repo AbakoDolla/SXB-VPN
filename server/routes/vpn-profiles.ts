@@ -79,14 +79,6 @@ router.get("/unified", requireAuth, async (req: AuthenticatedRequest, res: Respo
       const p = await syncProfile({ ...a, protocol: "ssh" }, "[SSH] ");
       configs.push({ id: p.id, name: p.name, protocol: "ssh", host: a.host, port: a.port, sourceType: "ssh", status: a.status });
     }
-    for (const a of xrayAccs) {
-      const p = await syncProfile(a, "[Xray] ");
-      configs.push({ id: p.id, name: p.name, protocol: a.protocol, host: a.host, port: a.port, sourceType: "xray", status: a.status });
-    }
-    for (const a of sbAccs) {
-      const p = await syncProfile(a, "[Singbox] ");
-      configs.push({ id: p.id, name: p.name, protocol: a.protocol, host: a.host, port: a.port, sourceType: "singbox", status: a.status });
-    }
     return res.json({ configs });
   } catch (err) {
     console.error("Unified configs error:", err);
