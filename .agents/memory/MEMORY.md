@@ -1,5 +1,1 @@
-- [VPS SSH quirks](vps-ssh.md) — username has trailing space → always trim with tr -d before SSH
-- [XNet auth model](xnet-auth.md) — XNet uses POST /api/auth/login not static Bearer; JWT 24h; backend caches 23h
-- [VPS vs Replit git](vps-git-split.md) — VPS /var/www/sxb-vpn/ is a separate git repo (63+ commits diverged from GitHub main)
-- [XNet API endpoints](xnet-auth.md) — real endpoints: /api/auth/login, /api/system/info, /api/v1/ping, /api/inbounds, /api/nodes
-- [.env recovery](vps-ssh.md) — if VPS .env lost: recover via git show <commit>:.env from git history
+- [SXB VPN project state](sxb-vpn-state.md) — corrections BUG 500, architecture VPS, credentials admin, build commands, multi-protocoles
