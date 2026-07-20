@@ -73,7 +73,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             }
 
             // Besoin de demander la permission via l'Activity
-            val activity = currentActivity
+            val activity = reactApplicationContext.currentActivity
             if (activity == null) {
                 // Pas d'Activity disponible — cas rare mais possible en background
                 promise.resolve(false)
@@ -93,7 +93,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
 
     // ── ActivityEventListener : capture le résultat de la popup VPN ───────────
     override fun onActivityResult(
-        activity: Activity?,
+        activity: Activity,
         requestCode: Int,
         resultCode: Int,
         data: Intent?
@@ -105,7 +105,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
         }
     }
 
-    override fun onNewIntent(intent: Intent?) {
+    override fun onNewIntent(intent: Intent) {
         // Non utilisé
     }
 
