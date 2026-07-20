@@ -52,6 +52,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
   const [error, setError]       = useState("");
   const [copied, setCopied]     = useState<string | null>(null);
   const [search, setSearch]     = useState("");
+  const [newToken, setNewToken] = useState<{ name: string; token: string } | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -111,10 +112,15 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
       };
       if (editId) {
         await updateSubscription(editId, payload);
+        setShowForm(false); load();
       } else {
-        await createSubscription(payload);
+        const created = await createSubscription(payload);
+        setShowForm(false);
+        if (created?.dataToken) {
+          setNewToken({ name: created.name, token: created.dataToken });
+        }
+        load();
       }
-      setShowForm(false); load();
     } catch (err: any) { setError(err.message || "Erreur"); }
     finally { setSaving(false); }
   };
@@ -391,6 +397,66 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal token révélation ───────────────────────────────────────── */}
+      {newToken && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <div className="bg-[#0d1117] border border-emerald-500/30 rounded-2xl p-6 w-full max-w-md shadow-2xl">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-emerald-500/15 flex items-center justify-center">
+                <Check size={20} className="text-emerald-400" />
+              </div>
+              <div>
+                <p className="text-white font-semibold">Forfait créé !</p>
+                <p className="text-gray-500 text-xs">{newToken.name}</p>
+              </div>
+            </div>
+
+            <p className="text-sm text-gray-400 mb-3">
+              Token d'activation généré — communiquez-le au client. Il ne sera affiché qu'une seule fois ici.
+            </p>
+
+            <div className="bg-[#07090e] border border-emerald-500/20 rounded-xl p-4 mb-4">
+              <p className="text-xs text-gray-500 mb-1.5 font-medium uppercase tracking-wider">Token SXB-DATA</p>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 text-emerald-400 font-mono text-base tracking-wider break-all">
+                  {newToken.token}
+                </code>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(newToken.token);
+                    setCopied("new-token");
+                    setTimeout(() => setCopied(null), 1500);
+                  }}
+                  className="flex-shrink-0 p-2 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 transition-colors"
+                >
+                  {copied === "new-token" ? <Check size={16} /> : <Copy size={16} />}
+                </button>
+              </div>
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(newToken.token);
+                  setCopied("new-token");
+                  setTimeout(() => setCopied(null), 1500);
+                }}
+                className="flex-1 py-2.5 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 text-sm font-medium rounded-xl border border-emerald-500/20 flex items-center justify-center gap-2 transition-colors"
+              >
+                <Copy size={14} />
+                {copied === "new-token" ? "Copié !" : "Copier le token"}
+              </button>
+              <button
+                onClick={() => setNewToken(null)}
+                className="flex-1 py-2.5 bg-white/5 hover:bg-white/10 text-gray-300 text-sm font-medium rounded-xl transition-colors"
+              >
+                Fermer
+              </button>
+            </div>
           </div>
         </div>
       )}
