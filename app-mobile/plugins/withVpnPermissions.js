@@ -127,18 +127,38 @@ function withMainAppPackage(config) {
   }]);
 }
 
-// ── 4. Dépendance JSch dans app/build.gradle ──────────────────────────────────
+// ── 4. Dépendance JSch + packagingOptions dans app/build.gradle ───────────────
 function withJschDependency(config) {
   return withAppBuildGradle(config, (cfg) => {
-    const gradle = cfg.modResults.contents;
-    const dep    = "    implementation 'com.github.mwiede:jsch:0.2.21'";
+    let gradle = cfg.modResults.contents;
+
+    // Ajouter JSch
+    const dep = "    implementation 'com.github.mwiede:jsch:0.2.21'";
     if (!gradle.includes('mwiede:jsch')) {
-      cfg.modResults.contents = gradle.replace(
+      gradle = gradle.replace(
         /dependencies\s*\{/,
         'dependencies {\n' + dep
       );
       console.log('[VPN plugin] JSch added to app/build.gradle');
     }
+
+    // Exclure le MANIFEST.MF dupliqué entre JSch et jspecify
+    const packagingBlock = `
+    packaging {
+        resources {
+            excludes += ['META-INF/versions/9/OSGI-INF/MANIFEST.MF']
+        }
+    }`;
+    if (!gradle.includes('OSGI-INF/MANIFEST.MF')) {
+      // Insérer dans le bloc android { ... }
+      gradle = gradle.replace(
+        /android\s*\{/,
+        'android {' + packagingBlock
+      );
+      console.log('[VPN plugin] packagingOptions exclusion added to app/build.gradle');
+    }
+
+    cfg.modResults.contents = gradle;
     return cfg;
   });
 }
