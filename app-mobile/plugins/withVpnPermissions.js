@@ -1,10 +1,10 @@
 /**
- * Expo Config Plugin — VPN natif Android (SSH tunnel)
+ * Expo Config Plugin — VPN natif Android (SSH tunnel via JSch)
  *
- * Ce plugin fait trois choses lors de `expo prebuild` :
- *  1. Copie les fichiers Kotlin depuis modules/android-native/ dans android/
- *  2. Injecte permissions VPN + déclaration du service dans AndroidManifest.xml
- *  3. Enregistre SxbVpnPackage dans MainApplication.kt
+ * 1. Copie les fichiers Kotlin depuis modules/android-native/ dans android/
+ * 2. Injecte permissions VPN + déclaration du service dans AndroidManifest.xml
+ * 3. Enregistre SxbVpnPackage dans MainApplication.kt
+ * 4. Ajoute la dépendance JSch dans app/build.gradle
  */
 const { withAndroidManifest, withDangerousMod, withAppBuildGradle } = require('@expo/config-plugins');
 const path = require('path');
@@ -14,13 +14,11 @@ const fs   = require('fs');
 function withKotlinSources(config) {
   return withDangerousMod(config, ['android', (cfg) => {
     const projectRoot   = cfg.modRequest.projectRoot;
-    const platformRoot  = cfg.modRequest.platformProjectRoot; // android/
+    const platformRoot  = cfg.modRequest.platformProjectRoot;
 
-    // Destination : android/app/src/main/java/com/sxbvpn/vpnmodule/
     const destDir = path.join(platformRoot, 'app', 'src', 'main', 'java', 'com', 'sxbvpn', 'vpnmodule');
     fs.mkdirSync(destDir, { recursive: true });
 
-    // Source : app-mobile/modules/android-native/*.kt
     const srcDir = path.join(projectRoot, 'modules', 'android-native');
     if (fs.existsSync(srcDir)) {
       fs.readdirSync(srcDir).forEach((file) => {
@@ -28,11 +26,11 @@ function withKotlinSources(config) {
           const src = path.join(srcDir, file);
           const dst = path.join(destDir, file);
           fs.copyFileSync(src, dst);
-          console.log(`[VPN plugin] Copied ${file} → ${dst}`);
+          console.log('[VPN plugin] Copied ' + file + ' -> ' + dst);
         }
       });
     } else {
-      console.warn(`[VPN plugin] Source dir not found: ${srcDir}`);
+      console.warn('[VPN plugin] Source dir not found: ' + srcDir);
     }
 
     return cfg;
@@ -45,7 +43,6 @@ function withVpnManifest(config) {
     const manifest = cfg.modResults;
     const app      = manifest.manifest.application[0];
 
-    // Permissions à ajouter
     const toAdd = [
       'android.permission.FOREGROUND_SERVICE',
       'android.permission.FOREGROUND_SERVICE_SPECIAL_USE',
@@ -61,7 +58,6 @@ function withVpnManifest(config) {
       }
     });
 
-    // Déclaration du service VPN
     const serviceName = 'com.sxbvpn.vpnmodule.SxbVpnService';
     const services    = app.service || [];
     const already     = services.some((s) => s.$['android:name'] === serviceName);
@@ -69,9 +65,9 @@ function withVpnManifest(config) {
     if (!already) {
       const entry = {
         $: {
-          'android:name':                serviceName,
-          'android:exported':            'false',
-          'android:permission':          'android.permission.BIND_VPN_SERVICE',
+          'android:name':                  serviceName,
+          'android:exported':              'false',
+          'android:permission':            'android.permission.BIND_VPN_SERVICE',
           'android:foregroundServiceType': 'specialUse',
         },
         'intent-filter': [
@@ -96,36 +92,28 @@ function withMainAppPackage(config) {
   return withDangerousMod(config, ['android', (cfg) => {
     const platformRoot = cfg.modRequest.platformProjectRoot;
 
-    // Chemin de MainApplication.kt (package = com.sxbvpn.app)
     const mainAppPath = path.join(
       platformRoot, 'app', 'src', 'main', 'java',
       'com', 'sxbvpn', 'app', 'MainApplication.kt'
     );
 
     if (!fs.existsSync(mainAppPath)) {
-      // Essai d'un chemin alternatif généré par Expo
-      console.warn('[VPN plugin] MainApplication.kt not found at expected path:', mainAppPath);
+      console.warn('[VPN plugin] MainApplication.kt not found at: ' + mainAppPath);
       return cfg;
     }
 
     let src = fs.readFileSync(mainAppPath, 'utf-8');
 
     if (src.includes('SxbVpnPackage')) {
-      // Déjà présent
       return cfg;
     }
 
-    // Ajout de l'import (après la déclaration de package)
     src = src.replace(
       /^(package .+)$/m,
       '$1\n\nimport com.sxbvpn.vpnmodule.SxbVpnPackage'
     );
 
-    // Ajout du package dans getPackages()
-    // Expo SDK 54 génère: override fun getPackages(): List<ReactPackage> = PackageList(this).packages
-    // ou la version multi-lignes. On gère les deux.
     if (src.includes('PackageList(this).packages')) {
-      // Version 1 : expression directe
       src = src.replace(
         'PackageList(this).packages',
         'PackageList(this).packages.also { it.add(SxbVpnPackage()) }'
@@ -139,25 +127,23 @@ function withMainAppPackage(config) {
   }]);
 }
 
-
-// ── 4. Injection de la dépendance JSch (SSH client Java) ─────────────────────
+// ── 4. Dépendance JSch dans app/build.gradle ──────────────────────────────────
 function withJschDependency(config) {
   return withAppBuildGradle(config, (cfg) => {
     const gradle = cfg.modResults.contents;
-    const dep = "    implementation 'com.github.mwiede:jsch:0.2.21'";
+    const dep    = "    implementation 'com.github.mwiede:jsch:0.2.21'";
     if (!gradle.includes('mwiede:jsch')) {
       cfg.modResults.contents = gradle.replace(
         /dependencies\s*\{/,
-        'dependencies {
-' + dep
+        'dependencies {\n' + dep
       );
-      console.log('[VPN plugin] JSch dependency added to app/build.gradle');
+      console.log('[VPN plugin] JSch added to app/build.gradle');
     }
     return cfg;
   });
 }
 
-// ── Export du plugin composite ────────────────────────────────────────────────
+// ── Export composite ──────────────────────────────────────────────────────────
 function withVpnPermissions(config) {
   config = withKotlinSources(config);
   config = withVpnManifest(config);
