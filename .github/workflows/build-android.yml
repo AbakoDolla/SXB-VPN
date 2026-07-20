@@ -123,6 +123,7 @@ jobs:
       - name: Build APK (release)
         working-directory: app-mobile/android
         run: |
+          set -o pipefail
           chmod +x gradlew
           ./gradlew :app:assembleRelease \
             --no-daemon \
