@@ -108,6 +108,17 @@ class SxbVpnService : VpnService() {
         Log.i(TAG, "SxbVpnService détruit")
     }
 
+    /**
+     * Android appelle onRevoke() quand une autre app VPN demande à prendre la main.
+     * Sans cette override, le service garde le TUN et bloque toutes les autres apps VPN.
+     */
+    override fun onRevoke() {
+        broadcastLog("⚠️ VPN révoqué — une autre application VPN a pris la main")
+        broadcastStatus("disconnected")
+        stopVpn()
+        super.onRevoke()
+    }
+
     // ── Dispatch ──────────────────────────────────────────────────────────────
 
     private fun protoLabel(proto: String) = when {
@@ -581,3 +592,4 @@ class SxbVpnService : VpnService() {
         sendBroadcast(Intent(BROADCAST_LOG).putExtra("log", message))
     }
 }
+
