@@ -58,8 +58,9 @@ export async function getSingboxConfig(id: string): Promise<{ config: object }> 
 }
 
 export async function fetchSingboxStats(): Promise<{ total: number; active: number }> {
-  const res = await apiRequest<{ stats: { total: number; active: number } }>('/singbox/stats');
-  return res.stats;
+  // API returns { success, total, active } directly (no "stats" wrapper)
+  const res = await apiRequest<{ total: number; active: number }>('/singbox/stats');
+  return { total: res.total ?? 0, active: res.active ?? 0 };
 }
 
 export async function fetchSingboxProtocols(): Promise<{ protocols: string[]; networks: string[] }> {

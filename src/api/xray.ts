@@ -66,8 +66,9 @@ export async function getXrayLink(id: string): Promise<{ link: string; protocol:
 }
 
 export async function fetchXrayStats(): Promise<XrayStats> {
-  const res = await apiRequest<{ stats: XrayStats }>('/xray/stats');
-  return res.stats;
+  // API returns { success, total, active, byProtocol } directly (no "stats" wrapper)
+  const res = await apiRequest<{ total: number; active: number; byProtocol: XrayStats['byProtocol'] }>('/xray/stats');
+  return { total: res.total ?? 0, active: res.active ?? 0, byProtocol: res.byProtocol ?? [] };
 }
 
 export async function fetchXrayProtocols(): Promise<{ protocols: string[]; methods: string[]; networks: string[] }> {
