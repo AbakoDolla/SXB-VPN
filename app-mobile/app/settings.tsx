@@ -211,7 +211,7 @@ function PinModal({ visible, mode, onSuccess, onClose }: {
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { user, accountState, logout } = useAuthContext();
-  const { logs, isConnected, selectedProtocol, availableProtocols } = useVpnContext();
+  const { logs, isConnected, selectedProtocol, availableProtocols, refreshVpnConfig } = useVpnContext();
   const { language, setLanguage } = useLanguageContext();
 
   // State
@@ -223,8 +223,9 @@ export default function SettingsScreen() {
   const [langModal,   setLangModal]   = useState(false);
   const [logsModal,   setLogsModal]   = useState(false);
   const [deviceId,    setDeviceId]    = useState<string | null>(null);
-  const [storageSize, setStorageSize] = useState<string>("…");
-  const [clearing,    setClearing]    = useState(false);
+  const [storageSize,      setStorageSize]      = useState<string>("…");
+  const [clearing,         setClearing]         = useState(false);
+  const [refreshingConfig, setRefreshingConfig] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -278,6 +279,19 @@ export default function SettingsScreen() {
     setPinEnabled(true);
     setPinModal(null);
     Alert.alert("PIN activé", "Le verrouillage par code est maintenant actif.");
+  };
+
+  const handleRefreshConfig = async () => {
+    if (refreshingConfig) return;
+    setRefreshingConfig(true);
+    try {
+      await refreshVpnConfig();
+      Alert.alert("✅ Configuration mise à jour", "La configuration VPN a été synchronisée depuis le serveur.");
+    } catch {
+      Alert.alert("❌ Erreur", "Impossible de synchroniser la configuration. Vérifiez votre connexion.");
+    } finally {
+      setRefreshingConfig(false);
+    }
   };
 
   const handleAutoReconnect = async (v: boolean) => {
@@ -412,6 +426,16 @@ export default function SettingsScreen() {
             toggle toggleValue={killSwitch} onToggle={handleKillSwitch}
             color={Colors.warning}
             badge={killSwitch ? "ON" : undefined} badgeColor={Colors.warning}
+          />
+          <View style={styles.divider} />
+          <View style={styles.divider} />
+          <Row
+            icon="cloud-download-outline"
+            label={refreshingConfig ? "Synchronisation..." : "Actualiser la configuration"}
+            onPress={handleRefreshConfig}
+            color={Colors.primary}
+            disabled={refreshingConfig}
+            badge={refreshingConfig ? "…" : undefined}
           />
           <View style={styles.divider} />
           <Row

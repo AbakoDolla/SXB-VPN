@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Android APK — SXB VPN
 
 on:
   push:
@@ -20,7 +20,7 @@ jobs:
         working-directory: app-mobile
 
     steps:
-      # ── Checkout ─────────────────────────────────────────────────────────────
+      # ── Checkout ──────────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -32,14 +32,14 @@ jobs:
           cache: "npm"
           cache-dependency-path: app-mobile/package-lock.json
 
-      # ── JDK ────────────────────────────────────────────────────────────────────
+      # ── JDK ───────────────────────────────────────────────────────────────────
       - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # ── Gradle cache ──────────────────────────────────────────────────────────
+      # ── Gradle cache ─────────────────────────────────────────────────────────
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
@@ -60,20 +60,45 @@ jobs:
           key: node-modules-${{ runner.os }}-${{ hashFiles('app-mobile/package-lock.json') }}
           restore-keys: node-modules-${{ runner.os }}-
 
-      # ── Install deps (skip if cache hit) ──────────────────────────────────────
+      # ── Install deps ──────────────────────────────────────────────────────────
       - name: Install dependencies
         if: steps.cache-node.outputs.cache-hit != 'true'
         run: npm install --legacy-peer-deps
 
-      # ── Kotlin metadata version fix ───────────────────────────────────────────
+      # ── sing-box binaire (pour protocoles VLESS/VMess/Trojan/SS/WG/Hysteria2) ─
+      - name: Download sing-box binaries
+        run: |
+          mkdir -p assets
+          SINGBOX_VERSION="1.9.7"
+          
+          # arm64-v8a
+          echo "Téléchargement sing-box arm64..."
+          curl -sL "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-android-arm64-v8a.tar.gz" \
+            | tar -xz --strip-components=1 -O "sing-box-${SINGBOX_VERSION}-android-arm64-v8a/sing-box" > assets/sing-box-arm64 2>/dev/null || true
+          
+          # armeabi-v7a (ARM 32-bit)
+          echo "Téléchargement sing-box arm32..."
+          curl -sL "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-android-armv7.tar.gz" \
+            | tar -xz --strip-components=1 -O "sing-box-${SINGBOX_VERSION}-android-armv7/sing-box" > assets/sing-box-arm 2>/dev/null || true
+          
+          # Vérification
+          for f in assets/sing-box-arm64 assets/sing-box-arm; do
+            if [ -f "$f" ] && [ "$(wc -c < "$f")" -gt 1000000 ]; then
+              echo "✅ $f ok ($(du -h "$f" | cut -f1))"
+            else
+              echo "⚠️  $f manquant ou corrompu — protocoles avancés désactivés"
+            fi
+          done
+
+      # ── Kotlin metadata fix ───────────────────────────────────────────────────
       - name: Patch expo-module-gradle-plugin (Kotlin metadata compat)
         run: |
           PLUGIN="node_modules/expo-modules-core/expo-module-gradle-plugin/build.gradle.kts"
           if [ -f "$PLUGIN" ] && ! grep -q "Xskip-metadata-version-check" "$PLUGIN"; then
-            printf '\n// CI patch: suppress Kotlin metadata version mismatch\ntasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {\n    kotlinOptions {\n        freeCompilerArgs = freeCompilerArgs + listOf("-Xskip-metadata-version-check")\n    }\n}\n' >> "$PLUGIN"
-            echo "[patch] Xskip-metadata-version-check added"
+            printf '\ntasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {\n    kotlinOptions { freeCompilerArgs = freeCompilerArgs + listOf("-Xskip-metadata-version-check") }\n}\n' >> "$PLUGIN"
+            echo "[patch] Kotlin metadata fix appliqué"
           else
-            echo "[patch] Already applied or file not found"
+            echo "[patch] Déjà appliqué ou fichier absent"
           fi
 
       # ── Expo prebuild ─────────────────────────────────────────────────────────
@@ -83,7 +108,7 @@ jobs:
           EXPO_PUBLIC_API_URL: https://vpnsxb.afrihall.com/api
 
       # ── Gradle properties ─────────────────────────────────────────────────────
-      - name: Configure Gradle (JVM + parallelism)
+      - name: Configure Gradle (performance)
         run: |
           cat >> android/gradle.properties << 'EOF'
           org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=512m -XX:+UseParallelGC
@@ -94,7 +119,7 @@ jobs:
           android.enableR8.fullMode=false
           EOF
 
-      # ── Build APK (debug + release) ───────────────────────────────────────────
+      # ── Build APK ─────────────────────────────────────────────────────────────
       - name: Build APK (release)
         working-directory: app-mobile/android
         run: |
@@ -106,30 +131,30 @@ jobs:
             -x :react-native-reanimated:assertMinimalReactNativeVersionTask \
             -x :react-native-worklets:assertMinimalReactNativeVersionTask \
             2>&1 | tee build.log
-          echo "::group::Gradle output (last 60 lines)"
+          echo "::group::Gradle output (dernières 60 lignes)"
           tail -60 build.log
           echo "::endgroup::"
         env:
           NODE_ENV: production
           EXPO_PUBLIC_API_URL: https://vpnsxb.afrihall.com/api
 
-      # ── APK collection ────────────────────────────────────────────────────────
-      - name: Locate and copy APK
+      # ── Collect APK ───────────────────────────────────────────────────────────
+      - name: Localiser et copier l'APK
         working-directory: app-mobile
         run: |
           mkdir -p build
           APK=$(find android/app/build/outputs/apk -name "*.apk" | head -n 1)
           if [ -z "$APK" ]; then
-            echo "::error::Aucun APK trouvé dans android/app/build/outputs/apk/"
+            echo "::error::Aucun APK trouvé"
             find android/app/build/outputs -type f 2>/dev/null || true
             exit 1
           fi
           cp "$APK" build/sxb-vpn.apk
-          echo "APK: $(ls -lh build/sxb-vpn.apk)"
+          echo "✅ APK: $(ls -lh build/sxb-vpn.apk)"
           echo "APK_PATH=app-mobile/build/sxb-vpn.apk" >> "$GITHUB_ENV"
 
       # ── Upload artifact ───────────────────────────────────────────────────────
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: sxb-vpn-android-apk-${{ github.run_number }}
@@ -138,40 +163,43 @@ jobs:
           retention-days: 30
 
       # ── GitHub Release ────────────────────────────────────────────────────────
-      - name: Create GitHub Release
+      - name: GitHub Release
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: apk-${{ github.run_number }}
           name: "SXB VPN APK #${{ github.run_number }}"
           body: |
-            ## SXB VPN — APK Android
+            ## SXB VPN — APK Android #${{ github.run_number }}
 
-            Build `${{ github.run_number }}` depuis commit `${{ github.sha }}`
+            Build depuis commit `${{ github.sha }}`
 
             ### Protocoles supportés
-            - ✅ SSH / SSH+Payload (tunnel JSch pur Java)
-            - ✅ VLESS / VMess / Trojan (V2Ray)
-            - ✅ Shadowsocks, Hysteria2, WireGuard
-            - ✅ Module natif Android (SxbVpnService + VpnService)
-            - ✅ Config VPN chiffrée localement (XOR + base64)
-            - ✅ Kill Switch + reconnexion automatique
-            - ✅ Token SXB-DATA-XXXX-XXXX-XXXX
+            - ✅ **SSH / SSH+Payload** — tunnel JSch natif Java
+            - ✅ **VLESS / VMess / Trojan** — sing-box v1.9.7
+            - ✅ **Shadowsocks** — sing-box
+            - ✅ **WireGuard** — sing-box
+            - ✅ **Hysteria2 / TUIC** — sing-box
+            - ✅ Permission VPN Android avec popup système réelle
+            - ✅ Foreground Service — fonctionne en arrière-plan
+            - ✅ Config chiffrée localement (XOR + base64)
+            - ✅ Mode hors ligne (config locale)
+            - ✅ Interface FR/EN
 
             ### Installation
             1. Télécharger `sxb-vpn.apk`
             2. Android → Paramètres → Sécurité → Sources inconnues
-            3. Installer et activer avec votre token SXB
+            3. Installer et activer avec votre token `SXB-USER-XXXX-XXXX-XXXX`
 
-            ### Serveur actif
-            `bugsleuth@node05.mikosi.fr.eu.org:443` (SNI yamo.mtn.cm)
+            ### Backend
+            `https://vpnsxb.afrihall.com/api`
           files: app-mobile/build/sxb-vpn.apk
           draft: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── Deploy APK to VPS ─────────────────────────────────────────────────────
-      - name: Deploy APK to VPS (SCP)
+      # ── Deploy APK sur VPS ────────────────────────────────────────────────────
+      - name: Déployer APK sur VPS
         if: github.ref == 'refs/heads/main'
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -183,7 +211,7 @@ jobs:
           strip_components: 2
         continue-on-error: true
 
-      - name: Install APK on VPS distribution folder
+      - name: Installer APK dans dossier distribution VPS
         if: github.ref == 'refs/heads/main'
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -194,5 +222,5 @@ jobs:
             sudo mkdir -p /var/www/apk
             sudo cp /tmp/sxb-vpn.apk /var/www/apk/sxbvpn-latest.apk 2>/dev/null || true
             sudo cp /tmp/sxb-vpn.apk "/var/www/apk/sxbvpn-build-${{ github.run_number }}.apk" 2>/dev/null || true
-            echo "Deployed: $(ls -lh /var/www/apk/ 2>/dev/null)"
+            echo "Déployé: $(ls -lh /var/www/apk/ 2>/dev/null)"
         continue-on-error: true

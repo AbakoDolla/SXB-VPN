@@ -66,6 +66,9 @@ export const en = {
 
   home: 'Home',
   history: 'History',
+  profile: 'Profile',
+  notifications: 'Notifications',
+
   no_history: 'No activity recorded',
   account_activated_event: 'Account activated',
   plan_activated_event: 'Plan activated',
@@ -74,12 +77,15 @@ export const en = {
   plan_expired_event: 'Plan expired',
   plan_renewed_event: 'Plan renewed',
 
-  notifications: 'Notifications',
   mark_all_read: 'Mark all as read',
   no_notifications: 'No notifications',
   no_notifications_desc: 'You have no notifications yet.',
+  notif_plan_expired: 'Your SXB VPN plan has expired.',
+  notif_low_quota_100mb: 'You have 100 MB of data remaining.',
+  notif_expires_tomorrow: 'Your plan expires tomorrow.',
+  notif_new_config: 'New VPN configuration available.',
+  notif_sync_done: 'Synchronization complete.',
 
-  profile: 'Profile',
   client_id: 'Client ID',
   plan_label: 'Plan',
   expiration: 'Expiration',
@@ -111,6 +117,28 @@ export const en = {
   terms: 'Terms of service',
   privacy_policy: 'Privacy policy',
 
+  account_section: 'Account',
+  device_id: 'Device ID',
+  subscription_status: 'Subscription status',
+  subscription_active: 'Active',
+  subscription_expired: 'Expired',
+  subscription_none: 'No plan',
+
+  vpn_section: 'VPN',
+  refresh_config: 'Refresh configuration',
+  refreshing_config: 'Syncing...',
+  refresh_config_success: 'Configuration updated!',
+  refresh_config_error: 'Unable to sync configuration',
+  kill_switch: 'Kill Switch',
+  kill_switch_desc: 'Block all traffic if VPN disconnects',
+  vpn_logs: 'VPN logs',
+  clear_logs: 'Clear logs',
+
+  data_section: 'Local data',
+  clear_cache: 'Clear local cache',
+  clear_cache_confirm: 'Clear all local data?',
+  clear_cache_success: 'Cache cleared successfully',
+
   support: 'Support',
   faq: 'FAQ',
   faq_q1: 'How do I activate my account?',
@@ -121,6 +149,8 @@ export const en = {
   faq_a3: 'Check your internet connection, then disconnect and reconnect the VPN. If the issue persists, contact support.',
   faq_q4: 'My plan has expired, what should I do?',
   faq_a4: 'Contact your reseller to get a new Data Token and activate it in the app.',
+  faq_q5: 'Does the VPN stay active when I close the app?',
+  faq_a5: 'Yes. A foreground service ensures the VPN tunnel stays active in the background and when the screen is locked.',
   create_ticket: 'Create a ticket',
   my_tickets: 'My tickets',
   contact_us: 'Contact us',
@@ -139,6 +169,7 @@ export const en = {
   error_server: 'Server error. Please try again later.',
   error_generic: 'An error occurred. Please try again.',
   error_quota_empty: 'Insufficient quota.',
+  error_vpn_permission: 'VPN permission required. Grant access in Android settings.',
   retry: 'Retry',
   back: 'Back',
 

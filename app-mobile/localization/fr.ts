@@ -73,9 +73,11 @@ export const fr = {
 
   // Navigation
   home: 'Accueil',
+  history: 'Historique',
+  profile: 'Profil',
+  notifications: 'Notifications',
 
   // History
-  history: 'Historique',
   no_history: 'Aucune activité enregistrée',
   account_activated_event: 'Compte activé',
   plan_activated_event: 'Forfait activé',
@@ -85,18 +87,21 @@ export const fr = {
   plan_renewed_event: 'Forfait renouvelé',
 
   // Notifications
-  notifications: 'Notifications',
   mark_all_read: 'Tout marquer comme lu',
   no_notifications: 'Aucune notification',
-  no_notifications_desc: 'Vous n\'avez pas encore de notifications.',
+  no_notifications_desc: "Vous n'avez pas encore de notifications.",
+  notif_plan_expired: 'Votre forfait SXB VPN a expiré.',
+  notif_low_quota_100mb: 'Il vous reste 100 Mo de données.',
+  notif_expires_tomorrow: 'Votre forfait expire demain.',
+  notif_new_config: 'Nouvelle configuration VPN disponible.',
+  notif_sync_done: 'Synchronisation terminée.',
 
   // Profile
-  profile: 'Profil',
   client_id: 'Identifiant client',
   plan_label: 'Forfait',
   expiration: 'Expiration',
   devices_authorized: 'Appareils autorisés',
-  app_version: 'Version de l\'application',
+  app_version: "Version de l'application",
   logout: 'Déconnexion',
   logout_confirm_title: 'Déconnexion',
   logout_confirm_message: 'Êtes-vous sûr de vouloir vous déconnecter ?',
@@ -121,20 +126,47 @@ export const fr = {
   biometrics: 'Déverrouillage biométrique',
   about_section: 'À propos',
   version: 'Version',
-  terms: 'Conditions d\'utilisation',
+  terms: "Conditions d'utilisation",
   privacy_policy: 'Politique de confidentialité',
+
+  // Settings — Compte
+  account_section: 'Compte',
+  device_id: 'Identifiant appareil',
+  subscription_status: 'Statut abonnement',
+  subscription_active: 'Actif',
+  subscription_expired: 'Expiré',
+  subscription_none: 'Aucun forfait',
+
+  // Settings — VPN
+  vpn_section: 'VPN',
+  refresh_config: 'Actualiser la configuration',
+  refreshing_config: 'Synchronisation...',
+  refresh_config_success: 'Configuration mise à jour !',
+  refresh_config_error: 'Impossible de synchroniser la configuration',
+  kill_switch: 'Kill Switch',
+  kill_switch_desc: 'Bloquer tout le trafic si le VPN se déconnecte',
+  vpn_logs: 'Journaux VPN',
+  clear_logs: 'Effacer les journaux',
+
+  // Settings — Données
+  data_section: 'Données locales',
+  clear_cache: 'Nettoyer le cache local',
+  clear_cache_confirm: 'Effacer toutes les données locales ?',
+  clear_cache_success: 'Cache effacé avec succès',
 
   // Support
   support: 'Support',
-  faq: 'Questions fréquentes',
+  faq: 'FAQ',
   faq_q1: 'Comment activer mon compte ?',
-  faq_a1: 'Entrez votre Token SXB-USER sur l\'écran d\'activation. Le Token vous a été fourni lors de votre inscription.',
+  faq_a1: "Entrez votre Token SXB-USER sur l'écran d'activation. Le token vous a été fourni lors de votre inscription.",
   faq_q2: 'Comment ajouter un forfait ?',
-  faq_a2: 'Appuyez sur "Activer un forfait" et entrez votre Token Data SXB-DATA.',
+  faq_a2: "Appuyez sur « Activer un forfait » et entrez votre Token Data SXB-DATA.",
   faq_q3: 'Que faire si ma connexion ne fonctionne pas ?',
-  faq_a3: 'Vérifiez votre connexion internet, puis déconnectez et reconnectez le VPN. Si le problème persiste, contactez le support.',
+  faq_a3: "Vérifiez votre connexion internet, puis déconnectez et reconnectez le VPN. Si le problème persiste, contactez le support.",
   faq_q4: 'Mon forfait est expiré, que faire ?',
-  faq_a4: 'Contactez votre revendeur pour obtenir un nouveau Token Data et activez-le depuis l\'application.',
+  faq_a4: 'Contactez votre revendeur pour obtenir un nouveau Token Data et activez-le dans l\'application.',
+  faq_q5: 'Le VPN reste-t-il actif quand je ferme l\'application ?',
+  faq_a5: 'Oui. Un service en premier plan garantit que le tunnel VPN reste actif en arrière-plan et lorsque l\'écran est verrouillé.',
   create_ticket: 'Créer un ticket',
   my_tickets: 'Mes tickets',
   contact_us: 'Nous contacter',
@@ -143,25 +175,26 @@ export const fr = {
   ticket_subject: 'Sujet',
   ticket_message: 'Message',
   ticket_submit: 'Envoyer',
-  ticket_submitting: 'Envoi...',
+  ticket_submitting: 'Envoi en cours...',
   ticket_success: 'Votre message a été envoyé avec succès.',
 
   // Errors
-  error_invalid_token: 'Token invalide. Vérifiez votre token et réessayez.',
+  error_invalid_token: 'Token invalide. Vérifiez et réessayez.',
   error_expired_token: 'Ce token a expiré.',
   error_suspended: 'Votre compte est suspendu. Contactez le support.',
   error_no_network: 'Connexion impossible. Vérifiez votre réseau.',
-  error_server: 'Erreur serveur. Réessayez dans quelques instants.',
-  error_generic: 'Une erreur s\'est produite. Réessayez.',
+  error_server: 'Erreur serveur. Veuillez réessayer plus tard.',
+  error_generic: "Une erreur s'est produite. Veuillez réessayer.",
   error_quota_empty: 'Quota insuffisant.',
+  error_vpn_permission: "Permission VPN requise. Accordez l'accès dans les paramètres Android.",
   retry: 'Réessayer',
   back: 'Retour',
 
   // Time
-  just_now: 'À l\'instant',
+  just_now: "À l'instant",
   minutes_ago: 'min',
   hours_ago: 'h',
-  today: 'Aujourd\'hui',
+  today: "Aujourd'hui",
   yesterday: 'Hier',
 
   // Status
@@ -169,7 +202,5 @@ export const fr = {
   inactive: 'Inactif',
   expired: 'Expiré',
   suspended_status: 'Suspendu',
-  no_package_status: 'Sans forfait',
+  no_package_status: 'Aucun forfait',
 } as const;
-
-export type TranslationKey = keyof typeof fr;
