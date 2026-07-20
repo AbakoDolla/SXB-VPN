@@ -1,7 +1,10 @@
 /**
- * Subscriptions Routes — SXB VPN Core
- * A Subscription links a VpnClient to a VpnProfile with quota/duration/devices.
- * Generating a subscription automatically creates or links a SXB-DATA token.
+ * Subscriptions Routes — SXB VPN Core v2
+ *
+ * CORRECTIF v2 :
+ *  - BigInt JSON : toutes les réponses passent par serializeSub()
+ *    qui convertit quotaBytes/quotaUsed en Number avant JSON.stringify
+ *  - Évite les crash 500 "Cannot serialize a BigInt value"
  */
 import { Router, Response } from 'express';
 import { prisma } from '../database';
@@ -16,6 +19,33 @@ function generateDataToken(): string {
   return `SXB-DATA-${part()}-${part()}-${part()}`;
 }
 
+// ── BigInt → Number avant sérialisation JSON ──────────────────────────────────
+// JSON.stringify plante avec "Cannot serialize a BigInt value" si on laisse
+// les champs BigInt de Prisma bruts.
+function serializeSub(sub: any): any {
+  if (!sub) return sub;
+  const s = { ...sub };
+  if (typeof s.quotaBytes === 'bigint') s.quotaBytes = Number(s.quotaBytes);
+  if (typeof s.quotaUsed  === 'bigint') s.quotaUsed  = Number(s.quotaUsed);
+  // Champs imbriqués (profile, client)
+  if (s.client) s.client = serializeClient(s.client);
+  if (s.profile) s.profile = serializeProfile(s.profile);
+  return s;
+}
+
+function serializeClient(c: any): any {
+  if (!c) return c;
+  const r = { ...c };
+  if (typeof r.quotaTotal === 'bigint') r.quotaTotal = Number(r.quotaTotal);
+  if (typeof r.quotaUsed  === 'bigint') r.quotaUsed  = Number(r.quotaUsed);
+  return r;
+}
+
+function serializeProfile(p: any): any {
+  if (!p) return p;
+  return { ...p };
+}
+
 // ─── GET /api/subscriptions ───────────────────────────────────────────────────
 router.get('/', requireAuth, requirePermission('subscription.view'), async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -26,10 +56,10 @@ router.get('/', requireAuth, requirePermission('subscription.view'), async (req:
         profile: true,
       },
     });
-    return res.json({ success: true, subscriptions: subs });
-  } catch (err) {
+    return res.json({ success: true, subscriptions: subs.map(serializeSub) });
+  } catch (err: any) {
     console.error('subscriptions list error:', err);
-    return res.status(500).json({ error: 'Failed to list subscriptions' });
+    return res.status(500).json({ error: err.message || 'Failed to list subscriptions' });
   }
 });
 
@@ -40,8 +70,8 @@ router.get('/stats', requireAuth, requirePermission('subscription.view'), async 
     const active  = await (prisma as any).subscription.count({ where: { status: 'active' } });
     const expired = await (prisma as any).subscription.count({ where: { status: 'expired' } });
     return res.json({ success: true, total, active, expired });
-  } catch (err) {
-    return res.status(500).json({ error: 'Failed to get stats' });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Failed to get stats' });
   }
 });
 
@@ -53,30 +83,27 @@ router.get('/:id', requireAuth, requirePermission('subscription.view'), async (r
       include: { client: { include: { user: true } }, profile: true },
     });
     if (!sub) return res.status(404).json({ error: 'Subscription not found' });
-    // Link subscription to a registered device if provided
-    return res.json({ success: true, subscription: sub });
-  } catch (err) {
-    return res.status(500).json({ error: 'Failed to get subscription' });
+    return res.json({ success: true, subscription: serializeSub(sub) });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Failed to get subscription' });
   }
 });
 
 // ─── POST /api/subscriptions ──────────────────────────────────────────────────
-// Creates a subscription and auto-generates a SXB-DATA token linked to the profile.
 router.post('/', requireAuth, requirePermission('subscription.manage'), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { clientId, profileId, name, quotaGB, durationDays, deviceLimit, deviceId } = req.body;
 
     if (!clientId || !profileId || !quotaGB || !durationDays) {
-      return res.status(400).json({ error: 'clientId, profileId, quotaGB and durationDays are required' });
+      return res.status(400).json({ error: 'clientId, profileId, quotaGB et durationDays sont requis' });
     }
 
-    // Verify client and profile exist
     const [client, profile] = await Promise.all([
       prisma.vpnClient.findUnique({ where: { id: clientId } }),
       (prisma as any).vpnProfile.findUnique({ where: { id: profileId } }),
     ]);
-    if (!client) return res.status(404).json({ error: 'VPN client not found' });
-    if (!profile) return res.status(404).json({ error: 'VPN profile not found' });
+    if (!client) return res.status(404).json({ error: 'Client VPN introuvable' });
+    if (!profile) return res.status(404).json({ error: 'Profil VPN introuvable' });
 
     const quotaBytes = BigInt(Math.round(Number(quotaGB) * 1024 * 1024 * 1024));
     const startAt    = new Date();
@@ -90,10 +117,10 @@ router.post('/', requireAuth, requirePermission('subscription.manage'), async (r
         profileId,
         dataToken,
         quotaBytes,
-        quotaUsed:   BigInt(0),
+        quotaUsed:    BigInt(0),
         durationDays: Number(durationDays),
         deviceLimit:  Number(deviceLimit) || 1,
-        deviceId:    deviceId || null,
+        deviceId:     deviceId || null,
         startAt,
         expireAt,
         status:       'active',
@@ -102,8 +129,8 @@ router.post('/', requireAuth, requirePermission('subscription.manage'), async (r
       include: { client: { include: { user: true } }, profile: true },
     });
 
-    await logDbActivity(req.user!.userId, `Created subscription "${sub.name}" for client ${clientId}`, 'info', req.ip || '');
-    return res.status(201).json({ success: true, subscription: sub });
+    await logDbActivity(req.user!.userId, `Forfait créé : "${sub.name}" pour client ${clientId}`, 'info', req.ip || '');
+    return res.status(201).json({ success: true, subscription: serializeSub(sub) });
   } catch (err: any) {
     console.error('subscription create error:', err);
     return res.status(500).json({ error: err.message || 'Failed to create subscription' });
@@ -121,20 +148,20 @@ router.put('/:id', requireAuth, requirePermission('subscription.manage'), async 
     const updated = await (prisma as any).subscription.update({
       where: { id: req.params.id },
       data: {
-        ...(name        !== undefined && { name }),
-        ...(quotaGB     !== undefined && { quotaBytes: BigInt(Math.round(Number(quotaGB) * 1024 ** 3)) }),
+        ...(name         !== undefined && { name }),
+        ...(quotaGB      !== undefined && { quotaBytes: BigInt(Math.round(Number(quotaGB) * 1024 ** 3)) }),
         ...(durationDays !== undefined && {
           durationDays: Number(durationDays),
           expireAt: new Date(existing.startAt.getTime() + Number(durationDays) * 86400000),
         }),
-        ...(deviceLimit !== undefined && { deviceLimit: Number(deviceLimit) }),
-        ...(status      !== undefined && { status }),
+        ...(deviceLimit  !== undefined && { deviceLimit: Number(deviceLimit) }),
+        ...(status       !== undefined && { status }),
       },
       include: { client: { include: { user: true } }, profile: true },
     });
 
-    await logDbActivity(req.user!.userId, `Updated subscription: ${updated.name}`, 'info', req.ip || '');
-    return res.json({ success: true, subscription: updated });
+    await logDbActivity(req.user!.userId, `Forfait mis à jour : ${updated.name}`, 'info', req.ip || '');
+    return res.json({ success: true, subscription: serializeSub(updated) });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Failed to update subscription' });
   }
@@ -146,8 +173,8 @@ router.delete('/:id', requireAuth, requirePermission('subscription.manage'), asy
     const existing = await (prisma as any).subscription.findUnique({ where: { id: req.params.id } });
     if (!existing) return res.status(404).json({ error: 'Subscription not found' });
     await (prisma as any).subscription.delete({ where: { id: req.params.id } });
-    await logDbActivity(req.user!.userId, `Deleted subscription: ${existing.name}`, 'warning', req.ip || '');
-    return res.json({ success: true, message: 'Subscription deleted' });
+    await logDbActivity(req.user!.userId, `Forfait supprimé : ${existing.name}`, 'warning', req.ip || '');
+    return res.json({ success: true, message: 'Forfait supprimé' });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Failed to delete subscription' });
   }
@@ -158,10 +185,10 @@ router.post('/:id/revoke', requireAuth, requirePermission('subscription.manage')
   try {
     const sub = await (prisma as any).subscription.update({
       where: { id: req.params.id },
-      data: { status: 'revoked', revokedAt: new Date(), revokeReason: req.body.reason || 'Admin revoked' },
+      data: { status: 'revoked', revokedAt: new Date(), revokeReason: req.body.reason || 'Révoqué par admin' },
     });
-    await logDbActivity(req.user!.userId, `Revoked subscription: ${sub.name}`, 'danger', req.ip || '');
-    return res.json({ success: true, message: 'Subscription revoked' });
+    await logDbActivity(req.user!.userId, `Forfait révoqué : ${sub.name}`, 'danger', req.ip || '');
+    return res.json({ success: true, message: 'Forfait révoqué' });
   } catch (err: any) {
     return res.status(500).json({ error: 'Failed to revoke subscription' });
   }

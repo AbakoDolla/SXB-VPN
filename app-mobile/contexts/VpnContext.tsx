@@ -95,6 +95,7 @@ export interface VpnConnectionConfig {
   connectionUri?: string | null;
   profileName?: string;
   subscriptionName?: string;
+  payload?: string;  // SSH+Payload : headers HTTP injectés avant handshake SSH
   _ts?: number;
 }
 
@@ -156,7 +157,7 @@ function buildConfigJson(config: VpnConnectionConfig): string {
   const base = { protocol: proto, host: config.host || "", port: config.port || 443 };
 
   if (proto === "ssh" || proto === "ssh+payload") {
-    return JSON.stringify({ ...base, username: config.username || "", password: config.password || "", sni: config.sni || "" });
+    return JSON.stringify({ ...base, username: config.username || "", password: config.password || "", sni: config.sni || "", payload: config.payload || "" });
   }
   if (["vless","vmess","trojan"].includes(proto)) {
     return JSON.stringify({ ...base, uuid: config.uuid || "", path: config.path || "/", network: config.network || "ws", tls: config.tls ?? false, sni: config.sni || config.host, flow: config.flow || "", password: config.password || "" });

@@ -36,6 +36,10 @@ import subscriptionsRouter from "./server/routes/subscriptions";
 async function startServer() {
   const app = express();
   app.set("trust proxy", 1);
+  // Global BigInt serializer — prevents "Do not know how to serialize a BigInt"
+  app.set("json replacer", (_key: string, value: unknown) =>
+    typeof value === "bigint" ? value.toString() : value
+  );
   const PORT = config.PORT;
 
   // 1. Security & Core Middleware

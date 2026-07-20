@@ -2,15 +2,15 @@ import { Router, Response } from "express";
 import { z } from "zod";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { generateTokens, requireAuth, AuthenticatedRequest } from "../middleware/auth";
-import { XPanelService } from "../services/xpanel";
 
 const router = Router();
 
 // -------------------------------------------------------------------------
 // SXB VPN Mobile API
-// Token formats:
-//   - Account token:  SXB-USER-XXXX-XXXX-XXXX  (activates a VpnClient)
-//   - Package token:  SXB-DATA-XXXX-XXXX-XXXX  (Voucher redeemed for quota)
+// Dedicated, token-only surface for the official mobile app. End users never
+// see servers/IP/protocol details - they only ever handle two token formats:
+//   - Account token:  SXB-USER-XXXX-XXXX-XXXX  (identifies + activates a VpnClient)
+//   - Package token:  SXB-DATA-XXXX-XXXX-XXXX  (a Voucher redeemed for quota)
 // -------------------------------------------------------------------------
 
 function normalizeToken(raw: string): string {
@@ -22,7 +22,6 @@ function bytesToGb(bytes: bigint | number | null | undefined): number {
   return Number(bytes) / (1024 * 1024 * 1024);
 }
 
-// FIX-008: Include user in the query so /me and /activate can return user data
 async function findClientByAccountToken(rawToken: string) {
   const normalized = normalizeToken(rawToken);
   if (prisma) {
@@ -35,15 +34,11 @@ async function findClientByAccountToken(rawToken: string) {
   return { ...client, user };
 }
 
-// FIX-008: Include user in findClientByUserId
 async function findClientByUserId(userId: string) {
   if (prisma) {
-    return prisma.vpnClient.findFirst({ where: { userId }, include: { user: true } } as any);
+    return (prisma as any).vpnClient.findFirst({ where: { userId }, include: { user: true } });
   }
-  const client = inMemoryDb.vpnClients.find((c) => c.userId === userId);
-  if (!client) return null;
-  const user = inMemoryDb.users.find((u) => u.id === client.userId);
-  return { ...client, user };
+  return inMemoryDb.vpnClients.find((c) => c.userId === userId) || null;
 }
 
 // Compute the single source of truth for the mobile "smart button" state.
@@ -70,7 +65,7 @@ function computeAccountState(client: any): {
   } else if (isExpired || quotaRemainingGb <= 0) {
     state = "expired";
   } else {
-    state = "ready";
+    state = "ready"; // vpn_connected is tracked client-side by the native tunnel, "ready" just means eligible
   }
 
   return {
@@ -84,7 +79,7 @@ function computeAccountState(client: any): {
 }
 
 // POST /api/mobile/auth/activate — first launch: pair the device with an account token
-const activateSchema = z.object({
+const activateSchema = z.object({ 
   token: z.string().min(5),
   deviceId: z.string().optional(),
 });
@@ -96,68 +91,71 @@ router.post("/auth/activate", async (req, res: Response) => {
     if (!client) {
       return res.status(404).json({ error: "errors.mobile.invalid_token", message: "Token de compte invalide" });
     }
-
-    if (client.status === "suspended") {
-      return res.status(403).json({ error: "errors.mobile.suspended", message: "Ce compte est suspendu" });
+    
+    // Check token expiration
+    if (client.expireAt && new Date(client.expireAt).getTime() < Date.now()) {
+      return res.status(403).json({ error: "errors.mobile.token_expired", message: "Ce token d'activation a expiré" });
     }
-
-    if (!client.user) {
-      return res.status(500).json({ error: "errors.server", message: "Compte client mal configuré" });
-    }
-
-    // FIX-005: Check and bind device ID — fail loudly, not silently
+    
+    // Check and bind device ID
     if (incomingDeviceId) {
       if (client.deviceId && client.deviceId !== incomingDeviceId) {
-        // Token already bound to a different device — refuse activation
-        return res.status(403).json({
-          error: "errors.mobile.wrong_device",
-          message: "Ce compte est déjà activé sur un autre appareil.",
+        return res.status(403).json({ 
+          error: "errors.mobile.wrong_device", 
+          message: "Ce token est lié à un autre appareil" 
         });
       }
       if (!client.deviceId && prisma) {
-        // First activation — bind device permanently
+        // FIX-005: No silent catch — propagate errors properly
         await (prisma as any).vpnClient.update({
           where: { id: client.id },
           data: { deviceId: incomingDeviceId, activatedAt: new Date() },
         });
         client.deviceId = incomingDeviceId;
-        client.activatedAt = new Date();
-
-        // Create ActivationSession for persistent session tracking
-        try {
-          await (prisma as any).activationSession.upsert({
-            where: { clientId_deviceId: { clientId: client.id, deviceId: incomingDeviceId } },
-            create: {
-              clientId: client.id,
-              deviceId: incomingDeviceId,
-              activationDate: new Date(),
-              expirationDate: client.expireAt || null,
-              lastSync: new Date(),
-              status: 'active',
-              ipAddress: req.ip || null,
-            },
-            update: {
-              activationDate: new Date(),
-              expirationDate: client.expireAt || null,
-              lastSync: new Date(),
-              status: 'active',
-              ipAddress: req.ip || null,
-            },
-          });
-        } catch (sessionErr) {
-          console.warn('Could not create ActivationSession:', sessionErr);
-        }
       }
     }
+    
+    if (client.status === "suspended") {
+      return res.status(403).json({ error: "errors.mobile.suspended", message: "Ce compte est suspendu" });
+    }
+    if (!client.user) {
+      return res.status(500).json({ error: "errors.server", message: "Compte client mal configuré" });
+    }
 
-    // FIX-004: Return `accountState` (not `client`) to match what AuthContext expects
     const tokens = generateTokens({
       userId: client.user.id,
       email: client.user.email,
       role: "CLIENT",
     });
 
-    await logDbActivity(client.user.id, `Mobile activation: account ${client.token} on device ${incomingDeviceId || "unknown"}`, "success", req.ip);
+    await logDbActivity(client.user.id, `Mobile device activated for account ${client.token}`, "success", req.ip);
+
+    // Create/update ActivationSession for persistent session tracking
+    if (incomingDeviceId && prisma) {
+      try {
+        await (prisma as any).activationSession.upsert({
+          where: { clientId_deviceId: { clientId: client.id, deviceId: incomingDeviceId } },
+          create: {
+            clientId: client.id,
+            deviceId: incomingDeviceId,
+            activationDate: new Date(),
+            expirationDate: client.expireAt || null,
+            lastSync: new Date(),
+            status: 'active',
+            ipAddress: req.ip || null,
+          },
+          update: {
+            activationDate: new Date(),
+            expirationDate: client.expireAt || null,
+            lastSync: new Date(),
+            status: 'active',
+            ipAddress: req.ip || null,
+          },
+        });
+      } catch (sessionErr) {
+        console.warn('Could not create ActivationSession:', sessionErr);
+      }
+    }
 
     return res.json({
       message: "Compte activé",
@@ -192,18 +190,14 @@ router.post("/auth/refresh", async (req, res: Response) => {
 // All routes below require a valid mobile session
 router.use(requireAuth);
 
-// GET /api/mobile/me — FIX-004: Return `accountState` + `user` to match AuthContext
+// GET /api/mobile/me — everything the smart button + home screen needs
 router.get("/me", async (req: AuthenticatedRequest, res: Response) => {
   try {
     const client: any = await findClientByUserId(req.user!.userId);
     if (!client) {
       return res.status(404).json({ error: "errors.mobile.no_account", message: "Aucun compte VPN associé" });
     }
-    return res.json({
-      accountState: computeAccountState(client),
-      user: client.user ? { id: client.user.id, name: client.user.name } : { id: req.user!.userId, name: "Utilisateur" },
-      accountToken: client.token,
-    });
+    return res.json({ accountState: computeAccountState(client), user: client.user ? { id: client.user.id, name: client.user.name } : { id: req.user.userId, name: "Utilisateur" }, accountToken: client.token });
   } catch (err) {
     console.error("Mobile /me error:", err);
     return res.status(500).json({ error: "errors.server", message: "Échec du chargement du compte" });
@@ -237,43 +231,58 @@ router.post("/packages/activate", async (req: AuthenticatedRequest, res: Respons
         : new Date();
       baseExpiry.setDate(baseExpiry.getDate() + voucher.durationDays);
 
-      await prisma.vpnClient.update({
-        where: { id: client.id },
-        data: {
-          quotaTotal: newQuotaTotal,
-          expireAt: baseExpiry,
-          status: "active",
-        },
-      });
+      const [updatedClient] = await prisma.$transaction([
+        prisma.vpnClient.update({
+          where: { id: client.id },
+          data: { quotaTotal: newQuotaTotal, expireAt: baseExpiry, status: "active" },
+        }),
+        prisma.voucher.update({
+          where: { id: voucher.id },
+          data: { isRedeemed: true, redeemedBy: client.id },
+        }),
+      ]);
 
-      await prisma.voucher.update({
-        where: { id: voucher.id },
-        data: { isRedeemed: true, redeemedBy: client.id },
-      });
-
-      const updatedClient = await findClientByUserId(req.user!.userId);
-      await logDbActivity(req.user!.userId, `Package activated: code ${normalized} → +${voucher.quota} quota, expires ${baseExpiry.toLocaleDateString()}`, "success", req.ip);
-
+      await logDbActivity(req.user!.userId, `Package ${normalized} activated via mobile app`, "success", req.ip);
       return res.json({ message: "Forfait activé", accountState: computeAccountState(updatedClient) });
     }
 
     // In-memory fallback
-    return res.status(503).json({ error: "errors.db_unavailable", message: "Base de données non disponible" });
+    const voucher = inMemoryDb.vouchers?.find((v: any) => normalizeToken(v.code) === normalized);
+    if (!voucher) {
+      return res.status(404).json({ error: "errors.mobile.invalid_package", message: "Code forfait invalide" });
+    }
+    if (voucher.isRedeemed) {
+      return res.status(409).json({ error: "errors.mobile.package_used", message: "Ce forfait a déjà été utilisé" });
+    }
+    voucher.isRedeemed = true;
+    voucher.redeemedBy = client.id;
+    client.quotaTotal = BigInt(client.quotaTotal || 0) + BigInt(voucher.quota);
+    const baseExpiry = client.expireAt && new Date(client.expireAt).getTime() > Date.now() ? new Date(client.expireAt) : new Date();
+    baseExpiry.setDate(baseExpiry.getDate() + voucher.durationDays);
+    client.expireAt = baseExpiry;
+    client.status = "active";
+
+    return res.json({ message: "Forfait activé", accountState: computeAccountState(client) });
   } catch (err: any) {
-    if (err?.issues) return res.status(400).json({ error: "errors.validation" });
-    console.error("Package activate error:", err);
-    return res.status(500).json({ error: "errors.server", message: "Activation du forfait échouée" });
+    if (err?.issues) {
+      return res.status(400).json({ error: "errors.validation", message: "Format de code invalide" });
+    }
+    console.error("Mobile package activation error:", err);
+    return res.status(500).json({ error: "errors.server", message: "Échec de l'activation du forfait" });
   }
 });
 
-// GET /api/mobile/vpn/config — VPN connection configuration (real data from subscription)
+// GET /api/mobile/vpn/config — config VPN reelle depuis abonnement actif
 router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
+  const FALLBACK = [
+    { name: "SSH",         port: 22,   transport: "TCP",  security: "SSH",     description: "Securise" },
+    { name: "SSH+Payload", port: 80,   transport: "TCP",  security: "Bypass",  description: "Anti-DPI" },
+  ];
   try {
     const client: any = await findClientByUserId(req.user!.userId);
     if (!client) return res.status(404).json({ error: "errors.mobile.no_account" });
     const state = computeAccountState(client);
 
-    // Fetch active subscription with real VPN profile
     let sub: any = null;
     if (prisma) {
       sub = await (prisma as any).subscription.findFirst({
@@ -285,133 +294,148 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
 
     const profile = sub?.profile || null;
     const proto = (profile?.protocol || "ssh").toLowerCase();
-
-    // Build protocol list from subscription profile (or fallbacks)
     const protocols = profile
-      ? [{ name: proto.toUpperCase(), port: profile.port, transport: (profile.network || "tcp").toUpperCase(), security: profile.tls ? "TLS" : "None", description: "Actif — " + profile.name }]
-      : [
-          { name: "SSH",    port: 22,   transport: "TCP",  security: "SSH",    description: "Sécurisé" },
-          { name: "VLESS",  port: 443,  transport: "TCP",  security: "Reality",description: "Recommandé" },
-          { name: "VMess",  port: 80,   transport: "WS",   security: "None",   description: "Compatible" },
-          { name: "Trojan", port: 443,  transport: "TCP",  security: "TLS",    description: "Stable" },
-          { name: "Shadowsocks", port: 8388, transport: "TCP", security: "ChaCha20", description: "Léger" },
-        ];
+      ? [{ name: proto.toUpperCase(), port: profile.port, transport: (profile.network || "tcp").toUpperCase(), security: profile.tls ? "TLS" : "None", description: "Actif \u2014 " + profile.name }]
+      : FALLBACK;
 
-    // Generate connection URI based on protocol
     let connectionUri: string | null = null;
     if (profile) {
       if (proto === "ssh") {
-        connectionUri = `ssh://${profile.username || "user"}@${profile.host}:${profile.port}`;
-      } else if (proto === "vless") {
-        const params = new URLSearchParams({ type: profile.network || "ws", security: profile.tls ? "tls" : "none" });
-        if (profile.sni) params.set("sni", profile.sni);
-        if (profile.path) params.set("path", profile.path);
-        connectionUri = `vless://${profile.uuid || ""}@${profile.host}:${profile.port}?${params.toString()}#${encodeURIComponent(sub?.name || profile.name)}`;
-      } else if (proto === "vmess") {
-        const vmessObj = { v: "2", ps: sub?.name || profile.name, add: profile.host, port: String(profile.port), id: profile.uuid || "", aid: "0", net: profile.network || "ws", type: "none", host: profile.sni || profile.host, path: profile.path || "/", tls: profile.tls ? "tls" : "" };
-        connectionUri = `vmess://${Buffer.from(JSON.stringify(vmessObj)).toString("base64")}`;
-      } else if (proto === "trojan") {
-        connectionUri = `trojan://${profile.password || profile.uuid || ""}@${profile.host}:${profile.port}?sni=${profile.sni || profile.host}#${encodeURIComponent(sub?.name || profile.name)}`;
-      } else if (proto === "shadowsocks") {
-        const userInfo = Buffer.from(`${profile.method || "aes-256-gcm"}:${profile.password || ""}`).toString("base64");
-        connectionUri = `ss://${userInfo}@${profile.host}:${profile.port}#${encodeURIComponent(sub?.name || profile.name)}`;
+        connectionUri = "ssh://" + (profile.username || "user") + "@" + profile.host + ":" + profile.port;
+        if (profile.sni) connectionUri += "?sni=" + encodeURIComponent(profile.sni);
       }
     }
 
     return res.json({
       state: state.state,
       protocols,
-      serverInfo: { host: profile?.host || "—", location: "SXB" },
+      serverInfo: { host: profile?.host || "vpnsxb.afrihall.com", location: profile ? "SXB" : "France / Europe" },
       subscriptionUrl: connectionUri,
       connectionUri,
-      profile: profile ? {
-        id: profile.id, name: profile.name, protocol: proto,
-        host: profile.host, port: profile.port,
-        network: profile.network, tls: profile.tls, sni: profile.sni,
-        uuid: profile.uuid, path: profile.path,
-        username: profile.username,
-      } : null,
-      subscription: sub ? {
-        id: sub.id, name: sub.name, dataToken: sub.dataToken,
-        quotaBytes: sub.quotaBytes?.toString(), quotaUsed: sub.quotaUsed?.toString(),
-        expireAt: sub.expireAt?.toISOString(), status: sub.status,
-      } : null,
+      profile: profile ? { id: profile.id, name: profile.name, protocol: proto, host: profile.host, port: profile.port, network: profile.network, tls: profile.tls, sni: profile.sni, uuid: profile.uuid, path: profile.path, username: profile.username, password: profile.password || null, method: profile.method || null } : null,
+      subscription: sub ? { id: sub.id, name: sub.name, dataToken: sub.dataToken, expireAt: sub.expireAt?.toISOString(), status: sub.status } : null,
     });
   } catch (err) {
-    console.error("VPN config error:", err);
-    return res.status(500).json({ error: "errors.server" });
+    console.error("Mobile vpn/config error:", err);
+    return res.json({ subscriptionUrl: null, protocols: FALLBACK, serverInfo: null });
   }
 });
 
-// POST /api/mobile/vpn/session — track VPN connect/disconnect
+// POST /api/mobile/vpn/session — audit trail only; the actual tunnel is managed natively on-device
 const sessionSchema = z.object({ action: z.enum(["connect", "disconnect"]) });
 router.post("/vpn/session", async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { action } = sessionSchema.parse(req.body);
-    await logDbActivity(req.user!.userId, `VPN ${action}ed`, action === "connect" ? "success" : "info", req.ip);
-    return res.json({ success: true, action });
-  } catch (err: any) {
-    if (err?.issues) return res.status(400).json({ error: "errors.validation" });
-    return res.status(500).json({ error: "errors.server" });
+    await logDbActivity(req.user!.userId, `Mobile VPN session ${action}`, "success", req.ip);
+    return res.json({ message: "ok" });
+  } catch (err) {
+    return res.status(400).json({ error: "errors.validation", message: "Action invalide" });
   }
 });
 
-// GET /api/mobile/notifications
-router.get("/notifications", async (req: AuthenticatedRequest, res: Response) => {
+
+// GET /api/mobile/notifications — notifications basées sur l'état du compte
+router.get('/notifications', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const client: any = await findClientByUserId(req.user!.userId);
+    if (!client) return res.json([]);
+
+    const state = computeAccountState(client);
     const notifications: any[] = [];
     const now = new Date().toISOString();
 
-    if (!client) {
-      notifications.push({ id: "notif-noac", type: "warning", title: "Compte non trouvé", message: "Aucun compte VPN associé à cette session.", createdAt: now, read: false });
-      return res.json(notifications);
+    if (state.state === 'expired') {
+      notifications.push({
+        id: 'notif-expired-' + Date.now(),
+        type: 'warning',
+        title: 'Forfait expiré',
+        message: 'Votre forfait VPN a expiré. Activez un nouveau code pour continuer.',
+        createdAt: now,
+        read: false,
+      });
+    } else if (state.quotaRemainingGb < 1 && state.state === 'ready') {
+      notifications.push({
+        id: 'notif-low-quota-' + Date.now(),
+        type: 'warning',
+        title: 'Quota presque épuisé',
+        message: 'Il vous reste moins de 1 GB. Rechargez votre forfait maintenant.',
+        createdAt: now,
+        read: false,
+      });
+    } else if (state.state === 'no_package') {
+      notifications.push({
+        id: 'notif-no-package-' + Date.now(),
+        type: 'info',
+        title: 'Aucun forfait actif',
+        message: 'Activez un code forfait SXB-DATA pour commencer à naviguer.',
+        createdAt: now,
+        read: false,
+      });
+    } else if (state.state === 'ready') {
+      if (state.expireAt) {
+        const daysLeft = Math.ceil((new Date(state.expireAt).getTime() - Date.now()) / 86400000);
+        if (daysLeft <= 5) {
+          notifications.push({
+            id: 'notif-expire-soon-' + Date.now(),
+            type: 'warning',
+            title: 'Forfait bientôt expiré',
+            message: 'Votre forfait expire bientôt. Pensez à le renouveler avant expiration.',
+            createdAt: now,
+            read: false,
+          });
+        }
+      }
+      notifications.push({
+        id: 'notif-welcome',
+        type: 'success',
+        title: 'Compte actif',
+        message: 'Votre compte est actif. Connexion VPN disponible.',
+        createdAt: now,
+        read: true,
+      });
+    } else if (state.state === 'suspended') {
+      notifications.push({
+        id: 'notif-suspended',
+        type: 'error',
+        title: 'Compte suspendu',
+        message: 'Votre compte a été suspendu. Contactez le support SXB.',
+        createdAt: now,
+        read: false,
+      });
     }
 
-    const state = computeAccountState(client);
-
-    if (state.state === "expired") {
-      notifications.push({ id: "notif-exp", type: "error", title: "Compte expiré", message: "Votre abonnement a expiré. Rechargez pour continuer.", createdAt: now, read: false });
-    } else if (state.state === "suspended") {
-      notifications.push({ id: "notif-sus", type: "error", title: "Compte suspendu", message: "Votre compte a été suspendu. Contactez le support.", createdAt: now, read: false });
-    } else if (state.state === "no_package") {
-      notifications.push({ id: "notif-nopkg", type: "warning", title: "Aucun forfait actif", message: "Activez un forfait pour accéder au VPN.", createdAt: now, read: false });
-    } else if (state.quotaRemainingGb < 1) {
-      notifications.push({ id: "notif-low", type: "warning", title: "Quota presque épuisé", message: `Il vous reste moins de 1 GB. Rechargez maintenant.`, createdAt: now, read: false });
-    } else {
-      notifications.push({ id: "notif-ok", type: "success", title: "Compte actif", message: `Quota restant : ${Math.round(state.quotaRemainingGb)} GB`, createdAt: now, read: true });
-    }
-
-    // Fetch recent audit logs as additional notifications
+    // Ajouter les derniers logs d'audit si disponibles
     if (prisma) {
       try {
         const logs = await prisma.auditLog.findMany({
           where: { userId: req.user!.userId },
-          orderBy: { timestamp: "desc" },
+          orderBy: { timestamp: 'desc' },
           take: 5,
         });
         for (const log of logs) {
-          notifications.push({
-            id: `log-${log.id}`,
-            type: log.type === "success" ? "info" : log.type,
-            title: "Activité récente",
-            message: log.action,
-            createdAt: log.timestamp.toISOString(),
-            read: true,
-          });
+          if (log.action.includes('VPN session')) {
+            notifications.push({
+              id: 'log-' + log.id,
+              type: log.type === 'success' ? 'info' : log.type,
+              title: log.action.includes('connect') ? 'Connexion VPN' : 'Déconnexion VPN',
+              message: log.action,
+              createdAt: log.timestamp.toISOString(),
+              read: true,
+            });
+          }
         }
       } catch (_) {}
     }
 
     return res.json(notifications);
   } catch (err) {
-    console.error("Mobile notifications error:", err);
+    console.error('Mobile notifications error:', err);
     return res.json([]);
   }
 });
 
 // GET /api/mobile/history — historique des sessions VPN
-router.get("/history", async (req: AuthenticatedRequest, res: Response) => {
+router.get('/history', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const client: any = await findClientByUserId(req.user!.userId);
     const history: any[] = [];
@@ -419,7 +443,7 @@ router.get("/history", async (req: AuthenticatedRequest, res: Response) => {
     if (prisma) {
       const logs = await prisma.auditLog.findMany({
         where: { userId: req.user!.userId },
-        orderBy: { timestamp: "desc" },
+        orderBy: { timestamp: 'desc' },
         take: 100,
       });
 
@@ -434,13 +458,13 @@ router.get("/history", async (req: AuthenticatedRequest, res: Response) => {
       }
     }
 
-    // FIX-002: Fixed syntax error — action now has a proper value
+    // Ajouter info quota si disponible
     if (client) {
       const state = computeAccountState(client);
       history.unshift({
-        id: "account-state-current",
-        action: `État : ${state.state} | Quota restant : ${Math.round(state.quotaRemainingGb)} GB`,
-        type: "info",
+        id: 'account-state-current',
+        action: 'Etat du compte : ' + state.state + ' | Quota restant : ' + Math.round(state.quotaRemainingGb) + ' GB',
+        type: 'info',
         timestamp: new Date().toISOString(),
         ipAddress: null,
         isAccountSummary: true,
@@ -449,7 +473,7 @@ router.get("/history", async (req: AuthenticatedRequest, res: Response) => {
 
     return res.json(history);
   } catch (err) {
-    console.error("Mobile history error:", err);
+    console.error('Mobile history error:', err);
     return res.json([]);
   }
 });

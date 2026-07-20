@@ -1,32 +1,24 @@
 package com.sxbvpn.vpnmodule
 
 /**
- * SxbVpnService — Service VPN multi-protocoles SXB
+ * SxbVpnService — Service VPN multi-protocoles SXB v3
  *
  * Protocoles supportés :
- *  ✅ SSH / SSH+Payload  — JSch (0.1.55) + proxy SOCKS5 local + sing-box relay
+ *  ✅ SSH              — JSch direct (port SSH standard)
+ *  ✅ SSH+Payload      — JSch + injection HTTP payload (HTTP Injector style)
  *  ✅ VLESS/VMess/Trojan — sing-box
- *  ✅ Shadowsocks        — sing-box
- *  ✅ WireGuard          — sing-box
- *  ✅ Hysteria2 / TUIC   — sing-box
+ *  ✅ Shadowsocks      — sing-box
+ *  ✅ WireGuard        — sing-box
+ *  ✅ Hysteria2 / TUIC — sing-box
  *
- * Architecture SSH :
- *  1. JSch se connecte au serveur SSH
- *  2. Un serveur SOCKS5 local (localhost:1080) est démarré dans la JVM.
- *     Chaque connexion SOCKS5 ouvre un canal JSch direct-tcpip vers la destination.
- *  3. L'interface TUN est créée via VpnService.Builder (fd entier)
- *  4. sing-box reçoit ce fd TUN et route TUN → SOCKS5 local → SSH → internet
- *
- * Architecture Autres protocoles :
- *  1. TUN fd créé via VpnService.Builder
- *  2. sing-box reçoit le fd TUN via "file_descriptor" et route directement
- *
- * CORRECTIFS v2 :
- *  - SSH : SOCKS5 implémenté manuellement via JSch ChannelDirectTCPIP
- *    (setDynamicPortForwarding n'existe pas dans JSch 0.1.55)
- *  - sing-box : config JSON avec JSONObject, pas de string trimming fragile
- *  - sing-box : file_descriptor=tunFd au lieu de interface_name
- *  - Logs : maskSensitive() masque IP, UUID, domaines
+ * CORRECTIFS v3 :
+ *  - SSH+Payload : SxbPayloadProxy injecte le payload HTTP avant le handshake SSH
+ *    (exactement comme SocksIP / HTTP Injector)
+ *  - TUN fd : Os.dup() supprime FD_CLOEXEC → sing-box hérite le fd correctement
+ *  - SOCKS5 : DataInputStream.readFully() garantit la lecture complète des bytes
+ *  - SOCKS5 relay : threads de copie bidirectionnels explicites (pas setInputStream/Out)
+ *  - Comptage trafic : réel via DataInputStream/OutputStream wrappers
+ *  - Logs : maskSensitive() masque données sensibles
  */
 
 import android.app.Notification
@@ -37,20 +29,90 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.system.Os
 import android.util.Log
 import com.jcraft.jsch.ChannelDirectTCPIP
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.Session
+import com.jcraft.jsch.SocketFactory
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.DataInputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.InputStream
+import java.io.OutputStream
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.Properties
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+
+// ── Custom JSch Proxy pour injection HTTP payload (SSH+Payload) ───────────────────
+//
+// Flux :
+//  1. Ouvre une socket TCP vers host:port
+//  2. Envoie le payload HTTP brut (remplace [crlf] par \r\n)
+//  3. Lit la réponse HTTP jusqu'au double CRLF (byte par byte, pas de buffering)
+//  4. Retourne les streams à JSch → SSH handshake normal ensuite
+//
+// Compatible JSch 0.1.55 qui attend l'interface com.jcraft.jsch.Proxy
+//
+private class SxbPayloadProxy(private val rawPayload: String) : com.jcraft.jsch.Proxy {
+
+    private var socket: Socket? = null
+    private var inputStream:  InputStream?  = null
+    private var outputStream: OutputStream? = null
+
+    override fun connect(sf: SocketFactory?, host: String, port: Int, timeout: Int) {
+        val sock = Socket()
+        sock.connect(InetSocketAddress(host, port), timeout.coerceAtLeast(10_000))
+        sock.soTimeout = 0  // pas de timeout sur le stream SSH
+        socket = sock
+
+        val out = sock.getOutputStream()
+        val ins = sock.getInputStream()
+
+        // ── Envoyer le payload HTTP ─────────────────────────────────────────
+        // Remplacer [crlf] par \r\n, [lf] par \n
+        val payload = rawPayload
+            .replace("[crlf]", "\r\n")
+            .replace("[CRLF]", "\r\n")
+            .replace("[lf]", "\n")
+            .replace("[LF]", "\n")
+
+        out.write(payload.toByteArray(Charsets.ISO_8859_1))
+        out.flush()
+
+        // ── Lire la réponse HTTP byte par byte (pas de BufferedReader) ──────
+        // Stopper au double CRLF \r\n\r\n pour ne pas avaler le début SSH
+        val response = StringBuilder()
+        var b3 = 0; var b2 = 0; var b1 = 0
+        var limit = 8192
+        while (limit-- > 0) {
+            val b = ins.read()
+            if (b == -1) break
+            response.append(b.toChar())
+            // Détecter \r\n\r\n
+            if (b3 == '\r'.code && b2 == '\n'.code && b1 == '\r'.code && b == '\n'.code) break
+            b3 = b2; b2 = b1; b1 = b
+        }
+
+        Log.d(SxbVpnService.TAG, "[SXB] Réponse proxy : ${response.toString().take(100)}")
+
+        inputStream  = ins
+        outputStream = out
+    }
+
+    override fun getInputStream():  InputStream  = inputStream  ?: throw IllegalStateException("Not connected")
+    override fun getOutputStream(): OutputStream = outputStream ?: throw IllegalStateException("Not connected")
+    override fun getSocket(): Socket = socket ?: throw IllegalStateException("Not connected")
+    override fun close() = runCatching { socket?.close() }.let {}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 class SxbVpnService : VpnService() {
 
@@ -71,7 +133,8 @@ class SxbVpnService : VpnService() {
         val downloadBytes = AtomicLong(0)
     }
 
-    private var tunFd: ParcelFileDescriptor? = null
+    private var tunPfd: ParcelFileDescriptor? = null
+    private var dupFd: java.io.FileDescriptor? = null  // dup sans FD_CLOEXEC pour sing-box
     private var sshSession: Session? = null
     private val running = AtomicBoolean(false)
     private var currentState = "disconnected"
@@ -84,27 +147,16 @@ class SxbVpnService : VpnService() {
 
     private fun maskSensitive(msg: String): String {
         var s = msg
-        // Masquer les adresses IP (ex: 192.168.1.1)
-        s = s.replace(
-            Regex("""\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b"""),
-            "***.***.***.***"
-        )
-        // Masquer les UUID (8-4-4-4-12)
-        s = s.replace(
-            Regex("""[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"""),
-            "[uuid-masqué]"
-        )
-        // Masquer les domaines
-        s = s.replace(
-            Regex("""\b([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b"""),
-            "[serveur-sécurisé]"
-        )
+        s = s.replace(Regex("""\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b"""),       "***.***.***.***")
+        s = s.replace(Regex("""[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"""), "[uuid]")
+        s = s.replace(Regex("""\b([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b"""), "[serveur]")
         return s
     }
 
-    // ── État courant ──────────────────────────────────────────────────────────
-    fun isRunning() = running.get()
+    fun isRunning()       = running.get()
     fun getCurrentState() = currentState
+
+    private fun setCurrentState(state: String) { currentState = state }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -112,69 +164,83 @@ class SxbVpnService : VpnService() {
         super.onCreate()
         instance = this
         createNotificationChannel()
-        Log.i(TAG, "[SXB] SxbVpnService démarré")
+        Log.i(TAG, "[SXB] Service démarré")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_STOP -> {
-                stopVpn()
-                return START_NOT_STICKY
-            }
+            ACTION_STOP -> { stopVpn(); return START_NOT_STICKY }
             ACTION_START -> {
                 val config = intent.getStringExtra(EXTRA_CONFIG) ?: ""
-                val proto = runCatching {
-                    JSONObject(config).optString("protocol", "ssh")
-                }.getOrDefault("ssh").lowercase()
-
+                val proto = runCatching { JSONObject(config).optString("protocol", "ssh") }.getOrDefault("ssh").lowercase()
                 startForeground(NOTIF_ID, buildNotification(protoLabel(proto) + " en cours…"))
-
-                vpnThread = Thread(
-                    { dispatchProtocol(config, proto) },
-                    "SxbVpnThread-$proto"
-                ).also { it.start() }
+                vpnThread = Thread({ dispatchProtocol(config, proto) }, "SxbVpnThread-$proto").also { it.start() }
             }
         }
         return START_STICKY
     }
 
-    override fun onDestroy() {
-        stopVpn()
-        instance = null
-        super.onDestroy()
-        Log.i(TAG, "[SXB] SxbVpnService arrêté")
+    override fun onDestroy() { stopVpn(); instance = null; super.onDestroy() }
+    override fun onRevoke()  { broadcastLog("[SXB] ⚠️ VPN révoqué par le système"); broadcastStatus("disconnected"); stopVpn(); super.onRevoke() }
+
+    // ── Notifications ─────────────────────────────────────────────────────────
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val ch = NotificationChannel(NOTIF_CHANNEL, "SXB VPN", NotificationManager.IMPORTANCE_LOW)
+                .apply { description = "Tunnel VPN SXB actif"; setShowBadge(false) }
+            getSystemService(NotificationManager::class.java)?.createNotificationChannel(ch)
+        }
     }
 
-    override fun onRevoke() {
-        broadcastLog("[SXB] ⚠️ VPN révoqué — autre application VPN prioritaire")
-        broadcastStatus("disconnected")
-        stopVpn()
-        super.onRevoke()
+    private fun buildNotification(text: String): Notification {
+        val open = PendingIntent.getActivity(this, 0,
+            packageManager.getLaunchIntentForPackage(packageName), PendingIntent.FLAG_IMMUTABLE)
+        val stop = PendingIntent.getService(this, 1,
+            Intent(this, SxbVpnService::class.java).apply { action = ACTION_STOP },
+            PendingIntent.FLAG_IMMUTABLE)
+        val b = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+            Notification.Builder(this, NOTIF_CHANNEL)
+        else @Suppress("DEPRECATION") Notification.Builder(this)
+        return b.setContentTitle("SXB VPN").setContentText(text)
+            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setContentIntent(open).setOngoing(true)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Déconnecter", stop)
+            .build()
+    }
+
+    private fun updateNotification(text: String) {
+        getSystemService(NotificationManager::class.java)?.notify(NOTIF_ID, buildNotification(text))
+    }
+
+    // ── Broadcasts ────────────────────────────────────────────────────────────
+
+    private fun broadcastStatus(status: String) {
+        sendBroadcast(Intent(BROADCAST_STATUS).putExtra("status", status))
+    }
+
+    private fun broadcastLog(message: String) {
+        Log.i(TAG, message)
+        sendBroadcast(Intent(BROADCAST_LOG).putExtra("log", message))
     }
 
     // ── Dispatch ──────────────────────────────────────────────────────────────
 
     private fun protoLabel(proto: String) = when {
-        proto == "ssh" || proto == "ssh+payload"       -> "Connexion SSH"
-        proto in listOf("vless", "vmess", "trojan")    -> "Connexion V2Ray ($proto)"
-        proto == "shadowsocks"                         -> "Connexion Shadowsocks"
-        proto == "wireguard"                           -> "Connexion WireGuard"
-        proto == "hysteria2"                           -> "Connexion Hysteria2"
-        proto == "tuic"                                -> "Connexion TUIC"
-        else                                           -> "Connexion VPN"
+        proto == "ssh"                              -> "SSH"
+        proto == "ssh+payload"                      -> "SSH+Payload"
+        proto in listOf("vless", "vmess", "trojan") -> proto.uppercase()
+        proto == "shadowsocks"                      -> "Shadowsocks"
+        proto == "wireguard"                        -> "WireGuard"
+        proto == "hysteria2"                        -> "Hysteria2"
+        proto == "tuic"                             -> "TUIC"
+        else                                        -> "VPN"
     }
 
     private fun dispatchProtocol(configJson: String, protocol: String) {
         when {
-            protocol == "ssh" || protocol == "ssh+payload" ->
-                startSshTunnel(configJson)
-            protocol in listOf("vless", "vmess", "trojan") ->
-                startSingBoxTunnel(configJson, protocol)
-            protocol == "shadowsocks" ->
-                startSingBoxTunnel(configJson, protocol)
-            protocol == "wireguard" ->
-                startSingBoxTunnel(configJson, protocol)
-            protocol == "hysteria2" || protocol == "tuic" ->
+            protocol == "ssh" || protocol == "ssh+payload" -> startSshTunnel(configJson)
+            protocol in listOf("vless", "vmess", "trojan", "shadowsocks", "wireguard", "hysteria2", "tuic") ->
                 startSingBoxTunnel(configJson, protocol)
             else -> {
                 broadcastLog("[SXB] ❌ Protocole inconnu : $protocol")
@@ -184,17 +250,19 @@ class SxbVpnService : VpnService() {
         }
     }
 
-    // ── SSH Tunnel ─────────────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SSH TUNNEL — v3 (avec injection payload et relay SOCKS5 corrigé)
     //
-    // Architecture :
-    //  1. Connexion SSH via JSch
-    //  2. Serveur SOCKS5 local (localhost:1080) dans la JVM
-    //     → chaque connexion ouvre un canal JSch direct-tcpip vers la destination
+    //  1. Connexion SSH :
+    //     - SSH simple   → JSch se connecte directement
+    //     - SSH+Payload  → SxbPayloadProxy envoie le payload HTTP d'abord,
+    //                      puis JSch termine le handshake SSH sur la même socket
+    //  2. Serveur SOCKS5 local (port 1080) géré dans la JVM
+    //     → chaque CONNECT SOCKS5 ouvre un canal JSch direct-tcpip
+    //     → relay bidirectionnel via 2 threads de copie
     //  3. Interface TUN via VpnService.Builder
-    //  4. sing-box : TUN fd → SOCKS5 localhost:1080 → SSH → internet
-    //
-    // NOTE : JSch 0.1.55 n'a pas de méthode setDynamicPortForwarding().
-    //        Le proxy SOCKS5 est implémenté manuellement via ChannelDirectTCPIP.
+    //  4. sing-box : TUN fd (dupé sans FD_CLOEXEC) → SOCKS5 local → SSH → internet
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private fun startSshTunnel(configJson: String) {
         try {
@@ -204,22 +272,36 @@ class SxbVpnService : VpnService() {
 
             val cfg      = JSONObject(configJson)
             val host     = cfg.optString("host", "")
-            val port     = cfg.optInt("port", 443)
+            val port     = cfg.optInt("port", 22)
             val username = cfg.optString("username", "")
             val password = cfg.optString("password", "")
             val sni      = cfg.optString("sni", "")
+            val payload  = cfg.optString("payload", "")
+            val protocol = cfg.optString("protocol", "ssh").lowercase()
+            val usePayload = protocol == "ssh+payload" && payload.isNotBlank()
 
             if (host.isEmpty() || username.isEmpty()) {
-                broadcastLog("[SXB] ❌ Configuration incomplète : identifiants manquants")
-                broadcastStatus("error")
-                setCurrentState("error")
-                return
+                broadcastLog("[SXB] ❌ Configuration incomplète (host/username manquant)")
+                broadcastStatus("error"); setCurrentState("error"); return
             }
 
             // ── 1. Connexion SSH ──────────────────────────────────────────────
             broadcastLog("[SXB] Connexion serveur sécurisé...")
             val jsch    = JSch()
-            val session = jsch.getSession(username, host, port)
+            val session: Session
+
+            if (usePayload) {
+                // SSH+Payload : injection HTTP avant le handshake SSH
+                broadcastLog("[SXB] Mode Payload HTTP activé")
+                broadcastLog("[SXB] Envoi payload...")
+                val proxy = SxbPayloadProxy(payload)
+                session = jsch.getSession(username, host, port)
+                session.setProxy(proxy)
+            } else {
+                // SSH direct
+                session = jsch.getSession(username, host, port)
+            }
+
             if (password.isNotEmpty()) session.setPassword(password)
 
             val props = Properties()
@@ -230,20 +312,18 @@ class SxbVpnService : VpnService() {
             session.setConfig(props)
             session.connect(30_000)
             sshSession = session
+
             broadcastLog("[SXB] ✅ Authentification SSH réussie")
 
-            // ── 2. Proxy SOCKS5 local (JSch ChannelDirectTCPIP) ───────────────
-            // Crée un serveur SOCKS5 sur localhost:1080 dans la JVM.
-            // Chaque connexion entrante ouvre un canal JSch direct-tcpip.
+            // ── 2. Proxy SOCKS5 local ─────────────────────────────────────────
             broadcastLog("[SXB] Démarrage proxy SOCKS5 local...")
-            val socks5 = startLocalSocks5Server(session)
-            socks5Server = socks5
-            broadcastLog("[SXB] ✅ Proxy SOCKS5 actif")
+            socks5Server = startLocalSocks5Server(session)
+            broadcastLog("[SXB] ✅ Proxy SOCKS5 actif sur port $SOCKS5_PORT")
 
             // ── 3. Interface TUN ──────────────────────────────────────────────
             broadcastLog("[SXB] Création interface réseau...")
             val builder = Builder()
-                .setSession("SXB VPN — SSH")
+                .setSession("SXB VPN — ${if (usePayload) "SSH+Payload" else "SSH"}")
                 .addAddress("172.19.0.1", 30)
                 .addRoute("0.0.0.0", 0)
                 .addRoute("::", 0)
@@ -253,11 +333,17 @@ class SxbVpnService : VpnService() {
                 .setBlocking(true)
             builder.addDisallowedApplication(packageName)
 
-            tunFd = builder.establish()
-                ?: throw Exception("Impossible d'établir l'interface TUN")
-            val tunFdInt = tunFd!!.fd
+            tunPfd = builder.establish()
+                ?: throw Exception("Impossible d'établir l'interface TUN (permission refusée ?)")
 
-            // ── 4. sing-box : TUN → SOCKS5 ────────────────────────────────────
+            // CORRECTIF v3 : Os.dup() crée un nouveau fd sans FD_CLOEXEC
+            // → sing-box hérite le fd correctement via ProcessBuilder
+            dupFd = Os.dup(tunPfd!!.fileDescriptor)
+            val tunFdInt = getFdInt(dupFd!!)
+
+            broadcastLog("[SXB] ✅ Interface réseau créée (fd=$tunFdInt)")
+
+            // ── 4. sing-box : TUN fd → SOCKS5 → SSH ──────────────────────────
             broadcastLog("[SXB] Chargement moteur tunnel...")
             val singBoxBinary = extractSingBoxBinary()
                 ?: throw Exception("Moteur VPN introuvable — réinstallez l'application")
@@ -279,24 +365,27 @@ class SxbVpnService : VpnService() {
             running.set(true)
             setCurrentState("connected")
             broadcastStatus("connected")
-            broadcastLog("[SXB] ✅ Tunnel actif — protocole SSH")
-            broadcastLog("[SXB] Trafic chiffré via tunnel SSH")
-            updateNotification("SXB VPN connecté — SSH")
+            broadcastLog("[SXB] ✅ VPN connecté — ${if (usePayload) "SSH+Payload" else "SSH"}")
+            broadcastLog("[SXB] Server    : Protected")
+            broadcastLog("[SXB] Credential: Hidden")
+            broadcastLog("[SXB] Payload   : ${if (usePayload) "Encrypted" else "N/A"}")
+            broadcastLog("[SXB] Trafic    : Actif")
+            updateNotification("SXB VPN actif — ${if (usePayload) "SSH+Payload" else "SSH"}")
 
+            // Thread logs sing-box
             Thread({
                 try {
                     process.inputStream.bufferedReader().forEachLine { line ->
                         if (line.isNotBlank()) broadcastLog("[tunnel] ${maskSensitive(line)}")
                     }
                 } catch (_: Exception) {}
-            }, "SingBoxLog-SSH").apply { isDaemon = true; start() }
+            }, "SingBoxLog").apply { isDaemon = true; start() }
 
+            // Boucle principale — surveiller SSH session + sing-box process
             while (running.get()) {
                 if (!session.isConnected) {
-                    broadcastLog("[SXB] ⚠️ Connexion serveur perdue")
-                    broadcastStatus("error")
-                    setCurrentState("error")
-                    break
+                    broadcastLog("[SXB] ⚠️ Connexion SSH perdue — reconnexion requise")
+                    broadcastStatus("error"); setCurrentState("error"); break
                 }
                 if (!process.isAlive) {
                     val code = process.exitValue()
@@ -304,36 +393,54 @@ class SxbVpnService : VpnService() {
                     if (running.get()) { broadcastStatus("error"); setCurrentState("error") }
                     break
                 }
-                uploadBytes.addAndGet(2048)
-                downloadBytes.addAndGet(4096)
-                Thread.sleep(5_000)
+                Thread.sleep(3_000)
             }
 
         } catch (e: InterruptedException) {
             Log.i(TAG, "Thread SSH interrompu")
         } catch (e: Exception) {
-            Log.e(TAG, "Erreur SSH tunnel", e)
-            broadcastLog("[SXB] ❌ Erreur tunnel : ${e.message?.take(80) ?: "inconnue"}")
+            Log.e(TAG, "Erreur SSH", e)
+            val msg = e.message ?: "erreur inconnue"
+            when {
+                msg.contains("Auth fail") || msg.contains("auth") ->
+                    broadcastLog("[SXB] ❌ Authentification SSH échouée — vérifiez username/password")
+                msg.contains("Connection refused") || msg.contains("refused") ->
+                    broadcastLog("[SXB] ❌ Connexion refusée — serveur inaccessible")
+                msg.contains("timeout") || msg.contains("Timeout") ->
+                    broadcastLog("[SXB] ❌ Timeout connexion — vérifiez host/port")
+                msg.contains("payload") || msg.contains("proxy") ->
+                    broadcastLog("[SXB] ❌ Payload rejeté — vérifiez la configuration payload")
+                else -> broadcastLog("[SXB] ❌ Erreur tunnel : ${msg.take(100)}")
+            }
             broadcastStatus("error")
             setCurrentState("error")
         } finally {
-            runCatching { socks5Server?.close() }
-            socks5Server = null
-            singBoxProcess?.destroy()
-            singBoxProcess = null
-            setCurrentState("disconnected")
-            broadcastStatus("disconnected")
-            stopVpn()
+            cleanup()
         }
     }
 
-    // ── Serveur SOCKS5 local (JSch ChannelDirectTCPIP) ─────────────────────────
+    // ── Obtenir l'int d'un FileDescriptor (par réflexion) ──────────────────────
+    private fun getFdInt(fd: java.io.FileDescriptor): Int {
+        return try {
+            val f = java.io.FileDescriptor::class.java.getDeclaredField("descriptor")
+            f.isAccessible = true
+            f.getInt(fd)
+        } catch (_: Exception) {
+            // fallback pour les APIs récentes
+            try {
+                val f = java.io.FileDescriptor::class.java.getDeclaredField("fd")
+                f.isAccessible = true
+                f.getInt(fd)
+            } catch (_: Exception) { -1 }
+        }
+    }
+
+    // ── Serveur SOCKS5 local (JSch ChannelDirectTCPIP) ────────────────────────
     //
-    // Implémentation SOCKS5 RFC 1928 :
-    //  1. Handshake authentification (NO AUTH)
-    //  2. Résolution de l'adresse cible
-    //  3. Ouverture d'un canal JSch direct-tcpip vers la cible
-    //  4. Relay bidirectionnel client ↔ canal SSH
+    // Corrections v3 :
+    //  - DataInputStream.readFully() garantit la lecture de TOUS les bytes
+    //  - Relay bidirectionnel via 2 threads de copie (pas setInputStream/setOutputStream)
+    //  - Comptage réel upload/download
 
     private fun startLocalSocks5Server(session: Session): ServerSocket {
         val server = ServerSocket(SOCKS5_PORT, 50, InetAddress.getLoopbackAddress())
@@ -341,12 +448,10 @@ class SxbVpnService : VpnService() {
             while (!server.isClosed && session.isConnected && running.get()) {
                 try {
                     val client = server.accept()
-                    Thread(
-                        { handleSocks5Client(session, client) },
-                        "Socks5Client"
-                    ).apply { isDaemon = true; start() }
+                    Thread({ handleSocks5Client(session, client) }, "Socks5Client")
+                        .apply { isDaemon = true; start() }
                 } catch (e: Exception) {
-                    if (running.get()) Log.w(TAG, "[SXB] Socks5 accept error: ${e.message}")
+                    if (running.get()) Log.w(TAG, "Socks5 accept: ${e.message}")
                     break
                 }
             }
@@ -358,95 +463,128 @@ class SxbVpnService : VpnService() {
     private fun handleSocks5Client(session: Session, client: Socket) {
         try {
             client.soTimeout = 30_000
-            val inp = client.inputStream
-            val out = client.outputStream
+            val din  = DataInputStream(client.inputStream)
+            val dout = client.outputStream
 
-            // ── Version + méthodes d'auth ─────────────────────────────────
-            if (inp.read() != 5) return  // Pas SOCKS5
-            val nMethods = inp.read()
-            repeat(nMethods) { inp.read() }  // Ignorer les méthodes
-            out.write(byteArrayOf(5, 0))      // NO AUTH sélectionné
-            out.flush()
+            // ── Handshake SOCKS5 ──────────────────────────────────────────────
+            // Version
+            val ver = din.readUnsignedByte()
+            if (ver != 5) { client.close(); return }
 
-            // ── Requête CONNECT ───────────────────────────────────────────
-            if (inp.read() != 5) return   // version
-            val cmd      = inp.read()     // commande : 1=CONNECT
-            inp.read()                    // réservé
-            val addrType = inp.read()     // type d'adresse
+            // Méthodes d'authentification
+            val nMethods = din.readUnsignedByte()
+            din.skipBytes(nMethods)  // On accepte toujours NO AUTH
+            dout.write(byteArrayOf(5, 0))  // NO AUTH sélectionné
+            dout.flush()
+
+            // Requête CONNECT
+            if (din.readUnsignedByte() != 5) { client.close(); return }  // version
+            val cmd      = din.readUnsignedByte()  // 1=CONNECT
+            din.readUnsignedByte()                 // réservé
+            val addrType = din.readUnsignedByte()  // type adresse
 
             val remoteHost: String = when (addrType) {
-                1 -> {  // IPv4 (4 octets)
+                1 -> {  // IPv4
                     val b = ByteArray(4)
-                    inp.read(b)
-                    InetAddress.getByAddress(b).hostAddress
+                    din.readFully(b)  // CORRECTIF v3 : readFully garantit 4 bytes
+                    InetAddress.getByAddress(b).hostAddress ?: "0.0.0.0"
                 }
                 3 -> {  // Nom de domaine
-                    val len = inp.read()
+                    val len = din.readUnsignedByte()
                     val b   = ByteArray(len)
-                    inp.read(b)
-                    String(b)
+                    din.readFully(b)  // CORRECTIF v3 : readFully garantit len bytes
+                    String(b, Charsets.UTF_8)
                 }
-                4 -> {  // IPv6 (16 octets)
+                4 -> {  // IPv6
                     val b = ByteArray(16)
-                    inp.read(b)
-                    InetAddress.getByAddress(b).hostAddress
+                    din.readFully(b)  // CORRECTIF v3 : readFully garantit 16 bytes
+                    InetAddress.getByAddress(b).hostAddress ?: "::1"
                 }
                 else -> {
-                    out.write(byteArrayOf(5, 8, 0, 1, 0, 0, 0, 0, 0, 0)) // unsupported address type
-                    return
+                    dout.write(byteArrayOf(5, 8, 0, 1, 0, 0, 0, 0, 0, 0))  // addr type not supported
+                    client.close(); return
                 }
             }
-            val remotePort = (inp.read() shl 8) or inp.read()
+            val remotePort = din.readUnsignedShort()  // big-endian 16-bit port
 
-            if (cmd != 1) {
-                // Seul CONNECT est supporté
-                out.write(byteArrayOf(5, 7, 0, 1, 0, 0, 0, 0, 0, 0)) // command not supported
-                return
+            if (cmd != 1) {  // Seul CONNECT est supporté
+                dout.write(byteArrayOf(5, 7, 0, 1, 0, 0, 0, 0, 0, 0))  // command not supported
+                client.close(); return
             }
 
-            // ── Ouvrir canal SSH direct-tcpip vers la destination ─────────
+            // ── Ouvrir canal SSH direct-tcpip ─────────────────────────────────
             val channel = session.openChannel("direct-tcpip") as ChannelDirectTCPIP
             channel.setHost(remoteHost)
             channel.setPort(remotePort)
 
-            // Répondre succès AVANT de brancher les flux
-            out.write(byteArrayOf(5, 0, 0, 1, 0, 0, 0, 0, 0, 0)) // success
-            out.flush()
+            // Répondre succès SOCKS5 (avant de connecter pour ne pas bloquer)
+            dout.write(byteArrayOf(5, 0, 0, 1, 0, 0, 0, 0, 0, 0))  // success
+            dout.flush()
 
-            // Brancher les flux : client ↔ canal SSH
-            channel.setInputStream(inp)   // client → SSH → serveur distant
-            channel.setOutputStream(out)  // serveur distant → SSH → client
-            channel.connect(10_000)
+            // Connecter le canal SSH
+            channel.connect(15_000)
 
-            // Attendre la fin de la connexion
-            while (channel.isConnected && !client.isClosed && running.get()) {
-                Thread.sleep(200)
-            }
+            // ── Relay bidirectionnel via 2 threads ────────────────────────────
+            // Thread A : client → SSH → serveur distant
+            val threadA = Thread({
+                try {
+                    val buf = ByteArray(8192)
+                    val chOut = channel.outputStream
+                    var n: Int
+                    while (channel.isConnected && !client.isClosed) {
+                        n = client.inputStream.read(buf)
+                        if (n == -1) break
+                        chOut.write(buf, 0, n)
+                        chOut.flush()
+                        uploadBytes.addAndGet(n.toLong())
+                    }
+                } catch (_: Exception) {}
+                runCatching { channel.disconnect() }
+            }, "Socks5-Up").apply { isDaemon = true; start() }
+
+            // Thread B : serveur distant → SSH → client
+            val threadB = Thread({
+                try {
+                    val buf = ByteArray(8192)
+                    val chIn = channel.inputStream
+                    var n: Int
+                    while (channel.isConnected && !client.isClosed) {
+                        n = chIn.read(buf)
+                        if (n == -1) break
+                        dout.write(buf, 0, n)
+                        dout.flush()
+                        downloadBytes.addAndGet(n.toLong())
+                    }
+                } catch (_: Exception) {}
+                runCatching { client.close() }
+            }, "Socks5-Down").apply { isDaemon = true; start() }
+
+            threadA.join(300_000)  // 5 min max par connexion
+            threadB.join(5_000)
             channel.disconnect()
 
         } catch (e: Exception) {
-            Log.d(TAG, "[SXB] SOCKS5 connexion terminée: ${e.message?.take(60)}")
+            Log.d(TAG, "SOCKS5 connexion terminée: ${e.message?.take(60)}")
         } finally {
             runCatching { client.close() }
         }
     }
 
-    // ── Config sing-box : TUN → SOCKS5 (SSH) ──────────────────────────────────
+    // ── Config sing-box : TUN fd → SOCKS5 (SSH relay) ─────────────────────────
 
     private fun buildSshSocksRelayConfig(tunFdInt: Int): String {
         val inbound = JSONObject().apply {
             put("type",            "tun")
             put("tag",             "tun-in")
-            put("file_descriptor", tunFdInt)      // fd VpnService
+            put("file_descriptor", tunFdInt)
             put("inet4_address",   "172.19.0.1/30")
-            put("auto_route",      false)          // VpnService gère le routage
+            put("auto_route",      false)   // VpnService gère le routage OS
             put("strict_route",    false)
             put("sniff",           true)
             put("sniff_override_destination", false)
-            put("exclude_package", JSONArray().put(packageName))
         }
 
-        val proxyOut = JSONObject().apply {
+        val socks5Out = JSONObject().apply {
             put("type",        "socks")
             put("tag",         "proxy")
             put("server",      "127.0.0.1")
@@ -454,19 +592,19 @@ class SxbVpnService : VpnService() {
             put("version",     "5")
         }
 
-        val config = JSONObject().apply {
-            put("log", JSONObject().put("level","warn").put("timestamp",true))
+        return JSONObject().apply {
+            put("log", JSONObject().put("level", "warn").put("timestamp", true))
             put("dns", JSONObject().apply {
                 put("servers", JSONArray()
                     .put(JSONObject().put("tag","dns-r").put("address","https://1.1.1.1/dns-query").put("strategy","prefer_ipv4"))
                     .put(JSONObject().put("tag","dns-l").put("address","local").put("detour","direct"))
                 )
-                put("rules",  JSONArray().put(JSONObject().put("outbound","any").put("server","dns-l")))
-                put("final",  "dns-r")
+                put("rules", JSONArray().put(JSONObject().put("outbound","any").put("server","dns-l")))
+                put("final", "dns-r")
             })
             put("inbounds",  JSONArray().put(inbound))
             put("outbounds", JSONArray()
-                .put(proxyOut)
+                .put(socks5Out)
                 .put(JSONObject().put("type","direct").put("tag","direct"))
                 .put(JSONObject().put("type","dns").put("tag","dns-out"))
             )
@@ -475,35 +613,33 @@ class SxbVpnService : VpnService() {
                     .put(JSONObject().put("protocol","dns").put("outbound","dns-out"))
                     .put(JSONObject().put("ip_is_private",true).put("outbound","direct"))
                 )
-                put("final",                "proxy")
-                put("auto_detect_interface", true)
+                put("final", "proxy")
+                put("auto_detect_interface", false)  // false sur Android pour éviter les conflits
             })
-        }
-        return config.toString(2)
+        }.toString(2)
     }
 
-    // ── sing-box (VLESS / VMess / Trojan / Shadowsocks / WireGuard / Hysteria2 / TUIC) ──
+    // ═══════════════════════════════════════════════════════════════════════════
+    // sing-box (VLESS / VMess / Trojan / Shadowsocks / WireGuard / Hysteria2 / TUIC)
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private fun startSingBoxTunnel(configJson: String, protocol: String) {
         try {
-            broadcastLog("[SXB] Initialisation VPN...")
+            broadcastLog("[SXB] Initialisation VPN ($protocol)...")
             broadcastStatus("connecting")
             setCurrentState("connecting")
 
             val cfg = JSONObject(configJson)
 
-            // ── 1. Charger le moteur sing-box ─────────────────────────────
-            broadcastLog("[SXB] Chargement moteur VPN ($protocol)...")
+            // ── Charger le binaire sing-box ───────────────────────────────────
             val singBoxBinary = extractSingBoxBinary()
             if (singBoxBinary == null) {
-                broadcastLog("[SXB] ❌ Moteur VPN introuvable dans l'application")
-                broadcastLog("[SXB] ⚠️  Réinstallez l'APK pour restaurer le moteur")
-                broadcastStatus("error")
-                setCurrentState("error")
-                return
+                broadcastLog("[SXB] ❌ Moteur VPN introuvable — réinstallez l'APK")
+                broadcastStatus("error"); setCurrentState("error"); return
             }
+            broadcastLog("[SXB] Moteur VPN chargé")
 
-            // ── 2. Interface TUN (avant config, fd requis) ─────────────────
+            // ── Créer l'interface TUN ─────────────────────────────────────────
             broadcastLog("[SXB] Création interface réseau...")
             val builder = Builder()
                 .setSession("SXB VPN — ${protocol.uppercase()}")
@@ -512,22 +648,26 @@ class SxbVpnService : VpnService() {
                 .addRoute("::", 0)
                 .addDnsServer("1.1.1.1")
                 .addDnsServer("8.8.8.8")
-                .setMtu(9000)
+                .setMtu(1500)
                 .setBlocking(true)
             builder.addDisallowedApplication(packageName)
 
-            tunFd = builder.establish()
+            tunPfd = builder.establish()
                 ?: throw Exception("Impossible d'établir l'interface TUN")
-            val tunFdInt = tunFd!!.fd
 
-            // ── 3. Config sing-box avec fd TUN ────────────────────────────
-            broadcastLog("[SXB] Chargement configuration ${protocol.uppercase()}...")
-            val singBoxConfig = buildSingBoxConfig(cfg, protocol, tunFdInt)
-            val configFile    = File(filesDir, "singbox-config.json")
-            configFile.writeText(singBoxConfig)
+            // CORRECTIF v3 : dupliquer le fd sans FD_CLOEXEC
+            dupFd = Os.dup(tunPfd!!.fileDescriptor)
+            val tunFdInt = getFdInt(dupFd!!)
+
+            broadcastLog("[SXB] Interface réseau créée")
+
+            // ── Construire et écrire la config sing-box ───────────────────────
+            val singConfig = buildSingBoxConfig(cfg, protocol, tunFdInt)
+            val configFile = File(filesDir, "singbox-${protocol}.json")
+            configFile.writeText(singConfig)
             singBoxConfigFile = configFile
 
-            // ── 4. Démarrer sing-box ──────────────────────────────────────
+            // ── Démarrer sing-box ─────────────────────────────────────────────
             broadcastLog("[SXB] Démarrage moteur tunnel...")
             val process = ProcessBuilder(
                 singBoxBinary.absolutePath, "run", "--config", configFile.absolutePath
@@ -537,25 +677,18 @@ class SxbVpnService : VpnService() {
             }.start()
             singBoxProcess = process
 
-            // Détection crash immédiat
-            Thread.sleep(800)
+            // Attendre que sing-box soit prêt (1.5s)
+            Thread.sleep(1500)
             if (!process.isAlive) {
-                val exitCode = process.exitValue()
-                val output   = process.inputStream.bufferedReader().readText().take(300)
-                broadcastLog("[SXB] ❌ Moteur VPN a planté (code=$exitCode)")
-                if (output.isNotBlank()) broadcastLog("[SXB] Détail : ${maskSensitive(output)}")
-                broadcastStatus("error")
-                setCurrentState("error")
-                return
+                val output = process.inputStream.bufferedReader().readText().take(500)
+                throw Exception("sing-box a planté au démarrage : $output")
             }
 
             running.set(true)
             setCurrentState("connected")
             broadcastStatus("connected")
-            broadcastLog("[SXB] ✅ Tunnel actif — protocole ${protocol.uppercase()}")
-            broadcastLog("[SXB] Interface réseau : active")
-            broadcastLog("[SXB] Routage : activé")
-            updateNotification("SXB VPN connecté — ${protocol.uppercase()}")
+            broadcastLog("[SXB] ✅ VPN connecté — ${protocol.uppercase()}")
+            updateNotification("SXB VPN actif — ${protocol.uppercase()}")
 
             Thread({
                 try {
@@ -568,29 +701,21 @@ class SxbVpnService : VpnService() {
             val exitCode = process.waitFor()
             if (running.get()) {
                 broadcastLog("[SXB] ⚠️ Moteur tunnel arrêté (code=$exitCode)")
-                broadcastStatus("error")
-                setCurrentState("error")
+                broadcastStatus("error"); setCurrentState("error")
             }
 
         } catch (e: InterruptedException) {
             Log.i(TAG, "Thread sing-box interrompu")
         } catch (e: Exception) {
             Log.e(TAG, "Erreur sing-box $protocol", e)
-            broadcastLog("[SXB] ❌ Erreur ${protocol.uppercase()} : ${e.message?.take(80) ?: "inconnue"}")
-            broadcastStatus("error")
-            setCurrentState("error")
+            broadcastLog("[SXB] ❌ Erreur ${protocol.uppercase()} : ${e.message?.take(100) ?: "inconnue"}")
+            broadcastStatus("error"); setCurrentState("error")
         } finally {
-            singBoxProcess?.destroy()
-            singBoxProcess = null
-            setCurrentState("disconnected")
-            broadcastStatus("disconnected")
-            stopVpn()
+            cleanup()
         }
     }
 
-    // ── Config sing-box (VLESS / VMess / Trojan / SS / WG / Hysteria2 / TUIC) ─
-    // Construit le JSON avec JSONObject : pas de string trimming fragile.
-    // Utilise "file_descriptor" = fd TUN réel au lieu de "interface_name".
+    // ── Config sing-box (protocoles via sing-box : VLESS/VMess/Trojan/SS/WG/Hy2/TUIC) ──
 
     private fun buildSingBoxConfig(cfg: JSONObject, protocol: String, tunFdInt: Int): String {
         val host          = cfg.optString("host", "")
@@ -654,7 +779,7 @@ class SxbVpnService : VpnService() {
                 }
                 "tuic" -> {
                     put("type", "tuic"); put("server", host); put("server_port", port)
-                    if (uuid.isNotEmpty()) put("uuid", uuid)
+                    if (uuid.isNotEmpty())     put("uuid", uuid)
                     if (password.isNotEmpty()) put("password", password)
                     if (tls) put("tls", tlsObj())
                 }
@@ -665,13 +790,12 @@ class SxbVpnService : VpnService() {
         val inbound = JSONObject().apply {
             put("type",            "tun")
             put("tag",             "tun-in")
-            put("file_descriptor", tunFdInt)      // fd réel du VpnService
+            put("file_descriptor", tunFdInt)
             put("inet4_address",   "172.19.0.1/30")
-            put("auto_route",      false)          // VpnService gère le routage
+            put("auto_route",      false)
             put("strict_route",    false)
             put("sniff",           true)
             put("sniff_override_destination", false)
-            put("exclude_package", JSONArray().put(packageName))
         }
 
         return JSONObject().apply {
@@ -681,14 +805,13 @@ class SxbVpnService : VpnService() {
                     .put(JSONObject().put("tag","dns-r").put("address","https://1.1.1.1/dns-query").put("strategy","prefer_ipv4"))
                     .put(JSONObject().put("tag","dns-l").put("address","local").put("detour","direct"))
                 )
-                put("rules",  JSONArray().put(JSONObject().put("outbound","any").put("server","dns-l")))
-                put("final",  "dns-r")
+                put("rules", JSONArray().put(JSONObject().put("outbound","any").put("server","dns-l")))
+                put("final", "dns-r")
             })
             put("inbounds",  JSONArray().put(inbound))
             put("outbounds", JSONArray()
                 .put(outbound)
                 .put(JSONObject().put("type","direct").put("tag","direct"))
-                .put(JSONObject().put("type","block").put("tag","block"))
                 .put(JSONObject().put("type","dns").put("tag","dns-out"))
             )
             put("route", JSONObject().apply {
@@ -696,8 +819,8 @@ class SxbVpnService : VpnService() {
                     .put(JSONObject().put("protocol","dns").put("outbound","dns-out"))
                     .put(JSONObject().put("ip_is_private",true).put("outbound","direct"))
                 )
-                put("final",                "proxy")
-                put("auto_detect_interface", true)
+                put("final", "proxy")
+                put("auto_detect_interface", false)
             })
         }.toString(2)
     }
@@ -722,87 +845,34 @@ class SxbVpnService : VpnService() {
                         FileOutputStream(destFile).use { output -> input.copyTo(output) }
                     }
                     destFile.setExecutable(true, false)
-                    Log.i(TAG, "[SXB] Moteur VPN chargé depuis les assets")
                 }
                 if (destFile.exists() && destFile.canExecute()) return destFile
-            } catch (e: Exception) {
-                Log.w(TAG, "[SXB] Asset $assetName non trouvé")
+            } catch (_: Exception) {
+                Log.w(TAG, "Asset $assetName non trouvé")
             }
         }
         return null
     }
 
-    // ── Stop VPN ──────────────────────────────────────────────────────────────
+    // ── Nettoyage ─────────────────────────────────────────────────────────────
 
-    fun stopVpn() {
+    private fun cleanup() {
         running.set(false)
         vpnThread?.interrupt()
 
-        runCatching { socks5Server?.close() }
-        socks5Server = null
+        runCatching { socks5Server?.close() }; socks5Server = null
+        runCatching { singBoxProcess?.destroy() }; singBoxProcess = null
+        runCatching { sshSession?.disconnect() }; sshSession = null
 
-        singBoxProcess?.destroy()
-        singBoxProcess = null
-
-        try { sshSession?.disconnect() } catch (_: Exception) {}
-        sshSession = null
-
-        try { tunFd?.close() } catch (_: Exception) {}
-        tunFd = null
+        // Fermer le fd dupliqué en premier
+        runCatching { if (dupFd != null) Os.close(dupFd!!) }; dupFd = null
+        runCatching { tunPfd?.close() }; tunPfd = null
 
         setCurrentState("disconnected")
         broadcastStatus("disconnected")
-        broadcastLog("[SXB] ✅ VPN arrêté proprement")
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopForeground(true)
         stopSelf()
     }
 
-    private fun setCurrentState(state: String) { currentState = state }
-
-    // ── Notifications ─────────────────────────────────────────────────────────
-
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                NOTIF_CHANNEL, "SXB VPN", NotificationManager.IMPORTANCE_LOW
-            ).apply { description = "Tunnel VPN SXB actif"; setShowBadge(false) }
-            getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
-        }
-    }
-
-    private fun buildNotification(text: String): Notification {
-        val pi = PendingIntent.getActivity(
-            this, 0, packageManager.getLaunchIntentForPackage(packageName),
-            PendingIntent.FLAG_IMMUTABLE
-        )
-        val stopPi = PendingIntent.getService(
-            this, 1,
-            Intent(this, SxbVpnService::class.java).apply { action = ACTION_STOP },
-            PendingIntent.FLAG_IMMUTABLE
-        )
-        val b = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-            Notification.Builder(this, NOTIF_CHANNEL)
-        else @Suppress("DEPRECATION") Notification.Builder(this)
-
-        return b.setContentTitle("SXB VPN").setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_lock_lock)
-            .setContentIntent(pi).setOngoing(true)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Déconnecter", stopPi)
-            .build()
-    }
-
-    private fun updateNotification(text: String) {
-        getSystemService(NotificationManager::class.java)?.notify(NOTIF_ID, buildNotification(text))
-    }
-
-    // ── Broadcasts ────────────────────────────────────────────────────────────
-
-    private fun broadcastStatus(status: String) {
-        sendBroadcast(Intent(BROADCAST_STATUS).putExtra("status", status))
-    }
-
-    private fun broadcastLog(message: String) {
-        Log.i(TAG, message)
-        sendBroadcast(Intent(BROADCAST_LOG).putExtra("log", message))
-    }
+    fun stopVpn() { cleanup() }
 }

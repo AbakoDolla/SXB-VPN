@@ -312,7 +312,7 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
       serverInfo: { host: profile?.host || "vpnsxb.afrihall.com", location: profile ? "SXB" : "France / Europe" },
       subscriptionUrl: connectionUri,
       connectionUri,
-      profile: profile ? { id: profile.id, name: profile.name, protocol: proto, host: profile.host, port: profile.port, network: profile.network, tls: profile.tls, sni: profile.sni, uuid: profile.uuid, path: profile.path, username: profile.username } : null,
+      profile: profile ? { id: profile.id, name: profile.name, protocol: proto, host: profile.host, port: profile.port, network: profile.network, tls: profile.tls, sni: profile.sni, uuid: profile.uuid, path: profile.path, username: profile.username, password: profile.password || null, method: profile.method || null } : null,
       subscription: sub ? { id: sub.id, name: sub.name, dataToken: sub.dataToken, expireAt: sub.expireAt?.toISOString(), status: sub.status } : null,
     });
   } catch (err) {
