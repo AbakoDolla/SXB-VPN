@@ -49,10 +49,8 @@ jobs:
         run: npm install --legacy-peer-deps
 
       # ── Kotlin metadata version fix ──────────────────────────────────────────
-      # expo-module-gradle-plugin is applied as a settings plugin and gets compiled
-      # by Gradle's bundled Kotlin 1.9.x (not 2.1.20 as declared in build.gradle.kts).
-      # The fix: add -Xskip-metadata-version-check so 1.9.x compiler tolerates
-      # dependencies compiled with Kotlin 2.1.x metadata.
+      # expo-module-gradle-plugin: suppress Kotlin metadata version mismatch between
+      # Gradle bundled Kotlin 1.9.x and dependencies compiled with Kotlin 2.1.x.
       - name: Patch expo-module-gradle-plugin for Kotlin metadata compatibility
         run: |
           PLUGIN="node_modules/expo-modules-core/expo-module-gradle-plugin/build.gradle.kts"
@@ -70,51 +68,6 @@ jobs:
 
       - name: Make gradlew executable
         run: chmod +x android/gradlew
-
-      # ── Download sing-box binary for Android ─────────────────────────────────
-      - name: Download sing-box Android ARM64
-        run: |
-          mkdir -p android/app/src/main/assets
-          SINGBOX_VERSION="1.13.13"
-          SINGBOX_URL="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-android-arm64.tar.gz"
-          echo "Downloading sing-box ${SINGBOX_VERSION} for android-arm64..."
-          curl -L --retry 3 --retry-delay 5 -o /tmp/sing-box-arm64.tar.gz "$SINGBOX_URL"
-          tar -xzf /tmp/sing-box-arm64.tar.gz -C /tmp/
-          cp /tmp/sing-box-${SINGBOX_VERSION}-android-arm64/sing-box android/app/src/main/assets/sing-box-arm64-v8a
-          chmod +x android/app/src/main/assets/sing-box-arm64-v8a
-          echo "sing-box arm64 size: $(du -sh android/app/src/main/assets/sing-box-arm64-v8a | cut -f1)"
-
-      - name: Download sing-box Android ARM (32-bit fallback)
-        run: |
-          SINGBOX_VERSION="1.13.13"
-          SINGBOX_URL="https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-android-arm.tar.gz"
-          echo "Downloading sing-box ${SINGBOX_VERSION} for android-arm..."
-          curl -L --retry 3 --retry-delay 5 -o /tmp/sing-box-arm.tar.gz "$SINGBOX_URL" || echo "ARM download failed (non-critical)"
-          if [ -f /tmp/sing-box-arm.tar.gz ]; then
-            tar -xzf /tmp/sing-box-arm.tar.gz -C /tmp/ || true
-            if [ -f "/tmp/sing-box-${SINGBOX_VERSION}-android-arm/sing-box" ]; then
-              cp /tmp/sing-box-${SINGBOX_VERSION}-android-arm/sing-box android/app/src/main/assets/sing-box-armeabi-v7a
-              chmod +x android/app/src/main/assets/sing-box-armeabi-v7a
-              echo "sing-box armeabi-v7a downloaded"
-            fi
-          fi
-
-      # ── Download tun2socks binary for Android ────────────────────────────────
-      - name: Download tun2socks Android ARM64
-        run: |
-          TUN2SOCKS_VERSION="v2.5.2"
-          TUN2SOCKS_URL="https://github.com/xjasonlyu/tun2socks/releases/download/${TUN2SOCKS_VERSION}/tun2socks-android-arm64.zip"
-          echo "Downloading tun2socks ${TUN2SOCKS_VERSION} for android-arm64..."
-          curl -L --retry 3 --retry-delay 5 -o /tmp/tun2socks-arm64.zip "$TUN2SOCKS_URL" || echo "tun2socks download failed (non-critical — fallback bridge will be used)"
-          if [ -f /tmp/tun2socks-arm64.zip ]; then
-            unzip -q /tmp/tun2socks-arm64.zip -d /tmp/tun2socks-arm64/ || true
-            T2S_BIN=$(find /tmp/tun2socks-arm64/ -name "tun2socks*" -type f | head -1)
-            if [ -n "$T2S_BIN" ]; then
-              cp "$T2S_BIN" android/app/src/main/assets/tun2socks-arm64-v8a
-              chmod +x android/app/src/main/assets/tun2socks-arm64-v8a
-              echo "tun2socks arm64 downloaded: $(du -sh android/app/src/main/assets/tun2socks-arm64-v8a | cut -f1)"
-            fi
-          fi
 
       - name: List assets
         run: ls -lah android/app/src/main/assets/ || true
@@ -164,25 +117,24 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: apk-${{ github.run_number }}
-          name: "SXB VPN APK #${{ github.run_number }} — VPN Réel (sing-box + tun2socks)"
+          name: "SXB VPN APK #${{ github.run_number }} — Tunnel SSH"
           body: |
-            ## SXB VPN — APK Android avec VPN Réel
+            ## SXB VPN — APK Android (tunnel SSH)
 
             Build automatique depuis le commit `${{ github.sha }}`
 
-            ### Nouveautés de cette version
-            - ✅ **Vrai moteur VPN** : sing-box v1.13.13 + tun2socks
+            ### Cette version
+            - ✅ **Protocole** : SSH uniquement (tunnel sécurisé)
+            - ✅ **Moteur SSH** : JSch (Java SSH client, pur Java — aucun binaire natif)
             - ✅ **Module natif Android** : SxbVpnService + VpnService Android
-            - ✅ **Multi-protocoles** : VLESS, VMess, Trojan, Shadowsocks, Hysteria2, WireGuard, TUIC
-            - ✅ **Vrais logs** depuis le moteur sing-box
-            - ✅ **Mode offline** : configuration persistée localement
-            - ✅ **Protection totale** : tout le trafic passe par le tunnel
+            - ✅ **Token forfait** : format `SXB-DATA-XXXX-XXXX-XXXX`
+            - ✅ **Connexion** : `bugsleuth@node05.mikosi.fr.eu.org:443` (SNI yamo.mtn.cm)
 
             ### Comment installer
             1. Télécharger `sxb-vpn.apk` ci-dessous
             2. Android : Paramètres → Sécurité → autoriser les sources inconnues
-            3. Ouvrir l APK et installer
-            4. Lancer l app — activer avec votre token SXB-USER-XXXX
+            3. Installer l APK
+            4. Activer avec votre token SXB-USER-XXXX
 
             ### Flux complet
             `Token → Activation → Config backend → Stockage local → POWER → Tunnel réel`

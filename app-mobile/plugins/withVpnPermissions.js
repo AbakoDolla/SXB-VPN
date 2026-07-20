@@ -6,7 +6,7 @@
  *  2. Injecte permissions VPN + déclaration du service dans AndroidManifest.xml
  *  3. Enregistre SxbVpnPackage dans MainApplication.kt
  */
-const { withAndroidManifest, withDangerousMod } = require('@expo/config-plugins');
+const { withAndroidManifest, withDangerousMod, withAppBuildGradle } = require('@expo/config-plugins');
 const path = require('path');
 const fs   = require('fs');
 
@@ -139,11 +139,30 @@ function withMainAppPackage(config) {
   }]);
 }
 
+
+// ── 4. Injection de la dépendance JSch (SSH client Java) ─────────────────────
+function withJschDependency(config) {
+  return withAppBuildGradle(config, (cfg) => {
+    const gradle = cfg.modResults.contents;
+    const dep = "    implementation 'com.github.mwiede:jsch:0.2.21'";
+    if (!gradle.includes('mwiede:jsch')) {
+      cfg.modResults.contents = gradle.replace(
+        /dependencies\s*\{/,
+        'dependencies {
+' + dep
+      );
+      console.log('[VPN plugin] JSch dependency added to app/build.gradle');
+    }
+    return cfg;
+  });
+}
+
 // ── Export du plugin composite ────────────────────────────────────────────────
 function withVpnPermissions(config) {
   config = withKotlinSources(config);
   config = withVpnManifest(config);
   config = withMainAppPackage(config);
+  config = withJschDependency(config);
   return config;
 }
 
