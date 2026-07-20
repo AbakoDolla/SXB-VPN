@@ -205,8 +205,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const [logs,               setLogs]                = useState<string[]>([]);
   const [hasVpnPermission,   setHasVpnPermission]    = useState(false);
 
-  const statusSubRef = useRef<any>(null);
-  const logSubRef    = useRef<any>(null);
+  const statusSubRef   = useRef<any>(null);
+  const logSubRef      = useRef<any>(null);
+  const connectTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Log helper ────────────────────────────────────────────────────────────
 
@@ -227,6 +228,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       const s = event.status;
       addLog(`État VPN : ${s}`);
       if (s === "connected") {
+        if (connectTimeout.current) { clearTimeout(connectTimeout.current); connectTimeout.current = null; }
         setIsConnected(true);
         setIsConnecting(false);
         AsyncStorage.setItem("@sxb_vpn_connected", "true").catch(() => {});
@@ -242,6 +244,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           if (ks === "true") addLog("⚠️ Kill Switch actif — trafic bloqué");
         });
       } else if (s === "error") {
+        if (connectTimeout.current) { clearTimeout(connectTimeout.current); connectTimeout.current = null; }
         setIsConnected(false);
         setIsConnecting(false);
         AsyncStorage.setItem("@sxb_vpn_connected", "false").catch(() => {});
@@ -357,7 +360,24 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       let cfg = connectionConfig;
       if (!cfg) cfg = await loadConfigSecure();
 
+      // Vérifier que la config est complète avant de tenter la connexion
+      if (!cfg) {
+        addLog("❌ Aucune configuration VPN trouvée — importez ou activez un forfait");
+        setIsConnecting(false);
+        return;
+      }
+      if (!cfg.host) {
+        addLog("❌ Configuration incomplète : serveur (host) manquant");
+        setIsConnecting(false);
+        return;
+      }
       const proto = (cfg?.protocol || selectedProtocol || "ssh").toLowerCase();
+      if ((proto === "ssh" || proto === "ssh+payload") && !cfg.username) {
+        addLog("❌ Configuration SSH incomplète : nom d'utilisateur manquant — resynchronisez votre configuration");
+        setIsConnecting(false);
+        return;
+      }
+
       addLog(`Protocole : ${proto.toUpperCase()}`);
       if (cfg?.host) addLog(`Serveur   : ${cfg.host}:${cfg.port}`);
 
@@ -383,6 +403,20 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         addLog("Initialisation du tunnel…");
         await SxbVpnNative.startVpn(configJson);
         // L'état sera mis à jour via les events natifs (onVpnStateChange)
+        // Timeout de sécurité : si après 65s toujours pas d'état "connected" ou "error",
+        // on reset l'état pour ne pas laisser l'interface bloquée indéfiniment
+        if (connectTimeout.current) clearTimeout(connectTimeout.current);
+        connectTimeout.current = setTimeout(() => {
+          setIsConnecting(prev => {
+            if (prev) {
+              addLog("⏱️ Délai dépassé — connexion annulée (serveur injoignable ?)");
+              setIsConnected(false);
+              AsyncStorage.setItem("@sxb_vpn_connected", "false").catch(() => {});
+            }
+            return false;
+          });
+          connectTimeout.current = null;
+        }, 65_000);
 
       } else {
         // Fallback simulateur iOS / dev
@@ -428,13 +462,20 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   // ── Disconnect ────────────────────────────────────────────────────────────
 
   const disconnect = useCallback(async () => {
-    if (isConnecting && !isConnected) return;
+    if (!isConnecting && !isConnected) return;
     addLog("Déconnexion en cours…");
+
+    // ── Réinitialiser l'état local immédiatement ──────────────────────────
+    // Ne pas attendre les events natifs — si le service est crashé ou bloqué,
+    // les events n'arriveront jamais et l'interface restera figée.
+    setIsConnected(false);
+    setIsConnecting(false);
+    await AsyncStorage.setItem("@sxb_vpn_connected", "false").catch(() => {});
 
     try {
       if (Platform.OS === "android" && SxbVpnNative) {
         await SxbVpnNative.stopVpn();
-        // État mis à jour via onVpnStateChange
+        // État déjà réinitialisé ci-dessus
       } else {
         await apiClient.post("/mobile/vpn/session", { action: "disconnect" }).catch(() => {});
         await new Promise(r => setTimeout(r, 600));
@@ -486,3 +527,4 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 export function useVpnContext() {
   return useContext(VpnContext);
 }
+
