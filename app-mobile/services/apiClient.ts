@@ -75,13 +75,18 @@ apiClient.interceptors.response.use(
           original.headers['Authorization'] = `Bearer ${accessToken}`;
         }
         return apiClient(original);
-      } catch (_err) {
-        // Refresh failed — clear session
-        await AsyncStorage.multiRemove([
-          '@sxb_access_token',
-          '@sxb_refresh_token',
-          '@sxb_user',
-        ]);
+      } catch (_err: any) {
+        // Ne supprimer les tokens QUE si le serveur répond explicitement (erreur HTTP).
+        // Une erreur réseau (pas d'internet, timeout) NE DOIT PAS effacer la session —
+        // sinon chaque coupure de réseau déconnecte l'utilisateur et invalide le token.
+        const isHttpError = !!_err?.response;
+        if (isHttpError) {
+          await AsyncStorage.multiRemove([
+            '@sxb_access_token',
+            '@sxb_refresh_token',
+            '@sxb_user',
+          ]);
+        }
         refreshQueue = [];
         return Promise.reject(error);
       } finally {
@@ -94,3 +99,4 @@ apiClient.interceptors.response.use(
 );
 
 export default apiClient;
+
