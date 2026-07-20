@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
-import { User, UserRole } from '../types';
+import { User } from '../types';
 import {
-  LayoutDashboard, Users, Server, Shield, Key, Ticket, Smartphone,
-  Settings, LogOut, UserCog, Terminal, Code2, Zap, Box,
-  Menu, X, UserPlus, HeadphonesIcon, FileText, BadgePercent, CreditCard, Layers,
+  LayoutDashboard, Users, Shield, Key, Smartphone,
+  Settings, LogOut, Terminal, Zap, CreditCard,
+  Menu, X, UserPlus, FileText, Layers, Network, Box,
 } from 'lucide-react';
 
 interface LayoutProps {
@@ -35,26 +35,44 @@ export default function Layout({
     return () => { document.body.style.overflow = ''; };
   }, [mobileNavOpen]);
 
-  const navItems = [
-    { id: 'dashboard',  label: 'Dashboard',           icon: LayoutDashboard,  roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
-    { id: 'clients',    label: 'Clients VPN',          icon: Users,            roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
-    { id: 'subscriptions', label: 'Forfaits Data',    icon: CreditCard,   roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
-    { id: 'tokens',     label: 'Tokens SXB',           icon: Key,              roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
-    { id: 'devices',    label: 'Appareils',            icon: Smartphone,       roles: ['SUPER_ADMIN','ADMIN'] },
-    { id: 'vouchers',   label: 'Vouchers',             icon: BadgePercent,     roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
-    { id: 'support',    label: 'Support',              icon: HeadphonesIcon,   roles: ['SUPER_ADMIN','ADMIN','SUPPORT'] },
-    { id: 'resellers',  label: 'Revendeurs',           icon: UserCog,          roles: ['SUPER_ADMIN','ADMIN'] },
-    { id: 'servers',    label: 'Serveurs',             icon: Server,           roles: ['SUPER_ADMIN','ADMIN','SUPPORT'] },
-    { id: 'ssh',       label: 'SSH Manager',          icon: Terminal,         roles: ['SUPER_ADMIN','ADMIN','SUPPORT'] },
-    { id: 'xray',      label: 'Xray Manager',         icon: Zap,              roles: ['SUPER_ADMIN','ADMIN'] },
-    { id: 'singbox',   label: 'Sing-box Manager',     icon: Box,              roles: ['SUPER_ADMIN','ADMIN'] },
-    { id: 'accounts',   label: 'Gestion des Comptes',  icon: UserPlus,         roles: ['SUPER_ADMIN','ADMIN'] },
-    { id: 'rbac',       label: 'Rôles & Permissions',  icon: Shield,           roles: ['SUPER_ADMIN','ADMIN'] },
-    { id: 'analytics',  label: 'Analytiques',          icon: FileText,         roles: ['SUPER_ADMIN','ADMIN','SUPPORT'] },
-    { id: 'settings',   label: 'Paramètres',           icon: Settings,         roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
+  // ── Navigation organisée selon les besoins réels ──────────────────────────
+  const navGroups = [
+    {
+      label: 'PRINCIPAL',
+      items: [
+        { id: 'dashboard',     label: 'Dashboard',          icon: LayoutDashboard,  roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
+        { id: 'clients',       label: 'Clients VPN',         icon: Users,             roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
+        { id: 'subscriptions', label: 'Forfaits Data',       icon: CreditCard,        roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
+        { id: 'tokens',        label: 'Tokens SXB',          icon: Key,               roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
+        { id: 'devices',       label: 'Appareils',           icon: Smartphone,        roles: ['SUPER_ADMIN','ADMIN'] },
+      ],
+    },
+    {
+      label: 'PROTOCOLES VPN',
+      items: [
+        { id: 'vpn-profiles',  label: 'Configurations VPN',  icon: Layers,            roles: ['SUPER_ADMIN','ADMIN'] },
+        { id: 'protocols',     label: 'Gestionnaire Proto.',  icon: Network,           roles: ['SUPER_ADMIN','ADMIN'] },
+        { id: 'ssh',           label: 'SSH Manager',          icon: Terminal,          roles: ['SUPER_ADMIN','ADMIN','SUPPORT'] },
+        { id: 'xray',          label: 'Xray / V2Ray',         icon: Zap,               roles: ['SUPER_ADMIN','ADMIN'] },
+        { id: 'singbox',       label: 'Sing-box',             icon: Box,               roles: ['SUPER_ADMIN','ADMIN'] },
+      ],
+    },
+    {
+      label: 'ADMINISTRATION',
+      items: [
+        { id: 'accounts',      label: 'Utilisateurs',         icon: UserPlus,          roles: ['SUPER_ADMIN','ADMIN'] },
+        { id: 'rbac',          label: 'Rôles & Permissions',  icon: Shield,            roles: ['SUPER_ADMIN','ADMIN'] },
+        { id: 'analytics',     label: 'Logs & Activité',      icon: FileText,          roles: ['SUPER_ADMIN','ADMIN','SUPPORT'] },
+        { id: 'settings',      label: 'Paramètres',           icon: Settings,          roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
+      ],
+    },
   ];
 
-  const filteredNav = navItems.filter(item => item.roles.includes(currentUser.role));
+  const allItems = navGroups.flatMap(g => g.items);
+  const filteredGroups = navGroups.map(g => ({
+    ...g,
+    items: g.items.filter(item => item.roles.includes(currentUser.role)),
+  })).filter(g => g.items.length > 0);
 
   function handleNavigate(route: string) {
     onNavigate(route);
@@ -86,32 +104,38 @@ export default function Layout({
         )}
       </div>
 
-      {/* Navigation */}
-      <nav className="flex-1 py-3 px-2.5 space-y-0.5 overflow-y-auto">
-        {filteredNav.map((item) => {
-          const Icon = item.icon;
-          const isActive = activeRoute === item.id;
-          return (
-            <button
-              key={item.id}
-              onClick={() => handleNavigate(item.id)}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-150 cursor-pointer ${
-                isActive
-                  ? 'bg-cyan-500/15 text-cyan-400 border-l-2 border-cyan-400 pl-[10px]'
-                  : 'text-gray-400 hover:bg-white/5 hover:text-white'
-              }`}
-            >
-              <Icon className="w-4.5 h-4.5 shrink-0" />
-              <span className="text-sm font-medium">{item.label}</span>
-            </button>
-          );
-        })}
+      {/* Navigation avec groupes */}
+      <nav className="flex-1 py-3 px-2.5 overflow-y-auto space-y-4">
+        {filteredGroups.map((group) => (
+          <div key={group.label}>
+            <p className="text-[10px] font-semibold text-gray-600 tracking-widest px-3 mb-1">{group.label}</p>
+            <div className="space-y-0.5">
+              {group.items.map((item) => {
+                const Icon = item.icon;
+                const isActive = activeRoute === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => handleNavigate(item.id)}
+                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-150 cursor-pointer ${
+                      isActive
+                        ? 'bg-cyan-500/15 text-cyan-400 border-l-2 border-cyan-400 pl-[10px]'
+                        : 'text-gray-400 hover:bg-white/5 hover:text-white'
+                    }`}
+                  >
+                    <Icon className="w-4 h-4 shrink-0" />
+                    <span className="text-sm font-medium">{item.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
       </nav>
 
       {/* User info */}
       <div className="p-3 border-t border-[#1a1f2e] shrink-0">
         <div className="flex items-center gap-3 px-2 py-2 rounded-xl hover:bg-white/5 transition-colors">
-          {/* Avatar */}
           <div className="relative shrink-0">
             {(currentUser as any).avatarUrl ? (
               <img

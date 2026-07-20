@@ -1,40 +1,32 @@
 import DashboardView from "./components/DashboardView";
 import ClientsView from "./components/ClientsView";
-import ResellersView from "./components/ResellersView";
-import ServersView from "./components/ServersView";
 import TokensView from "./components/TokensView";
-import VouchersView from "./components/VouchersView";
-import SupportView from "./components/SupportView";
 import RBACView from "./components/RBACView";
 import SettingsView from "./components/SettingsView";
 import AccountsView from "./components/AccountsView";
 import DevicesView from "./components/DevicesView";
 import SSHManagerView from "./components/SSHManagerView";
-import PayloadManagerView from "./components/PayloadManagerView";
 import XrayManagerView from "./components/XrayManagerView";
 import SingboxManagerView from "./components/SingboxManagerView";
 import SubscriptionsView from "./components/SubscriptionsView";
+import VpnProfilesView from "./components/VpnProfilesView";
+import ProtocolManagerView from "./components/ProtocolManagerView";
 import Layout from "./components/Layout";
 import { useEffect, useState } from 'react';
 import { I18nProvider, useTranslation } from './contexts/I18nContext';
 import { getSessionUser, login, logout } from './api/auth';
 import { activateWithAdminToken } from './api/accounts';
 import { setTokens } from './api/client';
-import { User, UserRole } from './types';
+import { User } from './types';
 import { ShieldAlert, RefreshCw, LogIn, Eye, EyeOff, KeyRound, Mail } from 'lucide-react';
 
 function LoginForm({ onLogin }: { onLogin: () => void }) {
   const { t } = useTranslation();
   const [mode, setMode] = useState<'password' | 'token'>('password');
-
-  // Mode email/mot de passe
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-
-  // Mode token d'accès
   const [accessToken, setAccessToken] = useState('');
-
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -71,7 +63,6 @@ function LoginForm({ onLogin }: { onLogin: () => void }) {
   return (
     <div className="min-h-screen bg-[#07090e] flex flex-col items-center justify-center px-4">
       <div className="w-full max-w-md">
-        {/* Logo */}
         <div className="text-center mb-8">
           <img
             src="/assets/images/logo_sxb_2026.png"
@@ -82,7 +73,6 @@ function LoginForm({ onLogin }: { onLogin: () => void }) {
           <p className="text-gray-400">Plateforme de gestion VPN</p>
         </div>
 
-        {/* Onglets de connexion */}
         <div className="flex gap-2 mb-4 bg-[#0f1218] border border-[#1a1f2e] rounded-xl p-1">
           <button
             type="button"
@@ -106,7 +96,6 @@ function LoginForm({ onLogin }: { onLogin: () => void }) {
           </button>
         </div>
 
-        {/* Formulaire */}
         <div className="bg-[#0f1218] border border-[#1a1f2e] rounded-2xl p-8">
           {error && (
             <div className="mb-6 p-4 bg-rose-500/10 border border-rose-500/30 rounded-xl">
@@ -127,7 +116,6 @@ function LoginForm({ onLogin }: { onLogin: () => void }) {
                   required
                 />
               </div>
-
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-2">Mot de passe</label>
                 <div className="relative">
@@ -148,11 +136,10 @@ function LoginForm({ onLogin }: { onLogin: () => void }) {
                   </button>
                 </div>
               </div>
-
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full py-3 px-4 bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-semibold rounded-xl hover:from-cyan-600 hover:to-blue-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                className="w-full py-3 px-4 bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-semibold rounded-xl hover:from-cyan-600 hover:to-blue-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
               >
                 {loading ? <RefreshCw className="w-5 h-5 animate-spin" /> : (<><LogIn className="w-5 h-5" />Connexion</>)}
               </button>
@@ -171,14 +158,13 @@ function LoginForm({ onLogin }: { onLogin: () => void }) {
                   required
                 />
                 <p className="text-xs text-gray-500 mt-2 text-center">
-                  Ce token t'a été communiqué par un super administrateur. Il détermine automatiquement ton rôle et tes accès.
+                  Ce token t'a été communiqué par un super administrateur.
                 </p>
               </div>
-
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full py-3 px-4 bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-semibold rounded-xl hover:from-cyan-600 hover:to-blue-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                className="w-full py-3 px-4 bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-semibold rounded-xl hover:from-cyan-600 hover:to-blue-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
               >
                 {loading ? <RefreshCw className="w-5 h-5 animate-spin" /> : (<><KeyRound className="w-5 h-5" />Se connecter avec le token</>)}
               </button>
@@ -195,7 +181,6 @@ function LoginForm({ onLogin }: { onLogin: () => void }) {
 }
 
 function MainApp() {
-  const { t } = useTranslation();
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [activeRoute, setActiveRoute] = useState('dashboard');
   const [loading, setLoading] = useState(true);
@@ -204,29 +189,18 @@ function MainApp() {
     try {
       const user = await getSessionUser();
       setCurrentUser(user);
-    } catch (err) {
-      console.error(err);
+    } catch {
+      // not logged in
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    fetchUserSession();
-  }, []);
+  useEffect(() => { fetchUserSession(); }, []);
 
-  const handleUserChanged = (updatedUser: User) => {
-    setCurrentUser(updatedUser);
-  };
-
-  const handleRolePermissionsUpdated = async () => {
-    await fetchUserSession();
-  };
-
-  const handleLogout = async () => {
-    await logout();
-    setCurrentUser(null);
-  };
+  const handleUserChanged = (updatedUser: User) => setCurrentUser(updatedUser);
+  const handleRolePermissionsUpdated = async () => { await fetchUserSession(); };
+  const handleLogout = async () => { await logout(); setCurrentUser(null); };
 
   if (loading) {
     return (
@@ -237,42 +211,35 @@ function MainApp() {
     );
   }
 
-  // Si pas connecté, afficher le formulaire de connexion
-  if (!currentUser) {
-    return <LoginForm onLogin={fetchUserSession} />;
-  }
+  if (!currentUser) return <LoginForm onLogin={fetchUserSession} />;
 
-  // RBAC Client-Side Route guard checks
+  const role = currentUser.role;
+
   const renderView = () => {
-    const role = currentUser.role;
-
     switch (activeRoute) {
       case 'dashboard':
-        return <DashboardView onNavigate={(route) => setActiveRoute(route)} />;
+      case 'analytics':
+        return <DashboardView onNavigate={(r) => setActiveRoute(r)} />;
       case 'clients':
         return <ClientsView currentUserRole={role} actorName={currentUser.name} />;
-      case 'resellers':
-        return <ResellersView currentUserRole={role} actorName={currentUser.name} />;
-      case 'servers':
-        return <ServersView currentUserRole={role} />;
+      case 'subscriptions':
+        return <SubscriptionsView currentUserRole={role} />;
+      case 'tokens':
+        return <TokensView currentUserRole={role} />;
+      case 'devices':
+        return <DevicesView />;
+      case 'vpn-profiles':
+        return <VpnProfilesView currentUserRole={role} />;
+      case 'protocols':
+        return <ProtocolManagerView currentUserRole={role} />;
       case 'ssh':
-        return <SSHManagerView currentUserRole={role} />;
-      case 'payload':
         return <SSHManagerView currentUserRole={role} />;
       case 'xray':
         return <XrayManagerView currentUserRole={role} />;
-      case 'subscriptions':
-        return <SubscriptionsView currentUserRole={role} />;
       case 'singbox':
         return <SingboxManagerView currentUserRole={role} />;
-      case 'devices':
-        return <DevicesView />;
-      case 'tokens':
-        return <TokensView currentUserRole={role} />;
-      case 'vouchers':
-        return <VouchersView currentUserRole={role} />;
-      case 'support':
-        return <SupportView />;
+      case 'accounts':
+        return <AccountsView currentUserRole={role} currentUserId={currentUser.id} />;
       case 'rbac':
         return (
           <RBACView
@@ -280,19 +247,10 @@ function MainApp() {
             onRolePermissionsUpdated={handleRolePermissionsUpdated}
           />
         );
-      case 'accounts':
-        return (
-          <AccountsView
-            currentUserRole={role}
-            currentUserId={currentUser.id}
-          />
-        );
-      case "analytics":
-        return <DashboardView onNavigate={(route) => setActiveRoute(route)} />;
-      case "settings":
+      case 'settings':
         return <SettingsView currentUser={currentUser} onUserUpdated={handleUserChanged} />;
       default:
-        return <DashboardView onNavigate={(route) => setActiveRoute(route)} />;
+        return <DashboardView onNavigate={(r) => setActiveRoute(r)} />;
     }
   };
 
