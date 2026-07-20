@@ -51,39 +51,29 @@ router.get('/', requireAuth, requirePermission('vpnprofile.view'), async (req: A
 router.get("/unified", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     if (!prisma) return res.status(503).json({ error: "DB unavailable" });
-    const sshAccs = await (prisma as any).sshAccount.findMany({ where: { status: "active" }, orderBy: { createdAt: "desc" } });
+    const [sshAccs, xrayAccs, singboxAccs] = await Promise.all([
+      (prisma as any).sshAccount.findMany({ where: { status: "active" }, orderBy: { createdAt: "desc" } }),
+      (prisma as any).xrayAccount.findMany({ where: { status: "active" }, orderBy: { createdAt: "desc" } }),
+      (prisma as any).singboxAccount.findMany({ where: { status: "active" }, orderBy: { createdAt: "desc" } }),
+    ]);
     const configs: any[] = [];
-    async function syncProfile(data: any, namePrefix: string) {
+    async function syncProfile(data: any, namePrefix: string, proto: string) {
       const profileName = namePrefix + data.name;
       let p = await (prisma as any).vpnProfile.findFirst({ where: { name: profileName } });
-      if (!p) {
-        p = await (prisma as any).vpnProfile.create({ data: {
-          name: profileName,
-          description: namePrefix.replace(/[\[\]]/g, "").trim() + " Manager — " + data.name,
-          protocol: data.protocol || "ssh",
-          host: data.host,
-          port: data.port,
-          username: data.username || null,
-          uuid: data.uuid || null,
-          path: data.path || null,
-          network: data.network || "tcp",
-          tls: data.tls || false,
-          sni: data.sni || null,
-          offlineValidDays: 7,
-          status: "active",
-        }});
-      }
+      if (!p) p = await (prisma as any).vpnProfile.create({ data: {
+          name: profileName, description: namePrefix.replace(/[\[\]]/g, "").trim() + " — " + data.name,
+          protocol: proto, host: data.host, port: data.port,
+          username: data.username || null, password: data.password || null, uuid: data.uuid || null,
+          path: data.path || null, network: data.network || (proto === "ssh" ? "tcp" : "ws"),
+          tls: data.tls || false, sni: data.sni || null, method: data.method || null, offlineValidDays: 7, status: "active",
+      }});
       return p;
     }
-    for (const a of sshAccs) {
-      const p = await syncProfile({ ...a, protocol: "ssh" }, "[SSH] ");
-      configs.push({ id: p.id, name: p.name, protocol: "ssh", host: a.host, port: a.port, sourceType: "ssh", status: a.status });
-    }
+    for (const a of sshAccs) { const p = await syncProfile(a, "[SSH] ", "ssh"); configs.push({ id: p.id, name: p.name, protocol: "ssh", host: a.host, port: a.port, sourceType: "ssh", status: a.status }); }
+    for (const a of xrayAccs) { const pfx = "[" + a.protocol.toUpperCase() + "] "; const p = await syncProfile(a, pfx, a.protocol); configs.push({ id: p.id, name: p.name, protocol: a.protocol, host: a.host, port: a.port, sourceType: "xray", status: a.status }); }
+    for (const a of singboxAccs) { const pfx = "[" + a.protocol.toUpperCase() + "-SB] "; const p = await syncProfile(a, pfx, a.protocol); configs.push({ id: p.id, name: p.name, protocol: a.protocol, host: a.host, port: a.port, sourceType: "singbox", status: a.status }); }
     return res.json({ configs });
-  } catch (err) {
-    console.error("Unified configs error:", err);
-    return res.status(500).json({ error: "Server error" });
-  }
+  } catch (err) { console.error("Unified configs error:", err); return res.status(500).json({ error: "Server error" }); }
 });
 
 // ─── GET /api/vpn-profiles/:id ───────────────────────────────────────────────

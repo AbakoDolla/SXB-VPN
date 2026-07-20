@@ -31,6 +31,8 @@ import vpnProfilesRouter from "./server/routes/vpn-profiles";
 import subscriptionsRouter from "./server/routes/subscriptions";
 import appRegisterRouter  from "./server/routes/app-register";
 import provisionRouter from "./server/routes/provision";
+import xrayRouter from "./server/routes/xray";
+import singboxRouter from "./server/routes/singbox";
 
 async function startServer() {
   const app = express();
@@ -123,6 +125,8 @@ async function startServer() {
   app.use("/api/payload", payloadRouter);
   app.use("/api/sessions", sessionsRouter);
   app.use("/api/vpn-profiles", vpnProfilesRouter);
+  app.use("/api/xray", xrayRouter);
+  app.use("/api/singbox", singboxRouter);
   app.use("/api/subscriptions", subscriptionsRouter);
   app.use("/api/app",           appRegisterRouter);
   app.use("/api/provision", provisionRouter);
@@ -154,7 +158,7 @@ async function startServer() {
   } else {
     console.log("📦 Mounting production static file serving (Serving compiled React frontend)...");
     const distPath = path.join(process.cwd(), "dist");
-    app.use("/uploads", express.static(require("path").join(process.cwd(), "public", "uploads")));
+    const _fs = require("fs"); const _uploadDir = require("path").join(process.cwd(), "public", "uploads", "avatars"); if (!_fs.existsSync(_uploadDir)) _fs.mkdirSync(_uploadDir, { recursive: true }); app.use("/uploads", express.static(require("path").join(process.cwd(), "public", "uploads")));
     app.use(express.static(distPath));
     app.get("*", (req: Request, res: Response) => {
       res.sendFile(path.join(distPath, "index.html"));
