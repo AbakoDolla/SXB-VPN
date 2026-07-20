@@ -363,6 +363,7 @@ model Subscription {
   lastProvisionAt DateTime?
   lastSyncAt      DateTime?
   revokedAt       DateTime?
+  deviceId        String?
   revokeReason    String?
   createdBy       String?
   createdAt       DateTime             @default(now())
