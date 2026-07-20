@@ -1,1 +1,6 @@
-- [SXB VPN project state](sxb-vpn-state.md) — corrections BUG 500, architecture VPS, credentials admin, build commands, multi-protocoles
+- [SXB VPN Architecture](sxb-vpn-arch.md) — architecture VPS/mobile/admin, URLs production, identifiants admin
+- [Prisma createdBy Fix](prisma-created-by-fix.md) — colonne ajoutée via SQL manuel → prisma generate requis après chaque ALTER TABLE
+- [sing-box Build](singbox-build.md) — sing-box v1.13.13 déjà installé /usr/local/bin/sing-box ; binaires arm64/arm à inclure dans assets APK via GitHub Actions
+- [VPN Permission Android](vpn-permission-android.md) — requestVpnPermission() doit utiliser startActivityForResult() + ActivityEventListener ; jamais isVpnPermissionGranted() seul
+- [Subscriptions Table Schema](subscriptions-schema.md) — colonnes réelles : quotaBytes, quotaUsed, durationDays, dataToken (pas quotaTotal/quotaGB)
+- [GitHub Secret VPS](github-secret-vps.md) — VPS_SSH_PASSWORD à ajouter manuellement dans Settings → Secrets du repo GitHub
