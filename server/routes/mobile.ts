@@ -1,7 +1,25 @@
 import { Router, Response } from "express";
 import { z } from "zod";
+import crypto from "crypto";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { generateTokens, requireAuth, AuthenticatedRequest } from "../middleware/auth";
+
+// ── AES-256-CBC decrypt (same key as vpn-profiles.ts) ─────────────────────────
+const ENC_ALGO = "aes-256-cbc";
+const ENC_KEY  = process.env.ENCRYPTION_KEY || "sxb-vpn-32-byte-encryption-key-!";
+
+function decryptField(enc: string | null | undefined): string | null {
+  if (!enc) return null;
+  try {
+    if (!enc.includes(":")) return enc; // not encrypted — return as-is
+    const [ivHex, encHex] = enc.split(":");
+    const k = crypto.createHash("sha256").update(ENC_KEY).digest();
+    const d = crypto.createDecipheriv(ENC_ALGO, k, Buffer.from(ivHex, "hex"));
+    return Buffer.concat([d.update(Buffer.from(encHex, "hex")), d.final()]).toString();
+  } catch {
+    return enc; // fallback: return raw value if decryption fails
+  }
+}
 
 const router = Router();
 
@@ -276,7 +294,7 @@ router.post("/packages/activate", async (req: AuthenticatedRequest, res: Respons
 router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
   const FALLBACK = [
     { name: "SSH",         port: 22,   transport: "TCP",  security: "SSH",     description: "Securise" },
-    { name: "SSH+Payload", port: 80,   transport: "TCP",  security: "Bypass",  description: "Anti-DPI" },
+    { name: "SSH+Payload", port: 443,  transport: "TCP",  security: "Bypass",  description: "Anti-DPI" },
   ];
   try {
     const client: any = await findClientByUserId(req.user!.userId);
@@ -293,16 +311,34 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
     }
 
     const profile = sub?.profile || null;
-    const proto = (profile?.protocol || "ssh").toLowerCase();
+    const proto = (profile?.protocol || "ssh").toLowerCase(); // already "ssh+payload" in DB
+
+    // ── Charger le payload SSH si le profil en a un ────────────────────────
+    let payloadContent: string | null = null;
+    if (profile?.payloadId && prisma) {
+      try {
+        const sshPayload = await (prisma as any).sshPayload.findUnique({
+          where: { id: profile.payloadId },
+        });
+        payloadContent = sshPayload?.content || null;
+      } catch (e) {
+        console.error("Erreur chargement payload SSH:", e);
+      }
+    }
+
+    // ── Déchiffrer le mot de passe avant envoi au mobile ─────────────────
+    const decryptedPassword = decryptField(profile?.password);
+
     const protocols = profile
-      ? [{ name: proto.toUpperCase(), port: profile.port, transport: (profile.network || "tcp").toUpperCase(), security: profile.tls ? "TLS" : "None", description: "Actif \u2014 " + profile.name }]
+      ? [{ name: proto === "ssh+payload" ? "SSH+Payload" : proto.toUpperCase(), port: profile.port, transport: (profile.network || "tcp").toUpperCase(), security: profile.tls ? "TLS" : "Bypass", description: "Actif — " + profile.name }]
       : FALLBACK;
 
     let connectionUri: string | null = null;
     if (profile) {
-      if (proto === "ssh") {
+      if (proto === "ssh" || proto === "ssh+payload") {
         connectionUri = "ssh://" + (profile.username || "user") + "@" + profile.host + ":" + profile.port;
         if (profile.sni) connectionUri += "?sni=" + encodeURIComponent(profile.sni);
+        if (proto === "ssh+payload") connectionUri += (connectionUri.includes("?") ? "&" : "?") + "mode=payload";
       }
     }
 
@@ -312,8 +348,31 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
       serverInfo: { host: profile?.host || "vpnsxb.afrihall.com", location: profile ? "SXB" : "France / Europe" },
       subscriptionUrl: connectionUri,
       connectionUri,
-      profile: profile ? { id: profile.id, name: profile.name, protocol: proto, host: profile.host, port: profile.port, network: profile.network, tls: profile.tls, sni: profile.sni, uuid: profile.uuid, path: profile.path, username: profile.username, password: profile.password || null, method: profile.method || null } : null,
-      subscription: sub ? { id: sub.id, name: sub.name, dataToken: sub.dataToken, expireAt: sub.expireAt?.toISOString(), status: sub.status } : null,
+      profile: profile ? {
+        id:         profile.id,
+        name:       profile.name,
+        protocol:   proto,                           // "ssh" | "ssh+payload" | "vless" etc.
+        host:       profile.host,
+        port:       profile.port,
+        network:    profile.network,
+        tls:        profile.tls,
+        sni:        profile.sni,
+        uuid:       profile.uuid,
+        path:       profile.path,
+        username:   profile.username,
+        password:   decryptedPassword,               // ← déchiffré
+        method:     profile.method || null,
+        dns:        profile.dns || null,
+        payload:    payloadContent,                  // ← NOUVEAU : contenu du payload HTTP
+        payloadId:  profile.payloadId || null,
+      } : null,
+      subscription: sub ? {
+        id:        sub.id,
+        name:      sub.name,
+        dataToken: sub.dataToken,
+        expireAt:  sub.expireAt?.toISOString(),
+        status:    sub.status,
+      } : null,
     });
   } catch (err) {
     console.error("Mobile vpn/config error:", err);

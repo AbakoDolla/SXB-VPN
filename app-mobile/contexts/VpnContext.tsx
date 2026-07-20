@@ -319,10 +319,17 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       if (data.serverInfo)      setServerInfo(data.serverInfo);
 
       if (data.profile) {
-        const cfg: VpnConnectionConfig = { ...data.profile, _ts: Date.now() };
+        // Assurer que le payload est bien présent dans la config locale
+        const cfg: VpnConnectionConfig = {
+          ...data.profile,
+          payload: data.profile.payload || undefined,
+          _ts: Date.now(),
+        };
         setConnectionConfig(cfg);
         await storeConfigSecure(cfg);
-        addLog("✅ Configuration VPN synchronisée depuis le serveur");
+        const protoLabel = (data.profile.protocol || "ssh").toUpperCase();
+        const hasPayload = !!data.profile.payload;
+        addLog(`✅ Config VPN synchronisée — ${protoLabel}${hasPayload ? " (payload chargé)" : ""}`);
       }
 
       if (data.connectionUri) {

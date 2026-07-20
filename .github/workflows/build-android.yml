@@ -69,24 +69,31 @@ jobs:
       - name: Download sing-box binaries
         run: |
           mkdir -p assets
-          SINGBOX_VERSION="1.9.7"
+          SINGBOX_VERSION="1.11.7"
           
           # arm64-v8a
-          echo "Téléchargement sing-box arm64..."
-          curl -sL "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-android-arm64-v8a.tar.gz" \
-            | tar -xz --strip-components=1 -O "sing-box-${SINGBOX_VERSION}-android-arm64-v8a/sing-box" > assets/sing-box-arm64 2>/dev/null || true
+          echo "Téléchargement sing-box arm64 v${SINGBOX_VERSION}..."
+          curl -fsSL "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-android-arm64-v8a.tar.gz" \
+            | tar -xz --strip-components=1 -O "sing-box-${SINGBOX_VERSION}-android-arm64-v8a/sing-box" > assets/sing-box-arm64 2>/dev/null \
+            || { echo "⚠️ arm64 v${SINGBOX_VERSION} failed, trying fallback 1.9.7..."; \
+                 curl -fsSL "https://github.com/SagerNet/sing-box/releases/download/v1.9.7/sing-box-1.9.7-android-arm64-v8a.tar.gz" \
+                   | tar -xz --strip-components=1 -O "sing-box-1.9.7-android-arm64-v8a/sing-box" > assets/sing-box-arm64 2>/dev/null || true; }
           
           # armeabi-v7a (ARM 32-bit)
-          echo "Téléchargement sing-box arm32..."
-          curl -sL "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-android-armv7.tar.gz" \
-            | tar -xz --strip-components=1 -O "sing-box-${SINGBOX_VERSION}-android-armv7/sing-box" > assets/sing-box-arm 2>/dev/null || true
+          echo "Téléchargement sing-box arm32 v${SINGBOX_VERSION}..."
+          curl -fsSL "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-android-armv7.tar.gz" \
+            | tar -xz --strip-components=1 -O "sing-box-${SINGBOX_VERSION}-android-armv7/sing-box" > assets/sing-box-arm 2>/dev/null \
+            || { echo "⚠️ armv7 v${SINGBOX_VERSION} failed, trying fallback 1.9.7..."; \
+                 curl -fsSL "https://github.com/SagerNet/sing-box/releases/download/v1.9.7/sing-box-1.9.7-android-armv7.tar.gz" \
+                   | tar -xz --strip-components=1 -O "sing-box-1.9.7-android-armv7/sing-box" > assets/sing-box-arm 2>/dev/null || true; }
           
-          # Vérification
+          # Vérification taille minimale 1MB
           for f in assets/sing-box-arm64 assets/sing-box-arm; do
             if [ -f "$f" ] && [ "$(wc -c < "$f")" -gt 1000000 ]; then
               echo "✅ $f ok ($(du -h "$f" | cut -f1))"
             else
               echo "⚠️  $f manquant ou corrompu — protocoles avancés désactivés"
+              rm -f "$f"
             fi
           done
 
@@ -177,7 +184,7 @@ jobs:
 
             ### Protocoles supportés
             - ✅ **SSH / SSH+Payload** — tunnel JSch natif Java
-            - ✅ **VLESS / VMess / Trojan** — sing-box v1.9.7
+            - ✅ **VLESS / VMess / Trojan** — sing-box v1.11.7
             - ✅ **Shadowsocks** — sing-box
             - ✅ **WireGuard** — sing-box
             - ✅ **Hysteria2 / TUIC** — sing-box
