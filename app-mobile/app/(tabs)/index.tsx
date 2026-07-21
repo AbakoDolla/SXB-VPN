@@ -8,7 +8,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useAuthContext } from "@/contexts/AuthContext";
-import { useVpnContext } from "@/contexts/VpnContext";
+import { useVpnContext, formatBytes, formatSpeed } from "@/contexts/VpnContext";
 import Colors from "@/constants/colors";
 
 const { width } = Dimensions.get("window");
@@ -95,7 +95,7 @@ function VpnLogsModal({
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const { user, accountState, refreshAccountState } = useAuthContext();
-  const { isConnected, isConnecting, selectedProtocol, subscriptionUrl, connect, disconnect } = useVpnContext();
+  const { isConnected, isConnecting, selectedProtocol, subscriptionUrl, connect, disconnect, traffic } = useVpnContext();
 
   const [logsVisible, setLogsVisible] = useState(false);
   const [timer, setTimer] = useState(0);
@@ -348,6 +348,31 @@ export default function HomeScreen() {
                 Expire le {new Date(accountState.expireAt).toLocaleDateString("fr-FR")}
               </Text>
             )}
+          </View>
+        )}
+
+        {/* Traffic stats card — affiché uniquement quand connecté */}
+        {isConnected && (
+          <View style={styles.statsCard}>
+            <Text style={styles.cardLabel}>TRAFIC EN TEMPS RÉEL</Text>
+            <View style={styles.statsRow}>
+              <View style={styles.statItem}>
+                <Text style={styles.statValue}>{formatBytes(traffic.uploadBytes)}</Text>
+                <Text style={styles.statLabel}>↑ Envoyé</Text>
+              </View>
+              <View style={styles.statDivider} />
+              <View style={styles.statItem}>
+                <Text style={styles.statValue}>{formatBytes(traffic.downloadBytes)}</Text>
+                <Text style={styles.statLabel}>↓ Reçu</Text>
+              </View>
+              <View style={styles.statDivider} />
+              <View style={styles.statItem}>
+                <Text style={[styles.statValue, { fontSize: 14 }]}>
+                  ↑{formatSpeed(traffic.uploadSpeed)}{"\n"}↓{formatSpeed(traffic.downloadSpeed)}
+                </Text>
+                <Text style={styles.statLabel}>Débit</Text>
+              </View>
+            </View>
           </View>
         )}
 

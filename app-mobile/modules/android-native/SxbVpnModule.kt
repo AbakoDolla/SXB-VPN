@@ -11,132 +11,99 @@ import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
 
 /**
- * SxbVpnModule — Bridge React Native ↔ SxbVpnService
+ * SxbVpnModule — Bridge React Native ↔ SxbVpnService v4
  *
- * CORRECTIF CRITIQUE : requestVpnPermission utilise désormais startActivityForResult
- * via l'Activity courante au lieu de simplement rejeter la promise.
- * L'ActivityEventListener capte le résultat et résout la promise.
+ * Méthodes exposées à JavaScript :
+ *  - requestVpnPermission()  → Promise<boolean>
+ *  - isVpnPermissionGranted()→ boolean (sync)
+ *  - startVpn(json)          → Promise<void>
+ *  - stopVpn()               → Promise<void>
+ *  - getVpnState()           → Promise<string>
+ *  - getTrafficStats()       → Promise<object>
+ *  - setKillSwitch(bool)     → void
+ *  - setAutoReconnect(bool)  → void
+ *  - checkSecurity()         → Promise<object>
  */
 class SxbVpnModule(reactContext: ReactApplicationContext)
     : ReactContextBaseJavaModule(reactContext), ActivityEventListener {
 
     companion object {
-        private const val VPN_REQUEST_CODE = 0x0F4C  // code arbitraire unique
+        private const val VPN_REQUEST_CODE = 0x0F4C
     }
 
-    /** Promise en attente de résolution lors de la demande de permission VPN */
     private var vpnPermissionPromise: Promise? = null
-
     private var statusReceiver: BroadcastReceiver? = null
     private var logReceiver: BroadcastReceiver? = null
 
-    init {
-        // S'enregistrer pour recevoir le résultat de la demande VPN
-        reactContext.addActivityEventListener(this)
-    }
+    init { reactContext.addActivityEventListener(this) }
 
     override fun getName() = "SxbVpnNative"
 
-    override fun initialize() {
-        super.initialize()
-        registerReceivers()
-    }
+    override fun initialize() { super.initialize(); registerReceivers() }
+    override fun invalidate()  { super.invalidate();  unregisterReceivers() }
 
-    override fun invalidate() {
-        super.invalidate()
-        unregisterReceivers()
-    }
-
-    // ── Required for JS EventEmitter ───────────────────────────────────────────
+    // ── JS EventEmitter boilerplate ───────────────────────────────────────────
     @ReactMethod fun addListener(eventName: String) {}
     @ReactMethod fun removeListeners(count: Int) {}
 
-    // ── requestVpnPermission(promise) — CORRECTIF PRINCIPAL ───────────────────
-    /**
-     * Demande la permission VPN Android en affichant la popup système.
-     * Résout true si accordée, false si refusée.
-     *
-     * AVANT : rejetait avec une erreur sans jamais montrer la popup.
-     * APRÈS : utilise startActivityForResult pour déclencher le dialog Android.
-     */
+    // ── requestVpnPermission ──────────────────────────────────────────────────
     @ReactMethod
     fun requestVpnPermission(promise: Promise) {
         try {
             val ctx = reactApplicationContext
-
-            // Vérifier si déjà accordée
             val vpnIntent = VpnService.prepare(ctx)
-            if (vpnIntent == null) {
-                // Permission déjà accordée
-                promise.resolve(true)
-                return
-            }
+            if (vpnIntent == null) { promise.resolve(true); return }
 
-            // Besoin de demander la permission via l'Activity
             val activity = reactApplicationContext.currentActivity
-            if (activity == null) {
-                // Pas d'Activity disponible — cas rare mais possible en background
-                promise.resolve(false)
-                return
-            }
+            if (activity == null) { promise.resolve(false); return }
 
-            // Stocker la promise pour la résoudre dans onActivityResult
             vpnPermissionPromise = promise
-
-            // ▶ Affiche la popup VPN Android
             activity.startActivityForResult(vpnIntent, VPN_REQUEST_CODE)
-
         } catch (e: Exception) {
-            promise.reject("PERMISSION_ERROR", e.message ?: "Erreur lors de la demande de permission VPN", e)
+            promise.reject("PERMISSION_ERROR", e.message ?: "Erreur permission VPN", e)
         }
     }
 
-    // ── ActivityEventListener : capture le résultat de la popup VPN ───────────
-    override fun onActivityResult(
-        activity: Activity,
-        requestCode: Int,
-        resultCode: Int,
-        data: Intent?
-    ) {
+    override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
         if (requestCode == VPN_REQUEST_CODE) {
-            val granted = resultCode == Activity.RESULT_OK
-            vpnPermissionPromise?.resolve(granted)
+            vpnPermissionPromise?.resolve(resultCode == Activity.RESULT_OK)
             vpnPermissionPromise = null
         }
     }
 
-    override fun onNewIntent(intent: Intent) {
-        // Non utilisé
-    }
+    override fun onNewIntent(intent: Intent) {}
 
-    // ── isVpnPermissionGranted() — vérification synchrone ─────────────────────
+    // ── isVpnPermissionGranted (synchrone) ────────────────────────────────────
     @ReactMethod(isBlockingSynchronousMethod = true)
     fun isVpnPermissionGranted(): Boolean {
         return try {
             VpnService.prepare(reactApplicationContext) == null
-        } catch (e: Exception) { false }
+        } catch (_: Exception) { false }
     }
 
-    // ── startVpn(configJson, promise) ─────────────────────────────────────────
+    // ── startVpn ─────────────────────────────────────────────────────────────
+    /**
+     * Démarre le service VPN.
+     * @param optionsJson JSON.stringify({ protocol, host, port, ... , killSwitch, autoReconnect })
+     */
     @ReactMethod
-    fun startVpn(configJson: String, promise: Promise) {
+    fun startVpn(optionsJson: String, promise: Promise) {
         try {
-            val ctx = reactApplicationContext
+            val ctx  = reactApplicationContext
+            val opts = org.json.JSONObject(optionsJson)
+            val proto = opts.optString("protocol", "").lowercase()
 
-            // Vérifier la permission AVANT de démarrer
-            val vpnIntent = VpnService.prepare(ctx)
-            if (vpnIntent != null) {
-                // Permission non accordée — indiquer à JS de la demander d'abord
-                promise.reject(
-                    "VPN_PERMISSION_REQUIRED",
-                    "La permission VPN Android est requise. Appelez requestVpnPermission() d'abord."
-                )
+            // Vérification permission
+            if (VpnService.prepare(ctx) != null) {
+                promise.reject("NO_PERMISSION", "Permission VPN non accordée")
                 return
             }
 
             val intent = Intent(ctx, SxbVpnService::class.java).apply {
                 action = SxbVpnService.ACTION_START
-                putExtra(SxbVpnService.EXTRA_CONFIG, configJson)
+                putExtra("configJson", optionsJson)
+                putExtra("protocol",   proto)
+                putExtra("killSwitch", opts.optBoolean("killSwitch", false))
             }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -145,64 +112,102 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                 ctx.startService(intent)
             }
 
-            promise.resolve(true)
+            // Activer auto-reconnect si demandé
+            if (opts.optBoolean("autoReconnect", false)) {
+                SxbVpnService.instance?.autoReconnect?.enable()
+            }
 
+            promise.resolve(null)
         } catch (e: Exception) {
-            promise.reject("START_FAILED", e.message ?: "Échec du démarrage VPN", e)
+            promise.reject("START_ERROR", e.message ?: "Erreur démarrage VPN", e)
         }
     }
 
-    // ── stopVpn(promise) ──────────────────────────────────────────────────────
+    // ── stopVpn ───────────────────────────────────────────────────────────────
     @ReactMethod
     fun stopVpn(promise: Promise) {
         try {
-            val intent = Intent(reactApplicationContext, SxbVpnService::class.java).apply {
+            val ctx = reactApplicationContext
+
+            // Désactiver auto-reconnect d'abord
+            SxbVpnService.instance?.autoReconnect?.disable()
+
+            val intent = Intent(ctx, SxbVpnService::class.java).apply {
                 action = SxbVpnService.ACTION_STOP
             }
-            reactApplicationContext.startService(intent)
-            promise.resolve(true)
+            ctx.startService(intent)
+            promise.resolve(null)
         } catch (e: Exception) {
-            promise.reject("STOP_FAILED", e.message ?: "Échec de l'arrêt VPN", e)
+            promise.reject("STOP_ERROR", e.message ?: "Erreur arrêt VPN", e)
         }
     }
 
-    // ── getStatus() ───────────────────────────────────────────────────────────
-    @ReactMethod(isBlockingSynchronousMethod = true)
-    fun getStatus(): String {
-        return when {
-            SxbVpnService.instance?.isRunning() == true -> "connected"
-            else -> "disconnected"
-        }
+    // ── getVpnState ───────────────────────────────────────────────────────────
+    @ReactMethod
+    fun getVpnState(promise: Promise) {
+        promise.resolve(SxbVpnService.getCurrentState())
     }
 
-    // ── getVpnState() ─────────────────────────────────────────────────────────
-    @ReactMethod(isBlockingSynchronousMethod = true)
-    fun getVpnState(): String {
-        return SxbVpnService.instance?.getCurrentState() ?: "disconnected"
-    }
-
-    // ── getTrafficStats() ─────────────────────────────────────────────────────
+    // ── getTrafficStats ───────────────────────────────────────────────────────
     @ReactMethod
     fun getTrafficStats(promise: Promise) {
         try {
-            val map = Arguments.createMap()
-            map.putDouble("uploadBytes",   SxbVpnService.uploadBytes.get().toDouble())
-            map.putDouble("downloadBytes", SxbVpnService.downloadBytes.get().toDouble())
-            map.putDouble("uploadSpeed",   0.0)
-            map.putDouble("downloadSpeed", 0.0)
+            val service = SxbVpnService.instance
+            val stats: Map<String, Long> = service?.getTrafficStats()
+                ?: mapOf("uploadBytes" to 0L, "downloadBytes" to 0L,
+                         "uploadSpeed" to 0L, "downloadSpeed" to 0L)
+
+            val map = Arguments.createMap().apply {
+                putDouble("uploadBytes",   stats["uploadBytes"]!!.toDouble())
+                putDouble("downloadBytes", stats["downloadBytes"]!!.toDouble())
+                putDouble("uploadSpeed",   stats["uploadSpeed"]!!.toDouble())
+                putDouble("downloadSpeed", stats["downloadSpeed"]!!.toDouble())
+            }
             promise.resolve(map)
         } catch (e: Exception) {
-            promise.reject("STATS_ERROR", e.message, e)
+            promise.reject("TRAFFIC_ERROR", e.message, e)
         }
     }
 
-    // ── Event helpers ─────────────────────────────────────────────────────────
-    private fun sendEvent(name: String, params: WritableMap) {
-        if (reactApplicationContext.hasActiveReactInstance()) {
+    // ── setKillSwitch ─────────────────────────────────────────────────────────
+    @ReactMethod
+    fun setKillSwitch(enabled: Boolean) {
+        SxbVpnService.instance?.setKillSwitch(enabled)
+    }
+
+    // ── setAutoReconnect ──────────────────────────────────────────────────────
+    @ReactMethod
+    fun setAutoReconnect(enabled: Boolean) {
+        val svc = SxbVpnService.instance
+        if (enabled) svc?.autoReconnect?.enable()
+        else         svc?.autoReconnect?.disable()
+    }
+
+    // ── checkSecurity ─────────────────────────────────────────────────────────
+    @ReactMethod
+    fun checkSecurity(promise: Promise) {
+        try {
+            val report = SecurityModule.audit(reactApplicationContext)
+            val map = Arguments.createMap().apply {
+                putBoolean("isRooted",   report.isRooted)
+                putBoolean("hasFrida",   report.hasFrida)
+                putBoolean("hasXposed",  report.hasXposed)
+                putBoolean("isEmulator", report.isEmulator)
+                putBoolean("isSafe",     report.isSafe)
+            }
+            promise.resolve(map)
+        } catch (e: Exception) {
+            promise.reject("SECURITY_ERROR", e.message, e)
+        }
+    }
+
+    // ── Helpers émission d'événements ────────────────────────────────────────
+    private fun sendEvent(name: String, params: WritableMap?) {
+        try {
             reactApplicationContext
                 .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
                 .emit(name, params)
-        }
+        } catch (_: Exception) {}
     }
 
     // ── Broadcast receivers ───────────────────────────────────────────────────
@@ -212,8 +217,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
         statusReceiver = object : BroadcastReceiver() {
             override fun onReceive(c: Context?, i: Intent?) {
                 val status = i?.getStringExtra("status") ?: return
-                val p = Arguments.createMap()
-                p.putString("status", status)
+                val p = Arguments.createMap().apply { putString("status", status) }
                 sendEvent("onVpnStateChange", p)
             }
         }
@@ -221,33 +225,30 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
         logReceiver = object : BroadcastReceiver() {
             override fun onReceive(c: Context?, i: Intent?) {
                 val log = i?.getStringExtra("log") ?: return
-                val p = Arguments.createMap()
-                p.putString("message", log)
+                val p = Arguments.createMap().apply { putString("message", log) }
                 sendEvent("onVpnLog", p)
             }
         }
 
         val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             Context.RECEIVER_NOT_EXPORTED
-        } else {
-            0
-        }
+        } else 0
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             ctx.registerReceiver(statusReceiver, IntentFilter(SxbVpnService.BROADCAST_STATUS), flags)
-            ctx.registerReceiver(logReceiver, IntentFilter(SxbVpnService.BROADCAST_LOG), flags)
+            ctx.registerReceiver(logReceiver,    IntentFilter(SxbVpnService.BROADCAST_LOG),    flags)
         } else {
             @Suppress("UnspecifiedRegisterReceiverFlag")
             ctx.registerReceiver(statusReceiver, IntentFilter(SxbVpnService.BROADCAST_STATUS))
             @Suppress("UnspecifiedRegisterReceiverFlag")
-            ctx.registerReceiver(logReceiver, IntentFilter(SxbVpnService.BROADCAST_LOG))
+            ctx.registerReceiver(logReceiver,    IntentFilter(SxbVpnService.BROADCAST_LOG))
         }
     }
 
     private fun unregisterReceivers() {
         try { reactApplicationContext.unregisterReceiver(statusReceiver) } catch (_: Exception) {}
-        try { reactApplicationContext.unregisterReceiver(logReceiver) } catch (_: Exception) {}
+        try { reactApplicationContext.unregisterReceiver(logReceiver)    } catch (_: Exception) {}
         statusReceiver = null
-        logReceiver = null
+        logReceiver    = null
     }
 }

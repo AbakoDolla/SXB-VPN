@@ -211,7 +211,12 @@ function PinModal({ visible, mode, onSuccess, onClose }: {
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { user, accountState, logout } = useAuthContext();
-  const { logs, isConnected, selectedProtocol, availableProtocols, refreshVpnConfig } = useVpnContext();
+  const {
+    logs, isConnected, selectedProtocol, availableProtocols, refreshVpnConfig,
+    killSwitch: ksCtx, autoReconnect: arCtx,
+    setKillSwitch: setKsCtx, setAutoReconnect: setArCtx,
+    traffic,
+  } = useVpnContext();
   const { language, setLanguage } = useLanguageContext();
 
   // State
@@ -241,11 +246,9 @@ export default function SettingsScreen() {
       const storedPin = await AsyncStorage.getItem("@sxb_pin");
       setPinEnabled(!!storedPin);
 
-      // Load auto reconnect + kill switch
-      const ar = await AsyncStorage.getItem("@sxb_auto_reconnect");
-      const ks = await AsyncStorage.getItem("@sxb_kill_switch");
-      setAutoReconnect(ar !== "false");
-      setKillSwitch(ks === "true");
+      // auto reconnect + kill switch viennent du VpnContext (synchronisés avec le service natif)
+      setAutoReconnect(arCtx);
+      setKillSwitch(ksCtx);
 
       // Estimate storage
       const keys = await AsyncStorage.getAllKeys();
@@ -296,12 +299,12 @@ export default function SettingsScreen() {
 
   const handleAutoReconnect = async (v: boolean) => {
     setAutoReconnect(v);
-    await AsyncStorage.setItem("@sxb_auto_reconnect", String(v));
+    await setArCtx(v);
   };
 
   const handleKillSwitch = async (v: boolean) => {
     setKillSwitch(v);
-    await AsyncStorage.setItem("@sxb_kill_switch", String(v));
+    await setKsCtx(v);
     if (v) {
       Alert.alert("Kill Switch activé", "Toute connexion internet sera bloquée si le VPN se déconnecte.");
     }

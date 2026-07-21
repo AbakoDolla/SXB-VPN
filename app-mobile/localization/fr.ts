@@ -203,4 +203,65 @@ export const fr = {
   expired: 'Expiré',
   suspended_status: 'Suspendu',
   no_package_status: 'Aucun forfait',
+
+  // VPN — Paramètres
+  vpn_section: 'VPN',
+  refresh_config: 'Actualiser la configuration',
+  refreshing_config: 'Synchronisation...',
+  refresh_config_success: 'Configuration mise à jour !',
+  refresh_config_error: 'Impossible de synchroniser la configuration',
+  kill_switch: 'Kill Switch',
+  kill_switch_desc: 'Bloquer tout le trafic si le VPN se déconnecte',
+  vpn_logs: 'Logs VPN',
+  clear_logs: 'Effacer les logs',
+  auto_reconnect: 'Reconnexion automatique',
+  auto_reconnect_desc: 'Se reconnecter automatiquement si la connexion est perdue',
+
+  // VPN — Trafic
+  traffic_realtime: 'TRAFIC EN TEMPS RÉEL',
+  traffic_sent: 'Envoyé',
+  traffic_received: 'Reçu',
+  traffic_speed: 'Débit',
+  traffic_upload: 'Upload',
+  traffic_download: 'Download',
+  traffic_session: 'Session',
+
+  // Compte
+  account_section: 'Compte',
+  device_id: 'Identifiant appareil',
+  subscription_status: 'État de l\'abonnement',
+  subscription_active: 'Actif',
+  subscription_expired: 'Expiré',
+  subscription_none: 'Aucun forfait',
+
+  // Paramètres
+  settings: 'Paramètres',
+  language_section: 'Langue',
+  french: 'Français',
+  english: 'English',
+  theme_section: 'Apparence',
+  theme_dark: 'Sombre',
+  theme_light: 'Clair',
+  theme_system: 'Système',
+  notifications_section: 'Notifications',
+  notifications_enable: 'Activer les notifications',
+  security_section: 'Sécurité',
+  biometrics: 'Déverrouillage biométrique',
+  about_section: 'À propos',
+  version: 'Version',
+  terms: 'Conditions d\'utilisation',
+  privacy_policy: 'Politique de confidentialité',
+
+  // Données locales
+  data_section: 'Données locales',
+  clear_cache: 'Effacer le cache local',
+  clear_cache_confirm: 'Effacer toutes les données locales ?',
+  clear_cache_success: 'Cache effacé avec succès',
+
+  // Notifications VPN
+  notif_connected: 'VPN connecté',
+  notif_disconnected: 'VPN déconnecté',
+  notif_reconnecting: 'Reconnexion en cours...',
+  notif_error: 'Erreur de connexion VPN',
+  notif_kill_switch: 'Kill Switch actif — connexion bloquée',
 } as const;

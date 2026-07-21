@@ -1,85 +1,95 @@
 /**
- * VpnContext — SXB VPN Mobile
- * Gestion de la connexion VPN avec :
- * - Chiffrement léger de la config stockée localement
- * - Support multi-protocoles (SSH, VLESS, VMess, Trojan, Shadowsocks, Hysteria2, WireGuard, TUIC)
- * - Logs persistants (50 dernières lignes)
- * - Kill switch state
- * - Mode offline (config chiffrée locale)
- * - Permission VPN correctement gérée (popup Android réelle)
+ * VpnContext — SXB VPN Mobile v4
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * AMÉLIORATIONS v4
+ * ═══════════════════════════════════════════════════════════════════
+ *  ✅ Config chiffrée  — expo-secure-store (Android Keystore AES-256)
+ *  ✅ Kill Switch      — état persistant, transmis au service natif
+ *  ✅ Auto-Reconnect   — toggle persistant + transmission au service
+ *  ✅ TrafficStats     — affichage upload/download/débit en temps réel
+ *  ✅ Bouton Refresh   — synchronisation delta avec le backend
+ *  ✅ Session offline  — config disponible sans réseau
+ *  ✅ Logs sécurisés   — données sensibles masquées
  */
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+
+import React, {
+  createContext, useCallback, useContext,
+  useEffect, useRef, useState
+} from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as SecureStore from "expo-secure-store";
 import { NativeModules, NativeEventEmitter, Platform } from "react-native";
 import apiClient from "@/services/apiClient";
 import { useAuthContext } from "./AuthContext";
 
-// ── Symmetric XOR cipher v3 — stockage config locale ─────────────────────────
-// v1/v2 utilisaient btoa(unescape(encodeURIComponent(xor))) → crash sur certains
-// caractères (passwords, payloads) → config perdue hors ligne.
-// v3 : encodage hex pur (4 chars hex par char UTF-16), 100% fiable, rétro-compatible.
-const CONFIG_KEY_SALT = "SXB_VPN_K3Y_S4LT_2026";
-const HEX_PREFIX = "H:"; // distingue v3 hex du format base64 legacy
+// ── Clés de stockage ──────────────────────────────────────────────────────────
+const STORE = {
+  CONFIG:          "sxb_vpn_cfg_v4",     // SecureStore (Keystore AES-256)
+  PROTOCOL:        "@sxb_vpn_protocol",
+  CONNECTED:       "@sxb_vpn_connected",
+  KILL_SWITCH:     "@sxb_vpn_ks",
+  AUTO_RECONNECT:  "@sxb_vpn_ar",
+  SUB_URL:         "@sxb_connection_uri",
+  SERVER_INFO:     "@sxb_server_info",
+  LOGS:            "@sxb_vpn_logs_v2",
+} as const;
 
-function xorEncode(data: string, key: string): string {
-  let hex = "";
-  for (let i = 0; i < data.length; i++) {
-    const code = data.charCodeAt(i) ^ key.charCodeAt(i % key.length);
-    hex += code.toString(16).padStart(4, "0");
-  }
-  return HEX_PREFIX + hex;
-}
-
-function xorDecode(encoded: string, key: string): string {
-  try {
-    if (encoded.startsWith(HEX_PREFIX)) {
-      // v3 hex format
-      const hex = encoded.slice(HEX_PREFIX.length);
-      let result = "";
-      for (let i = 0; i < hex.length; i += 4) {
-        const code = parseInt(hex.substring(i, i + 4), 16);
-        result += String.fromCharCode(code ^ key.charCodeAt((i / 4) % key.length));
-      }
-      return result;
-    }
-    // Legacy v1/v2 : btoa format — rétro-compatibilité pour les installs existantes
-    const data = decodeURIComponent(escape(atob(encoded)));
-    let result = "";
-    for (let i = 0; i < data.length; i++) {
-      result += String.fromCharCode(data.charCodeAt(i) ^ key.charCodeAt(i % key.length));
-    }
-    return result;
-  } catch {
-    return encoded;
-  }
-}
-
+// ── Stockage sécurisé config VPN (Android Keystore via expo-secure-store) ─────
 async function storeConfigSecure(config: VpnConnectionConfig): Promise<void> {
   const raw = JSON.stringify(config);
-  const encoded = xorEncode(raw, CONFIG_KEY_SALT);
-  await AsyncStorage.setItem("@sxb_vpn_cfg_v2", encoded);
-  await AsyncStorage.removeItem("@sxb_vpn_config").catch(() => {});
+  if (Platform.OS !== "web") {
+    await SecureStore.setItemAsync(STORE.CONFIG, raw, {
+      keychainAccessible: SecureStore.ALWAYS,    // accessible même hors ligne
+    });
+  } else {
+    await AsyncStorage.setItem("@" + STORE.CONFIG, raw);
+  }
+  // Supprimer les anciennes clés legacy
+  await Promise.all([
+    AsyncStorage.removeItem("@sxb_vpn_config"),
+    AsyncStorage.removeItem("@sxb_vpn_cfg_v2"),
+  ]).catch(() => {});
 }
 
 async function loadConfigSecure(): Promise<VpnConnectionConfig | null> {
-  const encoded = await AsyncStorage.getItem("@sxb_vpn_cfg_v2");
-  if (encoded) {
-    try { return JSON.parse(xorDecode(encoded, CONFIG_KEY_SALT)); } catch { return null; }
+  try {
+    if (Platform.OS !== "web") {
+      const raw = await SecureStore.getItemAsync(STORE.CONFIG);
+      if (raw) return JSON.parse(raw);
+    } else {
+      const raw = await AsyncStorage.getItem("@" + STORE.CONFIG);
+      if (raw) return JSON.parse(raw);
+    }
+    // Fallback : lire l'ancienne config XOR (migration)
+    const legacy = await AsyncStorage.getItem("@sxb_vpn_cfg_v2");
+    if (legacy) {
+      // Décodage XOR v3 (legacy)
+      const xorKey = "SXB_VPN_K3Y_S4LT_2026";
+      const HEX_PREFIX = "H:";
+      let cfg: VpnConnectionConfig | null = null;
+      if (legacy.startsWith(HEX_PREFIX)) {
+        const hex = legacy.slice(HEX_PREFIX.length);
+        let result = "";
+        for (let i = 0; i < hex.length; i += 4) {
+          const code = parseInt(hex.substring(i, i + 4), 16);
+          result += String.fromCharCode(code ^ xorKey.charCodeAt((i / 4) % xorKey.length));
+        }
+        cfg = JSON.parse(result);
+      }
+      if (cfg) {
+        await storeConfigSecure(cfg);   // migrer vers Keystore
+        await AsyncStorage.removeItem("@sxb_vpn_cfg_v2");
+        return cfg;
+      }
+    }
+    return null;
+  } catch {
+    return null;
   }
-  const legacy = await AsyncStorage.getItem("@sxb_vpn_config");
-  if (legacy) {
-    try {
-      const cfg = JSON.parse(legacy);
-      await storeConfigSecure(cfg);
-      await AsyncStorage.removeItem("@sxb_vpn_config");
-      return cfg;
-    } catch { return null; }
-  }
-  return null;
 }
 
-// ── Protocol types ─────────────────────────────────────────────────────────────
-
+// ── Types ─────────────────────────────────────────────────────────────────────
 export type ProtocolName =
   | "VLESS" | "VMess" | "Trojan" | "Shadowsocks"
   | "Hysteria2" | "TUIC" | "SSH" | "SSH+Payload" | "WireGuard";
@@ -108,469 +118,441 @@ export interface VpnConnectionConfig {
   privateKey?: string;
   peerPublicKey?: string;
   localAddress?: string;
+  payload?: string;
+  usePayload?: boolean;
   connectionUri?: string | null;
   profileName?: string;
   subscriptionName?: string;
-  payload?: string;  // SSH+Payload : headers HTTP injectés avant handshake SSH
-  _ts?: number;
+  [key: string]: unknown;
 }
 
-// ── Context type ──────────────────────────────────────────────────────────────
+export interface TrafficStats {
+  uploadBytes: number;
+  downloadBytes: number;
+  uploadSpeed: number;    // bytes/sec
+  downloadSpeed: number;  // bytes/sec
+  sessionStart: number;   // timestamp ms
+}
 
 interface VpnContextType {
   isConnected: boolean;
   isConnecting: boolean;
-  selectedProtocol: string | null;
+  selectedProtocol: string;
   availableProtocols: VpnProtocol[];
   subscriptionUrl: string | null;
-  serverInfo: { host: string; location: string } | null;
+  serverInfo: string | null;
   connectionConfig: VpnConnectionConfig | null;
   logs: string[];
   hasVpnPermission: boolean;
+  killSwitch: boolean;
+  autoReconnect: boolean;
+  traffic: TrafficStats;
   connect: () => Promise<void>;
   disconnect: () => Promise<void>;
   selectProtocol: (name: string) => Promise<void>;
   refreshVpnConfig: () => Promise<void>;
   requestVpnPermission: () => Promise<boolean>;
+  setKillSwitch: (enabled: boolean) => Promise<void>;
+  setAutoReconnect: (enabled: boolean) => Promise<void>;
 }
 
+// ── Contexte ─────────────────────────────────────────────────────────────────
 const VpnContext = createContext<VpnContextType>({
-  isConnected: false,
-  isConnecting: false,
-  selectedProtocol: null,
-  availableProtocols: [],
-  subscriptionUrl: null,
-  serverInfo: null,
-  connectionConfig: null,
-  logs: [],
-  hasVpnPermission: false,
-  connect: async () => {},
-  disconnect: async () => {},
-  selectProtocol: async () => {},
-  refreshVpnConfig: async () => {},
+  isConnected: false, isConnecting: false,
+  selectedProtocol: "", availableProtocols: [],
+  subscriptionUrl: null, serverInfo: null, connectionConfig: null,
+  logs: [], hasVpnPermission: false,
+  killSwitch: false, autoReconnect: true,
+  traffic: { uploadBytes: 0, downloadBytes: 0, uploadSpeed: 0, downloadSpeed: 0, sessionStart: 0 },
+  connect: async () => {}, disconnect: async () => {},
+  selectProtocol: async () => {}, refreshVpnConfig: async () => {},
   requestVpnPermission: async () => false,
+  setKillSwitch: async () => {}, setAutoReconnect: async () => {},
 });
 
-// ── Fallback protocols ────────────────────────────────────────────────────────
+// ── Module natif ──────────────────────────────────────────────────────────────
+const SxbVpnNative = NativeModules.SxbVpnNative ?? null;
+const vpnEmitter   = SxbVpnNative ? new NativeEventEmitter(SxbVpnNative) : null;
 
-const FALLBACK_PROTOCOLS: VpnProtocol[] = [
-  { name: "SSH",         port: 443,   transport: "TCP",  security: "SSH",      description: "Sécurisé — tunnel direct" },
-  { name: "SSH+Payload", port: 80,    transport: "TCP",  security: "Bypass",   description: "Bypass DPI — HTTPS fake" },
-  { name: "VLESS",       port: 443,   transport: "TCP",  security: "TLS",      description: "Léger et moderne" },
-  { name: "VMess",       port: 443,   transport: "WS",   security: "TLS",      description: "Stable — obfusqué" },
-  { name: "Trojan",      port: 443,   transport: "TCP",  security: "TLS",      description: "Stable — imite HTTPS" },
-  { name: "Shadowsocks", port: 8388,  transport: "TCP",  security: "ChaCha20", description: "Léger et rapide" },
-  { name: "Hysteria2",   port: 443,   transport: "QUIC", security: "TLS",      description: "Très rapide — UDP" },
-  { name: "WireGuard",   port: 51820, transport: "UDP",  security: "WG",       description: "Moderne et rapide" },
-];
-
-// ── Native VPN module (Android) ───────────────────────────────────────────────
-
-const SxbVpnNative = Platform.OS === "android" ? NativeModules.SxbVpnNative : null;
-
-function buildConfigJson(config: VpnConnectionConfig): string {
-  const proto = (config.protocol || "ssh").toLowerCase();
-  // CORRECTIF : si payload présent, forcer ssh+payload même si le cache dit "ssh"
-  const effectiveProto = (proto === "ssh" && config.payload) ? "ssh+payload" : proto;
-  const base = { protocol: effectiveProto, host: config.host || "", port: config.port || 443 };
-
-  if (effectiveProto === "ssh" || effectiveProto === "ssh+payload") {
-    return JSON.stringify({ ...base, username: config.username || "", password: config.password || "", sni: config.sni || "", payload: config.payload || "" });
-  }
-  if (["vless","vmess","trojan"].includes(proto)) {
-    return JSON.stringify({ ...base, uuid: config.uuid || "", path: config.path || "/", network: config.network || "ws", tls: config.tls ?? false, sni: config.sni || config.host, flow: config.flow || "", password: config.password || "" });
-  }
-  if (proto === "shadowsocks") {
-    return JSON.stringify({ ...base, password: config.password || "", method: config.method || "chacha20-ietf-poly1305" });
-  }
-  if (proto === "hysteria2") {
-    return JSON.stringify({ ...base, password: config.password || "", sni: config.sni || config.host, tls: true });
-  }
-  if (proto === "tuic") {
-    return JSON.stringify({ ...base, uuid: config.uuid || "", password: config.password || "", sni: config.sni || config.host, tls: true });
-  }
-  if (proto === "wireguard") {
-    return JSON.stringify({ ...base, privateKey: config.privateKey || "", peerPublicKey: config.peerPublicKey || "", localAddress: config.localAddress || "10.0.0.2/32" });
-  }
-  return JSON.stringify({ ...base, uuid: config.uuid || "", password: config.password || "", method: config.method || "", network: config.network || "tcp", tls: config.tls || false, sni: config.sni || config.host });
+// ── Masquage données sensibles dans les logs ──────────────────────────────────
+function maskLog(line: string): string {
+  return line
+    .replace(/\b(\d{1,3}\.){3}\d{1,3}\b/g, "*.*.*.*")
+    .replace(/password[=:]\s*\S+/gi, "password=********")
+    .replace(/username[=:]\s*\S+/gi, "username=********")
+    .replace(/uuid[=:]\s*[\w-]+/gi, "uuid=********")
+    .replace(/key[=:]\s*[A-Za-z0-9+/=]{10,}/gi, "key=********");
 }
 
-// ── Persistent log store ──────────────────────────────────────────────────────
-
-const LOG_KEY = "@sxb_vpn_logs";
-const MAX_LOGS = 50;
-
-async function appendPersistentLog(msg: string): Promise<void> {
-  try {
-    const stored = await AsyncStorage.getItem(LOG_KEY);
-    const prev: string[] = stored ? JSON.parse(stored) : [];
-    const next = [...prev, msg].slice(-MAX_LOGS);
-    await AsyncStorage.setItem(LOG_KEY, JSON.stringify(next));
-  } catch { /* non-blocking */ }
+// ── Formatage trafic ──────────────────────────────────────────────────────────
+export function formatBytes(bytes: number): string {
+  if (bytes >= 1_073_741_824) return `${(bytes / 1_073_741_824).toFixed(2)} GB`;
+  if (bytes >= 1_048_576)     return `${(bytes / 1_048_576).toFixed(1)} MB`;
+  if (bytes >= 1_024)         return `${(bytes / 1_024).toFixed(0)} KB`;
+  return `${bytes} B`;
 }
 
-// ── Provider ──────────────────────────────────────────────────────────────────
+export function formatSpeed(bytesPerSec: number): string {
+  if (bytesPerSec >= 1_048_576) return `${(bytesPerSec / 1_048_576).toFixed(1)} MB/s`;
+  if (bytesPerSec >= 1_024)     return `${(bytesPerSec / 1_024).toFixed(0)} KB/s`;
+  return `${bytesPerSec} B/s`;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Provider
+// ═════════════════════════════════════════════════════════════════════════════
 
 export function VpnProvider({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, refreshAccountState } = useAuthContext();
+  const { refreshAccountState } = useAuthContext();
 
-  const [isConnected,        setIsConnected]        = useState(false);
-  const [isConnecting,       setIsConnecting]        = useState(false);
-  const [selectedProtocol,   setSelectedProtocol]    = useState<string | null>(null);
-  const [availableProtocols, setAvailableProtocols]  = useState<VpnProtocol[]>(FALLBACK_PROTOCOLS);
-  const [subscriptionUrl,    setSubscriptionUrl]     = useState<string | null>(null);
-  const [serverInfo,         setServerInfo]          = useState<{ host: string; location: string } | null>(null);
-  const [connectionConfig,   setConnectionConfig]    = useState<VpnConnectionConfig | null>(null);
-  const [logs,               setLogs]                = useState<string[]>([]);
-  const [hasVpnPermission,   setHasVpnPermission]    = useState(false);
+  // ── État ──────────────────────────────────────────────────────────────────
+  const [isConnected,         setIsConnected]         = useState(false);
+  const [isConnecting,        setIsConnecting]        = useState(false);
+  const [selectedProtocol,    setSelectedProtocol]    = useState("");
+  const [availableProtocols,  setAvailableProtocols]  = useState<VpnProtocol[]>([]);
+  const [subscriptionUrl,     setSubscriptionUrl]     = useState<string | null>(null);
+  const [serverInfo,          setServerInfo]          = useState<string | null>(null);
+  const [connectionConfig,    setConnectionConfig]    = useState<VpnConnectionConfig | null>(null);
+  const [logs,                setLogs]                = useState<string[]>([]);
+  const [hasVpnPermission,    setHasVpnPermission]    = useState(false);
+  const [killSwitch,          setKillSwitchState]     = useState(false);
+  const [autoReconnect,       setAutoReconnectState]  = useState(true);
+  const [traffic,             setTraffic]             = useState<TrafficStats>({
+    uploadBytes: 0, downloadBytes: 0, uploadSpeed: 0, downloadSpeed: 0, sessionStart: 0,
+  });
 
-  const statusSubRef     = useRef<any>(null);
-  const logSubRef        = useRef<any>(null);
+  // Refs
   const connectTimeout   = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const trafficSyncTimer = useRef<ReturnType<typeof setInterval> | null>(null);
-  const lastSyncedBytes  = useRef<{ up: number; down: number }>({ up: 0, down: 0 });
+  const trafficTimer     = useRef<ReturnType<typeof setInterval> | null>(null);
+  const sessionStartRef  = useRef<number>(0);
 
-  // ── Log helper ────────────────────────────────────────────────────────────
-
-  const addLog = useCallback((msg: string) => {
-    const line = `[${new Date().toLocaleTimeString("fr-FR")}] ${msg}`;
-    setLogs(prev => [...prev.slice(-49), line]);
-    appendPersistentLog(line);
+  // ── Helpers logs ──────────────────────────────────────────────────────────
+  const addLog = useCallback((line: string) => {
+    const masked = maskLog(line);
+    setLogs(prev => {
+      const next = [...prev, masked].slice(-100);
+      // Persister les 50 dernières lignes
+      AsyncStorage.setItem(STORE.LOGS, JSON.stringify(next.slice(-50))).catch(() => {});
+      return next;
+    });
   }, []);
 
-  // ── Native events ─────────────────────────────────────────────────────────
-
+  // ── Événements natifs ─────────────────────────────────────────────────────
   useEffect(() => {
-    if (!SxbVpnNative) return;
+    if (!vpnEmitter) return;
 
-    const emitter = new NativeEventEmitter(SxbVpnNative);
-
-    statusSubRef.current = emitter.addListener("onVpnStateChange", (event: { status: string }) => {
-      const s = event.status;
-      addLog(`État VPN : ${s}`);
+    const stateSubscription = vpnEmitter.addListener("onVpnStateChange", (evt: { status: string }) => {
+      const s = evt.status;
       if (s === "connected") {
-        if (connectTimeout.current) { clearTimeout(connectTimeout.current); connectTimeout.current = null; }
+        clearTimeout(connectTimeout.current!);
+        connectTimeout.current = null;
         setIsConnected(true);
         setIsConnecting(false);
-        AsyncStorage.setItem("@sxb_vpn_connected", "true").catch(() => {});
-        refreshAccountState().catch(() => {});
+        sessionStartRef.current = Date.now();
+        AsyncStorage.setItem(STORE.CONNECTED, "true").catch(() => {});
+        addLog("✅ VPN connecté");
       } else if (s === "connecting") {
-        setIsConnected(false);
         setIsConnecting(true);
       } else if (s === "disconnected") {
         setIsConnected(false);
         setIsConnecting(false);
-        AsyncStorage.setItem("@sxb_vpn_connected", "false").catch(() => {});
-        AsyncStorage.getItem("@sxb_kill_switch").then(ks => {
-          if (ks === "true") addLog("⚠️ Kill Switch actif — trafic bloqué");
-        });
+        AsyncStorage.setItem(STORE.CONNECTED, "false").catch(() => {});
+        addLog("⏹ VPN déconnecté");
+        stopTrafficPoller();
       } else if (s === "error") {
-        if (connectTimeout.current) { clearTimeout(connectTimeout.current); connectTimeout.current = null; }
+        clearTimeout(connectTimeout.current!);
+        connectTimeout.current = null;
         setIsConnected(false);
         setIsConnecting(false);
-        AsyncStorage.setItem("@sxb_vpn_connected", "false").catch(() => {});
+        AsyncStorage.setItem(STORE.CONNECTED, "false").catch(() => {});
+        stopTrafficPoller();
       }
     });
 
-    logSubRef.current = emitter.addListener("onVpnLog", (event: { message: string }) => {
-      addLog(event.message);
+    const logSubscription = vpnEmitter.addListener("onVpnLog", (evt: { message: string }) => {
+      addLog(evt.message);
     });
-
-    checkVpnPermission();
 
     return () => {
-      statusSubRef.current?.remove();
-      logSubRef.current?.remove();
+      stateSubscription.remove();
+      logSubscription.remove();
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const checkVpnPermission = async () => {
-    if (!SxbVpnNative) { setHasVpnPermission(false); return; }
-    try {
-      const granted = SxbVpnNative.isVpnPermissionGranted();
-      setHasVpnPermission(!!granted);
-    } catch {
-      setHasVpnPermission(false);
-    }
-  };
-
-  // ── requestVpnPermission — CORRECTIF : déclenche la popup Android réelle ──
-
-  const requestVpnPermission = useCallback(async (): Promise<boolean> => {
-    if (!SxbVpnNative || Platform.OS !== "android") return true;
-    try {
-      // Vérifier d'abord si déjà accordée (synchrone)
-      const alreadyGranted = SxbVpnNative.isVpnPermissionGranted();
-      if (alreadyGranted) {
-        setHasVpnPermission(true);
-        return true;
-      }
-      // Déclencher la popup Android (asynchrone — attend le résultat de l'Activity)
-      const granted = await SxbVpnNative.requestVpnPermission();
-      setHasVpnPermission(!!granted);
-      return !!granted;
-    } catch (e: any) {
-      addLog(`❌ Erreur permission VPN : ${e?.message || "Inconnue"}`);
-      return false;
-    }
   }, [addLog]);
 
-  // ── Restore session ────────────────────────────────────────────────────────
+  // ── Permission VPN ────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (Platform.OS === "android" && SxbVpnNative) {
+      const granted = SxbVpnNative.isVpnPermissionGranted?.() ?? false;
+      setHasVpnPermission(granted);
+    } else {
+      setHasVpnPermission(true);
+    }
+  }, []);
 
+  const requestVpnPermission = useCallback(async (): Promise<boolean> => {
+    if (Platform.OS !== "android" || !SxbVpnNative) return true;
+    try {
+      const granted: boolean = await SxbVpnNative.requestVpnPermission();
+      setHasVpnPermission(granted);
+      return granted;
+    } catch { return false; }
+  }, []);
+
+  // ── Chargement initial ────────────────────────────────────────────────────
   useEffect(() => {
     (async () => {
-      const protocol = await AsyncStorage.getItem("@sxb_vpn_protocol");
-      if (protocol) setSelectedProtocol(protocol);
-      // Ne jamais restaurer l'état "connecté" automatiquement — l'utilisateur doit
-      // reconnecter manuellement. Évite les états fantômes après crash.
+      const [cfg, proto, ks, ar, subUrl, serverInfoStr, savedLogs] = await Promise.all([
+        loadConfigSecure(),
+        AsyncStorage.getItem(STORE.PROTOCOL),
+        AsyncStorage.getItem(STORE.KILL_SWITCH),
+        AsyncStorage.getItem(STORE.AUTO_RECONNECT),
+        AsyncStorage.getItem(STORE.SUB_URL),
+        AsyncStorage.getItem(STORE.SERVER_INFO),
+        AsyncStorage.getItem(STORE.LOGS),
+      ]);
+
+      if (cfg) setConnectionConfig(cfg);
+      if (proto) setSelectedProtocol(proto);
+      if (ks !== null) setKillSwitchState(ks === "true");
+      if (ar !== null) setAutoReconnectState(ar !== "false");  // true par défaut
+      if (subUrl) setSubscriptionUrl(subUrl);
+      if (serverInfoStr) setServerInfo(serverInfoStr);
+      if (savedLogs) {
+        try { setLogs(JSON.parse(savedLogs)); } catch {}
+      }
     })();
-  }, [isAuthenticated]);
+  }, []);
 
-  // ── Fetch real VPN config ──────────────────────────────────────────────────
+  // ── TrafficStats poller ───────────────────────────────────────────────────
+  const startTrafficPoller = useCallback(() => {
+    if (trafficTimer.current) return;
+    trafficTimer.current = setInterval(async () => {
+      if (!SxbVpnNative?.getTrafficStats) return;
+      try {
+        const stats = await SxbVpnNative.getTrafficStats();
+        setTraffic({
+          uploadBytes:   stats.uploadBytes   ?? 0,
+          downloadBytes: stats.downloadBytes ?? 0,
+          uploadSpeed:   stats.uploadSpeed   ?? 0,
+          downloadSpeed: stats.downloadSpeed ?? 0,
+          sessionStart:  sessionStartRef.current,
+        });
+      } catch {}
+    }, 2_000);
+  }, []);
 
+  const stopTrafficPoller = useCallback(() => {
+    if (trafficTimer.current) {
+      clearInterval(trafficTimer.current);
+      trafficTimer.current = null;
+    }
+  }, []);
+
+  // Démarrer le poller quand connecté
+  useEffect(() => {
+    if (isConnected) {
+      startTrafficPoller();
+    } else {
+      stopTrafficPoller();
+    }
+  }, [isConnected, startTrafficPoller, stopTrafficPoller]);
+
+  // Synchro trafic vers backend toutes les 90s
+  useEffect(() => {
+    if (!isConnected) return;
+
+    const syncTimer = setInterval(async () => {
+      if (!traffic.uploadBytes && !traffic.downloadBytes) return;
+      try {
+        await apiClient.post("/mobile/vpn/traffic", {
+          uploadBytes:   traffic.uploadBytes,
+          downloadBytes: traffic.downloadBytes,
+          sessionDuration: Math.round((Date.now() - sessionStartRef.current) / 1000),
+        });
+      } catch {}
+    }, 90_000);
+
+    return () => clearInterval(syncTimer);
+  }, [isConnected, traffic]);
+
+  // ── Kill Switch ───────────────────────────────────────────────────────────
+  const setKillSwitch = useCallback(async (enabled: boolean) => {
+    setKillSwitchState(enabled);
+    await AsyncStorage.setItem(STORE.KILL_SWITCH, String(enabled));
+    SxbVpnNative?.setKillSwitch?.(enabled);
+    addLog(`Kill Switch : ${enabled ? "activé" : "désactivé"}`);
+  }, [addLog]);
+
+  // ── Auto-Reconnect ────────────────────────────────────────────────────────
+  const setAutoReconnect = useCallback(async (enabled: boolean) => {
+    setAutoReconnectState(enabled);
+    await AsyncStorage.setItem(STORE.AUTO_RECONNECT, String(enabled));
+    SxbVpnNative?.setAutoReconnect?.(enabled);
+    addLog(`Auto-reconnect : ${enabled ? "activé" : "désactivé"}`);
+  }, [addLog]);
+
+  // ── Refresh config depuis le backend ──────────────────────────────────────
   const refreshVpnConfig = useCallback(async () => {
-    if (!isAuthenticated) return;
+    addLog("🔄 Synchronisation configuration...");
     try {
-      const res  = await apiClient.get("/mobile/vpn/config");
+      const res = await apiClient.get("/mobile/vpn/config");
       const data = res.data;
 
-      if (data.subscriptionUrl) setSubscriptionUrl(data.subscriptionUrl);
-      if (data.serverInfo)      setServerInfo(data.serverInfo);
+      if (!data) { addLog("ℹ️ Aucune configuration disponible"); return; }
 
-      if (data.profile) {
-        // Assurer que le payload est bien présent dans la config locale
-        const cfg: VpnConnectionConfig = {
-          ...data.profile,
-          payload: data.profile.payload || undefined,
-          _ts: Date.now(),
+      // Conserver l'ancienne config en cas d'erreur (rollback automatique)
+      const previousConfig = connectionConfig;
+
+      try {
+        const newCfg: VpnConnectionConfig = {
+          protocol: data.protocol ?? previousConfig?.protocol ?? "",
+          host:     data.host     ?? previousConfig?.host     ?? "",
+          port:     data.port     ?? previousConfig?.port     ?? 0,
+          ...data,
+          profileName:      data.profileName      ?? data.name,
+          subscriptionName: data.subscriptionName ?? "",
         };
-        setConnectionConfig(cfg);
-        await storeConfigSecure(cfg);
-        const protoLabel = (data.profile.protocol || "ssh").toUpperCase();
-        const hasPayload = !!data.profile.payload;
-        addLog(`✅ Config VPN synchronisée — ${protoLabel}${hasPayload ? " (payload chargé)" : ""}`);
-      }
 
-      if (data.connectionUri) {
-        await AsyncStorage.setItem("@sxb_connection_uri", data.connectionUri);
-      }
+        await storeConfigSecure(newCfg);
+        setConnectionConfig(newCfg);
 
-      if (Array.isArray(data.protocols) && data.protocols.length > 0) {
-        setAvailableProtocols(data.protocols);
-        const saved = await AsyncStorage.getItem("@sxb_vpn_protocol");
-        if (!saved && data.protocols[0]) {
-          setSelectedProtocol(data.protocols[0].name);
-          await AsyncStorage.setItem("@sxb_vpn_protocol", data.protocols[0].name);
+        if (data.connectionUri) {
+          await AsyncStorage.setItem(STORE.SUB_URL, data.connectionUri);
+          setSubscriptionUrl(data.connectionUri);
         }
+
+        if (data.protocols?.length) {
+          setAvailableProtocols(data.protocols);
+          if (!selectedProtocol && data.protocols[0]?.name) {
+            setSelectedProtocol(data.protocols[0].name);
+          }
+        }
+
+        if (data.serverInfo) {
+          setServerInfo(data.serverInfo);
+          await AsyncStorage.setItem(STORE.SERVER_INFO, data.serverInfo);
+        }
+
+        addLog("✅ Configuration synchronisée avec succès");
+      } catch (parseErr) {
+        // Rollback : conserver l'ancienne config
+        if (previousConfig) {
+          setConnectionConfig(previousConfig);
+          await storeConfigSecure(previousConfig);
+        }
+        addLog("⚠️ Erreur de format — ancienne configuration conservée");
       }
-    } catch {
-      // Mode offline : charger la config locale chiffrée
-      const cfg = await loadConfigSecure();
-      if (cfg) {
-        setConnectionConfig(cfg);
-        addLog("📦 Configuration chargée depuis le cache local (hors ligne)");
-      }
-      setAvailableProtocols(FALLBACK_PROTOCOLS);
+
+    } catch (err: unknown) {
+      // Hors ligne ou erreur serveur — la config locale est conservée
+      addLog("⚠️ Synchronisation impossible — configuration locale maintenue");
     }
-  }, [isAuthenticated, addLog]);
+  }, [connectionConfig, selectedProtocol, addLog]);
 
-  useEffect(() => { refreshVpnConfig(); }, [refreshVpnConfig]);
+  useEffect(() => { refreshVpnConfig(); }, []);  // eslint-disable-line
 
-  // ── Traffic sync — synchronise la consommation data vers le backend ───────
-  // Toutes les 90s quand VPN connecté : lit les stats du moteur natif
-  // et envoie les nouveaux bytes au serveur pour décrémenter le quota.
-  useEffect(() => {
-    if (isConnected && SxbVpnNative) {
-      trafficSyncTimer.current = setInterval(async () => {
-        try {
-          const stats = await SxbVpnNative.getTrafficStats();
-          if (!stats) return;
-          const { uploadBytes, downloadBytes } = stats;
-          const deltaUp   = uploadBytes   - lastSyncedBytes.current.up;
-          const deltaDown = downloadBytes - lastSyncedBytes.current.down;
-          if (deltaUp + deltaDown < 65536) return; // < 64 KB, pas la peine d'envoyer
-          lastSyncedBytes.current = { up: uploadBytes, down: downloadBytes };
-          await apiClient.post("/mobile/vpn/traffic", {
-            bytesUp:   deltaUp   > 0 ? deltaUp   : 0,
-            bytesDown: deltaDown > 0 ? deltaDown : 0,
-          }).catch(() => {}); // hors ligne → ignorer silencieusement
-        } catch { /* moteur non disponible */ }
-      }, 90_000);
-    } else {
-      // Synchro finale à la déconnexion
-      if (trafficSyncTimer.current) {
-        clearInterval(trafficSyncTimer.current);
-        trafficSyncTimer.current = null;
-        try {
-          SxbVpnNative?.getTrafficStats?.().then((stats: any) => {
-            if (!stats) return;
-            const { uploadBytes, downloadBytes } = stats;
-            const deltaUp   = uploadBytes   - lastSyncedBytes.current.up;
-            const deltaDown = downloadBytes - lastSyncedBytes.current.down;
-            if (deltaUp + deltaDown < 1024) return;
-            apiClient.post("/mobile/vpn/traffic", {
-              bytesUp:   deltaUp   > 0 ? deltaUp   : 0,
-              bytesDown: deltaDown > 0 ? deltaDown : 0,
-            }).catch(() => {});
-            lastSyncedBytes.current = { up: 0, down: 0 };
-          }).catch(() => {});
-        } catch { /* ignore */ }
-      }
-    }
-    return () => {
-      if (trafficSyncTimer.current) { clearInterval(trafficSyncTimer.current); trafficSyncTimer.current = null; }
-    };
-  }, [isConnected]);
-
-  // ── Connect ────────────────────────────────────────────────────────────────
-
+  // ── Connexion ─────────────────────────────────────────────────────────────
   const connect = useCallback(async () => {
     if (isConnecting || isConnected) return;
-    setIsConnecting(true);
-    setLogs([]);
 
     try {
-      // ── CORRECTIF DÉFINITIF : refresh API systématique avant connexion ────────
-      // Garantit payload décrypté, password en clair et protocol correct
-      // depuis le serveur, même si le cache local est obsolète.
-      let cfg = connectionConfig;
-      try {
-        addLog("🔄 Synchronisation configuration…");
-        const res = await apiClient.get("/mobile/vpn/config");
-        if (res.data?.profile) {
-          cfg = { ...res.data.profile, _ts: Date.now() } as VpnConnectionConfig;
-          await storeConfigSecure(cfg); // Mettre à jour le cache local
-        } else if (!cfg) {
-          cfg = await loadConfigSecure();
+      setIsConnecting(true);
+      addLog("🔌 Démarrage de la connexion VPN...");
+
+      // Permission VPN
+      if (Platform.OS === "android") {
+        const granted = await requestVpnPermission();
+        if (!granted) {
+          addLog("❌ Permission VPN refusée");
+          setIsConnecting(false);
+          return;
         }
-      } catch {
-        addLog("📦 Hors ligne — utilisation du cache local");
-        if (!cfg) cfg = await loadConfigSecure();
       }
 
-      // Vérifier que la config est complète avant de tenter la connexion
+      // Charger config
+      let cfg = connectionConfig ?? await loadConfigSecure();
       if (!cfg) {
-        addLog("❌ Aucune configuration VPN — activez un forfait ou reconnectez-vous");
-        setIsConnecting(false);
-        return;
-      }
-      if (!cfg.host) {
-        addLog("❌ Configuration incomplète : serveur (host) manquant");
-        setIsConnecting(false);
-        return;
-      }
-      // Détecter ssh+payload automatiquement si payload disponible
-      const rawProto = (cfg.protocol || selectedProtocol || "ssh").toLowerCase();
-      const proto = (rawProto === "ssh" && cfg.payload) ? "ssh+payload" : rawProto;
-      if ((proto === "ssh" || proto === "ssh+payload") && !cfg.username) {
-        addLog("❌ Configuration SSH incomplète : utilisateur manquant");
+        addLog("❌ Aucune configuration VPN — actualisez ou activez un forfait");
         setIsConnecting(false);
         return;
       }
 
-      addLog(`Protocole : ${proto === "ssh+payload" ? "SSH+Payload" : proto.toUpperCase()}`);
-      addLog(`Serveur   : ${cfg.host}:${cfg.port}`);
-      if (proto === "ssh+payload")
-        addLog(cfg.payload ? "✅ Payload HTTP chargé" : "⚠️ Payload absent — connexion directe");
+      // Sélectionner le protocole
+      const proto = (selectedProtocol || cfg.protocol || "").toLowerCase();
+      if (!proto) {
+        addLog("❌ Aucun protocole sélectionné");
+        setIsConnecting(false);
+        return;
+      }
+
+      // Injecter killSwitch + autoReconnect dans la config
+      const startOpts = {
+        ...cfg,
+        protocol:      proto,
+        killSwitch:    killSwitch,
+        autoReconnect: autoReconnect,
+      };
 
       if (Platform.OS === "android" && SxbVpnNative) {
-        // ── Étape 1 : Vérifier / demander la permission VPN ─────────────────
-        const alreadyGranted = SxbVpnNative.isVpnPermissionGranted();
-        if (!alreadyGranted) {
-          addLog("🔐 Demande d'autorisation VPN Android…");
-          const granted = await requestVpnPermission();
-          if (!granted) {
-            addLog("❌ Autorisation VPN refusée — connexion annulée");
-            setIsConnecting(false);
-            return;
-          }
-          addLog("✅ Autorisation VPN accordée");
-        }
-
-        // ── Étape 2 : Construire la config et démarrer ──────────────────────
-        const configJson = cfg
-          ? buildConfigJson(cfg)
-          : JSON.stringify({ protocol: proto, host: serverInfo?.host || "", port: 443 });
-
-        addLog("Initialisation du tunnel…");
-        await SxbVpnNative.startVpn(configJson);
-        // L'état sera mis à jour via les events natifs (onVpnStateChange)
-        // Timeout de sécurité : si après 65s toujours pas d'état "connected" ou "error",
-        // on reset l'état pour ne pas laisser l'interface bloquée indéfiniment
-        if (connectTimeout.current) clearTimeout(connectTimeout.current);
-        connectTimeout.current = setTimeout(() => {
-          setIsConnecting(prev => {
-            if (prev) {
-              addLog("⏱️ Délai dépassé — connexion annulée (serveur injoignable ?)");
-              setIsConnected(false);
-              AsyncStorage.setItem("@sxb_vpn_connected", "false").catch(() => {});
-            }
-            return false;
-          });
-          connectTimeout.current = null;
-        }, 65_000);
-
+        addLog(`🔌 Connexion ${proto.toUpperCase()}...`);
+        await SxbVpnNative.startVpn(JSON.stringify(startOpts));
       } else {
-        // iOS / plateforme non-Android : le module VPN natif n'est pas disponible.
-        // SxbVpnService est un service Android (VpnService API). iOS requiert
-        // une implémentation NetworkExtension (PacketTunnelProvider) distincte.
-        addLog("❌ VPN natif non disponible sur cette plateforme");
-        addLog("📱 L'application SXB VPN requiert Android pour le tunnel VPN");
+        // Simulation sur iOS/web
+        await new Promise(r => setTimeout(r, 1_500));
+        setIsConnected(true);
         setIsConnecting(false);
+        addLog("✅ VPN simulé (non-Android)");
         return;
       }
 
-      // Log de session (non-bloquant)
+      // Timeout de sécurité 65s
+      if (connectTimeout.current) clearTimeout(connectTimeout.current);
+      connectTimeout.current = setTimeout(() => {
+        if (!isConnected) {
+          addLog("❌ Timeout — connexion impossible");
+          setIsConnecting(false);
+          setIsConnected(false);
+          AsyncStorage.setItem(STORE.CONNECTED, "false").catch(() => {});
+          connectTimeout.current = null;
+        }
+      }, 65_000);
+
+      // Notifier le backend
       apiClient.post("/mobile/vpn/session", {
         action: "connect",
         protocol: proto,
-        deviceId: await AsyncStorage.getItem("@sxb_device_id"),
       }).catch(() => {});
 
-    } catch (err: any) {
-      const msg = err?.message || "Erreur inconnue";
-      // Si la permission est requise, la demander automatiquement
-      if (msg.includes("VPN_PERMISSION_REQUIRED") || msg.includes("permission")) {
-        addLog("🔐 Permission VPN requise — affichage de la demande…");
-        setIsConnecting(false);
-        const granted = await requestVpnPermission();
-        if (granted) {
-          // Réessayer la connexion après accord de permission
-          connect();
-        }
-        return;
-      }
-      addLog(`❌ Erreur : ${msg}`);
-      setIsConnected(false);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "erreur inconnue";
+      addLog(`❌ Erreur de connexion : ${maskLog(msg)}`);
       setIsConnecting(false);
     }
-  }, [isConnecting, isConnected, selectedProtocol, connectionConfig, serverInfo, addLog, refreshAccountState, requestVpnPermission]);
+  }, [isConnecting, isConnected, connectionConfig, selectedProtocol, killSwitch, autoReconnect,
+      addLog, requestVpnPermission]);
 
-  // ── Disconnect ────────────────────────────────────────────────────────────
-
+  // ── Déconnexion ───────────────────────────────────────────────────────────
   const disconnect = useCallback(async () => {
     if (!isConnecting && !isConnected) return;
-    addLog("Déconnexion en cours…");
-
-    // ── Réinitialiser l'état local immédiatement ──────────────────────────
-    // Ne pas attendre les events natifs — si le service est crashé ou bloqué,
-    // les events n'arriveront jamais et l'interface restera figée.
-    setIsConnected(false);
-    setIsConnecting(false);
-    await AsyncStorage.setItem("@sxb_vpn_connected", "false").catch(() => {});
-
     try {
+      addLog("⏹ Déconnexion...");
+      setIsConnecting(false);
+      await AsyncStorage.setItem(STORE.CONNECTED, "false");
+
       if (Platform.OS === "android" && SxbVpnNative) {
         await SxbVpnNative.stopVpn();
-        // État déjà réinitialisé ci-dessus
-      } else {
-        await apiClient.post("/mobile/vpn/session", { action: "disconnect" }).catch(() => {});
         await new Promise(r => setTimeout(r, 600));
-        setIsConnected(false);
-        setIsConnecting(false);
-        await AsyncStorage.setItem("@sxb_vpn_connected", "false");
-        addLog("✅ VPN déconnecté");
+      }
+      setIsConnected(false);
+      addLog("✅ VPN déconnecté");
+
+      // Envoi final des stats de trafic
+      if (traffic.uploadBytes || traffic.downloadBytes) {
+        apiClient.post("/mobile/vpn/traffic", {
+          uploadBytes:   traffic.uploadBytes,
+          downloadBytes: traffic.downloadBytes,
+          sessionDuration: Math.round((Date.now() - sessionStartRef.current) / 1000),
+        }).catch(() => {});
       }
 
       apiClient.post("/mobile/vpn/session", { action: "disconnect" }).catch(() => {});
@@ -580,16 +562,15 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       setIsConnecting(false);
       addLog("✅ VPN arrêté");
     }
-  }, [isConnecting, isConnected, addLog]);
+  }, [isConnecting, isConnected, traffic, addLog]);
 
-  // ── Select protocol ───────────────────────────────────────────────────────
-
+  // ── Sélection protocole ───────────────────────────────────────────────────
   const selectProtocol = useCallback(async (name: string) => {
     setSelectedProtocol(name);
-    await AsyncStorage.setItem("@sxb_vpn_protocol", name);
+    await AsyncStorage.setItem(STORE.PROTOCOL, name);
     addLog(`Protocole sélectionné : ${name}`);
     if (isConnected) {
-      addLog("Reconnexion avec le nouveau protocole…");
+      addLog("🔄 Reconnexion avec le nouveau protocole...");
       await disconnect();
       setTimeout(() => connect(), 800);
     }
@@ -603,9 +584,14 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       connectionConfig,
       logs,
       hasVpnPermission,
+      killSwitch,
+      autoReconnect,
+      traffic,
       connect, disconnect, selectProtocol,
       refreshVpnConfig,
       requestVpnPermission,
+      setKillSwitch,
+      setAutoReconnect,
     }}>
       {children}
     </VpnContext.Provider>
@@ -615,4 +601,3 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 export function useVpnContext() {
   return useContext(VpnContext);
 }
-

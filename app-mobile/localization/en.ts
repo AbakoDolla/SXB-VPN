@@ -184,4 +184,24 @@ export const en = {
   expired: 'Expired',
   suspended_status: 'Suspended',
   no_package_status: 'No plan',
+
+  // VPN — Traffic
+  traffic_realtime: 'REAL-TIME TRAFFIC',
+  traffic_sent: 'Sent',
+  traffic_received: 'Received',
+  traffic_speed: 'Speed',
+  traffic_upload: 'Upload',
+  traffic_download: 'Download',
+  traffic_session: 'Session',
+
+  // VPN — Auto-reconnect
+  auto_reconnect: 'Auto-reconnect',
+  auto_reconnect_desc: 'Automatically reconnect if the connection is lost',
+
+  // VPN Notifications
+  notif_connected: 'VPN connected',
+  notif_disconnected: 'VPN disconnected',
+  notif_reconnecting: 'Reconnecting...',
+  notif_error: 'VPN connection error',
+  notif_kill_switch: 'Kill Switch active — connection blocked',
 } as const;
