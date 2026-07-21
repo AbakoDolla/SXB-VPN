@@ -359,6 +359,7 @@ model VpnProfile {
 
   subscriptions    Subscription[]
 
+  createdBy        String?
   @@map("vpn_profiles")
 }
 
@@ -382,6 +383,10 @@ model Subscription {
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
 
+  createdBy       String?
+  revokedAt       DateTime?
+  lastProvisionAt DateTime?
+  lastSyncAt      DateTime?
   @@map("subscriptions")
 }
 
