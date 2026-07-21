@@ -52,13 +52,15 @@ jobs:
             gradle-
 
       # ── npm cache ─────────────────────────────────────────────────────────────
+      # Clé basée sur package.json (pas package-lock.json qui n'est pas commité).
+      # Quand package.json change (nouvelle dépendance), cache miss → npm install relancé.
+      # Pas de restore-keys pour éviter les caches périmés (ex: expo-secure-store manquant).
       - name: Cache node_modules
         id: cache-node
         uses: actions/cache@v4
         with:
           path: app-mobile/node_modules
-          key: node-modules-${{ runner.os }}-${{ hashFiles('app-mobile/package-lock.json') }}
-          restore-keys: node-modules-${{ runner.os }}-
+          key: node-modules-${{ runner.os }}-${{ hashFiles('app-mobile/package.json') }}
 
       # ── Install deps ──────────────────────────────────────────────────────────
       - name: Install dependencies
