@@ -119,6 +119,22 @@ jobs:
         env:
           EXPO_PUBLIC_API_URL: https://vpnsxb.afrihall.com/api
 
+      # ── Copier sing-box dans Android assets (CRITIQUE) ────────────────────────
+      # assets.open() en Kotlin lit depuis android/app/src/main/assets/
+      # PAS depuis le dossier Expo assets/ — copie obligatoire après prebuild.
+      - name: Copier sing-box vers Android assets natifs
+        run: |
+          mkdir -p android/app/src/main/assets
+          for f in sing-box-arm64 sing-box-arm; do
+            if [ -f "assets/$f" ]; then
+              cp "assets/$f" android/app/src/main/assets/"$f"
+              echo "✅ $f copié ($(du -h android/app/src/main/assets/$f | cut -f1))"
+            else
+              echo "⚠️  $f absent — protocoles avancés désactivés"
+            fi
+          done
+
+
       # ── Gradle properties ─────────────────────────────────────────────────────
       - name: Configure Gradle (performance)
         run: |

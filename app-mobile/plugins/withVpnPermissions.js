@@ -163,12 +163,41 @@ function withJschDependency(config) {
   });
 }
 
+// ── 5. Copier les binaires sing-box dans Android assets ───────────────────────
+// assets.open() dans Kotlin lit depuis android/app/src/main/assets/
+// Les fichiers Expo assets/ ne sont PAS copiés auto — plugin obligatoire.
+function withSingBoxAssets(config) {
+  return withDangerousMod(config, ['android', (cfg) => {
+    const projectRoot  = cfg.modRequest.projectRoot;
+    const platformRoot = cfg.modRequest.platformProjectRoot;
+    const assetsDir    = path.join(platformRoot, 'app', 'src', 'main', 'assets');
+
+    fs.mkdirSync(assetsDir, { recursive: true });
+
+    const binaries = ['sing-box-arm64', 'sing-box-arm'];
+    for (const name of binaries) {
+      const src = path.join(projectRoot, 'assets', name);
+      const dst = path.join(assetsDir, name);
+      if (fs.existsSync(src)) {
+        fs.copyFileSync(src, dst);
+        const sizeMB = Math.round(fs.statSync(dst).size / 1024 / 1024);
+        console.log('[VPN plugin] Copié ' + name + ' → android assets (' + sizeMB + ' MB)');
+      } else {
+        console.warn('[VPN plugin] ' + name + ' absent dans assets/ — protocoles avancés désactivés');
+      }
+    }
+    return cfg;
+  }]);
+}
+
+
 // ── Export composite ──────────────────────────────────────────────────────────
 function withVpnPermissions(config) {
   config = withKotlinSources(config);
   config = withVpnManifest(config);
   config = withMainAppPackage(config);
   config = withJschDependency(config);
+  config = withSingBoxAssets(config);
   return config;
 }
 
