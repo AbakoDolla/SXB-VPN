@@ -69,7 +69,6 @@ private class SxbPayloadProxy(private val rawPayload: String) : com.jcraft.jsch.
     override fun connect(sf: SocketFactory?, host: String, port: Int, timeout: Int) {
         val sock = Socket()
         sock.connect(InetSocketAddress(host, port), timeout.coerceAtLeast(10_000))
-        sock.soTimeout = 0  // pas de timeout sur le stream SSH
         socket = sock
 
         val out = sock.getOutputStream()
@@ -86,21 +85,37 @@ private class SxbPayloadProxy(private val rawPayload: String) : com.jcraft.jsch.
         out.write(payload.toByteArray(Charsets.ISO_8859_1))
         out.flush()
 
-        // ── Lire la réponse HTTP byte par byte (pas de BufferedReader) ──────
-        // Stopper au double CRLF \r\n\r\n pour ne pas avaler le début SSH
+        // ── Lire une éventuelle réponse HTTP byte par byte, avec timeout ────
+        // CORRECTIF : beaucoup de serveurs payload (style HTTP Injector /
+        // SocksIP) acceptent le payload comme simple bypass firewall et
+        // enchaînent DIRECTEMENT sur le protocole SSH brut, sans jamais
+        // renvoyer de réponse HTTP formatée. On ne doit donc jamais bloquer
+        // indéfiniment en attendant un double CRLF qui peut ne jamais
+        // arriver — on tente la lecture avec un court timeout, et on
+        // continue vers le handshake SSH dans tous les cas (timeout,
+        // réponse partielle, ou double CRLF trouvé).
+        sock.soTimeout = 8_000
         val response = StringBuilder()
-        var b3 = 0; var b2 = 0; var b1 = 0
-        var limit = 8192
-        while (limit-- > 0) {
-            val b = ins.read()
-            if (b == -1) break
-            response.append(b.toChar())
-            // Détecter \r\n\r\n
-            if (b3 == '\r'.code && b2 == '\n'.code && b1 == '\r'.code && b == '\n'.code) break
-            b3 = b2; b2 = b1; b1 = b
+        try {
+            var b3 = 0; var b2 = 0; var b1 = 0
+            var limit = 8192
+            while (limit-- > 0) {
+                val b = ins.read()
+                if (b == -1) break
+                response.append(b.toChar())
+                // Détecter \r\n\r\n
+                if (b3 == '\r'.code && b2 == '\n'.code && b1 == '\r'.code && b == '\n'.code) break
+                b3 = b2; b2 = b1; b1 = b
+            }
+            Log.d(SxbVpnService.TAG, "[SXB] Réponse proxy : ${response.toString().take(100)}")
+        } catch (e: java.net.SocketTimeoutException) {
+            // Pas de réponse HTTP dans les 8s — normal pour ce type de
+            // serveur. On continue directement vers le handshake SSH.
+            Log.d(SxbVpnService.TAG, "[SXB] Pas de réponse HTTP au payload (normal) — passage direct au handshake SSH")
         }
 
-        Log.d(SxbVpnService.TAG, "[SXB] Réponse proxy : ${response.toString().take(100)}")
+        // Retire le timeout pour la suite (session SSH longue durée)
+        sock.soTimeout = 0
 
         inputStream  = ins
         outputStream = out
