@@ -172,7 +172,12 @@ class SxbVpnService : VpnService() {
             ACTION_STOP -> { stopVpn(); return START_NOT_STICKY }
             ACTION_START -> {
                 val config = intent.getStringExtra(EXTRA_CONFIG) ?: ""
-                val proto = runCatching { JSONObject(config).optString("protocol", "ssh") }.getOrDefault("ssh").lowercase()
+                val proto = runCatching {
+                    val cfg2 = JSONObject(config)
+                    val p    = cfg2.optString("protocol", "ssh").lowercase()
+                    // Auto-détection : si payload présent et protocol="ssh", forcer ssh+payload
+                    if (p == "ssh" && cfg2.optString("payload", "").isNotBlank()) "ssh+payload" else p
+                }.getOrDefault("ssh")
                 startForeground(NOTIF_ID, buildNotification(protoLabel(proto) + " en cours…"))
                 vpnThread = Thread({ dispatchProtocol(config, proto) }, "SxbVpnThread-$proto").also { it.start() }
             }
@@ -278,7 +283,10 @@ class SxbVpnService : VpnService() {
             val sni      = cfg.optString("sni", "")
             val payload  = cfg.optString("payload", "")
             val protocol = cfg.optString("protocol", "ssh").lowercase()
-            val usePayload = protocol == "ssh+payload" && payload.isNotBlank()
+            // CORRECTIF DÉFINITIF : injecter le payload dès qu'il est disponible,
+            // indépendamment du champ "protocol" — certains caches stockent
+            // protocol="ssh" alors que le payload est présent.
+            val usePayload = payload.isNotBlank()
 
             if (host.isEmpty() || username.isEmpty()) {
                 broadcastLog("[SXB] ❌ Configuration incomplète (host/username manquant)")

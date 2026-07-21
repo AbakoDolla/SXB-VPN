@@ -69,30 +69,35 @@ jobs:
       - name: Download sing-box binaries
         run: |
           mkdir -p assets
-          SINGBOX_VERSION="1.11.7"
           
-          # arm64-v8a
-          echo "Téléchargement sing-box arm64 v${SINGBOX_VERSION}..."
-          curl -fsSL "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-android-arm64-v8a.tar.gz" \
-            | tar -xz --strip-components=1 -O "sing-box-${SINGBOX_VERSION}-android-arm64-v8a/sing-box" > assets/sing-box-arm64 2>/dev/null \
-            || { echo "⚠️ arm64 v${SINGBOX_VERSION} failed, trying fallback 1.9.7..."; \
-                 curl -fsSL "https://github.com/SagerNet/sing-box/releases/download/v1.9.7/sing-box-1.9.7-android-arm64-v8a.tar.gz" \
-                   | tar -xz --strip-components=1 -O "sing-box-1.9.7-android-arm64-v8a/sing-box" > assets/sing-box-arm64 2>/dev/null || true; }
+          download_singbox() {
+            local VER="$1" ARCH="$2" DEST="$3"
+            local ARCHIVE="sing-box-${VER}-android-${ARCH}"
+            local URL="https://github.com/SagerNet/sing-box/releases/download/v${VER}/${ARCHIVE}.tar.gz"
+            echo "→ ${ARCHIVE}..."
+            curl -fsSL --retry 3 --retry-delay 5 "$URL" -o /tmp/sb.tar.gz 2>/dev/null || return 1
+            mkdir -p /tmp/sb_extract && tar -xzf /tmp/sb.tar.gz -C /tmp/sb_extract 2>/dev/null || return 1
+            local BIN; BIN=$(find /tmp/sb_extract -name "sing-box" -type f 2>/dev/null | head -1)
+            [ -n "$BIN" ] && cp "$BIN" "$DEST" && rm -rf /tmp/sb.tar.gz /tmp/sb_extract && return 0
+            rm -rf /tmp/sb.tar.gz /tmp/sb_extract; return 1
+          }
           
-          # armeabi-v7a (ARM 32-bit)
-          echo "Téléchargement sing-box arm32 v${SINGBOX_VERSION}..."
-          curl -fsSL "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-android-armv7.tar.gz" \
-            | tar -xz --strip-components=1 -O "sing-box-${SINGBOX_VERSION}-android-armv7/sing-box" > assets/sing-box-arm 2>/dev/null \
-            || { echo "⚠️ armv7 v${SINGBOX_VERSION} failed, trying fallback 1.9.7..."; \
-                 curl -fsSL "https://github.com/SagerNet/sing-box/releases/download/v1.9.7/sing-box-1.9.7-android-armv7.tar.gz" \
-                   | tar -xz --strip-components=1 -O "sing-box-1.9.7-android-armv7/sing-box" > assets/sing-box-arm 2>/dev/null || true; }
+          # arm64-v8a : 1.11.7 → 1.10.2 → 1.9.7
+          for VER in 1.11.7 1.10.2 1.9.7; do
+            download_singbox "$VER" "arm64-v8a" "assets/sing-box-arm64" && echo "✅ arm64 v$VER" && break || echo "⚠️ arm64 v$VER échoué"
+          done
           
-          # Vérification taille minimale 1MB
+          # armeabi-v7a : 1.11.7 → 1.10.2 → 1.9.7
+          for VER in 1.11.7 1.10.2 1.9.7; do
+            download_singbox "$VER" "armv7" "assets/sing-box-arm" && echo "✅ armv7 v$VER" && break || echo "⚠️ armv7 v$VER échoué"
+          done
+          
+          # Vérification finale (1 MB minimum)
           for f in assets/sing-box-arm64 assets/sing-box-arm; do
             if [ -f "$f" ] && [ "$(wc -c < "$f")" -gt 1000000 ]; then
               echo "✅ $f ok ($(du -h "$f" | cut -f1))"
             else
-              echo "⚠️  $f manquant ou corrompu — protocoles avancés désactivés"
+              echo "⚠️  $f manquant — protocoles avancés désactivés"
               rm -f "$f"
             fi
           done

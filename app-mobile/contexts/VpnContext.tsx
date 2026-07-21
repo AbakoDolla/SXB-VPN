@@ -154,9 +154,11 @@ const SxbVpnNative = Platform.OS === "android" ? NativeModules.SxbVpnNative : nu
 
 function buildConfigJson(config: VpnConnectionConfig): string {
   const proto = (config.protocol || "ssh").toLowerCase();
-  const base = { protocol: proto, host: config.host || "", port: config.port || 443 };
+  // CORRECTIF : si payload présent, forcer ssh+payload même si le cache dit "ssh"
+  const effectiveProto = (proto === "ssh" && config.payload) ? "ssh+payload" : proto;
+  const base = { protocol: effectiveProto, host: config.host || "", port: config.port || 443 };
 
-  if (proto === "ssh" || proto === "ssh+payload") {
+  if (effectiveProto === "ssh" || effectiveProto === "ssh+payload") {
     return JSON.stringify({ ...base, username: config.username || "", password: config.password || "", sni: config.sni || "", payload: config.payload || "" });
   }
   if (["vless","vmess","trojan"].includes(proto)) {
@@ -365,12 +367,27 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     setLogs([]);
 
     try {
+      // ── CORRECTIF DÉFINITIF : refresh API systématique avant connexion ────────
+      // Garantit payload décrypté, password en clair et protocol correct
+      // depuis le serveur, même si le cache local est obsolète.
       let cfg = connectionConfig;
-      if (!cfg) cfg = await loadConfigSecure();
+      try {
+        addLog("🔄 Synchronisation configuration…");
+        const res = await apiClient.get("/mobile/vpn/config");
+        if (res.data?.profile) {
+          cfg = { ...res.data.profile, _ts: Date.now() } as VpnConnectionConfig;
+          await storeConfigSecure(cfg); // Mettre à jour le cache local
+        } else if (!cfg) {
+          cfg = await loadConfigSecure();
+        }
+      } catch {
+        addLog("📦 Hors ligne — utilisation du cache local");
+        if (!cfg) cfg = await loadConfigSecure();
+      }
 
       // Vérifier que la config est complète avant de tenter la connexion
       if (!cfg) {
-        addLog("❌ Aucune configuration VPN trouvée — importez ou activez un forfait");
+        addLog("❌ Aucune configuration VPN — activez un forfait ou reconnectez-vous");
         setIsConnecting(false);
         return;
       }
@@ -379,15 +396,19 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         setIsConnecting(false);
         return;
       }
-      const proto = (cfg?.protocol || selectedProtocol || "ssh").toLowerCase();
+      // Détecter ssh+payload automatiquement si payload disponible
+      const rawProto = (cfg.protocol || selectedProtocol || "ssh").toLowerCase();
+      const proto = (rawProto === "ssh" && cfg.payload) ? "ssh+payload" : rawProto;
       if ((proto === "ssh" || proto === "ssh+payload") && !cfg.username) {
-        addLog("❌ Configuration SSH incomplète : nom d'utilisateur manquant — resynchronisez votre configuration");
+        addLog("❌ Configuration SSH incomplète : utilisateur manquant");
         setIsConnecting(false);
         return;
       }
 
-      addLog(`Protocole : ${proto.toUpperCase()}`);
-      if (cfg?.host) addLog(`Serveur   : ${cfg.host}:${cfg.port}`);
+      addLog(`Protocole : ${proto === "ssh+payload" ? "SSH+Payload" : proto.toUpperCase()}`);
+      addLog(`Serveur   : ${cfg.host}:${cfg.port}`);
+      if (proto === "ssh+payload")
+        addLog(cfg.payload ? "✅ Payload HTTP chargé" : "⚠️ Payload absent — connexion directe");
 
       if (Platform.OS === "android" && SxbVpnNative) {
         // ── Étape 1 : Vérifier / demander la permission VPN ─────────────────
