@@ -512,18 +512,13 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         }, 65_000);
 
       } else {
-        // Fallback simulateur iOS / dev
-        addLog("Mode simulation (module natif indisponible sur cette plateforme)");
-        await apiClient.post("/mobile/vpn/session", {
-          action: "connect",
-          protocol: proto,
-        }).catch(() => {});
-        await new Promise(r => setTimeout(r, 1200));
-        setIsConnected(true);
+        // iOS / plateforme non-Android : le module VPN natif n'est pas disponible.
+        // SxbVpnService est un service Android (VpnService API). iOS requiert
+        // une implémentation NetworkExtension (PacketTunnelProvider) distincte.
+        addLog("❌ VPN natif non disponible sur cette plateforme");
+        addLog("📱 L'application SXB VPN requiert Android pour le tunnel VPN");
         setIsConnecting(false);
-        await AsyncStorage.setItem("@sxb_vpn_connected", "true");
-        refreshAccountState().catch(() => {});
-        addLog("✅ Session VPN démarrée (mode simulation)");
+        return;
       }
 
       // Log de session (non-bloquant)
