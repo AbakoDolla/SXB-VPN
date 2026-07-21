@@ -14,19 +14,35 @@ import { NativeModules, NativeEventEmitter, Platform } from "react-native";
 import apiClient from "@/services/apiClient";
 import { useAuthContext } from "./AuthContext";
 
-// ── Minimal symmetric XOR cipher for local config storage ─────────────────────
+// ── Symmetric XOR cipher v3 — stockage config locale ─────────────────────────
+// v1/v2 utilisaient btoa(unescape(encodeURIComponent(xor))) → crash sur certains
+// caractères (passwords, payloads) → config perdue hors ligne.
+// v3 : encodage hex pur (4 chars hex par char UTF-16), 100% fiable, rétro-compatible.
 const CONFIG_KEY_SALT = "SXB_VPN_K3Y_S4LT_2026";
+const HEX_PREFIX = "H:"; // distingue v3 hex du format base64 legacy
 
 function xorEncode(data: string, key: string): string {
-  let result = "";
+  let hex = "";
   for (let i = 0; i < data.length; i++) {
-    result += String.fromCharCode(data.charCodeAt(i) ^ key.charCodeAt(i % key.length));
+    const code = data.charCodeAt(i) ^ key.charCodeAt(i % key.length);
+    hex += code.toString(16).padStart(4, "0");
   }
-  try { return btoa(unescape(encodeURIComponent(result))); } catch { return result; }
+  return HEX_PREFIX + hex;
 }
 
 function xorDecode(encoded: string, key: string): string {
   try {
+    if (encoded.startsWith(HEX_PREFIX)) {
+      // v3 hex format
+      const hex = encoded.slice(HEX_PREFIX.length);
+      let result = "";
+      for (let i = 0; i < hex.length; i += 4) {
+        const code = parseInt(hex.substring(i, i + 4), 16);
+        result += String.fromCharCode(code ^ key.charCodeAt((i / 4) % key.length));
+      }
+      return result;
+    }
+    // Legacy v1/v2 : btoa format — rétro-compatibilité pour les installs existantes
     const data = decodeURIComponent(escape(atob(encoded)));
     let result = "";
     for (let i = 0; i < data.length; i++) {
@@ -208,9 +224,11 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const [logs,               setLogs]                = useState<string[]>([]);
   const [hasVpnPermission,   setHasVpnPermission]    = useState(false);
 
-  const statusSubRef   = useRef<any>(null);
-  const logSubRef      = useRef<any>(null);
-  const connectTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const statusSubRef     = useRef<any>(null);
+  const logSubRef        = useRef<any>(null);
+  const connectTimeout   = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const trafficSyncTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastSyncedBytes  = useRef<{ up: number; down: number }>({ up: 0, down: 0 });
 
   // ── Log helper ────────────────────────────────────────────────────────────
 
@@ -358,6 +376,52 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   }, [isAuthenticated, addLog]);
 
   useEffect(() => { refreshVpnConfig(); }, [refreshVpnConfig]);
+
+  // ── Traffic sync — synchronise la consommation data vers le backend ───────
+  // Toutes les 90s quand VPN connecté : lit les stats du moteur natif
+  // et envoie les nouveaux bytes au serveur pour décrémenter le quota.
+  useEffect(() => {
+    if (isConnected && SxbVpnNative) {
+      trafficSyncTimer.current = setInterval(async () => {
+        try {
+          const stats = await SxbVpnNative.getTrafficStats();
+          if (!stats) return;
+          const { uploadBytes, downloadBytes } = stats;
+          const deltaUp   = uploadBytes   - lastSyncedBytes.current.up;
+          const deltaDown = downloadBytes - lastSyncedBytes.current.down;
+          if (deltaUp + deltaDown < 65536) return; // < 64 KB, pas la peine d'envoyer
+          lastSyncedBytes.current = { up: uploadBytes, down: downloadBytes };
+          await apiClient.post("/mobile/vpn/traffic", {
+            bytesUp:   deltaUp   > 0 ? deltaUp   : 0,
+            bytesDown: deltaDown > 0 ? deltaDown : 0,
+          }).catch(() => {}); // hors ligne → ignorer silencieusement
+        } catch { /* moteur non disponible */ }
+      }, 90_000);
+    } else {
+      // Synchro finale à la déconnexion
+      if (trafficSyncTimer.current) {
+        clearInterval(trafficSyncTimer.current);
+        trafficSyncTimer.current = null;
+        try {
+          SxbVpnNative?.getTrafficStats?.().then((stats: any) => {
+            if (!stats) return;
+            const { uploadBytes, downloadBytes } = stats;
+            const deltaUp   = uploadBytes   - lastSyncedBytes.current.up;
+            const deltaDown = downloadBytes - lastSyncedBytes.current.down;
+            if (deltaUp + deltaDown < 1024) return;
+            apiClient.post("/mobile/vpn/traffic", {
+              bytesUp:   deltaUp   > 0 ? deltaUp   : 0,
+              bytesDown: deltaDown > 0 ? deltaDown : 0,
+            }).catch(() => {});
+            lastSyncedBytes.current = { up: 0, down: 0 };
+          }).catch(() => {});
+        } catch { /* ignore */ }
+      }
+    }
+    return () => {
+      if (trafficSyncTimer.current) { clearInterval(trafficSyncTimer.current); trafficSyncTimer.current = null; }
+    };
+  }, [isConnected]);
 
   // ── Connect ────────────────────────────────────────────────────────────────
 

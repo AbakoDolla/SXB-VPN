@@ -10,7 +10,7 @@ function withSxbVpnAndroid(config) {
     }
     const perms = mod.modResults.manifest["uses-permission"];
     const vpnPerm = "android.permission.BIND_VPN_SERVICE";
-    if (!perms.find((p) => p.0.["android:name"] === vpnPerm)) {
+    if (!perms.find((p) => p.$?.["android:name"] === vpnPerm)) {
       perms.push({ $: { "android:name": vpnPerm } });
     }
 

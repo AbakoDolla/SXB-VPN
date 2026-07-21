@@ -42,7 +42,9 @@
       ],
       "expo-font",
       "expo-web-browser",
-      "./plugins/withVpnPermissions"
+      "./plugins/withVpnPermissions",
+      "./plugins/withSxbVpn",
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": true

@@ -537,4 +537,58 @@ router.get('/history', async (req: AuthenticatedRequest, res: Response) => {
   }
 });
 
+// POST /api/mobile/vpn/traffic — synchronisation consommation data réelle
+// Appelé toutes les 90s par VpnContext quand VPN actif + à la déconnexion.
+// Décrémente le quota du client et enregistre dans traffic_usage.
+router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const schema = z.object({
+      bytesUp:   z.number().int().min(0),
+      bytesDown: z.number().int().min(0),
+    });
+    const { bytesUp, bytesDown } = schema.parse(req.body);
+    const totalBytes = BigInt(bytesUp + bytesDown);
+    if (totalBytes === 0n) return res.json({ ok: true });
+
+    const client: any = await findClientByUserId(req.user!.userId);
+    if (!client) return res.status(404).json({ error: "errors.mobile.no_account" });
+
+    if (prisma) {
+      // Incrémenter quotaUsed sur vpn_clients
+      await (prisma as any).vpnClient.update({
+        where: { id: client.id },
+        data: { quotaUsed: { increment: totalBytes } },
+      });
+      // Enregistrer dans traffic_usage
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO traffic_usage (id, "clientId", upload, download, timestamp)
+         VALUES (gen_random_uuid(), $1, $2, $3, NOW())`,
+        client.id,
+        BigInt(bytesUp),
+        BigInt(bytesDown),
+      ).catch(() => {}); // table peut avoir une structure différente — non-bloquant
+    } else {
+      // In-memory fallback
+      if (client.quotaUsed !== undefined) {
+        client.quotaUsed = BigInt(client.quotaUsed || 0) + totalBytes;
+      }
+    }
+
+    // Retourner le quota restant mis à jour pour que l'app puisse alerter l'utilisateur
+    const updatedClient: any = await findClientByUserId(req.user!.userId);
+    const state = computeAccountState(updatedClient || client);
+    return res.json({
+      ok: true,
+      quotaRemainingGb: state.quotaRemainingGb,
+      state: state.state,
+    });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: "errors.validation" });
+    }
+    console.error("Traffic sync error:", err);
+    return res.status(500).json({ error: "errors.server" });
+  }
+});
+
 export default router;

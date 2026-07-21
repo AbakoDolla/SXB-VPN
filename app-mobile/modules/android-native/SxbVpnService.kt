@@ -328,9 +328,16 @@ class SxbVpnService : VpnService() {
             if (password.isNotEmpty()) session.setPassword(password)
 
             val props = Properties()
-            props["StrictHostKeyChecking"] = "no"
+            // SÉCURITÉ : accepter les clés hôtes connues si disponibles, sinon no-strict
+            // En production les configs devraient inclure le fingerprint du serveur SSH.
+            // Pour l'instant on garde "no" pour compatibilité maximale avec les serveurs
+            // SSH des opérateurs africains (clés auto-signées, pas de PKI formelle).
+            // TODO: quand l'API mobile retournera "hostKeyFingerprint", vérifier ici.
+            val strictHostKey = cfg.optString("strictHostKey", "no")
+            props["StrictHostKeyChecking"] = strictHostKey
             props["ServerAliveInterval"]   = "30"
             props["ServerAliveCountMax"]   = "3"
+            props["ConnectTimeout"]        = "30000"
             if (sni.isNotEmpty()) props["hostname"] = sni
             session.setConfig(props)
             session.connect(30_000)

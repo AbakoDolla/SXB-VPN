@@ -4,6 +4,7 @@ import {
   fetchVpnProfiles, createVpnProfile, updateVpnProfile, deleteVpnProfile,
   fetchVpnProfileStats, VpnProfile,
 } from "../api/vpnProfiles";
+import { fetchPayloads, SshPayload } from "../api/payload";
 import {
   ShieldCheck, Plus, Trash2, RefreshCw, Edit3, X, AlertTriangle,
   Check, Wifi, Activity, Lock, Globe,
@@ -20,7 +21,7 @@ const PROTO_COLORS: Record<string, string> = {
   singbox:      "text-pink-400 bg-pink-500/10",
 };
 
-const PROTOCOLS = ['ssh', 'vless', 'vmess', 'trojan', 'shadowsocks', 'singbox'];
+const PROTOCOLS = ['ssh', 'ssh+payload', 'vless', 'vmess', 'trojan', 'shadowsocks', 'singbox'];
 const NETWORKS  = ['ws', 'grpc', 'tcp', 'h2'];
 
 const DEFAULT_FORM = {
@@ -28,6 +29,7 @@ const DEFAULT_FORM = {
   host: '', port: '', username: '', password: '',
   uuid: '', path: '/', network: 'ws', tls: false, sni: '', dns: '1.1.1.1',
   offlineValidDays: 7, method: 'aes-256-gcm', status: 'active',
+  payloadId: '' as string,
 };
 
 export default function VpnProfilesView({ currentUserRole }: Props) {
@@ -42,13 +44,19 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
   const [error, setError]       = useState('');
   const [filterProto, setFilterProto] = useState('all');
   const [search, setSearch]     = useState('');
+  const [payloads, setPayloads] = useState<SshPayload[]>([]);
 
   const load = async () => {
     setLoading(true);
     try {
-      const [profs, st] = await Promise.all([fetchVpnProfiles(), fetchVpnProfileStats()]);
+      const [profs, st, pays] = await Promise.all([
+        fetchVpnProfiles(),
+        fetchVpnProfileStats(),
+        fetchPayloads().catch(() => [] as SshPayload[]),
+      ]);
       setProfiles(profs);
       setStats(st);
+      setPayloads(pays);
     } catch { /* ignore */ } finally { setLoading(false); }
   };
 
@@ -66,6 +74,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
       uuid: p.uuid || '', path: p.path || '/', network: p.network, tls: p.tls,
       sni: p.sni || '', dns: p.dns || '1.1.1.1',
       offlineValidDays: p.offlineValidDays, method: p.method || 'aes-256-gcm', status: p.status,
+      payloadId: (p as any).payloadId || '',
     });
     setError(''); setShowForm(true);
   };
@@ -273,7 +282,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
                     placeholder="22" className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-emerald-500" />
                 </div>
 
-                {form.protocol === 'ssh' && <>
+                {['ssh', 'ssh+payload'].includes(form.protocol) && <>
                   <div>
                     <label className="block text-sm text-gray-400 mb-1.5">Utilisateur SSH</label>
                     <input value={form.username} onChange={e => f('username', e.target.value)}
@@ -285,6 +294,26 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
                       placeholder={editId ? 'Laisser vide pour conserver' : '••••••••'}
                       className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-emerald-500" />
                   </div>
+                  {form.protocol === 'ssh+payload' && (
+                    <div className="col-span-2">
+                      <label className="block text-sm text-gray-400 mb-1.5">
+                        Payload HTTP <span className="text-emerald-400">*</span>
+                        <span className="ml-2 text-xs text-gray-500">(injecté dans l'en-tête CONNECT)</span>
+                      </label>
+                      <select value={form.payloadId} onChange={e => f('payloadId', e.target.value)} required={form.protocol === 'ssh+payload'}
+                        className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-emerald-500">
+                        <option value="">— Sélectionner un payload —</option>
+                        {payloads.filter(p => p.status === 'active').map(p => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}{p.host ? ` (${p.host})` : ''}
+                          </option>
+                        ))}
+                      </select>
+                      {payloads.length === 0 && (
+                        <p className="text-xs text-amber-400 mt-1.5">⚠️ Aucun payload actif — créez-en un dans l'onglet SSH Payloads</p>
+                      )}
+                    </div>
+                  )}
                 </>}
 
                 {['vless', 'vmess'].includes(form.protocol) && (

@@ -1,8 +1,43 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
+import { Platform } from 'react-native';
 
 export const API_BASE_URL = 'https://vpnsxb.afrihall.com/api';
 const TIMEOUT = 15000;
+
+// ── Secure token storage ───────────────────────────────────────────────────────
+// Android : Android Keystore via expo-secure-store (chiffrement AES hardware)
+// iOS     : Keychain Services
+// Web/dev : AsyncStorage fallback (pas de Keystore disponible)
+const SEC_KEYS = {
+  ACCESS:  'sxb_access_token_v2',
+  REFRESH: 'sxb_refresh_token_v2',
+} as const;
+
+async function getSecureToken(key: string): Promise<string | null> {
+  try {
+    if (Platform.OS !== 'web') return await SecureStore.getItemAsync(key);
+    return await AsyncStorage.getItem('@' + key);
+  } catch { return null; }
+}
+
+async function setSecureToken(key: string, value: string): Promise<void> {
+  try {
+    if (Platform.OS !== 'web') {
+      await SecureStore.setItemAsync(key, value);
+    } else {
+      await AsyncStorage.setItem('@' + key, value);
+    }
+  } catch { /* ignore */ }
+}
+
+async function removeSecureToken(key: string): Promise<void> {
+  try {
+    if (Platform.OS !== 'web') await SecureStore.deleteItemAsync(key);
+    else await AsyncStorage.removeItem('@' + key);
+  } catch { /* ignore */ }
+}
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -16,7 +51,9 @@ export const apiClient = axios.create({
 // --- Request interceptor: attach JWT ---
 apiClient.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
-    const token = await AsyncStorage.getItem('@sxb_access_token');
+    // Lecture depuis SecureStore (Keystore Android) avec fallback AsyncStorage legacy
+    let token = await getSecureToken(SEC_KEYS.ACCESS);
+    if (!token) token = await AsyncStorage.getItem('@sxb_access_token'); // legacy migration
     if (token && config.headers) {
       config.headers['Authorization'] = `Bearer ${token}`;
     }
@@ -57,7 +94,9 @@ apiClient.interceptors.response.use(
       isRefreshing = true;
 
       try {
-        const refreshToken = await AsyncStorage.getItem('@sxb_refresh_token');
+        // Lire depuis SecureStore avec fallback legacy AsyncStorage
+        let refreshToken = await getSecureToken(SEC_KEYS.REFRESH);
+        if (!refreshToken) refreshToken = await AsyncStorage.getItem('@sxb_refresh_token');
         if (!refreshToken) throw new Error('No refresh token');
 
         const res = await axios.post(`${API_BASE_URL}/mobile/auth/refresh`, {
@@ -65,9 +104,12 @@ apiClient.interceptors.response.use(
         });
         const { accessToken, refreshToken: newRefresh } = res.data;
 
-        await AsyncStorage.multiSet([
-          ['@sxb_access_token', accessToken],
-          ['@sxb_refresh_token', newRefresh],
+        // Stocker dans SecureStore ET migrer depuis AsyncStorage legacy
+        await Promise.all([
+          setSecureToken(SEC_KEYS.ACCESS, accessToken),
+          setSecureToken(SEC_KEYS.REFRESH, newRefresh),
+          AsyncStorage.removeItem('@sxb_access_token').catch(() => {}),
+          AsyncStorage.removeItem('@sxb_refresh_token').catch(() => {}),
         ]);
 
         processQueue(accessToken);
@@ -81,10 +123,10 @@ apiClient.interceptors.response.use(
         // sinon chaque coupure de réseau déconnecte l'utilisateur et invalide le token.
         const isHttpError = !!_err?.response;
         if (isHttpError) {
-          await AsyncStorage.multiRemove([
-            '@sxb_access_token',
-            '@sxb_refresh_token',
-            '@sxb_user',
+          await Promise.all([
+            removeSecureToken(SEC_KEYS.ACCESS),
+            removeSecureToken(SEC_KEYS.REFRESH),
+            AsyncStorage.multiRemove(['@sxb_access_token', '@sxb_refresh_token', '@sxb_user']),
           ]);
         }
         refreshQueue = [];
@@ -98,5 +140,7 @@ apiClient.interceptors.response.use(
   },
 );
 
+// Exporter les helpers SecureStore pour que AuthContext les utilise
+export { getSecureToken, setSecureToken, removeSecureToken, SEC_KEYS };
 export default apiClient;
 

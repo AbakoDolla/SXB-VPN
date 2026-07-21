@@ -1,14 +1,14 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import apiClient from '@/services/apiClient';
+import apiClient, { getSecureToken, setSecureToken, removeSecureToken, SEC_KEYS } from '@/services/apiClient';
 import type { AccountState, User } from '@/types/api';
 
+// Clés non-sensibles restent dans AsyncStorage (infos user, onboarding...)
+// Clés sensibles (JWT) migrent vers SecureStore (Android Keystore / iOS Keychain)
 const KEYS = {
-  ACCESS:    '@sxb_access_token',
-  REFRESH:   '@sxb_refresh_token',
-  USER:      '@sxb_user',
-  ONBOARDING:'@sxb_onboarding_done',
-  DEVICE_ID: '@sxb_device_id',
+  USER:       '@sxb_user',
+  ONBOARDING: '@sxb_onboarding_done',
+  DEVICE_ID:  '@sxb_device_id',
 };
 
 // Generate a unique device ID stored permanently (survives app restarts)
@@ -82,14 +82,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    */
   const initSession = async () => {
     try {
-      const results = await AsyncStorage.multiGet([
-        KEYS.ACCESS,
-        KEYS.USER,
-        KEYS.ONBOARDING,
+      // JWT depuis SecureStore (Keystore Android), fallback AsyncStorage legacy
+      let accessToken = await getSecureToken(SEC_KEYS.ACCESS);
+      if (!accessToken) {
+        // Migration v1→v2 : lire l'ancien AsyncStorage et migrer vers SecureStore
+        accessToken = await AsyncStorage.getItem('@sxb_access_token');
+        const legacyRefresh = await AsyncStorage.getItem('@sxb_refresh_token');
+        if (accessToken) await setSecureToken(SEC_KEYS.ACCESS, accessToken);
+        if (legacyRefresh) await setSecureToken(SEC_KEYS.REFRESH, legacyRefresh);
+        // Nettoyer les anciens tokens en clair
+        await AsyncStorage.multiRemove(['@sxb_access_token', '@sxb_refresh_token']).catch(() => {});
+      }
+
+      const [storedUser, onboardingDone] = await Promise.all([
+        AsyncStorage.getItem(KEYS.USER),
+        AsyncStorage.getItem(KEYS.ONBOARDING),
       ]);
-      const accessToken  = results[0][1];
-      const storedUser   = results[1][1];
-      const onboardingDone = results[2][1];
 
       setHasSeenOnboarding(!!onboardingDone);
 
@@ -97,15 +105,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (storedUser) {
           try {
             const parsed = JSON.parse(storedUser);
-            // ✅ Restaurer immédiatement depuis le cache local
+            // ✅ Restaurer immédiatement depuis le cache local (Offline First)
             setUser(parsed.user ?? null);
             setAccountState(parsed.accountState ?? null);
-            setIsAuthenticated(true); // ← CORRECTIF PRINCIPAL
+            setIsAuthenticated(true);
           } catch (_) {}
         }
-
-        // Valider en arrière-plan (non-bloquant)
-        // Une erreur réseau ne déconnecte PAS l'utilisateur
+        // Valider en arrière-plan (non-bloquant — erreur réseau ne déconnecte PAS)
         validateSession().catch(() => {});
       }
     } catch (_) {
@@ -118,8 +124,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   /**
    * Valide la session en ligne.
    * - Succès → met à jour user/accountState depuis le serveur
-   * - 401    → session révoquée (token invalide côté serveur)
-   * - Erreur réseau → on NE révoque PAS (mode hors ligne conservé)
+   * - 401    → session révoquée côté serveur → déconnecter
+   * - Erreur réseau → session locale conservée (offline mode)
    */
   const validateSession = async () => {
     try {
@@ -130,14 +136,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setIsAuthenticated(true);
       await AsyncStorage.setItem(KEYS.USER, JSON.stringify({ user: u, accountState: as }));
     } catch (err: any) {
-      // Révoquer UNIQUEMENT sur 401 explicite du serveur
       if (err?.response?.status === 401) {
-        await AsyncStorage.multiRemove([KEYS.ACCESS, KEYS.REFRESH, KEYS.USER]);
+        await Promise.all([
+          removeSecureToken(SEC_KEYS.ACCESS),
+          removeSecureToken(SEC_KEYS.REFRESH),
+          AsyncStorage.removeItem(KEYS.USER),
+        ]);
         setIsAuthenticated(false);
         setUser(null);
         setAccountState(null);
       }
-      // Erreur réseau (timeout, hors ligne, etc.) → session locale conservée
+      // Erreur réseau → session locale conservée
     }
   };
 
@@ -146,10 +155,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setDeviceId(did);
     const res = await apiClient.post('/mobile/auth/activate', { token, deviceId: did });
     const { accessToken, refreshToken, user: u, accountState: as } = res.data;
-    await AsyncStorage.multiSet([
-      [KEYS.ACCESS,  accessToken],
-      [KEYS.REFRESH, refreshToken],
-      [KEYS.USER,    JSON.stringify({ user: u, accountState: as })],
+    // Stocker JWT dans SecureStore (Keystore Android / Keychain iOS)
+    await Promise.all([
+      setSecureToken(SEC_KEYS.ACCESS, accessToken),
+      setSecureToken(SEC_KEYS.REFRESH, refreshToken),
+      AsyncStorage.setItem(KEYS.USER, JSON.stringify({ user: u, accountState: as })),
     ]);
     setUser(u);
     setAccountState(as);
@@ -178,7 +188,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
-    await AsyncStorage.multiRemove([KEYS.ACCESS, KEYS.REFRESH, KEYS.USER]);
+    await Promise.all([
+      removeSecureToken(SEC_KEYS.ACCESS),
+      removeSecureToken(SEC_KEYS.REFRESH),
+      AsyncStorage.multiRemove([KEYS.USER, '@sxb_access_token', '@sxb_refresh_token']),
+    ]);
     setUser(null);
     setAccountState(null);
     setIsAuthenticated(false);
