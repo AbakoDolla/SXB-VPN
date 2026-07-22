@@ -186,23 +186,16 @@ jobs:
       - name: Corriger conflits META-INF (packagingOptions)
         run: |
           BUILD_GRADLE="android/app/build.gradle"
-          cat > /tmp/packaging_fix.py << 'PYEOF'
-import re, sys
-path = sys.argv[1]
-c = open(path).read()
-if "packagingOptions" not in c:
-    block = (
-        "\n    packagingOptions {"
-        "\n        exclude \"META-INF/versions/9/OSGI-INF/MANIFEST.MF\""
-        "\n        exclude \"META-INF/*.kotlin_module\""
-        "\n    }"
-    )
-    c = re.sub(r"android \{", "android {" + block, c, count=1)
-    open(path, "w").write(c)
-    print("[packaging] Exclusions META-INF ajoutees")
-else:
-    print("[packaging] Deja present")
-PYEOF
+          printf '%s\n' \
+            'import re, sys' \
+            'path = sys.argv[1]' \
+            'c = open(path).read()' \
+            'if "packagingOptions" not in c:' \
+            '    c = c.replace("android {", "android {\n    packagingOptions {\n        exclude \"META-INF/versions/9/OSGI-INF/MANIFEST.MF\"\n        exclude \"META-INF/*.kotlin_module\"\n    }", 1)' \
+            '    open(path, "w").write(c)' \
+            '    print("[packaging] Exclusions META-INF ajoutees")' \
+            'else: print("[packaging] Deja present")' \
+            > /tmp/packaging_fix.py
           python3 /tmp/packaging_fix.py "$BUILD_GRADLE"
 
       # ── Build APK release ─────────────────────────────────────────────────────
