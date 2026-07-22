@@ -177,6 +177,7 @@ jobs:
             'android.enableJetifier=true' \
             'android.enableR8.fullMode=false' \
             'kotlin.incremental=true' \
+            'newArchEnabled=true' \
             >> android/gradle.properties
           echo "[Gradle] Propriétés ajoutées (sans espaces parasites)"
 
