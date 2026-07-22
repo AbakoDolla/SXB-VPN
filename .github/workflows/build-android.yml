@@ -77,7 +77,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: app-mobile/android
-          key: android-prebuild-${{ runner.os }}-${{ hashFiles('app-mobile/package.json', 'app-mobile/app.json', 'app-mobile/plugins/**', 'app-mobile/modules/android-native/**/*.kt') }}
+          key: android-prebuild-v2-${{ runner.os }}-${{ hashFiles('app-mobile/package.json', 'app-mobile/app.json', 'app-mobile/plugins/**', 'app-mobile/modules/android-native/**/*.kt') }}
 
       # ── Expo prebuild ─────────────────────────────────────────────────────────
       - name: Expo prebuild (Android)
@@ -182,21 +182,19 @@ jobs:
             >> android/gradle.properties
           echo "[Gradle] Propriétés ajoutées (sans espaces parasites)"
 
-      # ── Corriger conflits META-INF (jsch + jspecify dupliqués) ─────────────────
-      - name: Corriger conflits META-INF (packagingOptions)
+      # ── Corriger conflits META-INF via init script Gradle (AGP 7+8 compat) ───
+      - name: Corriger conflits META-INF (init script Gradle)
         run: |
-          BUILD_GRADLE="android/app/build.gradle"
+          mkdir -p ~/.gradle/init.d
           printf '%s\n' \
-            'import re, sys' \
-            'path = sys.argv[1]' \
-            'c = open(path).read()' \
-            'if "packagingOptions" not in c:' \
-            '    c = c.replace("android {", "android {\n    packagingOptions {\n        exclude \"META-INF/versions/9/OSGI-INF/MANIFEST.MF\"\n        exclude \"META-INF/*.kotlin_module\"\n    }", 1)' \
-            '    open(path, "w").write(c)' \
-            '    print("[packaging] Exclusions META-INF ajoutees")' \
-            'else: print("[packaging] Deja present")' \
-            > /tmp/packaging_fix.py
-          python3 /tmp/packaging_fix.py "$BUILD_GRADLE"
+            'allprojects {' \
+            '    pluginManager.withPlugin("com.android.application") {' \
+            '        android.packagingOptions.exclude("META-INF/versions/9/OSGI-INF/MANIFEST.MF")' \
+            '        android.packagingOptions.exclude("META-INF/*.kotlin_module")' \
+            '    }' \
+            '}' \
+            > ~/.gradle/init.d/packaging-fix.gradle
+          echo "[packaging] Init script Gradle créé dans ~/.gradle/init.d/"
 
       # ── Build APK release ─────────────────────────────────────────────────────
       # BUG FIX #6 : les tâches -x assertWorkletsVersionTask / assertMinimalReactNativeVersionTask
