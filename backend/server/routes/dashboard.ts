@@ -10,7 +10,7 @@ import { requireAuth, requirePermission, AuthenticatedRequest } from "../middlew
 const router = Router();
 
 // GET /api/dashboard/stats — KPIs principaux
-router.get("/stats", requireAuth, requirePermission("analytics.view"), async (req: AuthenticatedRequest, res: Response) => {
+router.get("/stats", requireAuth, requirePermission("analytics.read"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     let activeUsers = 0;
     let expiredAccounts = 0;
@@ -59,7 +59,7 @@ router.get("/stats", requireAuth, requirePermission("analytics.view"), async (re
 });
 
 // GET /api/dashboard/traffic — graphique trafic sur les 7 derniers jours (données réelles)
-router.get("/traffic", requireAuth, requirePermission("analytics.view"), async (req: AuthenticatedRequest, res: Response) => {
+router.get("/traffic", requireAuth, requirePermission("analytics.read"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const now = new Date();
 
@@ -117,7 +117,7 @@ router.get("/traffic", requireAuth, requirePermission("analytics.view"), async (
 });
 
 // GET /api/dashboard/users — évolution des comptes VPN sur les 7 derniers jours
-router.get("/users", requireAuth, requirePermission("analytics.view"), async (req: AuthenticatedRequest, res: Response) => {
+router.get("/users", requireAuth, requirePermission("analytics.read"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const now = new Date();
 

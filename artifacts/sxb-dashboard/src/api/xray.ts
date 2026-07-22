@@ -33,8 +33,10 @@ export interface XrayStats {
 }
 
 export async function fetchXrayAccounts(): Promise<XrayAccount[]> {
-  const res = await apiRequest<{ accounts: XrayAccount[] }>('/xray/accounts');
-  return res.accounts;
+  try {
+    const res = await apiRequest<{ accounts: XrayAccount[] }>('/xray/accounts');
+    return res?.accounts ?? [];
+  } catch { return []; }
 }
 
 export async function createXrayAccount(data: Partial<XrayAccount>): Promise<XrayAccount> {
@@ -66,10 +68,15 @@ export async function getXrayLink(id: string): Promise<{ link: string; protocol:
 }
 
 export async function fetchXrayStats(): Promise<XrayStats> {
-  const res = await apiRequest<{ stats: XrayStats }>('/xray/stats');
-  return res.stats;
+  try {
+    const res = await apiRequest<{ stats: XrayStats }>('/xray/stats');
+    return res?.stats ?? { total: 0, active: 0, byProtocol: [] };
+  } catch { return { total: 0, active: 0, byProtocol: [] }; }
 }
 
 export async function fetchXrayProtocols(): Promise<{ protocols: string[]; methods: string[]; networks: string[] }> {
-  return apiRequest('/xray/protocols');
+  try {
+    const res = await apiRequest<{ protocols: string[]; methods: string[]; networks: string[] }>('/xray/protocols');
+    return res ?? { protocols: [], methods: [], networks: [] };
+  } catch { return { protocols: [], methods: [], networks: [] }; }
 }

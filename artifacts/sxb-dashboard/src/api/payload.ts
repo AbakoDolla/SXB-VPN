@@ -15,8 +15,10 @@ export interface SshPayload {
 }
 
 export async function fetchPayloads(): Promise<SshPayload[]> {
-  const res = await apiRequest<{ payloads: SshPayload[] }>('/payload');
-  return res.payloads;
+  try {
+    const res = await apiRequest<{ payloads: SshPayload[] }>('/payload');
+    return res?.payloads ?? [];
+  } catch { return []; }
 }
 
 export async function fetchPayload(id: string): Promise<SshPayload> {

@@ -25,8 +25,10 @@ export interface SingboxAccount {
 }
 
 export async function fetchSingboxAccounts(): Promise<SingboxAccount[]> {
-  const res = await apiRequest<{ accounts: SingboxAccount[] }>('/singbox/accounts');
-  return res.accounts;
+  try {
+    const res = await apiRequest<{ accounts: SingboxAccount[] }>('/singbox/accounts');
+    return res?.accounts ?? [];
+  } catch { return []; }
 }
 
 export async function createSingboxAccount(data: Partial<SingboxAccount>): Promise<SingboxAccount> {
@@ -58,10 +60,15 @@ export async function getSingboxConfig(id: string): Promise<{ config: object }> 
 }
 
 export async function fetchSingboxStats(): Promise<{ total: number; active: number }> {
-  const res = await apiRequest<{ stats: { total: number; active: number } }>('/singbox/stats');
-  return res.stats;
+  try {
+    const res = await apiRequest<{ stats: { total: number; active: number } }>('/singbox/stats');
+    return res?.stats ?? { total: 0, active: 0 };
+  } catch { return { total: 0, active: 0 }; }
 }
 
 export async function fetchSingboxProtocols(): Promise<{ protocols: string[]; networks: string[] }> {
-  return apiRequest('/singbox/protocols');
+  try {
+    const res = await apiRequest<{ protocols: string[]; networks: string[] }>('/singbox/protocols');
+    return res ?? { protocols: [], networks: [] };
+  } catch { return { protocols: [], networks: [] }; }
 }

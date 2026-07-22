@@ -43,8 +43,10 @@ export interface SshStats {
 }
 
 export async function fetchSshAccounts(): Promise<SshAccount[]> {
-  const res = await apiRequest<{ accounts: SshAccount[] }>('/ssh/accounts');
-  return res.accounts;
+  try {
+    const res = await apiRequest<{ accounts: SshAccount[] }>('/ssh/accounts');
+    return res?.accounts ?? [];
+  } catch { return []; }
 }
 
 export async function fetchSshAccount(id: string): Promise<SshAccount> {
@@ -83,6 +85,8 @@ export async function testSshConnection(id: string): Promise<{ reachable: boolea
 }
 
 export async function fetchSshStats(): Promise<SshStats> {
-  const res = await apiRequest<{ stats: SshStats }>('/ssh/stats');
-  return res.stats;
+  try {
+    const res = await apiRequest<{ stats: SshStats }>('/ssh/stats');
+    return res?.stats ?? { total: 0, active: 0, suspended: 0, expired: 0 };
+  } catch { return { total: 0, active: 0, suspended: 0, expired: 0 }; }
 }

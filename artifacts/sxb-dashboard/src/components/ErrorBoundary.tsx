@@ -23,6 +23,18 @@ class ErrorBoundary extends React.Component<Props, State> {
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
     console.error("[ErrorBoundary] Erreur attrapée :", error, info.componentStack);
+    // Send error to backend for logging
+    try {
+      fetch("/xapi/audit-logs/error", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          error: error.message,
+          stack: error.stack,
+          component: info.componentStack,
+        }),
+      }).catch(() => {});
+    } catch { /* ignore */ }
   }
 
   componentDidUpdate(prevProps: Props) {
@@ -62,7 +74,7 @@ class ErrorBoundary extends React.Component<Props, State> {
           <div className="flex gap-3 justify-center">
             <button
               onClick={this.handleRetry}
-              className="flex items-center gap-2 px-4 py-2 bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 rounded-lg text-sm hover:bg-cyan-500/30 transition-colors"
+              className="flex items-center gap-2 px-4 py-2 bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 rounded-lg text-sm hover:bg-cyan-500/30 transition-colors cursor-pointer"
             >
               <RefreshCw className="w-4 h-4" />
               Réessayer
@@ -72,7 +84,7 @@ class ErrorBoundary extends React.Component<Props, State> {
                 this.setState({ hasError: false, error: null });
                 window.location.hash = "";
               }}
-              className="flex items-center gap-2 px-4 py-2 bg-white/5 text-gray-300 border border-white/10 rounded-lg text-sm hover:bg-white/10 transition-colors"
+              className="flex items-center gap-2 px-4 py-2 bg-white/5 text-gray-300 border border-white/10 rounded-lg text-sm hover:bg-white/10 transition-colors cursor-pointer"
             >
               <Home className="w-4 h-4" />
               Tableau de bord
