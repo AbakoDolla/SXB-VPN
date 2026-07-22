@@ -201,7 +201,7 @@ export default function XrayManagerView({ currentUserRole }: Props) {
                 <tr key={acc.id} className="hover:bg-white/2 transition-colors">
                   <td className="px-4 py-3">
                     <span className="text-white text-sm font-medium">{acc.name}</span>
-                    {acc.client && <p className="text-xs text-gray-600">{acc.client.user.name}</p>}
+                    {acc.client && <p className="text-xs text-gray-600">{acc.client?.user?.name ?? "—"}</p>}
                   </td>
                   <td className="px-4 py-3">
                     <span className={`text-xs px-2 py-0.5 rounded-full font-medium capitalize ${PROTO_COLORS[acc.protocol] || "text-gray-400 bg-gray-500/10"}`}>

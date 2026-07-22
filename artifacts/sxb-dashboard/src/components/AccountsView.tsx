@@ -426,7 +426,7 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
                           </button>
                         </div>
                       </td>
-                      <td className="px-4 py-2.5 text-gray-300 text-xs">{tok.user.email}</td>
+                      <td className="px-4 py-2.5 text-gray-300 text-xs">{tok.user?.email ?? "—"}</td>
                       <td className="px-4 py-2.5">
                         <span className={`text-xs font-medium ${
                           tok.status === 'active' ? 'text-emerald-400' :

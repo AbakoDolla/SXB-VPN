@@ -205,7 +205,7 @@ export default function TokensView({ currentUserRole }: TokensViewProps) {
                         <div>
                           <p className="text-white font-medium text-sm">{clientName}</p>
                           {client?.user?.email && (
-                            <p className="text-gray-500 text-xs">{client.user.email}</p>
+                            <p className="text-gray-500 text-xs">{client.user?.email ?? "—"}</p>
                           )}
                         </div>
                       </td>
