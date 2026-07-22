@@ -591,4 +591,76 @@ router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => 
   }
 });
 
+// POST /api/mobile/vpn/usage — support usage data upload for V2Ray / general configs (Dashboard sync)
+const usageSchema = z.object({
+  download:       z.number().int().min(0),       // bytes
+  upload:         z.number().int().min(0),         // bytes
+  duration:       z.number().int().min(0),       // seconds
+  deviceId:       z.string().optional(),
+  subscriptionId: z.string().optional(),
+});
+
+router.post("/vpn/usage", async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { download, upload, duration, deviceId, subscriptionId } = usageSchema.parse(req.body);
+    const totalBytes = BigInt(download + upload);
+
+    let client: any = await findClientByUserId(req.user!.userId);
+    if (!client && deviceId && prisma) {
+      client = await (prisma as any).vpnClient.findUnique({ where: { deviceId } });
+    }
+
+    if (!client) {
+      return res.status(404).json({ error: "errors.mobile.no_account", message: "Client non trouvé" });
+    }
+
+    if (prisma) {
+      // Mettre à jour vpnClient
+      await (prisma as any).vpnClient.update({
+        where: { id: client.id },
+        data: { quotaUsed: { increment: totalBytes } },
+      });
+
+      // Mettre à jour la subscription si fournie (ou trouver l'active)
+      let subId = subscriptionId;
+      if (!subId) {
+        const activeSub = await (prisma as any).subscription.findFirst({
+          where: { clientId: client.id, status: "active" },
+          orderBy: { createdAt: "desc" },
+        });
+        subId = activeSub?.id;
+      }
+
+      if (subId) {
+        await (prisma as any).subscription.update({
+          where: { id: subId },
+          data: { quotaUsed: { increment: totalBytes } },
+        });
+      }
+
+      // Enregistrer dans traffic_usage
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO traffic_usage (id, "clientId", upload, download, timestamp)
+         VALUES (gen_random_uuid(), $1, $2, $3, NOW())`,
+        client.id,
+        BigInt(upload),
+        BigInt(download),
+      ).catch(() => {});
+    }
+
+    const updatedClient: any = await findClientByUserId(req.user!.userId);
+    const state = computeAccountState(updatedClient || client);
+
+    return res.json({
+      success: true,
+      message: "Usage enregistré avec succès",
+      quotaRemainingGb: state.quotaRemainingGb,
+      state: state.state,
+    });
+  } catch (err: any) {
+    console.error("vpn/usage endpoint error:", err);
+    return res.status(500).json({ error: "errors.server", message: "Erreur enregistrement de consommation" });
+  }
+});
+
 export default router;

@@ -3,7 +3,7 @@ import type { VpnState, StartVpnOptions, VpnTrafficStats } from './SxbVpn.types'
 export * from './SxbVpn.types';
 
 const SxbVpnNative = NativeModulesProxy.SxbVpnNative;
-const emitter = new EventEmitter(SxbVpnNative ?? {});
+const emitter = new EventEmitter((SxbVpnNative ?? {}) as any);
 
 const EVENT_STATE_CHANGE = 'onVpnStateChange';
 const EVENT_TRAFFIC      = 'onTrafficUpdate';
@@ -50,13 +50,13 @@ export function isVpnPermissionGranted(): boolean {
 }
 
 export function addVpnStateListener(listener: (state: VpnState) => void) {
-  return emitter.addListener(EVENT_STATE_CHANGE, listener);
+  return (emitter as any).addListener(EVENT_STATE_CHANGE, listener);
 }
 
 export function addTrafficListener(listener: (stats: VpnTrafficStats) => void) {
-  return emitter.addListener(EVENT_TRAFFIC, listener);
+  return (emitter as any).addListener(EVENT_TRAFFIC, listener);
 }
 
 export function addLogListener(listener: (log: string) => void) {
-  return emitter.addListener(EVENT_LOG, listener);
+  return (emitter as any).addListener(EVENT_LOG, listener);
 }

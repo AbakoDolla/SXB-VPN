@@ -31,7 +31,8 @@ object SecurityModule {
         val hasFrida: Boolean,
         val hasXposed: Boolean,
         val isEmulator: Boolean,
-        val isSafe: Boolean = !isRooted && !hasFrida && !hasXposed,
+        val isHooked: Boolean,
+        val isSafe: Boolean = !isRooted && !hasFrida && !hasXposed && !isHooked,
     )
 
     // ── Audit complet ─────────────────────────────────────────────────────────
@@ -40,13 +41,66 @@ object SecurityModule {
         val frida   = hasFrida()
         val xposed  = hasXposed()
         val emulator = isEmulator()
+        val hooked   = isHooked()
 
         if (rooted)  Log.w(TAG, "⚠️ Appareil rooté détecté")
         if (frida)   Log.w(TAG, "⚠️ Frida détecté")
         if (xposed)  Log.w(TAG, "⚠️ Xposed détecté")
         if (emulator) Log.i(TAG, "ℹ️ Émulateur détecté")
+        if (hooked)   Log.w(TAG, "⚠️ Hooking détecté")
 
-        return SecurityReport(rooted, frida, xposed, emulator)
+        return SecurityReport(rooted, frida, xposed, emulator, hooked)
+    }
+
+    // ── Détection de hook (analyse de la stack trace) ─────────────────────────
+    fun isHooked(): Boolean {
+        try {
+            throw Exception("Hook detection check")
+        } catch (e: Exception) {
+            for (element in e.stackTrace) {
+                val className = element.className.lowercase()
+                if (className.contains("com.saurik.substrate") ||
+                    className.contains("de.robv.android.xposed") ||
+                    className.contains("frida") ||
+                    className.contains("club.ccorange")) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    // ── Vérification de signature ────────────────────────────────────────────
+    fun verifySignature(ctx: Context, expectedSignatureHash: String): Boolean {
+        try {
+            val pm = ctx.packageManager
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES
+            } else {
+                @Suppress("DEPRECATION")
+                android.content.pm.PackageManager.GET_SIGNATURES
+            }
+
+            val info = pm.getPackageInfo(ctx.packageName, flags)
+            val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                info.signingInfo?.apkContentsSigners
+            } else {
+                @Suppress("DEPRECATION")
+                info.signatures
+            }
+
+            if (signatures != null) {
+                for (sig in signatures) {
+                    val md = java.security.MessageDigest.getInstance("SHA-256")
+                    md.update(sig.toByteArray())
+                    val hash = md.digest().joinToString("") { "%02x".format(it) }
+                    if (hash.equals(expectedSignatureHash, ignoreCase = true)) {
+                        return true
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return expectedSignatureHash.isEmpty()
     }
 
     // ── Détection Root ────────────────────────────────────────────────────────

@@ -1,12 +1,22 @@
 {
-  "extends": "expo/tsconfig.base",
   "compilerOptions": {
     "baseUrl": ".",
     "strict": true,
+    "target": "es2022",
+    "module": "esnext",
+    "moduleResolution": "node",
+    "jsx": "react-native",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
     "paths": {
-      "@/*": [
-        "./*"
-      ]
+      "@/*": ["./*"],
+      "react": ["../node_modules/react"],
+      "react-native": ["../node_modules/react-native"],
+      "expo-secure-store": ["../node_modules/expo-secure-store"],
+      "@react-native-async-storage/async-storage": ["../node_modules/@react-native-async-storage/async-storage"],
+      "expo-constants": ["../node_modules/expo-constants"],
+      "expo-router": ["../node_modules/expo-router"]
     }
   },
   "include": [
@@ -17,7 +27,7 @@
   ],
   "references": [
     {
-      "path": "../../lib/api-client-react"
+      "path": "../lib/api-client-react"
     }
   ]
 }

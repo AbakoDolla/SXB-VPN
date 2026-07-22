@@ -194,9 +194,25 @@ class SxbVpnService : VpnService() {
             broadcastLog("[SXB] ⚠️ Appareil rooté — risque de sécurité")
         }
 
-        val json    = intent?.getStringExtra("configJson") ?: return START_NOT_STICKY
-        val proto   = intent.getStringExtra("protocol")?.lowercase() ?: return START_NOT_STICKY
-        killSwitchEnabled = intent.getBooleanExtra("killSwitch", false)
+        var json    = intent?.getStringExtra("configJson") ?: ""
+        var proto   = intent?.getStringExtra("protocol")?.lowercase() ?: ""
+
+        if (json.isEmpty() || proto.isEmpty()) {
+            try {
+                val confFile = File(filesDir, "sb_config.json")
+                if (confFile.exists()) {
+                    json = confFile.readText(Charsets.UTF_8)
+                    val cfg = org.json.JSONObject(json)
+                    proto = cfg.optString("protocol", "").lowercase()
+                }
+            } catch (_: Exception) {}
+        }
+
+        if (json.isEmpty() || proto.isEmpty()) {
+            return START_NOT_STICKY
+        }
+
+        killSwitchEnabled = intent?.getBooleanExtra("killSwitch", false) ?: false
         configJson  = json
 
         running.set(true)
