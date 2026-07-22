@@ -1,12 +1,15 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   Animated, Dimensions, Image, Modal, Pressable,
-  ScrollView, StyleSheet, Text, View,
+  ScrollView, StyleSheet, Text, View, ActivityIndicator,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import Constants from "expo-constants";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import apiClient from "@/services/apiClient";
 import { useAuthContext } from "@/contexts/AuthContext";
 import { useVpnContext, formatBytes, formatSpeed } from "@/contexts/VpnContext";
 import Colors from "@/constants/colors";
@@ -94,11 +97,71 @@ function VpnLogsModal({
 // ── Main Home Screen ──────────────────────────────────────────────────────────
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
-  const { user, accountState, refreshAccountState } = useAuthContext();
-  const { isConnected, isConnecting, selectedProtocol, subscriptionUrl, connect, disconnect, traffic } = useVpnContext();
+  const { user, accountState, refreshAccountState, deviceId } = useAuthContext();
+  const { isConnected, isConnecting, selectedProtocol, subscriptionUrl, connect, disconnect, traffic, refreshVpnConfig } = useVpnContext();
 
   const [logsVisible, setLogsVisible] = useState(false);
   const [timer, setTimer] = useState(0);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [ping, setPing] = useState<number | null>(null);
+  const [connectedIp, setConnectedIp] = useState<string>("—");
+  const [lastConnection, setLastConnection] = useState<string>("—");
+
+  useEffect(() => {
+    let timerId: ReturnType<typeof setInterval>;
+    if (isConnected) {
+      const measurePing = async () => {
+        const start = Date.now();
+        try {
+          await apiClient.get("/health", { timeout: 4000 });
+          setPing(Date.now() - start);
+        } catch {
+          setPing(null);
+        }
+      };
+      measurePing();
+      timerId = setInterval(measurePing, 10_000);
+    } else {
+      setPing(null);
+    }
+    return () => clearInterval(timerId);
+  }, [isConnected]);
+
+  useEffect(() => {
+    if (isConnected) {
+      apiClient.get("https://api.ipify.org?format=json", { timeout: 5000 })
+        .then(res => setConnectedIp(res.data?.ip || "—"))
+        .catch(() => setConnectedIp("—"));
+    } else {
+      setConnectedIp("—");
+    }
+  }, [isConnected]);
+
+  useEffect(() => {
+    if (isConnected) {
+      const nowStr = new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+      setLastConnection(nowStr);
+      AsyncStorage.setItem("@last_conn_time", nowStr).catch(() => {});
+    }
+  }, [isConnected]);
+
+  useEffect(() => {
+    AsyncStorage.getItem("@last_conn_time").then(t => {
+      if (t) setLastConnection(t);
+    });
+  }, []);
+
+  const handleRefresh = async () => {
+    if (isRefreshing) return;
+    setIsRefreshing(true);
+    try {
+      await refreshVpnConfig();
+      await refreshAccountState();
+    } catch (_) {
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const glowAnim  = useRef(new Animated.Value(0.5)).current;
@@ -241,9 +304,18 @@ export default function HomeScreen() {
             <Text style={styles.greeting}>Bonjour 👋</Text>
             <Text style={styles.userName}>{user?.name || "Utilisateur"}</Text>
           </View>
-          <Pressable onPress={() => router.push("/settings")} style={styles.notifBtn}>
-            <Ionicons name="settings-outline" size={20} color={Colors.textSecondary} />
-          </Pressable>
+          <View style={{ flexDirection: "row", gap: 10 }}>
+            <Pressable onPress={handleRefresh} style={styles.notifBtn} disabled={isRefreshing}>
+              {isRefreshing ? (
+                <ActivityIndicator size="small" color={Colors.primary} />
+              ) : (
+                <Ionicons name="refresh" size={20} color={Colors.textSecondary} />
+              )}
+            </Pressable>
+            <Pressable onPress={() => router.push("/settings")} style={styles.notifBtn}>
+              <Ionicons name="settings-outline" size={20} color={Colors.textSecondary} />
+            </Pressable>
+          </View>
         </View>
 
         {/* VPN Button Area */}
@@ -376,19 +448,36 @@ export default function HomeScreen() {
           </View>
         )}
 
-        {/* Protocol section */}
-        {accountState && accountState.state === "ready" && (
-          <View style={styles.protoCard}>
-            <Text style={styles.cardLabel}>CONNEXION</Text>
-            <View style={styles.protoRow}>
-              <Ionicons name="globe-outline" size={16} color={Colors.textMuted} />
-              <Text style={styles.protoLabel}>Protocole actif</Text>
-              <View style={styles.protoBadge}>
-                <Text style={styles.protoBadgeText}>{selectedProtocol || "AUTO"}</Text>
-              </View>
+        {/* Infos Connexion & Système */}
+        <View style={styles.statsCard}>
+          <Text style={styles.cardLabel}>INFORMATIONS DE CONNEXION</Text>
+          <View style={styles.infoGrid}>
+            <View style={styles.infoRow}>
+              <Text style={styles.infoKey}>Adresse IP</Text>
+              <Text style={styles.infoVal}>{connectedIp}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <Text style={styles.infoKey}>Protocole</Text>
+              <Text style={styles.infoVal}>{selectedProtocol || "SSH"}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <Text style={styles.infoKey}>Ping</Text>
+              <Text style={styles.infoVal}>{ping ? `${ping} ms` : "—"}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <Text style={styles.infoKey}>Dernière conn.</Text>
+              <Text style={styles.infoVal}>{lastConnection}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <Text style={styles.infoKey}>Appareil ID</Text>
+              <Text style={styles.infoVal}>{deviceId ? deviceId.slice(0, 15) : "—"}</Text>
+            </View>
+            <View style={styles.infoRow}>
+              <Text style={styles.infoKey}>Version App</Text>
+              <Text style={styles.infoVal}>v{Constants.expoConfig?.version ?? "1.0.0"}</Text>
             </View>
           </View>
-        )}
+        </View>
 
         {/* Quick actions */}
         <View style={styles.quickRow}>
@@ -453,6 +542,10 @@ const styles = StyleSheet.create({
   logsLinkText: { fontSize: 12, color: Colors.primary, fontFamily: "Inter_500Medium" },
   statsCard: { backgroundColor: Colors.bgCard, borderRadius: 20, borderWidth: 1, borderColor: Colors.border, padding: 16, gap: 12 },
   cardLabel: { fontSize: 10, fontWeight: "700", color: Colors.textMuted, letterSpacing: 1.5, fontFamily: "Inter_700Bold" },
+  infoGrid: { gap: 8, marginTop: 4 },
+  infoRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  infoKey: { fontSize: 12, color: Colors.textMuted, fontFamily: "Inter_400Regular" },
+  infoVal: { fontSize: 13, color: "#FFF", fontFamily: "Inter_600SemiBold" },
   statsRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   statItem: { flex: 1, alignItems: "center", gap: 4 },
   statDivider: { width: 1, height: 36, backgroundColor: Colors.border },

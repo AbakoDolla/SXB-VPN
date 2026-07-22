@@ -193,6 +193,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                 putBoolean("hasFrida",   report.hasFrida)
                 putBoolean("hasXposed",  report.hasXposed)
                 putBoolean("isEmulator", report.isEmulator)
+                putBoolean("isHooked",   report.isHooked)
                 putBoolean("isSafe",     report.isSafe)
             }
             promise.resolve(map)

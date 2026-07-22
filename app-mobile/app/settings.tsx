@@ -119,6 +119,138 @@ function LangModal({ visible, current, onSelect, onClose }: {
   );
 }
 
+// ── V2Ray JSON Editor Modal ──────────────────────────────────────────────────
+
+function V2rayJsonModal({ visible, onSave, onClose }: {
+  visible: boolean; onSave: (config: any) => Promise<void>; onClose: () => void;
+}) {
+  const [jsonText, setJsonText] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [parsedConfig, setParsedConfig] = useState<any | null>(null);
+
+  const handleValidate = () => {
+    setError(null);
+    setParsedConfig(null);
+    if (!jsonText.trim()) {
+      setError("Le texte JSON est vide");
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(jsonText.trim());
+
+      // Auto-conversion of common V2Ray JSON configurations
+      // Standardizes fields to SXB-Vpn format (host, port, protocol, uuid, path, network, tls, etc.)
+      const normalized: any = {
+        protocol: parsed.protocol || parsed.type || "vless",
+        host: parsed.host || parsed.address || parsed.add || parsed.server || "",
+        port: Number(parsed.port || parsed.server_port || 443),
+        uuid: parsed.uuid || parsed.id || parsed.password || "",
+        password: parsed.password || parsed.uuid || parsed.id || "",
+        network: parsed.network || parsed.net || "ws",
+        path: parsed.path || parsed.wsPath || "/",
+        tls: parsed.tls === "tls" || parsed.tls === true || parsed.security === "tls" || false,
+        sni: parsed.sni || parsed.host || parsed.serverName || "",
+        flow: parsed.flow || "",
+      };
+
+      if (!normalized.host) {
+        setError("Erreur : l'hôte (host/address) est obligatoire");
+        return null;
+      }
+
+      setParsedConfig(normalized);
+      return normalized;
+    } catch (e: any) {
+      setError(`Erreur de syntaxe JSON : ${e.message}`);
+      return null;
+    }
+  };
+
+  const handleApply = async () => {
+    const config = handleValidate();
+    if (!config) return;
+    try {
+      await onSave(config);
+      Alert.alert("✅ Configuration enregistrée", "La configuration V2Ray a été appliquée avec succès !");
+      onClose();
+    } catch (err: any) {
+      setError(`Erreur d'application : ${err.message}`);
+    }
+  };
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <View style={styles.logsOverlay}>
+        <View style={[styles.logsSheet, { maxHeight: "85%", minHeight: 450 }]}>
+          <View style={styles.logsHeader}>
+            <View style={styles.logsHandle} />
+            <Text style={styles.logsTitle}>Éditeur JSON V2Ray</Text>
+            <Pressable onPress={onClose}>
+              <Ionicons name="close" size={22} color={Colors.textSecondary} />
+            </Pressable>
+          </View>
+
+          <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
+            <Text style={{ fontSize: 12, color: Colors.textMuted, marginBottom: 8 }}>
+              Collez ou écrivez une configuration V2Ray au format JSON brut (VLESS, VMess, Trojan, Shadowsocks).
+            </Text>
+
+            <TextInput
+              style={{
+                backgroundColor: "#060914",
+                borderWidth: 1,
+                borderColor: Colors.border,
+                borderRadius: 12,
+                color: "#00FF66",
+                fontFamily: "monospace",
+                fontSize: 12,
+                padding: 12,
+                minHeight: 180,
+                textAlignVertical: "top",
+              }}
+              multiline
+              placeholder={`{\n  "protocol": "vless",\n  "address": "mon-serveur.com",\n  "port": 443,\n  "id": "votre-uuid-ici",\n  "tls": true\n}`}
+              placeholderTextColor={Colors.textMuted}
+              value={jsonText}
+              onChangeText={(t) => { setJsonText(t); setError(null); setParsedConfig(null); }}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+
+            {error && (
+              <View style={{ backgroundColor: "rgba(255, 68, 68, 0.1)", borderWidth: 1, borderColor: "rgba(255, 68, 68, 0.3)", borderRadius: 10, padding: 10, marginTop: 12 }}>
+                <Text style={{ color: "#FF4444", fontSize: 12, fontFamily: "Inter_500Medium" }}>{error}</Text>
+              </View>
+            )}
+
+            {parsedConfig && (
+              <View style={{ backgroundColor: "rgba(0, 255, 102, 0.05)", borderWidth: 1, borderColor: "rgba(0, 255, 102, 0.2)", borderRadius: 10, padding: 12, marginTop: 12, gap: 4 }}>
+                <Text style={{ color: "#00FF66", fontSize: 11, fontWeight: "700", letterSpacing: 1 }}>PRÉVISUALISATION ET CONVERSION</Text>
+                <View style={{ flexDirection: "row", justifyContent: "space-between" }}><Text style={{ color: Colors.textMuted, fontSize: 12 }}>Protocole :</Text><Text style={{ color: "#FFF", fontSize: 12, fontWeight: "700" }}>{parsedConfig.protocol?.toUpperCase()}</Text></View>
+                <View style={{ flexDirection: "row", justifyContent: "space-between" }}><Text style={{ color: Colors.textMuted, fontSize: 12 }}>Serveur / Host :</Text><Text style={{ color: "#FFF", fontSize: 12 }}>{parsedConfig.host}</Text></View>
+                <View style={{ flexDirection: "row", justifyContent: "space-between" }}><Text style={{ color: Colors.textMuted, fontSize: 12 }}>Port :</Text><Text style={{ color: "#FFF", fontSize: 12 }}>{parsedConfig.port}</Text></View>
+                <View style={{ flexDirection: "row", justifyContent: "space-between" }}><Text style={{ color: Colors.textMuted, fontSize: 12 }}>ID / UUID :</Text><Text style={{ color: "#FFF", fontSize: 12 }}>{parsedConfig.uuid ? `${parsedConfig.uuid.slice(0, 18)}...` : "—"}</Text></View>
+                <View style={{ flexDirection: "row", justifyContent: "space-between" }}><Text style={{ color: Colors.textMuted, fontSize: 12 }}>TLS :</Text><Text style={{ color: "#FFF", fontSize: 12 }}>{parsedConfig.tls ? "Actif (ON)" : "Inactif (OFF)"}</Text></View>
+                <View style={{ flexDirection: "row", justifyContent: "space-between" }}><Text style={{ color: Colors.textMuted, fontSize: 12 }}>Réseau / Transport :</Text><Text style={{ color: "#FFF", fontSize: 12 }}>{parsedConfig.network?.toUpperCase() || "TCP"}</Text></View>
+                {parsedConfig.path && <View style={{ flexDirection: "row", justifyContent: "space-between" }}><Text style={{ color: Colors.textMuted, fontSize: 12 }}>Path (WS) :</Text><Text style={{ color: "#FFF", fontSize: 12 }}>{parsedConfig.path}</Text></View>}
+              </View>
+            )}
+
+            <View style={{ flexDirection: "row", gap: 10, marginTop: 16, marginBottom: 12 }}>
+              <Pressable onPress={handleValidate} style={{ flex: 1, paddingVertical: 12, borderRadius: 12, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.bgCard, alignItems: "center" }}>
+                <Text style={{ color: "#FFF", fontFamily: "Inter_600SemiBold", fontSize: 13 }}>Valider le JSON</Text>
+              </Pressable>
+              <Pressable onPress={handleApply} style={{ flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: Colors.primaryDim, borderWidth: 1, borderColor: Colors.primary + "40", alignItems: "center" }}>
+                <Text style={{ color: Colors.primary, fontFamily: "Inter_700Bold", fontSize: 13 }}>Appliquer</Text>
+              </Pressable>
+            </View>
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 // ── Logs modal ────────────────────────────────────────────────────────────────
 
 function LogsModal({ visible, logs, onClose }: { visible: boolean; logs: string[]; onClose: () => void }) {
@@ -216,11 +348,13 @@ export default function SettingsScreen() {
     killSwitch: ksCtx, autoReconnect: arCtx,
     setKillSwitch: setKsCtx, setAutoReconnect: setArCtx,
     traffic,
+    manuallySetConfig,
   } = useVpnContext();
   const { language, setLanguage } = useLanguageContext();
 
   // State
   const [notifPush,   setNotifPush]   = useState(true);
+  const [v2rayModal,  setV2rayModal]  = useState(false);
   const [pinEnabled,  setPinEnabled]  = useState(false);
   const [pinModal,    setPinModal]    = useState<"set"|"verify"|null>(null);
   const [autoReconnect, setAutoReconnect] = useState(true);
@@ -276,8 +410,8 @@ export default function SettingsScreen() {
   };
 
   const handlePinSet = async (pin: string) => {
-    // XOR-encoded PIN for minimal obfuscation (real apps use Keychain/Keystore)
-    const encoded = Buffer.from(pin).toString("base64");
+    // btoa-encoded PIN for minimal obfuscation
+    const encoded = btoa(pin);
     await AsyncStorage.setItem("@sxb_pin", encoded);
     setPinEnabled(true);
     setPinModal(null);
@@ -419,6 +553,11 @@ export default function SettingsScreen() {
           />
           <View style={styles.divider} />
           <Row
+            icon="code-working-outline" label="Éditeur JSON V2Ray"
+            onPress={() => setV2rayModal(true)} color={Colors.primary}
+          />
+          <View style={styles.divider} />
+          <Row
             icon="refresh-outline" label="Reconnexion automatique"
             toggle toggleValue={autoReconnect} onToggle={handleAutoReconnect}
             color={Colors.primary}
@@ -515,7 +654,7 @@ export default function SettingsScreen() {
         <Section title="À PROPOS">
           <Row icon="information-circle-outline" label="Version" value={`v${Constants.expoConfig?.version ?? "1.0.0"}`} />
           <View style={styles.divider} />
-          <Row icon="code-slash-outline" label="Build" value={Constants.expoConfig?.buildNumber ?? "1"} />
+          <Row icon="code-slash-outline" label="Build" value={Constants.expoConfig?.android?.versionCode?.toString() ?? "1"} />
           <View style={styles.divider} />
           <Row
             icon="headset-outline" label="Support"
@@ -541,11 +680,16 @@ export default function SettingsScreen() {
       {/* Modals */}
       <LangModal
         visible={langModal} current={language}
-        onSelect={setLanguage} onClose={() => setLangModal(false)}
+        onSelect={(code) => setLanguage(code as any)} onClose={() => setLangModal(false)}
       />
       <LogsModal
         visible={logsModal} logs={logs}
         onClose={() => setLogsModal(false)}
+      />
+      <V2rayJsonModal
+        visible={v2rayModal}
+        onSave={manuallySetConfig}
+        onClose={() => setV2rayModal(false)}
       />
       {pinModal && (
         <PinModal

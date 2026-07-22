@@ -154,6 +154,7 @@ interface VpnContextType {
   requestVpnPermission: () => Promise<boolean>;
   setKillSwitch: (enabled: boolean) => Promise<void>;
   setAutoReconnect: (enabled: boolean) => Promise<void>;
+  manuallySetConfig: (config: VpnConnectionConfig) => Promise<void>;
 }
 
 // ── Contexte ─────────────────────────────────────────────────────────────────
@@ -168,6 +169,7 @@ const VpnContext = createContext<VpnContextType>({
   selectProtocol: async () => {}, refreshVpnConfig: async () => {},
   requestVpnPermission: async () => false,
   setKillSwitch: async () => {}, setAutoReconnect: async () => {},
+  manuallySetConfig: async () => {},
 });
 
 // ── Module natif ──────────────────────────────────────────────────────────────
@@ -203,7 +205,7 @@ export function formatSpeed(bytesPerSec: number): string {
 // ═════════════════════════════════════════════════════════════════════════════
 
 export function VpnProvider({ children }: { children: React.ReactNode }) {
-  const { refreshAccountState } = useAuthContext();
+  const { refreshAccountState, deviceId } = useAuthContext();
 
   // ── État ──────────────────────────────────────────────────────────────────
   const [isConnected,         setIsConnected]         = useState(false);
@@ -213,6 +215,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const [subscriptionUrl,     setSubscriptionUrl]     = useState<string | null>(null);
   const [serverInfo,          setServerInfo]          = useState<string | null>(null);
   const [connectionConfig,    setConnectionConfig]    = useState<VpnConnectionConfig | null>(null);
+  const [subscriptionId,      setSubscriptionId]      = useState<string | null>(null);
   const [logs,                setLogs]                = useState<string[]>([]);
   const [hasVpnPermission,    setHasVpnPermission]    = useState(false);
   const [killSwitch,          setKillSwitchState]     = useState(false);
@@ -357,23 +360,33 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isConnected, startTrafficPoller, stopTrafficPoller]);
 
-  // Synchro trafic vers backend toutes les 90s
+  // Synchro trafic vers backend toutes les 90s (et de l'usage pour le Dashboard)
   useEffect(() => {
     if (!isConnected) return;
 
     const syncTimer = setInterval(async () => {
       if (!traffic.uploadBytes && !traffic.downloadBytes) return;
+      const duration = Math.round((Date.now() - sessionStartRef.current) / 1000);
       try {
+        // Envoi au nouvel endpoint Dashboard /mobile/vpn/usage
+        await apiClient.post("/mobile/vpn/usage", {
+          download:       traffic.downloadBytes,
+          upload:         traffic.uploadBytes,
+          duration,
+          deviceId:       deviceId || undefined,
+          subscriptionId: subscriptionId || undefined,
+        });
+
+        // Envoi au fallback historique /mobile/vpn/traffic
         await apiClient.post("/mobile/vpn/traffic", {
-          uploadBytes:   traffic.uploadBytes,
-          downloadBytes: traffic.downloadBytes,
-          sessionDuration: Math.round((Date.now() - sessionStartRef.current) / 1000),
+          bytesUp:   traffic.uploadBytes,
+          bytesDown: traffic.downloadBytes,
         });
       } catch {}
     }, 90_000);
 
     return () => clearInterval(syncTimer);
-  }, [isConnected, traffic]);
+  }, [isConnected, traffic, deviceId, subscriptionId]);
 
   // ── Kill Switch ───────────────────────────────────────────────────────────
   const setKillSwitch = useCallback(async (enabled: boolean) => {
@@ -431,6 +444,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         if (data.serverInfo) {
           setServerInfo(data.serverInfo);
           await AsyncStorage.setItem(STORE.SERVER_INFO, data.serverInfo);
+        }
+
+        if (data.subscription?.id) {
+          setSubscriptionId(data.subscription.id);
         }
 
         addLog("✅ Configuration synchronisée avec succès");
@@ -497,12 +514,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         addLog(`🔌 Connexion ${proto.toUpperCase()}...`);
         await SxbVpnNative.startVpn(JSON.stringify(startOpts));
       } else {
-        // Simulation sur iOS/web
-        await new Promise(r => setTimeout(r, 1_500));
-        setIsConnected(true);
-        setIsConnecting(false);
-        addLog("✅ VPN simulé (non-Android)");
-        return;
+        throw new Error("Moteur VPN réel uniquement supporté sur Android avec le module natif SXB");
       }
 
       // Timeout de sécurité 65s
@@ -548,10 +560,18 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
       // Envoi final des stats de trafic
       if (traffic.uploadBytes || traffic.downloadBytes) {
+        const dur = Math.round((Date.now() - sessionStartRef.current) / 1000);
+        apiClient.post("/mobile/vpn/usage", {
+          download:       traffic.downloadBytes,
+          upload:         traffic.uploadBytes,
+          duration:       dur,
+          deviceId:       deviceId || undefined,
+          subscriptionId: subscriptionId || undefined,
+        }).catch(() => {});
+
         apiClient.post("/mobile/vpn/traffic", {
-          uploadBytes:   traffic.uploadBytes,
-          downloadBytes: traffic.downloadBytes,
-          sessionDuration: Math.round((Date.now() - sessionStartRef.current) / 1000),
+          bytesUp:   traffic.uploadBytes,
+          bytesDown: traffic.downloadBytes,
         }).catch(() => {});
       }
 
@@ -576,6 +596,16 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isConnected, connect, disconnect, addLog]);
 
+  const manuallySetConfig = useCallback(async (cfg: VpnConnectionConfig) => {
+    await storeConfigSecure(cfg);
+    setConnectionConfig(cfg);
+    if (cfg.protocol) {
+      setSelectedProtocol(cfg.protocol.toUpperCase());
+      await AsyncStorage.setItem(STORE.PROTOCOL, cfg.protocol.toUpperCase());
+    }
+    addLog("✅ Nouvelle configuration V2Ray JSON appliquée manuellement");
+  }, [addLog]);
+
   return (
     <VpnContext.Provider value={{
       isConnected, isConnecting,
@@ -592,6 +622,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       requestVpnPermission,
       setKillSwitch,
       setAutoReconnect,
+      manuallySetConfig,
     }}>
       {children}
     </VpnContext.Provider>

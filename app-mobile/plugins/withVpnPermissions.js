@@ -34,6 +34,28 @@ function withKotlinSources(config) {
       console.warn('[VPN plugin] Source dir non trouvé: ' + srcDir);
     }
 
+    // Écrire les règles ProGuard / R8 de sécurité et d'obfuscation
+    try {
+      const proguardFile = path.join(platformRoot, 'app', 'proguard-rules.pro');
+      const customRules = `
+# SXB VPN Security ProGuard & R8 Obfuscation Rules
+-keep class com.sxbvpn.vpnmodule.** { *; }
+-keep class com.jcraft.jsch.** { *; }
+-dontwarn com.jcraft.jsch.**
+-keepclassmembers class * {
+    @com.facebook.react.bridge.ReactMethod *;
+}
+`;
+      if (fs.existsSync(proguardFile)) {
+        fs.appendFileSync(proguardFile, customRules);
+      } else {
+        fs.writeFileSync(proguardFile, customRules);
+      }
+      console.log('[VPN plugin] Règles ProGuard / R8 de sécurité et obfuscation injectées');
+    } catch (err) {
+      console.warn('[VPN plugin] Impossible de configurer ProGuard:', err.message);
+    }
+
     return cfg;
   }]);
 }
@@ -83,6 +105,25 @@ function withVpnManifest(config) {
             'android:value': 'VPN tunnel service for SXB VPN',
           }
         }],
+      });
+    }
+
+    // BootReceiver dans le manifest pour Always-on et reconnexion automatique au démarrage
+    if (!app.receiver) app.receiver = [];
+    const hasBootReceiver = app.receiver.some(
+      (r) => r.$?.['android:name'] === 'com.sxbvpn.vpnmodule.BootReceiver'
+    );
+    if (!hasBootReceiver) {
+      app.receiver.push({
+        $: {
+          'android:name': 'com.sxbvpn.vpnmodule.BootReceiver',
+          'android:enabled': 'true',
+          'android:exported': 'true',
+        },
+        'intent-filter': [{
+          action: [{ $: { 'android:name': 'android.intent.action.BOOT_COMPLETED' } }],
+          category: [{ $: { 'android:name': 'android.intent.category.DEFAULT' } }]
+        }]
       });
     }
 
