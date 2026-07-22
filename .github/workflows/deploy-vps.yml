@@ -15,6 +15,9 @@ on:
 permissions:
   contents: read
 
+env:
+  NODE_VERSION: '22'
+
 jobs:
   deploy:
     name: Build & Deploy to VPS
@@ -25,41 +28,38 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── Setup Node.js ──────────────────────────────────────────────────────
-      - name: Setup Node.js 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      # ── Setup pnpm ────────────────────────────────────────────────────────
+      # ── Setup pnpm first (needed before Node setup for caching) ──────────
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
           version: 9
 
-      # ── Cache pnpm store ───────────────────────────────────────────────────
-      - name: Cache pnpm store
-        uses: actions/cache@v4
+      # ── Setup Node.js ──────────────────────────────────────────────────────
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
         with:
-          path: ~/.pnpm-store
-          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: |
-            pnpm-store-${{ runner.os }}-
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      # ── Approve esbuild build scripts (required by pnpm security policy) ─
+      - name: Approve esbuild build scripts
+        run: pnpm approve-builds esbuild 2>/dev/null || true
 
       # ── Install workspace dependencies ────────────────────────────────────
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       # ── Build frontend (sxb-dashboard) ────────────────────────────────────
-      - name: Build Dashboard (React/Vite)
-        run: |
-          cd artifacts/sxb-dashboard
-          PORT=3000 BASE_PATH=/ ../../node_modules/.bin/vite build --config vite.config.ts
+      - name: Build Dashboard (React + Vite)
+        working-directory: artifacts/sxb-dashboard
         env:
+          PORT: '3000'
+          BASE_PATH: '/'
           NODE_ENV: production
+        run: ../../node_modules/.bin/vite build --config vite.config.ts
 
-      # ── Build backend ─────────────────────────────────────────────────────
-      - name: Build Backend (esbuild)
+      # ── Build backend (esbuild bundle) ────────────────────────────────────
+      - name: Build Backend (esbuild CJS bundle)
         run: |
           node_modules/.bin/esbuild server.ts \
             --bundle \
@@ -68,9 +68,10 @@ jobs:
             --packages=external \
             --sourcemap \
             --outfile=dist/server.cjs
+          echo "✅ Backend built: $(du -sh dist/server.cjs | cut -f1)"
 
-      # ── Deploy to VPS ─────────────────────────────────────────────────────
-      - name: Deploy files to VPS
+      # ── Deploy to VPS via SSH ─────────────────────────────────────────────
+      - name: Deploy to VPS
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: 141.95.112.93
@@ -80,13 +81,13 @@ jobs:
             set -e
             cd /var/www/sxb-vpn
 
-            echo "📥 Git pull latest..."
+            echo "📥 Pull latest code..."
             git fetch origin
             git reset --hard origin/main
 
-            echo "📦 Install dependencies..."
+            echo "📦 Install dependencies (pnpm)..."
             pnpm approve-builds esbuild 2>/dev/null || true
-            pnpm install --frozen-lockfile 2>/dev/null || true
+            pnpm install --frozen-lockfile 2>/dev/null || pnpm install
 
             echo "🎨 Build Dashboard..."
             cd artifacts/sxb-dashboard
@@ -102,31 +103,35 @@ jobs:
               --sourcemap \
               --outfile=dist/server.cjs
 
-            echo "🗄️ Prisma DB sync..."
-            npx prisma db push --schema=prisma/schema.prisma --accept-data-loss 2>&1 || true
+            echo "🗄️ Sync Prisma schema..."
+            DATABASE_URL="$(grep DATABASE_URL .env | cut -d= -f2-)" npx prisma db push \
+              --schema=prisma/schema.prisma \
+              --accept-data-loss 2>&1 || true
 
-            echo "🔄 Reload PM2 backend..."
+            echo "🔄 Reload backend (PM2)..."
             sudo pm2 reload sxb-backend
 
             echo "🔄 Reload Nginx..."
             sudo nginx -t && sudo systemctl reload nginx
 
-            echo "✅ Deploy complete!"
+            echo "✅ Deployment complete!"
             sudo pm2 status
 
-      # ── Validation post-deploy ─────────────────────────────────────────────
-      - name: Validate deployment
+      # ── Post-deploy validation ─────────────────────────────────────────────
+      - name: Validate production
         run: |
-          sleep 5
-          echo "Testing frontend..."
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://vpnsxb.afrihall.com/)
-          echo "Frontend HTTP: $STATUS"
-          [ "$STATUS" = "200" ] || exit 1
+          sleep 8
+          echo "=== Checking frontend ==="
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" https://vpnsxb.afrihall.com/)
+          echo "Frontend: HTTP $HTTP"
+          [ "$HTTP" = "200" ] || (echo "❌ Frontend not responding" && exit 1)
 
-          echo "Testing API..."
-          API_STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://vpnsxb.afrihall.com/xapi/auth/login -X POST -H "Content-Type: application/json" -d '{"email":"test","password":"test"}')
-          echo "API HTTP: $API_STATUS"
-          # 401 = API responded (wrong credentials = normal)
-          [ "$API_STATUS" = "401" ] || [ "$API_STATUS" = "200" ] || exit 1
+          echo "=== Checking API ==="
+          API=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST https://vpnsxb.afrihall.com/xapi/auth/login \
+            -H "Content-Type: application/json" \
+            -d '{"email":"test","password":"test"}')
+          echo "API: HTTP $API"
+          [ "$API" = "401" ] || [ "$API" = "200" ] || (echo "❌ API not responding" && exit 1)
 
-          echo "✅ Validation passed!"
+          echo "✅ Production validation passed!"
