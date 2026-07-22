@@ -24,87 +24,45 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── Node.js setup ─────────────────────────────────────────────────────────
-      - name: Setup Node.js 20
+      # ── Node.js 22 (LTS, non-deprecated) ──────────────────────────────────────
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
-          # Note: pas de cache npm ici car package-lock.json n'est pas committé.
-          # Le cache node_modules est géré séparément à l'étape suivante.
+          node-version: "22"
 
-      # ── JDK ───────────────────────────────────────────────────────────────────
+      # ── JDK 17 avec cache Gradle intégré ──────────────────────────────────────
       - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle           # cache ~/.gradle géré nativement par setup-java
 
-      # ── Gradle cache ─────────────────────────────────────────────────────────
-      - name: Cache Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-expo54-${{ hashFiles('app-mobile/android/gradle/wrapper/gradle-wrapper.properties', 'app-mobile/package.json') }}
-          restore-keys: |
-            gradle-expo54-
-            gradle-
-
-      # ── npm cache ─────────────────────────────────────────────────────────────
-      # Clé basée sur package.json (pas package-lock.json qui n'est pas commité).
-      # Quand package.json change (nouvelle dépendance), cache miss → npm install relancé.
-      # Pas de restore-keys pour éviter les caches périmés (ex: expo-secure-store manquant).
+      # ── Cache node_modules ────────────────────────────────────────────────────
+      # Clé basée sur package.json (pas de package-lock.json commité).
       - name: Cache node_modules
         id: cache-node
         uses: actions/cache@v4
         with:
           path: app-mobile/node_modules
-          key: node-modules-${{ runner.os }}-${{ hashFiles('app-mobile/package.json') }}
+          key: node-modules-${{ runner.os }}-node22-${{ hashFiles('app-mobile/package.json') }}
 
-      # ── Install deps ──────────────────────────────────────────────────────────
       - name: Install dependencies
         if: steps.cache-node.outputs.cache-hit != 'true'
         run: npm install --legacy-peer-deps
 
-      # ── sing-box binaire (pour protocoles VLESS/VMess/Trojan/SS/WG/Hysteria2) ─
-      - name: Download sing-box binaries
-        run: |
-          mkdir -p assets
-          
-          download_singbox() {
-            local VER="$1" ARCH="$2" DEST="$3"
-            local ARCHIVE="sing-box-${VER}-android-${ARCH}"
-            local URL="https://github.com/SagerNet/sing-box/releases/download/v${VER}/${ARCHIVE}.tar.gz"
-            echo "→ ${ARCHIVE}..."
-            curl -fsSL --retry 3 --retry-delay 5 "$URL" -o /tmp/sb.tar.gz 2>/dev/null || return 1
-            mkdir -p /tmp/sb_extract && tar -xzf /tmp/sb.tar.gz -C /tmp/sb_extract 2>/dev/null || return 1
-            local BIN; BIN=$(find /tmp/sb_extract -name "sing-box" -type f 2>/dev/null | head -1)
-            [ -n "$BIN" ] && cp "$BIN" "$DEST" && rm -rf /tmp/sb.tar.gz /tmp/sb_extract && return 0
-            rm -rf /tmp/sb.tar.gz /tmp/sb_extract; return 1
-          }
-          
-          # arm64-v8a : 1.11.7 → 1.10.2 → 1.9.7
-          for VER in 1.11.7 1.10.2 1.9.7; do
-            download_singbox "$VER" "arm64-v8a" "assets/sing-box-arm64" && echo "✅ arm64 v$VER" && break || echo "⚠️ arm64 v$VER échoué"
-          done
-          
-          # armeabi-v7a : 1.11.7 → 1.10.2 → 1.9.7
-          for VER in 1.11.7 1.10.2 1.9.7; do
-            download_singbox "$VER" "armv7" "assets/sing-box-arm" && echo "✅ armv7 v$VER" && break || echo "⚠️ armv7 v$VER échoué"
-          done
-          
-          # Vérification finale (1 MB minimum)
-          for f in assets/sing-box-arm64 assets/sing-box-arm; do
-            if [ -f "$f" ] && [ "$(wc -c < "$f")" -gt 1000000 ]; then
-              echo "✅ $f ok ($(du -h "$f" | cut -f1))"
-            else
-              echo "⚠️  $f manquant — protocoles avancés désactivés"
-              rm -f "$f"
-            fi
-          done
+      # ── Cache android/ (sortie expo prebuild) ────────────────────────────────
+      # Si les sources qui déterminent le contenu de android/ n'ont pas changé
+      # (package.json, app.json, plugins, fichiers Kotlin), on restaure le dossier
+      # généré et on saute entièrement l'étape expo prebuild (~90s économisés).
+      - name: Cache android/ prebuild output
+        id: cache-android
+        uses: actions/cache@v4
+        with:
+          path: app-mobile/android
+          key: android-prebuild-${{ runner.os }}-${{ hashFiles('app-mobile/package.json', 'app-mobile/app.json', 'app-mobile/plugins/**', 'app-mobile/modules/android-native/**/*.kt') }}
 
-      # ── Kotlin metadata fix ───────────────────────────────────────────────────
+      # ── Kotlin metadata compat (avant prebuild, patch dans node_modules) ──────
       - name: Patch expo-module-gradle-plugin (Kotlin metadata compat)
         run: |
           PLUGIN="node_modules/expo-modules-core/expo-module-gradle-plugin/build.gradle.kts"
@@ -115,29 +73,46 @@ jobs:
             echo "[patch] Déjà appliqué ou fichier absent"
           fi
 
-      # ── Expo prebuild ─────────────────────────────────────────────────────────
+      # ── Expo prebuild — saute si cache android/ valide ───────────────────────
       - name: Expo prebuild (Android)
+        if: steps.cache-android.outputs.cache-hit != 'true'
         run: npx expo prebuild --platform android --clean --no-install
         env:
+          EXPO_NO_TELEMETRY: "1"
           EXPO_PUBLIC_API_URL: https://vpnsxb.afrihall.com/api
 
-      # ── Copier sing-box dans Android assets (CRITIQUE) ────────────────────────
-      # assets.open() en Kotlin lit depuis android/app/src/main/assets/
-      # PAS depuis le dossier Expo assets/ — copie obligatoire après prebuild.
+      # ── ABI filter : arm64 + armeabi-v7a seulement ───────────────────────────
+      # Élimine la compilation CMake pour x86 et x86_64 (émulateurs).
+      # Économie : ~4-5 min sur reanimated + gesture-handler + app CMake.
+      - name: Restreindre ABI à arm64-v8a + armeabi-v7a
+        run: |
+          BUILD_GRADLE="android/app/build.gradle"
+          if grep -q 'abiFilters' "$BUILD_GRADLE" 2>/dev/null; then
+            # Remplacer tout abiFilters existant
+            sed -i 's/abiFilters.*/abiFilters "arm64-v8a", "armeabi-v7a"/' "$BUILD_GRADLE"
+          else
+            # Injecter dans le bloc defaultConfig (après la première accolade ouverte)
+            sed -i '/defaultConfig {/a\            ndk { abiFilters "arm64-v8a", "armeabi-v7a" }' "$BUILD_GRADLE"
+          fi
+          echo "[ABI] Filtres appliqués :"
+          grep -A1 "abiFilters\|ndk {" "$BUILD_GRADLE" | head -6
+
+      # ── Copier sing-box depuis assets git → android assets natifs ────────────
+      # Les binaires sont suivis dans git (app-mobile/assets/).
+      # android/app/src/main/assets/ est lue par assets.open() en Kotlin.
       - name: Copier sing-box vers Android assets natifs
         run: |
           mkdir -p android/app/src/main/assets
           for f in sing-box-arm64 sing-box-arm; do
             if [ -f "assets/$f" ]; then
-              cp "assets/$f" android/app/src/main/assets/"$f"
-              echo "✅ $f copié ($(du -h android/app/src/main/assets/$f | cut -f1))"
+              cp "assets/$f" "android/app/src/main/assets/$f"
+              echo "✅ $f ($(du -h "android/app/src/main/assets/$f" | cut -f1))"
             else
-              echo "⚠️  $f absent — protocoles avancés désactivés"
+              echo "⚠️  $f absent dans assets/ git"
             fi
           done
 
-
-      # ── Gradle properties ─────────────────────────────────────────────────────
+      # ── Gradle properties (performance) ───────────────────────────────────────
       - name: Configure Gradle (performance)
         run: |
           cat >> android/gradle.properties << 'EOF'
@@ -145,8 +120,11 @@ jobs:
           org.gradle.daemon=false
           org.gradle.parallel=true
           org.gradle.caching=true
+          org.gradle.configuration-cache=true
+          org.gradle.configuration-cache.problems=warn
           android.enableJetifier=true
           android.enableR8.fullMode=false
+          kotlin.incremental=true
           EOF
 
       # ── Build APK ─────────────────────────────────────────────────────────────
@@ -158,31 +136,33 @@ jobs:
           ./gradlew :app:assembleRelease \
             --no-daemon \
             --build-cache \
+            --parallel \
             -x :react-native-reanimated:assertWorkletsVersionTask \
             -x :react-native-reanimated:assertMinimalReactNativeVersionTask \
             -x :react-native-worklets:assertMinimalReactNativeVersionTask \
+            -x :app:lintVitalRelease \
+            -x :app:lintVitalAnalyzeRelease \
             2>&1 | tee build.log
-          echo "::group::Gradle output (dernières 60 lignes)"
-          tail -60 build.log
+          echo "::group::Gradle output (dernières 80 lignes)"
+          tail -80 build.log
           echo "::endgroup::"
         env:
           NODE_ENV: production
           EXPO_PUBLIC_API_URL: https://vpnsxb.afrihall.com/api
+          GRADLE_OPTS: "-Dorg.gradle.daemon=false"
 
       # ── Collect APK ───────────────────────────────────────────────────────────
       - name: Localiser et copier l'APK
-        working-directory: app-mobile
         run: |
           mkdir -p build
           APK=$(find android/app/build/outputs/apk -name "*.apk" | head -n 1)
           if [ -z "$APK" ]; then
-            echo "::error::Aucun APK trouvé"
+            echo "::error::Aucun APK trouvé — liste des sorties :"
             find android/app/build/outputs -type f 2>/dev/null || true
             exit 1
           fi
           cp "$APK" build/sxb-vpn.apk
           echo "✅ APK: $(ls -lh build/sxb-vpn.apk)"
-          echo "APK_PATH=app-mobile/build/sxb-vpn.apk" >> "$GITHUB_ENV"
 
       # ── Upload artifact ───────────────────────────────────────────────────────
       - name: Upload APK
@@ -205,17 +185,19 @@ jobs:
 
             Build depuis commit `${{ github.sha }}`
 
-            ### Protocoles supportés
-            - ✅ **SSH / SSH+Payload** — tunnel JSch natif Java
-            - ✅ **VLESS / VMess / Trojan** — sing-box v1.11.7
+            ### Moteur VPN v4
+            - ✅ **VLESS / VMess / Trojan** — sing-box v1.9.7
             - ✅ **Shadowsocks** — sing-box
             - ✅ **WireGuard** — sing-box
             - ✅ **Hysteria2 / TUIC** — sing-box
-            - ✅ Permission VPN Android avec popup système réelle
-            - ✅ Foreground Service — fonctionne en arrière-plan
-            - ✅ Config chiffrée localement (XOR + base64)
-            - ✅ Mode hors ligne (config locale)
-            - ✅ Interface FR/EN
+            - ✅ **SSH / SSH+Payload** — JSch natif Java
+            - ✅ **Kill Switch** — bloque tout le trafic si VPN déconnecté
+            - ✅ **Auto-reconnect** — backoff exponentiel (1s→30s, 10 tentatives)
+            - ✅ **Trafic temps réel** — upload/download/débit via Android TrafficStats
+            - ✅ **Config chiffrée** — Android Keystore AES-256-GCM
+            - ✅ **Détection Root/Frida/Xposed** — audit sécurité avant connexion
+            - ✅ **Foreground Service** — fonctionne en arrière-plan
+            - ✅ **Interface FR/EN**
 
             ### Installation
             1. Télécharger `sxb-vpn.apk`

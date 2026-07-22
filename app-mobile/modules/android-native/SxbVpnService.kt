@@ -98,8 +98,9 @@ private class SxbPayloadProxy(private val rawPayload: String) : com.jcraft.jsch.
         outputStream = out
     }
 
-    override fun getInputStream(): InputStream = inputStream!!
+    override fun getInputStream(): InputStream  = inputStream!!
     override fun getOutputStream(): OutputStream = outputStream!!
+    override fun getSocket(): Socket             = socket!!
     override fun close() { runCatching { socket?.close() } }
 }
 
@@ -141,6 +142,10 @@ class SxbVpnService : VpnService() {
     // Managers
     private val trafficManager  = TrafficStatsManager()
     private lateinit var autoReconnect: AutoReconnectManager
+
+    // ── Public API pour SxbVpnModule ──────────────────────────────────────────
+    fun enableAutoReconnect()  { if (::autoReconnect.isInitialized) autoReconnect.enable() }
+    fun disableAutoReconnect() { if (::autoReconnect.isInitialized) autoReconnect.disable() }
 
     // Compteurs trafic SSH (relay bidirectionnel)
     private val uploadBytes   = AtomicLong(0L)

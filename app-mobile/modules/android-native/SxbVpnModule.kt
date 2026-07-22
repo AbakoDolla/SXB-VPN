@@ -114,7 +114,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
 
             // Activer auto-reconnect si demandé
             if (opts.optBoolean("autoReconnect", false)) {
-                SxbVpnService.instance?.autoReconnect?.enable()
+                SxbVpnService.instance?.enableAutoReconnect()
             }
 
             promise.resolve(null)
@@ -130,7 +130,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             val ctx = reactApplicationContext
 
             // Désactiver auto-reconnect d'abord
-            SxbVpnService.instance?.autoReconnect?.disable()
+            SxbVpnService.instance?.disableAutoReconnect()
 
             val intent = Intent(ctx, SxbVpnService::class.java).apply {
                 action = SxbVpnService.ACTION_STOP
@@ -179,8 +179,8 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
     @ReactMethod
     fun setAutoReconnect(enabled: Boolean) {
         val svc = SxbVpnService.instance
-        if (enabled) svc?.autoReconnect?.enable()
-        else         svc?.autoReconnect?.disable()
+        if (enabled) svc?.enableAutoReconnect()
+        else         svc?.disableAutoReconnect()
     }
 
     // ── checkSecurity ─────────────────────────────────────────────────────────
