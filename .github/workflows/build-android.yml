@@ -183,41 +183,28 @@ jobs:
             >> android/gradle.properties
           echo "[Gradle] Propriétés ajoutées (newArchEnabled=false — old arch, compatible SxbVpnModule)"
 
-      # FIX #5 : Packaging META-INF — injection intelligente dans app/build.gradle
-      # CORRECTIF DOUBLE-BLOC : le plugin withJschDependency injecte déjà packaging{}
-      # On complète les excludes manquants sans créer de doublon.
-      # NOTE : le script Python est écrit dans /tmp/ pour éviter le heredoc à col 0
-      # qui invalide le bloc YAML run:| (bug connu GitHub Actions).
-      - name: Corriger conflits META-INF (injection intelligente build.gradle)
+      # FIX #5 : Packaging META-INF — bash+sed pur (pas de Python, pas de heredoc)
+      # Le plugin withJschDependency injecte packaging{} durant le prebuild.
+      # Ce step complète les excludes manquants sans créer de doublon.
+      - name: Corriger conflits META-INF (packaging build.gradle)
         run: |
-          printf '%s\n' \
-            'import re, sys' \
-            'path = sys.argv[1]' \
-            'c = open(path).read()' \
-            'NEEDED = [' \
-            '    "META-INF/versions/9/OSGI-INF/MANIFEST.MF",' \
-            '    "META-INF/*.kotlin_module",' \
-            '    "META-INF/LICENSE.md",' \
-            '    "META-INF/LICENSE-notice.md",' \
-            '    "META-INF/AL2.0",' \
-            '    "META-INF/LGPL2.1",' \
-            ']' \
-            'if "packaging {" in c or "packaging{" in c:' \
-            '    missing = [e for e in NEEDED if e not in c]' \
-            '    if missing:' \
-            '        insert = chr(10) + "            " + (chr(10) + "            ").join("excludes += \\"" + e + "\\"" for e in missing)' \
-            '        c = re.sub(r"(resources\s*\{)", r"\1" + insert, c, count=1)' \
-            '        open(path, "w").write(c)' \
-            '        print("[packaging] " + str(len(missing)) + " excludes ajoutés au bloc existant")' \
-            '    else:' \
-            '        print("[packaging] Bloc packaging complet — rien à faire")' \
-            'else:' \
-            '    block = "\n    packaging {\n        resources {\n            excludes += \"/META-INF/{AL2.0,LGPL2.1}\"\n            excludes += \"META-INF/versions/9/OSGI-INF/MANIFEST.MF\"\n            excludes += \"META-INF/*.kotlin_module\"\n            excludes += \"META-INF/LICENSE.md\"\n            excludes += \"META-INF/LICENSE-notice.md\"\n            excludes += \"META-INF/AL2.0\"\n            excludes += \"META-INF/LGPL2.1\"\n        }\n    }"' \
-            '    c = re.sub(r"android\s*\{", "android {" + block, c, count=1)' \
-            '    open(path, "w").write(c)' \
-            '    print("[packaging] Bloc packaging créé dans android {}")' \
-            > /tmp/packaging_fix.py
-          python3 /tmp/packaging_fix.py "android/app/build.gradle"
+          B="android/app/build.gradle"
+          if grep -q 'packaging' "$B" 2>/dev/null; then
+            echo "[packaging] Bloc packaging présent (injecté par le plugin Expo)"
+            for EXCL in \
+              'META-INF/versions/9/OSGI-INF/MANIFEST.MF' \
+              'META-INF/*.kotlin_module' \
+              'META-INF/AL2.0' \
+              'META-INF/LGPL2.1'; do
+              if ! grep -q "$EXCL" "$B"; then
+                sed -i "s|resources {|resources {\n            excludes += \"$EXCL\"|" "$B"
+                echo "[packaging] + $EXCL"
+              fi
+            done
+          else
+            echo "[packaging] Aucun bloc packaging — injection depuis zéro (GNU sed)"
+            sed -i 's|android {|android {\n    packaging {\n        resources {\n            excludes += "/META-INF/{AL2.0,LGPL2.1}"\n            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"\n            excludes += "META-INF/*.kotlin_module"\n            excludes += "META-INF/LICENSE.md"\n            excludes += "META-INF/LICENSE-notice.md"\n        }\n    }|' "$B"
+          fi
           echo "✅ Packaging META-INF configuré"
 
       # ── Build APK release ─────────────────────────────────────────────────────
