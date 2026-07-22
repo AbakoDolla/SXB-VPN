@@ -1,6 +1,3 @@
-- [SXB VPN Architecture](sxb-vpn-arch.md) — architecture VPS/mobile/admin, URLs production, identifiants admin
-- [Prisma createdBy Fix](prisma-created-by-fix.md) — colonne ajoutée via SQL manuel → prisma generate requis après chaque ALTER TABLE
-- [sing-box Build](singbox-build.md) — sing-box v1.13.13 déjà installé /usr/local/bin/sing-box ; binaires arm64/arm à inclure dans assets APK via GitHub Actions
-- [VPN Permission Android](vpn-permission-android.md) — requestVpnPermission() doit utiliser startActivityForResult() + ActivityEventListener ; jamais isVpnPermissionGranted() seul
-- [Subscriptions Table Schema](subscriptions-schema.md) — colonnes réelles : quotaBytes, quotaUsed, durationDays, dataToken (pas quotaTotal/quotaGB)
-- [GitHub Secret VPS](github-secret-vps.md) — VPS_SSH_PASSWORD à ajouter manuellement dans Settings → Secrets du repo GitHub
+- [SXB VPN Dashboard Architecture](sxb-vpn-architecture.md) — deux PM2 (root + ubuntu) peuvent coexister et causer EADDRINUSE ; fix : tuer root PM2, passer à pm2-ubuntu.service systemd
+- [SXB VPN Permission Fix](sxb-vpn-permissions.md) — dashboard.ts utilisait analytics.view au lieu de analytics.read, mais requirePermission bypass ADMIN/SUPER_ADMIN donc pas bloquant
+- [SXB VPN API Null-Safety Pattern](sxb-vpn-api-null-safety.md) — toutes les fonctions fetchXxx() doivent utiliser try/catch + res?.accounts ?? [] pour éviter crash .map() sur undefined
