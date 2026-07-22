@@ -107,9 +107,9 @@ jobs:
         run: |
           BUILD_GRADLE="android/app/build.gradle"
           if grep -q 'abiFilters' "$BUILD_GRADLE" 2>/dev/null; then
-            sed -i 's/abiFilters.*/abiFilters "arm64-v8a", "armeabi-v7a"/' "$BUILD_GRADLE"
+            sed -i 's/abiFilters.*/abiFilters "arm64-v8a"/' "$BUILD_GRADLE"
           else
-            sed -i '/defaultConfig {/a\            ndk { abiFilters "arm64-v8a", "armeabi-v7a" }' "$BUILD_GRADLE"
+            sed -i '/defaultConfig {/a\            ndk { abiFilters "arm64-v8a" }' "$BUILD_GRADLE"
           fi
           echo "[ABI] Filtres appliqués"
 
@@ -178,8 +178,32 @@ jobs:
             'android.enableR8.fullMode=false' \
             'kotlin.incremental=true' \
             'newArchEnabled=true' \
+            'reactNativeArchitectures=arm64-v8a' \
             >> android/gradle.properties
           echo "[Gradle] Propriétés ajoutées (sans espaces parasites)"
+
+      # ── Corriger conflits META-INF (jsch + jspecify dupliqués) ─────────────────
+      - name: Corriger conflits META-INF (packagingOptions)
+        run: |
+          BUILD_GRADLE="android/app/build.gradle"
+          cat > /tmp/packaging_fix.py << 'PYEOF'
+import re, sys
+path = sys.argv[1]
+c = open(path).read()
+if "packagingOptions" not in c:
+    block = (
+        "\n    packagingOptions {"
+        "\n        exclude \"META-INF/versions/9/OSGI-INF/MANIFEST.MF\""
+        "\n        exclude \"META-INF/*.kotlin_module\""
+        "\n    }"
+    )
+    c = re.sub(r"android \{", "android {" + block, c, count=1)
+    open(path, "w").write(c)
+    print("[packaging] Exclusions META-INF ajoutees")
+else:
+    print("[packaging] Deja present")
+PYEOF
+          python3 /tmp/packaging_fix.py "$BUILD_GRADLE"
 
       # ── Build APK release ─────────────────────────────────────────────────────
       # BUG FIX #6 : les tâches -x assertWorkletsVersionTask / assertMinimalReactNativeVersionTask
