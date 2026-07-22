@@ -54,7 +54,7 @@ export default function XrayManagerView({ currentUserRole }: Props) {
     setImportError("");
     try {
       const parsed = JSON.parse(jsonImportText.trim());
-      
+
       const mapped = {
         name: parsed.name || parsed.remark || parsed.ps || form.name || "V2ray Imported",
         protocol: parsed.protocol || parsed.type || "vless",
@@ -303,7 +303,7 @@ export default function XrayManagerView({ currentUserRole }: Props) {
               <h2 className="text-white font-semibold">{editId ? "Modifier" : "Nouveau"} compte Xray</h2>
               <button onClick={() => setShowForm(false)} className="p-1.5 text-gray-400 hover:text-white rounded-lg"><X className="w-5 h-5" /></button>
             </div>
-            
+
             {!editId && (
               <div className="px-6 pt-4 border-b border-[#1a1f2e] pb-4 bg-[#111622]/30">
                 <button
