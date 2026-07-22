@@ -225,9 +225,9 @@ function MainApp() {
       case 'clients':
         return <ClientsView currentUserRole={role} actorName={currentUser.name} />;
       case 'resellers':
-        return <ResellersView currentUserRole={role} />;
+        return <ResellersView currentUserRole={role} actorName={currentUser.name} />;
       case 'servers':
-        return <ServersView />;
+        return <ServersView currentUserRole={role} />;
       case 'tokens':
         return <TokensView currentUserRole={role} />;
       case 'vouchers':

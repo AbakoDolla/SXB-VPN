@@ -224,8 +224,8 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
   };
 
   const filtered = resellers.filter((r) => {
-    return r.name.toLowerCase().includes(search.toLowerCase()) || 
-           r.email.toLowerCase().includes(search.toLowerCase());
+    return (r.name || "").toLowerCase().includes(search.toLowerCase()) || 
+           (r.email || "").toLowerCase().includes(search.toLowerCase());
   });
 
   if (isReseller) {

@@ -103,8 +103,8 @@ export default function SupportView() {
 
   const filtered = tickets.filter((tk) => {
     const matchSearch =
-      tk.title.toLowerCase().includes(search.toLowerCase()) ||
-      tk.clientName.toLowerCase().includes(search.toLowerCase());
+      (tk.title || "").toLowerCase().includes(search.toLowerCase()) ||
+      (tk.clientName || "").toLowerCase().includes(search.toLowerCase());
     const matchStatus = filterStatus === "all" || tk.status === filterStatus;
     return matchSearch && matchStatus;
   });

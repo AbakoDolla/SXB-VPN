@@ -33,7 +33,7 @@ function LogsView() {
   useEffect(() => { load(); }, []);
 
   const filtered = logs.filter(l => {
-    const matchSearch = l.action.toLowerCase().includes(search.toLowerCase()) || l.user.toLowerCase().includes(search.toLowerCase());
+    const matchSearch = (l.action || "").toLowerCase().includes(search.toLowerCase()) || (l.user || "").toLowerCase().includes(search.toLowerCase());
     const matchType = typeFilter === "all" || l.type === typeFilter;
     return matchSearch && matchType;
   });

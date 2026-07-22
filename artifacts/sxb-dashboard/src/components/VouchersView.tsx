@@ -87,7 +87,7 @@ export default function VouchersView({ currentUserRole }: VouchersViewProps) {
   };
 
   const filtered = vouchers.filter((v) => {
-    return v.code.toLowerCase().includes(search.toLowerCase());
+    return (v.code || "").toLowerCase().includes(search.toLowerCase());
   });
 
   return (

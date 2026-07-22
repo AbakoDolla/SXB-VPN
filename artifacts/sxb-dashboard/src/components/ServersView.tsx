@@ -87,9 +87,9 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
   };
 
   const filtered = servers.filter((s) => {
-    return s.name.toLowerCase().includes(search.toLowerCase()) || 
-           s.ip.toLowerCase().includes(search.toLowerCase()) ||
-           s.location.toLowerCase().includes(search.toLowerCase());
+    return (s.name || "").toLowerCase().includes(search.toLowerCase()) || 
+           (s.ip || "").toLowerCase().includes(search.toLowerCase()) ||
+           (s.location || "").toLowerCase().includes(search.toLowerCase());
   });
 
   return (

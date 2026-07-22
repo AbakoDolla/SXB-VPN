@@ -38,9 +38,9 @@ export default function SessionsView() {
   };
 
   const filtered = sessions.filter((s) => {
-    const matchSearch = s.clientName.toLowerCase().includes(search.toLowerCase()) ||
-      s.clientToken.toLowerCase().includes(search.toLowerCase()) ||
-      s.deviceId.toLowerCase().includes(search.toLowerCase());
+    const matchSearch = (s.clientName || "").toLowerCase().includes(search.toLowerCase()) ||
+      (s.clientToken || "").toLowerCase().includes(search.toLowerCase()) ||
+      (s.deviceId || "").toLowerCase().includes(search.toLowerCase());
     const matchStatus = statusFilter === "all" || s.status === statusFilter;
     return matchSearch && matchStatus;
   });

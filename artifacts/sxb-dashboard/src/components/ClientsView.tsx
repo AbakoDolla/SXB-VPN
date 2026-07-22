@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useTranslation } from "../contexts/I18nContext";
-import { fetchClients, createClient, updateClient, deleteClient, suspendClient, activateClient } from "../api/clients";
+import { fetchClients, createClient, updateClient, deleteClient, suspendClient, activateClient, renewClient, resetClientAccess } from "../api/clients";
 import { Client, UserRole } from "../types";
 import { Search, UserPlus, Trash2, ShieldAlert, KeyRound, CalendarDays, Ban, CheckCircle, RefreshCcw, MoreHorizontal, HelpCircle } from "lucide-react";
 
