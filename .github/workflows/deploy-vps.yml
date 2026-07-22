@@ -1,0 +1,132 @@
+name: 🚀 Deploy to VPS — SXB VPN
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'artifacts/sxb-dashboard/**'
+      - 'backend/**'
+      - 'server/**'
+      - 'server.ts'
+      - 'prisma/**'
+      - '.github/workflows/deploy-vps.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Build & Deploy to VPS
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Setup Node.js ──────────────────────────────────────────────────────
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # ── Setup pnpm ────────────────────────────────────────────────────────
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      # ── Cache pnpm store ───────────────────────────────────────────────────
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ~/.pnpm-store
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      # ── Install workspace dependencies ────────────────────────────────────
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # ── Build frontend (sxb-dashboard) ────────────────────────────────────
+      - name: Build Dashboard (React/Vite)
+        run: |
+          cd artifacts/sxb-dashboard
+          PORT=3000 BASE_PATH=/ ../../node_modules/.bin/vite build --config vite.config.ts
+        env:
+          NODE_ENV: production
+
+      # ── Build backend ─────────────────────────────────────────────────────
+      - name: Build Backend (esbuild)
+        run: |
+          node_modules/.bin/esbuild server.ts \
+            --bundle \
+            --platform=node \
+            --format=cjs \
+            --packages=external \
+            --sourcemap \
+            --outfile=dist/server.cjs
+
+      # ── Deploy to VPS ─────────────────────────────────────────────────────
+      - name: Deploy files to VPS
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 141.95.112.93
+          username: ubuntu
+          password: ${{ secrets.VPS_SSH_PASSWORD }}
+          script: |
+            set -e
+            cd /var/www/sxb-vpn
+
+            echo "📥 Git pull latest..."
+            git fetch origin
+            git reset --hard origin/main
+
+            echo "📦 Install dependencies..."
+            pnpm approve-builds esbuild 2>/dev/null || true
+            pnpm install --frozen-lockfile 2>/dev/null || true
+
+            echo "🎨 Build Dashboard..."
+            cd artifacts/sxb-dashboard
+            PORT=3000 BASE_PATH=/ ../../node_modules/.bin/vite build --config vite.config.ts
+            cd ../..
+
+            echo "⚙️ Build Backend..."
+            node_modules/.bin/esbuild server.ts \
+              --bundle \
+              --platform=node \
+              --format=cjs \
+              --packages=external \
+              --sourcemap \
+              --outfile=dist/server.cjs
+
+            echo "🗄️ Prisma DB sync..."
+            npx prisma db push --schema=prisma/schema.prisma --accept-data-loss 2>&1 || true
+
+            echo "🔄 Reload PM2 backend..."
+            sudo pm2 reload sxb-backend
+
+            echo "🔄 Reload Nginx..."
+            sudo nginx -t && sudo systemctl reload nginx
+
+            echo "✅ Deploy complete!"
+            sudo pm2 status
+
+      # ── Validation post-deploy ─────────────────────────────────────────────
+      - name: Validate deployment
+        run: |
+          sleep 5
+          echo "Testing frontend..."
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://vpnsxb.afrihall.com/)
+          echo "Frontend HTTP: $STATUS"
+          [ "$STATUS" = "200" ] || exit 1
+
+          echo "Testing API..."
+          API_STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://vpnsxb.afrihall.com/xapi/auth/login -X POST -H "Content-Type: application/json" -d '{"email":"test","password":"test"}')
+          echo "API HTTP: $API_STATUS"
+          # 401 = API responded (wrong credentials = normal)
+          [ "$API_STATUS" = "401" ] || [ "$API_STATUS" = "200" ] || exit 1
+
+          echo "✅ Validation passed!"
