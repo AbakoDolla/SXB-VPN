@@ -99,12 +99,12 @@ jobs:
             echo '{"name":"pg","version":"1.0.0"}' > /tmp/prisma-gen/package.json
             NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
               node /var/www/sxb-vpn/backend/node_modules/prisma/build/index.js generate \
-              --schema=/tmp/prisma-gen/schema.prisma 2>&1 | tail -3
+              --schema=/tmp/prisma-gen/schema.prisma 2>&1 | tail -3 || true
             cd /var/www/sxb-vpn
 
             echo "🎨 Build Dashboard..."
             cd artifacts/sxb-dashboard
-            PORT=3000 BASE_PATH=/ pnpm run build
+            CI=true PORT=3000 BASE_PATH=/ pnpm run build
             cd /var/www/sxb-vpn
 
             echo "⚙️ Build Backend..."
