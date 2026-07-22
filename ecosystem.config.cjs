@@ -9,6 +9,9 @@ module.exports = {
     autorestart: true,
     watch: false,
     max_memory_restart: '500M',
-    env: { NODE_ENV: 'production' }
+    env: {
+      NODE_ENV: 'production',
+      NODE_PATH: '/var/www/sxb-vpn/backend/node_modules'
+    }
   }]
 };
