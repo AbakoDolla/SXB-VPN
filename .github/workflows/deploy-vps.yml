@@ -56,12 +56,12 @@ jobs:
           PORT: '3000'
           BASE_PATH: '/'
           NODE_ENV: production
-        run: ../../node_modules/.bin/vite build --config vite.config.ts
+        run: pnpm run build
 
       # ── Build backend (esbuild bundle) ────────────────────────────────────
       - name: Build Backend (esbuild CJS bundle)
         run: |
-          node_modules/.bin/esbuild server.ts \
+          pnpm exec esbuild server.ts \
             --bundle \
             --platform=node \
             --format=cjs \
@@ -91,11 +91,11 @@ jobs:
 
             echo "🎨 Build Dashboard..."
             cd artifacts/sxb-dashboard
-            PORT=3000 BASE_PATH=/ ../../node_modules/.bin/vite build --config vite.config.ts
+            PORT=3000 BASE_PATH=/ pnpm run build
             cd ../..
 
             echo "⚙️ Build Backend..."
-            node_modules/.bin/esbuild server.ts \
+            pnpm exec esbuild server.ts \
               --bundle \
               --platform=node \
               --format=cjs \
