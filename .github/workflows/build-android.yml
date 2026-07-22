@@ -131,19 +131,26 @@ jobs:
         run: |
           mkdir -p android/app/keystore
 
-          # Générer un keystore RSA-2048 auto-signé (valide 10000 jours)
-          keytool -genkeypair -v \
-            -storetype PKCS12 \
-            -keystore android/app/keystore/release.keystore \
-            -alias sxbvpn \
-            -keyalg RSA -keysize 2048 \
-            -validity 10000 \
-            -dname "CN=SXB VPN,OU=Mobile,O=SXB,L=Paris,ST=IDF,C=FR" \
-            -storepass sxbvpn_ci_2026 \
-            -keypass sxbvpn_ci_2026 \
-            -noprompt
+          # Idempotent : le dossier android/ peut être restauré depuis le cache
+          # (étape "Cache android/ prebuild output"), auquel cas le keystore
+          # existe déjà et keytool échouerait avec "alias already exists".
+          if [ -f "android/app/keystore/release.keystore" ]; then
+            echo "✅ Keystore déjà présent (restauré depuis le cache) — génération sautée"
+          else
+            # Générer un keystore RSA-2048 auto-signé (valide 10000 jours)
+            keytool -genkeypair -v \
+              -storetype PKCS12 \
+              -keystore android/app/keystore/release.keystore \
+              -alias sxbvpn \
+              -keyalg RSA -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=SXB VPN,OU=Mobile,O=SXB,L=Paris,ST=IDF,C=FR" \
+              -storepass sxbvpn_ci_2026 \
+              -keypass sxbvpn_ci_2026 \
+              -noprompt
 
-          echo "✅ Keystore généré : $(ls -lh android/app/keystore/release.keystore | awk '{print $5}')"
+            echo "✅ Keystore généré : $(ls -lh android/app/keystore/release.keystore | awk '{print $5}')"
+          fi
 
           # Injecter signingConfigs DANS android {} via Python (aucun heredoc, évite erreur YAML col 0)
           BUILD_GRADLE="android/app/build.gradle"
