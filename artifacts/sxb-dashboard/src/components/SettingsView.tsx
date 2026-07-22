@@ -3,10 +3,11 @@ import { useTranslation } from "../contexts/I18nContext";
 import {
   Settings, Globe, Shield, RefreshCw, Key, Users, Copy,
   CheckCheck, KeyRound, Camera, User, Phone, Mail, Save,
-  Upload, X,
+  Upload, X, Bell, Database, Wrench, Server, Code, Lock,
 } from "lucide-react";
 import { fetchRoles } from "../api/permissions";
 import { apiRequest } from "../api/client";
+import { listAdminTokens, generateAdminToken, revokeAdminToken } from "../api/accounts";
 
 interface GeneratedCreds { name: string; email: string; password: string; role: string; }
 
@@ -35,31 +36,27 @@ function CredentialsModal({ credentials, onClose }: { credentials: GeneratedCred
           ⚠️ Le mot de passe ne sera plus affiché après fermeture. Copiez-le maintenant.
         </div>
         <div className="space-y-3">
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Email</label>
-            <div className="flex gap-2">
-              <div className="flex-1 px-3 py-2 bg-[#0f1218] border border-[#1a1f2e] rounded-lg text-sm text-cyan-400 font-mono">{credentials.email}</div>
-              <button onClick={() => copy(credentials.email, setCopiedEmail)} className="px-3 py-2 rounded-lg bg-[#0f1218] border border-[#1a1f2e] text-gray-400 hover:text-white cursor-pointer">
-                {copiedEmail ? <CheckCheck size={14} className="text-emerald-400" /> : <Copy size={14} />}
-              </button>
+          {[
+            { label: "Email", value: credentials.email, copied: copiedEmail, setter: setCopiedEmail },
+            { label: "Mot de passe", value: credentials.password, copied: copiedPass, setter: setCopiedPass },
+          ].map(({ label, value, copied, setter }) => (
+            <div key={label}>
+              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">{label}</label>
+              <div className="flex gap-2">
+                <div className="flex-1 px-3 py-2 bg-[#0f1218] border border-[#1a1f2e] rounded-lg text-sm text-cyan-400 font-mono truncate">{value}</div>
+                <button onClick={() => copy(value, setter)} className="px-3 py-2 rounded-lg bg-[#0f1218] border border-[#1a1f2e] text-gray-400 hover:text-white cursor-pointer shrink-0">
+                  {copied ? <CheckCheck size={14} className="text-emerald-400" /> : <Copy size={14} />}
+                </button>
+              </div>
             </div>
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Mot de passe</label>
-            <div className="flex gap-2">
-              <div className="flex-1 px-3 py-2 bg-[#0f1218] border border-emerald-500/30 rounded-lg text-sm text-emerald-400 font-mono font-bold tracking-wide">{credentials.password}</div>
-              <button onClick={() => copy(credentials.password, setCopiedPass)} className="px-3 py-2 rounded-lg bg-[#0f1218] border border-[#1a1f2e] text-gray-400 hover:text-white cursor-pointer">
-                {copiedPass ? <CheckCheck size={14} className="text-emerald-400" /> : <Copy size={14} />}
-              </button>
-            </div>
-          </div>
+          ))}
           <div>
             <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">URL Dashboard</label>
             <div className="px-3 py-2 bg-[#0f1218] border border-[#1a1f2e] rounded-lg text-sm text-gray-300 font-mono">https://vpnsxb.afrihall.com</div>
           </div>
         </div>
         <div className="mt-5 flex gap-2">
-          <button onClick={copyAll} className="flex-1 py-2 text-xs font-semibold rounded-xl bg-gray-800 text-gray-300 hover:bg-gray-700 cursor-pointer flex items-center justify-center gap-1.5">
+          <button onClick={copyAll} className="flex-1 py-2 text-xs font-semibold rounded-xl bg-[#0f1218] border border-[#1a1f2e] text-gray-300 hover:text-white cursor-pointer flex items-center justify-center gap-1.5">
             <Copy size={12} /> Tout copier
           </button>
           <button onClick={onClose} className="flex-1 py-2 text-xs font-semibold rounded-xl bg-cyan-500 text-black hover:bg-cyan-400 cursor-pointer">Fermer</button>
@@ -74,8 +71,17 @@ interface SettingsViewProps {
   onUserUpdated?: (user: any) => void;
 }
 
+const TABS = [
+  { id: "profile", label: "Profil", icon: User },
+  { id: "team", label: "Équipe", icon: Users },
+  { id: "security", label: "Sécurité", icon: Shield },
+  { id: "api", label: "API & Tokens", icon: Key },
+  { id: "language", label: "Langue & Région", icon: Globe },
+];
+
 export default function SettingsView({ currentUser, onUserUpdated }: SettingsViewProps) {
   const { t, language, setLanguage } = useTranslation();
+  const [activeTab, setActiveTab] = useState("profile");
 
   // Profile state
   const [profileName, setProfileName] = useState(currentUser?.name || "");
@@ -90,7 +96,7 @@ export default function SettingsView({ currentUser, onUserUpdated }: SettingsVie
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Team creation state
+  // Team state
   const [roles, setRoles] = useState<any[]>([]);
   const [teamForm, setTeamForm] = useState({ name: "", email: "", phone: "", role: "", password: "" });
   const [autoGen, setAutoGen] = useState(true);
@@ -98,11 +104,26 @@ export default function SettingsView({ currentUser, onUserUpdated }: SettingsVie
   const [teamError, setTeamError] = useState("");
   const [createdCreds, setCreatedCreds] = useState<GeneratedCreds | null>(null);
 
+  // Admin tokens state
+  const [adminTokens, setAdminTokens] = useState<any[]>([]);
+  const [tokenLoading, setTokenLoading] = useState(false);
+  const [tokenGen, setTokenGen] = useState(false);
+  const [copiedToken, setCopiedToken] = useState<string | null>(null);
+
   useEffect(() => {
-    fetchRoles().then(r => setRoles(r.filter(role => !["SUPER_ADMIN"].includes(role.name))));
+    fetchRoles().then(r => setRoles(r.filter((role: any) => !["SUPER_ADMIN"].includes(role.name))));
+    loadAdminTokens();
   }, []);
 
-  // ── Avatar handlers ───────────────────────────────────────────────────
+  const loadAdminTokens = async () => {
+    setTokenLoading(true);
+    try {
+      const data = await listAdminTokens();
+      setAdminTokens(Array.isArray(data) ? data : data.tokens || []);
+    } catch { /* ignore */ } finally { setTokenLoading(false); }
+  };
+
+  // Avatar handlers
   const handleAvatarSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -119,7 +140,7 @@ export default function SettingsView({ currentUser, onUserUpdated }: SettingsVie
       const formData = new FormData();
       formData.append("avatar", file);
       const token = localStorage.getItem("sxb_access_token");
-      const res = await fetch("/api/users/me/avatar", {
+      const res = await fetch("/xapi/users/me/avatar", {
         method: "POST",
         headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: formData,
@@ -141,7 +162,6 @@ export default function SettingsView({ currentUser, onUserUpdated }: SettingsVie
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  // ── Profile save ──────────────────────────────────────────────────────
   const handleProfileSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setProfileSaving(true);
@@ -152,260 +172,305 @@ export default function SettingsView({ currentUser, onUserUpdated }: SettingsVie
         body: { name: profileName, phone: profilePhone },
       });
       setProfileSaved(true);
-      setTimeout(() => setProfileSaved(false), 3000);
-      if (onUserUpdated && data.user) onUserUpdated(data.user);
+      setTimeout(() => setProfileSaved(false), 2000);
+      if (onUserUpdated) onUserUpdated(data.user || data);
     } catch (err: any) {
-      setProfileError(err.message || "Erreur de sauvegarde");
+      setProfileError(err.message || "Erreur lors de la sauvegarde");
     } finally {
       setProfileSaving(false);
     }
   };
 
-  // ── Team member creation ──────────────────────────────────────────────
-  const handleCreateTeam = async (e: React.FormEvent) => {
+  const handleTeamCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     setTeamCreating(true);
     setTeamError("");
     try {
-      const result = await apiRequest<any>("/users", {
+      const genPass = autoGen ? Math.random().toString(36).slice(-10).toUpperCase() + "!" : teamForm.password;
+      const data = await apiRequest<any>("/users", {
         method: "POST",
-        body: {
-          name: teamForm.name,
-          email: teamForm.email,
-          phone: teamForm.phone || undefined,
-          role: teamForm.role,
-          password: autoGen ? undefined : teamForm.password || undefined,
-        },
+        body: { name: teamForm.name, email: teamForm.email, phone: teamForm.phone, role: teamForm.role, password: genPass },
       });
-      setCreatedCreds({
-        name: result.name || teamForm.name,
-        email: result.email || teamForm.email,
-        role: result.role?.name || teamForm.role,
-        password: result.generatedPassword || teamForm.password || "—",
-      });
+      setCreatedCreds({ name: teamForm.name, email: teamForm.email, password: genPass, role: teamForm.role });
       setTeamForm({ name: "", email: "", phone: "", role: "", password: "" });
     } catch (err: any) {
-      setTeamError(err.message || err.error || "Erreur de création");
+      setTeamError(err.message || "Erreur lors de la création");
     } finally {
       setTeamCreating(false);
     }
   };
 
-  const displayAvatar = avatarPreview || avatarUrl;
-  const initials = (currentUser?.name || "?").charAt(0).toUpperCase();
+  const handleGenerateToken = async () => {
+    setTokenGen(true);
+    try {
+      await generateAdminToken(currentUser.id, 168); // 7 days
+      await loadAdminTokens();
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setTokenGen(false);
+    }
+  };
+
+  const handleRevokeToken = async (id: string) => {
+    if (!confirm("Révoquer ce token ? Il ne pourra plus être utilisé.")) return;
+    try {
+      await revokeAdminToken(id);
+      await loadAdminTokens();
+    } catch { alert("Erreur lors de la révocation"); }
+  };
+
+  const copyToken = (token: string) => {
+    navigator.clipboard.writeText(token);
+    setCopiedToken(token);
+    setTimeout(() => setCopiedToken(null), 2000);
+  };
+
+  const sectionClass = "bg-[#0a0d14] border border-[#1a1f2e] rounded-xl p-5";
+  const labelClass = "block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider";
+  const inputClass = "w-full px-3 py-2.5 text-sm bg-[#07090e] border border-[#1a1f2e] rounded-lg text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/40";
 
   return (
-    <div className="space-y-6 max-w-4xl mx-auto">
-      {createdCreds && <CredentialsModal credentials={createdCreds} onClose={() => setCreatedCreds(null)} />}
-
+    <div className="space-y-5 max-w-3xl">
+      {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold tracking-tight text-white">{t("settings.title")}</h1>
-        <p className="text-sm text-gray-400 mt-1">{t("settings.subtitle")}</p>
+        <div className="flex items-center gap-2 mb-1">
+          <Settings className="w-5 h-5 text-gray-400" />
+          <h1 className="text-xl font-bold text-white">Paramètres</h1>
+        </div>
+        <p className="text-xs text-gray-500">Gérez votre compte, votre équipe et vos préférences</p>
       </div>
 
-      {/* ── Profile Section ── */}
-      <div className="p-5 rounded-xl border border-gray-800/80 bg-gray-950/20 space-y-5">
-        <div className="flex items-center gap-2 text-sm font-semibold text-white uppercase tracking-wider">
-          <User className="h-4 w-4 text-cyan-400" />
-          Profil & Photo
-        </div>
-
-        {/* Avatar Upload */}
-        <div className="flex items-start gap-5">
-          <div className="relative shrink-0">
-            {displayAvatar ? (
-              <img src={displayAvatar} alt="Avatar" className="w-20 h-20 rounded-2xl object-cover border-2 border-gray-700" />
-            ) : (
-              <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center border-2 border-gray-700">
-                <span className="text-white text-3xl font-bold">{initials}</span>
-              </div>
-            )}
+      {/* Tab bar */}
+      <div className="flex gap-1 bg-[#0a0d14] border border-[#1a1f2e] rounded-xl p-1 overflow-x-auto">
+        {TABS.map(tab => {
+          const Icon = tab.icon;
+          return (
             <button
-              onClick={() => fileInputRef.current?.click()}
-              className="absolute -bottom-2 -right-2 w-7 h-7 rounded-full bg-cyan-500 hover:bg-cyan-400 flex items-center justify-center shadow-lg transition-colors cursor-pointer"
-              title="Changer la photo"
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium whitespace-nowrap transition-all cursor-pointer ${
+                activeTab === tab.id ? 'bg-[#0f1218] text-white border border-[#252b3b]' : 'text-gray-500 hover:text-gray-300'
+              }`}
             >
-              <Camera className="w-3.5 h-3.5 text-black" />
+              <Icon className="w-3.5 h-3.5" />
+              {tab.label}
             </button>
-          </div>
+          );
+        })}
+      </div>
 
-          <div className="flex-1 space-y-2">
-            <div>
-              <p className="text-sm font-semibold text-white">{currentUser?.name}</p>
-              <p className="text-xs text-gray-400">{currentUser?.email}</p>
-              <span className="inline-block mt-1 text-[10px] px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400 font-semibold">{currentUser?.role}</span>
-            </div>
-
-            <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleAvatarSelect} />
-
-            {avatarPreview && (
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={handleAvatarUpload}
-                  disabled={avatarUploading}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-emerald-500 text-black hover:bg-emerald-400 disabled:opacity-50 cursor-pointer"
-                >
-                  {avatarUploading ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
-                  {avatarUploading ? "Upload..." : "Enregistrer"}
-                </button>
-                <button onClick={cancelAvatarPreview} className="p-1.5 text-gray-500 hover:text-rose-400 cursor-pointer">
-                  <X className="w-3.5 h-3.5" />
-                </button>
+      {/* Profile tab */}
+      {activeTab === "profile" && (
+        <div className="space-y-4">
+          <div className={sectionClass}>
+            <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2"><User className="w-4 h-4 text-cyan-400" />Informations personnelles</h3>
+            {/* Avatar */}
+            <div className="flex items-center gap-4 mb-5 pb-5 border-b border-[#1a1f2e]">
+              <div className="relative">
+                <div className="w-14 h-14 rounded-xl bg-[#0f1218] border border-[#1a1f2e] overflow-hidden flex items-center justify-center">
+                  {(avatarPreview || avatarUrl) ? (
+                    <img src={avatarPreview || avatarUrl!} alt="Avatar" className="w-full h-full object-cover" />
+                  ) : (
+                    <span className="text-xl font-bold text-gray-400">{currentUser?.name?.charAt(0).toUpperCase()}</span>
+                  )}
+                </div>
               </div>
-            )}
-
-            {!avatarPreview && (
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-gray-800 text-gray-300 hover:bg-gray-700 transition-colors cursor-pointer"
-              >
-                <Camera className="w-3 h-3" /> Changer la photo
+              <div className="flex-1">
+                <p className="text-sm font-medium text-white">{currentUser?.name}</p>
+                <p className="text-xs text-gray-500">{currentUser?.email}</p>
+                {avatarPreview ? (
+                  <div className="flex gap-2 mt-2">
+                    <button onClick={handleAvatarUpload} disabled={avatarUploading} className="text-xs px-3 py-1.5 bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 rounded-lg hover:bg-cyan-500/30 cursor-pointer flex items-center gap-1 disabled:opacity-50">
+                      {avatarUploading ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
+                      Enregistrer
+                    </button>
+                    <button onClick={cancelAvatarPreview} className="text-xs px-3 py-1.5 bg-[#0f1218] border border-[#1a1f2e] rounded-lg text-gray-400 hover:text-white cursor-pointer">
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ) : (
+                  <button onClick={() => fileInputRef.current?.click()} className="mt-2 text-xs text-cyan-400 hover:text-cyan-300 cursor-pointer flex items-center gap-1">
+                    <Camera className="w-3 h-3" /> Changer la photo
+                  </button>
+                )}
+                <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleAvatarSelect} />
+              </div>
+            </div>
+            {/* Profile form */}
+            <form onSubmit={handleProfileSave} className="space-y-4">
+              <div>
+                <label className={labelClass}>Nom complet</label>
+                <input value={profileName} onChange={e => setProfileName(e.target.value)} type="text" className={inputClass} placeholder="Votre nom" />
+              </div>
+              <div>
+                <label className={labelClass}>Email</label>
+                <input value={currentUser?.email || ""} type="email" className={inputClass + " opacity-60 cursor-not-allowed"} disabled />
+              </div>
+              <div>
+                <label className={labelClass}>Téléphone</label>
+                <input value={profilePhone} onChange={e => setProfilePhone(e.target.value)} type="tel" className={inputClass} placeholder="+225 07 XX XX XX" />
+              </div>
+              {profileError && <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{profileError}</p>}
+              <button type="submit" disabled={profileSaving} className="flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black transition-all disabled:opacity-60 cursor-pointer">
+                {profileSaving ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : profileSaved ? <CheckCheck className="w-3.5 h-3.5" /> : <Save className="w-3.5 h-3.5" />}
+                {profileSaved ? "Sauvegardé !" : "Enregistrer"}
               </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Team tab */}
+      {activeTab === "team" && (
+        <div className={sectionClass}>
+          <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2"><Users className="w-4 h-4 text-cyan-400" />Créer un membre d'équipe</h3>
+          <form onSubmit={handleTeamCreate} className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className={labelClass}>Nom complet *</label>
+                <input value={teamForm.name} onChange={e => setTeamForm(f => ({ ...f, name: e.target.value }))} type="text" className={inputClass} placeholder="Jean Dupont" required />
+              </div>
+              <div>
+                <label className={labelClass}>Email *</label>
+                <input value={teamForm.email} onChange={e => setTeamForm(f => ({ ...f, email: e.target.value }))} type="email" className={inputClass} placeholder="jean@example.com" required />
+              </div>
+              <div>
+                <label className={labelClass}>Téléphone</label>
+                <input value={teamForm.phone} onChange={e => setTeamForm(f => ({ ...f, phone: e.target.value }))} type="tel" className={inputClass} placeholder="+225 07 XX XX XX" />
+              </div>
+              <div>
+                <label className={labelClass}>Rôle *</label>
+                <select value={teamForm.role} onChange={e => setTeamForm(f => ({ ...f, role: e.target.value }))} className={inputClass} required>
+                  <option value="">Choisir un rôle</option>
+                  {roles.map(r => <option key={r.id} value={r.name}>{r.name}</option>)}
+                </select>
+              </div>
+            </div>
+            <div>
+              <div className="flex items-center gap-3 mb-2">
+                <label className="flex items-center gap-2 cursor-pointer text-xs text-gray-400">
+                  <input type="checkbox" checked={autoGen} onChange={e => setAutoGen(e.target.checked)} className="rounded border-[#1a1f2e] bg-[#07090e] accent-cyan-500" />
+                  Générer le mot de passe automatiquement
+                </label>
+              </div>
+              {!autoGen && (
+                <input value={teamForm.password} onChange={e => setTeamForm(f => ({ ...f, password: e.target.value }))} type="password" className={inputClass} placeholder="Mot de passe" required />
+              )}
+            </div>
+            {teamError && <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{teamError}</p>}
+            <button type="submit" disabled={teamCreating} className="flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black transition-all disabled:opacity-60 cursor-pointer">
+              {teamCreating ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Users className="w-3.5 h-3.5" />}
+              Créer le compte
+            </button>
+          </form>
+          {createdCreds && <CredentialsModal credentials={createdCreds} onClose={() => setCreatedCreds(null)} />}
+        </div>
+      )}
+
+      {/* Security tab */}
+      {activeTab === "security" && (
+        <div className={sectionClass}>
+          <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2"><Lock className="w-4 h-4 text-cyan-400" />Sécurité du compte</h3>
+          <div className="space-y-3">
+            {[
+              { label: "Authentification JWT", desc: "Tokens Bearer avec expiration automatique", status: "actif", color: "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" },
+              { label: "Refresh Token", desc: "Renouvellement automatique de session", status: "actif", color: "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" },
+              { label: "Contrôle d'accès RBAC", desc: "Permissions basées sur les rôles", status: "actif", color: "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" },
+              { label: "Chiffrement des données", desc: "Mots de passe hashés (bcrypt)", status: "actif", color: "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" },
+            ].map(item => (
+              <div key={item.label} className="flex items-center justify-between p-4 bg-[#07090e] border border-[#1a1f2e] rounded-xl">
+                <div>
+                  <p className="text-sm font-medium text-white">{item.label}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">{item.desc}</p>
+                </div>
+                <span className={`px-2.5 py-1 rounded-lg text-xs font-semibold border ${item.color}`}>{item.status}</span>
+              </div>
+            ))}
+          </div>
+          <div className="mt-4 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-xs text-amber-400">
+            💡 Pour changer votre mot de passe, contactez votre Super Admin ou utilisez la procédure de réinitialisation.
+          </div>
+        </div>
+      )}
+
+      {/* API Tokens tab */}
+      {activeTab === "api" && (
+        <div className="space-y-4">
+          <div className={sectionClass}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-semibold text-white flex items-center gap-2"><Key className="w-4 h-4 text-cyan-400" />Tokens Admin</h3>
+              <button
+                onClick={handleGenerateToken}
+                disabled={tokenGen}
+                className="flex items-center gap-2 px-3 py-1.5 text-xs font-semibold rounded-lg bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500/30 transition-all disabled:opacity-50 cursor-pointer"
+              >
+                {tokenGen ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Key className="w-3.5 h-3.5" />}
+                Générer un token
+              </button>
+            </div>
+            {tokenLoading ? (
+              <div className="py-6 flex justify-center"><RefreshCw className="w-4 h-4 text-cyan-400 animate-spin" /></div>
+            ) : adminTokens.length === 0 ? (
+              <div className="py-8 text-center text-gray-600">
+                <Key className="w-6 h-6 mx-auto mb-2 opacity-30" />
+                <p className="text-sm">Aucun token admin actif</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {adminTokens.map((token: any) => (
+                  <div key={token.id} className="flex items-center gap-3 p-3 bg-[#07090e] border border-[#1a1f2e] rounded-xl">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-mono text-cyan-400 truncate">{token.token}</p>
+                      <div className="flex items-center gap-3 mt-1">
+                        <span className={`text-[10px] font-medium ${token.status === 'active' ? 'text-emerald-400' : 'text-gray-500'}`}>
+                          ● {token.status === 'active' ? 'Actif' : 'Révoqué'}
+                        </span>
+                        {token.usedAt && <span className="text-[10px] text-gray-600">Utilisé le {new Date(token.usedAt).toLocaleDateString('fr-FR')}</span>}
+                        <span className="text-[10px] text-gray-600">Créé le {new Date(token.createdAt).toLocaleDateString('fr-FR')}</span>
+                      </div>
+                    </div>
+                    <button onClick={() => copyToken(token.token)} className="p-1.5 rounded-lg text-gray-500 hover:text-white hover:bg-white/5 cursor-pointer">
+                      {copiedToken === token.token ? <CheckCheck className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    </button>
+                    {token.status === 'active' && (
+                      <button onClick={() => handleRevokeToken(token.id)} className="p-1.5 rounded-lg text-gray-500 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer">
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         </div>
+      )}
 
-        {/* Profile form */}
-        <form onSubmit={handleProfileSave} className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-xs font-semibold text-gray-400 mb-1.5 flex items-center gap-1"><User className="w-3 h-3" /> Nom complet</label>
-            <input
-              type="text"
-              value={profileName}
-              onChange={e => setProfileName(e.target.value)}
-              className="w-full px-3 py-2.5 bg-gray-900 border border-gray-800 rounded-xl text-sm text-white focus:outline-none focus:border-cyan-500 transition-colors"
-              placeholder="Votre nom"
-            />
+      {/* Language tab */}
+      {activeTab === "language" && (
+        <div className={sectionClass}>
+          <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2"><Globe className="w-4 h-4 text-cyan-400" />Langue & Région</h3>
+          <div className="grid grid-cols-2 gap-3">
+            {[{ code: 'fr', label: 'Français', flag: '🇫🇷' }, { code: 'en', label: 'English', flag: '🇬🇧' }].map(lang => (
+              <button
+                key={lang.code}
+                onClick={() => setLanguage(lang.code as 'fr' | 'en')}
+                className={`flex items-center gap-3 p-4 rounded-xl border text-left transition-all cursor-pointer ${
+                  language === lang.code
+                    ? 'bg-cyan-500/15 border-cyan-500/30 text-white'
+                    : 'bg-[#07090e] border-[#1a1f2e] text-gray-400 hover:text-white hover:border-[#252b3b]'
+                }`}
+              >
+                <span className="text-2xl">{lang.flag}</span>
+                <div>
+                  <p className="text-sm font-semibold">{lang.label}</p>
+                  {language === lang.code && <p className="text-[10px] text-cyan-400">Actif</p>}
+                </div>
+              </button>
+            ))}
           </div>
-          <div>
-            <label className="block text-xs font-semibold text-gray-400 mb-1.5 flex items-center gap-1"><Phone className="w-3 h-3" /> Téléphone</label>
-            <input
-              type="tel"
-              value={profilePhone}
-              onChange={e => setProfilePhone(e.target.value)}
-              className="w-full px-3 py-2.5 bg-gray-900 border border-gray-800 rounded-xl text-sm text-white focus:outline-none focus:border-cyan-500 transition-colors"
-              placeholder="+33 6 00 00 00 00"
-            />
-          </div>
-          <div className="sm:col-span-2">
-            <label className="block text-xs font-semibold text-gray-400 mb-1.5 flex items-center gap-1"><Mail className="w-3 h-3" /> Email (non modifiable)</label>
-            <input
-              type="email"
-              value={currentUser?.email || ""}
-              readOnly
-              className="w-full px-3 py-2.5 bg-gray-900/40 border border-gray-800/50 rounded-xl text-sm text-gray-500 cursor-not-allowed"
-            />
-          </div>
-          {profileError && <p className="sm:col-span-2 text-xs text-rose-400">{profileError}</p>}
-          <div className="sm:col-span-2">
-            <button
-              type="submit"
-              disabled={profileSaving}
-              className="flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-xl bg-cyan-500 text-black hover:bg-cyan-400 disabled:opacity-50 cursor-pointer transition-colors"
-            >
-              {profileSaving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-              {profileSaved ? "✓ Sauvegardé !" : profileSaving ? "Sauvegarde..." : "Sauvegarder le profil"}
-            </button>
-          </div>
-        </form>
-      </div>
-
-      {/* ── Language Section ── */}
-      <div className="p-5 rounded-xl border border-gray-800/80 bg-gray-950/20 space-y-4">
-        <div className="flex items-center gap-2 text-sm font-semibold text-white uppercase tracking-wider">
-          <Globe className="h-4 w-4 text-cyan-400" />
-          {t("settings.sections.language_selection")}
         </div>
-        <div className="flex gap-3">
-          <button type="button" onClick={() => setLanguage("fr")}
-            className={`flex-1 py-2.5 text-sm font-semibold rounded-xl border flex items-center justify-center gap-2 cursor-pointer transition-all ${language === "fr" ? "bg-cyan-950 text-cyan-400 border-cyan-500/50" : "bg-gray-900/60 border-gray-800 text-gray-400 hover:bg-gray-900"}`}>
-            🇫🇷 Français
-          </button>
-          <button type="button" onClick={() => setLanguage("en")}
-            className={`flex-1 py-2.5 text-sm font-semibold rounded-xl border flex items-center justify-center gap-2 cursor-pointer transition-all ${language === "en" ? "bg-cyan-950 text-cyan-400 border-cyan-500/50" : "bg-gray-900/60 border-gray-800 text-gray-400 hover:bg-gray-900"}`}>
-            🇬🇧 English
-          </button>
-        </div>
-      </div>
-
-      {/* ── Create Team Member ── */}
-      <div className="p-5 rounded-xl border border-gray-800/80 bg-gray-950/20 space-y-4">
-        <div className="flex items-center gap-2 text-sm font-semibold text-white uppercase tracking-wider">
-          <Users className="h-4 w-4 text-violet-400" />
-          Créer un membre d'équipe
-        </div>
-        <form onSubmit={handleCreateTeam} className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-semibold text-gray-400 mb-1.5">Nom complet</label>
-              <input type="text" required value={teamForm.name} onChange={e => setTeamForm(f => ({ ...f, name: e.target.value }))}
-                className="w-full px-3 py-2 bg-gray-900 border border-gray-800 rounded-xl text-sm text-white focus:outline-none focus:border-cyan-500"
-                placeholder="Ex: Jean Dupont" />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-gray-400 mb-1.5">Email</label>
-              <input type="email" required value={teamForm.email} onChange={e => setTeamForm(f => ({ ...f, email: e.target.value }))}
-                className="w-full px-3 py-2 bg-gray-900 border border-gray-800 rounded-xl text-sm text-white focus:outline-none focus:border-cyan-500"
-                placeholder="jean@exemple.com" />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-gray-400 mb-1.5">Téléphone (optionnel)</label>
-              <input type="tel" value={teamForm.phone} onChange={e => setTeamForm(f => ({ ...f, phone: e.target.value }))}
-                className="w-full px-3 py-2 bg-gray-900 border border-gray-800 rounded-xl text-sm text-white focus:outline-none focus:border-cyan-500"
-                placeholder="+33 6 00 00 00 00" />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-gray-400 mb-1.5">Rôle</label>
-              <select required value={teamForm.role} onChange={e => setTeamForm(f => ({ ...f, role: e.target.value }))}
-                className="w-full px-3 py-2 bg-gray-900 border border-gray-800 rounded-xl text-sm text-white focus:outline-none focus:border-cyan-500 cursor-pointer">
-                <option value="">-- Sélectionner un rôle --</option>
-                {roles.map(r => <option key={r.id} value={r.name}>{r.name} {r.description ? `— ${r.description}` : ""}</option>)}
-              </select>
-            </div>
-          </div>
-
-          {/* Password */}
-          <div className="flex items-center gap-3">
-            <input type="checkbox" checked={autoGen} onChange={e => setAutoGen(e.target.checked)} id="autoGenPw" className="rounded" />
-            <label htmlFor="autoGenPw" className="text-xs text-gray-400 cursor-pointer">Générer un mot de passe automatiquement</label>
-          </div>
-          {!autoGen && (
-            <div>
-              <label className="block text-xs font-semibold text-gray-400 mb-1.5">Mot de passe (min. 6 caractères)</label>
-              <input type="password" value={teamForm.password} onChange={e => setTeamForm(f => ({ ...f, password: e.target.value }))} minLength={6}
-                className="w-full px-3 py-2 bg-gray-900 border border-gray-800 rounded-xl text-sm text-white focus:outline-none focus:border-cyan-500"
-                placeholder="••••••••••" />
-            </div>
-          )}
-
-          {teamError && <p className="text-xs text-rose-400 bg-rose-500/10 px-3 py-2 rounded-lg border border-rose-500/20">{teamError}</p>}
-          <button type="submit" disabled={teamCreating || !teamForm.name || !teamForm.email || !teamForm.role}
-            className="flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-xl bg-violet-500 text-white hover:bg-violet-400 disabled:opacity-50 cursor-pointer transition-colors">
-            {teamCreating ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Key className="w-4 h-4" />}
-            {teamCreating ? "Création..." : "Créer le compte"}
-          </button>
-        </form>
-      </div>
-
-      {/* ── Security Info ── */}
-      <div className="p-5 rounded-xl border border-gray-800/80 bg-gray-950/20 space-y-3">
-        <div className="flex items-center gap-2 text-sm font-semibold text-white uppercase tracking-wider">
-          <Shield className="h-4 w-4 text-emerald-400" />
-          Sécurité
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-          {[
-            { label: "Dashboard", value: "https://vpnsxb.afrihall.com", color: "text-cyan-400" },
-            { label: "API Backend", value: "https://vpnsxb.afrihall.com/api", color: "text-purple-400" },
-            { label: "Session", value: "JWT · 15min + Refresh 7j", color: "text-amber-400" },
-          ].map(item => (
-            <div key={item.label} className="p-3 bg-gray-900/60 rounded-lg border border-gray-800/50">
-              <p className="text-gray-500 mb-0.5">{item.label}</p>
-              <p className={`font-mono font-medium ${item.color} break-all`}>{item.value}</p>
-            </div>
-          ))}
-        </div>
-      </div>
+      )}
     </div>
   );
 }
