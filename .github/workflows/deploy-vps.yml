@@ -102,6 +102,8 @@ jobs:
               --schema=/tmp/prisma-gen/schema.prisma 2>&1 | tail -3 || true
             cd /var/www/sxb-vpn
 
+            echo "🔑 Fix permissions complètes (évite EACCES pnpm)..."
+            sudo chown -R ubuntu:ubuntu /var/www/sxb-vpn/ 2>/dev/null || true
             echo "📦 Sync deps (lockfile may differ from VPS)..."
             pnpm install --no-frozen-lockfile 2>&1 | tail -5
 
