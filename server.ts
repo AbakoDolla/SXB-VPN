@@ -33,6 +33,7 @@ import appRegisterRouter  from "./server/routes/app-register";
 import provisionRouter from "./server/routes/provision";
 import xrayRouter from "./server/routes/xray";
 import singboxRouter from "./server/routes/singbox";
+import xpanelRouter from "./server/routes/xpanel";
 
 async function startServer() {
   const app = express();
@@ -127,6 +128,7 @@ async function startServer() {
   app.use("/api/vpn-profiles", vpnProfilesRouter);
   app.use("/api/xray", xrayRouter);
   app.use("/api/singbox", singboxRouter);
+  app.use("/api/xpanel", xpanelRouter);
   app.use("/api/subscriptions", subscriptionsRouter);
   app.use("/api/app",           appRegisterRouter);
   app.use("/api/provision", provisionRouter);
