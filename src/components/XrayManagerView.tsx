@@ -7,7 +7,7 @@ import {
 } from "../api/xray";
 import {
   Zap, Plus, Trash2, RefreshCw, Edit3, Power, Copy, Check,
-  X, AlertTriangle, Activity, Link,
+  X, AlertTriangle, Activity, Link, ChevronDown, ChevronUp,
 } from "lucide-react";
 
 interface Props { currentUserRole: UserRole }
@@ -46,6 +46,43 @@ export default function XrayManagerView({ currentUserRole }: Props) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [filterProto, setFilterProto] = useState("all");
+  const [jsonImportText, setJsonImportText] = useState("");
+  const [importError, setImportError] = useState("");
+  const [showJsonInput, setShowJsonInput] = useState(false);
+
+  const handleImportJson = () => {
+    setImportError("");
+    try {
+      const parsed = JSON.parse(jsonImportText.trim());
+      
+      const mapped = {
+        name: parsed.name || parsed.remark || parsed.ps || form.name || "V2ray Imported",
+        protocol: parsed.protocol || parsed.type || "vless",
+        host: parsed.host || parsed.address || parsed.add || parsed.server || "",
+        port: String(parsed.port || parsed.server_port || 443),
+        path: parsed.path || parsed.wsPath || parsed.ws_path || "/",
+        tls: parsed.tls === "tls" || parsed.tls === true || parsed.security === "tls" || false,
+        sni: parsed.sni || parsed.host || parsed.serverName || "",
+        network: parsed.network || parsed.net || "ws",
+        quotaGB: parsed.quotaGB ? String(parsed.quotaGB) : "",
+        expireAt: parsed.expireAt ? parsed.expireAt.slice(0, 10) : "",
+        maxDevices: parsed.maxDevices || 1,
+        password: parsed.password || parsed.passwordHash || parsed.id || parsed.uuid || "",
+        method: parsed.method || "aes-256-gcm",
+      };
+
+      if (!mapped.host) {
+        setImportError("Erreur : l'hôte ('address' ou 'host') est introuvable ou vide.");
+        return;
+      }
+
+      setForm(mapped);
+      setShowJsonInput(false);
+      setJsonImportText("");
+    } catch (e: any) {
+      setImportError("Syntaxe JSON invalide : " + e.message);
+    }
+  };
   const [search, setSearch] = useState("");
   const [copied, setCopied] = useState<string | null>(null);
 
@@ -266,6 +303,39 @@ export default function XrayManagerView({ currentUserRole }: Props) {
               <h2 className="text-white font-semibold">{editId ? "Modifier" : "Nouveau"} compte Xray</h2>
               <button onClick={() => setShowForm(false)} className="p-1.5 text-gray-400 hover:text-white rounded-lg"><X className="w-5 h-5" /></button>
             </div>
+            
+            {!editId && (
+              <div className="px-6 pt-4 border-b border-[#1a1f2e] pb-4 bg-[#111622]/30">
+                <button
+                  type="button"
+                  onClick={() => setShowJsonInput(!showJsonInput)}
+                  className="w-full text-left flex items-center justify-between text-xs font-semibold text-blue-400 hover:text-blue-300"
+                >
+                  <span>{showJsonInput ? "Masquer l'éditeur JSON" : "+ Importer une configuration V2Ray JSON (VMess / VLESS / Trojan)"}</span>
+                  {showJsonInput ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                </button>
+                {showJsonInput && (
+                  <div className="mt-3 space-y-3">
+                    <textarea
+                      value={jsonImportText}
+                      onChange={(e) => setJsonImportText(e.target.value)}
+                      placeholder={`{\n  "protocol": "vless",\n  "address": "mon-serveur-vpn.com",\n  "port": 443,\n  "id": "uuid-client-ici",\n  "tls": true,\n  "network": "ws",\n  "path": "/ws"\n}`}
+                      rows={6}
+                      className="w-full px-3 py-2 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-emerald-400 font-mono text-xs focus:outline-none focus:border-blue-500"
+                    />
+                    {importError && <p className="text-xs text-rose-500 font-medium">{importError}</p>}
+                    <button
+                      type="button"
+                      onClick={handleImportJson}
+                      className="px-4 py-2 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded-xl text-xs font-semibold border border-blue-500/20 transition-all"
+                    >
+                      Convertir, Valider et Préremplir
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
             <form onSubmit={handleSubmit} className="p-6 space-y-4">
               {error && (
                 <div className="flex items-center gap-2 p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-rose-400 text-sm">
