@@ -103,9 +103,8 @@ jobs:
             cd /var/www/sxb-vpn
 
             echo "🎨 Build Dashboard..."
-            cd artifacts/sxb-dashboard
-            CI=true PORT=3000 BASE_PATH=/ pnpm run build
-            cd /var/www/sxb-vpn
+            sudo chown -R ubuntu:ubuntu /var/www/sxb-vpn/artifacts/ 2>/dev/null || true
+            CI=true PORT=3000 BASE_PATH=/ pnpm --filter @workspace/sxb-dashboard run build
 
             echo "⚙️ Build Backend..."
             ESBUILD=$(find backend/node_modules/.bin -name "esbuild" -executable | head -1)
