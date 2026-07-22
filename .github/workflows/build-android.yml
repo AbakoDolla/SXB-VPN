@@ -145,31 +145,23 @@ jobs:
 
           echo "✅ Keystore généré : $(ls -lh android/app/keystore/release.keystore | awk '{print $5}')"
 
-          # Injecter signingConfigs DANS android {} via Python inline
+          # Injecter signingConfigs DANS android {} via Python (aucun heredoc, évite erreur YAML col 0)
           BUILD_GRADLE="android/app/build.gradle"
-          python3 - "$BUILD_GRADLE" << 'PYEOF_SIGNING'
-import re, sys
-path = sys.argv[1]
-content = open(path).read()
-if 'signingConfigs' not in content:
-    block = (
-        "\n    signingConfigs {"
-        "\n        release {"
-        "\n            storeFile file(\"keystore/release.keystore\")"
-        "\n            storePassword \"sxbvpn_ci_2026\""
-        "\n            keyAlias \"sxbvpn\""
-        "\n            keyPassword \"sxbvpn_ci_2026\""
-        "\n        }"
-        "\n    }"
-    )
-    content = re.sub(r"android \{", "android {" + block, content, count=1)
-    print("[signing] signingConfigs injecte")
-if 'signingConfig signingConfigs.release' not in content:
-    content = re.sub(r"(\brelease \{)", r"\1\n            signingConfig signingConfigs.release", content, count=1)
-    print("[signing] signingConfig ref ajoutee")
-open(path, 'w').write(content)
-PYEOF_SIGNING
-          echo "✅ Signature configurée dans build.gradle"
+          printf '%s\n' \
+            'import re, sys' \
+            'path = sys.argv[1]' \
+            'c = open(path).read()' \
+            'if "signingConfigs" not in c:' \
+            '    b = "\n    signingConfigs {\n        release {\n            storeFile file(\"keystore/release.keystore\")\n            storePassword \"sxbvpn_ci_2026\"\n            keyAlias \"sxbvpn\"\n            keyPassword \"sxbvpn_ci_2026\"\n        }\n    }"' \
+            '    c = re.sub(r"android \{", "android {" + b, c, count=1)' \
+            '    print("[signing] signingConfigs injecte dans android {}")' \
+            'if "signingConfig signingConfigs.release" not in c:' \
+            '    c = re.sub(r"(buildTypes\s*\{[^}]*release\s*\{)", lambda m: m.group(0) + "\n            signingConfig signingConfigs.release", c, count=1)' \
+            '    print("[signing] signingConfig ref ajoutee")' \
+            'open(path, "w").write(c)' \
+            > /tmp/signing_inject.py
+          python3 /tmp/signing_inject.py "$BUILD_GRADLE"
+          echo "✅ Signature configurée dans build.gradle\"
 
       # BUG FIX #2 & #3 : gradle.properties sans espaces parasites, sans configuration-cache
       - name: Configure Gradle (performance + compatibilité RN)
