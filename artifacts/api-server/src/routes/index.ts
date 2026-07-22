@@ -1,16 +1,7 @@
 import { Router, type IRouter } from "express";
-<<<<<<< HEAD
-import healthRouter from "./health";
-
-const router: IRouter = Router();
-
-router.use(healthRouter);
-
-=======
 import healthRouter from "./health.js";
 import authRouter from "./auth.js";
 import mobileRouter from "./mobile.js";
-
 import dashboardRouter from "./dashboard.js";
 import clientsRouter from "./clients.js";
 import usersRouter from "./users.js";
@@ -28,7 +19,6 @@ router.use("/auth", authRouter);
 // Mobile app API
 router.use("/mobile", mobileRouter);
 
-
 // Dashboard stats
 router.use("/dashboard", dashboardRouter);
 
@@ -44,5 +34,4 @@ router.use("/admin-tokens", adminTokensRouter);
 // Analytics
 router.use("/analytics", analyticsRouter);
 
->>>>>>> github/main
 export default router;

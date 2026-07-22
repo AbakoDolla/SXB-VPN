@@ -35,10 +35,6 @@ minimumReleaseAgeExclude:
   - stripe-replit-sync
 
 packages:
-<<<<<<< HEAD
-=======
-  - app-mobile
->>>>>>> github/main
   - artifacts/*
   - lib/*
   - lib/integrations/*
@@ -162,9 +158,3 @@ overrides:
   # drizzle-kit uses esbuild internally on an older version that's vulnerable, this overrides it
   "@esbuild-kit/esm-loader": "npm:tsx@^4.21.0"
   esbuild: "0.27.3"
-<<<<<<< HEAD
-=======
-
-allowBuilds:
-  esbuild: set this to true or false
->>>>>>> github/main

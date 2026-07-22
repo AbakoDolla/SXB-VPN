@@ -65,12 +65,7 @@ jobs:
         run: |
           PLUGIN="node_modules/expo-modules-core/expo-module-gradle-plugin/build.gradle.kts"
           if [ -f "$PLUGIN" ] && ! grep -q "Xskip-metadata-version-check" "$PLUGIN"; then
-            cat >> "$PLUGIN" << 'KEOF'
-
-tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
-    kotlinOptions { freeCompilerArgs = freeCompilerArgs + listOf("-Xskip-metadata-version-check") }
-}
-KEOF
+            printf '\ntasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {\n    kotlinOptions { freeCompilerArgs = freeCompilerArgs + listOf("-Xskip-metadata-version-check") }\n}\n' >> "$PLUGIN"
             echo "[patch] Kotlin metadata fix appliqué"
           else
             echo "[patch] Déjà appliqué ou expo-modules-core absent (normal si cache node)"
