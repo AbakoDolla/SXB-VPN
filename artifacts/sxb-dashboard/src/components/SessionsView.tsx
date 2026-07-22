@@ -130,6 +130,7 @@ export default function SessionsView() {
             <p className="text-gray-500 text-sm">Aucune session trouvée</p>
           </div>
         ) : (
+          <>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -197,6 +198,7 @@ export default function SessionsView() {
             <Pagination page={page} pageSize={pageSize} total={filtered.length}
               onPageChange={setPage} onPageSizeChange={s => { setPageSize(s); setPage(1); }} />
           </div>
+          </>
         )}
       </div>
     </div>

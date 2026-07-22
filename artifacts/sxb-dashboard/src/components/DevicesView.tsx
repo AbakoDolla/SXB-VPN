@@ -185,6 +185,7 @@ export default function DevicesView() {
             <p className="text-gray-600 text-sm">Cliquez sur « Générer un token » pour commencer</p>
           </div>
         ) : (
+          <>
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
@@ -272,6 +273,7 @@ export default function DevicesView() {
             <Pagination page={page} pageSize={pageSize} total={filtered.length}
               onPageChange={setPage} onPageSizeChange={s => { setPageSize(s); setPage(1); }} />
           </div>
+          </>
         )}
       </div>
 
