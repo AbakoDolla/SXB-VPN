@@ -145,23 +145,30 @@ jobs:
 
           echo "✅ Keystore généré : $(ls -lh android/app/keystore/release.keystore | awk '{print $5}')"
 
-          # Injecter la config de signature dans android/app/build.gradle
-          # Ajouter signingConfigs AVANT le bloc android {}
+          # Injecter signingConfigs DANS android {} via Python inline
           BUILD_GRADLE="android/app/build.gradle"
-
-          # Vérifier si signingConfigs est déjà présent
-          if ! grep -q "signingConfigs" "$BUILD_GRADLE"; then
-            sed -i '/^android {/i signingConfigs {\n    release {\n        storeFile file("keystore/release.keystore")\n        storePassword "sxbvpn_ci_2026"\n        keyAlias "sxbvpn"\n        keyPassword "sxbvpn_ci_2026"\n    }\n}\n' "$BUILD_GRADLE"
-          fi
-
-          # Remplacer le buildType release pour utiliser la config de signature
-          if grep -q "buildTypes" "$BUILD_GRADLE"; then
-            # Injecter signingConfig dans le bloc release si pas déjà là
-            if ! grep -q "signingConfig signingConfigs.release" "$BUILD_GRADLE"; then
-              sed -i '/release {/a\            signingConfig signingConfigs.release' "$BUILD_GRADLE"
-            fi
-          fi
-
+          python3 - "$BUILD_GRADLE" << 'PYEOF_SIGNING'
+import re, sys
+path = sys.argv[1]
+content = open(path).read()
+if 'signingConfigs' not in content:
+    block = (
+        "\n    signingConfigs {"
+        "\n        release {"
+        "\n            storeFile file(\"keystore/release.keystore\")"
+        "\n            storePassword \"sxbvpn_ci_2026\""
+        "\n            keyAlias \"sxbvpn\""
+        "\n            keyPassword \"sxbvpn_ci_2026\""
+        "\n        }"
+        "\n    }"
+    )
+    content = re.sub(r"android \{", "android {" + block, content, count=1)
+    print("[signing] signingConfigs injecte")
+if 'signingConfig signingConfigs.release' not in content:
+    content = re.sub(r"(\brelease \{)", r"\1\n            signingConfig signingConfigs.release", content, count=1)
+    print("[signing] signingConfig ref ajoutee")
+open(path, 'w').write(content)
+PYEOF_SIGNING
           echo "✅ Signature configurée dans build.gradle"
 
       # BUG FIX #2 & #3 : gradle.properties sans espaces parasites, sans configuration-cache

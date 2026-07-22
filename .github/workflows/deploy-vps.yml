@@ -56,14 +56,17 @@ jobs:
       - name: Build Backend (esbuild CJS bundle)
         run: |
           pnpm --filter @workspace/api-spec run codegen 2>/dev/null || true
-          node_modules/.bin/esbuild server.ts \
-            --bundle \
-            --platform=node \
-            --format=cjs \
-            --packages=external \
-            --sourcemap \
-            --outfile=dist/server.cjs 2>/dev/null || \
-          pnpm exec esbuild server.ts \
+          mkdir -p dist
+          # esbuild n'est pas à la racine du workspace — installer les deps backend d'abord
+          cd backend && npm install --legacy-peer-deps --no-audit --silent 2>&1 | tail -3 && cd ..
+          # Utiliser l'esbuild du backend
+          ESBUILD=$(find backend/node_modules/.bin -name "esbuild" -executable | head -1)
+          if [ -z "$ESBUILD" ]; then
+            # Fallback: npx
+            ESBUILD="npx --yes esbuild@0.27.3"
+          fi
+          echo "esbuild: $ESBUILD"
+          $ESBUILD server.ts \
             --bundle \
             --platform=node \
             --format=cjs \
@@ -103,7 +106,9 @@ jobs:
             cd /var/www/sxb-vpn
 
             echo "⚙️ Build Backend..."
-            pnpm exec esbuild server.ts \
+            ESBUILD=$(find backend/node_modules/.bin -name "esbuild" -executable | head -1)
+            if [ -z "$ESBUILD" ]; then ESBUILD="npx --yes esbuild@0.27.3"; fi
+            $ESBUILD server.ts \
               --bundle \
               --platform=node \
               --format=cjs \
