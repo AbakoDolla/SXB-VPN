@@ -1,0 +1,62 @@
+{
+  "expo": {
+    "name": "SXB VPN",
+    "slug": "sxb-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "sxbvpn",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/images/icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#060914"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.sxbvpn.mobile",
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true
+        },
+        "NSLocationWhenInUseUsageDescription": "SXB VPN uses your location to select the optimal server.",
+        "NSPhotoLibraryUsageDescription": "SXB VPN may access photos for profile customization.",
+        "NSCameraUsageDescription": "SXB VPN uses the camera for QR code scanning."
+      }
+    },
+    "android": {
+      "package": "com.sxbvpn.mobile",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/icon.png",
+        "backgroundColor": "#060914"
+      },
+      "permissions": [
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
+        "ACCESS_WIFI_STATE",
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "RECEIVE_BOOT_COMPLETED",
+        "FOREGROUND_SERVICE"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/images/icon.png"
+    },
+    "plugins": [
+      [
+        "expo-router",
+        {
+          "origin": "https://replit.com/"
+        }
+      ],
+      "expo-font",
+      "expo-web-browser"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

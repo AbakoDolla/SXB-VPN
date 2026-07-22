@@ -1,0 +1,250 @@
+name: Build Android APK — SXB VPN
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app-mobile/**"
+      - ".github/workflows/build-android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-android:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app-mobile
+
+    steps:
+      # ── Checkout ──────────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Node.js 22 (LTS, non-deprecated) ──────────────────────────────────────
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # ── JDK 17 ────────────────────────────────────────────────────────────────
+      # Pas de `cache: gradle` ici : android/ est gitignored, donc gradlew
+      # n'existe pas encore au checkout → setup-java planterait immédiatement.
+      # Le cache ~/.gradle est géré manuellement ci-dessous.
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # ── Cache ~/.gradle (dépendances Gradle téléchargées) ─────────────────────
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: gradle-caches-${{ runner.os }}-${{ hashFiles('app-mobile/package.json') }}
+          restore-keys: |
+            gradle-caches-${{ runner.os }}-
+
+      # ── Cache node_modules ────────────────────────────────────────────────────
+      # Clé basée sur package.json (pas de package-lock.json commité).
+      - name: Cache node_modules
+        id: cache-node
+        uses: actions/cache@v4
+        with:
+          path: app-mobile/node_modules
+          key: node-modules-${{ runner.os }}-node22-${{ hashFiles('app-mobile/package.json') }}
+
+      - name: Install dependencies
+        if: steps.cache-node.outputs.cache-hit != 'true'
+        run: npm install --legacy-peer-deps
+
+      # ── Cache android/ (sortie expo prebuild) ────────────────────────────────
+      # Si les sources qui déterminent le contenu de android/ n'ont pas changé
+      # (package.json, app.json, plugins, fichiers Kotlin), on restaure le dossier
+      # généré et on saute entièrement l'étape expo prebuild (~90s économisés).
+      - name: Cache android/ prebuild output
+        id: cache-android
+        uses: actions/cache@v4
+        with:
+          path: app-mobile/android
+          key: android-prebuild-${{ runner.os }}-${{ hashFiles('app-mobile/package.json', 'app-mobile/app.json', 'app-mobile/plugins/**', 'app-mobile/modules/android-native/**/*.kt') }}
+
+      # ── Kotlin metadata compat (avant prebuild, patch dans node_modules) ──────
+      - name: Patch expo-module-gradle-plugin (Kotlin metadata compat)
+        run: |
+          PLUGIN="node_modules/expo-modules-core/expo-module-gradle-plugin/build.gradle.kts"
+          if [ -f "$PLUGIN" ] && ! grep -q "Xskip-metadata-version-check" "$PLUGIN"; then
+            printf '\ntasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {\n    kotlinOptions { freeCompilerArgs = freeCompilerArgs + listOf("-Xskip-metadata-version-check") }\n}\n' >> "$PLUGIN"
+            echo "[patch] Kotlin metadata fix appliqué"
+          else
+            echo "[patch] Déjà appliqué ou fichier absent"
+          fi
+
+      # ── Expo prebuild — saute si cache android/ valide ───────────────────────
+      - name: Expo prebuild (Android)
+        if: steps.cache-android.outputs.cache-hit != 'true'
+        run: npx expo prebuild --platform android --clean --no-install
+        env:
+          EXPO_NO_TELEMETRY: "1"
+          EXPO_PUBLIC_API_URL: https://vpnsxb.afrihall.com/api
+
+      # ── ABI filter : arm64 + armeabi-v7a seulement ───────────────────────────
+      # Élimine la compilation CMake pour x86 et x86_64 (émulateurs).
+      # Économie : ~4-5 min sur reanimated + gesture-handler + app CMake.
+      - name: Restreindre ABI à arm64-v8a + armeabi-v7a
+        run: |
+          BUILD_GRADLE="android/app/build.gradle"
+          if grep -q 'abiFilters' "$BUILD_GRADLE" 2>/dev/null; then
+            # Remplacer tout abiFilters existant
+            sed -i 's/abiFilters.*/abiFilters "arm64-v8a", "armeabi-v7a"/' "$BUILD_GRADLE"
+          else
+            # Injecter dans le bloc defaultConfig (après la première accolade ouverte)
+            sed -i '/defaultConfig {/a\            ndk { abiFilters "arm64-v8a", "armeabi-v7a" }' "$BUILD_GRADLE"
+          fi
+          echo "[ABI] Filtres appliqués :"
+          grep -A1 "abiFilters\|ndk {" "$BUILD_GRADLE" | head -6
+
+      # ── Copier sing-box depuis assets git → android assets natifs ────────────
+      # Les binaires sont suivis dans git (app-mobile/assets/).
+      # android/app/src/main/assets/ est lue par assets.open() en Kotlin.
+      - name: Copier sing-box vers Android assets natifs
+        run: |
+          mkdir -p android/app/src/main/assets
+          for f in sing-box-arm64 sing-box-arm; do
+            if [ -f "assets/$f" ]; then
+              cp "assets/$f" "android/app/src/main/assets/$f"
+              echo "✅ $f ($(du -h "android/app/src/main/assets/$f" | cut -f1))"
+            else
+              echo "⚠️  $f absent dans assets/ git"
+            fi
+          done
+
+      # ── Gradle properties (performance) ───────────────────────────────────────
+      - name: Configure Gradle (performance)
+        run: |
+          cat >> android/gradle.properties << 'EOF'
+          org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=512m -XX:+UseParallelGC
+          org.gradle.daemon=false
+          org.gradle.parallel=true
+          org.gradle.caching=true
+          org.gradle.configuration-cache=true
+          org.gradle.configuration-cache.problems=warn
+          android.enableJetifier=true
+          android.enableR8.fullMode=false
+          kotlin.incremental=true
+          EOF
+
+      # ── Build APK ─────────────────────────────────────────────────────────────
+      - name: Build APK (release)
+        working-directory: app-mobile/android
+        run: |
+          set -o pipefail
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease \
+            --no-daemon \
+            --build-cache \
+            --parallel \
+            -x :react-native-reanimated:assertWorkletsVersionTask \
+            -x :react-native-reanimated:assertMinimalReactNativeVersionTask \
+            -x :react-native-worklets:assertMinimalReactNativeVersionTask \
+            -x :app:lintVitalRelease \
+            -x :app:lintVitalAnalyzeRelease \
+            2>&1 | tee build.log
+          echo "::group::Gradle output (dernières 80 lignes)"
+          tail -80 build.log
+          echo "::endgroup::"
+        env:
+          NODE_ENV: production
+          EXPO_PUBLIC_API_URL: https://vpnsxb.afrihall.com/api
+          GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+
+      # ── Collect APK ───────────────────────────────────────────────────────────
+      - name: Localiser et copier l'APK
+        run: |
+          mkdir -p build
+          APK=$(find android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          if [ -z "$APK" ]; then
+            echo "::error::Aucun APK trouvé — liste des sorties :"
+            find android/app/build/outputs -type f 2>/dev/null || true
+            exit 1
+          fi
+          cp "$APK" build/sxb-vpn.apk
+          echo "✅ APK: $(ls -lh build/sxb-vpn.apk)"
+
+      # ── Upload artifact ───────────────────────────────────────────────────────
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: sxb-vpn-android-apk-${{ github.run_number }}
+          path: app-mobile/build/sxb-vpn.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      # ── GitHub Release ────────────────────────────────────────────────────────
+      - name: GitHub Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-${{ github.run_number }}
+          name: "SXB VPN APK #${{ github.run_number }}"
+          body: |
+            ## SXB VPN — APK Android #${{ github.run_number }}
+
+            Build depuis commit `${{ github.sha }}`
+
+            ### Moteur VPN v4
+            - ✅ **VLESS / VMess / Trojan** — sing-box v1.9.7
+            - ✅ **Shadowsocks** — sing-box
+            - ✅ **WireGuard** — sing-box
+            - ✅ **Hysteria2 / TUIC** — sing-box
+            - ✅ **SSH / SSH+Payload** — JSch natif Java
+            - ✅ **Kill Switch** — bloque tout le trafic si VPN déconnecté
+            - ✅ **Auto-reconnect** — backoff exponentiel (1s→30s, 10 tentatives)
+            - ✅ **Trafic temps réel** — upload/download/débit via Android TrafficStats
+            - ✅ **Config chiffrée** — Android Keystore AES-256-GCM
+            - ✅ **Détection Root/Frida/Xposed** — audit sécurité avant connexion
+            - ✅ **Foreground Service** — fonctionne en arrière-plan
+            - ✅ **Interface FR/EN**
+
+            ### Installation
+            1. Télécharger `sxb-vpn.apk`
+            2. Android → Paramètres → Sécurité → Sources inconnues
+            3. Installer et activer avec votre token `SXB-USER-XXXX-XXXX-XXXX`
+
+            ### Backend
+            `https://vpnsxb.afrihall.com/api`
+          files: app-mobile/build/sxb-vpn.apk
+          draft: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Deploy APK sur VPS ────────────────────────────────────────────────────
+      - name: Déployer APK sur VPS
+        if: github.ref == 'refs/heads/main'
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: 141.95.112.93
+          username: ubuntu
+          password: ${{ secrets.VPS_SSH_PASSWORD }}
+          source: "app-mobile/build/sxb-vpn.apk"
+          target: "/tmp/"
+          strip_components: 2
+        continue-on-error: true
+
+      - name: Installer APK dans dossier distribution VPS
+        if: github.ref == 'refs/heads/main'
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 141.95.112.93
+          username: ubuntu
+          password: ${{ secrets.VPS_SSH_PASSWORD }}
+          script: |
+            sudo mkdir -p /var/www/apk
+            sudo cp /tmp/sxb-vpn.apk /var/www/apk/sxbvpn-latest.apk 2>/dev/null || true
+            sudo cp /tmp/sxb-vpn.apk "/var/www/apk/sxbvpn-build-${{ github.run_number }}.apk" 2>/dev/null || true
+            echo "Déployé: $(ls -lh /var/www/apk/ 2>/dev/null)"
+        continue-on-error: true

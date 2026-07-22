@@ -1,0 +1,25 @@
+{
+  "title": "Gestion des Clients",
+  "subtitle": "Supervisez, suspendez et gérez les comptes clients SXB VPN et leurs allocations de bande passante.",
+  "add_client": "Ajouter un Client",
+  "fields": {
+    "name": "Nom complet",
+    "email": "E-mail / Téléphone",
+    "token": "Token SXB",
+    "plan": "Forfait / Plan",
+    "quota_total": "Quota Total (Go)",
+    "consumption": "Consommation (Go)",
+    "expiration": "Date d'expiration",
+    "status": "Statut"
+  },
+  "actions": {
+    "view_details": "Voir détails",
+    "suspend": "Suspendre",
+    "activate": "Activer",
+    "renew": "Renouveler (+30 jours)",
+    "delete": "Supprimer",
+    "reset_access": "Réinitialiser Accès"
+  },
+  "empty_state": "Aucun client VPN configuré",
+  "empty_state_desc": "Ajoutez des clients pour leur assigner un token SXB et un forfait VPN."
+}

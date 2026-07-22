@@ -1,0 +1,406 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id           String       @id @default(uuid())
+  name         String
+  email        String       @unique
+  phone        String?
+  passwordHash String
+  roleId       String
+  role         Role         @relation(fields: [roleId], references: [id])
+  status       String       @default("active") // active, suspended
+  avatarUrl    String?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  vpnClients   VpnClient[]
+  resellerInfo Reseller?
+  auditLogs    AuditLog[]
+  adminTokens     AdminToken[]
+  supportTickets SupportTicket[]
+
+  @@map("users")
+}
+
+model Role {
+  id          String           @id @default(uuid())
+  name        String           @unique // SUPER_ADMIN, ADMIN, SUPPORT, RESELLER
+  description String?
+  permissions RolePermission[]
+  users       User[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String           @id @default(uuid())
+  name        String           @unique
+  description String?
+  roles       RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model AdminToken {
+  id        String    @id @default(uuid())
+  token     String    @unique // SXB-ADMIN-XXXX-XXXX
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  usedAt    DateTime?
+  status    String    @default("active") // active, used, revoked
+  createdAt DateTime  @default(now())
+
+  @@map("admin_tokens")
+}
+
+model VpnClient {
+  id           String     @id @default(uuid())
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token        String     @unique // SXB-USER-XXXX-XXXX-XXXX
+  quotaTotal   BigInt?
+  quotaUsed    BigInt     @default(0)
+  expireAt     DateTime?
+  status       String       @default("active") // active, suspended
+  avatarUrl    String?
+  xpanelUserId String?
+  deviceLimit  Int        @default(1)
+  deviceId     String?    @unique
+  activatedAt  DateTime?
+  lastSeenAt      DateTime?
+  appRegisteredAt DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  tokens             TokenSXB[]
+  activationSessions ActivationSession[]
+  xrayAccounts        XrayAccount[]
+  singboxAccounts     SingboxAccount[]
+  subscriptions       Subscription[]
+  appRegistrations    AppRegistration[]
+
+  @@map("vpn_clients")
+}
+
+model Reseller {
+  id         String   @id @default(uuid())
+  userId     String   @unique
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  commission Float    @default(0.0)
+  status     String   @default("active")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("resellers")
+}
+
+model TokenSXB {
+  id          String    @id @default(uuid())
+  token       String    @unique // SXB-DATA-XXXX-XXXX-XXXX
+  clientId    String
+  client      VpnClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  quota       BigInt
+  expiration  DateTime
+  deviceLimit Int       @default(1)
+  status      String    @default("active") // active, used, expired, revoked
+  createdAt   DateTime  @default(now())
+
+  @@map("tokens")
+}
+
+model VPSServer {
+  id            String         @id @default(uuid())
+  name          String
+  ip            String
+  location      String
+  status        String         @default("online") // online, offline
+  xpanelId      String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  xpanelConfigs XPanelConfig[]
+
+  @@map("servers")
+}
+
+model XPanelConfig {
+  id                     String    @id @default(uuid())
+  serverId               String
+  server                 VPSServer @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  type                   String
+  configurationEncrypted String
+  createdAt              DateTime  @default(now())
+
+  @@map("xpanel_configs")
+}
+
+model Voucher {
+  id           String   @id @default(uuid())
+  code         String   @unique // SXB-VOUCH-XXXX
+  quota        BigInt
+  durationDays Int
+  isRedeemed   Boolean  @default(false)
+  redeemedBy   String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("vouchers")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String
+  type      String   // info, warning, danger, success
+  ipAddress String?
+  timestamp DateTime @default(now())
+
+  @@map("audit_logs")
+}
+
+model SupportTicket {
+  id          String   @id @default(uuid())
+  title       String
+  clientName  String
+  description String?
+  priority    String   @default("medium") // low, medium, high
+  status      String   @default("open") // open, in_progress, resolved, closed
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("support_tickets")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SXB VPN CORE — NEW MODULES (added, existing tables preserved)
+// ═══════════════════════════════════════════════════════════════
+
+model SshAccount {
+  id              String      @id @default(uuid())
+  name            String
+  host            String
+  port            Int         @default(22)
+  username        String
+  password        String      // AES-256-CBC encrypted
+  mode            String      @default("create") // "create" | "import"
+  expireAt        DateTime?
+  quotaTotal      BigInt?
+  quotaUsed       BigInt      @default(0)
+  connectionLimit Int         @default(1)
+  compression     Boolean     @default(false)
+  tcpNodelay      Boolean     @default(true)
+  slowDns         Boolean     @default(false)
+  dns             String?
+  sni             String?
+  payloadId       String?
+  payload         SshPayload? @relation(fields: [payloadId], references: [id])
+  status          String      @default("active") // active | suspended | expired
+  createdBy       String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@map("ssh_accounts")
+}
+
+model SshPayload {
+  id          String       @id @default(uuid())
+  name        String
+  host        String?
+  sni         String?
+  port        Int?
+  headers     Json?
+  content     String?
+  status      String       @default("active")
+  sshAccounts SshAccount[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@map("ssh_payloads")
+}
+
+model XrayAccount {
+  id         String     @id @default(uuid())
+  name       String
+  protocol   String     // vless | vmess | trojan | shadowsocks
+  uuid       String     @unique @default(uuid())
+  host       String
+  port       Int
+  path       String?
+  tls        Boolean    @default(false)
+  sni        String?
+  network    String?    @default("ws")
+  password   String?
+  method     String?
+  quotaTotal BigInt?
+  quotaUsed  BigInt     @default(0)
+  expireAt   DateTime?
+  maxDevices Int        @default(1)
+  status     String     @default("active")
+  serverId   String?
+  clientId   String?
+  client     VpnClient? @relation(fields: [clientId], references: [id])
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  @@map("xray_accounts")
+}
+
+model SingboxAccount {
+  id         String     @id @default(uuid())
+  name       String
+  protocol   String     // vless | trojan | shadowsocks | hysteria2 | tuic
+  uuid       String     @unique @default(uuid())
+  host       String
+  port       Int
+  path       String?
+  tls        Boolean    @default(true)
+  sni        String?
+  network    String?    @default("ws")
+  password   String?
+  method     String?
+  quotaTotal BigInt?
+  quotaUsed  BigInt     @default(0)
+  expireAt   DateTime?
+  maxDevices Int        @default(1)
+  status     String     @default("active")
+  serverId   String?
+  clientId   String?
+  client     VpnClient? @relation(fields: [clientId], references: [id])
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  @@map("singbox_accounts")
+}
+
+model TrafficUsage {
+  id          String   @id @default(uuid())
+  clientId    String?
+  accountId   String?
+  accountType String?  // ssh | xray | singbox
+  download    BigInt   @default(0)
+  upload      BigInt   @default(0)
+  timestamp   DateTime @default(now())
+
+  @@map("traffic_usage")
+}
+
+model VpnLog {
+  id          String   @id @default(uuid())
+  clientId    String?
+  accountId   String?
+  protocol    String?
+  action      String   // connect | disconnect | error
+  ipAddress   String?
+  details     String?
+  timestamp   DateTime @default(now())
+
+  @@map("vpn_logs")
+}
+
+model ActivationSession {
+  id             String    @id @default(uuid())
+  clientId       String
+  client         VpnClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  deviceId       String
+  activationDate DateTime  @default(now())
+  expirationDate DateTime?
+  lastSync       DateTime  @default(now())
+  status         String    @default("active") // active, revoked, expired
+  ipAddress      String?
+  userAgent      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([clientId, deviceId])
+  @@map("activation_sessions")
+}
+
+model VpnProfile {
+  id               String         @id @default(uuid())
+  name             String
+  description      String?
+  protocol         String         // ssh | vless | vmess | trojan | shadowsocks | singbox
+  host             String
+  port             Int
+  username         String?
+  password         String?
+  uuid             String?
+  path             String?
+  network          String         @default("ws")
+  tls              Boolean        @default(false)
+  sni              String?
+  dns              String?
+  payloadId        String?
+  offlineValidDays Int            @default(7)
+  method           String?
+  status           String         @default("active")
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  subscriptions    Subscription[]
+
+  createdBy        String?
+  @@map("vpn_profiles")
+}
+
+model Subscription {
+  id           String      @id @default(uuid())
+  name         String?
+  clientId     String
+  client       VpnClient   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  profileId    String
+  profile      VpnProfile  @relation(fields: [profileId], references: [id])
+  deviceId     String?
+  dataToken    String      @unique
+  quotaBytes   BigInt
+  quotaUsed    BigInt      @default(0)
+  durationDays Int
+  deviceLimit  Int         @default(1)
+  startAt      DateTime    @default(now())
+  expireAt     DateTime
+  status       String      @default("active")
+  revokeReason String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  createdBy       String?
+  revokedAt       DateTime?
+  lastProvisionAt DateTime?
+  lastSyncAt      DateTime?
+  @@map("subscriptions")
+}
+
+model AppRegistration {
+  id          String     @id @default(uuid())
+  deviceId    String     @unique
+  phone       String?
+  platform    String?
+  appVersion  String?
+  clientId    String?
+  client      VpnClient? @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  status      String     @default("pending")
+  createdAt   DateTime   @default(now())
+  lastSeenAt  DateTime   @default(now())
+
+  @@map("app_registrations")
+}
