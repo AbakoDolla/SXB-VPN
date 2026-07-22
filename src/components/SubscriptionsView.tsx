@@ -144,7 +144,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
   const filtered = subs.filter((s) =>
     (s.client?.user?.name || "").toLowerCase().includes(search.toLowerCase()) ||
     (s.name || "").toLowerCase().includes(search.toLowerCase()) ||
-    s.dataToken.includes(search.toUpperCase())
+    ((s.dataToken ?? "").includes(search.toUpperCase()))
   );
 
   return (

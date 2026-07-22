@@ -1,3 +1,5 @@
+import React from "react";
+import ErrorBoundary from "./components/ErrorBoundary";
 import DashboardView from "./components/DashboardView";
 import ClientsView from "./components/ClientsView";
 import TokensView from "./components/TokensView";
@@ -262,7 +264,9 @@ function MainApp() {
       onUserChanged={handleUserChanged}
       onLogout={handleLogout}
     >
-      {renderView()}
+      <ErrorBoundary resetKey={activeRoute}>
+        {renderView()}
+      </ErrorBoundary>
     </Layout>
   );
 }
