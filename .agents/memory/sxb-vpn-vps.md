@@ -40,5 +40,5 @@ PM2 crash-loops with EADDRINUSE when restarted too fast. Always `fuser -k 4000/t
 
 ## Admin credentials (ne pas hardcoder)
 - Email: `superadmin@sxbvpn.com`
-- Current pw: `SxBAdmin2026!` (resetté Jul 22 2026)
+- Current pw: `SXBAdmin2026!` (resetté Jul 22 2026 — X majuscule)
 - DATABASE_URL: `postgresql://postgres:sxb_secure_db_pass_2026@localhost:5432/sxb_vpn`
