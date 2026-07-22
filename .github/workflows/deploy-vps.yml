@@ -102,6 +102,9 @@ jobs:
               --schema=/tmp/prisma-gen/schema.prisma 2>&1 | tail -3 || true
             cd /var/www/sxb-vpn
 
+            echo "📦 Sync deps (lockfile may differ from VPS)..."
+            pnpm install --no-frozen-lockfile 2>&1 | tail -5
+
             echo "🎨 Build Dashboard..."
             sudo chown -R ubuntu:ubuntu /var/www/sxb-vpn/artifacts/ 2>/dev/null || true
             CI=true PORT=3000 BASE_PATH=/ pnpm --filter @workspace/sxb-dashboard run build
