@@ -73,11 +73,22 @@ export default defineConfig({
       strict: true,
     },
     proxy: {
+<<<<<<< HEAD
       '/xapi': {
         target: 'https://vpnsxb.afrihall.com',
         rewrite: (path: string) => path.replace(/^\/xapi/, '/api'),
         changeOrigin: true,
         secure: true,
+=======
+      // /xapi/* → https://vpnsxb.afrihall.com/api/*
+      // On évite /api/* car l'artifact api-server Replit l'intercepte
+      // avant que Vite puisse le proxifier.
+      '/xapi': {
+        target: 'https://vpnsxb.afrihall.com',
+        changeOrigin: true,
+        secure: true,
+        rewrite: (path) => path.replace(/^\/xapi/, '/api'),
+>>>>>>> github/main
       },
     },
   },

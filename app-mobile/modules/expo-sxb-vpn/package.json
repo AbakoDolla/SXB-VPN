@@ -1,0 +1,10 @@
+{
+  "name": "expo-sxb-vpn",
+  "version": "1.0.0",
+  "description": "Native VPN module for SXB VPN (sing-box backend)",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "peerDependencies": {
+    "expo": "*"
+  }
+}

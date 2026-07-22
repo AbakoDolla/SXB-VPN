@@ -1,0 +1,15 @@
+{
+  "title": "Paramètres Système",
+  "subtitle": "Configurez les préférences régionales, la sécurité de l'API SXB et les paramètres globaux.",
+  "sections": {
+    "profile": "Profil de l'utilisateur",
+    "language_selection": "Préférences Linguistiques",
+    "security": "Clés d'API & Sécurité"
+  },
+  "fields": {
+    "current_lang": "Langue actuelle de l'interface",
+    "browser_lang_detected": "Langue du navigateur détectée",
+    "api_endpoint": "Endpoint API de SXB VPN",
+    "secret_key": "Clé secrète d'administration"
+  }
+}

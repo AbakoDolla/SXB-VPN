@@ -15,5 +15,38 @@
   "devDependencies": {
     "prettier": "^3.9.5",
     "typescript": "~5.9.3"
+<<<<<<< HEAD
   }
+=======
+  },
+  "pnpm": {
+    "overrides": {
+      "esbuild>@esbuild/darwin-arm64": "-",
+      "esbuild>@esbuild/darwin-x64": "-",
+      "esbuild>@esbuild/freebsd-arm64": "-",
+      "esbuild>@esbuild/freebsd-x64": "-",
+      "esbuild>@esbuild/linux-arm": "-",
+      "esbuild>@esbuild/linux-arm64": "-",
+      "esbuild>@esbuild/linux-ia32": "-",
+      "esbuild>@esbuild/linux-loong64": "-",
+      "esbuild>@esbuild/linux-mips64el": "-",
+      "esbuild>@esbuild/linux-ppc64": "-",
+      "esbuild>@esbuild/linux-riscv64": "-",
+      "esbuild>@esbuild/linux-s390x": "-",
+      "esbuild>@esbuild/netbsd-arm64": "-",
+      "esbuild>@esbuild/netbsd-x64": "-",
+      "esbuild>@esbuild/openbsd-arm64": "-",
+      "esbuild>@esbuild/openbsd-x64": "-",
+      "esbuild>@esbuild/sunos-x64": "-",
+      "esbuild>@esbuild/win32-arm64": "-",
+      "esbuild>@esbuild/win32-ia32": "-",
+      "esbuild>@esbuild/win32-x64": "-"
+    }
+  },
+  "workspaces": [
+    "artifacts/*",
+    "lib/*",
+    "scripts"
+  ]
+>>>>>>> github/main
 }
