@@ -29,13 +29,14 @@ export async function requireAuth(
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
-) {
+): Promise<void> {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith("Bearer ")) {
-    return res.status(401).json({
+    res.status(401).json({
       error: "errors.auth.unauthorized",
       message: "Authorization token required",
     });
+    return;
   }
   const token = authHeader.split(" ")[1];
   try {
@@ -43,7 +44,7 @@ export async function requireAuth(
     req.user = { ...decoded, permissions: decoded.permissions || [] };
     next();
   } catch {
-    return res.status(401).json({
+    res.status(401).json({
       error: "errors.auth.invalid_token",
       message: "Invalid or expired session token",
     });
@@ -51,15 +52,15 @@ export async function requireAuth(
 }
 
 export function requireRole(allowedRoles: string[]) {
-  return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    if (!req.user)
-      return res
-        .status(401)
-        .json({ error: "errors.auth.unauthorized", message: "Auth required" });
-    if (!allowedRoles.includes(req.user.role))
-      return res
-        .status(403)
-        .json({ error: "errors.auth.forbidden", message: "Insufficient role" });
+  return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+    if (!req.user) {
+      res.status(401).json({ error: "errors.auth.unauthorized", message: "Auth required" });
+      return;
+    }
+    if (!allowedRoles.includes(req.user.role)) {
+      res.status(403).json({ error: "errors.auth.forbidden", message: "Insufficient role" });
+      return;
+    }
     next();
   };
 }
