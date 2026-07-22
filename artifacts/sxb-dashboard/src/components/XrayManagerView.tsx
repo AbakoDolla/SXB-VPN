@@ -99,8 +99,8 @@ export default function XrayManagerView({ currentUserRole }: Props) {
   };
 
   const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`Supprimer le compte Xray "${name}" ?`)) return;
-    await deleteXrayAccount(id); load();
+    if (!window.confirm(`Supprimer le compte Xray "${name}" ?`)) return;
+    try { await deleteXrayAccount(id); load(); } catch (err: any) { console.error(err); }
   };
 
   const handleSuspend = async (id: string) => { await suspendXrayAccount(id); load(); };

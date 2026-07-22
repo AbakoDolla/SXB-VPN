@@ -1,5 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { useTranslation } from '../contexts/I18nContext';
+import { toast } from 'sonner';
+import Pagination from './ui/Pagination';
 import {
   fetchAccounts, createAccount, deleteAccount, generateAdminToken,
   listAdminTokens, revokeAdminToken, fetchRolesForCreation,
@@ -127,9 +129,10 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
     try {
       const data = await generateAdminToken(userId, 24);
       setTokenResult({ userId, token: data.token, expiresAt: data.expiresAt });
+      toast.success('Token généré avec succès');
       await loadAll();
     } catch (err: any) {
-      alert(err?.message || 'Erreur lors de la génération du token');
+      toast.error(err?.message || 'Erreur lors de la génération du token');
     } finally {
       setGeneratingTokenFor(null);
     }
@@ -137,26 +140,31 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
 
   // ── Delete account ─────────────────────────────────────────────
   const handleDelete = async (id: string, name: string) => {
-    if (id === currentUserId) return alert('Vous ne pouvez pas supprimer votre propre compte');
-    if (!confirm(`Supprimer le compte de "${name}" ? Cette action est irréversible.`)) return;
+    if (id === currentUserId) { toast.error('Vous ne pouvez pas supprimer votre propre compte'); return; }
+    if (!window.confirm(`Supprimer le compte de "${name}" ? Cette action est irréversible.`)) return;
     try {
       await deleteAccount(id);
+      toast.success('Compte supprimé');
       await loadAll();
     } catch (err: any) {
-      alert(err?.message || 'Erreur lors de la suppression');
+      toast.error(err?.message || 'Erreur lors de la suppression');
     }
   };
 
   // ── Revoke token ───────────────────────────────────────────────
   const handleRevokeToken = async (id: string) => {
-    if (!confirm('Révoquer ce token d\'accès ?')) return;
+    if (!window.confirm('Révoquer ce token d\'accès ?')) return;
     try {
       await revokeAdminToken(id);
+      toast.success('Token révoqué');
       await loadAll();
     } catch (err: any) {
-      alert(err?.message || 'Erreur');
+      toast.error(err?.message || 'Erreur');
     }
   };
+
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
 
   // ── Copy helper ────────────────────────────────────────────────
   const copy = (field: string, value: string) => {

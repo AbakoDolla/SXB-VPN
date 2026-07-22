@@ -98,8 +98,8 @@ export default function SingboxManagerView({ currentUserRole }: Props) {
   };
 
   const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`Supprimer "${name}" ?`)) return;
-    await deleteSingboxAccount(id); load();
+    if (!window.confirm(`Supprimer "${name}" ?`)) return;
+    try { await deleteSingboxAccount(id); load(); } catch (err: any) { console.error(err); }
   };
 
   const handleSuspend = async (id: string) => { await suspendSingboxAccount(id); load(); };
@@ -112,7 +112,7 @@ export default function SingboxManagerView({ currentUserRole }: Props) {
       const a = document.createElement('a'); a.href = url;
       a.download = `singbox-${name}.json`; a.click();
       URL.revokeObjectURL(url);
-    } catch { alert("Erreur lors du téléchargement"); }
+    } catch { console.error("Erreur lors du téléchargement"); }
   };
 
   const filtered = accounts.filter(a => filterProto === "all" || a.protocol === filterProto);

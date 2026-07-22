@@ -1,4 +1,5 @@
 import React from "react";
+import { Toaster } from "sonner";
 import ErrorBoundary from "./components/ErrorBoundary";
 import DashboardView from "./components/DashboardView";
 import ClientsView from "./components/ClientsView";
@@ -18,6 +19,8 @@ import SingboxManagerView from "./components/SingboxManagerView";
 import SessionsView from "./components/SessionsView";
 import VpnEngineView from "./components/VpnEngineView";
 import MonitoringView from "./components/MonitoringView";
+import SubscriptionsView from "./components/SubscriptionsView";
+import VpnProfilesView from "./components/VpnProfilesView";
 import Layout from "./components/Layout";
 import { useEffect, useState } from 'react';
 import { I18nProvider, useTranslation } from './contexts/I18nContext';
@@ -170,7 +173,7 @@ function LoginForm({ onLogin }: { onLogin: () => void }) {
           )}
         </div>
 
-        <p className="text-center text-xs text-gray-600 mt-4">SXB VPN Control Panel · v2.0</p>
+        <p className="text-center text-xs text-gray-600 mt-4">SXB VPN Control Panel · v2.1</p>
       </div>
     </div>
   );
@@ -224,6 +227,10 @@ function MainApp() {
         return <DashboardView onNavigate={(route) => setActiveRoute(route)} />;
       case 'clients':
         return <ClientsView currentUserRole={role} actorName={currentUser.name} />;
+      case 'subscriptions':
+        return <SubscriptionsView currentUserRole={role} />;
+      case 'vpn-profiles':
+        return <VpnProfilesView currentUserRole={role} />;
       case 'resellers':
         return <ResellersView currentUserRole={role} actorName={currentUser.name} />;
       case 'servers':
@@ -244,7 +251,6 @@ function MainApp() {
         return <DevicesView />;
       case 'sessions':
         return <SessionsView />;
-      // VPN Engine — individual pages still accessible for backward compatibility
       case 'ssh':
         return <SSHManagerView currentUserRole={role} />;
       case 'payload':
@@ -253,11 +259,12 @@ function MainApp() {
         return <XrayManagerView currentUserRole={role} />;
       case 'singbox':
         return <SingboxManagerView currentUserRole={role} />;
-      // Grouped views
       case 'vpn-engine':
         return <VpnEngineView currentUserRole={role} />;
       case 'analytics':
-        return <MonitoringView currentUserRole={role} defaultTab="analytics" />;
+        return <MonitoringView currentUserRole={role} defaultTab="logs" />;
+      case 'monitoring':
+        return <MonitoringView currentUserRole={role} defaultTab="sessions" />;
       default:
         return <DashboardView onNavigate={(route) => setActiveRoute(route)} />;
     }
@@ -281,6 +288,17 @@ function MainApp() {
 export default function App() {
   return (
     <I18nProvider>
+      <Toaster
+        theme="dark"
+        position="top-right"
+        toastOptions={{
+          style: {
+            background: '#0f1218',
+            border: '1px solid #1a1f2e',
+            color: '#e2e8f0',
+          },
+        }}
+      />
       <MainApp />
     </I18nProvider>
   );

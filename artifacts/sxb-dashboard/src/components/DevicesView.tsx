@@ -1,7 +1,9 @@
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import { fetchDevices, generateDeviceToken, revokeDevice, renewDevice, Device } from "../api/devices";
 import { Smartphone, Plus, Copy, Check, Ban, RefreshCw, Search, X, Clock, Shield, Key } from "lucide-react";
+import Pagination from "./ui/Pagination";
+import { toast } from "sonner";
 
 const STATUS_CONFIG = {
   active:    { label: "Actif",    cls: "text-emerald-400 bg-emerald-500/10 border border-emerald-500/20" },
@@ -75,16 +77,19 @@ export default function DevicesView() {
     }
   };
 
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+
   const handleRevoke = async (id: string) => {
-    if (!confirm("Révoquer le token de cet appareil ? L'accès VPN sera immédiatement coupé.")) return;
-    try { await revokeDevice(id); await load(); }
-    catch (err: any) { alert(err?.message || "Erreur"); }
+    if (!window.confirm("Révoquer le token de cet appareil ? L'accès VPN sera immédiatement coupé.")) return;
+    try { await revokeDevice(id); await load(); toast.success("Token révoqué"); }
+    catch (err: any) { toast.error(err?.message || "Erreur"); }
   };
 
   const handleRenew = async (id: string) => {
-    if (!confirm("Renouveler pour 365 jours ?")) return;
-    try { await renewDevice(id, 365); await load(); }
-    catch (err: any) { alert(err?.message || "Erreur"); }
+    if (!window.confirm("Renouveler pour 365 jours ?")) return;
+    try { await renewDevice(id, 365); await load(); toast.success("Renouvelé pour 365 jours"); }
+    catch (err: any) { toast.error(err?.message || "Erreur"); }
   };
 
   const copy = (key: string, value: string) => {
@@ -98,6 +103,11 @@ export default function DevicesView() {
     (d.token || "").toLowerCase().includes(search.toLowerCase()) ||
     (d.label || "").toLowerCase().includes(search.toLowerCase())
   );
+
+  const paginated = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return filtered.slice(start, start + pageSize);
+  }, [filtered, page, pageSize]);
 
   const active = devices.filter(d => d.status === "active" && (!d.expireAt || new Date(d.expireAt) > new Date())).length;
   const inactive = devices.length - active;
@@ -187,7 +197,7 @@ export default function DevicesView() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#1a1f2e]">
-                {filtered.map(device => {
+                {paginated.map(device => {
                   const isExpired = device.expireAt && new Date(device.expireAt) < new Date();
                   const effectiveStatus = (isExpired && device.status === "active") ? "expired" : device.status;
                   const { label: sLabel, cls } = STATUS_CONFIG[effectiveStatus as keyof typeof STATUS_CONFIG] ?? STATUS_CONFIG.active;
@@ -257,6 +267,10 @@ export default function DevicesView() {
                 })}
               </tbody>
             </table>
+          </div>
+          <div className="border-t border-[#1a1f2e] px-4">
+            <Pagination page={page} pageSize={pageSize} total={filtered.length}
+              onPageChange={setPage} onPageSizeChange={s => { setPageSize(s); setPage(1); }} />
           </div>
         )}
       </div>

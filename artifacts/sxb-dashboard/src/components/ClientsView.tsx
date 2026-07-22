@@ -1,8 +1,10 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import { useTranslation } from "../contexts/I18nContext";
 import { fetchClients, createClient, updateClient, deleteClient, suspendClient, activateClient, renewClient, resetClientAccess } from "../api/clients";
 import { Client, UserRole } from "../types";
 import { Search, UserPlus, Trash2, ShieldAlert, KeyRound, CalendarDays, Ban, CheckCircle, RefreshCcw, MoreHorizontal, HelpCircle } from "lucide-react";
+import Pagination from "./ui/Pagination";
+import { toast } from "sonner";
 
 interface ClientsViewProps {
   currentUserRole: UserRole;
@@ -56,9 +58,10 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
       setEmail("");
       setPhone("");
       setShowAddModal(false);
+      toast.success("Client créé avec succès");
       loadClients();
     } catch (err) {
-      alert(err instanceof Error ? err.message : t("common.error_generic"));
+      toast.error(err instanceof Error ? err.message : t("common.error_generic"));
     }
   };
 
@@ -67,12 +70,14 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
     try {
       if (isCurrentlyActive) {
         await suspendClient(id);
+        toast.success("Client suspendu");
       } else {
         await activateClient(id);
+        toast.success("Client activé");
       }
       loadClients();
     } catch (err) {
-      alert(t("common.error_generic"));
+      toast.error(t("common.error_generic"));
     }
   };
 
@@ -80,42 +85,54 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
     if (isSupport) return;
     try {
       await renewClient(id);
+      toast.success("Accès renouvelé");
       loadClients();
     } catch (err) {
-      alert(t("common.error_generic"));
+      toast.error(t("common.error_generic"));
     }
   };
 
   const handleResetAccess = async (id: string) => {
     if (isSupport) return;
-    if (!confirm("Voulez-vous vraiment générer une nouvelle clé d'accès Sing-box pour ce client ? Ses anciens profils VPN seront déconnectés.")) return;
+    if (!window.confirm("Voulez-vous vraiment générer une nouvelle clé d'accès Sing-box pour ce client ? Ses anciens profils VPN seront déconnectés.")) return;
     try {
       await resetClientAccess(id);
+      toast.success("Clé d'accès réinitialisée");
       loadClients();
     } catch (err) {
-      alert(t("common.error_generic"));
+      toast.error(t("common.error_generic"));
     }
   };
 
   const handleDelete = async (id: string) => {
     if (isSupport) return;
-    if (!confirm("Voulez-vous définitivement supprimer ce client VPN ? Cette action est irréversible.")) return;
+    if (!window.confirm("Voulez-vous définitivement supprimer ce client VPN ? Cette action est irréversible.")) return;
     try {
       await deleteClient(id);
+      toast.success("Client supprimé");
       loadClients();
     } catch (err) {
-      alert(t("common.error_generic"));
+      toast.error(t("common.error_generic"));
     }
   };
 
-  const filteredClients = clients.filter((c) => {
+  // Pagination
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+
+  const filteredClients = useMemo(() => clients.filter((c) => {
     const matchesSearch = c.name.toLowerCase().includes(search.toLowerCase()) || 
                           c.email.toLowerCase().includes(search.toLowerCase()) ||
                           c.token.toLowerCase().includes(search.toLowerCase());
     
     const matchesStatus = statusFilter === "all" || c.status === statusFilter;
     return matchesSearch && matchesStatus;
-  });
+  }), [clients, search, statusFilter]);
+
+  const paginatedClients = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return filteredClients.slice(start, start + pageSize);
+  }, [filteredClients, page, pageSize]);
 
   return (
     <div className="space-y-6">
@@ -173,7 +190,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
           <RefreshCcw className="h-7 w-7 animate-spin text-cyan-400 mb-4" />
           <p className="text-sm font-mono">{t("common.loading")}</p>
         </div>
-      ) : filteredClients.length > 0 ? (
+      ) : filteredClients.length > 0 || paginatedClients.length > 0 ? (
         <div className="border border-gray-800/80 rounded-xl bg-gray-950/20 overflow-hidden backdrop-blur-md">
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
@@ -189,7 +206,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-900 text-sm">
-                {filteredClients.map((client) => {
+                {paginatedClients.map((client) => {
                   const quotaTotal = Number(client.quotaTotal) / (1024 * 1024 * 1024);
                   const quotaUsed = Number(client.quotaUsed) / (1024 * 1024 * 1024);
                   const percent = quotaTotal > 0 ? Math.min(100, (quotaUsed / quotaTotal) * 100) : 0;
@@ -283,6 +300,10 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                 })}
               </tbody>
             </table>
+          </div>
+          <div className="border-t border-gray-800/80 px-4">
+            <Pagination page={page} pageSize={pageSize} total={filteredClients.length}
+              onPageChange={setPage} onPageSizeChange={s => { setPageSize(s); setPage(1); }} />
           </div>
         </div>
       ) : (

@@ -5,6 +5,7 @@ import {
   Settings, LogOut, UserCog, Terminal, Code2, Zap, Box,
   Menu, X, UserPlus, HeadphonesIcon, BadgePercent, Activity,
   ChevronDown, Network, Radio, Cpu, BarChart3, Ticket,
+  PackageOpen, GitBranch,
 } from 'lucide-react';
 
 interface LayoutProps {
@@ -66,8 +67,10 @@ export default function Layout({
   useEffect(() => {
     const groupMap: Record<string, string> = {
       clients: 'clients', devices: 'clients', tokens: 'clients', vouchers: 'clients',
-      'vpn-engine': 'vpnengine',
-      monitoring: 'monitoring',
+      subscriptions: 'clients',
+      'vpn-engine': 'vpnengine', xray: 'vpnengine', singbox: 'vpnengine', payload: 'vpnengine',
+      'vpn-profiles': 'vpnengine',
+      sessions: 'monitoring', analytics: 'monitoring', servers: 'monitoring', monitoring: 'monitoring',
       accounts: 'admin', resellers: 'admin', rbac: 'admin',
     };
     const group = groupMap[activeRoute];
@@ -93,6 +96,7 @@ export default function Layout({
       roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'],
       items: [
         { kind: 'leaf', id: 'clients', label: 'Clients VPN', icon: Users, roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'] },
+        { kind: 'leaf', id: 'subscriptions', label: 'Forfaits Data', icon: PackageOpen, roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
         { kind: 'leaf', id: 'devices', label: 'Appareils', icon: Smartphone, roles: ['SUPER_ADMIN', 'ADMIN'] },
         { kind: 'leaf', id: 'tokens', label: 'Tokens SXB', icon: Key, roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'] },
         { kind: 'leaf', id: 'vouchers', label: 'Vouchers', icon: BadgePercent, roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'] },
@@ -106,6 +110,7 @@ export default function Layout({
       color: 'text-violet-400',
       roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT'],
       items: [
+        { kind: 'leaf', id: 'vpn-profiles', label: 'Profils VPN', icon: GitBranch, roles: ['SUPER_ADMIN', 'ADMIN'] },
         { kind: 'leaf', id: 'vpn-engine', label: 'SSH & Configs', icon: Terminal, roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
         { kind: 'leaf', id: 'xray', label: 'Xray / Protocols', icon: Zap, roles: ['SUPER_ADMIN', 'ADMIN'] },
         { kind: 'leaf', id: 'singbox', label: 'Sing-box', icon: Box, roles: ['SUPER_ADMIN', 'ADMIN'] },
@@ -121,7 +126,7 @@ export default function Layout({
       roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT'],
       items: [
         { kind: 'leaf', id: 'sessions', label: 'Sessions', icon: Radio, roles: ['SUPER_ADMIN', 'ADMIN'] },
-        { kind: 'leaf', id: 'analytics', label: 'Analytiques', icon: BarChart3, roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
+        { kind: 'leaf', id: 'analytics', label: 'Logs & Activité', icon: BarChart3, roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
         { kind: 'leaf', id: 'servers', label: 'Serveurs', icon: Server, roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
       ],
     },

@@ -3,6 +3,7 @@ import { useTranslation } from "../contexts/I18nContext";
 import { fetchVouchers, createVoucher, useVoucher } from "../api/vouchers";
 import { Voucher, UserRole } from "../types";
 import { Ticket, Plus, Search, RefreshCw, Sparkles, Check, Copy } from "lucide-react";
+import { toast } from "sonner";
 
 interface VouchersViewProps {
   currentUserRole: UserRole;
@@ -56,9 +57,10 @@ export default function VouchersView({ currentUserRole }: VouchersViewProps) {
       });
       setQuota(50);
       setShowAddVoucher(false);
+      toast.success("Voucher créé avec succès");
       loadVouchers();
     } catch (err) {
-      alert("Erreur lors de la création du voucher");
+      toast.error("Erreur lors de la création du voucher");
     }
   };
 
@@ -70,13 +72,13 @@ export default function VouchersView({ currentUserRole }: VouchersViewProps) {
       const result = await useVoucher(activationInput.trim());
       setActivationInput("");
       if (result.success) {
-        alert(`Félicitations ! Le voucher a bien été activé !`);
+        toast.success("Voucher activé avec succès !");
       } else {
-        alert(result.message);
+        toast.error(result.message || "Voucher invalide");
       }
       loadVouchers();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Erreur lors de l'activation");
+      toast.error(err instanceof Error ? err.message : "Erreur lors de l'activation");
     }
   };
 

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useTranslation } from "../contexts/I18nContext";
+import { toast } from "sonner";
 import { fetchResellers, createReseller, updateReseller } from "../api/resellers";
 import { fetchClients, createClient } from "../api/clients";
 import { Reseller, Client, UserRole } from "../types";
@@ -184,9 +185,10 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
       setEmail("");
       setBalance(500);
       setShowAddReseller(false);
+      toast.success("Revendeur créé avec succès");
       loadResellers();
     } catch (err) {
-      alert("Erreur lors de la création");
+      toast.error("Erreur lors de la création");
     }
   };
 
@@ -203,23 +205,25 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
       setClientName("");
       setClientEmail("");
       setShowAddResellerClient(false);
+      toast.success("Client ajouté");
       loadResellers();
     } catch (err) {
-      alert(err instanceof Error ? err.message : t("common.error_generic"));
+      toast.error(err instanceof Error ? err.message : t("common.error_generic"));
     }
   };
 
   const handleAdjustBalance = async (id: string, currentBalance: number) => {
-    const promptAmount = prompt("Saisir la quantité de crédit en Go à attribuer (positif pour ajouter, négatif pour retirer) :");
+    const promptAmount = window.prompt("Saisir la quantité de crédit en Go à attribuer (positif pour ajouter, négatif pour retirer) :");
     if (promptAmount === null) return;
     const amount = Number(promptAmount);
-    if (isNaN(amount)) return alert("Veuillez saisir un nombre valide");
+    if (isNaN(amount)) { toast.error("Veuillez saisir un nombre valide"); return; }
 
     try {
       await updateReseller(id, { balance: Math.max(0, currentBalance + amount) });
+      toast.success("Crédits mis à jour");
       loadResellers();
     } catch (err) {
-      alert("Erreur lors de l'attribution des crédits");
+      toast.error("Erreur lors de l'attribution des crédits");
     }
   };
 

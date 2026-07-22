@@ -1,6 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import { fetchSessions, revokeSession, resetSession, deleteSession, ActivationSession } from "../api/sessions";
 import { Smartphone, RefreshCcw, XCircle, Trash2, Search, Clock, CheckCircle, AlertCircle, ShieldOff } from "lucide-react";
+import Pagination from "./ui/Pagination";
+import { toast } from "sonner";
 
 export default function SessionsView() {
   const [sessions, setSessions] = useState<ActivationSession[]>([]);
@@ -22,19 +24,22 @@ export default function SessionsView() {
 
   useEffect(() => { load(); }, []);
 
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+
   const handleRevoke = async (id: string) => {
-    if (!confirm("Révoquer cette session ? L'appareil sera déconnecté.")) return;
-    try { await revokeSession(id); load(); } catch { alert("Erreur lors de la révocation"); }
+    if (!window.confirm("Révoquer cette session ? L'appareil sera déconnecté.")) return;
+    try { await revokeSession(id); load(); toast.success("Session révoquée"); } catch { toast.error("Erreur lors de la révocation"); }
   };
 
   const handleReset = async (id: string) => {
-    if (!confirm("Réinitialiser cette activation ? L'utilisateur pourra s'activer sur un autre appareil.")) return;
-    try { await resetSession(id); load(); } catch { alert("Erreur lors de la réinitialisation"); }
+    if (!window.confirm("Réinitialiser cette activation ? L'utilisateur pourra s'activer sur un autre appareil.")) return;
+    try { await resetSession(id); load(); toast.success("Activation réinitialisée"); } catch { toast.error("Erreur lors de la réinitialisation"); }
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm("Supprimer définitivement cette session ?")) return;
-    try { await deleteSession(id); load(); } catch { alert("Erreur lors de la suppression"); }
+    if (!window.confirm("Supprimer définitivement cette session ?")) return;
+    try { await deleteSession(id); load(); toast.success("Session supprimée"); } catch { toast.error("Erreur lors de la suppression"); }
   };
 
   const filtered = sessions.filter((s) => {
@@ -44,6 +49,11 @@ export default function SessionsView() {
     const matchStatus = statusFilter === "all" || s.status === statusFilter;
     return matchSearch && matchStatus;
   });
+
+  const paginated = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return filtered.slice(start, start + pageSize);
+  }, [filtered, page, pageSize]);
 
   const formatDate = (d: string | null) => {
     if (!d) return "—";
@@ -130,7 +140,7 @@ export default function SessionsView() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#1a1f2e]">
-                {filtered.map((s) => (
+                {paginated.map((s) => (
                   <tr key={s.id} className="hover:bg-white/2 transition-colors">
                     <td className="px-4 py-3 text-white font-medium">{s.clientName}</td>
                     <td className="px-4 py-3">
@@ -182,6 +192,10 @@ export default function SessionsView() {
                 ))}
               </tbody>
             </table>
+          </div>
+          <div className="border-t border-[#1a1f2e] px-4">
+            <Pagination page={page} pageSize={pageSize} total={filtered.length}
+              onPageChange={setPage} onPageSizeChange={s => { setPageSize(s); setPage(1); }} />
           </div>
         )}
       </div>

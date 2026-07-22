@@ -113,9 +113,8 @@ export default function SSHManagerView({ currentUserRole }: Props) {
   };
 
   const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`Supprimer le compte SSH "${name}" ?`)) return;
-    await deleteSshAccount(id);
-    load();
+    if (!window.confirm(`Supprimer le compte SSH "${name}" ?`)) return;
+    try { await deleteSshAccount(id); load(); } catch (err: any) { console.error(err); }
   };
 
   const handleSuspend = async (id: string) => {
