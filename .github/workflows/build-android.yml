@@ -161,7 +161,7 @@ jobs:
             'open(path, "w").write(c)' \
             > /tmp/signing_inject.py
           python3 /tmp/signing_inject.py "$BUILD_GRADLE"
-          echo "✅ Signature configurée dans build.gradle\"
+          echo "✅ Signature configurée dans build.gradle"
 
       # BUG FIX #2 & #3 : gradle.properties sans espaces parasites, sans configuration-cache
       - name: Configure Gradle (performance + compatibilité RN)
