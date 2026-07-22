@@ -85,8 +85,10 @@ jobs:
             set -e
             cd /var/www/sxb-vpn
 
-            echo "📥 Pull latest code..."
-            git fetch origin
+            echo "📥 Fix permissions git + Pull latest code..."
+            sudo chown -R ubuntu:ubuntu /var/www/sxb-vpn/.git 2>/dev/null || true
+            sudo chmod -R u+rw /var/www/sxb-vpn/.git 2>/dev/null || true
+            git fetch origin 2>&1 | grep -v "jules-" || true
             git reset --hard origin/main
 
             echo "📦 Install backend dependencies..."
