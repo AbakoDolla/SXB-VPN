@@ -110,6 +110,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const [vpnLogs,            setVpnLogs]             = useState<string[]>([]);
   const [hasVpnPermission,   setHasVpnPermission]    = useState(false);
   const [vpnConfig,          setVpnConfig]           = useState<any>(null);
+  const [killSwitch,         setKillSwitchState]      = useState<boolean>(false);
+  const [autoReconnect,      setAutoReconnectState]   = useState<boolean>(true);
 
   const trafficTimerRef  = useRef<ReturnType<typeof setInterval> | null>(null);
   const reportTimerRef   = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -121,6 +123,36 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     const ts = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     setVpnLogs(prev => [`[${ts}] ${msg}`, ...prev].slice(0, 200));
   }, []);
+
+  // ── Kill Switch & Auto Reconnect ──────────────────────────────────────────
+
+  const setKillSwitch = useCallback((v: boolean) => {
+    setKillSwitchState(v);
+    if (IS_ANDROID && SxbVpnNative) {
+      try { SxbVpnNative.setKillSwitch(v); } catch { /* ignore */ }
+    }
+    AsyncStorage.setItem('@sxb_kill_switch', v ? 'true' : 'false').catch(() => {});
+  }, []);
+
+  const setAutoReconnect = useCallback((v: boolean) => {
+    setAutoReconnectState(v);
+    if (IS_ANDROID && SxbVpnNative) {
+      try { SxbVpnNative.setAutoReconnect(v); } catch { /* ignore */ }
+    }
+    AsyncStorage.setItem('@sxb_auto_reconnect', v ? 'true' : 'false').catch(() => {});
+  }, []);
+
+  // ── Import manuel d'une configuration ─────────────────────────────────────
+
+  const manuallySetConfig = useCallback(async (config: any) => {
+    if (!config || typeof config !== 'object') {
+      throw new Error('Configuration invalide');
+    }
+    const proto = (config.protocol || 'vless').toLowerCase();
+    setVpnConfig(config);
+    await saveVpnConfig(config, proto, config.configId || `manual_${Date.now()}`);
+    addLog(`✅ Configuration ${proto.toUpperCase()} importée et sauvegardée localement`);
+  }, [addLog]);
 
   // ── Vérification / demande permission VPN ─────────────────────────────────
 
@@ -151,13 +183,19 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     checkPermission();
 
     const restore = async () => {
-      const [connected, protocol] = await Promise.all([
+      const [connected, protocol, ks, ar] = await Promise.all([
         AsyncStorage.getItem('@sxb_vpn_connected'),
         AsyncStorage.getItem('@sxb_vpn_protocol'),
+        AsyncStorage.getItem('@sxb_kill_switch'),
+        AsyncStorage.getItem('@sxb_auto_reconnect'),
       ]);
       if (protocol) setSelectedProtocol(protocol);
+      // Restaurer kill switch & auto reconnect
+      if (ks !== null)  setKillSwitchState(ks === 'true');
+      if (ar !== null)  setAutoReconnectState(ar !== 'false'); // default true
 
-      // Sur Android, vérifier l'état réel du service
+      // Sur Android, vérifier l'état réel du service VPN
+      // IMPORTANT : ne pas retourner ici — continuer pour charger la config hors-ligne
       if (IS_ANDROID && SxbVpnNative) {
         try {
           const state: string = await SxbVpnNative.getVpnState();
@@ -165,11 +203,12 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           setVpnState(state);
           setIsConnected(reallyConnected);
           await AsyncStorage.setItem('@sxb_vpn_connected', reallyConnected ? 'true' : 'false');
-          return;
+          // Pas de return ici — on continue pour restaurer la config locale
         } catch { /* ignore */ }
       }
 
       // Restaurer vpnConfig depuis stockage local (mode hors-ligne)
+      // S'exécute sur TOUTES les plateformes, y compris Android
       try {
         const offlineEntry = await loadVpnConfig();
         if (offlineEntry?.config) {
@@ -177,10 +216,12 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         }
       } catch { /* ignore */ }
 
-      // Fallback : utiliser la valeur persistée
-      const wasConnected = connected === 'true' && !!isAuthenticated;
-      setIsConnected(wasConnected);
-      setVpnState(wasConnected ? 'connected' : 'disconnected');
+      // Fallback : utiliser la valeur persistée si Android non disponible
+      if (!IS_ANDROID || !SxbVpnNative) {
+        const wasConnected = connected === 'true' && !!isAuthenticated;
+        setIsConnected(wasConnected);
+        setVpnState(wasConnected ? 'connected' : 'disconnected');
+      }
     };
     restore();
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -395,8 +436,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         const optionsJson = JSON.stringify({
           ...configToUse,
           protocol,
-          killSwitch:    false,
-          autoReconnect: true,
+          killSwitch,
+          autoReconnect,
         });
 
         addLog(`🚀 Démarrage tunnel ${protocol.toUpperCase()}...`);
@@ -434,7 +475,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       setVpnState('error');
       setIsConnecting(false);
     }
-  }, [isConnecting, isConnected, selectedProtocol, vpnConfig, addLog]);
+  }, [isConnecting, isConnected, selectedProtocol, vpnConfig, killSwitch, autoReconnect, addLog]);
 
   // ── Disconnect ────────────────────────────────────────────────────────────
 
@@ -485,6 +526,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isConnected, connect, disconnect, addLog]);
 
+  // hasValidConfig : true si config disponible en mémoire OU en stockage local
+  const hasValidConfig = vpnConfig !== null;
+
   return (
     <VpnContext.Provider value={{
       isConnected, isConnecting, vpnState,
@@ -492,6 +536,15 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       subscriptionUrl, serverInfo,
       trafficStats, vpnLogs,
       hasVpnPermission,
+      hasValidConfig,
+      // Alias pour compatibilité avec settings.tsx et autres composants
+      logs:          vpnLogs,
+      traffic:       trafficStats,
+      killSwitch,
+      autoReconnect,
+      setKillSwitch,
+      setAutoReconnect,
+      manuallySetConfig,
       connect, disconnect, selectProtocol,
       refreshVpnConfig, requestPermission,
     }}>

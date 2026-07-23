@@ -25,12 +25,16 @@ function getButtonState(
   isConnected: boolean,
   isConnecting: boolean,
   subscriptionUrl: string | null,
+  hasValidConfig: boolean,
 ): BtnState {
   if (!accountState) return "no_account";
   if (isConnecting) return "connecting";
   if (isConnected) return "connected";
-  // Si une configuration est déjà importée → toujours permettre la connexion
+  // Priorité 1 : config locale valide (importée + sauvegardée) → connexion autorisée sans vérifier le forfait
+  if (hasValidConfig) return "connect";
+  // Priorité 2 : subscriptionUrl fournie par le backend
   if (subscriptionUrl) return "connect";
+  // Sinon : vérifier l'état du compte
   const s = accountState.state;
   if (s === "no_package") return "no_package";
   if (s === "expired") return "expired";
@@ -98,7 +102,7 @@ function VpnLogsModal({
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const { user, accountState, refreshAccountState, deviceId } = useAuthContext();
-  const { isConnected, isConnecting, selectedProtocol, subscriptionUrl, connect, disconnect, trafficStats: traffic, refreshVpnConfig } = useVpnContext();
+  const { isConnected, isConnecting, selectedProtocol, subscriptionUrl, hasValidConfig, connect, disconnect, trafficStats: traffic, refreshVpnConfig } = useVpnContext();
 
   const [logsVisible, setLogsVisible] = useState(false);
   const [timer, setTimer] = useState(0);
@@ -168,7 +172,7 @@ export default function HomeScreen() {
   const ring1     = useRef(new Animated.Value(1)).current;
   const ring2     = useRef(new Animated.Value(1)).current;
 
-  const btnState = getButtonState(accountState, isConnected, isConnecting, subscriptionUrl);
+  const btnState = getButtonState(accountState, isConnected, isConnecting, subscriptionUrl, hasValidConfig);
 
   // Pulse animation
   useEffect(() => {
