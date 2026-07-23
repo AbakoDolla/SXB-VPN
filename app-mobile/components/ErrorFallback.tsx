@@ -12,6 +12,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useColors } from '@/hooks/useColors';
 import { Feather } from '@expo/vector-icons';
 import { reloadAppAsync } from 'expo';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const CRASH_LOG_KEY = 'sxb_last_crash';
 
 export type ErrorFallbackProps = {
   error: Error;
@@ -21,6 +24,15 @@ export type ErrorFallbackProps = {
 export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
   const colors = useColors();
   const insets = useSafeAreaInsets();
+
+  React.useEffect(() => {
+    const entry = {
+      message: error?.message ?? String(error),
+      stack: error?.stack ?? 'no stack',
+      time: new Date().toISOString(),
+    };
+    AsyncStorage.setItem(CRASH_LOG_KEY, JSON.stringify(entry, null, 2)).catch(() => {});
+  }, [error]);
 
   const [isModalVisible, setIsModalVisible] = useState(false);
 
@@ -49,23 +61,21 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      {__DEV__ ? (
-        <Pressable
-          onPress={() => setIsModalVisible(true)}
-          accessibilityLabel="View error details"
-          accessibilityRole="button"
-          style={({ pressed }) => [
-            styles.topButton,
-            {
-              top: insets.top + 16,
-              backgroundColor: colors.card,
-              opacity: pressed ? 0.8 : 1,
-            },
-          ]}
-        >
-          <Feather name="alert-circle" size={20} color={colors.foreground} />
-        </Pressable>
-      ) : null}
+      <Pressable
+        onPress={() => setIsModalVisible(true)}
+        accessibilityLabel="View error details"
+        accessibilityRole="button"
+        style={({ pressed }) => [
+          styles.topButton,
+          {
+            top: insets.top + 16,
+            backgroundColor: colors.card,
+            opacity: pressed ? 0.8 : 1,
+          },
+        ]}
+      >
+        <Feather name="alert-circle" size={20} color={colors.foreground} />
+      </Pressable>
 
       <View style={styles.content}>
         <Text style={[styles.title, { color: colors.foreground }]}>
@@ -95,8 +105,7 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
         </Pressable>
       </View>
 
-      {__DEV__ ? (
-        <Modal
+      <Modal
           visible={isModalVisible}
           animationType="slide"
           transparent={true}
@@ -162,7 +171,6 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
             </View>
           </View>
         </Modal>
-      ) : null}
     </View>
   );
 }

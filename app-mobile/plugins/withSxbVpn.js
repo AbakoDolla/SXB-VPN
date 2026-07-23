@@ -163,11 +163,11 @@ function withJschDependency(config) {
       );
     }
 
-    // Packaging exclusions
-    if (!gradle.includes('META-INF/{AL2.0,LGPL2.1}')) {
+    // Packaging exclusions — liste complète (évite les conflits META-INF en AGP 8+)
+    if (!gradle.includes('packaging {')) {
       gradle = gradle.replace(
         /android\s*\{/,
-        `android {\n    packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}"\n        excludes += "META-INF/LICENSE.md"\n        excludes += "META-INF/LICENSE-notice.md" } }`
+        `android {\n    packaging {\n        resources {\n            excludes += "/META-INF/{AL2.0,LGPL2.1}"\n            excludes += "META-INF/LICENSE.md"\n            excludes += "META-INF/LICENSE-notice.md"\n            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"\n            excludes += "META-INF/*.kotlin_module"\n            excludes += "META-INF/AL2.0"\n            excludes += "META-INF/LGPL2.1"\n        }\n    }`
       );
     }
 

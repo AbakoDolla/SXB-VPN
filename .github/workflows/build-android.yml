@@ -59,8 +59,7 @@ jobs:
         if: steps.cache-node.outputs.cache-hit != 'true'
         run: npm install --legacy-peer-deps
 
-      # BUG FIX #1 : ce patch doit être APRÈS npm install (node_modules/ doit exister)
-      # ── Kotlin metadata compat patch ──────────────────────────────────────────
+      # FIX #1 : patch Kotlin metadata compat — après npm install (node_modules/ doit exister)
       - name: Patch expo-module-gradle-plugin (Kotlin metadata compat)
         run: |
           PLUGIN="node_modules/expo-modules-core/expo-module-gradle-plugin/build.gradle.kts"
@@ -77,7 +76,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: app-mobile/android
-          key: android-prebuild-v2-${{ runner.os }}-${{ hashFiles('app-mobile/package.json', 'app-mobile/app.json', 'app-mobile/plugins/**', 'app-mobile/modules/android-native/**/*.kt') }}
+          key: android-prebuild-v4-${{ runner.os }}-${{ hashFiles('app-mobile/package.json', 'app-mobile/app.json', 'app-mobile/plugins/**', 'app-mobile/modules/android-native/**/*.kt') }}
 
       # ── Expo prebuild ─────────────────────────────────────────────────────────
       - name: Expo prebuild (Android)
@@ -87,23 +86,22 @@ jobs:
           EXPO_NO_TELEMETRY: "1"
           EXPO_PUBLIC_API_URL: https://vpnsxb.afrihall.com/api
 
-      # BUG FIX #5 : JitPack dans settings.gradle (Expo SDK 50+) ─────────────────
-      # Le plugin withSxbVpn.js injecte dans app/build.gradle mais SDK 54 utilise
-      # dependencyResolutionManagement dans settings.gradle → JSch introuvable.
+      # FIX #2 : JitPack — injecter seulement dans la section dependencyResolutionManagement
+      # (première occurrence de mavenCentral uniquement pour éviter les doublons)
       - name: Injecter JitPack dans settings.gradle
         run: |
           SETTINGS="android/settings.gradle"
           if [ -f "$SETTINGS" ] && ! grep -q "jitpack.io" "$SETTINGS"; then
-            # Injecter avant la dernière accolade de dependencyResolutionManagement
-            sed -i 's|mavenCentral()|mavenCentral()\n        maven { url = uri("https://jitpack.io") }|g' "$SETTINGS"
-            echo "[JitPack] Injecté dans $SETTINGS"
-            grep -A2 "jitpack" "$SETTINGS" | head -5
+            # Remplacer SEULEMENT la première occurrence de mavenCentral()
+            sed -i '0,/mavenCentral()/{s|mavenCentral()|mavenCentral()\n        maven { url = uri("https://jitpack.io") }|}' "$SETTINGS"
+            echo "[JitPack] Injecté dans $SETTINGS (première occurrence)"
+            grep -n "jitpack" "$SETTINGS" | head -3
           else
             echo "[JitPack] Déjà présent ou settings.gradle absent"
           fi
 
-      # ── ABI filter : arm64 + armeabi-v7a seulement ────────────────────────────
-      - name: Restreindre ABI à arm64-v8a + armeabi-v7a
+      # ── ABI filter : arm64-v8a seulement ─────────────────────────────────────
+      - name: Restreindre ABI à arm64-v8a
         run: |
           BUILD_GRADLE="android/app/build.gradle"
           if grep -q 'abiFilters' "$BUILD_GRADLE" 2>/dev/null; then
@@ -126,49 +124,65 @@ jobs:
             fi
           done
 
-      # BUG FIX #4 : Générer un keystore de release et configurer la signature ───
+      # FIX #3 : Keystore + signing config
+      # FIX CRITIQUE v2 : utiliser Node.js (déjà installé) au lieu de Python.
+      # Vérifier SPÉCIFIQUEMENT "keystore/release.keystore" — pas juste "signingConfigs"
+      # car Expo prebuild génère déjà signingConfigs { debug { ... } } sans release.
+      # L'ancienne condition `if "signingConfigs" not in c` était donc toujours fausse,
+      # le bloc release n'était jamais injecté, mais la référence signingConfigs.release
+      # était quand même ajoutée → BUILD FAILED "unknown property release".
       - name: Générer le keystore de release et configurer la signature
         run: |
           mkdir -p android/app/keystore
 
-          # Générer un keystore RSA-2048 auto-signé (valide 10000 jours)
-          keytool -genkeypair -v \
-            -storetype PKCS12 \
-            -keystore android/app/keystore/release.keystore \
-            -alias sxbvpn \
-            -keyalg RSA -keysize 2048 \
-            -validity 10000 \
-            -dname "CN=SXB VPN,OU=Mobile,O=SXB,L=Paris,ST=IDF,C=FR" \
-            -storepass sxbvpn_ci_2026 \
-            -keypass sxbvpn_ci_2026 \
-            -noprompt
+          if [ -f "android/app/keystore/release.keystore" ]; then
+            echo "✅ Keystore déjà présent (restauré depuis le cache) — génération sautée"
+          else
+            keytool -genkeypair -v \
+              -storetype PKCS12 \
+              -keystore android/app/keystore/release.keystore \
+              -alias sxbvpn \
+              -keyalg RSA -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=SXB VPN,OU=Mobile,O=SXB,L=Paris,ST=IDF,C=FR" \
+              -storepass sxbvpn_ci_2026 \
+              -keypass sxbvpn_ci_2026 \
+              -noprompt
+            echo "✅ Keystore généré : $(ls -lh android/app/keystore/release.keystore | awk '{print $5}')"
+          fi
 
-          echo "✅ Keystore généré : $(ls -lh android/app/keystore/release.keystore | awk '{print $5}')"
-
-          # Injecter signingConfigs DANS android {} via Python (aucun heredoc, évite erreur YAML col 0)
           BUILD_GRADLE="android/app/build.gradle"
           printf '%s\n' \
-            'import re, sys' \
-            'path = sys.argv[1]' \
-            'c = open(path).read()' \
-            'if "signingConfigs" not in c:' \
-            '    b = "\n    signingConfigs {\n        release {\n            storeFile file(\"keystore/release.keystore\")\n            storePassword \"sxbvpn_ci_2026\"\n            keyAlias \"sxbvpn\"\n            keyPassword \"sxbvpn_ci_2026\"\n        }\n    }"' \
-            '    c = re.sub(r"android \{", "android {" + b, c, count=1)' \
-            '    print("[signing] signingConfigs injecte dans android {}")' \
-            'if "signingConfig signingConfigs.release" not in c:' \
-            '    c = re.sub(r"(buildTypes\s*\{[^}]*release\s*\{)", lambda m: m.group(0) + "\n            signingConfig signingConfigs.release", c, count=1)' \
-            '    print("[signing] signingConfig ref ajoutee")' \
-            'open(path, "w").write(c)' \
-            > /tmp/signing_inject.py
-          python3 /tmp/signing_inject.py "$BUILD_GRADLE"
-          echo "✅ Signature configurée dans build.gradle"
+            'const fs = require("fs");' \
+            'const p = process.argv[2];' \
+            'let c = fs.readFileSync(p, "utf8");' \
+            '// Bonne condition : chercher le KEYSTORE release spécifiquement' \
+            '// (Expo prebuild génère déjà signingConfigs{debug{...}} — sans release)' \
+            'if (!c.includes("keystore/release.keystore")) {' \
+            '  if (c.includes("signingConfigs {")) {' \
+            '    c = c.replace("signingConfigs {",' \
+            '      "signingConfigs {\n        release {\n            storeFile file(\"keystore/release.keystore\")\n            storePassword \"sxbvpn_ci_2026\"\n            keyAlias \"sxbvpn\"\n            keyPassword \"sxbvpn_ci_2026\"\n        }");' \
+            '    console.log("[signing] bloc release injecté dans signingConfigs existant");' \
+            '  } else {' \
+            '    c = c.replace("android {", "android {\n    signingConfigs {\n        release {\n            storeFile file(\"keystore/release.keystore\")\n            storePassword \"sxbvpn_ci_2026\"\n            keyAlias \"sxbvpn\"\n            keyPassword \"sxbvpn_ci_2026\"\n        }\n    }");' \
+            '    console.log("[signing] nouveau bloc signingConfigs.release injecté");' \
+            '  }' \
+            '}' \
+            'if (!c.includes("signingConfig signingConfigs.release")) {' \
+            '  c = c.replace(/(buildTypes[\s\S]*?release\s*\{)/, "$1\n            signingConfig signingConfigs.release");' \
+            '  console.log("[signing] signingConfig reference ajoutée dans buildTypes.release");' \
+            '}' \
+            'fs.writeFileSync(p, c);' \
+            'console.log("✅ Signature configurée dans build.gradle");' \
+            > /tmp/signing_inject.js
+          node /tmp/signing_inject.js "$BUILD_GRADLE"
 
-      # BUG FIX #2 & #3 : gradle.properties sans espaces parasites, sans configuration-cache
+      # FIX #4 : Gradle properties — newArchEnabled=false (cohérent avec app.json)
+      # CORRECTION CRITIQUE : newArchEnabled=true forçait la nouvelle architecture alors
+      # que le module natif SxbVpnModule utilise l'ancienne (ReactContextBaseJavaModule).
+      # Forcer new arch ON causait des erreurs de compilation Kotlin.
       - name: Configure Gradle (performance + compatibilité RN)
         run: |
-          # BUG FIX #2 : utiliser printf au lieu de heredoc YAML
-          # pour éviter les espaces d'indentation qui corrompent les propriétés.
-          # BUG FIX #3 : configuration-cache=true est INCOMPATIBLE avec React Native.
           printf '%s\n' \
             'org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=512m -XX:+UseParallelGC' \
             'org.gradle.daemon=false' \
@@ -177,35 +191,42 @@ jobs:
             'android.enableJetifier=true' \
             'android.enableR8.fullMode=false' \
             'kotlin.incremental=true' \
-            'newArchEnabled=true' \
+            'newArchEnabled=false' \
             'reactNativeArchitectures=arm64-v8a' \
             >> android/gradle.properties
-          echo "[Gradle] Propriétés ajoutées (sans espaces parasites)"
+          echo "[Gradle] Propriétés ajoutées (newArchEnabled=false — old arch, compatible SxbVpnModule)"
 
-      # ── Corriger conflits META-INF via init script Gradle (AGP 7+8 compat) ───
-      - name: Corriger conflits META-INF (init script Gradle)
+      # FIX #5 : Packaging META-INF — bash+sed pur (pas de Python, pas de heredoc)
+      # Le plugin withJschDependency injecte packaging{} durant le prebuild.
+      # Ce step complète les excludes manquants sans créer de doublon.
+      - name: Corriger conflits META-INF (packaging build.gradle)
         run: |
-          mkdir -p ~/.gradle/init.d
-          printf '%s\n' \
-            'allprojects {' \
-            '    pluginManager.withPlugin("com.android.application") {' \
-            '        android.packagingOptions.exclude("META-INF/versions/9/OSGI-INF/MANIFEST.MF")' \
-            '        android.packagingOptions.exclude("META-INF/*.kotlin_module")' \
-            '    }' \
-            '}' \
-            > ~/.gradle/init.d/packaging-fix.gradle
-          echo "[packaging] Init script Gradle créé dans ~/.gradle/init.d/"
+          B="android/app/build.gradle"
+          if grep -q 'packaging' "$B" 2>/dev/null; then
+            echo "[packaging] Bloc packaging présent (injecté par le plugin Expo)"
+            for EXCL in \
+              'META-INF/versions/9/OSGI-INF/MANIFEST.MF' \
+              'META-INF/*.kotlin_module' \
+              'META-INF/AL2.0' \
+              'META-INF/LGPL2.1'; do
+              if ! grep -q "$EXCL" "$B"; then
+                sed -i "s|resources {|resources {\n            excludes += \"$EXCL\"|" "$B"
+                echo "[packaging] + $EXCL"
+              fi
+            done
+          else
+            echo "[packaging] Aucun bloc packaging — injection depuis zéro (GNU sed)"
+            sed -i 's|android {|android {\n    packaging {\n        resources {\n            excludes += "/META-INF/{AL2.0,LGPL2.1}"\n            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"\n            excludes += "META-INF/*.kotlin_module"\n            excludes += "META-INF/LICENSE.md"\n            excludes += "META-INF/LICENSE-notice.md"\n        }\n    }|' "$B"
+          fi
+          echo "✅ Packaging META-INF configuré"
 
       # ── Build APK release ─────────────────────────────────────────────────────
-      # BUG FIX #6 : les tâches -x assertWorkletsVersionTask / assertMinimalReactNativeVersionTask
-      # peuvent ne pas exister selon la version exacte de reanimated → --continue est plus robuste.
       - name: Build APK (release)
         working-directory: app-mobile/android
         run: |
           set -o pipefail
           chmod +x gradlew
 
-          # Désactiver les tâches d'assertion de version qui peuvent échouer si absentes
           SKIP_TASKS=""
           for task in \
             ":react-native-reanimated:assertWorkletsVersionTask" \
@@ -213,7 +234,6 @@ jobs:
             ":react-native-worklets:assertMinimalReactNativeVersionTask" \
             ":app:lintVitalRelease" \
             ":app:lintVitalAnalyzeRelease"; do
-            # Ajouter -x seulement si la tâche existe dans le projet
             if ./gradlew tasks --all 2>/dev/null | grep -qF "${task#:}"; then
               SKIP_TASKS="$SKIP_TASKS -x $task"
             fi
@@ -226,7 +246,6 @@ jobs:
             $SKIP_TASKS \
             2>&1 | tee /tmp/gradle-build.log
 
-          # Afficher les dernières lignes en cas d'erreur
           echo "::group::Gradle output (dernières 100 lignes)"
           tail -100 /tmp/gradle-build.log
           echo "::endgroup::"
@@ -240,7 +259,6 @@ jobs:
       - name: Localiser et copier l'APK
         run: |
           mkdir -p build
-          # Chercher d'abord release signé, puis unsigned, puis debug
           APK=$(find android/app/build/outputs/apk/release -name "*.apk" 2>/dev/null | grep -v unsigned | head -n 1)
           if [ -z "$APK" ]; then
             APK=$(find android/app/build/outputs/apk -name "*.apk" 2>/dev/null | head -n 1)
@@ -323,7 +341,6 @@ jobs:
           password: ${{ secrets.VPS_SSH_PASSWORD }}
           script: |
             sudo mkdir -p /var/www/apk
-            # Chercher l'APK déposé par scp (strip_components=2 → /tmp/sxb-vpn.apk)
             if [ -f /tmp/sxb-vpn.apk ]; then
               sudo cp /tmp/sxb-vpn.apk /var/www/apk/sxbvpn-latest.apk
               sudo cp /tmp/sxb-vpn.apk "/var/www/apk/sxbvpn-build-${{ github.run_number }}.apk"
