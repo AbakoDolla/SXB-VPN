@@ -73,7 +73,9 @@ private class SxbPayloadProxy(private val rawPayload: String) : com.jcraft.jsch.
 
         val payload = rawPayload
             .replace("[crlf]", "\r\n").replace("[CRLF]", "\r\n")
-            .replace("[lf]", "\n").replace("[LF]", "\n")
+            .replace("[lf]",   "\n").replace("[LF]",   "\n")
+            .replace("[cr]",   "\r").replace("[CR]",   "\r")
+            .replace("[port]", port.toString())
             .replace("[host]", host).replace("[Host]", host)
             .replace("[host_port]", "$host:$port")
         out.write(payload.toByteArray(Charsets.ISO_8859_1))
@@ -199,9 +201,21 @@ class SxbVpnService : VpnService() {
 
         if (json.isEmpty() || proto.isEmpty()) {
             try {
-                val confFile = File(filesDir, "sb_config.json")
-                if (confFile.exists()) {
+                // P1 — Lecture config chiffrée (AES-256-GCM) ou plaintext fallback
+                val credsFile = File(filesDir, "sxb_creds.enc")
+                val confFile  = File(filesDir, "sb_config.json")
+                if (credsFile.exists()) {
+                    try {
+                        json = KeystoreManager(this).decrypt(credsFile.readText(Charsets.UTF_8))
+                        Log.i(TAG, "[P1] Config VPN déchiffrée depuis sxb_creds.enc")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "[P1] Déchiffrement échoué — fallback plaintext: ${e.message}")
+                        if (confFile.exists()) json = confFile.readText(Charsets.UTF_8)
+                    }
+                } else if (confFile.exists()) {
                     json = confFile.readText(Charsets.UTF_8)
+                }
+                if (json.isNotEmpty()) {
                     val cfg = org.json.JSONObject(json)
                     proto = cfg.optString("protocol", "").lowercase()
                 }
@@ -212,6 +226,8 @@ class SxbVpnService : VpnService() {
             return START_NOT_STICKY
         }
 
+        // P1 — Persister config chiffrée pour démarrage hors-ligne
+        if (json.isNotEmpty()) { try { persistEncryptedConfig(json) } catch (_: Exception) {} }
         killSwitchEnabled = intent?.getBooleanExtra("killSwitch", false) ?: false
         configJson  = json
 
@@ -262,8 +278,9 @@ class SxbVpnService : VpnService() {
             val username   = cfg.optString("username", "")
             val password   = cfg.optString("password", "")
             val payload    = cfg.optString("payload", "")
-            val usePayload = cfg.optBoolean("usePayload", false) || cfg.optString("protocol","").contains("payload")
-            val sni        = cfg.optString("sni", "")
+            val usePayload   = cfg.optBoolean("usePayload", false) || cfg.optString("protocol","").contains("payload")
+            val sni         = cfg.optString("sni", "")
+            val fingerprint = cfg.optString("fingerprint", "")
 
             // ── Session JSch ──────────────────────────────────────────────────
             val jsch = JSch()
@@ -273,6 +290,7 @@ class SxbVpnService : VpnService() {
                     s.setProxy(SxbPayloadProxy(payload))
                     s.setPassword(password)
                     val props = Properties().apply {
+                        // P5: fingerprint vérifié après connect — no bypass definitif
                         set("StrictHostKeyChecking", "no")
                         set("PreferredAuthentications", "password")
                         if (sni.isNotEmpty()) set("ServerAliveInterval", "30")
@@ -295,6 +313,19 @@ class SxbVpnService : VpnService() {
 
             broadcastLog("[SXB] Connexion SSH... Host:****  Port:$port")
             session.connect(30_000)
+            // P5 — Vérification fingerprint post-connexion (hors StrictHostKeyChecking)
+            if (fingerprint.isNotEmpty()) {
+                val hostKey  = session.hostKey
+                val actualFp = hostKey?.fingerPrint(jsch) ?: ""
+                val fpNorm   = { s: String -> s.replace(":", "").lowercase() }
+                if (fpNorm(actualFp) != fpNorm(fingerprint)) {
+                    session.disconnect()
+                    throw SecurityException("[SXB] ❌ Fingerprint SSH invalide\n  Attendu: $fingerprint\n  Reçu   : $actualFp")
+                }
+                broadcastLog("[SXB] ✅ Fingerprint SSH vérifié: $fingerprint")
+            } else {
+                broadcastLog("[SXB] ⚠️ Aucun fingerprint configuré — hôte non vérifié")
+            }
             sshSession = session
             broadcastLog("[SXB] Tunnel SSH établi ✅")
 
@@ -964,6 +995,15 @@ class SxbVpnService : VpnService() {
     // UTILITAIRES
     // ═════════════════════════════════════════════════════════════════════════
 
+
+    /** SHA-256 d'un stream — pour P4 vérification intégrité sing-box */
+    private fun sha256Stream(stream: java.io.InputStream): String {
+        val md  = java.security.MessageDigest.getInstance("SHA-256")
+        val buf = ByteArray(8192)
+        stream.use { var n: Int; while (stream.read(buf).also { n = it } != -1) md.update(buf, 0, n) }
+        return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
     private fun extractSingBoxBinary(): File? {
         val arch = System.getProperty("os.arch") ?: ""
         val assetNames = when {
@@ -984,6 +1024,19 @@ class SxbVpnService : VpnService() {
                     }
                     dest.setExecutable(true, false)
                     Log.i(TAG, "sing-box extrait depuis asset '$name' (${dest.length()} bytes)")
+                    // P4 — SHA-256 : fichier extrait doit correspondre à l'asset
+                    try {
+                        val assetHash = sha256Stream(assets.open(name))
+                        val fileHash  = sha256Stream(java.io.FileInputStream(dest))
+                        if (assetHash != fileHash) {
+                            dest.delete()
+                            Log.e(TAG, "sing-box SHA-256 mismatch — exécution bloquée")
+                            continue
+                        }
+                        Log.i(TAG, "sing-box SHA-256 ✅")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "[P4] SHA-256 check skipped: ${e.message}")
+                    }
                 }
                 if (dest.exists() && dest.canExecute()) return dest
             } catch (_: Exception) {
@@ -997,6 +1050,17 @@ class SxbVpnService : VpnService() {
         val confFile = File(filesDir, "sb_config.json")
         confFile.writeText(configJson, Charsets.UTF_8)
         return confFile
+    }
+
+    /** P1 — Chiffre configJson (credentials VPN) avec AES-256-GCM Android Keystore */
+    private fun persistEncryptedConfig(originalConfigJson: String) {
+        try {
+            val km = KeystoreManager(this)
+            File(filesDir, "sxb_creds.enc").writeText(km.encrypt(originalConfigJson), Charsets.UTF_8)
+            Log.i(TAG, "[P1] Config VPN chiffrée et persistée (AES-256-GCM) ✅")
+        } catch (e: Exception) {
+            Log.w(TAG, "[P1] Chiffrement config échoué (Keystore non disponible?): ${e.message}")
+        }
     }
 
     private fun getSingBoxVersion(bin: File): String {
