@@ -96,6 +96,26 @@ jobs:
           EXPO_NO_TELEMETRY: "1"
           EXPO_PUBLIC_API_URL: https://vpnsxb.afrihall.com/api
 
+      # ── P3 — ProGuard : règles R8 pour JSch + sing-box + modules SXB ──────────
+      - name: Créer proguard-rules.pro (JSch + sing-box + natif SXB)
+        run: |
+          PGFILE="android/app/proguard-rules.pro"
+          printf '%s\n' \
+            '# JSch — SSH library' \
+            '-keep class com.jcraft.jsch.** { *; }' \
+            '-dontwarn com.jcraft.jsch.**' \
+            '# Modules natifs SXB VPN' \
+            '-keep class com.sxbvpn.** { *; }' \
+            '-keepclassmembers class com.sxbvpn.** { *; }' \
+            '-keepattributes Signature,*Annotation*,EnclosingMethod,InnerClasses' \
+            '# React Native / Expo' \
+            '-keep class com.facebook.react.** { *; }' \
+            '-dontwarn com.facebook.react.**' \
+            >> "$PGFILE"
+          echo "[ProGuard] Règles ajoutées à $PGFILE ($(wc -l < $PGFILE) lignes)"
+
+
+
       # FIX #2 : JitPack — injecter seulement dans la section dependencyResolutionManagement
       # (première occurrence de mavenCentral uniquement pour éviter les doublons)
       - name: Injecter JitPack dans settings.gradle
@@ -141,13 +161,22 @@ jobs:
       # L'ancienne condition `if "signingConfigs" not in c` était donc toujours fausse,
       # le bloc release n'était jamais injecté, mais la référence signingConfigs.release
       # était quand même ajoutée → BUILD FAILED "unknown property release".
-      - name: Générer le keystore de release et configurer la signature
+      - name: Configurer le keystore de release (Secrets GitHub ou CI fallback)
+        env:
+          KEYSTORE_FILE:     ${{ secrets.KEYSTORE_FILE }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS:         ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD:      ${{ secrets.KEY_PASSWORD }}
         run: |
           mkdir -p android/app/keystore
-
-          if [ -f "android/app/keystore/release.keystore" ]; then
-            echo "✅ Keystore déjà présent (restauré depuis le cache) — génération sautée"
+          if [ -n "$KEYSTORE_FILE" ]; then
+            echo "$KEYSTORE_FILE" | base64 -d > android/app/keystore/release.keystore
+            STORE_PASS="$KEYSTORE_PASSWORD"
+            KEY_AL="$KEY_ALIAS"
+            KEY_PW="$KEY_PASSWORD"
+            echo "✅ Keystore restauré depuis GitHub Secrets"
           else
+            echo "⚠️  Secrets KEYSTORE_* non configurés — keystore CI éphémère (non-production)"
             keytool -genkeypair -v \
               -storetype PKCS12 \
               -keystore android/app/keystore/release.keystore \
@@ -158,8 +187,13 @@ jobs:
               -storepass sxbvpn_ci_2026 \
               -keypass sxbvpn_ci_2026 \
               -noprompt
-            echo "✅ Keystore généré : $(ls -lh android/app/keystore/release.keystore | awk '{print $5}')"
+            STORE_PASS="sxbvpn_ci_2026"
+            KEY_AL="sxbvpn"
+            KEY_PW="sxbvpn_ci_2026"
           fi
+          echo "STORE_PASS=$STORE_PASS" >> $GITHUB_ENV
+          echo "KEY_AL=$KEY_AL"         >> $GITHUB_ENV
+          echo "KEY_PW=$KEY_PW"         >> $GITHUB_ENV
 
           BUILD_GRADLE="android/app/build.gradle"
           printf '%s\n' \
@@ -171,10 +205,10 @@ jobs:
             'if (!c.includes("keystore/release.keystore")) {' \
             '  if (c.includes("signingConfigs {")) {' \
             '    c = c.replace("signingConfigs {",' \
-            '      "signingConfigs {\n        release {\n            storeFile file(\"keystore/release.keystore\")\n            storePassword \"sxbvpn_ci_2026\"\n            keyAlias \"sxbvpn\"\n            keyPassword \"sxbvpn_ci_2026\"\n        }");' \
+            '      "signingConfigs {\n        release {\n            storeFile file(\"keystore/release.keystore\")\n            storePassword \"' + process.env.STORE_PASS + '\"\n            keyAlias \"' + process.env.KEY_AL + '\"\n            keyPassword \"' + process.env.KEY_PW + '\"\n        }");' \
             '    console.log("[signing] bloc release injecté dans signingConfigs existant");' \
             '  } else {' \
-            '    c = c.replace("android {", "android {\n    signingConfigs {\n        release {\n            storeFile file(\"keystore/release.keystore\")\n            storePassword \"sxbvpn_ci_2026\"\n            keyAlias \"sxbvpn\"\n            keyPassword \"sxbvpn_ci_2026\"\n        }\n    }");' \
+            '    c = c.replace("android {", "android {\n    signingConfigs {\n        release {\n            storeFile file(\"keystore/release.keystore\")\n            storePassword \"' + process.env.STORE_PASS + '\"\n            keyAlias \"' + process.env.KEY_AL + '\"\n            keyPassword \"' + process.env.KEY_PW + '\"\n        }\n    }");' \
             '    console.log("[signing] nouveau bloc signingConfigs.release injecté");' \
             '  }' \
             '}' \
