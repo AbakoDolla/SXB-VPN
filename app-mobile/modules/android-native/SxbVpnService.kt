@@ -182,28 +182,35 @@ class SxbVpnService : VpnService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_4_SERVICE_ONSTART action=${intent?.action}")
+
         if (intent?.action == ACTION_STOP) { cleanup(); return START_NOT_STICKY }
 
         // Vérifications de sécurité
         val secReport = SecurityModule.audit(this)
         if (secReport.hasFrida || secReport.hasXposed) {
+            Log.e("SXB_DEBUG", "[SXB_DEBUG] SECURITY_BLOCK hasFrida=${secReport.hasFrida} hasXposed=${secReport.hasXposed}")
             broadcastLog("[SXB] ❌ Environnement compromis — connexion refusée")
             broadcastStatus("error")
             stopSelf()
             return START_NOT_STICKY
         }
         if (secReport.isRooted) {
+            Log.w("SXB_DEBUG", "[SXB_DEBUG] SECURITY_WARN isRooted=true")
             broadcastLog("[SXB] ⚠️ Appareil rooté — risque de sécurité")
         }
 
         var json    = intent?.getStringExtra("configJson") ?: ""
         var proto   = intent?.getStringExtra("protocol")?.lowercase() ?: ""
 
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] CONFIG_FROM_INTENT proto=$proto json_empty=${json.isEmpty()}")
+
         if (json.isEmpty() || proto.isEmpty()) {
             try {
                 // P1 — Lecture config chiffrée (AES-256-GCM) ou plaintext fallback
                 val credsFile = File(filesDir, "sxb_creds.enc")
                 val confFile  = File(filesDir, "sb_config.json")
+                Log.i("SXB_DEBUG", "[SXB_DEBUG] CONFIG_FALLBACK credsExists=${credsFile.exists()} confExists=${confFile.exists()}")
                 if (credsFile.exists()) {
                     try {
                         json = KeystoreManager.decrypt(credsFile.readText(Charsets.UTF_8))
@@ -223,8 +230,13 @@ class SxbVpnService : VpnService() {
         }
 
         if (json.isEmpty() || proto.isEmpty()) {
+            Log.e("SXB_DEBUG", "[SXB_DEBUG] CONFIG_MISSING json_empty=${json.isEmpty()} proto_empty=${proto.isEmpty()} — arrêt")
+            broadcastLog("[SXB] ❌ Configuration manquante — importez un profil VPN")
+            broadcastStatus("error")
             return START_NOT_STICKY
         }
+
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_5_CONFIG_LOADED proto=$proto json_len=${json.length}")
 
         // P1 — Persister config chiffrée pour démarrage hors-ligne
         if (json.isNotEmpty()) { try { persistEncryptedConfig(json) } catch (_: Exception) {} }
@@ -252,11 +264,13 @@ class SxbVpnService : VpnService() {
     // ── Dispatch protocole ────────────────────────────────────────────────────
 
     private fun dispatchProtocol(json: String, proto: String) {
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_2_CONFIG_RECEIVED proto=$proto")
         when (proto) {
             "ssh", "ssh+payload"                                        -> startSshTunnel(json)
             "vless", "vmess", "trojan", "shadowsocks",
             "wireguard", "hysteria2", "tuic"                            -> startSingBoxTunnel(json, proto)
             else -> {
+                Log.e("SXB_DEBUG", "[SXB_DEBUG] DISPATCH_ERROR proto_inconnu=$proto")
                 broadcastLog("[SXB] ❌ Protocole inconnu : $proto")
                 broadcastStatus("error"); setCurrentState("error"); stopSelf()
             }
@@ -282,9 +296,14 @@ class SxbVpnService : VpnService() {
             val sni         = cfg.optString("sni", "")
             val fingerprint = cfg.optString("fingerprint", "")
 
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_9_SSH_CONNECTING host=**** port=$port usePayload=$usePayload")
+            broadcastLog("[SXB_DEBUG] STEP_9_SSH_CONNECTING port=$port usePayload=$usePayload")
+
             // ── Session JSch ──────────────────────────────────────────────────
             val jsch = JSch()
             val session: Session = if (usePayload && payload.isNotEmpty()) {
+                Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_11_PAYLOAD_SENT payload_len=${payload.length}")
+                broadcastLog("[SXB_DEBUG] STEP_11_PAYLOAD_SENT payload_len=${payload.length}")
                 broadcastLog("[SXB] Mode SSH+Payload (HTTP Injector)")
                 jsch.getSession(username, host, port).also { s ->
                     s.setProxy(SxbPayloadProxy(payload))
@@ -299,6 +318,7 @@ class SxbVpnService : VpnService() {
                     s.timeout = 30_000
                 }
             } else {
+                Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_DIRECT_MODE")
                 broadcastLog("[SXB] Mode SSH direct")
                 jsch.getSession(username, host, port).also { s ->
                     s.setPassword(password)
@@ -311,8 +331,14 @@ class SxbVpnService : VpnService() {
                 }
             }
 
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_AUTH_START host=**** port=$port timeout=30000ms")
+            broadcastLog("[SXB_DEBUG] SSH_AUTH_START host=**** port=$port")
             broadcastLog("[SXB] Connexion SSH... Host:****  Port:$port")
             session.connect(30_000)
+
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_10_SSH_AUTH_SUCCESS session.isConnected=${session.isConnected}")
+            broadcastLog("[SXB_DEBUG] STEP_10_SSH_AUTH_SUCCESS")
+
             // P5 — Vérification fingerprint post-connexion (hors StrictHostKeyChecking)
             if (fingerprint.isNotEmpty()) {
                 val hostKey  = session.hostKey
@@ -331,20 +357,28 @@ class SxbVpnService : VpnService() {
 
             // ── Serveur SOCKS5 local ──────────────────────────────────────────
             socks5Server = startLocalSocks5Server(session)
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_12_SOCKS_STARTED port=$SOCKS5_PORT")
+            broadcastLog("[SXB_DEBUG] STEP_12_SOCKS_STARTED port=$SOCKS5_PORT")
             broadcastLog("[SXB] SOCKS5 local actif (port $SOCKS5_PORT)")
 
             // ── Interface TUN ─────────────────────────────────────────────────
             val tun = buildTunInterface("SSH", listOf("1.1.1.1", "8.8.8.8"))
-            tunPfd = tun ?: throw Exception("Impossible d'établir l'interface TUN")
+            tunPfd = tun ?: throw Exception("Impossible d'établir l'interface TUN — VpnService.Builder().establish() a retourné null")
 
             // ── sing-box comme pont TUN → SOCKS5 ─────────────────────────────
             val fdInt = getFdInt(tunPfd!!.fileDescriptor)
             dupFd = Os.dup(tunPfd!!.fileDescriptor)
             val dupInt = getFdInt(dupFd!!)
 
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_8_SINGBOX_START proto=ssh-relay tunFd=$dupInt")
+            broadcastLog("[SXB_DEBUG] STEP_8_SINGBOX_START proto=ssh-relay tunFd=$dupInt")
+
             val sbConfig = buildSshSocksRelayConfig(dupInt)
-            val sbBin    = extractSingBoxBinary() ?: throw Exception("Moteur VPN introuvable")
+            val sbBin    = extractSingBoxBinary() ?: throw Exception("Moteur VPN introuvable — binaire sing-box absent ou non exécutable")
             val sbConf   = writeSingBoxConfig(sbConfig)
+
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_LAUNCH bin=${sbBin.absolutePath} config=${sbConf.absolutePath}")
+            broadcastLog("[SXB_DEBUG] SINGBOX_LAUNCH bin=${sbBin.name} config=${sbConf.name} size=${sbBin.length()}")
 
             val process = ProcessBuilder(sbBin.absolutePath, "run", "-c", sbConf.absolutePath)
                 .redirectErrorStream(true)
@@ -354,14 +388,23 @@ class SxbVpnService : VpnService() {
             Thread({
                 try {
                     process.inputStream.bufferedReader().forEachLine { line ->
-                        if (line.isNotBlank()) broadcastLog("[engine] ${SecurityModule.maskSensitive(line)}")
+                        if (line.isNotBlank()) {
+                            Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_LOG: $line")
+                            broadcastLog("[engine] ${SecurityModule.maskSensitive(line)}")
+                        }
                     }
                 } catch (_: Exception) {}
             }, "SXB-SbLog").apply { isDaemon = true; start() }
 
             Thread.sleep(1_500)
-            if (!process.isAlive) throw Exception("sing-box s'est arrêté immédiatement")
+            if (!process.isAlive) {
+                val code = process.exitValue()
+                Log.e("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_CRASHED_IMMEDIATELY code=$code")
+                throw Exception("sing-box s'est arrêté immédiatement (code=$code) — config invalide?")
+            }
 
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_13_VPN_CONNECTED proto=ssh")
+            broadcastLog("[SXB_DEBUG] STEP_13_VPN_CONNECTED proto=${if (usePayload) "ssh+payload" else "ssh"}")
             broadcastLog("[SXB] ✅ VPN SSH actif — Credential:******** Trafic:Actif")
             broadcastStatus("connected"); setCurrentState("connected")
             autoReconnect.onConnected()
@@ -371,6 +414,7 @@ class SxbVpnService : VpnService() {
             // ── Boucle de surveillance ────────────────────────────────────────
             while (running.get()) {
                 if (!session.isConnected) {
+                    Log.w("SXB_DEBUG", "[SXB_DEBUG] SSH_SESSION_LOST")
                     broadcastLog("[SXB] ⚠️ Session SSH perdue")
                     broadcastStatus("error"); setCurrentState("error")
                     if (autoReconnect.isEnabled()) { autoReconnect.onDisconnected(); return }
@@ -378,6 +422,7 @@ class SxbVpnService : VpnService() {
                 }
                 if (!process.isAlive) {
                     val code = process.exitValue()
+                    Log.w("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_STOPPED_IN_LOOP code=$code")
                     broadcastLog("[SXB] ⚠️ Moteur TUN arrêté (code=$code)")
                     broadcastStatus("error"); setCurrentState("error")
                     if (autoReconnect.isEnabled()) { autoReconnect.onDisconnected(); return }
@@ -388,15 +433,23 @@ class SxbVpnService : VpnService() {
         } catch (e: InterruptedException) {
             Log.i(TAG, "Thread SSH interrompu")
         } catch (e: Exception) {
-            Log.e(TAG, "Erreur SSH", e)
+            Log.e("SXB_DEBUG", "[SXB_DEBUG] SSH_EXCEPTION at currentState=$currentState msg=${e.message}", e)
             val msg = e.message ?: "erreur inconnue"
+            // Log stacktrace complet pour diagnostic
+            val stack = e.stackTrace.take(8).joinToString("\n  ") { "at ${it.className}.${it.methodName}(${it.fileName}:${it.lineNumber})" }
+            broadcastLog("[SXB_DEBUG] SSH_EXCEPTION: $msg")
+            broadcastLog("[SXB_DEBUG] STACKTRACE:\n  $stack")
             val display = when {
                 msg.contains("Auth fail") || msg.contains("auth", true) ->
-                    "❌ Authentification SSH échouée"
+                    "❌ Authentification SSH échouée — vérifiez username/password"
                 msg.contains("Connection refused") ->
-                    "❌ Connexion refusée — serveur inaccessible"
+                    "❌ Connexion refusée — serveur inaccessible port=${""}vérifiez host/port"
                 msg.contains("timeout", true) ->
-                    "❌ Timeout — vérifiez host/port"
+                    "❌ Timeout — vérifiez host/port/réseau"
+                msg.contains("TUN") || msg.contains("establish") ->
+                    "❌ TUN échoué — permission VPN révoquée?"
+                msg.contains("sing-box") || msg.contains("moteur", true) ->
+                    "❌ Moteur VPN — ${msg.take(80)}"
                 else -> "❌ Erreur tunnel : ${msg.take(80)}"
             }
             broadcastLog("[SXB] $display")
@@ -413,6 +466,7 @@ class SxbVpnService : VpnService() {
 
     private fun startSingBoxTunnel(configJsonStr: String, protocol: String) {
         try {
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_TUNNEL_START proto=$protocol")
             broadcastLog("[SXB] Initialisation VPN ${protocol.uppercase()}...")
             broadcastStatus("connecting"); setCurrentState("connecting")
 
@@ -421,38 +475,51 @@ class SxbVpnService : VpnService() {
             // ── Binaire sing-box ──────────────────────────────────────────────
             val sbBin = extractSingBoxBinary()
                 ?: throw Exception("Moteur VPN introuvable — réinstallez l'APK")
-            broadcastLog("[SXB] Moteur VPN: sing-box ${getSingBoxVersion(sbBin)}")
+            val sbVer = getSingBoxVersion(sbBin)
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_BINARY_FOUND path=${sbBin.absolutePath} version=$sbVer size=${sbBin.length()}")
+            broadcastLog("[SXB] Moteur VPN: sing-box $sbVer")
 
             // ── Interface TUN ─────────────────────────────────────────────────
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_6_TUN_CREATING proto=$protocol")
+            broadcastLog("[SXB_DEBUG] STEP_6_TUN_CREATING proto=$protocol")
             broadcastLog("[SXB] Création interface réseau TUN...")
             val dns = listOf("1.1.1.1", "8.8.8.8", "1.0.0.1")
             val tun = buildTunInterface(protocol.uppercase(), dns)
-            tunPfd = tun ?: throw Exception("Impossible d'établir l'interface TUN")
+            tunPfd = tun ?: throw Exception("Impossible d'établir l'interface TUN — VpnService.Builder().establish() a retourné null")
 
             // Dupliquer le fd pour le passer à sing-box (supprime FD_CLOEXEC)
             dupFd = Os.dup(tunPfd!!.fileDescriptor)
             val tunFdInt = getFdInt(dupFd!!)
-            if (tunFdInt < 0) throw Exception("fd TUN invalide : $tunFdInt")
+            if (tunFdInt < 0) throw Exception("fd TUN invalide ($tunFdInt) — réflexion FileDescriptor échouée")
+
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_7_TUN_CREATED tunFd=$tunFdInt")
+            broadcastLog("[SXB_DEBUG] STEP_7_TUN_CREATED tunFd=$tunFdInt")
             broadcastLog("[SXB] Interface TUN créée (fd=$tunFdInt)")
 
             // ── Config sing-box ───────────────────────────────────────────────
             val sbConfigJson = buildSingBoxConfig(cfg, protocol, tunFdInt)
             val sbConfFile   = writeSingBoxConfig(sbConfigJson)
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_CONFIG_WRITTEN path=${sbConfFile.absolutePath} size=${sbConfFile.length()}")
             broadcastLog("[SXB] Config générée pour $protocol")
 
             // ── Lancement sing-box ────────────────────────────────────────────
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_8_SINGBOX_START proto=$protocol bin=${sbBin.absolutePath}")
+            broadcastLog("[SXB_DEBUG] STEP_8_SINGBOX_START proto=$protocol")
+
             val pb = ProcessBuilder(sbBin.absolutePath, "run", "-c", sbConfFile.absolutePath)
                 .redirectErrorStream(true)
             pb.environment()["GOMAXPROCS"] = "2"
 
             val process = pb.start()
             singBoxProcess = process
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_PROCESS_LAUNCHED pid=${process.pid()}")
 
             // Thread logs sing-box (masquage données sensibles)
             Thread({
                 try {
                     process.inputStream.bufferedReader().forEachLine { line ->
                         if (line.isNotBlank()) {
+                            Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_LOG: $line")
                             broadcastLog("[engine] ${SecurityModule.maskSensitive(line)}")
                         }
                     }
@@ -463,9 +530,12 @@ class SxbVpnService : VpnService() {
             Thread.sleep(2_500)
             if (!process.isAlive) {
                 val code = process.exitValue()
-                throw Exception("sing-box s'est arrêté immédiatement (code=$code) — vérifiez la configuration")
+                Log.e("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_CRASHED_IMMEDIATELY code=$code proto=$protocol")
+                throw Exception("sing-box s'est arrêté immédiatement (code=$code) — vérifiez uuid/password/host dans la configuration")
             }
 
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_13_VPN_CONNECTED proto=$protocol")
+            broadcastLog("[SXB_DEBUG] STEP_13_VPN_CONNECTED proto=$protocol")
             broadcastLog("[SXB] ✅ VPN ${protocol.uppercase()} actif")
             broadcastStatus("connected"); setCurrentState("connected")
             autoReconnect.onConnected()
@@ -476,6 +546,7 @@ class SxbVpnService : VpnService() {
             while (running.get()) {
                 if (!process.isAlive) {
                     val code = process.exitValue()
+                    Log.w("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_STOPPED_IN_LOOP code=$code proto=$protocol")
                     broadcastLog("[SXB] ⚠️ sing-box arrêté (code=$code)")
                     broadcastStatus("error"); setCurrentState("error")
                     if (autoReconnect.isEnabled()) { autoReconnect.onDisconnected(); return }
@@ -487,7 +558,10 @@ class SxbVpnService : VpnService() {
         } catch (e: InterruptedException) {
             Log.i(TAG, "Thread sing-box interrompu")
         } catch (e: Exception) {
-            Log.e(TAG, "Erreur sing-box", e)
+            Log.e("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_EXCEPTION proto=$protocol msg=${e.message}", e)
+            val stack = e.stackTrace.take(8).joinToString("\n  ") { "at ${it.className}.${it.methodName}(${it.fileName}:${it.lineNumber})" }
+            broadcastLog("[SXB_DEBUG] SINGBOX_EXCEPTION: ${e.message}")
+            broadcastLog("[SXB_DEBUG] STACKTRACE:\n  $stack")
             broadcastLog("[SXB] ❌ ${e.message?.take(120) ?: "erreur inconnue"}")
             broadcastStatus("error"); setCurrentState("error")
             if (autoReconnect.isEnabled()) autoReconnect.onDisconnected()
@@ -501,6 +575,7 @@ class SxbVpnService : VpnService() {
     // ═════════════════════════════════════════════════════════════════════════
 
     private fun buildTunInterface(sessionName: String, dns: List<String>): ParcelFileDescriptor? {
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_6_TUN_CREATING session=$sessionName dns=${dns.joinToString(",")}")
         val builder = Builder()
             .setSession("SXB VPN — $sessionName")
             .addAddress("172.19.0.1", 30)
@@ -522,8 +597,16 @@ class SxbVpnService : VpnService() {
         // Note : le kill switch Android réel est géré via VpnService.Builder
         // Les apps bloquées restent bloquées si VPN coupe (pas de fallback réseau)
 
-        return try { builder.establish() } catch (e: Exception) {
-            Log.e(TAG, "establish() failed: ${e.message}")
+        return try {
+            val pfd = builder.establish()
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_7_TUN_CREATED result=${if (pfd != null) "OK fd=${pfd.fd}" else "NULL — establish() a retourné null"}")
+            if (pfd == null) {
+                broadcastLog("[SXB_DEBUG] STEP_7_TUN_FAILED: establish() null — permission révoquée? VPN déjà actif?")
+            }
+            pfd
+        } catch (e: Exception) {
+            Log.e("SXB_DEBUG", "[SXB_DEBUG] STEP_7_TUN_EXCEPTION: ${e.message}", e)
+            broadcastLog("[SXB_DEBUG] TUN_EXCEPTION: ${e.message}")
             null
         }
     }
@@ -1006,6 +1089,9 @@ class SxbVpnService : VpnService() {
 
     private fun extractSingBoxBinary(): File? {
         val arch = System.getProperty("os.arch") ?: ""
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_EXTRACT_START arch=$arch filesDir=$filesDir")
+        broadcastLog("[SXB_DEBUG] SINGBOX_EXTRACT arch=$arch")
+
         val assetNames = when {
             arch.contains("aarch64") || arch.contains("arm64") ->
                 listOf("sing-box-arm64", "sing-box")
@@ -1014,35 +1100,50 @@ class SxbVpnService : VpnService() {
             else ->
                 listOf("sing-box-arm64", "sing-box-arm", "sing-box")
         }
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_TRY_ASSETS ${assetNames.joinToString(",")}")
+
         for (name in assetNames) {
             try {
                 val dest = File(filesDir, "sing-box")
                 // Recopia si absent ou trop petit (corrompu)
                 if (!dest.exists() || dest.length() < 1_000_000) {
+                    Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_EXTRACT_ASSET name=$name")
                     assets.open(name).use { inp ->
                         FileOutputStream(dest).use { out -> inp.copyTo(out) }
                     }
                     dest.setExecutable(true, false)
-                    Log.i(TAG, "sing-box extrait depuis asset '$name' (${dest.length()} bytes)")
+                    Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_EXTRACTED name=$name size=${dest.length()} executable=${dest.canExecute()}")
+                    broadcastLog("[SXB_DEBUG] SINGBOX_EXTRACTED name=$name size=${dest.length()}")
                     // P4 — SHA-256 : fichier extrait doit correspondre à l'asset
                     try {
                         val assetHash = sha256Stream(assets.open(name))
                         val fileHash  = sha256Stream(java.io.FileInputStream(dest))
                         if (assetHash != fileHash) {
                             dest.delete()
-                            Log.e(TAG, "sing-box SHA-256 mismatch — exécution bloquée")
+                            Log.e("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_SHA256_MISMATCH name=$name — exécution bloquée")
+                            broadcastLog("[SXB_DEBUG] SINGBOX_SHA256_MISMATCH name=$name")
                             continue
                         }
-                        Log.i(TAG, "sing-box SHA-256 ✅")
+                        Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_SHA256_OK name=$name")
                     } catch (e: Exception) {
-                        Log.w(TAG, "[P4] SHA-256 check skipped: ${e.message}")
+                        Log.w("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_SHA256_SKIP: ${e.message}")
                     }
+                } else {
+                    Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_CACHED size=${dest.length()} executable=${dest.canExecute()}")
                 }
-                if (dest.exists() && dest.canExecute()) return dest
-            } catch (_: Exception) {
-                Log.w(TAG, "Asset '$name' non trouvé")
+                if (dest.exists() && dest.canExecute()) {
+                    Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_BINARY_READY path=${dest.absolutePath}")
+                    return dest
+                } else {
+                    Log.e("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_NOT_EXECUTABLE exists=${dest.exists()} canExec=${dest.canExecute()}")
+                }
+            } catch (e: Exception) {
+                Log.w("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_ASSET_NOT_FOUND name=$name error=${e.message}")
+                broadcastLog("[SXB_DEBUG] SINGBOX_ASSET_MISSING name=$name")
             }
         }
+        Log.e("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_BINARY_MISSING — aucun asset compatible pour arch=$arch")
+        broadcastLog("[SXB_DEBUG] SINGBOX_BINARY_MISSING arch=$arch tried=${assetNames.joinToString(",")}")
         return null
     }
 

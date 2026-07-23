@@ -664,6 +664,18 @@ export default function SettingsScreen() {
           <Row icon="document-text-outline" label="CGU / Politique de confidentialité" onPress={() => {}} />
         </Section>
 
+        {/* Diagnostic VPN — pour déboguer les connexions bloquées */}
+        <Section title="DIAGNOSTIC" subtitle="Outils de débogage tunnel VPN">
+          <Row
+            icon="bug-outline"
+            label="Diagnostic VPN"
+            badge="DEBUG"
+            badgeColor="#7C5FFF"
+            onPress={() => router.push("/vpn-debug")}
+            color="#7C5FFF"
+          />
+        </Section>
+
         {/* Logout */}
         {clearing ? (
           <ActivityIndicator color={Colors.primary} style={{ marginTop: 8 }} />

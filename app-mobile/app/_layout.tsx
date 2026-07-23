@@ -50,6 +50,16 @@ function RootLayoutNav() {
             headerTintColor: "#FFFFFF",
           }}
         />
+        <Stack.Screen
+          name="vpn-debug"
+          options={{
+            headerShown: true,
+            animation: 'slide_from_right',
+            headerTitle: 'Diagnostic VPN',
+            headerStyle: { backgroundColor: '#060914' },
+            headerTintColor: '#FFFFFF',
+          }}
+        />
         <Stack.Screen name="+not-found" />
       </Stack>
     </>
