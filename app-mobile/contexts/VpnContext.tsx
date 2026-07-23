@@ -447,9 +447,17 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         // L'état réel sera mis à jour via onVpnStateChange event
         addLog('⏳ Connexion en cours...');
 
+      } else if (IS_ANDROID) {
+        // Android MAIS module natif absent (SxbVpnNative === undefined)
+        // Cela indique un problème de build — le package n'a pas été enregistré.
+        addLog('❌ Module natif VPN non chargé');
+        addLog('ℹ️  Réinstallez l\'APK ou signalez ce bug');
+        setVpnState('error');
+        setIsConnecting(false);
+        return;
       } else {
-        // Hors Android (web/iOS) — simuler pour le dev
-        addLog('⚠️ VPN Android non disponible sur cette plateforme');
+        // Hors Android (web/iOS dev uniquement) — simuler pour le dev
+        addLog('⚠️ Mode développement — VPN simulé (non-Android)');
         await apiClient.post('/mobile/vpn/session', {
           action: 'connect',
           protocol: selectedProtocol || 'VLESS',
@@ -458,7 +466,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         setIsConnected(true);
         setVpnState('connected');
         await AsyncStorage.setItem('@sxb_vpn_connected', 'true');
-        addLog('✅ Connecté (mode web)');
+        addLog('✅ Connecté (mode web dev)');
         setIsConnecting(false);
       }
 

@@ -126,33 +126,65 @@ function withMainAppPackage(config) {
         `$1${importLine}\n`
       );
 
-      // Pattern moderne RN 0.71+ : PackageList(this).packages
-      // ex: val packages = PackageList(this).packages
-      //     return packages
-      if (src.includes('PackageList(this).packages')) {
+      // Priorité 1 — Expo SDK 50+ / RN 0.73+ :
+      //   override fun getPackages() = PackageList(this).packages.apply {
+      //       // commentaire
+      //   }
+      if (src.includes('PackageList(this).packages.apply')) {
+        src = src.replace(
+          /(PackageList\(this\)\.packages\.apply\s*\{[^\n]*\n)/,
+          `$1        ${packageCall}\n`
+        );
+        console.log('[SXB VPN plugin] SxbVpnPackage injecté dans .packages.apply {} (Expo SDK 50+ / RN 0.73+)');
+
+      // Priorité 2 — RN 0.71-0.72 : val packages = PackageList(this).packages
+      } else if (src.includes('PackageList(this).packages')) {
         src = src.replace(
           /(val packages = PackageList\(this\)\.packages\s*\n)/,
           `$1      ${packageCall}\n`
         );
-        console.log('[SXB VPN plugin] SxbVpnPackage injecté après PackageList (RN 0.71+)');
+        console.log('[SXB VPN plugin] SxbVpnPackage injecté après PackageList (RN 0.71-0.72)');
+
+      // Priorité 3 — RN legacy : packages.add(MainReactPackage())
       } else if (src.includes('MainReactPackage()')) {
-        // Pattern ancien : packages.add(MainReactPackage())
         src = src.replace(
           /(packages\.add\(MainReactPackage\(\)\))/m,
           `$1\n      ${packageCall}`
         );
         console.log('[SXB VPN plugin] SxbVpnPackage injecté après MainReactPackage (RN legacy)');
-      } else {
-        // Fallback : injecter avant le premier "return packages"
+
+      // Priorité 4 — Fallback universel : avant "return packages"
+      } else if (src.includes('return packages')) {
         src = src.replace(
           /(\breturn packages\b)/m,
           `${packageCall}\n      $1`
         );
         console.log('[SXB VPN plugin] SxbVpnPackage injecté via fallback return-packages');
+
+      // Priorité 5 — Dernier recours : injecter dans getPackages()
+      } else {
+        src = src.replace(
+          /(override fun getPackages\(\)[^{]*\{)/,
+          `$1\n      ${packageCall}`
+        );
+        console.log('[SXB VPN plugin] SxbVpnPackage injecté via fallback getPackages() body');
       }
 
       fs.writeFileSync(mainAppPath, src);
       console.log('[SXB VPN plugin] SxbVpnPackage enregistré dans MainApplication.kt');
+
+      // Vérification post-écriture
+      const written = fs.readFileSync(mainAppPath, 'utf8');
+      if (!written.includes('SxbVpnPackage')) {
+        console.error('[SXB VPN plugin] ⚠️  INJECTION ÉCHOUÉE — SxbVpnPackage absent de MainApplication.kt');
+        console.error('[SXB VPN plugin] Contenu autour de getPackages :');
+        const idx = written.indexOf('getPackages');
+        if (idx !== -1) console.error(written.slice(Math.max(0, idx - 100), idx + 500));
+      } else {
+        console.log('[SXB VPN plugin] ✅ Vérification OK — SxbVpnPackage présent');
+      }
+    } else {
+      console.log('[SXB VPN plugin] SxbVpnPackage déjà présent dans MainApplication.kt — skip');
     }
     return cfg;
   }]);

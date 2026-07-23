@@ -96,6 +96,67 @@ jobs:
           EXPO_NO_TELEMETRY: "1"
           EXPO_PUBLIC_API_URL: https://vpnsxb.afrihall.com/api
 
+      # ── P2b — GARANTIR SxbVpnPackage dans MainApplication.kt ─────────────────
+      # Le plugin withMainAppPackage() peut échouer si le pattern de getPackages()
+      # ne correspond à aucune regex. Ce step est le filet de sécurité : il injecte
+      # directement via sed si SxbVpnPackage est absent après le prebuild.
+      - name: Vérifier et forcer injection SxbVpnPackage dans MainApplication.kt
+        run: |
+          MAIN_APP=$(find android/app/src/main/java -name "MainApplication.kt" 2>/dev/null | head -1)
+          if [ -z "$MAIN_APP" ]; then
+            echo "::error::MainApplication.kt introuvable après prebuild"
+            exit 1
+          fi
+          echo "[SxbVpnPackage] Fichier : $MAIN_APP"
+          if grep -q "SxbVpnPackage" "$MAIN_APP"; then
+            echo "✅ SxbVpnPackage déjà présent (plugin OK)"
+          else
+            echo "⚠️  SxbVpnPackage absent — injection manuelle..."
+
+            # Ajouter import après la ligne package
+            sed -i '/^package /a import com.sxbvpn.vpnmodule.SxbVpnPackage' "$MAIN_APP"
+
+            # Pattern Expo SDK 50+ / RN 0.73+ : .packages.apply {
+            if grep -q "PackageList(this).packages.apply" "$MAIN_APP"; then
+              sed -i 's/PackageList(this).packages.apply {/PackageList(this).packages.apply {\n        add(SxbVpnPackage())/' "$MAIN_APP"
+              echo "[inject] Pattern .packages.apply {} patché (RN 0.73+)"
+
+            # Pattern RN 0.71-0.72 : val packages = PackageList(this).packages
+            elif grep -q "val packages = PackageList(this).packages" "$MAIN_APP"; then
+              sed -i 's/val packages = PackageList(this).packages/val packages = PackageList(this).packages\n      packages.add(SxbVpnPackage())/' "$MAIN_APP"
+              echo "[inject] Pattern val packages patché (RN 0.71-0.72)"
+
+            # Fallback : avant le premier "return packages"
+            elif grep -q "return packages" "$MAIN_APP"; then
+              sed -i 's/return packages/add(SxbVpnPackage())\n      return packages/' "$MAIN_APP"
+              echo "[inject] Pattern return packages patché (fallback)"
+
+            else
+              echo "::error::Aucun pattern connu dans MainApplication.kt — injection impossible"
+              cat "$MAIN_APP"
+              exit 1
+            fi
+
+            # Vérification finale
+            if grep -q "SxbVpnPackage" "$MAIN_APP"; then
+              echo "✅ Injection réussie"
+            else
+              echo "::error::Injection échouée — SxbVpnPackage toujours absent"
+              cat "$MAIN_APP"
+              exit 1
+            fi
+          fi
+
+          # Vérifier aussi que les fichiers Kotlin sont copiés
+          KOTLIN_DIR="android/app/src/main/java/com/sxbvpn/vpnmodule"
+          if [ -d "$KOTLIN_DIR" ] && ls "$KOTLIN_DIR"/*.kt 2>/dev/null | grep -q SxbVpnModule; then
+            echo "✅ Fichiers Kotlin natifs présents dans $KOTLIN_DIR"
+          else
+            echo "⚠️  Kotlin natifs absents — copie manuelle..."
+            mkdir -p "$KOTLIN_DIR"
+            cp modules/android-native/*.kt "$KOTLIN_DIR/" && echo "✅ Copiés"
+          fi
+
       # ── P3 — ProGuard : règles R8 pour JSch + sing-box + modules SXB ──────────
       - name: Créer proguard-rules.pro (JSch + sing-box + natif SXB)
         run: |
