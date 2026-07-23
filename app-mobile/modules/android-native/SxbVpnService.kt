@@ -512,7 +512,8 @@ class SxbVpnService : VpnService() {
 
             val process = pb.start()
             singBoxProcess = process
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_PROCESS_LAUNCHED pid=${process.pid()}")
+            val pidStr = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) process.pid().toString() else process.hashCode().toString()
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_PROCESS_LAUNCHED pid=$pidStr")
 
             // Thread logs sing-box (masquage données sensibles)
             Thread({
