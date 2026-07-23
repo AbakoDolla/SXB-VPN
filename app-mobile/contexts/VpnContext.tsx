@@ -62,6 +62,15 @@ interface VpnContextType {
   trafficStats:       TrafficStats;
   vpnLogs:            string[];
   hasVpnPermission:   boolean;
+  hasValidConfig:     boolean;       // true si une config (backend OU locale hors-ligne) est disponible
+  // Alias pratiques (mêmes valeurs que trafficStats/vpnLogs, noms attendus par settings.tsx)
+  logs:                string[];
+  traffic:             TrafficStats;
+  killSwitch:          boolean;
+  autoReconnect:       boolean;
+  setKillSwitch:       (v: boolean) => void;
+  setAutoReconnect:    (v: boolean) => void;
+  manuallySetConfig:   (config: any) => Promise<void>;
   connect:            () => Promise<void>;
   disconnect:         () => Promise<void>;
   selectProtocol:     (name: string) => void;
@@ -75,7 +84,11 @@ const VpnContext = createContext<VpnContextType>({
   isConnected: false, isConnecting: false, vpnState: 'disconnected',
   selectedProtocol: null, availableProtocols: [], subscriptionUrl: null,
   serverInfo: null, trafficStats: DEFAULT_STATS, vpnLogs: [],
-  hasVpnPermission: false,
+  hasVpnPermission: false, hasValidConfig: false,
+  logs: [], traffic: DEFAULT_STATS,
+  killSwitch: false, autoReconnect: true,
+  setKillSwitch: () => {}, setAutoReconnect: () => {},
+  manuallySetConfig: async () => {},
   connect: async () => {}, disconnect: async () => {},
   selectProtocol: () => {}, refreshVpnConfig: async () => {},
   requestPermission: async () => false,
