@@ -125,11 +125,32 @@ function withMainAppPackage(config) {
         /^(package .+\n)/m,
         `$1${importLine}\n`
       );
-      // Registration dans getPackages()
-      src = src.replace(
-        /(override fun getPackages.*?\{[\s\S]*?)(packages\.add\(MainReactPackage\(\)\))/m,
-        `$1$2\n      ${packageCall}`
-      );
+
+      // Pattern moderne RN 0.71+ : PackageList(this).packages
+      // ex: val packages = PackageList(this).packages
+      //     return packages
+      if (src.includes('PackageList(this).packages')) {
+        src = src.replace(
+          /(val packages = PackageList\(this\)\.packages\s*\n)/,
+          `$1      ${packageCall}\n`
+        );
+        console.log('[SXB VPN plugin] SxbVpnPackage injecté après PackageList (RN 0.71+)');
+      } else if (src.includes('MainReactPackage()')) {
+        // Pattern ancien : packages.add(MainReactPackage())
+        src = src.replace(
+          /(packages\.add\(MainReactPackage\(\)\))/m,
+          `$1\n      ${packageCall}`
+        );
+        console.log('[SXB VPN plugin] SxbVpnPackage injecté après MainReactPackage (RN legacy)');
+      } else {
+        // Fallback : injecter avant le premier "return packages"
+        src = src.replace(
+          /(\breturn packages\b)/m,
+          `${packageCall}\n      $1`
+        );
+        console.log('[SXB VPN plugin] SxbVpnPackage injecté via fallback return-packages');
+      }
+
       fs.writeFileSync(mainAppPath, src);
       console.log('[SXB VPN plugin] SxbVpnPackage enregistré dans MainApplication.kt');
     }
