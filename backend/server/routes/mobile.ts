@@ -314,6 +314,7 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
       connectionUri,
       profile: profile ? { id: profile.id, name: profile.name, protocol: proto, host: profile.host, port: profile.port, network: profile.network, tls: profile.tls, sni: profile.sni, uuid: profile.uuid, path: profile.path, username: profile.username, password: profile.password || null, method: profile.method || null } : null,
       subscription: sub ? { id: sub.id, name: sub.name, dataToken: sub.dataToken, expireAt: sub.expireAt?.toISOString(), status: sub.status } : null,
+      vpnConfig: profile ? { id: profile.id, name: profile.name, protocol: proto, host: profile.host, port: profile.port, network: profile.network, tls: profile.tls, sni: profile.sni, uuid: profile.uuid, path: profile.path, username: profile.username, password: profile.password || null, method: profile.method || null } : null,
     });
   } catch (err) {
     console.error("Mobile vpn/config error:", err);
@@ -333,6 +334,28 @@ router.post("/vpn/session", async (req: AuthenticatedRequest, res: Response) => 
   }
 });
 
+
+
+// POST /api/mobile/vpn/traffic — trafic temps réel envoyé depuis l'appareil
+const trafficSchema = z.object({
+  upload:    z.number().int().min(0),
+  download:  z.number().int().min(0),
+  sessionId: z.string().optional(),
+});
+router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { upload, download, sessionId } = trafficSchema.parse(req.body);
+    await logDbActivity(
+      req.user!.userId,
+      `Mobile VPN traffic — ↑${upload}B ↓${download}B${sessionId ? " sid:" + sessionId : ""}`,
+      "success",
+      req.ip
+    );
+    return res.json({ message: "ok", upload, download });
+  } catch (err) {
+    return res.status(400).json({ error: "errors.validation", message: "Données trafic invalides" });
+  }
+});
 
 // GET /api/mobile/notifications — notifications basées sur l'état du compte
 router.get('/notifications', async (req: AuthenticatedRequest, res: Response) => {
