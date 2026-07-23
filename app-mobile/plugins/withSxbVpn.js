@@ -117,6 +117,9 @@ function withMainAppPackage(config) {
 
     let src = fs.readFileSync(mainAppPath, 'utf8');
     const importLine  = 'import com.sxbvpn.vpnmodule.SxbVpnPackage';
+    // Dans un bloc .apply { }, le receiver EST la liste → add(...) sans préfixe
+    const addCall     = 'add(SxbVpnPackage())';
+    // Hors apply {}, la variable s'appelle packages
     const packageCall = 'packages.add(SxbVpnPackage())';
 
     if (!src.includes('SxbVpnPackage')) {
@@ -133,7 +136,7 @@ function withMainAppPackage(config) {
       if (src.includes('PackageList(this).packages.apply')) {
         src = src.replace(
           /(PackageList\(this\)\.packages\.apply\s*\{[^\n]*\n)/,
-          `$1        ${packageCall}\n`
+          `$1        ${addCall}\n`
         );
         console.log('[SXB VPN plugin] SxbVpnPackage injecté dans .packages.apply {} (Expo SDK 50+ / RN 0.73+)');
 
