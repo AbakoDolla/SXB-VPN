@@ -70,18 +70,28 @@ jobs:
             echo "[patch] Déjà appliqué ou expo-modules-core absent (normal si cache node)"
           fi
 
-      # ── Cache android/ prebuild output ────────────────────────────────────────
-      - name: Cache android/ prebuild output
+      # ── Cache Gradle build artifacts uniquement (pas android/app/build.gradle) ──
+      # IMPORTANT : on ne cache PAS le dossier android/ complet car build.gradle
+      # est modifié par les steps suivants (signing, packaging). Mettre ce fichier
+      # dans le cache provoquerait des corruptions aux runs suivants (double injection).
+      # On cache seulement les artefacts Gradle compilés pour accélérer le build.
+      - name: Cache Gradle build artifacts
         id: cache-android
         uses: actions/cache@v4
         with:
-          path: app-mobile/android
-          key: android-prebuild-v4-${{ runner.os }}-${{ hashFiles('app-mobile/package.json', 'app-mobile/app.json', 'app-mobile/plugins/**', 'app-mobile/modules/android-native/**/*.kt') }}
+          path: |
+            app-mobile/android/.gradle
+            app-mobile/android/app/build
+          key: android-gradle-v5-${{ runner.os }}-${{ hashFiles('app-mobile/package.json', 'app-mobile/app.json', 'app-mobile/plugins/**', 'app-mobile/modules/android-native/**/*.kt') }}
+          restore-keys: |
+            android-gradle-v5-${{ runner.os }}-
 
-      # ── Expo prebuild ─────────────────────────────────────────────────────────
+      # ── Expo prebuild — TOUJOURS (régénère build.gradle propre à chaque run) ──
+      # Sans --clean : préserve les artefacts Gradle dans android/app/build/
+      # Sans la condition cache-hit : garantit un build.gradle vierge avant les
+      # étapes de modification (signing, packaging, ABI) → pas de double-injection.
       - name: Expo prebuild (Android)
-        if: steps.cache-android.outputs.cache-hit != 'true'
-        run: npx expo prebuild --platform android --clean --no-install
+        run: npx expo prebuild --platform android --no-install
         env:
           EXPO_NO_TELEMETRY: "1"
           EXPO_PUBLIC_API_URL: https://vpnsxb.afrihall.com/api
@@ -183,18 +193,26 @@ jobs:
       # Forcer new arch ON causait des erreurs de compilation Kotlin.
       - name: Configure Gradle (performance + compatibilité RN)
         run: |
-          printf '%s\n' \
-            'org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=512m -XX:+UseParallelGC' \
-            'org.gradle.daemon=false' \
-            'org.gradle.parallel=true' \
-            'org.gradle.caching=true' \
-            'android.enableJetifier=true' \
-            'android.enableR8.fullMode=false' \
-            'kotlin.incremental=true' \
-            'newArchEnabled=false' \
-            'reactNativeArchitectures=arm64-v8a' \
-            >> android/gradle.properties
-          echo "[Gradle] Propriétés ajoutées (newArchEnabled=false — old arch, compatible SxbVpnModule)"
+          GPROPS="android/gradle.properties"
+          # Idempotent : ajouter une propriété seulement si sa clé n'est pas déjà présente
+          add_prop() {
+            local KEY="${1%%=*}"
+            local VAL="$1"
+            if ! grep -q "^${KEY}=" "$GPROPS" 2>/dev/null; then
+              echo "$VAL" >> "$GPROPS"
+              echo "[gradle.properties] + $KEY"
+            fi
+          }
+          add_prop 'org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=512m -XX:+UseParallelGC'
+          add_prop 'org.gradle.daemon=false'
+          add_prop 'org.gradle.parallel=true'
+          add_prop 'org.gradle.caching=true'
+          add_prop 'android.enableJetifier=true'
+          add_prop 'android.enableR8.fullMode=false'
+          add_prop 'kotlin.incremental=true'
+          add_prop 'newArchEnabled=false'
+          add_prop 'reactNativeArchitectures=arm64-v8a'
+          echo "[Gradle] gradle.properties configuré (newArchEnabled=false — old arch)"
 
       # FIX #5 : Packaging META-INF — bash+sed pur (pas de Python, pas de heredoc)
       # Le plugin withJschDependency injecte packaging{} durant le prebuild.
