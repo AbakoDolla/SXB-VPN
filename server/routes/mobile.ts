@@ -366,6 +366,28 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
         payload:    payloadContent,                  // ← NOUVEAU : contenu du payload HTTP
         payloadId:  profile.payloadId || null,
       } : null,
+      // vpnConfig : objet complet consommé par le module natif Android
+      vpnConfig: profile ? {
+        configId:  profile.id,
+        protocol:  proto,
+        host:      profile.host,
+        port:      profile.port,
+        username:  profile.username   || '',
+        password:  decryptedPassword  || '',
+        sni:       profile.sni        || '',
+        network:   profile.network    || 'tcp',
+        tls:       profile.tls        ?? false,
+        uuid:      profile.uuid       || null,
+        path:      profile.path       || null,
+        method:    profile.method     || null,
+        payload:   payloadContent     || null,
+      } : null,
+      // quota : bytes — consommé par offlineStorage.ts en mode hors-ligne
+      quota: {
+        totalQuota:  client.quotaTotal ? Number(client.quotaTotal) : 0,
+        usedQuota:   Number(client.quotaUsed ?? 0),
+        expiryDate:  client.expireAt ? new Date(client.expireAt).toISOString() : null,
+      },
       subscription: sub ? {
         id:        sub.id,
         name:      sub.name,

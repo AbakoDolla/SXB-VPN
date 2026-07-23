@@ -281,6 +281,26 @@ router.get("/vpn/config", requireAuth, async (req: AuthenticatedRequest, res) =>
         path: profile.path,
         username: profile.username,
       },
+      // vpnConfig : objet complet consommé par le module natif Android
+      vpnConfig: {
+        configId:  profile.id,
+        protocol:  proto,
+        host:      profile.host,
+        port:      profile.port,
+        username:  profile.username,
+        password:  profile.password || '',
+        sni:       profile.sni      || '',
+        network:   profile.network  || 'tcp',
+        tls:       profile.tls      ?? false,
+        uuid:      profile.uuid     || null,
+        path:      profile.path     || null,
+      },
+      // quota : bytes — consommé par offlineStorage.ts en mode hors-ligne
+      quota: {
+        totalQuota:  client.quotaTotal ? Number(client.quotaTotal) : 0,
+        usedQuota:   Number(client.quotaUsed),
+        expiryDate:  client.expireAt?.toISOString() ?? null,
+      },
       subscription: client ? {
         expireAt: client.expireAt?.toISOString() || null,
         status: client.status,
