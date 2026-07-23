@@ -125,7 +125,12 @@ jobs:
           done
 
       # FIX #3 : Keystore + signing config
-      # FIX CRITIQUE : regex Python corrigée avec re.DOTALL pour matcher buildTypes multi-lignes
+      # FIX CRITIQUE v2 : utiliser Node.js (déjà installé) au lieu de Python.
+      # Vérifier SPÉCIFIQUEMENT "keystore/release.keystore" — pas juste "signingConfigs"
+      # car Expo prebuild génère déjà signingConfigs { debug { ... } } sans release.
+      # L'ancienne condition `if "signingConfigs" not in c` était donc toujours fausse,
+      # le bloc release n'était jamais injecté, mais la référence signingConfigs.release
+      # était quand même ajoutée → BUILD FAILED "unknown property release".
       - name: Générer le keystore de release et configurer la signature
         run: |
           mkdir -p android/app/keystore
@@ -148,21 +153,29 @@ jobs:
 
           BUILD_GRADLE="android/app/build.gradle"
           printf '%s\n' \
-            'import re, sys' \
-            'path = sys.argv[1]' \
-            'c = open(path).read()' \
-            'if "signingConfigs" not in c:' \
-            '    b = "\n    signingConfigs {\n        release {\n            storeFile file(\"keystore/release.keystore\")\n            storePassword \"sxbvpn_ci_2026\"\n            keyAlias \"sxbvpn\"\n            keyPassword \"sxbvpn_ci_2026\"\n        }\n    }"' \
-            '    c = re.sub(r"android \{", "android {" + b, c, count=1)' \
-            '    print("[signing] signingConfigs injecte dans android {}")' \
-            'if "signingConfig signingConfigs.release" not in c:' \
-            '    # FIX : re.DOTALL pour matcher buildTypes sur plusieurs lignes' \
-            '    c = re.sub(r"(buildTypes\s*\{.*?release\s*\{)", lambda m: m.group(0) + "\n            signingConfig signingConfigs.release", c, count=1, flags=re.DOTALL)' \
-            '    print("[signing] signingConfig ref ajoutee")' \
-            'open(path, "w").write(c)' \
-            > /tmp/signing_inject.py
-          python3 /tmp/signing_inject.py "$BUILD_GRADLE"
-          echo "✅ Signature configurée dans build.gradle"
+            'const fs = require("fs");' \
+            'const p = process.argv[2];' \
+            'let c = fs.readFileSync(p, "utf8");' \
+            '// Bonne condition : chercher le KEYSTORE release spécifiquement' \
+            '// (Expo prebuild génère déjà signingConfigs{debug{...}} — sans release)' \
+            'if (!c.includes("keystore/release.keystore")) {' \
+            '  if (c.includes("signingConfigs {")) {' \
+            '    c = c.replace("signingConfigs {",' \
+            '      "signingConfigs {\n        release {\n            storeFile file(\"keystore/release.keystore\")\n            storePassword \"sxbvpn_ci_2026\"\n            keyAlias \"sxbvpn\"\n            keyPassword \"sxbvpn_ci_2026\"\n        }");' \
+            '    console.log("[signing] bloc release injecté dans signingConfigs existant");' \
+            '  } else {' \
+            '    c = c.replace("android {", "android {\n    signingConfigs {\n        release {\n            storeFile file(\"keystore/release.keystore\")\n            storePassword \"sxbvpn_ci_2026\"\n            keyAlias \"sxbvpn\"\n            keyPassword \"sxbvpn_ci_2026\"\n        }\n    }");' \
+            '    console.log("[signing] nouveau bloc signingConfigs.release injecté");' \
+            '  }' \
+            '}' \
+            'if (!c.includes("signingConfig signingConfigs.release")) {' \
+            '  c = c.replace(/(buildTypes[\s\S]*?release\s*\{)/, "$1\n            signingConfig signingConfigs.release");' \
+            '  console.log("[signing] signingConfig reference ajoutée dans buildTypes.release");' \
+            '}' \
+            'fs.writeFileSync(p, c);' \
+            'console.log("✅ Signature configurée dans build.gradle");' \
+            > /tmp/signing_inject.js
+          node /tmp/signing_inject.js "$BUILD_GRADLE"
 
       # FIX #4 : Gradle properties — newArchEnabled=false (cohérent avec app.json)
       # CORRECTION CRITIQUE : newArchEnabled=true forçait la nouvelle architecture alors
