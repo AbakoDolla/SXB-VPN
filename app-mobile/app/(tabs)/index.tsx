@@ -43,7 +43,7 @@ function VpnLogsModal({
 }: {
   visible: boolean; onClose: () => void;
 }) {
-  const { logs, isConnected, isConnecting, selectedProtocol } = useVpnContext();
+  const { vpnLogs: logs, isConnected, isConnecting, selectedProtocol } = useVpnContext();
   const scrollRef = useRef<ScrollView>(null);
 
   // Auto-scroll when new logs arrive
@@ -98,7 +98,7 @@ function VpnLogsModal({
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const { user, accountState, refreshAccountState, deviceId } = useAuthContext();
-  const { isConnected, isConnecting, selectedProtocol, subscriptionUrl, connect, disconnect, traffic, refreshVpnConfig } = useVpnContext();
+  const { isConnected, isConnecting, selectedProtocol, subscriptionUrl, connect, disconnect, trafficStats: traffic, refreshVpnConfig } = useVpnContext();
 
   const [logsVisible, setLogsVisible] = useState(false);
   const [timer, setTimer] = useState(0);
