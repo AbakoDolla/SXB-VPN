@@ -43,7 +43,7 @@ function VpnLogsModal({
 }: {
   visible: boolean; onClose: () => void;
 }) {
-  const { logs, isConnected, isConnecting, selectedProtocol } = useVpnContext();
+  const { vpnLogs: logs, isConnected, isConnecting, selectedProtocol } = useVpnContext();
   const scrollRef = useRef<ScrollView>(null);
 
   // Auto-scroll when new logs arrive
