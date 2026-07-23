@@ -19,6 +19,7 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient from '@/services/apiClient';
+import { saveVpnConfig, loadVpnConfig, isQuotaExhausted, isConfigExpired, consumeLocalQuota, syncQuotaFromBackend } from '@/services/offlineStorage';
 import { useAuthContext } from './AuthContext';
 
 // ── Native bridge ─────────────────────────────────────────────────────────────
@@ -155,6 +156,14 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         } catch { /* ignore */ }
       }
 
+      // Restaurer vpnConfig depuis stockage local (mode hors-ligne)
+      try {
+        const offlineEntry = await loadVpnConfig();
+        if (offlineEntry?.config) {
+          setVpnConfig(offlineEntry.config);
+        }
+      } catch { /* ignore */ }
+
       // Fallback : utiliser la valeur persistée
       const wasConnected = connected === 'true' && !!isAuthenticated;
       setIsConnected(wasConnected);
@@ -262,7 +271,14 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       const data = res.data;
       if (data.subscriptionUrl) setSubscriptionUrl(data.subscriptionUrl);
       if (data.serverInfo)      setServerInfo(data.serverInfo);
-      if (data.vpnConfig)       setVpnConfig(data.vpnConfig);
+      if (data.vpnConfig) {
+        setVpnConfig(data.vpnConfig);
+        // Persister localement pour mode hors-ligne
+        try {
+          const proto = (data.vpnConfig.protocol || 'vless').toLowerCase();
+          await saveVpnConfig(data.vpnConfig, proto, data.vpnConfig.configId);
+        } catch { /* ignore */ }
+      }
 
       if (Array.isArray(data.protocols) && data.protocols.length > 0) {
         setAvailableProtocols(data.protocols);
@@ -311,14 +327,52 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           try {
             const res = await apiClient.get('/mobile/vpn/config');
             configToUse = res.data?.vpnConfig;
-            if (res.data?.vpnConfig) setVpnConfig(res.data.vpnConfig);
+            if (res.data?.vpnConfig) {
+              setVpnConfig(res.data.vpnConfig);
+              // Persister + synchroniser quota depuis backend
+              try {
+                const proto = (res.data.vpnConfig.protocol || 'vless').toLowerCase();
+                await saveVpnConfig(res.data.vpnConfig, proto, res.data.vpnConfig.configId);
+                await syncQuotaFromBackend(async () => ({
+                  configId:   res.data.vpnConfig.configId ?? 'default',
+                  totalQuota: res.data.quota?.totalQuota  ?? 0,
+                  usedQuota:  res.data.quota?.usedQuota   ?? 0,
+                  expiryDate: res.data.quota?.expiryDate  ?? null,
+                }));
+              } catch { /* quota non critique */ }
+            }
           } catch {
-            addLog('⚠️ Config en cache — mode hors ligne');
+            addLog('⚠️ Backend inaccessible — chargement config hors-ligne...');
           }
+        }
+
+        // Fallback 2 : charger depuis offlineStorage (mode avion)
+        if (!configToUse) {
+          try {
+            const offlineEntry = await loadVpnConfig();
+            if (offlineEntry?.config) {
+              configToUse = offlineEntry.config;
+              addLog('✅ Config restaurée depuis stockage local');
+            }
+          } catch { /* ignore */ }
         }
 
         if (!configToUse) {
           addLog('❌ Aucune configuration VPN disponible — importez un profil');
+          setIsConnecting(false);
+          return;
+        }
+
+        // Vérifier quota local avant connexion
+        const exhausted = await isQuotaExhausted();
+        if (exhausted) {
+          addLog('❌ Quota data épuisé — rechargez votre abonnement');
+          setIsConnecting(false);
+          return;
+        }
+        const expired = await isConfigExpired();
+        if (expired) {
+          addLog('❌ Abonnement expiré — renouvelez votre abonnement');
           setIsConnecting(false);
           return;
         }
