@@ -316,7 +316,7 @@ class SxbVpnService : VpnService() {
             // P5 — Vérification fingerprint post-connexion (hors StrictHostKeyChecking)
             if (fingerprint.isNotEmpty()) {
                 val hostKey  = session.hostKey
-                val actualFp = hostKey?.fingerPrint(jsch) ?: ""
+                val actualFp = hostKey?.getFingerPrint(jsch) ?: ""
                 val fpNorm   = { s: String -> s.replace(":", "").lowercase() }
                 if (fpNorm(actualFp) != fpNorm(fingerprint)) {
                     session.disconnect()
