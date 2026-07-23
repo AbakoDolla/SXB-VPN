@@ -196,29 +196,12 @@ jobs:
           echo "KEY_PW=$KEY_PW"         >> $GITHUB_ENV
 
           BUILD_GRADLE="android/app/build.gradle"
-          printf '%s\n' \
-            'const fs = require("fs");' \
-            'const p = process.argv[2];' \
-            'let c = fs.readFileSync(p, "utf8");' \
-            '// Bonne condition : chercher le KEYSTORE release spécifiquement' \
-            '// (Expo prebuild génère déjà signingConfigs{debug{...}} — sans release)' \
-            'if (!c.includes("keystore/release.keystore")) {' \
-            '  if (c.includes("signingConfigs {")) {' \
-            '    c = c.replace("signingConfigs {",' \
-            '      "signingConfigs {\n        release {\n            storeFile file(\"keystore/release.keystore\")\n            storePassword \"' + process.env.STORE_PASS + '\"\n            keyAlias \"' + process.env.KEY_AL + '\"\n            keyPassword \"' + process.env.KEY_PW + '\"\n        }");' \
-            '    console.log("[signing] bloc release injecté dans signingConfigs existant");' \
-            '  } else {' \
-            '    c = c.replace("android {", "android {\n    signingConfigs {\n        release {\n            storeFile file(\"keystore/release.keystore\")\n            storePassword \"' + process.env.STORE_PASS + '\"\n            keyAlias \"' + process.env.KEY_AL + '\"\n            keyPassword \"' + process.env.KEY_PW + '\"\n        }\n    }");' \
-            '    console.log("[signing] nouveau bloc signingConfigs.release injecté");' \
-            '  }' \
-            '}' \
-            'if (!c.includes("signingConfig signingConfigs.release")) {' \
-            '  c = c.replace(/(buildTypes[\s\S]*?release\s*\{)/, "$1\n            signingConfig signingConfigs.release");' \
-            '  console.log("[signing] signingConfig reference ajoutée dans buildTypes.release");' \
-            '}' \
-            'fs.writeFileSync(p, c);' \
-            'console.log("✅ Signature configurée dans build.gradle");' \
-            > /tmp/signing_inject.js
+
+          # Export shell→process enfant (node lira via process.env)
+          export STORE_PASS KEY_AL KEY_PW
+
+          # Script JS encodé base64 — évite col-0 / heredoc incompatible avec YAML
+          echo "Y29uc3QgZnMgPSByZXF1aXJlKCJmcyIpOwpjb25zdCBwID0gcHJvY2Vzcy5hcmd2WzJdOwpjb25zdCBzdG9yZVBhc3MgPSBwcm9jZXNzLmVudi5TVE9SRV9QQVNTIHx8ICIiOwpjb25zdCBrZXlBbCAgICA9IHByb2Nlc3MuZW52LktFWV9BTCAgICB8fCAiIjsKY29uc3Qga2V5UHcgICAgPSBwcm9jZXNzLmVudi5LRVlfUFcgICAgfHwgIiI7CmxldCBjID0gZnMucmVhZEZpbGVTeW5jKHAsICJ1dGY4Iik7CmlmICghYy5pbmNsdWRlcygia2V5c3RvcmUvcmVsZWFzZS5rZXlzdG9yZSIpKSB7CiAgY29uc3QgYmxvY2sgPSAicmVsZWFzZSB7XG4iICsKICAgICIgICAgICAgICAgICBzdG9yZUZpbGUgZmlsZShcImtleXN0b3JlL3JlbGVhc2Uua2V5c3RvcmVcIilcbiIgKwogICAgIiAgICAgICAgICAgIHN0b3JlUGFzc3dvcmQgXCIiICsgc3RvcmVQYXNzICsgIlwiXG4iICsKICAgICIgICAgICAgICAgICBrZXlBbGlhcyBcIiIgKyBrZXlBbCArICJcIlxuIiArCiAgICAiICAgICAgICAgICAga2V5UGFzc3dvcmQgXCIiICsga2V5UHcgKyAiXCJcbiIgKwogICAgIiAgICAgICAgfSI7CiAgaWYgKGMuaW5jbHVkZXMoInNpZ25pbmdDb25maWdzIHsiKSkgewogICAgYyA9IGMucmVwbGFjZSgic2lnbmluZ0NvbmZpZ3MgeyIsICJzaWduaW5nQ29uZmlncyB7XG4gICAgICAgICIgKyBibG9jayk7CiAgICBjb25zb2xlLmxvZygiW3NpZ25pbmddIHJlbGVhc2UgaW5qZWN0ZSBkYW5zIHNpZ25pbmdDb25maWdzIGV4aXN0YW50Iik7CiAgfSBlbHNlIHsKICAgIGMgPSBjLnJlcGxhY2UoImFuZHJvaWQgeyIsICJhbmRyb2lkIHtcbiAgICBzaWduaW5nQ29uZmlncyB7XG4gICAgICAgICIgKyBibG9jayArICJcbiAgICB9Iik7CiAgICBjb25zb2xlLmxvZygiW3NpZ25pbmddIG5vdXZlYXUgYmxvYyBzaWduaW5nQ29uZmlncy5yZWxlYXNlIGNyZWUiKTsKICB9Cn0KaWYgKCFjLmluY2x1ZGVzKCJzaWduaW5nQ29uZmlnIHNpZ25pbmdDb25maWdzLnJlbGVhc2UiKSkgewogIGMgPSBjLnJlcGxhY2UoLyhidWlsZFR5cGVzW1xzXFNdKj9yZWxlYXNlXHMqXHspLywgIiQxXG4gICAgICAgICAgICBzaWduaW5nQ29uZmlnIHNpZ25pbmdDb25maWdzLnJlbGVhc2UiKTsKICBjb25zb2xlLmxvZygiW3NpZ25pbmddIHNpZ25pbmdDb25maWcgcmVmZXJlbmNlIGFqb3V0ZWUgZGFucyBidWlsZFR5cGVzLnJlbGVhc2UiKTsKfQpmcy53cml0ZUZpbGVTeW5jKHAsIGMpOwpjb25zb2xlLmxvZygiT0sgU2lnbmF0dXJlIGNvbmZpZ3VyZWUgZGFucyBidWlsZC5ncmFkbGUiKTsK" | base64 -d > /tmp/signing_inject.js
           node /tmp/signing_inject.js "$BUILD_GRADLE"
 
       # FIX #4 : Gradle properties — newArchEnabled=false (cohérent avec app.json)

@@ -206,7 +206,7 @@ class SxbVpnService : VpnService() {
                 val confFile  = File(filesDir, "sb_config.json")
                 if (credsFile.exists()) {
                     try {
-                        json = KeystoreManager(this).decrypt(credsFile.readText(Charsets.UTF_8))
+                        json = KeystoreManager.decrypt(credsFile.readText(Charsets.UTF_8))
                         Log.i(TAG, "[P1] Config VPN déchiffrée depuis sxb_creds.enc")
                     } catch (e: Exception) {
                         Log.w(TAG, "[P1] Déchiffrement échoué — fallback plaintext: ${e.message}")
@@ -1055,8 +1055,7 @@ class SxbVpnService : VpnService() {
     /** P1 — Chiffre configJson (credentials VPN) avec AES-256-GCM Android Keystore */
     private fun persistEncryptedConfig(originalConfigJson: String) {
         try {
-            val km = KeystoreManager(this)
-            File(filesDir, "sxb_creds.enc").writeText(km.encrypt(originalConfigJson), Charsets.UTF_8)
+            File(filesDir, "sxb_creds.enc").writeText(KeystoreManager.encrypt(originalConfigJson), Charsets.UTF_8)
             Log.i(TAG, "[P1] Config VPN chiffrée et persistée (AES-256-GCM) ✅")
         } catch (e: Exception) {
             Log.w(TAG, "[P1] Chiffrement config échoué (Keystore non disponible?): ${e.message}")
