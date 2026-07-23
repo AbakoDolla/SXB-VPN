@@ -186,7 +186,14 @@ class SxbVpnService : VpnService() {
 
         if (intent?.action == ACTION_STOP) { cleanup(); return START_NOT_STICKY }
 
-        // Vérifications de sécurité
+        // *** CRITICAL FIX: startForeground() MUST be called within 5 seconds of
+        // startForegroundService(). Move it here — BEFORE SecurityModule.audit() and
+        // any I/O — to satisfy the Android FGS contract on API 26+.
+        // If we don't, Android kills the service with ForegroundServiceDidNotStartInTimeException.
+        startForeground(NOTIF_ID, buildNotification("SXB VPN — Connexion en cours..."))
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_4B_FOREGROUND_STARTED")
+
+        // Vérifications de sécurité — OK to run after startForeground()
         val secReport = SecurityModule.audit(this)
         if (secReport.hasFrida || secReport.hasXposed) {
             Log.e("SXB_DEBUG", "[SXB_DEBUG] SECURITY_BLOCK hasFrida=${secReport.hasFrida} hasXposed=${secReport.hasXposed}")
@@ -233,6 +240,7 @@ class SxbVpnService : VpnService() {
             Log.e("SXB_DEBUG", "[SXB_DEBUG] CONFIG_MISSING json_empty=${json.isEmpty()} proto_empty=${proto.isEmpty()} — arrêt")
             broadcastLog("[SXB] ❌ Configuration manquante — importez un profil VPN")
             broadcastStatus("error")
+            stopSelf()
             return START_NOT_STICKY
         }
 
@@ -244,7 +252,6 @@ class SxbVpnService : VpnService() {
         configJson  = json
 
         running.set(true)
-        startForeground(NOTIF_ID, buildNotification("SXB VPN — Connexion en cours..."))
         trafficManager.start()
 
         vpnThread = Thread({ dispatchProtocol(json, proto) }, "SXB-VpnMain")
