@@ -1,0 +1,6 @@
+{
+  "name": "SXB VPN Dashboard",
+  "description": "Professional administrative dashboard for SXB VPN (XPanel, Sing-box, SSH, and RBAC security management).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

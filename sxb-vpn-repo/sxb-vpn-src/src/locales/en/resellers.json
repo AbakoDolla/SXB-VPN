@@ -1,0 +1,15 @@
+{
+  "title": "Resellers Network",
+  "subtitle": "Manage your reseller partners, allocate token credits, and trace sales activity.",
+  "add_reseller": "Create Reseller",
+  "fields": {
+    "name": "Reseller Name",
+    "email": "Email Address",
+    "balance": "Credit Balance (GB)",
+    "clients_count": "Associated Clients",
+    "status": "Partnership Status",
+    "created_at": "Member Since"
+  },
+  "empty_state": "No active resellers",
+  "empty_state_desc": "Invite your first reseller partners to join the SXB VPN network."
+}

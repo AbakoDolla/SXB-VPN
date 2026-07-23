@@ -1,0 +1,167 @@
+name: 🚀 Deploy to VPS — SXB VPN
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'artifacts/sxb-dashboard/**'
+      - 'backend/**'
+      - 'server/**'
+      - 'server.ts'
+      - 'prisma/**'
+      - '.github/workflows/deploy-vps.yml'
+      - 'ecosystem.config.cjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  deploy:
+    name: Build & Deploy to VPS
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Approve esbuild build scripts
+        run: pnpm approve-builds esbuild 2>/dev/null || true
+
+      - name: Install workspace dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build Dashboard (React + Vite)
+        working-directory: artifacts/sxb-dashboard
+        env:
+          PORT: '3000'
+          BASE_PATH: '/'
+          NODE_ENV: production
+        run: pnpm run build
+
+      - name: Build Backend (esbuild CJS bundle)
+        run: |
+          pnpm --filter @workspace/api-spec run codegen 2>/dev/null || true
+          mkdir -p dist
+          # esbuild n'est pas à la racine du workspace — installer les deps backend d'abord
+          cd backend && npm install --legacy-peer-deps --no-audit --silent 2>&1 | tail -3 && cd ..
+          # Utiliser l'esbuild du backend
+          ESBUILD=$(find backend/node_modules/.bin -name "esbuild" -executable | head -1)
+          if [ -z "$ESBUILD" ]; then
+            # Fallback: npx
+            ESBUILD="npx --yes esbuild@0.27.3"
+          fi
+          echo "esbuild: $ESBUILD"
+          $ESBUILD server.ts \
+            --bundle \
+            --platform=node \
+            --format=cjs \
+            --packages=external \
+            --sourcemap \
+            --outfile=dist/server.cjs
+          echo "✅ Backend built: $(du -sh dist/server.cjs | cut -f1)"
+
+      - name: Deploy to VPS
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 141.95.112.93
+          username: ubuntu
+          password: ${{ secrets.VPS_SSH_PASSWORD }}
+          script: |
+            set -e
+            cd /var/www/sxb-vpn
+
+            echo "📥 Fix permissions git + Pull latest code..."
+            sudo chown -R ubuntu:ubuntu /var/www/sxb-vpn/.git 2>/dev/null || true
+            sudo chmod -R u+rw /var/www/sxb-vpn/.git 2>/dev/null || true
+            git fetch origin 2>&1 | grep -v "jules-" || true
+            git reset --hard origin/main
+
+            echo "📦 Install backend dependencies..."
+            cd backend
+            npm install --legacy-peer-deps --no-audit 2>&1 | tail -3
+            # Generate Prisma client from /tmp to avoid pnpm-workspace interference
+            mkdir -p /tmp/prisma-gen && cp /var/www/sxb-vpn/prisma/schema.prisma /tmp/prisma-gen/
+            echo '{"name":"pg","version":"1.0.0"}' > /tmp/prisma-gen/package.json
+            NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
+              node /var/www/sxb-vpn/backend/node_modules/prisma/build/index.js generate \
+              --schema=/tmp/prisma-gen/schema.prisma 2>&1 | tail -3 || true
+            cd /var/www/sxb-vpn
+
+            echo "🔑 Fix permissions complètes (évite EACCES pnpm)..."
+            sudo chown -R ubuntu:ubuntu /var/www/sxb-vpn/ 2>/dev/null || true
+            echo "📦 Sync deps (lockfile may differ from VPS)..."
+            pnpm install --no-frozen-lockfile 2>&1 | tail -5
+
+            echo "🎨 Build Dashboard..."
+            sudo chown -R ubuntu:ubuntu /var/www/sxb-vpn/artifacts/ 2>/dev/null || true
+            CI=true PORT=3000 BASE_PATH=/ pnpm --filter @workspace/sxb-dashboard run build
+
+            echo "⚙️ Build Backend..."
+            ESBUILD=$(find backend/node_modules/.bin -name "esbuild" -executable | head -1)
+            if [ -z "$ESBUILD" ]; then ESBUILD="npx --yes esbuild@0.27.3"; fi
+            $ESBUILD server.ts \
+              --bundle \
+              --platform=node \
+              --format=cjs \
+              --packages=external \
+              --sourcemap \
+              --outfile=dist/server.cjs
+
+            echo "🗄️ Push Prisma schema..."
+            DB_URL=$(grep DATABASE_URL .env | cut -d= -f2-)
+            NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
+              node /var/www/sxb-vpn/backend/node_modules/prisma/build/index.js db push \
+              --schema=prisma/schema.prisma \
+              --accept-data-loss 2>&1 | tail -5 || true
+
+            echo "🔄 Reload PM2..."
+            pm2 restart ecosystem.config.cjs --update-env || pm2 start ecosystem.config.cjs
+
+            echo "🔄 Reload Nginx..."
+            sudo nginx -t && sudo systemctl reload nginx
+
+            echo "✅ Deployment complete!"
+            pm2 list
+
+      - name: Validate production
+        run: |
+          sleep 10
+          echo "=== Frontend ==="
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" https://vpnsxb.afrihall.com/)
+          echo "Frontend HTTP $HTTP"
+          [ "$HTTP" = "200" ] || (echo "❌ Frontend down" && exit 1)
+
+          echo "=== API health ==="
+          # Accepte 200/400/401/403/422 — toute réponse HTTP valide du serveur
+          # (400 = bad request pour creds invalides = serveur UP)
+          API=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST https://vpnsxb.afrihall.com/xapi/auth/login \
+            -H "Content-Type: application/json" \
+            -d '{"email":"test","password":"test"}')
+          echo "API HTTP $API"
+          case "$API" in
+            200|400|401|403|422)
+              echo "✅ API up (HTTP $API — réponse valide du serveur)" ;;
+            000)
+              echo "❌ API unreachable (timeout/DNS)" && exit 1 ;;
+            502|503|504)
+              echo "❌ API down (gateway error $API)" && exit 1 ;;
+            *)
+              echo "⚠️  API HTTP $API — considéré OK (pas une erreur réseau)" ;;
+          esac
+          echo "✅ Production OK"

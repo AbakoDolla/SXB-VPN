@@ -1,0 +1,23 @@
+{
+  "title": "SXB VPN Dashboard",
+  "subtitle": "Overview of network activity and infrastructure in real time",
+  "stats": {
+    "active_users": "Active Users",
+    "expired_accounts": "Expired Accounts",
+    "consumed_traffic": "Consumed Traffic",
+    "active_servers": "Active Servers",
+    "active_resellers": "Active Resellers",
+    "total_revenue": "Total Revenue"
+  },
+  "charts": {
+    "traffic_title": "Traffic Consumption (GB)",
+    "users_title": "New VPN Users",
+    "activity_title": "Tunnel Activity & Connections",
+    "time": "Time",
+    "data_limit": "Global Limit"
+  },
+  "activity": {
+    "title": "Global Activity Stream",
+    "no_activity": "No activity logs available"
+  }
+}

@@ -1,0 +1,448 @@
+name: Build Android APK — SXB VPN
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app-mobile/**"
+      - ".github/workflows/build-android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-android:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app-mobile
+
+    steps:
+      # ── Checkout ──────────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Node.js 22 ────────────────────────────────────────────────────────────
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # ── JDK 17 ────────────────────────────────────────────────────────────────
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # ── Cache ~/.gradle ────────────────────────────────────────────────────────
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: gradle-caches-${{ runner.os }}-${{ hashFiles('app-mobile/package.json') }}
+          restore-keys: |
+            gradle-caches-${{ runner.os }}-
+
+      # ── Cache node_modules ────────────────────────────────────────────────────
+      - name: Cache node_modules
+        id: cache-node
+        uses: actions/cache@v4
+        with:
+          path: app-mobile/node_modules
+          key: node-modules-${{ runner.os }}-node22-${{ hashFiles('app-mobile/package.json') }}
+
+      # ── Install dependencies — MUST run before any node_modules/ patch ────────
+      - name: Install dependencies
+        if: steps.cache-node.outputs.cache-hit != 'true'
+        run: npm install --legacy-peer-deps
+
+      # FIX #1 : patch Kotlin metadata compat — après npm install (node_modules/ doit exister)
+      - name: Patch expo-module-gradle-plugin (Kotlin metadata compat)
+        run: |
+          PLUGIN="node_modules/expo-modules-core/expo-module-gradle-plugin/build.gradle.kts"
+          if [ -f "$PLUGIN" ] && ! grep -q "Xskip-metadata-version-check" "$PLUGIN"; then
+            printf '\ntasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {\n    kotlinOptions { freeCompilerArgs = freeCompilerArgs + listOf("-Xskip-metadata-version-check") }\n}\n' >> "$PLUGIN"
+            echo "[patch] Kotlin metadata fix appliqué"
+          else
+            echo "[patch] Déjà appliqué ou expo-modules-core absent (normal si cache node)"
+          fi
+
+      # ── Cache Gradle build artifacts uniquement (pas android/app/build.gradle) ──
+      # IMPORTANT : on ne cache PAS le dossier android/ complet car build.gradle
+      # est modifié par les steps suivants (signing, packaging). Mettre ce fichier
+      # dans le cache provoquerait des corruptions aux runs suivants (double injection).
+      # On cache seulement les artefacts Gradle compilés pour accélérer le build.
+      - name: Cache Gradle build artifacts
+        id: cache-android
+        uses: actions/cache@v4
+        with:
+          path: |
+            app-mobile/android/.gradle
+            app-mobile/android/app/build
+          key: android-gradle-v5-${{ runner.os }}-${{ hashFiles('app-mobile/package.json', 'app-mobile/app.json', 'app-mobile/plugins/**', 'app-mobile/modules/android-native/**/*.kt') }}
+          restore-keys: |
+            android-gradle-v5-${{ runner.os }}-
+
+      # ── Expo prebuild — TOUJOURS (régénère build.gradle propre à chaque run) ──
+      # Sans --clean : préserve les artefacts Gradle dans android/app/build/
+      # Sans la condition cache-hit : garantit un build.gradle vierge avant les
+      # étapes de modification (signing, packaging, ABI) → pas de double-injection.
+      - name: Expo prebuild (Android)
+        run: npx expo prebuild --platform android --no-install
+        env:
+          EXPO_NO_TELEMETRY: "1"
+          EXPO_PUBLIC_API_URL: https://vpnsxb.afrihall.com/api
+
+      # ── P2b — GARANTIR SxbVpnPackage dans MainApplication.kt ─────────────────
+      # Le plugin withMainAppPackage() peut échouer si le pattern de getPackages()
+      # ne correspond à aucune regex. Ce step est le filet de sécurité : il injecte
+      # directement via sed si SxbVpnPackage est absent après le prebuild.
+      - name: Vérifier et forcer injection SxbVpnPackage dans MainApplication.kt
+        run: |
+          MAIN_APP=$(find android/app/src/main/java -name "MainApplication.kt" 2>/dev/null | head -1)
+          if [ -z "$MAIN_APP" ]; then
+            echo "::error::MainApplication.kt introuvable après prebuild"
+            exit 1
+          fi
+          echo "[SxbVpnPackage] Fichier : $MAIN_APP"
+          if grep -q "SxbVpnPackage" "$MAIN_APP"; then
+            echo "✅ SxbVpnPackage déjà présent (plugin OK)"
+          else
+            echo "⚠️  SxbVpnPackage absent — injection manuelle..."
+
+            # Ajouter import après la ligne package
+            sed -i '/^package /a import com.sxbvpn.vpnmodule.SxbVpnPackage' "$MAIN_APP"
+
+            # Pattern Expo SDK 50+ / RN 0.73+ : .packages.apply {
+            if grep -q "PackageList(this).packages.apply" "$MAIN_APP"; then
+              sed -i 's/PackageList(this).packages.apply {/PackageList(this).packages.apply {\n        add(SxbVpnPackage())/' "$MAIN_APP"
+              echo "[inject] Pattern .packages.apply {} patché (RN 0.73+)"
+
+            # Pattern RN 0.71-0.72 : val packages = PackageList(this).packages
+            elif grep -q "val packages = PackageList(this).packages" "$MAIN_APP"; then
+              sed -i 's/val packages = PackageList(this).packages/val packages = PackageList(this).packages\n      packages.add(SxbVpnPackage())/' "$MAIN_APP"
+              echo "[inject] Pattern val packages patché (RN 0.71-0.72)"
+
+            # Fallback : avant le premier "return packages"
+            elif grep -q "return packages" "$MAIN_APP"; then
+              sed -i 's/return packages/add(SxbVpnPackage())\n      return packages/' "$MAIN_APP"
+              echo "[inject] Pattern return packages patché (fallback)"
+
+            else
+              echo "::error::Aucun pattern connu dans MainApplication.kt — injection impossible"
+              cat "$MAIN_APP"
+              exit 1
+            fi
+
+            # Vérification finale
+            if grep -q "SxbVpnPackage" "$MAIN_APP"; then
+              echo "✅ Injection réussie"
+            else
+              echo "::error::Injection échouée — SxbVpnPackage toujours absent"
+              cat "$MAIN_APP"
+              exit 1
+            fi
+          fi
+
+          # Vérifier aussi que les fichiers Kotlin sont copiés
+          KOTLIN_DIR="android/app/src/main/java/com/sxbvpn/vpnmodule"
+          if [ -d "$KOTLIN_DIR" ] && ls "$KOTLIN_DIR"/*.kt 2>/dev/null | grep -q SxbVpnModule; then
+            echo "✅ Fichiers Kotlin natifs présents dans $KOTLIN_DIR"
+          else
+            echo "⚠️  Kotlin natifs absents — copie manuelle..."
+            mkdir -p "$KOTLIN_DIR"
+            cp modules/android-native/*.kt "$KOTLIN_DIR/" && echo "✅ Copiés"
+          fi
+
+      # ── P3 — ProGuard : règles R8 pour JSch + sing-box + modules SXB ──────────
+      - name: Créer proguard-rules.pro (JSch + sing-box + natif SXB)
+        run: |
+          PGFILE="android/app/proguard-rules.pro"
+          printf '%s\n' \
+            '# JSch — SSH library' \
+            '-keep class com.jcraft.jsch.** { *; }' \
+            '-dontwarn com.jcraft.jsch.**' \
+            '# Modules natifs SXB VPN' \
+            '-keep class com.sxbvpn.** { *; }' \
+            '-keepclassmembers class com.sxbvpn.** { *; }' \
+            '-keepattributes Signature,*Annotation*,EnclosingMethod,InnerClasses' \
+            '# React Native / Expo' \
+            '-keep class com.facebook.react.** { *; }' \
+            '-dontwarn com.facebook.react.**' \
+            >> "$PGFILE"
+          echo "[ProGuard] Règles ajoutées à $PGFILE ($(wc -l < $PGFILE) lignes)"
+
+
+
+      # FIX #2 : JitPack — injecter seulement dans la section dependencyResolutionManagement
+      # (première occurrence de mavenCentral uniquement pour éviter les doublons)
+      - name: Injecter JitPack dans settings.gradle
+        run: |
+          SETTINGS="android/settings.gradle"
+          if [ -f "$SETTINGS" ] && ! grep -q "jitpack.io" "$SETTINGS"; then
+            # Remplacer SEULEMENT la première occurrence de mavenCentral()
+            sed -i '0,/mavenCentral()/{s|mavenCentral()|mavenCentral()\n        maven { url = uri("https://jitpack.io") }|}' "$SETTINGS"
+            echo "[JitPack] Injecté dans $SETTINGS (première occurrence)"
+            grep -n "jitpack" "$SETTINGS" | head -3
+          else
+            echo "[JitPack] Déjà présent ou settings.gradle absent"
+          fi
+
+      # ── ABI filter : arm64-v8a seulement ─────────────────────────────────────
+      - name: Restreindre ABI à arm64-v8a
+        run: |
+          BUILD_GRADLE="android/app/build.gradle"
+          if grep -q 'abiFilters' "$BUILD_GRADLE" 2>/dev/null; then
+            sed -i 's/abiFilters.*/abiFilters "arm64-v8a"/' "$BUILD_GRADLE"
+          else
+            sed -i '/defaultConfig {/a\            ndk { abiFilters "arm64-v8a" }' "$BUILD_GRADLE"
+          fi
+          echo "[ABI] Filtres appliqués"
+
+      # ── Copier sing-box vers Android assets natifs ────────────────────────────
+      - name: Copier sing-box vers Android assets natifs
+        run: |
+          mkdir -p android/app/src/main/assets
+          for f in sing-box-arm64 sing-box-arm; do
+            if [ -f "assets/$f" ]; then
+              cp "assets/$f" "android/app/src/main/assets/$f"
+              echo "✅ $f ($(du -h "android/app/src/main/assets/$f" | cut -f1))"
+            else
+              echo "⚠️  $f absent dans assets/ — sing-box désactivé pour cette architecture"
+            fi
+          done
+
+      # FIX #3 : Keystore + signing config
+      # FIX CRITIQUE v2 : utiliser Node.js (déjà installé) au lieu de Python.
+      # Vérifier SPÉCIFIQUEMENT "keystore/release.keystore" — pas juste "signingConfigs"
+      # car Expo prebuild génère déjà signingConfigs { debug { ... } } sans release.
+      # L'ancienne condition `if "signingConfigs" not in c` était donc toujours fausse,
+      # le bloc release n'était jamais injecté, mais la référence signingConfigs.release
+      # était quand même ajoutée → BUILD FAILED "unknown property release".
+      - name: Configurer le keystore de release (Secrets GitHub ou CI fallback)
+        env:
+          KEYSTORE_FILE:     ${{ secrets.KEYSTORE_FILE }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS:         ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD:      ${{ secrets.KEY_PASSWORD }}
+        run: |
+          mkdir -p android/app/keystore
+          if [ -n "$KEYSTORE_FILE" ]; then
+            echo "$KEYSTORE_FILE" | base64 -d > android/app/keystore/release.keystore
+            STORE_PASS="$KEYSTORE_PASSWORD"
+            KEY_AL="$KEY_ALIAS"
+            KEY_PW="$KEY_PASSWORD"
+            echo "✅ Keystore restauré depuis GitHub Secrets"
+          else
+            echo "⚠️  Secrets KEYSTORE_* non configurés — keystore CI éphémère (non-production)"
+            keytool -genkeypair -v \
+              -storetype PKCS12 \
+              -keystore android/app/keystore/release.keystore \
+              -alias sxbvpn \
+              -keyalg RSA -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=SXB VPN,OU=Mobile,O=SXB,L=Paris,ST=IDF,C=FR" \
+              -storepass sxbvpn_ci_2026 \
+              -keypass sxbvpn_ci_2026 \
+              -noprompt
+            STORE_PASS="sxbvpn_ci_2026"
+            KEY_AL="sxbvpn"
+            KEY_PW="sxbvpn_ci_2026"
+          fi
+          echo "STORE_PASS=$STORE_PASS" >> $GITHUB_ENV
+          echo "KEY_AL=$KEY_AL"         >> $GITHUB_ENV
+          echo "KEY_PW=$KEY_PW"         >> $GITHUB_ENV
+
+          BUILD_GRADLE="android/app/build.gradle"
+
+          # Export shell→process enfant (node lira via process.env)
+          export STORE_PASS KEY_AL KEY_PW
+
+          # Script JS encodé base64 — évite col-0 / heredoc incompatible avec YAML
+          echo "Y29uc3QgZnMgPSByZXF1aXJlKCJmcyIpOwpjb25zdCBwID0gcHJvY2Vzcy5hcmd2WzJdOwpjb25zdCBzdG9yZVBhc3MgPSBwcm9jZXNzLmVudi5TVE9SRV9QQVNTIHx8ICIiOwpjb25zdCBrZXlBbCAgICA9IHByb2Nlc3MuZW52LktFWV9BTCAgICB8fCAiIjsKY29uc3Qga2V5UHcgICAgPSBwcm9jZXNzLmVudi5LRVlfUFcgICAgfHwgIiI7CmxldCBjID0gZnMucmVhZEZpbGVTeW5jKHAsICJ1dGY4Iik7CmlmICghYy5pbmNsdWRlcygia2V5c3RvcmUvcmVsZWFzZS5rZXlzdG9yZSIpKSB7CiAgY29uc3QgYmxvY2sgPSAicmVsZWFzZSB7XG4iICsKICAgICIgICAgICAgICAgICBzdG9yZUZpbGUgZmlsZShcImtleXN0b3JlL3JlbGVhc2Uua2V5c3RvcmVcIilcbiIgKwogICAgIiAgICAgICAgICAgIHN0b3JlUGFzc3dvcmQgXCIiICsgc3RvcmVQYXNzICsgIlwiXG4iICsKICAgICIgICAgICAgICAgICBrZXlBbGlhcyBcIiIgKyBrZXlBbCArICJcIlxuIiArCiAgICAiICAgICAgICAgICAga2V5UGFzc3dvcmQgXCIiICsga2V5UHcgKyAiXCJcbiIgKwogICAgIiAgICAgICAgfSI7CiAgaWYgKGMuaW5jbHVkZXMoInNpZ25pbmdDb25maWdzIHsiKSkgewogICAgYyA9IGMucmVwbGFjZSgic2lnbmluZ0NvbmZpZ3MgeyIsICJzaWduaW5nQ29uZmlncyB7XG4gICAgICAgICIgKyBibG9jayk7CiAgICBjb25zb2xlLmxvZygiW3NpZ25pbmddIHJlbGVhc2UgaW5qZWN0ZSBkYW5zIHNpZ25pbmdDb25maWdzIGV4aXN0YW50Iik7CiAgfSBlbHNlIHsKICAgIGMgPSBjLnJlcGxhY2UoImFuZHJvaWQgeyIsICJhbmRyb2lkIHtcbiAgICBzaWduaW5nQ29uZmlncyB7XG4gICAgICAgICIgKyBibG9jayArICJcbiAgICB9Iik7CiAgICBjb25zb2xlLmxvZygiW3NpZ25pbmddIG5vdXZlYXUgYmxvYyBzaWduaW5nQ29uZmlncy5yZWxlYXNlIGNyZWUiKTsKICB9Cn0KaWYgKCFjLmluY2x1ZGVzKCJzaWduaW5nQ29uZmlnIHNpZ25pbmdDb25maWdzLnJlbGVhc2UiKSkgewogIGMgPSBjLnJlcGxhY2UoLyhidWlsZFR5cGVzW1xzXFNdKj9yZWxlYXNlXHMqXHspLywgIiQxXG4gICAgICAgICAgICBzaWduaW5nQ29uZmlnIHNpZ25pbmdDb25maWdzLnJlbGVhc2UiKTsKICBjb25zb2xlLmxvZygiW3NpZ25pbmddIHNpZ25pbmdDb25maWcgcmVmZXJlbmNlIGFqb3V0ZWUgZGFucyBidWlsZFR5cGVzLnJlbGVhc2UiKTsKfQpmcy53cml0ZUZpbGVTeW5jKHAsIGMpOwpjb25zb2xlLmxvZygiT0sgU2lnbmF0dXJlIGNvbmZpZ3VyZWUgZGFucyBidWlsZC5ncmFkbGUiKTsK" | base64 -d > /tmp/signing_inject.js
+          node /tmp/signing_inject.js "$BUILD_GRADLE"
+
+      # FIX #4 : Gradle properties — newArchEnabled=false (cohérent avec app.json)
+      # CORRECTION CRITIQUE : newArchEnabled=true forçait la nouvelle architecture alors
+      # que le module natif SxbVpnModule utilise l'ancienne (ReactContextBaseJavaModule).
+      # Forcer new arch ON causait des erreurs de compilation Kotlin.
+      - name: Configure Gradle (performance + compatibilité RN)
+        run: |
+          GPROPS="android/gradle.properties"
+          # Idempotent : ajouter une propriété seulement si sa clé n'est pas déjà présente
+          add_prop() {
+            local KEY="${1%%=*}"
+            local VAL="$1"
+            if ! grep -q "^${KEY}=" "$GPROPS" 2>/dev/null; then
+              echo "$VAL" >> "$GPROPS"
+              echo "[gradle.properties] + $KEY"
+            fi
+          }
+          add_prop 'org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=512m -XX:+UseParallelGC'
+          add_prop 'org.gradle.daemon=false'
+          add_prop 'org.gradle.parallel=true'
+          add_prop 'org.gradle.caching=true'
+          add_prop 'android.enableJetifier=true'
+          add_prop 'android.enableR8.fullMode=false'
+          add_prop 'kotlin.incremental=true'
+          add_prop 'newArchEnabled=false'
+          add_prop 'reactNativeArchitectures=arm64-v8a'
+          echo "[Gradle] gradle.properties configuré (newArchEnabled=false — old arch)"
+
+      # FIX #5 : Packaging META-INF — bash+sed pur (pas de Python, pas de heredoc)
+      # Le plugin withJschDependency injecte packaging{} durant le prebuild.
+      # Ce step complète les excludes manquants sans créer de doublon.
+      - name: Corriger conflits META-INF (packaging build.gradle)
+        run: |
+          B="android/app/build.gradle"
+          if grep -q 'packaging' "$B" 2>/dev/null; then
+            echo "[packaging] Bloc packaging présent (injecté par le plugin Expo)"
+            for EXCL in \
+              'META-INF/versions/9/OSGI-INF/MANIFEST.MF' \
+              'META-INF/*.kotlin_module' \
+              'META-INF/AL2.0' \
+              'META-INF/LGPL2.1'; do
+              if ! grep -q "$EXCL" "$B"; then
+                sed -i "s|resources {|resources {\n            excludes += \"$EXCL\"|" "$B"
+                echo "[packaging] + $EXCL"
+              fi
+            done
+          else
+            echo "[packaging] Aucun bloc packaging — injection depuis zéro (GNU sed)"
+            sed -i 's|android {|android {\n    packaging {\n        resources {\n            excludes += "/META-INF/{AL2.0,LGPL2.1}"\n            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"\n            excludes += "META-INF/*.kotlin_module"\n            excludes += "META-INF/LICENSE.md"\n            excludes += "META-INF/LICENSE-notice.md"\n        }\n    }|' "$B"
+          fi
+          echo "✅ Packaging META-INF configuré"
+
+      # ── Build APK release ─────────────────────────────────────────────────────
+      - name: Build APK (release)
+        working-directory: app-mobile/android
+        run: |
+          set -o pipefail
+          chmod +x gradlew
+
+          SKIP_TASKS=""
+          for task in \
+            ":react-native-reanimated:assertWorkletsVersionTask" \
+            ":react-native-reanimated:assertMinimalReactNativeVersionTask" \
+            ":react-native-worklets:assertMinimalReactNativeVersionTask" \
+            ":app:lintVitalRelease" \
+            ":app:lintVitalAnalyzeRelease"; do
+            if ./gradlew tasks --all 2>/dev/null | grep -qF "${task#:}"; then
+              SKIP_TASKS="$SKIP_TASKS -x $task"
+            fi
+          done
+
+          ./gradlew :app:assembleRelease \
+            --no-daemon \
+            --build-cache \
+            --parallel \
+            $SKIP_TASKS \
+            2>&1 | tee /tmp/gradle-build.log
+
+          echo "::group::Gradle output (dernières 100 lignes)"
+          tail -100 /tmp/gradle-build.log
+          echo "::endgroup::"
+        env:
+          NODE_ENV: production
+          EXPO_PUBLIC_API_URL: https://vpnsxb.afrihall.com/api
+          ANDROID_HOME: /usr/local/lib/android/sdk
+          GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+
+      # ── Localiser et copier l'APK ─────────────────────────────────────────────
+      - name: Localiser et copier l'APK
+        run: |
+          mkdir -p build
+          APK=$(find android/app/build/outputs/apk/release -name "*.apk" 2>/dev/null | grep -v unsigned | head -n 1)
+          if [ -z "$APK" ]; then
+            APK=$(find android/app/build/outputs/apk -name "*.apk" 2>/dev/null | head -n 1)
+          fi
+          if [ -z "$APK" ]; then
+            echo "::error::Aucun APK trouvé — liste des sorties :"
+            find android/app/build/outputs -type f 2>/dev/null || true
+            echo "--- Gradle log (erreurs) ---"
+            grep -E "FAILED|error:|Error|BUILD" /tmp/gradle-build.log | tail -30 || true
+            exit 1
+          fi
+          cp "$APK" build/sxb-vpn.apk
+          echo "✅ APK: $(ls -lh build/sxb-vpn.apk)"
+          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
+
+      # ── Upload artifact CI ────────────────────────────────────────────────────
+      - name: Upload APK (artifact CI)
+        uses: actions/upload-artifact@v4
+        with:
+          name: sxb-vpn-android-apk-${{ github.run_number }}
+          path: app-mobile/build/sxb-vpn.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      # ── GitHub Release ────────────────────────────────────────────────────────
+      - name: GitHub Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-${{ github.run_number }}
+          name: "SXB VPN APK #${{ github.run_number }}"
+          body: |
+            ## SXB VPN — APK Android #${{ github.run_number }}
+
+            Build depuis commit `${{ github.sha }}`
+
+            ### Moteur VPN v5
+            - ✅ **VLESS / VMess / Trojan** — sing-box
+            - ✅ **Shadowsocks / WireGuard / Hysteria2 / TUIC** — sing-box
+            - ✅ **SSH / SSH+Payload** — JSch natif Java
+            - ✅ **Kill Switch** — coupe le trafic si VPN déconnecté
+            - ✅ **Auto-reconnect** — backoff exponentiel (1s→30s, 10 tentatives)
+            - ✅ **Trafic temps réel** — Android TrafficStats (valeurs réelles)
+            - ✅ **Config chiffrée** — Android Keystore AES-256-GCM
+            - ✅ **Détection Root/Frida/Xposed** — audit sécurité avant connexion
+            - ✅ **Foreground Service** — fonctionne écran verrouillé / swipe
+            - ✅ **Interface FR/EN**
+
+            ### Installation
+            1. Télécharger `sxb-vpn.apk`
+            2. Android → Paramètres → Sécurité → Sources inconnues → Activer
+            3. Installer et activer avec votre token `SXB-USER-XXXX-XXXX-XXXX`
+
+            ### Backend
+            `https://vpnsxb.afrihall.com/api`
+          files: app-mobile/build/sxb-vpn.apk
+          draft: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Déployer APK sur VPS ──────────────────────────────────────────────────
+      - name: Déployer APK sur VPS (scp)
+        if: github.ref == 'refs/heads/main'
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: 141.95.112.93
+          username: ubuntu
+          password: ${{ secrets.VPS_SSH_PASSWORD }}
+          source: "app-mobile/build/sxb-vpn.apk"
+          target: "/tmp/"
+          strip_components: 2
+        continue-on-error: true
+
+      - name: Installer APK dans dossier distribution VPS
+        if: github.ref == 'refs/heads/main'
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 141.95.112.93
+          username: ubuntu
+          password: ${{ secrets.VPS_SSH_PASSWORD }}
+          script: |
+            sudo mkdir -p /var/www/apk
+            if [ -f /tmp/sxb-vpn.apk ]; then
+              sudo cp /tmp/sxb-vpn.apk /var/www/apk/sxbvpn-latest.apk
+              sudo cp /tmp/sxb-vpn.apk "/var/www/apk/sxbvpn-build-${{ github.run_number }}.apk"
+              echo "✅ Déployé: $(ls -lh /var/www/apk/sxbvpn-latest.apk)"
+            else
+              echo "⚠️  /tmp/sxb-vpn.apk absent — scp a peut-être échoué"
+              ls /tmp/*.apk 2>/dev/null || true
+            fi
+        continue-on-error: true

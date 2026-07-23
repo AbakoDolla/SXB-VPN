@@ -1,0 +1,17 @@
+{
+  "title": "Paramètres Système",
+  "subtitle": "Configurez les préférences régionales, la sécurité de l'API SXB et les paramètres globaux XPanel.",
+  "sections": {
+    "profile": "Profil de l'utilisateur",
+    "language_selection": "Préférences Linguistiques",
+    "security": "Clés d'API & Sécurité",
+    "xpanel_config": "Liaison Technique XPanel"
+  },
+  "fields": {
+    "current_lang": "Langue actuelle de l'interface",
+    "browser_lang_detected": "Langue du navigateur détectée",
+    "api_endpoint": "Endpoint API de SXB VPN",
+    "xpanel_endpoint": "Hôte XPanel (SSH/Sing-box)",
+    "secret_key": "Clé secrète d'administration"
+  }
+}

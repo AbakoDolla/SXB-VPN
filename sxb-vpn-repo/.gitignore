@@ -1,0 +1,101 @@
+<<<<<<< HEAD
+# See https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files for more about ignoring files.
+
+# compiled output
+dist
+tmp
+out-tsc
+*.tsbuildinfo
+.expo
+.expo-shared
+
+# dependencies
+node_modules
+
+# IDEs and editors
+=======
+# ── Dependencies ──────────────────────────────────────────
+node_modules/
+node_modules
+
+# ── Build outputs ─────────────────────────────────────────
+dist/
+dist
+build/
+tmp/
+out-tsc/
+*.tsbuildinfo
+
+# ── Environment & secrets ─────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Logs ──────────────────────────────────────────────────
+*.log
+npm-debug.log
+yarn-error.log
+testem.log
+/libpeerconnection.log
+
+# ── Expo / React Native ───────────────────────────────────
+.expo/
+.expo-shared/
+
+# ── IDEs ──────────────────────────────────────────────────
+>>>>>>> github/main
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+<<<<<<< HEAD
+
+# IDE - VSCode
+=======
+>>>>>>> github/main
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+<<<<<<< HEAD
+# misc
+/.sass-cache
+/connect.lock
+/coverage
+/libpeerconnection.log
+npm-debug.log
+yarn-error.log
+testem.log
+/typings
+
+# System Files
+.DS_Store
+Thumbs.db
+
+.cursor/rules/nx-rules.mdc
+.github/instructions/nx.instructions.md
+
+# Replit
+.cache/
+.local/
+=======
+# ── System ────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+/.sass-cache
+/connect.lock
+/coverage
+/typings
+
+# ── Replit ────────────────────────────────────────────────
+.cache/
+.local/
+
+# ── Uploads ───────────────────────────────────────────────
+public/uploads/avatars/
+>>>>>>> github/main

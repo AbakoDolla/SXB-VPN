@@ -1,0 +1,14 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "J0c0fJib6LJL_KrzxCmFU"
+uri = "file://attached_assets/expo-qr.png"
+type = "image"
+title = "QR Code Expo Go"
+
+[[outputs]]
+id = "Zog4glPPowSdMkcF2PJEx"
+uri = "file://attached_assets/expo-qr-real.png"
+type = "image"
+title = "QR Code Expo Go — SXB VPN Mobile"

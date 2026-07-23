@@ -1,0 +1,3 @@
+- [SXB VPN Dashboard Architecture](sxb-vpn-architecture.md) — deux PM2 (root + ubuntu) peuvent coexister et causer EADDRINUSE ; fix : tuer root PM2, passer à pm2-ubuntu.service systemd
+- [SXB VPN Permission Fix](sxb-vpn-permissions.md) — dashboard.ts utilisait analytics.view au lieu de analytics.read, mais requirePermission bypass ADMIN/SUPER_ADMIN donc pas bloquant
+- [SXB VPN API Null-Safety Pattern](sxb-vpn-api-null-safety.md) — toutes les fonctions fetchXxx() doivent utiliser try/catch + res?.accounts ?? [] pour éviter crash .map() sur undefined
