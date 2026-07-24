@@ -160,8 +160,28 @@ class SxbVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
+        Log.i(TAG, "[SXB_DEBUG] SERVICE_CREATE")
         instance = this
+
+        // Le canal DOIT exister avant startForeground()
         createNotificationChannel()
+
+        // startForeground() dans onCreate() — garantit le délai de 5s Android.
+        // Sur API 29+ on passe foregroundServiceType explicitement.
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIF_ID,
+                    buildNotification("SXB VPN — Démarrage..."),
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                )
+            } else {
+                startForeground(NOTIF_ID, buildNotification("SXB VPN — Démarrage..."))
+            }
+            Log.i(TAG, "[SXB_DEBUG] FOREGROUND_STARTED")
+        } catch (e: Exception) {
+            Log.e(TAG, "[SXB_DEBUG] FOREGROUND_START_FAILED: " + e.message)
+        }
 
         autoReconnect = AutoReconnectManager(
             onReconnect = {
@@ -182,16 +202,11 @@ class SxbVpnService : VpnService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_4_SERVICE_ONSTART action=${intent?.action}")
-
         if (intent?.action == ACTION_STOP) { cleanup(); return START_NOT_STICKY }
 
-        // *** CRITICAL FIX: startForeground() MUST be called within 5 seconds of
-        // startForegroundService(). Move it here — BEFORE SecurityModule.audit() and
-        // any I/O — to satisfy the Android FGS contract on API 26+.
-        // If we don't, Android kills the service with ForegroundServiceDidNotStartInTimeException.
-        startForeground(NOTIF_ID, buildNotification("SXB VPN — Connexion en cours..."))
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_4B_FOREGROUND_STARTED")
+        // startForeground() déjà appelé dans onCreate() — mise à jour notification seule.
+        try { updateNotification("SXB VPN — Connexion en cours...") } catch (_: Exception) {}
+        Log.i(TAG, "[SXB_DEBUG] START_COMMAND_RECEIVED action=" + intent?.action)
 
         // Vérifications de sécurité — OK to run after startForeground()
         val secReport = SecurityModule.audit(this)
@@ -207,6 +222,7 @@ class SxbVpnService : VpnService() {
             broadcastLog("[SXB] ⚠️ Appareil rooté — risque de sécurité")
         }
 
+        Log.i(TAG, "[SXB_DEBUG] CONFIG_LOADING")
         var json    = intent?.getStringExtra("configJson") ?: ""
         var proto   = intent?.getStringExtra("protocol")?.lowercase() ?: ""
 
