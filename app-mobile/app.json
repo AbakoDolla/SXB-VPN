@@ -44,8 +44,6 @@
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE",
         "android.permission.BIND_VPN_SERVICE",
-        "android.permission.CHANGE_NETWORK_STATE",
-        "android.permission.CHANGE_WIFI_STATE",
         "android.permission.POST_NOTIFICATIONS"
       ]
     },
