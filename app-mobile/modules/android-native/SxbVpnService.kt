@@ -401,6 +401,7 @@ class SxbVpnService : VpnService() {
         val secReport = SecurityModule.audit(this)
         if (secReport.hasFrida || secReport.hasXposed) {
             Log.e("SXB_DEBUG", "[SXB_DEBUG] SECURITY_BLOCK hasFrida=${secReport.hasFrida} hasXposed=${secReport.hasXposed}")
+            broadcastLog("[SXB_DEBUG] ❌ SECURITY_BLOCK hasFrida=${secReport.hasFrida} hasXposed=${secReport.hasXposed}")
             broadcastLog("[SXB] ❌ Environnement compromis — connexion refusée")
             broadcastStatus("error")
             stopSelf()
@@ -408,6 +409,7 @@ class SxbVpnService : VpnService() {
         }
         if (secReport.isRooted) {
             Log.w("SXB_DEBUG", "[SXB_DEBUG] SECURITY_WARN isRooted=true")
+            broadcastLog("[SXB_DEBUG] ⚠️ SECURITY_WARN: appareil rooté")
             broadcastLog("[SXB] ⚠️ Appareil rooté — risque de sécurité")
         }
 
@@ -416,6 +418,7 @@ class SxbVpnService : VpnService() {
         var proto   = intent?.getStringExtra("protocol")?.lowercase() ?: ""
 
         Log.i("SXB_DEBUG", "[SXB_DEBUG] CONFIG_FROM_INTENT proto=$proto json_empty=${json.isEmpty()}")
+        broadcastLog("[SXB_DEBUG] ▶ CONFIG_FROM_INTENT proto='$proto' empty=${json.isEmpty()}")
 
         if (json.isEmpty() || proto.isEmpty()) {
             try {
@@ -423,6 +426,7 @@ class SxbVpnService : VpnService() {
                 val credsFile = File(filesDir, "sxb_creds.enc")
                 val confFile  = File(filesDir, "sb_config.json")
                 Log.i("SXB_DEBUG", "[SXB_DEBUG] CONFIG_FALLBACK credsExists=${credsFile.exists()} confExists=${confFile.exists()}")
+                broadcastLog("[SXB_DEBUG] ▶ CONFIG_FALLBACK credsExists=${credsFile.exists()} confExists=${confFile.exists()}")
                 if (credsFile.exists()) {
                     try {
                         json = KeystoreManager.decrypt(credsFile.readText(Charsets.UTF_8))
@@ -443,6 +447,7 @@ class SxbVpnService : VpnService() {
 
         if (json.isEmpty() || proto.isEmpty()) {
             Log.e("SXB_DEBUG", "[SXB_DEBUG] CONFIG_MISSING json_empty=${json.isEmpty()} proto_empty=${proto.isEmpty()} — arrêt")
+        broadcastLog("[SXB_DEBUG] ❌ CONFIG_MISSING json_empty=${json.isEmpty()} proto_empty=${proto.isEmpty()}")
             broadcastLog("[SXB] ❌ Configuration manquante — importez un profil VPN")
             broadcastStatus("error")
             stopSelf()
@@ -450,6 +455,7 @@ class SxbVpnService : VpnService() {
         }
 
         Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_5_CONFIG_LOADED proto=$proto json_len=${json.length}")
+        broadcastLog("[SXB_DEBUG] ✅ STEP_5_CONFIG_LOADED proto='$proto' len=${json.length}")
 
         // P1 — Persister config chiffrée pour démarrage hors-ligne
         if (json.isNotEmpty()) { try { persistEncryptedConfig(json) } catch (_: Exception) {} }
@@ -477,6 +483,7 @@ class SxbVpnService : VpnService() {
 
     private fun dispatchProtocol(json: String, proto: String) {
         Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_2_CONFIG_RECEIVED proto=$proto")
+        broadcastLog("[SXB_DEBUG] ▶ STEP_2_DISPATCH proto='$proto'")
         when (proto) {
             "ssh", "ssh+payload"                                        -> startSshTunnel(json)
             "vless", "vmess", "trojan", "shadowsocks",
