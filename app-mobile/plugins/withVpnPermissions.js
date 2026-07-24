@@ -72,7 +72,7 @@ function withVpnManifest(config) {
       'android.permission.FOREGROUND_SERVICE_SPECIAL_USE',
       'android.permission.RECEIVE_BOOT_COMPLETED',
       'android.permission.ACCESS_NETWORK_STATE',
-      'android.permission.CHANGE_NETWORK_STATE',
+      'android.permission.POST_NOTIFICATIONS',
     ];
 
     const existing = (manifest.manifest['uses-permission'] || []).map(
