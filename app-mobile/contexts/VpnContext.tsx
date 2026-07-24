@@ -120,9 +120,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const sessionStartRef  = useRef<number>(0);
 
   // ── Watchdog connexion ────────────────────────────────────────────────────
-  // Si aucun événement VPN_CONNECTED n'arrive dans 45s, on libère l'UI
+  // Si aucun événement VPN_CONNECTED n'arrive dans 35s, on libère l'UI
   const watchdogRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastStepRef  = useRef<string>('INIT');
+  const lastStepRef  = useRef<string>('INIT';
 
   const clearWatchdog = useCallback(() => {
     if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
@@ -131,18 +131,21 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const startWatchdog = useCallback((lastStep: string) => {
     clearWatchdog();
     lastStepRef.current = lastStep;
-    watchdogRef.current = setTimeout(() => {
+    watchdogRef.current = setTimeout(async () => {
       const step = lastStepRef.current;
       console.warn(`[SXB_DEBUG] WATCHDOG_FIRED lastStep=${step}`);
-      setIsConnecting(false);
-      setVpnState('error');
       setVpnLogs(prev => [
         `[WATCHDOG] ⏱️ Connexion bloquée à : ${step}`,
-        `[WATCHDOG] Aucune réponse après 45s — vérifiez les logs natifs`,
-        `[WATCHDOG] adb logcat | grep SXB_DEBUG`,
+        `[WATCHDOG] Aucune réponse après 35s — arrêt du service`,
         ...prev,
       ].slice(0, 200));
-    }, 45_000);
+      // Arrêter proprement le service Android bloqué
+      if (IS_ANDROID && SxbVpnNative) {
+        try { await SxbVpnNative.stopVpn(); } catch { /* ignore */ }
+      }
+      setIsConnecting(false);
+      setVpnState('error');
+    }, 35_000);
   }, [clearWatchdog]);
 
   // ── Ajout d'un log ─────────────────────────────────────────────────────────
@@ -498,7 +501,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         console.log('[SXB_DEBUG] STEP_3_NATIVE_MODULE_CALLED startVpn()');
         addLog('[SXB_DEBUG] STEP_3_NATIVE_MODULE_CALLED');
 
-        // Démarrer le watchdog 45s avant d'appeler le natif
+        // Démarrer le watchdog 35s avant d'appeler le natif
         lastStepRef.current = `STEP_3_NATIVE_CALLED proto=${protocol}`;
         startWatchdog(`STEP_3_NATIVE_CALLED proto=${protocol}`);
 
@@ -507,8 +510,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         console.log(`[SXB_DEBUG] STEP_4_SERVICE_STARTED result=${JSON.stringify(startResult)}`);
         addLog(`[SXB_DEBUG] STEP_4_SERVICE_STARTED serviceStarted=${startResult?.serviceStarted}`);
         // L'état réel sera mis à jour via onVpnStateChange event
-        // Le watchdog lèvera une alerte si rien n'arrive dans 45s
-        addLog('⏳ Connexion en cours... (watchdog 45s actif)');
+        // Le watchdog lèvera une alerte si rien n'arrive dans 35s
+        addLog('⏳ Connexion en cours... (watchdog 35s actif)');
 
       } else if (IS_ANDROID) {
         // Android MAIS module natif absent (SxbVpnNative === undefined)
