@@ -1,4 +1,3 @@
-- [SXB VPN Architecture](sxb-vpn-arch.md) — Backend Express sur VPS 141.95.112.93:4000, PM2 sxb-backend, git pull + pm2 restart pour déployer
-- [VPS Deployment](vps-ssh.md) — SSH ubuntu@141.95.112.93 pass stuffNation321, DB postgresql://postgres:sxb_secure_db_pass_2026@localhost:5432/sxb_vpn
-- [Prisma peer auth quirk](prisma-created-by-fix.md) — psql FATAL peer auth: toujours passer la connection string complète, pas juste -U postgres
 - [VPN Connections Feature](vpn-connections-feature.md) — displayProtocol (commercial) vs protocol (technique) séparés dans VpnProfile; stash requis avant git pull sur VPS si modifications locales
+- [VPS SSH Servers](vps-ssh-servers.md) — Dropbear:444 + websockify:2082 + sshd:2223 + Nginx /ssh-ws; stunnel non utilisable (port 443 = Nginx)
+- [Prisma VPS Fix](prisma-vps-fix.md) — prisma generate échoue dans pnpm workspace (pnpm add hook); utiliser /tmp/prisma-clean hors workspace + copier runtime/ aussi
