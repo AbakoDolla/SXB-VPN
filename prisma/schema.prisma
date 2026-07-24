@@ -322,7 +322,8 @@ model VpnProfile {
   id               String         @id @default(uuid())
   name             String
   description      String?
-  protocol         String         // ssh | vless | vmess | trojan | shadowsocks | singbox
+  protocol         String         // ssh | vless | vmess | trojan | shadowsocks | singbox  ← technicalProtocol
+  displayProtocol  String?        // Nom commercial affiché sur mobile : "MTN Protocol", "Orange Protocol"
   host             String
   port             Int
   username         String?

@@ -56,6 +56,7 @@ interface VpnContextType {
   isConnecting:       boolean;
   vpnState:           string;        // 'disconnected' | 'connecting' | 'connected' | 'error'
   selectedProtocol:   string | null;
+  connectedProtocol:  string | null; // Protocole affiché quand connecté : "MTN Protocol" (displayProtocol) ou "SSH"
   availableProtocols: VpnProtocol[];
   subscriptionUrl:    string | null;
   serverInfo:         { host: string; location: string } | null;
@@ -82,7 +83,7 @@ const DEFAULT_STATS: TrafficStats = { uploadBytes: 0, downloadBytes: 0, uploadSp
 
 const VpnContext = createContext<VpnContextType>({
   isConnected: false, isConnecting: false, vpnState: 'disconnected',
-  selectedProtocol: null, availableProtocols: [], subscriptionUrl: null,
+  selectedProtocol: null, connectedProtocol: null, availableProtocols: [], subscriptionUrl: null,
   serverInfo: null, trafficStats: DEFAULT_STATS, vpnLogs: [],
   hasVpnPermission: false, hasValidConfig: false,
   logs: [], traffic: DEFAULT_STATS,
@@ -103,6 +104,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const [isConnecting,       setIsConnecting]        = useState(false);
   const [vpnState,           setVpnState]            = useState('disconnected');
   const [selectedProtocol,   setSelectedProtocol]    = useState<string | null>(null);
+  const [connectedProtocol,  setConnectedProtocol]   = useState<string | null>(null); // Nom affiché quand connecté
   const [availableProtocols, setAvailableProtocols]  = useState<VpnProtocol[]>([]);
   const [subscriptionUrl,    setSubscriptionUrl]     = useState<string | null>(null);
   const [serverInfo,         setServerInfo]          = useState<{ host: string; location: string } | null>(null);
@@ -360,6 +362,12 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       if (data.serverInfo)      setServerInfo(data.serverInfo);
       if (data.vpnConfig) {
         setVpnConfig(data.vpnConfig);
+        // Sauvegarder le displayProtocol (nom commercial) pour l'affichage
+        if (data.vpnConfig.displayProtocol || data.profile?.displayProtocol) {
+          const dp = data.vpnConfig.displayProtocol || data.profile?.displayProtocol;
+          setConnectedProtocol(dp);
+          await AsyncStorage.setItem('@sxb_connected_protocol', dp).catch(() => {});
+        }
         // Persister localement pour mode hors-ligne
         try {
           const proto = (data.vpnConfig.protocol || 'vless').toLowerCase();
@@ -468,6 +476,14 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
         // 3. Construire les options pour le module natif
         const protocol = (configToUse.protocol || selectedProtocol || 'VLESS').toLowerCase();
+
+        // Sauvegarder le displayProtocol (nom commercial) pour affichage pendant connexion
+        const displayProto = configToUse.displayProtocol || null;
+        if (displayProto) {
+          setConnectedProtocol(displayProto);
+          await AsyncStorage.setItem('@sxb_connected_protocol', displayProto).catch(() => {});
+        }
+
         const optionsJson = JSON.stringify({
           ...configToUse,
           protocol,
@@ -569,6 +585,20 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isConnecting, isConnected, addLog, reportUsageToBackend]);
 
+  // ── Restaurer connectedProtocol depuis AsyncStorage ──────────────────────
+  useEffect(() => {
+    AsyncStorage.getItem('@sxb_connected_protocol').then(p => {
+      if (p) setConnectedProtocol(p);
+    });
+  }, []);
+
+  // Réinitialiser connectedProtocol à la déconnexion
+  useEffect(() => {
+    if (!isConnected && vpnState === 'disconnected') {
+      setConnectedProtocol(null);
+    }
+  }, [isConnected, vpnState]);
+
   // ── Sélection protocole ───────────────────────────────────────────────────
 
   const selectProtocol = useCallback(async (name: string) => {
@@ -587,7 +617,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   return (
     <VpnContext.Provider value={{
       isConnected, isConnecting, vpnState,
-      selectedProtocol, availableProtocols,
+      selectedProtocol, connectedProtocol, availableProtocols,
       subscriptionUrl, serverInfo,
       trafficStats, vpnLogs,
       hasVpnPermission,

@@ -26,6 +26,7 @@ const NETWORKS  = ['ws', 'grpc', 'tcp', 'h2'];
 
 const DEFAULT_FORM = {
   name: '', description: '', protocol: 'ssh',
+  displayProtocol: '', // Nom commercial affiché sur mobile
   host: '', port: '', username: '', password: '',
   uuid: '', path: '/', network: 'ws', tls: false, sni: '', dns: '1.1.1.1',
   offlineValidDays: 7, method: 'aes-256-gcm', status: 'active',
@@ -70,6 +71,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
     setEditId(p.id);
     setForm({
       name: p.name, description: p.description || '', protocol: p.protocol,
+      displayProtocol: p.displayProtocol || '',
       host: p.host, port: String(p.port), username: p.username || '', password: '',
       uuid: p.uuid || '', path: p.path || '/', network: p.network, tls: p.tls,
       sni: p.sni || '', dns: p.dns || '1.1.1.1',
@@ -250,6 +252,19 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
                   <label className="block text-sm text-gray-400 mb-1.5">Nom du profil *</label>
                   <input value={form.name} onChange={e => f('name', e.target.value)} required
                     placeholder="MTN SSH Premium" className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-emerald-500" />
+                </div>
+                <div className="col-span-2">
+                  <label className="block text-sm text-gray-400 mb-1.5">
+                    Nom affiché sur mobile
+                    <span className="ml-2 text-xs text-emerald-400/70">(Display Name)</span>
+                  </label>
+                  <input value={form.displayProtocol} onChange={e => f('displayProtocol', e.target.value)}
+                    placeholder="MTN Protocol, Orange Protocol, SXB Premium…"
+                    className="w-full px-3 py-2.5 bg-[#07090e] border border-emerald-500/30 rounded-xl text-white text-sm focus:outline-none focus:border-emerald-500" />
+                  <p className="text-xs text-gray-600 mt-1">
+                    Ce nom sera affiché sur l'appli mobile à la place du protocole technique (SSH, VLESS…).
+                    Laissez vide pour afficher le protocole technique.
+                  </p>
                 </div>
                 <div className="col-span-2">
                   <label className="block text-sm text-gray-400 mb-1.5">Description</label>

@@ -4,7 +4,8 @@ export interface VpnProfile {
   id: string;
   name: string;
   description?: string;
-  protocol: string; // ssh | vless | vmess | trojan | shadowsocks | singbox
+  protocol: string;         // Protocole technique : ssh | vless | vmess | trojan | shadowsocks | singbox
+  displayProtocol?: string; // Nom commercial affiché sur mobile : "MTN Protocol", "Orange Protocol"
   host: string;
   port: number;
   username?: string;

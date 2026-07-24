@@ -613,6 +613,79 @@ router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => 
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/mobile/connections — toutes les connexions VPN d'un client
+// Retourne chaque Subscription avec displayProtocol ET technicalProtocol séparés
+// ─────────────────────────────────────────────────────────────────────────────
+router.get("/connections", async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const client: any = await findClientByUserId(req.user!.userId);
+    if (!client) {
+      return res.status(404).json({ error: "errors.mobile.no_account", message: "Aucun compte VPN associé" });
+    }
+
+    if (!prisma) {
+      return res.json({ connections: [] });
+    }
+
+    const subscriptions = await (prisma as any).subscription.findMany({
+      where:   { clientId: client.id },
+      orderBy: { createdAt: "desc" },
+      include: { profile: true },
+    });
+
+    const now = Date.now();
+
+    const connections = subscriptions.map((sub: any) => {
+      const profile = sub.profile || null;
+
+      // Protocol technique (SSH, VLESS, Trojan…)
+      const technicalProtocol = profile?.protocol || "ssh";
+
+      // Protocol affiché (nom commercial défini dans le dashboard, sinon fallback technique)
+      const displayProtocol = profile?.displayProtocol ||
+        (technicalProtocol === "ssh+payload" ? "SSH+Payload" : technicalProtocol.toUpperCase());
+
+      const totalBytes     = Number(sub.quotaBytes ?? 0);
+      const usedBytes      = Number(sub.quotaUsed  ?? 0);
+      const remainingBytes = Math.max(totalBytes - usedBytes, 0);
+      const GB             = 1024 ** 3;
+
+      // Calculer le statut réel (expired si dépassé la date)
+      let status = sub.status;
+      if (status === "active" && sub.expireAt && new Date(sub.expireAt).getTime() < now) {
+        status = "expired";
+      }
+
+      return {
+        id:                sub.id,
+        name:              sub.name || "Connexion VPN",
+        displayProtocol,
+        technicalProtocol,
+        server:            profile?.host || "—",
+        port:              profile?.port || 0,
+        quota: {
+          totalGB:     totalBytes / GB,
+          usedGB:      usedBytes  / GB,
+          remainingGB: remainingBytes / GB,
+          totalBytes,
+          usedBytes,
+        },
+        duration:   sub.durationDays,
+        expiresAt:  sub.expireAt ? new Date(sub.expireAt).toISOString() : null,
+        status,
+        dataToken:  sub.dataToken,
+        createdAt:  sub.createdAt ? new Date(sub.createdAt).toISOString() : new Date().toISOString(),
+      };
+    });
+
+    return res.json({ connections });
+  } catch (err) {
+    console.error("Mobile /connections error:", err);
+    return res.status(500).json({ error: "errors.server", message: "Impossible de charger les connexions" });
+  }
+});
+
 // POST /api/mobile/vpn/usage — support usage data upload for V2Ray / general configs (Dashboard sync)
 const usageSchema = z.object({
   download:       z.number().int().min(0),       // bytes
