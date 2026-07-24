@@ -94,12 +94,13 @@ jobs:
             echo "📦 Install backend dependencies..."
             cd backend
             npm install --legacy-peer-deps --no-audit 2>&1 | tail -3
-            # Generate Prisma client from /tmp to avoid pnpm-workspace interference
-            mkdir -p /tmp/prisma-gen && cp /var/www/sxb-vpn/prisma/schema.prisma /tmp/prisma-gen/
-            echo '{"name":"pg","version":"1.0.0"}' > /tmp/prisma-gen/package.json
+            # Generate the client in backend/node_modules, which is the directory
+            # PM2 resolves through NODE_PATH at runtime. Generating from /tmp
+            # leaves the deployed client without runtime/library.js.
             NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
               node /var/www/sxb-vpn/backend/node_modules/prisma/build/index.js generate \
-              --schema=/tmp/prisma-gen/schema.prisma 2>&1 | tail -3 || true
+              --schema=/var/www/sxb-vpn/backend/prisma/schema.prisma
+            test -f /var/www/sxb-vpn/backend/node_modules/.prisma/client/runtime/library.js
             cd /var/www/sxb-vpn
 
             echo "🔑 Fix permissions complètes (évite EACCES pnpm)..."
@@ -126,8 +127,8 @@ jobs:
             DB_URL=$(grep DATABASE_URL .env | cut -d= -f2-)
             NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
               node /var/www/sxb-vpn/backend/node_modules/prisma/build/index.js db push \
-              --schema=prisma/schema.prisma \
-              --accept-data-loss 2>&1 | tail -5 || true
+              --schema=backend/prisma/schema.prisma \
+              --accept-data-loss 2>&1 | tail -5
 
             echo "🔄 Reload PM2..."
             pm2 restart ecosystem.config.cjs --update-env || pm2 start ecosystem.config.cjs
