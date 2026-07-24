@@ -52,29 +52,30 @@ function Row({
       <Text style={[styles.rowLabel, destructive && { color: Colors.disconnected }, disabled && { color: Colors.textMuted }]}>
         {label}
       </Text>
-      {badge && (
-        <View style={[styles.badge, { backgroundColor: (badgeColor || Colors.primary) + "20", borderColor: (badgeColor || Colors.primary) + "40" }]}>
-          <Text style={[styles.badgeText, { color: badgeColor || Colors.primary }]}>{badge}</Text>
-        </View>
-      )}
       {toggle ? (
         <Switch
           value={toggleValue}
           onValueChange={onToggle}
-          trackColor={{ false: Colors.border, true: c + "60" }}
+          trackColor={{ false: Colors.border, true: c + "40" }}
           thumbColor={toggleValue ? c : Colors.textMuted}
-          disabled={disabled}
+          style={styles.rowSwitch}
         />
       ) : value ? (
-        <Text style={styles.rowValue} numberOfLines={1}>{value}</Text>
-      ) : onPress ? (
+        <Text style={styles.rowValue}>{value}</Text>
+      ) : badge ? (
+        <View style={[styles.rowBadge, { backgroundColor: (badgeColor || c) + "20" }]}>
+          <Text style={[styles.rowBadgeText, { color: badgeColor || c }]}>{badge}</Text>
+        </View>
+      ) : (
         <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
-      ) : null}
+      )}
     </Pressable>
   );
 }
 
-function Section({ title, children, subtitle }: { title: string; children: React.ReactNode; subtitle?: string }) {
+// ── Section component ────────────────────────────────────────────────────────
+
+function Section({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
     <View style={styles.section}>
       <View style={styles.sectionHeader}>
@@ -125,215 +126,131 @@ function V2rayJsonModal({ visible, onSave, onClose }: {
   visible: boolean; onSave: (config: any) => Promise<void>; onClose: () => void;
 }) {
   const [jsonText, setJsonText] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [parsedConfig, setParsedConfig] = useState<any | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
 
-  const handleValidate = () => {
-    setError(null);
-    setParsedConfig(null);
-    if (!jsonText.trim()) {
-      setError("Le texte JSON est vide");
-      return null;
-    }
+  const handleSave = async () => {
+    setError("");
     try {
-      const parsed = JSON.parse(jsonText.trim());
-
-      // Auto-conversion of common V2Ray JSON configurations
-      // Standardizes fields to SXB-Vpn format (host, port, protocol, uuid, path, network, tls, etc.)
-      const normalized: any = {
-        protocol: parsed.protocol || parsed.type || "vless",
-        host: parsed.host || parsed.address || parsed.add || parsed.server || "",
-        port: Number(parsed.port || parsed.server_port || 443),
-        uuid: parsed.uuid || parsed.id || parsed.password || "",
-        password: parsed.password || parsed.uuid || parsed.id || "",
-        network: parsed.network || parsed.net || "ws",
-        path: parsed.path || parsed.wsPath || "/",
-        tls: parsed.tls === "tls" || parsed.tls === true || parsed.security === "tls" || false,
-        sni: parsed.sni || parsed.host || parsed.serverName || "",
-        flow: parsed.flow || "",
-      };
-
-      if (!normalized.host) {
-        setError("Erreur : l'hôte (host/address) est obligatoire");
-        return null;
-      }
-
-      setParsedConfig(normalized);
-      return normalized;
-    } catch (e: any) {
-      setError(`Erreur de syntaxe JSON : ${e.message}`);
-      return null;
-    }
-  };
-
-  const handleApply = async () => {
-    const config = handleValidate();
-    if (!config) return;
-    try {
-      await onSave(config);
-      Alert.alert("✅ Configuration enregistrée", "La configuration V2Ray a été appliquée avec succès !");
+      const parsed = JSON.parse(jsonText);
+      setSaving(true);
+      await onSave(parsed);
+      setSaving(false);
       onClose();
-    } catch (err: any) {
-      setError(`Erreur d'application : ${err.message}`);
+    } catch (e: any) {
+      setError(e.message || "JSON invalide");
+      setSaving(false);
     }
-  };
-
-  return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={styles.logsOverlay}>
-        <View style={[styles.logsSheet, { maxHeight: "85%", minHeight: 450 }]}>
-          <View style={styles.logsHeader}>
-            <View style={styles.logsHandle} />
-            <Text style={styles.logsTitle}>Éditeur JSON V2Ray</Text>
-            <Pressable onPress={onClose}>
-              <Ionicons name="close" size={22} color={Colors.textSecondary} />
-            </Pressable>
-          </View>
-
-          <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
-            <Text style={{ fontSize: 12, color: Colors.textMuted, marginBottom: 8 }}>
-              Collez ou écrivez une configuration V2Ray au format JSON brut (VLESS, VMess, Trojan, Shadowsocks).
-            </Text>
-
-            <TextInput
-              style={{
-                backgroundColor: "#060914",
-                borderWidth: 1,
-                borderColor: Colors.border,
-                borderRadius: 12,
-                color: "#00FF66",
-                fontFamily: "monospace",
-                fontSize: 12,
-                padding: 12,
-                minHeight: 180,
-                textAlignVertical: "top",
-              }}
-              multiline
-              placeholder={`{\n  "protocol": "vless",\n  "address": "mon-serveur.com",\n  "port": 443,\n  "id": "votre-uuid-ici",\n  "tls": true\n}`}
-              placeholderTextColor={Colors.textMuted}
-              value={jsonText}
-              onChangeText={(t) => { setJsonText(t); setError(null); setParsedConfig(null); }}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-
-            {error && (
-              <View style={{ backgroundColor: "rgba(255, 68, 68, 0.1)", borderWidth: 1, borderColor: "rgba(255, 68, 68, 0.3)", borderRadius: 10, padding: 10, marginTop: 12 }}>
-                <Text style={{ color: "#FF4444", fontSize: 12, fontFamily: "Inter_500Medium" }}>{error}</Text>
-              </View>
-            )}
-
-            {parsedConfig && (
-              <View style={{ backgroundColor: "rgba(0, 255, 102, 0.05)", borderWidth: 1, borderColor: "rgba(0, 255, 102, 0.2)", borderRadius: 10, padding: 12, marginTop: 12, gap: 4 }}>
-                <Text style={{ color: "#00FF66", fontSize: 11, fontWeight: "700", letterSpacing: 1 }}>PRÉVISUALISATION ET CONVERSION</Text>
-                <View style={{ flexDirection: "row", justifyContent: "space-between" }}><Text style={{ color: Colors.textMuted, fontSize: 12 }}>Protocole :</Text><Text style={{ color: "#FFF", fontSize: 12, fontWeight: "700" }}>{parsedConfig.protocol?.toUpperCase()}</Text></View>
-                <View style={{ flexDirection: "row", justifyContent: "space-between" }}><Text style={{ color: Colors.textMuted, fontSize: 12 }}>Serveur / Host :</Text><Text style={{ color: "#FFF", fontSize: 12 }}>{parsedConfig.host}</Text></View>
-                <View style={{ flexDirection: "row", justifyContent: "space-between" }}><Text style={{ color: Colors.textMuted, fontSize: 12 }}>Port :</Text><Text style={{ color: "#FFF", fontSize: 12 }}>{parsedConfig.port}</Text></View>
-                <View style={{ flexDirection: "row", justifyContent: "space-between" }}><Text style={{ color: Colors.textMuted, fontSize: 12 }}>ID / UUID :</Text><Text style={{ color: "#FFF", fontSize: 12 }}>{parsedConfig.uuid ? `${parsedConfig.uuid.slice(0, 18)}...` : "—"}</Text></View>
-                <View style={{ flexDirection: "row", justifyContent: "space-between" }}><Text style={{ color: Colors.textMuted, fontSize: 12 }}>TLS :</Text><Text style={{ color: "#FFF", fontSize: 12 }}>{parsedConfig.tls ? "Actif (ON)" : "Inactif (OFF)"}</Text></View>
-                <View style={{ flexDirection: "row", justifyContent: "space-between" }}><Text style={{ color: Colors.textMuted, fontSize: 12 }}>Réseau / Transport :</Text><Text style={{ color: "#FFF", fontSize: 12 }}>{parsedConfig.network?.toUpperCase() || "TCP"}</Text></View>
-                {parsedConfig.path && <View style={{ flexDirection: "row", justifyContent: "space-between" }}><Text style={{ color: Colors.textMuted, fontSize: 12 }}>Path (WS) :</Text><Text style={{ color: "#FFF", fontSize: 12 }}>{parsedConfig.path}</Text></View>}
-              </View>
-            )}
-
-            <View style={{ flexDirection: "row", gap: 10, marginTop: 16, marginBottom: 12 }}>
-              <Pressable onPress={handleValidate} style={{ flex: 1, paddingVertical: 12, borderRadius: 12, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.bgCard, alignItems: "center" }}>
-                <Text style={{ color: "#FFF", fontFamily: "Inter_600SemiBold", fontSize: 13 }}>Valider le JSON</Text>
-              </Pressable>
-              <Pressable onPress={handleApply} style={{ flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: Colors.primaryDim, borderWidth: 1, borderColor: Colors.primary + "40", alignItems: "center" }}>
-                <Text style={{ color: Colors.primary, fontFamily: "Inter_700Bold", fontSize: 13 }}>Appliquer</Text>
-              </Pressable>
-            </View>
-          </ScrollView>
-        </View>
-      </View>
-    </Modal>
-  );
-}
-
-// ── Logs modal ────────────────────────────────────────────────────────────────
-
-function LogsModal({ visible, logs, onClose }: { visible: boolean; logs: string[]; onClose: () => void }) {
-  return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={styles.logsOverlay}>
-        <View style={styles.logsSheet}>
-          <View style={styles.logsHeader}>
-            <View style={styles.logsHandle} />
-            <Text style={styles.logsTitle}>Logs VPN</Text>
-            <Pressable onPress={onClose}>
-              <Ionicons name="close" size={22} color={Colors.textSecondary} />
-            </Pressable>
-          </View>
-          <ScrollView style={styles.logsScroll} showsVerticalScrollIndicator={false}>
-            {logs.length === 0 ? (
-              <Text style={styles.logsEmpty}>Aucun log disponible</Text>
-            ) : logs.map((l, i) => (
-              <Text key={i} style={[
-                styles.logLine,
-                l.startsWith("✅") && { color: Colors.connected },
-                l.startsWith("❌") && { color: Colors.disconnected },
-              ]}>{l}</Text>
-            ))}
-          </ScrollView>
-        </View>
-      </View>
-    </Modal>
-  );
-}
-
-// ── PIN modal ─────────────────────────────────────────────────────────────────
-
-function PinModal({ visible, mode, onSuccess, onClose }: {
-  visible: boolean; mode: "set" | "verify";
-  onSuccess: (pin: string) => void; onClose: () => void;
-}) {
-  const [pin, setPin] = useState("");
-  const [confirm, setConfirm] = useState("");
-  const [err, setErr] = useState("");
-
-  const handleSubmit = () => {
-    if (mode === "set") {
-      if (pin.length < 4) { setErr("PIN minimum 4 chiffres"); return; }
-      if (pin !== confirm) { setErr("Les PIN ne correspondent pas"); return; }
-      onSuccess(pin);
-    } else {
-      onSuccess(pin);
-    }
-    setPin(""); setConfirm(""); setErr("");
   };
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <View style={styles.modalOverlay}>
+      <Pressable style={styles.modalOverlay} onPress={onClose}>
+        <View style={styles.v2raySheet}>
+          <Text style={styles.v2rayTitle}>Importer une configuration JSON</Text>
+          <Text style={styles.v2rayHint}>Collez votre configuration V2Ray / VLESS / VMess / Trojan ici :</Text>
+          <TextInput
+            style={styles.v2rayInput}
+            value={jsonText}
+            onChangeText={setJsonText}
+            placeholder={`{\n  "protocol": "vless",\n  "address": "mon-serveur.com",\n  "port": 443,\n  "id": "votre-uuid-ici",\n  "tls": true\n}`}
+            placeholderTextColor={Colors.textMuted}
+            multiline
+            textAlignVertical="top"
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          {error ? <Text style={styles.v2rayError}>{error}</Text> : null}
+          <View style={styles.v2rayButtons}>
+            <Pressable onPress={onClose} style={styles.v2rayCancelBtn}>
+              <Text style={styles.v2rayCancelText}>Annuler</Text>
+            </Pressable>
+            <Pressable onPress={handleSave} disabled={saving || !jsonText.trim()} style={styles.v2raySaveBtn}>
+              {saving ? <ActivityIndicator color="#FFF" /> : <Text style={styles.v2raySaveText}>Importer</Text>}
+            </Pressable>
+          </View>
+        </View>
+      </Pressable>
+    </Modal>
+  );
+}
+
+// ── PIN Modal ─────────────────────────────────────────────────────────────────
+
+function PinModal({ visible, mode, onSet, onClose }: {
+  visible: boolean; mode: "set" | "verify"; onSet: (pin: string) => void; onClose: () => void;
+}) {
+  const [pin, setPin] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+
+  const handleSet = () => {
+    if (pin.length < 4) { setError("Le code doit contenir au moins 4 chiffres"); return; }
+    if (mode === "set" && pin !== confirm) { setError("Les codes ne correspondent pas"); return; }
+    onSet(pin);
+    setPin(""); setConfirm(""); setError("");
+  };
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.modalOverlay} onPress={onClose}>
         <View style={styles.pinSheet}>
-          <Text style={styles.pinTitle}>{mode === "set" ? "Définir un code PIN" : "Entrer le code PIN"}</Text>
-          {err ? <Text style={styles.pinErr}>{err}</Text> : null}
+          <Text style={styles.pinTitle}>{mode === "set" ? "Définir un code PIN" : "Entrer votre code PIN"}</Text>
           <TextInput
             style={styles.pinInput}
-            value={pin} onChangeText={setPin}
-            keyboardType="number-pad" secureTextEntry maxLength={8}
+            value={pin}
+            onChangeText={(t) => { setPin(t.replace(/\D/g, "")); setError(""); }}
             placeholder="••••" placeholderTextColor={Colors.textMuted}
-            autoFocus
+            keyboardType="number-pad" secureTextEntry maxLength={8}
           />
           {mode === "set" && (
             <TextInput
               style={styles.pinInput}
-              value={confirm} onChangeText={setConfirm}
-              keyboardType="number-pad" secureTextEntry maxLength={8}
+              value={confirm}
+              onChangeText={(t) => { setConfirm(t.replace(/\D/g, "")); setError(""); }}
               placeholder="Confirmer ••••" placeholderTextColor={Colors.textMuted}
+              keyboardType="number-pad" secureTextEntry maxLength={8}
             />
           )}
-          <View style={styles.pinBtns}>
-            <Pressable onPress={onClose} style={styles.pinBtnCancel}>
-              <Text style={styles.pinBtnCancelText}>Annuler</Text>
+          {error ? <Text style={styles.pinError}>{error}</Text> : null}
+          <View style={styles.pinButtons}>
+            <Pressable onPress={onClose} style={styles.pinCancelBtn}>
+              <Text style={styles.pinCancelText}>Annuler</Text>
             </Pressable>
-            <Pressable onPress={handleSubmit} style={styles.pinBtnOk}>
-              <Text style={styles.pinBtnOkText}>Confirmer</Text>
+            <Pressable onPress={handleSet} style={styles.pinSaveBtn}>
+              <Text style={styles.pinSaveText}>Confirmer</Text>
             </Pressable>
           </View>
         </View>
-      </View>
+      </Pressable>
+    </Modal>
+  );
+}
+
+// ── Logs Modal ────────────────────────────────────────────────────────────────
+
+function LogsModal({ visible, logs, onClose }: {
+  visible: boolean; logs: string[]; onClose: () => void;
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.modalOverlay} onPress={onClose}>
+        <View style={styles.logsSheet}>
+          <Text style={styles.logsTitle}>Logs VPN ({logs.length})</Text>
+          <ScrollView style={styles.logsScroll} contentContainerStyle={styles.logsContent}>
+            {logs.length === 0 ? (
+              <Text style={styles.logsEmpty}>Aucun log pour le moment</Text>
+            ) : (
+              logs.map((log, i) => (
+                <Text key={i} style={styles.logLine}>{log}</Text>
+              ))
+            )}
+          </ScrollView>
+          <Pressable onPress={onClose} style={styles.logsCloseBtn}>
+            <Text style={styles.logsCloseText}>Fermer</Text>
+          </Pressable>
+        </View>
+      </Pressable>
     </Modal>
   );
 }
@@ -354,6 +271,12 @@ export default function SettingsScreen() {
 
   // State
   const [notifPush,   setNotifPush]   = useState(true);
+
+  // Persist notification preference
+  const handleNotifToggle = async (v: boolean) => {
+    setNotifPush(v);
+    await AsyncStorage.setItem('@sxb_notif_push', v ? 'true' : 'false');
+  };
   const [v2rayModal,  setV2rayModal]  = useState(false);
   const [pinEnabled,  setPinEnabled]  = useState(false);
   const [pinModal,    setPinModal]    = useState<"set"|"verify"|null>(null);
@@ -378,6 +301,8 @@ export default function SettingsScreen() {
 
       // Load PIN setting
       const storedPin = await AsyncStorage.getItem("@sxb_pin");
+      const storedNotif = await AsyncStorage.getItem("@sxb_notif_push");
+      if (storedNotif !== null) setNotifPush(storedNotif === 'true');
       setPinEnabled(!!storedPin);
 
       // auto reconnect + kill switch viennent du VpnContext (synchronisés avec le service natif)
@@ -594,12 +519,7 @@ export default function SettingsScreen() {
             toggle toggleValue={pinEnabled} onToggle={handlePinToggle}
             color={Colors.warning}
           />
-          <View style={styles.divider} />
-          <Row
-            icon="finger-print-outline" label="Authentification biométrique"
-            toggle toggleValue={false} onToggle={() => Alert.alert("Bientôt disponible", "La biométrie sera activée dans la prochaine version.")}
-            color={Colors.warning} disabled
-          />
+
           <View style={styles.divider} />
           <Row
             icon="phone-portrait-outline" label="ID Appareil"
@@ -612,8 +532,8 @@ export default function SettingsScreen() {
         <Section title="APPARENCE & LANGUE">
           <Row
             icon="moon-outline" label="Thème sombre"
-            toggle toggleValue={true} onToggle={() => {}}
-            color={Colors.primary} disabled
+            value="Activé"
+            color={Colors.primary}
           />
           <View style={styles.divider} />
           <Row
@@ -627,89 +547,71 @@ export default function SettingsScreen() {
         <Section title="NOTIFICATIONS">
           <Row
             icon="notifications-outline" label="Notifications push"
-            toggle toggleValue={notifPush} onToggle={setNotifPush}
+            toggle toggleValue={notifPush} onToggle={handleNotifToggle}
           />
           <View style={styles.divider} />
           <Row
             icon="warning-outline" label="Alertes expiration forfait"
-            toggle toggleValue={notifPush} onToggle={setNotifPush}
+            toggle toggleValue={notifPush} onToggle={handleNotifToggle}
             color={Colors.warning}
           />
         </Section>
 
         {/* Data */}
-        <Section title="DONNÉES LOCALES">
+        <Section title="DONNÉES & STOCKAGE">
           <Row
-            icon="folder-outline" label="Données stockées"
-            value={storageSize} color={Colors.textMuted}
+            icon="server-outline" label="Taille du cache"
+            value={storageSize}
+            color={Colors.textMuted}
           />
           <View style={styles.divider} />
-          <Row
-            icon="trash-outline" label="Effacer les données locales"
-            onPress={handleClearData} destructive
-          />
+          <Pressable
+            onPress={handleClearData}
+            disabled={clearing}
+            style={({ pressed }) => [styles.row, pressed && { opacity: 0.7 }]}
+          >
+            <View style={[styles.rowIcon, { backgroundColor: Colors.disconnected + "15" }]}>
+              <Ionicons name="trash-outline" size={18} color={Colors.disconnected} />
+            </View>
+            <Text style={[styles.rowLabel, { color: Colors.disconnected }]}>
+              {clearing ? "Effacement..." : "Effacer les données locales"}
+            </Text>
+            {clearing ? <ActivityIndicator color={Colors.disconnected} size="small" /> : null}
+          </Pressable>
         </Section>
 
         {/* About */}
         <Section title="À PROPOS">
-          <Row icon="information-circle-outline" label="Version" value={`v${Constants.expoConfig?.version ?? "1.0.0"}`} />
+          <Row icon="information-circle-outline" label="Version" value={Constants.expoConfig?.version || "1.0.0"} color={Colors.textMuted} />
           <View style={styles.divider} />
-          <Row icon="code-slash-outline" label="Build" value={Constants.expoConfig?.android?.versionCode?.toString() ?? "1"} />
+          <Row icon="hardware-chip-outline" label="Moteur VPN" value="sing-box + JSch" color={Colors.textMuted} />
           <View style={styles.divider} />
-          <Row
-            icon="headset-outline" label="Support"
-            onPress={() => router.push("/support")} color={Colors.connected}
-          />
-          <View style={styles.divider} />
-          <Row icon="document-text-outline" label="CGU / Politique de confidentialité" onPress={() => {}} />
-        </Section>
-
-        {/* Diagnostic VPN — pour déboguer les connexions bloquées */}
-        <Section title="DIAGNOSTIC" subtitle="Outils de débogage tunnel VPN">
-          <Row
-            icon="bug-outline"
-            label="Diagnostic VPN"
-            badge="DEBUG"
-            badgeColor="#7C5FFF"
-            onPress={() => router.push("/vpn-debug")}
-            color="#7C5FFF"
-          />
+          <Pressable
+            onPress={() => router.push("/support")}
+            style={({ pressed }) => [styles.row, pressed && { opacity: 0.7 }]}
+          >
+            <View style={[styles.rowIcon, { backgroundColor: Colors.primary + "15" }]}>
+              <Ionicons name="help-circle-outline" size={18} color={Colors.primary} />
+            </View>
+            <Text style={styles.rowLabel}>Support & Aide</Text>
+            <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+          </Pressable>
         </Section>
 
         {/* Logout */}
-        {clearing ? (
-          <ActivityIndicator color={Colors.primary} style={{ marginTop: 8 }} />
-        ) : (
-          <Pressable onPress={handleLogout} style={styles.logoutBtn}>
-            <Ionicons name="log-out-outline" size={18} color={Colors.disconnected} />
-            <Text style={styles.logoutText}>Se déconnecter</Text>
-          </Pressable>
-        )}
+        <Pressable onPress={handleLogout} style={styles.logoutBtn}>
+          <Ionicons name="log-out-outline" size={20} color={Colors.disconnected} />
+          <Text style={styles.logoutText}>Se déconnecter</Text>
+        </Pressable>
 
-        <Text style={styles.footer}>SXB VPN — STUFF X BILAL</Text>
+        <Text style={styles.footerText}>SXB VPN © 2025 — Tous droits réservés</Text>
       </ScrollView>
 
       {/* Modals */}
-      <LangModal
-        visible={langModal} current={language}
-        onSelect={(code) => setLanguage(code as any)} onClose={() => setLangModal(false)}
-      />
-      <LogsModal
-        visible={logsModal} logs={logs}
-        onClose={() => setLogsModal(false)}
-      />
-      <V2rayJsonModal
-        visible={v2rayModal}
-        onSave={manuallySetConfig}
-        onClose={() => setV2rayModal(false)}
-      />
-      {pinModal && (
-        <PinModal
-          visible={true} mode={pinModal}
-          onSuccess={handlePinSet}
-          onClose={() => setPinModal(null)}
-        />
-      )}
+      <V2rayJsonModal visible={v2rayModal} onSave={manuallySetConfig} onClose={() => setV2rayModal(false)} />
+      <PinModal visible={pinModal === "set"} mode="set" onSet={handlePinSet} onClose={() => setPinModal(null)} />
+      <LangModal visible={langModal} current={language} onSelect={setLanguage} onClose={() => setLangModal(false)} />
+      <LogsModal visible={logsModal} logs={logs} onClose={() => setLogsModal(false)} />
     </LinearGradient>
   );
 }
@@ -717,56 +619,66 @@ export default function SettingsScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   content: { paddingHorizontal: 20, gap: 20 },
-  pageHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 4 },
-  backBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: Colors.bgCard, borderWidth: 1, borderColor: Colors.border, alignItems: "center", justifyContent: "center" },
-  pageTitle: { fontSize: 18, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold" },
-  accountCard: { flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: Colors.bgCard, borderRadius: 20, borderWidth: 1, borderColor: Colors.border, padding: 16 },
-  accountAvatar: { width: 52, height: 52, borderRadius: 26, backgroundColor: Colors.primaryDim, borderWidth: 1.5, borderColor: Colors.primary + "50", alignItems: "center", justifyContent: "center", flexShrink: 0 },
-  accountInitials: { fontSize: 20, fontWeight: "700", color: Colors.primary, fontFamily: "Inter_700Bold" },
-  accountName: { fontSize: 16, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold" },
+  pageHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
+  backBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: Colors.bgCard, alignItems: "center", justifyContent: "center" },
+  pageTitle: { fontSize: 20, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold" },
+  accountCard: { flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: Colors.bgCard, borderRadius: 18, borderWidth: 1, borderColor: Colors.border, padding: 16 },
+  accountAvatar: { width: 48, height: 48, borderRadius: 24, backgroundColor: Colors.primaryDim, alignItems: "center", justifyContent: "center" },
+  accountInitials: { fontSize: 18, fontWeight: "700", color: Colors.primary, fontFamily: "Inter_700Bold" },
+  accountName: { fontSize: 15, fontWeight: "600", color: "#FFF", fontFamily: "Inter_600SemiBold" },
   accountEmail: { fontSize: 12, color: Colors.textMuted, fontFamily: "Inter_400Regular" },
-  accountDotWrap: { alignItems: "center", justifyContent: "center" },
-  accountDot: { width: 10, height: 10, borderRadius: 5 },
-  section: { gap: 6 },
-  sectionHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingLeft: 4 },
-  sectionLabel: { fontSize: 10, fontWeight: "700", color: Colors.textMuted, letterSpacing: 1.5, fontFamily: "Inter_700Bold" },
-  sectionSubtitle: { fontSize: 10, color: Colors.textMuted, fontFamily: "Inter_400Regular" },
-  sectionCard: { backgroundColor: Colors.bgCard, borderRadius: 16, borderWidth: 1, borderColor: Colors.border, paddingHorizontal: 14 },
-  row: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 13 },
-  rowIcon: { width: 36, height: 36, borderRadius: 10, alignItems: "center", justifyContent: "center" },
-  rowLabel: { flex: 1, fontSize: 14, color: "#FFF", fontFamily: "Inter_500Medium" },
-  rowValue: { fontSize: 12, color: Colors.textMuted, fontFamily: "Inter_400Regular", maxWidth: 120 },
-  badge: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, borderWidth: 1 },
-  badgeText: { fontSize: 10, fontWeight: "700", fontFamily: "Inter_700Bold" },
-  divider: { height: 1, backgroundColor: Colors.border },
-  logoutBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 14, borderRadius: 14, borderWidth: 1, borderColor: Colors.disconnected + "40", backgroundColor: Colors.disconnectedDim },
-  logoutText: { fontSize: 15, fontWeight: "600", color: Colors.disconnected, fontFamily: "Inter_600SemiBold" },
-  footer: { textAlign: "center", fontSize: 10, color: Colors.textMuted, fontFamily: "Inter_400Regular", letterSpacing: 2 },
-  // Lang modal
-  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.7)", justifyContent: "center", padding: 20 },
-  langSheet: { backgroundColor: "#0A0F1C", borderRadius: 20, padding: 20, borderWidth: 1, borderColor: Colors.border },
-  langSheetTitle: { fontSize: 16, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold", marginBottom: 14, textAlign: "center" },
-  langRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 12, paddingHorizontal: 10, borderRadius: 12 },
-  langRowActive: { backgroundColor: Colors.primaryDim },
+  accountDotWrap: { width: 12, height: 12, borderRadius: 6, backgroundColor: Colors.bgInput, alignItems: "center", justifyContent: "center" },
+  accountDot: { width: 8, height: 8, borderRadius: 4 },
+  badge: { flexDirection: "row", alignItems: "center", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, borderWidth: 1, gap: 4 },
+  badgeText: { fontSize: 10, fontWeight: "600", fontFamily: "Inter_600SemiBold" },
+  section: { gap: 10 },
+  sectionHeader: { paddingHorizontal: 4 },
+  sectionLabel: { fontSize: 11, fontWeight: "700", color: Colors.textMuted, letterSpacing: 1.2, fontFamily: "Inter_700Bold" },
+  sectionSubtitle: { fontSize: 11, color: Colors.textMuted, fontFamily: "Inter_400Regular", marginTop: 2 },
+  sectionCard: { backgroundColor: Colors.bgCard, borderRadius: 16, borderWidth: 1, borderColor: Colors.border, overflow: "hidden" },
+  row: { flexDirection: "row", alignItems: "center", padding: 14, gap: 12, minHeight: 52 },
+  rowIcon: { width: 34, height: 34, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  rowLabel: { flex: 1, fontSize: 14, fontWeight: "500", color: "#FFF", fontFamily: "Inter_500Medium" },
+  rowValue: { fontSize: 13, color: Colors.textMuted, fontFamily: "Inter_400Regular" },
+  rowSwitch: { transform: [{ scale: 0.85 }] },
+  rowBadge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8 },
+  rowBadgeText: { fontSize: 10, fontWeight: "700", fontFamily: "Inter_700Bold" },
+  divider: { height: 1, backgroundColor: Colors.border, marginHorizontal: 14 },
+  modalOverlay: { flex: 1, backgroundColor: Colors.overlay, justifyContent: "center", alignItems: "center", padding: 24 },
+  langSheet: { backgroundColor: Colors.bgCard, borderRadius: 20, padding: 20, width: "100%", maxWidth: 360, gap: 8, borderWidth: 1, borderColor: Colors.border },
+  langSheetTitle: { fontSize: 18, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold", marginBottom: 8 },
+  langRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 12, paddingHorizontal: 12, borderRadius: 12, borderWidth: 1, borderColor: Colors.border },
+  langRowActive: { borderColor: Colors.primary + "50", backgroundColor: Colors.primaryDim },
   langFlag: { fontSize: 24 },
-  langLabel: { flex: 1, fontSize: 15, color: "#FFF", fontFamily: "Inter_500Medium" },
-  // Logs modal
-  logsOverlay: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(6,9,20,0.8)" },
-  logsSheet: { backgroundColor: "#0A0F1C", borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, maxHeight: "65%", minHeight: 250 },
-  logsHandle: { width: 36, height: 4, backgroundColor: Colors.border, borderRadius: 2, alignSelf: "center", marginBottom: 4 },
-  logsHeader: { flexDirection: "row", alignItems: "center", gap: 10, paddingBottom: 12 },
-  logsTitle: { flex: 1, fontSize: 16, fontWeight: "600", color: "#FFF", fontFamily: "Inter_600SemiBold" },
+  langLabel: { flex: 1, fontSize: 15, fontWeight: "500", color: "#FFF", fontFamily: "Inter_500Medium" },
+  v2raySheet: { backgroundColor: Colors.bgCard, borderRadius: 20, padding: 20, width: "100%", maxWidth: 400, gap: 10, borderWidth: 1, borderColor: Colors.border },
+  v2rayTitle: { fontSize: 18, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold" },
+  v2rayHint: { fontSize: 12, color: Colors.textMuted, fontFamily: "Inter_400Regular" },
+  v2rayInput: { backgroundColor: Colors.bgInput, borderRadius: 12, borderWidth: 1, borderColor: Colors.border, padding: 12, minHeight: 120, color: "#FFF", fontSize: 13, fontFamily: "Inter_400Regular", lineHeight: 18 },
+  v2rayError: { fontSize: 12, color: Colors.disconnected, fontFamily: "Inter_400Regular" },
+  v2rayButtons: { flexDirection: "row", justifyContent: "flex-end", gap: 10, marginTop: 4 },
+  v2rayCancelBtn: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12, borderWidth: 1, borderColor: Colors.border },
+  v2rayCancelText: { fontSize: 14, color: Colors.textMuted, fontFamily: "Inter_500Medium" },
+  v2raySaveBtn: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12, backgroundColor: Colors.primary },
+  v2raySaveText: { fontSize: 14, fontWeight: "600", color: "#060914", fontFamily: "Inter_600SemiBold" },
+  pinSheet: { backgroundColor: Colors.bgCard, borderRadius: 20, padding: 20, width: "100%", maxWidth: 340, gap: 10, borderWidth: 1, borderColor: Colors.border },
+  pinTitle: { fontSize: 18, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold", marginBottom: 4 },
+  pinInput: { backgroundColor: Colors.bgInput, borderRadius: 12, borderWidth: 1, borderColor: Colors.border, padding: 14, color: "#FFF", fontSize: 18, textAlign: "center", fontFamily: "Inter_600SemiBold", letterSpacing: 8 },
+  pinError: { fontSize: 12, color: Colors.disconnected, fontFamily: "Inter_400Regular" },
+  pinButtons: { flexDirection: "row", justifyContent: "flex-end", gap: 10, marginTop: 4 },
+  pinCancelBtn: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12, borderWidth: 1, borderColor: Colors.border },
+  pinCancelText: { fontSize: 14, color: Colors.textMuted, fontFamily: "Inter_500Medium" },
+  pinSaveBtn: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12, backgroundColor: Colors.primary },
+  pinSaveText: { fontSize: 14, fontWeight: "600", color: "#060914", fontFamily: "Inter_600SemiBold" },
+  logsSheet: { backgroundColor: Colors.bgCard, borderRadius: 20, padding: 20, width: "100%", maxWidth: 400, maxHeight: "80%", gap: 10, borderWidth: 1, borderColor: Colors.border },
+  logsTitle: { fontSize: 16, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold" },
   logsScroll: { flex: 1 },
-  logsEmpty: { color: Colors.textMuted, fontFamily: "Inter_400Regular", fontSize: 13, textAlign: "center", paddingTop: 20 },
-  logLine: { fontSize: 12, color: Colors.textSecondary, fontFamily: "Inter_400Regular", paddingVertical: 2 },
-  // PIN modal
-  pinSheet: { backgroundColor: "#0A0F1C", borderRadius: 20, padding: 24, borderWidth: 1, borderColor: Colors.border, gap: 14 },
-  pinTitle: { fontSize: 16, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold", textAlign: "center" },
-  pinErr: { color: Colors.disconnected, fontSize: 12, fontFamily: "Inter_400Regular", textAlign: "center" },
-  pinInput: { backgroundColor: "#060914", borderWidth: 1, borderColor: Colors.border, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 16, color: "#FFF", fontSize: 20, fontFamily: "Inter_700Bold", textAlign: "center", letterSpacing: 8 },
-  pinBtns: { flexDirection: "row", gap: 10, marginTop: 4 },
-  pinBtnCancel: { flex: 1, paddingVertical: 12, borderRadius: 12, borderWidth: 1, borderColor: Colors.border, alignItems: "center" },
-  pinBtnCancelText: { color: Colors.textMuted, fontFamily: "Inter_500Medium", fontSize: 14 },
-  pinBtnOk: { flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: Colors.primaryDim, borderWidth: 1, borderColor: Colors.primary + "40", alignItems: "center" },
-  pinBtnOkText: { color: Colors.primary, fontFamily: "Inter_600SemiBold", fontSize: 14 },
+  logsContent: { gap: 6 },
+  logsEmpty: { fontSize: 13, color: Colors.textMuted, fontFamily: "Inter_400Regular", textAlign: "center", paddingVertical: 20 },
+  logLine: { fontSize: 11, color: Colors.textSecondary, fontFamily: "Inter_400Regular", lineHeight: 16 },
+  logsCloseBtn: { alignSelf: "center", paddingHorizontal: 20, paddingVertical: 10, borderRadius: 12, backgroundColor: Colors.primary, marginTop: 8 },
+  logsCloseText: { fontSize: 14, fontWeight: "600", color: "#060914", fontFamily: "Inter_600SemiBold" },
+  logoutBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 14, borderRadius: 14, borderWidth: 1, borderColor: Colors.disconnected + "30", backgroundColor: Colors.disconnected + "10" },
+  logoutText: { fontSize: 14, fontWeight: "600", color: Colors.disconnected, fontFamily: "Inter_600SemiBold" },
+  footerText: { fontSize: 11, color: Colors.textMuted, fontFamily: "Inter_400Regular", textAlign: "center", marginBottom: 10 },
 });
