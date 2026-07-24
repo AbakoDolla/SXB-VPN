@@ -45,6 +45,32 @@ export interface VpnConfigResponse {
   subscription: string;
 }
 
+// ── VPN Connections (GET /api/mobile/connections) ─────────────────────────────
+export interface VpnConnection {
+  id: string;
+  name: string;
+  displayProtocol: string;    // Nom commercial : "MTN Protocol", "Orange Protocol"
+  technicalProtocol: string;  // Protocole réel : "ssh", "vless", "trojan"…
+  server: string;
+  port: number;
+  quota: {
+    totalGB: number;
+    usedGB: number;
+    remainingGB: number;
+    totalBytes: number;
+    usedBytes: number;
+  };
+  duration: number;           // jours
+  expiresAt: string | null;
+  status: string;             // active | expired | revoked | suspended
+  dataToken: string;
+  createdAt: string;
+}
+
+export interface ConnectionsResponse {
+  connections: VpnConnection[];
+}
+
 export interface HistoryItem {
   id: string;
   action: string;

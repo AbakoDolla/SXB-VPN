@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Animated, Dimensions, Image, Modal, Pressable,
   ScrollView, StyleSheet, Text, View, ActivityIndicator,
@@ -13,6 +13,7 @@ import apiClient from "@/services/apiClient";
 import { useAuthContext } from "@/contexts/AuthContext";
 import { useVpnContext, formatBytes, formatSpeed } from "@/contexts/VpnContext";
 import Colors from "@/constants/colors";
+import type { VpnConnection } from "@/types/api";
 
 const { width } = Dimensions.get("window");
 const LOGO = require("@/assets/images/icon.png");
@@ -98,11 +99,82 @@ function VpnLogsModal({
   );
 }
 
+// ── VPN Connection Card ───────────────────────────────────────────────────────
+function VpnConnectionCard({ conn, isActive }: { conn: VpnConnection; isActive: boolean }) {
+  const now = Date.now();
+  const isExpired  = conn.status === "expired" || (conn.expiresAt ? new Date(conn.expiresAt).getTime() < now : false);
+  const isRevoked  = conn.status === "revoked";
+  const isSuspended = conn.status === "suspended";
+
+  const statusColor = isExpired || isRevoked || isSuspended
+    ? Colors.disconnected
+    : isActive
+    ? Colors.connected
+    : Colors.primary;
+
+  const pct = conn.quota.totalGB > 0
+    ? Math.min((conn.quota.usedGB / conn.quota.totalGB) * 100, 100)
+    : 0;
+
+  const statusLabel = isExpired ? "Expiré" : isRevoked ? "Révoqué" : isSuspended ? "Suspendu" : isActive ? "Actif" : "Actif";
+
+  return (
+    <View style={[connStyles.card, isActive && connStyles.cardActive]}>
+      {/* Header */}
+      <View style={connStyles.cardHeader}>
+        <View style={{ flex: 1 }}>
+          <Text style={connStyles.connName} numberOfLines={1}>{conn.name}</Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 }}>
+            <View style={[connStyles.protoBadge, { borderColor: statusColor + "40", backgroundColor: statusColor + "15" }]}>
+              <Text style={[connStyles.protoText, { color: statusColor }]}>{conn.displayProtocol}</Text>
+            </View>
+            {conn.displayProtocol !== conn.technicalProtocol.toUpperCase() && (
+              <Text style={connStyles.techProto}>{conn.technicalProtocol.toUpperCase()}</Text>
+            )}
+          </View>
+        </View>
+        <View style={[connStyles.statusDot, { backgroundColor: statusColor }]} />
+        <Text style={[connStyles.statusLabel, { color: statusColor }]}>{statusLabel}</Text>
+      </View>
+
+      {/* Quota */}
+      <View style={connStyles.quotaRow}>
+        <View style={connStyles.quotaItem}>
+          <Text style={connStyles.quotaVal}>{conn.quota.remainingGB.toFixed(1)} GB</Text>
+          <Text style={connStyles.quotaLbl}>Restant</Text>
+        </View>
+        <View style={connStyles.quotaDivider} />
+        <View style={connStyles.quotaItem}>
+          <Text style={connStyles.quotaVal}>{conn.quota.usedGB.toFixed(1)} GB</Text>
+          <Text style={connStyles.quotaLbl}>Utilisé</Text>
+        </View>
+        <View style={connStyles.quotaDivider} />
+        <View style={connStyles.quotaItem}>
+          <Text style={connStyles.quotaVal}>{conn.quota.totalGB.toFixed(1)} GB</Text>
+          <Text style={connStyles.quotaLbl}>Total</Text>
+        </View>
+      </View>
+
+      {/* Progress */}
+      <View style={connStyles.progressBg}>
+        <View style={[connStyles.progressFill, { width: `${pct}%` as any, backgroundColor: pct > 80 ? Colors.disconnected : statusColor }]} />
+      </View>
+
+      {/* Expiration */}
+      {conn.expiresAt && (
+        <Text style={connStyles.expire}>
+          Expire le {new Date(conn.expiresAt).toLocaleDateString("fr-FR")}
+        </Text>
+      )}
+    </View>
+  );
+}
+
 // ── Main Home Screen ──────────────────────────────────────────────────────────
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const { user, accountState, refreshAccountState, deviceId } = useAuthContext();
-  const { isConnected, isConnecting, selectedProtocol, subscriptionUrl, hasValidConfig, connect, disconnect, trafficStats: traffic, refreshVpnConfig } = useVpnContext();
+  const { isConnected, isConnecting, selectedProtocol, connectedProtocol, subscriptionUrl, hasValidConfig, connect, disconnect, trafficStats: traffic, refreshVpnConfig } = useVpnContext();
 
   const [logsVisible, setLogsVisible] = useState(false);
   const [timer, setTimer] = useState(0);
@@ -110,6 +182,8 @@ export default function HomeScreen() {
   const [ping, setPing] = useState<number | null>(null);
   const [connectedIp, setConnectedIp] = useState<string>("—");
   const [lastConnection, setLastConnection] = useState<string>("—");
+  const [connections, setConnections] = useState<VpnConnection[]>([]);
+  const [connectionsLoading, setConnectionsLoading] = useState(false);
 
   useEffect(() => {
     let timerId: ReturnType<typeof setInterval>;
@@ -155,12 +229,25 @@ export default function HomeScreen() {
     });
   }, []);
 
+  const fetchConnections = useCallback(async () => {
+    try {
+      setConnectionsLoading(true);
+      const res = await apiClient.get("/mobile/connections");
+      setConnections(res.data?.connections || []);
+    } catch {
+      // ignore — non-bloquant
+    } finally {
+      setConnectionsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchConnections(); }, [fetchConnections]);
+
   const handleRefresh = async () => {
     if (isRefreshing) return;
     setIsRefreshing(true);
     try {
-      await refreshVpnConfig();
-      await refreshAccountState();
+      await Promise.all([refreshVpnConfig(), refreshAccountState(), fetchConnections()]);
     } catch (_) {
     } finally {
       setIsRefreshing(false);
@@ -462,7 +549,9 @@ export default function HomeScreen() {
             </View>
             <View style={styles.infoRow}>
               <Text style={styles.infoKey}>Protocole</Text>
-              <Text style={styles.infoVal}>{selectedProtocol || "SSH"}</Text>
+              <Text style={styles.infoVal}>
+                {isConnected && connectedProtocol ? connectedProtocol : (selectedProtocol || "SSH")}
+              </Text>
             </View>
             <View style={styles.infoRow}>
               <Text style={styles.infoKey}>Ping</Text>
@@ -481,6 +570,39 @@ export default function HomeScreen() {
               <Text style={styles.infoVal}>v{Constants.expoConfig?.version ?? "1.0.0"}</Text>
             </View>
           </View>
+        </View>
+
+        {/* ── VPN Connections ─────────────────────────────────────────── */}
+        <View style={styles.statsCard}>
+          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <Text style={styles.cardLabel}>VPN CONNECTIONS</Text>
+            <Pressable onPress={fetchConnections} disabled={connectionsLoading} style={{ padding: 4 }}>
+              {connectionsLoading
+                ? <ActivityIndicator size="small" color={Colors.primary} />
+                : <Ionicons name="refresh" size={16} color={Colors.primary} />
+              }
+            </Pressable>
+          </View>
+
+          {connections.length === 0 ? (
+            <View style={{ alignItems: "center", paddingVertical: 16 }}>
+              <Ionicons name="shield-outline" size={32} color={Colors.textMuted} style={{ marginBottom: 8 }} />
+              <Text style={{ fontSize: 13, color: Colors.textMuted, fontFamily: "Inter_400Regular" }}>
+                {connectionsLoading ? "Chargement..." : "Aucune connexion VPN configurée"}
+              </Text>
+              <Text style={{ fontSize: 11, color: Colors.textMuted, marginTop: 4, fontFamily: "Inter_400Regular" }}>
+                Demandez à votre administrateur de créer un forfait
+              </Text>
+            </View>
+          ) : (
+            connections.map((conn) => (
+              <VpnConnectionCard
+                key={conn.id}
+                conn={conn}
+                isActive={conn.status === "active"}
+              />
+            ))
+          )}
         </View>
 
         {/* Quick actions */}
@@ -567,4 +689,101 @@ const styles = StyleSheet.create({
   quickItem: { flex: 1, alignItems: "center", gap: 8 },
   quickIcon: { width: 52, height: 52, borderRadius: 16, borderWidth: 1, alignItems: "center", justifyContent: "center" },
   quickLabel: { fontSize: 11, color: Colors.textSecondary, fontFamily: "Inter_500Medium", textAlign: "center" },
+});
+
+// ── VPN Connection Card Styles ────────────────────────────────────────────────
+const connStyles = StyleSheet.create({
+  card: {
+    backgroundColor: Colors.bgCard,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    padding: 14,
+    gap: 10,
+    marginTop: 10,
+  },
+  cardActive: {
+    borderColor: Colors.primary + "30",
+  },
+  cardHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+  },
+  connName: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#FFF",
+    fontFamily: "Inter_600SemiBold",
+    flex: 1,
+  },
+  protoBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  protoText: {
+    fontSize: 10,
+    fontWeight: "700",
+    fontFamily: "Inter_700Bold",
+    letterSpacing: 0.5,
+  },
+  techProto: {
+    fontSize: 10,
+    color: Colors.textMuted,
+    fontFamily: "Inter_400Regular",
+  },
+  statusDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    marginTop: 6,
+  },
+  statusLabel: {
+    fontSize: 11,
+    fontFamily: "Inter_500Medium",
+    marginTop: 4,
+  },
+  quotaRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  quotaItem: {
+    flex: 1,
+    alignItems: "center",
+    gap: 2,
+  },
+  quotaDivider: {
+    width: 1,
+    height: 28,
+    backgroundColor: Colors.border,
+  },
+  quotaVal: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#FFF",
+    fontFamily: "Inter_700Bold",
+  },
+  quotaLbl: {
+    fontSize: 10,
+    color: Colors.textMuted,
+    fontFamily: "Inter_400Regular",
+  },
+  progressBg: {
+    height: 3,
+    backgroundColor: Colors.border,
+    borderRadius: 2,
+  },
+  progressFill: {
+    height: 3,
+    borderRadius: 2,
+  },
+  expire: {
+    fontSize: 11,
+    color: Colors.textMuted,
+    fontFamily: "Inter_400Regular",
+    textAlign: "right",
+  },
 });

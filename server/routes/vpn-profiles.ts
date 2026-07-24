@@ -94,7 +94,7 @@ router.get('/:id', requireAuth, requirePermission('vpnprofile.view'), async (req
 router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const {
-      name, description, protocol,
+      name, description, protocol, displayProtocol,
       host, port, username, password,
       uuid, path, network, tls, sni, dns,
       payloadId, offlineValidDays, status,
@@ -110,6 +110,7 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
     const profile = await (prisma as any).vpnProfile.create({
       data: {
         name, description, protocol,
+        displayProtocol: displayProtocol || null,
         host, port: Number(port),
         username: username || null,
         password: encPassword,
@@ -141,7 +142,7 @@ router.put('/:id', requireAuth, requirePermission('vpnprofile.manage'), async (r
     if (!existing) return res.status(404).json({ error: 'Profile not found' });
 
     const {
-      name, description, protocol,
+      name, description, protocol, displayProtocol,
       host, port, username, password,
       uuid, path, network, tls, sni, dns,
       payloadId, offlineValidDays, status, method,
@@ -155,6 +156,7 @@ router.put('/:id', requireAuth, requirePermission('vpnprofile.manage'), async (r
         ...(name !== undefined && { name }),
         ...(description !== undefined && { description }),
         ...(protocol !== undefined && { protocol }),
+        ...(displayProtocol !== undefined && { displayProtocol: displayProtocol || null }),
         ...(host !== undefined && { host }),
         ...(port !== undefined && { port: Number(port) }),
         ...(username !== undefined && { username }),
