@@ -173,7 +173,7 @@ private class SxbPayloadProxy(private val rawPayload: String) : com.jcraft.jsch.
         val rawOut = sock.getOutputStream()
         val rawIn  = sock.getInputStream()
 
-        // ── 1. Substitutions dans le payload ─────────────────────────────────
+        // ── 1. Substitutions et envoi du payload ───────────────────────────────
         val payload = rawPayload
             .replace("[crlf]", "\r\n").replace("[CRLF]", "\r\n")
             .replace("[lf]",   "\n").replace("[LF]",   "\n")
@@ -183,104 +183,121 @@ private class SxbPayloadProxy(private val rawPayload: String) : com.jcraft.jsch.
             .replace("[host_port]", "$host:$port")
         rawOut.write(payload.toByteArray(Charsets.ISO_8859_1))
         rawOut.flush()
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] PAYLOAD_WRITTEN bytes=${payload.length}")
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] PAYLOAD_SENT bytes=${payload.length}")
 
-        // ── 2. Lire la réponse HTTP du serveur (headers jusqu'à \r\n\r\n) ────
-        sock.soTimeout = 10_000
-        val headerBuf = StringBuilder()
+        // ── 2. Lire la réponse initiale (timeout 5s) ────────────────────────────
+        //    On lit un premier bloc pour détecter rapidement le type de réponse.
+        //    Si le serveur envoie un banner SSH directement, on évite d'attendre
+        //    10s la fin des headers HTTP qui n'existent pas.
+        sock.soTimeout = 5_000
+        val initialBuf = ByteArray(4096)
+        var initialLen = 0
         try {
-            var b3 = 0; var b2 = 0; var b1 = 0; var limit = 8192
-            while (limit-- > 0) {
-                val b = rawIn.read(); if (b == -1) break
-                headerBuf.append(b.toChar())
-                if (b3 == '\r'.code && b2 == '\n'.code && b1 == '\r'.code && b == '\n'.code) break
-                b3 = b2; b2 = b1; b1 = b
-            }
+            initialLen = rawIn.read(initialBuf)
         } catch (e: Exception) {
-            Log.w("SXB_DEBUG", "[SXB_DEBUG] HEADER_READ_TIMEOUT_OR_DIRECT_SSH: ${e.message}")
+            Log.w("SXB_DEBUG", "[SXB_DEBUG] NO_SERVER_RESPONSE: ${e.message}")
         }
-        sock.soTimeout = 0
 
-        val response = headerBuf.toString()
-        // Log brut pour diagnostic (masque host, pas de données user)
-        val logSafe = response.take(200).replace('\r', ' ').replace('\n', '↓')
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] RAW_SOCKET_RESPONSE len=${response.length} | $logSafe")
-
-        // ── 3. Détecter le mode transport ─────────────────────────────────────
-        //   HTTP 101 = WebSocket upgrade  → adapter WS obligatoire
-        //   HTTP 200 = CONNECT tunnel     → SSH direct sur le même socket
-        //   Réponse vide / "SSH-"         → SSH direct (pas de proxy HTTP)
-        val statusLine  = response.substringBefore("\r\n")
-        val isWs        = response.contains("101") &&
-                          (response.contains("websocket", ignoreCase = true) ||
-                           response.contains("Upgrade",   ignoreCase = true))
-        val isConnect   = response.contains("200") &&
-                          response.contains("Connection established", ignoreCase = true)
-        val isSshBanner = response.startsWith("SSH-")
-        val isEmpty     = response.isBlank()
-
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] SERVER_MODE status='$statusLine' isWS=$isWs isConnect=$isConnect isSshBanner=$isSshBanner isEmpty=$isEmpty")
-
-        // ── 4. Lire les premiers octets utiles pour confirmer le mode ─────────
-        if (!isWs && !isConnect && !isSshBanner && !isEmpty) {
-            // Essayer de voir les premiers octets après les headers (ex: début SSH banner)
-            val peekBuf = ByteArray(16)
-            var peekLen = 0
-            try {
-                sock.soTimeout = 3_000
-                peekLen = rawIn.read(peekBuf)
-                sock.soTimeout = 0
-            } catch (_: Exception) {}
-            val peekHex = peekBuf.take(peekLen).joinToString(" ") { "%02X".format(it) }
-            val peekStr = peekBuf.take(peekLen).map { if (it in 32..126) it.toInt().toChar() else '.' }.joinToString("")
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] FIRST_SERVER_BYTES len=$peekLen hex=[$peekHex] str=[$peekStr]")
-
-            // Prépend les octets lus avant le stream réel (ils font partie du banner SSH ou autre)
-            val prependStream: InputStream = if (peekLen > 0)
-                SequenceInputStream(ByteArrayInputStream(peekBuf, 0, peekLen), rawIn)
-            else rawIn
-            inputStream  = prependStream
+        // Pas de réponse — le serveur n'a rien renvoyé après le payload.
+        // On tente le mode SSH raw (le serveur peut être un SSH direct qui attend
+        // le banner client avant d'envoyer le sien).
+        if (initialLen <= 0) {
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] EMPTY_RESPONSE — raw SSH mode")
+            sock.soTimeout = 30_000
+            inputStream  = rawIn
             outputStream = rawOut
             return
         }
 
-        when {
-            isSshBanner || isEmpty -> {
-                // Serveur répond SSH directement (pas de proxy intermédiaire)
-                // Si le banner a déjà été consommé dans headerBuf, il faut le remettre en tête
-                if (isSshBanner) {
-                    Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_BANNER_PREPEND bytes=${response.length}")
-                    inputStream = SequenceInputStream(
-                        ByteArrayInputStream(response.toByteArray(Charsets.ISO_8859_1)),
-                        rawIn
-                    )
-                } else {
-                    Log.i("SXB_DEBUG", "[SXB_DEBUG] EMPTY_RESPONSE raw streams")
-                    inputStream = rawIn
-                }
-                outputStream = rawOut
-            }
+        val responseStr = String(initialBuf, 0, initialLen, Charsets.ISO_8859_1)
+        val logSafe = responseStr.take(200).replace('\r', ' ').replace('\n', '↓')
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] SERVER_RESPONSE len=$initialLen | $logSafe")
 
-            isConnect -> {
-                // HTTP CONNECT 200 → tunnel TCP transparent, SSH direct
-                Log.i("SXB_DEBUG", "[SXB_DEBUG] HTTP_CONNECT_TUNNEL raw SSH streams")
-                inputStream  = rawIn
-                outputStream = rawOut
-            }
-
-            isWs -> {
-                // HTTP 101 WebSocket Upgrade → JSch doit passer par les frames WS
-                Log.i("SXB_DEBUG", "[SXB_DEBUG] WEBSOCKET_MODE_ACTIVATED wrapping streams with WS adapter")
-                inputStream  = WsInputStream(rawIn)
-                outputStream = WsOutputStream(rawOut)
-            }
-
-            else -> {
-                Log.w("SXB_DEBUG", "[SXB_DEBUG] UNKNOWN_RESPONSE_FALLBACK raw streams")
-                inputStream  = rawIn
-                outputStream = rawOut
-            }
+        // ── 3. Banner SSH direct (serveur SSH sans proxy HTTP) ──────────────────
+        //    Le serveur a répondu directement avec son banner SSH sans passer
+        //    par un proxy HTTP. On prépend les bytes lus et JSch traitera le banner.
+        if (responseStr.startsWith("SSH-")) {
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_BANNER_RECEIVED bytes=$initialLen")
+            sock.soTimeout = 30_000
+            inputStream  = SequenceInputStream(ByteArrayInputStream(initialBuf, 0, initialLen), rawIn)
+            outputStream = rawOut
+            return
         }
+
+        // ── 4. Réponse HTTP — lire les headers complets ─────────────────────────
+        //    La réponse commence par "HTTP/" → c'est un proxy HTTP (CONNECT,
+        //    WebSocket upgrade, etc.). On doit lire tous les headers jusqu'à
+        //    \r\n\r\n, puis prépend les données restantes au stream SSH.
+        if (responseStr.startsWith("HTTP/") || responseStr.contains("HTTP/")) {
+            val headerEndIdx = responseStr.indexOf("\r\n\r\n")
+            val fullHeaderBuf = StringBuilder()
+            var remainingAfterHeaders: ByteArray? = null
+
+            if (headerEndIdx >= 0) {
+                // Headers complets dans le buffer initial
+                fullHeaderBuf.append(responseStr.substring(0, headerEndIdx + 4))
+                val afterHeaders = headerEndIdx + 4
+                if (afterHeaders < initialLen) {
+                    remainingAfterHeaders = initialBuf.copyOfRange(afterHeaders, initialLen)
+                    Log.i("SXB_DEBUG", "[SXB_DEBUG] DATA_AFTER_HEADERS bytes=${remainingAfterHeaders!!.size}")
+                }
+            } else {
+                // Headers incomplets — continuer à lire byte par byte
+                fullHeaderBuf.append(responseStr)
+                try {
+                    var b3 = 0; var b2 = 0; var b1 = 0; var limit = 8192 - initialLen
+                    while (limit-- > 0) {
+                        val b = rawIn.read(); if (b == -1) break
+                        fullHeaderBuf.append(b.toChar())
+                        if (b3 == '\r'.code && b2 == '\n'.code && b1 == '\r'.code && b == '\n'.code) break
+                        b3 = b2; b2 = b1; b1 = b
+                    }
+                } catch (e: Exception) {
+                    Log.w("SXB_DEBUG", "[SXB_DEBUG] HEADER_READ_INCOMPLETE: ${e.message}")
+                }
+            }
+
+            val fullResponse = fullHeaderBuf.toString()
+            val statusLine = fullResponse.substringBefore("\r\n")
+            val isWs = fullResponse.contains("101") &&
+                       (fullResponse.contains("websocket", ignoreCase = true) ||
+                        fullResponse.contains("Upgrade",   ignoreCase = true))
+            val isConnect = fullResponse.contains("200") &&
+                            fullResponse.contains("Connection established", ignoreCase = true)
+
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] SERVER_MODE status='$statusLine' isWS=$isWs isConnect=$isConnect")
+            sock.soTimeout = 30_000
+
+            when {
+                isConnect -> {
+                    Log.i("SXB_DEBUG", "[SXB_DEBUG] HTTP_CONNECT_TUNNEL — SSH direct sur tunnel")
+                    inputStream = if (remainingAfterHeaders != null)
+                        SequenceInputStream(ByteArrayInputStream(remainingAfterHeaders), rawIn)
+                    else rawIn
+                    outputStream = rawOut
+                }
+                isWs -> {
+                    Log.i("SXB_DEBUG", "[SXB_DEBUG] WEBSOCKET_MODE_ACTIVATED — wrapping streams with WS adapter")
+                    val wsRaw = if (remainingAfterHeaders != null)
+                        SequenceInputStream(ByteArrayInputStream(remainingAfterHeaders), rawIn)
+                    else rawIn
+                    inputStream  = WsInputStream(wsRaw)
+                    outputStream = WsOutputStream(rawOut)
+                }
+                else -> {
+                    Log.w("SXB_DEBUG", "[SXB_DEBUG] UNKNOWN_HTTP_RESPONSE — fallback raw SSH with prepended bytes")
+                    inputStream = SequenceInputStream(ByteArrayInputStream(initialBuf, 0, initialLen), rawIn)
+                    outputStream = rawOut
+                }
+            }
+            return
+        }
+
+        // ── 5. Réponse non-HTTP, non-SSH — prépendre et laisser JSch décider ────
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] UNKNOWN_RESPONSE — prepending bytes, raw SSH mode")
+        sock.soTimeout = 30_000
+        inputStream  = SequenceInputStream(ByteArrayInputStream(initialBuf, 0, initialLen), rawIn)
+        outputStream = rawOut
     }
 
     override fun getInputStream(): InputStream  = inputStream!!
@@ -306,11 +323,7 @@ class SxbVpnService : VpnService() {
 
         private const val SOCKS5_PORT  = 1080
 
-        /**
-         * DEBUG — mettre à true pour désactiver l'auto-reconnect pendant les tests SSH.
-         * Remettre à false en production.
-         */
-        const val DEBUG_NO_AUTORECONNECT = true
+        const val DEBUG_NO_AUTORECONNECT = false
 
         @Volatile var instance: SxbVpnService? = null
         @Volatile private var currentState: String = "disconnected"
@@ -553,10 +566,16 @@ class SxbVpnService : VpnService() {
             Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_AUTH_START host=**** port=$port timeout=30000ms")
             broadcastLog("[SXB_DEBUG] SSH_AUTH_START host=**** port=$port")
             broadcastLog("[SXB] Connexion SSH... Host:****  Port:$port")
-            session.connect(30_000)
+            try {
+                session.connect(30_000)
+            } catch (e: Exception) {
+                Log.e("SXB_DEBUG", "[SXB_DEBUG] SSH_AUTH_FAILED: ${e.message}", e)
+                broadcastLog("[SXB_DEBUG] SSH_AUTH_FAILED: ${e.message}")
+                throw e
+            }
 
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_10_SSH_AUTH_SUCCESS session.isConnected=${session.isConnected}")
-            broadcastLog("[SXB_DEBUG] STEP_10_SSH_AUTH_SUCCESS")
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_AUTH_SUCCESS session.isConnected=${session.isConnected}")
+            broadcastLog("[SXB_DEBUG] SSH_AUTH_SUCCESS")
 
             // P5 — Vérification fingerprint post-connexion (hors StrictHostKeyChecking)
             if (fingerprint.isNotEmpty()) {
@@ -622,8 +641,8 @@ class SxbVpnService : VpnService() {
                 throw Exception("sing-box s'est arrêté immédiatement (code=$code) — config invalide?")
             }
 
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_13_VPN_CONNECTED proto=ssh")
-            broadcastLog("[SXB_DEBUG] STEP_13_VPN_CONNECTED proto=${if (usePayload) "ssh+payload" else "ssh"}")
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] TUNNEL_CONNECTED proto=${if (usePayload) "ssh+payload" else "ssh"}")
+            broadcastLog("[SXB_DEBUG] TUNNEL_CONNECTED proto=${if (usePayload) "ssh+payload" else "ssh"}")
             broadcastLog("[SXB] ✅ VPN SSH actif — Credential:******** Trafic:Actif")
             broadcastStatus("connected"); setCurrentState("connected")
             if (!DEBUG_NO_AUTORECONNECT) autoReconnect.onConnected()
@@ -652,10 +671,10 @@ class SxbVpnService : VpnService() {
         } catch (e: InterruptedException) {
             Log.i(TAG, "Thread SSH interrompu")
         } catch (e: Exception) {
-            Log.e("SXB_DEBUG", "[SXB_DEBUG] SSH_EXCEPTION at currentState=$currentState msg=${e.message}", e)
+            Log.e("SXB_DEBUG", "[SXB_DEBUG] TUNNEL_FAILED: ${e.message}", e)
             val msg = e.message ?: "erreur inconnue"
             val stack = e.stackTrace.take(10).joinToString("\n  ") { "at ${it.className}.${it.methodName}(${it.fileName}:${it.lineNumber})" }
-            broadcastLog("[SXB_DEBUG] SSH_EXCEPTION: $msg")
+            broadcastLog("[SXB_DEBUG] TUNNEL_FAILED: $msg")
             broadcastLog("[SXB_DEBUG] STACKTRACE:\n  $stack")
             val display = when {
                 msg.contains("Auth fail") || msg.contains("auth", true) ->
@@ -663,7 +682,7 @@ class SxbVpnService : VpnService() {
                 msg.contains("Connection refused") ->
                     "❌ Connexion refusée — vérifiez host/port"
                 msg.contains("timeout", true) || msg.contains("Read timed out", true) ->
-                    "❌ Timeout SSH — serveur attend frames WebSocket? Voir RAW_SOCKET_RESPONSE dans logcat"
+                    "❌ Timeout SSH — serveur injoignable ou payload incorrect"
                 msg.contains("TUN") || msg.contains("establish") ->
                     "❌ TUN échoué — permission VPN révoquée?"
                 msg.contains("sing-box") || msg.contains("moteur", true) ->
