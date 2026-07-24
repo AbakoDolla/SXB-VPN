@@ -58,51 +58,230 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.Locale
 
-// ── SxbPayloadProxy — Injection HTTP payload avant handshake SSH ─────────────
-private class SxbPayloadProxy(private val rawPayload: String) : com.jcraft.jsch.Proxy {
-    private var socket: Socket? = null
-    private var inputStream: InputStream? = null
-    private var outputStream: OutputStream? = null
+// ═════════════════════════════════════════════════════════════════════════════
+// WebSocket binary frame transport — SSH over WebSocket (RFC 6455)
+// ═════════════════════════════════════════════════════════════════════════════
 
-    override fun connect(sf: SocketFactory?, host: String, port: Int, timeout: Int) {
-        val sock = Socket()
-        sock.connect(InetSocketAddress(host, port), timeout.coerceAtLeast(10_000))
-        socket = sock
-        val out = sock.getOutputStream()
-        val ins = sock.getInputStream()
+/** Reads exactly [n] bytes from [stream], blocking until all arrive or EOF. */
+private fun readExactly(stream: InputStream, n: Int): ByteArray? {
+    if (n == 0) return ByteArray(0)
+    val buf = ByteArray(n)
+    var pos = 0
+    while (pos < n) {
+        val r = stream.read(buf, pos, n - pos)
+        if (r == -1) return null
+        pos += r
+    }
+    return buf
+}
 
-        val payload = rawPayload
-            .replace("[crlf]", "\r\n").replace("[CRLF]", "\r\n")
-            .replace("[lf]",   "\n").replace("[LF]",   "\n")
-            .replace("[cr]",   "\r").replace("[CR]",   "\r")
-            .replace("[port]", port.toString())
-            .replace("[host]", host).replace("[Host]", host)
-            .replace("[host_port]", "$host:$port")
-        out.write(payload.toByteArray(Charsets.ISO_8859_1))
-        out.flush()
+/**
+ * Reads WebSocket binary frames from [raw] and exposes the payload as a plain InputStream.
+ * Server-to-client frames must not be masked (RFC 6455 §5.1); we handle masked frames
+ * gracefully anyway in case of non-compliant servers.
+ */
+private class WsFrameInputStream(
+    private val raw: InputStream,
+    private val log: (String) -> Unit,
+) : InputStream() {
 
-        // Attendre une éventuelle réponse HTTP (timeout court, non bloquant)
-        sock.soTimeout = 8_000
-        val response = StringBuilder()
-        try {
-            var b3 = 0; var b2 = 0; var b1 = 0
-            var limit = 8192
-            while (limit-- > 0) {
-                val b = ins.read()
-                if (b == -1) break
-                response.append(b.toChar())
-                if (b3 == '\r'.code && b2 == '\n'.code && b1 == '\r'.code && b == '\n'.code) break
-                b3 = b2; b2 = b1; b1 = b
+    private var frameBuf    = ByteArray(0)
+    private var frameBufPos = 0
+    private var frameCount  = 0
+    private var bannerDone  = false
+
+    // Drain buffered payload, then fetch next frame when empty.
+    override fun read(dst: ByteArray, off: Int, len: Int): Int {
+        while (frameBufPos >= frameBuf.size) {
+            val payload = readNextFrame() ?: return -1
+            if (payload.isEmpty()) continue          // ping/pong — skip, try again
+            frameBuf    = payload
+            frameBufPos = 0
+        }
+        val n = minOf(len, frameBuf.size - frameBufPos)
+        System.arraycopy(frameBuf, frameBufPos, dst, off, n)
+        frameBufPos += n
+        if (!bannerDone && n >= 4) {
+            val s = String(dst, off, minOf(n, 20), Charsets.US_ASCII)
+            if (s.startsWith("SSH-")) {
+                bannerDone = true
+                log("[SXB_DEBUG] SSH_BANNER_RECEIVED: ${s.take(20).trim()}")
             }
-        } catch (_: Exception) { /* timeout ou réponse directe SSH — normal */ }
-        sock.soTimeout = 0
-        inputStream  = ins
-        outputStream = out
+        }
+        return n
     }
 
-    override fun getInputStream(): InputStream  = inputStream!!
-    override fun getOutputStream(): OutputStream = outputStream!!
-    override fun getSocket(): Socket             = socket!!
+    override fun read(): Int {
+        val tmp = ByteArray(1)
+        return if (read(tmp, 0, 1) == -1) -1 else tmp[0].toInt() and 0xFF
+    }
+
+    private fun readNextFrame(): ByteArray? {
+        val b0 = raw.read(); if (b0 == -1) return null
+        val b1 = raw.read(); if (b1 == -1) return null
+
+        val opcode = b0 and 0x0F
+        val masked  = (b1 and 0x80) != 0
+
+        when (opcode) {
+            0x08 -> return null                       // Close — signal EOF to JSch
+            0x09, 0x0A -> {                           // Ping / Pong — swallow payload
+                val pLen = (b1 and 0x7F)
+                if (pLen > 0) readExactly(raw, pLen)
+                return ByteArray(0)
+            }
+        }
+
+        // Payload length (7-bit, 16-bit or 64-bit extended)
+        val rawLen = (b1 and 0x7F)
+        val payloadLen: Long = when (rawLen) {
+            126  -> {
+                val h = readExactly(raw, 2) ?: return null
+                ((h[0].toLong() and 0xFF) shl 8) or (h[1].toLong() and 0xFF)
+            }
+            127  -> {
+                val h = readExactly(raw, 8) ?: return null
+                var v = 0L; for (b in h) v = (v shl 8) or (b.toLong() and 0xFF); v
+            }
+            else -> rawLen.toLong()
+        }
+
+        val maskKey = if (masked) readExactly(raw, 4) else null
+        val payload = readExactly(raw, payloadLen.toInt()) ?: return null
+        if (masked && maskKey != null) {
+            for (i in payload.indices) payload[i] = (payload[i].toInt() xor maskKey[i % 4].toInt()).toByte()
+        }
+
+        frameCount++
+        if (frameCount <= 5) log("[SXB_DEBUG] WS_FRAME_READ opcode=0x${opcode.toString(16)} len=${payload.size} frame#$frameCount")
+        return payload
+    }
+
+    override fun available(): Int = maxOf(0, frameBuf.size - frameBufPos)
+    override fun close() = raw.close()
+}
+
+/**
+ * Sends each JSch write as a masked WebSocket binary frame (RFC 6455 §5.3).
+ * Client-to-server frames MUST be masked per spec.
+ */
+private class WsFrameOutputStream(
+    private val raw: OutputStream,
+    private val log: (String) -> Unit,
+) : OutputStream() {
+
+    private val rng        = java.util.Random()
+    private val lock       = Any()
+    private var frameCount = 0
+
+    override fun write(b: Int) = write(byteArrayOf(b.toByte()), 0, 1)
+
+    override fun write(data: ByteArray, off: Int, len: Int) {
+        if (len == 0) return
+        frameCount++
+        if (frameCount <= 5) log("[SXB_DEBUG] WS_FRAME_WRITE len=$len frame#$frameCount")
+
+        val mask = ByteArray(4).also { rng.nextBytes(it) }
+
+        // Header: FIN=1, opcode=2 (binary), MASK=1
+        val header: ByteArray = when {
+            len < 126    -> byteArrayOf(0x82.toByte(), (0x80 or len).toByte())
+            len < 65_536 -> byteArrayOf(0x82.toByte(), (0x80 or 126).toByte(),
+                                         (len shr 8).toByte(), (len and 0xFF).toByte())
+            else         -> {
+                val lb = ByteArray(8); var v = len.toLong()
+                for (i in 7 downTo 0) { lb[i] = (v and 0xFF).toByte(); v = v shr 8 }
+                byteArrayOf(0x82.toByte(), (0x80 or 127).toByte()) + lb
+            }
+        }
+
+        // Mask payload in place (copy to avoid mutating caller's buffer)
+        val masked = ByteArray(len)
+        for (i in 0 until len) masked[i] = (data[off + i].toInt() xor mask[i % 4].toInt()).toByte()
+
+        synchronized(lock) {
+            raw.write(header)
+            raw.write(mask)
+            raw.write(masked)
+            raw.flush()
+        }
+    }
+
+    override fun flush() {} // flush is called inside write()
+    override fun close() = raw.close()
+}
+
+// ── SxbPayloadProxy — HTTP Upgrade → WebSocket binary frame transport ────────
+/**
+ * JSch Proxy implementation for SSH over WebSocket.
+ *
+ * Flow:
+ *  1. TCP connect to host:port
+ *  2. Send HTTP Upgrade payload (from config) → WebSocket handshake
+ *  3. Read response until \r\n\r\n — verify 101 Switching Protocols
+ *  4. Wrap raw socket streams with WsFrameInputStream / WsFrameOutputStream
+ *  5. JSch uses the wrapped streams transparently for SSH protocol
+ */
+private class SxbPayloadProxy(
+    private val rawPayload: String,
+    private val debugLog: (String) -> Unit = {},
+) : com.jcraft.jsch.Proxy {
+
+    private var socket: Socket?               = null
+    private var wsIn:   WsFrameInputStream?   = null
+    private var wsOut:  WsFrameOutputStream?  = null
+
+    override fun connect(sf: SocketFactory?, host: String, port: Int, timeout: Int) {
+        debugLog("[SXB_DEBUG] WS_HANDSHAKE_START host=**** port=$port")
+
+        val sock = Socket()
+        sock.connect(InetSocketAddress(host, port), timeout.coerceAtLeast(15_000))
+        socket = sock
+        val rawOut = sock.getOutputStream()
+        val rawIn  = sock.getInputStream()
+
+        // Substitutions dans le template payload
+        val payload = rawPayload
+            .replace("[crlf]",      "\r\n").replace("[CRLF]",      "\r\n")
+            .replace("[lf]",        "\n") .replace("[LF]",        "\n")
+            .replace("[cr]",        "\r") .replace("[CR]",        "\r")
+            .replace("[port]",      port.toString())
+            .replace("[host]",      host) .replace("[Host]",      host)
+            .replace("[host_port]", "$host:$port")
+
+        rawOut.write(payload.toByteArray(Charsets.ISO_8859_1))
+        rawOut.flush()
+        debugLog("[SXB_DEBUG] STEP_11_PAYLOAD_SENT bytes=${payload.length}")
+
+        // Lire réponse HTTP jusqu'à \r\n\r\n (fin des headers)
+        sock.soTimeout = 15_000
+        val response = StringBuilder()
+        var b3 = 0; var b2 = 0; var b1 = 0; var limit = 16_384
+        while (limit-- > 0) {
+            val b = rawIn.read(); if (b == -1) break
+            response.append(b.toChar())
+            if (b3 == '\r'.code && b2 == '\n'.code && b1 == '\r'.code && b == '\n'.code) break
+            b3 = b2; b2 = b1; b1 = b
+        }
+        sock.soTimeout = 0
+
+        val respStr = response.toString()
+        val firstLine = respStr.lineSequence().firstOrNull() ?: ""
+        debugLog("[SXB_DEBUG] WS_RESPONSE: $firstLine")
+
+        if (!respStr.contains("101")) {
+            throw Exception("WebSocket upgrade refusé — réponse serveur: ${firstLine.take(80)}")
+        }
+        debugLog("[SXB_DEBUG] WS_HANDSHAKE_SUCCESS — wrapping streams with WS frame I/O")
+
+        // Après 101 Switching Protocols : toutes les données DOIVENT être en frames WS
+        wsIn  = WsFrameInputStream(rawIn,   debugLog)
+        wsOut = WsFrameOutputStream(rawOut, debugLog)
+    }
+
+    override fun getInputStream():  InputStream  = wsIn!!
+    override fun getOutputStream(): OutputStream = wsOut!!
+    override fun getSocket():       Socket        = socket!!
     override fun close() { runCatching { socket?.close() } }
 }
 
@@ -283,20 +462,25 @@ class SxbVpnService : VpnService() {
             val fingerprint = cfg.optString("fingerprint", "")
 
             // ── Session JSch ──────────────────────────────────────────────────
+            // Logger partagé pour SxbPayloadProxy → broadcastLog + logcat
+            val dbg: (String) -> Unit = { msg ->
+                Log.d(TAG, msg)
+                broadcastLog(msg)
+            }
+
             val jsch = JSch()
             val session: Session = if (usePayload && payload.isNotEmpty()) {
-                broadcastLog("[SXB] Mode SSH+Payload (HTTP Injector)")
+                broadcastLog("[SXB] Mode SSH+Payload (WebSocket transport)")
                 jsch.getSession(username, host, port).also { s ->
-                    s.setProxy(SxbPayloadProxy(payload))
+                    s.setProxy(SxbPayloadProxy(payload, dbg))
                     s.setPassword(password)
                     val props = Properties().apply {
-                        // P5: fingerprint vérifié après connect — no bypass definitif
                         set("StrictHostKeyChecking", "no")
                         set("PreferredAuthentications", "password")
                         if (sni.isNotEmpty()) set("ServerAliveInterval", "30")
                     }
                     s.setConfig(props)
-                    s.timeout = 30_000
+                    s.timeout = 45_000   // plus long pour WS handshake + SSH connect
                 }
             } else {
                 broadcastLog("[SXB] Mode SSH direct")
@@ -311,8 +495,8 @@ class SxbVpnService : VpnService() {
                 }
             }
 
-            broadcastLog("[SXB] Connexion SSH... Host:****  Port:$port")
-            session.connect(30_000)
+            broadcastLog("[SXB_DEBUG] STEP_9_SSH_CONNECTING host=**** port=$port")
+            session.connect(45_000)
             // P5 — Vérification fingerprint post-connexion (hors StrictHostKeyChecking)
             if (fingerprint.isNotEmpty()) {
                 val hostKey  = session.hostKey
@@ -327,10 +511,12 @@ class SxbVpnService : VpnService() {
                 broadcastLog("[SXB] ⚠️ Aucun fingerprint configuré — hôte non vérifié")
             }
             sshSession = session
+            broadcastLog("[SXB_DEBUG] SSH_AUTH_SUCCESS — session établie")
             broadcastLog("[SXB] Tunnel SSH établi ✅")
 
             // ── Serveur SOCKS5 local ──────────────────────────────────────────
             socks5Server = startLocalSocks5Server(session)
+            broadcastLog("[SXB_DEBUG] SOCKS_READY port=$SOCKS5_PORT")
             broadcastLog("[SXB] SOCKS5 local actif (port $SOCKS5_PORT)")
 
             // ── Interface TUN ─────────────────────────────────────────────────
