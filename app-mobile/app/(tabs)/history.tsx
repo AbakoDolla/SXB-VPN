@@ -3,7 +3,6 @@ import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from "
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useAuthContext } from "@/contexts/AuthContext";
 import apiClient from "@/services/apiClient";
 import type { HistoryItem } from "@/types/api";
 import Colors from "@/constants/colors";
@@ -57,21 +56,14 @@ const rowStyles = StyleSheet.create({
   statusDot: { width: 6, height: 6, borderRadius: 3 },
 });
 
-function buildLocalHistory(accountState: any): HistoryItem[] {
-  const items: HistoryItem[] = [];
-  if (accountState?.state !== "no_package") {
-    items.push({ id: "1", action: "plan_activated", description: "Forfait activé", createdAt: new Date(Date.now() - 86400000).toISOString(), status: "success" });
-  }
-  items.push({ id: "2", action: "account_activated", description: "Compte activé", createdAt: new Date(Date.now() - 172800000).toISOString(), status: "success" });
-  return items;
-}
+
 
 export default function HistoryScreen() {
   const insets = useSafeAreaInsets();
-  const { accountState } = useAuthContext();
+  // useAuthContext available if needed for user-specific features
   const [items, setItems]   = useState<HistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter]   = useState<"all" | "connections" | "activations">("all");
+  const [filter, setFilter]   = useState<("all" | "connections" | "activations")>("all");
 
   useEffect(() => {
     let cancelled = false;
@@ -80,14 +72,14 @@ export default function HistoryScreen() {
         const res = await apiClient.get("/mobile/history");
         if (!cancelled) setItems(res.data ?? []);
       } catch (_) {
-        if (!cancelled && accountState) setItems(buildLocalHistory(accountState));
+        // API inaccessible — afficher l'état vide (pas de fausses données)
       } finally {
         if (!cancelled) setLoading(false);
       }
     };
     load();
     return () => { cancelled = true; };
-  }, [accountState]);
+  }, []);
 
   const filteredItems = items.filter((item) => {
     if (filter === "all") return true;
