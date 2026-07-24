@@ -1,6 +1,4 @@
-- [SXB VPN VPS setup](sxb-vpn-vps.md) — VPS 141.95.112.93, PM2 + esbuild rebuild procedure, admin password reset method
-- [SXB VPN dashboard Replit](sxb-vpn-dashboard-replit.md) — dashboard source in sxb-vpn-src/, copied to artifacts/sxb-dashboard/, uses /xapi proxy to VPS
-- [SXB VPN GitHub push auth](sxb-vpn-github.md) — git push requires PAT; HTTP auth fails without token in remote URL
-- [SXB VPN Dashboard Architecture](sxb-vpn-architecture.md) — deux PM2 (root + ubuntu) peuvent coexister et causer EADDRINUSE ; fix : tuer root PM2, passer à pm2-ubuntu.service systemd
-- [SXB VPN Permission Fix](sxb-vpn-permissions.md) — dashboard.ts utilisait analytics.view au lieu de analytics.read, mais requirePermission bypass ADMIN/SUPER_ADMIN donc pas bloquant
-- [SXB VPN API Null-Safety Pattern](sxb-vpn-api-null-safety.md) — toutes les fonctions fetchXxx() doivent utiliser try/catch + res?.accounts ?? [] pour éviter crash .map() sur undefined
+- [SXB VPN Architecture](sxb-vpn-arch.md) — Backend Express sur VPS 141.95.112.93:4000, PM2 sxb-backend, git pull + pm2 restart pour déployer
+- [VPS Deployment](vps-ssh.md) — SSH ubuntu@141.95.112.93 pass stuffNation321, DB postgresql://postgres:sxb_secure_db_pass_2026@localhost:5432/sxb_vpn
+- [Prisma peer auth quirk](prisma-created-by-fix.md) — psql FATAL peer auth: toujours passer la connection string complète, pas juste -U postgres
+- [VPN Connections Feature](vpn-connections-feature.md) — displayProtocol (commercial) vs protocol (technique) séparés dans VpnProfile; stash requis avant git pull sur VPS si modifications locales
