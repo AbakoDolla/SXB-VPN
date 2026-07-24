@@ -177,6 +177,22 @@ async function startServer() {
   });
 }
 
+// ── Fix 5 : Gestionnaires globaux pour éviter les crashes PM2 silencieux ────────
+// Sans ces handlers, une exception non catchée tue le process → PM2 restart loop.
+// On log l'erreur et on continue sauf si c'est un crash fatal (SIGKILL etc).
+process.on("uncaughtException", (err: Error) => {
+  console.error("💥 [UNCAUGHT_EXCEPTION] Non-fatal — keeping process alive:", err.message);
+  console.error(err.stack);
+  // Ne pas appeler process.exit() ici — laisser PM2 décider
+});
+
+process.on("unhandledRejection", (reason: unknown, promise: Promise<unknown>) => {
+  console.error("💥 [UNHANDLED_REJECTION] Promise rejected without handler:");
+  console.error("  Reason:", reason);
+  // Log seulement, ne pas crasher
+});
+
 startServer().catch((err) => {
   console.error("💥 Critical Failure during backend server boot sequence:", err);
+  process.exit(1);
 });
