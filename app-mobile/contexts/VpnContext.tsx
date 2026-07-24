@@ -19,7 +19,7 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient from '@/services/apiClient';
-import { saveVpnConfig, loadVpnConfig, isQuotaExhausted, isConfigExpired, consumeLocalQuota, syncQuotaFromBackend } from '@/services/offlineStorage';
+import { saveVpnConfig, loadVpnConfig, isQuotaExhausted, isConfigExpired, syncQuotaFromBackend } from '@/services/offlineStorage';
 import { useAuthContext } from './AuthContext';
 
 // ── Native bridge ─────────────────────────────────────────────────────────────
@@ -122,7 +122,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   // ── Watchdog connexion ────────────────────────────────────────────────────
   // Si aucun événement VPN_CONNECTED n'arrive dans 35s, on libère l'UI
   const watchdogRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastStepRef  = useRef<string>('INIT';
+  const lastStepRef  = useRef<string>('INIT');
 
   const clearWatchdog = useCallback(() => {
     if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
