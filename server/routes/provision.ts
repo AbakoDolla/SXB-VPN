@@ -130,7 +130,6 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
       include: {
         profile: true,
         client:  { include: { user: true } },
-        devices: true,
       },
     });
 
@@ -162,31 +161,25 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
       return res.status(403).json({ error: 'Abonnement suspendu' });
     }
 
-    // 4. Vérification de la limite d'appareils
-    const existingDevices: string[] = sub.devices
-      ? sub.devices.map((d: any) => d.deviceId)
-      : [];
-    const isExistingDevice = existingDevices.includes(deviceId);
+    // 4. Vérification de la limite d'appareils (schéma : deviceId unique sur Subscription)
+    const registeredDeviceId = sub.deviceId as string | null;
+    const isExistingDevice   = registeredDeviceId === deviceId;
 
-    if (!isExistingDevice && existingDevices.length >= sub.deviceLimit) {
+    // deviceLimit > 1 non supporté par ce schéma (un seul deviceId par abonnement)
+    if (!isExistingDevice && registeredDeviceId) {
       return res.status(403).json({
-        error: 'Limite d\'appareils atteinte',
-        deviceLimit: sub.deviceLimit,
-        registeredDevices: existingDevices.length,
+        error: 'Cet abonnement est déjà lié à un autre appareil',
+        deviceLimit: 1,
+        registeredDevices: 1,
       });
     }
 
     // 5. Enregistrer l'appareil si nouveau
     if (!isExistingDevice) {
-      await (prisma as any).subscriptionDevice.create({
-        data: { subscriptionId: sub.id, deviceId },
+      await (prisma as any).subscription.update({
+        where: { id: sub.id },
+        data:  { deviceId },
       });
-    } else {
-      // Mettre à jour lastSeenAt
-      await (prisma as any).subscriptionDevice.updateMany({
-        where: { subscriptionId: sub.id, deviceId },
-        data:  { lastSeenAt: new Date() },
-      }).catch(() => null);
     }
 
     // 6. Déchiffrer les credentials du profil pour construire la config brute
