@@ -137,11 +137,13 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       setIsConnecting(false);
       setVpnState('error');
       setVpnLogs(prev => [
-        `[WATCHDOG] ⏱️ Connexion bloquée à : ${step}`,
-        `[WATCHDOG] Aucune réponse après 45s — vérifiez les logs natifs`,
-        `[WATCHDOG] adb logcat | grep SXB_DEBUG`,
+        `[SXB_DEBUG] WATCHDOG_FIRED lastStep=${step}`,
+        `[WATCHDOG] Connexion arrêtée après 45s — cause native attendue dans les logs`,
         ...prev,
       ].slice(0, 200));
+      if (IS_ANDROID && SxbVpnNative) {
+        SxbVpnNative.stopVpn().catch(() => {});
+      }
     }, 45_000);
   }, [clearWatchdog]);
 
@@ -291,6 +293,26 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
     const logSub = vpnEmitter.addListener('onVpnLog', (e: { message: string }) => {
       addLog(e.message);
+      if (e.message.includes('SSH_SOCKET_CONNECT_START') ||
+          e.message.includes('PAYLOAD_SEND_START')) {
+        lastStepRef.current = e.message.includes('PAYLOAD') ? 'PAYLOAD_SEND_START' : 'SSH_SOCKET_CONNECT_START';
+      } else if (e.message.includes('PAYLOAD_RESPONSE_RECEIVED')) {
+        lastStepRef.current = 'PAYLOAD_RESPONSE_RECEIVED';
+      } else if (e.message.includes('TLS_HANDSHAKE_SUCCESS')) {
+        lastStepRef.current = 'TLS_HANDSHAKE_SUCCESS';
+      } else if (e.message.includes('SSH_BANNER_RECEIVED')) {
+        lastStepRef.current = 'SSH_BANNER_RECEIVED';
+      } else if (e.message.includes('SSH_AUTH_SUCCESS')) {
+        lastStepRef.current = 'SSH_AUTH_SUCCESS';
+      } else if (e.message.includes('TUNNEL_READY')) {
+        lastStepRef.current = 'TUNNEL_READY';
+      } else if (e.message.includes('VPN_CONNECTED')) {
+        lastStepRef.current = 'VPN_CONNECTED';
+      } else if (e.message.includes('VPN_FAILED')) {
+        lastStepRef.current = e.message;
+        setVpnState('error');
+        setIsConnecting(false);
+      }
     });
 
     return () => { stateSub.remove(); logSub.remove(); };

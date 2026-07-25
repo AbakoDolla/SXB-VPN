@@ -234,6 +234,7 @@ object SecurityModule {
         result = result.replace(Regex("""username[=:]\s*\S+""", RegexOption.IGNORE_CASE), "username=********")
         result = result.replace(Regex("""key[=:]\s*[A-Za-z0-9+/=]{10,}""", RegexOption.IGNORE_CASE), "key=********")
         result = result.replace(Regex("""uuid[=:]\s*[\w-]+""", RegexOption.IGNORE_CASE), "uuid=********")
+        result = result.replace(Regex("""(token|secret|access_token|private_key)[=:]\s*\S+""", RegexOption.IGNORE_CASE), "$1=********")
         return result
     }
 }

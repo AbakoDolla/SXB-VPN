@@ -26,9 +26,14 @@ const INITIAL_STEPS: Record<string, StepState> = {
   'Permission Android':   { reached: false, error: false, detail: '' },
   'Service VPN':          { reached: false, error: false, detail: '' },
   'Config chargée':       { reached: false, error: false, detail: '' },
+  'Socket SSH':           { reached: false, error: false, detail: '' },
+  'Payload envoyé':       { reached: false, error: false, detail: '' },
+  'Réponse serveur':      { reached: false, error: false, detail: '' },
+  'Banner SSH':            { reached: false, error: false, detail: '' },
+  'Authentification SSH': { reached: false, error: false, detail: '' },
   'TUN créé':             { reached: false, error: false, detail: '' },
   'Sing-box lancé':       { reached: false, error: false, detail: '' },
-  'SSH connecté':         { reached: false, error: false, detail: '' },
+  'Tunnel prêt':          { reached: false, error: false, detail: '' },
   'VPN connecté':         { reached: false, error: false, detail: '' },
 };
 
@@ -87,21 +92,47 @@ export default function VpnDebugScreen() {
       updateStep('Sing-box lancé', true, true, 'Binaire introuvable');
       setLastError('Binaire sing-box introuvable dans APK');
     }
-    if (log.includes('STEP_9_SSH_CONNECTING')) {
-      updateStep('SSH connecté', false, false, 'Connexion en cours...');
-      setLastStep('SSH en connexion...');
+    if (log.includes('SSH_SOCKET_CONNECT_START')) {
+      updateStep('Socket SSH', true, false, 'Socket TCP en connexion');
+      setLastStep('Socket SSH');
     }
-    if (log.includes('STEP_10_SSH_AUTH_SUCCESS')) {
-      updateStep('SSH connecté', true, false, 'Auth SSH OK');
+    if (log.includes('PAYLOAD_SEND_START')) {
+      updateStep('Payload envoyé', false, false, 'Injection en cours...');
+      setLastStep('Payload en cours...');
+    }
+    if (log.includes('PAYLOAD_SEND_COMPLETE')) {
+      updateStep('Payload envoyé', true, false, 'Payload transmis');
+    }
+    if (log.includes('PAYLOAD_RESPONSE_RECEIVED')) {
+      updateStep('Réponse serveur', true, false, log.substring(0, 80));
+      setLastStep('Réponse serveur reçue');
+    }
+    if (log.includes('TLS_HANDSHAKE_SUCCESS')) {
+      updateStep('Réponse serveur', true, false, 'Handshake TLS réussi');
+    }
+    if (log.includes('SSH_BANNER_RECEIVED')) {
+      updateStep('Banner SSH', true, false, 'Banner reçu');
+      setLastStep('Banner SSH reçu');
+    }
+    if (log.includes('SSH_AUTH_SUCCESS') || log.includes('STEP_10_SSH_AUTH_SUCCESS')) {
+      updateStep('Authentification SSH', true, false, 'Auth SSH OK');
       setLastStep('SSH authentifié');
     }
     if (log.includes('SSH_EXCEPTION') || log.includes('Auth fail') || log.includes('Connection refused')) {
-      updateStep('SSH connecté', true, true, log.substring(0, 60));
+      updateStep('Authentification SSH', true, true, log.substring(0, 60));
       setLastError(log.substring(0, 120));
     }
-    if (log.includes('STEP_13_VPN_CONNECTED')) {
+    if (log.includes('TUNNEL_READY')) {
+      updateStep('Tunnel prêt', true, false, 'Relais TUN actif');
+      setLastStep('Tunnel prêt');
+    }
+    if (log.includes('VPN_CONNECTED') || log.includes('STEP_13_VPN_CONNECTED')) {
       updateStep('VPN connecté', true, false, 'Tunnel actif');
       setLastStep('✅ VPN connecté');
+    }
+    if (log.includes('VPN_FAILED')) {
+      setLastError(log.substring(0, 160));
+      setLastStep('❌ ' + log.substring(0, 100));
     }
     if (log.includes('WATCHDOG')) {
       setLastError(log);

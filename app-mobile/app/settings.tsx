@@ -661,7 +661,12 @@ export default function SettingsScreen() {
             onPress={() => router.push("/support")} color={Colors.connected}
           />
           <View style={styles.divider} />
-          <Row icon="document-text-outline" label="CGU / Politique de confidentialité" onPress={() => {}} />
+          <Row icon="document-text-outline" label="CGU / Politique de confidentialité"
+            onPress={() => Alert.alert(
+              "CGU & Politique de confidentialité",
+              "Disponible sur https://sxbvpn.com/legal\n\nSXB VPN ne collecte aucune donnée de navigation ni log de connexion.",
+              [{ text: "Fermer" }]
+            )} />
         </Section>
 
         {/* Diagnostic VPN — pour déboguer les connexions bloquées */}

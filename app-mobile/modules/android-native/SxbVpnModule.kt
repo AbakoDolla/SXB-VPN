@@ -110,6 +110,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                 putExtra("configJson", optionsJson)
                 putExtra("protocol",   proto)
                 putExtra("killSwitch", opts.optBoolean("killSwitch", false))
+                putExtra("autoReconnect", opts.optBoolean("autoReconnect", false))
             }
 
             Log.i(DBG, "[SXB_DEBUG] SERVICE_INTENT_SENT action=${SxbVpnService.ACTION_START} proto=$proto")

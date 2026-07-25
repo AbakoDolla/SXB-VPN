@@ -141,8 +141,17 @@ export default function ActivateScreen() {
           <View style={styles.sepLine} />
         </View>
 
-        {/* QR placeholder */}
-        <Pressable style={styles.qrBtn}>
+        {/* QR — bientôt disponible */}
+        <Pressable
+          style={styles.qrBtn}
+          onPress={() =>
+            Alert.alert(
+              "QR Code",
+              "Le scan de QR Code sera disponible dans la prochaine version.\n\nEntrez votre token manuellement ci-dessus.",
+              [{ text: "OK" }]
+            )
+          }
+        >
           <Ionicons name="qr-code-outline" size={20} color={Colors.textSecondary} />
           <Text style={styles.qrBtnText}>Scanner un QR Code</Text>
         </Pressable>

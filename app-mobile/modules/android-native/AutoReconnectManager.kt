@@ -43,9 +43,15 @@ class AutoReconnectManager(
         Log.i(DBG, "[SXB_DEBUG] AUTO_RECONNECT_RESET — connexion établie")
     }
 
-    /** Appelé quand la connexion est perdue — déclenche la reconnexion si activée */
+    /** Appelé quand la connexion est perdue — déclenche la reconnexion si activée.
+     *  Guard contre les appels concurrents : si un job est déjà en cours, on l'ignore. */
     fun onDisconnected() {
         if (!enabled.get()) return
+        // Éviter les double-déclenchements si un job est déjà programmé
+        if (job?.isActive == true) {
+            Log.w(DBG, "[SXB_DEBUG] AUTO_RECONNECT_SKIP — job déjà en cours")
+            return
+        }
         val attempt = retryCount.incrementAndGet()
         if (attempt > MAX_RETRIES) {
             Log.w(DBG, "[SXB_DEBUG] AUTO_RECONNECT_GIVEUP — max tentatives ($MAX_RETRIES) atteint — arrêt")
