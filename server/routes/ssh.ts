@@ -25,17 +25,22 @@ function decrypt(encrypted: string, key: string): string {
   const decipher = crypto.createDecipheriv(ALGO, k, iv);
   return Buffer.concat([decipher.update(Buffer.from(encHex, 'hex')), decipher.final()]).toString();
 }
-const ENC_KEY = process.env.ENCRYPTION_KEY || 'sxb-vpn-32-byte-encryption-key-!';
+const ENC_KEY = (() => { const k = process.env.ENCRYPTION_KEY; if (!k) console.error('[SECURITY] ENCRYPTION_KEY not set in ssh.ts!'); return k || 'sxb-vpn-32-byte-encryption-key-!'; })();
 
 // ─── GET /api/ssh/accounts ───────────────────────────────────────────────────
 router.get('/accounts', requireAuth, requirePermission('ssh.view'), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const accounts = await prisma.sshAccount.findMany({
       orderBy: { createdAt: 'desc' },
-      include: { payload: true },
     });
+    // Fetch payloads separately (Prisma client missing payload relation in generated client)
+    const payloadIds = [...new Set(accounts.map((a: any) => a.payloadId).filter(Boolean))];
+    const payloads = payloadIds.length > 0
+      ? await (prisma as any).sshPayload.findMany({ where: { id: { in: payloadIds } } }).catch(() => [])
+      : [];
+    const payloadMap = Object.fromEntries(payloads.map((p: any) => [p.id, p]));
     // Mask passwords in response
-    const safe = accounts.map(a => ({ ...a, password: '••••••••' }));
+    const safe = accounts.map((a: any) => ({ ...a, password: '••••••••', payload: a.payloadId ? payloadMap[a.payloadId] ?? null : null }));
     return res.json({ success: true, accounts: safe });
   } catch (err) {
     console.error('SSH list error:', err);
@@ -48,10 +53,14 @@ router.get('/accounts/:id', requireAuth, requirePermission('ssh.view'), async (r
   try {
     const acc = await prisma.sshAccount.findUnique({
       where: { id: req.params.id },
-      include: { payload: true },
     });
+    // Fetch payload separately
+    let accPayload = null;
+    if ((acc as any)?.payloadId) {
+      accPayload = await (prisma as any).sshPayload.findUnique({ where: { id: (acc as any).payloadId } }).catch(() => null);
+    }
     if (!acc) return res.status(404).json({ error: 'SSH account not found' });
-    return res.json({ success: true, account: { ...acc, password: '••••••••' } });
+    return res.json({ success: true, account: { ...acc, password: '••••••••', payload: accPayload } });
   } catch (err) {
     return res.status(500).json({ error: 'Failed to get SSH account' });
   }

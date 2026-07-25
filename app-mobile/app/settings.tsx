@@ -551,11 +551,7 @@ export default function SettingsScreen() {
             icon="globe-outline" label="Protocole actif"
             value={selectedProtocol || "AUTO"} color={Colors.primary}
           />
-          <View style={styles.divider} />
-          <Row
-            icon="code-working-outline" label="Éditeur JSON V2Ray"
-            onPress={() => setV2rayModal(true)} color={Colors.primary}
-          />
+          {/* V2Ray JSON editor removed — SXB VPN is a pure SaaS client; server config is managed by backend */}
           <View style={styles.divider} />
           <Row
             icon="refresh-outline" label="Reconnexion automatique"
@@ -669,17 +665,19 @@ export default function SettingsScreen() {
             )} />
         </Section>
 
-        {/* Diagnostic VPN — pour déboguer les connexions bloquées */}
-        <Section title="DIAGNOSTIC" subtitle="Outils de débogage tunnel VPN">
-          <Row
-            icon="bug-outline"
-            label="Diagnostic VPN"
-            badge="DEBUG"
-            badgeColor="#7C5FFF"
-            onPress={() => router.push("/vpn-debug")}
-            color="#7C5FFF"
-          />
-        </Section>
+        {/* Diagnostic VPN — accessible uniquement en mode développement */}
+        {__DEV__ && (
+          <Section title="DIAGNOSTIC" subtitle="Outils de débogage tunnel VPN (dev only)">
+            <Row
+              icon="bug-outline"
+              label="Diagnostic VPN"
+              badge="DEV"
+              badgeColor="#7C5FFF"
+              onPress={() => router.push("/vpn-debug")}
+              color="#7C5FFF"
+            />
+          </Section>
+        )}
 
         {/* Logout */}
         {clearing ? (

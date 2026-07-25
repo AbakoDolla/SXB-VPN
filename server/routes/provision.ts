@@ -60,7 +60,7 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
     const sub = await (prisma as any).subscription.findFirst({
       where: { dataToken: normalToken },
       include: {
-        profile: { include: { payload: true } },
+        profile: true,
         client:  { include: { user: true } },
         devices: true,
       },
@@ -69,6 +69,14 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
     if (!sub) {
       return res.status(404).json({ error: 'Token invalide ou introuvable' });
     }
+    // Fetch SshPayload separately (Prisma client doesn't include it via profile relation yet)
+    let profilePayload = null;
+    if (sub?.profile?.payloadId) {
+      profilePayload = await (prisma as any).sshPayload.findUnique({
+        where: { id: sub.profile.payloadId }
+      }).catch(() => null);
+    }
+    if (sub?.profile) sub.profile.payload = profilePayload;
 
     // Validate subscription
     if (sub.status === 'revoked') {

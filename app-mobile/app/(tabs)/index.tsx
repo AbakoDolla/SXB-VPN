@@ -583,10 +583,7 @@ export default function HomeScreen() {
               <Text style={styles.infoKey}>Dernière conn.</Text>
               <Text style={styles.infoVal}>{lastConnection}</Text>
             </View>
-            <View style={styles.infoRow}>
-              <Text style={styles.infoKey}>Appareil ID</Text>
-              <Text style={styles.infoVal}>{deviceId ? deviceId.slice(0, 15) : "—"}</Text>
-            </View>
+            {/* Appareil ID supprimé du dashboard utilisateur — info interne uniquement */}
             <View style={styles.infoRow}>
               <Text style={styles.infoKey}>Version App</Text>
               <Text style={styles.infoVal}>v{Constants.expoConfig?.version ?? "1.0.0"}</Text>
