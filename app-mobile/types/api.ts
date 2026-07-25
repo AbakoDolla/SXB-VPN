@@ -51,8 +51,6 @@ export interface VpnConnection {
   name: string;
   displayProtocol: string;    // Nom commercial : "MTN Protocol", "Orange Protocol"
   technicalProtocol: string;  // Protocole réel : "ssh", "vless", "trojan"…
-  server: string;
-  port: number;
   quota: {
     totalGB: number;
     usedGB: number;
