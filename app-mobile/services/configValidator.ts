@@ -26,9 +26,13 @@ export interface ValidationResult {
 
 // ── Champs requis par protocole ──────────────────────────────────────────────
 
+// Note : 'payload' n'est PAS requis pour ssh+payload.
+// Le moteur natif (SxbVpnService.kt) utilise un payload WebSocket par défaut
+// si le champ payload est absent ou vide.
+// Une vérification non-bloquante (warning) est effectuée dans extraValidation().
 const REQUIRED_FIELDS: Record<SupportedProtocol, string[]> = {
   'ssh':         ['host', 'port', 'username'],
-  'ssh+payload': ['host', 'port', 'username', 'payload'],
+  'ssh+payload': ['host', 'port', 'username'],
   'vless':       ['host', 'port', 'uuid'],
   'vmess':       ['host', 'port', 'uuid'],
   'trojan':      ['host', 'port', 'password'],
@@ -110,8 +114,12 @@ function extraValidation(
       if (!obj.password && !obj.privateKeyBase64) {
         errors.push('SSH : "password" ou "privateKeyBase64" requis');
       }
-      if (proto === 'ssh+payload' && typeof obj.payload !== 'string') {
-        errors.push('SSH+Payload : "payload" doit être une chaîne');
+      if (proto === 'ssh+payload') {
+        if (obj.payload !== undefined && typeof obj.payload !== 'string') {
+          errors.push('SSH+Payload : "payload" doit être une chaîne (ou absent pour utiliser le payload WebSocket par défaut)');
+        } else if (!obj.payload) {
+          warnings.push('SSH+Payload : "payload" absent — le moteur utilisera le payload WebSocket par défaut');
+        }
       }
       break;
 
