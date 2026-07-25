@@ -57,7 +57,7 @@ export async function fetchSshAccount(id: string): Promise<SshAccount> {
 export async function createSshAccount(data: Partial<SshAccount> & { password: string }): Promise<SshAccount> {
   const res = await apiRequest<{ account: SshAccount }>('/ssh/accounts', {
     method: 'POST',
-    body: JSON.stringify(data),
+    body: data,
   });
   return res.account;
 }
@@ -65,7 +65,7 @@ export async function createSshAccount(data: Partial<SshAccount> & { password: s
 export async function updateSshAccount(id: string, data: Partial<SshAccount>): Promise<SshAccount> {
   const res = await apiRequest<{ account: SshAccount }>(`/ssh/accounts/${id}`, {
     method: 'PUT',
-    body: JSON.stringify(data),
+    body: data,
   });
   return res.account;
 }

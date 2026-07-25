@@ -42,7 +42,7 @@ export async function fetchXrayAccounts(): Promise<XrayAccount[]> {
 export async function createXrayAccount(data: Partial<XrayAccount>): Promise<XrayAccount> {
   const res = await apiRequest<{ account: XrayAccount }>('/xray/accounts', {
     method: 'POST',
-    body: JSON.stringify(data),
+    body: data,
   });
   return res.account;
 }
@@ -50,7 +50,7 @@ export async function createXrayAccount(data: Partial<XrayAccount>): Promise<Xra
 export async function updateXrayAccount(id: string, data: Partial<XrayAccount>): Promise<XrayAccount> {
   const res = await apiRequest<{ account: XrayAccount }>(`/xray/accounts/${id}`, {
     method: 'PUT',
-    body: JSON.stringify(data),
+    body: data,
   });
   return res.account;
 }
@@ -60,7 +60,7 @@ export async function deleteXrayAccount(id: string): Promise<void> {
 }
 
 export async function suspendXrayAccount(id: string): Promise<{ status: string }> {
-  return apiRequest<{ status: string }>(`/xray/accounts/${id}/suspend`, { method: 'PATCH' });
+  return apiRequest<{ status: string }>(`/xray/accounts/${id}/suspend`, { method: 'POST' });
 }
 
 export async function getXrayLink(id: string): Promise<{ link: string; protocol: string }> {

@@ -29,7 +29,7 @@ export async function fetchPayload(id: string): Promise<SshPayload> {
 export async function createPayload(data: Partial<SshPayload>): Promise<SshPayload> {
   const res = await apiRequest<{ payload: SshPayload }>('/payload', {
     method: 'POST',
-    body: JSON.stringify(data),
+    body: data,
   });
   return res.payload;
 }
@@ -37,7 +37,7 @@ export async function createPayload(data: Partial<SshPayload>): Promise<SshPaylo
 export async function updatePayload(id: string, data: Partial<SshPayload>): Promise<SshPayload> {
   const res = await apiRequest<{ payload: SshPayload }>(`/payload/${id}`, {
     method: 'PUT',
-    body: JSON.stringify(data),
+    body: data,
   });
   return res.payload;
 }
@@ -49,14 +49,14 @@ export async function deletePayload(id: string): Promise<void> {
 export async function attachPayload(payloadId: string, sshAccountId: string): Promise<void> {
   await apiRequest(`/payload/${payloadId}/attach`, {
     method: 'POST',
-    body: JSON.stringify({ sshAccountId }),
+    body: { sshAccountId },
   });
 }
 
 export async function testPayload(id: string, testHost?: string): Promise<{ reachable: boolean; message: string }> {
   const res = await apiRequest<{ reachable: boolean; message: string }>(`/payload/${id}/test`, {
     method: 'POST',
-    body: JSON.stringify({ testHost }),
+    body: { testHost },
   });
   return res;
 }

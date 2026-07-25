@@ -34,7 +34,7 @@ export async function fetchSingboxAccounts(): Promise<SingboxAccount[]> {
 export async function createSingboxAccount(data: Partial<SingboxAccount>): Promise<SingboxAccount> {
   const res = await apiRequest<{ account: SingboxAccount }>('/singbox/accounts', {
     method: 'POST',
-    body: JSON.stringify(data),
+    body: data,
   });
   return res.account;
 }
@@ -42,7 +42,7 @@ export async function createSingboxAccount(data: Partial<SingboxAccount>): Promi
 export async function updateSingboxAccount(id: string, data: Partial<SingboxAccount>): Promise<SingboxAccount> {
   const res = await apiRequest<{ account: SingboxAccount }>(`/singbox/accounts/${id}`, {
     method: 'PUT',
-    body: JSON.stringify(data),
+    body: data,
   });
   return res.account;
 }
@@ -52,7 +52,7 @@ export async function deleteSingboxAccount(id: string): Promise<void> {
 }
 
 export async function suspendSingboxAccount(id: string): Promise<{ status: string }> {
-  return apiRequest<{ status: string }>(`/singbox/accounts/${id}/suspend`, { method: 'PATCH' });
+  return apiRequest<{ status: string }>(`/singbox/accounts/${id}/suspend`, { method: 'POST' });
 }
 
 export async function getSingboxConfig(id: string): Promise<{ config: object }> {
