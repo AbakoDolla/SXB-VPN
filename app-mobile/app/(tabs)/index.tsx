@@ -26,7 +26,6 @@ function getButtonState(
   accountState: any,
   isConnected: boolean,
   isConnecting: boolean,
-  subscriptionUrl: string | null,
   hasValidConfig: boolean,
   activeConnection: import("@/types/api").VpnConnection | null,
 ): BtnState {
@@ -37,8 +36,6 @@ function getButtonState(
   if (activeConnection && activeConnection.status === "active") return "connect";
   // Priorité 2 : config locale valide (importée + sauvegardée)
   if (hasValidConfig) return "connect";
-  // Priorité 3 : subscriptionUrl fournie par le backend
-  if (subscriptionUrl) return "connect";
   // Sinon : vérifier l'état du compte
   const s = accountState.state;
   if (s === "no_package") return "no_package";
@@ -55,7 +52,6 @@ function VpnLogsModal({
   const { vpnLogs: logs, isConnected, isConnecting, selectedProtocol } = useVpnContext();
   const scrollRef = useRef<ScrollView>(null);
 
-  // Auto-scroll when new logs arrive
   useEffect(() => {
     if (visible && logs.length > 0) {
       setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
@@ -180,7 +176,7 @@ export default function HomeScreen() {
   const { user, accountState, refreshAccountState, deviceId } = useAuthContext();
   const {
     isConnected, isConnecting, selectedProtocol, connectedProtocol,
-    subscriptionUrl, hasValidConfig, activeConnection,
+    hasValidConfig, activeConnection,
     connect, disconnect, trafficStats: traffic,
     refreshVpnConfig, syncFromConnection,
   } = useVpnContext();
@@ -278,7 +274,7 @@ export default function HomeScreen() {
   const ring1     = useRef(new Animated.Value(1)).current;
   const ring2     = useRef(new Animated.Value(1)).current;
 
-  const btnState = getButtonState(accountState, isConnected, isConnecting, subscriptionUrl, hasValidConfig, activeConnection);
+  const btnState = getButtonState(accountState, isConnected, isConnecting, hasValidConfig, activeConnection);
 
   // Pulse animation
   useEffect(() => {
