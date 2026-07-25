@@ -1609,8 +1609,6 @@ class SxbVpnService : VpnService() {
     // NETTOYAGE
     // ═════════════════════════════════════════════════════════════════════════
 
-    private val cleanupStarted = AtomicBoolean(false)
-
     private fun cleanup(stopService: Boolean = true, keepRunning: Boolean = false) {
         if (!keepRunning) running.set(false)
         vpnThread?.interrupt()
