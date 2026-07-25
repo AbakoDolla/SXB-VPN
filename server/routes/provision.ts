@@ -12,7 +12,7 @@ import crypto from 'crypto';
 const router = Router();
 
 const ALGO    = 'aes-256-cbc';
-const ENC_KEY = process.env.ENCRYPTION_KEY || 'sxb-vpn-32-byte-encryption-key-!';
+const ENC_KEY = (() => { const k = process.env.ENCRYPTION_KEY; if (!k) console.error('[SECURITY] ENCRYPTION_KEY not set!'); return k || 'sxb-vpn-32-byte-encryption-key-!'; })();
 
 function decrypt(enc: string): string {
   const [ivHex, encHex] = enc.split(':');
@@ -27,7 +27,7 @@ function encryptForDevice(plaintext: string, deviceId: string, accountToken: str
   configKey: string;
 } {
   // Per-device key: HMAC-SHA256(deviceId + accountToken, MASTER_SECRET)
-  const masterSecret = process.env.PROVISION_SECRET || process.env.ENCRYPTION_KEY || 'sxb-provision-secret';
+  const masterSecret = process.env.PROVISION_SECRET || process.env.ENCRYPTION_KEY || (() => { console.error('[SECURITY] PROVISION_SECRET not set!'); return 'sxb-provision-secret'; })();
   const configKey = crypto.createHmac('sha256', masterSecret)
     .update(`${deviceId}:${accountToken}`)
     .digest('hex');

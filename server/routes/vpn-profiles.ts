@@ -13,7 +13,7 @@ import crypto from 'crypto';
 const router = Router();
 
 const ALGO = 'aes-256-cbc';
-const ENC_KEY = process.env.ENCRYPTION_KEY || 'sxb-vpn-32-byte-encryption-key-!';
+const ENC_KEY = (() => { const k = process.env.ENCRYPTION_KEY; if (!k) console.error('[SECURITY] ENCRYPTION_KEY not set!'); return k || 'sxb-vpn-32-byte-encryption-key-!'; })();
 
 function encrypt(text: string): string {
   const iv = crypto.randomBytes(16);

@@ -1,3 +1,6 @@
+// ⚠️  DEV ONLY — This screen must not be accessible in production builds.
+// Gate access with __DEV__ check in settings.tsx.
+
 /**
  * VpnDebugScreen — Écran de diagnostic VPN SXB
  * Accessible depuis Settings → Diagnostic VPN

@@ -6,7 +6,7 @@ import { generateTokens, requireAuth, AuthenticatedRequest } from "../middleware
 
 // ── AES-256-CBC decrypt (same key as vpn-profiles.ts) ─────────────────────────
 const ENC_ALGO = "aes-256-cbc";
-const ENC_KEY  = process.env.ENCRYPTION_KEY || "sxb-vpn-32-byte-encryption-key-!";
+const ENC_KEY = (() => { const k = process.env.ENCRYPTION_KEY; if (!k) console.error("[SECURITY] ENCRYPTION_KEY not set — insecure fallback active!"); return k || "sxb-vpn-32-byte-encryption-key-!"; })();
 
 function decryptField(enc: string | null | undefined): string | null {
   if (!enc) return null;
@@ -307,7 +307,7 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
       // et garantir que le contenu du payload arrive même si payloadId est défini
       sub = await (prisma as any).subscription.findFirst({
         where: { clientId: client.id, status: "active" },
-        include: { profile: { include: { payload: true } } },
+        include: { profile: true },
         orderBy: { createdAt: "desc" },
       });
     }
