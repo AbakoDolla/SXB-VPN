@@ -99,10 +99,10 @@ export default function TokensView({ currentUserRole }: TokensViewProps) {
   const clientMap = Object.fromEntries(clients.map(c => [c.id, c]));
 
   const filtered = tokens.filter((tok) => {
-    const clientName = clientMap[tok.clientId]?.user?.name || tok.clientId;
+    const clientName = clientMap[tok.clientId]?.user?.name || tok.clientId || '';
     return (
       tok.token.toLowerCase().includes(search.toLowerCase()) ||
-      clientName.toLowerCase().includes(search.toLowerCase())
+      ( clientName as string).toLowerCase().includes(search.toLowerCase())
     );
   });
 
