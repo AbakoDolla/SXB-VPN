@@ -1,29 +1,30 @@
+/**
+ * update_passwords.cjs — Script utilitaire de diagnostique
+ *
+ * ⚠️  CE SCRIPT NE RÉINITIALISE PLUS LES MOTS DE PASSE EXISTANTS.
+ *     Il affiche uniquement la liste des utilisateurs en base.
+ *
+ * Pour réinitialiser manuellement un seul compte, utiliser directement psql :
+ *   PGPASSWORD=... psql -c "UPDATE users SET \"passwordHash\"='<hash>' WHERE email='...';"
+ */
+
 const { PrismaClient } = require('@prisma/client');
-const bcrypt = require('bcryptjs');
 
 const prisma = new PrismaClient();
 
 async function main() {
-  const password = await bcrypt.hash('SxBvpn2026', 10);
-  
-  // Update all existing users
-  const users = await prisma.user.findMany();
-  for (const user of users) {
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { passwordHash: password }
-    });
-    console.log('Password updated: ' + user.email);
-  }
-  
-  // List all users
-  const allUsers = await prisma.user.findMany({ 
+  const allUsers = await prisma.user.findMany({
     include: { role: true },
-    select: { email: true, role: { select: { name: true } } }
+    select: { email: true, status: true, role: { select: { name: true } } }
   });
-  console.log('\nAll users in database:');
-  allUsers.forEach(u => console.log('  - ' + u.email + ' (' + u.role.name + ')'));
-  
+
+  console.log('\nUtilisateurs en base de données :');
+  allUsers.forEach(u =>
+    console.log(`  - ${u.email}  (rôle: ${u.role?.name})  [${u.status}]`)
+  );
+  console.log(`\nTotal : ${allUsers.length} utilisateur(s)`);
+  console.log('\n⚠️  Aucun mot de passe modifié. Ce script est en lecture seule.');
+
   await prisma.$disconnect();
 }
 
