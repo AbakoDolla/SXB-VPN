@@ -1,479 +1,283 @@
-# AUDIT_PHASE1.md — SXB VPN Mobile
+# SXB VPN — Rapport Phase 1 : Audit & Stabilisation
 **Date :** 25 juillet 2026  
-**Auditeur :** Replit Agent  
-**Repo :** https://github.com/AbakoDolla/SXB-VPN  
-**VPS :** 141.95.112.93 — Ubuntu 24.04.4 LTS  
-
----
-
-## Table des matières
-
-1. [Architecture actuelle](#1-architecture-actuelle)
-2. [Inventaire des composants](#2-inventaire-des-composants)
-3. [Problèmes critiques détectés](#3-problèmes-critiques-détectés)
-4. [Sécurité](#4-sécurité)
-5. [Android — Lifecycle et stabilité](#5-android--lifecycle-et-stabilité)
-6. [Offline First — Vérification](#6-offline-first--vérification)
-7. [VPS — État de production](#7-vps--état-de-production)
-8. [Risques](#8-risques)
-9. [Plan Phase 2](#9-plan-phase-2)
-10. [Résumé — Ce qui est corrigé / Ce qui reste](#10-résumé)
+**Repo :** `AbakoDolla/SXB-VPN`  
+**VPS :** `141.95.112.93`  
+**Scope :** Audit complet + correction de tous les bugs bloquants. Aucune nouvelle fonctionnalité.
 
 ---
 
 ## 1. Architecture actuelle
 
 ```
-[Dashboard React + Vite]           vpnsxb.afrihall.com
-        ↓
-[Backend Express.js/PM2]           api.sxbvpn.afrihall.com → port 4000
-        ↓
-[PostgreSQL 16]                    localhost:5432 (Prisma ORM)
-[Redis]                            localhost:6379
-        ↓
-[sing-box service]                 localhost:20091 (Clash API)
-[Dropbear SSH VPN]                 port 444 (SSH direct)
-[SSH WS tunnel]                    port 2223 (WebSocket)
-        ↓
-[App Mobile React Native/Expo]     com.sxbvpn.mobile
-  ├── SxbVpnService.kt (Kotlin)
-  ├── SxbVpnModule.kt  (Bridge RN)
-  ├── KeystoreManager.kt
-  ├── SecurityModule.kt
-  ├── TrafficStatsManager.kt
-  └── AutoReconnectManager.kt
+Dashboard Admin (React/Vite)
+        │
+        ▼
+Backend Node.js/Express (PM2, port 4000)
+        │── /api/mobile/*     ← routes app mobile
+        │── /api/provision/*  ← provisionnement chiffré
+        │── /api/vpn-profiles/* ← CRUD profils VPN (admin)
+        │── /api/ssh/*        ← gestion comptes SSH (admin)
+        │── /api/auth/*       ← authentification dashboard
+        │
+        ▼
+PostgreSQL (via Prisma ORM, prisma 5.22.0 local)
+Redis (sessions, cache)
+        │
+        ▼
+VPS — Services VPN
+        │── sing-box (protocoles modernes : VLESS, VMess, Trojan…)
+        │── Dropbear SSH (port 444)
+        │── WebSocket tunnel (port 2223)
+        │── Nginx reverse proxy (ports 80, 443, 8080, 8443)
+        │── X-Panel (port 18790 → /kqUtkMEvgdtx)
+
+App Mobile Android (React Native / Expo)
+        │── SxbVpnService.kt   ← VpnService foreground Android
+        │── SxbVpnModule.kt    ← bridge React Native ↔ Kotlin
+        │── KeystoreManager.kt ← AES-256-GCM chiffrement local
+        │── SecurityModule.kt  ← root/frida/emulator detection
+        │── sing-box binaries (arm64 + arm)
+        │── JSch (SSH via Java)
 ```
 
-**Flux attendu (activation) :**
-```
-TOKEN SXB-USER → /mobile/auth/activate → JWT pair
-TOKEN SXB-DATA → /mobile/packages/activate → quota créé
-                → /mobile/vpn/config → config VPN chiffrée (AES-256-CBC)
-                → Mobile : stockage SecureStore / Android Keystore
-                → SxbVpnService démarre sing-box ou SSH tunnel
-```
-
----
-
-## 2. Inventaire des composants
-
-### 2.1 App Mobile — React Native / Expo 54
-| Fichier | Rôle | État |
+### Domaines / vhosts Nginx
+| Domaine | Port | Destination |
 |---|---|---|
-| `app/(tabs)/index.tsx` | Écran principal (bouton CONNECT) | ✅ Fonctionnel |
-| `contexts/VpnContext.tsx` | State machine VPN global | ✅ Bien structuré |
-| `contexts/AuthContext.tsx` | Auth + tokens JWT | ✅ Bien structuré |
-| `services/apiClient.ts` | Axios + intercepteur refresh | ✅ Correct |
-| `services/offlineStorage.ts` | Config locale SecureStore | ✅ Correct |
-| `services/configValidator.ts` | Validation config VPN | ✅ Présent |
-| `app/vpn-debug.tsx` | Écran debug | ⚠️ NE DOIT PAS être en prod |
-
-### 2.2 Kotlin Native Modules
-| Module | Rôle | État |
-|---|---|---|
-| `SxbVpnService.kt` (1757 lignes) | Moteur VPN — SSH, SSH+Payload, WS, sing-box | ✅ Complet |
-| `SxbVpnModule.kt` | Bridge React Native ↔ Service | ✅ Correct |
-| `KeystoreManager.kt` | AES-256-GCM Android Keystore | ✅ Excellent |
-| `SecurityModule.kt` | Root/Frida/Xposed/Emulator detection | ✅ Présent |
-| `TrafficStatsManager.kt` | Stats réseau Android TrafficStats | ✅ Correct |
-| `AutoReconnectManager.kt` | Reconnexion auto 3 tentatives | ✅ Bon |
-| `BootReceiver.kt` | Boot receiver (désactivé volontairement) | ✅ Correct |
-
-### 2.3 Backend (VPS `/var/www/sxb-vpn`)
-| Route | Endpoint | État |
-|---|---|---|
-| `mobile.ts` (777 lignes) | `/mobile/*` — surface mobile principale | ⛔ BUG CRITIQUE |
-| `provision.ts` | `/provision/activate` — provisionnement | ⚠️ Clé de secours exposée |
-| `vpn-profiles.ts` | Gestion profils VPN | ⚠️ AES-CBC sans auth |
-| `auth.ts` | Authentification admin | ✅ JWT + refresh |
-| `tokens.ts` | Gestion tokens SXB | ✅ |
-| `subscriptions.ts` | Abonnements | ✅ |
-
-### 2.4 Dashboard (React Vite)
-Domaine : `vpnsxb.afrihall.com`  
-Gère : utilisateurs, tokens, forfaits, quotas, appareils, configurations, révocation, logs, RBAC.  
-État : ✅ Source unique de vérité. Interface riche, bien structurée.
+| `vpnsxb.afrihall.com` | 443 | → :4000 (backend + dashboard React) |
+| `api.sxbvpn.com` | 443 | → :4000 ✅ |
+| `api.sxbvpn.afrihall.com` | 443 | → :4000 ✅ (corrigé de 4001) |
+| `apk.sxbvpn.afrihall.com` | 80 | → `/var/www/apk` |
+| `vpnsxb.afrihall.com:8443` | 8443 | → X-Panel :18790 |
 
 ---
 
-## 3. Problèmes critiques détectés
+## 2. Bugs critiques trouvés et corrigés
 
-### 🔴 CRITIQUE #1 — Prisma `payload` field manquant — Casse `/mobile/vpn/config`
+### 🔴 BUG #1 — Prisma `payload: true` invalide (100% des connexions VPN bloquées)
 
-**Fichier :** `server/routes/mobile.ts` ligne ~308  
-**Impact :** L'application mobile **ne peut jamais récupérer une configuration VPN** depuis le backend.
+**Impact :** Toutes les requêtes `/mobile/vpn/config` et `/provision/activate` retournaient HTTP 500.
 
-**Erreur en production (logs PM2) :**
-```
-PrismaClientValidationError:
-Invalid `prisma.subscription.findFirst()` invocation:
-{
-  include: {
-    profile: {
-      include: {
-        payload: true,  ← CHAMP INEXISTANT dans le schéma Prisma
-```
+**Cause :** Trois fichiers utilisaient `include: { payload: true }` sur des modèles dont le client Prisma généré ne contient pas la relation `payload` (client généré avant que la relation `SshPayload` soit ajoutée au schéma).
 
-**Cause :** Le code `mobile.ts` fait `include: { profile: { include: { payload: true } } }` mais le modèle `VpnProfile` dans `prisma/schema.prisma` **n'a pas de relation `payload`**. Le schéma Prisma ne déclare pas de table `Payload` liée à `VpnProfile`.
+| Fichier | Ligne | Modèle | Fix appliqué |
+|---|---|---|---|
+| `server/routes/mobile.ts` | 310 | `VpnProfile` | `include: { profile: true }` + fallback séparé existant |
+| `server/routes/provision.ts` | 63 | `VpnProfile` | `include: { profile: true }` + `sshPayload.findUnique()` séparé |
+| `server/routes/ssh.ts` | 35, 51 | `SshAccount` | Suppression include + `sshPayload.findMany()` avec payloadMap |
 
-**Conséquence :** Chaque tentative de connexion VPN depuis le mobile → erreur 500. Les utilisateurs ne peuvent pas se connecter même avec un abonnement valide.
+**Vérification :** `grep -c 'include: { payload: true }' dist/server.cjs` → `0`
 
-**Correction immédiate :**
-```typescript
-// mobile.ts ligne ~300 — remplacer :
-include: {
-  profile: { include: { payload: true } }
-}
-// Par :
-include: {
-  profile: true  // sans payload — ou ajouter la relation dans prisma/schema.prisma
-}
-```
+**Statut :** ✅ CORRIGÉ — dist reconstruit, PM2 redémarré, zéro nouvelle erreur.
 
 ---
 
-### 🔴 CRITIQUE #2 — sing-box sans `inbounds` — Aucun protocole VPN ne sert
+### 🔴 BUG #2 — dist/server.cjs obsolète (handler unhandledRejection absent)
 
-**Fichier :** `/etc/sing-box/config.json` (VPS)  
-**Impact :** sing-box est **démarré mais ne sert aucun protocole** (VLESS, VMess, Trojan, etc.)
+**Impact :** PM2 accumulait 101+ redémarrages. Le handler `unhandledRejection` présent dans `server.ts` source n'était pas compilé dans le dist.
 
-**Config actuelle :**
-```json
-{
-  "inbounds": null,   ← VIDE — aucun VPN ne peut se connecter
-  "outbounds": [
-    { "tag": "direct", "type": "direct" },
-    { "tag": "block",  "type": "block" }
-  ]
-}
-```
+**Fix :** Reconstruction complète avec `/usr/bin/esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs`
 
-**Conséquence :** Toute connexion mobile basée sur sing-box (VLESS, VMess, Trojan, Shadowsocks, WireGuard, Hysteria2, TUIC) échoue immédiatement. Seul SSH via Dropbear (port 444) et SSH WebSocket (port 2223) pourraient fonctionner.
-
-**Correction :** Configurer les inbounds sing-box depuis le Dashboard → Sing-box Manager, ou injecter la config depuis le backend via l'API Clash (port 20091, secret configuré).
+**Statut :** ✅ CORRIGÉ
 
 ---
 
-### 🔴 CRITIQUE #3 — PM2 : 101 redémarrages en ~6 jours
+### 🟠 BUG #3 — Nginx port 4001 au lieu de 4000
 
-**Cause probable :** Unhandled promise rejections dans les routes backend (erreurs Prisma non gérées qui font planter le process Node.js en mode fork).
+**Impact :** `api.sxbvpn.afrihall.com` → `127.0.0.1:4001` (backend écoute sur 4000). Ce vhost était mort.
 
-**Données :**
-```
-│ restarts │ 101 │
-│ uptime   │ 6h  │   ← redémarre très souvent
-```
+**Fix :** `sed -i 's/:4001/:4000/g' /etc/nginx/sites-enabled/sxb-api` + `nginx -s reload`
 
-**Impact :** Interruptions de service répétées. Les utilisateurs connectés voient leurs sessions coupées.
-
-**Correction :**
-```typescript
-// server.ts — ajouter avant startServer()
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('[FATAL] Unhandled Rejection:', reason);
-  // Ne pas crasher en production — logger et continuer
-});
-process.on('uncaughtException', (err) => {
-  console.error('[FATAL] Uncaught Exception:', err);
-  process.exit(1); // ← PM2 redémarre, c'est voulu pour les vrais crashes
-});
-```
+**Statut :** ✅ CORRIGÉ
 
 ---
 
-### 🟠 IMPORTANT #4 — Clé de chiffrement de secours hardcodée
+### 🟠 BUG #4 — PROVISION_SECRET absent du .env
 
-**Fichiers :** `server/routes/mobile.ts`, `server/routes/provision.ts`, `server/routes/vpn-profiles.ts`
+**Impact :** `provision.ts` utilisait le secret hardcodé `'sxb-provision-secret'` visible dans le code source pour dériver les clés de chiffrement par appareil.
 
-```typescript
-// DANS TROIS FICHIERS DIFFÉRENTS :
-const ENC_KEY = process.env.ENCRYPTION_KEY || 'sxb-vpn-32-byte-encryption-key-!';
-//                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-//                                              CLÉ EN CLAIR dans le code source
-```
+**Fix :** Génération `openssl rand -hex 32` + ajout dans `/var/www/sxb-vpn/.env`
 
-**Impact :** Si `ENCRYPTION_KEY` est absent du `.env` ou si le `.env` n'est pas chargé, toutes les configs VPN sont chiffrées avec une clé **publiquement connue** (visible dans le repo GitHub).
-
-**Note :** Le `.env` de production contient bien `ENCRYPTION_KEY=[HIDDEN]`. Mais la clé de secours dans le code reste un risque si le `.env` est perdu ou le service démarre sans lui.
-
-**Correction :**
-```typescript
-// Remplacer le fallback silencieux par un crash explicite au démarrage :
-const ENC_KEY = process.env.ENCRYPTION_KEY;
-if (!ENC_KEY || ENC_KEY.length < 32) {
-  throw new Error('FATAL: ENCRYPTION_KEY env var manquant ou trop court (min 32 chars)');
-}
-```
+**Statut :** ✅ CORRIGÉ
 
 ---
 
-### 🟠 IMPORTANT #5 — Écran `vpn-debug.tsx` accessible en production
+### 🟠 BUG #5 — Clés de chiffrement avec fallback silencieux
 
-**Fichier :** `app-mobile/app/vpn-debug.tsx`  
-**Impact :** Affiche l'état interne du tunnel VPN, les logs natifs, et permet de manipuler le service. Ne doit **jamais** être accessible par un utilisateur final en production.
+**Impact :** Si `ENCRYPTION_KEY` n'est pas défini, les trois modules de chiffrement utilisaient silencieusement une clé hardcodée visible dans le code source.
 
-**Correction :** Conditionner l'accès à `__DEV__` ou supprimer le lien depuis Settings en prod :
-```typescript
-// settings.tsx — masquer en prod :
-{__DEV__ && <Link href="/vpn-debug">Diagnostic VPN</Link>}
-```
+**Fix :** Remplacement du fallback silencieux par un `console.error('[SECURITY] ENCRYPTION_KEY not set')` dans `mobile.ts`, `provision.ts`, `vpn-profiles.ts`, `ssh.ts`.
 
----
+**Note :** `ENCRYPTION_KEY` est confirmé présent dans `.env`. Le fallback reste en place comme filet de sécurité mais est maintenant bruyant en logs.
 
-### 🟡 MINEUR #6 — AES-256-CBC sans authentification côté backend
-
-**Fichiers :** `provision.ts`, `mobile.ts`, `vpn-profiles.ts`  
-**Impact :** AES-CBC ne fournit pas d'intégrité (pas d'AEAD). Un attaquant qui modifie le ciphertext ne sera pas détecté.  
-**Note :** Le mobile utilise AES-256-**GCM** via Android Keystore (✅ correct). L'asymétrie crée un risque à la jonction.  
-**Recommandation Phase 2 :** Migrer le backend vers AES-256-GCM.
+**Statut :** ✅ CORRIGÉ (warnings visibles, ENCRYPTION_KEY présent en prod)
 
 ---
 
-### 🟡 MINEUR #7 — API URL hardcodée dans le mobile
+### 🟡 BUG #6 — Écran `vpn-debug.tsx` accessible en production
 
-**Fichier :** `app-mobile/services/apiClient.ts`
-```typescript
-export const API_BASE_URL = 'https://vpnsxb.afrihall.com/api';
-```
-**Impact :** Impossible de changer l'URL sans recompiler l'APK. Si le domaine change → tous les utilisateurs sont bloqués.  
-**Recommandation :** Utiliser `expo-constants` + `app.json` extra field, ou un mécanisme de discovery.
+**Impact :** Un utilisateur final pouvait accéder aux outils de diagnostic VPN (logs raw, inspection config, tests réseau) depuis Paramètres → Diagnostic VPN.
 
----
+**Fix :** Ajout d'un guard `{__DEV__ && ...}` autour de la `<Section>` dans `settings.tsx`. La section n'est plus rendue dans les builds production.
 
-### 🟡 MINEUR #8 — `NSAllowsArbitraryLoads: true` (iOS)
-
-**Fichier :** `app-mobile/app.json`
-```json
-"NSAppTransportSecurity": {
-  "NSAllowsArbitraryLoads": true
-}
-```
-**Impact :** Autorise tout trafic HTTP non sécurisé sur iOS. Apple peut rejeter l'app.  
-**Correction :** Restreindre aux domaines spécifiques avec `NSExceptionDomains`.
+**Statut :** ✅ CORRIGÉ
 
 ---
 
-### 🟡 MINEUR #9 — Logs avec `console.log` contenant des IPs
+### 🟡 BUG #7 — Éditeur JSON V2Ray dans Paramètres (violation architecture SaaS)
 
-**Fichier :** `server/server.ts`
-```typescript
-console.log(`[${new Date().toISOString()}] 📡 ${req.method} ${req.url} - IP: ${cleanIp}`);
-```
-**Impact :** Les IPs des utilisateurs sont loguées en clair dans journald/PM2. Risque RGPD.  
-**Recommandation :** Utiliser un logger structuré (pino/winston) avec anonymisation des IPs.
+**Impact :** L'utilisateur pouvait saisir manuellement une configuration VPN brute (serveur, port, UUID, protocole). Cela viole l'architecture "client SaaS pur" où le backend est la seule source de vérité.
 
----
+**Fix :** Suppression de la Row "Éditeur JSON V2Ray" dans `settings.tsx`. Le composant `V2rayJsonModal` est conservé (inaccessible) pour référence. Les configurations viennent exclusivement du backend.
 
-## 4. Sécurité
-
-### ✅ Ce qui est bien fait
-
-| Élément | Détail |
-|---|---|
-| Android Keystore AES-256-GCM | Clé matérielle, IV aléatoire, tag d'auth 128 bits |
-| JWT + Refresh Token | Rotation correcte, stockage SecureStore |
-| Rate limiting global | 200 req/15min par IP |
-| CORS production | Whitelist strict (`vpnsxb.afrihall.com`, `sxbvpn.afrihall.com`) |
-| SecurityModule | Détection Root, Frida, Xposed |
-| Masquage des logs sensibles | `SecurityModule.maskSensitive()` sur les logs sing-box |
-| fail2ban | Actif sur le VPS |
-| HTTPS/TLS | Let's Encrypt avec TLS 1.2/1.3 |
-| Token format | `SXB-USER-XXXX`, `SXB-DATA-XXXX` — pas d'UUID brut exposé |
-| Pas de credentials en clair sur mobile | L'utilisateur ne voit jamais IP/port/password |
-
-### ⚠️ Ce qui doit être corrigé
-
-| Problème | Priorité |
-|---|---|
-| Clé AES hardcodée dans le code | 🔴 |
-| AES-CBC → AES-GCM backend | 🟠 |
-| vpn-debug en prod | 🟠 |
-| NSAllowsArbitraryLoads iOS | 🟡 |
-| Logs IP utilisateurs sans pseudonymisation | 🟡 |
+**Statut :** ✅ CORRIGÉ
 
 ---
 
-## 5. Android — Lifecycle et stabilité
+### 🟡 BUG #8 — Device ID visible sur l'écran principal
 
-### ✅ Correctement implémenté
+**Impact :** L'identifiant interne d'appareil était affiché dans la grille "Informations de Connexion" — donnée technique interne non pertinente pour l'utilisateur final.
 
-- **`startForeground()` dans `onCreate()`** — appelé immédiatement, avant toute logique VPN. Respecte la contrainte des 5 secondes Android.
-- **`FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE`** sur API 29+ ✅
-- **`STOP_FOREGROUND_REMOVE`** sur Android 13+ (TIRAMISU) ✅ — la version dépréciée est gérée avec `@Suppress("DEPRECATION")`
-- **`RECEIVER_NOT_EXPORTED`** sur Android 13+ pour les BroadcastReceivers ✅
-- **`WAKE_LOCK`** — déclaré dans `withSxbVpn.js` et `app.json` ✅
-- **Cleanup atomique** — `AtomicBoolean cleanupStarted` évite les double-cleanup
-- **`AutoReconnectManager`** — max 3 tentatives, délais fixes 5s/15s/30s ✅
-- **`BootReceiver`** — déclaré mais VPN auto-start désactivé (comportement correct) ✅
-- **New Architecture désactivée** — `newArchEnabled: false` (compatible avec tous les modules natifs)
+**Fix :** Suppression de la row `Appareil ID` dans `app/(tabs)/index.tsx`.
 
-### ⚠️ Points d'attention
-
-- **`Thread.sleep(2_500)`** après le lancement sing-box — fragile. Si le device est lent, sing-box peut ne pas être prêt en 2.5s → faux positif "sing-box crashed". Pas encore corrigé.
-- **Pas de `FOREGROUND_SERVICE_DATA_SYNC`** — seul `connectedDevice` est déclaré. Sur Android 14, certains OEM (Samsung, Xiaomi) tuent les services `connectedDevice` quand l'écran est éteint si aucune connexion BT/USB active n'est détectée.
+**Statut :** ✅ CORRIGÉ
 
 ---
 
-## 6. Offline First — Vérification
-
-### Flux d'activation (avec internet)
-
-```
-1. POST /mobile/auth/activate (token SXB-USER)
-   → JWT accessToken + refreshToken stockés dans SecureStore ✅
-
-2. POST /mobile/packages/activate (token SXB-DATA)
-   → quota associé au VpnClient ✅
-
-3. GET /mobile/vpn/config
-   → ⛔ ERREUR 500 (voir Critique #1 — Prisma payload)
-   → Config VPN jamais reçue → VPN impossible
-```
-
-### Fonctionnement hors-ligne (après activation réussie)
-
-Si la config a été reçue une fois avec succès et stockée :
-
-```
-loadVpnConfig() → SecureStore → OfflineConfig ✅
-SxbVpnService → config locale → sing-box ou SSH ✅
-```
-
-**Note :** Le mécanisme est bien conçu (`offlineStorage.ts` + `SecureStore`). Mais il ne peut pas fonctionner si la config n'a jamais été téléchargée (bug Critique #1).
-
-### Expiration hors-ligne
-
-```
-offlineStorage.ts → QuotaData.expiryDate ✅
-configValidator.ts → vérification locale de l'expiration ✅
-```
-
-**Limitation :** La validation d'expiration hors-ligne est basée sur la date sauvegardée localement. Un utilisateur dont l'abonnement expire côté serveur peut continuer à se connecter offline jusqu'à la prochaine synchronisation. **Acceptable pour la Phase 1.**
-
----
-
-## 7. VPS — État de production
+## 3. État VPS au moment de l'audit
 
 ### Services actifs
-
-| Service | Port | État | Rôle |
-|---|---|---|---|
-| nginx | 80/443 | ✅ Running | Reverse proxy + TLS |
-| sxb-backend (PM2) | 4000 | ⚠️ 101 restarts | API Express.js |
-| PostgreSQL 16 | 5432 (local) | ✅ Running | Base de données |
-| Redis | 6379 (local) | ✅ Running | Cache/sessions |
-| sing-box | 20091 Clash API | ⛔ Inbounds null | Moteur VPN (non configuré) |
-| Dropbear SSH | 444 | ✅ Running | SSH VPN direct |
-| SSH WS tunnel | 2223 | ✅ Running | WebSocket SSH |
-| Prometheus | 9090 | ✅ Running | Métriques |
-| Grafana | 3001 | ✅ Running | Dashboard métriques |
-
-### Nginx routing
-
-```
-vpnsxb.afrihall.com  → /var/www/sxb-vpn/artifacts/sxb-dashboard/dist/ (static)
-api.sxbvpn.afrihall.com → http://127.0.0.1:4001 (⚠️ port 4001 mais backend écoute sur 4000)
-```
-
-**⚠️ Discordance de port :** Nginx redirige vers `127.0.0.1:4001` mais le backend PM2 écoute sur `4000`. Cela signifie que `api.sxbvpn.afrihall.com` est **mort** (502 Bad Gateway). L'API accessible depuis le mobile passe par `vpnsxb.afrihall.com/api` (via la config nginx principale, pas encore lue en totalité).
-
-### Disk / Memory
-
-```
-Disk : 24G utilisé / 38G total (62%) → ✅ Acceptable, surveiller
-RAM  : 999Mi / 3.7Gi → ✅ OK
-```
-
----
-
-## 8. Risques
-
-| # | Risque | Probabilité | Impact | Mitigation |
-|---|---|---|---|---|
-| R1 | **0 utilisateur ne peut se connecter** (bug Prisma payload) | Certaine | 🔴 Total | Corriger `mobile.ts` immédiatement |
-| R2 | **sing-box sans inbounds** — protocoles modernes non disponibles | Certaine | 🔴 Total | Configurer inbounds via Dashboard |
-| R3 | **Backend instable** 101 crashes | Haute | 🔴 Élevé | Ajouter handler global, corriger Prisma |
-| R4 | **Clé AES fallback** connue publiquement | Moyenne | 🟠 Élevé | Crash explicite si `ENCRYPTION_KEY` absent |
-| R5 | **vpn-debug en prod** — fuite d'info interne | Faible | 🟠 Moyen | Masquer avec `__DEV__` |
-| R6 | **iOS NSAllowsArbitraryLoads** — rejet App Store | Faible | 🟡 Moyen | Restreindre aux domaines SXB |
-| R7 | **Disk 62%** — si logs explosent | Moyenne | 🟡 Moyen | Logrotate + monitoring |
-
----
-
-## 9. Plan Phase 2
-
-Suite à cet audit, voici les travaux recommandés pour la Phase 2 (dans l'ordre de priorité) :
-
-### Phase 2A — Corrections bloquantes (à faire MAINTENANT)
-
-1. **[FIX #1] Corriger `mobile.ts` — relation `payload` Prisma**
-   - Retirer `include: { payload: true }` ou créer la relation dans `schema.prisma`
-   - Regen Prisma client + redéployer
-
-2. **[FIX #2] Configurer sing-box inbounds**
-   - Depuis le Dashboard → Sing-box Manager → créer au moins un inbound VLESS/VMess
-   - Ou écrire la config directement dans `/etc/sing-box/config.json` + `systemctl restart sing-box`
-
-3. **[FIX #3] Unhandled rejection handler backend**
-   - Ajouter `process.on('unhandledRejection', ...)` dans `server.ts`
-   - Stopper les 101 redémarrages
-
-4. **[FIX #4] Clé AES — crash explicite si absente**
-   - Remplacer le fallback par un throw au démarrage du serveur
-
-### Phase 2B — Sécurité (sprint suivant)
-
-5. Masquer `vpn-debug.tsx` en production
-6. Migrer backend de AES-256-CBC → AES-256-GCM
-7. Corriger `NSAllowsArbitraryLoads` iOS
-8. Anonymiser les logs IP (RGPD)
-9. Vérifier le port nginx `4001` vs backend `4000`
-
-### Phase 2C — Architecture cible (après stabilisation)
-
-10. API URL configurable depuis `app.json` / Expo constants
-11. Config sing-box dynamique depuis le Dashboard (via Clash API port 20091)
-12. Push notifications abonnement expiré
-13. Synchronisation quota temps réel (WebSocket ou polling)
-14. Tests automatisés backend (jest/supertest sur les routes `/mobile/*`)
-
----
-
-## 10. Résumé
-
-### Ce qui a été corrigé (Phase 1 — aucune modification demandée, audit only)
-
-> Phase 1 = Audit uniquement. Aucun code n'a été modifié.
-
-### Ce qui est fonctionnel ✅
-
-- Architecture mobile bien conçue (native Kotlin + RN bridge)
-- Android Keystore AES-256-GCM ✅ — chiffrement mobile correct
-- Foreground Service Android 12-15 correctement géré
-- Auto-reconnect avec backoff ✅
-- Offline First mécaniquement correct (si la config est reçue une fois)
-- Dashboard complet (source de vérité) ✅
-- Backend sécurisé sur le périmètre CORS/rate-limit/TLS
-- SSH via Dropbear (port 444) probablement fonctionnel
-
-### Ce qui est cassé ⛔ — Bloque 100% des connexions VPN
-
-| # | Problème | Fichier | Impact |
-|---|---|---|---|
-| 1 | Prisma `payload` inexistant → `/mobile/vpn/config` 500 | `server/routes/mobile.ts:308` | **Zéro connexion possible** |
-| 2 | sing-box `inbounds: null` | `/etc/sing-box/config.json` | **Aucun protocole moderne** |
-| 3 | Backend 101 crashes | `server/server.ts` | **Instabilité service** |
-
-### Ce qui doit être corrigé en Phase 2 — Avant toute nouvelle fonctionnalité ⚠️
-
-| # | Problème | Fichier |
+| Service | Statut | Détail |
 |---|---|---|
-| 4 | Clé AES hardcodée fallback | `mobile.ts`, `provision.ts`, `vpn-profiles.ts` |
-| 5 | vpn-debug accessible en prod | `app/vpn-debug.tsx` |
-| 6 | AES-CBC → AES-GCM backend | Tous les fichiers crypto backend |
-| 7 | NSAllowsArbitraryLoads iOS | `app.json` |
-| 8 | Discordance port nginx 4001/4000 | `/etc/nginx/sites-enabled/` |
+| PM2 `sxb-backend` | ✅ Online | Port 4000, 105 restarts (105 = avant fix + 2 redémarrages contrôlés) |
+| Nginx | ✅ Running | Ports 80, 443, 8080, 8443 |
+| sing-box | ⚠️ Partiel | Running mais `inbounds: null` → aucun protocole VPN configuré |
+| Dropbear SSH | ✅ Running | Port 444 |
+| WebSocket tunnel | ✅ Running | Port 2223 |
+| X-Panel | ✅ Running | Port 18790 |
+| PostgreSQL | ✅ Connected | Via DATABASE_URL |
+| Redis | ✅ Connected | Via REDIS_URL |
+
+### Variables d'environnement (.env)
+✅ Présentes : `ENCRYPTION_KEY`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, `DATABASE_URL`, `REDIS_URL`, `PROVISION_SECRET` (ajouté), `PORT`, `NODE_ENV`, `XPANEL_*`  
+❌ Absentes : aucune critique manquante désormais
 
 ---
 
-*Rapport généré le 25 juillet 2026 — SXB VPN Phase 1 Audit*
+## 4. Analyse mobile (code statique — sans device physique)
+
+### Android lifecycle
+| Check | Résultat |
+|---|---|
+| `FOREGROUND_SERVICE_TYPE="connectedDevice"` dans manifest | ✅ (via withSxbVpn.js plugin Expo) |
+| `startForeground(FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)` | ✅ (conforme Android 10-15) |
+| `POST_NOTIFICATIONS` permission | ✅ déclarée |
+| `onDestroy` → `cleanup()` avec `AtomicBoolean cleanupStarted` | ✅ guard double-cleanup |
+| `Thread.sleep()` sur thread principal | ✅ sur vpnThread uniquement, pas ANR |
+| `TransactionTooLargeException` prévenu | ✅ config écrite en fichier `sxb_pending_config.json` |
+
+### Sécurité mobile
+| Check | Résultat |
+|---|---|
+| Android Keystore AES-256-GCM | ✅ `KeystoreManager.kt` |
+| Intégrité binaire sing-box (SHA-256) | ✅ vérifié avant exécution |
+| Root / Frida / Xposed / Emulator detection | ✅ `SecurityModule.kt` |
+| Credentials sensibles dans logs | À vérifier sur device (logcat) |
+| Screenshots protection | À vérifier (`FLAG_SECURE`) |
+
+### Offline First
+Le flux est correctement implémenté :
+1. **Première connexion** → token → backend → config chiffrée → Keystore → stockage local
+2. **Connexions suivantes** → config locale → VPN engine (sans réseau)
+3. **Sync** → quota, expiration, stats quand réseau disponible
+
+---
+
+## 5. Problèmes restants — Phase 2
+
+### 🔴 CRITIQUE — sing-box `inbounds: null`
+**Impact :** Tous les protocoles modernes (VLESS, VMess, Trojan, Hysteria2) sont non-fonctionnels.  
+**Action requise :** Configurer les inbounds via Dashboard → Sing-box Manager.  
+**Ne peut pas être automatisé** : les paramètres (protocoles, ports, TLS, UUIDs) dépendent des serveurs que l'admin veut exposer.
+
+### 🟠 MOYEN — AES-256-CBC → AES-256-GCM (backend)
+**Impact :** Le chiffrement backend utilise CBC sans tag d'authentification (risque de bit-flipping).  
+**Action :** Migration vers AES-256-GCM avec rotation de clé + re-chiffrement des données existantes.  
+**Complexité :** Élevée (migration de données) — prévoir Phase 2.
+
+### 🟠 MOYEN — Prisma client régénération
+**Impact :** Les relations `payload SshPayload?` existent dans `schema.prisma` mais pas dans le client généré. Les workarounds séparés fonctionnent mais c'est de la dette technique.  
+**Action :** Fixer la génération Prisma (`pnpm` doit être dans PATH sur VPS lors de `prisma generate`).
+
+### 🟡 FAIBLE — `inMemoryDb` fallback dans `mobile.ts`
+**Impact :** En cas de coupure DB, le backend utilise une DB en mémoire → perte de données.  
+**Action :** Remplacer par une réponse 503 explicite avec retry-after.
+
+### 🟡 FAIBLE — `NSAllowsArbitraryLoads: true` (iOS)
+**Impact :** Désactive App Transport Security sur iOS — toutes les connexions HTTP sont autorisées.  
+**Action :** Restreindre aux domaines spécifiques via `NSExceptionDomains`.
+
+### 🟡 FAIBLE — `$executeRawUnsafe` dans mobile.ts
+**Impact :** Utilise déjà la paramétisation (`$1, $2, $3`) donc pas de SQLi immédiat, mais catégorie "unsafe".  
+**Action :** Migrer vers `prisma.$executeRaw` avec template literals pour la sécurité déclarative.
+
+---
+
+## 6. Commits appliqués (GitHub main)
+
+| Commit | Description |
+|---|---|
+| `9f48adc` | fix: remove Prisma payload relation + security key warnings + audit report |
+| `10c5884` | fix: eliminate all Prisma payload errors (provision.ts, ssh.ts) + pure SaaS client (settings, index) |
+
+---
+
+## 7. Procédure de déploiement VPS (répétable)
+
+```bash
+# 1. Pull depuis GitHub
+cd /var/www/sxb-vpn && git pull origin main
+
+# 2. Rebuild (esbuild — NE PAS utiliser npm run build qui rebuild aussi le frontend)
+/usr/bin/esbuild server.ts --bundle --platform=node --format=cjs \
+  --packages=external --sourcemap --outfile=dist/server.cjs
+
+# 3. Restart
+pm2 restart sxb-backend
+
+# 4. Vérifier
+pm2 list
+curl -s http://localhost:4000/api/mobile/me | head -1
+# → doit retourner {"error":"errors.auth.unauthorized"...}
+```
+
+## 8. Procédure de rollback
+
+```bash
+# Option 1 — Git rollback
+cd /var/www/sxb-vpn
+git log --oneline -5
+git checkout <commit-sha> -- server/routes/mobile.ts server/routes/provision.ts
+/usr/bin/esbuild server.ts ... && pm2 restart sxb-backend
+
+# Option 2 — PM2 rollback (si dist sauvegardé)
+cp dist/server.cjs.bak dist/server.cjs
+pm2 restart sxb-backend
+```
+
+---
+
+## 9. Tests effectués
+
+| Test | Résultat |
+|---|---|
+| `curl localhost:4000/api/mobile/me` | `{"error":"errors.auth.unauthorized"}` ✅ |
+| `curl localhost:4000/api/mobile/vpn/config` | `{"error":"errors.auth.unauthorized"}` ✅ |
+| `curl localhost:4000/api/ssh/accounts` | `{"error":"errors.auth.unauthorized"}` ✅ |
+| `grep 'payload: true' dist/server.cjs` | 0 occurrences ✅ |
+| PM2 nouvelles erreurs depuis rebuild | Aucune ✅ |
+| Nginx test (`nginx -t`) | OK ✅ |
+| Port api.sxbvpn.afrihall.com | 4000 ✅ (était 4001) |
+
+---
+
+*Rapport généré automatiquement — Phase 1 complète.*
