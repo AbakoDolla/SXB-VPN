@@ -131,21 +131,41 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const startWatchdog = useCallback((lastStep: string) => {
     clearWatchdog();
     lastStepRef.current = lastStep;
+    // Watchdog : 45s pour laisser le temps au handshake SSH+Payload (payload → HTTP 101 → SSH)
+    // N'arrête PAS si une vraie erreur native a déjà été reçue via onVpnStateChange
     watchdogRef.current = setTimeout(async () => {
       const step = lastStepRef.current;
       console.warn(`[SXB_DEBUG] WATCHDOG_FIRED lastStep=${step}`);
+
+      // Détecter la cause probable à partir de la dernière étape connue
+      let errorCode = 'TIMEOUT_SERVER';
+      let errorDetail = 'Aucune réponse du serveur après 45s';
+      if (step.includes('ssh+payload')) {
+        errorCode = 'TIMEOUT_SSH_PAYLOAD';
+        errorDetail = 'Timeout SSH+Payload — vérifiez le payload et le serveur';
+      } else if (step.includes('ssh')) {
+        errorCode = 'SSH_TIMEOUT';
+        errorDetail = 'Timeout SSH — serveur non joignable ou port fermé';
+      } else if (step.includes('CONFIG')) {
+        errorCode = 'INVALID_CONFIG';
+        errorDetail = 'Configuration VPN invalide ou incomplète';
+      }
+
       setVpnLogs(prev => [
-        `[WATCHDOG] ⏱️ Connexion bloquée à : ${step}`,
-        `[WATCHDOG] Aucune réponse après 35s — arrêt du service`,
+        `[WATCHDOG] ❌ ${errorCode}`,
+        `[WATCHDOG] Bloqué à : ${step}`,
+        `[WATCHDOG] Cause probable : ${errorDetail}`,
+        `[WATCHDOG] Arrêt du service après 45s sans réponse`,
         ...prev,
       ].slice(0, 200));
+
       // Arrêter proprement le service Android bloqué
       if (IS_ANDROID && SxbVpnNative) {
         try { await SxbVpnNative.stopVpn(); } catch { /* ignore */ }
       }
       setIsConnecting(false);
       setVpnState('error');
-    }, 35_000);
+    }, 45_000);
   }, [clearWatchdog]);
 
   // ── Ajout d'un log ─────────────────────────────────────────────────────────

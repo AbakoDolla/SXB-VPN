@@ -231,12 +231,12 @@ private class SxbPayloadProxy(
             .replace("[port]", port.toString())
             .replace("[host]", host).replace("[Host]", host)
             .replace("[host_port]", "$host:$port")
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] PAYLOAD_SEND_START bytes=${payload.length}")
-        onEvent("[SXB_DEBUG] PAYLOAD_SEND_START bytes=${payload.length}")
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] PAYLOAD_START host=$host port=$port bytes=${payload.length}")
+        onEvent("[SXB_DEBUG] PAYLOAD_START host=$host port=$port bytes=${payload.length}")
         rawOut.write(payload.toByteArray(Charsets.ISO_8859_1))
         rawOut.flush()
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] PAYLOAD_SEND_COMPLETE bytes=${payload.length}")
-        onEvent("[SXB_DEBUG] PAYLOAD_SEND_COMPLETE bytes=${payload.length}")
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] PAYLOAD_SENT length=${payload.length}")
+        onEvent("[SXB_DEBUG] PAYLOAD_SENT length=${payload.length}")
 
         // ── 2. Lire la réponse HTTP du serveur (headers jusqu'à \r\n\r\n) ────
         transportSocket.soTimeout = 10_000
@@ -256,10 +256,10 @@ private class SxbPayloadProxy(
         transportSocket.soTimeout = 0
 
         val response = headerBuf.toString()
-        val logSafeStatus = response.substringBefore("\r\n").take(40)
+        val logSafeStatus = response.substringBefore("\r\n").take(60)
             .replace(Regex("[^\\x20-\\x7E]"), "")
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] PAYLOAD_RESPONSE_RECEIVED bytes=${response.length} status=$logSafeStatus")
-        onEvent("[SXB_DEBUG] PAYLOAD_RESPONSE_RECEIVED bytes=${response.length} status=$logSafeStatus")
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] SERVER_RESPONSE=${logSafeStatus} bytes=${response.length}")
+        onEvent("[SXB_DEBUG] SERVER_RESPONSE=${logSafeStatus} bytes=${response.length}")
 
         // ── 3. Détecter le mode transport ─────────────────────────────────────
         //   HTTP 101 = WebSocket upgrade  → adapter WS obligatoire
@@ -624,20 +624,41 @@ class SxbVpnService : VpnService() {
             val port       = cfg.optInt("port", 22)
             val username   = cfg.optString("username", "")
             val password   = cfg.optString("password", "")
-            val payload    = cfg.optString("payload", "")
-            val usePayload   = cfg.optBoolean("usePayload", false) || cfg.optString("protocol","").contains("payload")
-            val sni         = cfg.optString("sni", "")
-            val tlsEnabled  = cfg.optBoolean("tlsEnabled", cfg.optBoolean("tls", false))
+            val usePayload = cfg.optBoolean("usePayload", false) || cfg.optString("protocol","").contains("payload")
+            val sni        = cfg.optString("sni", "")
+            val tlsEnabled = cfg.optBoolean("tlsEnabled", cfg.optBoolean("tls", false))
             val websocketEnabled = cfg.optBoolean("websocketEnabled", false)
             val fingerprint = cfg.optString("fingerprint", "")
 
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_SOCKET_CONNECT_START port=$port usePayload=$usePayload tls=$tlsEnabled ws=$websocketEnabled")
-            broadcastLog("[SXB_DEBUG] SSH_SOCKET_CONNECT_START port=$port usePayload=$usePayload tls=$tlsEnabled ws=$websocketEnabled")
+            // ── Payload SSH ─────────────────────────────────────────────────
+            // BUG FIX: ne jamais basculer en SSH direct si le protocole est ssh+payload
+            // Même si le backend n'a pas renvoyé de contenu de payload (payloadContent null),
+            // on utilise un payload WebSocket par défaut pour éviter le timeout sur port 443.
+            val rawPayload = cfg.optString("payload", "")
+            val payload = when {
+                rawPayload.isNotEmpty() -> rawPayload   // payload réel reçu du backend
+                usePayload -> {
+                    // Payload WebSocket par défaut — garantit que le handshake HTTP
+                    // est envoyé avant SSH, nécessaire pour les serveurs port 443/80
+                    Log.i("SXB_DEBUG", "[SXB_DEBUG] PAYLOAD_DEFAULT_USED host=$host port=$port")
+                    broadcastLog("[SXB_DEBUG] PAYLOAD_DEFAULT_USED — aucun payload configuré sur le profil, utilisation WebSocket défaut")
+                    "GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]"
+                }
+                else -> ""
+            }
+
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_SOCKET_CONNECT_START port=$port usePayload=$usePayload payload_len=${payload.length} tls=$tlsEnabled ws=$websocketEnabled")
+            broadcastLog("[SXB_DEBUG] SSH_SOCKET_CONNECT_START port=$port usePayload=$usePayload payload_len=${payload.length} tls=$tlsEnabled ws=$websocketEnabled")
 
             // ── Session JSch ──────────────────────────────────────────────────
             val jsch = JSch()
-            val session: Session = if (usePayload && payload.isNotEmpty()) {
-                broadcastLog("[SXB] Mode SSH+Payload (HTTP Injector)")
+            val session: Session = if (usePayload) {
+                // SSH+Payload : injection HTTP avant le handshake SSH
+                // Le proxy SxbPayloadProxy envoie le payload, lit la réponse HTTP (101/200),
+                // et adapte les streams (WsOutputStream/WsInputStream si WebSocket 101)
+                Log.i("SXB_DEBUG", "[SXB_DEBUG] PAYLOAD_START mode=SSH+Payload payload_len=${payload.length}")
+                broadcastLog("[SXB_DEBUG] PAYLOAD_START mode=SSH+Payload payload_len=${payload.length}")
+                broadcastLog("[SXB] Mode SSH+Payload (HTTP Injector) — injection payload avant SSH")
                 jsch.getSession(username, host, port).also { s ->
                     s.setProxy(SxbPayloadProxy(payload, tlsEnabled, sni) { event ->
                         broadcastLog(event)
@@ -669,13 +690,13 @@ class SxbVpnService : VpnService() {
                 }
             }
 
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_AUTH_START port=$port timeout=30000ms")
-            broadcastLog("[SXB_DEBUG] SSH_AUTH_START port=$port")
-            broadcastLog("[SXB] Connexion SSH... Port:$port")
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_HANDSHAKE_START port=$port timeout=30000ms usePayload=$usePayload")
+            broadcastLog("[SXB_DEBUG] SSH_HANDSHAKE_START port=$port usePayload=$usePayload")
+            broadcastLog("[SXB] Handshake SSH en cours... Port:$port")
             session.connect(30_000)
 
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_AUTH_SUCCESS session.isConnected=${session.isConnected}")
-            broadcastLog("[SXB_DEBUG] SSH_AUTH_SUCCESS")
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_CONNECTED session.isConnected=${session.isConnected} host=$host port=$port")
+            broadcastLog("[SXB_DEBUG] SSH_CONNECTED — handshake réussi sur $host:$port")
 
             // P5 — Vérification fingerprint post-connexion (hors StrictHostKeyChecking)
             if (fingerprint.isNotEmpty()) {

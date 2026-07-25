@@ -303,19 +303,25 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
 
     let sub: any = null;
     if (prisma) {
+      // IMPORTANT : include { payload: true } pour éviter un second round-trip
+      // et garantir que le contenu du payload arrive même si payloadId est défini
       sub = await (prisma as any).subscription.findFirst({
         where: { clientId: client.id, status: "active" },
-        include: { profile: true },
+        include: { profile: { include: { payload: true } } },
         orderBy: { createdAt: "desc" },
       });
     }
 
     const profile = sub?.profile || null;
-    const proto = (profile?.protocol || "ssh").toLowerCase(); // already "ssh+payload" in DB
+    const proto = (profile?.protocol || "ssh").toLowerCase(); // "ssh" | "ssh+payload" | "vless" …
 
-    // ── Charger le payload SSH si le profil en a un ────────────────────────
+    // ── Charger le payload SSH (via JOIN Prisma d'abord, puis requête séparée) ─
     let payloadContent: string | null = null;
-    if (profile?.payloadId && prisma) {
+    if (profile?.payload?.content) {
+      // Contenu ramené directement par le JOIN (chemin normal)
+      payloadContent = profile.payload.content;
+    } else if (profile?.payloadId && prisma) {
+      // Fallback : requête séparée si le JOIN n'a pas ramené le contenu
       try {
         const sshPayload = await (prisma as any).sshPayload.findUnique({
           where: { id: profile.payloadId },
@@ -324,6 +330,11 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
       } catch (e) {
         console.error("Erreur chargement payload SSH:", e);
       }
+    }
+    // Payload WebSocket par défaut pour ssh+payload si aucun payload n'est configuré
+    // Garantit que le module natif Android n'entre pas en mode SSH direct sur port 443
+    if (!payloadContent && proto === "ssh+payload") {
+      payloadContent = "GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]";
     }
 
     // ── Déchiffrer le mot de passe avant envoi au mobile ─────────────────
@@ -367,20 +378,25 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
         payloadId:  profile.payloadId || null,
       } : null,
       // vpnConfig : objet complet consommé par le module natif Android
+      // IMPORTANT : tous les champs sont explicitement inclus, y compris displayProtocol et payload
       vpnConfig: profile ? {
-        configId:  profile.id,
-        protocol:  proto,
-        host:      profile.host,
-        port:      profile.port,
-        username:  profile.username   || '',
-        password:  decryptedPassword  || '',
-        sni:       profile.sni        || '',
-        network:   profile.network    || 'tcp',
-        tls:       profile.tls        ?? false,
-        uuid:      profile.uuid       || null,
-        path:      profile.path       || null,
-        method:    profile.method     || null,
-        payload:   payloadContent     || null,
+        configId:        profile.id,
+        protocol:        proto,
+        displayProtocol: profile.displayProtocol || null,   // nom commercial (ex: "MTN Protocol")
+        host:            profile.host,
+        port:            profile.port,
+        username:        profile.username   || '',
+        password:        decryptedPassword  || '',
+        sni:             profile.sni        || '',
+        network:         profile.network    || 'tcp',
+        tls:             profile.tls        ?? false,
+        uuid:            profile.uuid       || null,
+        path:            profile.path       || null,
+        method:          profile.method     || null,
+        // payload : contenu réel du payload HTTP (ex: "GET / HTTP/1.1[crlf]Host: [host]...")
+        // Ne jamais envoyer null pour ssh+payload — le module natif Android basculer
+        // en mode SSH direct si payload est vide, causant un timeout sur port 443
+        payload:         payloadContent     || null,
       } : null,
       // quota : bytes — consommé par offlineStorage.ts en mode hors-ligne
       quota: {
