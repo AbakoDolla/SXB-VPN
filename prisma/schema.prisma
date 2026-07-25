@@ -72,27 +72,31 @@ model AdminToken {
 }
 
 model VpnClient {
-  id           String     @id @default(uuid())
-  userId       String
-  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  token        String     @unique // SXB-USER-XXXX-XXXX-XXXX
-  quotaTotal   BigInt?
-  quotaUsed    BigInt     @default(0)
-  expireAt     DateTime?
-  status       String       @default("active") // active, suspended
-  avatarUrl    String?
-  deviceLimit  Int        @default(1)
-  deviceId     String?    @unique
-  activatedAt  DateTime?
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  id              String     @id @default(uuid())
+  userId          String
+  user            User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token           String     @unique // SXB-USER-XXXX-XXXX-XXXX
+  quotaTotal      BigInt?
+  quotaUsed       BigInt     @default(0)
+  expireAt        DateTime?
+  status          String     @default("active") // active, suspended
+  avatarUrl       String?
+  xpanelUserId    String?    // External xPanel user ID
+  deviceLimit     Int        @default(1)
+  deviceId        String?    @unique
+  activatedAt     DateTime?
+  lastSeenAt      DateTime?
+  appRegisteredAt DateTime?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
 
   tokens       TokenSXB[]
 
-  subscriptions   Subscription[]
-  xrayAccounts    XrayAccount[]
-  singboxAccounts SingboxAccount[]
+  subscriptions      Subscription[]
+  xrayAccounts       XrayAccount[]
+  singboxAccounts    SingboxAccount[]
   activationSessions ActivationSession[]
+  appRegistrations   AppRegistration[]
 
   @@map("vpn_clients")
 }
@@ -349,32 +353,49 @@ model VpnProfile {
 }
 
 model Subscription {
-  id              String               @id @default(uuid())
-  name            String
-  clientId        String
-  client          VpnClient            @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  profileId       String
-  profile         VpnProfile           @relation(fields: [profileId], references: [id])
-  dataToken       String               @unique // SXB-DATA-XXXX-XXXX-XXXX
-  quotaBytes      BigInt               @default(0)
-  quotaUsed       BigInt               @default(0)
-  durationDays    Int
-  deviceLimit     Int                  @default(1)
-  startAt         DateTime             @default(now())
-  expireAt        DateTime?
-  status          String               @default("active") // active | expired | revoked | suspended
-  lastProvisionAt DateTime?
-  lastSyncAt      DateTime?
-  revokedAt       DateTime?
-  deviceId        String?
-  revokeReason    String?
-  createdBy       String?
-  createdAt       DateTime             @default(now())
-  updatedAt       DateTime             @updatedAt
+  id                String               @id @default(uuid())
+  name              String
+  clientId          String
+  client            VpnClient            @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  profileId         String
+  profile           VpnProfile           @relation(fields: [profileId], references: [id])
+  dataToken         String               @unique // SXB-DATA-XXXX-XXXX-XXXX
+  quotaBytes        BigInt               @default(0)
+  quotaUsed         BigInt               @default(0)
+  durationDays      Int
+  deviceLimit       Int                  @default(1)
+  startAt           DateTime             @default(now())
+  expireAt          DateTime?
+  status            String               @default("active") // active | expired | revoked | suspended
+  displayProtocol   String?              // Nom commercial : "MTN Protocol", "Orange Protocol"
+  technicalProtocol String?              // Protocole technique : "ssh" | "vless" | "trojan"
+  lastProvisionAt   DateTime?
+  lastSyncAt        DateTime?
+  revokedAt         DateTime?
+  deviceId          String?
+  revokeReason      String?
+  createdBy         String?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
 
-  devices         SubscriptionDevice[]
+  devices           SubscriptionDevice[]
 
   @@map("subscriptions")
+}
+
+model AppRegistration {
+  id          String     @id @default(uuid())
+  deviceId    String     @unique
+  phone       String?
+  platform    String?
+  appVersion  String?
+  clientId    String?
+  client      VpnClient? @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  status      String     @default("pending")
+  createdAt   DateTime   @default(now())
+  lastSeenAt  DateTime   @default(now())
+
+  @@map("app_registrations")
 }
 
 model SubscriptionDevice {
