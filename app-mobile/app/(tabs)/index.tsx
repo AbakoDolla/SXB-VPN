@@ -12,6 +12,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import apiClient from "@/services/apiClient";
 import { useAuthContext } from "@/contexts/AuthContext";
 import { useVpnContext, formatBytes, formatSpeed } from "@/contexts/VpnContext";
+import { ProtocolDetector } from "@/services/protocolDetector";
 import Colors from "@/constants/colors";
 import type { VpnConnection } from "@/types/api";
 
@@ -27,13 +28,16 @@ function getButtonState(
   isConnecting: boolean,
   subscriptionUrl: string | null,
   hasValidConfig: boolean,
+  activeConnection: import("@/types/api").VpnConnection | null,
 ): BtnState {
   if (!accountState) return "no_account";
   if (isConnecting) return "connecting";
   if (isConnected) return "connected";
-  // Priorité 1 : config locale valide (importée + sauvegardée) → connexion autorisée sans vérifier le forfait
+  // Priorité 1 : connexion active détectée depuis /mobile/connections → toujours "Se connecter"
+  if (activeConnection && activeConnection.status === "active") return "connect";
+  // Priorité 2 : config locale valide (importée + sauvegardée)
   if (hasValidConfig) return "connect";
-  // Priorité 2 : subscriptionUrl fournie par le backend
+  // Priorité 3 : subscriptionUrl fournie par le backend
   if (subscriptionUrl) return "connect";
   // Sinon : vérifier l'état du compte
   const s = accountState.state;
@@ -174,7 +178,12 @@ function VpnConnectionCard({ conn, isActive }: { conn: VpnConnection; isActive: 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const { user, accountState, refreshAccountState, deviceId } = useAuthContext();
-  const { isConnected, isConnecting, selectedProtocol, connectedProtocol, subscriptionUrl, hasValidConfig, connect, disconnect, trafficStats: traffic, refreshVpnConfig } = useVpnContext();
+  const {
+    isConnected, isConnecting, selectedProtocol, connectedProtocol,
+    subscriptionUrl, hasValidConfig, activeConnection,
+    connect, disconnect, trafficStats: traffic,
+    refreshVpnConfig, syncFromConnection,
+  } = useVpnContext();
 
   const [logsVisible, setLogsVisible] = useState(false);
   const [timer, setTimer] = useState(0);
@@ -233,13 +242,23 @@ export default function HomeScreen() {
     try {
       setConnectionsLoading(true);
       const res = await apiClient.get("/mobile/connections");
-      setConnections(res.data?.connections || []);
+      const conns: VpnConnection[] = res.data?.connections || [];
+      setConnections(conns);
+
+      // ── Phase 2 : synchronisation état global depuis connexion active ────────
+      // Chercher une connexion avec status="active" et alimenter VpnContext
+      // pour que le bouton principal affiche "Se connecter" et non "Activer un forfait"
+      const activeConn = conns.find(c => c.status === "active");
+      if (activeConn) {
+        console.log(`[SXB_DEBUG] ACTIVE_CONNECTION_FOUND id=${activeConn.id} proto=${activeConn.technicalProtocol}`);
+        syncFromConnection(activeConn);
+      }
     } catch {
       // ignore — non-bloquant
     } finally {
       setConnectionsLoading(false);
     }
-  }, []);
+  }, [syncFromConnection]);
 
   useEffect(() => { fetchConnections(); }, [fetchConnections]);
 
@@ -259,7 +278,7 @@ export default function HomeScreen() {
   const ring1     = useRef(new Animated.Value(1)).current;
   const ring2     = useRef(new Animated.Value(1)).current;
 
-  const btnState = getButtonState(accountState, isConnected, isConnecting, subscriptionUrl, hasValidConfig);
+  const btnState = getButtonState(accountState, isConnected, isConnecting, subscriptionUrl, hasValidConfig, activeConnection);
 
   // Pulse animation
   useEffect(() => {
@@ -550,7 +569,10 @@ export default function HomeScreen() {
             <View style={styles.infoRow}>
               <Text style={styles.infoKey}>Protocole</Text>
               <Text style={styles.infoVal}>
-                {isConnected && connectedProtocol ? connectedProtocol : (selectedProtocol || "SSH")}
+                {connectedProtocol
+                  || (activeConnection ? activeConnection.displayProtocol : null)
+                  || selectedProtocol
+                  || "—"}
               </Text>
             </View>
             <View style={styles.infoRow}>
