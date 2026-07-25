@@ -520,33 +520,95 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           addLog('✅ Permission VPN accordée');
         }
 
-        // 2. Récupérer la configuration
+        // 2. Récupérer la configuration SSH complète (credentials + payload)
         addLog('🌐 Récupération de la configuration...');
         let configToUse = vpnConfig;
 
-        // Si la config synthétisée depuis activeConnection est disponible,
-        // aller chercher la config complète depuis le backend pour avoir les credentials
-        if (!configToUse || (configToUse.dataToken && !configToUse.password && !configToUse.username)) {
-          try {
-            addLog('[SXB_DEBUG] CONFIG_SENT_NATIVE — appel /mobile/vpn/config pour credentials complets');
-            const res = await apiClient.get('/mobile/vpn/config');
-            if (res.data?.vpnConfig) {
-              configToUse = res.data.vpnConfig;
-              setVpnConfig(res.data.vpnConfig);
-              try {
-                const proto = (res.data.vpnConfig.protocol || 'vless').toLowerCase();
-                await saveVpnConfig(res.data.vpnConfig, proto, res.data.vpnConfig.configId);
-                await syncQuotaFromBackend(async () => ({
-                  configId:   res.data.vpnConfig.configId ?? 'default',
-                  totalQuota: res.data.quota?.totalQuota  ?? 0,
-                  usedQuota:  res.data.quota?.usedQuota   ?? 0,
-                  expiryDate: res.data.quota?.expiryDate  ?? null,
-                }));
-              } catch { /* quota non critique */ }
-            }
-          } catch {
-            addLog('⚠️ Backend inaccessible — chargement config hors-ligne...');
+        // ── Stratégie multi-niveaux pour obtenir les credentials complets ──────
+        // Le vpnConfig synthétisé par syncFromConnection() n'a que : host, port,
+        // configId, dataToken. Pour SSH+Payload il faut aussi : username, password,
+        // payload. On essaie dans l'ordre :
+        //   1. Décoder le dataToken (base64 JSON) — pattern courant des dashboards VPN
+        //   2. GET /mobile/vpn/config/<dataToken> — endpoint config par token
+        //   3. GET /mobile/connections/<configId>/config — endpoint par connexion
+        //   4. GET /mobile/vpn/config — endpoint générique (fallback)
+        const needsCredentials = !configToUse?.password && !configToUse?.username;
+        if (!configToUse || needsCredentials) {
+          const token   = configToUse?.dataToken  as string | undefined;
+          const connId  = configToUse?.configId   as string | undefined;
+          let fetched   = false;
+
+          // Stratégie 1 — décoder le dataToken comme base64 JSON ──────────────
+          if (token && !fetched) {
+            try {
+              const decoded = JSON.parse(atob(token));
+              if (decoded && typeof decoded === 'object' && (decoded.password || decoded.username || decoded.host)) {
+                addLog('[SXB_DEBUG] CRED_FROM_TOKEN strategy=base64_decode');
+                configToUse  = { ...configToUse, ...decoded };
+                fetched      = true;
+              }
+            } catch { /* token n'est pas du base64 JSON */ }
           }
+
+          // Stratégie 2 — GET /mobile/vpn/config/<dataToken> ──────────────────
+          if (token && !fetched) {
+            try {
+              addLog(`[SXB_DEBUG] CRED_FETCH strategy=token_endpoint token=...${token.slice(-6)}`);
+              const res = await apiClient.get(`/mobile/vpn/config/${token}`);
+              const data = res.data?.vpnConfig ?? res.data?.config ?? res.data;
+              if (data && typeof data === 'object' && (data.host || data.username || data.password)) {
+                configToUse = { ...configToUse, ...data };
+                fetched     = true;
+                addLog('[SXB_DEBUG] CRED_FETCH_OK strategy=token_endpoint');
+              }
+            } catch { /* endpoint inexistant */ }
+          }
+
+          // Stratégie 3 — GET /mobile/connections/<id>/config ─────────────────
+          if (connId && !fetched) {
+            try {
+              addLog(`[SXB_DEBUG] CRED_FETCH strategy=connection_config id=${connId}`);
+              const res = await apiClient.get(`/mobile/connections/${connId}/config`);
+              const data = res.data?.vpnConfig ?? res.data?.config ?? res.data;
+              if (data && typeof data === 'object' && (data.host || data.username || data.password)) {
+                configToUse = { ...configToUse, ...data };
+                fetched     = true;
+                addLog('[SXB_DEBUG] CRED_FETCH_OK strategy=connection_config');
+              }
+            } catch { /* endpoint inexistant */ }
+          }
+
+          // Stratégie 4 — /mobile/vpn/config générique (fallback) ─────────────
+          if (!fetched) {
+            try {
+              addLog('[SXB_DEBUG] CRED_FETCH strategy=generic_config');
+              const res = await apiClient.get('/mobile/vpn/config');
+              if (res.data?.vpnConfig) {
+                configToUse = { ...configToUse, ...res.data.vpnConfig };
+                setVpnConfig(configToUse);
+                fetched = true;
+                try {
+                  const proto = (configToUse.protocol || 'vless').toLowerCase();
+                  await saveVpnConfig(configToUse, proto, configToUse.configId);
+                  await syncQuotaFromBackend(async () => ({
+                    configId:   configToUse.configId   ?? 'default',
+                    totalQuota: res.data.quota?.totalQuota ?? 0,
+                    usedQuota:  res.data.quota?.usedQuota  ?? 0,
+                    expiryDate: res.data.quota?.expiryDate ?? null,
+                  }));
+                } catch { /* quota non critique */ }
+                addLog('[SXB_DEBUG] CRED_FETCH_OK strategy=generic_config');
+              }
+            } catch {
+              addLog('⚠️ Backend inaccessible — chargement config hors-ligne...');
+            }
+          }
+
+          // Log final des credentials obtenus (masqués)
+          const hasUser = !!(configToUse as any)?.username;
+          const hasPass = !!(configToUse as any)?.password;
+          const hasPayload = !!(configToUse as any)?.payload;
+          addLog(`[SXB_DEBUG] CRED_STATUS hasUser=${hasUser} hasPass=${hasPass} hasPayload=${hasPayload} proto=${(configToUse as any)?.protocol ?? '?'}`);
         }
 
         // Fallback : charger depuis offlineStorage (mode avion)

@@ -338,6 +338,15 @@ private class SxbPayloadProxy(
                 outputStream = rawOut
             }
         }
+
+        // ── Timeout SSH banner ────────────────────────────────────────────────
+        // Borner la lecture du banner SSH à 28s (légèrement sous le timeout JSch
+        // de 30s). Sans cette limite, si le proxy MTN accepte la TCP mais n'envoie
+        // rien (payload non reconnu), la lecture SSH bloque indéfiniment et le
+        // watchdog Android coupe après 45s sans que l'erreur soit broadcastée.
+        // Avec soTimeout=28s, JSch reçoit SocketTimeoutException → JSchException
+        // → failVpn() → broadcast status=error → RN clearWatchdog() < 45s.
+        try { transportSocket.soTimeout = 28_000 } catch (_: Exception) {}
     }
 
     override fun getInputStream(): InputStream  = inputStream!!
@@ -1513,12 +1522,23 @@ class SxbVpnService : VpnService() {
     // ═════════════════════════════════════════════════════════════════════════
 
     private fun broadcastStatus(status: String) {
-        sendBroadcast(Intent(BROADCAST_STATUS).putExtra("status", status))
+        // setPackage() obligatoire sur Android 14+ avec RECEIVER_NOT_EXPORTED
+        // Sans ça, les broadcasts intra-app sont silencieusement ignorés.
+        val intent = Intent(BROADCAST_STATUS).apply {
+            putExtra("status", status)
+            setPackage(packageName)
+        }
+        sendBroadcast(intent)
     }
 
     private fun broadcastLog(message: String) {
         Log.i(TAG, message)
-        sendBroadcast(Intent(BROADCAST_LOG).putExtra("log", SecurityModule.maskSensitive(message)))
+        // setPackage() obligatoire sur Android 14+ avec RECEIVER_NOT_EXPORTED
+        val intent = Intent(BROADCAST_LOG).apply {
+            putExtra("log", SecurityModule.maskSensitive(message))
+            setPackage(packageName)
+        }
+        sendBroadcast(intent)
     }
 
     // ═════════════════════════════════════════════════════════════════════════
