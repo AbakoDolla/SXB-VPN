@@ -451,6 +451,7 @@ class SxbVpnService : VpnService() {
     override fun onCreate() {
         super.onCreate()
         Log.i(TAG, "[SXB_DEBUG] SERVICE_CREATE")
+        broadcastLog("[SXB_DEBUG] ▶ SERVICE_CREATE (onCreate a démarré)")
         instance = this
 
         // Le canal DOIT exister avant startForeground()
@@ -469,8 +470,10 @@ class SxbVpnService : VpnService() {
                 startForeground(NOTIF_ID, buildNotification("SXB VPN — Démarrage..."))
             }
             Log.i(TAG, "[SXB_DEBUG] FOREGROUND_STARTED")
+            broadcastLog("[SXB_DEBUG] ✅ FOREGROUND_STARTED")
         } catch (e: Exception) {
             Log.e(TAG, "[SXB_DEBUG] FOREGROUND_START_FAILED: " + e.message)
+            broadcastLog("[SXB_DEBUG] ❌ FOREGROUND_START_FAILED: " + e.message)
         }
 
         autoReconnect = AutoReconnectManager(
@@ -499,6 +502,7 @@ class SxbVpnService : VpnService() {
         // startForeground() déjà appelé dans onCreate() — mise à jour notification seule.
         try { updateNotification("SXB VPN — Connexion en cours...") } catch (_: Exception) {}
         Log.i(TAG, "[SXB_DEBUG] START_COMMAND_RECEIVED action=" + intent?.action)
+        broadcastLog("[SXB_DEBUG] ▶ START_COMMAND_RECEIVED (onStartCommand a démarré)")
 
         // Vérifications de sécurité — OK to run after startForeground()
         val secReport = SecurityModule.audit(this)
