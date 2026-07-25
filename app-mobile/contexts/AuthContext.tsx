@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient, { getSecureToken, setSecureToken, removeSecureToken, SEC_KEYS } from '@/services/apiClient';
+import { clearProvisionedConfig } from '@/services/provisionClient';
 import type { AccountState, User } from '@/types/api';
 
 // Clés non-sensibles restent dans AsyncStorage (infos user, onboarding...)
@@ -192,6 +193,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       removeSecureToken(SEC_KEYS.ACCESS),
       removeSecureToken(SEC_KEYS.REFRESH),
       AsyncStorage.multiRemove([KEYS.USER, '@sxb_access_token', '@sxb_refresh_token']),
+      // Supprimer la config VPN provisionnée (Android Keystore / Keychain)
+      clearProvisionedConfig().catch(() => {}),
     ]);
     setUser(null);
     setAccountState(null);

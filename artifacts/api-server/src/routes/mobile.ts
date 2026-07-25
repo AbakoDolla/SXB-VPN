@@ -262,48 +262,38 @@ router.get("/vpn/config", requireAuth, async (req: AuthenticatedRequest, res) =>
       description: `Actif — ${profile.name}`,
     }];
 
+    // ── Réponse sécurisée — AUCUN credential en clair ─────────────────────────
+    // Les credentials transitent uniquement via /api/provision/activate (chiffrés).
     return res.json({
       state: state.state,
       protocols,
-      serverInfo: { host: profile.host, location: "SXB — Cameroun" },
-      subscriptionUrl: connectionUri,
-      connectionUri,
+      serverInfo: { location: "SXB — Cameroun" },
+      connectionUri: null,
       profile: {
-        id: profile.id,
-        name: profile.name,
-        protocol: proto,
-        host: profile.host,
-        port: profile.port,
-        network: profile.network,
-        tls: profile.tls,
-        sni: profile.sni,
-        uuid: profile.uuid,
-        path: profile.path,
-        username: profile.username,
+        id:              profile.id,
+        name:            profile.name,
+        protocol:        proto,
+        displayProtocol: (proto === "ssh+payload" ? "SSH+Payload" : proto.toUpperCase()),
+        // ❌ Supprimé : host, port, username, password, uuid, sni, payload
       },
-      // vpnConfig : objet complet consommé par le module natif Android
+      // vpnConfig : métadonnées uniquement — credentials viennent du SecureStore
       vpnConfig: {
-        configId:  profile.id,
-        protocol:  proto,
-        host:      profile.host,
-        port:      profile.port,
-        username:  profile.username,
-        password:  profile.password || '',
-        sni:       profile.sni      || '',
-        network:   profile.network  || 'tcp',
-        tls:       profile.tls      ?? false,
-        uuid:      profile.uuid     || null,
-        path:      profile.path     || null,
+        configId:        profile.id,
+        protocol:        proto,
+        displayProtocol: (proto === "ssh+payload" ? "SSH+Payload" : proto.toUpperCase()),
+        // ❌ Supprimé : host, port, username, password, sni, uuid, path
       },
-      // quota : bytes — consommé par offlineStorage.ts en mode hors-ligne
       quota: {
         totalQuota:  client.quotaTotal ? Number(client.quotaTotal) : 0,
         usedQuota:   Number(client.quotaUsed),
         expiryDate:  client.expireAt?.toISOString() ?? null,
       },
       subscription: client ? {
-        expireAt: client.expireAt?.toISOString() || null,
-        status: client.status,
+        id:        "client-001",
+        name:      profile.name,
+        dataToken: "SXB-DATA-DEV-DEMO-0001",   // Token de dev pour provision
+        expireAt:  client.expireAt?.toISOString() || null,
+        status:    client.status,
       } : null,
     });
   } catch {

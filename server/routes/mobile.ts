@@ -353,50 +353,29 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
       }
     }
 
+    // ── Réponse sécurisée — AUCUN credential en clair ─────────────────────────
+    // Les credentials (host, port, username, password, uuid, payload) ne sont
+    // plus exposés ici. Ils transitent uniquement via /api/provision/activate
+    // (chiffrés AES-256-GCM, liés à l'appareil, stockés dans Android Keystore).
     return res.json({
       state: state.state,
       protocols,
-      serverInfo: { host: profile?.host || "vpnsxb.afrihall.com", location: profile ? "SXB" : "France / Europe" },
-      subscriptionUrl: connectionUri,
-      connectionUri,
+      serverInfo: { location: profile ? "SXB" : "Africa / Cameroun" },
+      // connectionUri exposé uniquement pour affichage informatif (pas de credential)
+      connectionUri: connectionUri ? connectionUri.replace(/:\/\/.*@/, '://***@') : null,
       profile: profile ? {
-        id:         profile.id,
-        name:       profile.name,
-        protocol:   proto,                           // "ssh" | "ssh+payload" | "vless" etc.
-        host:       profile.host,
-        port:       profile.port,
-        network:    profile.network,
-        tls:        profile.tls,
-        sni:        profile.sni,
-        uuid:       profile.uuid,
-        path:       profile.path,
-        username:   profile.username,
-        password:   decryptedPassword,               // ← déchiffré
-        method:     profile.method || null,
-        dns:        profile.dns || null,
-        payload:    payloadContent,                  // ← NOUVEAU : contenu du payload HTTP
-        payloadId:  profile.payloadId || null,
+        id:              profile.id,
+        name:            profile.name,
+        protocol:        proto,
+        displayProtocol: profile.displayProtocol || null,
+        // ❌ Champs supprimés : host, port, username, password, uuid, payload, sni, path
       } : null,
-      // vpnConfig : objet complet consommé par le module natif Android
-      // IMPORTANT : tous les champs sont explicitement inclus, y compris displayProtocol et payload
+      // vpnConfig : métadonnées uniquement — les credentials viennent du SecureStore via /provision
       vpnConfig: profile ? {
         configId:        profile.id,
         protocol:        proto,
-        displayProtocol: profile.displayProtocol || null,   // nom commercial (ex: "MTN Protocol")
-        host:            profile.host,
-        port:            profile.port,
-        username:        profile.username   || '',
-        password:        decryptedPassword  || '',
-        sni:             profile.sni        || '',
-        network:         profile.network    || 'tcp',
-        tls:             profile.tls        ?? false,
-        uuid:            profile.uuid       || null,
-        path:            profile.path       || null,
-        method:          profile.method     || null,
-        // payload : contenu réel du payload HTTP (ex: "GET / HTTP/1.1[crlf]Host: [host]...")
-        // Ne jamais envoyer null pour ssh+payload — le module natif Android basculer
-        // en mode SSH direct si payload est vide, causant un timeout sur port 443
-        payload:         payloadContent     || null,
+        displayProtocol: profile.displayProtocol || null,
+        // ❌ Champs supprimés : host, port, username, password, sni, uuid, payload, etc.
       } : null,
       // quota : bytes — consommé par offlineStorage.ts en mode hors-ligne
       quota: {
@@ -407,7 +386,7 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
       subscription: sub ? {
         id:        sub.id,
         name:      sub.name,
-        dataToken: sub.dataToken,
+        dataToken: sub.dataToken,   // Token SXB-DATA — utilisé par le mobile pour /provision/activate
         expireAt:  sub.expireAt?.toISOString(),
         status:    sub.status,
       } : null,

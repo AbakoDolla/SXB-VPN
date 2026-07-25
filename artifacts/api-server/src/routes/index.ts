@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import healthRouter from "./health.js";
 import authRouter from "./auth.js";
 import mobileRouter from "./mobile.js";
+import provisionRouter from "./provision.js";
 import dashboardRouter from "./dashboard.js";
 import clientsRouter from "./clients.js";
 import usersRouter from "./users.js";
@@ -18,6 +19,9 @@ router.use("/auth", authRouter);
 
 // Mobile app API
 router.use("/mobile", mobileRouter);
+
+// Secure VPN provisioning (dev mirror of VPS /api/provision)
+router.use("/provision", provisionRouter);
 
 // Dashboard stats
 router.use("/dashboard", dashboardRouter);

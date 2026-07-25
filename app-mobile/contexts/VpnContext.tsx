@@ -20,6 +20,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient from '@/services/apiClient';
 import { saveVpnConfig, loadVpnConfig, isQuotaExhausted, isConfigExpired, syncQuotaFromBackend } from '@/services/offlineStorage';
+import { provisionAndStore, loadProvisionedConfig, clearProvisionedConfig } from '@/services/provisionClient';
 import { useAuthContext } from './AuthContext';
 import type { VpnConnection } from '@/types/api';
 
@@ -97,7 +98,7 @@ const VpnContext = createContext<VpnContextType>({
 // ── Provider ─────────────────────────────────────────────────────────────────
 
 export function VpnProvider({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, refreshAccountState } = useAuthContext();
+  const { isAuthenticated, refreshAccountState, deviceId } = useAuthContext();
 
   const [isConnected,        setIsConnected]        = useState(false);
   const [isConnecting,       setIsConnecting]        = useState(false);
@@ -190,8 +191,6 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     const engineProtocol = conn.technicalProtocol.toLowerCase();
     const displayProtocol = conn.displayProtocol;
 
-    // Les champs techniques (host, port, credentials) seront complétés par
-    // /mobile/vpn/config au moment du connect() — on ne stocke pas server/port ici
     const synthesizedConfig: Record<string, any> = {
       protocol:        engineProtocol,
       displayProtocol: displayProtocol,
@@ -215,9 +214,26 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
     saveVpnConfig(synthesizedConfig, engineProtocol, conn.id).catch(() => {});
 
+    // ── Pré-provisionnement asynchrone ─────────────────────────────────────
+    // Déclencher le provisionnement en arrière-plan si dataToken disponible.
+    // Le résultat est stocké dans SecureStore pour être utilisé par connect().
+    if (conn.dataToken && deviceId) {
+      loadProvisionedConfig()
+        .then(existing => {
+          // Ne re-provisionner que si pas déjà provisionnée pour cette connexion
+          if (!existing) {
+            addLog('[SXB_DEBUG] PRE_PROVISION_START — provisionnement arrière-plan');
+            return provisionAndStore(conn.dataToken!, deviceId)
+              .then(() => addLog('[SXB_DEBUG] PRE_PROVISION_OK — config stockée dans KeyStore'))
+              .catch(e => addLog(`[SXB_DEBUG] PRE_PROVISION_WARN — ${e?.message || 'erreur réseau'}`));
+          }
+        })
+        .catch(() => { /* non-bloquant */ });
+    }
+
     addLog(`[SXB_DEBUG] HOME_STATE_UPDATED hasValidConfig=true proto="${engineProtocol}" display="${displayProtocol}"`);
     console.log(`[SXB_DEBUG] HOME_STATE_UPDATED hasValidConfig=true proto=${engineProtocol} display=${displayProtocol}`);
-  }, [addLog]);
+  }, [addLog, deviceId]);
 
   const checkPermission = useCallback(async () => {
     if (!IS_ANDROID || !SxbVpnNative) { setHasVpnPermission(true); return true; }
@@ -448,87 +464,70 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           addLog('✅ Permission VPN accordée');
         }
 
-        addLog('🌐 Récupération de la configuration...');
-        let configToUse = vpnConfig;
+        addLog('🔐 Chargement configuration sécurisée...');
+        let configToUse: any = null;
 
-        // ── Stratégie multi-niveaux pour obtenir les credentials complets ──────
-        //   1. GET /mobile/vpn/config/<dataToken> — endpoint config par token
-        //   2. GET /mobile/connections/<configId>/config — endpoint par connexion
-        //   3. GET /mobile/vpn/config — endpoint générique (fallback)
-        const needsCredentials = !configToUse?.password && !configToUse?.username;
-        if (!configToUse || needsCredentials) {
-          const token   = configToUse?.dataToken  as string | undefined;
-          const connId  = configToUse?.configId   as string | undefined;
-          let fetched   = false;
-
-          // Stratégie 1 — GET /mobile/vpn/config/<dataToken> ──────────────────
-          if (token && !fetched) {
-            try {
-              addLog(`[SXB_DEBUG] CRED_FETCH strategy=token_endpoint token=...${token.slice(-6)}`);
-              const res = await apiClient.get(`/mobile/vpn/config/${token}`);
-              const data = res.data?.vpnConfig ?? res.data?.config ?? res.data;
-              if (data && typeof data === 'object' && (data.host || data.username || data.password)) {
-                configToUse = { ...configToUse, ...data };
-                fetched     = true;
-                addLog('[SXB_DEBUG] CRED_FETCH_OK strategy=token_endpoint');
+        // ── Flux sécurisé — provision chiffré (AES-256-GCM + SecureStore) ──────
+        // Les credentials ne transitent JAMAIS en clair sur le réseau.
+        // 1. Charger depuis SecureStore (config déjà provisionnée)
+        // 2. Si absente, déclencher /provision/activate avec le dataToken
+        // 3. Fallback : offlineStorage (mode avion post-provision)
+        addLog('[SXB_DEBUG] PROVISION_LOAD_START — lecture SecureStore');
+        try {
+          const provisioned = await loadProvisionedConfig();
+          if (provisioned) {
+            // Config provisionnée disponible (mode offline-ready)
+            configToUse = { ...provisioned.config };
+            // Enrichir avec les métadonnées de connexion (displayProtocol, configId)
+            if (vpnConfig?.displayProtocol) configToUse.displayProtocol = vpnConfig.displayProtocol;
+            if (vpnConfig?.configId)        configToUse.configId        = vpnConfig.configId;
+            addLog(`[SXB_DEBUG] PROVISION_LOADED proto=${provisioned.meta.protocol} expires=${provisioned.meta.configExpiresAt}`);
+            addLog('✅ Configuration sécurisée chargée');
+          } else {
+            // Pas de config provisionnée — déclencher le provisionnement en ligne
+            const dataToken = (vpnConfig as any)?.dataToken as string | undefined;
+            if (dataToken && deviceId) {
+              addLog('[SXB_DEBUG] PROVISION_REQUIRED — appel /provision/activate');
+              addLog('🔒 Provisionnement sécurisé en cours...');
+              try {
+                const freshConfig = await provisionAndStore(dataToken, deviceId);
+                configToUse = { ...freshConfig };
+                if (vpnConfig?.displayProtocol) configToUse.displayProtocol = vpnConfig.displayProtocol;
+                if (vpnConfig?.configId)        configToUse.configId        = vpnConfig.configId;
+                addLog('[SXB_DEBUG] PROVISION_OK — config déchiffrée et stockée dans KeyStore');
+                addLog('✅ Configuration provisionnée avec succès');
+              } catch (provErr: any) {
+                addLog(`⚠️ Provisionnement échoué : ${provErr?.message || 'erreur réseau'}`);
+                addLog('[SXB_DEBUG] PROVISION_FAILED — tentative config hors-ligne');
+                // Fallback offlineStorage (ancienne config encore valide)
+                const offlineEntry = await loadVpnConfig();
+                if (offlineEntry?.config) {
+                  configToUse = offlineEntry.config;
+                  addLog('✅ Config hors-ligne restaurée');
+                } else {
+                  addLog('❌ Aucune configuration disponible — internet requis pour le premier provisionnement');
+                  setIsConnecting(false);
+                  return;
+                }
               }
-            } catch { /* endpoint inexistant */ }
-          }
-
-          // Stratégie 2 — GET /mobile/connections/<id>/config ─────────────────
-          if (connId && !fetched) {
-            try {
-              addLog(`[SXB_DEBUG] CRED_FETCH strategy=connection_config id=${connId}`);
-              const res = await apiClient.get(`/mobile/connections/${connId}/config`);
-              const data = res.data?.vpnConfig ?? res.data?.config ?? res.data;
-              if (data && typeof data === 'object' && (data.host || data.username || data.password)) {
-                configToUse = { ...configToUse, ...data };
-                fetched     = true;
-                addLog('[SXB_DEBUG] CRED_FETCH_OK strategy=connection_config');
+            } else {
+              // Pas de dataToken disponible — fallback offlineStorage
+              addLog('[SXB_DEBUG] NO_DATA_TOKEN — fallback offlineStorage');
+              const offlineEntry = await loadVpnConfig();
+              if (offlineEntry?.config) {
+                configToUse = offlineEntry.config;
+                addLog('✅ Config hors-ligne restaurée');
               }
-            } catch { /* endpoint inexistant */ }
-          }
-
-          // Stratégie 3 — /mobile/vpn/config générique (fallback) ─────────────
-          if (!fetched) {
-            try {
-              addLog('[SXB_DEBUG] CRED_FETCH strategy=generic_config');
-              const res = await apiClient.get('/mobile/vpn/config');
-              if (res.data?.vpnConfig) {
-                configToUse = { ...configToUse, ...res.data.vpnConfig };
-                setVpnConfig(configToUse);
-                fetched = true;
-                try {
-                  const proto = (configToUse.protocol || 'vless').toLowerCase();
-                  await saveVpnConfig(configToUse, proto, configToUse.configId);
-                  await syncQuotaFromBackend(async () => ({
-                    configId:   configToUse.configId   ?? 'default',
-                    totalQuota: res.data.quota?.totalQuota ?? 0,
-                    usedQuota:  res.data.quota?.usedQuota  ?? 0,
-                    expiryDate: res.data.quota?.expiryDate ?? null,
-                  }));
-                } catch { /* quota non critique */ }
-                addLog('[SXB_DEBUG] CRED_FETCH_OK strategy=generic_config');
-              }
-            } catch {
-              addLog('⚠️ Backend inaccessible — chargement config hors-ligne...');
             }
           }
-
-          // Log final — masqué pour ne pas exposer les champs techniques
-          const hasUser = !!(configToUse as any)?.username;
-          const hasPass = !!(configToUse as any)?.password;
-          const hasPayload = !!(configToUse as any)?.payload;
-          addLog(`[SXB_DEBUG] CRED_STATUS hasUser=${hasUser} hasPass=${hasPass} hasPayload=${hasPayload}`);
-        }
-
-        // Fallback : charger depuis offlineStorage (mode avion)
-        if (!configToUse) {
+        } catch (loadErr: any) {
+          addLog(`⚠️ Erreur chargement config : ${loadErr?.message}`);
+          // Fallback final offlineStorage
           try {
             const offlineEntry = await loadVpnConfig();
             if (offlineEntry?.config) {
               configToUse = offlineEntry.config;
-              addLog('✅ Config restaurée depuis stockage local');
+              addLog('✅ Config hors-ligne restaurée');
             }
           } catch { /* ignore */ }
         }
@@ -538,6 +537,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           setIsConnecting(false);
           return;
         }
+
+        const hasHost  = !!(configToUse?.host);
+        const hasCreds = !!(configToUse?.username) || !!(configToUse?.uuid);
+        addLog(`[SXB_DEBUG] CONFIG_READY hasHost=${hasHost} hasCreds=${hasCreds}`);
 
         const cfgProto = ((configToUse as any)?.protocol || selectedProtocol || '').toLowerCase();
         const isSshBased = cfgProto === 'ssh' || cfgProto === 'ssh+payload';
