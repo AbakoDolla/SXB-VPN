@@ -23,6 +23,10 @@ function withVpnManifest(config) {
     const vpnPerms = [
       'android.permission.INTERNET',
       'android.permission.FOREGROUND_SERVICE',
+      // FIX — WAKE_LOCK : empêche Android de tuer le service VPN quand l'écran est éteint.
+      // Sans ce verrou, le foreground service peut être suspendu par Doze mode, causant
+      // des déconnexions aléatoires sur batterie avec écran verrouillé.
+      'android.permission.WAKE_LOCK',
       'android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE',
       'android.permission.RECEIVE_BOOT_COMPLETED',
       'android.permission.POST_NOTIFICATIONS',

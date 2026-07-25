@@ -628,6 +628,33 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           return;
         }
 
+        // FIX — Validation config avant de tenter la connexion native.
+        // Si le protocole est SSH ou SSH+Payload et que les credentials sont absents,
+        // la connexion native échoue immédiatement (AUTH_FAILED) sans message clair.
+        // On intercepte ici pour afficher une erreur actionnable à l'utilisateur.
+        const cfgProto = ((configToUse as any)?.protocol || selectedProtocol || '').toLowerCase();
+        const isSshBased = cfgProto === 'ssh' || cfgProto === 'ssh+payload';
+        const hasCriticalFields = !!(configToUse as any)?.host;
+        const hasCredentials = !!(configToUse as any)?.username || !!(configToUse as any)?.password
+          || !!(configToUse as any)?.uuid || !!(configToUse as any)?.dataToken;
+
+        if (!hasCriticalFields) {
+          addLog('❌ Config incomplète : champ "host" manquant — synchronisez votre abonnement');
+          addLog('[SXB_DEBUG] CONFIG_INCOMPLETE_BLOCK host=missing proto=' + cfgProto);
+          setVpnState('error');
+          setIsConnecting(false);
+          return;
+        }
+
+        if (isSshBased && !hasCredentials) {
+          addLog('❌ Config SSH incomplète : credentials manquants (username/password)');
+          addLog('[SXB_DEBUG] CONFIG_INCOMPLETE_BLOCK proto=' + cfgProto + ' credentials=missing');
+          addLog('ℹ️  Essayez de vous déconnecter puis reconnecter — rechargement de la config...');
+          setVpnState('error');
+          setIsConnecting(false);
+          return;
+        }
+
         // Vérifier quota et expiration
         const exhausted = await isQuotaExhausted();
         if (exhausted) {

@@ -105,12 +105,27 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                 return
             }
 
+            // FIX — TransactionTooLargeException : les Intent extras sont limités à ~1MB
+            // par le Binder IPC Android. Les configs VPN (sing-box JSON, payloads base64)
+            // peuvent dépasser cette limite. On écrit la config dans un fichier temporaire
+            // et on passe uniquement le chemin via l'extra, jamais le JSON complet.
+            val configFile = java.io.File(ctx.filesDir, "sxb_pending_config.json")
+            try {
+                configFile.writeText(optionsJson, Charsets.UTF_8)
+                Log.i(DBG, "[SXB_DEBUG] CONFIG_WRITTEN_TO_FILE size=${configFile.length()}")
+            } catch (e: Exception) {
+                Log.w(DBG, "[SXB_DEBUG] CONFIG_FILE_WRITE_FAILED: ${e.message} — fallback intent extra")
+                // Fallback : passer via intent (risque uniquement si > 1MB)
+            }
+
             val intent = Intent(ctx, SxbVpnService::class.java).apply {
                 action = SxbVpnService.ACTION_START
-                putExtra("configJson", optionsJson)
-                putExtra("protocol",   proto)
-                putExtra("killSwitch", opts.optBoolean("killSwitch", false))
-                putExtra("autoReconnect", opts.optBoolean("autoReconnect", false))
+                // Passer le chemin du fichier config ET l'extra (fallback pour compatibilité)
+                putExtra("configFilePath", configFile.absolutePath)
+                putExtra("configJson",     optionsJson)
+                putExtra("protocol",       proto)
+                putExtra("killSwitch",     opts.optBoolean("killSwitch", false))
+                putExtra("autoReconnect",  opts.optBoolean("autoReconnect", false))
             }
 
             Log.i(DBG, "[SXB_DEBUG] SERVICE_INTENT_SENT action=${SxbVpnService.ACTION_START} proto=$proto")

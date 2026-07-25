@@ -153,16 +153,25 @@ private class WsInputStream(
                 if (n == -1) break
                 total += n
             }
+            // FIX — RFC 6455 §5.1 : les frames client→serveur DOIVENT être masquées.
+            // L'implémentation précédente envoyait un pong non masqué, ce qui provoque
+            // la fermeture immédiate de la connexion WebSocket par le serveur (code 1002).
             if (opcode == 0x09) {
-                val pong = ByteArrayOutputStream(payload.size + 2)
-                pong.write(0x8A)
-                if (payload.size < 126) pong.write(payload.size)
-                else {
-                    pong.write(126)
+                val pongMask    = ByteArray(4).also { java.security.SecureRandom().nextBytes(it) }
+                val pongMasked  = ByteArray(payload.size) { i ->
+                    (payload[i].toInt() xor pongMask[i % 4].toInt()).toByte()
+                }
+                val pong = ByteArrayOutputStream(payload.size + 8)
+                pong.write(0x8A)  // FIN=1, opcode=0x0A (pong)
+                if (payload.size < 126) {
+                    pong.write(0x80 or payload.size)   // mask bit=1
+                } else {
+                    pong.write(0x80 or 126)
                     pong.write(payload.size shr 8)
                     pong.write(payload.size and 0xFF)
                 }
-                pong.write(payload)
+                pong.write(pongMask)
+                pong.write(pongMasked)
                 synchronized(rawOut) { rawOut.write(pong.toByteArray()); rawOut.flush() }
                 return readNextFrame()
             }
@@ -530,8 +539,33 @@ class SxbVpnService : VpnService() {
         }
 
         Log.i(TAG, "[SXB_DEBUG] CONFIG_LOADING")
-        var json    = intent?.getStringExtra("configJson") ?: ""
-        var proto   = intent?.getStringExtra("protocol")?.lowercase() ?: ""
+
+        // FIX — TransactionTooLargeException : lire depuis le fichier temporaire en priorité.
+        // SxbVpnModule écrit la config dans filesDir/sxb_pending_config.json AVANT de démarrer
+        // le service, évitant la limite ~1MB du Binder IPC pour les Intent extras.
+        val pendingConfigFile = File(filesDir, "sxb_pending_config.json")
+        val configFilePath    = intent?.getStringExtra("configFilePath")
+        var json = when {
+            configFilePath != null && File(configFilePath).exists() -> {
+                val content = File(configFilePath).readText(Charsets.UTF_8)
+                Log.i(TAG, "[SXB_DEBUG] CONFIG_FROM_FILE path=$configFilePath size=${content.length}")
+                broadcastLog("[SXB_DEBUG] CONFIG_FROM_FILE size=${content.length}")
+                content
+            }
+            pendingConfigFile.exists() && pendingConfigFile.length() > 10 -> {
+                val content = pendingConfigFile.readText(Charsets.UTF_8)
+                Log.i(TAG, "[SXB_DEBUG] CONFIG_FROM_PENDING_FILE size=${content.length}")
+                broadcastLog("[SXB_DEBUG] CONFIG_FROM_PENDING_FILE size=${content.length}")
+                content
+            }
+            else -> intent?.getStringExtra("configJson") ?: ""
+        }
+        var proto = if (json.isNotEmpty()) {
+            try { org.json.JSONObject(json).optString("protocol", intent?.getStringExtra("protocol") ?: "").lowercase() }
+            catch (_: Exception) { intent?.getStringExtra("protocol")?.lowercase() ?: "" }
+        } else {
+            intent?.getStringExtra("protocol")?.lowercase() ?: ""
+        }
 
         Log.i("SXB_DEBUG", "[SXB_DEBUG] CONFIG_FROM_INTENT proto=$proto json_empty=${json.isEmpty()}")
         broadcastLog("[SXB_DEBUG] ▶ CONFIG_FROM_INTENT proto='$proto' empty=${json.isEmpty()}")
@@ -583,7 +617,7 @@ class SxbVpnService : VpnService() {
         }
         configJson  = json
 
-        cleanupStarted.set(false)
+        cleanupStarted.set(false)  // FIX — Réinitialiser le guard cleanup pour cette nouvelle connexion
         running.set(true)
         trafficManager.start()
         startConnectionWatchdog()
@@ -968,12 +1002,13 @@ class SxbVpnService : VpnService() {
         broadcastLog("[SXB] $code — ${displayMessage.removePrefix("❌ ").take(160)}")
         broadcastStatus("error")
         setCurrentState("error")
+        // FIX — Ne pas appeler cleanup() ici : le bloc finally de startSshTunnel /
+        // startSingBoxTunnel appelle déjà cleanup(). Un double appel provoquait un
+        // stopForeground + stopSelf() en double, laissant l'UI dans un état incohérent.
         if (::autoReconnect.isInitialized && autoReconnect.isEnabled() && running.get()) {
             autoReconnect.onDisconnected()
-        } else {
-            // Aucune reconnexion prévue → arrêt propre du service
-            cleanup(stopService = true)
         }
+        // Pas de cleanup() ici : géré exclusivement dans le bloc finally du tunnel.
     }
 
     private fun startConnectionWatchdog() {
@@ -1046,12 +1081,26 @@ class SxbVpnService : VpnService() {
         // Exclure l'app elle-même (évite boucle)
         try { builder.addDisallowedApplication(packageName) } catch (_: Exception) {}
 
-        // Kill Switch : si activé, aucune appli ne bypass le VPN
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             builder.setMetered(false)
         }
-        // Note : le kill switch Android réel est géré via VpnService.Builder
-        // Les apps bloquées restent bloquées si VPN coupe (pas de fallback réseau)
+
+        // FIX — Kill Switch réel : quand activé, interdire aux applications de bypasser
+        // le VPN via un socket non-protégé. Sur Android 10+ (API 29), allowBypass() permet
+        // aux apps d'explicitement bypasser le tunnel — on ne l'appelle PAS pour le kill
+        // switch. Sur Android 8.1+ (API 27), setAllowedPackages est disponible mais
+        // la bonne API est de ne pas appeler allowBypass() (comportement par défaut).
+        //
+        // Note : le vrai "Always-On VPN with block connections" ne peut être activé que
+        // depuis les paramètres système. Ce que l'on fait ici est d'assurer qu'aucune
+        // application ne peut bypasser le tunnel (comportement par défaut sans allowBypass).
+        //
+        // Quand killSwitch est OFF : on autorise explicitement le bypass (comportement
+        // permissif, certaines apps système peuvent contourner le VPN).
+        if (!killSwitchEnabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            try { builder.allowBypass() } catch (_: Exception) {}
+        }
+        // Quand killSwitch est ON : on n'appelle pas allowBypass() → comportement strict
 
         return try {
             val pfd = builder.establish()
@@ -1655,6 +1704,14 @@ class SxbVpnService : VpnService() {
     // ═════════════════════════════════════════════════════════════════════════
 
     private fun cleanup(stopService: Boolean = true, keepRunning: Boolean = false) {
+        // FIX — Guard contre le double-cleanup : failVpn() ne doit plus appeler cleanup()
+        // directement, mais cette garde sécurise le cas où cleanup() serait appelé depuis
+        // deux chemins concurrents (ex: onDestroy + finally d'un tunnel).
+        if (stopService && cleanupStarted.getAndSet(true)) {
+            Log.w("SXB_DEBUG", "[SXB_DEBUG] CLEANUP_SKIPPED — déjà en cours")
+            return
+        }
+
         if (!keepRunning) running.set(false)
         vpnThread?.interrupt()
         notifThread?.interrupt()
@@ -1684,7 +1741,14 @@ class SxbVpnService : VpnService() {
             broadcastStatus("disconnected")
         }
         if (stopService) {
-            stopForeground(true)
+            // FIX — stopForeground(boolean) est deprecated depuis API 33 (Android 13).
+            // Utiliser stopForeground(STOP_FOREGROUND_REMOVE) sur API 33+.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                stopForeground(android.app.Service.STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
             stopSelf()
         }
     }
