@@ -10,22 +10,46 @@ import crypto from 'crypto';
 
 const router = Router();
 
-// Encryption helpers for SSH passwords
-const ALGO = 'aes-256-cbc';
+// ── Chiffrement AES-256-GCM (Phase 2) ─────────────────────────────────────────
+const ENC_KEY = (() => {
+  const k = process.env.ENCRYPTION_KEY;
+  if (!k || k.startsWith('CHANGE_ME')) console.error('[SECURITY] ENCRYPTION_KEY non configurée dans ssh.ts!');
+  return k || '';
+})();
+
+function getKey(rawKey: string): Buffer {
+  return crypto.createHash('sha256').update(rawKey).digest();
+}
+
+/** Chiffrement AES-256-GCM — format : "gcm:<iv_hex>:<ciphertext_hex>:<tag_hex>" */
 function encrypt(text: string, key: string): string {
-  const iv = crypto.randomBytes(16);
-  const k = crypto.createHash('sha256').update(key).digest();
-  const cipher = crypto.createCipheriv(ALGO, k, iv);
-  return iv.toString('hex') + ':' + Buffer.concat([cipher.update(text), cipher.final()]).toString('hex');
+  const k  = getKey(key);
+  const iv = crypto.randomBytes(12);
+  const c  = crypto.createCipheriv('aes-256-gcm', k, iv) as crypto.CipherGCM;
+  const enc = Buffer.concat([c.update(text, 'utf8'), c.final()]);
+  const tag = c.getAuthTag();
+  return `gcm:${iv.toString('hex')}:${enc.toString('hex')}:${tag.toString('hex')}`;
 }
+
+/** Déchiffrement — supporte GCM (v2) et CBC (v1 legacy pour anciens mots de passe) */
 function decrypt(encrypted: string, key: string): string {
+  if (!encrypted) return '';
+  const k = getKey(key);
+  if (encrypted.startsWith('gcm:')) {
+    const parts = encrypted.slice(4).split(':');
+    if (parts.length !== 3) throw new Error('Format GCM invalide');
+    const iv  = Buffer.from(parts[0], 'hex');
+    const tag = Buffer.from(parts[2], 'hex');
+    const d   = crypto.createDecipheriv('aes-256-gcm', k, iv) as crypto.DecipherGCM;
+    d.setAuthTag(tag);
+    return Buffer.concat([d.update(Buffer.from(parts[1], 'hex')), d.final()]).toString();
+  }
+  // Rétro-compatibilité CBC v1
   const [ivHex, encHex] = encrypted.split(':');
-  const iv = Buffer.from(ivHex, 'hex');
-  const k = crypto.createHash('sha256').update(key).digest();
-  const decipher = crypto.createDecipheriv(ALGO, k, iv);
-  return Buffer.concat([decipher.update(Buffer.from(encHex, 'hex')), decipher.final()]).toString();
+  if (!ivHex || !encHex) return encrypted;
+  const d = crypto.createDecipheriv('aes-256-cbc', k, Buffer.from(ivHex, 'hex'));
+  return Buffer.concat([d.update(Buffer.from(encHex, 'hex')), d.final()]).toString();
 }
-const ENC_KEY = (() => { const k = process.env.ENCRYPTION_KEY; if (!k) console.error('[SECURITY] ENCRYPTION_KEY not set in ssh.ts!'); return k || 'sxb-vpn-32-byte-encryption-key-!'; })();
 
 // ─── GET /api/ssh/accounts ───────────────────────────────────────────────────
 router.get('/accounts', requireAuth, requirePermission('ssh.view'), async (req: AuthenticatedRequest, res: Response) => {

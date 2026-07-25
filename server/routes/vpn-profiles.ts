@@ -12,19 +12,46 @@ import crypto from 'crypto';
 
 const router = Router();
 
-const ALGO = 'aes-256-cbc';
-const ENC_KEY = (() => { const k = process.env.ENCRYPTION_KEY; if (!k) console.error('[SECURITY] ENCRYPTION_KEY not set!'); return k || 'sxb-vpn-32-byte-encryption-key-!'; })();
+// ── Chiffrement AES-256-GCM (Phase 2 — authentifié, résistant à la falsification) ──
+const ENC_KEY = (() => {
+  const k = process.env.ENCRYPTION_KEY;
+  if (!k || k.startsWith('CHANGE_ME')) console.error('[SECURITY] ENCRYPTION_KEY non configurée!');
+  return k || '';
+})();
 
-function encrypt(text: string): string {
-  const iv = crypto.randomBytes(16);
-  const k  = crypto.createHash('sha256').update(ENC_KEY).digest();
-  const c  = crypto.createCipheriv(ALGO, k, iv);
-  return iv.toString('hex') + ':' + Buffer.concat([c.update(text), c.final()]).toString('hex');
+function getKey(): Buffer {
+  if (!ENC_KEY) throw new Error('[SECURITY] ENCRYPTION_KEY manquante');
+  return crypto.createHash('sha256').update(ENC_KEY).digest();
 }
+
+/** Chiffrement AES-256-GCM — format : "gcm:<iv_hex>:<ciphertext_hex>:<tag_hex>" */
+function encrypt(text: string): string {
+  const key = getKey();
+  const iv  = crypto.randomBytes(12);
+  const c   = crypto.createCipheriv('aes-256-gcm', key, iv) as crypto.CipherGCM;
+  const enc = Buffer.concat([c.update(text, 'utf8'), c.final()]);
+  const tag = c.getAuthTag();
+  return `gcm:${iv.toString('hex')}:${enc.toString('hex')}:${tag.toString('hex')}`;
+}
+
+/** Déchiffrement — supporte GCM (v2) et CBC (v1 legacy) */
 function decrypt(enc: string): string {
+  if (!enc) return '';
+  if (enc.startsWith('gcm:')) {
+    const parts = enc.slice(4).split(':');
+    if (parts.length !== 3) throw new Error('Format GCM invalide');
+    const key = getKey();
+    const iv  = Buffer.from(parts[0], 'hex');
+    const tag = Buffer.from(parts[2], 'hex');
+    const d   = crypto.createDecipheriv('aes-256-gcm', key, iv) as crypto.DecipherGCM;
+    d.setAuthTag(tag);
+    return Buffer.concat([d.update(Buffer.from(parts[1], 'hex')), d.final()]).toString();
+  }
+  // Rétro-compatibilité CBC v1
   const [ivHex, encHex] = enc.split(':');
-  const k = crypto.createHash('sha256').update(ENC_KEY).digest();
-  const d = crypto.createDecipheriv(ALGO, k, Buffer.from(ivHex, 'hex'));
+  if (!ivHex || !encHex) return enc;
+  const key = getKey();
+  const d   = crypto.createDecipheriv('aes-256-cbc', key, Buffer.from(ivHex, 'hex'));
   return Buffer.concat([d.update(Buffer.from(encHex, 'hex')), d.final()]).toString();
 }
 
