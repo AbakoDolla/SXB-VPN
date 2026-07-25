@@ -26,7 +26,6 @@ function withVpnManifest(config) {
       'android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE',
       'android.permission.RECEIVE_BOOT_COMPLETED',
       'android.permission.POST_NOTIFICATIONS',
-      'android.permission.CHANGE_NETWORK_STATE',
       'android.permission.ACCESS_NETWORK_STATE',
     ];
     vpnPerms.forEach(perm => {

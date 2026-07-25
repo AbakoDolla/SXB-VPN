@@ -19,7 +19,7 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient from '@/services/apiClient';
-import { saveVpnConfig, loadVpnConfig, isQuotaExhausted, isConfigExpired, consumeLocalQuota, syncQuotaFromBackend } from '@/services/offlineStorage';
+import { saveVpnConfig, loadVpnConfig, isQuotaExhausted, isConfigExpired, syncQuotaFromBackend } from '@/services/offlineStorage';
 import { useAuthContext } from './AuthContext';
 
 // ── Native bridge ─────────────────────────────────────────────────────────────
@@ -120,7 +120,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const sessionStartRef  = useRef<number>(0);
 
   // ── Watchdog connexion ────────────────────────────────────────────────────
-  // Si aucun événement VPN_CONNECTED n'arrive dans 45s, on libère l'UI
+  // Si aucun événement VPN_CONNECTED n'arrive dans 35s, on libère l'UI
   const watchdogRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastStepRef  = useRef<string>('INIT');
 
@@ -131,20 +131,21 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const startWatchdog = useCallback((lastStep: string) => {
     clearWatchdog();
     lastStepRef.current = lastStep;
-    watchdogRef.current = setTimeout(() => {
+    watchdogRef.current = setTimeout(async () => {
       const step = lastStepRef.current;
       console.warn(`[SXB_DEBUG] WATCHDOG_FIRED lastStep=${step}`);
-      setIsConnecting(false);
-      setVpnState('error');
       setVpnLogs(prev => [
-        `[SXB_DEBUG] WATCHDOG_FIRED lastStep=${step}`,
-        `[WATCHDOG] Connexion arrêtée après 45s — cause native attendue dans les logs`,
+        `[WATCHDOG] ⏱️ Connexion bloquée à : ${step}`,
+        `[WATCHDOG] Aucune réponse après 35s — arrêt du service`,
         ...prev,
       ].slice(0, 200));
+      // Arrêter proprement le service Android bloqué
       if (IS_ANDROID && SxbVpnNative) {
-        SxbVpnNative.stopVpn().catch(() => {});
+        try { await SxbVpnNative.stopVpn(); } catch { /* ignore */ }
       }
-    }, 45_000);
+      setIsConnecting(false);
+      setVpnState('error');
+    }, 35_000);
   }, [clearWatchdog]);
 
   // ── Ajout d'un log ─────────────────────────────────────────────────────────
@@ -293,26 +294,6 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
     const logSub = vpnEmitter.addListener('onVpnLog', (e: { message: string }) => {
       addLog(e.message);
-      if (e.message.includes('SSH_SOCKET_CONNECT_START') ||
-          e.message.includes('PAYLOAD_SEND_START')) {
-        lastStepRef.current = e.message.includes('PAYLOAD') ? 'PAYLOAD_SEND_START' : 'SSH_SOCKET_CONNECT_START';
-      } else if (e.message.includes('PAYLOAD_RESPONSE_RECEIVED')) {
-        lastStepRef.current = 'PAYLOAD_RESPONSE_RECEIVED';
-      } else if (e.message.includes('TLS_HANDSHAKE_SUCCESS')) {
-        lastStepRef.current = 'TLS_HANDSHAKE_SUCCESS';
-      } else if (e.message.includes('SSH_BANNER_RECEIVED')) {
-        lastStepRef.current = 'SSH_BANNER_RECEIVED';
-      } else if (e.message.includes('SSH_AUTH_SUCCESS')) {
-        lastStepRef.current = 'SSH_AUTH_SUCCESS';
-      } else if (e.message.includes('TUNNEL_READY')) {
-        lastStepRef.current = 'TUNNEL_READY';
-      } else if (e.message.includes('VPN_CONNECTED')) {
-        lastStepRef.current = 'VPN_CONNECTED';
-      } else if (e.message.includes('VPN_FAILED')) {
-        lastStepRef.current = e.message;
-        setVpnState('error');
-        setIsConnecting(false);
-      }
     });
 
     return () => { stateSub.remove(); logSub.remove(); };
@@ -520,7 +501,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         console.log('[SXB_DEBUG] STEP_3_NATIVE_MODULE_CALLED startVpn()');
         addLog('[SXB_DEBUG] STEP_3_NATIVE_MODULE_CALLED');
 
-        // Démarrer le watchdog 45s avant d'appeler le natif
+        // Démarrer le watchdog 35s avant d'appeler le natif
         lastStepRef.current = `STEP_3_NATIVE_CALLED proto=${protocol}`;
         startWatchdog(`STEP_3_NATIVE_CALLED proto=${protocol}`);
 
@@ -529,8 +510,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         console.log(`[SXB_DEBUG] STEP_4_SERVICE_STARTED result=${JSON.stringify(startResult)}`);
         addLog(`[SXB_DEBUG] STEP_4_SERVICE_STARTED serviceStarted=${startResult?.serviceStarted}`);
         // L'état réel sera mis à jour via onVpnStateChange event
-        // Le watchdog lèvera une alerte si rien n'arrive dans 45s
-        addLog('⏳ Connexion en cours... (watchdog 45s actif)');
+        // Le watchdog lèvera une alerte si rien n'arrive dans 35s
+        addLog('⏳ Connexion en cours... (watchdog 35s actif)');
 
       } else if (IS_ANDROID) {
         // Android MAIS module natif absent (SxbVpnNative === undefined)
