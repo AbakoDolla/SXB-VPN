@@ -486,6 +486,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           } else {
             // Pas de config provisionnée — déclencher le provisionnement en ligne
             const dataToken = (vpnConfig as any)?.dataToken as string | undefined;
+            addLog(`[SXB_DEBUG] PROVISION_CHECK dataToken=${dataToken ? 'OK' : 'MISSING'} deviceId=${deviceId ? 'OK' : 'MISSING'}`);
             if (dataToken && deviceId) {
               addLog('[SXB_DEBUG] PROVISION_REQUIRED — appel /provision/activate');
               addLog('🔒 Provisionnement sécurisé en cours...');
@@ -497,8 +498,11 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
                 addLog('[SXB_DEBUG] PROVISION_OK — config déchiffrée et stockée dans KeyStore');
                 addLog('✅ Configuration provisionnée avec succès');
               } catch (provErr: any) {
-                addLog(`⚠️ Provisionnement échoué : ${provErr?.message || 'erreur réseau'}`);
-                addLog('[SXB_DEBUG] PROVISION_FAILED — tentative config hors-ligne');
+                const httpStatus  = provErr?.response?.status ?? 'no-response';
+                const httpMsg     = provErr?.response?.data?.error ?? provErr?.response?.data?.message ?? '';
+                const netCode     = provErr?.code ?? '';
+                addLog(`[SXB_DEBUG] PROVISION_FAILED http=${httpStatus} code=${netCode} msg="${httpMsg || provErr?.message || 'inconnu'}"`);
+                addLog(`⚠️ Provisionnement échoué [${httpStatus}] : ${httpMsg || provErr?.message || 'erreur réseau'}`);
                 // Fallback offlineStorage (ancienne config encore valide)
                 const offlineEntry = await loadVpnConfig();
                 if (offlineEntry?.config) {
@@ -644,7 +648,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       setVpnState('error');
       setIsConnecting(false);
     }
-  }, [isConnecting, isConnected, selectedProtocol, vpnConfig, activeConnection, killSwitch, autoReconnect, addLog, startWatchdog]);
+  }, [isConnecting, isConnected, selectedProtocol, vpnConfig, activeConnection, killSwitch, autoReconnect, deviceId, addLog, startWatchdog]);
 
   const disconnect = useCallback(async () => {
     if (isConnecting && !isConnected) return;
