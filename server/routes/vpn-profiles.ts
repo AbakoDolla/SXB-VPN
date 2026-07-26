@@ -103,6 +103,18 @@ router.get("/unified", requireAuth, async (req: AuthenticatedRequest, res: Respo
   } catch (err) { console.error("Unified configs error:", err); return res.status(500).json({ error: "Server error" }); }
 });
 
+// ─── GET /api/vpn-profiles/stats/all ─────────────────────────────────────────
+router.get('/stats/all', requireAuth, requirePermission('vpnprofile.view'), async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const total      = await (prisma as any).vpnProfile.count();
+    const active     = await (prisma as any).vpnProfile.count({ where: { status: 'active' } });
+    const byProtocol = await (prisma as any).vpnProfile.groupBy({ by: ['protocol'], _count: { id: true } });
+    return res.json({ success: true, total, active, byProtocol });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to get stats' });
+  }
+});
+
 // ─── GET /api/vpn-profiles/:id ───────────────────────────────────────────────
 router.get('/:id', requireAuth, requirePermission('vpnprofile.view'), async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -235,18 +247,6 @@ router.get('/:id/stats', requireAuth, requirePermission('vpnprofile.view'), asyn
   try {
     const total     = await (prisma as any).vpnProfile.count();
     const active    = await (prisma as any).vpnProfile.count({ where: { status: 'active' } });
-    const byProtocol = await (prisma as any).vpnProfile.groupBy({ by: ['protocol'], _count: { id: true } });
-    return res.json({ success: true, total, active, byProtocol });
-  } catch (err) {
-    return res.status(500).json({ error: 'Failed to get stats' });
-  }
-});
-
-// ─── GET /api/vpn-profiles/stats/all ─────────────────────────────────────────
-router.get('/stats/all', requireAuth, requirePermission('vpnprofile.view'), async (_req: AuthenticatedRequest, res: Response) => {
-  try {
-    const total      = await (prisma as any).vpnProfile.count();
-    const active     = await (prisma as any).vpnProfile.count({ where: { status: 'active' } });
     const byProtocol = await (prisma as any).vpnProfile.groupBy({ by: ['protocol'], _count: { id: true } });
     return res.json({ success: true, total, active, byProtocol });
   } catch (err) {

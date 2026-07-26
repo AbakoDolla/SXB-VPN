@@ -74,7 +74,7 @@ export default function DashboardView({ onNavigate }: Props) {
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const token = localStorage.getItem("sxb_admin_token") || sessionStorage.getItem("sxb_admin_token") || "";
+      const token = localStorage.getItem("sxb_access_token") || sessionStorage.getItem("sxb_access_token") || "";
       const [s, l, cr, tr] = await Promise.all([
         fetchDashboardStats(),
         fetchActivityLogs(),
