@@ -340,6 +340,7 @@ model VpnProfile {
   name             String
   description      String?
   protocol         String         // ssh | vless | vmess | trojan | shadowsocks | singbox
+  displayProtocol  String?
   host             String
   port             Int
   username         String?
