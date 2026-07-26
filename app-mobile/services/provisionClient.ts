@@ -3,14 +3,13 @@
  *
  * Gère le flux complet d'activation sécurisée :
  *   1. Appel à /api/provision/activate (dataToken + deviceId)
- *   2. Réception du blob chiffré AES-256-GCM + configKey
- *   3. Déchiffrement local via Web Crypto API (crypto.subtle — RN 0.73+)
- *   4. Stockage de la config déchiffrée dans SecureStore (Android Keystore)
+ *   2. Réception de la config VPN (chiffrée ou en clair selon encVersion)
+ *   3. Déchiffrement local via Web Crypto API (crypto.subtle — RN 0.73+) si nécessaire
+ *   4. Stockage de la config dans SecureStore (Android Keystore)
  *
- * Le mobile ne stocke JAMAIS :
- *   ❌ Le blob chiffré brut (inutile après déchiffrement)
- *   ❌ Le configKey en clair (utilisé uniquement en mémoire)
- *   ❌ Les credentials dans AsyncStorage non chiffré
+ * Formats supportés :
+ *   - encVersion: "gcm-v1" → AES-256-GCM chiffré (encryptedBlob + configKey)
+ *   - encVersion: "plain-v1" → Config VPN en clair (vpnConfig)
  */
 import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -87,10 +86,10 @@ async function decryptGCM(blob: string, configKeyHex: string): Promise<string> {
 // ── Provision/Activate ────────────────────────────────────────────────────────
 
 /**
- * Appelle /api/provision/activate, déchiffre la config, la stocke dans SecureStore.
+ * Appelle /api/provision/activate, déchiffre la config si nécessaire, la stocke dans SecureStore.
  * @param dataToken  Token SXB-DATA de l'abonnement
  * @param deviceId   Identifiant unique de l'appareil
- * @returns          Config VPN déchiffrée (objet JSON brut)
+ * @returns          Config VPN (objet JSON brut)
  */
 export async function provisionAndStore(
   dataToken: string,
@@ -99,18 +98,26 @@ export async function provisionAndStore(
   const res = await apiClient.post('/provision/activate', { dataToken, deviceId });
   const { config: prov } = res.data;
 
-  if (!prov?.encryptedBlob || !prov?.configKey) {
-    throw new Error('Réponse provision invalide — champs manquants');
-  }
-
   // Vérification expiration de la config
   if (prov.configExpiresAt && new Date(prov.configExpiresAt) < new Date()) {
     throw new Error('Configuration expirée — re-provisionnement requis');
   }
 
-  // Déchiffrement local (jamais envoyé en clair sur le réseau après ce point)
-  const decryptedJson = await decryptGCM(prov.encryptedBlob, prov.configKey);
-  const vpnConfig     = JSON.parse(decryptedJson) as Record<string, any>;
+  let vpnConfig: Record<string, any>;
+
+  // Support multi-format : chiffré (gcm-v1) ou clair (plain-v1)
+  if (prov.encryptedBlob && prov.configKey) {
+    // Format chiffré AES-256-GCM
+    console.log('[Provision] Using encrypted config (gcm-v1)');
+    const decryptedJson = await decryptGCM(prov.encryptedBlob, prov.configKey);
+    vpnConfig = JSON.parse(decryptedJson) as Record<string, any>;
+  } else if (prov.vpnConfig) {
+    // Format clair (plain-v1)
+    console.log('[Provision] Using plain config (plain-v1)');
+    vpnConfig = prov.vpnConfig as Record<string, any>;
+  } else {
+    throw new Error('Réponse provision invalide — champs manquants (encryptedBlob/configKey ou vpnConfig)');
+  }
 
   // Stockage dans SecureStore (Android Keystore / iOS Keychain)
   await SecureStore.setItemAsync(PROV_KEY, JSON.stringify(vpnConfig));
@@ -121,7 +128,7 @@ export async function provisionAndStore(
     profileId:       prov.profileId,
     profileName:     prov.profileName,
     protocol:        prov.protocol,
-    displayProtocol: prov.displayProtocol,
+    displayProtocol: prov.displayProtocol || prov.vpnConfig?.protocol?.toUpperCase() || prov.protocol?.toUpperCase() || 'VPN',
     quotaGB:         prov.quotaGB,
     quotaUsedGB:     prov.quotaUsedGB,
     expireAt:        prov.expireAt,
