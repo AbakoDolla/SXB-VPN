@@ -14,14 +14,16 @@ interface Props { currentUserRole: UserRole }
 
 const PROTO_COLORS: Record<string, string> = {
   ssh:          "text-cyan-400 bg-cyan-500/10",
+  "ssh+payload":"text-teal-400 bg-teal-500/10",
   vless:        "text-blue-400 bg-blue-500/10",
   vmess:        "text-indigo-400 bg-indigo-500/10",
   trojan:       "text-amber-400 bg-amber-500/10",
   shadowsocks:  "text-purple-400 bg-purple-500/10",
   singbox:      "text-pink-400 bg-pink-500/10",
+  wireguard:    "text-green-400 bg-green-500/10",
 };
 
-const PROTOCOLS = ['ssh', 'ssh+payload', 'vless', 'vmess', 'trojan', 'shadowsocks', 'singbox'];
+const PROTOCOLS = ['ssh', 'ssh+payload', 'vless', 'vmess', 'trojan', 'shadowsocks', 'singbox', 'wireguard'];
 const NETWORKS  = ['ws', 'grpc', 'tcp', 'h2'];
 
 const DEFAULT_FORM = {
@@ -31,6 +33,7 @@ const DEFAULT_FORM = {
   uuid: '', path: '/', network: 'ws', tls: false, sni: '', dns: '1.1.1.1',
   offlineValidDays: 7, method: 'aes-256-gcm', status: 'active',
   payloadId: '' as string,
+  jsonConfig: '', // Configuration JSON complète optionnelle (V2Ray/VMess/VLESS/Trojan/WireGuard)
 };
 
 export default function VpnProfilesView({ currentUserRole }: Props) {
@@ -77,6 +80,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
       sni: p.sni || '', dns: p.dns || '1.1.1.1',
       offlineValidDays: p.offlineValidDays, method: p.method || 'aes-256-gcm', status: p.status,
       payloadId: (p as any).payloadId || '',
+      jsonConfig: (p as any).jsonConfig || '',
     });
     setError(''); setShowForm(true);
   };
@@ -386,6 +390,26 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
                   {form.tls ? <Check className="w-3.5 h-3.5" /> : <X className="w-3.5 h-3.5" />} TLS/SSL
                 </button>
               </div>
+
+              {/* JSON Config optionnel — V2Ray / VMess / VLESS / Trojan / Sing-box / WireGuard */}
+              {!['ssh', 'ssh+payload'].includes(form.protocol) && (
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1.5">
+                    Configuration JSON <span className="text-gray-600 text-xs">(optionnel — coller une config brute)</span>
+                  </label>
+                  <textarea
+                    value={form.jsonConfig}
+                    onChange={e => f('jsonConfig', e.target.value)}
+                    rows={6}
+                    placeholder={`{\n  "protocol": "${form.protocol}",\n  "address": "...",\n  "port": 443\n}`}
+                    className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-emerald-400 text-xs font-mono focus:outline-none focus:border-emerald-500/50 resize-y"
+                  />
+                  <p className="text-xs text-gray-600 mt-1">
+                    Si renseigné, cette config JSON sera utilisée à la place des champs individuels lors du provisionnement.
+                    Les champs Hôte, Port, UUID restent requis pour l'identification du profil.
+                  </p>
+                </div>
+              )}
 
               <div className="flex justify-end gap-3 pt-2">
                 <button type="button" onClick={() => setShowForm(false)}

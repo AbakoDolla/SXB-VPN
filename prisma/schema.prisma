@@ -342,6 +342,7 @@ model VpnProfile {
   payload          SshPayload?    @relation(fields: [payloadId], references: [id])
   offlineValidDays Int            @default(7)
   method           String?
+  jsonConfig       String?        // Optional raw JSON config for V2Ray/VMess/VLESS/Trojan/Sing-box/WireGuard
   status           String         @default("active") // active | archived
   createdBy        String?
   createdAt        DateTime       @default(now())

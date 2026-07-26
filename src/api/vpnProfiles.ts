@@ -19,6 +19,7 @@ export interface VpnProfile {
   payloadId?: string;
   offlineValidDays: number;
   method?: string;
+  jsonConfig?: string;
   status: string;
   createdAt: string;
   _count?: { subscriptions: number };

@@ -125,7 +125,7 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
       host, port, username, password,
       uuid, path, network, tls, sni, dns,
       payloadId, offlineValidDays, status,
-      method,
+      method, jsonConfig,
     } = req.body;
 
     if (!name || !protocol || !host || !port) {
@@ -141,7 +141,7 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
         host, port: Number(port),
         username: username || null,
         password: encPassword,
-        uuid: uuid || (protocol !== 'ssh' ? crypto.randomUUID() : null),
+        uuid: uuid || (!['ssh', 'ssh+payload'].includes(protocol) ? crypto.randomUUID() : null),
         path: path || null,
         network: network || 'ws',
         tls: !!tls,
@@ -150,6 +150,7 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
         payloadId: payloadId || null,
         offlineValidDays: offlineValidDays ? Number(offlineValidDays) : 7,
         method: method || null,
+        jsonConfig: jsonConfig || null,
         status: status || 'active',
       },
     });
@@ -172,7 +173,7 @@ router.put('/:id', requireAuth, requirePermission('vpnprofile.manage'), async (r
       name, description, protocol, displayProtocol,
       host, port, username, password,
       uuid, path, network, tls, sni, dns,
-      payloadId, offlineValidDays, status, method,
+      payloadId, offlineValidDays, status, method, jsonConfig,
     } = req.body;
 
     const encPassword = password ? encrypt(password) : existing.password;
@@ -197,6 +198,7 @@ router.put('/:id', requireAuth, requirePermission('vpnprofile.manage'), async (r
         ...(payloadId !== undefined && { payloadId }),
         ...(offlineValidDays !== undefined && { offlineValidDays: Number(offlineValidDays) }),
         ...(method !== undefined && { method }),
+        ...(jsonConfig !== undefined && { jsonConfig: jsonConfig || null }),
         ...(status !== undefined && { status }),
       },
     });

@@ -3,7 +3,7 @@ import { UserRole } from "../types";
 import {
   fetchSubscriptions, createSubscription, updateSubscription,
   deleteSubscription, revokeSubscription, Subscription,
-  fetchVpnProfiles, VpnProfile, fetchUnifiedConfigs, UnifiedConfig,
+  fetchVpnProfiles, VpnProfile,
 } from "../api/vpnProfiles";
 import { fetchClients } from "../api/clients";
 import { fetchDevices, Device } from "../api/devices";
@@ -59,11 +59,11 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
     try {
       const [s, p, c, d] = await Promise.all([
         fetchSubscriptions(),
-        fetchUnifiedConfigs(),
+        fetchVpnProfiles(),
         fetchClients(),
         fetchDevices(),
       ]);
-      setSubs(s); setProfiles(p); setClients(c); setDevices(d);
+      setSubs(s); setProfiles(p as any[]); setClients(c); setDevices(d);
     } catch { /* ignore */ } finally { setLoading(false); }
   };
 
