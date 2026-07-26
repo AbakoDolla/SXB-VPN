@@ -284,12 +284,29 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
     const state = computeAccountState(client);
 
     let sub: any = null;
+    let payloadContent: string | null = null;
     if (prisma) {
       sub = await (prisma as any).subscription.findFirst({
         where: { clientId: client.id, status: "active" },
         include: { profile: true },
         orderBy: { createdAt: "desc" },
       });
+      
+      // Récupérer le payload si présent - utiliser (prisma as any) pour éviter les erreurs de typage
+      const subAny = sub as any;
+      const profileAny = subAny?.profile;
+      console.log("[DEBUG] sub:", JSON.stringify(subAny?.id));
+      console.log("[DEBUG] profile:", JSON.stringify(profileAny?.name));
+      console.log("[DEBUG] payloadId:", profileAny?.payloadId);
+      if (profileAny?.payloadId) {
+        const payload = await (prisma as any).payload.findUnique({
+          where: { id: profileAny.payloadId }
+        });
+        console.log("[DEBUG] payload found:", payload?.content?.substring(0, 50));
+        if (payload) {
+          payloadContent = payload.content;
+        }
+      }
     }
 
     const profile = sub?.profile || null;
@@ -312,9 +329,41 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
       serverInfo: { host: profile?.host || "vpnsxb.afrihall.com", location: profile ? "SXB" : "France / Europe" },
       subscriptionUrl: connectionUri,
       connectionUri,
-      profile: profile ? { id: profile.id, name: profile.name, protocol: proto, host: profile.host, port: profile.port, network: profile.network, tls: profile.tls, sni: profile.sni, uuid: profile.uuid, path: profile.path, username: profile.username, password: profile.password || null, method: profile.method || null } : null,
+      profile: profile ? { 
+        id: profile.id, 
+        name: profile.name, 
+        protocol: proto, 
+        host: profile.host, 
+        port: profile.port, 
+        network: profile.network, 
+        tls: profile.tls, 
+        sni: profile.sni, 
+        uuid: profile.uuid, 
+        path: profile.path, 
+        username: profile.username, 
+        password: profile.password || null, 
+        method: profile.method || null,
+        payload: payloadContent,
+        usePayload: !!payloadContent,
+      } : null,
       subscription: sub ? { id: sub.id, name: sub.name, dataToken: sub.dataToken, expireAt: sub.expireAt?.toISOString(), status: sub.status } : null,
-      vpnConfig: profile ? { id: profile.id, name: profile.name, protocol: proto, host: profile.host, port: profile.port, network: profile.network, tls: profile.tls, sni: profile.sni, uuid: profile.uuid, path: profile.path, username: profile.username, password: profile.password || null, method: profile.method || null } : null,
+      vpnConfig: profile ? { 
+        id: profile.id, 
+        name: profile.name, 
+        protocol: proto, 
+        host: profile.host, 
+        port: profile.port, 
+        network: profile.network, 
+        tls: profile.tls, 
+        sni: profile.sni, 
+        uuid: profile.uuid, 
+        path: profile.path, 
+        username: profile.username, 
+        password: profile.password || null, 
+        method: profile.method || null,
+        payload: payloadContent,
+        usePayload: !!payloadContent,
+      } : null,
     });
   } catch (err) {
     console.error("Mobile vpn/config error:", err);
@@ -498,6 +547,125 @@ router.get('/history', async (req: AuthenticatedRequest, res: Response) => {
   } catch (err) {
     console.error('Mobile history error:', err);
     return res.json([]);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/mobile/provision/activate — Provisionnement sécurisé
+// Retourne la config VPN complète pour le mobile
+// ─────────────────────────────────────────────────────────────────────────────
+const provisionActivateSchema = z.object({
+  dataToken: z.string().min(5),
+  deviceId: z.string().min(1),
+});
+
+router.post("/provision/activate", async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { dataToken, deviceId } = provisionActivateSchema.parse(req.body);
+
+    // 1. Trouver la subscription via dataToken
+    let subscription: any = null;
+    if (prisma) {
+      subscription = await (prisma as any).subscription.findFirst({
+        where: {
+          dataToken: normalizeToken(dataToken),
+          status: "active",
+        },
+        include: {
+          client: { include: { user: true } },
+          profile: true,
+        },
+      });
+    }
+
+    if (!subscription) {
+      return res.status(404).json({
+        error: "errors.mobile.invalid_subscription",
+        message: "Abonnement invalide ou expiré"
+      });
+    }
+
+    // 2. Vérifier l'expiration
+    if (subscription.expireAt && new Date(subscription.expireAt).getTime() < Date.now()) {
+      return res.status(403).json({
+        error: "errors.mobile.subscription_expired",
+        message: "Abonnement expiré"
+      });
+    }
+
+    // 3. Récupérer le payload si c'est un profil SSH avec payload
+    let payloadContent: string | null = null;
+    if (subscription.profile?.payloadId && prisma) {
+      const payload = await (prisma as any).payload.findUnique({
+        where: { id: subscription.profile.payloadId }
+      });
+      if (payload) {
+        payloadContent = payload.content;
+      }
+    }
+
+    // 4. Construire la config VPN complète
+    const profile = subscription.profile;
+    const vpnConfig: Record<string, any> = {
+      protocol: (profile?.protocol || "ssh").toLowerCase(),
+      host: profile?.host || "",
+      port: profile?.port || 22,
+      username: profile?.username || "",
+      password: profile?.password || "",
+      network: profile?.network || "tcp",
+      tls: profile?.tls || false,
+      sni: profile?.sni || "",
+      uuid: profile?.uuid || "",
+      method: profile?.method || "",
+      payload: payloadContent,
+      usePayload: !!payloadContent,
+    };
+
+    // 5. Calculer expiration (24h par défaut)
+    const configExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+    // 6. Logger l'activité
+    try {
+      await logDbActivity(
+        subscription.client?.userId || "unknown",
+        `Provision activated for device ${deviceId}`,
+        "success",
+        req.ip
+      );
+    } catch (logErr) {
+      console.log("[Provision] Logging skipped:", logErr);
+    }
+
+    // 7. Retourner la config
+    return res.json({
+      success: true,
+      config: {
+        subscriptionId: subscription.id,
+        profileId: profile?.id || null,
+        profileName: profile?.name || "Default",
+        protocol: vpnConfig.protocol,
+        displayProtocol: profile?.displayProtocol || vpnConfig.protocol.toUpperCase(),
+        quotaGB: Number(subscription.quotaBytes) / (1024 * 1024 * 1024),
+        quotaUsedGB: Number(subscription.quotaUsed || 0) / (1024 * 1024 * 1024),
+        expireAt: subscription.expireAt?.toISOString() || null,
+        configExpiresAt,
+        provisionedAt: new Date().toISOString(),
+        encVersion: "plain-v1",
+        vpnConfig,
+      }
+    });
+  } catch (err: any) {
+    console.error("Provision activate error:", err);
+    if (err?.issues) {
+      return res.status(400).json({
+        error: "errors.validation",
+        message: "Paramètres invalides"
+      });
+    }
+    return res.status(500).json({
+      error: "errors.server",
+      message: "Échec du provisionnement"
+    });
   }
 });
 
