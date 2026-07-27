@@ -45,13 +45,13 @@ export async function suspendClient(id: string): Promise<Client> {
 }
 
 export async function activateClient(id: string): Promise<Client> {
-  return updateClient(id, { status: "active" });
+  return await apiRequest<Client>(`/clients/${id}/activate`, { method: "POST" });
 }
 
 export async function renewClient(id: string): Promise<Client> {
-  return updateClient(id, { status: "active" });
+  return await apiRequest<Client>(`/clients/${id}/renew`, { method: "POST" });
 }
 
 export async function resetClientAccess(id: string): Promise<Client> {
-  return await apiRequest<Client>(`/clients/${id}/reset-token`, { method: "POST" });
+  return await apiRequest<Client>(`/clients/${id}/reset-access`, { method: "POST" });
 }
