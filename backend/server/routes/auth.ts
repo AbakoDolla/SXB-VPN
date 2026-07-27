@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { z } from "zod";
 import jwt from "jsonwebtoken";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
-import { generateTokens, TokenPayload, AuthenticatedRequest } from "../middleware/auth";
+import { generateTokens, requireAuth, TokenPayload, AuthenticatedRequest } from "../middleware/auth";
 import { config } from "../config";
 
 const router = Router();
