@@ -120,14 +120,27 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
 
-  const filteredClients = useMemo(() => clients.filter((c) => {
-    const matchesSearch = c.name.toLowerCase().includes(search.toLowerCase()) || 
-                          c.email.toLowerCase().includes(search.toLowerCase()) ||
-                          c.token.toLowerCase().includes(search.toLowerCase());
-    
-    const matchesStatus = statusFilter === "all" || c.status === statusFilter;
-    return matchesSearch && matchesStatus;
-  }), [clients, search, statusFilter]);
+  const filteredClients = useMemo(() => {
+    const normalizedSearch = search.trim().toLowerCase();
+
+    return clients.filter((client) => {
+      // The API returns the display name and email on the related user object.
+      // Keep fallbacks for older records and never call string methods on null.
+      const clientRecord = client as Client & {
+        user?: { name?: string | null; email?: string | null };
+        name?: string | null;
+        email?: string | null;
+      };
+      const clientName = String(clientRecord.user?.name ?? clientRecord.name ?? "");
+      const clientEmail = String(clientRecord.user?.email ?? clientRecord.email ?? "");
+      const clientToken = String(client.token ?? "");
+      const matchesSearch = !normalizedSearch || [clientName, clientEmail, clientToken]
+        .some((value) => value.toLowerCase().includes(normalizedSearch));
+
+      const matchesStatus = statusFilter === "all" || client.status === statusFilter;
+      return matchesSearch && matchesStatus;
+    });
+  }, [clients, search, statusFilter]);
 
   const paginatedClients = useMemo(() => {
     const start = (page - 1) * pageSize;
