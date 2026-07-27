@@ -52,7 +52,7 @@ export async function deleteSingboxAccount(id: string): Promise<void> {
 }
 
 export async function suspendSingboxAccount(id: string): Promise<{ status: string }> {
-  return apiRequest<{ status: string }>(`/singbox/accounts/${id}/suspend`, { method: 'POST' });
+  return apiRequest<{ status: string }>(`/singbox/accounts/${id}/suspend`, { method: 'PATCH' });
 }
 
 export async function getSingboxConfig(id: string): Promise<{ config: object }> {

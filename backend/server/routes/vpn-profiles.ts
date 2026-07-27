@@ -8,7 +8,7 @@ const router = Router();
 const profileSchema = z.object({
   name:             z.string().min(2),
   description:      z.string().optional(),
-  protocol:         z.enum(["ssh", "vless", "vmess", "trojan", "shadowsocks", "singbox"]),
+  protocol:         z.enum(["ssh", "vless", "vmess", "trojan", "shadowsocks", "singbox", "hysteria2", "tuic", "wireguard", "reality"]),
   host:             z.string().min(1),
   port:             z.coerce.number().min(1).max(65535),
   username:         z.string().optional(),

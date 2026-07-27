@@ -60,7 +60,7 @@ export async function deleteXrayAccount(id: string): Promise<void> {
 }
 
 export async function suspendXrayAccount(id: string): Promise<{ status: string }> {
-  return apiRequest<{ status: string }>(`/xray/accounts/${id}/suspend`, { method: 'POST' });
+  return apiRequest<{ status: string }>(`/xray/accounts/${id}/suspend`, { method: 'PATCH' });
 }
 
 export async function getXrayLink(id: string): Promise<{ link: string; protocol: string }> {

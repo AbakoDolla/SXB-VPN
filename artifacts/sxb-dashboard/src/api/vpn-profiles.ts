@@ -41,7 +41,7 @@ export async function createVpnProfile(payload: {
 
 export async function updateVpnProfile(id: string, payload: Partial<VpnProfile>): Promise<VpnProfile> {
   const data = await apiRequest<{ profile: VpnProfile }>(`/vpn-profiles/${id}`, {
-    method: 'PATCH', body: payload,
+    method: 'PUT', body: payload,
   });
   return data.profile;
 }

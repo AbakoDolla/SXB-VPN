@@ -7,7 +7,7 @@ import {
 } from "../api/xray";
 import {
   Zap, Plus, Trash2, RefreshCw, Edit3, Power, Copy, Check,
-  X, AlertTriangle, Activity, Link,
+  X, AlertTriangle, Activity, Link, FileJson, ArrowRight,
 } from "lucide-react";
 
 interface Props { currentUserRole: UserRole }
@@ -25,6 +25,116 @@ const DEFAULT_FORM = {
   quotaGB: "", expireAt: "", maxDevices: 1,
   password: "", method: "aes-256-gcm",
 };
+
+// ─── Parseur V2Ray URI / JSON ─────────────────────────────────────────────────
+function parseV2RayInput(raw: string): Partial<typeof DEFAULT_FORM> | null {
+  const s = raw.trim();
+  if (!s) return null;
+
+  try {
+    // vless://uuid@host:port?type=ws&security=tls&sni=...&path=...#name
+    if (s.startsWith("vless://")) {
+      const noProto = s.slice(8);
+      const hashIdx = noProto.indexOf("#");
+      const name = hashIdx !== -1 ? decodeURIComponent(noProto.slice(hashIdx + 1)) : "";
+      const main = hashIdx !== -1 ? noProto.slice(0, hashIdx) : noProto;
+      const [userinfo, rest] = main.split("@");
+      const qIdx = rest.indexOf("?");
+      const hostPort = qIdx !== -1 ? rest.slice(0, qIdx) : rest;
+      const qs = qIdx !== -1 ? new URLSearchParams(rest.slice(qIdx + 1)) : new URLSearchParams();
+      const lastColon = hostPort.lastIndexOf(":");
+      const host = hostPort.slice(0, lastColon);
+      const port = hostPort.slice(lastColon + 1);
+      return {
+        name, protocol: "vless", host, port,
+        path: qs.get("path") || "/",
+        tls: qs.get("security") === "tls",
+        sni: qs.get("sni") || "",
+        network: qs.get("type") || "ws",
+      };
+    }
+
+    // vmess://base64encodedJSON
+    if (s.startsWith("vmess://")) {
+      const decoded = atob(s.slice(8));
+      const obj = JSON.parse(decoded);
+      return {
+        name: obj.ps || obj.add || "",
+        protocol: "vmess",
+        host: obj.add || "",
+        port: String(obj.port || ""),
+        path: obj.path || "/",
+        tls: obj.tls === "tls",
+        sni: obj.sni || "",
+        network: obj.net || "ws",
+      };
+    }
+
+    // trojan://password@host:port?security=tls&sni=...#name
+    if (s.startsWith("trojan://")) {
+      const noProto = s.slice(9);
+      const hashIdx = noProto.indexOf("#");
+      const name = hashIdx !== -1 ? decodeURIComponent(noProto.slice(hashIdx + 1)) : "";
+      const main = hashIdx !== -1 ? noProto.slice(0, hashIdx) : noProto;
+      const [pw, rest] = main.split("@");
+      const qIdx = rest.indexOf("?");
+      const hostPort = qIdx !== -1 ? rest.slice(0, qIdx) : rest;
+      const qs = qIdx !== -1 ? new URLSearchParams(rest.slice(qIdx + 1)) : new URLSearchParams();
+      const lastColon = hostPort.lastIndexOf(":");
+      const host = hostPort.slice(0, lastColon);
+      const port = hostPort.slice(lastColon + 1);
+      return {
+        name, protocol: "trojan", host, port,
+        password: pw,
+        path: qs.get("path") || "/",
+        tls: true,
+        sni: qs.get("sni") || "",
+        network: qs.get("type") || "ws",
+      };
+    }
+
+    // ss://base64(method:password)@host:port#name
+    if (s.startsWith("ss://")) {
+      const noProto = s.slice(5);
+      const hashIdx = noProto.indexOf("#");
+      const name = hashIdx !== -1 ? decodeURIComponent(noProto.slice(hashIdx + 1)) : "";
+      const main = hashIdx !== -1 ? noProto.slice(0, hashIdx) : noProto;
+      const atIdx = main.lastIndexOf("@");
+      const b64 = main.slice(0, atIdx);
+      const hostPort = main.slice(atIdx + 1);
+      const lastColon = hostPort.lastIndexOf(":");
+      const host = hostPort.slice(0, lastColon);
+      const port = hostPort.slice(lastColon + 1);
+      let method = "aes-256-gcm", password = "";
+      try {
+        const decoded = atob(b64);
+        const colonIdx = decoded.indexOf(":");
+        method = decoded.slice(0, colonIdx);
+        password = decoded.slice(colonIdx + 1);
+      } catch { /* ignore */ }
+      return { name, protocol: "shadowsocks", host, port, password, method, network: "tcp", tls: false };
+    }
+
+    // JSON object / config
+    if (s.startsWith("{")) {
+      const obj = JSON.parse(s);
+      // Generic JSON mapping
+      return {
+        name: obj.ps || obj.name || obj.tag || "",
+        protocol: obj.protocol || obj.type || "vless",
+        host: obj.server || obj.add || obj.host || "",
+        port: String(obj.server_port || obj.port || ""),
+        path: obj.path || "/",
+        tls: !!(obj.tls || (obj.security === "tls")),
+        sni: obj.sni || obj.server_name || "",
+        network: obj.net || obj.network || obj.transport?.type || "ws",
+        password: obj.password || "",
+        method: obj.method || "aes-256-gcm",
+      };
+    }
+  } catch { /* ignore */ }
+  return null;
+}
 
 function fmtBytes(b: string | null): string {
   if (!b) return "∞";
@@ -48,6 +158,34 @@ export default function XrayManagerView({ currentUserRole }: Props) {
   const [filterProto, setFilterProto] = useState("all");
   const [search, setSearch] = useState("");
   const [copied, setCopied] = useState<string | null>(null);
+  // JSON / URI V2Ray import
+  const [showJsonImport, setShowJsonImport] = useState(false);
+  const [jsonInput, setJsonInput] = useState("");
+  const [jsonError, setJsonError] = useState("");
+
+  const handleJsonImport = () => {
+    setJsonError("");
+    const parsed = parseV2RayInput(jsonInput);
+    if (!parsed) {
+      setJsonError("Format non reconnu. Collez une URI vless://, vmess://, trojan://, ss:// ou un objet JSON V2Ray.");
+      return;
+    }
+    setForm(f => ({
+      ...f,
+      ...(parsed.name     !== undefined && parsed.name     !== "" ? { name:     parsed.name }     : {}),
+      ...(parsed.protocol !== undefined ? { protocol: parsed.protocol } : {}),
+      ...(parsed.host     !== undefined ? { host:     parsed.host }     : {}),
+      ...(parsed.port     !== undefined ? { port:     String(parsed.port) } : {}),
+      ...(parsed.path     !== undefined ? { path:     parsed.path }     : {}),
+      ...(parsed.tls      !== undefined ? { tls:      parsed.tls }      : {}),
+      ...(parsed.sni      !== undefined ? { sni:      parsed.sni }      : {}),
+      ...(parsed.network  !== undefined ? { network:  parsed.network }  : {}),
+      ...(parsed.password !== undefined ? { password: parsed.password } : {}),
+      ...(parsed.method   !== undefined ? { method:   parsed.method }   : {}),
+    }));
+    setJsonInput("");
+    setShowJsonImport(false);
+  };
 
   const load = async () => {
     setLoading(true);
@@ -264,7 +402,17 @@ export default function XrayManagerView({ currentUserRole }: Props) {
           <div className="bg-[#0f1218] border border-[#1a1f2e] rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between p-6 border-b border-[#1a1f2e]">
               <h2 className="text-white font-semibold">{editId ? "Modifier" : "Nouveau"} compte Xray</h2>
-              <button onClick={() => setShowForm(false)} className="p-1.5 text-gray-400 hover:text-white rounded-lg"><X className="w-5 h-5" /></button>
+              <div className="flex items-center gap-2">
+                {!editId && (
+                  <button type="button" onClick={() => { setShowJsonImport(v => !v); setJsonError(""); }}
+                    title="Importer depuis URI V2Ray ou JSON"
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${showJsonImport ? "bg-blue-500/20 border-blue-500/30 text-blue-400" : "bg-[#0a0d14] border-[#1a1f2e] text-gray-400 hover:text-gray-200"}`}>
+                    <FileJson className="w-3.5 h-3.5" />
+                    Import URI/JSON
+                  </button>
+                )}
+                <button onClick={() => setShowForm(false)} className="p-1.5 text-gray-400 hover:text-white rounded-lg"><X className="w-5 h-5" /></button>
+              </div>
             </div>
             <form onSubmit={handleSubmit} className="p-6 space-y-4">
               {error && (
@@ -272,6 +420,31 @@ export default function XrayManagerView({ currentUserRole }: Props) {
                   <AlertTriangle className="w-4 h-4 shrink-0" />{error}
                 </div>
               )}
+
+              {/* JSON / URI V2Ray import section */}
+              {showJsonImport && !editId && (
+                <div className="p-4 bg-[#0a0d14] border border-blue-500/20 rounded-xl space-y-3">
+                  <div className="flex items-center gap-2">
+                    <FileJson className="w-4 h-4 text-blue-400" />
+                    <p className="text-sm font-medium text-blue-400">Importer une configuration V2Ray</p>
+                  </div>
+                  <p className="text-xs text-gray-500">Collez une URI (<code className="text-blue-300">vless://</code>, <code className="text-blue-300">vmess://</code>, <code className="text-blue-300">trojan://</code>, <code className="text-blue-300">ss://</code>) ou un objet JSON V2Ray. Les champs du formulaire seront remplis automatiquement.</p>
+                  <textarea
+                    value={jsonInput}
+                    onChange={e => { setJsonInput(e.target.value); setJsonError(""); }}
+                    placeholder="vless://uuid@host:443?type=ws&security=tls&sni=example.com&path=%2F#Mon-VLESS"
+                    rows={4}
+                    className="w-full px-3 py-2 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-xs font-mono placeholder-gray-700 focus:outline-none focus:border-blue-500 resize-none"
+                  />
+                  {jsonError && <p className="text-xs text-rose-400 flex items-center gap-1"><AlertTriangle className="w-3 h-3" />{jsonError}</p>}
+                  <button type="button" onClick={handleJsonImport} disabled={!jsonInput.trim()}
+                    className="flex items-center gap-2 px-4 py-2 bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30 text-blue-400 text-sm font-medium rounded-xl transition-colors disabled:opacity-40">
+                    <ArrowRight className="w-4 h-4" />
+                    Remplir le formulaire
+                  </button>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-4">
                 <div className="col-span-2">
                   <label className="block text-sm text-gray-400 mb-1.5">Nom *</label>
