@@ -253,3 +253,104 @@ export function parseAndValidateConfig(raw: string | Record<string, any>): Recor
   }
   return result.config;
 }
+
+// ── Validation de complétude Offline ───────────────────────────────────────────
+// Une configuration Offline est considérée "complète" si elle contient au
+// minimum les champs nécessaires au démarrage du moteur VPN sans nouvel
+// appel API : host, port, protocol, et les credentials du protocole.
+// Cette fonction est le gardien qui empêche toute sauvegarde d'une config
+// incomplète dans SecureStore.
+
+export interface CompletenessResult {
+  complete:   boolean;
+  missing:    string[];
+  hasHost:    boolean;
+  hasCreds:   boolean;
+  hasPayload: boolean;
+  protocol:   string | null;
+}
+
+export function isCompleteOfflineConfig(cfg: Record<string, any> | null | undefined): CompletenessResult {
+  const missing: string[] = [];
+  if (!cfg || typeof cfg !== 'object') {
+    return { complete: false, missing: ['config'], hasHost: false, hasCreds: false, hasPayload: false, protocol: null };
+  }
+
+  const protocol = (cfg.protocol ?? cfg.type ?? '').toString().toLowerCase().trim() || null;
+  const hasHost  = !!(cfg.host && String(cfg.host).trim());
+  const hasPort  = cfg.port !== undefined && cfg.port !== null && Number(cfg.port) > 0;
+  const hasPayload = !!(cfg.payload && String(cfg.payload).trim());
+
+  // Credentials selon le protocole
+  let hasCreds = false;
+  if (protocol === 'ssh' || protocol === 'ssh+payload') {
+    hasCreds = !!(cfg.username && (cfg.password || cfg.privateKeyBase64));
+  } else if (protocol === 'vless' || protocol === 'vmess' || protocol === 'tuic') {
+    hasCreds = !!(cfg.uuid);
+  } else if (protocol === 'trojan' || protocol === 'hysteria2') {
+    hasCreds = !!(cfg.password);
+  } else if (protocol === 'shadowsocks') {
+    hasCreds = !!(cfg.password && cfg.method);
+  } else if (protocol === 'wireguard') {
+    hasCreds = !!(cfg.privateKey && cfg.endpoint);
+  } else if (protocol === 'singbox') {
+    hasCreds = Array.isArray(cfg.outbounds) && cfg.outbounds.length > 0;
+  } else {
+    // Protocole inconnu — accepter username/uuid/password comme credentials génériques
+    hasCreds = !!(cfg.username || cfg.uuid || cfg.password);
+  }
+
+  if (!hasHost && protocol !== 'wireguard' && protocol !== 'singbox') missing.push('host');
+  if (!hasPort && protocol !== 'wireguard') missing.push('port');
+  if (!protocol) missing.push('protocol');
+  if (!hasCreds) missing.push('credentials');
+
+  return {
+    complete: missing.length === 0,
+    missing,
+    hasHost,
+    hasCreds,
+    hasPayload,
+    protocol,
+  };
+}
+
+// ── Fusion intelligente de configurations ─────────────────────────────────────
+// Conserve les champs valides de l'ancienne config, remplace uniquement
+// les champs présents et non-nuls dans la nouvelle. Ne perd jamais host,
+// payload, credentials, ou paramètres de protocole.
+
+export function mergeConfigs(
+  oldCfg: Record<string, any> | null | undefined,
+  newCfg: Record<string, any>,
+): Record<string, any> {
+  const base = oldCfg && typeof oldCfg === 'object' ? { ...oldCfg } : {};
+  const merged: Record<string, any> = { ...base };
+
+  for (const [key, value] of Object.entries(newCfg)) {
+    // Ne remplacer que si la nouvelle valeur est présente et non-nulle
+    if (value !== undefined && value !== null && value !== '') {
+      merged[key] = value;
+    }
+  }
+
+  // Préserver explicitement les champs critiques si absents de la nouvelle
+  if (oldCfg) {
+    if (!merged.host && oldCfg.host) merged.host = oldCfg.host;
+    if (!merged.port && oldCfg.port) merged.port = oldCfg.port;
+    if (!merged.protocol && oldCfg.protocol) merged.protocol = oldCfg.protocol;
+    if (!merged.username && oldCfg.username) merged.username = oldCfg.username;
+    if (!merged.password && oldCfg.password) merged.password = oldCfg.password;
+    if (!merged.uuid && oldCfg.uuid) merged.uuid = oldCfg.uuid;
+    if (!merged.payload && oldCfg.payload) merged.payload = oldCfg.payload;
+    if (!merged.sni && oldCfg.sni) merged.sni = oldCfg.sni;
+    if (!merged.tls && oldCfg.tls) merged.tls = oldCfg.tls;
+    if (!merged.path && oldCfg.path) merged.path = oldCfg.path;
+    if (!merged.flow && oldCfg.flow) merged.flow = oldCfg.flow;
+    if (!merged.method && oldCfg.method) merged.method = oldCfg.method;
+    if (!merged.privateKey && oldCfg.privateKey) merged.privateKey = oldCfg.privateKey;
+    if (!merged.endpoint && oldCfg.endpoint) merged.endpoint = oldCfg.endpoint;
+  }
+
+  return merged;
+}

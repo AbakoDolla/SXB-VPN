@@ -86,16 +86,21 @@ async function decryptGCM(blob: string, configKeyHex: string): Promise<string> {
 
 // ── Provision/Activate ────────────────────────────────────────────────────────
 
+export interface ProvisionResult {
+  config: Record<string, any>;
+  meta:   ProvisionMeta;
+}
+
 /**
  * Appelle /api/provision/activate, déchiffre la config, la stocke dans SecureStore.
  * @param dataToken  Token SXB-DATA de l'abonnement
  * @param deviceId   Identifiant unique de l'appareil
- * @returns          Config VPN déchiffrée (objet JSON brut)
+ * @returns          Config VPN déchiffrée + métadonnées (expiration, quota)
  */
 export async function provisionAndStore(
   dataToken: string,
   deviceId:  string,
-): Promise<Record<string, any>> {
+): Promise<ProvisionResult> {
   const res = await apiClient.post('/provision/activate', { dataToken, deviceId });
   const { config: prov } = res.data;
 
@@ -131,7 +136,7 @@ export async function provisionAndStore(
   };
   await AsyncStorage.setItem(PROV_META_KEY, JSON.stringify(meta));
 
-  return vpnConfig;
+  return { config: vpnConfig, meta };
 }
 
 /**

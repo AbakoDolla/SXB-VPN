@@ -21,8 +21,26 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient from '@/services/apiClient';
 import { saveVpnConfig, loadVpnConfig, isQuotaExhausted, isConfigExpired, syncQuotaFromBackend } from '@/services/offlineStorage';
 import { provisionAndStore, loadProvisionedConfig, clearProvisionedConfig } from '@/services/provisionClient';
+import { isCompleteOfflineConfig, mergeConfigs } from '@/services/configValidator';
 import { useAuthContext } from './AuthContext';
 import type { VpnConnection } from '@/types/api';
+
+// ── Helper : sauvegarde protégée (jamais de config incomplète) ──────────────────
+// Retourne true si la config a été sauvegardée, false si elle était incomplète.
+async function saveCompleteConfig(
+  config: Record<string, any>,
+  protocol: string,
+  configId?: string,
+  expiresAt?: string | null,
+): Promise<boolean> {
+  const check = isCompleteOfflineConfig(config);
+  if (!check.complete) {
+    console.warn(`[SXB] saveCompleteConfig refusé — champs manquants: ${check.missing.join(', ')}`);
+    return false;
+  }
+  await saveVpnConfig(config, protocol, configId, expiresAt);
+  return true;
+}
 
 // ── Native bridge ─────────────────────────────────────────────────────────────
 
@@ -183,24 +201,19 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   // ── Synchronisation depuis une connexion active (/mobile/connections) ──────
+  // Architecture corrigée : provisionnement d'abord, fusion, validation,
+  // puis sauvegarde unique. Aucune config incomplète n'est jamais persistée.
   const syncFromConnection = useCallback((conn: VpnConnection) => {
     console.log(`[SXB_DEBUG] ACTIVE_CONNECTION_FOUND id=${conn.id} proto=${conn.technicalProtocol} display=${conn.displayProtocol}`);
     addLog(`[SXB_DEBUG] ACTIVE_CONNECTION_FOUND id=${conn.id}`);
-    addLog(`[SXB_DEBUG] CONFIG_SYNC_SUCCESS proto=${conn.technicalProtocol} display="${conn.displayProtocol}"`);
 
-    const engineProtocol = conn.technicalProtocol.toLowerCase();
+    const engineProtocol  = conn.technicalProtocol.toLowerCase();
     const displayProtocol = conn.displayProtocol;
 
-    const synthesizedConfig: Record<string, any> = {
-      protocol:        engineProtocol,
-      displayProtocol: displayProtocol,
-      configId:        conn.id,
-      dataToken:       conn.dataToken,
-    };
-
-    setVpnConfig(synthesizedConfig);
+    // Métadonnées de connexion (non-sensibles, toujours disponibles)
     setActiveConnection(conn);
-
+    setConnectedProtocol(displayProtocol);
+    AsyncStorage.setItem('@sxb_connected_protocol', displayProtocol).catch(() => {});
     setSelectedProtocol(prev => {
       if (!prev) {
         AsyncStorage.setItem('@sxb_vpn_protocol', engineProtocol).catch(() => {});
@@ -209,30 +222,90 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       return prev;
     });
 
-    setConnectedProtocol(displayProtocol);
-    AsyncStorage.setItem('@sxb_connected_protocol', displayProtocol).catch(() => {});
+    // ── Flux sécurisé : provisionner avant de sauvegarder ───────────────────
+    // On ne sauvegarde JAMAIS une config incomplète. Le provisionnement
+    // récupère les vraies données VPN (host, port, credentials, payload),
+    // les fusionne avec les métadonnées de connexion, valide la complétude,
+    // puis enregistre uniquement le résultat complet dans SecureStore.
+    const provisionFlow = async () => {
+      // 1. Vérifier si une config provisionnée valide existe déjà
+      const existing = await loadProvisionedConfig().catch(() => null);
+      if (existing) {
+        // Config déjà provisionnée et valide — fusionner avec les métadonnées
+        const merged = mergeConfigs(existing.config, {
+          protocol:        engineProtocol,
+          displayProtocol: displayProtocol,
+          configId:        conn.id,
+          dataToken:       conn.dataToken,
+        });
+        const saved = await saveCompleteConfig(merged, engineProtocol, conn.id, existing.meta.configExpiresAt);
+        if (saved) {
+          setVpnConfig(merged);
+          addLog(`[SXB_DEBUG] CONFIG_SYNC_SUCCESS proto=${engineProtocol} display="${displayProtocol}" (depuis cache provisionné)`);
+          addLog(`[SXB_DEBUG] HOME_STATE_UPDATED hasValidConfig=true proto="${engineProtocol}" display="${displayProtocol}"`);
+          return;
+        }
+      }
 
-    saveVpnConfig(synthesizedConfig, engineProtocol, conn.id).catch(() => {});
-
-    // ── Pré-provisionnement asynchrone ─────────────────────────────────────
-    // Déclencher le provisionnement en arrière-plan si dataToken disponible.
-    // Le résultat est stocké dans SecureStore pour être utilisé par connect().
-    if (conn.dataToken && deviceId) {
-      loadProvisionedConfig()
-        .then(existing => {
-          // Ne re-provisionner que si pas déjà provisionnée pour cette connexion
-          if (!existing) {
-            addLog('[SXB_DEBUG] PRE_PROVISION_START — provisionnement arrière-plan');
-            return provisionAndStore(conn.dataToken!, deviceId)
-              .then(() => addLog('[SXB_DEBUG] PRE_PROVISION_OK — config stockée dans KeyStore'))
-              .catch(e => addLog(`[SXB_DEBUG] PRE_PROVISION_WARN — ${e?.message || 'erreur réseau'}`));
+      // 2. Pas de config provisionnée valide — déclencher le provisionnement
+      if (conn.dataToken && deviceId) {
+        addLog('[SXB_DEBUG] PROVISION_START — provisionnement sécurisé');
+        try {
+          const freshResult = await provisionAndStore(conn.dataToken!, deviceId);
+          const freshConfig = freshResult.config;
+          // Fusionner la config provisionnée avec les métadonnées de connexion
+          const merged = mergeConfigs(freshConfig, {
+            protocol:        engineProtocol,
+            displayProtocol: displayProtocol,
+            configId:        conn.id,
+            dataToken:       conn.dataToken,
+          });
+          const saved = await saveCompleteConfig(merged, engineProtocol, conn.id, freshResult.meta.configExpiresAt);
+          if (saved) {
+            setVpnConfig(merged);
+            addLog(`[SXB_DEBUG] CONFIG_SYNC_SUCCESS proto=${engineProtocol} display="${displayProtocol}"`);
+            addLog('[SXB_DEBUG] PROVISION_OK — config complète stockée dans SecureStore');
+            addLog(`[SXB_DEBUG] HOME_STATE_UPDATED hasValidConfig=true proto="${engineProtocol}" display="${displayProtocol}"`);
+            console.log(`[SXB_DEBUG] HOME_STATE_UPDATED hasValidConfig=true proto=${engineProtocol} display=${displayProtocol}`);
+            return;
+          } else {
+            addLog('[SXB_DEBUG] PROVISION_WARN — config provisionnée incomplète, sauvegarde refusée');
           }
-        })
-        .catch(() => { /* non-bloquant */ });
-    }
+        } catch (e: any) {
+          addLog(`[SXB_DEBUG] PROVISION_WARN — ${e?.message || 'erreur réseau'}`);
+        }
+      }
 
-    addLog(`[SXB_DEBUG] HOME_STATE_UPDATED hasValidConfig=true proto="${engineProtocol}" display="${displayProtocol}"`);
-    console.log(`[SXB_DEBUG] HOME_STATE_UPDATED hasValidConfig=true proto=${engineProtocol} display=${displayProtocol}`);
+      // 3. Provisionnement échoué — conserver l'ancienne config si valide
+      const offlineEntry = await loadVpnConfig().catch(() => null);
+      if (offlineEntry?.config) {
+        const check = isCompleteOfflineConfig(offlineEntry.config);
+        if (check.complete) {
+          // Fusionner avec les nouvelles métadonnées (displayProtocol, configId)
+          const merged = mergeConfigs(offlineEntry.config, {
+            protocol:        engineProtocol,
+            displayProtocol: displayProtocol,
+            configId:        conn.id,
+            dataToken:       conn.dataToken,
+          });
+          setVpnConfig(merged);
+          addLog('[SXB_DEBUG] CONFIG_RESTORED — config offline valide conservée');
+          addLog(`[SXB_DEBUG] HOME_STATE_UPDATED hasValidConfig=true proto="${engineProtocol}" display="${displayProtocol}"`);
+          return;
+        }
+      }
+
+      // 4. Aucune config valide — état dégradé, internet requis
+      addLog('[SXB_DEBUG] CONFIG_INCOMPLETE — provisionnement requis, internet nécessaire pour la première activation');
+      setVpnConfig({
+        protocol:        engineProtocol,
+        displayProtocol: displayProtocol,
+        configId:        conn.id,
+        dataToken:       conn.dataToken,
+      });
+    };
+
+    provisionFlow().catch(e => addLog(`[SXB_DEBUG] SYNC_ERROR — ${e?.message || 'erreur'}`));
   }, [addLog, deviceId]);
 
   const checkPermission = useCallback(async () => {
@@ -399,16 +472,43 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       addLog('[SXB_DEBUG] CONFIG_SYNC_START — appel /mobile/vpn/config');
       const res = await apiClient.get('/mobile/vpn/config');
       const data = res.data;
-      if (data.vpnConfig) {
-        setVpnConfig(data.vpnConfig);
 
+      // ── Synchronisation intelligente ───────────────────────────────────────
+      // On télécharge la nouvelle config, on la compare avec l'existante,
+      // on fusionne intelligemment (conserve les champs valides, remplace
+      // uniquement ce qui change), et on ne sauvegarde que si le résultat
+      // est complet. On ne perd jamais host, payload, credentials, clés.
+      if (data.vpnConfig) {
+        const engineProto = (data.vpnConfig.protocol || 'vless').toLowerCase();
         const dp = data.vpnConfig.displayProtocol || data.profile?.displayProtocol || null;
+
+        // Charger l'ancienne config pour fusion intelligente
+        const offlineEntry = await loadVpnConfig().catch(() => null);
+        const oldConfig = offlineEntry?.config || null;
+
+        // Fusionner : nouvelle config remplace, ancienne comble les manques
+        const merged = mergeConfigs(oldConfig, data.vpnConfig);
+
+        // Valider la complétude avant de sauvegarder
+        const saved = await saveCompleteConfig(merged, engineProto, data.vpnConfig.configId);
+        if (saved) {
+          setVpnConfig(merged);
+          addLog(`[SXB_DEBUG] CONFIG_SYNC_SUCCESS proto="${engineProto}" display="${dp ?? '—'}" (fusion intelligente)`);
+          console.log(`[SXB_DEBUG] CONFIG_SYNC_SUCCESS proto=${engineProto}`);
+        } else {
+          // Config fusionnée incomplète — conserver l'ancienne si valide
+          if (oldConfig && isCompleteOfflineConfig(oldConfig).complete) {
+            addLog('[SXB_DEBUG] CONFIG_SYNC_PARTIAL — nouvelle config incomplète, ancienne conservée');
+          } else {
+            addLog('[SXB_DEBUG] CONFIG_SYNC_INCOMPLETE — config incomplète rejetée');
+          }
+        }
+
         if (dp) {
           setConnectedProtocol(dp);
           await AsyncStorage.setItem('@sxb_connected_protocol', dp).catch(() => {});
         }
 
-        const engineProto = (data.vpnConfig.protocol || 'vless').toLowerCase();
         setSelectedProtocol(prev => {
           if (!prev) {
             AsyncStorage.setItem('@sxb_vpn_protocol', engineProto).catch(() => {});
@@ -416,13 +516,6 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           }
           return prev;
         });
-
-        try {
-          await saveVpnConfig(data.vpnConfig, engineProto, data.vpnConfig.configId);
-        } catch { /* ignore */ }
-
-        addLog(`[SXB_DEBUG] CONFIG_SYNC_SUCCESS proto="${engineProto}" display="${dp ?? '—'}"`);
-        console.log(`[SXB_DEBUG] CONFIG_SYNC_SUCCESS proto=${engineProto}`);
       }
 
       if (Array.isArray(data.protocols) && data.protocols.length > 0) {
@@ -467,103 +560,69 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         addLog('🔐 Chargement configuration sécurisée...');
         let configToUse: any = null;
 
-        // ── Flux sécurisé — provision chiffré (AES-256-GCM + SecureStore) ──────
-        // Les credentials ne transitent JAMAIS en clair sur le réseau.
-        // 1. Charger depuis SecureStore (config déjà provisionnée)
-        // 2. Si absente, déclencher /provision/activate avec le dataToken
-        // 3. Fallback : offlineStorage (mode avion post-provision)
-        addLog('[SXB_DEBUG] PROVISION_LOAD_START — lecture SecureStore');
-        try {
-          const provisioned = await loadProvisionedConfig();
-          if (provisioned) {
-            // Config provisionnée disponible (mode offline-ready)
-            configToUse = { ...provisioned.config };
-            // Enrichir avec les métadonnées de connexion (displayProtocol, configId)
-            if (vpnConfig?.displayProtocol) configToUse.displayProtocol = vpnConfig.displayProtocol;
-            if (vpnConfig?.configId)        configToUse.configId        = vpnConfig.configId;
-            addLog(`[SXB_DEBUG] PROVISION_LOADED proto=${provisioned.meta.protocol} expires=${provisioned.meta.configExpiresAt}`);
-            addLog('✅ Configuration sécurisée chargée');
-          } else {
-            // Pas de config provisionnée — déclencher le provisionnement en ligne
-            const dataToken = (vpnConfig as any)?.dataToken as string | undefined;
-            addLog(`[SXB_DEBUG] PROVISION_CHECK dataToken=${dataToken ? 'OK' : 'MISSING'} deviceId=${deviceId ? 'OK' : 'MISSING'}`);
-            if (dataToken && deviceId) {
-              addLog('[SXB_DEBUG] PROVISION_REQUIRED — appel /provision/activate');
-              addLog('🔒 Provisionnement sécurisé en cours...');
-              try {
-                const freshConfig = await provisionAndStore(dataToken, deviceId);
-                configToUse = { ...freshConfig };
-                if (vpnConfig?.displayProtocol) configToUse.displayProtocol = vpnConfig.displayProtocol;
-                if (vpnConfig?.configId)        configToUse.configId        = vpnConfig.configId;
-                addLog('[SXB_DEBUG] PROVISION_OK — config déchiffrée et stockée dans KeyStore');
-                addLog('✅ Configuration provisionnée avec succès');
-              } catch (provErr: any) {
-                const httpStatus  = provErr?.response?.status ?? 'no-response';
-                const httpMsg     = provErr?.response?.data?.error ?? provErr?.response?.data?.message ?? '';
-                const netCode     = provErr?.code ?? '';
-                addLog(`[SXB_DEBUG] PROVISION_FAILED http=${httpStatus} code=${netCode} msg="${httpMsg || provErr?.message || 'inconnu'}"`);
-                addLog(`⚠️ Provisionnement échoué [${httpStatus}] : ${httpMsg || provErr?.message || 'erreur réseau'}`);
-                // Fallback offlineStorage (ancienne config encore valide)
-                const offlineEntry = await loadVpnConfig();
-                if (offlineEntry?.config) {
-                  configToUse = offlineEntry.config;
-                  addLog('✅ Config hors-ligne restaurée');
-                } else {
-                  addLog('❌ Aucune configuration disponible — internet requis pour le premier provisionnement');
-                  setIsConnecting(false);
-                  return;
-                }
-              }
-            } else {
-              // Pas de dataToken disponible — fallback offlineStorage
-              addLog('[SXB_DEBUG] NO_DATA_TOKEN — fallback offlineStorage');
-              const offlineEntry = await loadVpnConfig();
-              if (offlineEntry?.config) {
-                configToUse = offlineEntry.config;
-                addLog('✅ Config hors-ligne restaurée');
-              }
-            }
-          }
-        } catch (loadErr: any) {
-          addLog(`⚠️ Erreur chargement config : ${loadErr?.message}`);
-          // Fallback final offlineStorage
-          try {
-            const offlineEntry = await loadVpnConfig();
-            if (offlineEntry?.config) {
-              configToUse = offlineEntry.config;
-              addLog('✅ Config hors-ligne restaurée');
-            }
-          } catch { /* ignore */ }
+        // ── Source de vérité unique : offlineStorage (SecureStore) ────────────
+        // La config Offline est la seule source de vérité locale. Elle contient
+        // tout ce qui est nécessaire au moteur VPN (host, port, credentials,
+        // payload, paramètres de protocole). Le moteur ne dépend plus d'un
+        // nouvel appel API pour démarrer.
+        addLog('[SXB_DEBUG] CONFIG_LOAD_START — lecture SecureStore');
+        const offlineEntry = await loadVpnConfig().catch(() => null);
+
+        if (offlineEntry?.config) {
+          configToUse = { ...offlineEntry.config };
+          // Enrichir avec les métadonnées de connexion courante
+          if (vpnConfig?.displayProtocol) configToUse.displayProtocol = vpnConfig.displayProtocol;
+          if (vpnConfig?.configId)        configToUse.configId        = vpnConfig.configId;
+          addLog(`[SXB_DEBUG] CONFIG_LOADED proto=${offlineEntry.protocol} savedAt=${offlineEntry.savedAt}`);
+          addLog('✅ Configuration sécurisée chargée');
         }
 
+        // ── Si pas de config Offline, tenter le provisionnement en ligne ─────
         if (!configToUse) {
-          addLog('❌ Aucune configuration VPN disponible — activez un forfait');
-          setIsConnecting(false);
-          return;
+          const dataToken = (vpnConfig as any)?.dataToken as string | undefined;
+          addLog(`[SXB_DEBUG] PROVISION_CHECK dataToken=${dataToken ? 'OK' : 'MISSING'} deviceId=${deviceId ? 'OK' : 'MISSING'}`);
+          if (dataToken && deviceId) {
+            addLog('[SXB_DEBUG] PROVISION_REQUIRED — appel /provision/activate');
+            addLog('🔒 Provisionnement sécurisé en cours...');
+            try {
+              const freshResult = await provisionAndStore(dataToken, deviceId);
+              const freshConfig = freshResult.config;
+              // Fusionner avec les métadonnées de connexion
+              configToUse = mergeConfigs(freshConfig, {
+                displayProtocol: vpnConfig?.displayProtocol,
+                configId:        vpnConfig?.configId,
+                dataToken:       dataToken,
+              });
+              // Sauvegarder uniquement si complet
+              await saveCompleteConfig(configToUse, (configToUse.protocol || 'vless').toLowerCase(), vpnConfig?.configId, freshResult.meta.configExpiresAt);
+              addLog('[SXB_DEBUG] PROVISION_OK — config complète stockée dans SecureStore');
+              addLog('✅ Configuration provisionnée avec succès');
+            } catch (provErr: any) {
+              const httpStatus = provErr?.response?.status ?? 'no-response';
+              const httpMsg    = provErr?.response?.data?.error ?? provErr?.response?.data?.message ?? '';
+              addLog(`[SXB_DEBUG] PROVISION_FAILED http=${httpStatus} msg="${httpMsg || provErr?.message || 'inconnu'}"`);
+              addLog(`⚠️ Provisionnement échoué : ${httpMsg || provErr?.message || 'erreur réseau'}`);
+              addLog('❌ Internet requis pour le premier provisionnement');
+              setVpnState('error');
+              setIsConnecting(false);
+              return;
+            }
+          } else {
+            addLog('❌ Aucune configuration disponible — activez un forfait');
+            setVpnState('error');
+            setIsConnecting(false);
+            return;
+          }
         }
 
-        const hasHost  = !!(configToUse?.host);
-        const hasCreds = !!(configToUse?.username) || !!(configToUse?.uuid);
-        addLog(`[SXB_DEBUG] CONFIG_READY hasHost=${hasHost} hasCreds=${hasCreds}`);
+        // ── Validation de complétude avec le gardien unifié ───────────────────
+        const completeness = isCompleteOfflineConfig(configToUse);
+        addLog(`[SXB_DEBUG] CONFIG_READY hasHost=${completeness.hasHost} hasCreds=${completeness.hasCreds} missing=[${completeness.missing.join(',')}]`);
 
-        const cfgProto = ((configToUse as any)?.protocol || selectedProtocol || '').toLowerCase();
-        const isSshBased = cfgProto === 'ssh' || cfgProto === 'ssh+payload';
-        const hasCriticalFields = !!(configToUse as any)?.host;
-        const hasCredentials = !!(configToUse as any)?.username || !!(configToUse as any)?.password
-          || !!(configToUse as any)?.uuid || !!(configToUse as any)?.dataToken;
-
-        if (!hasCriticalFields) {
-          addLog('❌ Config incomplète : champ "host" manquant — synchronisez votre abonnement');
-          addLog('[SXB_DEBUG] CONFIG_INCOMPLETE_BLOCK host=missing proto=' + cfgProto);
-          setVpnState('error');
-          setIsConnecting(false);
-          return;
-        }
-
-        if (isSshBased && !hasCredentials) {
-          addLog('❌ Config SSH incomplète : credentials manquants (username/password)');
-          addLog('[SXB_DEBUG] CONFIG_INCOMPLETE_BLOCK proto=' + cfgProto + ' credentials=missing');
-          addLog('ℹ️  Essayez de vous déconnecter puis reconnecter — rechargement de la config...');
+        if (!completeness.complete) {
+          addLog(`❌ Configuration incomplète — champs manquants : ${completeness.missing.join(', ')}`);
+          addLog('[SXB_DEBUG] CONFIG_INCOMPLETE_BLOCK missing=' + completeness.missing.join(','));
+          addLog('ℹ️  Re-provisionnement requis — vérifiez votre connexion internet');
           setVpnState('error');
           setIsConnecting(false);
           return;

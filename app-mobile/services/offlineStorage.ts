@@ -46,6 +46,7 @@ export interface OfflineConfig {
   savedAt:    string;   // ISO date string
   protocol:   string;
   configId:   string;
+  expiresAt?: string | null;  // ISO date string — null/absent = pas d'expiration
 }
 
 // ── Helpers SecureStore / AsyncStorage ───────────────────────────────────────
@@ -90,17 +91,20 @@ async function secureDelete(key: string): Promise<void> {
 /**
  * Sauvegarde la configuration VPN localement (SecureStore / AsyncStorage).
  * Appeler après validation réussie par configValidator.
+ * @param expiresAt  Date d'expiration de la config (ISO). null = pas d'expiration.
  */
 export async function saveVpnConfig(
   config: Record<string, any>,
   protocol: string,
   configId?: string,
+  expiresAt?: string | null,
 ): Promise<void> {
   const entry: OfflineConfig = {
     config,
     savedAt:  new Date().toISOString(),
     protocol: protocol.toLowerCase(),
     configId: configId ?? `local_${Date.now()}`,
+    expiresAt: expiresAt ?? null,
   };
   await secureWrite(KEYS.VPN_CONFIG, JSON.stringify(entry));
   // Mettre à jour lastSync
@@ -110,6 +114,8 @@ export async function saveVpnConfig(
 /**
  * Restaure la configuration VPN depuis le stockage local.
  * Retourne null si aucune config n'a été sauvegardée.
+ * Ne supprime PAS une config expirée — permet de la conserver pour
+ * re-provisionnement intelligent. L'appelant décide de l'action.
  */
 export async function loadVpnConfig(): Promise<OfflineConfig | null> {
   try {
@@ -122,6 +128,16 @@ export async function loadVpnConfig(): Promise<OfflineConfig | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Vérifie si la config Offline est expirée (selon expiresAt).
+ * Retourne false si pas d'expiration définie.
+ */
+export async function isOfflineConfigExpired(): Promise<boolean> {
+  const cfg = await loadVpnConfig();
+  if (!cfg?.expiresAt) return false;
+  return new Date() > new Date(cfg.expiresAt);
 }
 
 /**
