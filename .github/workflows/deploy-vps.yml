@@ -100,7 +100,7 @@ jobs:
             NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
               node /var/www/sxb-vpn/backend/node_modules/prisma/build/index.js generate \
               --schema=/var/www/sxb-vpn/backend/prisma/schema.prisma
-            test -f /var/www/sxb-vpn/backend/node_modules/.prisma/client/runtime/library.js
+            test -f /var/www/sxb-vpn/backend/node_modules/@prisma/client/runtime/library.js
             cd /var/www/sxb-vpn
 
             echo "🔑 Fix permissions complètes (évite EACCES pnpm)..."

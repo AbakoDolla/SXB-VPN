@@ -23,6 +23,7 @@ function getKey(rawKey: string): Buffer {
 
 /** Chiffrement AES-256-GCM — format : "gcm:<iv_hex>:<ciphertext_hex>:<tag_hex>" */
 function encrypt(text: string, key: string): string {
+  if (typeof text !== 'string' || !text) throw new TypeError('encrypt: text doit être une chaîne non vide');
   const k  = getKey(key);
   const iv = crypto.randomBytes(12);
   const c  = crypto.createCipheriv('aes-256-gcm', k, iv) as crypto.CipherGCM;
