@@ -290,8 +290,6 @@ router.post("/token-login", async (req: AuthenticatedRequest, res: Response) => 
   }
 });
 
-export default router;
-
 // GET /api/auth/me — Retourne l'utilisateur authentifié courant
 router.get('/me', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -333,3 +331,4 @@ router.get('/me', requireAuth, async (req: AuthenticatedRequest, res: Response) 
   }
 });
 
+export default router;
