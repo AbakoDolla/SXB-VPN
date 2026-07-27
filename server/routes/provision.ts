@@ -310,7 +310,8 @@ router.post('/sync', requireAuth, async (req: AuthenticatedRequest, res: Respons
       data:  { quotaUsed: newQuotaUsed, status: newStatus, lastSyncAt: new Date() },
     });
 
-    if (deviceId) {
+    // subscriptionDevice est optionnel (table non créée dans ce schéma)
+    if (deviceId && (prisma as any).subscriptionDevice) {
       await (prisma as any).subscriptionDevice.updateMany({
         where: { subscriptionId, deviceId },
         data:  { lastSeenAt: new Date() },
