@@ -18,6 +18,7 @@ import {
   NativeModules, NativeEventEmitter, Platform,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
 import apiClient from '@/services/apiClient';
 import { useAuthContext } from './AuthContext';
 
@@ -83,7 +84,7 @@ const VpnContext = createContext<VpnContextType>({
 // ── Provider ─────────────────────────────────────────────────────────────────
 
 export function VpnProvider({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, refreshAccountState } = useAuthContext();
+  const { isAuthenticated, refreshAccountState, deviceId } = useAuthContext();
 
   const [isConnected,        setIsConnected]        = useState(false);
   const [isConnecting,       setIsConnecting]        = useState(false);
@@ -95,7 +96,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const [trafficStats,       setTrafficStats]        = useState<TrafficStats>(DEFAULT_STATS);
   const [vpnLogs,            setVpnLogs]             = useState<string[]>([]);
   const [hasVpnPermission,   setHasVpnPermission]    = useState(false);
-  const [vpnConfig,          setVpnConfig]           = useState<any>(null);
+  // vpnConfig supprimé — config VPN stockée chiffrée dans SecureStore (PROVISION_KEY)
 
   const trafficTimerRef  = useRef<ReturnType<typeof setInterval> | null>(null);
   const reportTimerRef   = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -253,6 +254,55 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     return () => { if (reportTimerRef.current) { clearInterval(reportTimerRef.current); reportTimerRef.current = null; } };
   }, [isConnected, isAuthenticated, reportUsageToBackend]);
 
+  // ── Clé SecureStore pour la config provisionnée ─────────────────────────────
+  const PROVISION_KEY = '@sxb_provision_v2';
+
+  // ── Stocker la config provisionnée dans SecureStore ──────────────────────────
+  const provisionAndStore = useCallback(async (dataToken: string, did: string): Promise<boolean> => {
+    try {
+      addLog('🌐 Provisionnement configuration sécurisée...');
+      const res = await apiClient.post('/provision/activate', { dataToken, deviceId: did });
+      const cfg = res.data;
+      if (!cfg.encryptedBlob || !cfg.configKey) {
+        addLog('⚠️ Réponse provision invalide');
+        return false;
+      }
+      const stored = JSON.stringify({
+        encryptedBlob:   cfg.encryptedBlob,
+        configKey:       cfg.configKey,
+        encVersion:      cfg.encVersion || 'gcm-v2',
+        protocol:        cfg.protocol   || 'ssh',
+        signature:       cfg.signature  || '',
+        configExpiresAt: cfg.expiresAt  || null,
+        deviceId:        did,
+        storedAt:        new Date().toISOString(),
+      });
+      await SecureStore.setItemAsync(PROVISION_KEY, stored);
+      addLog('🔐 Configuration stockée dans le Keystore');
+      return true;
+    } catch (err: any) {
+      addLog();
+      return false;
+    }
+  }, [addLog]);
+
+  // ── Charger la config provisionnée depuis SecureStore ────────────────────────
+  const loadProvisionedConfig = useCallback(async (): Promise<any | null> => {
+    try {
+      const raw = await SecureStore.getItemAsync(PROVISION_KEY);
+      if (!raw) return null;
+      const cfg = JSON.parse(raw);
+      if (cfg.configExpiresAt && new Date(cfg.configExpiresAt) < new Date()) {
+        await SecureStore.deleteItemAsync(PROVISION_KEY);
+        addLog('⚠️ Config expirée — re-provisionnement nécessaire');
+        return null;
+      }
+      return cfg;
+    } catch {
+      return null;
+    }
+  }, [addLog]);
+
   // ── Fetch config VPN depuis le backend ────────────────────────────────────
 
   const refreshVpnConfig = useCallback(async () => {
@@ -260,9 +310,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     try {
       const res = await apiClient.get('/mobile/vpn/config');
       const data = res.data;
-      if (data.subscriptionUrl) setSubscriptionUrl(data.subscriptionUrl);
-      if (data.serverInfo)      setServerInfo(data.serverInfo);
-      if (data.vpnConfig)       setVpnConfig(data.vpnConfig);
+      if (data.serverInfo) setServerInfo(data.serverInfo);
 
       if (Array.isArray(data.protocols) && data.protocols.length > 0) {
         setAvailableProtocols(data.protocols);
@@ -274,10 +322,18 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       } else {
         setAvailableProtocols(FALLBACK_PROTOCOLS);
       }
+
+      // Auto-provision si subscription disponible et pas encore en cache
+      if (data.subscription?.dataToken && deviceId) {
+        const existing = await loadProvisionedConfig();
+        if (!existing) {
+          await provisionAndStore(data.subscription.dataToken, deviceId);
+        }
+      }
     } catch {
       setAvailableProtocols(FALLBACK_PROTOCOLS);
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, deviceId, loadProvisionedConfig, provisionAndStore]);
 
   useEffect(() => { refreshVpnConfig(); }, [refreshVpnConfig]);
 
@@ -289,8 +345,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     addLog('🔄 Initialisation du tunnel VPN...');
 
     try {
-      // 1. Vérifier / demander la permission VPN
       if (IS_ANDROID && SxbVpnNative) {
+        // 1. Permission VPN Android
         const hasPerm = SxbVpnNative.isVpnPermissionGranted();
         if (!hasPerm) {
           addLog('🔐 Demande de permission VPN...');
@@ -303,48 +359,68 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           addLog('✅ Permission VPN accordée');
         }
 
-        // 2. Récupérer la configuration depuis le backend
-        addLog('🌐 Récupération de la configuration...');
-        let configToUse = vpnConfig;
+        // 2. Charger config chiffrée depuis SecureStore (Android Keystore)
+        addLog('🔐 Chargement configuration sécurisée...');
+        let provConfig = await loadProvisionedConfig();
 
-        if (!configToUse) {
+        if (!provConfig) {
+          // 3. Re-provisionnement automatique
+          addLog('🌐 Récupération configuration serveur...');
           try {
             const res = await apiClient.get('/mobile/vpn/config');
-            configToUse = res.data?.vpnConfig;
-            if (res.data?.vpnConfig) setVpnConfig(res.data.vpnConfig);
+            const data = res.data;
+            const dataToken = data.subscription?.dataToken;
+            if (!dataToken) {
+              addLog('❌ Aucun forfait actif — importez un abonnement');
+              setIsConnecting(false);
+              return;
+            }
+            if (!deviceId) {
+              addLog('❌ deviceId manquant — relancez l\'application');
+              setIsConnecting(false);
+              return;
+            }
+            const ok = await provisionAndStore(dataToken, deviceId);
+            if (!ok) {
+              addLog('❌ Provisionnement échoué — vérifiez votre connexion');
+              setIsConnecting(false);
+              return;
+            }
+            provConfig = await loadProvisionedConfig();
           } catch {
-            addLog('⚠️ Config en cache — mode hors ligne');
+            addLog('❌ Impossible de contacter le serveur de provisionnement');
+            setIsConnecting(false);
+            return;
           }
         }
 
-        if (!configToUse) {
-          addLog('❌ Aucune configuration VPN disponible — importez un profil');
+        // 4. Bloc strict — pas de fallback AsyncStorage
+        if (!provConfig?.encryptedBlob || !provConfig?.configKey) {
+          addLog('❌ Configuration sécurisée invalide — réactivez votre compte');
           setIsConnecting(false);
           return;
         }
 
-        // 3. Construire les options pour le module natif
-        const protocol = (configToUse.protocol || selectedProtocol || 'VLESS').toLowerCase();
+        // 5. Passer config chiffrée au VPN engine (déchiffrement natif Kotlin)
+        const protocol = provConfig.protocol || selectedProtocol || 'ssh';
         const optionsJson = JSON.stringify({
-          ...configToUse,
+          encryptedBlob: provConfig.encryptedBlob,
+          configKey:     provConfig.configKey,
+          encVersion:    provConfig.encVersion || 'gcm-v2',
           protocol,
           killSwitch:    false,
           autoReconnect: true,
         });
 
         addLog(`🚀 Démarrage tunnel ${protocol.toUpperCase()}...`);
-
-        // 4. Démarrer le service VPN Android
         await SxbVpnNative.startVpn(optionsJson);
-        // L'état réel sera mis à jour via onVpnStateChange event
         addLog('⏳ Connexion en cours...');
 
       } else {
-        // Hors Android (web/iOS) — simuler pour le dev
+        // Hors Android (dev web/iOS)
         addLog('⚠️ VPN Android non disponible sur cette plateforme');
         await apiClient.post('/mobile/vpn/session', {
-          action: 'connect',
-          protocol: selectedProtocol || 'VLESS',
+          action: 'connect', protocol: selectedProtocol || 'ssh',
         });
         await new Promise(r => setTimeout(r, 1200));
         setIsConnected(true);
@@ -354,11 +430,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         setIsConnecting(false);
       }
 
-      // Notifier le backend de la session
+      // Audit trail backend (non bloquant)
       try {
         await apiClient.post('/mobile/vpn/session', {
-          action: 'connect',
-          protocol: selectedProtocol || 'VLESS',
+          action: 'connect', protocol: selectedProtocol || 'ssh',
         });
       } catch { /* non-bloquant */ }
 
@@ -367,7 +442,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       setVpnState('error');
       setIsConnecting(false);
     }
-  }, [isConnecting, isConnected, selectedProtocol, vpnConfig, addLog]);
+  }, [isConnecting, isConnected, selectedProtocol, deviceId, loadProvisionedConfig, provisionAndStore, addLog]);
 
   // ── Disconnect ────────────────────────────────────────────────────────────
 

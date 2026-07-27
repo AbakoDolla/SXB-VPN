@@ -258,35 +258,20 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
     );
 
     return res.json({
-      success: true,
-      config: {
-        // Identification (sans données sensibles)
-        subscriptionId:  sub.id,
-        profileId:       profile?.id,
-        profileName:     profile?.name,
-        protocol:        proto,
-        displayProtocol: profile?.displayProtocol || proto,
-
-        // Payload chiffré — l'appareil déchiffre localement avec configKey
-        encryptedBlob,
-        configKey,         // Clé par-appareil : HMAC(deviceId:token, PROVISION_SECRET)
-        encVersion:        'gcm-v2',
-
-        // Signature serveur — permet de vérifier l'intégrité hors-ligne
-        serverSignature,
-
-        // Expiration de la config locale
-        configExpiresAt,
-        offlineValidDays: offlineDays,
-
-        // Quota
-        quotaGB:         parseFloat(quotaGB.toFixed(4)),
-        quotaUsedGB:     parseFloat(quotaUsedGB.toFixed(4)),
-        expireAt:        sub.expireAt,
-        deviceLimit:     sub.deviceLimit,
-        provisionedAt:   new Date().toISOString(),
-        lastSyncAt:      null,
-      },
+      success:        true,
+      // Config chiffrée — format plat conforme au spec gcm-v2
+      encryptedBlob,
+      configKey,          // Clé par-appareil : HMAC(deviceId:token, PROVISION_SECRET)
+      encVersion:         'gcm-v2',
+      signature:          serverSignature,
+      expiresAt:          configExpiresAt,
+      deviceId,
+      protocol:           proto,
+      displayProtocol:    profile?.displayProtocol || proto,
+      // Quota (informatif — pas de secret)
+      quotaGB:            parseFloat(quotaGB.toFixed(4)),
+      quotaUsedGB:        parseFloat(quotaUsedGB.toFixed(4)),
+      expireAt:           sub.expireAt,
     });
   } catch (err: any) {
     if (err.message?.includes('PROVISION_SECRET')) {

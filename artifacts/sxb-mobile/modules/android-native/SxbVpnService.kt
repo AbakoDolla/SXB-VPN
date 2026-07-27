@@ -212,6 +212,24 @@ class SxbVpnService : VpnService() {
             return START_NOT_STICKY
         }
 
+        // ── Déchiffrement GCM-v2 si config provisionnée ─────────────────────────
+        try {
+            val encCheck = JSONObject(json)
+            if (encCheck.optString("encVersion") == "gcm-v2") {
+                val blob = encCheck.getString("encryptedBlob")
+                val key  = encCheck.getString("configKey")
+                broadcastLog("[SXB] Déchiffrement config provisionnée (GCM-v2)...")
+                json  = decryptGcmV2(blob, key)
+                proto = JSONObject(json).optString("protocol", proto).lowercase()
+                broadcastLog("[SXB] Config déchiffrée — protocole : $proto")
+            }
+        } catch (e: Exception) {
+            broadcastLog("[SXB] Echec déchiffrement GCM-v2 : ${e.message?.take(80)}")
+            broadcastStatus("error"); setCurrentState("error")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
         killSwitchEnabled = intent?.getBooleanExtra("killSwitch", false) ?: false
         configJson  = json
 
@@ -1017,6 +1035,30 @@ class SxbVpnService : VpnService() {
             } catch (_: Exception) {}
         }
         return -1
+    }
+
+
+    // ── Déchiffrement config GCM-v2 ──────────────────────────────────────────
+    private fun decryptGcmV2(blob: String, configKeyHex: String): String {
+        require(blob.startsWith("gcm:")) { "Format blob invalide" }
+        val parts = blob.removePrefix("gcm:").split(":")
+        require(parts.size == 3) { "Format blob GCM invalide" }
+        val ivBytes  = parts[0].hexToBytes()
+        val ctBytes  = parts[1].hexToBytes()
+        val tagBytes = parts[2].hexToBytes()
+        val keyBytes = configKeyHex.hexToBytes().copyOf(32)
+        val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+        val spec   = javax.crypto.spec.GCMParameterSpec(128, ivBytes)
+        cipher.init(javax.crypto.Cipher.DECRYPT_MODE,
+            javax.crypto.spec.SecretKeySpec(keyBytes, "AES"), spec)
+        return String(cipher.doFinal(ctBytes + tagBytes), Charsets.UTF_8)
+    }
+
+    private fun String.hexToBytes(): ByteArray {
+        check(length % 2 == 0) { "Hex longueur impaire" }
+        return ByteArray(length / 2) { i ->
+            ((this[i * 2].digitToInt(16) shl 4) or this[i * 2 + 1].digitToInt(16)).toByte()
+        }
     }
 
     // ═════════════════════════════════════════════════════════════════════════
