@@ -5,7 +5,7 @@
  * It is then attached to Subscriptions delivered to clients.
  */
 import { Router, Response } from 'express';
-import { prisma } from '../database';
+import { prisma, inMemoryDb } from '../database';
 import { requireAuth, requirePermission, AuthenticatedRequest } from '../middleware/auth';
 import { logDbActivity } from '../database';
 import crypto from 'crypto';
@@ -62,6 +62,9 @@ function maskProfile(p: any) {
 // ─── GET /api/vpn-profiles ────────────────────────────────────────────────────
 router.get('/', requireAuth, requirePermission('vpnprofile.view'), async (req: AuthenticatedRequest, res: Response) => {
   try {
+    if (!prisma) {
+      return res.json({ success: true, profiles: (inMemoryDb.vpnProfiles || []).map(maskProfile) });
+    }
     const profiles = await (prisma as any).vpnProfile.findMany({
       orderBy: { createdAt: 'desc' },
       include: { _count: { select: { subscriptions: true } } },
@@ -106,6 +109,12 @@ router.get("/unified", requireAuth, async (req: AuthenticatedRequest, res: Respo
 // ─── GET /api/vpn-profiles/stats/all ─────────────────────────────────────────
 router.get('/stats/all', requireAuth, requirePermission('vpnprofile.view'), async (_req: AuthenticatedRequest, res: Response) => {
   try {
+    if (!prisma) {
+      const profiles = inMemoryDb.vpnProfiles || [];
+      const total = profiles.length;
+      const active = profiles.filter(p => p.status === 'active').length;
+      return res.json({ success: true, total, active, byProtocol: [] });
+    }
     const total      = await (prisma as any).vpnProfile.count();
     const active     = await (prisma as any).vpnProfile.count({ where: { status: 'active' } });
     const byProtocol = await (prisma as any).vpnProfile.groupBy({ by: ['protocol'], _count: { id: true } });
@@ -118,6 +127,11 @@ router.get('/stats/all', requireAuth, requirePermission('vpnprofile.view'), asyn
 // ─── GET /api/vpn-profiles/:id ───────────────────────────────────────────────
 router.get('/:id', requireAuth, requirePermission('vpnprofile.view'), async (req: AuthenticatedRequest, res: Response) => {
   try {
+    if (!prisma) {
+      const p = (inMemoryDb.vpnProfiles || []).find((prof) => prof.id === req.params.id);
+      if (!p) return res.status(404).json({ error: 'Profile not found' });
+      return res.json({ success: true, profile: maskProfile(p) });
+    }
     const p = await (prisma as any).vpnProfile.findUnique({
       where: { id: req.params.id },
       include: { _count: { select: { subscriptions: true } } },
