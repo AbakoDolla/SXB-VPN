@@ -39,3 +39,7 @@ yarn-error.*
 .vercel
 
 .env
+
+# Moteur VPN sing-box compilé (libbox.aar) — généré par scripts/build-libbox.sh
+# ou par le workflow CI. Artefact binaire volumineux : jamais commité.
+libs/libbox.aar

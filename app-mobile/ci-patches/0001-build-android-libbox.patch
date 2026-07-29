@@ -1,0 +1,104 @@
+diff --git a/.github/workflows/build-android.yml b/.github/workflows/build-android.yml
+index 13b2b94..99c6d81 100644
+--- a/.github/workflows/build-android.yml
++++ b/.github/workflows/build-android.yml
+@@ -11,6 +11,10 @@ on:
+ permissions:
+   contents: write
+ 
++env:
++  # Version de sing-box compilée en libbox.aar (moteur VPN embarqué).
++  SING_BOX_VERSION: v1.11.15
++
+ jobs:
+   build-android:
+     name: Build Android APK
+@@ -70,6 +74,43 @@ jobs:
+             echo "[patch] Déjà appliqué ou expo-modules-core absent (normal si cache node)"
+           fi
+ 
++      # ══════════════════════════════════════════════════════════════════════════
++      # MOTEUR VPN — libbox.aar (sing-box in-process)
++      # ══════════════════════════════════════════════════════════════════════════
++      # Remplace l'ancien binaire sing-box exécuté par ProcessBuilder, qui ne
++      # pouvait pas fonctionner : Android 10+ interdit l'exécution depuis le
++      # répertoire privé de l'app (W^X), et le CLI ne sait pas recevoir le
++      # descripteur du TUN (le champ JSON `file_descriptor` n'existe pas —
++      # il n'est peuplé que par l'API Go libbox).
++      #
++      # La compilation prend ~10 min, on la met donc en cache sur la version.
++      - name: Setup Go 1.23
++        uses: actions/setup-go@v5
++        with:
++          go-version: "1.23"
++          cache: false
++
++      - name: Cache libbox.aar
++        id: cache-libbox
++        uses: actions/cache@v4
++        with:
++          path: app-mobile/libs/libbox.aar
++          key: libbox-aar-${{ env.SING_BOX_VERSION }}-${{ hashFiles('app-mobile/scripts/build-libbox.sh') }}
++
++      - name: Build libbox.aar (sing-box)
++        if: steps.cache-libbox.outputs.cache-hit != 'true'
++        run: ./scripts/build-libbox.sh
++        env:
++          ANDROID_HOME: /usr/local/lib/android/sdk
++
++      - name: Vérifier la présence de libbox.aar
++        run: |
++          if [ ! -f libs/libbox.aar ]; then
++            echo "::error::libs/libbox.aar introuvable après l'étape de build"
++            exit 1
++          fi
++          echo "✅ libbox.aar prêt ($(du -h libs/libbox.aar | cut -f1))"
++
+       # ── Cache Gradle build artifacts uniquement (pas android/app/build.gradle) ──
+       # IMPORTANT : on ne cache PAS le dossier android/ complet car build.gradle
+       # est modifié par les steps suivants (signing, packaging). Mettre ce fichier
+@@ -169,6 +210,14 @@ jobs:
+             '-keep class com.sxbvpn.** { *; }' \
+             '-keepclassmembers class com.sxbvpn.** { *; }' \
+             '-keepattributes Signature,*Annotation*,EnclosingMethod,InnerClasses' \
++            '# Moteur sing-box embarqué (libbox / gomobile)' \
++            '# Go appelle ces classes par réflexion : sans ces règles, R8 les' \
++            '# supprime et PlatformInterface plante au démarrage du tunnel.' \
++            '-keep class io.nekohasekai.libbox.** { *; }' \
++            '-keep interface io.nekohasekai.libbox.** { *; }' \
++            '-keep class go.** { *; }' \
++            '-dontwarn io.nekohasekai.libbox.**' \
++            '-dontwarn go.**' \
+             '# React Native / Expo' \
+             '-keep class com.facebook.react.** { *; }' \
+             '-dontwarn com.facebook.react.**' \
+@@ -202,18 +251,18 @@ jobs:
+           fi
+           echo "[ABI] Filtres appliqués"
+ 
+-      # ── Copier sing-box vers Android assets natifs ────────────────────────────
+-      - name: Copier sing-box vers Android assets natifs
++      # ── Vérifier que libbox.aar est bien présent ──────────────────────────────
++      # Le plugin Expo l'a copié depuis app-mobile/libs/ vers android/app/libs/
++      # pendant le prebuild. Sans lui, le moteur VPN ne compile pas.
++      - name: Vérifier libbox.aar
+         run: |
+-          mkdir -p android/app/src/main/assets
+-          for f in sing-box-arm64 sing-box-arm; do
+-            if [ -f "assets/$f" ]; then
+-              cp "assets/$f" "android/app/src/main/assets/$f"
+-              echo "✅ $f ($(du -h "android/app/src/main/assets/$f" | cut -f1))"
+-            else
+-              echo "⚠️  $f absent dans assets/ — sing-box désactivé pour cette architecture"
+-            fi
+-          done
++          if [ ! -f android/app/libs/libbox.aar ]; then
++            echo "::error::android/app/libs/libbox.aar manquant — le moteur sing-box ne peut pas être compilé."
++            echo "Le cache 'libbox-aar' n'a pas été restauré et la construction a échoué."
++            exit 1
++          fi
++          echo "✅ libbox.aar ($(du -h android/app/libs/libbox.aar | cut -f1))"
++          sha256sum android/app/libs/libbox.aar
+ 
+       # FIX #3 : Keystore + signing config
+       # FIX CRITIQUE v2 : utiliser Node.js (déjà installé) au lieu de Python.

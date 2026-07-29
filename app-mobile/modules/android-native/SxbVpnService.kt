@@ -1,29 +1,53 @@
 package com.sxbvpn.vpnmodule
 
 /**
- * SxbVpnService — Moteur VPN professionnel SXB v4
+ * SxbVpnService — Moteur VPN professionnel SXB v6 (libbox in-process)
  *
  * ═══════════════════════════════════════════════════════════════════
  * PROTOCOLES SUPPORTÉS
  * ═══════════════════════════════════════════════════════════════════
- *  SSH              → JSch direct
+ *  SSH              → JSch + SOCKS5 local, relayé au TUN par libbox
  *  SSH+Payload      → JSch + SxbPayloadProxy (HTTP Injector style)
- *  VLESS            → sing-box (libbox officiel)
- *  VMess            → sing-box
- *  Trojan           → sing-box
- *  Shadowsocks      → sing-box
- *  WireGuard        → sing-box
- *  Hysteria2        → sing-box
- *  TUIC             → sing-box
+ *  VLESS            → libbox (sing-box in-process)
+ *  VMess            → libbox
+ *  Trojan           → libbox
+ *  Shadowsocks      → libbox
+ *  WireGuard        → libbox
+ *  Hysteria2        → libbox
+ *  TUIC             → libbox
  *
  * ═══════════════════════════════════════════════════════════════════
- * FEATURES v4
+ * CHANGEMENT MAJEUR v6 — POURQUOI LE VPN NE DÉMARRAIT PAS
+ * ═══════════════════════════════════════════════════════════════════
+ * La v5 générait un inbound TUN `{"type":"tun","file_descriptor":<fd>}` et
+ * lançait `sing-box run -c config.json` via ProcessBuilder. Deux défauts
+ * rendaient toute connexion impossible — la clé VPN n'apparaissait jamais
+ * dans la barre d'état Android :
+ *
+ *  1. `file_descriptor` N'EXISTE PAS dans le schéma JSON de sing-box.
+ *     Ce champ n'est renseigné que par l'API Go `libbox`, via
+ *     `PlatformInterface.OpenTun()`. En CLI, sing-box rejette la config
+ *     (`json: unknown field "file_descriptor"`) et s'arrête aussitôt.
+ *     → l'ancien code levait « sing-box s'est arrêté immédiatement (code=1) ».
+ *
+ *  2. Depuis Android 10 (API 29), exécuter un binaire depuis le répertoire
+ *     privé de l'app est interdit (W^X) → `error=13, Permission denied`.
+ *
+ * v6 supprime totalement le processus externe. Le service implémente
+ * `libbox.PlatformInterface` : sing-box tourne DANS le process de l'app,
+ * réclame le TUN par `openTun()` (qui appelle `VpnService.Builder.establish()`)
+ * et protège ses sockets sortants par `autoDetectInterfaceControl()` →
+ * `VpnService.protect()`. C'est exactement l'architecture de sing-box for
+ * Android, NPV Tunnel, HTTP Custom et SocksIP.
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * FEATURES
  * ═══════════════════════════════════════════════════════════════════
  *  ✅ Kill Switch    — coupe tout le trafic si VPN déconnecté
- *  ✅ Auto-Reconnect — backoff exponentiel jusqu'à 10 tentatives
+ *  ✅ Auto-Reconnect — délais fixes, 3 tentatives
  *  ✅ TrafficStats   — Android TrafficStats (valeurs réelles)
  *  ✅ Notifications  — upload/download en temps réel
- *  ✅ Foreground     — résiste à l'écran verrouillé / swipe
+ *  ✅ Foreground     — type `specialUse` (exigé pour les VPN sur Android 14+)
  *  ✅ Security       — SecurityModule (Root/Frida/Xposed)
  *  ✅ Logs masqués   — jamais host/user/password en clair
  */
@@ -39,19 +63,25 @@ import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
-import android.system.Os
 import android.util.Log
 import com.jcraft.jsch.ChannelDirectTCPIP
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.Session
 import com.jcraft.jsch.SocketFactory
+import io.nekohasekai.libbox.BoxService
+import io.nekohasekai.libbox.InterfaceUpdateListener
+import io.nekohasekai.libbox.Libbox
+import io.nekohasekai.libbox.NetworkInterfaceIterator
+import io.nekohasekai.libbox.PlatformInterface
+import io.nekohasekai.libbox.SetupOptions
+import io.nekohasekai.libbox.TunOptions
+import io.nekohasekai.libbox.WIFIState
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.File
-import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.io.SequenceInputStream
@@ -59,9 +89,6 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
-import java.net.ConnectException
-import java.net.SocketTimeoutException
-import java.net.UnknownHostException
 import java.security.SecureRandom
 import java.util.Properties
 import java.util.concurrent.atomic.AtomicBoolean
@@ -200,6 +227,16 @@ private class SxbPayloadProxy(
     private val rawPayload: String,
     private val tlsEnabled: Boolean,
     private val sni: String,
+    /**
+     * FIX CRITIQUE — Protection du socket sortant.
+     *
+     * Le socket physique qui porte le tunnel SSH doit être exclu du TUN via
+     * `VpnService.protect()`, SINON il est lui-même routé dans le tunnel qu'il
+     * est censé alimenter → boucle de routage, puis coupure immédiate.
+     * On protège AVANT `connect()` : `protect()` agit sur le descripteur, il
+     * doit être appelé tant que le socket n'est pas encore connecté.
+     */
+    private val protectSocket: (Socket) -> Boolean,
     private val onEvent: (String) -> Unit,
 ) : com.jcraft.jsch.Proxy {
     private var socket: Socket? = null
@@ -209,6 +246,9 @@ private class SxbPayloadProxy(
     override fun connect(sf: SocketFactory?, host: String, port: Int, timeout: Int) {
         val connectTimeout = timeout.coerceIn(5_000, 30_000)
         val rawSocket = Socket()
+        val protectedOk = protectSocket(rawSocket)
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_SOCKET_PROTECTED result=$protectedOk")
+        onEvent("[SXB_DEBUG] SSH_SOCKET_PROTECTED result=$protectedOk")
         rawSocket.connect(InetSocketAddress(host, port), connectTimeout)
         val transportSocket: Socket = if (tlsEnabled) {
             val tlsSocket = (SSLSocketFactory.getDefault() as SSLSocketFactory)
@@ -400,10 +440,16 @@ private class SxbBannerInputStream(
 
 private class SxbLoggingSocketFactory(
     private val timeoutMs: Int,
+    /** Voir SxbPayloadProxy : le socket SSH direct doit aussi être protégé. */
+    private val protectSocket: (Socket) -> Boolean,
     private val onBanner: () -> Unit,
 ) : SocketFactory {
     override fun createSocket(host: String, port: Int): Socket =
-        Socket().apply { connect(InetSocketAddress(host, port), timeoutMs) }
+        Socket().apply {
+            val ok = protectSocket(this)
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_SOCKET_PROTECTED result=$ok")
+            connect(InetSocketAddress(host, port), timeoutMs)
+        }
 
     override fun getInputStream(socket: Socket): InputStream =
         SxbBannerInputStream(socket.getInputStream(), onBanner)
@@ -415,7 +461,7 @@ private class SxbLoggingSocketFactory(
 // SxbVpnService
 // ═════════════════════════════════════════════════════════════════════════════
 
-class SxbVpnService : VpnService() {
+class SxbVpnService : VpnService(), PlatformInterface {
 
     companion object {
         const val TAG              = "SXB-VPN"
@@ -433,18 +479,23 @@ class SxbVpnService : VpnService() {
 
         fun getCurrentState() = currentState
         private fun setCurrentState(s: String) { currentState = s }
+
+        /** `Libbox.setup()` ne doit être appelé qu'une seule fois par process. */
+        @Volatile private var libboxInitialized = false
     }
 
     // ── État du service ───────────────────────────────────────────────────────
     private val running         = AtomicBoolean(false)
     private var tunPfd          : ParcelFileDescriptor? = null
-    private var dupFd           : java.io.FileDescriptor? = null
     private var sshSession      : Session? = null
     private var socks5Server    : ServerSocket? = null
-    private var singBoxProcess  : Process? = null
+    /** Instance sing-box in-process (remplace l'ancien `Process` externe). */
+    private var boxService      : BoxService? = null
     private var vpnThread       : Thread? = null
     private var killSwitchEnabled = false
     private var configJson      = ""
+    /** Nom de notre interface TUN — exclue de l'énumération pour éviter les boucles. */
+    @Volatile private var tunInterfaceName: String? = null
 
     // Managers
     private val trafficManager  = TrafficStatsManager()
@@ -476,14 +527,29 @@ class SxbVpnService : VpnService() {
         createNotificationChannel()
 
         // startForeground() dans onCreate() — garantit le délai de 5s Android.
-        // Sur API 29+ on passe foregroundServiceType explicitement.
+        //
+        // FIX CRITIQUE Android 14 (API 34) — type de service en premier plan.
+        // L'ancienne version utilisait FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE.
+        // Sur API 34, ce type exige EN PLUS une permission runtime parmi
+        // BLUETOOTH_* / CHANGE_NETWORK_STATE / NFC / USB — que l'app n'a pas.
+        // Résultat : SecurityException levée dès startForeground(), le service
+        // était tué dans onCreate() avant même de lire la configuration, et
+        // aucune clé VPN n'apparaissait dans la barre d'état.
+        //
+        // Le type correct pour une app VPN tierce est `specialUse`
+        // (`systemExempted` est réservé aux VPN configurés dans les Réglages
+        // système). C'est ce que déclare le client officiel sing-box.
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 startForeground(
                     NOTIF_ID,
                     buildNotification("SXB VPN — Démarrage..."),
-                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
                 )
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // API 29-33 : `specialUse` n'existe pas encore. Aucun type
+                // spécifique n'est requis pour un VpnService à ces niveaux.
+                startForeground(NOTIF_ID, buildNotification("SXB VPN — Démarrage..."))
             } else {
                 startForeground(NOTIF_ID, buildNotification("SXB VPN — Démarrage..."))
             }
@@ -703,7 +769,7 @@ class SxbVpnService : VpnService() {
                 broadcastLog("[SXB_DEBUG] PAYLOAD_START mode=SSH+Payload payload_len=${payload.length}")
                 broadcastLog("[SXB] Mode SSH+Payload (HTTP Injector) — injection payload avant SSH")
                 jsch.getSession(username, host, port).also { s ->
-                    s.setProxy(SxbPayloadProxy(payload, tlsEnabled, sni) { event ->
+                    s.setProxy(SxbPayloadProxy(payload, tlsEnabled, sni, ::protectSocket) { event ->
                         broadcastLog(event)
                     })
                     s.setPassword(password)
@@ -726,7 +792,7 @@ class SxbVpnService : VpnService() {
                         set("PreferredAuthentications", "password")
                     }
                     s.setConfig(props)
-                    s.setSocketFactory(SxbLoggingSocketFactory(30_000) {
+                    s.setSocketFactory(SxbLoggingSocketFactory(30_000, ::protectSocket) {
                         broadcastLog("[SXB_DEBUG] SSH_BANNER_RECEIVED")
                     })
                     s.timeout = 30_000
@@ -763,57 +829,12 @@ class SxbVpnService : VpnService() {
             broadcastLog("[SXB_DEBUG] STEP_12_SOCKS_STARTED port=$SOCKS5_PORT")
             broadcastLog("[SXB] SOCKS5 local actif (port $SOCKS5_PORT)")
 
-            // ── Interface TUN ─────────────────────────────────────────────────
-            val tun = buildTunInterface("SSH", listOf("1.1.1.1", "8.8.8.8"))
-            tunPfd = tun ?: throw Exception("Impossible d'établir l'interface TUN — VpnService.Builder().establish() a retourné null")
-
-            // ── sing-box comme pont TUN → SOCKS5 ─────────────────────────────
-            val fdInt = getFdInt(tunPfd!!.fileDescriptor)
-            dupFd = Os.dup(tunPfd!!.fileDescriptor)
-            val dupInt = getFdInt(dupFd!!)
-
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_8_SINGBOX_START proto=ssh-relay tunFd=$dupInt")
-            broadcastLog("[SXB_DEBUG] STEP_8_SINGBOX_START proto=ssh-relay tunFd=$dupInt")
-
-            val sbConfig = buildSshSocksRelayConfig(dupInt)
-            val sbBin    = extractSingBoxBinary() ?: throw Exception("Moteur VPN introuvable — binaire sing-box absent ou non exécutable")
-            val sbConf   = writeSingBoxConfig(sbConfig)
-
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_LAUNCH bin=${sbBin.absolutePath} config=${sbConf.absolutePath}")
-            broadcastLog("[SXB_DEBUG] SINGBOX_LAUNCH bin=${sbBin.name} config=${sbConf.name} size=${sbBin.length()}")
-
-            val process = ProcessBuilder(sbBin.absolutePath, "run", "-c", sbConf.absolutePath)
-                .redirectErrorStream(true)
-                .start()
-            singBoxProcess = process
-
-            Thread({
-                try {
-                    process.inputStream.bufferedReader().forEachLine { line ->
-                        if (line.isNotBlank()) {
-                            Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_LOG: $line")
-                            broadcastLog("[engine] ${SecurityModule.maskSensitive(line)}")
-                        }
-                    }
-                } catch (_: Exception) {}
-            }, "SXB-SbLog").apply { isDaemon = true; start() }
-
-            Thread.sleep(1_500)
-            if (!process.isAlive) {
-                val code = process.exitValue()
-                Log.e("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_CRASHED_IMMEDIATELY code=$code")
-                throw Exception("sing-box s'est arrêté immédiatement (code=$code) — config invalide?")
-            }
-
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] TUNNEL_READY proto=ssh")
-            broadcastLog("[SXB_DEBUG] TUNNEL_READY proto=${if (usePayload) "ssh+payload" else "ssh"}")
-            broadcastLog("[SXB_DEBUG] VPN_CONNECTED proto=${if (usePayload) "ssh+payload" else "ssh"}")
-            broadcastLog("[SXB] VPN SSH actif — Trafic actif")
-            connectionWatchdog?.interrupt()
-            broadcastStatus("connected"); setCurrentState("connected")
-            autoReconnect.onConnected()
-            updateNotification("SXB VPN — ${if (usePayload) "SSH+Payload" else "SSH"} connecté")
-            startNotificationUpdater()
+            // ── Pont TUN → SOCKS5 via libbox ─────────────────────────────────
+            // Le TUN n'est plus construit ici : c'est libbox qui le réclame via
+            // openTun() au démarrage du moteur. On lui fournit simplement une
+            // config dont l'outbound est notre SOCKS5 local alimenté par SSH.
+            val label = if (usePayload) "SSH+PAYLOAD" else "SSH"
+            startLibboxService(buildSshSocksRelayConfig(), label)
 
             // ── Boucle de surveillance ────────────────────────────────────────
             while (running.get()) {
@@ -824,10 +845,9 @@ class SxbVpnService : VpnService() {
                     if (autoReconnect.isEnabled()) { autoReconnect.onDisconnected(); return }
                     break
                 }
-                if (!process.isAlive) {
-                    val code = process.exitValue()
-                    Log.w("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_STOPPED_IN_LOOP code=$code")
-                    broadcastLog("[SXB] ⚠️ Moteur TUN arrêté (code=$code)")
+                if (boxService == null) {
+                    Log.w("SXB_DEBUG", "[SXB_DEBUG] LIBBOX_STOPPED_IN_LOOP")
+                    broadcastLog("[SXB] ⚠️ Moteur TUN arrêté")
                     broadcastStatus("error"); setCurrentState("error")
                     if (autoReconnect.isEnabled()) { autoReconnect.onDisconnected(); return }
                     break
@@ -870,6 +890,14 @@ class SxbVpnService : VpnService() {
     // SING-BOX TUNNEL (VLESS / VMess / Trojan / Shadowsocks / WireGuard / Hysteria2 / TUIC)
     // ═════════════════════════════════════════════════════════════════════════
 
+    /**
+     * Démarre un tunnel via le moteur sing-box embarqué (libbox).
+     *
+     * Contrairement à la v5, aucun processus externe n'est lancé et aucun
+     * descripteur n'est passé par JSON : `Libbox.newService()` instancie le
+     * moteur dans notre process, puis sing-box rappelle `openTun()` ci-dessous
+     * pour obtenir l'interface TUN construite par `VpnService.Builder`.
+     */
     private fun startSingBoxTunnel(configJsonStr: String, protocol: String) {
         try {
             Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_TUNNEL_START proto=$protocol")
@@ -878,89 +906,18 @@ class SxbVpnService : VpnService() {
 
             val cfg = JSONObject(configJsonStr)
 
-            // ── Binaire sing-box ──────────────────────────────────────────────
-            val sbBin = extractSingBoxBinary()
-                ?: throw Exception("Moteur VPN introuvable — réinstallez l'APK")
-            val sbVer = getSingBoxVersion(sbBin)
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_BINARY_FOUND path=${sbBin.absolutePath} version=$sbVer size=${sbBin.length()}")
-            broadcastLog("[SXB] Moteur VPN: sing-box $sbVer")
-
-            // ── Interface TUN ─────────────────────────────────────────────────
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_6_TUN_CREATING proto=$protocol")
-            broadcastLog("[SXB_DEBUG] STEP_6_TUN_CREATING proto=$protocol")
-            broadcastLog("[SXB] Création interface réseau TUN...")
-            val dns = listOf("1.1.1.1", "8.8.8.8", "1.0.0.1")
-            val tun = buildTunInterface(protocol.uppercase(), dns)
-            tunPfd = tun ?: throw Exception("Impossible d'établir l'interface TUN — VpnService.Builder().establish() a retourné null")
-
-            // Dupliquer le fd pour le passer à sing-box (supprime FD_CLOEXEC)
-            dupFd = Os.dup(tunPfd!!.fileDescriptor)
-            val tunFdInt = getFdInt(dupFd!!)
-            if (tunFdInt < 0) throw Exception("fd TUN invalide ($tunFdInt) — réflexion FileDescriptor échouée")
-
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_7_TUN_CREATED tunFd=$tunFdInt")
-            broadcastLog("[SXB_DEBUG] STEP_7_TUN_CREATED tunFd=$tunFdInt")
-            broadcastLog("[SXB] Interface TUN créée (fd=$tunFdInt)")
-
             // ── Config sing-box ───────────────────────────────────────────────
-            val sbConfigJson = buildSingBoxConfig(cfg, protocol, tunFdInt)
-            val sbConfFile   = writeSingBoxConfig(sbConfigJson)
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_CONFIG_WRITTEN path=${sbConfFile.absolutePath} size=${sbConfFile.length()}")
+            // L'inbound TUN ne contient plus « file_descriptor » : libbox le
+            // renseigne lui-même à partir de la valeur retournée par openTun().
+            val sbConfigJson = buildSingBoxConfig(cfg, protocol)
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_CONFIG_BUILT len=${sbConfigJson.length}")
             broadcastLog("[SXB] Config générée pour $protocol")
 
-            // ── Lancement sing-box ────────────────────────────────────────────
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_8_SINGBOX_START proto=$protocol bin=${sbBin.absolutePath}")
-            broadcastLog("[SXB_DEBUG] STEP_8_SINGBOX_START proto=$protocol")
-
-            val pb = ProcessBuilder(sbBin.absolutePath, "run", "-c", sbConfFile.absolutePath)
-                .redirectErrorStream(true)
-            pb.environment()["GOMAXPROCS"] = "2"
-
-            val process = pb.start()
-            singBoxProcess = process
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_PROCESS_LAUNCHED handle=${process.hashCode()}")
-
-            // Thread logs sing-box (masquage données sensibles)
-            Thread({
-                try {
-                    process.inputStream.bufferedReader().forEachLine { line ->
-                        if (line.isNotBlank()) {
-                            Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_LOG: $line")
-                            broadcastLog("[engine] ${SecurityModule.maskSensitive(line)}")
-                        }
-                    }
-                } catch (_: Exception) {}
-            }, "SXB-SbLog").apply { isDaemon = true; start() }
-
-            // Attendre que sing-box soit prêt
-            Thread.sleep(2_500)
-            if (!process.isAlive) {
-                val code = process.exitValue()
-                Log.e("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_CRASHED_IMMEDIATELY code=$code proto=$protocol")
-                throw Exception("sing-box s'est arrêté immédiatement (code=$code) — vérifiez uuid/password/host dans la configuration")
-            }
-
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_13_VPN_CONNECTED proto=$protocol")
-            broadcastLog("[SXB_DEBUG] TUNNEL_READY proto=$protocol")
-            broadcastLog("[SXB_DEBUG] VPN_CONNECTED proto=$protocol")
-            broadcastLog("[SXB] ✅ VPN ${protocol.uppercase()} actif")
-            connectionWatchdog?.interrupt()
-            broadcastStatus("connected"); setCurrentState("connected")
-            autoReconnect.onConnected()
-            updateNotification("SXB VPN — ${protocol.uppercase()} connecté")
-            startNotificationUpdater()
+            startLibboxService(sbConfigJson, protocol.uppercase())
 
             // ── Boucle de surveillance ────────────────────────────────────────
             while (running.get()) {
-                if (!process.isAlive) {
-                    val code = process.exitValue()
-                    Log.w("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_STOPPED_IN_LOOP code=$code proto=$protocol")
-                    broadcastLog("[SXB] ⚠️ sing-box arrêté (code=$code)")
-                    broadcastStatus("error"); setCurrentState("error")
-                    if (autoReconnect.isEnabled()) { autoReconnect.onDisconnected(); return }
-                    break
-                }
-                // Mise à jour notification avec trafic toutes les 5s
+                if (boxService == null) break
                 Thread.sleep(5_000)
             }
         } catch (e: InterruptedException) {
@@ -977,6 +934,63 @@ class SxbVpnService : VpnService() {
             val willReconnect = ::autoReconnect.isInitialized && autoReconnect.isEnabled()
             cleanup(stopService = !willReconnect, keepRunning = willReconnect)
         }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // MOTEUR LIBBOX (sing-box in-process)
+    // ═════════════════════════════════════════════════════════════════════════
+
+    /** Initialise libbox une seule fois par process (chemins de travail). */
+    private fun ensureLibboxSetup() {
+        if (libboxInitialized) return
+        synchronized(SxbVpnService::class.java) {
+            if (libboxInitialized) return
+            val baseDir = filesDir.also { it.mkdirs() }
+            val workDir = File(getExternalFilesDir(null) ?: filesDir, "sing-box").also { it.mkdirs() }
+            val tempDir = cacheDir.also { it.mkdirs() }
+            val options = SetupOptions().apply {
+                basePath    = baseDir.absolutePath
+                workingPath = workDir.absolutePath
+                tempPath    = tempDir.absolutePath
+                // Contournement du bug Go sur la petite pile des threads Android
+                // (golang/go#68760) — le client officiel active la même option.
+                fixAndroidStack = true
+            }
+            Libbox.setup(options)
+            libboxInitialized = true
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] LIBBOX_SETUP_OK base=${baseDir.absolutePath}")
+        }
+    }
+
+    /**
+     * Crée et démarre l'instance sing-box, puis bascule l'état en « connected ».
+     * Le TUN est ouvert par sing-box lui-même via le rappel `openTun()`.
+     */
+    private fun startLibboxService(configJson: String, label: String) {
+        ensureLibboxSetup()
+        SxbDefaultNetworkMonitor.start(this)
+
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_8_LIBBOX_START label=$label version=${Libbox.version()}")
+        broadcastLog("[SXB] Moteur VPN : sing-box ${Libbox.version()}")
+
+        val service = try {
+            Libbox.newService(configJson, this)
+        } catch (e: Exception) {
+            throw Exception("Configuration refusée par le moteur : ${e.message}")
+        }
+
+        service.start()
+        boxService = service
+
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_13_VPN_CONNECTED label=$label")
+        broadcastLog("[SXB_DEBUG] TUNNEL_READY proto=$label")
+        broadcastLog("[SXB_DEBUG] VPN_CONNECTED proto=$label")
+        broadcastLog("[SXB] ✅ VPN $label actif")
+        connectionWatchdog?.interrupt()
+        broadcastStatus("connected"); setCurrentState("connected")
+        autoReconnect.onConnected()
+        updateNotification("SXB VPN — $label connecté")
+        startNotificationUpdater()
     }
 
     private fun classifyVpnError(message: String): String {
@@ -1062,65 +1076,207 @@ class SxbVpnService : VpnService() {
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // CONSTRUCTEUR D'INTERFACE TUN
+    // IMPLÉMENTATION libbox.PlatformInterface
     // ═════════════════════════════════════════════════════════════════════════
+    //
+    // C'est le cœur du correctif. sing-box, tournant dans notre process,
+    // délègue à ces méthodes tout ce qui relève de la plateforme Android :
+    // ouverture du TUN, protection des sockets, découverte des interfaces.
 
-    private fun buildTunInterface(sessionName: String, dns: List<String>): ParcelFileDescriptor? {
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_6_TUN_CREATING session=$sessionName dns=${dns.joinToString(",")}")
+    /**
+     * Appelé par sing-box pour obtenir l'interface TUN.
+     *
+     * C'est ICI que la clé VPN apparaît dans la barre d'état Android :
+     * `Builder.establish()` enregistre le tunnel auprès du système.
+     * Le descripteur retourné est ensuite utilisé directement par le moteur —
+     * il n'a jamais besoin de transiter par un fichier de configuration.
+     */
+    override fun openTun(options: TunOptions): Int {
+        if (VpnService.prepare(this) != null) {
+            throw IllegalStateException("Permission VPN non accordée")
+        }
+
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_6_TUN_CREATING mtu=${options.mtu} autoRoute=${options.autoRoute}")
+        broadcastLog("[SXB] Création interface réseau TUN...")
+
         val builder = Builder()
-            .setSession("SXB VPN — $sessionName")
-            .addAddress("172.19.0.1", 30)
-            .addRoute("0.0.0.0", 0)
-            .addRoute("::", 0)
-            .setMtu(1500)
-            .setBlocking(true)
-
-        // DNS
-        for (d in dns) { try { builder.addDnsServer(d) } catch (_: Exception) {} }
-
-        // Exclure l'app elle-même (évite boucle)
-        try { builder.addDisallowedApplication(packageName) } catch (_: Exception) {}
+            .setSession("SXB VPN")
+            .setMtu(options.mtu)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             builder.setMetered(false)
         }
 
-        // FIX — Kill Switch réel : quand activé, interdire aux applications de bypasser
-        // le VPN via un socket non-protégé. Sur Android 10+ (API 29), allowBypass() permet
-        // aux apps d'explicitement bypasser le tunnel — on ne l'appelle PAS pour le kill
-        // switch. Sur Android 8.1+ (API 27), setAllowedPackages est disponible mais
-        // la bonne API est de ne pas appeler allowBypass() (comportement par défaut).
-        //
-        // Note : le vrai "Always-On VPN with block connections" ne peut être activé que
-        // depuis les paramètres système. Ce que l'on fait ici est d'assurer qu'aucune
-        // application ne peut bypasser le tunnel (comportement par défaut sans allowBypass).
-        //
-        // Quand killSwitch est OFF : on autorise explicitement le bypass (comportement
-        // permissif, certaines apps système peuvent contourner le VPN).
+        // Kill Switch : quand il est actif, on n'autorise PAS allowBypass(),
+        // aucune app ne peut alors court-circuiter le tunnel.
         if (!killSwitchEnabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            try { builder.allowBypass() } catch (_: Exception) {}
+            runCatching { builder.allowBypass() }
         }
-        // Quand killSwitch est ON : on n'appelle pas allowBypass() → comportement strict
 
-        return try {
-            val pfd = builder.establish()
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_7_TUN_CREATED result=${if (pfd != null) "OK fd=${pfd.fd}" else "NULL — establish() a retourné null"}")
-            if (pfd == null) {
-                broadcastLog("[SXB_DEBUG] STEP_7_TUN_FAILED: establish() null — permission révoquée? VPN déjà actif?")
-            }
-            pfd
-        } catch (e: Exception) {
-            Log.e("SXB_DEBUG", "[SXB_DEBUG] STEP_7_TUN_EXCEPTION: ${e.message}", e)
-            broadcastLog("[SXB_DEBUG] TUN_EXCEPTION: ${e.message}")
-            null
+        // Adresses de l'interface, fournies par sing-box.
+        val inet4 = options.inet4Address
+        while (inet4.hasNext()) {
+            val address = inet4.next()
+            builder.addAddress(address.address(), address.prefix())
         }
+        val inet6 = options.inet6Address
+        while (inet6.hasNext()) {
+            val address = inet6.next()
+            builder.addAddress(address.address(), address.prefix())
+        }
+
+        if (options.autoRoute) {
+            // `dnsServerAddress` est un StringBox (libbox 1.11.x) : .value
+            // contient l'IP à annoncer au système pour le détournement DNS.
+            runCatching { builder.addDnsServer(options.dnsServerAddress.value) }
+
+            val v4Routes = options.inet4RouteAddress
+            if (v4Routes.hasNext()) {
+                while (v4Routes.hasNext()) {
+                    val r = v4Routes.next()
+                    builder.addRoute(r.address(), r.prefix())
+                }
+            } else {
+                builder.addRoute("0.0.0.0", 0)
+            }
+
+            val v6Routes = options.inet6RouteAddress
+            if (v6Routes.hasNext()) {
+                while (v6Routes.hasNext()) {
+                    val r = v6Routes.next()
+                    builder.addRoute(r.address(), r.prefix())
+                }
+            }
+
+            // Exclure notre propre app du tunnel : sans cela, les appels API
+            // de l'app (provisionnement, quotas) boucleraient dans le VPN.
+            runCatching { builder.addDisallowedApplication(packageName) }
+
+            val includePackage = options.includePackage
+            while (includePackage.hasNext()) {
+                runCatching { builder.addAllowedApplication(includePackage.next()) }
+            }
+            val excludePackage = options.excludePackage
+            while (excludePackage.hasNext()) {
+                runCatching { builder.addDisallowedApplication(excludePackage.next()) }
+            }
+        }
+
+        val pfd = builder.establish()
+            ?: throw IllegalStateException("establish() a retourné null — permission révoquée ou VPN déjà actif")
+
+        tunPfd = pfd
+        tunInterfaceName = runCatching {
+            java.net.NetworkInterface.getNetworkInterfaces().toList()
+                .firstOrNull { it.name.startsWith("tun") }?.name
+        }.getOrNull()
+
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_7_TUN_CREATED fd=${pfd.fd} name=$tunInterfaceName")
+        broadcastLog("[SXB_DEBUG] STEP_7_TUN_CREATED fd=${pfd.fd}")
+        broadcastLog("[SXB] Interface TUN créée")
+        return pfd.fd
     }
+
+    /** On veut que sing-box délègue la protection des sockets à Android. */
+    override fun usePlatformAutoDetectInterfaceControl(): Boolean = true
+
+    /**
+     * FIX CRITIQUE — Protection des sockets sortants du moteur.
+     *
+     * Chaque socket que sing-box ouvre vers le serveur distant doit être exclu
+     * du TUN, faute de quoi il serait routé dans le tunnel qu'il alimente
+     * (boucle de routage → coupure immédiate). `VpnService.protect()` lie le
+     * socket au réseau physique sous-jacent.
+     */
+    override fun autoDetectInterfaceControl(fd: Int) {
+        val ok = protect(fd)
+        if (!ok) Log.w("SXB_DEBUG", "[SXB_DEBUG] PROTECT_FAILED fd=$fd")
+    }
+
+    /** Protège un `Socket` Java (utilisé par les tunnels SSH/JSch). */
+    private fun protectSocket(socket: Socket): Boolean =
+        runCatching { protect(socket) }.getOrDefault(false)
+
+    override fun useProcFS(): Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
+
+    override fun findConnectionOwner(
+        ipProtocol: Int,
+        sourceAddress: String,
+        sourcePort: Int,
+        destinationAddress: String,
+        destinationPort: Int,
+    ): Int {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            throw UnsupportedOperationException("findConnectionOwner requiert Android 10+")
+        }
+        val cm = getSystemService(ConnectivityManager::class.java)
+            ?: throw IllegalStateException("ConnectivityManager indisponible")
+        val uid = cm.getConnectionOwnerUid(
+            ipProtocol,
+            InetSocketAddress(sourceAddress, sourcePort),
+            InetSocketAddress(destinationAddress, destinationPort),
+        )
+        if (uid == android.os.Process.INVALID_UID) throw IllegalStateException("propriétaire introuvable")
+        return uid
+    }
+
+    override fun packageNameByUid(uid: Int): String {
+        val packages = packageManager.getPackagesForUid(uid)
+        if (packages.isNullOrEmpty()) throw IllegalStateException("paquet introuvable pour uid=$uid")
+        return packages[0]
+    }
+
+    override fun uidByPackageName(packageName: String): Int {
+        return runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                packageManager.getPackageUid(
+                    packageName,
+                    android.content.pm.PackageManager.PackageInfoFlags.of(0),
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                packageManager.getPackageUid(packageName, 0)
+            }
+        }.getOrElse { throw IllegalStateException("paquet introuvable : $packageName") }
+    }
+
+    override fun startDefaultInterfaceMonitor(listener: InterfaceUpdateListener) {
+        SxbDefaultNetworkMonitor.start(this)
+        SxbDefaultNetworkMonitor.setListener(listener)
+    }
+
+    override fun closeDefaultInterfaceMonitor(listener: InterfaceUpdateListener) {
+        SxbDefaultNetworkMonitor.setListener(null)
+    }
+
+    override fun getInterfaces(): NetworkInterfaceIterator =
+        SxbInterfaceIterator(SxbNetworkInterfaces.enumerate(this, tunInterfaceName))
+
+    override fun underNetworkExtension(): Boolean = false
+
+    override fun includeAllNetworks(): Boolean = false
+
+    override fun readWIFIState(): WIFIState? = null
+
+    override fun clearDNSCache() { /* géré par Android */ }
+
+    override fun writeLog(message: String) {
+        if (message.isBlank()) return
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] LIBBOX_LOG: $message")
+        broadcastLog("[engine] ${SecurityModule.maskSensitive(message)}")
+    }
+
+    override fun sendNotification(notification: io.nekohasekai.libbox.Notification) {
+        // Les notifications du moteur sont ignorées : SXB gère sa propre
+        // notification persistante de service en premier plan.
+    }
+
 
     // ═════════════════════════════════════════════════════════════════════════
     // GÉNÉRATEUR DE CONFIG SING-BOX (JSON complet pour chaque protocole)
     // ═════════════════════════════════════════════════════════════════════════
 
-    private fun buildSingBoxConfig(cfg: JSONObject, protocol: String, tunFd: Int): String {
+    private fun buildSingBoxConfig(cfg: JSONObject, protocol: String): String {
         val host     = cfg.optString("host", "")
         val port     = cfg.optInt("port", 443)
         val uuid     = cfg.optString("uuid", "")
@@ -1136,13 +1292,23 @@ class SxbVpnService : VpnService() {
         val localAddr = cfg.optString("localAddress", "10.0.0.2/32")
 
         // Inbound TUN
+        //
+        // NOTE — « file_descriptor » a été retiré volontairement : ce champ
+        // n'existe pas dans le schéma JSON de sing-box et faisait échouer le
+        // parsing de la config (le moteur s'arrêtait aussitôt). Sous libbox,
+        // le descripteur est fourni par le rappel openTun() ci-dessus.
+        //
+        // « auto_route » doit valoir true : c'est lui qui demande à libbox
+        // d'appeler openTun() avec des routes par défaut (0.0.0.0/0), donc
+        // qui fait réellement passer le trafic du système dans le tunnel.
         val tunInbound = JSONObject().apply {
             put("type", "tun")
             put("tag", "tun-in")
-            put("file_descriptor", tunFd)
             put("inet4_address", "172.19.0.1/30")
-            put("auto_route", false)
+            put("auto_route", true)
             put("strict_route", false)
+            put("stack", "system")
+            put("mtu", 9000)
             put("sniff", true)
             put("sniff_override_destination", false)
         }
@@ -1185,8 +1351,13 @@ class SxbVpnService : VpnService() {
                 .put(JSONObject().put("ip_is_private", true).put("outbound", "direct"))
             )
             put("final", "proxy")
-            put("auto_detect_interface", false)
-            put("override_android_vpn", true)
+            // FIX — doit valoir true : combiné à
+            // usePlatformAutoDetectInterfaceControl(), c'est ce qui déclenche
+            // autoDetectInterfaceControl() → VpnService.protect() sur chaque
+            // socket sortant. À false, les connexions du moteur rentraient
+            // dans le TUN qu'elles alimentent (boucle) et le tunnel tombait.
+            // `override_android_vpn` est retiré : sans pertinence sous libbox.
+            put("auto_detect_interface", true)
         }
 
         return JSONObject().apply {
@@ -1334,8 +1505,14 @@ class SxbVpnService : VpnService() {
         }
     }
 
-    // ── Config TUN → SOCKS5 (pour tunnel SSH) ────────────────────────────────
-    private fun buildSshSocksRelayConfig(tunFdInt: Int): String {
+    /**
+     * Config TUN → SOCKS5 : fait entrer tout le trafic du système dans le
+     * tunnel SSH, en le relayant vers le serveur SOCKS5 local alimenté par JSch.
+     *
+     * Comme pour buildSingBoxConfig(), le champ « file_descriptor » a disparu :
+     * c'est openTun() qui fournit le TUN au moteur.
+     */
+    private fun buildSshSocksRelayConfig(): String {
         return JSONObject().apply {
             put("log", JSONObject().put("level", "warn").put("timestamp", true))
             put("dns", JSONObject().apply {
@@ -1349,10 +1526,11 @@ class SxbVpnService : VpnService() {
             put("inbounds", JSONArray().put(JSONObject().apply {
                 put("type", "tun")
                 put("tag", "tun-in")
-                put("file_descriptor", tunFdInt)
                 put("inet4_address", "172.19.0.1/30")
-                put("auto_route", false)
+                put("auto_route", true)
                 put("strict_route", false)
+                put("stack", "system")
+                put("mtu", 9000)
                 put("sniff", true)
             }))
             put("outbounds", JSONArray()
@@ -1372,7 +1550,8 @@ class SxbVpnService : VpnService() {
                     .put(JSONObject().put("ip_is_private", true).put("outbound", "direct"))
                 )
                 put("final", "proxy")
-                put("auto_detect_interface", false)
+                // true → protège les sockets sortants (voir buildSingBoxConfig).
+                put("auto_detect_interface", true)
             })
         }.toString(2)
     }
@@ -1593,81 +1772,12 @@ class SxbVpnService : VpnService() {
     // ═════════════════════════════════════════════════════════════════════════
     // UTILITAIRES
     // ═════════════════════════════════════════════════════════════════════════
-
-
-    /** SHA-256 d'un stream — pour P4 vérification intégrité sing-box */
-    private fun sha256Stream(stream: java.io.InputStream): String {
-        val md  = java.security.MessageDigest.getInstance("SHA-256")
-        val buf = ByteArray(8192)
-        stream.use { var n: Int; while (stream.read(buf).also { n = it } != -1) md.update(buf, 0, n) }
-        return md.digest().joinToString("") { "%02x".format(it) }
-    }
-
-    private fun extractSingBoxBinary(): File? {
-        val arch = System.getProperty("os.arch") ?: ""
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_EXTRACT_START arch=$arch filesDir=$filesDir")
-        broadcastLog("[SXB_DEBUG] SINGBOX_EXTRACT arch=$arch")
-
-        val assetNames = when {
-            arch.contains("aarch64") || arch.contains("arm64") ->
-                listOf("sing-box-arm64", "sing-box")
-            arch.contains("arm") ->
-                listOf("sing-box-arm", "sing-box-armeabi", "sing-box-arm64", "sing-box")
-            else ->
-                listOf("sing-box-arm64", "sing-box-arm", "sing-box")
-        }
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_TRY_ASSETS ${assetNames.joinToString(",")}")
-
-        for (name in assetNames) {
-            try {
-                val dest = File(filesDir, "sing-box")
-                // Recopia si absent ou trop petit (corrompu)
-                if (!dest.exists() || dest.length() < 1_000_000) {
-                    Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_EXTRACT_ASSET name=$name")
-                    assets.open(name).use { inp ->
-                        FileOutputStream(dest).use { out -> inp.copyTo(out) }
-                    }
-                    dest.setExecutable(true, false)
-                    Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_EXTRACTED name=$name size=${dest.length()} executable=${dest.canExecute()}")
-                    broadcastLog("[SXB_DEBUG] SINGBOX_EXTRACTED name=$name size=${dest.length()}")
-                    // P4 — SHA-256 : fichier extrait doit correspondre à l'asset
-                    try {
-                        val assetHash = sha256Stream(assets.open(name))
-                        val fileHash  = sha256Stream(java.io.FileInputStream(dest))
-                        if (assetHash != fileHash) {
-                            dest.delete()
-                            Log.e("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_SHA256_MISMATCH name=$name — exécution bloquée")
-                            broadcastLog("[SXB_DEBUG] SINGBOX_SHA256_MISMATCH name=$name")
-                            continue
-                        }
-                        Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_SHA256_OK name=$name")
-                    } catch (e: Exception) {
-                        Log.w("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_SHA256_SKIP: ${e.message}")
-                    }
-                } else {
-                    Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_CACHED size=${dest.length()} executable=${dest.canExecute()}")
-                }
-                if (dest.exists() && dest.canExecute()) {
-                    Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_BINARY_READY path=${dest.absolutePath}")
-                    return dest
-                } else {
-                    Log.e("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_NOT_EXECUTABLE exists=${dest.exists()} canExec=${dest.canExecute()}")
-                }
-            } catch (e: Exception) {
-                Log.w("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_ASSET_NOT_FOUND name=$name error=${e.message}")
-                broadcastLog("[SXB_DEBUG] SINGBOX_ASSET_MISSING name=$name")
-            }
-        }
-        Log.e("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_BINARY_MISSING — aucun asset compatible pour arch=$arch")
-        broadcastLog("[SXB_DEBUG] SINGBOX_BINARY_MISSING arch=$arch tried=${assetNames.joinToString(",")}")
-        return null
-    }
-
-    private fun writeSingBoxConfig(configJson: String): File {
-        val confFile = File(filesDir, "sb_config.json")
-        confFile.writeText(configJson, Charsets.UTF_8)
-        return confFile
-    }
+    //
+    // Les helpers d'extraction du binaire sing-box (extractSingBoxBinary,
+    // writeSingBoxConfig, getSingBoxVersion, sha256Stream, getFdInt) ont été
+    // supprimés en v6 : le moteur tourne désormais in-process via libbox, il
+    // n'y a plus ni binaire à extraire, ni fichier de config à écrire sur
+    // disque, ni descripteur à récupérer par réflexion.
 
     /** P1 — Chiffre configJson (credentials VPN) avec AES-256-GCM Android Keystore */
     private fun persistEncryptedConfig(originalConfigJson: String) {
@@ -1677,26 +1787,6 @@ class SxbVpnService : VpnService() {
         } catch (e: Exception) {
             Log.w(TAG, "[P1] Chiffrement config échoué (Keystore non disponible?): ${e.message}")
         }
-    }
-
-    private fun getSingBoxVersion(bin: File): String {
-        return try {
-            val p   = Runtime.getRuntime().exec(arrayOf(bin.absolutePath, "version"))
-            val out = p.inputStream.bufferedReader().readLine() ?: ""
-            p.destroy()
-            out.trim().take(30)
-        } catch (_: Exception) { "unknown" }
-    }
-
-    private fun getFdInt(fd: java.io.FileDescriptor): Int {
-        for (field in arrayOf("descriptor", "fd")) {
-            try {
-                val f = java.io.FileDescriptor::class.java.getDeclaredField(field)
-                f.isAccessible = true
-                return f.getInt(fd)
-            } catch (_: Exception) {}
-        }
-        return -1
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -1727,11 +1817,20 @@ class SxbVpnService : VpnService() {
         }
 
         runCatching { socks5Server?.close() };  socks5Server    = null
-        runCatching { singBoxProcess?.destroy() }; singBoxProcess = null
+
+        // Arrêt du moteur libbox AVANT la fermeture du TUN : sing-box doit
+        // pouvoir vider ses connexions avant que le descripteur disparaisse.
+        boxService?.let { svc ->
+            runCatching { svc.close() }
+                .onFailure { Log.w(TAG, "libbox close: ${it.message}") }
+        }
+        boxService = null
+
         runCatching { sshSession?.disconnect() }; sshSession     = null
 
-        runCatching { if (dupFd != null) Os.close(dupFd!!) }; dupFd   = null
-        runCatching { tunPfd?.close() };                       tunPfd  = null
+        runCatching { tunPfd?.close() };  tunPfd = null
+        tunInterfaceName = null
+        if (stopService) SxbDefaultNetworkMonitor.stop()
 
         trafficManager.stop()
         if (stopService) autoReconnect.reset()

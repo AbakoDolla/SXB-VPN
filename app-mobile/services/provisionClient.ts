@@ -48,6 +48,9 @@ function hexToUint8(hex: string): Uint8Array {
 // La Web Crypto API (crypto.subtle) est disponible sur RN 0.73+ / Expo 50+.
 
 async function decryptGCM(blob: string, configKeyHex: string): Promise<string> {
+  if (typeof crypto === 'undefined' || !crypto.subtle) {
+    throw new Error('Moteur cryptographique indisponible');
+  }
   if (!blob.startsWith('gcm:')) {
     throw new Error('Format de blob non supporté (attend gcm:...)');
   }
@@ -102,19 +105,27 @@ export async function provisionAndStore(
   deviceId:  string,
 ): Promise<ProvisionResult> {
   const res = await apiClient.post('/provision/activate', { dataToken, deviceId });
-  const { config: prov } = res.data;
+  
+  // Support both nested (dev server) and flat (production VPS) response formats
+  const prov = res.data?.config ? res.data.config : res.data;
 
-  if (!prov?.encryptedBlob || !prov?.configKey) {
+  const encryptedBlob = prov?.encryptedBlob;
+  const configKey = prov?.configKey;
+  const configExpiresAt = prov?.configExpiresAt || prov?.expiresAt;
+  const encVersion = prov?.encVersion || 'gcm-v2';
+  const provisionedAt = prov?.provisionedAt || new Date().toISOString();
+
+  if (!encryptedBlob || !configKey) {
     throw new Error('Réponse provision invalide — champs manquants');
   }
 
   // Vérification expiration de la config
-  if (prov.configExpiresAt && new Date(prov.configExpiresAt) < new Date()) {
+  if (configExpiresAt && new Date(configExpiresAt) < new Date()) {
     throw new Error('Configuration expirée — re-provisionnement requis');
   }
 
   // Déchiffrement local (jamais envoyé en clair sur le réseau après ce point)
-  const decryptedJson = await decryptGCM(prov.encryptedBlob, prov.configKey);
+  const decryptedJson = await decryptGCM(encryptedBlob, configKey);
   const vpnConfig     = JSON.parse(decryptedJson) as Record<string, any>;
 
   // Stockage dans SecureStore (Android Keystore / iOS Keychain)
@@ -122,17 +133,17 @@ export async function provisionAndStore(
 
   // Métadonnées non-sensibles dans AsyncStorage (quota, expiration, identifiants)
   const meta: ProvisionMeta = {
-    subscriptionId:  prov.subscriptionId,
-    profileId:       prov.profileId,
-    profileName:     prov.profileName,
-    protocol:        prov.protocol,
-    displayProtocol: prov.displayProtocol,
-    quotaGB:         prov.quotaGB,
-    quotaUsedGB:     prov.quotaUsedGB,
-    expireAt:        prov.expireAt,
-    configExpiresAt: prov.configExpiresAt,
-    provisionedAt:   prov.provisionedAt,
-    encVersion:      prov.encVersion,
+    subscriptionId:  prov.subscriptionId || '',
+    profileId:       prov.profileId || '',
+    profileName:     prov.profileName || '',
+    protocol:        prov.protocol || '',
+    displayProtocol: prov.displayProtocol || '',
+    quotaGB:         prov.quotaGB || 0,
+    quotaUsedGB:     prov.quotaUsedGB || 0,
+    expireAt:        prov.expireAt || null,
+    configExpiresAt: configExpiresAt,
+    provisionedAt:   provisionedAt,
+    encVersion:      encVersion,
   };
   await AsyncStorage.setItem(PROV_META_KEY, JSON.stringify(meta));
 
