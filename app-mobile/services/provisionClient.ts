@@ -69,16 +69,16 @@ async function decryptGCM(blob: string, configKeyHex: string): Promise<string> {
 
   const cryptoKey = await crypto.subtle.importKey(
     'raw',
-    keyBytes,
+    keyBytes as unknown as BufferSource,
     { name: 'AES-GCM' },
     false,
     ['decrypt'],
   );
 
   const decryptedBuffer = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv },
+    { name: 'AES-GCM', iv: iv as unknown as BufferSource },
     cryptoKey,
-    ciphertextWithTag,
+    ciphertextWithTag as unknown as BufferSource,
   );
 
   return new TextDecoder().decode(decryptedBuffer);

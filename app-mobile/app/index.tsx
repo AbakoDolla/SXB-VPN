@@ -50,7 +50,7 @@ export default function SplashScreen() {
         if (!isAuthenticated) {
           router.replace(hasSeenOnboarding ? "/activate" : "/onboarding");
         } else {
-          router.replace("/(tabs)/");
+          router.replace("/(tabs)/" as any);
         }
       }, 2200);
       return () => clearTimeout(timer);

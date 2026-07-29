@@ -37,7 +37,7 @@ export default function PlanScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setSuccess(true);
       Animated.spring(successScale, { toValue: 1, tension: 80, friction: 6, useNativeDriver: true }).start();
-      setTimeout(() => router.replace("/(tabs)/"), 1600);
+      setTimeout(() => router.replace("/(tabs)/" as any), 1600);
     } catch (err: any) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       shake();

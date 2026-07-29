@@ -539,7 +539,7 @@ export default function SettingsScreen() {
               label="Diagnostic VPN"
               badge="DEV"
               badgeColor="#7C5FFF"
-              onPress={() => router.push("/vpn-debug")}
+              onPress={() => router.push("/vpn-debug" as any)}
               color="#7C5FFF"
             />
           </Section>

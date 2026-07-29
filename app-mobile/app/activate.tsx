@@ -1,6 +1,6 @@
 import React, { useRef, useState } from "react";
 import {
-  Animated, Image, Pressable, ScrollView,
+  Alert, Animated, Image, Pressable, ScrollView,
   StyleSheet, Text, TextInput, View,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
@@ -42,7 +42,7 @@ export default function ActivateScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setSuccess(true);
       Animated.spring(successScale, { toValue: 1, tension: 80, friction: 6, useNativeDriver: true }).start();
-      setTimeout(() => router.replace("/(tabs)/"), 1500);
+      setTimeout(() => router.replace("/(tabs)/" as any), 1500);
     } catch (err: any) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       shake();

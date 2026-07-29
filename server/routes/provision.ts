@@ -228,6 +228,7 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
     // 7. Calcul de l'expiration de la configuration locale
     const offlineDays    = profile?.offlineValidDays || 7;
     const configExpiresAt = new Date(Date.now() + offlineDays * 86_400_000).toISOString();
+    const provisionedAt   = new Date().toISOString();
 
     // 8. Chiffrement AES-256-GCM lié à l'appareil
     const token = sub.dataToken;
@@ -257,21 +258,31 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
       req.ip || '',
     );
 
-    return res.json({
-      success:        true,
-      // Config chiffrée — format plat conforme au spec gcm-v2
+    const responseConfig = {
+      subscriptionId:  sub.id,
+      profileId:       profile?.id,
+      profileName:     profile?.name,
+      protocol:        proto,
+      displayProtocol: profile?.displayProtocol || proto,
       encryptedBlob,
-      configKey,          // Clé par-appareil : HMAC(deviceId:token, PROVISION_SECRET)
-      encVersion:         'gcm-v2',
-      signature:          serverSignature,
-      expiresAt:          configExpiresAt,
+      configKey,       // Clé par-appareil : HMAC(deviceId:token, PROVISION_SECRET)
+      encVersion:      'gcm-v2',
+      signature:       serverSignature,
+      configExpiresAt,
+      provisionedAt,
+      quotaGB:         parseFloat(quotaGB.toFixed(4)),
+      quotaUsedGB:     parseFloat(quotaUsedGB.toFixed(4)),
+      expireAt:        sub.expireAt,
       deviceId,
-      protocol:           proto,
-      displayProtocol:    profile?.displayProtocol || proto,
-      // Quota (informatif — pas de secret)
-      quotaGB:            parseFloat(quotaGB.toFixed(4)),
-      quotaUsedGB:        parseFloat(quotaUsedGB.toFixed(4)),
-      expireAt:           sub.expireAt,
+    };
+
+    return res.json({
+      success: true,
+      // Format attendu par le mobile actuel
+      config: responseConfig,
+      // Champs plats conservés pour compatibilite descendante
+      ...responseConfig,
+      expiresAt: configExpiresAt,
     });
   } catch (err: any) {
     if (err.message?.includes('PROVISION_SECRET')) {
