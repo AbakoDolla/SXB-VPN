@@ -104,6 +104,42 @@ export interface DbAuditLog {
   timestamp: Date;
 }
 
+export interface DbSubscription {
+  id: string;
+  name: string;
+  clientId: string;
+  profileId: string;
+  dataToken: string;
+  quotaBytes: bigint;
+  quotaUsed: bigint;
+  durationDays: number;
+  deviceLimit: number;
+  startAt: Date;
+  expireAt?: Date | null;
+  status: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface DbVpnProfile {
+  id: string;
+  name: string;
+  description?: string | null;
+  protocol: string;
+  displayProtocol?: string | null;
+  host: string;
+  port: number;
+  username?: string | null;
+  password?: string | null;
+  uuid?: string | null;
+  path?: string | null;
+  network?: string | null;
+  tls: boolean;
+  status: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 // Global In-Memory Database Fallback for preview/development state
 class InMemoryDatabase {
   users: DbUser[] = [];
@@ -117,6 +153,8 @@ class InMemoryDatabase {
   xpanelConfigs: DbXPanelConfig[] = [];
   vouchers: DbVoucher[] = [];
   auditLogs: DbAuditLog[] = [];
+  subscriptions: DbSubscription[] = [];
+  vpnProfiles: DbVpnProfile[] = [];
 
   constructor() {
     this.seed();
@@ -142,6 +180,12 @@ class InMemoryDatabase {
       { id: "p9", name: "clients.create", description: "Create VPN Clients" },
       { id: "p10", name: "tokens.manage", description: "Manage SXB Tokens" },
       { id: "p11", name: "vouchers.manage", description: "Manage Vouchers" },
+      { id: "p12", name: "subscription.view", description: "View Subscriptions" },
+      { id: "p13", name: "subscription.manage", description: "Manage Subscriptions" },
+      { id: "p14", name: "vpnprofile.view", description: "View VPN Profiles" },
+      { id: "p15", name: "vpnprofile.manage", description: "Manage VPN Profiles" },
+      { id: "p16", name: "analytics.read", description: "Read Analytics" },
+      { id: "p17", name: "audit.view", description: "View Audit Logs" },
     ];
     this.permissions = perms;
 

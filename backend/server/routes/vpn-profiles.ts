@@ -1,6 +1,6 @@
 import { Router, Response } from "express";
 import { z } from "zod";
-import { prisma } from "../database";
+import { prisma, inMemoryDb } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 
 const router = Router();
@@ -28,12 +28,14 @@ const profileSchema = z.object({
 // GET /api/vpn-profiles
 router.get("/", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    if (!prisma) return res.status(503).json({ error: "DB unavailable" });
+    if (!prisma) {
+      return res.json({ success: true, profiles: inMemoryDb.vpnProfiles || [] });
+    }
     const profiles = await (prisma as any).vpnProfile.findMany({
       orderBy: { createdAt: "desc" },
       include: { _count: { select: { subscriptions: true } } },
     });
-    return res.json({ profiles });
+    return res.json({ success: true, profiles });
   } catch (err) {
     console.error("List vpn-profiles error:", err);
     return res.status(500).json({ error: "Server error" });
@@ -43,13 +45,18 @@ router.get("/", requireAuth, async (req: AuthenticatedRequest, res: Response) =>
 // GET /api/vpn-profiles/stats/all
 router.get("/stats/all", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    if (!prisma) return res.status(503).json({ error: "DB unavailable" });
+    if (!prisma) {
+      const profiles = inMemoryDb.vpnProfiles || [];
+      const total = profiles.length;
+      const active = profiles.filter(p => p.status === "active").length;
+      return res.json({ success: true, total, active, byProtocol: [] });
+    }
     const [total, active, byProtocol] = await Promise.all([
       (prisma as any).vpnProfile.count(),
       (prisma as any).vpnProfile.count({ where: { status: "active" } }),
       (prisma as any).vpnProfile.groupBy({ by: ["protocol"], _count: true }),
     ]);
-    return res.json({ total, active, byProtocol });
+    return res.json({ success: true, total, active, byProtocol });
   } catch (err) {
     console.error("vpn-profiles stats error:", err);
     return res.status(500).json({ error: "Server error" });

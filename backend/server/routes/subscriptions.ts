@@ -7,7 +7,7 @@
  *  - Évite les crash 500 "Cannot serialize a BigInt value"
  */
 import { Router, Response } from 'express';
-import { prisma } from '../database';
+import { prisma, inMemoryDb } from '../database';
 import { requireAuth, requirePermission, AuthenticatedRequest } from '../middleware/auth';
 import { logDbActivity } from '../database';
 import crypto from 'crypto';
@@ -49,6 +49,9 @@ function serializeProfile(p: any): any {
 // ─── GET /api/subscriptions ───────────────────────────────────────────────────
 router.get('/', requireAuth, requirePermission('subscription.view'), async (req: AuthenticatedRequest, res: Response) => {
   try {
+    if (!prisma) {
+      return res.json({ success: true, subscriptions: (inMemoryDb.subscriptions || []).map(serializeSub) });
+    }
     const subs = await (prisma as any).subscription.findMany({
       orderBy: { createdAt: 'desc' },
       include: {
@@ -66,6 +69,13 @@ router.get('/', requireAuth, requirePermission('subscription.view'), async (req:
 // ─── GET /api/subscriptions/stats ────────────────────────────────────────────
 router.get('/stats', requireAuth, requirePermission('subscription.view'), async (_req: AuthenticatedRequest, res: Response) => {
   try {
+    if (!prisma) {
+      const subs = inMemoryDb.subscriptions || [];
+      const total   = subs.length;
+      const active  = subs.filter(s => s.status === 'active').length;
+      const expired = subs.filter(s => s.status === 'expired').length;
+      return res.json({ success: true, total, active, expired });
+    }
     const total   = await (prisma as any).subscription.count();
     const active  = await (prisma as any).subscription.count({ where: { status: 'active' } });
     const expired = await (prisma as any).subscription.count({ where: { status: 'expired' } });
@@ -78,6 +88,11 @@ router.get('/stats', requireAuth, requirePermission('subscription.view'), async 
 // ─── GET /api/subscriptions/:id ──────────────────────────────────────────────
 router.get('/:id', requireAuth, requirePermission('subscription.view'), async (req: AuthenticatedRequest, res: Response) => {
   try {
+    if (!prisma) {
+      const sub = (inMemoryDb.subscriptions || []).find((s) => s.id === req.params.id);
+      if (!sub) return res.status(404).json({ error: 'Subscription not found' });
+      return res.json({ success: true, subscription: serializeSub(sub) });
+    }
     const sub = await (prisma as any).subscription.findUnique({
       where: { id: req.params.id },
       include: { client: { include: { user: true } }, profile: true },
