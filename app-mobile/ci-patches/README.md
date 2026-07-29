@@ -1,9 +1,13 @@
-# Patch CI — à appliquer manuellement
+# Patch CI — OPTIONNEL (optimisation)
 
-Le workflow `.github/workflows/build-android.yml` doit être mis à jour pour
-construire le moteur VPN (`libbox.aar`), mais l'App GitHub utilisée par cette
-session n'a pas la permission `workflows` : la modification a donc été extraite
-ici au lieu d'être poussée.
+> **Le build fonctionne sans ce patch.** Le plugin Expo construit `libbox.aar`
+> automatiquement pendant le prebuild si l'AAR est absent. Ce patch sert
+> uniquement à **mettre le résultat en cache** entre les exécutions CI, ce qui
+> économise ~10 min par build.
+
+Le workflow n'a pas pu être modifié directement : l'App GitHub utilisée par
+cette session n'a pas la permission `workflows` (push rejeté par GitHub). La
+modification a donc été extraite ici.
 
 ## Appliquer
 
@@ -26,7 +30,15 @@ git commit -m "ci(android): construire libbox.aar (moteur sing-box in-process)"
    elles, R8 supprime les classes appelées par réflexion depuis Go et le
    moteur plante au démarrage du tunnel.
 
-**Sans ce patch, le build Android échouera** : `libbox.aar` ne sera pas généré
-et le plugin Expo avertira `libs/libbox.aar introuvable`.
+## Sans le patch
+
+Le build reste fonctionnel : le plugin Expo détecte l'absence de
+`libs/libbox.aar` et lance `scripts/build-libbox.sh` pendant le prebuild.
+Go et le NDK sont préinstallés sur les runners `ubuntu-latest`. Seul coût :
+le moteur est recompilé à chaque exécution (~10 min).
+
+L'étape « Copier sing-box vers Android assets natifs » du workflow actuel
+n'échoue pas malgré la suppression des binaires : elle se contente d'un
+avertissement.
 
 Voir `app-mobile/VPN_ENGINE_FIX.md` pour le diagnostic complet.

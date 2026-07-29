@@ -12,6 +12,7 @@
 const { withAndroidManifest, withDangerousMod, withAppBuildGradle } = require('@expo/config-plugins');
 const path = require('path');
 const fs   = require('fs');
+const { execFileSync } = require('child_process');
 
 // ── 1. Permissions + déclaration service dans AndroidManifest.xml ─────────────
 function withVpnManifest(config) {
@@ -292,13 +293,46 @@ function withLibboxAar(config) {
 
     const src = path.join(projectRoot, 'libs', 'libbox.aar');
     const dst = path.join(libsDir, 'libbox.aar');
+
+    // Construction automatique si l'AAR est absent.
+    //
+    // Le moteur est indispensable : sans lui, SxbVpnService.kt ne compile pas
+    // (imports io.nekohasekai.libbox.*). On le construit donc ici, pendant le
+    // prebuild, plutôt que d'exiger une étape dédiée dans le workflow — ce qui
+    // rend le build autonome quel que soit l'environnement (CI ou local).
+    //
+    // Go et le NDK Android sont préinstallés sur les runners ubuntu-latest.
+    // Compter ~10 min la première fois ; définir SXB_SKIP_LIBBOX_BUILD=1 pour
+    // sauter cette étape (build hors-ligne avec un AAR déjà présent).
+    if (!fs.existsSync(src) && process.env.SXB_SKIP_LIBBOX_BUILD !== '1') {
+      const script = path.join(projectRoot, 'scripts', 'build-libbox.sh');
+      if (fs.existsSync(script)) {
+        console.log('[SXB VPN plugin] libbox.aar absent — construction du moteur sing-box...');
+        console.log('[SXB VPN plugin] (~10 min ; SXB_SKIP_LIBBOX_BUILD=1 pour sauter)');
+        try {
+          execFileSync('bash', [script], { cwd: projectRoot, stdio: 'inherit' });
+        } catch (e) {
+          console.error('[SXB VPN plugin] ❌ Échec de la construction de libbox.aar');
+          throw new Error(
+            'Impossible de construire libbox.aar (moteur VPN). ' +
+            'Vérifiez Go >= 1.23 et le NDK Android, ou fournissez app-mobile/libs/libbox.aar. ' +
+            'Détail : ' + (e && e.message ? e.message : e)
+          );
+        }
+      }
+    }
+
     if (fs.existsSync(src)) {
       fs.copyFileSync(src, dst);
       const mb = (fs.statSync(dst).size / 1048576).toFixed(1);
       console.log(`[SXB VPN plugin] Copié libbox.aar → android/app/libs (${mb} MB)`);
     } else {
-      console.warn('[SXB VPN plugin] ⚠️  libs/libbox.aar introuvable — le moteur VPN ne compilera pas.');
-      console.warn('[SXB VPN plugin]     Lancez scripts/build-libbox.sh ou le workflow CI.');
+      // Échouer franchement plutôt que de laisser Gradle produire une erreur
+      // Kotlin obscure (« unresolved reference: nekohasekai ») 10 min plus tard.
+      throw new Error(
+        'app-mobile/libs/libbox.aar introuvable — le moteur VPN ne peut pas être compilé. ' +
+        'Lancez ./scripts/build-libbox.sh.'
+      );
     }
     return cfg;
   }]);

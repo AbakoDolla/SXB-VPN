@@ -45,20 +45,72 @@ echo "════════════════════════�
 echo " SXB VPN — build libbox (sing-box $SING_BOX_VERSION)"
 echo "═══════════════════════════════════════════════════════════"
 
-command -v go >/dev/null 2>&1 || { echo "❌ Go introuvable"; exit 1; }
+# ── Localisation de Go ────────────────────────────────────────────────────────
+# Sur les runners GitHub Ubuntu 24.04, Go n'est pas sur le PATH par défaut :
+# il est fourni comme « cached tool » sous le hostedtoolcache. On le récupère
+# donc explicitement si `go` est introuvable, ce qui évite d'imposer une étape
+# actions/setup-go dans le workflow.
+if ! command -v go >/dev/null 2>&1; then
+  TOOLCACHE="${AGENT_TOOLSDIRECTORY:-${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}}"
+  if [ -d "$TOOLCACHE/go" ]; then
+    GO_DIR="$(find "$TOOLCACHE/go" -maxdepth 2 -mindepth 2 -type d -name 'x64' | sort -V | tail -1)"
+    if [ -n "$GO_DIR" ] && [ -x "$GO_DIR/bin/go" ]; then
+      export PATH="$GO_DIR/bin:$PATH"
+    fi
+  fi
+fi
+if ! command -v go >/dev/null 2>&1 && [ -x /usr/local/go/bin/go ]; then
+  export PATH="/usr/local/go/bin:$PATH"
+fi
+
+command -v go >/dev/null 2>&1 || {
+  echo "❌ Go introuvable. Installez Go >= 1.20 (sing-box $SING_BOX_VERSION exige go 1.20+)"
+  echo "   En CI, ajoutez : - uses: actions/setup-go@v5"
+  exit 1
+}
 echo "→ Go : $(go version)"
 
-if [ -z "${ANDROID_NDK_HOME:-}" ] && [ -z "${ANDROID_NDK_ROOT:-}" ]; then
-  # Tenter de localiser un NDK dans le SDK Android.
+# gomobile place ses binaires dans GOPATH/bin — s'assurer qu'ils sont trouvables.
+export PATH="$(go env GOPATH)/bin:$PATH"
+
+# ── Localisation du SDK / NDK Android ────────────────────────────────────────
+# Sur les runners GitHub ubuntu-latest, le SDK est préinstallé sous
+# /usr/local/lib/android/sdk et contient un ou plusieurs NDK.
+if [ -z "${ANDROID_HOME:-}" ]; then
+  for candidate in \
+    "/usr/local/lib/android/sdk" \
+    "$HOME/Android/Sdk" \
+    "$HOME/Library/Android/sdk"; do
+    if [ -d "$candidate" ]; then
+      export ANDROID_HOME="$candidate"
+      break
+    fi
+  done
+fi
+[ -n "${ANDROID_HOME:-}" ] && echo "→ SDK Android : $ANDROID_HOME"
+
+if [ -z "${ANDROID_NDK_HOME:-}" ] && [ -n "${ANDROID_NDK_ROOT:-}" ]; then
+  ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
+  export ANDROID_NDK_HOME
+fi
+
+if [ -z "${ANDROID_NDK_HOME:-}" ]; then
+  # Tenter de localiser un NDK dans le SDK Android (le plus récent).
   if [ -n "${ANDROID_HOME:-}" ] && [ -d "$ANDROID_HOME/ndk" ]; then
     ANDROID_NDK_HOME="$(find "$ANDROID_HOME/ndk" -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1)"
     export ANDROID_NDK_HOME
-    echo "→ NDK détecté : $ANDROID_NDK_HOME"
-  else
-    echo "❌ ANDROID_NDK_HOME non défini et aucun NDK trouvé dans ANDROID_HOME"
-    exit 1
+  elif [ -n "${ANDROID_HOME:-}" ] && [ -d "$ANDROID_HOME/ndk-bundle" ]; then
+    export ANDROID_NDK_HOME="$ANDROID_HOME/ndk-bundle"
   fi
 fi
+
+if [ -z "${ANDROID_NDK_HOME:-}" ] || [ ! -d "$ANDROID_NDK_HOME" ]; then
+  echo "❌ NDK Android introuvable."
+  echo "   Définissez ANDROID_NDK_HOME, ou installez-le :"
+  echo "   sdkmanager --install 'ndk;26.1.10909125'"
+  exit 1
+fi
+echo "→ NDK : $ANDROID_NDK_HOME"
 
 WORK_DIR="$(mktemp -d)"
 cleanup() { rm -rf "$WORK_DIR"; }
