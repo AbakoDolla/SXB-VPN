@@ -1,11 +1,12 @@
 /**
- * Expo Config Plugin — VPN natif Android SXB v5
+ * Expo Config Plugin — VPN natif Android SXB v6 (moteur libbox in-process)
  *
  * 1. Injecte les permissions VPN + déclaration du service dans AndroidManifest.xml
+ *    (type de service en premier plan `specialUse` — requis Android 14+)
  * 2. Copie tous les fichiers Kotlin (modules/android-native/) dans android/
  * 3. Enregistre SxbVpnPackage dans MainApplication.kt
- * 4. Ajoute les dépendances JSch + Coroutines dans app/build.gradle
- * 5. Copie les binaires sing-box dans android/app/src/main/assets/
+ * 4. Ajoute les dépendances JSch + Coroutines + libbox.aar dans app/build.gradle
+ * 5. Copie libs/libbox.aar dans android/app/libs/
  * 6. Injecte les règles ProGuard R8
  */
 const { withAndroidManifest, withDangerousMod, withAppBuildGradle } = require('@expo/config-plugins');
@@ -27,10 +28,18 @@ function withVpnManifest(config) {
       // Sans ce verrou, le foreground service peut être suspendu par Doze mode, causant
       // des déconnexions aléatoires sur batterie avec écran verrouillé.
       'android.permission.WAKE_LOCK',
-      'android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE',
+      // FIX CRITIQUE Android 14 (API 34) — type de service en premier plan.
+      // FOREGROUND_SERVICE_CONNECTED_DEVICE exigeait en plus une permission
+      // runtime (BLUETOOTH_*/CHANGE_NETWORK_STATE/NFC) absente de l'app :
+      // startForeground() levait une SecurityException et le service VPN
+      // mourait avant d'établir le tunnel (aucune clé VPN dans la barre d'état).
+      // `specialUse` est le type correct pour une app VPN tierce.
+      'android.permission.FOREGROUND_SERVICE_SPECIAL_USE',
       'android.permission.RECEIVE_BOOT_COMPLETED',
       'android.permission.POST_NOTIFICATIONS',
       'android.permission.ACCESS_NETWORK_STATE',
+      'android.permission.ACCESS_WIFI_STATE',
+      'android.permission.CHANGE_NETWORK_STATE',
     ];
     vpnPerms.forEach(perm => {
       if (!perms.find(p => p.$?.['android:name'] === perm)) {
@@ -55,11 +64,23 @@ function withVpnManifest(config) {
         $: {
           'android:name': vpnSvcName,
           'android:permission': 'android.permission.BIND_VPN_SERVICE',
-          'android:foregroundServiceType': 'connectedDevice',
+          // Voir la note sur FOREGROUND_SERVICE_SPECIAL_USE ci-dessus.
+          'android:foregroundServiceType': 'specialUse',
           'android:exported': 'false',
         },
         'intent-filter': [{ action: [{ $: { 'android:name': 'android.net.VpnService' } }] }],
+        // Requis par Google Play pour le type `specialUse` : justifie l'usage.
+        property: [{
+          $: {
+            'android:name': 'android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE',
+            'android:value': 'vpn',
+          },
+        }],
       });
+    } else {
+      // Service déjà déclaré (prebuild incrémental) : corriger le type hérité.
+      const svc = app.service.find(s => s.$?.['android:name'] === vpnSvcName);
+      svc.$['android:foregroundServiceType'] = 'specialUse';
     }
 
     // Déclarer BootReceiver
@@ -96,7 +117,22 @@ function withKotlinSources(config) {
 
     // ProGuard
     const proguardFile = path.join(platformRoot, 'app', 'proguard-rules.pro');
-    const rules = '\n# SXB VPN\n-keep class com.sxbvpn.vpnmodule.** { *; }\n-keep class com.jcraft.jsch.** { *; }\n-dontwarn com.jcraft.jsch.**\n';
+    // libbox/gomobile appellent nos classes par réflexion depuis Go : sans ces
+    // règles, R8 supprime PlatformInterface et le moteur plante au démarrage.
+    const rules = [
+      '',
+      '# SXB VPN',
+      '-keep class com.sxbvpn.vpnmodule.** { *; }',
+      '-keep class com.jcraft.jsch.** { *; }',
+      '-dontwarn com.jcraft.jsch.**',
+      '# Moteur sing-box (libbox / gomobile)',
+      '-keep class io.nekohasekai.libbox.** { *; }',
+      '-keep interface io.nekohasekai.libbox.** { *; }',
+      '-keep class go.** { *; }',
+      '-dontwarn io.nekohasekai.libbox.**',
+      '-dontwarn go.**',
+      '',
+    ].join('\n');
     if (fs.existsSync(proguardFile)) {
       const existing = fs.readFileSync(proguardFile, 'utf8');
       if (!existing.includes('com.sxbvpn.vpnmodule')) fs.appendFileSync(proguardFile, rules);
@@ -204,6 +240,10 @@ function withJschDependency(config) {
     const deps = [
       "implementation(\"com.github.mwiede:jsch:0.2.21\")",
       "implementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3\")",
+      // Moteur sing-box embarqué (libbox.aar déposé dans android/app/libs/).
+      // Remplace l'ancien binaire exécuté par ProcessBuilder — interdit depuis
+      // Android 10 (W^X) et incapable de recevoir le descripteur du TUN.
+      "implementation(fileTree(mapOf(\"dir\" to \"libs\", \"include\" to listOf(\"*.aar\"))))",
     ];
     deps.forEach(dep => {
       if (!gradle.includes(dep)) {
@@ -235,21 +275,31 @@ function withJschDependency(config) {
   });
 }
 
-// ── 5. Binaires sing-box dans Android assets ──────────────────────────────────
-function withSingBoxAssets(config) {
+// ── 5. Moteur libbox (AAR) dans android/app/libs ──────────────────────────────
+//
+// Remplace l'ancienne copie des binaires sing-box dans les assets. Ces binaires
+// ne pouvaient de toute façon pas être exécutés (Android 10+ interdit l'exécution
+// depuis le répertoire privé) ni recevoir le descripteur du TUN.
+//
+// libbox.aar est produit par le workflow CI (gomobile bind) et déposé dans
+// app-mobile/libs/libbox.aar.
+function withLibboxAar(config) {
   return withDangerousMod(config, ['android', (cfg) => {
     const projectRoot  = cfg.modRequest.projectRoot;
     const platformRoot = cfg.modRequest.platformProjectRoot;
-    const assetsDir    = path.join(platformRoot, 'app', 'src', 'main', 'assets');
-    fs.mkdirSync(assetsDir, { recursive: true });
-    ['sing-box-arm64', 'sing-box-arm'].forEach(name => {
-      const src = path.join(projectRoot, 'assets', name);
-      const dst = path.join(assetsDir, name);
-      if (fs.existsSync(src)) {
-        fs.copyFileSync(src, dst);
-        console.log('[SXB VPN plugin] Copié ' + name + ' → android assets');
-      }
-    });
+    const libsDir      = path.join(platformRoot, 'app', 'libs');
+    fs.mkdirSync(libsDir, { recursive: true });
+
+    const src = path.join(projectRoot, 'libs', 'libbox.aar');
+    const dst = path.join(libsDir, 'libbox.aar');
+    if (fs.existsSync(src)) {
+      fs.copyFileSync(src, dst);
+      const mb = (fs.statSync(dst).size / 1048576).toFixed(1);
+      console.log(`[SXB VPN plugin] Copié libbox.aar → android/app/libs (${mb} MB)`);
+    } else {
+      console.warn('[SXB VPN plugin] ⚠️  libs/libbox.aar introuvable — le moteur VPN ne compilera pas.');
+      console.warn('[SXB VPN plugin]     Lancez scripts/build-libbox.sh ou le workflow CI.');
+    }
     return cfg;
   }]);
 }
@@ -260,6 +310,6 @@ module.exports = function withSxbVpn(config) {
   config = withKotlinSources(config);
   config = withMainAppPackage(config);
   config = withJschDependency(config);
-  config = withSingBoxAssets(config);
+  config = withLibboxAar(config);
   return config;
 };
