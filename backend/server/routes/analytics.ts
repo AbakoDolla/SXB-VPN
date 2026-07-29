@@ -171,3 +171,62 @@ router.get("/servers", requireAuth, requirePermission("analytics.read"), async (
 });
 
 export default router;
+
+// GET /api/analytics/overview — agrégat complet pour le dashboard
+router.get("/overview", requireAuth, requirePermission("analytics.read"), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (prisma) {
+      const [
+        totalUsers,
+        activeClients,
+        resellersCount,
+        totalServers,
+        onlineServers,
+        totalTokens,
+        usedTokens,
+        totalVouchers,
+        usedVouchers,
+        totalTraffic,
+      ] = await Promise.all([
+        prisma.user.count(),
+        prisma.vpnClient.count({ where: { status: "active" } }),
+        prisma.reseller.count(),
+        prisma.vPSServer.count(),
+        prisma.vPSServer.count({ where: { status: "online" } }),
+        prisma.tokenSXB.count(),
+        prisma.tokenSXB.count({ where: { status: "used" } }),
+        prisma.voucher.count(),
+        prisma.voucher.count({ where: { status: "used" } }),
+        prisma.vpnClient.aggregate({ _sum: { quotaUsed: true } }),
+      ]);
+      return res.json({
+        totalUsers,
+        activeClients,
+        resellersCount,
+        totalServers,
+        onlineServers,
+        totalTokens,
+        usedTokens,
+        totalVouchers,
+        usedVouchers,
+        consumedTrafficBytes: totalTraffic._sum.quotaUsed?.toString() ?? "0",
+      });
+    }
+    // Fallback inMemory
+    return res.json({
+      totalUsers: inMemoryDb.users.length,
+      activeClients: inMemoryDb.vpnClients.filter((c) => c.status === "active").length,
+      resellersCount: inMemoryDb.resellers.length,
+      totalServers: inMemoryDb.vpsServers.length,
+      onlineServers: inMemoryDb.vpsServers.filter((s) => s.status === "online").length,
+      totalTokens: inMemoryDb.tokens.length,
+      usedTokens: inMemoryDb.tokens.filter((t) => t.status === "used").length,
+      totalVouchers: inMemoryDb.vouchers.length,
+      usedVouchers: inMemoryDb.vouchers.filter((v) => v.status === "used").length,
+      consumedTrafficBytes: "0",
+    });
+  } catch (err) {
+    console.error("Analytics overview error:", err);
+    return res.status(500).json({ error: "errors.server", message: "Failed to compile overview statistics" });
+  }
+});

@@ -17,7 +17,7 @@ import Colors from "@/constants/colors";
 import type { VpnConnection } from "@/types/api";
 
 const { width } = Dimensions.get("window");
-const LOGO = require("@/assets/images/icon.png");
+const LOGO = require("../../assets/images/icon.png");
 
 // ── VPN Button States ─────────────────────────────────────────────────────────
 type BtnState = "no_account" | "no_package" | "connect" | "connecting" | "connected" | "expired";

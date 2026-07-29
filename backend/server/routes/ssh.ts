@@ -10,32 +10,62 @@ import crypto from 'crypto';
 
 const router = Router();
 
-// Encryption helpers for SSH passwords
-const ALGO = 'aes-256-cbc';
+// ── Chiffrement AES-256-GCM (Phase 2) ─────────────────────────────────────────
+const ENC_KEY = (() => {
+  const k = process.env.ENCRYPTION_KEY;
+  if (!k || k.startsWith('CHANGE_ME')) console.error('[SECURITY] ENCRYPTION_KEY non configurée dans ssh.ts!');
+  return k || '';
+})();
+
+function getKey(rawKey: string): Buffer {
+  return crypto.createHash('sha256').update(rawKey).digest();
+}
+
+/** Chiffrement AES-256-GCM — format : "gcm:<iv_hex>:<ciphertext_hex>:<tag_hex>" */
 function encrypt(text: string, key: string): string {
-  const iv = crypto.randomBytes(16);
-  const k = crypto.createHash('sha256').update(key).digest();
-  const cipher = crypto.createCipheriv(ALGO, k, iv);
-  return iv.toString('hex') + ':' + Buffer.concat([cipher.update(text), cipher.final()]).toString('hex');
+  if (typeof text !== 'string' || !text) throw new TypeError('encrypt: text doit être une chaîne non vide');
+  const k  = getKey(key);
+  const iv = crypto.randomBytes(12);
+  const c  = crypto.createCipheriv('aes-256-gcm', k, iv) as crypto.CipherGCM;
+  const enc = Buffer.concat([c.update(text, 'utf8'), c.final()]);
+  const tag = c.getAuthTag();
+  return `gcm:${iv.toString('hex')}:${enc.toString('hex')}:${tag.toString('hex')}`;
 }
+
+/** Déchiffrement — supporte GCM (v2) et CBC (v1 legacy pour anciens mots de passe) */
 function decrypt(encrypted: string, key: string): string {
+  if (!encrypted) return '';
+  const k = getKey(key);
+  if (encrypted.startsWith('gcm:')) {
+    const parts = encrypted.slice(4).split(':');
+    if (parts.length !== 3) throw new Error('Format GCM invalide');
+    const iv  = Buffer.from(parts[0], 'hex');
+    const tag = Buffer.from(parts[2], 'hex');
+    const d   = crypto.createDecipheriv('aes-256-gcm', k, iv) as crypto.DecipherGCM;
+    d.setAuthTag(tag);
+    return Buffer.concat([d.update(Buffer.from(parts[1], 'hex')), d.final()]).toString();
+  }
+  // Rétro-compatibilité CBC v1
   const [ivHex, encHex] = encrypted.split(':');
-  const iv = Buffer.from(ivHex, 'hex');
-  const k = crypto.createHash('sha256').update(key).digest();
-  const decipher = crypto.createDecipheriv(ALGO, k, iv);
-  return Buffer.concat([decipher.update(Buffer.from(encHex, 'hex')), decipher.final()]).toString();
+  if (!ivHex || !encHex) return encrypted;
+  const d = crypto.createDecipheriv('aes-256-cbc', k, Buffer.from(ivHex, 'hex'));
+  return Buffer.concat([d.update(Buffer.from(encHex, 'hex')), d.final()]).toString();
 }
-const ENC_KEY = process.env.ENCRYPTION_KEY || 'sxb-vpn-32-byte-encryption-key-!';
 
 // ─── GET /api/ssh/accounts ───────────────────────────────────────────────────
 router.get('/accounts', requireAuth, requirePermission('ssh.view'), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const accounts = await prisma.sshAccount.findMany({
       orderBy: { createdAt: 'desc' },
-      include: { payload: true },
     });
+    // Fetch payloads separately (Prisma client missing payload relation in generated client)
+    const payloadIds = [...new Set(accounts.map((a: any) => a.payloadId).filter(Boolean))];
+    const payloads = payloadIds.length > 0
+      ? await (prisma as any).sshPayload.findMany({ where: { id: { in: payloadIds } } }).catch(() => [])
+      : [];
+    const payloadMap = Object.fromEntries(payloads.map((p: any) => [p.id, p]));
     // Mask passwords in response
-    const safe = accounts.map(a => ({ ...a, password: '••••••••' }));
+    const safe = accounts.map((a: any) => ({ ...a, password: '••••••••', payload: a.payloadId ? payloadMap[a.payloadId] ?? null : null }));
     return res.json({ success: true, accounts: safe });
   } catch (err) {
     console.error('SSH list error:', err);
@@ -48,10 +78,14 @@ router.get('/accounts/:id', requireAuth, requirePermission('ssh.view'), async (r
   try {
     const acc = await prisma.sshAccount.findUnique({
       where: { id: req.params.id },
-      include: { payload: true },
     });
+    // Fetch payload separately
+    let accPayload = null;
+    if ((acc as any)?.payloadId) {
+      accPayload = await (prisma as any).sshPayload.findUnique({ where: { id: (acc as any).payloadId } }).catch(() => null);
+    }
     if (!acc) return res.status(404).json({ error: 'SSH account not found' });
-    return res.json({ success: true, account: { ...acc, password: '••••••••' } });
+    return res.json({ success: true, account: { ...acc, password: '••••••••', payload: accPayload } });
   } catch (err) {
     return res.status(500).json({ error: 'Failed to get SSH account' });
   }

@@ -6,7 +6,7 @@ import { useAuthContext } from "@/contexts/AuthContext";
 import Colors from "@/constants/colors";
 
 const { width, height } = Dimensions.get("window");
-const LOGO = require("@/assets/images/icon.png");
+const LOGO = require("../assets/images/icon.png");
 
 export default function SplashScreen() {
   const { isLoading, isAuthenticated, hasSeenOnboarding } = useAuthContext();

@@ -40,7 +40,6 @@ export interface DbVpnClient {
   quotaUsed: bigint;
   expireAt: Date;
   status: string;
-  xpanelUserId?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -71,12 +70,11 @@ export interface DbVPSServer {
   ip: string;
   location: string;
   status: string;
-  xpanelId?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
 
-export interface DbXPanelConfig {
+export interface DbServerConfig {
   id: string;
   serverId: string;
   type: string;
@@ -150,7 +148,7 @@ class InMemoryDatabase {
   resellers: DbReseller[] = [];
   tokens: DbTokenSXB[] = [];
   vpsServers: DbVPSServer[] = [];
-  xpanelConfigs: DbXPanelConfig[] = [];
+  serverConfigs: DbServerConfig[] = [];
   vouchers: DbVoucher[] = [];
   auditLogs: DbAuditLog[] = [];
   subscriptions: DbSubscription[] = [];
@@ -173,7 +171,7 @@ class InMemoryDatabase {
       { id: "p2", name: "users.create", description: "Create users" },
       { id: "p3", name: "users.delete", description: "Delete users" },
       { id: "p4", name: "config.view", description: "View system configs" },
-      { id: "p5", name: "xpanel.access", description: "Access XPanel integration" },
+      { id: "p5", name: "server.config", description: "Access server configuration" },
       { id: "p6", name: "server.manage", description: "Manage VPN Servers" },
       { id: "p7", name: "reseller.manage", description: "Manage resellers" },
       { id: "p8", name: "clients.view", description: "View VPN Clients" },
@@ -256,7 +254,6 @@ class InMemoryDatabase {
         ip: "195.154.120.12",
         location: "Paris, France 🇫🇷",
         status: "online",
-        xpanelId: "xp-srv-1",
         createdAt: new Date(),
         updatedAt: new Date(),
       },
@@ -266,7 +263,6 @@ class InMemoryDatabase {
         ip: "3.120.45.99",
         location: "Frankfurt, Germany 🇩🇪",
         status: "online",
-        xpanelId: "xp-srv-2",
         createdAt: new Date(),
         updatedAt: new Date(),
       }

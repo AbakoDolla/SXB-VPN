@@ -1,7 +1,25 @@
 import { Router, Response } from "express";
 import { z } from "zod";
+import crypto from "crypto";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { generateTokens, requireAuth, AuthenticatedRequest } from "../middleware/auth";
+
+// ── AES-256-CBC decrypt (same key as vpn-profiles.ts) ─────────────────────────
+const ENC_ALGO = "aes-256-cbc";
+const ENC_KEY = (() => { const k = process.env.ENCRYPTION_KEY; if (!k) console.error("[SECURITY] ENCRYPTION_KEY not set — insecure fallback active!"); return k || "sxb-vpn-32-byte-encryption-key-!"; })();
+
+function decryptField(enc: string | null | undefined): string | null {
+  if (!enc) return null;
+  try {
+    if (!enc.includes(":")) return enc; // not encrypted — return as-is
+    const [ivHex, encHex] = enc.split(":");
+    const k = crypto.createHash("sha256").update(ENC_KEY).digest();
+    const d = crypto.createDecipheriv(ENC_ALGO, k, Buffer.from(ivHex, "hex"));
+    return Buffer.concat([d.update(Buffer.from(encHex, "hex")), d.final()]).toString();
+  } catch {
+    return enc; // fallback: return raw value if decryption fails
+  }
+}
 
 const router = Router();
 
@@ -276,7 +294,7 @@ router.post("/packages/activate", async (req: AuthenticatedRequest, res: Respons
 router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
   const FALLBACK = [
     { name: "SSH",         port: 22,   transport: "TCP",  security: "SSH",     description: "Securise" },
-    { name: "SSH+Payload", port: 80,   transport: "TCP",  security: "Bypass",  description: "Anti-DPI" },
+    { name: "SSH+Payload", port: 443,  transport: "TCP",  security: "Bypass",  description: "Anti-DPI" },
   ];
   try {
     const client: any = await findClientByUserId(req.user!.userId);
@@ -284,85 +302,93 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
     const state = computeAccountState(client);
 
     let sub: any = null;
-    let payloadContent: string | null = null;
     if (prisma) {
+      // IMPORTANT : include { payload: true } pour éviter un second round-trip
+      // et garantir que le contenu du payload arrive même si payloadId est défini
       sub = await (prisma as any).subscription.findFirst({
         where: { clientId: client.id, status: "active" },
         include: { profile: true },
         orderBy: { createdAt: "desc" },
       });
-      
-      // Récupérer le payload si présent - utiliser (prisma as any) pour éviter les erreurs de typage
-      const subAny = sub as any;
-      const profileAny = subAny?.profile;
-      console.log("[DEBUG] sub:", JSON.stringify(subAny?.id));
-      console.log("[DEBUG] profile:", JSON.stringify(profileAny?.name));
-      console.log("[DEBUG] payloadId:", profileAny?.payloadId);
-      if (profileAny?.payloadId) {
-        const payload = await (prisma as any).payload.findUnique({
-          where: { id: profileAny.payloadId }
-        });
-        console.log("[DEBUG] payload found:", payload?.content?.substring(0, 50));
-        if (payload) {
-          payloadContent = payload.content;
-        }
-      }
     }
 
     const profile = sub?.profile || null;
-    const proto = (profile?.protocol || "ssh").toLowerCase();
+    const proto = (profile?.protocol || "ssh").toLowerCase(); // "ssh" | "ssh+payload" | "vless" …
+
+    // ── Charger le payload SSH (via JOIN Prisma d'abord, puis requête séparée) ─
+    let payloadContent: string | null = null;
+    if (profile?.payload?.content) {
+      // Contenu ramené directement par le JOIN (chemin normal)
+      payloadContent = profile.payload.content;
+    } else if (profile?.payloadId && prisma) {
+      // Fallback : requête séparée si le JOIN n'a pas ramené le contenu
+      try {
+        const sshPayload = await (prisma as any).sshPayload.findUnique({
+          where: { id: profile.payloadId },
+        });
+        payloadContent = sshPayload?.content || null;
+      } catch (e) {
+        console.error("Erreur chargement payload SSH:", e);
+      }
+    }
+    // Payload WebSocket par défaut pour ssh+payload si aucun payload n'est configuré
+    // Garantit que le module natif Android n'entre pas en mode SSH direct sur port 443
+    if (!payloadContent && proto === "ssh+payload") {
+      payloadContent = "GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]";
+    }
+
+    // ── Déchiffrer le mot de passe avant envoi au mobile ─────────────────
+    const decryptedPassword = decryptField(profile?.password);
+
     const protocols = profile
-      ? [{ name: proto.toUpperCase(), port: profile.port, transport: (profile.network || "tcp").toUpperCase(), security: profile.tls ? "TLS" : "None", description: "Actif \u2014 " + profile.name }]
+      ? [{ name: proto === "ssh+payload" ? "SSH+Payload" : proto.toUpperCase(), port: profile.port, transport: (profile.network || "tcp").toUpperCase(), security: profile.tls ? "TLS" : "Bypass", description: "Actif — " + profile.name }]
       : FALLBACK;
 
     let connectionUri: string | null = null;
     if (profile) {
-      if (proto === "ssh") {
+      if (proto === "ssh" || proto === "ssh+payload") {
         connectionUri = "ssh://" + (profile.username || "user") + "@" + profile.host + ":" + profile.port;
         if (profile.sni) connectionUri += "?sni=" + encodeURIComponent(profile.sni);
+        if (proto === "ssh+payload") connectionUri += (connectionUri.includes("?") ? "&" : "?") + "mode=payload";
       }
     }
 
+    // ── Réponse sécurisée — AUCUN credential en clair ─────────────────────────
+    // Les credentials (host, port, username, password, uuid, payload) ne sont
+    // plus exposés ici. Ils transitent uniquement via /api/provision/activate
+    // (chiffrés AES-256-GCM, liés à l'appareil, stockés dans Android Keystore).
     return res.json({
       state: state.state,
       protocols,
-      serverInfo: { host: profile?.host || "vpnsxb.afrihall.com", location: profile ? "SXB" : "France / Europe" },
-      subscriptionUrl: connectionUri,
-      connectionUri,
-      profile: profile ? { 
-        id: profile.id, 
-        name: profile.name, 
-        protocol: proto, 
-        host: profile.host, 
-        port: profile.port, 
-        network: profile.network, 
-        tls: profile.tls, 
-        sni: profile.sni, 
-        uuid: profile.uuid, 
-        path: profile.path, 
-        username: profile.username, 
-        password: profile.password || null, 
-        method: profile.method || null,
-        payload: payloadContent,
-        usePayload: !!payloadContent,
+      serverInfo: { location: profile ? "SXB" : "Africa / Cameroun" },
+      // connectionUri exposé uniquement pour affichage informatif (pas de credential)
+      connectionUri: connectionUri ? connectionUri.replace(/:\/\/.*@/, '://***@') : null,
+      profile: profile ? {
+        id:              profile.id,
+        name:            profile.name,
+        protocol:        proto,
+        displayProtocol: profile.displayProtocol || null,
+        // ❌ Champs supprimés : host, port, username, password, uuid, payload, sni, path
       } : null,
-      subscription: sub ? { id: sub.id, name: sub.name, dataToken: sub.dataToken, expireAt: sub.expireAt?.toISOString(), status: sub.status } : null,
-      vpnConfig: profile ? { 
-        id: profile.id, 
-        name: profile.name, 
-        protocol: proto, 
-        host: profile.host, 
-        port: profile.port, 
-        network: profile.network, 
-        tls: profile.tls, 
-        sni: profile.sni, 
-        uuid: profile.uuid, 
-        path: profile.path, 
-        username: profile.username, 
-        password: profile.password || null, 
-        method: profile.method || null,
-        payload: payloadContent,
-        usePayload: !!payloadContent,
+      // vpnConfig : métadonnées uniquement — les credentials viennent du SecureStore via /provision
+      vpnConfig: profile ? {
+        configId:        profile.id,
+        protocol:        proto,
+        displayProtocol: profile.displayProtocol || null,
+        // ❌ Champs supprimés : host, port, username, password, sni, uuid, payload, etc.
+      } : null,
+      // quota : bytes — consommé par offlineStorage.ts en mode hors-ligne
+      quota: {
+        totalQuota:  client.quotaTotal ? Number(client.quotaTotal) : 0,
+        usedQuota:   Number(client.quotaUsed ?? 0),
+        expiryDate:  client.expireAt ? new Date(client.expireAt).toISOString() : null,
+      },
+      subscription: sub ? {
+        id:        sub.id,
+        name:      sub.name,
+        dataToken: sub.dataToken,   // Token SXB-DATA — utilisé par le mobile pour /provision/activate
+        expireAt:  sub.expireAt?.toISOString(),
+        status:    sub.status,
       } : null,
     });
   } catch (err) {
@@ -383,28 +409,6 @@ router.post("/vpn/session", async (req: AuthenticatedRequest, res: Response) => 
   }
 });
 
-
-
-// POST /api/mobile/vpn/traffic — trafic temps réel envoyé depuis l'appareil
-const trafficSchema = z.object({
-  upload:    z.number().int().min(0),
-  download:  z.number().int().min(0),
-  sessionId: z.string().optional(),
-});
-router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const { upload, download, sessionId } = trafficSchema.parse(req.body);
-    await logDbActivity(
-      req.user!.userId,
-      `Mobile VPN traffic — ↑${upload}B ↓${download}B${sessionId ? " sid:" + sessionId : ""}`,
-      "success",
-      req.ip
-    );
-    return res.json({ message: "ok", upload, download });
-  } catch (err) {
-    return res.status(400).json({ error: "errors.validation", message: "Données trafic invalides" });
-  }
-});
 
 // GET /api/mobile/notifications — notifications basées sur l'état du compte
 router.get('/notifications', async (req: AuthenticatedRequest, res: Response) => {
@@ -550,122 +554,202 @@ router.get('/history', async (req: AuthenticatedRequest, res: Response) => {
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// POST /api/mobile/provision/activate — Provisionnement sécurisé
-// Retourne la config VPN complète pour le mobile
-// ─────────────────────────────────────────────────────────────────────────────
-const provisionActivateSchema = z.object({
-  dataToken: z.string().min(5),
-  deviceId: z.string().min(1),
+// POST /api/mobile/vpn/traffic — synchronisation consommation data réelle
+// Appelé toutes les 90s par VpnContext quand VPN actif + à la déconnexion.
+// Décrémente le quota du client et enregistre dans traffic_usage.
+router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const schema = z.object({
+      bytesUp:   z.number().int().min(0),
+      bytesDown: z.number().int().min(0),
+    });
+    const { bytesUp, bytesDown } = schema.parse(req.body);
+    const totalBytes = BigInt(bytesUp + bytesDown);
+    if (totalBytes === 0n) return res.json({ ok: true });
+
+    const client: any = await findClientByUserId(req.user!.userId);
+    if (!client) return res.status(404).json({ error: "errors.mobile.no_account" });
+
+    if (prisma) {
+      // Incrémenter quotaUsed sur vpn_clients
+      await (prisma as any).vpnClient.update({
+        where: { id: client.id },
+        data: { quotaUsed: { increment: totalBytes } },
+      });
+      // Enregistrer dans traffic_usage
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO traffic_usage (id, "clientId", upload, download, timestamp)
+         VALUES (gen_random_uuid(), $1, $2, $3, NOW())`,
+        client.id,
+        BigInt(bytesUp),
+        BigInt(bytesDown),
+      ).catch(() => {}); // table peut avoir une structure différente — non-bloquant
+    } else {
+      // In-memory fallback
+      if (client.quotaUsed !== undefined) {
+        client.quotaUsed = BigInt(client.quotaUsed || 0) + totalBytes;
+      }
+    }
+
+    // Retourner le quota restant mis à jour pour que l'app puisse alerter l'utilisateur
+    const updatedClient: any = await findClientByUserId(req.user!.userId);
+    const state = computeAccountState(updatedClient || client);
+    return res.json({
+      ok: true,
+      quotaRemainingGb: state.quotaRemainingGb,
+      state: state.state,
+    });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: "errors.validation" });
+    }
+    console.error("Traffic sync error:", err);
+    return res.status(500).json({ error: "errors.server" });
+  }
 });
 
-router.post("/provision/activate", async (req: AuthenticatedRequest, res: Response) => {
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/mobile/connections — toutes les connexions VPN d'un client
+// Retourne chaque Subscription avec displayProtocol ET technicalProtocol séparés
+// ─────────────────────────────────────────────────────────────────────────────
+router.get("/connections", async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { dataToken, deviceId } = provisionActivateSchema.parse(req.body);
-
-    // 1. Trouver la subscription via dataToken
-    let subscription: any = null;
-    if (prisma) {
-      subscription = await (prisma as any).subscription.findFirst({
-        where: {
-          dataToken: normalizeToken(dataToken),
-          status: "active",
-        },
-        include: {
-          client: { include: { user: true } },
-          profile: true,
-        },
-      });
+    const client: any = await findClientByUserId(req.user!.userId);
+    if (!client) {
+      return res.status(404).json({ error: "errors.mobile.no_account", message: "Aucun compte VPN associé" });
     }
 
-    if (!subscription) {
-      return res.status(404).json({
-        error: "errors.mobile.invalid_subscription",
-        message: "Abonnement invalide ou expiré"
-      });
+    if (!prisma) {
+      return res.json({ connections: [] });
     }
 
-    // 2. Vérifier l'expiration
-    if (subscription.expireAt && new Date(subscription.expireAt).getTime() < Date.now()) {
-      return res.status(403).json({
-        error: "errors.mobile.subscription_expired",
-        message: "Abonnement expiré"
-      });
-    }
+    const subscriptions = await (prisma as any).subscription.findMany({
+      where:   { clientId: client.id },
+      orderBy: { createdAt: "desc" },
+      include: { profile: true },
+    });
 
-    // 3. Récupérer le payload si c'est un profil SSH avec payload
-    let payloadContent: string | null = null;
-    if (subscription.profile?.payloadId && prisma) {
-      const payload = await (prisma as any).payload.findUnique({
-        where: { id: subscription.profile.payloadId }
-      });
-      if (payload) {
-        payloadContent = payload.content;
+    const now = Date.now();
+
+    const connections = subscriptions.map((sub: any) => {
+      const profile = sub.profile || null;
+
+      // Protocol technique (SSH, VLESS, Trojan…)
+      const technicalProtocol = profile?.protocol || "ssh";
+
+      // Protocol affiché (nom commercial défini dans le dashboard, sinon fallback technique)
+      const displayProtocol = profile?.displayProtocol ||
+        (technicalProtocol === "ssh+payload" ? "SSH+Payload" : technicalProtocol.toUpperCase());
+
+      const totalBytes     = Number(sub.quotaBytes ?? 0);
+      const usedBytes      = Number(sub.quotaUsed  ?? 0);
+      const remainingBytes = Math.max(totalBytes - usedBytes, 0);
+      const GB             = 1024 ** 3;
+
+      // Calculer le statut réel (expired si dépassé la date)
+      let status = sub.status;
+      if (status === "active" && sub.expireAt && new Date(sub.expireAt).getTime() < now) {
+        status = "expired";
       }
+
+      return {
+        id:                sub.id,
+        name:              sub.name || "Connexion VPN",
+        displayProtocol,
+        technicalProtocol,
+        server:            profile?.host || "—",
+        port:              profile?.port || 0,
+        quota: {
+          totalGB:     totalBytes / GB,
+          usedGB:      usedBytes  / GB,
+          remainingGB: remainingBytes / GB,
+          totalBytes,
+          usedBytes,
+        },
+        duration:   sub.durationDays,
+        expiresAt:  sub.expireAt ? new Date(sub.expireAt).toISOString() : null,
+        status,
+        dataToken:  sub.dataToken,
+        createdAt:  sub.createdAt ? new Date(sub.createdAt).toISOString() : new Date().toISOString(),
+      };
+    });
+
+    return res.json({ connections });
+  } catch (err) {
+    console.error("Mobile /connections error:", err);
+    return res.status(500).json({ error: "errors.server", message: "Impossible de charger les connexions" });
+  }
+});
+
+// POST /api/mobile/vpn/usage — support usage data upload for V2Ray / general configs (Dashboard sync)
+const usageSchema = z.object({
+  download:       z.number().int().min(0),       // bytes
+  upload:         z.number().int().min(0),         // bytes
+  duration:       z.number().int().min(0),       // seconds
+  deviceId:       z.string().optional(),
+  subscriptionId: z.string().optional(),
+});
+
+router.post("/vpn/usage", async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { download, upload, duration, deviceId, subscriptionId } = usageSchema.parse(req.body);
+    const totalBytes = BigInt(download + upload);
+
+    let client: any = await findClientByUserId(req.user!.userId);
+    if (!client && deviceId && prisma) {
+      client = await (prisma as any).vpnClient.findUnique({ where: { deviceId } });
     }
 
-    // 4. Construire la config VPN complète
-    const profile = subscription.profile;
-    const vpnConfig: Record<string, any> = {
-      protocol: (profile?.protocol || "ssh").toLowerCase(),
-      host: profile?.host || "",
-      port: profile?.port || 22,
-      username: profile?.username || "",
-      password: profile?.password || "",
-      network: profile?.network || "tcp",
-      tls: profile?.tls || false,
-      sni: profile?.sni || "",
-      uuid: profile?.uuid || "",
-      method: profile?.method || "",
-      payload: payloadContent,
-      usePayload: !!payloadContent,
-    };
-
-    // 5. Calculer expiration (24h par défaut)
-    const configExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-
-    // 6. Logger l'activité
-    try {
-      await logDbActivity(
-        subscription.client?.userId || "unknown",
-        `Provision activated for device ${deviceId}`,
-        "success",
-        req.ip
-      );
-    } catch (logErr) {
-      console.log("[Provision] Logging skipped:", logErr);
+    if (!client) {
+      return res.status(404).json({ error: "errors.mobile.no_account", message: "Client non trouvé" });
     }
 
-    // 7. Retourner la config
+    if (prisma) {
+      // Mettre à jour vpnClient
+      await (prisma as any).vpnClient.update({
+        where: { id: client.id },
+        data: { quotaUsed: { increment: totalBytes } },
+      });
+
+      // Mettre à jour la subscription si fournie (ou trouver l'active)
+      let subId = subscriptionId;
+      if (!subId) {
+        const activeSub = await (prisma as any).subscription.findFirst({
+          where: { clientId: client.id, status: "active" },
+          orderBy: { createdAt: "desc" },
+        });
+        subId = activeSub?.id;
+      }
+
+      if (subId) {
+        await (prisma as any).subscription.update({
+          where: { id: subId },
+          data: { quotaUsed: { increment: totalBytes } },
+        });
+      }
+
+      // Enregistrer dans traffic_usage
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO traffic_usage (id, "clientId", upload, download, timestamp)
+         VALUES (gen_random_uuid(), $1, $2, $3, NOW())`,
+        client.id,
+        BigInt(upload),
+        BigInt(download),
+      ).catch(() => {});
+    }
+
+    const updatedClient: any = await findClientByUserId(req.user!.userId);
+    const state = computeAccountState(updatedClient || client);
+
     return res.json({
       success: true,
-      config: {
-        subscriptionId: subscription.id,
-        profileId: profile?.id || null,
-        profileName: profile?.name || "Default",
-        protocol: vpnConfig.protocol,
-        displayProtocol: profile?.displayProtocol || vpnConfig.protocol.toUpperCase(),
-        quotaGB: Number(subscription.quotaBytes) / (1024 * 1024 * 1024),
-        quotaUsedGB: Number(subscription.quotaUsed || 0) / (1024 * 1024 * 1024),
-        expireAt: subscription.expireAt?.toISOString() || null,
-        configExpiresAt,
-        provisionedAt: new Date().toISOString(),
-        encVersion: "plain-v1",
-        vpnConfig,
-      }
+      message: "Usage enregistré avec succès",
+      quotaRemainingGb: state.quotaRemainingGb,
+      state: state.state,
     });
   } catch (err: any) {
-    console.error("Provision activate error:", err);
-    if (err?.issues) {
-      return res.status(400).json({
-        error: "errors.validation",
-        message: "Paramètres invalides"
-      });
-    }
-    return res.status(500).json({
-      error: "errors.server",
-      message: "Échec du provisionnement"
-    });
+    console.error("vpn/usage endpoint error:", err);
+    return res.status(500).json({ error: "errors.server", message: "Erreur enregistrement de consommation" });
   }
 });
 

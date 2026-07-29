@@ -72,30 +72,31 @@ model AdminToken {
 }
 
 model VpnClient {
-  id           String     @id @default(uuid())
-  userId       String
-  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  token        String     @unique // SXB-USER-XXXX-XXXX-XXXX
-  quotaTotal   BigInt?
-  quotaUsed    BigInt     @default(0)
-  expireAt     DateTime?
-  status       String       @default("active") // active, suspended
-  avatarUrl    String?
-  xpanelUserId String?
-  deviceLimit  Int        @default(1)
-  deviceId     String?    @unique
-  activatedAt  DateTime?
+  id              String     @id @default(uuid())
+  userId          String
+  user            User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token           String     @unique // SXB-USER-XXXX-XXXX-XXXX
+  quotaTotal      BigInt?
+  quotaUsed       BigInt     @default(0)
+  expireAt        DateTime?
+  status          String     @default("active") // active, suspended
+  avatarUrl       String?
+  xpanelUserId    String?    // External xPanel user ID
+  deviceLimit     Int        @default(1)
+  deviceId        String?    @unique
+  activatedAt     DateTime?
   lastSeenAt      DateTime?
   appRegisteredAt DateTime?
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
 
-  tokens             TokenSXB[]
+  tokens       TokenSXB[]
+
+  subscriptions      Subscription[]
+  xrayAccounts       XrayAccount[]
+  singboxAccounts    SingboxAccount[]
   activationSessions ActivationSession[]
-  xrayAccounts        XrayAccount[]
-  singboxAccounts     SingboxAccount[]
-  subscriptions       Subscription[]
-  appRegistrations    AppRegistration[]
+  appRegistrations   AppRegistration[]
 
   @@map("vpn_clients")
 }
@@ -132,15 +133,14 @@ model VPSServer {
   ip            String
   location      String
   status        String         @default("online") // online, offline
-  xpanelId      String?
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
-  xpanelConfigs XPanelConfig[]
+  serverConfigs ServerConfig[]
 
   @@map("servers")
 }
 
-model XPanelConfig {
+model ServerConfig {
   id                     String    @id @default(uuid())
   serverId               String
   server                 VPSServer @relation(fields: [serverId], references: [id], onDelete: Cascade)
@@ -232,6 +232,7 @@ model SshPayload {
   content     String?
   status      String       @default("active")
   sshAccounts SshAccount[]
+  vpnProfiles VpnProfile[]
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 
@@ -317,77 +318,69 @@ model VpnLog {
   @@map("vpn_logs")
 }
 
-model ActivationSession {
-  id             String    @id @default(uuid())
-  clientId       String
-  client         VpnClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  deviceId       String
-  activationDate DateTime  @default(now())
-  expirationDate DateTime?
-  lastSync       DateTime  @default(now())
-  status         String    @default("active") // active, revoked, expired
-  ipAddress      String?
-  userAgent      String?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
-
-  @@unique([clientId, deviceId])
-  @@map("activation_sessions")
-}
+// ═══════════════════════════════════════════════════════════════
+// SXB VPN OFFLINE-FIRST — VPN Profiles + Subscriptions
+// ═══════════════════════════════════════════════════════════════
 
 model VpnProfile {
   id               String         @id @default(uuid())
   name             String
   description      String?
-  protocol         String         // ssh | vless | vmess | trojan | shadowsocks | singbox
-  displayProtocol  String?
+  protocol         String         // ssh | vless | vmess | trojan | shadowsocks | singbox  ← technicalProtocol
+  displayProtocol  String?        // Nom commercial affiché sur mobile : "MTN Protocol", "Orange Protocol"
   host             String
   port             Int
   username         String?
-  password         String?
-  uuid             String?
+  password         String?        // AES-256-CBC encrypted
+  uuid             String?        @unique @default(uuid())
   path             String?
-  network          String         @default("ws")
+  network          String?        @default("ws")
   tls              Boolean        @default(false)
   sni              String?
   dns              String?
   payloadId        String?
+  payload          SshPayload?    @relation(fields: [payloadId], references: [id])
   offlineValidDays Int            @default(7)
   method           String?
-  status           String         @default("active")
+  jsonConfig       String?        // Optional raw JSON config for V2Ray/VMess/VLESS/Trojan/Sing-box/WireGuard
+  status           String         @default("active") // active | archived
+  createdBy        String?
   createdAt        DateTime       @default(now())
   updatedAt        DateTime       @updatedAt
 
   subscriptions    Subscription[]
 
-  createdBy        String?
   @@map("vpn_profiles")
 }
 
 model Subscription {
-  id           String      @id @default(uuid())
-  name         String?
-  clientId     String
-  client       VpnClient   @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  profileId    String
-  profile      VpnProfile  @relation(fields: [profileId], references: [id])
-  deviceId     String?
-  dataToken    String      @unique
-  quotaBytes   BigInt
-  quotaUsed    BigInt      @default(0)
-  durationDays Int
-  deviceLimit  Int         @default(1)
-  startAt      DateTime    @default(now())
-  expireAt     DateTime
-  status       String      @default("active")
-  revokeReason String?
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
+  id                String               @id @default(uuid())
+  name              String
+  clientId          String
+  client            VpnClient            @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  profileId         String
+  profile           VpnProfile           @relation(fields: [profileId], references: [id])
+  dataToken         String               @unique // SXB-DATA-XXXX-XXXX-XXXX
+  quotaBytes        BigInt               @default(0)
+  quotaUsed         BigInt               @default(0)
+  durationDays      Int
+  deviceLimit       Int                  @default(1)
+  startAt           DateTime             @default(now())
+  expireAt          DateTime?
+  status            String               @default("active") // active | expired | revoked | suspended
+  displayProtocol   String?              // Nom commercial : "MTN Protocol", "Orange Protocol"
+  technicalProtocol String?              // Protocole technique : "ssh" | "vless" | "trojan"
+  lastProvisionAt   DateTime?
+  lastSyncAt        DateTime?
+  revokedAt         DateTime?
+  deviceId          String?
+  revokeReason      String?
+  createdBy         String?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
 
-  createdBy       String?
-  revokedAt       DateTime?
-  lastProvisionAt DateTime?
-  lastSyncAt      DateTime?
+  devices           SubscriptionDevice[]
+
   @@map("subscriptions")
 }
 
@@ -404,4 +397,34 @@ model AppRegistration {
   lastSeenAt  DateTime   @default(now())
 
   @@map("app_registrations")
+}
+
+model SubscriptionDevice {
+  id             String       @id @default(uuid())
+  subscriptionId String
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  deviceId       String
+  activatedAt    DateTime     @default(now())
+  lastSeenAt     DateTime?
+
+  @@unique([subscriptionId, deviceId])
+  @@map("subscription_devices")
+}
+
+model ActivationSession {
+  id             String    @id @default(uuid())
+  clientId       String
+  client         VpnClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  deviceId       String
+  activationDate DateTime  @default(now())
+  expirationDate DateTime?
+  lastSync       DateTime  @default(now())
+  status         String    @default("active")
+  ipAddress      String?
+  userAgent      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([clientId, deviceId])
+  @@map("activation_sessions")
 }

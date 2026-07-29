@@ -19,7 +19,7 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient from '@/services/apiClient';
-import { saveVpnConfig, loadVpnConfig, isQuotaExhausted, isConfigExpired, syncQuotaFromBackend } from '@/services/offlineStorage';
+import { saveVpnConfig, loadVpnConfig, saveQuotaData, isQuotaExhausted, isConfigExpired } from '@/services/offlineStorage';
 import { provisionAndStore, loadProvisionedConfig, clearProvisionedConfig } from '@/services/provisionClient';
 import { isCompleteOfflineConfig, mergeConfigs } from '@/services/configValidator';
 import { useAuthContext } from './AuthContext';
@@ -253,6 +253,15 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         try {
           const freshResult = await provisionAndStore(conn.dataToken!, deviceId);
           const freshConfig = freshResult.config;
+          // Synchroniser le quota local (gardes offline : expiration + épuisement)
+          if (freshResult.meta.quotaGB > 0) {
+            await saveQuotaData({
+              configId:    freshResult.meta.subscriptionId || conn.id,
+              totalQuota:  Math.round(freshResult.meta.quotaGB * 1024 ** 3),
+              usedQuota:   Math.round(freshResult.meta.quotaUsedGB * 1024 ** 3),
+              expiryDate:  freshResult.meta.expireAt,
+            }).catch(() => {});
+          }
           // Fusionner la config provisionnée avec les métadonnées de connexion
           const merged = mergeConfigs(freshConfig, {
             protocol:        engineProtocol,
@@ -473,6 +482,19 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       const res = await apiClient.get('/mobile/vpn/config');
       const data = res.data;
 
+      // ── Quota : persister localement pour le mode hors-ligne ──────────────
+      // Le backend renvoie quota { totalQuota, usedQuota, expiryDate } (bytes).
+      // C'est ce qui permet aux gardes isQuotaExhausted()/isConfigExpired()
+      // de fonctionner sans réseau après redémarrage de l'app.
+      if (data.quota && Number(data.quota.totalQuota) > 0) {
+        await saveQuotaData({
+          configId:    data.vpnConfig?.configId ?? data.profile?.id ?? 'vpn_config',
+          totalQuota:  Number(data.quota.totalQuota) || 0,
+          usedQuota:   Number(data.quota.usedQuota)   || 0,
+          expiryDate:  data.quota.expiryDate ?? null,
+        }).catch(() => {});
+      }
+
       // ── Synchronisation intelligente ───────────────────────────────────────
       // On télécharge la nouvelle config, on la compare avec l'existante,
       // on fusionne intelligemment (conserve les champs valides, remplace
@@ -569,17 +591,31 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         const offlineEntry = await loadVpnConfig().catch(() => null);
 
         if (offlineEntry?.config) {
-          configToUse = { ...offlineEntry.config };
-          // Enrichir avec les métadonnées de connexion courante
-          if (vpnConfig?.displayProtocol) configToUse.displayProtocol = vpnConfig.displayProtocol;
-          if (vpnConfig?.configId)        configToUse.configId        = vpnConfig.configId;
-          addLog(`[SXB_DEBUG] CONFIG_LOADED proto=${offlineEntry.protocol} savedAt=${offlineEntry.savedAt}`);
-          addLog('✅ Configuration sécurisée chargée');
+          // FIX — Ne JAMAIS utiliser une config stockée incomplète :
+          // une écriture partielle héritée d'une ancienne version (avant le
+          // gardien saveCompleteConfig) bloquait définitivement la connexion
+          // (CONFIG_INCOMPLETE_BLOCK) sans jamais re-tenter le provisionnement.
+          // Règle : complète → utilisable hors-ligne ; incomplète → re-provision.
+          const storedCheck = isCompleteOfflineConfig(offlineEntry.config);
+          if (storedCheck.complete) {
+            configToUse = { ...offlineEntry.config };
+            // Enrichir avec les métadonnées de connexion courante
+            if (vpnConfig?.displayProtocol) configToUse.displayProtocol = vpnConfig.displayProtocol;
+            if (vpnConfig?.configId)        configToUse.configId        = vpnConfig.configId;
+            addLog(`[SXB_DEBUG] CONFIG_LOADED proto=${offlineEntry.protocol} savedAt=${offlineEntry.savedAt}`);
+            addLog('✅ Configuration sécurisée chargée');
+          } else {
+            addLog(`[SXB_DEBUG] CONFIG_STORED_INCOMPLETE missing=[${storedCheck.missing.join(',')}] — re-provisionnement requis`);
+          }
         }
 
-        // ── Si pas de config Offline, tenter le provisionnement en ligne ─────
+        // ── Si pas de config Offline complète, tenter le provisionnement ─────
         if (!configToUse) {
-          const dataToken = (vpnConfig as any)?.dataToken as string | undefined;
+          // Chercher le dataToken dans toutes les sources disponibles
+          const dataToken =
+            ((vpnConfig as any)?.dataToken as string | undefined) ??
+            ((offlineEntry?.config as any)?.dataToken as string | undefined) ??
+            ((activeConnection as any)?.dataToken as string | undefined);
           addLog(`[SXB_DEBUG] PROVISION_CHECK dataToken=${dataToken ? 'OK' : 'MISSING'} deviceId=${deviceId ? 'OK' : 'MISSING'}`);
           if (dataToken && deviceId) {
             addLog('[SXB_DEBUG] PROVISION_REQUIRED — appel /provision/activate');
@@ -589,12 +625,21 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
               const freshConfig = freshResult.config;
               // Fusionner avec les métadonnées de connexion
               configToUse = mergeConfigs(freshConfig, {
-                displayProtocol: vpnConfig?.displayProtocol,
-                configId:        vpnConfig?.configId,
+                displayProtocol: vpnConfig?.displayProtocol ?? activeConnection?.displayProtocol ?? freshResult.meta.displayProtocol,
+                configId:        vpnConfig?.configId ?? activeConnection?.id ?? freshResult.meta.subscriptionId,
                 dataToken:       dataToken,
               });
               // Sauvegarder uniquement si complet
-              await saveCompleteConfig(configToUse, (configToUse.protocol || 'vless').toLowerCase(), vpnConfig?.configId, freshResult.meta.configExpiresAt);
+              await saveCompleteConfig(configToUse, (configToUse.protocol || 'vless').toLowerCase(), vpnConfig?.configId ?? activeConnection?.id, freshResult.meta.configExpiresAt);
+              // Synchroniser le quota local (validation offline expiration/quota)
+              if (freshResult.meta.quotaGB > 0) {
+                await saveQuotaData({
+                  configId:    freshResult.meta.subscriptionId || 'provision',
+                  totalQuota:  Math.round(freshResult.meta.quotaGB * 1024 ** 3),
+                  usedQuota:   Math.round(freshResult.meta.quotaUsedGB * 1024 ** 3),
+                  expiryDate:  freshResult.meta.expireAt,
+                }).catch(() => {});
+              }
               addLog('[SXB_DEBUG] PROVISION_OK — config complète stockée dans SecureStore');
               addLog('✅ Configuration provisionnée avec succès');
             } catch (provErr: any) {
@@ -602,7 +647,15 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
               const httpMsg    = provErr?.response?.data?.error ?? provErr?.response?.data?.message ?? '';
               addLog(`[SXB_DEBUG] PROVISION_FAILED http=${httpStatus} msg="${httpMsg || provErr?.message || 'inconnu'}"`);
               addLog(`⚠️ Provisionnement échoué : ${httpMsg || provErr?.message || 'erreur réseau'}`);
-              addLog('❌ Internet requis pour le premier provisionnement');
+              if (offlineEntry?.config) {
+                // Gardien ultime : signaler précisément ce qui manque au lieu
+                // d'un échec opaque. La config incomplète n'est PAS utilisée.
+                const missing = isCompleteOfflineConfig(offlineEntry.config).missing;
+                addLog(`[SXB_DEBUG] CONFIG_INCOMPLETE_BLOCK missing=${missing.join(',')}`);
+                addLog(`❌ Configuration incomplète (manque : ${missing.join(', ')}) — internet requis pour la réparer`);
+              } else {
+                addLog('❌ Internet requis pour le premier provisionnement');
+              }
               setVpnState('error');
               setIsConnecting(false);
               return;

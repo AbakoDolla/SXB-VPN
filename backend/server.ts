@@ -11,7 +11,6 @@ import authRouter from "./server/routes/auth";
 import usersRouter from "./server/routes/users";
 import clientsRouter from "./server/routes/clients";
 import tokensRouter from "./server/routes/tokens";
-import xpanelRouter from "./server/routes/xpanel";
 import resellersRouter from "./server/routes/resellers";
 import vouchersRouter from "./server/routes/vouchers";
 import analyticsRouter from "./server/routes/analytics";
@@ -27,15 +26,19 @@ import auditLogsRouter from "./server/routes/audit-logs";
 import devicesRouter from "./server/routes/devices";
 import sshRouter from "./server/routes/ssh";
 import payloadRouter from "./server/routes/payload";
-import xrayRouter from "./server/routes/xray";
-import singboxRouter from "./server/routes/singbox";
 import sessionsRouter from "./server/routes/sessions";
 import vpnProfilesRouter from "./server/routes/vpn-profiles";
 import subscriptionsRouter from "./server/routes/subscriptions";
+import appRegisterRouter  from "./server/routes/app-register";
+import provisionRouter from "./server/routes/provision";
+import xrayRouter from "./server/routes/xray";
+import singboxRouter from "./server/routes/singbox";
+import xpanelRouter from "./server/routes/xpanel";
 
 async function startServer() {
   const app = express();
   app.set("trust proxy", 1);
+
   // Global BigInt serializer — prevents "Do not know how to serialize a BigInt"
   app.set("json replacer", (_key: string, value: unknown) =>
     typeof value === "bigint" ? value.toString() : value
@@ -106,7 +109,6 @@ async function startServer() {
   app.use("/api/users", usersRouter);
   app.use("/api/clients", clientsRouter);
   app.use("/api/tokens", tokensRouter);
-  app.use("/api/xpanel", xpanelRouter);
   app.use("/api/resellers", resellersRouter);
   app.use("/api/vouchers", vouchersRouter);
   app.use("/api/analytics", analyticsRouter);
@@ -122,12 +124,14 @@ async function startServer() {
   app.use("/api/devices", devicesRouter);
   app.use("/api/ssh", sshRouter);
   app.use("/api/payload", payloadRouter);
+  app.use("/api/sessions", sessionsRouter);
+  app.use("/api/vpn-profiles", vpnProfilesRouter);
   app.use("/api/xray", xrayRouter);
   app.use("/api/singbox", singboxRouter);
-  app.use("/api/sessions", sessionsRouter);
-
-  app.use("/api/vpn-profiles", vpnProfilesRouter);
+  app.use("/api/xpanel", xpanelRouter);
   app.use("/api/subscriptions", subscriptionsRouter);
+  app.use("/api/app",           appRegisterRouter);
+  app.use("/api/provision", provisionRouter);
 
   // Global Error Handler with support for Multilingual Error i18n
   app.use((err: any, req: Request, res: Response, next: NextFunction) => {
@@ -156,7 +160,7 @@ async function startServer() {
   } else {
     console.log("📦 Mounting production static file serving (Serving compiled React frontend)...");
     const distPath = path.join(process.cwd(), "dist");
-    app.use("/uploads", express.static(require("path").join(process.cwd(), "public", "uploads")));
+    const _fs = require("fs"); const _uploadDir = require("path").join(process.cwd(), "public", "uploads", "avatars"); if (!_fs.existsSync(_uploadDir)) _fs.mkdirSync(_uploadDir, { recursive: true }); app.use("/uploads", express.static(require("path").join(process.cwd(), "public", "uploads")));
     app.use(express.static(distPath));
     app.get("*", (req: Request, res: Response) => {
       res.sendFile(path.join(distPath, "index.html"));
@@ -173,6 +177,22 @@ async function startServer() {
   });
 }
 
+// ── Fix 5 : Gestionnaires globaux pour éviter les crashes PM2 silencieux ────────
+// Sans ces handlers, une exception non catchée tue le process → PM2 restart loop.
+// On log l'erreur et on continue sauf si c'est un crash fatal (SIGKILL etc).
+process.on("uncaughtException", (err: Error) => {
+  console.error("💥 [UNCAUGHT_EXCEPTION] Non-fatal — keeping process alive:", err.message);
+  console.error(err.stack);
+  // Ne pas appeler process.exit() ici — laisser PM2 décider
+});
+
+process.on("unhandledRejection", (reason: unknown, promise: Promise<unknown>) => {
+  console.error("💥 [UNHANDLED_REJECTION] Promise rejected without handler:");
+  console.error("  Reason:", reason);
+  // Log seulement, ne pas crasher
+});
+
 startServer().catch((err) => {
   console.error("💥 Critical Failure during backend server boot sequence:", err);
+  process.exit(1);
 });
