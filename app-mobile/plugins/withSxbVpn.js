@@ -244,7 +244,11 @@ function withJschDependency(config) {
       // Moteur sing-box embarqué (libbox.aar déposé dans android/app/libs/).
       // Remplace l'ancien binaire exécuté par ProcessBuilder — interdit depuis
       // Android 10 (W^X) et incapable de recevoir le descripteur du TUN.
-      "implementation(fileTree(mapOf(\"dir\" to \"libs\", \"include\" to listOf(\"*.aar\"))))",
+      //
+      // ATTENTION : app/build.gradle est en Groovy, PAS en Kotlin DSL.
+      // La syntaxe `fileTree(mapOf("dir" to ...))` est du Kotlin et provoque
+      // « No signature of method: java.lang.String.to() » à l'évaluation.
+      "implementation fileTree(dir: 'libs', include: ['*.aar'])",
     ];
     deps.forEach(dep => {
       if (!gradle.includes(dep)) {
