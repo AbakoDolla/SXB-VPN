@@ -2,7 +2,6 @@ import { Router, Response } from "express";
 import { z } from "zod";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
-import { XPanelService } from "../services/xpanel";
 
 const router = Router();
 
@@ -15,6 +14,7 @@ const createClientSchema = z.object({
   quotaTotalGb: z.coerce.number().min(1).optional(), // Optional - can be set via token later
   durationDays: z.coerce.number().min(1).optional(), // Optional - can be set via token later
   deviceLimit: z.coerce.number().min(1).default(1),
+  deviceId: z.string().optional(),
 });
 
 const updateClientSchema = z.object({
@@ -139,7 +139,7 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
         data: {
           name: body.name,
           email: tempEmail,
-          phone: "+00000000000",
+          phone: body.phone || "+00000000000",
           passwordHash,
           roleId: clientRole.id,
           status: "active",
@@ -156,24 +156,10 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
     }
 
     // Generate SXB Secure Client Token (Sing-box/V2Ray standard)
-    // Generate SXB-USER-XXXX-XXXX-XXXX format token
-    const sxbChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    const sxbPart = () => Array.from({ length: 4 }, () => sxbChars[Math.floor(Math.random() * sxbChars.length)]).join('');
-    const token = `SXB-USER-${sxbPart()}-${sxbPart()}-${sxbPart()}`;
-
-    // Only call XPanel if quota is provided
-    let xpanelUserId: string | undefined;
-    if (body.quotaTotalGb && body.durationDays) {
-      const quotaBytes = BigInt(body.quotaTotalGb) * BigInt(1024 * 1024 * 1024);
-      const expireAt = new Date();
-      expireAt.setDate(expireAt.getDate() + body.durationDays);
-      try {
-        const xpanelUser = await XPanelService.createUser(body.name, quotaBytes, expireAt, body.deviceLimit);
-        xpanelUserId = xpanelUser.id;
-      } catch (err) {
-        console.warn("XPanel user creation failed:", err);
-      }
-    }
+    // FIX-001: Format SXB-USER-XXXX-XXXX-XXXX standard
+    const _chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    const _seg = () => Array.from({ length: 4 }, () => _chars[Math.floor(Math.random() * _chars.length)]).join('');
+    const token = `SXB-USER-${_seg()}-${_seg()}-${_seg()}`;
 
     let newClient: any = null;
     if (prisma) {
@@ -185,7 +171,7 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
           quotaUsed: BigInt(0),
           expireAt: body.durationDays ? new Date(Date.now() + body.durationDays * 24 * 60 * 60 * 1000) : null,
           status: "active",
-          xpanelUserId,
+          deviceId: body.deviceId || undefined,
         },
         include: { user: true },
       });
@@ -198,7 +184,6 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
         quotaUsed: BigInt(0),
         expireAt: body.durationDays ? new Date(Date.now() + body.durationDays * 24 * 60 * 60 * 1000) : null,
         status: "active",
-        xpanelUserId,
         createdAt: new Date(),
         updatedAt: new Date(),
       };
@@ -294,11 +279,6 @@ router.post("/:id/suspend", requireAuth, requirePermission("clients.manage"), as
       return res.status(403).json({ error: "errors.auth.forbidden" });
     }
 
-    // Call XPanel to suspend user
-    if (client.xpanelUserId) {
-      await XPanelService.deleteUser(client.xpanelUserId);
-    }
-
     let updated: any = null;
     if (prisma) {
       updated = await prisma.vpnClient.update({
@@ -337,11 +317,6 @@ router.post("/:id/activate", requireAuth, requirePermission("clients.create"), a
     // Secure reseller boundary
     if (req.user?.role === "RESELLER" && client.userId !== req.user?.userId) {
       return res.status(403).json({ error: "errors.auth.forbidden" });
-    }
-
-    // Provision back into XPanel
-    if (client.xpanelUserId) {
-      await XPanelService.createUser(`client-${client.id.substring(0, 5)}`, client.quotaTotal, client.expireAt);
     }
 
     let updated: any = null;
@@ -430,9 +405,10 @@ router.post("/:id/reset-access", requireAuth, requirePermission("clients.create"
     }
 
     // Generate a brand new, random, completely secure access UUID token for the VPN clients config
-    const sxbChars2 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    const sxbPart2 = () => Array.from({ length: 4 }, () => sxbChars2[Math.floor(Math.random() * sxbChars2.length)]).join('');
-    const newToken = `SXB-USER-${sxbPart2()}-${sxbPart2()}-${sxbPart2()}`;
+    // FIX-001: Format SXB-USER-XXXX-XXXX-XXXX standard
+      const _rc = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+      const _rs = () => Array.from({ length: 4 }, () => _rc[Math.floor(Math.random() * _rc.length)]).join('');
+      const newToken = `SXB-USER-${_rs()}-${_rs()}-${_rs()}`;
 
     let updated: any = null;
     if (prisma) {
@@ -472,11 +448,6 @@ router.delete("/:id", requireAuth, requirePermission("clients.delete"), async (r
     // Secure reseller boundary
     if (req.user?.role === "RESELLER" && client.userId !== req.user?.userId) {
       return res.status(403).json({ error: "errors.auth.forbidden", message: "Access forbidden" });
-    }
-
-    // Deprovision from external XPanel Engine
-    if (client.xpanelUserId) {
-      await XPanelService.deleteUser(client.xpanelUserId);
     }
 
     if (prisma) {

@@ -50,6 +50,7 @@
     "expo-secure-store": "~15.0.8",
     "react-native-reanimated": "~4.1.7",
     "react-native-svg": "^15.12.1",
+    "react-native-worklets": "^0.5.2",
     "typescript": "~5.9.3"
   }
 }

@@ -313,46 +313,7 @@ router.get('/me', requireAuth, async (req: AuthenticatedRequest, res: Response) 
         avatarUrl: user.avatarUrl ?? null,
       });
     }
-    const memUser = inMemoryDb.users.find((u) => u.id === req.user!.userId);
-    if (!memUser) return res.status(404).json({ error: 'errors.auth.user_not_found', message: 'Utilisateur introuvable' });
-    return res.json({
-      id: memUser.id,
-      name: (memUser as any).name || req.user.email,
-      email: memUser.email,
-      role: req.user.role,
-      status: memUser.status,
-      permissions: req.user.permissions,
-      avatarUrl: null,
-    });
-  } catch (err) {
-    console.error('auth/me error:', err);
-    return res.status(500).json({ error: 'errors.server', message: 'Erreur interne' });
-  }
-});
-
-// GET /api/auth/me — Retourne l'utilisateur authentifié courant
-router.get('/me', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    if (!req.user) {
-      return res.status(401).json({ error: 'errors.auth.unauthorized', message: 'Non authentifié' });
-    }
-    if (prisma) {
-      const user = await prisma.user.findUnique({
-        where: { id: req.user.userId },
-        include: { role: { include: { permissions: { include: { permission: true } } } } },
-      });
-      if (!user) return res.status(404).json({ error: 'errors.auth.user_not_found', message: 'Utilisateur introuvable' });
-      const permissions = user.role.permissions.map((rp) => rp.permission.name);
-      return res.json({
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role.name,
-        status: user.status,
-        permissions,
-        avatarUrl: user.avatarUrl ?? null,
-      });
-    }
+    // Fallback in-memory
     const memUser = inMemoryDb.users.find((u) => u.id === req.user!.userId);
     if (!memUser) return res.status(404).json({ error: 'errors.auth.user_not_found', message: 'Utilisateur introuvable' });
     return res.json({

@@ -15,6 +15,7 @@
 import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient from './apiClient';
+import { decryptSxbBlob, utf8Decode } from './aesGcm';
 
 const PROV_KEY = 'sxb_prov_config_v2';
 const PROV_META_KEY = 'sxb_prov_meta_v2';
@@ -45,46 +46,65 @@ function hexToUint8(hex: string): Uint8Array {
 
 // ── Déchiffrement AES-256-GCM côté mobile ────────────────────────────────────
 // Format blob : "gcm:<iv_hex(12o)>:<ciphertext_hex>:<tag_hex(16o)>"
-// La Web Crypto API (crypto.subtle) est disponible sur RN 0.73+ / Expo 50+.
+//
+// Stratégie double moteur (fix définitif) :
+//   1. Web Crypto API (crypto.subtle) si disponible — natif, rapide.
+//   2. Fallback pur TypeScript (services/aesGcm.ts) — OBLIGATOIRE sous Hermes :
+//      React Native (toutes versions, RN 0.81 inclus) ne fournit PAS
+//      crypto.subtle. Sans ce fallback, tout provisionnement échouait avec
+//      « Moteur cryptographique indisponible » et aucune config complète
+//      n'était jamais stockée → CONFIG_INCOMPLETE_BLOCK / hasHost=false.
+// Le fallback ne dépend ni de TextDecoder ni d'aucune API Web.
 
 async function decryptGCM(blob: string, configKeyHex: string): Promise<string> {
-  if (typeof crypto === 'undefined' || !crypto.subtle) {
-    throw new Error('Moteur cryptographique indisponible');
-  }
   if (!blob.startsWith('gcm:')) {
     throw new Error('Format de blob non supporté (attend gcm:...)');
   }
-  const parts = blob.slice(4).split(':');
-  if (parts.length !== 3) throw new Error('Blob GCM invalide — mauvais nombre de segments');
 
-  const [ivHex, cipherHex, tagHex] = parts;
+  const subtle = (typeof crypto !== 'undefined' ? crypto.subtle : undefined) as SubtleCrypto | undefined;
+  if (subtle && typeof subtle.decrypt === 'function') {
+    try {
+      const parts = blob.slice(4).split(':');
+      if (parts.length !== 3) throw new Error('Blob GCM invalide — mauvais nombre de segments');
 
-  // Clé 32 octets (256 bits)
-  const keyBytes = hexToUint8(configKeyHex.slice(0, 64));
-  const iv       = hexToUint8(ivHex);
+      const [ivHex, cipherHex, tagHex] = parts;
 
-  // Web Crypto attend ciphertext + auth tag concaténés
-  const cipherBytes = hexToUint8(cipherHex);
-  const tagBytes    = hexToUint8(tagHex);
-  const ciphertextWithTag = new Uint8Array(cipherBytes.length + tagBytes.length);
-  ciphertextWithTag.set(cipherBytes);
-  ciphertextWithTag.set(tagBytes, cipherBytes.length);
+      // Clé 32 octets (256 bits)
+      const keyBytes = hexToUint8(configKeyHex.slice(0, 64));
+      const iv       = hexToUint8(ivHex);
 
-  const cryptoKey = await crypto.subtle.importKey(
-    'raw',
-    keyBytes as unknown as BufferSource,
-    { name: 'AES-GCM' },
-    false,
-    ['decrypt'],
-  );
+      // Web Crypto attend ciphertext + auth tag concaténés
+      const cipherBytes = hexToUint8(cipherHex);
+      const tagBytes    = hexToUint8(tagHex);
+      const ciphertextWithTag = new Uint8Array(cipherBytes.length + tagBytes.length);
+      ciphertextWithTag.set(cipherBytes);
+      ciphertextWithTag.set(tagBytes, cipherBytes.length);
 
-  const decryptedBuffer = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: iv as unknown as BufferSource },
-    cryptoKey,
-    ciphertextWithTag as unknown as BufferSource,
-  );
+      const cryptoKey = await subtle.importKey(
+        'raw',
+        keyBytes as unknown as BufferSource,
+        { name: 'AES-GCM' },
+        false,
+        ['decrypt'],
+      );
 
-  return new TextDecoder().decode(decryptedBuffer);
+      const decryptedBuffer = await subtle.decrypt(
+        { name: 'AES-GCM', iv: iv as unknown as BufferSource },
+        cryptoKey,
+        ciphertextWithTag as unknown as BufferSource,
+      );
+
+      if (typeof TextDecoder !== 'undefined') {
+        return new TextDecoder().decode(decryptedBuffer);
+      }
+      return utf8Decode(new Uint8Array(decryptedBuffer));
+    } catch {
+      // Moteur natif en échec (ou indisponible) → moteur TypeScript ci-dessous.
+    }
+  }
+
+  // Moteur pur TypeScript — fonctionne partout (Hermes, JSC, Web, Node).
+  return decryptSxbBlob(blob, configKeyHex);
 }
 
 // ── Provision/Activate ────────────────────────────────────────────────────────

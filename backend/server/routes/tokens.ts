@@ -59,7 +59,19 @@ router.get("/", requireAuth, requirePermission("tokens.view"), async (req: Authe
 // POST /api/tokens — crée un nouveau token (alias pour /generate)
 router.post("/", requireAuth, requirePermission("tokens.view"), async (req: AuthenticatedRequest, res: Response) => {
   try {
+    console.log("[TOKEN_DEBUG] REQUEST_RECEIVED", JSON.stringify({ clientId: req.body?.clientId, quotaGb: req.body?.quotaGb, durationDays: req.body?.durationDays }));
     const body = generateTokenSchema.parse(req.body);
+
+    // [TOKEN_DEBUG] CLIENT_VALIDATED — verify client exists to avoid FK 500
+    if (prisma) {
+      console.log("[TOKEN_DEBUG] CLIENT_VALIDATED: checking clientId", body.clientId);
+      const clientExists = await prisma.vpnClient.findUnique({ where: { id: body.clientId }, select: { id: true } });
+      if (!clientExists) {
+        console.error("[TOKEN_DEBUG] DATABASE_ERROR: client not found →", body.clientId);
+        return res.status(404).json({ error: "errors.tokens.client_not_found", message: `VPN client introuvable: ${body.clientId}` });
+      }
+      console.log("[TOKEN_DEBUG] CLIENT_VALIDATED: OK →", body.clientId);
+    }
     const tokenStr = makeSxbToken();
     const quotaBytes = BigInt(body.quotaGb) * BigInt(1024 * 1024 * 1024);
     const expiration = new Date();
@@ -67,16 +79,26 @@ router.post("/", requireAuth, requirePermission("tokens.view"), async (req: Auth
 
     let newToken: any = null;
     if (prisma) {
-      newToken = await prisma.tokenSXB.create({
-        data: {
-          token: tokenStr,
-          clientId: body.clientId,
-          quota: quotaBytes,
-          expiration,
-          deviceLimit: body.deviceLimit,
-          status: "active",
-        },
-      });
+      try {
+        console.log("[TOKEN_DEBUG] TOKEN_CREATED: inserting", tokenStr);
+        newToken = await prisma.tokenSXB.create({
+          data: {
+            token: tokenStr,
+            clientId: body.clientId,
+            quota: quotaBytes,
+            expiration,
+            deviceLimit: body.deviceLimit,
+            status: "active",
+          },
+        });
+        console.log("[TOKEN_DEBUG] TOKEN_CREATED: success →", newToken.id);
+      } catch (dbErr: any) {
+        console.error("[TOKEN_DEBUG] DATABASE_ERROR:", dbErr?.code, dbErr?.message?.slice(0, 200));
+        if (dbErr?.code === "P2003") {
+          return res.status(404).json({ error: "errors.tokens.client_not_found", message: "Client ID invalide ou inexistant (FK constraint)" });
+        }
+        throw dbErr;
+      }
     } else {
       newToken = {
         id: `token-${Date.now()}`,
@@ -97,7 +119,7 @@ router.post("/", requireAuth, requirePermission("tokens.view"), async (req: Auth
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: "errors.validation", message: err.issues });
     }
-    console.error("Token creation error:", err);
+    console.error("[TOKEN_DEBUG] DATABASE_ERROR: unexpected →", err);
     return res.status(500).json({ error: "errors.server", message: "Failed to create token" });
   }
 });
