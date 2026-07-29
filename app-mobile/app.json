@@ -55,7 +55,8 @@
       "expo-router",
       "expo-font",
       "expo-web-browser",
-      "./plugins/withSxbVpn"
+      "./plugins/withSxbVpn",
+      "./plugins/withCiGradleAnnotations"
     ],
     "experiments": {
       "typedRoutes": true
