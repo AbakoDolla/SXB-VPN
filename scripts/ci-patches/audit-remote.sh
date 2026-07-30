@@ -87,8 +87,8 @@ sudo -n journalctl -u ssh -u sshd -u dropbear -u nginx -u xnet -u sing-box _COMM
 echo "--- erreurs nginx récentes ---"
 sudo -n tail -n 30 /var/log/nginx/error.log 2>&1 | red || true
 
-echo "════════════════════════════════ 4.3 NGINX -T (extrait) ══════════════════════"
-sudo -n nginx -T 2>&1 | grep -Ev '^# (configuration file|.*:$)' | sed -n '1,320p' | red || true
+echo "════════════════════════════════ 4.3 NGINX -T (directives utiles) ═══════════"
+sudo -n nginx -T 2>&1 | grep -E '^\s*(server|listen|server_name|proxy_pass|proxy_set_header Host|root|location|upstream|ssl_certificate |return|error_page)' | head -150 | red || true
 
 echo "════════════════════════════════ SONDES LOCALES ══════════════════════════════"
 for p in 3000 3001 4000 18790; do
@@ -102,31 +102,52 @@ curl -skv --max-time 8 "https://127.0.0.1:8443/api/v1/ping" -H 'Host: vpnsxb.afr
 
 echo "════════════════════════════════ 4.4 BASE DE DONNÉES (SELECT uniquement) ═════"
 cd /var/www/sxb-vpn 2>/dev/null || true
-DB_URL=$(grep -E '^DATABASE_URL=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"'')
-if [ -z "$DB_URL" ]; then
+DB_URL_RAW=$(grep -E '^DATABASE_URL=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"'')
+# URL Prisma : postgres(ql)://user:pass@host:port/db?schema=public — psql rejette
+# le paramètre ?schema. On décompose PUIS on passe par PGPASSWORD (jamais affiché).
+DB_NOPARAMS="${DB_URL_RAW%%\?*}"
+DB_CORE="${DB_NOPARAMS#*://}"
+DB_USERPASS="${DB_CORE%%@*}"
+DB_USER="${DB_USERPASS%%:*}"
+DB_PASS="${DB_USERPASS#*:}"
+DB_HOSTDB="${DB_CORE#*@}"
+DB_HOST="${DB_HOSTDB%%[:/]*}"
+DB_REST="${DB_HOSTDB#$DB_HOST}"
+DB_PORT="$(echo "${DB_REST#:}" | cut -d/ -f1)"
+DB_NAME="$(echo "${DB_REST#:}" | cut -d/ -f2)"
+DB_PORT="${DB_PORT:-5432}"
+run_sql() {
+  PGPASSWORD="$DB_PASS" PGCONNECT_TIMEOUT=8 psql -X -q -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" "$@" 2>&1 | red
+}
+if [ -z "$DB_URL_RAW" ]; then
   echo "⚠️ DATABASE_URL introuvable dans .env — section DB ignorée"
 elif ! command -v psql >/dev/null 2>&1; then
   echo "⚠️ psql absent du VPS — section DB ignorée"
+elif [ -z "$DB_HOST" ] || [ -z "$DB_NAME" ] || [ -z "$DB_USER" ]; then
+  echo "⚠️ parsing DATABASE_URL incomplet (hôte/base/utilisateur) — section ignorée"
 else
+  echo "(connexion : utilisateur/base/ports masqués partiels — vérifiés sans affichage)"
+  run_sql -tAc "SELECT current_database(), current_user, version();" | sed -E 's/\|.*\|/ | … |/' || true
   echo "--- tables publiques ---"
-  psql "$DB_URL" -tAc "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY 1;" 2>&1 | red || true
+  run_sql -tAc "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY 1;" || true
   echo "--- migrations prisma (si présentes) ---"
-  psql "$DB_URL" -tAc "SELECT migration_name, finished_at, rolled_back_at FROM _prisma_migrations ORDER BY started_at DESC LIMIT 8;" 2>&1 | red || true
+  run_sql -tAc "SELECT migration_name, finished_at, rolled_back_at FROM _prisma_migrations ORDER BY started_at DESC LIMIT 8;" || true
   echo "--- ABONNEMENT CIBLE 83ea8954 (colonnes masquées) ---"
-  psql "$DB_URL" -x -c "SELECT s.id AS subscription_id, s.status, s.\"profileId\", s.\"clientId\", s.\"lastProvisionAt\", s.\"lastSyncAt\", s.\"startAt\", s.\"expireAt\", s.\"createdAt\" AS sub_created, s.\"updatedAt\" AS sub_updated, s.\"deviceId\", s.\"technicalProtocol\", s.\"displayProtocol\", p.id AS profile_id, p.name AS profile_name, p.protocol, p.host, p.port, p.tls, p.sni, p.network, p.path, p.method, p.\"payloadId\", (p.username IS NOT NULL) AS has_username, (p.password IS NOT NULL) AS has_password_enc, (p.\"jsonConfig\" IS NOT NULL) AS has_json_config, length(p.\"jsonConfig\") AS json_config_length, p.\"offlineValidDays\", p.status AS profile_status, p.\"createdAt\" AS profile_created, p.\"updatedAt\" AS profile_updated, pl.name AS payload_name, pl.host AS payload_host, pl.sni AS payload_sni, pl.port AS payload_port, length(pl.content) AS payload_length, pl.status AS payload_status FROM subscriptions s LEFT JOIN vpn_profiles p ON p.id = s.\"profileId\" LEFT JOIN ssh_payloads pl ON pl.id = p.\"payloadId\" WHERE s.id='83ea8954-8be7-4fda-a3af-03e6e61d2161';" 2>&1 | red || true
+  run_sql -x -c "SELECT s.id AS subscription_id, s.status, s.\"profileId\", s.\"clientId\", s.\"lastProvisionAt\", s.\"lastSyncAt\", s.\"startAt\", s.\"expireAt\", s.\"createdAt\" AS sub_created, s.\"updatedAt\" AS sub_updated, s.\"deviceId\", s.\"technicalProtocol\", s.\"displayProtocol\", p.id AS profile_id, p.name AS profile_name, p.protocol, p.host, p.port, p.tls, p.sni, p.network, p.path, p.method, p.\"payloadId\", (p.username IS NOT NULL) AS has_username, (p.password IS NOT NULL) AS has_password_enc, (p.\"jsonConfig\" IS NOT NULL) AS has_json_config, length(p.\"jsonConfig\") AS json_config_length, p.\"offlineValidDays\", p.status AS profile_status, p.\"createdAt\" AS profile_created, p.\"updatedAt\" AS profile_updated, pl.name AS payload_name, pl.host AS payload_host, pl.sni AS payload_sni, pl.port AS payload_port, length(pl.content) AS payload_length, pl.status AS payload_status FROM subscriptions s LEFT JOIN vpn_profiles p ON p.id = s.\"profileId\" LEFT JOIN ssh_payloads pl ON pl.id = p.\"payloadId\" WHERE s.id='83ea8954-8be7-4fda-a3af-03e6e61d2161';" || true
   echo "--- INVENTAIRE vpn_profiles (masqué) ---"
-  psql "$DB_URL" -c "SELECT id, name, protocol, host, port, tls, sni, network, status, (username IS NOT NULL) AS has_user, (password IS NOT NULL) AS has_pass, (\"jsonConfig\" IS NOT NULL) AS has_json, \"payloadId\" IS NOT NULL AS has_payload, \"updatedAt\" FROM vpn_profiles ORDER BY \"updatedAt\" DESC LIMIT 20;" 2>&1 | red || true
+  run_sql -c "SELECT id, name, protocol, host, port, tls, sni, network, status, (username IS NOT NULL) AS has_user, (password IS NOT NULL) AS has_pass, (\"jsonConfig\" IS NOT NULL) AS has_json, \"payloadId\" IS NOT NULL AS has_payload, \"updatedAt\" FROM vpn_profiles ORDER BY \"updatedAt\" DESC LIMIT 20;" || true
   echo "--- inventaire ssh_accounts (masqué) ---"
-  psql "$DB_URL" -c "SELECT id, name, host, port, mode, status, \"expireAt\", \"payloadId\" IS NOT NULL AS has_payload, \"updatedAt\" FROM ssh_accounts ORDER BY \"updatedAt\" DESC LIMIT 15;" 2>&1 | red || true
+  run_sql -c "SELECT id, name, host, port, mode, status, \"expireAt\", \"payloadId\" IS NOT NULL AS has_payload, \"updatedAt\" FROM ssh_accounts ORDER BY \"updatedAt\" DESC LIMIT 15;" || true
   echo "--- inventaire ssh_payloads (longueurs seulement) ---"
-  psql "$DB_URL" -c "SELECT id, name, host, sni, port, length(content) AS content_len, status, \"updatedAt\" FROM ssh_payloads LIMIT 15;" 2>&1 | red || true
+  run_sql -c "SELECT id, name, host, sni, port, length(content) AS content_len, status, \"updatedAt\" FROM ssh_payloads LIMIT 15;" || true
   echo "--- doublons profils ---"
-  psql "$DB_URL" -c "SELECT host, port, protocol, count(*) FROM vpn_profiles GROUP BY 1,2,3 HAVING count(*)>1;" 2>&1 | red || true
+  run_sql -c "SELECT host, port, protocol, count(*) FROM vpn_profiles GROUP BY 1,2,3 HAVING count(*)>1;" || true
   echo "--- devices liés aux abonnements ---"
-  psql "$DB_URL" -c "SELECT \"subscriptionId\", \"deviceId\", \"activatedAt\", \"lastSeenAt\" FROM subscription_devices ORDER BY \"lastSeenAt\" DESC NULLS LAST LIMIT 10;" 2>&1 | red || true
+  run_sql -c "SELECT \"subscriptionId\", \"deviceId\", \"activatedAt\", \"lastSeenAt\" FROM subscription_devices ORDER BY \"lastSeenAt\" DESC NULLS LAST LIMIT 10;" || true
   echo "--- enregistrements app récents ---"
-  psql "$DB_URL" -c "SELECT \"deviceId\", platform, \"appVersion\", status, \"lastSeenAt\" FROM app_registrations ORDER BY \"lastSeenAt\" DESC LIMIT 10;" 2>&1 | red || true
+  run_sql -c "SELECT \"deviceId\", platform, \"appVersion\", status, \"lastSeenAt\" FROM app_registrations ORDER BY \"lastSeenAt\" DESC LIMIT 10;" || true
 fi
+unset DB_PASS DB_USERPASS DB_URL_RAW DB_NOPARAMS DB_CORE
 
 echo "════════════════════════════════ 4.5 TRANSPORT — VUE INTERNE VPS ═════════════"
 for p in 22 444 443; do
