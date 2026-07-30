@@ -342,7 +342,19 @@ model VpnProfile {
   payload          SshPayload?    @relation(fields: [payloadId], references: [id])
   offlineValidDays Int            @default(7)
   method           String?
-  jsonConfig       String?        // Optional raw JSON config for V2Ray/VMess/VLESS/Trojan/Sing-box/WireGuard
+  jsonConfig       String?        // LEGACY — ne plus écrire en clair ; voir canonicalConfig
+  // ── Modèle « intermédiaire d'import » (canonique, chiffré, versionné) ────────
+  // Règle : quand canonicalConfig est présent, il est LA SEULE source de vérité
+  // technique du profil. Les colonnes host/port/protocol/tls... restent pour
+  // identification/affichage et DOIVENT refléter le contenu du canonique.
+  sourceFormat       String?      // ssh-json | ssh+payload-json | vless-uri | vmess-uri | trojan-uri | ss-uri | wireguard-conf | hysteria2-uri | tuic-uri | singbox-json | sxb-canonical
+  canonicalConfig    String?      // AES-256-GCM (préfixe gcm:) — config technique importée, JAMAIS en clair
+  canonicalConfigHash String?     // sha256 hex (64) du JSON canonique normalisé
+  configVersion      Int          @default(1) // incrémenté à chaque réimport explicite
+  importedAt         DateTime?
+  validatedAt        DateTime?
+  validationStatus   String?      // valid | invalid | unreachable_from_probe | unknown
+  validationMessage  String?
   status           String         @default("active") // active | archived
   createdBy        String?
   createdAt        DateTime       @default(now())
