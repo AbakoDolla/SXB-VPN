@@ -31,6 +31,7 @@ import vpnProfilesRouter from "./server/routes/vpn-profiles";
 import subscriptionsRouter from "./server/routes/subscriptions";
 import appRegisterRouter  from "./server/routes/app-register";
 import provisionRouter from "./server/routes/provision";
+import configTestRouter from "./server/routes/config-test";
 import xrayRouter from "./server/routes/xray";
 import singboxRouter from "./server/routes/singbox";
 import xpanelRouter from "./server/routes/xpanel";
@@ -132,6 +133,7 @@ async function startServer() {
   app.use("/api/subscriptions", subscriptionsRouter);
   app.use("/api/app",           appRegisterRouter);
   app.use("/api/provision", provisionRouter);
+  app.use("/api/config-test", configTestRouter);
 
   // Global Error Handler with support for Multilingual Error i18n
   app.use((err: any, req: Request, res: Response, next: NextFunction) => {
