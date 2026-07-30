@@ -73,3 +73,6 @@ backend/reset_admin.mjs
 # ── Keystore Android (ne jamais committer) ────────────────────────────────────
 *.keystore
 *.jks
+
+# Artefacts d'entrypoints generes par les suites e2e
+scripts/tests/.entry-*.ts
