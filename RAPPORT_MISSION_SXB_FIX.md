@@ -1,12 +1,13 @@
-# RAPPORT DE MISSION — DIAGNOSTIC COMPLET ET CORRECTION DE LA CONNEXION VPN SXB VPN
+# RAPPORT DE MISSION — CORRECTION VPN ET BUILD ANDROID CI DE SXB VPN
 
-**Date :** 2026-07-29
-**Branche :** `arena/019faf29-sxb-vpn`
-**Méthode :** scan récursif intégral du dépôt, preuve par reproduction, correction définitive, validation E2E exécutable.
+**Dates :** 2026-07-29 — 2026-07-30
+**Branche finale :** `arena/019fb122-sxb-vpn`
+**Méthode :** scan du dépôt, reproduction, instrumentation ciblée, correction minimale,
+validation E2E exécutable et preuve sur le pipeline GitHub Actions de production.
 
 ---
 
-## 1. CAUSE RACINE EXACTE
+## 1. CAUSES RACINES EXACTES
 
 ### 🔴 Cause principale — `crypto.subtle` n'existe pas sous Hermes (React Native)
 
@@ -30,14 +31,14 @@ inclus) n'implémente pas `crypto.subtle`**, et l'application n'embarque **aucun
 1. Le dashboard crée l'abonnement → `POST /api/subscriptions` génère `SXB-DATA-…` ✔ (backend sain)
 2. L'app reçoit le `dataToken` via `GET /api/mobile/connections` ✔ (backend sain)
 3. L'app appelle `POST /api/provision/activate` ✔ — **le serveur répond 200** avec
-   `encryptedBlob` + `configKey` (prouvé par test HTTP réel, §5.2)
+   `encryptedBlob` + `configKey` (prouvé par test HTTP réel, §4.2)
 4. `provisionAndStore` → `decryptGCM()` → 💥 **`Moteur cryptographique indisponible`**
-   (reproduit dans un environnement sans `crypto.subtle`, §5.1)
+   (reproduit dans un environnement sans `crypto.subtle`, §4.1)
 5. Catch → `PROVISION_WARN / PROVISION_FAILED` → **aucune config complète n'est jamais
    stockée** dans SecureStore
 6. `VpnContext.connect()` → gardien `isCompleteOfflineConfig` →
    `CONFIG_READY hasHost=false hasCreds=false missing=[host,port,credentials]`
-   → **`CONFIG_INCOMPLETE_BLOCK`** (log exact produit en production, §5.3)
+   → **`CONFIG_INCOMPLETE_BLOCK`** (log exact produit en production, §4.3)
 7. En l'absence de réseau, le même chemin échoue côté HTTP → axios remonte
    littéralement `Network Error`.
 
@@ -61,15 +62,45 @@ la déclare complète ; sinon re-provisionnement automatique (avec `dataToken` r
 dans la config héritée, l'état `vpnConfig` ou la connexion active), puis si tout échoue,
 logs explicites `CONFIG_INCOMPLETE_BLOCK missing=…` au lieu d'un échec opaque.
 
-### 🟠 Cause secondaire 2 — chaîne de build APK cassée (`react-native-worklets` manquant)
+### 🔴 Cause du build Android CI — Reanimated 4 exige la nouvelle architecture
 
-`babel.config.js` référence `react-native-reanimated/plugin`, lequel en v4.1.x exige
-`react-native-worklets/plugin`. La peer-dependency `react-native-worklets` n'était **pas
-installée** (peer range `0.5 - 0.8`, jamais auto-installée avec `--legacy-peer-deps`).
-Résultat : Metro échoue avec `Cannot find module 'react-native-worklets/plugin'` —
-reproduit à l'identique dans le sandbox (§5.4). **Corrigé :** `react-native-worklets@~0.5.1`
-(pin Expo SDK 54 = 0.5.1) ajouté aux devDependencies. Le bundle Android se reconstruit :
-`_expo/static/js/android/entry-….hbc` (4,68 MB), et contient bien le code du correctif.
+Le run instrumenté
+[`30492141052`](https://github.com/AbakoDolla/SXB-VPN/actions/runs/30492141052)
+a fourni, via l'annotation `SXB-GRADLE-FAILURE`, la chaîne de causes Gradle exacte :
+
+```text
+app-mobile/node_modules/react-native-reanimated/android/build.gradle:298
+Execution failed for task ':react-native-reanimated:assertNewArchitectureEnabledTask'.
+[Reanimated] Reanimated requires new architecture to be enabled.
+Please enable it by setting newArchEnabled to true in gradle.properties.
+```
+
+Le projet construit volontairement avec l'ancienne architecture React Native. La panne
+était donc déclenchée par `react-native-reanimated@4.1.7` **avant**
+`:app:createBundleReleaseJsAndAssets`. Cela élimine comme causes de ce run Metro,
+Hermes, CMake/NDK, Kotlin et Node 24. Le dernier build antérieur vert utilisait
+Reanimated 3.19.5 ; l'application n'utilise Reanimated dans aucun écran actif.
+
+**Correctif minimal (PR #12) :** retour à `react-native-reanimated@3.19.5` et suppression
+de `react-native-worklets`, dépendance de Reanimated 4 devenue inutile. Il n'a pas été
+nécessaire d'activer la nouvelle architecture ni de modifier le workflow.
+
+**Preuve CI après correction :** le run
+[`30512255502`](https://github.com/AbakoDolla/SXB-VPN/actions/runs/30512255502)
+est vert en **14 min 37 s** sous Node **24.18.0**. Les étapes build release, localisation
+APK, upload de l'artefact, GitHub Release, déploiement SCP et installation dans le
+dossier de distribution VPS sont toutes vertes. La release
+[`apk-164`](https://github.com/AbakoDolla/SXB-VPN/releases/tag/apk-164) contient
+`sxb-vpn.apk` (63 892 693 octets).
+
+### 🟠 Correctif Metro préalable — nécessaire et conservé
+
+`expo/metro-config` ajoute `<racine-repo>/node_modules` à `watchFolders`, mais ce dossier
+n'existe pas sur le runner qui installe seulement `app-mobile/node_modules`. Metro
+appelle `verifyRootExists` sur chaque entrée et échoue alors avec `ENOENT`. Ce défaut a
+été reproduit puis corrigé en PR #9 en filtrant uniquement les `watchFolders` existants
+dans `app-mobile/metro.config.js`. Ce correctif pérenne est conservé ; il était
+nécessaire au bundling, mais distinct de l'échec Gradle Reanimated 4 prouvé ci-dessus.
 
 ### 🟡 Divergences VPS/GitHub (ÉTAPE 10)
 
@@ -83,12 +114,10 @@ reproduit à l'identique dans le sandbox (§5.4). **Corrigé :** `react-native-w
   → **synchronisé** intégralement (le bundle de production est compilé depuis la racine
   `server.ts` + `server/`, elle-même intacte et déjà correcte).
 - `Dockerfile.backend` copie `prisma/`, `server/`, `server.ts` de la racine → cohérent.
-- Impossible de vérifier l'état live du VPS depuis ce sandbox (egress bloqué vers
-  `vpnsxb.afrihall.com` : curl → `000`). La preuve est donc documentaire : le workflow
-  déploie `git reset --hard origin/main` + rebuild `server.ts` + `prisma generate` —
-  avec cette PR, GitHub redevient la source de vérité unique. **Action requise après
-  merge :** `git push main` (ou `gh workflow run deploy-vps.yml`) pour resynchroniser
-  le VPS ; l'APK sera reconstruit par `build-android.yml` grâce au fix worklets.
+- Le sandbox ne peut toujours pas joindre directement `vpnsxb.afrihall.com`
+  (`curl` → `000`). En revanche, les runners autorisés ont validé les déploiements :
+  `deploy-vps` run `30488286589` vert pour le backend, puis `build-android` run
+  `30512255502` vert jusque dans les étapes SCP et installation de l'APK sur le VPS.
 
 ### 🟡 Régression assets (bonus)
 
@@ -116,7 +145,9 @@ rétablis partout.
 | `app-mobile/services/aesGcm.ts` | **nouveau** | AES-256-GCM pur TypeScript (FIPS-197 + SP 800-38D) : decrypt+encrypt, GHASH, comparateur de tag à temps constant, codec UTF-8 autonome, `decryptSxbBlob()`. Zéro dépendance, compatible Hermes/JSC/Web/Node. |
 | `app-mobile/services/provisionClient.ts` | modifié | `decryptGCM` : WebCrypto si dispo → **fallback `decryptSxbBlob`** ; décodage UTF-8 sans dépendre de `TextDecoder`. |
 | `app-mobile/contexts/VpnContext.tsx` | modifié | `connect()` : n'utilise une config stockée que si complète, sinon re-provisionne (dataToken multi-sources), logs explicites ; **quota local synchronisé** après provision et dans `refreshVpnConfig` (`saveQuotaData` depuis `/mobile/vpn/config`). |
-| `app-mobile/package.json` + `package-lock.json` | modifié | `react-native-worklets@~0.5.1` (devDependencies) — build Metro/APK réparé. |
+| `app-mobile/package.json` + `package-lock.json` | modifié | Reanimated ramené à `~3.19.5` ; Worklets supprimé — compatibilité avec l'ancienne architecture restaurée. |
+| `app-mobile/metro.config.js` | modifié | Filtre les `watchFolders` inexistants (fix Metro CI conservé) ; sonde temporaire retirée après diagnostic. |
+| `app-mobile/app.json`, `plugins/withCiGradleAnnotations.js`, `react-native.config.js` | nettoyé | Instrumentation CI temporaire supprimée une fois la cause acquise et le premier run vert obtenu. |
 | `app-mobile/app/_layout.tsx`, `app/index.tsx`, `app/onboarding.tsx`, `app/activate.tsx`, `app/(tabs)/index.tsx` | modifié | `require()` d'assets en chemins relatifs (régression du Bug #1 corrigée). |
 | `backend/prisma/schema.prisma` | synchronisé | = `prisma/schema.prisma` (source de vérité). |
 | `backend/server.ts`, `backend/server/**` | synchronisé | = arbre racine `server/` (incl. `routes/provision.ts`, `routes/app-register.ts`). |
@@ -176,9 +207,13 @@ mémoire ; axios réel vers le serveur local) : **18/18**
 
 ### 4.4 Builds
 - `npx tsc -p app-mobile/tsconfig.json --noEmit` → **0 erreur**
-- `npx expo export --platform android` (Metro/Hermes) → **entry.hbc 4,68 MB** contenant
-  le correctif (`decryptSxbBlob`… présents dans le bytecode, vérifié par `strings`)
+- `NODE_ENV=production npx expo export --platform android` avec Reanimated 3.19.5 et
+  sans Worklets → **succès**, bundle Hermes `entry-0b8d6a4e….hbc` de **4 419 423 octets**
+- `npm ls react-native-reanimated react-native-worklets --all` → Reanimated 3.19.5,
+  aucun paquet Worklets
 - `esbuild server.ts --bundle --packages=external` (pipeline CI exact) → **server.cjs 241 kB OK**
+- GitHub Actions `30512255502` → **succès complet**, artefact CI
+  `sxb-vpn-android-apk-164` (32 502 986 octets compressés) et release APK #164 publiée
 
 ### Captures avant/après (extrémités du pipeline)
 
@@ -200,8 +235,9 @@ APRÈS (Hermes)   : decryptSxbBlob → {"protocol":"ssh+payload","host":"196.216
   ici (pas d'émulateur). La lecture des champs par `SxbVpnService.kt` a été vérifiée
   statiquement et le JSON d'entrée validé par le simulateur. Le trafic Internet final
   dépend aussi de l'état des serveurs SSH/upstream (VPS), hors périmètre code.
-- **Requêtes live vers `vpnsxb.afrihall.com`** : egress bloqué depuis le sandbox ;
-  synchro VPS effective au prochain déploiement (workflow existant, inchangé).
+- **Requêtes live vers `vpnsxb.afrihall.com`** : egress bloqué depuis le sandbox.
+  La validation distante disponible est celle du runner GitHub : déploiements backend
+  et APK réussis, sans prétendre remplacer un test fonctionnel depuis un appareil.
 
 ## 6. CHECKLIST FINALE (code & pipeline)
 
@@ -211,5 +247,8 @@ APRÈS (Hermes)   : decryptSxbBlob → {"protocol":"ssh+payload","host":"196.216
 - ✅ `CONFIG_INCOMPLETE_BLOCK` ne peut plus se figer (re-provision auto + logs explicites)
 - ✅ SecureStore complet (ÉTAPE 8, champs listés §3)
 - ✅ restauration hors-ligne strictement identique (deep-equal)
-- ✅ build APK (Metro) réparé ; backend bundle CI OK ; typecheck 0 erreur
-- ⚠️ validation du tunnel sur appareil physique + déploiement VPS : requis après merge
+- ✅ build APK release réparé sur le vrai runner CI sous Node 24.18.0
+- ✅ artefact et GitHub Release `apk-164` publiés ; APK copié et installé sur le VPS
+- ✅ backend déployé par `deploy-vps` ; backend bundle CI OK ; typecheck 0 erreur
+- ✅ sondes de diagnostic retirées après acquisition de la cause ; fix Metro conservé
+- ⚠️ validation du tunnel et du trafic Internet sur appareil physique encore requise
