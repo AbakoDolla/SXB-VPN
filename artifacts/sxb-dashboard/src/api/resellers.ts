@@ -24,6 +24,8 @@ export async function createReseller(data: {
   name: string;
   email: string;
   phone?: string;
+  balance?: number;
+  status?: "active" | "suspended";
 }): Promise<Reseller> {
   return await apiRequest<Reseller>("/resellers", {
     method: "POST",

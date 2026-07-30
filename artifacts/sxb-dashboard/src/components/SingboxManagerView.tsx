@@ -90,8 +90,8 @@ export default function SingboxManagerView({ currentUserRole }: Props) {
         quotaGB: form.quotaGB ? Number(form.quotaGB) : undefined,
         expireAt: form.expireAt || undefined,
       };
-      if (editId) await updateSingboxAccount(editId, data);
-      else await createSingboxAccount(data);
+      if (editId) await updateSingboxAccount(editId, data as any);
+      else await createSingboxAccount(data as any);
       setShowForm(false); load();
     } catch (err: any) { setError(err.message || "Erreur"); }
     finally { setSaving(false); }

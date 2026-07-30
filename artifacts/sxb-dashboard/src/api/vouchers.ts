@@ -15,12 +15,14 @@ export function generateVoucherCode(): string {
 export interface Voucher {
   id: string;
   code: string;
-  quota: string; // BigInt serialisé en string (bytes)
-  durationDays: number;
-  isRedeemed: boolean;
+  quota: string | number;
+  durationDays?: number;
+  isRedeemed?: boolean;
   redeemedBy?: string | null;
-  createdAt: string;
-  updatedAt: string;
+  createdAt?: string;
+  updatedAt?: string;
+  status?: "active" | "used" | "expired";
+  expiration?: string;
 }
 
 export async function fetchVouchers(): Promise<Voucher[]> {

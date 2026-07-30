@@ -22,11 +22,14 @@ export async function fetchServerById(id: string): Promise<VPSServer | null> {
 
 export async function createServer(serverData: {
   name: string;
-  host: string;
-  port: number;
-  username: string;
+  host?: string;
+  port?: number;
+  username?: string;
   password?: string;
   sshKey?: string;
+  location?: string;
+  ip?: string;
+  status?: "online" | "offline";
 }): Promise<VPSServer> {
   return await apiRequest<VPSServer>("/servers", {
     method: "POST",
