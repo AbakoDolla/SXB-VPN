@@ -49,63 +49,97 @@ async function check(name, fn) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-console.log('\n══ SECTION 1 — mergeConfigs : fusion destructive (configValidator.ts) ══\n');
+console.log('\n══ SECTION 1 — Fusion sûre (modèle « intermédiaire », configValidator.ts) ══\n');
+//
+// Historique : mergeConfigs (correctif PR #8) restaurait false/null/'' depuis
+// l\'ancien cache et laissait des sources non provisionnées toucher la technique.
+// Ces appels fusion-partielle ont DISPARU du produit : le provisionné est la
+// SEULE source technique (mergeProvisionedConfig) et les sources de métadonnées
+// passent par une allowlist stricte (mergeConnectionMetadata). Ces fonctions
+// N\'EXISTENT PAS dans le code d\'avant la refonte → imports undefined → ROUGE.
 
-const { mergeConfigs, validateVpnConfig } =
+const { mergeProvisionedConfig, mergeConnectionMetadata, validateVpnConfig } =
   await import(path.join(MOBILE, 'services/configValidator.ts'));
 
-await check('S1.1 — tls:false EXPLICITE prévaut sur un ancien tls:true', () => {
+await check('S1.1 — tls:false EXPLICITE du provisionné prévaut (jamais restauré tls:true du cache)', () => {
+  if (typeof mergeProvisionedConfig !== 'function') {
+    throw new Error('mergeProvisionedConfig inexistante — ancienne mergeConfigs destructive toujours en place');
+  }
   const old = { protocol: 'ssh', host: 'h', port: 443, username: 'u', password: 'p', tls: true };
-  const merged = mergeConfigs(old, { tls: false });
+  const fresh = { protocol: 'ssh', host: 'h', port: 443, username: 'u', password: 'p', tls: false };
+  const merged = mergeProvisionedConfig(old, fresh);
   assert.equal(merged.tls, false,
-    `tls:false explicite a été écrasé par l'ancien tls:true (merged.tls=${merged.tls})`);
+    `tls:false explicite du provisionné a été écrasé par l'ancien tls:true (merged.tls=${merged.tls})`);
 });
 
-await check('S1.2 — payload:null EXPLICITE (suppression) n\'est pas restauré depuis l\'ancien payload', () => {
+await check("S1.2 — payload ABSENT du provisionné (suppression) n'est jamais restauré depuis l'ancien cache", () => {
+  if (typeof mergeProvisionedConfig !== 'function') {
+    throw new Error('mergeProvisionedConfig inexistante');
+  }
   const old = { protocol: 'ssh+payload', host: 'h', port: 443, username: 'u', password: 'p', payload: 'GET / [crlf]' };
-  const merged = mergeConfigs(old, { protocol: 'ssh', payload: null });
+  const fresh = { protocol: 'ssh', host: 'h', port: 22, username: 'u', password: 'p' };
+  const merged = mergeProvisionedConfig(old, fresh);
   assert.equal(merged.payload ?? null, null,
-    `payload null de suppression a été remplacé par l'ancien payload (merged.payload=${JSON.stringify(merged.payload)})`);
+    `l'ancien payload a été restauré dans la config fusionnée (${JSON.stringify(merged.payload)})`);
+  assert.equal(merged.protocol, 'ssh');
 });
 
-await check("S1.3 — sni:'' EXPLICITE (chaîne vide = suppression SNI) n'est pas restauré", () => {
+await check("S1.3 — sni ABSENT du provisionné n'est pas restauré (suppression SNI effective)", () => {
+  if (typeof mergeProvisionedConfig !== 'function') {
+    throw new Error('mergeProvisionedConfig inexistante');
+  }
   const old = { protocol: 'ssh', host: 'h', port: 443, username: 'u', password: 'p', sni: 'www.whatsapp.com' };
-  const merged = mergeConfigs(old, { sni: '' });
-  assert.equal(merged.sni, '',
-    `sni vide explicite a été remplacé par l'ancien sni (merged.sni=${JSON.stringify(merged.sni)})`);
+  const fresh = { protocol: 'ssh', host: 'h', port: 443, username: 'u', password: 'p' };
+  const merged = mergeProvisionedConfig(old, fresh);
+  assert.equal(merged.sni ?? null, null,
+    `l'ancien sni a été restauré (merged.sni=${JSON.stringify(merged.sni)})`);
 });
 
 await check('S1.4 — les champs techniques d\'une source NON provisionnée (type /mobile/connections) ne modifient JAMAIS la config provisionnée', () => {
+  if (typeof mergeConnectionMetadata !== 'function') {
+    throw new Error('mergeConnectionMetadata inexistante — aucune allowlist métadonnées (§6.4)');
+  }
   const provisioned = {
     protocol: 'ssh', host: 'serveur-externe.example.com', port: 22,
-    username: 'u', password: 'p', tls: false, sni: null, payload: null,
+    username: 'u', password: 'p', tls: false, payload: 'GET / [crlf]',
   };
-  // Réponse /mobile/connections expose aujourd'hui server(host), port ET dérive
-  // technicalProtocol — si un tel objet atteint mergeConfigs, la boucle 1 les applique.
+  // Même si l\'objet porte des champs techniques, l\'allowlist les ignore TOUS.
   const connectionLike = {
-    technicalProtocol: 'vless',           // 6.4 : protocol interdit
-    server: 'autre-hote.example.com',     // 6.4 : host interdit
-    port: 443,                            // 6.4 : port interdit
+    technicalProtocol: 'vless',           // §6.4 : protocol interdit
+    protocol: 'vless',                    // §6.4 : interdit même sous ce nom
+    server: 'autre-hote.example.com',     // §6.4 : host interdit
+    host: 'hote-pirate.example.com',      // §6.4 : host interdit
+    port: 443,                            // §6.4 : port interdit
+    tls: true, sni: 'x.evil.example', payload: 'Evil /', // §6.4 : interdits
     displayProtocol: 'Orange Protocol',   // allowlist métadonnées
-    id: 'sub-xyz',                        // allowlist métadonnées
+    id: 'sub-xyz',                        // → configId/subscriptionId
     dataToken: 'SXB-DATA-XXXX-XXXX-XXXX', // allowlist métadonnées
+    configHash: 'a'.repeat(64),           // allowlist métadonnées
   };
-  const merged = mergeConfigs(provisioned, connectionLike);
+  const merged = mergeConnectionMetadata(provisioned, connectionLike);
   assert.equal(merged.protocol, 'ssh',
     `protocol écrasé par une source non provisionnée (${merged.protocol})`);
   assert.equal(merged.host, 'serveur-externe.example.com',
     `host écrasé par une source non provisionnée (${merged.host})`);
   assert.equal(merged.port, 22, `port écrasé (${merged.port})`);
+  assert.equal(merged.tls, false, `tls écrasé (${merged.tls})`);
+  assert.equal(merged.payload, 'GET / [crlf]', 'payload écrasé');
+  assert.equal(merged.sni ?? null, null, 'sni injecté');
 });
 
-await check('S1.5 — CONTRÔLE : les métadonnées autorisées DOIVENT se mettre à jour', () => {
-  const merged = mergeConfigs(
+await check('S1.5 — CONTRÔLE : les métadonnées autorisées DOIVENT se mettre à jour (allowlist §6.4)', () => {
+  const merged = mergeConnectionMetadata(
     { protocol: 'ssh', host: 'h', port: 22, username: 'u', password: 'p', displayProtocol: 'Ancien', configId: 'x' },
-    { displayProtocol: 'Nouveau', configId: 'y', dataToken: 'SXB-DATA-0000-0000-0000' },
+    { displayProtocol: 'Nouveau', configId: 'y', dataToken: 'SXB-DATA-0000-0000-0000', configVersion: 3, configHash: 'b'.repeat(64) },
   );
   assert.equal(merged.displayProtocol, 'Nouveau');
   assert.equal(merged.configId, 'y');
   assert.equal(merged.dataToken, 'SXB-DATA-0000-0000-0000');
+  assert.equal(merged.configVersion, 3);
+  assert.equal(merged.configHash, 'b'.repeat(64));
+  // … et la technique est INTACTE
+  assert.equal(merged.host, 'h');
+  assert.equal(merged.port, 22);
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -125,15 +159,23 @@ function aospOptString(jsonObj, key, fallback = '') {
   return typeof v === 'string' ? v : String(v); // JSON.toString
 }
 
-/** Rejoue la composition exacte de VpnContext.tsx l.707-713 */
+/** Rejoue la composition de VpnContext.tsx (frontière native, après refonte) :
+ *  JSON.stringify(sanitizeEngineConfig({ ...configToUse, protocol, killSwitch, autoReconnect }))
+ *  sanitizeEngineConfig N\'EXISTE PAS dans le code d\'avant la refonte → ROUGE. */
 function composeEngineJson(configToUse, engineProtocol) {
-  return JSON.stringify({
+  if (typeof sanitizeEngineConfig !== 'function') {
+    throw new Error('sanitizeEngineConfig inexistante — les null partent au natif (payload="null")');
+  }
+  return JSON.stringify(sanitizeEngineConfig({
     ...configToUse,
     protocol: engineProtocol,
     killSwitch: false,
     autoReconnect: true,
-  });
+  }));
 }
+
+const { sanitizeEngineConfig } =
+  await import(path.join(MOBILE, 'services/configValidator.ts'));
 
 await check('S2.1 — Aucun payload="null" n\'atteint le natif (mission §6.4)', () => {
   // Reproduction exacte : provision.ts émet { payload: null } pour ssh direct
@@ -208,6 +250,7 @@ export { default as provisionRouter } from ${JSON.stringify(path.join(BACKEND, '
 export { default as mobileRouter }    from ${JSON.stringify(path.join(BACKEND, 'server/routes/mobile.ts'))};
 export * as fixtures from ${JSON.stringify(DB_STUB)};
 export { decryptSxbBlob } from ${JSON.stringify(path.join(MOBILE, 'services/aesGcm.ts'))};
+export { encryptCanonical, computeCanonicalHash, canonicalJson } from ${JSON.stringify(path.join(BACKEND, 'server/services/canonical-config.ts'))};
 `);
 
 await esbuild.build({
@@ -249,9 +292,11 @@ function dbEncryptGcm(text) {
   return `gcm:${iv.toString('hex')}:${enc.toString('hex')}:${c.getAuthTag().toString('hex')}`;
 }
 
-// Profil VLESS « importé » : les colonnes contiennent des valeurs DIFFÉRENTES
-// du jsonConfig fourni par le fournisseur externe (cas réel d'import).
-const IMPORTED_JSON_CONFIG = JSON.stringify({
+// Profil VLESS « importé » via le NOUVEAU modèle : le canonique fournisseur est
+// stocké CHIFFRÉ (canonicalConfig) + hash déterministe. Les colonnes
+// d\'identification peuvent DIFFÉRER — elles ne servent plus au provisionnement.
+// (Avant la refonte : seules les colonnes étaient lues → jsonConfig ignoré.)
+const IMPORTED_CANONICAL = {
   protocol: 'vless',
   host:     'serveur-du-fournisseur.example.net',
   port:     8443,
@@ -260,7 +305,19 @@ const IMPORTED_JSON_CONFIG = JSON.stringify({
   path:     '/cdn',
   tls:      true,
   sni:      'cdn.example.net',
-});
+  flow:     'xtls-rprx-vision',
+};
+
+let canonBlob = null;
+let canonHash = null;
+{
+  if (typeof B.encryptCanonical !== 'function' || typeof B.computeCanonicalHash !== 'function') {
+    canonBlob = null; // la section S4.1 rapportera le ROUGE explicite
+  } else {
+    canonBlob = B.encryptCanonical(B.canonicalJson(IMPORTED_CANONICAL));
+    canonHash = B.computeCanonicalHash(IMPORTED_CANONICAL);
+  }
+}
 
 FX.subscription = {
   id: 'sub-incident',
@@ -278,19 +335,23 @@ FX.subscription = {
     name: 'Import VLESS fournisseur',
     protocol: 'vless',
     displayProtocol: 'MTN Protocol',
-    host: 'ancien-serveur-colonnes.example.com', // ← colonnes ≠ jsonConfig
+    host: 'ancien-serveur-colonnes.example.com', // ← colonne d\'identification ≠ canonique
     port: 443,
     username: null,
     password: null,
-    uuid: '11111111-2222-3333-4444-555555555555',
-    tls: false,                                  // ← colonne ≠ jsonConfig (true)
+    uuid: null,
+    tls: false,                                  // ← colonne ≠ canonique (true)
     sni: null,
     network: 'tcp',
     path: '/',
     payloadId: null,
-    jsonConfig: IMPORTED_JSON_CONFIG,            // ← promis « utilisé au provisionnement » (UI)
     offlineValidDays: 7,
     status: 'active',
+    // Nouveau modèle : canonique chiffré + hash + version
+    canonicalConfig:      canonBlob,
+    canonicalConfigHash:  canonHash,
+    configVersion:        2,
+    sourceFormat:         'vless-uri',
   },
   client: { id: 'client-001', user: { id: 'user-001', email: 'client@sxb.cm' } },
 };
@@ -324,16 +385,32 @@ const DEV = 'SXBTESTDEVICE-INCIDENT';
   provisionBody = await res.json();
 }
 
-await check('S4.1 — jsonConfig de l\'import est la SOURCE des champs techniques provisionnés (mission 6.1)', async () => {
+await check('S4.1 — FIDÉLITÉ §8.1 : la config canonique importée est restituée TECHNIQUEMENT IDENTIQUE (hors allowlist métadonnées)', async () => {
+  if (!canonBlob) {
+    throw new Error('encryptCanonical/computeCanonicalHash introuvables — modèle canonique non implémenté (jsonConfig ignoré au provisionnement)');
+  }
   const cfg = provisionBody.config;
   const clear = JSON.parse(await B.decryptSxbBlob(cfg.encryptedBlob, cfg.configKey));
-  const imported = JSON.parse(IMPORTED_JSON_CONFIG);
-  for (const f of ['host', 'port', 'uuid', 'network', 'path', 'tls', 'sni']) {
-    assert.deepEqual(clear[f], imported[f],
-      `champ "${f}" vaut ${JSON.stringify(clear[f])} (colonnes) au lieu de ` +
-      `${JSON.stringify(imported[f])} (jsonConfig importé) — le jsonConfig est IGNORED ` +
-      `alors que le dashboard promet qu'il est utilisé au provisionnement`);
+  // Chaque champ TECHNIQUE du canonique doit être reproduit à l\'identique
+  for (const f of Object.keys(IMPORTED_CANONICAL)) {
+    assert.deepEqual(clear[f], IMPORTED_CANONICAL[f],
+      `champ "${f}" vaut ${JSON.stringify(clear[f])} (colonnes legacy) au lieu de ` +
+      `${JSON.stringify(IMPORTED_CANONICAL[f])} (canonique importé) — la configuration ` +
+      `fournisseur est ALTÉRÉE au provisionnement`);
   }
+  // Réciproque : aucun champ technique ÉTRANGER (colonnes legacy) ne s\'est glissé
+  const ALLOWLIST_META = new Set(['displayProtocol', 'profileId', 'profileName']);
+  const intrus = Object.keys(clear).filter(k => !(k in IMPORTED_CANONICAL) && !ALLOWLIST_META.has(k));
+  assert.deepEqual(intrus, [],
+    `champs étrangers injectés dans la config moteur : ${intrus.join(', ')} — ` +
+    `la config provisionnée n\'est PAS techniquement identique à l\'import (§8.1)`);
+  // Le host colonne (ancien-serveur…) ne doit JAMAIS fuiter
+  assert.notEqual(clear.host, 'ancien-serveur-colonnes.example.com',
+    'le host des colonnes legacy a fuité dans la config provisionnée');
+  // Métadonnées allowlist présentes
+  assert.equal(clear.profileId, 'prof-import');
+  assert.equal(clear.profileName, 'Import VLESS fournisseur');
+  assert.equal(clear.displayProtocol, 'MTN Protocol');
 });
 
 await check('S4.2 — la réponse de provisionnement expose configVersion ET configHash (mission 6.3/6.4)', () => {
@@ -366,10 +443,12 @@ for (const r of results) console.log(` ${r.ok ? '✅' : '🔴'} ${r.name}`);
 console.log('───────────────────────────────────────────────────────────────────────────');
 console.log(` VERTS : ${verts.length}   ROUGES : ${rouges.length}   TOTAL : ${results.length}`);
 if (rouges.length > 0) {
-  console.log('\n⛔ La suite est ROUGE comme attendu AVANT la refonte.');
-  console.log('   Chaque 🔴 ci-dessus est un défaut prouvé de l\'incident APK #165 ;');
-  console.log('   l\'implémentation du modèle « intermédiaire » devra faire passer ces');
-  console.log('   tests au vert SANS modifier les 52 assertions historiques.');
+  console.log('\n⛔ Des défauts de l\'incident APK #165 NE SONT PAS corrigés.');
+  console.log('   Chaque 🔴 ci-dessus est un contrat non respecté du modèle « intermédiaire »');
+  console.log('   (allowlist métadonnées, sanitize natif, rejet SSH+TLS, canonique chiffré,');
+  console.log('   configVersion/configHash). Les 52 assertions historiques doivent rester vertes.');
   process.exit(1);
 }
-console.log('\n🟢 Tous les contrats cibles sont respectés — refonte validée.');
+console.log('\n🟢 REFONTE VALIDÉE — les 5 défauts de l\'incident APK #165 sont corrigés.');
+console.log('   Modèle « intermédiaire » conforme : canonique chiffré restitué à l\'identique,');
+console.log('   fusion allowlist §6.4, frontière native sans null, transport SSH+TLS rejeté.');
