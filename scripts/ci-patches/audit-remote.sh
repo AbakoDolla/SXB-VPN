@@ -10,6 +10,9 @@ set -uo pipefail
 red() {
   sed -E \
     -e 's#(postgres(ql)?://)[^:@/ ]+:[^@/ ]+@#\1***:***@#gi' \
+    -e 's#(https?://)[^:@/ ]+:[^@/ ]+@#\1***MASQUÉ-CREDENTIALS***@#gi' \
+    -e 's/gh[pousr]_[A-Za-z0-9]{20,}/***MASQUÉ-PAT***/g' \
+    -e 's/github_pat_[A-Za-z0-9_]{20,}/***MASQUÉ-PAT***/g' \
     -e 's/(DATABASE_URL|ENCRYPTION_KEY|PROVISION_SECRET|JWT_SECRET|SESSION_SECRET|PASSWORD|PASSWD)[A-Za-z_]*(=|:)[^ ]+/\1\2***MASQUÉ***/gi' \
     -e 's/gcm:[0-9a-fA-F:]+/***MASQUÉ-GCM***/g' \
     -e 's/[0-9a-f]{32,}:[0-9a-f]{32,}/***MASQUÉ-HEX***/g' \
