@@ -23,7 +23,51 @@ export interface VpnProfile {
   status: string;
   createdAt: string;
   _count?: { subscriptions: number };
+
+  // ── Modèle « intermédiaire » (import-only, canonique chiffré) ─────────────
+  /** true si la config technique vient d'un import fournisseur (immuable hors réimport) */
+  hasCanonicalConfig?: boolean;
+  canonicalConfigHash?: string | null;
+  configVersion?: number;
+  sourceFormat?: string | null;
+  importedAt?: string | null;
+  validatedAt?: string | null;
+  validationStatus?: string | null;  // transport_ok | unreachable_from_probe | invalid | unsupported | unknown
+  validationMessage?: string | null;
 }
+
+// ── Préflight /api/config-test (mission §7) ───────────────────────────────────
+
+export interface ProbeStep {
+  step: string;
+  ok: boolean;
+  detail: string;
+  latencyMs?: number;
+}
+
+export interface ConfigTestResult {
+  success: boolean;
+  validationStatus: 'transport_ok' | 'unreachable_from_probe' | 'invalid' | 'unsupported' | 'unknown' | string;
+  parse?: { errors: string[]; warnings: string[] };
+  probe?: {
+    verdict: string;
+    steps: ProbeStep[];
+    latencyMs?: number | null;
+    durationMs?: number;
+    startedAt?: string;
+    hint?: string | null;
+  };
+  error?: string;
+  details?: { errors?: string[]; warnings?: string[] };
+}
+
+/** Teste une configuration en cours d'import (URI/JSON — non encore stockée). */
+export const testImportedConfig = (importConfig: string): Promise<ConfigTestResult> =>
+  apiRequest<ConfigTestResult>('/config-test', { method: 'POST', body: { importConfig } });
+
+/** Teste la configuration importée d'un profil existant (stockée chiffrée). */
+export const testProfileConfig = (profileId: string): Promise<ConfigTestResult> =>
+  apiRequest<ConfigTestResult>('/config-test', { method: 'POST', body: { profileId } });
 
 export interface Subscription {
   id: string;

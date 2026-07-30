@@ -63,6 +63,9 @@ export interface VpnConnection {
   status: string;             // active | expired | revoked | suspended
   dataToken: string;
   createdAt: string;
+  /** §6.4 — métadonnées d'invalidation de cache (jamais de champs techniques) */
+  configVersion: number;
+  configHash: string | null;
 }
 
 export interface ConnectionsResponse {

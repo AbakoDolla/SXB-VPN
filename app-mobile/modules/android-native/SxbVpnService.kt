@@ -461,6 +461,24 @@ private class SxbLoggingSocketFactory(
 // SxbVpnService
 // ═════════════════════════════════════════════════════════════════════════════
 
+/**
+ * Lecture sûre d'une chaîne JSON — correctif incident APK #165.
+ *
+ * AOSP JSONObject.optString(name, fallback) retourne la CHAÎNE "null" quand la
+ * valeur est JSONObject.NULL (NULL.toString() == "null"), contrairement à
+ * org.json de bureau. C'est ce qui produisait payload_len=4 (payload="null"
+ * injecté dans le handshake HTTP → réponse inattendue → SSH_TIMEOUT).
+ *
+ * Ce helper garantit : absent/NULL/"null" → fallback ; sinon la valeur réelle.
+ */
+private fun JSONObject.optStringOrNull(name: String, fallback: String = ""): String {
+    if (!has(name) || isNull(name)) return fallback
+    val v = opt(name) ?: return fallback
+    if (v === JSONObject.NULL) return fallback
+    val s = if (v is String) v else v.toString()
+    return if (s == "null") fallback else s
+}
+
 class SxbVpnService : VpnService(), PlatformInterface {
 
     companion object {
@@ -731,19 +749,22 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
             val host       = cfg.getString("host")
             val port       = cfg.optInt("port", 22)
-            val username   = cfg.optString("username", "")
-            val password   = cfg.optString("password", "")
-            val usePayload = cfg.optBoolean("usePayload", false) || cfg.optString("protocol","").contains("payload")
-            val sni        = cfg.optString("sni", "")
+            // optStringOrNull : jamais la chaîne "null" (AOSP) — correctif APK #165
+            val username   = cfg.optStringOrNull("username", "")
+            val password   = cfg.optStringOrNull("password", "")
+            val usePayload = cfg.optBoolean("usePayload", false) || cfg.optStringOrNull("protocol","").contains("payload")
+            val sni        = cfg.optStringOrNull("sni", "")
             val tlsEnabled = cfg.optBoolean("tlsEnabled", cfg.optBoolean("tls", false))
             val websocketEnabled = cfg.optBoolean("websocketEnabled", false)
-            val fingerprint = cfg.optString("fingerprint", "")
+            val fingerprint = cfg.optStringOrNull("fingerprint", "")
 
             // ── Payload SSH ─────────────────────────────────────────────────
             // BUG FIX: ne jamais basculer en SSH direct si le protocole est ssh+payload
             // Même si le backend n'a pas renvoyé de contenu de payload (payloadContent null),
             // on utilise un payload WebSocket par défaut pour éviter le timeout sur port 443.
-            val rawPayload = cfg.optString("payload", "")
+            // optStringOrNull : payload=null côté backend ne doit JAMAIS
+            // devenir la chaîne "null" (payload_len=4 — incident APK #165)
+            val rawPayload = cfg.optStringOrNull("payload", "")
             val payload = when {
                 rawPayload.isNotEmpty() -> rawPayload   // payload réel reçu du backend
                 usePayload -> {
@@ -785,6 +806,18 @@ class SxbVpnService : VpnService(), PlatformInterface {
             } else {
                 Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_DIRECT_MODE")
                 broadcastLog("[SXB] Mode SSH direct")
+                // ── Avertissement explicite (mission §6.2) ────────────────────
+                // Le SSH direct utilise SxbLoggingSocketFactory = socket TCP BRUT :
+                // TLS n'est JAMAIS appliqué dans ce mode, même si la config le
+                // demande. C'est la cause du SSH_TIMEOUT de l'incident APK #165
+                // (profil ssh + tls=true sur un serveur WebSocket en clair).
+                // Le rejet de cette combinaison a lieu à l'import (backend) et à
+                // la validation (configValidator) — ici on journalise au cas où
+                // une vieille config provisionnée arriverait encore au natif.
+                if (tlsEnabled) {
+                    Log.w("SXB_DEBUG", "[SXB_DEBUG] TLS_IGNORED_SSH_DIRECT — tls=true ignoré : le tunnel SSH direct applique un socket TCP brut (pas de TLS)")
+                    broadcastLog("[SXB_DEBUG] TLS_IGNORED_SSH_DIRECT — TLS NON appliqué en SSH direct : si le serveur exige TLS/WebSocket, utilisez un profil ssh+payload")
+                }
                 jsch.getSession(username, host, port).also { s ->
                     s.setPassword(password)
                     val props = Properties().apply {
@@ -993,18 +1026,43 @@ class SxbVpnService : VpnService(), PlatformInterface {
         startNotificationUpdater()
     }
 
+    /**
+     * Classification différenciée des erreurs VPN (mission §7) — alignée sur la
+     * taxonomie du préflight backend (transport-probe) :
+     *   AUTH_FAILED         — credentials rejetés par le serveur
+     *   TLS_FAILED          — handshake TLS/SSL échoué (SNI, certificat, ALPN)
+     *   SSH_BANNER_MISSING  — le port ne parle pas SSH (pas de bannière SSH-2.0)
+     *   HTTP_UNEXPECTED     — la passerelle HTTP/WebSocket a répondu autrement
+     *                         que 101/200 (mauvais payload, Host/SNI filtré)
+     *   TCP_TIMEOUT         — socket ouvert mais silencieux (DPI, mauvais port)
+     *   SSH_TIMEOUT         — watchdog global 45 s (conservé)
+     *   SERVER_UNREACHABLE  — TCP refusé / hôte injoignable / DNS en échec
+     *   VPN_TUN_FAILED      — interface TUN Android
+     */
     private fun classifyVpnError(message: String): String {
         val lower = message.lowercase(Locale.ROOT)
         return when {
             lower.contains("auth fail") || lower.contains("authentication") ||
-                lower.contains("auth fail") -> "AUTH_FAILED"
-            lower.contains("payload") || lower.contains("http 4") ||
-                lower.contains("websocket") -> "PAYLOAD_ERROR"
+                lower.contains("auth failure") -> "AUTH_FAILED"
+            lower.contains("javax.net.ssl") || lower.contains("sslhandshake") ||
+                (lower.contains("handshake") && (lower.contains("tls") || lower.contains("ssl") || lower.contains("cert"))) ||
+                lower.contains("certificate") || lower.contains("certpath") ->
+                "TLS_FAILED"
+            lower.contains("invalid server's version string") ||
+                lower.contains("invalid server version") ||
+                lower.contains("banner") || lower.contains("ssh-2.0") ->
+                "SSH_BANNER_MISSING"
+            lower.contains("http 4") || lower.contains("http 5") ||
+                lower.contains("http status") || lower.contains("unexpected http") ||
+                lower.contains("websocket handshake") || lower.contains("payload") ->
+                "HTTP_UNEXPECTED"
             lower.contains("timeout") || lower.contains("timed out") ->
-                "SSH_TIMEOUT"
+                "TCP_TIMEOUT"
             lower.contains("refused") || lower.contains("unreachable") ||
                 lower.contains("unknownhost") || lower.contains("network is unreachable") ->
                 "SERVER_UNREACHABLE"
+            lower.contains("dns") || lower.contains("unable to resolve host") ->
+                "DNS_FAILED"
             lower.contains("tun") || lower.contains("establish") -> "VPN_TUN_FAILED"
             else -> "VPN_FAILED"
         }
@@ -1277,19 +1335,20 @@ class SxbVpnService : VpnService(), PlatformInterface {
     // ═════════════════════════════════════════════════════════════════════════
 
     private fun buildSingBoxConfig(cfg: JSONObject, protocol: String): String {
-        val host     = cfg.optString("host", "")
+        // optStringOrNull : jamais la chaîne "null" (AOSP) — correctif APK #165
+        val host     = cfg.optStringOrNull("host", "")
         val port     = cfg.optInt("port", 443)
-        val uuid     = cfg.optString("uuid", "")
-        val password = cfg.optString("password", "")
-        val method   = cfg.optString("method", "aes-256-gcm")
-        val sni      = cfg.optString("sni", host)
-        val network  = cfg.optString("network", "tcp")
-        val path     = cfg.optString("path", "/")
+        val uuid     = cfg.optStringOrNull("uuid", "")
+        val password = cfg.optStringOrNull("password", "")
+        val method   = cfg.optStringOrNull("method", "aes-256-gcm")
+        val sni      = cfg.optStringOrNull("sni", host)
+        val network  = cfg.optStringOrNull("network", "tcp")
+        val path     = cfg.optStringOrNull("path", "/")
         val tls      = cfg.optBoolean("tls", true)
-        val flow     = cfg.optString("flow", "")
-        val privKey  = cfg.optString("privateKey", "")
-        val peerPub  = cfg.optString("peerPublicKey", "")
-        val localAddr = cfg.optString("localAddress", "10.0.0.2/32")
+        val flow     = cfg.optStringOrNull("flow", "")
+        val privKey  = cfg.optStringOrNull("privateKey", "")
+        val peerPub  = cfg.optStringOrNull("peerPublicKey", "")
+        val localAddr = cfg.optStringOrNull("localAddress", "10.0.0.2/32")
 
         // Inbound TUN
         //

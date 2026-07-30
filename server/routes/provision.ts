@@ -17,6 +17,12 @@ import { prisma }           from '../database';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth';
 import { logDbActivity }    from '../database';
 import crypto               from 'crypto';
+import {
+  decryptCanonical, computeCanonicalHash, engineConfigFromCanonical,
+} from '../services/canonical-config';
+import {
+  configHashForProfile, configVersionForProfile,
+} from '../services/config-hash';
 
 const router = Router();
 
@@ -182,48 +188,94 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
       });
     }
 
-    // 6. Déchiffrer les credentials du profil pour construire la config brute
-    const profile  = sub.profile;
-    const proto    = (profile?.protocol || 'ssh').toLowerCase();
-    const password = decryptDbField(profile?.password);
-    const uuid     = decryptDbField(profile?.uuid);
+    // 6. Construire la config brute moteur.
+    //    ─ Priorité au CANONIQUE importé (Phase 3 — modèle « intermédiaire ») :
+    //      la configuration du fournisseur externe est restituée TECHNIQUEMENT
+    //      IDENTIQUE à l'import, sans reconstruction depuis les colonnes legacy.
+    //    ─ Sinon : chemin LEGACY (profils créés manuellement) — INCHANGÉ.
+    const profile = sub.profile;
+    const proto   = (profile?.protocol || 'ssh').toLowerCase();
 
-    // Payload SSH (fallback WebSocket si non configuré)
-    let payloadContent: string | null = null;
-    if (profilePayload?.content) {
-      payloadContent = profilePayload.content;
-    } else if (proto === 'ssh+payload') {
-      payloadContent = 'GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]';
+    let rawConfig: Record<string, any>;
+
+    if (profile?.canonicalConfig) {
+      // ── Chemin CANONIQUE (import fournisseur, chiffré en DB) ──────────────
+      const plain = decryptCanonical(profile.canonicalConfig);
+      if (!plain) {
+        console.error(`[provision/activate] Déchiffrement canonique impossible — profil ${profile.id}`);
+        return res.status(500).json({
+          error: 'Configuration importée illisible — réimportez le profil ou contactez un administrateur',
+        });
+      }
+      let canonical: Record<string, any>;
+      try {
+        canonical = JSON.parse(plain);
+      } catch {
+        console.error(`[provision/activate] Canonique non-JSON — profil ${profile.id}`);
+        return res.status(500).json({
+          error: 'Configuration importée corrompue — réimportez le profil ou contactez un administrateur',
+        });
+      }
+      // Preuve de NON-ALTÉRATION : le hash déterministe stocké à l'import doit
+      // correspondre exactement au contenu déchiffré (§6.3).
+      if (profile.canonicalConfigHash &&
+          computeCanonicalHash(canonical) !== profile.canonicalConfigHash) {
+        console.error(`[provision/activate] Hash canonique mismatch — profil ${profile.id}`);
+        return res.status(500).json({
+          error: 'Configuration importée altérée — réimportez le profil ou contactez un administrateur',
+        });
+      }
+      const engine = engineConfigFromCanonical(canonical);
+      // ALLOWLIST métadonnées (§6.1) : les SEULS champs que le serveur ajoute
+      // à la configuration fournisseur. Aucun champ technique n'est modifié.
+      rawConfig = {
+        ...engine,
+        displayProtocol: profile.displayProtocol || (engine as any).protocol || proto,
+        profileId:       profile.id,
+        profileName:     profile.name,
+      };
+    } else {
+      // ── Chemin LEGACY (reconstruction colonnes — comportement historique) ──
+      const password = decryptDbField(profile?.password);
+      const uuid     = decryptDbField(profile?.uuid);
+
+      // Payload SSH (fallback WebSocket si non configuré)
+      let payloadContent: string | null = null;
+      if (profilePayload?.content) {
+        payloadContent = profilePayload.content;
+      } else if (proto === 'ssh+payload') {
+        payloadContent = 'GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]';
+      }
+
+      // Config brute (jamais envoyée en clair au mobile)
+      rawConfig = {
+        protocol:        proto,
+        displayProtocol: profile?.displayProtocol || proto,
+        host:            profile?.host,
+        port:            profile?.port,
+        username:        profile?.username,
+        password:        password,
+        uuid:            uuid,
+        tls:             profile?.tls    || false,
+        sni:             profile?.sni    || null,
+        network:         profile?.network || 'tcp',
+        dns:             profile?.dns    || null,
+        payload:         payloadContent,
+        payloadId:       profile?.payloadId || null,
+        // Champs sing-box
+        path:            profile?.path   || null,
+        headerType:      profile?.headerType || null,
+        grpcServiceName: profile?.grpcServiceName || null,
+        flow:            profile?.flow   || null,
+        fingerprint:     profile?.fingerprint || null,
+        publicKey:       profile?.publicKey || null,
+        shortId:         profile?.shortId || null,
+        spiderX:         profile?.spiderX || null,
+        // Metadata
+        profileId:       profile?.id,
+        profileName:     profile?.name,
+      };
     }
-
-    // Config brute (jamais envoyée en clair au mobile)
-    const rawConfig: Record<string, any> = {
-      protocol:        proto,
-      displayProtocol: profile?.displayProtocol || proto,
-      host:            profile?.host,
-      port:            profile?.port,
-      username:        profile?.username,
-      password:        password,
-      uuid:            uuid,
-      tls:             profile?.tls    || false,
-      sni:             profile?.sni    || null,
-      network:         profile?.network || 'tcp',
-      dns:             profile?.dns    || null,
-      payload:         payloadContent,
-      payloadId:       profile?.payloadId || null,
-      // Champs sing-box
-      path:            profile?.path   || null,
-      headerType:      profile?.headerType || null,
-      grpcServiceName: profile?.grpcServiceName || null,
-      flow:            profile?.flow   || null,
-      fingerprint:     profile?.fingerprint || null,
-      publicKey:       profile?.publicKey || null,
-      shortId:         profile?.shortId || null,
-      spiderX:         profile?.spiderX || null,
-      // Metadata
-      profileId:       profile?.id,
-      profileName:     profile?.name,
-    };
 
     // 7. Calcul de l'expiration de la configuration locale
     const offlineDays    = profile?.offlineValidDays || 7;
@@ -274,6 +326,9 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
       quotaUsedGB:     parseFloat(quotaUsedGB.toFixed(4)),
       expireAt:        sub.expireAt,
       deviceId,
+      // §6.4 — invalidation de cache côté mobile (métadonnées only)
+      configVersion:   configVersionForProfile(profile),
+      configHash:      configHashForProfile(profile),
     };
 
     return res.json({

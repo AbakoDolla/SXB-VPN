@@ -9,8 +9,70 @@ import { prisma, inMemoryDb } from '../database';
 import { requireAuth, requirePermission, AuthenticatedRequest } from '../middleware/auth';
 import { logDbActivity } from '../database';
 import crypto from 'crypto';
+import {
+  parseImportedConfig, canonicalJson, computeCanonicalHash, encryptCanonical,
+} from '../services/canonical-config';
 
 const router = Router();
+
+// ── Import canonique : champs d'identification dérivés, technique immuable ────
+/**
+ * Construit les données Prisma d'un profil importé.
+ * - Le canonique (technique) est stocké CHIFFRÉ (canonicalConfig), jamais en clair.
+ * - Les colonnes host/port/protocol/tls... servent UNIQUEMENT à l'identification
+ *   et reflètent le canonique. Les credentials ne sont JAMAIS recopiés dans les
+ *   colonnes en clair : canonicalConfig les détient déjà, chiffrés.
+ * - jsonConfig legacy n'est plus jamais écrit (redirigé ici, chiffré, puis NULL).
+ */
+function buildImportData(rawImport: string, opts: { bumpVersion?: number | null } = {}) {
+  const parsed = parseImportedConfig(rawImport);
+  if (!parsed.ok || !parsed.canonical) {
+    const err = new Error('IMPORT_INVALID');
+    (err as any).details = { errors: parsed.errors, warnings: parsed.warnings };
+    throw err;
+  }
+  const canon = parsed.canonical;
+  const proto = String(canon.protocol).toLowerCase();
+
+  // Identification dérivée du canonique (jamais inventée)
+  let host = canon.host ?? null;
+  let port: number = canon.port ?? 0;
+  if (!host && proto === 'wireguard' && canon.endpoint) {
+    const [h, p] = String(canon.endpoint).split(':');
+    host = h; port = Number(p) || 0;
+  }
+  if (!host && proto === 'singbox') {
+    const out0 = Array.isArray(canon.outbounds) ? canon.outbounds[0] : null;
+    host = out0?.server ?? 'singbox-json';
+    port = Number(out0?.server_port ?? 0) || 0;
+  }
+
+  return {
+    protocol: proto,
+    host,
+    port,
+    tls: canon.tls === true,
+    sni: canon.sni ?? null,
+    network: canon.network ?? null,
+    path: canon.path ?? null,
+    username: null as string | null,   // credentials : dans canonicalConfig uniquement
+    password: null as string | null,
+    uuid: null as string | null,
+    method: canon.method ?? null,
+    jsonConfig: null as string | null, // plus JAMAIS de clair ici
+    payloadId: null as string | null,
+    // Bloc canonique
+    sourceFormat: parsed.sourceFormat ?? null,
+    canonicalConfig: encryptCanonical(canonicalJson(canon)),
+    canonicalConfigHash: computeCanonicalHash(canon),
+    configVersion: (opts.bumpVersion ?? 0) + 1,
+    importedAt: new Date(),
+    validatedAt: null,
+    validationStatus: 'unknown',
+    validationMessage: parsed.warnings.length ? parsed.warnings.join(' | ') : null,
+    _parseWarnings: parsed.warnings,
+  };
+}
 
 // ── Chiffrement AES-256-GCM (Phase 2 — authentifié, résistant à la falsification) ──
 const ENC_KEY = (() => {
@@ -56,7 +118,21 @@ function decrypt(enc: string): string {
 }
 
 function maskProfile(p: any) {
-  return { ...p, password: p.password ? '••••••••' : null };
+  return {
+    ...p,
+    password: p.password ? '••••••••' : null,
+    // Jamais de contenu chiffré ni clair exposé — seulement les métadonnées
+    canonicalConfig: undefined,
+    jsonConfig: p.jsonConfig ? '(chiffré — non exposé)' : null,
+    hasCanonicalConfig: !!p.canonicalConfig,
+    canonicalConfigHash: p.canonicalConfigHash ?? null,
+    configVersion: p.configVersion ?? 1,
+    sourceFormat: p.sourceFormat ?? null,
+    validationStatus: p.validationStatus ?? null,
+    validationMessage: p.validationMessage ?? null,
+    validatedAt: p.validatedAt ?? null,
+    importedAt: p.importedAt ?? null,
+  };
 }
 
 // ─── GET /api/vpn-profiles ────────────────────────────────────────────────────
@@ -151,11 +227,44 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
       host, port, username, password,
       uuid, path, network, tls, sni, dns,
       payloadId, offlineValidDays, status,
-      method, jsonConfig,
+      method, jsonConfig, importConfig,
     } = req.body;
 
+    // ── FLUX CIBLE : import d'une configuration externe (URI/JSON) ────────────
+    // jsonConfig legacy est traité comme un import (désormais chiffré, plus en clair).
+    const rawImport = importConfig || (jsonConfig ? String(jsonConfig) : null);
+    if (rawImport) {
+      if (!name) return res.status(400).json({ error: 'name est requis' });
+      let data: any;
+      try {
+        data = buildImportData(String(rawImport));
+      } catch (e: any) {
+        if (e.message === 'IMPORT_INVALID') {
+          return res.status(422).json({
+            success: false, error: 'Configuration importée invalide',
+            details: e.details,
+          });
+        }
+        throw e;
+      }
+      const parseWarnings = data._parseWarnings; delete data._parseWarnings;
+      const profile = await (prisma as any).vpnProfile.create({
+        data: {
+          name, description,
+          displayProtocol: displayProtocol || null,
+          dns: dns || null,
+          offlineValidDays: offlineValidDays ? Number(offlineValidDays) : 7,
+          status: status || 'active',
+          ...data,
+        },
+      });
+      await logDbActivity(req.user!.userId, `Imported VPN profile: ${name} (${data.sourceFormat})`, 'info', req.ip || '');
+      return res.status(201).json({ success: true, profile: maskProfile(profile), warnings: parseWarnings, imported: true });
+    }
+
+    // ── FLUX LEGACY (colonnes) — conservé pour compatibilité ──────────────────
     if (!name || !protocol || !host || !port) {
-      return res.status(400).json({ error: 'name, protocol, host and port are required' });
+      return res.status(400).json({ error: 'name + importConfig (recommandé) ou name, protocol, host, port (legacy) requis' });
     }
 
     const encPassword = password ? encrypt(password) : null;
@@ -176,12 +285,12 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
         payloadId: payloadId || null,
         offlineValidDays: offlineValidDays ? Number(offlineValidDays) : 7,
         method: method || null,
-        jsonConfig: jsonConfig || null,
+        jsonConfig: null, // plus jamais de clair — legacy jsonConfig a été redirigé vers l'import chiffré
         status: status || 'active',
       },
     });
 
-    await logDbActivity(req.user!.userId, `Created VPN profile: ${name}`, 'info', req.ip || '');
+    await logDbActivity(req.user!.userId, `Created VPN profile (legacy): ${name}`, 'info', req.ip || '');
     return res.status(201).json({ success: true, profile: maskProfile(profile) });
   } catch (err: any) {
     console.error('vpn-profile create error:', err);
@@ -190,6 +299,11 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
 });
 
 // ─── PUT /api/vpn-profiles/:id ───────────────────────────────────────────────
+// Champs ADMINISTRATIFS (name, description, displayProtocol, status, dns,
+// offlineValidDays) : toujours éditables.
+// Champs TECHNIQUES (protocol, host, port, credentials, tls, sni, network,
+// path, payload, jsonConfig…) : IMMUABLES hors « importConfig » (réimport
+// explicite → nouveau canonique chiffré + configVersion incrémentée).
 router.put('/:id', requireAuth, requirePermission('vpnprofile.manage'), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const existing = await (prisma as any).vpnProfile.findUnique({ where: { id: req.params.id } });
@@ -199,37 +313,66 @@ router.put('/:id', requireAuth, requirePermission('vpnprofile.manage'), async (r
       name, description, protocol, displayProtocol,
       host, port, username, password,
       uuid, path, network, tls, sni, dns,
-      payloadId, offlineValidDays, status, method, jsonConfig,
+      payloadId, offlineValidDays, status, method, jsonConfig, importConfig,
     } = req.body;
 
-    const encPassword = password ? encrypt(password) : existing.password;
+    // ── Réimport explicite (seule voie de modification technique) ─────────────
+    const rawImport = importConfig || (jsonConfig ? String(jsonConfig) : null);
+    if (rawImport) {
+      let data: any;
+      try {
+        data = buildImportData(String(rawImport), { bumpVersion: existing.configVersion ?? 0 });
+      } catch (e: any) {
+        if (e.message === 'IMPORT_INVALID') {
+          return res.status(422).json({ success: false, error: 'Configuration importée invalide', details: e.details });
+        }
+        throw e;
+      }
+      const parseWarnings = data._parseWarnings; delete data._parseWarnings;
+      const updated = await (prisma as any).vpnProfile.update({
+        where: { id: req.params.id },
+        data: {
+          ...data,
+          ...(name !== undefined && { name }),
+          ...(description !== undefined && { description }),
+          ...(displayProtocol !== undefined && { displayProtocol: displayProtocol || null }),
+          ...(dns !== undefined && { dns }),
+          ...(offlineValidDays !== undefined && { offlineValidDays: Number(offlineValidDays) }),
+          ...(status !== undefined && { status }),
+        },
+      });
+      await logDbActivity(req.user!.userId,
+        `Re-imported VPN profile: ${updated.name} (v${updated.configVersion}, ${data.sourceFormat})`, 'warning', req.ip || '');
+      return res.json({ success: true, profile: maskProfile(updated), warnings: parseWarnings, reimported: true });
+    }
+
+    // ── Édition administrative : aucun champ technique accepté ────────────────
+    const technicalAttempt = [
+      ['protocol', protocol], ['host', host], ['port', port], ['username', username],
+      ['password', password], ['uuid', uuid], ['path', path], ['network', network],
+      ['tls', tls], ['sni', sni], ['payloadId', payloadId], ['method', method],
+    ].filter(([, v]) => v !== undefined);
+    if (technicalAttempt.length > 0) {
+      return res.status(409).json({
+        success: false,
+        error: 'Champs techniques immuables — modifiez la configuration via "importConfig" (réimport explicite)',
+        technicalFieldsRejected: technicalAttempt.map(([k]) => k),
+      });
+    }
 
     const updated = await (prisma as any).vpnProfile.update({
       where: { id: req.params.id },
       data: {
         ...(name !== undefined && { name }),
         ...(description !== undefined && { description }),
-        ...(protocol !== undefined && { protocol }),
         ...(displayProtocol !== undefined && { displayProtocol: displayProtocol || null }),
-        ...(host !== undefined && { host }),
-        ...(port !== undefined && { port: Number(port) }),
-        ...(username !== undefined && { username }),
-        password: encPassword,
-        ...(uuid !== undefined && { uuid }),
-        ...(path !== undefined && { path }),
-        ...(network !== undefined && { network }),
-        ...(tls !== undefined && { tls: !!tls }),
-        ...(sni !== undefined && { sni }),
         ...(dns !== undefined && { dns }),
-        ...(payloadId !== undefined && { payloadId }),
         ...(offlineValidDays !== undefined && { offlineValidDays: Number(offlineValidDays) }),
-        ...(method !== undefined && { method }),
-        ...(jsonConfig !== undefined && { jsonConfig: jsonConfig || null }),
         ...(status !== undefined && { status }),
       },
     });
 
-    await logDbActivity(req.user!.userId, `Updated VPN profile: ${updated.name}`, 'info', req.ip || '');
+    await logDbActivity(req.user!.userId, `Updated VPN profile (admin): ${updated.name}`, 'info', req.ip || '');
     return res.json({ success: true, profile: maskProfile(updated) });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Failed to update VPN profile' });

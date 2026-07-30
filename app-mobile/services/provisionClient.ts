@@ -32,6 +32,9 @@ export interface ProvisionMeta {
   configExpiresAt: string;
   provisionedAt:   string;
   encVersion:      string;
+  /** §6.4 — métadonnées d'invalidation de cache (comparées à /mobile/connections) */
+  configVersion:   number;
+  configHash:      string | null;
 }
 
 // ── Helpers hex/bytes ─────────────────────────────────────────────────────────
@@ -164,6 +167,8 @@ export async function provisionAndStore(
     configExpiresAt: configExpiresAt,
     provisionedAt:   provisionedAt,
     encVersion:      encVersion,
+    configVersion:   typeof prov.configVersion === 'number' ? prov.configVersion : 1,
+    configHash:      prov.configHash || null,
   };
   await AsyncStorage.setItem(PROV_META_KEY, JSON.stringify(meta));
 

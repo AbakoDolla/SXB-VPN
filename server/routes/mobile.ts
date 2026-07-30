@@ -3,6 +3,7 @@ import { z } from "zod";
 import crypto from "crypto";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { generateTokens, requireAuth, AuthenticatedRequest } from "../middleware/auth";
+import { configHashForProfile, configVersionForProfile } from "../services/config-hash";
 
 // ── AES-256-CBC decrypt (same key as vpn-profiles.ts) ─────────────────────────
 const ENC_ALGO = "aes-256-cbc";
@@ -375,6 +376,9 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
         configId:        profile.id,
         protocol:        proto,
         displayProtocol: profile.displayProtocol || null,
+        // §6.4 — métadonnées d'invalidation de cache mobile
+        configVersion:   configVersionForProfile(profile),
+        configHash:      configHashForProfile(profile),
         // ❌ Champs supprimés : host, port, username, password, sni, uuid, payload, etc.
       } : null,
       // quota : bytes — consommé par offlineStorage.ts en mode hors-ligne
@@ -657,8 +661,10 @@ router.get("/connections", async (req: AuthenticatedRequest, res: Response) => {
         name:              sub.name || "Connexion VPN",
         displayProtocol,
         technicalProtocol,
-        server:            profile?.host || "—",
-        port:              profile?.port || 0,
+        // ❌ « server » (host) et « port » SUPPRIMÉS (mission §6.4) :
+        //    l'adresse du serveur fournisseur est une donnée technique
+        //    confidentielle — elle ne transite que par le blob chiffré de
+        //    /provision/activate, jamais par ce endpoint de métadonnées.
         quota: {
           totalGB:     totalBytes / GB,
           usedGB:      usedBytes  / GB,
@@ -671,6 +677,9 @@ router.get("/connections", async (req: AuthenticatedRequest, res: Response) => {
         status,
         dataToken:  sub.dataToken,
         createdAt:  sub.createdAt ? new Date(sub.createdAt).toISOString() : new Date().toISOString(),
+        // §6.4 — métadonnées d'invalidation de cache mobile (jamais de technique)
+        configVersion: configVersionForProfile(profile),
+        configHash:    configHashForProfile(profile),
       };
     });
 
