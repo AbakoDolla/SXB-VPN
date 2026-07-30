@@ -252,3 +252,100 @@ APRÈS (Hermes)   : decryptSxbBlob → {"protocol":"ssh+payload","host":"196.216
 - ✅ backend déployé par `deploy-vps` ; backend bundle CI OK ; typecheck 0 erreur
 - ✅ sondes de diagnostic retirées après acquisition de la cause ; fix Metro conservé
 - ⚠️ validation du tunnel et du trafic Internet sur appareil physique encore requise
+
+---
+
+# PHASE B — REFONTE « INTERMÉDIAIRE SÉCURISÉ » (2026-07-30)
+
+Suite au verdict de la Phase A (causes prouvées dans `AUDIT_PHASE_A_FINAL_2026-07-30.md`),
+le produit a été refondu selon l'architecture impérative : **le dashboard SXB ne crée,
+n'installe et ne configure aucun serveur — il importe, stocke chiffré et provisionne
+sans altération technique des configurations obtenues auprès de fournisseurs externes.**
+
+## B.1 Cause principale du SSH_TIMEOUT (rappel — prouvée)
+
+Le profil « Evans new » (`protocol=ssh, port=443, tls=true, sni=yamo.mtn.cm`) pointait
+un serveur **SSH-over-WebSocket en clair** (sonde décisive : 101 → trames
+`SSH-2.0-BugSleuth_0.1.9`). Or le moteur natif en SSH direct ouvre un socket **TCP brut**
+et ignore silencieusement TLS (`SxbLoggingSocketFactory`). Config correcte =
+`ssh+payload`, `tls=false`, payload WS Host. Refonte : cette combinaison est désormais
+**rejetée à l'import (backend 422) et à la validation (mobile)**, et le natif
+journalise `TLS_IGNORED_SSH_DIRECT` si une vieille config y parvenait encore.
+
+## B.2 Flux cible implémenté
+
+```
+Fournisseur externe (URI/JSON)
+  → Import admin (dashboard, assistant dédié)
+  → Parsing/validation (server/services/canonical-config.ts)
+  → Config CANONIQUE chiffrée AES-256-GCM + hash sha256 déterministe (JSON normalisé)
+  → Abonnement → Provision chiffrée par appareil (/provision/activate)
+  → Déchiffrement mobile → JSON moteur TECHNIQUEMENT IDENTIQUE (preuve §8.1 deepEqual)
+```
+
+- **Champs administratifs éditables** : nom, description, displayName, statut,
+  validité offline, quota/durée (abonnement).
+- **Champs techniques immuables** hors réimport explicite (backend 409) : protocol,
+  host, port, credentials, TLS/SNI, transport, path, payload, crypto.
+- **Formats d'import** : ssh/ssh+payload JSON, vless://, vmess://, trojan://, ss://,
+  WireGuard (conf), Hysteria2, TUIC, sing-box JSON, canonique SXB.
+- **jsonConfig en clair : supprimé** — tout import est redirigé vers canonicalConfig
+  chiffré, colonne legacy stockée NULL.
+
+## B.3 Préflight « Tester la configuration importée » (§7)
+
+`POST /api/config-test` (importConfig OU profileId) — transport-only, **aucune
+authentification tentée**, aucun serveur créé/configuré :
+`DNS_RESOLVED → TCP_CONNECTED (+LATENCY_MS) → [TLS_HANDSHAKE_OK|TLS_FAILED] →
+SSH_BANNER_RECEIVED|SSH_BANNER_MISSING → HTTP 101/200/UNEXPECTED`.
+Verdicts : `transport_ok` 🟢 · `invalid` 🔴 · `unreachable_from_probe` 🟠
+(≠ invalide : géo/opérateur-restreinte possible) · `unsupported`.
+Profils stockés : validatedAt/validationStatus/validationMessage mis à jour.
+
+## B.4 Mobile (fusion et frontière native)
+
+- **Allowlist métadonnées uniquement** depuis `/mobile/connections` et
+  `/mobile/vpn/config` : displayName, ids, dataToken, quota, dates, configVersion,
+  configHash. Jamais protocol/host/port/tls/sni/payload/path/network/credentials
+  (`mergeConnectionMetadata`). Le provisionné est la SEULE source technique
+  (`mergeProvisionedConfig`).
+- **`/mobile/connections` n'expose plus `server`(host) ni `port`**.
+- **Invalidation de cache** : comparaison configHash (serveur vs cache) et
+  changement d'abonnement → **purge atomique + re-provisionnement**.
+- **Frontière native nettoyée** (`sanitizeEngineConfig`) : aucun null n'atteint
+  Android — fin du `payload="null"` (AOSP `optString` → chaîne "null",
+  payload_len=4 de l'incident).
+- **Natif** : `optStringOrNull` partout, WARN `TLS_IGNORED_SSH_DIRECT`, codes
+  erreur différenciés alignés sur le préflight (AUTH_FAILED, TLS_FAILED,
+  SSH_BANNER_MISSING, HTTP_UNEXPECTED, TCP_TIMEOUT, DNS_FAILED).
+
+## B.5 Preuves (toutes VERTES au 2026-07-30)
+
+| Suite | Résultat |
+|---|---|
+| provision-e2e (pipeline crypto) | 17 groupes ✅ |
+| provision-route (route réelle + doublures) | 17 ✅ |
+| device-sim (cycle vie appareil E2E) | 18 ✅ |
+| canonical-config (parseurs/chiffrement) | 10 ✅ |
+| transport-probe (sondes simulées) | 9 ✅ |
+| **incident-repro** (5 défauts prouvés rouges AVANT) | **13/13 ✅** |
+| mirror-parity (anti-divergence + fidélité §8.1 ×6 formats) | 10 ✅ |
+| tsc app-mobile `--noEmit` | 0 erreur ✅ |
+| `expo export --platform android` | bundle 4.42 MB ✅ |
+| `vite build` dashboard | 1836 modules ✅ |
+
+Total : **94 assertions/groupes vertes, 0 régression sur les 52 historiques.**
+
+## B.6 Déploiement — EN ATTENTE DE VALIDATION EXPLICITE
+
+Avant migration prod (ordre mission §10) :
+1. Sauvegarde vérifiable DB (`pg_dump`) + `git rev-parse HEAD` VPS.
+2. `prisma db push` (colonnes additives : canonicalConfig, canonicalConfigHash,
+   configVersion, sourceFormat, importedAt, validatedAt, validationStatus,
+   validationMessage) — pas de perte de données ; profils existants = legacy,
+   continuent de fonctionner, réimport possible pour les passer en canonique.
+3. Déploiement backend (miroir `backend/` synchronisé — test anti-divergence).
+4. Re-import du profil incident en ssh+payload/tls=false (payload WS) si choisi.
+5. Remédiation VPS validée séparément : nettoyage remote URL (PAT), UFW
+   3001/9090/4000, `pnpm-lock.yaml` modifié, XNet (502/8443).
+6. Compilation APK à valider via pipeline (toolchain Android hors sandbox).
