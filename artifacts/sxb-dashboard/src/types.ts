@@ -22,6 +22,13 @@ export interface Client {
   expireAt: string;
   status: "active" | "suspended" | "expired";
   user?: User;
+  name?: string;
+  email?: string;
+  phone?: string;
+  deviceId?: string;
+  lastSeenAt?: string;
+  activatedAt?: string;
+  createdAt?: string;
 }
 
 export interface Reseller {
@@ -59,9 +66,11 @@ export interface TokenSXB {
 export interface Voucher {
   id: string;
   code: string;
-  status: "active" | "used" | "expired";
-  quota: number; // GB
-  expiration: string;
+  status?: "active" | "used" | "expired";
+  quota: string | number; // GB or Bytes string
+  expiration?: string;
+  createdAt?: string;
+  durationDays?: number;
 }
 
 

@@ -229,8 +229,8 @@ export default function XrayManagerView({ currentUserRole }: Props) {
         quotaGB: form.quotaGB ? Number(form.quotaGB) : undefined,
         expireAt: form.expireAt || undefined,
       };
-      if (editId) await updateXrayAccount(editId, data);
-      else await createXrayAccount(data);
+      if (editId) await updateXrayAccount(editId, data as any);
+      else await createXrayAccount(data as any);
       setShowForm(false); load();
     } catch (err: any) { setError(err.message || "Erreur"); }
     finally { setSaving(false); }

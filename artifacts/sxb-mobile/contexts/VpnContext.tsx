@@ -281,7 +281,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       addLog('🔐 Configuration stockée dans le Keystore');
       return true;
     } catch (err: any) {
-      addLog();
+      addLog('⚠️ Provisionnement échoué : ' + (err?.message || 'Erreur réseau'));
       return false;
     }
   }, [addLog]);

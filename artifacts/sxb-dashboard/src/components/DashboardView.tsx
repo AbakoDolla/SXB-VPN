@@ -133,7 +133,7 @@ export default function DashboardView({ onNavigate }: DashboardViewProps) {
       setLogs(lLogs);
       setTotalClients(clients.length);
       setTotalDevices(devices.length);
-      setActiveSessions(sessions.filter(s => s.status === 'active').length);
+      setActiveSessions(((sessions || []) as any[]).filter(s => s.status === 'active').length);
       setServers(srvs);
     } catch (error) {
       console.error("Dashboard load error:", error);

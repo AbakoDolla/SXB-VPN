@@ -119,7 +119,7 @@ export default function SettingsView({ currentUser, onUserUpdated }: SettingsVie
     setTokenLoading(true);
     try {
       const data = await listAdminTokens();
-      setAdminTokens(Array.isArray(data) ? data : data.tokens || []);
+      setAdminTokens(Array.isArray(data) ? data : (data as any).tokens || []);
     } catch { /* ignore */ } finally { setTokenLoading(false); }
   };
 
