@@ -216,5 +216,49 @@ for p in 2082 8080 8443 8880 2095 2096; do
   timeout 4 bash -c "exec 3<>/dev/tcp/$EXT_HOST/$p && echo TCP_$p\_OUVERT || echo TCP_$p\_FERMÉ" 2>&1 | tail -1
 done
 
+echo "--- SONDE DÉCISIVE : handshake WS clair :443 puis lecture du flux (bannière SSH ?) ---"
+python3 - "$EXT_HOST" "$EXT_PORT" "$EXT_SNI" <<'PYEOF' 2>&1 | red || true
+import socket, base64, os, sys, re
+host, port, sni = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+try:
+    s = socket.create_connection((host, port), timeout=8)
+    key = base64.b64encode(os.urandom(16)).decode()
+    req = (f"GET / HTTP/1.1\r\nHost: {sni}\r\nUpgrade: websocket\r\n"
+           f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
+           f"Sec-WebSocket-Version: 13\r\n\r\n")
+    s.sendall(req.encode())
+    s.settimeout(8)
+    resp = b""
+    while b"\r\n\r\n" not in resp:
+        chunk = s.recv(4096)
+        if not chunk: break
+        resp += chunk
+    head = resp.split(b"\r\n\r\n")[0].decode(errors="replace")
+    print("ENTÊTES WS :", head.replace("\r\n", " | ")[:400])
+    code = head.split()[1] if len(head.split()) > 1 else "?"
+    if code == "101":
+        # Après 101 : lire des trames WS serveur (non masquées), chercher 'SSH-'
+        buf = resp.split(b"\r\n\r\n", 1)[1] if b"\r\n\r\n" in resp else b""
+        s.settimeout(8)
+        try:
+            while b"SSH-" not in buf and len(buf) < 4096:
+                chunk = s.recv(4096)
+                if not chunk: break
+                buf += chunk
+        except socket.timeout:
+            pass
+        m = re.search(rb"SSH-[0-9A-Za-z.\-_ ]+", buf)
+        if m:
+            print(f"✅ FLUX_WS_CONTIENT_BANNIÈRE_SSH : {m.group(0).decode(errors='replace')}")
+        else:
+            print(f"⚠️ WS ouvert mais aucune bannière SSH dans {len(buf)} octets lus : "
+                  f"{buf[:48]!r}")
+    else:
+        print(f"(pas de 101 — code {code})")
+    s.close()
+except Exception as e:
+    print(f"ÉCHEC SONDE : {type(e).__name__}: {e}")
+PYEOF
+
 echo "════════════════════════════════ FIN AUDIT INTERNE ═══════════════════════════"
 exit 0
