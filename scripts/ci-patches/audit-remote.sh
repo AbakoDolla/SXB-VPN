@@ -164,5 +164,57 @@ echo | timeout 8 openssl s_client -connect 127.0.0.1:443 -servername vpnsxb.afri
 echo "--- port BadVPN/UDPGW 7300 ---"
 timeout 4 bash -c "exec 3<>/dev/tcp/127.0.0.1/7300 && echo TCP_7300_OUVERT || echo TCP_7300_FERMÉ" 2>&1 || true
 
+echo "════════════════════════════════ 4.6 SONDES PROFIL EXTERNE (host réel de l'abonnement cible) ══"
+# Sondes SANS credentials : DNS, TCP, bannière SSH, TLS, WS. Ne teste JAMAIS
+# l'authentification (mission : credentials seulement après bannière compatible).
+EXT_HOST="node05.mikosi.fr.eu.org"
+EXT_PORT=443
+EXT_SNI="yamo.mtn.cm"
+# Lecture dynamique depuis la DB si disponible (profil lié à l'abonnement cible)
+if command -v psql >/dev/null 2>&1 && [ -n "${DB_URL_RAW:-}" ]; then
+  ROW=$(run_sql -tAc "SELECT p.host, p.port, COALESCE(p.sni,'') FROM subscriptions s JOIN vpn_profiles p ON p.id=s.\"profileId\" WHERE s.id='83ea8954-8be7-4fda-a3af-03e6e61d2161';" 2>/dev/null | head -1)
+  if [ -n "$ROW" ]; then
+    EXT_HOST="$(echo "$ROW" | cut -d'|' -f1)"
+    EXT_PORT="$(echo "$ROW" | cut -d'|' -f2)"
+    S="$(echo "$ROW" | cut -d'|' -f3)"; [ -n "$S" ] && EXT_SNI="$S"
+  fi
+fi
+echo "Cible sondes : host=$EXT_HOST port=$EXT_PORT sni=$EXT_SNI"
+echo "--- DNS ---"
+getent hosts "$EXT_HOST" 2>&1 | head -3 || true
+echo "--- bannières SSH brutes (22/443/444/80) ---"
+for p in 22 443 444 80; do
+  echo "--- $EXT_HOST:$p ---"
+  timeout 6 bash -c "exec 3<>/dev/tcp/$EXT_HOST/$p && head -c 80 <&3" 2>&1 | red || true
+  echo ""
+done
+echo "--- TLS :$EXT_PORT SNI=$EXT_SNI (cert + handshake) ---"
+echo | timeout 10 openssl s_client -connect "$EXT_HOST:$EXT_PORT" -servername "$EXT_SNI" 2>&1 | grep -E "subject=|issuer=|Verify|verify return code|handshake failure|no peer|New, |Cipher|Protocol" | head -12 | red || true
+echo "--- TLS :$EXT_PORT SNI=node05 ($EXT_HOST) ---"
+echo | timeout 10 openssl s_client -connect "$EXT_HOST:$EXT_PORT" -servername "$EXT_HOST" 2>&1 | grep -E "subject=|issuer=|Verify|handshake failure|no peer" | head -6 | red || true
+echo "--- HTTP en clair :80 et :443 ---"
+curl -sv --max-time 7 -o /dev/null -w "HTTP %{http_code} via http://$EXT_HOST:80 (Host: $EXT_SNI)\n" -H "Host: $EXT_SNI" "http://$EXT_HOST:80/" 2>&1 | tail -2 | red || true
+curl -sv --max-time 7 -o /dev/null -w "HTTP %{http_code} via http://$EXT_HOST:443 en clair\n" "http://$EXT_HOST:443/" 2>&1 | tail -2 | red || true
+echo "--- WebSocket upgrade TLS :$EXT_PORT (SNI=$EXT_SNI, Host=$EXT_SNI) ---"
+EXT_IP="$(getent hosts "$EXT_HOST" 2>/dev/null | awk '{print $1}' | head -1)"
+if [ -n "$EXT_IP" ]; then
+  curl -skv --max-time 10 "https://$EXT_SNI:$EXT_PORT/" \
+    --resolve "$EXT_SNI:$EXT_PORT:$EXT_IP" \
+    -H "Upgrade: websocket" -H "Connection: Upgrade" \
+    -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" -H "Sec-WebSocket-Version: 13" \
+    -o /dev/null -w "WS-TLS-HTTP %{http_code}\n" 2>&1 | grep -E "subject=|issuer=|HTTP/|< |WS-TLS-HTTP" | head -14 | red || true
+  echo "--- WebSocket upgrade HTTP clair :80 (Host=$EXT_SNI) ---"
+  curl -sv --max-time 8 "http://$EXT_SNI/" --resolve "$EXT_SNI:80:$EXT_IP" \
+    -H "Upgrade: websocket" -H "Connection: Upgrade" \
+    -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" -H "Sec-WebSocket-Version: 13" \
+    -o /dev/null -w "WS-HTTP-80 %{http_code}\n" 2>&1 | grep -E "HTTP/|< |WS-HTTP" | head -10 | red || true
+else
+  echo "⚠️ DNS non résolu — sondes WS ignorées"
+fi
+echo "--- ports WS alternatifs courants (2082/8080/8443/8880/2095) ---"
+for p in 2082 8080 8443 8880 2095 2096; do
+  timeout 4 bash -c "exec 3<>/dev/tcp/$EXT_HOST/$p && echo TCP_$p\_OUVERT || echo TCP_$p\_FERMÉ" 2>&1 | tail -1
+done
+
 echo "════════════════════════════════ FIN AUDIT INTERNE ═══════════════════════════"
 exit 0
