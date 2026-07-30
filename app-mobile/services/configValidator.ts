@@ -114,6 +114,18 @@ function extraValidation(
       if (!obj.password && !obj.privateKeyBase64) {
         errors.push('SSH : "password" ou "privateKeyBase64" requis');
       }
+      if (proto === 'ssh' && obj.tls === true) {
+        // Mission §6.2 — « SSH direct + TLS » est REJETÉ : le moteur natif
+        // ignore TLS en SSH direct (SxbLoggingSocketFactory = socket TCP brut,
+        // SxbVpnService.kt l.447-457) — c'est la cause du SSH_TIMEOUT de
+        // l'incident APK #165. Si le fournisseur expose SSH derrière TLS, le
+        // transport doit être « ssh+payload » (WebSocket/HTTP + TLS réel).
+        errors.push(
+          'SSH direct + TLS activé : combinaison REJETÉE — le tunnel SSH direct ' +
+          'n\'applique pas TLS (connexion impossible : timeout). Utilisez ' +
+          '« ssh+payload » (WebSocket/HTTP) si le serveur exige TLS, ou désactivez TLS.',
+        );
+      }
       if (proto === 'ssh+payload') {
         if (obj.payload !== undefined && typeof obj.payload !== 'string') {
           errors.push('SSH+Payload : "payload" doit être une chaîne (ou absent pour utiliser le payload WebSocket par défaut)');
@@ -316,10 +328,18 @@ export function isCompleteOfflineConfig(cfg: Record<string, any> | null | undefi
 }
 
 // ── Fusion intelligente de configurations ─────────────────────────────────────
+// ⚠️ LEGACY (correctif PR #8 — conservée pour compatibilité, NE PLUS UTILISER
+// pour les champs techniques : voir mergeProvisionedConfig / mergeConnectionMetadata).
 // Conserve les champs valides de l'ancienne config, remplace uniquement
 // les champs présents et non-nuls dans la nouvelle. Ne perd jamais host,
 // payload, credentials, ou paramètres de protocole.
 
+/**
+ * @deprecated Fusion historique (correctif PR #8). Le modèle « intermédiaire »
+ * (mission §6) interdit toute fusion de champs techniques depuis des sources
+ * non provisionnées : utiliser `mergeProvisionedConfig` (provisionné = seule
+ * source technique) et `mergeConnectionMetadata` (allowlist métadonnées).
+ */
 export function mergeConfigs(
   oldCfg: Record<string, any> | null | undefined,
   newCfg: Record<string, any>,
@@ -353,4 +373,81 @@ export function mergeConfigs(
   }
 
   return merged;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// FUSION SÛRE — modèle « intermédiaire » (mission §6)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// Règle d'or : les champs TECHNIQUES (protocol, host, port, username, password,
+// uuid, tls, sni, network, dns, payload, path, method, credentials, paramètres
+// crypto...) proviennent EXCLUSIVEMENT de la configuration provisionnée
+// déchiffrée (/provision/activate) — jamais d'une réponse de métadonnées
+// (/mobile/connections, /mobile/vpn/config).
+
+/**
+ * Allowlist MÉTADONNÉES (mission §6.4) — les SEULES clés qu'une source non
+ * provisionnée peut apporter à la configuration persistée.
+ */
+export const CONNECTION_METADATA_KEYS: readonly string[] = [
+  'displayProtocol', 'profileName', 'profileId', 'configId', 'subscriptionId',
+  'dataToken', 'quotaGB', 'quotaUsedGB', 'quota', 'expireAt', 'configExpiresAt',
+  'provisionedAt', 'configVersion', 'configHash', 'signature', 'deviceId',
+  'name', 'status', 'duration', 'durationDays', 'createdAt',
+];
+
+/**
+ * Fusion d'une source NON provisionnée (/mobile/connections, /mobile/vpn/config).
+ * ALLOWLIST MÉTADONNÉES UNIQUEMENT — aucun champ technique n'est jamais lu,
+ * même s'il est présent dans la source (mission §6.4). La config `base`
+ * (provisionnée) est retournée avec ses champs techniques intacts.
+ */
+export function mergeConnectionMetadata(
+  base: Record<string, any> | null | undefined,
+  meta: Record<string, any> | null | undefined,
+): Record<string, any> {
+  const merged: Record<string, any> = base && typeof base === 'object' ? { ...base } : {};
+  if (!meta || typeof meta !== 'object') return merged;
+  for (const key of CONNECTION_METADATA_KEYS) {
+    if ((meta as any)[key] !== undefined) merged[key] = (meta as any)[key];
+  }
+  return merged;
+}
+
+/**
+ * Fusion de la CONFIG PROVISIONNÉE — seule source technique autorisée (§6.1).
+ * - La config fraîche fait FOI pour TOUS les champs techniques : tls:false
+ *   explicite, payload/sni absents = valeurs fournisseur EXACTES (jamais
+ *   complétées depuis l'ancien cache — fin de la fusion destructive).
+ * - Seules les métadonnées (allowlist) absentes du frais sont reprises du prev.
+ */
+export function mergeProvisionedConfig(
+  prev: Record<string, any> | null | undefined,
+  freshProvisioned: Record<string, any>,
+): Record<string, any> {
+  const merged: Record<string, any> = { ...freshProvisioned };
+  if (prev && typeof prev === 'object') {
+    for (const key of CONNECTION_METADATA_KEYS) {
+      if (merged[key] === undefined && (prev as any)[key] !== undefined) {
+        merged[key] = (prev as any)[key];
+      }
+    }
+  }
+  return merged;
+}
+
+/**
+ * Nettoie la config moteur avant sérialisation vers le natif (mission §6.4).
+ * Supprime TOUTES les propriétés null/undefined : côté Android, AOSP
+ * JSONObject.optString(name, fallback) lit JSONObject.NULL.toString() ==
+ * "null" — c'est ce qui produisait payload_len=4 dans l'incident APK #165.
+ * Aucun champ null ne doit jamais atteindre le JSON moteur natif.
+ */
+export function sanitizeEngineConfig(cfg: Record<string, any>): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(cfg || {})) {
+    if (v === undefined || v === null) continue;
+    out[k] = v;
+  }
+  return out;
 }
