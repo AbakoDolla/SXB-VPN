@@ -24,25 +24,4 @@ const config = getDefaultConfig(__dirname);
 // absent (app-mobile est auto-suffisant après `npm install`).
 config.watchFolders = (config.watchFolders || []).filter((dir) => fs.existsSync(dir));
 
-// SONDE CI — phase « bundle » (task :app:createBundleReleaseJsAndAssets).
-// metro.config.js est chargé UNE FOIS par le process node de `expo export:embed` ;
-// stderr est relayé dans le log Gradle → annotations lisibles via l'API check-runs.
-// Émission unique par runner (verrou /tmp) : start au chargement, exit code en fin.
-if (process.env.GITHUB_ACTIONS === 'true') {
-  try {
-    if (!fs.existsSync('/tmp/.sxb-probe-bundle')) {
-      fs.writeFileSync('/tmp/.sxb-probe-bundle', '1');
-      console.error(`::notice title=SXB-PROBE bundle::start node=${process.version}`);
-    }
-    process.once('exit', (code) => {
-      try {
-        if (!fs.existsSync('/tmp/.sxb-probe-bundle-exit')) {
-          fs.writeFileSync('/tmp/.sxb-probe-bundle-exit', '1');
-          console.error(`::notice title=SXB-PROBE bundle::exit code=${code}`);
-        }
-      } catch { /* silencieux */ }
-    });
-  } catch { /* silencieux */ }
-}
-
 module.exports = config;
