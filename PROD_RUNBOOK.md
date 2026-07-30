@@ -34,12 +34,14 @@ Sans cette ligne verte, **ne pas continuer**.
 
 > Alternative immédiate (avant merge) — les commandes essentielles :
 > ```bash
-> cd /var/www/sxb-vpn
-> mkdir -p /var/backups/sxb-vpn/$(date -u +%Y%m%dT%H%M%SZ) && cd $_
+> mkdir -p ~/sxb-backups/$(date -u +%Y%m%dT%H%M%SZ) && cd $_
 > git -C /var/www/sxb-vpn rev-parse HEAD > git-head.txt
 > set -a; source /var/www/sxb-vpn/.env; set +a
-> pg_dump "$DATABASE_URL" -Fc -Z9 -f db.dump && pg_restore -l db.dump | grep -c " TABLE "
+> URL="${DATABASE_URL%%\?*}"   # retire ?schema=public (paramètre Prisma, inconnu de libpq)
+> pg_dump "$URL" -Fc -Z9 -f db.dump && pg_restore -l db.dump | grep -c " TABLE "
 > ```
+> ⚠️ `pg_dump "$DATABASE_URL"` **sans nettoyage échoue** : Prisma suffixe l'URI de
+> `?schema=public`, que libpq ne connaît pas (`invalid URI query parameter: "schema"`).
 
 ## ÉTAPE 2 — Merger la PR #16 🔀
 
@@ -119,6 +121,6 @@ note `pnpm-lock.yaml`, décision XNet (502 sur :8443). Interactif, rien de forc�
 ```bash
 cd /var/www/sxb-vpn
 git reset --hard <git-head.txt de l'étape 1>
-pg_restore --clean --if-exists -d "$DATABASE_URL" /var/backups/sxb-vpn/<TS>/db.dump
+bash ~/sxb-backups/<TS>/restore.sh        # restaure la DB (nettoyage ?schema=… inclus)
 pm2 restart ecosystem.config.cjs --update-env
 ```

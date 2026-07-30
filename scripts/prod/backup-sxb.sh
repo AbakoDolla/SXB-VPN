@@ -6,7 +6,8 @@
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/var/www/sxb-vpn}"
-BACKUP_ROOT="${BACKUP_ROOT:-/var/backups/sxb-vpn}"
+# Par défaut dans $HOME : /var/backups exige root, or la mission s'exécute en ubuntu.
+BACKUP_ROOT="${BACKUP_ROOT:-$HOME/sxb-backups}"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 DEST="$BACKUP_ROOT/$TS"
 mkdir -p "$DEST"
@@ -24,7 +25,10 @@ set -a; # exporte les variables du .env sans les afficher
 source "$APP_DIR/.env"
 set +a
 : "${DATABASE_URL:?DATABASE_URL absent de .env — sauvegarde impossible}"
-pg_dump "$DATABASE_URL" --format=custom --compress=9 --file="$DEST/db-$(date -u +%Y%m%d).dump"
+# Prisma suffixe l'URI de "?schema=public", paramètre INCONNU de libpq (pg_dump/psql).
+# On retire UNIQUEMENT « schema » (sslmode & co. préservés) ; la valeur n'est jamais affichée.
+PGLIB_URL="$(printf '%s' "$DATABASE_URL" | sed -E 's/([?&])schema=[^&]*&?/\1/; s/[?&]$//')"
+pg_dump "$PGLIB_URL" --format=custom --compress=9 --file="$DEST/db-$(date -u +%Y%m%d).dump"
 echo "✅ 2/5 Dump PostgreSQL créé ($(du -h "$DEST"/db-*.dump | cut -f1))"
 
 # 3. VÉRIFICATION du dump (obligatoire : une sauvegarde non vérifiable ne compte pas)
@@ -35,7 +39,7 @@ sha256sum "$DEST"/db-*.dump | tee "$DEST/db-sha256.txt"
 echo "✅ 3/5 Dump vérifié : $TABLES tables, empreinte sha256 consignée"
 
 # 4. Compteurs de contrôle (comparaison post-migration)
-psql "$DATABASE_URL" -Atc "
+psql "$PGLIB_URL" -Atc "
   SELECT 'vpn_profiles='      || count(*) FROM vpn_profiles;
   SELECT 'subscriptions='     || count(*) FROM subscriptions;
   SELECT 'vpn_clients='       || count(*) FROM vpn_clients;
@@ -47,7 +51,21 @@ echo "✅ 4/5 Compteurs de contrôle : $(tr '\n' ' ' < "$DEST/db-counts.txt")"
 install -m 600 "$APP_DIR/.env" "$DEST/env.backup"
 echo "✅ 5/5 .env sauvegardé (chmod 600)"
 
+# 6. Script de restauration prêt à l'emploi (une sauvegarde n'a de valeur
+#    que si sa restauration est éprouvée — voir §Rollback du runbook)
+cat > "$DEST/restore.sh" <<'EOF'
+#!/usr/bin/env bash
+# Restauration d'urgence — ROLLBACK UNIQUEMENT (écrase la base courante)
+set -euo pipefail
+DIR="$(cd "$(dirname "$0")" && pwd)"
+set -a; source "$DIR/env.backup"; set +a
+# Même nettoyage du paramètre Prisma « schema », inconnu de libpq
+URL="$(printf '%s' "$DATABASE_URL" | sed -E 's/([?&])schema=[^&]*&?/\1/; s/[?&]$//')"
+pg_restore --clean --if-exists -d "$URL" "$DIR"/db-*.dump
+echo "🟢 Restauration terminée depuis : $DIR"
+EOF
+chmod 700 "$DEST/restore.sh"
+
 echo
 echo "🟢 SAUVEGARDE COMPLÈTE ET VÉRIFIÉE : $DEST"
-echo "   Restauration si besoin :"
-echo "   pg_restore --clean --if-exists -d \"\$DATABASE_URL\" $DEST/db-*.dump"
+echo "   Restauration d'urgence : bash $DEST/restore.sh"
