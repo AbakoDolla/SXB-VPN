@@ -126,6 +126,10 @@ function withKotlinSources(config) {
       '-keep class com.sxbvpn.vpnmodule.** { *; }',
       '-keep class com.jcraft.jsch.** { *; }',
       '-dontwarn com.jcraft.jsch.**',
+      // BouncyCastle (compagnon JSch pour ed25519/curve25519) — R8 ne doit ni
+      // obfusquer ni élaguer ces classes, JSch y accède par réflexion.
+      '-keep class org.bouncycastle.** { *; }',
+      '-dontwarn org.bouncycastle.**',
       '# Moteur sing-box (libbox / gomobile)',
       '-keep class io.nekohasekai.libbox.** { *; }',
       '-keep interface io.nekohasekai.libbox.** { *; }',
@@ -241,6 +245,9 @@ function withJschDependency(config) {
     const deps = [
       "implementation(\"com.github.mwiede:jsch:0.2.21\")",
       "implementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3\")",
+      "implementation(\"org.bouncycastle:bcprov-jdk18on:1.78.1\")",
+      "implementation(\"org.bouncycastle:bcutil-jdk18on:1.78.1\")",
+      "implementation(\"org.bouncycastle:bceddsa:1.78.1\")",
       // Moteur sing-box embarqué (libbox.aar déposé dans android/app/libs/).
       // Remplace l'ancien binaire exécuté par ProcessBuilder — interdit depuis
       // Android 10 (W^X) et incapable de recevoir le descripteur du TUN.
