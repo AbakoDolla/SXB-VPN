@@ -99,7 +99,10 @@ import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 
 // ── WsOutputStream — Encode chaque write() en frame WebSocket binaire (client→server, masqué) ──
-private class WsOutputStream(private val raw: OutputStream) : OutputStream() {
+private class WsOutputStream(
+    private val raw: OutputStream,
+    private val onEvent: (String) -> Unit = {},
+) : OutputStream() {
     private val rng = SecureRandom()
 
     override fun write(b: Int) = write(byteArrayOf(b.toByte()), 0, 1)
@@ -108,6 +111,11 @@ private class WsOutputStream(private val raw: OutputStream) : OutputStream() {
         if (len == 0) return
         val mask = ByteArray(4).also { rng.nextBytes(it) }
         val masked = ByteArray(len) { i -> (b[off + i].toInt() xor mask[i % 4].toInt()).toByte() }
+        // Télémétrie : aperçu clair (la bannière SSH-2.0 sort en clair, le kex est binaire)
+        val preview = (0 until minOf(len, 24)).joinToString("") { i ->
+            val v = b[off + i].toInt(); if (v in 32..126) v.toChar().toString() else "·"
+        }
+        onEvent("[SXB_DEBUG] WS_OUT len=$len txt=[$preview]")
         val buf = ByteArrayOutputStream(len + 14)
         buf.write(0x82)                         // FIN=1, opcode=0x02 (binary)
         when {
@@ -131,6 +139,7 @@ private class WsOutputStream(private val raw: OutputStream) : OutputStream() {
 private class WsInputStream(
     private val raw: InputStream,
     private val rawOut: OutputStream,
+    private val onEvent: (String) -> Unit = {},
 ) : InputStream() {
     private var pending = ByteArray(0)
     private var pendingPos = 0
@@ -156,12 +165,17 @@ private class WsInputStream(
 
     private fun readNextFrame(): ByteArray? {
         return try {
-            val b0 = raw.read(); if (b0 == -1) return null
+            val b0 = raw.read()
+            if (b0 == -1) {
+                onEvent("[SXB_DEBUG] WS_EOF — serveur a coupé le flux TCP (avant/pendant les trames)")
+                return null
+            }
             val b1 = raw.read(); if (b1 == -1) return null
             val opcode = b0 and 0x0F
             // Répondre aux ping est nécessaire pour les serveurs WebSocket mobiles
             // qui ferment la connexion si aucun pong n'est reçu.
             if (opcode == 0x08) {
+                onEvent("[SXB_DEBUG] WS_CLOSE_FRAME received — le serveur met fin au WebSocket")
                 Log.w("SXB_DEBUG", "[SXB_DEBUG] WS_CLOSE_FRAME received")
                 return null
             }
@@ -200,14 +214,20 @@ private class WsInputStream(
                 pong.write(pongMask)
                 pong.write(pongMasked)
                 synchronized(rawOut) { rawOut.write(pong.toByteArray()); rawOut.flush() }
+                onEvent("[SXB_DEBUG] WS_PING len=${payload.size} → PONG masqué envoyé")
                 return readNextFrame()
             }
             if (maskKey != null) {
                 for (i in payload.indices) payload[i] = (payload[i].toInt() xor maskKey[i % 4].toInt()).toByte()
             }
+            val preview = payload.take(24).joinToString("") {
+                val v = it.toInt(); if (v in 32..126) v.toChar().toString() else "·"
+            }
+            onEvent("[SXB_DEBUG] WS_IN opcode=$opcode len=${payload.size} txt=[$preview]")
             Log.d("SXB_DEBUG", "[SXB_DEBUG] WS_FRAME_IN opcode=$opcode len=${payload.size}")
             payload
         } catch (e: Exception) {
+            onEvent("[SXB_DEBUG] WS_FRAME_READ_ERROR: ${e.message}")
             Log.e("SXB_DEBUG", "[SXB_DEBUG] WS_FRAME_READ_ERROR: ${e.message}")
             null
         }
@@ -249,7 +269,14 @@ private class SxbPayloadProxy(
         val protectedOk = protectSocket(rawSocket)
         Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_SOCKET_PROTECTED result=$protectedOk")
         onEvent("[SXB_DEBUG] SSH_SOCKET_PROTECTED result=$protectedOk")
+        // Résolution DNS visible (diagnostic données cellulaires / split-DNS)
+        val ips = runCatching {
+            java.net.InetAddress.getAllByName(host).joinToString(", ") { it.hostAddress ?: "?" }
+        }.getOrDefault("ÉCHEC_DNS")
+        onEvent("[SXB_DEBUG] DNS_RESOLVE host=$host ips=[$ips] timeout=${connectTimeout}ms")
+        val t0 = System.currentTimeMillis()
         rawSocket.connect(InetSocketAddress(host, port), connectTimeout)
+        onEvent("[SXB_DEBUG] TCP_CONNECTED host=$host port=$port en ${System.currentTimeMillis() - t0}ms")
         val transportSocket: Socket = if (tlsEnabled) {
             val tlsSocket = (SSLSocketFactory.getDefault() as SSLSocketFactory)
                 .createSocket(rawSocket, sni.ifBlank { host }, port, false) as SSLSocket
@@ -281,20 +308,40 @@ private class SxbPayloadProxy(
             .replace("[host]", host).replace("[Host]", host)
             .replace("[host_port]", "$host:$port")
 
-        // Parité sonde (transport-probe.ts) — Injection automatique de Sec-WebSocket-Key si absent et upgrade websocket détecté
-        val hasUpgrade = payload.contains("upgrade: websocket", ignoreCase = true)
-        if (hasUpgrade && !payload.contains("sec-websocket-key", ignoreCase = true)) {
-            val nonce = ByteArray(16).apply { SecureRandom().nextBytes(this) }
-            val base64Key = android.util.Base64.encodeToString(nonce, android.util.Base64.NO_WRAP)
-            val regex = Regex("(\r\n)(\r\n)")
-            if (regex.containsMatchIn(payload)) {
-                payload = regex.replaceFirst(
-                    payload,
-                    "\r\nSec-WebSocket-Key: $base64Key\r\nSec-WebSocket-Version: 13\r\n$2")
-            } else {
-                payload = payload.trimEnd() + "\r\nSec-WebSocket-Key: $base64Key\r\nSec-WebSocket-Version: 13\r\n\r\n"
-            }
+        // ── 1b. Compléter le handshake WS si besoin — PARITÉ sonde backend ────
+        // RFC 6455 §4.1 : Sec-WebSocket-Key + Version sont OBLIGATOIRES. Sans eux,
+        // ce serveur (Accept valide = endpoint strict) répond 101 en façade mais le
+        // backend WS ne livre jamais le flux SSH → JSch attend la bannière ~30 s →
+        // « connection is closed by foreign host » (incident réel du 2026-07-31).
+        // Preuve positive : la sonde (transport-probe.ts) injecte la clé et reçoit
+        // immédiatement « SSH-2.0-BugSleuth_0.1.9 » derrière le même tunnel.
+        // v2 — détection par REGEX tolérante aux espaces (parité exacte sonde
+        // /upgrade:\s*websocket/i) : le test v1 par chaîne exacte (1 seul espace)
+        // laissait passer des payloads réels — jamais déclenchée (bytes inchangés,
+        // pas de WS_KEY_INJECTED dans les logs terrain du 2026-07-31 03:26).
+        val keyPresent = Regex("sec-websocket-key\\s*:", RegexOption.IGNORE_CASE).containsMatchIn(payload)
+        if (payload.contains("websocket", ignoreCase = true) && !keyPresent) {
+            val wsKey = android.util.Base64.encodeToString(
+                ByteArray(16).also { java.security.SecureRandom().nextBytes(it) },
+                android.util.Base64.NO_WRAP)
+            val wsHeaders = "\r\nSec-WebSocket-Key: $wsKey" +
+                            "\r\nSec-WebSocket-Version: 13" +
+                            "\r\nSec-WebSocket-Protocol: binary"
+            payload = if (payload.endsWith("\r\n\r\n"))
+                payload.dropLast(4) + wsHeaders + "\r\n\r\n"
+            else
+                payload + wsHeaders + "\r\n\r\n"
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] WS_KEY_INJECTED — handshake RFC 6455 complété (parité sonde)")
+            onEvent("[SXB_DEBUG] WS_KEY_INJECTED — handshake RFC 6455 complété")
         }
+        // Debug SANS secret (le payload = modèle HTTP injecteur, jamais les
+        // identifiants SSH) : rend visible le handshake réellement envoyé.
+        onEvent("[SXB_DEBUG] PAYLOAD_HEAD " + payload.take(96)
+            .replace("\r", "\\r").replace("\n", "\\n"))
+        onEvent("[SXB_DEBUG] PAYLOAD_FULL " + payload.take(1024)
+            .replace("\r", "\\r").replace("\n", "\\n"))
+        Log.i("SXB", "[SXB_DEBUG] PAYLOAD_FULL " + payload.take(1024)
+            .replace("\r", "\\r").replace("\n", "\\n"))
         Log.i("SXB_DEBUG", "[SXB_DEBUG] PAYLOAD_START host=$host port=$port bytes=${payload.length}")
         onEvent("[SXB_DEBUG] PAYLOAD_START host=$host port=$port bytes=${payload.length}")
         rawOut.write(payload.toByteArray(Charsets.ISO_8859_1))
@@ -324,6 +371,8 @@ private class SxbPayloadProxy(
             .replace(Regex("[^\\x20-\\x7E]"), "")
         Log.i("SXB_DEBUG", "[SXB_DEBUG] SERVER_RESPONSE=${logSafeStatus} bytes=${response.length}")
         onEvent("[SXB_DEBUG] SERVER_RESPONSE=${logSafeStatus} bytes=${response.length}")
+        onEvent("[SXB_DEBUG] RESPONSE_FULL " + response.take(512)
+            .replace("\r", "\\r").replace("\n", "\\n"))
 
         // ── 3. Détecter le mode transport ─────────────────────────────────────
         //   HTTP 101 = WebSocket upgrade  → adapter WS obligatoire
@@ -339,6 +388,7 @@ private class SxbPayloadProxy(
         val isEmpty     = response.isBlank()
 
         Log.i("SXB_DEBUG", "[SXB_DEBUG] SERVER_MODE status='$statusLine' isWS=$isWs isConnect=$isConnect isSshBanner=$isSshBanner isEmpty=$isEmpty")
+        onEvent("[SXB_DEBUG] SERVER_MODE isWS=$isWs isConnect=$isConnect isSshBanner=$isSshBanner isEmpty=$isEmpty")
 
         // ── 4. Lire les premiers octets utiles pour confirmer le mode ─────────
         if (!isWs && !isConnect && !isSshBanner && !isEmpty) {
@@ -391,9 +441,10 @@ private class SxbPayloadProxy(
 
             isWs -> {
                 // HTTP 101 WebSocket Upgrade → JSch doit passer par les frames WS
+                onEvent("[SXB_DEBUG] WEBSOCKET_MODE_ACTIVATED — trames RFC 6455 (masquage client)")
                 Log.i("SXB_DEBUG", "[SXB_DEBUG] WEBSOCKET_MODE_ACTIVATED wrapping streams with WS adapter")
-                inputStream  = WsInputStream(rawIn, rawOut)
-                outputStream = WsOutputStream(rawOut)
+                inputStream  = WsInputStream(rawIn, rawOut) { ev -> onEvent(ev) }
+                outputStream = WsOutputStream(rawOut) { ev -> onEvent(ev) }
             }
 
             else -> {
@@ -795,6 +846,22 @@ class SxbVpnService : VpnService(), PlatformInterface {
             Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_SOCKET_CONNECT_START port=$port usePayload=$usePayload payload_len=${payload.length} tls=$tlsEnabled ws=$websocketEnabled")
             broadcastLog("[SXB_DEBUG] SSH_SOCKET_CONNECT_START port=$port usePayload=$usePayload payload_len=${payload.length} tls=$tlsEnabled ws=$websocketEnabled")
 
+            // ── Télémétrie JSch (kex/auth visible) — SANS secrets : JSch consigne
+            // les méthodes, drapeaux et paquets, jamais le mot de passe.
+            JSch.setLogger(object : com.jcraft.jsch.Logger {
+                override fun isEnabled(level: Int): Boolean = true
+                override fun log(level: Int, message: String?) {
+                    val tag = when (level) {
+                        com.jcraft.jsch.Logger.DEBUG -> "DBG"
+                        com.jcraft.jsch.Logger.INFO  -> "INF"
+                        com.jcraft.jsch.Logger.WARN  -> "WRN"
+                        com.jcraft.jsch.Logger.ERROR -> "ERR"
+                        else -> "FTL"
+                    }
+                    broadcastLog("[JSch:$tag] ${message ?: ""}")
+                }
+            })
+
             // ── Session JSch ──────────────────────────────────────────────────
             val jsch = JSch()
             val session: Session = if (usePayload) {
@@ -912,6 +979,16 @@ class SxbVpnService : VpnService(), PlatformInterface {
             val code = classifyVpnError(msg)
             broadcastLog("[SXB_DEBUG] SSH_EXCEPTION code=$code")
             broadcastLog("[SXB_DEBUG] STACKTRACE:\n  ${SecurityModule.maskSensitive(stack)}")
+            // Chaîne de causes complète — c'est elle qui nomme le blocage exact
+            var cause: Throwable? = e; var depth = 0
+            val chain = StringBuilder()
+            while (cause != null && depth < 4) {
+                if (depth > 0) chain.append("  ←  ")
+                chain.append(cause.javaClass.simpleName).append(": ")
+                    .append((cause.message ?: "").take(140))
+                cause = cause.cause; depth++
+            }
+            broadcastLog("[SXB_DEBUG] SSH_CAUSE_CHAIN ${SecurityModule.maskSensitive(chain.toString())}")
             val display = when {
                 msg.contains("Auth fail") || msg.contains("auth", true) ->
                     "❌ Auth SSH échouée — vérifiez username/password"
@@ -1267,8 +1344,21 @@ class SxbVpnService : VpnService(), PlatformInterface {
     }
 
     /** Protège un `Socket` Java (utilisé par les tunnels SSH/JSch). */
-    private fun protectSocket(socket: Socket): Boolean =
-        runCatching { protect(socket) }.getOrDefault(false)
+    private fun protectSocket(socket: Socket): Boolean {
+        // protect() peut renvoyer false/échouer quand le TUN n'est pas encore créé
+        // (ROMs strictes) : 3 tentatives espacées. Non bloquant à ce stade — avant
+        // l'établissement du TUN, un socket non protégé ne peut pas boucler.
+        var ok = false
+        var attempt = 0
+        while (!ok && attempt < 3) {
+            ok = runCatching { protect(socket) }.getOrDefault(false)
+            if (!ok && attempt < 2) {
+                try { Thread.sleep(150) } catch (_: InterruptedException) {}
+            }
+            attempt++
+        }
+        return ok
+    }
 
     override fun useProcFS(): Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
 
