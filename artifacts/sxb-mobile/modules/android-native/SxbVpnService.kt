@@ -984,13 +984,27 @@ class SxbVpnService : VpnService() {
     // BROADCASTS
     // ═════════════════════════════════════════════════════════════════════════
 
+    // HANDOFF_LOGS_ULTRADETAIL — bouton Copier : persister les logs complets
+    private val fullLogBuffer = StringBuilder()
+
     private fun broadcastStatus(status: String) {
         sendBroadcast(Intent(BROADCAST_STATUS).putExtra("status", status))
     }
 
     private fun broadcastLog(message: String) {
         Log.i(TAG, message)
+        fullLogBuffer.append(message).append("\n")
         sendBroadcast(Intent(BROADCAST_LOG).putExtra("log", SecurityModule.maskSensitive(message)))
+    }
+
+    fun copyFullLogs(): String {
+        val copy = fullLogBuffer.toString()
+        if (copy.isNotEmpty()) {
+            File(filesDir, "full_logs_copy.txt").writeText(copy, Charsets.UTF_8)
+            Log.i(TAG, "[SXB_DEBUG] FULL_LOGS_COPIED bytes=${copy.length}")
+            broadcastLog("[SXB_DEBUG] FULL_LOGS_COPIED bytes=${copy.length}")
+        }
+        return copy
     }
 
     // ═════════════════════════════════════════════════════════════════════════
