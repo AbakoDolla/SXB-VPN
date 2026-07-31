@@ -273,13 +273,26 @@ private class SxbPayloadProxy(
         val rawIn  = transportSocket.getInputStream()
 
         // ── 1. Substitutions dans le payload ─────────────────────────────────
-        val payload = rawPayload
+        var payload = rawPayload
             .replace("[crlf]", "\r\n").replace("[CRLF]", "\r\n")
             .replace("[lf]",   "\n").replace("[LF]",   "\n")
             .replace("[cr]",   "\r").replace("[CR]",   "\r")
             .replace("[port]", port.toString())
             .replace("[host]", host).replace("[Host]", host)
             .replace("[host_port]", "$host:$port")
+
+        // Parité sonde (transport-probe.ts) — Injection automatique de Sec-WebSocket-Key si absent et upgrade websocket détecté
+        val hasUpgrade = payload.contains("upgrade: websocket", ignoreCase = true)
+        if (hasUpgrade && !payload.contains("sec-websocket-key", ignoreCase = true)) {
+            val nonce = ByteArray(16).apply { SecureRandom().nextBytes(this) }
+            val base64Key = android.util.Base64.encodeToString(nonce, android.util.Base64.NO_WRAP)
+            val regex = Regex("(\r\n)(\r\n)")
+            if (regex.containsMatchIn(payload)) {
+                payload = regex.replaceFirst(payload, "\r\nSec-WebSocket-Key: $base64Key\r\nSec-WebSocket-Version: 13\r\n$2")
+            } else {
+                payload = payload.trimEnd() + "\r\nSec-WebSocket-Key: $base64Key\r\nSec-WebSocket-Version: 13\r\n\r\n"
+            }
+        }
         Log.i("SXB_DEBUG", "[SXB_DEBUG] PAYLOAD_START host=$host port=$port bytes=${payload.length}")
         onEvent("[SXB_DEBUG] PAYLOAD_START host=$host port=$port bytes=${payload.length}")
         rawOut.write(payload.toByteArray(Charsets.ISO_8859_1))
