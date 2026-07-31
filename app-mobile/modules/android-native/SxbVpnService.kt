@@ -386,12 +386,31 @@ private class SxbPayloadProxy(
                           response.contains("Connection established", ignoreCase = true)
         val isSshBanner = response.startsWith("SSH-")
         val isEmpty     = response.isBlank()
+        // Charge « CONNECT <cible> » (mode eProxy/SocksIP) = tunnel TCP transparent,
+        // quelle que soit la réponse (101 cosmétique ignoré — voir branche when).
+        val isConnectPayload = payload.trimStart().startsWith("CONNECT ", ignoreCase = true)
 
         Log.i("SXB_DEBUG", "[SXB_DEBUG] SERVER_MODE status='$statusLine' isWS=$isWs isConnect=$isConnect isSshBanner=$isSshBanner isEmpty=$isEmpty")
         onEvent("[SXB_DEBUG] SERVER_MODE isWS=$isWs isConnect=$isConnect isSshBanner=$isSshBanner isEmpty=$isEmpty")
 
         // ── 4. Lire les premiers octets utiles pour confirmer le mode ─────────
         if (!isWs && !isConnect && !isSshBanner && !isEmpty) {
+            // Court-circuit « non-tunnel » : toute réponse HTTP qui n'est ni 101 ni
+            // CONNECT 200 (ex. 302 portail captif MTN nointernet = quota data épuisé,
+            // page d'erreur) ne livrera JAMAIS de bannière SSH — échouer ici avec un
+            // message actionnable au lieu d'un timeout muet suivi d'un crash.
+            val statusForFail = response.substringBefore("\r\n")
+            if (statusForFail.startsWith("HTTP/")) {
+                val loc = Regex("(?i)location:\\s*(\\S+)").find(response)?.groupValues?.getOrNull(1) ?: ""
+                val portal = loc.contains("nointernet", true) || loc.contains("captive", true) ||
+                             loc.contains("portal", true)
+                val hint = if (portal)
+                    " — portail captif détecté : forfait data épuisé (rechargez) ou Host zéro-rated requis"
+                else ""
+                onEvent("[SXB_DEBUG] NON_TUNNEL_HTTP status='$statusForFail' location='$loc'$hint")
+                Log.w("SXB_DEBUG", "[SXB_DEBUG] NON_TUNNEL_HTTP status='$statusForFail' location='$loc'$hint")
+                throw java.io.IOException("NON_TUNNEL_HTTP $statusForFail$hint")
+            }
             // Essayer de voir les premiers octets après les headers (ex: début SSH banner)
             val peekBuf = ByteArray(16)
             var peekLen = 0
@@ -400,6 +419,13 @@ private class SxbPayloadProxy(
                 peekLen = rawIn.read(peekBuf)
                 transportSocket.soTimeout = 0
             } catch (_: Exception) {}
+            // Garde-fou EOF : read() renvoie -1 quand le pair referme juste après les
+            // headers — take(-1) jetait IllegalArgumentException (crash réel du
+            // 2026-07-31 sur portail captif MTN, SxbPayloadProxy.connect:403).
+            if (peekLen < 0) {
+                onEvent("[SXB_DEBUG] FIRST_SERVER_BYTES_EOF — le pair a refermé après les headers")
+                peekLen = 0
+            }
             val peekHex = peekBuf.take(peekLen).joinToString(" ") { "%02X".format(it) }
             val peekStr = peekBuf.take(peekLen).map { if (it in 32..126) it.toInt().toChar() else '.' }.joinToString("")
             Log.i("SXB_DEBUG", "[SXB_DEBUG] FIRST_SERVER_BYTES len=$peekLen hex=[$peekHex] str=[$peekStr]")
@@ -435,6 +461,19 @@ private class SxbPayloadProxy(
             isConnect -> {
                 // HTTP CONNECT 200 → tunnel TCP transparent, SSH direct
                 Log.i("SXB_DEBUG", "[SXB_DEBUG] HTTP_CONNECT_TUNNEL raw SSH streams")
+                inputStream  = rawIn
+                outputStream = rawOut
+            }
+
+            // Une charge CONNECT(*) demande un tunnel TCP transparent (sémantique proxy
+            // eProxy/SocksIP). Un 101 reçu ici est COSMÉTIQUE — certains panneaux
+            // répondent 101 à toute requête — et le SSH arrive derrière en FLUX BRUT,
+            // pas en trames WS. Preuve terrain 2026-07-31 (node05, HOST zéro-raté) :
+            // 101 Sec-WebSocket-Accept statique + « SSH-2.0-… » en clair ; l'adaptateur
+            // WS attendait des trames → 30 s de silence → « closed by foreign host ».
+            isConnectPayload -> {
+                onEvent("[SXB_DEBUG] CONNECT_PAYLOAD_RAW_TUNNEL — 101 cosmétique ignoré, SSH en flux brut")
+                Log.i("SXB_DEBUG", "[SXB_DEBUG] CONNECT_PAYLOAD_RAW_TUNNEL raw SSH streams (cosmetic 101 ignored)")
                 inputStream  = rawIn
                 outputStream = rawOut
             }
@@ -990,6 +1029,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
             }
             broadcastLog("[SXB_DEBUG] SSH_CAUSE_CHAIN ${SecurityModule.maskSensitive(chain.toString())}")
             val display = when {
+                msg.contains("NON_TUNNEL_HTTP") ->
+                    "🚫 Réseau bloquant : réponse HTTP directe — portail captif / forfait data épuisé. Rechargez la ligne ou utilisez le Host zéro-rated."
                 msg.contains("Auth fail") || msg.contains("auth", true) ->
                     "❌ Auth SSH échouée — vérifiez username/password"
                 msg.contains("Connection refused") ->
@@ -1134,6 +1175,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private fun classifyVpnError(message: String): String {
         val lower = message.lowercase(Locale.ROOT)
         return when {
+            lower.contains("non_tunnel_http") || lower.contains("portail captif") ||
+                lower.contains("nointernet") || lower.contains("quota") ->
+                "CAPTIVE_PORTAL"
             lower.contains("auth fail") || lower.contains("authentication") ||
                 lower.contains("auth failure") -> "AUTH_FAILED"
             lower.contains("javax.net.ssl") || lower.contains("sslhandshake") ||
