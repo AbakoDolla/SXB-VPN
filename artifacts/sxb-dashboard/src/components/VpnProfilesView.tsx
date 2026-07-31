@@ -243,28 +243,16 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
             dns: adminForm.dns || undefined,
           });
         } else {
-          // Profil legacy : formulaire technique complet (comportement historique)
-          if (!adminForm.name || !legacyForm.host || !legacyForm.port) {
-            setError('Nom, hôte et port sont requis'); setSaving(false); return;
-          }
+          // Profil legacy : champs techniques immuables côté backend (PUT rejette tout champ technique avec 409)
+          // → on n'envoie QUE les champs administratifs autorisés
+          if (!adminForm.name) { setError('Le nom du profil est requis'); setSaving(false); return; }
           await updateVpnProfile(editId, {
             name: adminForm.name, description: adminForm.description,
             displayProtocol: adminForm.displayProtocol,
             status: adminForm.status,
             offlineValidDays: Number(adminForm.offlineValidDays),
             dns: adminForm.dns || undefined,
-            protocol: legacyForm.protocol,
-            host: legacyForm.host, port: Number(legacyForm.port),
-            username: legacyForm.username || undefined,
-            password: legacyForm.password || undefined,
-            uuid: legacyForm.uuid || undefined,
-            path: legacyForm.path || undefined,
-            network: legacyForm.network,
-            tls: legacyForm.tls,
-            sni: legacyForm.sni || undefined,
-            method: legacyForm.method,
-            payloadId: legacyForm.payloadId || undefined,
-          } as any);
+          });
         }
       } else if (createTab === 'import') {
         if (!adminForm.name) { setError('Le nom du profil est requis'); setSaving(false); return; }
@@ -695,35 +683,47 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
   form: any; f: (k: any, v: any) => void; payloads: SshPayload[];
   inputCls: string; networks: string[]; protocols: string[]; editId?: string | null;
 }) {
+  // Quand on édite un profil existant, tous les champs techniques sont immuables
+  // (le backend renvoie 409 si on en envoie). On les affiche en lecture seule.
+  const locked = !!editId;
+  const lockedCls = locked
+    ? `${inputCls} opacity-60 cursor-not-allowed pointer-events-none select-none`
+    : inputCls;
   return (
     <div className="grid grid-cols-2 gap-4">
+      {locked && (
+        <div className="col-span-2 flex items-center gap-2 px-3 py-2 bg-zinc-800/60 border border-zinc-700/50 rounded-xl text-xs text-zinc-400">
+          <Lock className="w-3.5 h-3.5 shrink-0" />
+          Champs techniques <strong className="text-zinc-300">verrouillés</strong> — pour les modifier, créez un nouveau profil via « Importer une configuration ».
+        </div>
+      )}
       <div>
-        <label className="block text-sm text-gray-400 mb-1.5">Protocole *</label>
-        <select value={form.protocol} onChange={e => f('protocol', e.target.value)} className={inputCls}>
+        <label className="block text-sm text-gray-400 mb-1.5">Protocole {!locked && '*'}</label>
+        <select value={form.protocol} onChange={e => f('protocol', e.target.value)} className={lockedCls} disabled={locked}>
           {protocols.map(p => <option key={p} value={p}>{p.toUpperCase()}</option>)}
         </select>
       </div>
       <div>
-        <label className="block text-sm text-gray-400 mb-1.5">Hôte *</label>
+        <label className="block text-sm text-gray-400 mb-1.5">Hôte {!locked && '*'}</label>
         <input value={form.host} onChange={e => f('host', e.target.value)}
-          placeholder="141.95.112.93" className={inputCls} />
+          placeholder="141.95.112.93" className={lockedCls} disabled={locked} readOnly={locked} />
       </div>
       <div>
-        <label className="block text-sm text-gray-400 mb-1.5">Port *</label>
+        <label className="block text-sm text-gray-400 mb-1.5">Port {!locked && '*'}</label>
         <input type="number" value={form.port} onChange={e => f('port', e.target.value)}
-          placeholder="22" className={inputCls} />
+          placeholder="22" className={lockedCls} disabled={locked} readOnly={locked} />
       </div>
 
       {['ssh', 'ssh+payload'].includes(form.protocol) && <>
         <div>
           <label className="block text-sm text-gray-400 mb-1.5">Utilisateur SSH</label>
           <input value={form.username} onChange={e => f('username', e.target.value)}
-            placeholder="ubuntu" className={inputCls} />
+            placeholder="ubuntu" className={lockedCls} disabled={locked} readOnly={locked} />
         </div>
         <div>
           <label className="block text-sm text-gray-400 mb-1.5">Mot de passe SSH</label>
           <input type="password" value={form.password} onChange={e => f('password', e.target.value)}
-            placeholder={editId ? 'Laisser vide pour conserver' : '••••••••'} className={inputCls} />
+            placeholder={locked ? '••••••••' : '••••••••'} className={lockedCls} disabled={locked} readOnly={locked} />
         </div>
         {form.protocol === 'ssh+payload' && (
           <div className="col-span-2">
@@ -759,7 +759,7 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
           <label className="block text-sm text-gray-400 mb-1.5">UUID</label>
           <input value={form.uuid} onChange={e => f('uuid', e.target.value)}
             placeholder="Laissez vide pour générer automatiquement"
-            className={`${inputCls} font-mono`} />
+            className={`${lockedCls} font-mono`} disabled={locked} readOnly={locked} />
         </div>
       )}
 
@@ -767,14 +767,14 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
         <div>
           <label className="block text-sm text-gray-400 mb-1.5">Mot de passe</label>
           <input type="password" value={form.password} onChange={e => f('password', e.target.value)}
-            className={inputCls} />
+            className={lockedCls} disabled={locked} readOnly={locked} />
         </div>
       )}
 
       {form.protocol !== 'ssh' && (
         <div>
           <label className="block text-sm text-gray-400 mb-1.5">Network</label>
-          <select value={form.network} onChange={e => f('network', e.target.value)} className={inputCls}>
+          <select value={form.network} onChange={e => f('network', e.target.value)} className={lockedCls} disabled={locked}>
             {networks.map(n => <option key={n} value={n}>{n}</option>)}
           </select>
         </div>
@@ -783,16 +783,17 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
       <div>
         <label className="block text-sm text-gray-400 mb-1.5">SNI</label>
         <input value={form.sni} onChange={e => f('sni', e.target.value)}
-          placeholder="example.com" className={inputCls} />
+          placeholder="example.com" className={lockedCls} disabled={locked} readOnly={locked} />
       </div>
       <div>
         <label className="block text-sm text-gray-400 mb-1.5">Path</label>
         <input value={form.path} onChange={e => f('path', e.target.value)}
-          placeholder="/" className={inputCls} />
+          placeholder="/" className={lockedCls} disabled={locked} readOnly={locked} />
       </div>
       <div>
-        <button type="button" onClick={() => f('tls', !form.tls)}
-          className={`flex items-center gap-2 px-3 py-2 rounded-xl text-sm border transition-colors ${form.tls ? 'bg-cyan-500/15 border-cyan-500/30 text-cyan-400' : 'bg-transparent border-[#1a1f2e] text-gray-500'}`}>
+        <button type="button" onClick={() => !locked && f('tls', !form.tls)}
+          disabled={locked}
+          className={`flex items-center gap-2 px-3 py-2 rounded-xl text-sm border transition-colors ${locked ? 'opacity-60 cursor-not-allowed' : ''} ${form.tls ? 'bg-cyan-500/15 border-cyan-500/30 text-cyan-400' : 'bg-transparent border-[#1a1f2e] text-gray-500'}`}>
           {form.tls ? <Check className="w-3.5 h-3.5" /> : <X className="w-3.5 h-3.5" />} TLS/SSL
         </button>
       </div>
