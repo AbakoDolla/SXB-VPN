@@ -288,7 +288,9 @@ private class SxbPayloadProxy(
             val base64Key = android.util.Base64.encodeToString(nonce, android.util.Base64.NO_WRAP)
             val regex = Regex("(\r\n)(\r\n)")
             if (regex.containsMatchIn(payload)) {
-                payload = regex.replaceFirst(payload, "\r\nSec-WebSocket-Key: $base64Key\r\nSec-WebSocket-Version: 13\r\n$2")
+                payload = regex.replaceFirst(
+                    payload,
+                    "\r\nSec-WebSocket-Key: $base64Key\r\nSec-WebSocket-Version: 13\r\n$2")
             } else {
                 payload = payload.trimEnd() + "\r\nSec-WebSocket-Key: $base64Key\r\nSec-WebSocket-Version: 13\r\n\r\n"
             }
@@ -1821,6 +1823,16 @@ class SxbVpnService : VpnService(), PlatformInterface {
     // BROADCASTS
     // ═════════════════════════════════════════════════════════════════════════
 
+    fun copyFullLogs(): String {
+        val copy = fullLogBuffer.toString()
+        if (copy.isNotEmpty()) {
+            File(filesDir, "full_logs_copy.txt").writeText(copy, Charsets.UTF_8)
+            Log.i(TAG, "[SXB_DEBUG] FULL_LOGS_COPIED bytes=${copy.length}")
+            broadcastLog("[SXB_DEBUG] FULL_LOGS_COPIED bytes=${copy.length}")
+        }
+        return copy
+    }
+
     private fun broadcastStatus(status: String) {
         // setPackage() obligatoire sur Android 14+ avec RECEIVER_NOT_EXPORTED
         // Sans ça, les broadcasts intra-app sont silencieusement ignorés.
@@ -1831,8 +1843,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
         sendBroadcast(intent)
     }
 
+    // HANDOFF_LOGS_ULTRADETAIL — bouton Copier : persister les logs complets
+    private val fullLogBuffer = StringBuilder()
+
     private fun broadcastLog(message: String) {
         Log.i(TAG, message)
+        fullLogBuffer.append(message).append("\n")
         // setPackage() obligatoire sur Android 14+ avec RECEIVER_NOT_EXPORTED
         val intent = Intent(BROADCAST_LOG).apply {
             putExtra("log", SecurityModule.maskSensitive(message))

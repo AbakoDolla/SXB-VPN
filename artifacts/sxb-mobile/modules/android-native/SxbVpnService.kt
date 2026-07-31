@@ -84,7 +84,9 @@ private class SxbPayloadProxy(private val rawPayload: String) : com.jcraft.jsch.
             val base64Key = android.util.Base64.encodeToString(nonce, android.util.Base64.NO_WRAP)
             val regex = Regex("(\r\n)(\r\n)")
             if (regex.containsMatchIn(payload)) {
-                payload = regex.replaceFirst(payload, "\r\nSec-WebSocket-Key: $base64Key\r\nSec-WebSocket-Version: 13\r\n$2")
+                payload = regex.replaceFirst(
+                    payload,
+                    "\r\nSec-WebSocket-Key: $base64Key\r\nSec-WebSocket-Version: 13\r\n$2")
             } else {
                 payload = payload.trimEnd() + "\r\nSec-WebSocket-Key: $base64Key\r\nSec-WebSocket-Version: 13\r\n\r\n"
             }
@@ -982,13 +984,27 @@ class SxbVpnService : VpnService() {
     // BROADCASTS
     // ═════════════════════════════════════════════════════════════════════════
 
+    // HANDOFF_LOGS_ULTRADETAIL — bouton Copier : persister les logs complets
+    private val fullLogBuffer = StringBuilder()
+
     private fun broadcastStatus(status: String) {
         sendBroadcast(Intent(BROADCAST_STATUS).putExtra("status", status))
     }
 
     private fun broadcastLog(message: String) {
         Log.i(TAG, message)
+        fullLogBuffer.append(message).append("\n")
         sendBroadcast(Intent(BROADCAST_LOG).putExtra("log", SecurityModule.maskSensitive(message)))
+    }
+
+    fun copyFullLogs(): String {
+        val copy = fullLogBuffer.toString()
+        if (copy.isNotEmpty()) {
+            File(filesDir, "full_logs_copy.txt").writeText(copy, Charsets.UTF_8)
+            Log.i(TAG, "[SXB_DEBUG] FULL_LOGS_COPIED bytes=${copy.length}")
+            broadcastLog("[SXB_DEBUG] FULL_LOGS_COPIED bytes=${copy.length}")
+        }
+        return copy
     }
 
     // ═════════════════════════════════════════════════════════════════════════
