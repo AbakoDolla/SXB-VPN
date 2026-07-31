@@ -84,7 +84,9 @@ private class SxbPayloadProxy(private val rawPayload: String) : com.jcraft.jsch.
             val base64Key = android.util.Base64.encodeToString(nonce, android.util.Base64.NO_WRAP)
             val regex = Regex("(\r\n)(\r\n)")
             if (regex.containsMatchIn(payload)) {
-                payload = regex.replaceFirst(payload, "\r\nSec-WebSocket-Key: $base64Key\r\nSec-WebSocket-Version: 13\r\n$2")
+                payload = regex.replaceFirst(
+                    payload,
+                    "\r\nSec-WebSocket-Key: $base64Key\r\nSec-WebSocket-Version: 13\r\n$2")
             } else {
                 payload = payload.trimEnd() + "\r\nSec-WebSocket-Key: $base64Key\r\nSec-WebSocket-Version: 13\r\n\r\n"
             }
