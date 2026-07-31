@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Animated, Dimensions, Image, Modal, Pressable,
-  ScrollView, StyleSheet, Text, View, ActivityIndicator,
+  ScrollView, Share, StyleSheet, Text, View, ActivityIndicator,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -58,6 +58,22 @@ function VpnLogsModal({
     }
   }, [logs, visible]);
 
+  // ── Copie en UNE touche : feuille de partage native (tuile « Copier »,
+  // WhatsApp, e-mail…) avec en-tête de diagnostic — Diagnostic ultra-détaillé.
+  const copyAllLogs = async () => {
+    const header = [
+      "═══ SXB VPN — Logs de diagnostic ═══",
+      `Date      : ${new Date().toISOString()}`,
+      `Protocole : ${selectedProtocol ?? "-"}`,
+      `État      : ${isConnected ? "connecté" : isConnecting ? "connexion en cours" : "déconnecté"}`,
+      `Lignes    : ${logs.length}`,
+      "────────────────────────────────────────",
+    ].join("\n");
+    try {
+      await Share.share({ message: `${header}\n${logs.join("\n")}`, title: "Logs SXB VPN" });
+    } catch { /* feuille fermée — sans conséquence */ }
+  };
+
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <View style={logStyles.overlay}>
@@ -66,10 +82,15 @@ function VpnLogsModal({
           <View style={logStyles.header}>
             <View style={[logStyles.statusDot, { backgroundColor: isConnected ? Colors.connected : isConnecting ? Colors.primary : Colors.textMuted }]} />
             <Text style={logStyles.title}>Logs moteur VPN (sing-box)</Text>
+            <Pressable onPress={copyAllLogs} style={logStyles.copyBtn} disabled={logs.length === 0} accessibilityLabel="Copier tous les logs">
+              <Ionicons name="copy-outline" size={15} color={logs.length === 0 ? Colors.textMuted : Colors.primary} />
+              <Text style={[logStyles.copyBtnText, logs.length === 0 && { color: Colors.textMuted }]}>Copier</Text>
+            </Pressable>
             <Pressable onPress={onClose}>
               <Ionicons name="close" size={22} color={Colors.textSecondary} />
             </Pressable>
           </View>
+          <Text style={logStyles.hint}>Une touche « Copier » = tout l'historique (partage ou presse-papiers), prêt à coller.</Text>
           <ScrollView
             ref={scrollRef}
             style={logStyles.logScroll}
@@ -82,7 +103,7 @@ function VpnLogsModal({
             ) : logs.map((line, i) => (
               <View key={i} style={logStyles.logLine}>
                 <Text style={logStyles.logPrefix}>›</Text>
-                <Text style={[
+                <Text selectable style={[
                   logStyles.logText,
                   line.startsWith("✅") && { color: Colors.connected },
                   line.startsWith("❌") && { color: "#FF4444" },
@@ -650,9 +671,12 @@ const logStyles = StyleSheet.create({
   overlay: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(6,9,20,0.7)" },
   sheet: { backgroundColor: "#0A0F1C", borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, maxHeight: "60%", minHeight: 300 },
   handle: { width: 36, height: 4, backgroundColor: Colors.border, borderRadius: 2, alignSelf: "center", marginBottom: 16 },
-  header: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 16 },
+  header: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 8 },
   statusDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.connected },
   title: { flex: 1, fontSize: 16, fontWeight: "600", color: "#FFF", fontFamily: "Inter_600SemiBold" },
+  copyBtn: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 12, borderWidth: 1, borderColor: Colors.primary + "40", backgroundColor: Colors.primary + "15" },
+  copyBtnText: { fontSize: 12, color: Colors.primary, fontFamily: "Inter_600SemiBold" },
+  hint: { fontSize: 11, color: Colors.textMuted, fontFamily: "Inter_400Regular", marginBottom: 10 },
   logScroll: { flex: 1 },
   logLine: { flexDirection: "row", gap: 8, paddingVertical: 3 },
   logPrefix: { color: Colors.primary, fontFamily: "Inter_700Bold", fontSize: 13 },
