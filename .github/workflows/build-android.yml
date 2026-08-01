@@ -52,7 +52,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: app-mobile/node_modules
-          key: node-modules-${{ runner.os }}-node22-${{ hashFiles('app-mobile/package.json') }}
+          key: node-modules-${{ runner.os }}-node24-${{ hashFiles('app-mobile/package.json') }}
 
       # ── Install dependencies — MUST run before any node_modules/ patch ────────
       - name: Install dependencies
@@ -265,6 +265,37 @@ jobs:
           echo "Y29uc3QgZnMgPSByZXF1aXJlKCJmcyIpOwpjb25zdCBwID0gcHJvY2Vzcy5hcmd2WzJdOwpjb25zdCBzdG9yZVBhc3MgPSBwcm9jZXNzLmVudi5TVE9SRV9QQVNTIHx8ICIiOwpjb25zdCBrZXlBbCAgICA9IHByb2Nlc3MuZW52LktFWV9BTCAgICB8fCAiIjsKY29uc3Qga2V5UHcgICAgPSBwcm9jZXNzLmVudi5LRVlfUFcgICAgfHwgIiI7CmxldCBjID0gZnMucmVhZEZpbGVTeW5jKHAsICJ1dGY4Iik7CmlmICghYy5pbmNsdWRlcygia2V5c3RvcmUvcmVsZWFzZS5rZXlzdG9yZSIpKSB7CiAgY29uc3QgYmxvY2sgPSAicmVsZWFzZSB7XG4iICsKICAgICIgICAgICAgICAgICBzdG9yZUZpbGUgZmlsZShcImtleXN0b3JlL3JlbGVhc2Uua2V5c3RvcmVcIilcbiIgKwogICAgIiAgICAgICAgICAgIHN0b3JlUGFzc3dvcmQgXCIiICsgc3RvcmVQYXNzICsgIlwiXG4iICsKICAgICIgICAgICAgICAgICBrZXlBbGlhcyBcIiIgKyBrZXlBbCArICJcIlxuIiArCiAgICAiICAgICAgICAgICAga2V5UGFzc3dvcmQgXCIiICsga2V5UHcgKyAiXCJcbiIgKwogICAgIiAgICAgICAgfSI7CiAgaWYgKGMuaW5jbHVkZXMoInNpZ25pbmdDb25maWdzIHsiKSkgewogICAgYyA9IGMucmVwbGFjZSgic2lnbmluZ0NvbmZpZ3MgeyIsICJzaWduaW5nQ29uZmlncyB7XG4gICAgICAgICIgKyBibG9jayk7CiAgICBjb25zb2xlLmxvZygiW3NpZ25pbmddIHJlbGVhc2UgaW5qZWN0ZSBkYW5zIHNpZ25pbmdDb25maWdzIGV4aXN0YW50Iik7CiAgfSBlbHNlIHsKICAgIGMgPSBjLnJlcGxhY2UoImFuZHJvaWQgeyIsICJhbmRyb2lkIHtcbiAgICBzaWduaW5nQ29uZmlncyB7XG4gICAgICAgICIgKyBibG9jayArICJcbiAgICB9Iik7CiAgICBjb25zb2xlLmxvZygiW3NpZ25pbmddIG5vdXZlYXUgYmxvYyBzaWduaW5nQ29uZmlncy5yZWxlYXNlIGNyZWUiKTsKICB9Cn0KaWYgKCFjLmluY2x1ZGVzKCJzaWduaW5nQ29uZmlnIHNpZ25pbmdDb25maWdzLnJlbGVhc2UiKSkgewogIGMgPSBjLnJlcGxhY2UoLyhidWlsZFR5cGVzW1xzXFNdKj9yZWxlYXNlXHMqXHspLywgIiQxXG4gICAgICAgICAgICBzaWduaW5nQ29uZmlnIHNpZ25pbmdDb25maWdzLnJlbGVhc2UiKTsKICBjb25zb2xlLmxvZygiW3NpZ25pbmddIHNpZ25pbmdDb25maWcgcmVmZXJlbmNlIGFqb3V0ZWUgZGFucyBidWlsZFR5cGVzLnJlbGVhc2UiKTsKfQpmcy53cml0ZUZpbGVTeW5jKHAsIGMpOwpjb25zb2xlLmxvZygiT0sgU2lnbmF0dXJlIGNvbmZpZ3VyZWUgZGFucyBidWlsZC5ncmFkbGUiKTsK" | base64 -d > /tmp/signing_inject.js
           node /tmp/signing_inject.js "$BUILD_GRADLE"
 
+      # FIX SIGNING — Supprimer signingConfig signingConfigs.debug du bloc release
+      # Groovy : la DERNIÈRE affectation d'une propriété gagne. Expo prebuild injecte
+      # "signingConfig signingConfigs.debug" dans buildTypes.release. Notre inject
+      # ajoute .release AVANT → la ligne debug vient en dernier → APK signé debug.
+      # Ce step supprime la ligne debug UNIQUEMENT dans le bloc release {}.
+      - name: Retirer signingConfig debug du bloc release (fix Groovy last-wins)
+        run: |
+          node - << 'NODEJS_EOF'
+          const fs = require('fs');
+          const p = 'android/app/build.gradle';
+          const lines = fs.readFileSync(p, 'utf8').split('\n');
+          let inRelease = false, depth = 0, removed = 0;
+          const result = lines.map(line => {
+            // Détecter entrée dans buildTypes > release { }
+            if (/^\s*release\s*\{/.test(line)) { inRelease = true; depth = 1; return line; }
+            if (inRelease) {
+              for (const ch of line) { if (ch==='{') depth++; else if (ch==='}') depth--; }
+              if (depth <= 0) { inRelease = false; return line; }
+              // Supprimer la ligne debug signingConfig dans le bloc release
+              if (/signingConfig\s+signingConfigs\.debug/.test(line)) {
+                console.log('[signing-fix] Supprimé: ' + line.trim());
+                removed++;
+                return null;
+              }
+            }
+            return line;
+          }).filter(l => l !== null).join('\n');
+          fs.writeFileSync(p, result);
+          console.log('[signing-fix] OK — ' + removed + ' ligne(s) debug supprimée(s) du bloc release');
+          NODEJS_EOF
+
       # FIX #4 : Gradle properties — newArchEnabled=false (cohérent avec app.json)
       # CORRECTION CRITIQUE : newArchEnabled=true forçait la nouvelle architecture alors
       # que le module natif SxbVpnModule utilise l'ancienne (ReactContextBaseJavaModule).
@@ -301,7 +332,9 @@ jobs:
           if grep -q 'packaging' "$B" 2>/dev/null; then
             echo "[packaging] Bloc packaging présent (injecté par le plugin Expo)"
             for EXCL in \
+              'META-INF/versions/**' \
               'META-INF/versions/9/OSGI-INF/MANIFEST.MF' \
+              'META-INF/versions/11/OSGI-INF/MANIFEST.MF' \
               'META-INF/*.kotlin_module' \
               'META-INF/AL2.0' \
               'META-INF/LGPL2.1'; do
