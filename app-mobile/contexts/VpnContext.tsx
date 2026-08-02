@@ -12,6 +12,7 @@
  */
 
 import React, {
+import { legacyDebugLog } from '@/services/secureLogger';
   createContext, useCallback, useContext, useEffect, useRef, useState,
 } from 'react';
 import {
@@ -153,7 +154,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     lastStepRef.current = lastStep;
     watchdogRef.current = setTimeout(async () => {
       const step = lastStepRef.current;
-      console.warn(`[SXB_DEBUG] WATCHDOG_FIRED lastStep=${step}`);
+      legacyDebugLog(`WATCHDOG_FIRED lastStep=${step}`);
 
       let errorCode = 'TIMEOUT_SERVER';
       let errorDetail = 'Aucune réponse du serveur après 45s';
@@ -215,8 +216,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   //     différent → purge atomique + re-provisionnement ;
   //   • aucune config incomplète n'est jamais persistée.
   const syncFromConnection = useCallback((conn: VpnConnection) => {
-    console.log(`[SXB_DEBUG] ACTIVE_CONNECTION_FOUND id=${conn.id} proto=${conn.technicalProtocol} display=${conn.displayProtocol}`);
-    addLog(`[SXB_DEBUG] ACTIVE_CONNECTION_FOUND id=${conn.id}`);
+    legacyDebugLog(`ACTIVE_CONNECTION_FOUND id=${conn.id} proto=${conn.technicalProtocol} display=${conn.displayProtocol}`);
+    legacyDebugLog(`ACTIVE_CONNECTION_FOUND id=${conn.id}`);
 
     // Étiquette technique informative (UI uniquement — jamais injectée dans
     // la config moteur ; la vérité technique vient du blob provisionné).
@@ -261,7 +262,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           !!existing.meta?.configHash && !!connMeta.configHash &&
           existing.meta.configHash !== connMeta.configHash;
         if (staleByProfile || staleByHash) {
-          addLog(`[SXB_DEBUG] CONFIG_STALE ${staleByProfile ? 'subscription-changed' : 'config-hash-mismatch'} — PURGE atomique du cache provisionné`);
+          legacyDebugLog(`CONFIG_STALE ${staleByProfile ? 'subscription-changed' : 'config-hash-mismatch'} — PURGE atomique du cache provisionné`);
           await clearProvisionedConfig().catch(() => {});
         } else {
           // Cache valide et à jour — métadonnées seules ajoutées (technique intacte)
@@ -270,8 +271,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           const saved = await saveCompleteConfig(merged, engineProtocol, conn.id, existing.meta.configExpiresAt);
           if (saved) {
             setVpnConfig(merged);
-            addLog(`[SXB_DEBUG] CONFIG_SYNC_SUCCESS proto=${engineProtocol} display="${displayProtocol}" (depuis cache provisionné)`);
-            addLog(`[SXB_DEBUG] HOME_STATE_UPDATED hasValidConfig=true proto="${engineProtocol}" display="${displayProtocol}"`);
+            legacyDebugLog(`CONFIG_SYNC_SUCCESS proto=${engineProtocol} display="${displayProtocol}" (depuis cache provisionné)`);
+            legacyDebugLog(`HOME_STATE_UPDATED hasValidConfig=true proto="${engineProtocol}" display="${displayProtocol}"`);
             return;
           }
         }
@@ -279,7 +280,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
       // 2. Pas de config provisionnée valide (ou périmée) — provisionnement
       if (conn.dataToken && deviceId) {
-        addLog('[SXB_DEBUG] PROVISION_START — provisionnement sécurisé');
+        legacyDebugLog('PROVISION_START — provisionnement sécurisé');
         try {
           const freshResult = await provisionAndStore(conn.dataToken!, deviceId);
           // Synchroniser le quota local (gardes offline : expiration + épuisement)
@@ -301,16 +302,16 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           const saved = await saveCompleteConfig(merged, engineProtocol, conn.id, freshResult.meta.configExpiresAt);
           if (saved) {
             setVpnConfig(merged);
-            addLog(`[SXB_DEBUG] CONFIG_SYNC_SUCCESS proto=${engineProtocol} display="${displayProtocol}"`);
-            addLog('[SXB_DEBUG] PROVISION_OK — config complète stockée dans SecureStore');
-            addLog(`[SXB_DEBUG] HOME_STATE_UPDATED hasValidConfig=true proto="${engineProtocol}" display="${displayProtocol}"`);
-            console.log(`[SXB_DEBUG] HOME_STATE_UPDATED hasValidConfig=true proto=${engineProtocol} display=${displayProtocol}`);
+            legacyDebugLog(`CONFIG_SYNC_SUCCESS proto=${engineProtocol} display="${displayProtocol}"`);
+            legacyDebugLog('PROVISION_OK — config complète stockée dans SecureStore');
+            legacyDebugLog(`HOME_STATE_UPDATED hasValidConfig=true proto="${engineProtocol}" display="${displayProtocol}"`);
+            legacyDebugLog(`HOME_STATE_UPDATED hasValidConfig=true proto=${engineProtocol} display=${displayProtocol}`);
             return;
           } else {
-            addLog('[SXB_DEBUG] PROVISION_WARN — config provisionnée incomplète, sauvegarde refusée');
+            legacyDebugLog('PROVISION_WARN — config provisionnée incomplète, sauvegarde refusée');
           }
         } catch (e: any) {
-          addLog(`[SXB_DEBUG] PROVISION_WARN — ${e?.message || 'erreur réseau'}`);
+          legacyDebugLog(`PROVISION_WARN — ${e?.message || 'erreur réseau'}`);
         }
       }
 
@@ -323,20 +324,20 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           // périmée — on ne l'utilise plus (re-provisionnement requis).
           if (connMeta.configHash && (offlineEntry.config as any).configHash &&
               (offlineEntry.config as any).configHash !== connMeta.configHash) {
-            addLog('[SXB_DEBUG] CONFIG_OFFLINE_STALE config-hash-mismatch — re-provisionnement requis (internet)');
+            legacyDebugLog('CONFIG_OFFLINE_STALE config-hash-mismatch — re-provisionnement requis (internet)');
           } else {
             // Métadonnées de connexion ajoutées (allowlist — technique intacte)
             const merged = mergeConnectionMetadata(offlineEntry.config, connMeta);
             setVpnConfig(merged);
-            addLog('[SXB_DEBUG] CONFIG_RESTORED — config offline valide conservée');
-            addLog(`[SXB_DEBUG] HOME_STATE_UPDATED hasValidConfig=true proto="${(merged.protocol || protocolLabel).toLowerCase()}" display="${displayProtocol}"`);
+            legacyDebugLog('CONFIG_RESTORED — config offline valide conservée');
+            legacyDebugLog(`HOME_STATE_UPDATED hasValidConfig=true proto="${(merged.protocol || protocolLabel).toLowerCase()}" display="${displayProtocol}"`);
             return;
           }
         }
       }
 
       // 4. Aucune config valide — état dégradé, internet requis
-      addLog('[SXB_DEBUG] CONFIG_INCOMPLETE — provisionnement requis, internet nécessaire pour la première activation');
+      legacyDebugLog('CONFIG_INCOMPLETE — provisionnement requis, internet nécessaire pour la première activation');
       setVpnConfig({
         protocol:        protocolLabel,
         displayProtocol: displayProtocol,
@@ -345,7 +346,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       });
     };
 
-    provisionFlow().catch(e => addLog(`[SXB_DEBUG] SYNC_ERROR — ${e?.message || 'erreur'}`));
+    provisionFlow().catch(e => legacyDebugLog(`SYNC_ERROR — ${e?.message || 'erreur'}`););
   }, [addLog, deviceId]);
 
   const checkPermission = useCallback(async () => {
@@ -418,7 +419,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
     const stateSub = vpnEmitter.addListener('onVpnStateChange', (e: { status: string }) => {
       const s = e.status;
-      console.log(`[SXB_DEBUG] BROADCAST_STATUS_RECEIVED status=${s}`);
+      legacyDebugLog(`BROADCAST_STATUS_RECEIVED status=${s}`);
       setVpnState(s);
       const connected = s === 'connected';
       setIsConnected(connected);
@@ -433,17 +434,17 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       if (connected) {
         clearWatchdog();
         addLog('✅ VPN_CONNECTED — tunnel actif');
-        addLog('[SXB_DEBUG] VPN_CONNECTED');
-        console.log('[SXB_DEBUG] VPN_CONNECTED');
+        legacyDebugLog('VPN_CONNECTED');
+        legacyDebugLog('VPN_CONNECTED');
         sessionStartRef.current = Date.now();
         refreshAccountState().catch(() => {});
       } else if (s === 'disconnected') {
-        addLog('[SXB_DEBUG] VPN_FAILED status=disconnected');
+        legacyDebugLog('VPN_FAILED status=disconnected');
         addLog('🔴 VPN déconnecté');
         stopTrafficPolling();
         reportUsageToBackend(0, 0);
       } else if (s === 'error') {
-        addLog('[SXB_DEBUG] VPN_FAILED status=error');
+        legacyDebugLog('VPN_FAILED status=error');
         addLog('❌ Erreur VPN — connexion perdue');
         setIsConnecting(false);
       }
@@ -509,7 +510,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const refreshVpnConfig = useCallback(async () => {
     if (!isAuthenticated) return;
     try {
-      addLog('[SXB_DEBUG] CONFIG_SYNC_START — appel /mobile/vpn/config');
+      legacyDebugLog('CONFIG_SYNC_START — appel /mobile/vpn/config');
       const res = await apiClient.get('/mobile/vpn/config');
       const data = res.data;
 
@@ -559,7 +560,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           // §6.4 — invalidation de cache : hash serveur ≠ hash local
           if (data.vpnConfig.configHash && (oldConfig as any).configHash &&
               data.vpnConfig.configHash !== (oldConfig as any).configHash) {
-            addLog('[SXB_DEBUG] CONFIG_STALE_HASH — configuration serveur modifiée, re-provisionnement au prochain démarrage');
+            legacyDebugLog('CONFIG_STALE_HASH — configuration serveur modifiée, re-provisionnement au prochain démarrage');
             await clearProvisionedConfig().catch(() => {});
           }
 
@@ -567,15 +568,15 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           const saved = await saveCompleteConfig(merged, engineProto, data.vpnConfig.configId);
           if (saved) {
             setVpnConfig(merged);
-            addLog(`[SXB_DEBUG] CONFIG_SYNC_SUCCESS proto="${engineProto}" display="${dp ?? '—'}" (métadonnées seules)`);
-            console.log(`[SXB_DEBUG] CONFIG_SYNC_SUCCESS proto=${engineProto}`);
+            legacyDebugLog(`CONFIG_SYNC_SUCCESS proto="${engineProto}" display="${dp ?? '—'}" (métadonnées seules)`);
+            legacyDebugLog(`CONFIG_SYNC_SUCCESS proto=${engineProto}`);
           } else if (isCompleteOfflineConfig(oldConfig).complete) {
-            addLog('[SXB_DEBUG] CONFIG_SYNC_PARTIAL — ancienne config complète conservée');
+            legacyDebugLog('CONFIG_SYNC_PARTIAL — ancienne config complète conservée');
           } else {
-            addLog('[SXB_DEBUG] CONFIG_SYNC_INCOMPLETE — métadonnées seules non persistées (provisionnement requis)');
+            legacyDebugLog('CONFIG_SYNC_INCOMPLETE — métadonnées seules non persistées (provisionnement requis)');
           }
         } else {
-          addLog('[SXB_DEBUG] CONFIG_SYNC_META — aucune config provisionnée : métadonnées reçues, moteur intact');
+          legacyDebugLog('CONFIG_SYNC_META — aucune config provisionnée : métadonnées reçues, moteur intact');
         }
 
         if (dp) {
@@ -603,7 +604,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         setAvailableProtocols(FALLBACK_PROTOCOLS);
       }
     } catch {
-      addLog('[SXB_DEBUG] CONFIG_SYNC_FAILED — backend inaccessible, mode hors-ligne');
+      legacyDebugLog('CONFIG_SYNC_FAILED — backend inaccessible, mode hors-ligne');
       setAvailableProtocols(FALLBACK_PROTOCOLS);
     }
   }, [isAuthenticated, addLog]);
@@ -613,8 +614,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const connect = useCallback(async () => {
     if (isConnecting || isConnected) return;
     setIsConnecting(true);
-    console.log('[SXB_DEBUG] CONNECT_START');
-    addLog('[SXB_DEBUG] CONNECT_START — bouton "Se connecter" appuyé');
+    legacyDebugLog('CONNECT_START');
+    legacyDebugLog('CONNECT_START — bouton "Se connecter" appuyé');
     addLog('🔄 Initialisation du tunnel VPN...');
 
     try {
@@ -639,7 +640,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         // tout ce qui est nécessaire au moteur VPN (host, port, credentials,
         // payload, paramètres de protocole). Le moteur ne dépend plus d'un
         // nouvel appel API pour démarrer.
-        addLog('[SXB_DEBUG] CONFIG_LOAD_START — lecture SecureStore');
+        legacyDebugLog('CONFIG_LOAD_START — lecture SecureStore');
         const offlineEntry = await loadVpnConfig().catch(() => null);
 
         if (offlineEntry?.config) {
@@ -654,10 +655,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
             // Enrichir avec les métadonnées de connexion courante
             if (vpnConfig?.displayProtocol) configToUse.displayProtocol = vpnConfig.displayProtocol;
             if (vpnConfig?.configId)        configToUse.configId        = vpnConfig.configId;
-            addLog(`[SXB_DEBUG] CONFIG_LOADED proto=${offlineEntry.protocol} savedAt=${offlineEntry.savedAt}`);
+            legacyDebugLog(`CONFIG_LOADED proto=${offlineEntry.protocol} savedAt=${offlineEntry.savedAt}`);
             addLog('✅ Configuration sécurisée chargée');
           } else {
-            addLog(`[SXB_DEBUG] CONFIG_STORED_INCOMPLETE missing=[${storedCheck.missing.join(',')}] — re-provisionnement requis`);
+            legacyDebugLog(`CONFIG_STORED_INCOMPLETE missing=[${storedCheck.missing.join(',')}] — re-provisionnement requis`);
           }
         }
 
@@ -668,9 +669,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
             ((vpnConfig as any)?.dataToken as string | undefined) ??
             ((offlineEntry?.config as any)?.dataToken as string | undefined) ??
             ((activeConnection as any)?.dataToken as string | undefined);
-          addLog(`[SXB_DEBUG] PROVISION_CHECK dataToken=${dataToken ? 'OK' : 'MISSING'} deviceId=${deviceId ? 'OK' : 'MISSING'}`);
+          legacyDebugLog(`PROVISION_CHECK dataToken=${dataToken ? 'OK' : 'MISSING'} deviceId=${deviceId ? 'OK' : 'MISSING'}`);
           if (dataToken && deviceId) {
-            addLog('[SXB_DEBUG] PROVISION_REQUIRED — appel /provision/activate');
+            legacyDebugLog('PROVISION_REQUIRED — appel /provision/activate');
             addLog('🔒 Provisionnement sécurisé en cours...');
             try {
               const freshResult = await provisionAndStore(dataToken, deviceId);
@@ -699,18 +700,18 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
                   expiryDate:  freshResult.meta.expireAt,
                 }).catch(() => {});
               }
-              addLog('[SXB_DEBUG] PROVISION_OK — config complète stockée dans SecureStore');
+              legacyDebugLog('PROVISION_OK — config complète stockée dans SecureStore');
               addLog('✅ Configuration provisionnée avec succès');
             } catch (provErr: any) {
               const httpStatus = provErr?.response?.status ?? 'no-response';
               const httpMsg    = provErr?.response?.data?.error ?? provErr?.response?.data?.message ?? '';
-              addLog(`[SXB_DEBUG] PROVISION_FAILED http=${httpStatus} msg="${httpMsg || provErr?.message || 'inconnu'}"`);
+              legacyDebugLog(`PROVISION_FAILED http=${httpStatus} msg="${httpMsg || provErr?.message || 'inconnu'}"`);
               addLog(`⚠️ Provisionnement échoué : ${httpMsg || provErr?.message || 'erreur réseau'}`);
               if (offlineEntry?.config) {
                 // Gardien ultime : signaler précisément ce qui manque au lieu
                 // d'un échec opaque. La config incomplète n'est PAS utilisée.
                 const missing = isCompleteOfflineConfig(offlineEntry.config).missing;
-                addLog(`[SXB_DEBUG] CONFIG_INCOMPLETE_BLOCK missing=${missing.join(',')}`);
+                legacyDebugLog(`CONFIG_INCOMPLETE_BLOCK missing=${missing.join(',')}`);
                 addLog(`❌ Configuration incomplète (manque : ${missing.join(', ')}) — internet requis pour la réparer`);
               } else {
                 addLog('❌ Internet requis pour le premier provisionnement');
@@ -729,11 +730,11 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
         // ── Validation de complétude avec le gardien unifié ───────────────────
         const completeness = isCompleteOfflineConfig(configToUse);
-        addLog(`[SXB_DEBUG] CONFIG_READY hasHost=${completeness.hasHost} hasCreds=${completeness.hasCreds} missing=[${completeness.missing.join(',')}]`);
+        legacyDebugLog(`CONFIG_READY hasHost=${completeness.hasHost} hasCreds=${completeness.hasCreds} missing=[${completeness.missing.join(',')}]`);
 
         if (!completeness.complete) {
           addLog(`❌ Configuration incomplète — champs manquants : ${completeness.missing.join(', ')}`);
-          addLog('[SXB_DEBUG] CONFIG_INCOMPLETE_BLOCK missing=' + completeness.missing.join(','));
+          legacyDebugLog(`CONFIG_INCOMPLETE_BLOCK missing=${completeness.missing.join(','))}`);
           addLog('ℹ️  Re-provisionnement requis — vérifiez votre connexion internet');
           setVpnState('error');
           setIsConnecting(false);
@@ -773,19 +774,19 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           autoReconnect,
         }));
 
-        console.log(`[SXB_DEBUG] CONFIG_SENT_NATIVE proto=${engineProtocol}`);
-        addLog(`[SXB_DEBUG] CONFIG_SENT_NATIVE proto=${engineProtocol}`);
+        legacyDebugLog(`CONFIG_SENT_NATIVE proto=${engineProtocol}`);
+        legacyDebugLog(`CONFIG_SENT_NATIVE proto=${engineProtocol}`);
         addLog(`🚀 Démarrage tunnel ${engineProtocol.toUpperCase()}...`);
 
-        console.log('[SXB_DEBUG] SERVICE_STARTED — appel startVpn()');
-        addLog('[SXB_DEBUG] SERVICE_STARTED — startVpn() envoyé au module natif');
+        legacyDebugLog('SERVICE_STARTED — appel startVpn()');
+        legacyDebugLog('SERVICE_STARTED — startVpn() envoyé au module natif');
 
         lastStepRef.current = `STEP_3_NATIVE_CALLED proto=${engineProtocol}`;
         startWatchdog(`STEP_3_NATIVE_CALLED proto=${engineProtocol}`);
 
         const startResult = await SxbVpnNative.startVpn(optionsJson);
-        console.log(`[SXB_DEBUG] SERVICE_STARTED result=${JSON.stringify(startResult)}`);
-        addLog(`[SXB_DEBUG] SERVICE_STARTED serviceStarted=${startResult?.serviceStarted}`);
+        legacyDebugLog(`SERVICE_STARTED result=${JSON.stringify(startResult)}`);
+        legacyDebugLog(`SERVICE_STARTED serviceStarted=${startResult?.serviceStarted}`);
         addLog('⏳ Connexion en cours... (watchdog 45s actif)');
 
       } else if (IS_ANDROID) {
@@ -804,7 +805,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         setIsConnected(true);
         setVpnState('connected');
         await AsyncStorage.setItem('@sxb_vpn_connected', 'true');
-        addLog('[SXB_DEBUG] VPN_CONNECTED mode=dev-simulation');
+        legacyDebugLog('VPN_CONNECTED mode=dev-simulation');
         addLog('✅ Connecté (mode web dev)');
         setIsConnecting(false);
       }
@@ -817,7 +818,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       } catch { /* non-bloquant */ }
 
     } catch (err: any) {
-      addLog(`[SXB_DEBUG] VPN_FAILED error=${err?.message || 'connexion_échouée'}`);
+      legacyDebugLog(`VPN_FAILED error=${err?.message || 'connexion_échouée'}`);
       addLog(`❌ Erreur : ${err?.message || 'Connexion échouée'}`);
       setVpnState('error');
       setIsConnecting(false);
