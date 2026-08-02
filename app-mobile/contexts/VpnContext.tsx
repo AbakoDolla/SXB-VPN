@@ -12,9 +12,9 @@
  */
 
 import React, {
-import { legacyDebugLog } from '@/services/secureLogger';
   createContext, useCallback, useContext, useEffect, useRef, useState,
 } from 'react';
+import { legacyDebugLog } from '@/services/secureLogger';
 import {
   NativeModules, NativeEventEmitter, Platform,
 } from 'react-native';
@@ -346,7 +346,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       });
     };
 
-    provisionFlow().catch(e => legacyDebugLog(`SYNC_ERROR — ${e?.message || 'erreur'}`););
+    provisionFlow().catch(e => legacyDebugLog(`SYNC_ERROR — ${e?.message || 'erreur'}`));
   }, [addLog, deviceId]);
 
   const checkPermission = useCallback(async () => {
@@ -734,7 +734,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
         if (!completeness.complete) {
           addLog(`❌ Configuration incomplète — champs manquants : ${completeness.missing.join(', ')}`);
-          legacyDebugLog(`CONFIG_INCOMPLETE_BLOCK missing=${completeness.missing.join(','))}`);
+          legacyDebugLog(`CONFIG_INCOMPLETE_BLOCK missing=${completeness.missing.join(',')}`);
           addLog('ℹ️  Re-provisionnement requis — vérifiez votre connexion internet');
           setVpnState('error');
           setIsConnecting(false);
