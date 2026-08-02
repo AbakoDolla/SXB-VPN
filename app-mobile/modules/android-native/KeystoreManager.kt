@@ -14,7 +14,8 @@ package com.sxbvpn.vpnmodule
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
-import android.util.Log
+import com.sxbvpn.vpnmodule.SxbSecureLogger
+import com.sxbvpn.vpnmodule.SxbSecureLogger.VpnEvent
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -54,7 +55,7 @@ object KeystoreManager {
 
         keyGen.init(spec)
         val key = keyGen.generateKey()
-        Log.i(TAG, "Nouvelle clé AES-256-GCM créée dans l'Android Keystore")
+        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.KEYSTORE_KEY_CREATED)
         return key
     }
 
@@ -78,7 +79,7 @@ object KeystoreManager {
 
             "v1:" + Base64.encodeToString(blob, Base64.NO_WRAP)
         } catch (e: Exception) {
-            Log.e(TAG, "Échec du chiffrement", e)
+            SxbSecureLogger.error(SxbSecureLogger.VpnEvent.KEYSTORE_ENCRYPT_FAILED)
             throw RuntimeException("KeystoreManager.encrypt failed: ${e.message}", e)
         }
     }
@@ -101,7 +102,7 @@ object KeystoreManager {
 
             String(cipher.doFinal(ciphertext), Charsets.UTF_8)
         } catch (e: Exception) {
-            Log.e(TAG, "Échec du déchiffrement", e)
+            SxbSecureLogger.error(SxbSecureLogger.VpnEvent.KEYSTORE_DECRYPT_FAILED)
             throw RuntimeException("KeystoreManager.decrypt failed: ${e.message}", e)
         }
     }
@@ -114,10 +115,10 @@ object KeystoreManager {
             val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).also { it.load(null) }
             if (keyStore.containsAlias(KEYSTORE_ALIAS)) {
                 keyStore.deleteEntry(KEYSTORE_ALIAS)
-                Log.i(TAG, "Clé supprimée du Keystore")
+                SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.KEYSTORE_KEY_DELETED)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Erreur suppression clé", e)
+            SxbSecureLogger.error(SxbSecureLogger.VpnEvent.KEYSTORE_KEY_DELETED)
         }
     }
 
