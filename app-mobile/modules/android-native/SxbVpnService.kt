@@ -1748,6 +1748,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     put("server", "127.0.0.1")
                     put("server_port", SOCKS5_PORT)
                     put("version", "5")
+                    put("bind_interface", "lo")
                 })
                 .put(JSONObject().put("type", "direct").put("tag", "direct"))
                 .put(JSONObject().put("type", "dns").put("tag", "dns-out"))
