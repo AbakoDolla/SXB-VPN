@@ -7,7 +7,8 @@ package com.sxbvpn.vpnmodule
  * Après 3 échecs : arrêt propre, pas de boucle infinie.
  */
 
-import android.util.Log
+import com.sxbvpn.vpnmodule.SxbSecureLogger
+import com.sxbvpn.vpnmodule.SxbSecureLogger.VpnEvent
 import kotlinx.coroutines.*
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -19,7 +20,6 @@ class AutoReconnectManager(
 ) {
     companion object {
         private const val TAG         = "SXB-AutoReconnect"
-        private const val DBG         = "SXB_DEBUG"
         private const val MAX_RETRIES = 3
 
         /** Délais fixes en ms : tentative 1 → 5s, 2 → 15s, 3 → 30s */
@@ -31,8 +31,8 @@ class AutoReconnectManager(
     private var job: Job?  = null
     private val scope      = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    fun enable()  { enabled.set(true);  Log.i(DBG, "[SXB_DEBUG] AUTO_RECONNECT_ENABLED") }
-    fun disable() { enabled.set(false); cancel(); Log.i(DBG, "[SXB_DEBUG] AUTO_RECONNECT_DISABLED") }
+    fun enable()  { enabled.set(true);  SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.RECONNECT_ENABLED) }
+    fun disable() { enabled.set(false); cancel(); SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.RECONNECT_DISABLED) }
 
     fun isEnabled() = enabled.get()
 
@@ -40,7 +40,7 @@ class AutoReconnectManager(
     fun onConnected() {
         retryCount.set(0)
         cancel()
-        Log.i(DBG, "[SXB_DEBUG] AUTO_RECONNECT_RESET — connexion établie")
+        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.RECONNECT_RESET)
     }
 
     /** Appelé quand la connexion est perdue — déclenche la reconnexion si activée.
@@ -49,24 +49,24 @@ class AutoReconnectManager(
         if (!enabled.get()) return
         // Éviter les double-déclenchements si un job est déjà programmé
         if (job?.isActive == true) {
-            Log.w(DBG, "[SXB_DEBUG] AUTO_RECONNECT_SKIP — job déjà en cours")
+            SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.RECONNECT_SKIP)
             return
         }
         val attempt = retryCount.incrementAndGet()
         if (attempt > MAX_RETRIES) {
-            Log.w(DBG, "[SXB_DEBUG] AUTO_RECONNECT_GIVEUP — max tentatives ($MAX_RETRIES) atteint — arrêt")
+            SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.RECONNECT_GIVEUP)
             onLog("❌ Auto-reconnect : $MAX_RETRIES tentatives échouées — arrêt propre")
             onGiveUp()
             return
         }
         val delay = RETRY_DELAYS.getOrElse(attempt - 1) { RETRY_DELAYS.last() }
-        Log.i(DBG, "[SXB_DEBUG] AUTO_RECONNECT_SCHEDULED attempt=$attempt/$MAX_RETRIES delay=${delay/1000}s")
+        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.RECONNECT_SCHEDULED)
         onLog("🔄 Auto-reconnect — tentative $attempt/$MAX_RETRIES dans ${delay / 1000}s...")
 
         job = scope.launch {
             delay(delay)
             if (enabled.get()) {
-                Log.i(DBG, "[SXB_DEBUG] AUTO_RECONNECT_FIRING attempt=$attempt")
+                SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.RECONNECT_FIRED)
                 onLog("🔄 Reconnexion automatique (tentative $attempt)...")
                 onReconnect()
             }
