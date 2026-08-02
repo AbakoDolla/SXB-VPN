@@ -247,6 +247,7 @@ function withJschDependency(config) {
       "implementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3\")",
       "implementation(\"org.bouncycastle:bcprov-jdk18on:1.78.1\")",
       "implementation(\"org.bouncycastle:bcutil-jdk18on:1.78.1\")",
+      "implementation(\"org.bouncycastle:bceddsa:1.78.1\")",
       // Moteur sing-box embarqué (libbox.aar déposé dans android/app/libs/).
       // Remplace l'ancien binaire exécuté par ProcessBuilder — interdit depuis
       // Android 10 (W^X) et incapable de recevoir le descripteur du TUN.
