@@ -63,7 +63,8 @@ import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
-import android.util.Log
+import com.sxbvpn.vpnmodule.SxbSecureLogger
+import com.sxbvpn.vpnmodule.SxbSecureLogger.VpnEvent
 import com.jcraft.jsch.ChannelDirectTCPIP
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.Session
@@ -115,7 +116,7 @@ private class WsOutputStream(
         val preview = (0 until minOf(len, 24)).joinToString("") { i ->
             val v = b[off + i].toInt(); if (v in 32..126) v.toChar().toString() else "·"
         }
-        onEvent("[SXB_DEBUG] WS_OUT len=$len txt=[$preview]")
+        onEvent("[SXB] WS_OUT len=$len txt=[$preview]")
         val buf = ByteArrayOutputStream(len + 14)
         buf.write(0x82)                         // FIN=1, opcode=0x02 (binary)
         when {
@@ -167,7 +168,7 @@ private class WsInputStream(
         return try {
             val b0 = raw.read()
             if (b0 == -1) {
-                onEvent("[SXB_DEBUG] WS_EOF — serveur a coupé le flux TCP (avant/pendant les trames)")
+                onEvent("[SXB] WS_EOF — serveur a coupé le flux TCP (avant/pendant les trames)")
                 return null
             }
             val b1 = raw.read(); if (b1 == -1) return null
@@ -175,8 +176,8 @@ private class WsInputStream(
             // Répondre aux ping est nécessaire pour les serveurs WebSocket mobiles
             // qui ferment la connexion si aucun pong n'est reçu.
             if (opcode == 0x08) {
-                onEvent("[SXB_DEBUG] WS_CLOSE_FRAME received — le serveur met fin au WebSocket")
-                Log.w("SXB_DEBUG", "[SXB_DEBUG] WS_CLOSE_FRAME received")
+                onEvent("[SXB] WS_CLOSE_FRAME received — le serveur met fin au WebSocket")
+                SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.TUNNEL_DISCONNECTED)
                 return null
             }
             val masked = (b1 and 0x80) != 0
@@ -214,7 +215,7 @@ private class WsInputStream(
                 pong.write(pongMask)
                 pong.write(pongMasked)
                 synchronized(rawOut) { rawOut.write(pong.toByteArray()); rawOut.flush() }
-                onEvent("[SXB_DEBUG] WS_PING len=${payload.size} → PONG masqué envoyé")
+                onEvent("[SXB] WS_PING len=${payload.size} → PONG masqué envoyé")
                 return readNextFrame()
             }
             if (maskKey != null) {
@@ -223,12 +224,12 @@ private class WsInputStream(
             val preview = payload.take(24).joinToString("") {
                 val v = it.toInt(); if (v in 32..126) v.toChar().toString() else "·"
             }
-            onEvent("[SXB_DEBUG] WS_IN opcode=$opcode len=${payload.size} txt=[$preview]")
-            Log.d("SXB_DEBUG", "[SXB_DEBUG] WS_FRAME_IN opcode=$opcode len=${payload.size}")
+            onEvent("[SXB] WS_IN opcode=$opcode len=${payload.size} txt=[$preview]")
+            // frame log suppressed
             payload
         } catch (e: Exception) {
-            onEvent("[SXB_DEBUG] WS_FRAME_READ_ERROR: ${e.message}")
-            Log.e("SXB_DEBUG", "[SXB_DEBUG] WS_FRAME_READ_ERROR: ${e.message}")
+            onEvent("[SXB] WS_FRAME_READ_ERROR: ${e.message}")
+            SxbSecureLogger.error(SxbSecureLogger.VpnEvent.TUNNEL_FAILED)
             null
         }
     }
@@ -267,16 +268,16 @@ private class SxbPayloadProxy(
         val connectTimeout = timeout.coerceIn(5_000, 30_000)
         val rawSocket = Socket()
         val protectedOk = protectSocket(rawSocket)
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_SOCKET_PROTECTED result=$protectedOk")
-        onEvent("[SXB_DEBUG] SSH_SOCKET_PROTECTED result=$protectedOk")
+        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.TUNNEL_CONNECTING)
+        onEvent("[SXB] SSH_SOCKET_PROTECTED result=$protectedOk")
         // Résolution DNS visible (diagnostic données cellulaires / split-DNS)
         val ips = runCatching {
             java.net.InetAddress.getAllByName(host).joinToString(", ") { it.hostAddress ?: "?" }
         }.getOrDefault("ÉCHEC_DNS")
-        onEvent("[SXB_DEBUG] DNS_RESOLVE host=$host ips=[$ips] timeout=${connectTimeout}ms")
+        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.TUNNEL_CONNECTING) // DNS
         val t0 = System.currentTimeMillis()
         rawSocket.connect(InetSocketAddress(host, port), connectTimeout)
-        onEvent("[SXB_DEBUG] TCP_CONNECTED host=$host port=$port en ${System.currentTimeMillis() - t0}ms")
+        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.TUNNEL_CONNECTING) // TCP
         val transportSocket: Socket = if (tlsEnabled) {
             val tlsSocket = (SSLSocketFactory.getDefault() as SSLSocketFactory)
                 .createSocket(rawSocket, sni.ifBlank { host }, port, false) as SSLSocket
@@ -288,8 +289,8 @@ private class SxbPayloadProxy(
             }
             tlsSocket.sslParameters = sslParams
             tlsSocket.startHandshake()
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] TLS_HANDSHAKE_SUCCESS")
-            onEvent("[SXB_DEBUG] TLS_HANDSHAKE_SUCCESS")
+            SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
+            onEvent("[SXB] TLS_HANDSHAKE_SUCCESS")
             tlsSocket.soTimeout = 0
             tlsSocket
         } else {
@@ -331,23 +332,23 @@ private class SxbPayloadProxy(
                 payload.dropLast(4) + wsHeaders + "\r\n\r\n"
             else
                 payload + wsHeaders + "\r\n\r\n"
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] WS_KEY_INJECTED — handshake RFC 6455 complété (parité sonde)")
-            onEvent("[SXB_DEBUG] WS_KEY_INJECTED — handshake RFC 6455 complété")
+            SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)")
+            onEvent("[SXB] WS_KEY_INJECTED — handshake RFC 6455 complété")
         }
         // Debug SANS secret (le payload = modèle HTTP injecteur, jamais les
         // identifiants SSH) : rend visible le handshake réellement envoyé.
-        onEvent("[SXB_DEBUG] PAYLOAD_HEAD " + payload.take(96)
+        // payload_head suppressed — data redacted in release
             .replace("\r", "\\r").replace("\n", "\\n"))
-        onEvent("[SXB_DEBUG] PAYLOAD_FULL " + payload.take(1024)
+        // payload_full suppressed — data redacted in release
             .replace("\r", "\\r").replace("\n", "\\n"))
-        Log.i("SXB", "[SXB_DEBUG] PAYLOAD_FULL " + payload.take(1024)
+        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.TRAFFIC_UPDATE)
             .replace("\r", "\\r").replace("\n", "\\n"))
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] PAYLOAD_START host=$host port=$port bytes=${payload.length}")
-        onEvent("[SXB_DEBUG] PAYLOAD_START host=$host port=$port bytes=${payload.length}")
+        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
+        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.TRAFFIC_UPDATE)
         rawOut.write(payload.toByteArray(Charsets.ISO_8859_1))
         rawOut.flush()
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] PAYLOAD_SENT length=${payload.length}")
-        onEvent("[SXB_DEBUG] PAYLOAD_SENT length=${payload.length}")
+        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
+        onEvent("[SXB] PAYLOAD_SENT length=${payload.length}")
 
         // ── 2. Lire la réponse HTTP du serveur (headers jusqu'à \r\n\r\n) ────
         transportSocket.soTimeout = 10_000
@@ -362,16 +363,16 @@ private class SxbPayloadProxy(
                 b3 = b2; b2 = b1; b1 = b
             }
         } catch (e: Exception) {
-            Log.w("SXB_DEBUG", "[SXB_DEBUG] PAYLOAD_RESPONSE_WAIT: ${e.javaClass.simpleName}")
+            SxbSecureLogger.warn("W")
         }
         transportSocket.soTimeout = 0
 
         val response = headerBuf.toString()
         val logSafeStatus = response.substringBefore("\r\n").take(60)
             .replace(Regex("[^\\x20-\\x7E]"), "")
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] SERVER_RESPONSE=${logSafeStatus} bytes=${response.length}")
-        onEvent("[SXB_DEBUG] SERVER_RESPONSE=${logSafeStatus} bytes=${response.length}")
-        onEvent("[SXB_DEBUG] RESPONSE_FULL " + response.take(512)
+        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
+        onEvent("[SXB] SERVER_RESPONSE=${logSafeStatus} bytes=${response.length}")
+        // response_full suppressed — data redacted in release
             .replace("\r", "\\r").replace("\n", "\\n"))
 
         // ── 3. Détecter le mode transport ─────────────────────────────────────
@@ -390,8 +391,8 @@ private class SxbPayloadProxy(
         // quelle que soit la réponse (101 cosmétique ignoré — voir branche when).
         val isConnectPayload = payload.trimStart().startsWith("CONNECT ", ignoreCase = true)
 
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] SERVER_MODE status='$statusLine' isWS=$isWs isConnect=$isConnect isSshBanner=$isSshBanner isEmpty=$isEmpty")
-        onEvent("[SXB_DEBUG] SERVER_MODE isWS=$isWs isConnect=$isConnect isSshBanner=$isSshBanner isEmpty=$isEmpty")
+        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
+        onEvent("[SXB] SERVER_MODE isWS=$isWs isConnect=$isConnect isSshBanner=$isSshBanner isEmpty=$isEmpty")
 
         // ── 4. Lire les premiers octets utiles pour confirmer le mode ─────────
         if (!isWs && !isConnect && !isSshBanner && !isEmpty) {
@@ -407,8 +408,8 @@ private class SxbPayloadProxy(
                 val hint = if (portal)
                     " — portail captif détecté : forfait data épuisé (rechargez) ou Host zéro-rated requis"
                 else ""
-                onEvent("[SXB_DEBUG] NON_TUNNEL_HTTP status='$statusForFail' location='$loc'$hint")
-                Log.w("SXB_DEBUG", "[SXB_DEBUG] NON_TUNNEL_HTTP status='$statusForFail' location='$loc'$hint")
+                onEvent("[SXB] NON_TUNNEL_HTTP status='$statusForFail' location='$loc'$hint")
+                SxbSecureLogger.warn("W")
                 throw java.io.IOException("NON_TUNNEL_HTTP $statusForFail$hint")
             }
             // Essayer de voir les premiers octets après les headers (ex: début SSH banner)
@@ -423,12 +424,12 @@ private class SxbPayloadProxy(
             // headers — take(-1) jetait IllegalArgumentException (crash réel du
             // 2026-07-31 sur portail captif MTN, SxbPayloadProxy.connect:403).
             if (peekLen < 0) {
-                onEvent("[SXB_DEBUG] FIRST_SERVER_BYTES_EOF — le pair a refermé après les headers")
+                onEvent("[SXB] FIRST_SERVER_BYTES_EOF — le pair a refermé après les headers")
                 peekLen = 0
             }
             val peekHex = peekBuf.take(peekLen).joinToString(" ") { "%02X".format(it) }
             val peekStr = peekBuf.take(peekLen).map { if (it in 32..126) it.toInt().toChar() else '.' }.joinToString("")
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] FIRST_SERVER_BYTES len=$peekLen hex=[$peekHex] str=[$peekStr]")
+            SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
 
             // Prépend les octets lus avant le stream réel (ils font partie du banner SSH ou autre)
             val prependStream: InputStream = if (peekLen > 0)
@@ -444,15 +445,15 @@ private class SxbPayloadProxy(
                 // Serveur répond SSH directement (pas de proxy intermédiaire)
                 // Si le banner a déjà été consommé dans headerBuf, il faut le remettre en tête
                 if (isSshBanner) {
-                    onEvent("[SXB_DEBUG] SSH_BANNER_RECEIVED")
-                    Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_BANNER_RECEIVED source=payload_response")
-                    Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_BANNER_PREPEND bytes=${response.length}")
+                    onEvent("[SXB] SSH_BANNER_RECEIVED")
+                    SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
+                    SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
                     inputStream = SequenceInputStream(
                         ByteArrayInputStream(response.toByteArray(Charsets.ISO_8859_1)),
                         rawIn
                     )
                 } else {
-                    Log.i("SXB_DEBUG", "[SXB_DEBUG] EMPTY_RESPONSE raw streams")
+                    SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
                     inputStream = rawIn
                 }
                 outputStream = rawOut
@@ -460,7 +461,7 @@ private class SxbPayloadProxy(
 
             isConnect -> {
                 // HTTP CONNECT 200 → tunnel TCP transparent, SSH direct
-                Log.i("SXB_DEBUG", "[SXB_DEBUG] HTTP_CONNECT_TUNNEL raw SSH streams")
+                SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
                 inputStream  = rawIn
                 outputStream = rawOut
             }
@@ -472,22 +473,22 @@ private class SxbPayloadProxy(
             // 101 Sec-WebSocket-Accept statique + « SSH-2.0-… » en clair ; l'adaptateur
             // WS attendait des trames → 30 s de silence → « closed by foreign host ».
             isConnectPayload -> {
-                onEvent("[SXB_DEBUG] CONNECT_PAYLOAD_RAW_TUNNEL — 101 cosmétique ignoré, SSH en flux brut")
-                Log.i("SXB_DEBUG", "[SXB_DEBUG] CONNECT_PAYLOAD_RAW_TUNNEL raw SSH streams (cosmetic 101 ignored)")
+                onEvent("[SXB] CONNECT_PAYLOAD_RAW_TUNNEL — 101 cosmétique ignoré, SSH en flux brut")
+                SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)")
                 inputStream  = rawIn
                 outputStream = rawOut
             }
 
             isWs -> {
                 // HTTP 101 WebSocket Upgrade → JSch doit passer par les frames WS
-                onEvent("[SXB_DEBUG] WEBSOCKET_MODE_ACTIVATED — trames RFC 6455 (masquage client)")
-                Log.i("SXB_DEBUG", "[SXB_DEBUG] WEBSOCKET_MODE_ACTIVATED wrapping streams with WS adapter")
+                onEvent("[SXB] WEBSOCKET_MODE_ACTIVATED — trames RFC 6455 (masquage client)")
+                SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
                 inputStream  = WsInputStream(rawIn, rawOut) { ev -> onEvent(ev) }
                 outputStream = WsOutputStream(rawOut) { ev -> onEvent(ev) }
             }
 
             else -> {
-                Log.w("SXB_DEBUG", "[SXB_DEBUG] UNKNOWN_RESPONSE_FALLBACK raw streams")
+                SxbSecureLogger.warn("W")
                 inputStream  = rawIn
                 outputStream = rawOut
             }
@@ -552,7 +553,7 @@ private class SxbLoggingSocketFactory(
     override fun createSocket(host: String, port: Int): Socket =
         Socket().apply {
             val ok = protectSocket(this)
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_SOCKET_PROTECTED result=$ok")
+            SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.TUNNEL_CONNECTING)
             connect(InetSocketAddress(host, port), timeoutMs)
         }
 
@@ -642,8 +643,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
     override fun onCreate() {
         super.onCreate()
-        Log.i(TAG, "[SXB_DEBUG] SERVICE_CREATE")
-        broadcastLog("[SXB_DEBUG] ▶ SERVICE_CREATE (onCreate a démarré)")
+        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
+        broadcastLog("▶ SERVICE_CREATE (onCreate a démarré)")
         instance = this
 
         // Le canal DOIT exister avant startForeground()
@@ -676,17 +677,17 @@ class SxbVpnService : VpnService(), PlatformInterface {
             } else {
                 startForeground(NOTIF_ID, buildNotification("SXB VPN — Démarrage..."))
             }
-            Log.i(TAG, "[SXB_DEBUG] FOREGROUND_STARTED")
-            broadcastLog("[SXB_DEBUG] ✅ FOREGROUND_STARTED")
+            SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
+            broadcastLog("✅ FOREGROUND_STARTED")
         } catch (e: Exception) {
-            Log.e(TAG, "[SXB_DEBUG] FOREGROUND_START_FAILED: " + e.message)
-            broadcastLog("[SXB_DEBUG] ❌ FOREGROUND_START_FAILED: " + e.message)
+            SxbSecureLogger.error(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
+            broadcastLog("❌ FOREGROUND_START_FAILED: " + e.message)
         }
 
         autoReconnect = AutoReconnectManager(
             onReconnect = {
                 if (running.get() && configJson.isNotEmpty()) {
-                    broadcastLog("[SXB_DEBUG] AUTO_RECONNECT_TRIGGERED")
+                    broadcastLog("AUTO_RECONNECT_TRIGGERED")
                     broadcastLog("[SXB] Auto-reconnexion en cours...")
                     val json = JSONObject(configJson)
                     dispatchProtocol(configJson, json.optString("protocol", "").lowercase())
@@ -708,26 +709,26 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         // startForeground() déjà appelé dans onCreate() — mise à jour notification seule.
         try { updateNotification("SXB VPN — Connexion en cours...") } catch (_: Exception) {}
-        Log.i(TAG, "[SXB_DEBUG] START_COMMAND_RECEIVED action=" + intent?.action)
-        broadcastLog("[SXB_DEBUG] ▶ START_COMMAND_RECEIVED (onStartCommand a démarré)")
+        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
+        broadcastLog("▶ START_COMMAND_RECEIVED (onStartCommand a démarré)")
 
         // Vérifications de sécurité — OK to run after startForeground()
         val secReport = SecurityModule.audit(this)
         if (secReport.hasFrida || secReport.hasXposed) {
-            Log.e("SXB_DEBUG", "[SXB_DEBUG] SECURITY_BLOCK hasFrida=${secReport.hasFrida} hasXposed=${secReport.hasXposed}")
-            broadcastLog("[SXB_DEBUG] ❌ SECURITY_BLOCK hasFrida=${secReport.hasFrida} hasXposed=${secReport.hasXposed}")
+            SxbSecureLogger.error(SxbSecureLogger.VpnEvent.TUNNEL_FAILED)
+            broadcastLog("❌ SECURITY_BLOCK hasFrida=${secReport.hasFrida} hasXposed=${secReport.hasXposed}")
             broadcastLog("[SXB] ❌ Environnement compromis — connexion refusée")
             broadcastStatus("error")
             stopSelf()
             return START_NOT_STICKY
         }
         if (secReport.isRooted) {
-            Log.w("SXB_DEBUG", "[SXB_DEBUG] SECURITY_WARN isRooted=true")
-            broadcastLog("[SXB_DEBUG] ⚠️ SECURITY_WARN: appareil rooté")
+            SxbSecureLogger.warn("W")
+            broadcastLog("⚠️ SECURITY_WARN: appareil rooté")
             broadcastLog("[SXB] ⚠️ Appareil rooté — risque de sécurité")
         }
 
-        Log.i(TAG, "[SXB_DEBUG] CONFIG_LOADING")
+        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.CONFIG_LOADED)
 
         // FIX — TransactionTooLargeException : lire depuis le fichier temporaire en priorité.
         // SxbVpnModule écrit la config dans filesDir/sxb_pending_config.json AVANT de démarrer
@@ -737,14 +738,14 @@ class SxbVpnService : VpnService(), PlatformInterface {
         var json = when {
             configFilePath != null && File(configFilePath).exists() -> {
                 val content = File(configFilePath).readText(Charsets.UTF_8)
-                Log.i(TAG, "[SXB_DEBUG] CONFIG_FROM_FILE path=$configFilePath size=${content.length}")
-                broadcastLog("[SXB_DEBUG] CONFIG_FROM_FILE size=${content.length}")
+                SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.CONFIG_LOADED)
+                broadcastLog("CONFIG_FROM_FILE size=${content.length}")
                 content
             }
             pendingConfigFile.exists() && pendingConfigFile.length() > 10 -> {
                 val content = pendingConfigFile.readText(Charsets.UTF_8)
-                Log.i(TAG, "[SXB_DEBUG] CONFIG_FROM_PENDING_FILE size=${content.length}")
-                broadcastLog("[SXB_DEBUG] CONFIG_FROM_PENDING_FILE size=${content.length}")
+                SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.CONFIG_LOADED)
+                broadcastLog("CONFIG_FROM_PENDING_FILE size=${content.length}")
                 content
             }
             else -> intent?.getStringExtra("configJson") ?: ""
@@ -756,22 +757,22 @@ class SxbVpnService : VpnService(), PlatformInterface {
             intent?.getStringExtra("protocol")?.lowercase() ?: ""
         }
 
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] CONFIG_FROM_INTENT proto=$proto json_empty=${json.isEmpty()}")
-        broadcastLog("[SXB_DEBUG] ▶ CONFIG_FROM_INTENT proto='$proto' empty=${json.isEmpty()}")
+        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)}")
+        broadcastLog("▶ CONFIG_FROM_INTENT proto='$proto' empty=${json.isEmpty()}")
 
         if (json.isEmpty() || proto.isEmpty()) {
             try {
                 // P1 — Lecture config chiffrée (AES-256-GCM) ou plaintext fallback
                 val credsFile = File(filesDir, "sxb_creds.enc")
                 val confFile  = File(filesDir, "sb_config.json")
-                Log.i("SXB_DEBUG", "[SXB_DEBUG] CONFIG_FALLBACK credsExists=${credsFile.exists()} confExists=${confFile.exists()}")
-                broadcastLog("[SXB_DEBUG] ▶ CONFIG_FALLBACK credsExists=${credsFile.exists()} confExists=${confFile.exists()}")
+                SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)} confExists=${confFile.exists()}")
+                broadcastLog("▶ CONFIG_FALLBACK credsExists=${credsFile.exists()} confExists=${confFile.exists()}")
                 if (credsFile.exists()) {
                     try {
                         json = KeystoreManager.decrypt(credsFile.readText(Charsets.UTF_8))
-                        Log.i(TAG, "[P1] Config VPN déchiffrée depuis sxb_creds.enc")
+                        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.CONFIG_LOADED)
                     } catch (e: Exception) {
-                        Log.w(TAG, "[P1] Déchiffrement échoué — fallback plaintext: ${e.message}")
+                        SxbSecureLogger.error(SxbSecureLogger.VpnEvent.KEYSTORE_DECRYPT_FAILED)
                         if (confFile.exists()) json = confFile.readText(Charsets.UTF_8)
                     }
                 } else if (confFile.exists()) {
@@ -785,16 +786,16 @@ class SxbVpnService : VpnService(), PlatformInterface {
         }
 
         if (json.isEmpty() || proto.isEmpty()) {
-            Log.e("SXB_DEBUG", "[SXB_DEBUG] CONFIG_MISSING json_empty=${json.isEmpty()} proto_empty=${proto.isEmpty()} — arrêt")
-        broadcastLog("[SXB_DEBUG] ❌ CONFIG_MISSING json_empty=${json.isEmpty()} proto_empty=${proto.isEmpty()}")
+            SxbSecureLogger.error(SxbSecureLogger.VpnEvent.TUNNEL_FAILED)} proto_empty=${proto.isEmpty()} — arrêt")
+        broadcastLog("❌ CONFIG_MISSING json_empty=${json.isEmpty()} proto_empty=${proto.isEmpty()}")
             broadcastLog("[SXB] ❌ Configuration manquante — importez un profil VPN")
             broadcastStatus("error")
             stopSelf()
             return START_NOT_STICKY
         }
 
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_5_CONFIG_LOADED proto=$proto json_len=${json.length}")
-        broadcastLog("[SXB_DEBUG] ✅ STEP_5_CONFIG_LOADED proto='$proto' len=${json.length}")
+        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
+        broadcastLog("✅ STEP_5_CONFIG_LOADED proto='$proto' len=${json.length}")
 
         // P1 — Persister config chiffrée pour démarrage hors-ligne
         if (json.isNotEmpty()) { try { persistEncryptedConfig(json) } catch (_: Exception) {} }
@@ -828,14 +829,14 @@ class SxbVpnService : VpnService(), PlatformInterface {
     // ── Dispatch protocole ────────────────────────────────────────────────────
 
     private fun dispatchProtocol(json: String, proto: String) {
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_2_CONFIG_RECEIVED proto=$proto")
-        broadcastLog("[SXB_DEBUG] ▶ STEP_2_DISPATCH proto='$proto'")
+        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
+        broadcastLog("▶ STEP_2_DISPATCH proto='$proto'")
         when (proto) {
             "ssh", "ssh+payload"                                        -> startSshTunnel(json)
             "vless", "vmess", "trojan", "shadowsocks",
             "wireguard", "hysteria2", "tuic"                            -> startSingBoxTunnel(json, proto)
             else -> {
-                Log.e("SXB_DEBUG", "[SXB_DEBUG] DISPATCH_ERROR proto_inconnu=$proto")
+                SxbSecureLogger.error(SxbSecureLogger.VpnEvent.TUNNEL_FAILED)
                 broadcastLog("[SXB] ❌ Protocole inconnu : $proto")
                 broadcastStatus("error"); setCurrentState("error"); stopSelf()
             }
@@ -875,15 +876,15 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 usePayload -> {
                     // Payload WebSocket par défaut — garantit que le handshake HTTP
                     // est envoyé avant SSH, nécessaire pour les serveurs port 443/80
-                    Log.i("SXB_DEBUG", "[SXB_DEBUG] PAYLOAD_DEFAULT_USED host=$host port=$port")
-                    broadcastLog("[SXB_DEBUG] PAYLOAD_DEFAULT_USED — aucun payload configuré sur le profil, utilisation WebSocket défaut")
+                    SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
+                    broadcastLog("PAYLOAD_DEFAULT_USED — aucun payload configuré sur le profil, utilisation WebSocket défaut")
                     "GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]"
                 }
                 else -> ""
             }
 
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_SOCKET_CONNECT_START port=$port usePayload=$usePayload payload_len=${payload.length} tls=$tlsEnabled ws=$websocketEnabled")
-            broadcastLog("[SXB_DEBUG] SSH_SOCKET_CONNECT_START port=$port usePayload=$usePayload payload_len=${payload.length} tls=$tlsEnabled ws=$websocketEnabled")
+            SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
+            broadcastLog("SSH_SOCKET_CONNECT_START port=$port usePayload=$usePayload payload_len=${payload.length} tls=$tlsEnabled ws=$websocketEnabled")
 
             // ── Télémétrie JSch (kex/auth visible) — SANS secrets : JSch consigne
             // les méthodes, drapeaux et paquets, jamais le mot de passe.
@@ -907,8 +908,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 // SSH+Payload : injection HTTP avant le handshake SSH
                 // Le proxy SxbPayloadProxy envoie le payload, lit la réponse HTTP (101/200),
                 // et adapte les streams (WsOutputStream/WsInputStream si WebSocket 101)
-                Log.i("SXB_DEBUG", "[SXB_DEBUG] PAYLOAD_START mode=SSH+Payload payload_len=${payload.length}")
-                broadcastLog("[SXB_DEBUG] PAYLOAD_START mode=SSH+Payload payload_len=${payload.length}")
+                SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
+                broadcastLog("PAYLOAD_START mode=SSH+Payload payload_len=${payload.length}")
                 broadcastLog("[SXB] Mode SSH+Payload (HTTP Injector) — injection payload avant SSH")
                 jsch.getSession(username, host, port).also { s ->
                     s.setProxy(SxbPayloadProxy(payload, tlsEnabled, sni, ::protectSocket) { event ->
@@ -925,7 +926,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     s.timeout = 30_000
                 }
             } else {
-                Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_DIRECT_MODE")
+                SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
                 broadcastLog("[SXB] Mode SSH direct")
                 // ── Avertissement explicite (mission §6.2) ────────────────────
                 // Le SSH direct utilise SxbLoggingSocketFactory = socket TCP BRUT :
@@ -936,8 +937,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 // la validation (configValidator) — ici on journalise au cas où
                 // une vieille config provisionnée arriverait encore au natif.
                 if (tlsEnabled) {
-                    Log.w("SXB_DEBUG", "[SXB_DEBUG] TLS_IGNORED_SSH_DIRECT — tls=true ignoré : le tunnel SSH direct applique un socket TCP brut (pas de TLS)")
-                    broadcastLog("[SXB_DEBUG] TLS_IGNORED_SSH_DIRECT — TLS NON appliqué en SSH direct : si le serveur exige TLS/WebSocket, utilisez un profil ssh+payload")
+                    SxbSecureLogger.warn("W")")
+                    broadcastLog("TLS_IGNORED_SSH_DIRECT — TLS NON appliqué en SSH direct : si le serveur exige TLS/WebSocket, utilisez un profil ssh+payload")
                 }
                 jsch.getSession(username, host, port).also { s ->
                     s.setPassword(password)
@@ -947,19 +948,19 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     }
                     s.setConfig(props)
                     s.setSocketFactory(SxbLoggingSocketFactory(30_000, ::protectSocket) {
-                        broadcastLog("[SXB_DEBUG] SSH_BANNER_RECEIVED")
+                        broadcastLog("SSH_BANNER_RECEIVED")
                     })
                     s.timeout = 30_000
                 }
             }
 
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_HANDSHAKE_START port=$port timeout=30000ms usePayload=$usePayload")
-            broadcastLog("[SXB_DEBUG] SSH_HANDSHAKE_START port=$port usePayload=$usePayload")
+            SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
+            broadcastLog("SSH_HANDSHAKE_START port=$port usePayload=$usePayload")
             broadcastLog("[SXB] Handshake SSH en cours... Port:$port")
             session.connect(30_000)
 
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_CONNECTED session.isConnected=${session.isConnected} host=$host port=$port")
-            broadcastLog("[SXB_DEBUG] SSH_CONNECTED — handshake réussi sur $host:$port")
+            SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
+            broadcastLog("SSH_CONNECTED — handshake réussi sur $host:$port")
 
             // P5 — Vérification fingerprint post-connexion (hors StrictHostKeyChecking)
             if (fingerprint.isNotEmpty()) {
@@ -979,8 +980,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
             // ── Serveur SOCKS5 local ──────────────────────────────────────────
             socks5Server = startLocalSocks5Server(session)
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_12_SOCKS_STARTED port=$SOCKS5_PORT")
-            broadcastLog("[SXB_DEBUG] STEP_12_SOCKS_STARTED port=$SOCKS5_PORT")
+            SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
+            broadcastLog("STEP_12_SOCKS_STARTED port=$SOCKS5_PORT")
             broadcastLog("[SXB] SOCKS5 local actif (port $SOCKS5_PORT)")
 
             // ── Pont TUN → SOCKS5 via libbox ─────────────────────────────────
@@ -993,14 +994,14 @@ class SxbVpnService : VpnService(), PlatformInterface {
             // ── Boucle de surveillance ────────────────────────────────────────
             while (running.get()) {
                 if (!session.isConnected) {
-                    Log.w("SXB_DEBUG", "[SXB_DEBUG] SSH_SESSION_LOST")
+                    SxbSecureLogger.warn("W")
                     broadcastLog("[SXB] ⚠️ Session SSH perdue")
                     broadcastStatus("error"); setCurrentState("error")
                     if (autoReconnect.isEnabled()) { autoReconnect.onDisconnected(); return }
                     break
                 }
                 if (boxService == null) {
-                    Log.w("SXB_DEBUG", "[SXB_DEBUG] LIBBOX_STOPPED_IN_LOOP")
+                    SxbSecureLogger.warn("W")
                     broadcastLog("[SXB] ⚠️ Moteur TUN arrêté")
                     broadcastStatus("error"); setCurrentState("error")
                     if (autoReconnect.isEnabled()) { autoReconnect.onDisconnected(); return }
@@ -1009,15 +1010,15 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 Thread.sleep(3_000)
             }
         } catch (e: InterruptedException) {
-            Log.i(TAG, "Thread SSH interrompu")
+            SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.TUNNEL_DISCONNECTED)
         } catch (e: Exception) {
             val safeException = SecurityModule.maskSensitive(e.message ?: "erreur inconnue")
-            Log.e("SXB_DEBUG", "[SXB_DEBUG] SSH_EXCEPTION at currentState=$currentState msg=$safeException")
+            SxbSecureLogger.error(SxbSecureLogger.VpnEvent.TUNNEL_FAILED)
             val msg = e.message ?: "erreur inconnue"
             val stack = e.stackTrace.take(10).joinToString("\n  ") { "at ${it.className}.${it.methodName}(${it.fileName}:${it.lineNumber})" }
             val code = classifyVpnError(msg)
-            broadcastLog("[SXB_DEBUG] SSH_EXCEPTION code=$code")
-            broadcastLog("[SXB_DEBUG] STACKTRACE:\n  ${SecurityModule.maskSensitive(stack)}")
+            broadcastLog("SSH_EXCEPTION code=$code")
+            broadcastLog("STACKTRACE:\n  ${SecurityModule.maskSensitive(stack)}")
             // Chaîne de causes complète — c'est elle qui nomme le blocage exact
             var cause: Throwable? = e; var depth = 0
             val chain = StringBuilder()
@@ -1027,7 +1028,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     .append((cause.message ?: "").take(140))
                 cause = cause.cause; depth++
             }
-            broadcastLog("[SXB_DEBUG] SSH_CAUSE_CHAIN ${SecurityModule.maskSensitive(chain.toString())}")
+            broadcastLog("SSH_CAUSE_CHAIN ${SecurityModule.maskSensitive(chain.toString())}")
             val display = when {
                 msg.contains("NON_TUNNEL_HTTP") ->
                     "🚫 Réseau bloquant : réponse HTTP directe — portail captif / forfait data épuisé. Rechargez la ligne ou utilisez le Host zéro-rated."
@@ -1066,7 +1067,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
      */
     private fun startSingBoxTunnel(configJsonStr: String, protocol: String) {
         try {
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_TUNNEL_START proto=$protocol")
+            SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
             broadcastLog("[SXB] Initialisation VPN ${protocol.uppercase()}...")
             broadcastStatus("connecting"); setCurrentState("connecting")
 
@@ -1076,7 +1077,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             // L'inbound TUN ne contient plus « file_descriptor » : libbox le
             // renseigne lui-même à partir de la valeur retournée par openTun().
             val sbConfigJson = buildSingBoxConfig(cfg, protocol)
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_CONFIG_BUILT len=${sbConfigJson.length}")
+            SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
             broadcastLog("[SXB] Config générée pour $protocol")
 
             startLibboxService(sbConfigJson, protocol.uppercase())
@@ -1087,14 +1088,14 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 Thread.sleep(5_000)
             }
         } catch (e: InterruptedException) {
-            Log.i(TAG, "Thread sing-box interrompu")
+            SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.TUNNEL_DISCONNECTED)
         } catch (e: Exception) {
-            Log.e("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_EXCEPTION proto=$protocol msg=${e.message}", e)
+            SxbSecureLogger.error(SxbSecureLogger.VpnEvent.TUNNEL_FAILED, e)
             val stack = e.stackTrace.take(8).joinToString("\n  ") { "at ${it.className}.${it.methodName}(${it.fileName}:${it.lineNumber})" }
             val msg = e.message ?: "erreur inconnue"
             val code = classifyVpnError(msg)
-            broadcastLog("[SXB_DEBUG] SINGBOX_EXCEPTION code=$code")
-            broadcastLog("[SXB_DEBUG] STACKTRACE:\n  ${SecurityModule.maskSensitive(stack)}")
+            broadcastLog("SINGBOX_EXCEPTION code=$code")
+            broadcastLog("STACKTRACE:\n  ${SecurityModule.maskSensitive(stack)}")
             failVpn(code, "Erreur moteur ${protocol.uppercase()}")
         } finally {
             val willReconnect = ::autoReconnect.isInitialized && autoReconnect.isEnabled()
@@ -1124,7 +1125,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             }
             Libbox.setup(options)
             libboxInitialized = true
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] LIBBOX_SETUP_OK base=${baseDir.absolutePath}")
+            SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
         }
     }
 
@@ -1136,7 +1137,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         ensureLibboxSetup()
         SxbDefaultNetworkMonitor.start(this)
 
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_8_LIBBOX_START label=$label version=${Libbox.version()}")
+        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)}")
         broadcastLog("[SXB] Moteur VPN : sing-box ${Libbox.version()}")
 
         val service = try {
@@ -1148,9 +1149,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
         service.start()
         boxService = service
 
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_13_VPN_CONNECTED label=$label")
-        broadcastLog("[SXB_DEBUG] TUNNEL_READY proto=$label")
-        broadcastLog("[SXB_DEBUG] VPN_CONNECTED proto=$label")
+        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
+        broadcastLog("TUNNEL_READY proto=$label")
+        broadcastLog("VPN_CONNECTED proto=$label")
         broadcastLog("[SXB] ✅ VPN $label actif")
         connectionWatchdog?.interrupt()
         broadcastStatus("connected"); setCurrentState("connected")
@@ -1205,8 +1206,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
     }
 
     private fun failVpn(code: String, displayMessage: String) {
-        Log.e("SXB_DEBUG", "[SXB_DEBUG] VPN_FAILED code=$code")
-        broadcastLog("[SXB_DEBUG] VPN_FAILED code=$code")
+        SxbSecureLogger.error(SxbSecureLogger.VpnEvent.TUNNEL_FAILED)
+        broadcastLog("VPN_FAILED code=$code")
         broadcastLog("[SXB] $code — ${displayMessage.removePrefix("❌ ").take(160)}")
         broadcastStatus("error")
         setCurrentState("error")
@@ -1225,8 +1226,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
             try {
                 Thread.sleep(45_000)
                 if (running.get() && currentState == "connecting") {
-                    Log.e("SXB_DEBUG", "[SXB_DEBUG] WATCHDOG_FIRED lastState=$currentState")
-                    broadcastLog("[SXB_DEBUG] WATCHDOG_FIRED lastState=$currentState")
+                    SxbSecureLogger.error(SxbSecureLogger.VpnEvent.TUNNEL_FAILED)
+                    broadcastLog("WATCHDOG_FIRED lastState=$currentState")
                     failVpn("SSH_TIMEOUT", "Connexion bloquée après 45 secondes")
                 }
             } catch (_: InterruptedException) {
@@ -1245,18 +1246,18 @@ class SxbVpnService : VpnService(), PlatformInterface {
             .build()
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                Log.i("SXB_DEBUG", "[SXB_DEBUG] NETWORK_AVAILABLE")
-                broadcastLog("[SXB_DEBUG] NETWORK_AVAILABLE")
+                SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
+                broadcastLog("NETWORK_AVAILABLE")
             }
 
             override fun onLost(network: Network) {
-                Log.w("SXB_DEBUG", "[SXB_DEBUG] NETWORK_LOST")
-                broadcastLog("[SXB_DEBUG] NETWORK_LOST")
-                broadcastLog("[SXB_DEBUG] NETWORK_CHANGE_BLOCKED reason=network_callback_only")
+                SxbSecureLogger.warn("W")
+                broadcastLog("NETWORK_LOST")
+                broadcastLog("NETWORK_CHANGE_BLOCKED reason=network_callback_only")
                 // Ne pas appeler bindProcessToNetwork ni basculer de transport :
                 // Android/VpnService garde la sélection réseau courante.
                 if (running.get() && currentState == "connected" && autoReconnect.isEnabled()) {
-                    broadcastLog("[SXB_DEBUG] AUTO_RECONNECT_TRIGGERED reason=NETWORK_LOST")
+                    broadcastLog("AUTO_RECONNECT_TRIGGERED reason=NETWORK_LOST")
                     autoReconnect.onDisconnected()
                 }
             }
@@ -1265,7 +1266,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             manager.registerNetworkCallback(request, callback)
             networkCallback = callback
         }.onFailure {
-            Log.w("SXB_DEBUG", "[SXB_DEBUG] NETWORK_CALLBACK_REGISTER_FAILED")
+            SxbSecureLogger.warn("W")
         }
     }
 
@@ -1290,7 +1291,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             throw IllegalStateException("Permission VPN non accordée")
         }
 
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_6_TUN_CREATING mtu=${options.mtu} autoRoute=${options.autoRoute}")
+        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
         broadcastLog("[SXB] Création interface réseau TUN...")
 
         val builder = Builder()
@@ -1365,8 +1366,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 .firstOrNull { it.name.startsWith("tun") }?.name
         }.getOrNull()
 
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_7_TUN_CREATED fd=${pfd.fd} name=$tunInterfaceName")
-        broadcastLog("[SXB_DEBUG] STEP_7_TUN_CREATED fd=${pfd.fd}")
+        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
+        broadcastLog("STEP_7_TUN_CREATED fd=${pfd.fd}")
         broadcastLog("[SXB] Interface TUN créée")
         return pfd.fd
     }
@@ -1384,7 +1385,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
      */
     override fun autoDetectInterfaceControl(fd: Int) {
         val ok = protect(fd)
-        if (!ok) Log.w("SXB_DEBUG", "[SXB_DEBUG] PROTECT_FAILED fd=$fd")
+        if (!ok) SxbSecureLogger.warn("W")
     }
 
     /** Protège un `Socket` Java (utilisé par les tunnels SSH/JSch). */
@@ -1469,7 +1470,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
     override fun writeLog(message: String) {
         if (message.isBlank()) return
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] LIBBOX_LOG: $message")
+        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
         broadcastLog("[engine] ${SecurityModule.maskSensitive(message)}")
     }
 
@@ -1777,7 +1778,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     Thread({ handleSocks5Client(session, client) }, "Socks5Client")
                         .apply { isDaemon = true; start() }
                 } catch (e: Exception) {
-                    if (running.get()) Log.w(TAG, "Socks5 accept: ${e.message}")
+                    if (running.get()) SxbSecureLogger.warn("socks5-accept")
                     break
                 }
             }
@@ -1852,7 +1853,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             threadA.join(300_000); threadB.join(5_000)
             channel.disconnect()
         } catch (e: Exception) {
-            Log.d(TAG, "SOCKS5 fin: ${e.message?.take(60)}")
+            SxbSecureLogger.debug("socks5-end")
         } finally {
             runCatching { client.close() }
         }
@@ -1961,8 +1962,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
         val copy = fullLogBuffer.toString()
         if (copy.isNotEmpty()) {
             File(filesDir, "full_logs_copy.txt").writeText(copy, Charsets.UTF_8)
-            Log.i(TAG, "[SXB_DEBUG] FULL_LOGS_COPIED bytes=${copy.length}")
-            broadcastLog("[SXB_DEBUG] FULL_LOGS_COPIED bytes=${copy.length}")
+            SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
+            broadcastLog("FULL_LOGS_COPIED bytes=${copy.length}")
         }
         return copy
     }
@@ -1981,7 +1982,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private val fullLogBuffer = StringBuilder()
 
     private fun broadcastLog(message: String) {
-        Log.i(TAG, message)
+        SxbSecureLogger.debug(message)
         fullLogBuffer.append(message).append("\n")
         // setPackage() obligatoire sur Android 14+ avec RECEIVER_NOT_EXPORTED
         val intent = Intent(BROADCAST_LOG).apply {
@@ -2005,9 +2006,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private fun persistEncryptedConfig(originalConfigJson: String) {
         try {
             File(filesDir, "sxb_creds.enc").writeText(KeystoreManager.encrypt(originalConfigJson), Charsets.UTF_8)
-            Log.i(TAG, "[P1] Config VPN chiffrée et persistée (AES-256-GCM) ✅")
+            SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.CONFIG_LOADED)
         } catch (e: Exception) {
-            Log.w(TAG, "[P1] Chiffrement config échoué (Keystore non disponible?): ${e.message}")
+            SxbSecureLogger.error(SxbSecureLogger.VpnEvent.KEYSTORE_ENCRYPT_FAILED)
         }
     }
 
@@ -2020,7 +2021,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // directement, mais cette garde sécurise le cas où cleanup() serait appelé depuis
         // deux chemins concurrents (ex: onDestroy + finally d'un tunnel).
         if (stopService && cleanupStarted.getAndSet(true)) {
-            Log.w("SXB_DEBUG", "[SXB_DEBUG] CLEANUP_SKIPPED — déjà en cours")
+            SxbSecureLogger.warn("W")
             return
         }
 
@@ -2044,7 +2045,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // pouvoir vider ses connexions avant que le descripteur disparaisse.
         boxService?.let { svc ->
             runCatching { svc.close() }
-                .onFailure { Log.w(TAG, "libbox close: ${it.message}") }
+                .onFailure { SxbSecureLogger.warn("libbox-close") }
         }
         boxService = null
 
