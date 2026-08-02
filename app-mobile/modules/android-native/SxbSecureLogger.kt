@@ -27,7 +27,7 @@ package com.sxbvpn.vpnmodule
  */
 
 import android.util.Log
-import com.sxbvpn.vpnmodule.BuildConfig
+import com.sxbvpn.mobile.BuildConfig
 
 object SxbSecureLogger {
 
