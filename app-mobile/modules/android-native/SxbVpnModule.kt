@@ -7,7 +7,8 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.net.VpnService
 import android.os.Build
-import android.util.Log
+import com.sxbvpn.vpnmodule.SxbSecureLogger
+import com.sxbvpn.vpnmodule.SxbSecureLogger.VpnEvent
 import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
 
@@ -30,7 +31,6 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
 
     companion object {
         private const val VPN_REQUEST_CODE = 0x0F4C
-        private const val DBG = "SXB_DEBUG"
     }
 
     private var vpnPermissionPromise: Promise? = null
@@ -96,11 +96,11 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             val opts = org.json.JSONObject(optionsJson)
             val proto = opts.optString("protocol", "").lowercase()
 
-            Log.i(DBG, "[SXB_DEBUG] MODULE_START_CALLED proto=$proto")
+            SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.MODULE_CALLED)
 
             // Vérification permission
             if (VpnService.prepare(ctx) != null) {
-                Log.e(DBG, "[SXB_DEBUG] MODULE_START_ERROR: NO_PERMISSION")
+                SxbSecureLogger.error(SxbSecureLogger.VpnEvent.MODULE_REJECTED)
                 promise.reject("NO_PERMISSION", "Permission VPN non accordée")
                 return
             }
@@ -112,9 +112,9 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             val configFile = java.io.File(ctx.filesDir, "sxb_pending_config.json")
             try {
                 configFile.writeText(optionsJson, Charsets.UTF_8)
-                Log.i(DBG, "[SXB_DEBUG] CONFIG_WRITTEN_TO_FILE size=${configFile.length()}")
+                SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.CONFIG_LOADED)
             } catch (e: Exception) {
-                Log.w(DBG, "[SXB_DEBUG] CONFIG_FILE_WRITE_FAILED: ${e.message} — fallback intent extra")
+                SxbSecureLogger.error(SxbSecureLogger.VpnEvent.CONFIG_WRITE_FAILED)
                 // Fallback : passer via intent (risque uniquement si > 1MB)
             }
 
@@ -128,7 +128,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                 putExtra("autoReconnect",  opts.optBoolean("autoReconnect", false))
             }
 
-            Log.i(DBG, "[SXB_DEBUG] SERVICE_INTENT_SENT action=${SxbVpnService.ACTION_START} proto=$proto")
+            SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 ctx.startForegroundService(intent)
@@ -136,13 +136,13 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                 ctx.startService(intent)
             }
 
-            Log.i(DBG, "[SXB_DEBUG] STEP_4_SERVICE_STARTED — service lancé en foreground")
+            SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
 
             // Note: autoReconnect sera activé dans onStartCommand() via l'extra,
             // car SxbVpnService.instance est null ici (service pas encore démarré).
             // On stocke la préférence pour l'activer dès que le service tourne.
             if (opts.optBoolean("autoReconnect", false)) {
-                Log.i(DBG, "[SXB_DEBUG] AUTO_RECONNECT_REQUESTED — sera activé après démarrage service")
+                SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.RECONNECT_ENABLED)
                 // Tentative optionnelle si instance existe (redémarrage du service)
                 SxbVpnService.instance?.enableAutoReconnect()
             }
@@ -154,10 +154,10 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                 putBoolean("serviceStarted", true)
             }
             promise.resolve(result)
-            Log.i(DBG, "[SXB_DEBUG] MODULE_PROMISE_RESOLVED success=true — attente broadcast tunnel")
+            SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.MODULE_RESOLVED)
 
         } catch (e: Exception) {
-            Log.e(DBG, "[SXB_DEBUG] MODULE_START_EXCEPTION: ${e.message}", e)
+            SxbSecureLogger.error(SxbSecureLogger.VpnEvent.MODULE_REJECTED, e)
             promise.reject("START_ERROR", e.message ?: "Erreur démarrage VPN", e)
         }
     }
@@ -257,7 +257,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
         statusReceiver = object : BroadcastReceiver() {
             override fun onReceive(c: Context?, i: Intent?) {
                 val status = i?.getStringExtra("status") ?: return
-                Log.i(DBG, "[SXB_DEBUG] BROADCAST_STATUS_RECEIVED status=$status")
+                SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.TUNNEL_CONNECTED)
                 val p = Arguments.createMap().apply { putString("status", status) }
                 sendEvent("onVpnStateChange", p)
             }
@@ -285,7 +285,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             ctx.registerReceiver(logReceiver,    IntentFilter(SxbVpnService.BROADCAST_LOG))
         }
 
-        Log.i(DBG, "[SXB_DEBUG] BROADCAST_RECEIVERS_REGISTERED status=${SxbVpnService.BROADCAST_STATUS}")
+        SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
     }
 
     private fun unregisterReceivers() {
