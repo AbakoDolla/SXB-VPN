@@ -9,6 +9,12 @@ async function main() {
   // ─── 1. ROLES ───────────────────────────────────────────────────
   console.log('[1/5] Création des rôles RBAC...');
 
+  const ownerRole = await prisma.role.upsert({
+    where: { name: 'OWNER' },
+    update: { description: 'Propriétaire racine — au-dessus de SUPER_ADMIN (invisible des statistiques et listes)' },
+    create: { name: 'OWNER', description: 'Propriétaire racine — au-dessus de SUPER_ADMIN (invisible des statistiques et listes)' },
+  });
+
   const superAdminRole = await prisma.role.upsert({
     where: { name: 'SUPER_ADMIN' },
     update: { description: 'Super Administrateur — Accès total et irrestricted' },
@@ -34,6 +40,7 @@ async function main() {
   });
 
   console.log('  ✓ SUPER_ADMIN, ADMIN, SUPPORT, RESELLER créés\n');
+  console.log('  ✓ OWNER (racine, stealth) créé\n');
 
   // ─── 2. PERMISSIONS ─────────────────────────────────────────────
   console.log('[2/5] Création des permissions...');

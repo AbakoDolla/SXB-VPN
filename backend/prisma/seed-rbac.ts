@@ -11,6 +11,11 @@ async function main() {
 
   // Create Roles
   const roles = {
+    OWNER: await prisma.role.upsert({
+      where: { name: 'OWNER' },
+      update: {},
+      create: { name: 'OWNER', description: 'Propriétaire racine — au-dessus de SUPER_ADMIN (stealth)' },
+    }),
     ADMIN: await prisma.role.upsert({
       where: { name: 'ADMIN' },
       update: {},
@@ -159,4 +164,4 @@ async function main() {
 
 main()
   .catch((e) => { console.error(e); process.exit(1); })
-  .finally(async () => { await prisma.(); });
+  .finally(async () => { await prisma.$disconnect(); });

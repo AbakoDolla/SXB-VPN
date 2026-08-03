@@ -2,6 +2,7 @@ import { Router, Response } from "express";
 import { z } from "zod";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
+import { canSeeUser, isOwnerRequest } from "../middleware/rbac/owner";
 
 const router = Router();
 
@@ -53,7 +54,7 @@ router.get("/", requireAuth, requirePermission("clients.view"), async (req: Auth
     if (prisma) {
       clients = await prisma.vpnClient.findMany({
         where: isReseller ? { userId: req.user?.userId } : undefined,
-        include: { user: true },
+        include: { user: { include: { role: true } } },
         orderBy: { createdAt: "desc" },
       });
     } else {
@@ -66,7 +67,11 @@ router.get("/", requireAuth, requirePermission("clients.view"), async (req: Auth
       }
     }
 
-    return res.json(clients.map(sanitizeVpnClient));
+    // Stealth : les clients rattachés à un compte OWNER sont invisibles
+    // pour les non-OWNER (filtrage à la lecture uniquement).
+    const visibleClients = clients.filter((c) => canSeeUser(req, c.user));
+
+    return res.json(visibleClients.map(sanitizeVpnClient));
   } catch (err) {
     console.error("Fetch VPN clients error:", err);
     return res.status(500).json({ error: "errors.server", message: "Failed to fetch VPN clients" });
@@ -82,7 +87,7 @@ router.get("/:id", requireAuth, requirePermission("clients.view"), async (req: A
     if (prisma) {
       client = await prisma.vpnClient.findUnique({
         where: { id },
-        include: { user: true },
+        include: { user: { include: { role: true } } },
       });
     } else {
       const c = inMemoryDb.vpnClients.find((cli) => cli.id === id);
@@ -99,6 +104,11 @@ router.get("/:id", requireAuth, requirePermission("clients.view"), async (req: A
     // Secure reseller boundary
     if (req.user?.role === "RESELLER" && client.userId !== req.user?.userId) {
       return res.status(403).json({ error: "errors.auth.forbidden", message: "Unauthorized access to reseller client data" });
+    }
+
+    // Garde hiérarchique : client d'un compte OWNER invisible pour les non-OWNER.
+    if (!canSeeUser(req, client.user)) {
+      return res.status(404).json({ error: "errors.clients.not_found", message: "VPN client not found" });
     }
 
     return res.json(sanitizeVpnClient(client));

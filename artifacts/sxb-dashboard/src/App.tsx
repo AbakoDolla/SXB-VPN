@@ -21,12 +21,15 @@ import VpnEngineView from "./components/VpnEngineView";
 import MonitoringView from "./components/MonitoringView";
 import SubscriptionsView from "./components/SubscriptionsView";
 import VpnProfilesView from "./components/VpnProfilesView";
+import OwnerLogView from "./components/OwnerLogView";
+import MaintenancePage from "./components/MaintenancePage";
 import Layout from "./components/Layout";
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { I18nProvider, useTranslation } from './contexts/I18nContext';
 import { getSessionUser, login, logout } from './api/auth';
 import { activateWithAdminToken } from './api/accounts';
 import { setTokens } from './api/client';
+import { fetchMaintenanceState, setMaintenanceMode } from './api/owner';
 import { User, UserRole } from './types';
 import { ShieldAlert, RefreshCw, LogIn, Eye, EyeOff, KeyRound, Mail } from 'lucide-react';
 
@@ -183,6 +186,22 @@ function MainApp() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [checking, setChecking] = useState(true);
   const [activeRoute, setActiveRoute] = useState('dashboard');
+  const [showOwnerLogin, setShowOwnerLogin] = useState(false);
+  // Mode maintenance : l'état réel vient du serveur (/ops/maintenance).
+  // Pour l'OWNER → état courant ; pour les autres rôles pendant une pause,
+  // le serveur répond 503 { error: 'maintenance' } → page publique propre.
+  const [maintenanceEnabled, setMaintenanceEnabled] = useState(false);
+
+  const refreshMaintenance = useCallback(async () => {
+    try {
+      const state = await fetchMaintenanceState();
+      setMaintenanceEnabled(state.enabled);
+    } catch (err: any) {
+      // 503 { error: 'maintenance' } = maintenance active (non-OWNER)
+      if (err?.code === 'maintenance') setMaintenanceEnabled(true);
+      else setMaintenanceEnabled(false); // 403/401 = service normal
+    }
+  }, []);
 
   const checkSession = async () => {
     try {
@@ -191,20 +210,39 @@ function MainApp() {
     } catch {
       setCurrentUser(null);
     } finally {
+      // Toujours interroger l'état maintenance (même sans session) :
+      // le frontend public affiche la page « Maintenance en cours ».
+      await refreshMaintenance();
       setChecking(false);
     }
   };
 
   useEffect(() => { checkSession(); }, []);
 
-  const handleLogin = () => { checkSession(); };
+  // Bannière « MODE MAINTENANCE ACTIF » persistante pour l'OWNER :
+  // rafraîchissement périodique tant que la session est ouverte.
+  useEffect(() => {
+    if (!currentUser) return;
+    const interval = setInterval(() => { refreshMaintenance(); }, 45000);
+    return () => clearInterval(interval);
+  }, [currentUser, refreshMaintenance]);
+
+  const handleLogin = () => { checkSession(); setShowOwnerLogin(false); };
   const handleLogout = async () => {
     try { await logout(); } catch { /* ignore */ }
     setCurrentUser(null);
     setActiveRoute('dashboard');
+    setMaintenanceEnabled(false);
+    setShowOwnerLogin(false);
+    await refreshMaintenance();
   };
   const handleUserChanged = (user: User) => setCurrentUser(user);
   const handleRolePermissionsUpdated = () => { checkSession(); };
+
+  const handleMaintenanceToggle = async (enabled: boolean) => {
+    const state = await setMaintenanceMode(enabled);
+    setMaintenanceEnabled(state.enabled);
+  };
 
   if (checking) {
     return (
@@ -217,6 +255,14 @@ function MainApp() {
     );
   }
 
+  // Maintenance active + session non-OWNER (ou aucune session) :
+  // page publique « Maintenance en cours » sans fuite d'information.
+  // L'OWNER garde l'accès (login + dashboard + bannière) via le lien
+  // discret « Espace propriétaire » de la page.
+  if (maintenanceEnabled && currentUser?.role !== UserRole.OWNER && !showOwnerLogin) {
+    return <MaintenancePage onOwnerLogin={() => setShowOwnerLogin(true)} />;
+  }
+
   if (!currentUser) return <LoginForm onLogin={handleLogin} />;
 
   const role = currentUser.role;
@@ -224,7 +270,14 @@ function MainApp() {
   const renderView = () => {
     switch (activeRoute) {
       case 'dashboard':
-        return <DashboardView onNavigate={(route) => setActiveRoute(route)} />;
+        return (
+          <DashboardView
+            onNavigate={(route) => setActiveRoute(route)}
+            currentUserRole={role}
+            maintenanceEnabled={maintenanceEnabled}
+            onMaintenanceToggle={handleMaintenanceToggle}
+          />
+        );
       case 'clients':
         return <ClientsView currentUserRole={role} actorName={currentUser.name} />;
       case 'subscriptions':
@@ -265,8 +318,22 @@ function MainApp() {
         return <MonitoringView currentUserRole={role} defaultTab="logs" />;
       case 'monitoring':
         return <MonitoringView currentUserRole={role} defaultTab="sessions" />;
+      case 'owner-log':
+        // Garde côté route React : « Journal propriétaire » réservé à l'OWNER.
+        // La sécurité réelle est le filtre serveur (/api/audit-logs/owner).
+        if (role !== UserRole.OWNER) {
+          return <DashboardView onNavigate={(route) => setActiveRoute(route)} currentUserRole={role} />;
+        }
+        return <OwnerLogView />;
       default:
-        return <DashboardView onNavigate={(route) => setActiveRoute(route)} />;
+        return (
+          <DashboardView
+            onNavigate={(route) => setActiveRoute(route)}
+            currentUserRole={role}
+            maintenanceEnabled={maintenanceEnabled}
+            onMaintenanceToggle={handleMaintenanceToggle}
+          />
+        );
     }
   };
 
@@ -277,6 +344,7 @@ function MainApp() {
       currentUser={currentUser}
       onUserChanged={handleUserChanged}
       onLogout={handleLogout}
+      maintenanceEnabled={maintenanceEnabled}
     >
       <ErrorBoundary resetKey={activeRoute}>
         {renderView()}

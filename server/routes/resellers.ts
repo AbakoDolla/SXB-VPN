@@ -4,6 +4,7 @@ import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
+import { canSeeUser } from "../middleware/rbac/owner";
 
 const router = Router();
 
@@ -47,12 +48,15 @@ router.get("/", requireAuth, requirePermission("reseller.manage"), async (req: A
   try {
     let resellers: any[] = [];
     if (prisma) {
-      const raw = await prisma.reseller.findMany({ include: { user: true } });
+      const raw = await prisma.reseller.findMany({ include: { user: { include: { role: true } } } });
       resellers = await Promise.all(
-        raw.map(async (r) => {
-          const clientsCount = await prisma.vpnClient.count({ where: { userId: r.userId } });
-          return flattenReseller(r, clientsCount);
-        })
+        raw
+          // Stealth : revendeur lié à un compte OWNER invisible pour les non-OWNER.
+          .filter((r) => canSeeUser(req, r.user))
+          .map(async (r) => {
+            const clientsCount = await prisma.vpnClient.count({ where: { userId: r.userId } });
+            return flattenReseller(r, clientsCount);
+          })
       );
     } else {
       resellers = inMemoryDb.resellers.map((r) => {

@@ -141,12 +141,19 @@ router.post("/login", async (req: AuthenticatedRequest, res: Response) => {
 
     // Load active permissions
     let permissions: string[] = [];
+    const isOwnerLogin = userRecord.role?.name === "OWNER";
     if (prisma) {
-      const rp = await prisma.rolePermission.findMany({
-        where: { roleId: userRecord.roleId },
-        include: { permission: true },
-      });
-      permissions = rp.map((item) => item.permission.name);
+      if (isOwnerLogin) {
+        // Le rôle racine OWNER dispose de toutes les permissions (bypass centralisé).
+        const allPerms = await prisma.permission.findMany();
+        permissions = allPerms.map((p) => p.name);
+      } else {
+        const rp = await prisma.rolePermission.findMany({
+          where: { roleId: userRecord.roleId },
+          include: { permission: true },
+        });
+        permissions = rp.map((item) => item.permission.name);
+      }
     } else {
       const rp = inMemoryDb.rolePermissions.filter((item) => item.roleId === userRecord.roleId);
       permissions = inMemoryDb.permissions
@@ -160,7 +167,16 @@ router.post("/login", async (req: AuthenticatedRequest, res: Response) => {
       role: userRecord.role?.name || "SUPPORT",
     });
 
-    await logDbActivity(userRecord.id, `User login: ${userRecord.email}`, "success", req.ip);
+    // Traçabilité de sécurité : les authentifications OWNER réussies écrivent
+    // un AuditLog normal EN PLUS du flag visibleOwnerOnly=true (invisible
+    // des journaux consultés par les non-OWNER).
+    await logDbActivity(
+      userRecord.id,
+      `User login: ${userRecord.email}`,
+      "success",
+      req.ip,
+      { visibleOwnerOnly: isOwnerLogin }
+    );
 
     return res.json({
       message: "Login successful",

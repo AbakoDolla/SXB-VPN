@@ -1,5 +1,6 @@
 import express, { Request, Response, NextFunction } from "express";
 import path from "path";
+import fs from "fs";
 import cors from "cors";
 import helmet from "helmet";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
@@ -35,6 +36,9 @@ import configTestRouter from "./server/routes/config-test";
 import xrayRouter from "./server/routes/xray";
 import singboxRouter from "./server/routes/singbox";
 import xpanelRouter from "./server/routes/xpanel";
+import opsRouter from "./server/routes/ops";
+import { maintenanceGuard, MAINTENANCE_PAGE_HTML } from "./server/middleware/maintenance";
+import { getMaintenanceMode } from "./server/services/maintenance";
 
 async function startServer() {
   const app = express();
@@ -91,8 +95,7 @@ async function startServer() {
       // Clean up the IP address - remove any backslash escape sequences
       const ip = req.ip?.replace(/\\/g, '') || 'unknown';
       // Use ipKeyGenerator for proper IPv6 handling
-      const cleanReq = { ...req, ip } as Request;
-      return ipKeyGenerator(cleanReq);
+      return ipKeyGenerator(ip);
     },
     skip: (req: Request) => {
       // Skip rate limiting for health checks
@@ -106,6 +109,12 @@ async function startServer() {
   });
 
   // 2. SaaS API Endpoints Gateway Routing
+  // ── Mode maintenance : après auth possible, avant les routes ──────────────
+  // maintenance_mode='true' → 503 { error: 'maintenance' } sur TOUT /api/*
+  // sauf /api/auth/login, /api/auth/refresh, /api/ops/*, /api/health ;
+  // l'OWNER (JWT valide) traverse toujours.
+  app.use("/api/", maintenanceGuard);
+  app.use("/api", opsRouter); // GET/POST /api/ops/maintenance (OWNER only)
   app.use("/api/auth", authRouter);
   app.use("/api/users", usersRouter);
   app.use("/api/clients", clientsRouter);
@@ -162,9 +171,25 @@ async function startServer() {
   } else {
     console.log("📦 Mounting production static file serving (Serving compiled React frontend)...");
     const distPath = path.join(process.cwd(), "dist");
-    const _fs = require("fs"); const _uploadDir = require("path").join(process.cwd(), "public", "uploads", "avatars"); if (!_fs.existsSync(_uploadDir)) _fs.mkdirSync(_uploadDir, { recursive: true }); app.use("/uploads", express.static(require("path").join(process.cwd(), "public", "uploads")));
+    const _uploadDir = path.join(process.cwd(), "public", "uploads", "avatars"); if (!fs.existsSync(_uploadDir)) fs.mkdirSync(_uploadDir, { recursive: true }); app.use("/uploads", express.static(path.join(process.cwd(), "public", "uploads")));
     app.use(express.static(distPath));
-    app.get("*", (req: Request, res: Response) => {
+    app.get("*", async (req: Request, res: Response) => {
+      // Page maintenance statique pour les routes non-API (sauf /login et
+      // /maintenance) — l'OWNER garde l'accès au dashboard pendant la pause.
+      try {
+        const maintenanceOn = await getMaintenanceMode();
+        const pathname = req.path || "/";
+        if (maintenanceOn && pathname !== "/login" && pathname !== "/maintenance" && !pathname.startsWith("/xapi/")) {
+          res.status(503).send(MAINTENANCE_PAGE_HTML);
+          return;
+        }
+        if (pathname === "/maintenance") {
+          res.status(503).send(MAINTENANCE_PAGE_HTML);
+          return;
+        }
+      } catch (err) {
+        console.error("Maintenance static page check error:", err);
+      }
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
