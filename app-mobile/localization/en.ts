@@ -257,6 +257,12 @@ export const en = {
   config_expired: 'Configuration expired',
   config_expires_at: 'Expires on',
 
+  // Connection Info
+  info_protocol: 'Protocol',
+  info_last_conn: 'Last conn.',
+  info_ip_address: 'IP Address',
+  info_ping: 'Ping',
+
   // VPN Notifications
   notif_connected: 'VPN connected',
   notif_disconnected: 'VPN disconnected',
