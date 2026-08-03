@@ -1365,9 +1365,24 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 }
             }
 
-            // Exclure notre propre app du tunnel : sans cela, les appels API
-            // de l'app (provisionnement, quotas) boucleraient dans le VPN.
-            runCatching { builder.addDisallowedApplication(packageName) }
+            // ── F5 — L'APP DANS LE TUNNEL ────────────────────────────────────
+            // Par défaut, l'app EST incluse dans le tunnel : son trafic
+            // (API, provisionnement, quotas) passe par le VPN — c'est le
+            // comportement attendu (« l'app ne voit plus rien quand elle est
+            // connectée » = l'app n'était pas routée dans le TUN). On ne
+            // l'exclut (addDisallowedApplication) QUE si la config JSON reçue
+            // le demande explicitement : includeOwnApp === false.
+            // SÉCURITÉ — aucune boucle possible : le porteur SSH reste protégé
+            // par VpnService.protect(socket) + la règle route ip_cidr→direct
+            // (PR #34) → le trafic du tunnel sort par le réseau physique,
+            // jamais réinjecté dans le TUN.
+            val includeOwnApp = runCatching {
+                JSONObject(configJson).optBoolean("includeOwnApp", true)
+            }.getOrDefault(true)
+            if (!includeOwnApp) {
+                // Mode hérité / diagnostic : exclure l'app du tunnel
+                runCatching { builder.addDisallowedApplication(packageName) }
+            }
 
             val includePackage = options.includePackage
             while (includePackage.hasNext()) {
