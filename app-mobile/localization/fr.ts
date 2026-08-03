@@ -217,11 +217,53 @@ export const fr = {
   traffic_download: 'Download',
   traffic_session: 'Session',
 
-  // Compte
+  // StepLogs — Étapes de connexion VPN
+  step_preparing: 'Préparation…',
+  step_checking_security: 'Vérification de sécurité…',
+  step_security_ok: 'Environnement sécurisé',
+  step_loading_config: 'Chargement de la configuration…',
+  step_config_loaded: 'Configuration chargée',
+  step_provisioning: 'Provisionnement sécurisé…',
+  step_provisioned: 'Configuration provisionnée',
+  step_syncing: 'Synchronisation…',
+  step_synced: 'Données synchronisées',
+  step_connecting: 'Connexion au serveur…',
+  step_handshake: 'Négociation sécurisée…',
+  step_establishing_tunnel: 'Établissement du tunnel…',
+  step_tunnel_ready: 'Tunnel sécurisé prêt',
+  step_vpn_active: 'VPN connecté',
+  step_error: 'Erreur de connexion',
+  step_disconnecting: 'Déconnexion…',
+  step_disconnected: 'VPN déconnecté',
+  step_reconnecting: 'Reconnexion automatique…',
+  step_quota_check: 'Vérification du quota…',
+  step_quota_ok: 'Quota suffisant',
+  step_quota_exhausted: 'Quota épuisé',
+  step_expired: 'Abonnement expiré',
+  step_revoked: 'Configuration révoquée',
+  step_suspended: 'Compte suspendu',
+  step_permission_check: 'Vérification des permissions…',
+  step_permission_granted: 'Permission accordée',
+  step_permission_denied: 'Permission refusée',
 
-  // Paramètres
+  // Multi-config
+  config_select: 'Sélectionner',
+  config_active: 'Active',
+  config_inactive: 'Inactive',
+  config_max_reached: 'Maximum 2 configurations atteint',
+  config_switch: 'Changer de configuration',
+  config_saved: 'Configuration sauvegardée',
+  config_removed: 'Configuration supprimée',
 
-  // Données locales
+  // VPN Connections
+  vpn_connections: 'CONNEXIONS VPN',
+  no_vpn_connections: 'Aucune connexion VPN configurée',
+  ask_admin_for_plan: 'Demandez à votre administrateur de créer un forfait',
+  connection_expired: 'Expiré',
+  connection_revoked: 'Révoqué',
+  connection_suspended: 'Suspendu',
+  connection_active: 'Actif',
+  connection_disabled: 'Désactivé',
 
   // Notifications VPN
   notif_connected: 'VPN connecté',

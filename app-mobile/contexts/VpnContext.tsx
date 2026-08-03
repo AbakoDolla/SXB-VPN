@@ -75,6 +75,16 @@ export interface TrafficStats {
   downloadSpeed: number;   // bytes/sec
 }
 
+// ── StepLogs types ────────────────────────────────────────────────────────────
+
+export interface StepLogItem {
+  key: string;
+  translationKey: string;
+  status: 'pending' | 'active' | 'done' | 'error' | 'warning';
+  timestamp?: string;
+  detail?: string;
+}
+
 // ── Context type ─────────────────────────────────────────────────────────────
 
 interface VpnContextType {
@@ -89,6 +99,13 @@ interface VpnContextType {
   hasVpnPermission:   boolean;
   hasValidConfig:     boolean;
   activeConnection:   VpnConnection | null;
+  stepLogs:           StepLogItem[];
+  // Multi-config
+  savedConfigs:       Array<{ id: string; name: string; protocol: string; isActive: boolean }>;
+  activeConfigId:     string | null;
+  switchConfig:       (configId: string) => Promise<void>;
+  // Revocation
+  revokedStatus:      'none' | 'revoked' | 'suspended' | 'expired' | 'disabled';
   logs:                string[];
   traffic:             TrafficStats;
   killSwitch:          boolean;
@@ -110,6 +127,9 @@ const VpnContext = createContext<VpnContextType>({
   selectedProtocol: null, connectedProtocol: null, availableProtocols: [],
   trafficStats: DEFAULT_STATS, vpnLogs: [],
   hasVpnPermission: false, hasValidConfig: false, activeConnection: null,
+  stepLogs: [],
+  savedConfigs: [], activeConfigId: null, switchConfig: async () => {},
+  revokedStatus: 'none',
   logs: [], traffic: DEFAULT_STATS,
   killSwitch: false, autoReconnect: true,
   setKillSwitch: () => {}, setAutoReconnect: () => {},
@@ -137,6 +157,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const [activeConnection,   setActiveConnection]    = useState<VpnConnection | null>(null);
   const [killSwitch,         setKillSwitchState]      = useState<boolean>(false);
   const [autoReconnect,      setAutoReconnectState]   = useState<boolean>(true);
+  const [stepLogs,           setStepLogs]             = useState<StepLogItem[]>([]);
+  const [savedConfigs,       setSavedConfigs]         = useState<Array<{ id: string; name: string; protocol: string; isActive: boolean }>>([]);
+  const [activeConfigId,     setActiveConfigId]       = useState<string | null>(null);
+  const [revokedStatus,      setRevokedStatus]        = useState<'none' | 'revoked' | 'suspended' | 'expired' | 'disabled'>('none');
 
   const trafficTimerRef  = useRef<ReturnType<typeof setInterval> | null>(null);
   const reportTimerRef   = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -144,6 +168,72 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
   const watchdogRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastStepRef  = useRef<string>('INIT');
+
+  // ── StepLogs helpers ────────────────────────────────────────────────────────
+  const resetStepLogs = useCallback(() => {
+    setStepLogs([]);
+  }, []);
+
+  const addStepLog = useCallback((key: string, translationKey: string, status: StepLogItem['status'], detail?: string) => {
+    const now = new Date().toISOString();
+    setStepLogs(prev => {
+      const existing = prev.findIndex(s => s.key === key);
+      const newStep: StepLogItem = { key, translationKey, status, timestamp: now, detail };
+      if (existing >= 0) {
+        const updated = [...prev];
+        updated[existing] = newStep;
+        return updated;
+      }
+      return [...prev, newStep];
+    });
+  }, []);
+
+  const updateStepStatus = useCallback((key: string, status: StepLogItem['status'], detail?: string) => {
+    setStepLogs(prev => prev.map(s =>
+      s.key === key ? { ...s, status, ...(detail ? { detail } : {}), timestamp: new Date().toISOString() } : s
+    ));
+  }, []);
+
+  // ── Revocation detection ────────────────────────────────────────────────────
+  const checkRevocation = useCallback((conn: VpnConnection | null) => {
+    if (!conn) { setRevokedStatus('none'); return 'none'; }
+    const status = conn.status?.toLowerCase();
+    if (status === 'revoked')   { setRevokedStatus('revoked');   return 'revoked'; }
+    if (status === 'suspended') { setRevokedStatus('suspended'); return 'suspended'; }
+    if (status === 'disabled')  { setRevokedStatus('disabled');  return 'disabled'; }
+    if (status === 'expired' || (conn.expiresAt && new Date(conn.expiresAt).getTime() < Date.now())) {
+      setRevokedStatus('expired'); return 'expired';
+    }
+    setRevokedStatus('none');
+    return 'none';
+  }, []);
+
+  // ── Multi-config: load saved configs from AsyncStorage ──────────────────────
+  useEffect(() => {
+    const loadSavedConfigs = async () => {
+      try {
+        const stored = await AsyncStorage.getItem('@sxb_saved_configs');
+        if (stored) {
+          const configs = JSON.parse(stored);
+          setSavedConfigs(configs);
+        }
+        const activeId = await AsyncStorage.getItem('@sxb_active_config_id');
+        if (activeId) setActiveConfigId(activeId);
+      } catch { /* ignore */ }
+    };
+    loadSavedConfigs();
+  }, []);
+
+  const switchConfig = useCallback(async (configId: string) => {
+    setActiveConfigId(configId);
+    await AsyncStorage.setItem('@sxb_active_config_id', configId);
+    // Update saved configs active state
+    setSavedConfigs(prev => {
+      const updated = prev.map(c => ({ ...c, isActive: c.id === configId }));
+      AsyncStorage.setItem('@sxb_saved_configs', JSON.stringify(updated)).catch(() => {});
+      return updated;
+    });
+  }, []);
 
   const clearWatchdog = useCallback(() => {
     if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
@@ -218,6 +308,39 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const syncFromConnection = useCallback((conn: VpnConnection) => {
     legacyDebugLog(`ACTIVE_CONNECTION_FOUND id=${conn.id} proto=${conn.technicalProtocol} display=${conn.displayProtocol}`);
     legacyDebugLog(`ACTIVE_CONNECTION_FOUND id=${conn.id}`);
+
+    // Check revocation status
+    const revocation = checkRevocation(conn);
+    if (revocation !== 'none') {
+      legacyDebugLog(`CONNECTION_REVOKED status=${revocation} — arrêt VPN`);
+      addLog(`⚠️ Configuration ${revocation === 'revoked' ? 'révoquée' : revocation === 'suspended' ? 'suspendue' : revocation === 'expired' ? 'expirée' : 'désactivée'}`);
+      // Stop VPN if connected
+      if (isConnected || isConnecting) {
+        if (IS_ANDROID && SxbVpnNative) {
+          try { SxbVpnNative.stopVpn(); } catch { /* ignore */ }
+        }
+        setIsConnected(false);
+        setIsConnecting(false);
+        setVpnState('error');
+      }
+      return;
+    }
+
+    // Update saved configs (max 2)
+    setSavedConfigs(prev => {
+      const exists = prev.find(c => c.id === conn.id);
+      let updated: typeof prev;
+      if (exists) {
+        updated = prev.map(c => c.id === conn.id ? { ...c, name: conn.name, protocol: conn.displayProtocol, isActive: true } : c);
+      } else {
+        const newConfig = { id: conn.id, name: conn.name, protocol: conn.displayProtocol, isActive: true };
+        updated = prev.length >= 2 ? [...prev.slice(1), newConfig] : [...prev, newConfig];
+      }
+      AsyncStorage.setItem('@sxb_saved_configs', JSON.stringify(updated)).catch(() => {});
+      setActiveConfigId(conn.id);
+      AsyncStorage.setItem('@sxb_active_config_id', conn.id).catch(() => {});
+      return updated;
+    });
 
     // Étiquette technique informative (UI uniquement — jamais injectée dans
     // la config moteur ; la vérité technique vient du blob provisionné).
@@ -433,17 +556,21 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       AsyncStorage.setItem('@sxb_vpn_connected', connected ? 'true' : 'false').catch(() => {});
       if (connected) {
         clearWatchdog();
+        addStepLog('tunnel', 'step_tunnel_ready', 'done');
+        addStepLog('connected', 'step_vpn_active', 'done');
         addLog('✅ VPN_CONNECTED — tunnel actif');
         legacyDebugLog('VPN_CONNECTED');
         legacyDebugLog('VPN_CONNECTED');
         sessionStartRef.current = Date.now();
         refreshAccountState().catch(() => {});
       } else if (s === 'disconnected') {
+        addStepLog('disconnected', 'step_disconnected', 'done');
         legacyDebugLog('VPN_FAILED status=disconnected');
         addLog('🔴 VPN déconnecté');
         stopTrafficPolling();
         reportUsageToBackend(0, 0);
       } else if (s === 'error') {
+        addStepLog('error', 'step_error', 'error');
         legacyDebugLog('VPN_FAILED status=error');
         addLog('❌ Erreur VPN — connexion perdue');
         setIsConnecting(false);
@@ -613,25 +740,45 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
   const connect = useCallback(async () => {
     if (isConnecting || isConnected) return;
+
+    // Check revocation before attempting connection
+    if (revokedStatus !== 'none') {
+      addLog(`❌ Connexion impossible — compte ${revokedStatus === 'revoked' ? 'révoqué' : revokedStatus === 'suspended' ? 'suspendu' : revokedStatus === 'expired' ? 'expiré' : 'désactivé'}`);
+      return;
+    }
+
     setIsConnecting(true);
+    resetStepLogs();
+    addStepLog('preparing', 'step_preparing', 'active');
     legacyDebugLog('CONNECT_START');
     legacyDebugLog('CONNECT_START — bouton "Se connecter" appuyé');
     addLog('🔄 Initialisation du tunnel VPN...');
 
     try {
       if (IS_ANDROID && SxbVpnNative) {
+        // Step: Security check
+        updateStepStatus('preparing', 'done');
+        addStepLog('security', 'step_checking_security', 'active');
+
         const hasPerm = SxbVpnNative.isVpnPermissionGranted();
         if (!hasPerm) {
+          addStepLog('permission', 'step_permission_check', 'active');
           addLog('🔐 Demande de permission VPN...');
           const granted = await SxbVpnNative.requestVpnPermission();
           if (!granted) {
+            addStepLog('permission', 'step_permission_denied', 'error');
             addLog('❌ Permission VPN refusée');
             setIsConnecting(false);
             return;
           }
+          addStepLog('permission', 'step_permission_granted', 'done');
           addLog('✅ Permission VPN accordée');
+        } else {
+          addStepLog('permission', 'step_permission_granted', 'done');
         }
 
+        addStepLog('security', 'step_security_ok', 'done');
+        addStepLog('config', 'step_loading_config', 'active');
         addLog('🔐 Chargement configuration sécurisée...');
         let configToUse: any = null;
 
@@ -672,6 +819,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           legacyDebugLog(`PROVISION_CHECK dataToken=${dataToken ? 'OK' : 'MISSING'} deviceId=${deviceId ? 'OK' : 'MISSING'}`);
           if (dataToken && deviceId) {
             legacyDebugLog('PROVISION_REQUIRED — appel /provision/activate');
+            addStepLog('provisioning', 'step_provisioning', 'active');
             addLog('🔒 Provisionnement sécurisé en cours...');
             try {
               const freshResult = await provisionAndStore(dataToken, deviceId);
@@ -701,6 +849,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
                 }).catch(() => {});
               }
               legacyDebugLog('PROVISION_OK — config complète stockée dans SecureStore');
+              addStepLog('provisioning', 'step_provisioned', 'done');
               addLog('✅ Configuration provisionnée avec succès');
             } catch (provErr: any) {
               const httpStatus = provErr?.response?.status ?? 'no-response';
@@ -741,18 +890,25 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           return;
         }
 
+        // Step: Config loaded
+        updateStepStatus('config', 'done');
+        addStepLog('quota', 'step_quota_check', 'active');
+
         const exhausted = await isQuotaExhausted();
         if (exhausted) {
+          addStepLog('quota', 'step_quota_exhausted', 'error');
           addLog('❌ Quota data épuisé — rechargez votre abonnement');
           setIsConnecting(false);
           return;
         }
         const expired = await isConfigExpired();
         if (expired) {
+          addStepLog('quota', 'step_expired', 'error');
           addLog('❌ Abonnement expiré — renouvelez votre abonnement');
           setIsConnecting(false);
           return;
         }
+        addStepLog('quota', 'step_quota_ok', 'done');
 
         const engineProtocol = (configToUse.protocol || selectedProtocol || 'vless').toLowerCase();
 
@@ -776,6 +932,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
         legacyDebugLog(`CONFIG_SENT_NATIVE proto=${engineProtocol}`);
         legacyDebugLog(`CONFIG_SENT_NATIVE proto=${engineProtocol}`);
+        addStepLog('connecting', 'step_connecting', 'active');
         addLog(`🚀 Démarrage tunnel ${engineProtocol.toUpperCase()}...`);
 
         legacyDebugLog('SERVICE_STARTED — appel startVpn()');
@@ -787,6 +944,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         const startResult = await SxbVpnNative.startVpn(optionsJson);
         legacyDebugLog(`SERVICE_STARTED result=${JSON.stringify(startResult)}`);
         legacyDebugLog(`SERVICE_STARTED serviceStarted=${startResult?.serviceStarted}`);
+        addStepLog('handshake', 'step_handshake', 'active');
         addLog('⏳ Connexion en cours... (watchdog 45s actif)');
 
       } else if (IS_ANDROID) {
@@ -828,6 +986,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const disconnect = useCallback(async () => {
     if (isConnecting && !isConnected) return;
     setIsConnecting(true);
+    addStepLog('disconnecting', 'step_disconnecting', 'active');
     addLog('🔴 Déconnexion...');
 
     try {
@@ -884,6 +1043,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       hasVpnPermission,
       hasValidConfig,
       activeConnection,
+      stepLogs,
+      savedConfigs, activeConfigId, switchConfig,
+      revokedStatus,
       logs:          vpnLogs,
       traffic:       trafficStats,
       killSwitch,
