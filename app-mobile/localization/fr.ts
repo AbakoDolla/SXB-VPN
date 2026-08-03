@@ -51,7 +51,6 @@ export const fr = {
   // Subscription Card
   current_plan: 'Votre forfait',
   quota_remaining: 'Quota restant',
-  quota_used: 'Quota utilisé',
   expires_on: 'Expire le',
   no_active_plan: 'Aucun forfait actif',
   add_plan: 'Ajouter un forfait',

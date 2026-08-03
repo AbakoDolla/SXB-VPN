@@ -45,7 +45,6 @@ export const en = {
 
   current_plan: 'Your plan',
   quota_remaining: 'Remaining quota',
-  quota_used: 'Used quota',
   expires_on: 'Expires on',
   no_active_plan: 'No active plan',
   add_plan: 'Add a plan',

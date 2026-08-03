@@ -877,7 +877,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 broadcastLog("[SXB] ERREUR : champ \"host\" vide — configuration invalide")
                 broadcastStatus("error"); setCurrentState("error")
                 cleanup()
-                return@run
+                return
             }
 
             // ── Payload SSH ─────────────────────────────────────────────────
