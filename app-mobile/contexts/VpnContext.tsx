@@ -176,6 +176,19 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const expiryTimerRef   = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionStartRef  = useRef<number>(0);
 
+  // ── F1 — QUOTA DELTA : derniers compteurs envoyés au backend ────────────────
+  // Le backend INCÉMENTE le quota de ce que l'app lui envoie. On ne doit donc
+  // JAMAIS envoyer de totaux cumulés (sur-décompte), mais uniquement l'écart
+  // depuis le dernier envoi RÉUSSI. Initialisés à 0 au CONNECT réussi, remis
+  // à 0 à la déconnexion.
+  const lastReportUpRef   = useRef(0);
+  const lastReportDownRef = useRef(0);
+
+  // ── F3 — Référence vers le connect() le plus récent (évite qu'un connect
+  // capturé dans un closure périmé soit bloqué par son propre garde
+  // `if (isConnecting || isConnected) return;` après un switch). ─────────────
+  const connectRef = useRef<(() => Promise<void>) | null>(null);
+
   const watchdogRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastStepRef  = useRef<string>('INIT');
 
@@ -218,6 +231,72 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     return 'none';
   }, []);
 
+  // ── F2 — Révocation APPLIQUÉE (pas seulement affichée) ──────────────────────
+  // Dès que revokedStatus quitte 'none', on arrête effectivement le VPN natif
+  // (s'il est actif), on repasse l'état à disconnected, on persiste
+  // '@sxb_vpn_connected'='false' et on purge la config provisionnée : avec une
+  // configuration révoquée, l'app ne peut plus rester connectée ni se
+  // reconnecter. Le guard revocationAppliedRef évite de ré-appliquer plusieurs
+  // fois le même statut (l'effet se redéclenche sur isConnected/isConnecting).
+  const revocationAppliedRef = useRef<string>('none');
+
+  useEffect(() => {
+    if (revokedStatus !== 'none') {
+      if (revocationAppliedRef.current === revokedStatus) return;
+      revocationAppliedRef.current = revokedStatus;
+      const applyRevocation = async () => {
+        if (isConnected || isConnecting) {
+          legacyDebugLog(`REVOCATION_APPLY status=${revokedStatus} — arrêt natif du VPN`);
+          if (IS_ANDROID && SxbVpnNative) {
+            try { await SxbVpnNative.stopVpn(); } catch { /* ignore */ }
+          }
+          setIsConnected(false);
+          setIsConnecting(false);
+        }
+        setVpnState('disconnected');
+        await AsyncStorage.setItem('@sxb_vpn_connected', 'false');
+        await clearProvisionedConfig().catch(() => {});
+        const label = revokedStatus === 'revoked' ? 'révoquée' : revokedStatus === 'suspended' ? 'suspendue' : revokedStatus === 'expired' ? 'expirée' : 'désactivée';
+        addLog(`🚫 Configuration ${label} par le serveur — VPN arrêté`);
+        legacyDebugLog(`REVOCATION_APPLIED status=${revokedStatus} — VPN arrêté, config provisionnée purgée`);
+      };
+      applyRevocation().catch(() => {});
+    } else {
+      revocationAppliedRef.current = 'none';
+    }
+  }, [revokedStatus, isConnected, isConnecting, addLog]);
+
+  // ── F2 — Surveillance /mobile/connections ───────────────────────────────────
+  // Si la config active n'est plus présente dans la liste rafraîchie
+  // (suppression côté dashboard), on la traite comme 'revoked' — même chemin
+  // d'application que ci-dessus. On vérifie aussi le statut courant de la
+  // config active (révoquée/suspendue/expirée) pour déclencher l'arrêt.
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let cancelled = false;
+    const checkConnections = async () => {
+      try {
+        const res = await apiClient.get('/mobile/connections');
+        const conns: VpnConnection[] = res.data?.connections || [];
+        if (cancelled) return;
+        const activeId = await AsyncStorage.getItem('@sxb_active_config_id');
+        if (activeId) {
+          const activeConn = conns.find(c => c.id === activeId);
+          if (activeConn) {
+            checkRevocation(activeConn);
+          } else {
+            // Config active absente de la liste → traitée comme révoquée
+            legacyDebugLog(`ACTIVE_CONFIG_MISSING id=${activeId} — traité comme révoqué`);
+            setRevokedStatus('revoked');
+          }
+        }
+      } catch { /* ignore — non-bloquant */ }
+    };
+    checkConnections();
+    const t = setInterval(checkConnections, 60_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [isAuthenticated, checkRevocation]);
+
   // ── Multi-config: load saved configs from AsyncStorage ──────────────────────
   useEffect(() => {
     const loadSavedConfigs = async () => {
@@ -234,80 +313,153 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     loadSavedConfigs();
   }, []);
 
+  // ── F3 — Switch TRANSACTIONNEL multi-configs ────────────────────────────────
+  // Règles strictes :
+  //   • JAMAIS de purge avant succès : aucun état (activeConfigId, config
+  //     provisionnée, savedConfigs) n'est modifié tant que la cible n'est pas
+  //     validée ET provisionnée avec une config complète ;
+  //   • la connexion cible est résolue + dataToken vérifié AVANT toute action
+  //     (sinon message clair, état inchangé) ;
+  //   • stopVpn natif puis ATTENTE de l'état natif disconnected (≤ 3 s) ;
+  //   • provisionAndStore(targetDataToken, deviceId) puis attente d'une config
+  //     complète (isCompleteOfflineConfig) ;
+  //   • SEULEMENT ALORS : setActiveConfigId + maj savedConfigs + connect() unique ;
+  //   • en catch : rollback de activeConfigId + rechargement de l'ancienne
+  //     config, log d'erreur, SANS toucher aux données.
   const switchConfig = useCallback(async (configId: string) => {
     if (configId === activeConfigId) return;
+    const previousConfigId = activeConfigId;
     setIsSwitchingConfig(true);
     legacyDebugLog(`SWITCH_CONFIG_START targetId=${configId}`);
     addLog('🔄 Changement de configuration...');
 
     try {
-      // 1. Si VPN connecté → déconnecter d'abord
+      // 1. Résoudre la connexion cible + VÉRIFIER dataToken AVANT toute action
+      const res = await apiClient.get('/mobile/connections');
+      const connections: VpnConnection[] = res.data?.connections || [];
+      const targetConn = connections.find(c => c.id === configId);
+      if (!targetConn) {
+        legacyDebugLog(`SWITCH_CONFIG — cible non trouvée id=${configId}`);
+        addLog('⚠️ Configuration cible introuvable sur le serveur — état inchangé');
+        return;
+      }
+      if (!targetConn.dataToken) {
+        legacyDebugLog(`SWITCH_CONFIG — dataToken manquant id=${configId}`);
+        addLog('⚠️ Configuration cible sans token de provisionnement — état inchangé');
+        return;
+      }
+      const targetStatus = (targetConn.status || '').toLowerCase();
+      if (targetStatus === 'revoked' || targetStatus === 'suspended' || targetStatus === 'disabled' || targetStatus === 'expired') {
+        legacyDebugLog(`SWITCH_CONFIG — cible ${targetStatus} id=${configId}`);
+        addLog(`⚠️ Configuration cible ${targetStatus === 'revoked' ? 'révoquée' : targetStatus === 'suspended' ? 'suspendue' : targetStatus === 'expired' ? 'expirée' : 'désactivée'} — changement impossible`);
+        return;
+      }
+      legacyDebugLog(`SWITCH_CONFIG — cible validée id=${targetConn.id} proto=${targetConn.technicalProtocol}`);
+
+      // 2. Si VPN actif → stopVpn natif puis ATTENDRE l'état natif disconnected
       if (isConnected || isConnecting) {
         legacyDebugLog('SWITCH_CONFIG — VPN actif, déconnexion préalable');
         if (IS_ANDROID && SxbVpnNative) {
           try { await SxbVpnNative.stopVpn(); } catch { /* ignore */ }
         }
+        // Polling de l'état natif (≤ 3 s) — on ne continue qu'une fois le
+        // tunnel réellement arrêté (évite un conflit d'établissement TUN).
+        if (IS_ANDROID && SxbVpnNative) {
+          let waited = 0;
+          while (waited < 3000) {
+            try {
+              const nativeState: string = await SxbVpnNative.getVpnState();
+              if (nativeState === 'disconnected' || nativeState === 'error' || nativeState === '') break;
+            } catch { break; }
+            await new Promise(r => setTimeout(r, 250));
+            waited += 250;
+          }
+          legacyDebugLog(`SWITCH_CONFIG — état natif après stop (waited=${waited}ms)`);
+        }
         setIsConnected(false);
-        setVpnState('disconnected');
         setIsConnecting(false);
+        setVpnState('disconnected');
         await AsyncStorage.setItem('@sxb_vpn_connected', 'false');
       }
 
-      // 2. Purger la config technique provisionnée actuelle
-      await clearProvisionedConfig().catch(() => {});
-      legacyDebugLog('SWITCH_CONFIG — config provisionnée purgée');
+      // 3. Provisionner la cible AVANT toute modification d'état (jamais de
+      //    purge avant succès : provisionAndStore écrase proprement la config
+      //    provisionnée au succès seulement).
+      const freshResult = await provisionAndStore(targetConn.dataToken, deviceId);
+      const merged = mergeConnectionMetadata(
+        mergeProvisionedConfig(null, freshResult.config),
+        {
+          displayProtocol: targetConn.displayProtocol,
+          configId:        targetConn.id,
+          subscriptionId:  targetConn.id,
+          dataToken:       targetConn.dataToken,
+          configVersion:   (targetConn as any).configVersion,
+          configHash:      (targetConn as any).configHash,
+        },
+      );
 
-      // 3. Reset vpnConfig
-      setVpnConfig(null);
+      // 4. Attendre une config COMPLÈTE avant de basculer
+      const completeness = isCompleteOfflineConfig(merged);
+      if (!completeness.complete) {
+        throw new Error(`config cible incomplète (manque : ${completeness.missing.join(', ')})`);
+      }
+      const engineProtocol = (merged.protocol || targetConn.technicalProtocol.toLowerCase()).toLowerCase();
+      const saved = await saveCompleteConfig(merged, engineProtocol, targetConn.id, freshResult.meta.configExpiresAt);
+      if (!saved) throw new Error('sauvegarde de la config cible refusée');
+      setVpnConfig(merged);
 
-      // 4. Mettre à jour l'ID actif
+      // Synchroniser le quota local (gardes offline expiration/épuisement)
+      if (freshResult.meta.quotaGB > 0) {
+        await saveQuotaData({
+          configId:    freshResult.meta.subscriptionId || targetConn.id,
+          totalQuota:  Math.round(freshResult.meta.quotaGB * 1024 ** 3),
+          usedQuota:   Math.round(freshResult.meta.quotaUsedGB * 1024 ** 3),
+          expiryDate:  freshResult.meta.expireAt,
+        }).catch(() => {});
+      }
+
+      // 5. SEULEMENT ALORS : basculer l'ID actif + savedConfigs + connect() unique
       setActiveConfigId(configId);
       await AsyncStorage.setItem('@sxb_active_config_id', configId);
-
-      // 5. Mettre à jour savedConfigs (active state)
       setSavedConfigs(prev => {
-        const updated = prev.map(c => ({ ...c, isActive: c.id === configId }));
+        const exists = prev.find(c => c.id === configId);
+        let updated: typeof prev;
+        if (exists) {
+          updated = prev.map(c => c.id === configId
+            ? { ...c, name: targetConn.name, protocol: targetConn.displayProtocol, isActive: true }
+            : { ...c, isActive: false });
+        } else {
+          const newCfg = { id: configId, name: targetConn.name, protocol: targetConn.displayProtocol, isActive: true };
+          updated = prev.length >= 2 ? [...prev.slice(1), newCfg] : [...prev, newCfg];
+        }
         AsyncStorage.setItem('@sxb_saved_configs', JSON.stringify(updated)).catch(() => {});
         return updated;
       });
+      setActiveConnection(targetConn);
 
-      // 6. Trouver la connexion cible dans /mobile/connections
-      try {
-        const res = await apiClient.get('/mobile/connections');
-        const connections: VpnConnection[] = res.data?.connections || [];
-        const targetConn = connections.find(c => c.id === configId);
-        if (targetConn) {
-          legacyDebugLog(`SWITCH_CONFIG — cible trouvée id=${targetConn.id} proto=${targetConn.technicalProtocol}`);
-          // 7. syncFromConnection → re-provisionne automatiquement
-          syncFromConnection(targetConn);
-          // 8. Attendre que vpnConfig soit non-null (max 10s, polling 500ms)
-          let waited = 0;
-          while (waited < 10000) {
-            await new Promise(r => setTimeout(r, 500));
-            waited += 500;
-            // Check si vpnConfig a été mis à jour par syncFromConnection
-            const checkCfg = await loadVpnConfig().catch(() => null);
-            if (checkCfg?.config && isCompleteOfflineConfig(checkCfg.config).complete) {
-              legacyDebugLog(`SWITCH_CONFIG — config prête après ${waited}ms`);
-              // 9. Connecter automatiquement
-              setTimeout(() => connect(), 300);
-              break;
-            }
-          }
-        } else {
-          legacyDebugLog(`SWITCH_CONFIG — cible non trouvée id=${configId}`);
-          addLog('⚠️ Configuration cible introuvable sur le serveur');
-        }
-      } catch (e: any) {
-        legacyDebugLog(`SWITCH_CONFIG — fetch connections échoué: ${e?.message || 'erreur'}`);
-      }
+      legacyDebugLog(`SWITCH_CONFIG — cible provisionnée et active id=${targetConn.id}, connexion`);
+      addLog('✅ Configuration changée — connexion au nouveau serveur...');
+      // connect() unique — via connectRef pour utiliser le connect() le plus
+      // récent (le closure capturé ici verrait encore l'ancien isConnected).
+      setTimeout(() => { connectRef.current?.(); }, 300);
     } catch (e: any) {
+      // ROLLBACK : restaurer l'ID actif précédent + recharger l'ancienne
+      // config, log d'erreur — sans toucher aux données.
       legacyDebugLog(`SWITCH_CONFIG_ERROR — ${e?.message || 'erreur'}`);
-      addLog('⚠️ Erreur lors du changement de configuration');
+      addLog(`⚠️ Changement de configuration impossible : ${e?.message || 'erreur'}`);
+      if (previousConfigId) {
+        setActiveConfigId(previousConfigId);
+        await AsyncStorage.setItem('@sxb_active_config_id', previousConfigId).catch(() => {});
+      } else {
+        setActiveConfigId(null);
+        await AsyncStorage.removeItem('@sxb_active_config_id').catch(() => {});
+      }
+      const oldEntry = await loadVpnConfig().catch(() => null);
+      if (oldEntry?.config) setVpnConfig(oldEntry.config);
     } finally {
       setIsSwitchingConfig(false);
     }
-  }, [activeConfigId, isConnected, isConnecting, addLog, syncFromConnection, connect]);
+  }, [activeConfigId, isConnected, isConnecting, addLog, deviceId]);
 
   const clearWatchdog = useCallback(() => {
     if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
@@ -636,6 +788,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         legacyDebugLog('VPN_CONNECTED');
         legacyDebugLog('VPN_CONNECTED');
         sessionStartRef.current = Date.now();
+        // F1 — nouveau cycle de session : compteurs delta repartent de zéro
+        lastReportUpRef.current = 0;
+        lastReportDownRef.current = 0;
         refreshAccountState().catch(() => {});
       } else if (s === 'disconnected') {
         addStepLog('disconnected', 'step_disconnected', 'done');
@@ -643,6 +798,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         addLog('🔴 VPN déconnecté');
         stopTrafficPolling();
         reportUsageToBackend(0, 0);
+        // F1 — session terminée : remise à zéro des compteurs delta
+        lastReportUpRef.current = 0;
+        lastReportDownRef.current = 0;
       } else if (s === 'error') {
         addStepLog('error', 'step_error', 'error');
         legacyDebugLog('VPN_FAILED status=error');
@@ -685,14 +843,29 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     return stopTrafficPolling;
   }, [isConnected, startTrafficPolling, stopTrafficPolling]);
 
+  // ── F1 — QUOTA DELTA : envoi au backend en delta uniquement ────────────────
+  // delta = max(0, courant - dernier) sur up et down ; on n'envoie QUE si
+  // delta > 0 ; body avec reportMode:'delta' ; les refs ne sont mises à jour
+  // QU'APRÈS un envoi réussi (en cas d'échec, le prochain report renverra
+  // l'intégralité de l'écart — aucune perte, aucun sur-décompte).
   const reportUsageToBackend = useCallback(async (up: number, down: number) => {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated) return undefined;
+    const deltaUp   = Math.max(0, up - lastReportUpRef.current);
+    const deltaDown = Math.max(0, down - lastReportDownRef.current);
+    if (deltaUp <= 0 && deltaDown <= 0) return undefined;
     try {
-      await apiClient.post('/mobile/vpn/traffic', {
-        bytesUp:   up,
-        bytesDown: down,
+      const result = await apiClient.post('/mobile/vpn/traffic', {
+        bytesUp:   deltaUp,
+        bytesDown: deltaDown,
+        reportMode:'delta',
       });
-    } catch { /* ignore — report is best-effort */ }
+      // Mettre à jour les refs SEULEMENT après envoi réussi
+      lastReportUpRef.current   = up;
+      lastReportDownRef.current = down;
+      return result;
+    } catch {
+      return undefined; /* ignore — report is best-effort */
+    }
   }, [isAuthenticated]);
 
   useEffect(() => {
@@ -701,12 +874,11 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       if (IS_ANDROID && SxbVpnNative) {
         try {
           const stats = await SxbVpnNative.getTrafficStats();
-          const result = await apiClient.post('/mobile/vpn/traffic', {
-            bytesUp:   stats.uploadBytes || 0,
-            bytesDown: stats.downloadBytes || 0,
-          });
+          // F1 — le backend incrémente le quota de ce qu'on lui envoie :
+          // 1 Mo consommé = 1 Mo décompté (jamais de total cumulé).
+          const result = await reportUsageToBackend(stats.uploadBytes || 0, stats.downloadBytes || 0);
           // Update local quota from backend response
-          if (result.data?.quotaRemainingGb !== undefined) {
+          if (result?.data?.quotaRemainingGb !== undefined) {
             const remainingBytes = Math.round(result.data.quotaRemainingGb * 1024 ** 3);
             const currentQuota = await loadQuotaData().catch(() => null);
             if (currentQuota) {
@@ -721,7 +893,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
             }
           }
           // If backend signals quota exhausted, stop VPN
-          if (result.data?.quotaExhausted) {
+          if (result?.data?.quotaExhausted) {
             addLog('❌ Quota épuisé — arrêt du VPN');
             if (IS_ANDROID && SxbVpnNative) {
               try { await SxbVpnNative.stopVpn(); } catch { /* ignore */ }
@@ -733,7 +905,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       }
     }, 60_000);
     return () => { if (reportTimerRef.current) { clearInterval(reportTimerRef.current); reportTimerRef.current = null; } };
-  }, [isConnected, isAuthenticated, addLog]);
+  }, [isConnected, isAuthenticated, addLog, reportUsageToBackend]);
 
   // ── Quota data polling (every 60s) ─────────────────────────────────────────
   const refreshQuotaData = useCallback(async () => {
@@ -1103,6 +1275,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           protocol:      engineProtocol,
           killSwitch,
           autoReconnect,
+          // F5 — L'APP DANS LE TUNNEL : includeOwnApp=true demande au module
+          // natif de NE PAS exclure l'app du TUN (voir SxbVpnService.kt) —
+          // le trafic applicatif (API, quota, configs) passe par le VPN.
+          includeOwnApp: true,
         }));
 
         legacyDebugLog(`CONFIG_SENT_NATIVE proto=${engineProtocol}`);
@@ -1138,6 +1314,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         setIsConnected(true);
         setVpnState('connected');
         await AsyncStorage.setItem('@sxb_vpn_connected', 'true');
+        // F1 — connexion réussie (simulation dev) : compteurs delta à zéro
+        lastReportUpRef.current = 0;
+        lastReportDownRef.current = 0;
         legacyDebugLog('VPN_CONNECTED mode=dev-simulation');
         addLog('✅ Connecté (mode web dev)');
         setIsConnecting(false);
@@ -1157,6 +1336,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       setIsConnecting(false);
     }
   }, [isConnecting, isConnected, selectedProtocol, vpnConfig, activeConnection, killSwitch, autoReconnect, deviceId, addLog, startWatchdog]);
+
+  // ── F3 — garde connectRef synchronisé avec le connect() courant ─────────────
+  useEffect(() => { connectRef.current = connect; });
 
   const disconnect = useCallback(async () => {
     if (isConnecting && !isConnected) return;
@@ -1189,6 +1371,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       await AsyncStorage.setItem('@sxb_vpn_connected', 'false');
     } finally {
       if (!IS_ANDROID || !SxbVpnNative) setIsConnecting(false);
+      // F1 — déconnexion : remise à zéro des compteurs delta (après l'envoi
+      // final du delta restant dans le try ci-dessus).
+      lastReportUpRef.current = 0;
+      lastReportDownRef.current = 0;
     }
   }, [isConnecting, isConnected, addLog, reportUsageToBackend]);
 

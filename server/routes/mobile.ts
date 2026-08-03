@@ -566,6 +566,10 @@ router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => 
     const schema = z.object({
       bytesUp:   z.number().int().min(0),
       bytesDown: z.number().int().min(0),
+      // F1 — QUOTA DELTA : l'app n'envoie plus que des deltas depuis le dernier
+      // envoi réussi (reportMode:'delta'). Le comptage reste un incrément :
+      // 1 Mo consommé = 1 Mo décompté. 'absolute' est toléré pour compat.
+      reportMode: z.enum(['delta','absolute']).optional(),
     });
     const { bytesUp, bytesDown } = schema.parse(req.body);
     const totalBytes = BigInt(bytesUp + bytesDown);

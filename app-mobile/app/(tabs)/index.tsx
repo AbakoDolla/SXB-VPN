@@ -372,7 +372,8 @@ export default function HomeScreen() {
     if (btnState === "no_account") { router.push("/activate"); return; }
     if (btnState === "no_package" || btnState === "expired") { router.push("/plan"); return; }
     if (btnState === "connect") {
-      setLogsVisible(true);
+      // F4 — logs sur clic UNIQUEMENT : plus d'ouverture automatique des logs
+      // à la connexion ; l'utilisateur ouvre via le bouton « Voir les logs ».
       await connect();
       await refreshAccountState();
     } else if (btnState === "connected") {
@@ -591,9 +592,11 @@ export default function HomeScreen() {
           </Pressable>
 
           {/* StepLogs — modern step-by-step progress */}
+          {/* F4 — logs sur clic uniquement : StepLogs n'apparaît que si
+              l'utilisateur a ouvert les logs (visible={logsVisible}). */}
           {isConnecting && stepLogs.length > 0 && (
             <View style={{ width: '100%', marginTop: 8 }}>
-              <StepLogs steps={stepLogs} visible={true} />
+              <StepLogs steps={stepLogs} visible={logsVisible} />
             </View>
           )}
 
