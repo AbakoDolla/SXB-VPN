@@ -30,10 +30,13 @@ function getButtonState(
   isConnecting: boolean,
   hasValidConfig: boolean,
   activeConnection: import("@/types/api").VpnConnection | null,
+  quotaExhausted: boolean = false,
 ): BtnState {
   if (!accountState) return "no_account";
   if (isConnecting) return "connecting";
   if (isConnected) return "connected";
+  // Quota épuisé → montrer "Forfait expiré"
+  if (quotaExhausted) return "expired";
   // Priorité 1 : connexion active détectée depuis /mobile/connections → toujours "Se connecter"
   if (activeConnection && activeConnection.status === "active") return "connect";
   // Priorité 2 : config locale valide (importée + sauvegardée)
@@ -165,17 +168,17 @@ function VpnConnectionCard({ conn, isActive }: { conn: VpnConnection; isActive: 
       <View style={connStyles.quotaRow}>
         <View style={connStyles.quotaItem}>
           <Text style={connStyles.quotaVal}>{conn.quota.remainingGB.toFixed(1)} GB</Text>
-          <Text style={connStyles.quotaLbl}>Restant</Text>
+          <Text style={connStyles.quotaLbl}>{t('quota_remaining')}</Text>
         </View>
         <View style={connStyles.quotaDivider} />
         <View style={connStyles.quotaItem}>
           <Text style={connStyles.quotaVal}>{conn.quota.usedGB.toFixed(1)} GB</Text>
-          <Text style={connStyles.quotaLbl}>Utilisé</Text>
+          <Text style={connStyles.quotaLbl}>{t('quota_used')}</Text>
         </View>
         <View style={connStyles.quotaDivider} />
         <View style={connStyles.quotaItem}>
           <Text style={connStyles.quotaVal}>{conn.quota.totalGB.toFixed(1)} GB</Text>
-          <Text style={connStyles.quotaLbl}>Total</Text>
+          <Text style={connStyles.quotaLbl}>{t('quota_total')}</Text>
         </View>
       </View>
 
@@ -300,7 +303,7 @@ export default function HomeScreen() {
   const ring1     = useRef(new Animated.Value(1)).current;
   const ring2     = useRef(new Animated.Value(1)).current;
 
-  const btnState = getButtonState(accountState, isConnected, isConnecting, hasValidConfig, activeConnection);
+  const btnState = getButtonState(accountState, isConnected, isConnecting, hasValidConfig, activeConnection, quotaData ? quotaData.remainingQuota <= 0 : false);
 
   // Pulse animation
   useEffect(() => {
@@ -537,7 +540,7 @@ export default function HomeScreen() {
           <View style={[styles.statusBadge, { borderColor: btnColor + "50", backgroundColor: btnColor + "10" }]}>
             <View style={[styles.statusDot, { backgroundColor: btnColor }]} />
             <Text style={[styles.statusText, { color: btnColor }]}>
-              {isConnected ? "Protection active" : isConnecting ? "Connexion en cours..." : "Protection inactive"}
+              {isConnected ? t('protection_active') : isConnecting ? t('connecting_status') : t('protection_inactive')}
             </Text>
           </View>
 
@@ -575,10 +578,10 @@ export default function HomeScreen() {
           {/* Subtitle */}
           <Text style={styles.btnHint}>
             {isConnected
-              ? "Votre connexion est sécurisée"
+              ? t('protection_active')
               : isConnecting
-              ? "Établissement du tunnel sécurisé..."
-              : "Appuyez pour activer la protection"}
+              ? t('connecting_status')
+              : t('tap_to_connect')}
           </Text>
 
           {/* Action button */}
@@ -603,24 +606,24 @@ export default function HomeScreen() {
           )}
         </View>
 
-        {/* Stats Row */}
+        {/* Stats Row — Quota depuis accountState (fallback rapide, valeurs entières) */}
         {quota && quota.total > 0 && (
           <View style={styles.statsCard}>
             <Text style={styles.cardLabel}>QUOTA DU FORFAIT</Text>
             <View style={styles.statsRow}>
               <View style={styles.statItem}>
                 <Text style={styles.statValue}>{quota.remain} GB</Text>
-                <Text style={styles.statLabel}>Restant</Text>
+                <Text style={styles.statLabel}>{t('quota_remaining')}</Text>
               </View>
               <View style={styles.statDivider} />
               <View style={styles.statItem}>
                 <Text style={styles.statValue}>{quota.used} GB</Text>
-                <Text style={styles.statLabel}>Utilisé</Text>
+                <Text style={styles.statLabel}>{t('quota_used')}</Text>
               </View>
               <View style={styles.statDivider} />
               <View style={styles.statItem}>
                 <Text style={styles.statValue}>{quota.total} GB</Text>
-                <Text style={styles.statLabel}>Total</Text>
+                <Text style={styles.statLabel}>{t('quota_total')}</Text>
               </View>
             </View>
             {/* Progress bar */}
@@ -637,7 +640,7 @@ export default function HomeScreen() {
             </View>
             {accountState?.expireAt && (
               <Text style={styles.expireText}>
-                Expire le {new Date(accountState.expireAt).toLocaleDateString("fr-FR")}
+                {t('config_expires_at')} {new Date(accountState.expireAt).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" })}
               </Text>
             )}
           </View>
@@ -650,19 +653,19 @@ export default function HomeScreen() {
             <View style={styles.statsRow}>
               <View style={styles.statItem}>
                 <Text style={styles.statValue}>{formatBytes(traffic.uploadBytes)}</Text>
-                <Text style={styles.statLabel}>↑ Envoyé</Text>
+                <Text style={styles.statLabel}>↑ {t('traffic_sent')}</Text>
               </View>
               <View style={styles.statDivider} />
               <View style={styles.statItem}>
                 <Text style={styles.statValue}>{formatBytes(traffic.downloadBytes)}</Text>
-                <Text style={styles.statLabel}>↓ Reçu</Text>
+                <Text style={styles.statLabel}>↓ {t('traffic_received')}</Text>
               </View>
               <View style={styles.statDivider} />
               <View style={styles.statItem}>
                 <Text style={[styles.statValue, { fontSize: 14 }]}>
                   ↑{formatSpeed(traffic.uploadSpeed)}{"\n"}↓{formatSpeed(traffic.downloadSpeed)}
                 </Text>
-                <Text style={styles.statLabel}>Débit</Text>
+                <Text style={styles.statLabel}>{t('traffic_speed')}</Text>
               </View>
             </View>
           </View>
@@ -677,7 +680,7 @@ export default function HomeScreen() {
               <Text style={styles.infoVal}>{connectedIp}</Text>
             </View>
             <View style={styles.infoRow}>
-              <Text style={styles.infoKey}>Protocole</Text>
+              <Text style={styles.infoKey}>{t('info_protocol')}</Text>
               <Text style={styles.infoVal}>
                 {connectedProtocol
                   || (activeConnection ? activeConnection.displayProtocol : null)
@@ -690,12 +693,12 @@ export default function HomeScreen() {
               <Text style={styles.infoVal}>{ping ? `${ping} ms` : "—"}</Text>
             </View>
             <View style={styles.infoRow}>
-              <Text style={styles.infoKey}>Dernière conn.</Text>
+              <Text style={styles.infoKey}>{t('info_last_conn')}</Text>
               <Text style={styles.infoVal}>{lastConnection}</Text>
             </View>
             {/* Appareil ID supprimé du dashboard utilisateur — info interne uniquement */}
             <View style={styles.infoRow}>
-              <Text style={styles.infoKey}>Version App</Text>
+              <Text style={styles.infoKey}>{t('app_version')}</Text>
               <Text style={styles.infoVal}>v{Constants.expoConfig?.version ?? "1.0.0"}</Text>
             </View>
           </View>
