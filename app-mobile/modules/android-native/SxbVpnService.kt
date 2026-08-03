@@ -919,7 +919,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
                         // P5: fingerprint vérifié après connect — no bypass definitif
                         set("StrictHostKeyChecking", "no")
                         set("PreferredAuthentications", "password")
-                        if (sni.isNotEmpty()) set("ServerAliveInterval", "30")
+                        set("ServerAliveInterval", "10")
+                        set("ServerAliveCountMax", "3")
                     }
                     s.setConfig(props)
                     s.timeout = 30_000
@@ -944,6 +945,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     val props = Properties().apply {
                         set("StrictHostKeyChecking", "no")
                         set("PreferredAuthentications", "password")
+                        set("ServerAliveInterval", "10")
+                        set("ServerAliveCountMax", "3")
                     }
                     s.setConfig(props)
                     s.setSocketFactory(SxbLoggingSocketFactory(30_000, ::protectSocket) {
@@ -988,7 +991,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             // openTun() au démarrage du moteur. On lui fournit simplement une
             // config dont l'outbound est notre SOCKS5 local alimenté par SSH.
             val label = if (usePayload) "SSH+PAYLOAD" else "SSH"
-            startLibboxService(buildSshSocksRelayConfig(), label)
+            startLibboxService(buildSshSocksRelayConfig(host), label)
 
             // ── Boucle de surveillance ────────────────────────────────────────
             while (running.get()) {
@@ -1532,8 +1535,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 .put("enabled", true)
                 .put("inet4_range", "198.18.0.0/15")
             )
+            // D4 — DNS via tunnel : supprimer règle outbound=any → dns-local (garder fakeip + final dns-remote)
             put("rules", JSONArray()
-                .put(JSONObject().put("outbound", "any").put("server", "dns-local"))
                 .put(JSONObject().put("query_type", JSONArray().put("A").put("AAAA")).put("server", "dns-fake"))
             )
             put("final", "dns-remote")
@@ -1552,12 +1555,16 @@ class SxbVpnService : VpnService(), PlatformInterface {
             else -> JSONObject().put("type", "direct").put("tag", "proxy")
         }
 
-        // Route
+        // Route — D3: carrier exclusion FIRST (if host resolves)
+        val exclusion = carrierExclusionRule(host)
+        val routeRules = JSONArray()
+        exclusion?.let { routeRules.put(it) }
+        routeRules
+            .put(JSONObject().put("protocol", "dns").put("outbound", "dns-out"))
+            .put(JSONObject().put("ip_is_private", true).put("outbound", "direct"))
+
         val routeObj = JSONObject().apply {
-            put("rules", JSONArray()
-                .put(JSONObject().put("protocol", "dns").put("outbound", "dns-out"))
-                .put(JSONObject().put("ip_is_private", true).put("outbound", "direct"))
-            )
+            put("rules", routeRules)
             put("final", "proxy")
             // FIX — doit valoir true : combiné à
             // usePlatformAutoDetectInterfaceControl(), c'est ce qui déclenche
@@ -1714,13 +1721,38 @@ class SxbVpnService : VpnService(), PlatformInterface {
     }
 
     /**
+     * Anti-boucle porteur : exclusion explicite des IPs du serveur de transport
+     * (SSH, VLESS, etc.) dans les règles de route TUN. Insérée EN PREMIÈRE.
+     * Résout une fois (IPv4) et retourne la règle ip_cidr ou null.
+     */
+    private fun carrierExclusionRule(host: String): JSONObject? {
+        val ips = runCatching {
+            InetAddress.getAllByName(host)
+                .filterIsInstance<java.net.Inet4Address>()
+                .mapNotNull { it.hostAddress }
+                .map { "$it/32" }
+        }.getOrDefault(emptyList())
+        if (ips.isEmpty()) return null
+        return JSONObject().put("ip_cidr", JSONArray(ips)).put("outbound", "direct")
+    }
+
+    /**
      * Config TUN → SOCKS5 : fait entrer tout le trafic du système dans le
      * tunnel SSH, en le relayant vers le serveur SOCKS5 local alimenté par JSch.
      *
      * Comme pour buildSingBoxConfig(), le champ « file_descriptor » a disparu :
      * c'est openTun() qui fournit le TUN au moteur.
      */
-    private fun buildSshSocksRelayConfig(): String {
+    private fun buildSshSocksRelayConfig(host: String = ""): String {
+        val exclusion = if (host.isNotBlank()) carrierExclusionRule(host) else null
+
+        // Build rules manually: exclusion FIRST (if any), then protocol-dns, ip_is_private
+        val routeRules = JSONArray()
+        exclusion?.let { routeRules.put(it) }
+        routeRules
+            .put(JSONObject().put("protocol", "dns").put("outbound", "dns-out"))
+            .put(JSONObject().put("ip_is_private", true).put("outbound", "direct"))
+
         return JSONObject().apply {
             put("log", JSONObject().put("level", "warn").put("timestamp", true))
             put("dns", JSONObject().apply {
@@ -1728,7 +1760,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     .put(JSONObject().put("tag", "dns-r").put("address", "https://1.1.1.1/dns-query").put("strategy", "prefer_ipv4"))
                     .put(JSONObject().put("tag", "dns-l").put("address", "local").put("detour", "direct"))
                 )
-                put("rules", JSONArray().put(JSONObject().put("outbound", "any").put("server", "dns-l")))
+                // D4 — DNS via tunnel : supprimer règle outbound=any → dns-l
                 put("final", "dns-r")
             })
             put("inbounds", JSONArray().put(JSONObject().apply {
@@ -1754,10 +1786,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 .put(JSONObject().put("type", "dns").put("tag", "dns-out"))
             )
             put("route", JSONObject().apply {
-                put("rules", JSONArray()
-                    .put(JSONObject().put("protocol", "dns").put("outbound", "dns-out"))
-                    .put(JSONObject().put("ip_is_private", true).put("outbound", "direct"))
-                )
+                put("rules", routeRules)
                 put("final", "proxy")
                 // true → protège les sockets sortants (voir buildSingBoxConfig).
                 put("auto_detect_interface", true)
@@ -1770,7 +1799,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
     // ═════════════════════════════════════════════════════════════════════════
 
     private fun startLocalSocks5Server(session: Session): ServerSocket {
-        val server = ServerSocket(SOCKS5_PORT, 50, InetAddress.getLoopbackAddress())
+        val server = ServerSocket(SOCKS5_PORT, 50, InetAddress.getByName("127.0.0.1"))
+        Log.i(TAG, "[SXB_DEBUG] SOCKS5_SERVER_BOUND address=${server.inetAddress.hostAddress} port=$SOCKS5_PORT")
         Thread({
             while (!server.isClosed && session.isConnected && running.get()) {
                 try {
