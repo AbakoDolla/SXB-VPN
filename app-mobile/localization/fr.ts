@@ -265,6 +265,17 @@ export const fr = {
   connection_active: 'Actif',
   connection_disabled: 'Désactivé',
 
+  // Quota
+  quota_total: 'Total',
+  quota_used: 'Utilisé',
+  quota_remaining: 'Restant',
+  quota_exhausted: 'Quota épuisé',
+  quota_reload: 'Rechargez votre forfait',
+
+  // Expiration
+  config_expired: 'Configuration expirée',
+  config_expires_at: 'Expire le',
+
   // Notifications VPN
   notif_connected: 'VPN connecté',
   notif_disconnected: 'VPN déconnecté',

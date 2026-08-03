@@ -251,7 +251,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                     </span>
                     <span className="flex items-center gap-1">
                       <Clock className="w-3 h-3" />
-                      Expire: {new Date(sub.expireAt).toLocaleDateString("fr-FR")}
+                      Expire: {new Date(sub.expireAt).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" })}
                     </span>
                     <span className="flex items-center gap-1">
                       <Smartphone className="w-3 h-3" />

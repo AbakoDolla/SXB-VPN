@@ -246,6 +246,17 @@ export const en = {
   auto_reconnect: 'Auto-reconnect',
   auto_reconnect_desc: 'Automatically reconnect if the connection is lost',
 
+  // Quota
+  quota_total: 'Total',
+  quota_used: 'Used',
+  quota_remaining: 'Remaining',
+  quota_exhausted: 'Quota exhausted',
+  quota_reload: 'Reload your plan',
+
+  // Expiration
+  config_expired: 'Configuration expired',
+  config_expires_at: 'Expires on',
+
   // VPN Notifications
   notif_connected: 'VPN connected',
   notif_disconnected: 'VPN disconnected',

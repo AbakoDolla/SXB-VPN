@@ -598,9 +598,11 @@ router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => 
     // Retourner le quota restant mis à jour pour que l'app puisse alerter l'utilisateur
     const updatedClient: any = await findClientByUserId(req.user!.userId);
     const state = computeAccountState(updatedClient || client);
+    const quotaExhausted = state.quotaRemainingGb <= 0;
     return res.json({
       ok: true,
       quotaRemainingGb: state.quotaRemainingGb,
+      quotaExhausted,
       state: state.state,
     });
   } catch (err) {

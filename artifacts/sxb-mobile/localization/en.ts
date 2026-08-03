@@ -66,6 +66,9 @@ export const en = {
 
   home: 'Home',
   history: 'History',
+  profile: 'Profile',
+  notifications: 'Notifications',
+
   no_history: 'No activity recorded',
   account_activated_event: 'Account activated',
   plan_activated_event: 'Plan activated',
@@ -74,12 +77,15 @@ export const en = {
   plan_expired_event: 'Plan expired',
   plan_renewed_event: 'Plan renewed',
 
-  notifications: 'Notifications',
   mark_all_read: 'Mark all as read',
   no_notifications: 'No notifications',
   no_notifications_desc: 'You have no notifications yet.',
+  notif_plan_expired: 'Your SXB VPN plan has expired.',
+  notif_low_quota_100mb: 'You have 100 MB of data remaining.',
+  notif_expires_tomorrow: 'Your plan expires tomorrow.',
+  notif_new_config: 'New VPN configuration available.',
+  notif_sync_done: 'Synchronization complete.',
 
-  profile: 'Profile',
   client_id: 'Client ID',
   plan_label: 'Plan',
   expiration: 'Expiration',
@@ -111,6 +117,28 @@ export const en = {
   terms: 'Terms of service',
   privacy_policy: 'Privacy policy',
 
+  account_section: 'Account',
+  device_id: 'Device ID',
+  subscription_status: 'Subscription status',
+  subscription_active: 'Active',
+  subscription_expired: 'Expired',
+  subscription_none: 'No plan',
+
+  vpn_section: 'VPN',
+  refresh_config: 'Refresh configuration',
+  refreshing_config: 'Syncing...',
+  refresh_config_success: 'Configuration updated!',
+  refresh_config_error: 'Unable to sync configuration',
+  kill_switch: 'Kill Switch',
+  kill_switch_desc: 'Block all traffic if VPN disconnects',
+  vpn_logs: 'VPN logs',
+  clear_logs: 'Clear logs',
+
+  data_section: 'Local data',
+  clear_cache: 'Clear local cache',
+  clear_cache_confirm: 'Clear all local data?',
+  clear_cache_success: 'Cache cleared successfully',
+
   support: 'Support',
   faq: 'FAQ',
   faq_q1: 'How do I activate my account?',
@@ -121,6 +149,8 @@ export const en = {
   faq_a3: 'Check your internet connection, then disconnect and reconnect the VPN. If the issue persists, contact support.',
   faq_q4: 'My plan has expired, what should I do?',
   faq_a4: 'Contact your reseller to get a new Data Token and activate it in the app.',
+  faq_q5: 'Does the VPN stay active when I close the app?',
+  faq_a5: 'Yes. A foreground service ensures the VPN tunnel stays active in the background and when the screen is locked.',
   create_ticket: 'Create a ticket',
   my_tickets: 'My tickets',
   contact_us: 'Contact us',
@@ -139,6 +169,7 @@ export const en = {
   error_server: 'Server error. Please try again later.',
   error_generic: 'An error occurred. Please try again.',
   error_quota_empty: 'Insufficient quota.',
+  error_vpn_permission: 'VPN permission required. Grant access in Android settings.',
   retry: 'Retry',
   back: 'Back',
 
@@ -153,4 +184,83 @@ export const en = {
   expired: 'Expired',
   suspended_status: 'Suspended',
   no_package_status: 'No plan',
+
+  // VPN — Traffic
+  traffic_realtime: 'REAL-TIME TRAFFIC',
+  traffic_sent: 'Sent',
+  traffic_received: 'Received',
+  traffic_speed: 'Speed',
+  traffic_upload: 'Upload',
+  traffic_download: 'Download',
+  traffic_session: 'Session',
+
+  // StepLogs — VPN connection steps
+  step_preparing: 'Preparing…',
+  step_checking_security: 'Checking security…',
+  step_security_ok: 'Secure environment',
+  step_loading_config: 'Loading configuration…',
+  step_config_loaded: 'Configuration loaded',
+  step_provisioning: 'Secure provisioning…',
+  step_provisioned: 'Configuration provisioned',
+  step_syncing: 'Syncing…',
+  step_synced: 'Data synced',
+  step_connecting: 'Connecting to server…',
+  step_handshake: 'Secure handshake…',
+  step_establishing_tunnel: 'Establishing tunnel…',
+  step_tunnel_ready: 'Secure tunnel ready',
+  step_vpn_active: 'VPN connected',
+  step_error: 'Connection error',
+  step_disconnecting: 'Disconnecting…',
+  step_disconnected: 'VPN disconnected',
+  step_reconnecting: 'Auto-reconnecting…',
+  step_quota_check: 'Checking quota…',
+  step_quota_ok: 'Sufficient quota',
+  step_quota_exhausted: 'Quota exhausted',
+  step_expired: 'Subscription expired',
+  step_revoked: 'Configuration revoked',
+  step_suspended: 'Account suspended',
+  step_permission_check: 'Checking permissions…',
+  step_permission_granted: 'Permission granted',
+  step_permission_denied: 'Permission denied',
+
+  // Multi-config
+  config_select: 'Select',
+  config_active: 'Active',
+  config_inactive: 'Inactive',
+  config_max_reached: 'Maximum 2 configurations reached',
+  config_switch: 'Switch configuration',
+  config_saved: 'Configuration saved',
+  config_removed: 'Configuration removed',
+
+  // VPN Connections
+  vpn_connections: 'VPN CONNECTIONS',
+  no_vpn_connections: 'No VPN connections configured',
+  ask_admin_for_plan: 'Ask your administrator to create a plan',
+  connection_expired: 'Expired',
+  connection_revoked: 'Revoked',
+  connection_suspended: 'Suspended',
+  connection_active: 'Active',
+  connection_disabled: 'Disabled',
+
+  // VPN — Auto-reconnect
+  auto_reconnect: 'Auto-reconnect',
+  auto_reconnect_desc: 'Automatically reconnect if the connection is lost',
+
+  // Quota
+  quota_total: 'Total',
+  quota_used: 'Used',
+  quota_remaining: 'Remaining',
+  quota_exhausted: 'Quota exhausted',
+  quota_reload: 'Reload your plan',
+
+  // Expiration
+  config_expired: 'Configuration expired',
+  config_expires_at: 'Expires on',
+
+  // VPN Notifications
+  notif_connected: 'VPN connected',
+  notif_disconnected: 'VPN disconnected',
+  notif_reconnecting: 'Reconnecting...',
+  notif_error: 'VPN connection error',
+  notif_kill_switch: 'Kill Switch active — connection blocked',
 } as const;
