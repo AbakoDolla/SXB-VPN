@@ -853,16 +853,32 @@ class SxbVpnService : VpnService(), PlatformInterface {
             broadcastStatus("connecting"); setCurrentState("connecting")
             val cfg = JSONObject(configJsonStr)
 
-            val host       = cfg.getString("host")
+            val host       = cfg.optStringOrNull("host", "")
             val port       = cfg.optInt("port", 22)
             // optStringOrNull : jamais la chaîne "null" (AOSP) — correctif APK #165
             val username   = cfg.optStringOrNull("username", "")
             val password   = cfg.optStringOrNull("password", "")
+            val uuid       = cfg.optStringOrNull("uuid", "")
             val usePayload = cfg.optBoolean("usePayload", false) || cfg.optStringOrNull("protocol","").contains("payload")
             val sni        = cfg.optStringOrNull("sni", "")
+            val network    = cfg.optStringOrNull("network", "tcp")
+            val path       = cfg.optStringOrNull("path", "/")
+            val method     = cfg.optStringOrNull("method", "")
+            val privateKey = cfg.optStringOrNull("privateKey", "")
+            val peerPublicKey = cfg.optStringOrNull("peerPublicKey", "")
+            val localAddress = cfg.optStringOrNull("localAddress", "")
+            val flow       = cfg.optStringOrNull("flow", "")
             val tlsEnabled = cfg.optBoolean("tlsEnabled", cfg.optBoolean("tls", false))
             val websocketEnabled = cfg.optBoolean("websocketEnabled", false)
             val fingerprint = cfg.optStringOrNull("fingerprint", "")
+
+            // Guard : host vide = config invalide, arrêter proprement
+            if (host.isEmpty()) {
+                broadcastLog("[SXB] ERREUR : champ \"host\" vide — configuration invalide")
+                broadcastStatus("error"); setCurrentState("error")
+                cleanup()
+                return@run
+            }
 
             // ── Payload SSH ─────────────────────────────────────────────────
             // BUG FIX: ne jamais basculer en SSH direct si le protocole est ssh+payload
@@ -1505,6 +1521,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         val privKey  = cfg.optStringOrNull("privateKey", "")
         val peerPub  = cfg.optStringOrNull("peerPublicKey", "")
         val localAddr = cfg.optStringOrNull("localAddress", "10.0.0.2/32")
+        val fingerprint = cfg.optStringOrNull("fingerprint", "")
 
         // Inbound TUN
         //

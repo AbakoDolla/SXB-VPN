@@ -187,7 +187,7 @@ function VpnConnectionCard({ conn, isActive }: { conn: VpnConnection; isActive: 
       {/* Expiration */}
       {conn.expiresAt && (
         <Text style={connStyles.expire}>
-          Expire le {new Date(conn.expiresAt).toLocaleDateString("fr-FR")}
+          {t('config_expires_at')} {new Date(conn.expiresAt).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" })}
         </Text>
       )}
     </View>
@@ -203,7 +203,7 @@ export default function HomeScreen() {
     hasValidConfig, activeConnection,
     connect, disconnect, trafficStats: traffic,
     refreshVpnConfig, syncFromConnection,
-    stepLogs, savedConfigs, activeConfigId, switchConfig, revokedStatus,
+    stepLogs, savedConfigs, activeConfigId, switchConfig, isSwitchingConfig, quotaData, revokedStatus,
   } = useVpnContext();
   const { t } = useTranslation();
 
@@ -470,47 +470,63 @@ export default function HomeScreen() {
         {/* Saved Configs Selector (Multi-config, max 2) */}
         {savedConfigs.length > 1 && (
           <View style={styles.statsCard}>
-            <Text style={styles.cardLabel}>{t('config_switch')}</Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Text style={styles.cardLabel}>{t('config_switch')}</Text>
+              {isSwitchingConfig && <ActivityIndicator size="small" color={Colors.primary} />}
+            </View>
             <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
-              {savedConfigs.map((cfg) => (
-                <Pressable
-                  key={cfg.id}
-                  onPress={() => switchConfig(cfg.id)}
-                  style={{
-                    flex: 1,
-                    paddingVertical: 10,
-                    paddingHorizontal: 12,
-                    borderRadius: 12,
-                    borderWidth: 1,
-                    borderColor: cfg.id === activeConfigId ? Colors.primary + '60' : Colors.border,
-                    backgroundColor: cfg.id === activeConfigId ? Colors.primaryDim : Colors.bgCard,
-                    alignItems: 'center',
-                    gap: 4,
-                  }}
-                >
-                  <Ionicons
-                    name={cfg.id === activeConfigId ? 'shield-checkmark' : 'shield-outline'}
-                    size={18}
-                    color={cfg.id === activeConfigId ? Colors.primary : Colors.textMuted}
-                  />
-                  <Text style={{ fontSize: 12, fontWeight: '600', color: cfg.id === activeConfigId ? Colors.primary : Colors.textSecondary, fontFamily: 'Inter_600SemiBold' }} numberOfLines={1}>
-                    {cfg.name}
-                  </Text>
-                  <Text style={{ fontSize: 10, color: Colors.textMuted, fontFamily: 'Inter_400Regular' }}>
-                    {cfg.protocol}
-                  </Text>
-                  <View style={{
-                    paddingHorizontal: 6,
-                    paddingVertical: 2,
-                    borderRadius: 6,
-                    backgroundColor: cfg.id === activeConfigId ? Colors.connected + '20' : Colors.textMuted + '15',
-                  }}>
-                    <Text style={{ fontSize: 9, color: cfg.id === activeConfigId ? Colors.connected : Colors.textMuted, fontFamily: 'Inter_600SemiBold' }}>
-                      {cfg.id === activeConfigId ? t('config_active') : t('config_inactive')}
+              {savedConfigs.map((cfg) => {
+                const isRevokedOrExpired = connections.find(c => c.id === cfg.id)?.status === 'revoked' ||
+                  connections.find(c => c.id === cfg.id)?.status === 'expired' ||
+                  connections.find(c => c.id === cfg.id)?.status === 'suspended';
+                const isActive = cfg.id === activeConfigId;
+                const isDisabled = isRevokedOrExpired && !isActive;
+                return (
+                  <Pressable
+                    key={cfg.id}
+                    onPress={() => !isSwitchingConfig && !isDisabled && switchConfig(cfg.id)}
+                    disabled={isSwitchingConfig || isDisabled}
+                    style={{
+                      flex: 1,
+                      paddingVertical: 10,
+                      paddingHorizontal: 12,
+                      borderRadius: 12,
+                      borderWidth: 1,
+                      borderColor: isActive ? Colors.primary + '60' : isDisabled ? Colors.disconnected + '30' : Colors.border,
+                      backgroundColor: isActive ? Colors.primaryDim : isDisabled ? Colors.bgCard + '60' : Colors.bgCard,
+                      alignItems: 'center',
+                      gap: 4,
+                      opacity: isDisabled ? 0.5 : 1,
+                    }}
+                  >
+                    {isSwitchingConfig && isActive ? (
+                      <ActivityIndicator size="small" color={Colors.primary} />
+                    ) : (
+                      <Ionicons
+                        name={isActive ? 'shield-checkmark' : 'shield-outline'}
+                        size={18}
+                        color={isDisabled ? Colors.disconnected : isActive ? Colors.primary : Colors.textMuted}
+                      />
+                    )}
+                    <Text style={{ fontSize: 12, fontWeight: '600', color: isDisabled ? Colors.disconnected : isActive ? Colors.primary : Colors.textSecondary, fontFamily: 'Inter_600SemiBold' }} numberOfLines={1}>
+                      {cfg.name}
                     </Text>
-                  </View>
-                </Pressable>
-              ))}
+                    <Text style={{ fontSize: 10, color: Colors.textMuted, fontFamily: 'Inter_400Regular' }}>
+                      {cfg.protocol}
+                    </Text>
+                    <View style={{
+                      paddingHorizontal: 6,
+                      paddingVertical: 2,
+                      borderRadius: 6,
+                      backgroundColor: isDisabled ? Colors.disconnected + '15' : isActive ? Colors.connected + '20' : Colors.textMuted + '15',
+                    }}>
+                      <Text style={{ fontSize: 9, color: isDisabled ? Colors.disconnected : isActive ? Colors.connected : Colors.textMuted, fontFamily: 'Inter_600SemiBold' }}>
+                        {isDisabled ? t('config_expired') : isActive ? t('config_active') : t('config_inactive')}
+                      </Text>
+                    </View>
+                  </Pressable>
+                );
+              })}
             </View>
           </View>
         )}
@@ -684,6 +700,58 @@ export default function HomeScreen() {
             </View>
           </View>
         </View>
+
+        {/* ── QUOTA CARD ─────────────────────────────────────────────── */}
+        {quotaData && quotaData.totalQuota > 0 && (
+          <View style={styles.statsCard}>
+            <Text style={styles.cardLabel}>QUOTA DU FORFAIT</Text>
+            {quotaData.remainingQuota <= 0 ? (
+              <View style={{ alignItems: "center", paddingVertical: 8 }}>
+                <Ionicons name="warning-outline" size={24} color={Colors.disconnected} />
+                <Text style={{ fontSize: 14, fontWeight: "700", color: Colors.disconnected, fontFamily: "Inter_700Bold", marginTop: 4 }}>
+                  {t('quota_exhausted')}
+                </Text>
+                <Text style={{ fontSize: 11, color: Colors.textMuted, fontFamily: "Inter_400Regular", marginTop: 2 }}>
+                  {t('quota_reload')}
+                </Text>
+              </View>
+            ) : (
+              <>
+                <View style={connStyles.quotaRow}>
+                  <View style={connStyles.quotaItem}>
+                    <Text style={connStyles.quotaVal}>{formatBytes(quotaData.totalQuota)}</Text>
+                    <Text style={connStyles.quotaLbl}>{t('quota_total')}</Text>
+                  </View>
+                  <View style={connStyles.quotaDivider} />
+                  <View style={connStyles.quotaItem}>
+                    <Text style={connStyles.quotaVal}>{formatBytes(quotaData.usedQuota)}</Text>
+                    <Text style={connStyles.quotaLbl}>{t('quota_used')}</Text>
+                  </View>
+                  <View style={connStyles.quotaDivider} />
+                  <View style={connStyles.quotaItem}>
+                    <Text style={connStyles.quotaVal}>{formatBytes(quotaData.remainingQuota)}</Text>
+                    <Text style={connStyles.quotaLbl}>{t('quota_remaining')}</Text>
+                  </View>
+                </View>
+                {/* Progress bar */}
+                <View style={styles.progressBg}>
+                  <View style={[styles.progressFill, {
+                    width: `${Math.min((quotaData.usedQuota / quotaData.totalQuota) * 100, 100)}%` as any,
+                    backgroundColor: quotaData.usedQuota / quotaData.totalQuota > 0.8 ? Colors.disconnected : Colors.primary
+                  }]} />
+                </View>
+                <Text style={{ fontSize: 11, color: Colors.textMuted, fontFamily: "Inter_400Regular", textAlign: "center" }}>
+                  {Math.round((quotaData.usedQuota / quotaData.totalQuota) * 100)}% {t('quota_used')}
+                </Text>
+                {quotaData.expiryDate && (
+                  <Text style={{ fontSize: 11, color: Colors.textMuted, fontFamily: "Inter_400Regular", textAlign: "center", marginTop: 4 }}>
+                    {t('config_expires_at')} {new Date(quotaData.expiryDate).toLocaleString("fr-FR", { dateStyle: "long", timeStyle: "short" })}
+                  </Text>
+                )}
+              </>
+            )}
+          </View>
+        )}
 
         {/* ── VPN Connections ─────────────────────────────────────────── */}
         <View style={styles.statsCard}>

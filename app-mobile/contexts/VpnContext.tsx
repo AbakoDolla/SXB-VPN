@@ -20,13 +20,15 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient from '@/services/apiClient';
-import { saveVpnConfig, loadVpnConfig, saveQuotaData, isQuotaExhausted, isConfigExpired } from '@/services/offlineStorage';
+import { saveVpnConfig, loadVpnConfig, saveQuotaData, loadQuotaData, isQuotaExhausted, isConfigExpired } from '@/services/offlineStorage';
+import type { QuotaData } from '@/services/offlineStorage';
 import { provisionAndStore, loadProvisionedConfig, clearProvisionedConfig } from '@/services/provisionClient';
 import {
   isCompleteOfflineConfig,
   mergeConnectionMetadata,
   mergeProvisionedConfig,
   sanitizeEngineConfig,
+  detectProtocolFromFields,
 } from '@/services/configValidator';
 import { useAuthContext } from './AuthContext';
 import type { VpnConnection } from '@/types/api';
@@ -104,6 +106,9 @@ interface VpnContextType {
   savedConfigs:       Array<{ id: string; name: string; protocol: string; isActive: boolean }>;
   activeConfigId:     string | null;
   switchConfig:       (configId: string) => Promise<void>;
+  isSwitchingConfig:  boolean;
+  // Quota
+  quotaData:          QuotaData | null;
   // Revocation
   revokedStatus:      'none' | 'revoked' | 'suspended' | 'expired' | 'disabled';
   logs:                string[];
@@ -128,7 +133,8 @@ const VpnContext = createContext<VpnContextType>({
   trafficStats: DEFAULT_STATS, vpnLogs: [],
   hasVpnPermission: false, hasValidConfig: false, activeConnection: null,
   stepLogs: [],
-  savedConfigs: [], activeConfigId: null, switchConfig: async () => {},
+  savedConfigs: [], activeConfigId: null, switchConfig: async () => {}, isSwitchingConfig: false,
+  quotaData: null,
   revokedStatus: 'none',
   logs: [], traffic: DEFAULT_STATS,
   killSwitch: false, autoReconnect: true,
@@ -160,10 +166,14 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const [stepLogs,           setStepLogs]             = useState<StepLogItem[]>([]);
   const [savedConfigs,       setSavedConfigs]         = useState<Array<{ id: string; name: string; protocol: string; isActive: boolean }>>([]);
   const [activeConfigId,     setActiveConfigId]       = useState<string | null>(null);
+  const [isSwitchingConfig,  setIsSwitchingConfig]     = useState<boolean>(false);
+  const [quotaData,          setQuotaData]             = useState<QuotaData | null>(null);
   const [revokedStatus,      setRevokedStatus]        = useState<'none' | 'revoked' | 'suspended' | 'expired' | 'disabled'>('none');
 
   const trafficTimerRef  = useRef<ReturnType<typeof setInterval> | null>(null);
   const reportTimerRef   = useRef<ReturnType<typeof setInterval> | null>(null);
+  const quotaTimerRef    = useRef<ReturnType<typeof setInterval> | null>(null);
+  const expiryTimerRef   = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionStartRef  = useRef<number>(0);
 
   const watchdogRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -225,15 +235,79 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const switchConfig = useCallback(async (configId: string) => {
-    setActiveConfigId(configId);
-    await AsyncStorage.setItem('@sxb_active_config_id', configId);
-    // Update saved configs active state
-    setSavedConfigs(prev => {
-      const updated = prev.map(c => ({ ...c, isActive: c.id === configId }));
-      AsyncStorage.setItem('@sxb_saved_configs', JSON.stringify(updated)).catch(() => {});
-      return updated;
-    });
-  }, []);
+    if (configId === activeConfigId) return;
+    setIsSwitchingConfig(true);
+    legacyDebugLog(`SWITCH_CONFIG_START targetId=${configId}`);
+    addLog('🔄 Changement de configuration...');
+
+    try {
+      // 1. Si VPN connecté → déconnecter d'abord
+      if (isConnected || isConnecting) {
+        legacyDebugLog('SWITCH_CONFIG — VPN actif, déconnexion préalable');
+        if (IS_ANDROID && SxbVpnNative) {
+          try { await SxbVpnNative.stopVpn(); } catch { /* ignore */ }
+        }
+        setIsConnected(false);
+        setVpnState('disconnected');
+        setIsConnecting(false);
+        await AsyncStorage.setItem('@sxb_vpn_connected', 'false');
+      }
+
+      // 2. Purger la config technique provisionnée actuelle
+      await clearProvisionedConfig().catch(() => {});
+      legacyDebugLog('SWITCH_CONFIG — config provisionnée purgée');
+
+      // 3. Reset vpnConfig
+      setVpnConfig(null);
+
+      // 4. Mettre à jour l'ID actif
+      setActiveConfigId(configId);
+      await AsyncStorage.setItem('@sxb_active_config_id', configId);
+
+      // 5. Mettre à jour savedConfigs (active state)
+      setSavedConfigs(prev => {
+        const updated = prev.map(c => ({ ...c, isActive: c.id === configId }));
+        AsyncStorage.setItem('@sxb_saved_configs', JSON.stringify(updated)).catch(() => {});
+        return updated;
+      });
+
+      // 6. Trouver la connexion cible dans /mobile/connections
+      try {
+        const res = await apiClient.get('/mobile/connections');
+        const connections: VpnConnection[] = res.data?.connections || [];
+        const targetConn = connections.find(c => c.id === configId);
+        if (targetConn) {
+          legacyDebugLog(`SWITCH_CONFIG — cible trouvée id=${targetConn.id} proto=${targetConn.technicalProtocol}`);
+          // 7. syncFromConnection → re-provisionne automatiquement
+          syncFromConnection(targetConn);
+          // 8. Attendre que vpnConfig soit non-null (max 10s, polling 500ms)
+          let waited = 0;
+          while (waited < 10000) {
+            await new Promise(r => setTimeout(r, 500));
+            waited += 500;
+            // Check si vpnConfig a été mis à jour par syncFromConnection
+            const checkCfg = await loadVpnConfig().catch(() => null);
+            if (checkCfg?.config && isCompleteOfflineConfig(checkCfg.config).complete) {
+              legacyDebugLog(`SWITCH_CONFIG — config prête après ${waited}ms`);
+              // 9. Connecter automatiquement
+              setTimeout(() => connect(), 300);
+              break;
+            }
+          }
+        } else {
+          legacyDebugLog(`SWITCH_CONFIG — cible non trouvée id=${configId}`);
+          addLog('⚠️ Configuration cible introuvable sur le serveur');
+        }
+      } catch (e: any) {
+        legacyDebugLog(`SWITCH_CONFIG — fetch connections échoué: ${e?.message || 'erreur'}`);
+      }
+    } catch (e: any) {
+      legacyDebugLog(`SWITCH_CONFIG_ERROR — ${e?.message || 'erreur'}`);
+      addLog('⚠️ Erreur lors du changement de configuration');
+    } finally {
+      setIsSwitchingConfig(false);
+    }
+  }, [activeConfigId, isConnected, isConnecting, addLog, syncFromConnection, connect]);
 
   const clearWatchdog = useCallback(() => {
     if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
@@ -627,12 +701,89 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       if (IS_ANDROID && SxbVpnNative) {
         try {
           const stats = await SxbVpnNative.getTrafficStats();
-          await reportUsageToBackend(stats.uploadBytes || 0, stats.downloadBytes || 0);
-        } catch { /* ignore */ }
+          const result = await apiClient.post('/mobile/vpn/traffic', {
+            bytesUp:   stats.uploadBytes || 0,
+            bytesDown: stats.downloadBytes || 0,
+          });
+          // Update local quota from backend response
+          if (result.data?.quotaRemainingGb !== undefined) {
+            const remainingBytes = Math.round(result.data.quotaRemainingGb * 1024 ** 3);
+            const currentQuota = await loadQuotaData().catch(() => null);
+            if (currentQuota) {
+              const usedBytes = currentQuota.totalQuota - remainingBytes;
+              setQuotaData(prev => prev ? { ...prev, usedQuota: usedBytes, remainingQuota: remainingBytes } : prev);
+              await saveQuotaData({
+                configId: currentQuota.configId,
+                totalQuota: currentQuota.totalQuota,
+                usedQuota: usedBytes,
+                expiryDate: currentQuota.expiryDate,
+              }).catch(() => {});
+            }
+          }
+          // If backend signals quota exhausted, stop VPN
+          if (result.data?.quotaExhausted) {
+            addLog('❌ Quota épuisé — arrêt du VPN');
+            if (IS_ANDROID && SxbVpnNative) {
+              try { await SxbVpnNative.stopVpn(); } catch { /* ignore */ }
+            }
+            setIsConnected(false);
+            setVpnState('disconnected');
+          }
+        } catch { /* ignore — report is best-effort */ }
       }
     }, 60_000);
     return () => { if (reportTimerRef.current) { clearInterval(reportTimerRef.current); reportTimerRef.current = null; } };
-  }, [isConnected, isAuthenticated, reportUsageToBackend]);
+  }, [isConnected, isAuthenticated, addLog]);
+
+  // ── Quota data polling (every 60s) ─────────────────────────────────────────
+  const refreshQuotaData = useCallback(async () => {
+    try {
+      const loaded = await loadQuotaData();
+      if (loaded) setQuotaData(loaded);
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    refreshQuotaData();
+    quotaTimerRef.current = setInterval(refreshQuotaData, 60_000);
+    return () => { if (quotaTimerRef.current) { clearInterval(quotaTimerRef.current); quotaTimerRef.current = null; } };
+  }, [refreshQuotaData]);
+
+  // ── Expiration polling (every 60s) ─────────────────────────────────────────
+  useEffect(() => {
+    const checkExpiration = async () => {
+      const expired = await isConfigExpired();
+      if (expired) {
+        legacyDebugLog('EXPIRATION_CHECK — config expirée, arrêt VPN');
+        // Disconnect VPN if active
+        if (isConnected || isConnecting) {
+          if (IS_ANDROID && SxbVpnNative) {
+            try { await SxbVpnNative.stopVpn(); } catch { /* ignore */ }
+          }
+          setIsConnected(false);
+          setVpnState('disconnected');
+          setIsConnecting(false);
+        }
+        // Clear provisioned config
+        await clearProvisionedConfig().catch(() => {});
+        setVpnConfig(null);
+        // Remove from savedConfigs
+        const activeId = await AsyncStorage.getItem('@sxb_active_config_id');
+        if (activeId) {
+          setSavedConfigs(prev => {
+            const updated = prev.filter(c => c.id !== activeId);
+            AsyncStorage.setItem('@sxb_saved_configs', JSON.stringify(updated)).catch(() => {});
+            return updated;
+          });
+        }
+        setRevokedStatus('expired');
+        addLog('⏰ Configuration expirée — renouvelez votre abonnement');
+      }
+    };
+    checkExpiration();
+    expiryTimerRef.current = setInterval(checkExpiration, 60_000);
+    return () => { if (expiryTimerRef.current) { clearInterval(expiryTimerRef.current); expiryTimerRef.current = null; } };
+  }, [isConnected, isConnecting, addLog]);
 
   const refreshVpnConfig = useCallback(async () => {
     if (!isAuthenticated) return;
@@ -877,6 +1028,30 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           }
         }
 
+        // ── Vérification post-provisionnement : host et protocol ─────────────
+        if (!configToUse.host && configToUse.protocol !== 'wireguard' && configToUse.protocol !== 'singbox') {
+          legacyDebugLog('CONFIG_MISSING_HOST — host absent après provisionnement');
+          addLog('❌ Configuration invalide — champ "host" manquant');
+          setVpnState('error');
+          setIsConnecting(false);
+          return;
+        }
+
+        // Si protocol est vide, détecter depuis les champs présents
+        if (!configToUse.protocol || String(configToUse.protocol).trim() === '') {
+          const detected = detectProtocolFromFields(configToUse);
+          if (detected) {
+            configToUse.protocol = detected;
+            legacyDebugLog(`CONFIG_PROTOCOL_DETECTED proto=${detected}`);
+          }
+        }
+
+        // ── Debug: log field presence (jamais les valeurs) ───────────────────
+        const presentFields = Object.entries(configToUse)
+          .filter(([_, v]) => v !== null && v !== undefined && v !== '')
+          .map(([k, _]) => k);
+        legacyDebugLog(`CONFIG_FIELDS_PRESENT fields=[${presentFields.join(',')}]`);
+
         // ── Validation de complétude avec le gardien unifié ───────────────────
         const completeness = isCompleteOfflineConfig(configToUse);
         legacyDebugLog(`CONFIG_READY hasHost=${completeness.hasHost} hasCreds=${completeness.hasCreds} missing=[${completeness.missing.join(',')}]`);
@@ -1044,7 +1219,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       hasValidConfig,
       activeConnection,
       stepLogs,
-      savedConfigs, activeConfigId, switchConfig,
+      savedConfigs, activeConfigId, switchConfig, isSwitchingConfig,
+      quotaData,
       revokedStatus,
       logs:          vpnLogs,
       traffic:       trafficStats,
