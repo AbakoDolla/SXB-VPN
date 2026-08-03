@@ -1,6 +1,6 @@
 /**
  * RBAC Middleware - Role Based Access Control
- * Supports: SUPER_ADMIN, ADMIN, SUPPORT, RESELLER
+ * Supports: OWNER (racine, au-dessus de SUPER_ADMIN), SUPER_ADMIN, ADMIN, SUPPORT, RESELLER
  */
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
@@ -21,8 +21,8 @@ export interface AuthRequest extends Request {
   user?: AuthUser;
 }
 
-// Role hierarchy: SUPER_ADMIN > ADMIN > SUPPORT > RESELLER
-export type RoleType = "SUPER_ADMIN" | "ADMIN" | "SUPPORT" | "RESELLER";
+// Role hierarchy: OWNER > SUPER_ADMIN > ADMIN > SUPPORT > RESELLER
+export type RoleType = "OWNER" | "SUPER_ADMIN" | "ADMIN" | "SUPPORT" | "RESELLER";
 
 export async function authenticateUser(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -41,9 +41,9 @@ export async function authenticateUser(req: AuthRequest, res: Response, next: Ne
       if (!user) { res.status(401).json({ error: "USER_NOT_FOUND", message: "Utilisateur non trouve" }); return; }
       if (user.status !== "active") { res.status(403).json({ error: "ACCOUNT_DISABLED", message: "Compte desactive" }); return; }
       
-      // SUPER_ADMIN gets all permissions automatically
+      // SUPER_ADMIN / OWNER get all permissions automatically
       let permissions = user.role.permissions.map((rp: any) => rp.permission.name);
-      if (user.role.name === "SUPER_ADMIN") {
+      if (user.role.name === "SUPER_ADMIN" || user.role.name === "OWNER") {
         const allPerms = await prisma.permission.findMany();
         permissions = allPerms.map(p => p.name);
       }
@@ -65,8 +65,8 @@ export function authorizeRole(...allowedRoles: RoleType[]) {
   return (req: AuthRequest, res: Response, next: NextFunction): void => {
     if (!req.user) { res.status(401).json({ error: "UNAUTHORIZED", message: "Auth requise" }); return; }
     
-    // SUPER_ADMIN can do everything
-    if (req.user.role === "SUPER_ADMIN") {
+    // OWNER (racine) et SUPER_ADMIN peuvent tout faire — POINT UNIQUE DE BYPASS.
+    if (req.user.role === "OWNER" || req.user.role === "SUPER_ADMIN") {
       next();
       return;
     }
@@ -83,8 +83,8 @@ export function authorizePermission(...requiredPermissions: string[]) {
   return (req: AuthRequest, res: Response, next: NextFunction): void => {
     if (!req.user) { res.status(401).json({ error: "UNAUTHORIZED", message: "Auth requise" }); return; }
     
-    // SUPER_ADMIN bypasses permission checks
-    if (req.user.role === "SUPER_ADMIN") {
+    // OWNER (racine) et SUPER_ADMIN bypassent les vérifications — POINT UNIQUE DE BYPASS.
+    if (req.user.role === "OWNER" || req.user.role === "SUPER_ADMIN") {
       next();
       return;
     }

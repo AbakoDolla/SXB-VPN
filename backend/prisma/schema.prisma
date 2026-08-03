@@ -31,7 +31,7 @@ model User {
 
 model Role {
   id          String           @id @default(uuid())
-  name        String           @unique // SUPER_ADMIN, ADMIN, SUPPORT, RESELLER
+  name        String           @unique // OWNER (racine, invisible), SUPER_ADMIN, ADMIN, SUPPORT, RESELLER
   description String?
   permissions RolePermission[]
   users       User[]
@@ -165,15 +165,23 @@ model Voucher {
 }
 
 model AuditLog {
-  id        String   @id @default(uuid())
-  userId    String?
-  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
-  action    String
-  type      String   // info, warning, danger, success
-  ipAddress String?
-  timestamp DateTime @default(now())
+  id               String   @id @default(uuid())
+  userId           String?
+  user             User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action           String
+  type             String   // info, warning, danger, success
+  ipAddress        String?
+  timestamp        DateTime @default(now())
+  visibleOwnerOnly Boolean  @default(false) // vrai = entrée visible UNIQUEMENT par le rôle OWNER
 
   @@map("audit_logs")
+}
+
+model Setting {
+  key   String @id
+  value String
+
+  @@map("settings")
 }
 
 model SupportTicket {

@@ -105,7 +105,7 @@ function tlsUpgrade(
       ALPNProtocols: ['http/1.1'],
       timeout: timeoutMs,
       servernameCallback: undefined as any,
-    });
+    } as tls.ConnectionOptions);
     const to = setTimeout(() => { s.destroy(); resolve({ error: `timeout TLS après ${timeoutMs}ms` }); }, timeoutMs);
     s.once('secureConnect', () => {
       clearTimeout(to);

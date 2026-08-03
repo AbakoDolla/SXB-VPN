@@ -36,6 +36,7 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
     let isActive = false;
     let permissions: string[] = [];
 
+    let dbRoleName: string | null = null;
     if (prisma) {
       const user = await prisma.user.findUnique({
         where: { id: decoded.userId },
@@ -51,13 +52,22 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
       });
       if (user && user.status === "active") {
         isActive = true;
-        permissions = user.role.permissions.map((rp) => rp.permission.name);
+        dbRoleName = user.role.name;
+        if (dbRoleName === "OWNER") {
+          // Le rôle racine OWNER dispose de toutes les permissions (bypass centralisé).
+          const allPerms = await prisma.permission.findMany();
+          permissions = allPerms.map((p) => p.name);
+        } else {
+          permissions = user.role.permissions.map((rp) => rp.permission.name);
+        }
       }
     } else {
       // In-Memory Database Fallback
       const user = inMemoryDb.users.find((u) => u.id === decoded.userId);
       if (user && user.status === "active") {
         isActive = true;
+        const roleRecord = inMemoryDb.roles.find((r) => r.id === user.roleId);
+        dbRoleName = roleRecord?.name ?? null;
         const rolePermIds = inMemoryDb.rolePermissions
           .filter((rp) => rp.roleId === user.roleId)
           .map((rp) => rp.permissionId);
@@ -73,6 +83,9 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
 
     req.user = {
       ...decoded,
+      // Le rôle réel vient de la base (jamais du JWT seul) : suspension, changement
+      // de rôle ou promotion OWNER sont pris en compte immédiatement.
+      role: dbRoleName ?? decoded.role,
       permissions,
     };
     next();
@@ -87,6 +100,10 @@ export function requireRole(allowedRoles: string[]) {
     if (!req.user) {
       return res.status(401).json({ error: "errors.auth.unauthorized", message: "Authorization required" });
     }
+    // POINT UNIQUE DE BYPASS : le rôle racine OWNER accède à tout endpoint.
+    if (req.user.role === "OWNER") {
+      return next();
+    }
     if (!allowedRoles.includes(req.user.role)) {
       return res.status(403).json({ error: "errors.auth.forbidden", message: "Insufficient privilege role level" });
     }
@@ -99,6 +116,10 @@ export function requirePermission(permissionName: string) {
   return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     if (!req.user) {
       return res.status(401).json({ error: "errors.auth.unauthorized", message: "Authorization required" });
+    }
+    // POINT UNIQUE DE BYPASS : le rôle racine OWNER accède à tout endpoint.
+    if (req.user.role === "OWNER") {
+      return next();
     }
     const hasPermission = req.user.permissions.includes(permissionName) || req.user.role === "ADMIN" || req.user.role === "SUPER_ADMIN";
     if (!hasPermission) {

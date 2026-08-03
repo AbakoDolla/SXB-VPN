@@ -6,8 +6,16 @@
 import { Router, Response } from "express";
 import { prisma, inMemoryDb } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
+import { isOwnerRequest } from "../middleware/rbac/owner";
 
 const router = Router();
+
+// Stealth : pour les non-OWNER, les KPIs excluent les comptes OWNER et leurs
+// clients/revendeurs. Filtrage à la lecture uniquement — aucune suppression.
+function stealthWhere(requesterIsOwner: boolean): any {
+  if (requesterIsOwner) return undefined;
+  return { user: { role: { name: { not: "OWNER" } } } };
+}
 
 // GET /api/dashboard/stats — KPIs principaux
 router.get("/stats", requireAuth, requirePermission("analytics.read"), async (req: AuthenticatedRequest, res: Response) => {
@@ -20,17 +28,23 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
     let totalVouchers = 0;
     let redeemedVouchers = 0;
 
+    const requesterIsOwner = isOwnerRequest(req);
     if (prisma) {
+      const clientStealthWhere = stealthWhere(requesterIsOwner);
+      const resellerStealthWhere = stealthWhere(requesterIsOwner);
       [activeUsers, expiredAccounts, activeServers, activeResellers, totalVouchers, redeemedVouchers] = await Promise.all([
-        prisma.vpnClient.count({ where: { status: "active" } }),
-        prisma.vpnClient.count({ where: { status: "expired" } }),
+        prisma.vpnClient.count({ where: { status: "active", ...clientStealthWhere } }),
+        prisma.vpnClient.count({ where: { status: "expired", ...clientStealthWhere } }),
         prisma.vPSServer.count({ where: { status: "online" } }),
-        prisma.reseller.count({ where: { status: "active" } }),
+        prisma.reseller.count({ where: { status: "active", ...resellerStealthWhere } }),
         prisma.voucher.count(),
         prisma.voucher.count({ where: { isRedeemed: true } }),
       ]);
 
-      const clients = await prisma.vpnClient.findMany({ select: { quotaUsed: true } });
+      const clients = await prisma.vpnClient.findMany({
+        select: { quotaUsed: true },
+        ...(clientStealthWhere ? { where: clientStealthWhere } : {}),
+      });
       consumedTrafficBytes = clients.reduce((acc, c) => acc + c.quotaUsed, BigInt(0));
     } else {
       activeUsers = inMemoryDb.vpnClients.filter((c) => c.status === "active").length;
@@ -71,10 +85,13 @@ router.get("/traffic", requireAuth, requirePermission("analytics.read"), async (
       return d;
     });
 
+    const requesterIsOwner = isOwnerRequest(req);
+    const clientStealthWhere = stealthWhere(requesterIsOwner);
     if (prisma) {
       // Récupérer tous les clients avec leurs données de quota et date de mise à jour
       const clients = await prisma.vpnClient.findMany({
         select: { quotaUsed: true, quotaTotal: true, updatedAt: true, createdAt: true },
+        ...(clientStealthWhere ? { where: clientStealthWhere } : {}),
       });
 
       const data = days.map((day) => {
@@ -128,6 +145,8 @@ router.get("/users", requireAuth, requirePermission("analytics.read"), async (re
       return d;
     });
 
+    const requesterIsOwner = isOwnerRequest(req);
+    const clientStealthWhere = stealthWhere(requesterIsOwner);
     if (prisma) {
       // Compter les clients VPN créés jusqu'à chaque jour (cumulatif)
       const data = await Promise.all(
@@ -135,7 +154,7 @@ router.get("/users", requireAuth, requirePermission("analytics.read"), async (re
           const dayEnd = new Date(day);
           dayEnd.setHours(23, 59, 59, 999);
           const count = await prisma!.vpnClient.count({
-            where: { createdAt: { lte: dayEnd } },
+            where: { createdAt: { lte: dayEnd }, ...clientStealthWhere },
           });
           return {
             time: day.toLocaleDateString("fr-FR", { weekday: "short" }),

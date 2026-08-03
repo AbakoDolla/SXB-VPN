@@ -1,4 +1,5 @@
 export enum UserRole {
+  OWNER = "OWNER",
   SUPER_ADMIN = "SUPER_ADMIN",
   ADMIN = "ADMIN",
   SUPPORT = "SUPPORT",
@@ -104,4 +105,6 @@ export interface ActivityLog {
   user: string;
   action: string;
   type: "info" | "warning" | "success" | "danger";
+  ipAddress?: string;
+  visibleOwnerOnly?: boolean;
 }

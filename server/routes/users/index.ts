@@ -188,7 +188,7 @@ router.post("/", authenticateUser, async (req: AuthRequest, res: Response) => {
     });
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return res.status(400).json({ error: "Validation error", details: error.errors });
+      return res.status(400).json({ error: "Validation error", details: error.issues });
     }
     console.error("Create user error:", error);
     res.status(500).json({ error: "Erreur serveur" });

@@ -89,6 +89,7 @@ export interface DbVoucher {
   durationDays: number;
   isRedeemed: boolean;
   redeemedBy?: string | null;
+  status?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -100,6 +101,12 @@ export interface DbAuditLog {
   type: string;
   ipAddress?: string | null;
   timestamp: Date;
+  visibleOwnerOnly?: boolean;
+}
+
+export interface DbSetting {
+  key: string;
+  value: string;
 }
 
 export interface DbSubscription {
@@ -153,6 +160,7 @@ class InMemoryDatabase {
   auditLogs: DbAuditLog[] = [];
   subscriptions: DbSubscription[] = [];
   vpnProfiles: DbVpnProfile[] = [];
+  settings: Record<string, string> = {};
 
   constructor() {
     this.seed();
@@ -296,8 +304,15 @@ if (config.DATABASE_URL) {
 export { prisma };
 
 // Helper function to log backend activity inside the DB
-export async function logDbActivity(userId: string | null, action: string, type: string, ipAddress?: string) {
+export async function logDbActivity(
+  userId: string | null,
+  action: string,
+  type: string,
+  ipAddress?: string,
+  options?: { visibleOwnerOnly?: boolean }
+) {
   const timestamp = new Date();
+  const visibleOwnerOnly = options?.visibleOwnerOnly ?? false;
   if (prisma) {
     try {
       await prisma.auditLog.create({
@@ -307,6 +322,7 @@ export async function logDbActivity(userId: string | null, action: string, type:
           type,
           ipAddress,
           timestamp,
+          visibleOwnerOnly,
         },
       });
       return;
@@ -323,5 +339,6 @@ export async function logDbActivity(userId: string | null, action: string, type:
     type,
     ipAddress,
     timestamp,
+    visibleOwnerOnly,
   });
 }

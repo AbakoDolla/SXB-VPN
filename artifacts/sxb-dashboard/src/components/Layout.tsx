@@ -5,7 +5,7 @@ import {
   Settings, LogOut, UserCog, Terminal, Code2, Zap, Box,
   Menu, X, UserPlus, HeadphonesIcon, BadgePercent, Activity,
   ChevronDown, Network, Radio, Cpu, BarChart3, Ticket,
-  PackageOpen, GitBranch,
+  PackageOpen, GitBranch, ScrollText,
 } from 'lucide-react';
 
 interface LayoutProps {
@@ -15,6 +15,7 @@ interface LayoutProps {
   currentUser: User;
   onUserChanged: (user: User) => void;
   onLogout: () => void;
+  maintenanceEnabled?: boolean;
 }
 
 interface NavLeaf {
@@ -43,6 +44,7 @@ export default function Layout({
   onNavigate,
   currentUser,
   onLogout,
+  maintenanceEnabled = false,
 }: LayoutProps) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
@@ -79,13 +81,15 @@ export default function Layout({
 
   const role = currentUser.role;
 
+  const ALL_ROLES = ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'];
+
   const navStructure: NavEntry[] = [
     {
       kind: 'leaf',
       id: 'dashboard',
       label: 'Dashboard',
       icon: LayoutDashboard,
-      roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'],
+      roles: ALL_ROLES,
     },
     {
       kind: 'group',
@@ -93,13 +97,13 @@ export default function Layout({
       label: 'Clients',
       icon: Users,
       color: 'text-cyan-400',
-      roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'],
+      roles: ALL_ROLES,
       items: [
-        { kind: 'leaf', id: 'clients', label: 'Clients VPN', icon: Users, roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'] },
-        { kind: 'leaf', id: 'subscriptions', label: 'Forfaits Data', icon: PackageOpen, roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
-        { kind: 'leaf', id: 'devices', label: 'Appareils', icon: Smartphone, roles: ['SUPER_ADMIN', 'ADMIN'] },
-        { kind: 'leaf', id: 'tokens', label: 'Tokens SXB', icon: Key, roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'] },
-        { kind: 'leaf', id: 'vouchers', label: 'Vouchers', icon: BadgePercent, roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'] },
+        { kind: 'leaf', id: 'clients', label: 'Clients VPN', icon: Users, roles: ALL_ROLES },
+        { kind: 'leaf', id: 'subscriptions', label: 'Forfaits Data', icon: PackageOpen, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
+        { kind: 'leaf', id: 'devices', label: 'Appareils', icon: Smartphone, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
+        { kind: 'leaf', id: 'tokens', label: 'Tokens SXB', icon: Key, roles: ALL_ROLES },
+        { kind: 'leaf', id: 'vouchers', label: 'Vouchers', icon: BadgePercent, roles: ALL_ROLES },
       ],
     },
     {
@@ -108,13 +112,13 @@ export default function Layout({
       label: 'VPN Engine',
       icon: Network,
       color: 'text-violet-400',
-      roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT'],
+      roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'],
       items: [
-        { kind: 'leaf', id: 'vpn-profiles', label: 'Profils VPN', icon: GitBranch, roles: ['SUPER_ADMIN', 'ADMIN'] },
-        { kind: 'leaf', id: 'vpn-engine', label: 'SSH & Configs', icon: Terminal, roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
-        { kind: 'leaf', id: 'xray', label: 'Xray / Protocols', icon: Zap, roles: ['SUPER_ADMIN', 'ADMIN'] },
-        { kind: 'leaf', id: 'singbox', label: 'Sing-box', icon: Box, roles: ['SUPER_ADMIN', 'ADMIN'] },
-        { kind: 'leaf', id: 'payload', label: 'Payload Manager', icon: Code2, roles: ['SUPER_ADMIN', 'ADMIN'] },
+        { kind: 'leaf', id: 'vpn-profiles', label: 'Profils VPN', icon: GitBranch, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
+        { kind: 'leaf', id: 'vpn-engine', label: 'SSH & Configs', icon: Terminal, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
+        { kind: 'leaf', id: 'xray', label: 'Xray / Protocols', icon: Zap, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
+        { kind: 'leaf', id: 'singbox', label: 'Sing-box', icon: Box, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
+        { kind: 'leaf', id: 'payload', label: 'Payload Manager', icon: Code2, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
       ],
     },
     {
@@ -123,11 +127,11 @@ export default function Layout({
       label: 'Monitoring',
       icon: Activity,
       color: 'text-emerald-400',
-      roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT'],
+      roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'],
       items: [
-        { kind: 'leaf', id: 'sessions', label: 'Sessions', icon: Radio, roles: ['SUPER_ADMIN', 'ADMIN'] },
-        { kind: 'leaf', id: 'analytics', label: 'Logs & Activité', icon: BarChart3, roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
-        { kind: 'leaf', id: 'servers', label: 'Serveurs', icon: Server, roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
+        { kind: 'leaf', id: 'sessions', label: 'Sessions', icon: Radio, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
+        { kind: 'leaf', id: 'analytics', label: 'Logs & Activité', icon: BarChart3, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
+        { kind: 'leaf', id: 'servers', label: 'Serveurs', icon: Server, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
       ],
     },
     {
@@ -136,11 +140,11 @@ export default function Layout({
       label: 'Administration',
       icon: Shield,
       color: 'text-amber-400',
-      roles: ['SUPER_ADMIN', 'ADMIN'],
+      roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'],
       items: [
-        { kind: 'leaf', id: 'accounts', label: 'Comptes', icon: UserPlus, roles: ['SUPER_ADMIN', 'ADMIN'] },
-        { kind: 'leaf', id: 'resellers', label: 'Revendeurs', icon: UserCog, roles: ['SUPER_ADMIN', 'ADMIN'] },
-        { kind: 'leaf', id: 'rbac', label: 'Rôles & Permissions', icon: Shield, roles: ['SUPER_ADMIN', 'ADMIN'] },
+        { kind: 'leaf', id: 'accounts', label: 'Comptes', icon: UserPlus, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
+        { kind: 'leaf', id: 'resellers', label: 'Revendeurs', icon: UserCog, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
+        { kind: 'leaf', id: 'rbac', label: 'Rôles & Permissions', icon: Shield, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
       ],
     },
     {
@@ -148,14 +152,22 @@ export default function Layout({
       id: 'support',
       label: 'Support',
       icon: HeadphonesIcon,
-      roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT'],
+      roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'],
     },
     {
       kind: 'leaf',
       id: 'settings',
       label: 'Paramètres',
       icon: Settings,
-      roles: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'],
+      roles: ALL_ROLES,
+    },
+    // ── Rôle racine OWNER uniquement ─────────────────────────────────────────
+    {
+      kind: 'leaf',
+      id: 'owner-log',
+      label: 'Journal propriétaire',
+      icon: ScrollText,
+      roles: ['OWNER'],
     },
   ];
 
@@ -176,6 +188,7 @@ export default function Layout({
   }
 
   const roleColors: Record<string, string> = {
+    OWNER: 'text-rose-300 bg-rose-500/10 border-rose-500/30',
     SUPER_ADMIN: 'text-red-400 bg-red-500/10 border-red-500/20',
     ADMIN: 'text-cyan-400 bg-cyan-500/10 border-cyan-500/20',
     SUPPORT: 'text-amber-400 bg-amber-500/10 border-amber-500/20',
@@ -183,6 +196,7 @@ export default function Layout({
   };
 
   const roleLabels: Record<string, string> = {
+    OWNER: 'Propriétaire',
     SUPER_ADMIN: 'Super Admin',
     ADMIN: 'Administrateur',
     SUPPORT: 'Support',
@@ -339,6 +353,16 @@ export default function Layout({
         </div>
 
         <main className="flex-1 overflow-y-auto p-4 md:p-5 lg:p-6">
+          {/* Bannière persistante « MODE MAINTENANCE ACTIF » — OWNER uniquement */}
+          {maintenanceEnabled && role === 'OWNER' && (
+            <div className="mb-4 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs font-bold tracking-widest uppercase">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500" />
+              </span>
+              Mode maintenance actif
+            </div>
+          )}
           {children}
         </main>
       </div>

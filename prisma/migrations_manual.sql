@@ -49,3 +49,21 @@ BEGIN
     ALTER TABLE vpn_profiles ADD COLUMN "validationMessage" TEXT;
   END IF;
 END $$;
+
+-- ── Mission OWNER : rôle racine OWNER (au-dessus de SUPER_ADMIN) ─────────────
+-- Idempotent : INSERT … ON CONFLICT DO NOTHING. Aucune donnée existante n'est
+-- modifiée. gen_random_uuid() est natif PostgreSQL 13+.
+INSERT INTO roles (id, name, description)
+SELECT gen_random_uuid(), 'OWNER', 'Propriétaire racine — au-dessus de SUPER_ADMIN'
+ON CONFLICT (name) DO NOTHING;
+
+-- ── Mission OWNER : traçabilité de sécurité (AuditLog) ──────────────────────
+-- visibleOwnerOnly=true → entrée visible UNIQUEMENT par le rôle OWNER.
+-- Les routes /api/audit-logs excluent ces entrées pour les non-OWNER.
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS "visibleOwnerOnly" BOOLEAN NOT NULL DEFAULT false;
+
+-- ── Mission OWNER : modèle Setting clé/valeur (mode maintenance) ────────────
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);

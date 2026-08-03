@@ -5,11 +5,11 @@ import { fetchClients } from "../api/clients";
 import { fetchDevices } from "../api/devices";
 import { fetchSessions } from "../api/sessions";
 import { fetchServers } from "../api/servers";
-import { TrafficDataPoint, ActivityLog, VPSServer } from "../types";
+import { TrafficDataPoint, ActivityLog, VPSServer, UserRole } from "../types";
 import {
   Users, Server, RefreshCw, Activity, AlertTriangle, Wifi,
   Clock, ShieldCheck, HardDrive, Cpu, Upload, Download,
-  Database, TrendingUp, Radio, Zap, ArrowUpRight,
+  Database, TrendingUp, Radio, Zap, ArrowUpRight, PauseCircle, PlayCircle, Settings2,
 } from "lucide-react";
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -18,6 +18,9 @@ import {
 
 interface DashboardViewProps {
   onNavigate: (route: string) => void;
+  currentUserRole?: UserRole | string;
+  maintenanceEnabled?: boolean;
+  onMaintenanceToggle?: (enabled: boolean) => Promise<void>;
 }
 
 function StatCard({
@@ -105,8 +108,15 @@ function fmtBytes(bytes: number): string {
   return bytes + ' B';
 }
 
-export default function DashboardView({ onNavigate }: DashboardViewProps) {
+export default function DashboardView({
+  onNavigate,
+  currentUserRole,
+  maintenanceEnabled = false,
+  onMaintenanceToggle,
+}: DashboardViewProps) {
   const { t } = useTranslation();
+  const [maintenanceBusy, setMaintenanceBusy] = useState(false);
+  const isOwner = currentUserRole === UserRole.OWNER;
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [stats, setStats] = useState<DashboardStats | null>(null);
@@ -208,6 +218,47 @@ export default function DashboardView({ onNavigate }: DashboardViewProps) {
               {a.msg}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Carte Exploitation — OWNER uniquement (pause/play du dashboard) */}
+      {isOwner && (
+        <div className={`rounded-xl border p-4 transition-all ${
+          maintenanceEnabled ? 'bg-rose-500/[0.07] border-rose-500/30' : 'bg-[#0a0d14] border-[#1a1f2e]'
+        }`}>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${maintenanceEnabled ? 'bg-rose-500/15' : 'bg-emerald-500/10'}`}>
+                <Settings2 className={`w-4 h-4 ${maintenanceEnabled ? 'text-rose-400' : 'text-emerald-400'}`} />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-white">Exploitation</p>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  {maintenanceEnabled
+                    ? 'MODE MAINTENANCE ACTIF — le dashboard est en pause pour tous les autres rôles'
+                    : 'Service en ligne — le dashboard est accessible à tous les rôles'}
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2 shrink-0">
+              <button
+                onClick={async () => { setMaintenanceBusy(true); try { await onMaintenanceToggle?.(true); } finally { setMaintenanceBusy(false); } }}
+                disabled={maintenanceBusy || maintenanceEnabled}
+                className="flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-rose-500/10 text-rose-400 border border-rose-500/25 hover:bg-rose-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
+              >
+                <PauseCircle className="w-4 h-4" />
+                Mettre le dashboard en pause
+              </button>
+              <button
+                onClick={async () => { setMaintenanceBusy(true); try { await onMaintenanceToggle?.(false); } finally { setMaintenanceBusy(false); } }}
+                disabled={maintenanceBusy || !maintenanceEnabled}
+                className="flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 hover:bg-emerald-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
+              >
+                <PlayCircle className="w-4 h-4" />
+                Remettre en service
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

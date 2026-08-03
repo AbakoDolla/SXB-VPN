@@ -1,6 +1,7 @@
 import { Router, Response } from "express";
 import { prisma, logDbActivity } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
+import { canSeeUser } from "../middleware/rbac/owner";
 
 const router = Router();
 
@@ -9,11 +10,14 @@ router.get("/", requireAuth, requirePermission("clients.view"), async (req: Auth
   try {
     if (!prisma) return res.status(503).json({ error: "Database unavailable" });
     const sessions = await (prisma as any).activationSession.findMany({
-      include: { client: { include: { user: true } } },
+      include: { client: { include: { user: { include: { role: true } } } } },
       orderBy: { activationDate: "desc" },
     });
+    // Stealth : sessions des clients rattachés à un compte OWNER invisibles
+    // pour les non-OWNER (filtrage à la lecture uniquement).
+    const visibleSessions = sessions.filter((s: any) => canSeeUser(req, s.client?.user));
     return res.json({
-      sessions: sessions.map((s: any) => ({
+      sessions: visibleSessions.map((s: any) => ({
         id: s.id,
         clientId: s.clientId,
         clientName: s.client?.user?.name || "Inconnu",

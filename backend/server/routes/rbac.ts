@@ -2,6 +2,7 @@ import { Router, Response } from "express";
 import { z } from "zod";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { requireAuth, requireRole, AuthenticatedRequest } from "../middleware/auth";
+import { isOwnerRequest, OWNER_ROLE } from "../middleware/rbac/owner";
 
 const router = Router();
 
@@ -33,7 +34,9 @@ router.get("/roles", requireAuth, async (req: AuthenticatedRequest, res: Respons
         return { id: r.id, name: r.name, description: r.description, permissions: perms };
       });
     }
-    return res.json(roles);
+    // Stealth : le rôle OWNER n'apparaît que pour un OWNER.
+    const visibleRoles = isOwnerRequest(req) ? roles : roles.filter((r) => r.name !== OWNER_ROLE);
+    return res.json(visibleRoles);
   } catch (err) {
     console.error("Fetch RBAC roles error:", err);
     return res.status(500).json({ error: "errors.server", message: "Failed to fetch roles" });
