@@ -226,15 +226,30 @@ object SecurityModule {
     }
 
     // ── Masquage de données sensibles dans les logs ───────────────────────────
+    // Couvre TOUS les champs listés dans la mission :
+    //   IP, host, serveur, payload, password, username, token, UUID, URL, JWT,
+    //   deviceId, SXB-USER-*, secrets
     fun maskSensitive(text: String): String {
         var result = text
-        // Masquer les IPs/hosts dans les logs
-        result = result.replace(Regex("""(\d{1,3}\.){3}\d{1,3}"""), "*.*.*.* ")
-        result = result.replace(Regex("""password[=:]\s*\S+""", RegexOption.IGNORE_CASE), "password=********")
-        result = result.replace(Regex("""username[=:]\s*\S+""", RegexOption.IGNORE_CASE), "username=********")
-        result = result.replace(Regex("""key[=:]\s*[A-Za-z0-9+/=]{10,}""", RegexOption.IGNORE_CASE), "key=********")
-        result = result.replace(Regex("""uuid[=:]\s*[\w-]+""", RegexOption.IGNORE_CASE), "uuid=********")
-        result = result.replace(Regex("""(token|secret|access_token|private_key)[=:]\s*\S+""", RegexOption.IGNORE_CASE), "$1=********")
+        // IPv4 + port optionnel
+        result = result.replace(Regex("""(\d{1,3}\.){3}\d{1,3}(:\d+)?"""), "[ip:****]")
+        // IPv6
+        result = result.replace(Regex("""[0-9a-fA-F]{0,4}(:[0-9a-fA-F]{0,4}){2,7}"""), "[ipv6:****]")
+        // UUID (clé VLESS, etc.)
+        result = result.replace(Regex("""[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"""), "[uuid:****]")
+        // SXB-USER-XXXX-XXXX-XXXX tokens
+        result = result.replace(Regex("""SXB-[A-Z]+-[A-Z0-9]+-[A-Z0-9]+-[A-Z0-9]+""", RegexOption.IGNORE_CASE), "[token:****]")
+        // JWT (Bearer ou brut)
+        result = result.replace(Regex("""Bearer\s+[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+""", RegexOption.IGNORE_CASE), "Bearer [jwt:****]")
+        result = result.replace(Regex("""eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"""), "[jwt:****]")
+        // URL complète
+        result = result.replace(Regex("""https?://[^\s"']+"""), "[url:****]")
+        // Domaines hostname.tld
+        result = result.replace(Regex("""[a-zA-Z0-9-]{2,63}\.[a-zA-Z]{2,6}(:\d+)?"""), "[host:****]")
+        // password=, key=, token=, secret=, uuid=, username=, deviceId=, payload=
+        result = result.replace(Regex("""(password|passwd|key|token|secret|uuid|user|username|deviceId|payload|host|server)[=:]\s*\S+""", RegexOption.IGNORE_CASE), "$1=[****]")
+        // Base64 longue (> 20 chars)
+        result = result.replace(Regex("""[A-Za-z0-9+/]{20,}={0,2}"""), "[b64:****]")
         return result
     }
 }

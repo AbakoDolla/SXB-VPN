@@ -14,6 +14,8 @@ import { useAuthContext } from "@/contexts/AuthContext";
 import { useVpnContext, formatBytes, formatSpeed } from "@/contexts/VpnContext";
 import { ProtocolDetector } from "@/services/protocolDetector";
 import Colors from "@/constants/colors";
+import StepLogs from "@/components/StepLogs";
+import { useTranslation } from "@/localization";
 import type { VpnConnection } from "@/types/api";
 
 const { width } = Dimensions.get("window");
@@ -137,7 +139,8 @@ function VpnConnectionCard({ conn, isActive }: { conn: VpnConnection; isActive: 
     ? Math.min((conn.quota.usedGB / conn.quota.totalGB) * 100, 100)
     : 0;
 
-  const statusLabel = isExpired ? "Expiré" : isRevoked ? "Révoqué" : isSuspended ? "Suspendu" : isActive ? "Actif" : "Actif";
+  const { t } = useTranslation();
+  const statusLabel = isExpired ? t('connection_expired') : isRevoked ? t('connection_revoked') : isSuspended ? t('connection_suspended') : isActive ? t('connection_active') : t('connection_active');
 
   return (
     <View style={[connStyles.card, isActive && connStyles.cardActive]}>
@@ -200,7 +203,9 @@ export default function HomeScreen() {
     hasValidConfig, activeConnection,
     connect, disconnect, trafficStats: traffic,
     refreshVpnConfig, syncFromConnection,
+    stepLogs, savedConfigs, activeConfigId, switchConfig, revokedStatus,
   } = useVpnContext();
+  const { t } = useTranslation();
 
   const [logsVisible, setLogsVisible] = useState(false);
   const [timer, setTimer] = useState(0);
@@ -445,6 +450,71 @@ export default function HomeScreen() {
           </View>
         </View>
 
+        {/* Revocation Warning Banner */}
+        {revokedStatus !== 'none' && (
+          <View style={[styles.statsCard, { borderColor: Colors.disconnected + '60', backgroundColor: Colors.disconnectedDim }]}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+              <Ionicons name="warning" size={24} color={Colors.disconnected} />
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 14, fontWeight: '700', color: Colors.disconnected, fontFamily: 'Inter_700Bold' }}>
+                  {revokedStatus === 'revoked' ? t('connection_revoked') : revokedStatus === 'suspended' ? t('connection_suspended') : revokedStatus === 'expired' ? t('connection_expired') : t('connection_disabled')}
+                </Text>
+                <Text style={{ fontSize: 12, color: Colors.textSecondary, fontFamily: 'Inter_400Regular', marginTop: 2 }}>
+                  {revokedStatus === 'revoked' ? 'Cette configuration a été révoquée par l\'administrateur.' : revokedStatus === 'suspended' ? 'Votre compte est suspendu. Contactez le support.' : revokedStatus === 'expired' ? 'Votre abonnement a expiré. Renouvelez-le.' : 'Cette configuration est désactivée.'}
+                </Text>
+              </View>
+            </View>
+          </View>
+        )}
+
+        {/* Saved Configs Selector (Multi-config, max 2) */}
+        {savedConfigs.length > 1 && (
+          <View style={styles.statsCard}>
+            <Text style={styles.cardLabel}>{t('config_switch')}</Text>
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+              {savedConfigs.map((cfg) => (
+                <Pressable
+                  key={cfg.id}
+                  onPress={() => switchConfig(cfg.id)}
+                  style={{
+                    flex: 1,
+                    paddingVertical: 10,
+                    paddingHorizontal: 12,
+                    borderRadius: 12,
+                    borderWidth: 1,
+                    borderColor: cfg.id === activeConfigId ? Colors.primary + '60' : Colors.border,
+                    backgroundColor: cfg.id === activeConfigId ? Colors.primaryDim : Colors.bgCard,
+                    alignItems: 'center',
+                    gap: 4,
+                  }}
+                >
+                  <Ionicons
+                    name={cfg.id === activeConfigId ? 'shield-checkmark' : 'shield-outline'}
+                    size={18}
+                    color={cfg.id === activeConfigId ? Colors.primary : Colors.textMuted}
+                  />
+                  <Text style={{ fontSize: 12, fontWeight: '600', color: cfg.id === activeConfigId ? Colors.primary : Colors.textSecondary, fontFamily: 'Inter_600SemiBold' }} numberOfLines={1}>
+                    {cfg.name}
+                  </Text>
+                  <Text style={{ fontSize: 10, color: Colors.textMuted, fontFamily: 'Inter_400Regular' }}>
+                    {cfg.protocol}
+                  </Text>
+                  <View style={{
+                    paddingHorizontal: 6,
+                    paddingVertical: 2,
+                    borderRadius: 6,
+                    backgroundColor: cfg.id === activeConfigId ? Colors.connected + '20' : Colors.textMuted + '15',
+                  }}>
+                    <Text style={{ fontSize: 9, color: cfg.id === activeConfigId ? Colors.connected : Colors.textMuted, fontFamily: 'Inter_600SemiBold' }}>
+                      {cfg.id === activeConfigId ? t('config_active') : t('config_inactive')}
+                    </Text>
+                  </View>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+        )}
+
         {/* VPN Button Area */}
         <View style={styles.vpnSection}>
           {/* Status label */}
@@ -501,11 +571,18 @@ export default function HomeScreen() {
             <Text style={[styles.actionBtnText, { color: "#000" }]}>{btnLabel}</Text>
           </Pressable>
 
+          {/* StepLogs — modern step-by-step progress */}
+          {isConnecting && stepLogs.length > 0 && (
+            <View style={{ width: '100%', marginTop: 8 }}>
+              <StepLogs steps={stepLogs} visible={true} />
+            </View>
+          )}
+
           {/* Logs link */}
           {(isConnecting || isConnected) && (
             <Pressable onPress={() => setLogsVisible(true)} style={styles.logsLink}>
               <Ionicons name="terminal-outline" size={14} color={Colors.primary} />
-              <Text style={styles.logsLinkText}>Voir les logs de connexion</Text>
+              <Text style={styles.logsLinkText}>{isConnecting ? 'Logs en cours...' : 'Voir les logs de connexion'}</Text>
             </Pressable>
           )}
         </View>
@@ -611,7 +688,7 @@ export default function HomeScreen() {
         {/* ── VPN Connections ─────────────────────────────────────────── */}
         <View style={styles.statsCard}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-            <Text style={styles.cardLabel}>VPN CONNECTIONS</Text>
+            <Text style={styles.cardLabel}>{t('vpn_connections')}</Text>
             <Pressable onPress={fetchConnections} disabled={connectionsLoading} style={{ padding: 4 }}>
               {connectionsLoading
                 ? <ActivityIndicator size="small" color={Colors.primary} />
@@ -624,10 +701,11 @@ export default function HomeScreen() {
             <View style={{ alignItems: "center", paddingVertical: 16 }}>
               <Ionicons name="shield-outline" size={32} color={Colors.textMuted} style={{ marginBottom: 8 }} />
               <Text style={{ fontSize: 13, color: Colors.textMuted, fontFamily: "Inter_400Regular" }}>
-                {connectionsLoading ? "Chargement..." : "Aucune connexion VPN configurée"}
+                {connectionsLoading ? "Chargement..." : t('no_vpn_connections')}
               </Text>
               <Text style={{ fontSize: 11, color: Colors.textMuted, marginTop: 4, fontFamily: "Inter_400Regular" }}>
-                Demandez à votre administrateur de créer un forfait
+                {t('ask_admin_for_plan')}
+
               </Text>
             </View>
           ) : (

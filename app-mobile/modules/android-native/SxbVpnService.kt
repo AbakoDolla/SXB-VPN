@@ -849,6 +849,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private fun startSshTunnel(configJsonStr: String) {
         try {
             broadcastLog("[SXB] Initialisation tunnel SSH...")
+            broadcastLog("[SXB] Préparation de la connexion...")
             broadcastStatus("connecting"); setCurrentState("connecting")
             val cfg = JSONObject(configJsonStr)
 
@@ -1071,6 +1072,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         try {
             Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_TUNNEL_START proto=$protocol")
             broadcastLog("[SXB] Initialisation VPN ${protocol.uppercase()}...")
+            broadcastLog("[SXB] Préparation de la connexion...")
             broadcastStatus("connecting"); setCurrentState("connecting")
 
             val cfg = JSONObject(configJsonStr)
@@ -1154,6 +1156,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_13_VPN_CONNECTED label=$label")
         broadcastLog("[SXB_DEBUG] TUNNEL_READY proto=$label")
         broadcastLog("[SXB_DEBUG] VPN_CONNECTED proto=$label")
+        broadcastLog("[SXB] Tunnel sécurisé prêt")
         broadcastLog("[SXB] ✅ VPN $label actif")
         connectionWatchdog?.interrupt()
         broadcastStatus("connected"); setCurrentState("connected")
@@ -1295,6 +1298,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_6_TUN_CREATING mtu=${options.mtu} autoRoute=${options.autoRoute}")
         broadcastLog("[SXB] Création interface réseau TUN...")
+        broadcastLog("[SXB] Établissement du tunnel sécurisé...")
 
         val builder = Builder()
             .setSession("SXB VPN")

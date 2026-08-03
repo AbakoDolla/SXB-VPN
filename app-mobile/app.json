@@ -2,7 +2,7 @@
   "expo": {
     "name": "SXB VPN",
     "slug": "sxb-mobile",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "sxbvpn",
@@ -28,7 +28,8 @@
     },
     "android": {
       "package": "com.sxbvpn.mobile",
-      "versionCode": 5,
+      "versionCode": 6,
+      "versionName": "1.1.0",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/icon.png",
         "backgroundColor": "#060914"
@@ -42,6 +43,7 @@
         "android.permission.WRITE_EXTERNAL_STORAGE",
         "android.permission.RECEIVE_BOOT_COMPLETED",
         "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
         "android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE",
         "android.permission.BIND_VPN_SERVICE",
         "android.permission.POST_NOTIFICATIONS",
