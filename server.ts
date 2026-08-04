@@ -37,6 +37,7 @@ import xrayRouter from "./server/routes/xray";
 import singboxRouter from "./server/routes/singbox";
 import xpanelRouter from "./server/routes/xpanel";
 import opsRouter from "./server/routes/ops";
+import xapiRouter from "./server/routes/xapi";
 import { maintenanceGuard, MAINTENANCE_PAGE_HTML } from "./server/middleware/maintenance";
 import { getMaintenanceMode } from "./server/services/maintenance";
 
@@ -143,6 +144,14 @@ async function startServer() {
   app.use("/api/app",           appRegisterRouter);
   app.use("/api/provision", provisionRouter);
   app.use("/api/config-test", configTestRouter);
+
+  // ── xapi — endpoints publics légers pour l'app mobile ─────────────────────
+  // Namespace dédié /xapi (hors /api) pour :
+  //   - éviter la maintenanceGuard qui bloque tout /api/* en mode maintenance
+  //   - permettre au client de vérifier une nouvelle version même hors ligne
+  //     partielle (endpoint sans base, sans auth, cache-friendly).
+  // GET /xapi/mobile/app-version → { versionCode, versionName, apkUrl, notes? }
+  app.use("/xapi", xapiRouter);
 
   // Global Error Handler with support for Multilingual Error i18n
   app.use((err: any, req: Request, res: Response, next: NextFunction) => {

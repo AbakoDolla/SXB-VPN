@@ -24,7 +24,7 @@ export default function AppHeader({ showSettings = true }: AppHeaderProps) {
   const { user, accountState } = useAuthContext();
   const { t } = useTranslation();
 
-  const firstName = user?.name?.split(' ')[0] ?? 'Utilisateur';
+  const firstName = user?.name?.split(' ')[0] ?? t('user_default');
   const isActive = accountState?.state === 'ready' || accountState?.state === 'no_package';
   const statusLabel = accountState?.state === 'suspended'
     ? t('account_suspended')
