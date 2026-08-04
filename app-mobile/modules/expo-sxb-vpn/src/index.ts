@@ -31,6 +31,27 @@ export async function getTrafficStats(): Promise<VpnTrafficStats> {
   return SxbVpnNative.getTrafficStats();
 }
 
+export async function getPerAppStats(): Promise<import('./SxbVpn.types').AppTrafficStat[]> {
+  if (!SxbVpnNative || Platform.OS !== 'android') return [];
+  try {
+    return await SxbVpnNative.getPerAppStats();
+  } catch {
+    return [];
+  }
+}
+
+export async function updateNotification(text: string): Promise<boolean> {
+  if (!SxbVpnNative || Platform.OS !== 'android') return true;
+  if (SxbVpnNative.updateNotification) {
+    try {
+      return await SxbVpnNative.updateNotification(text);
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
 /**
  * Demande la permission VPN Android.
  * Sur Android : affiche la popup système VPN si non encore accordée.

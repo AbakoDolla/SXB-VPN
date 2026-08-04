@@ -808,7 +808,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         cleanupStarted.set(false)  // FIX — Réinitialiser le guard cleanup pour cette nouvelle connexion
         running.set(true)
-        trafficManager.start()
+        trafficManager.start(this)
         startConnectionWatchdog()
 
         vpnThread = Thread({ dispatchProtocol(json, proto) }, "SXB-VpnMain")
@@ -1939,6 +1939,18 @@ class SxbVpnService : VpnService(), PlatformInterface {
         )
     }
 
+    fun getPerAppStats(): List<Map<String, Any>> {
+        return trafficManager.getPerAppStats(this).map { info ->
+            mapOf(
+                "packageName"   to info.packageName,
+                "appName"       to info.appName,
+                "uploadBytes"   to info.uploadBytes,
+                "downloadBytes" to info.downloadBytes,
+                "totalBytes"    to info.totalBytes
+            )
+        }
+    }
+
     // ═════════════════════════════════════════════════════════════════════════
     // KILL SWITCH
     // ═════════════════════════════════════════════════════════════════════════
@@ -1993,7 +2005,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             .build()
     }
 
-    private fun updateNotification(text: String) {
+    fun updateNotification(text: String) {
         getSystemService(NotificationManager::class.java)?.notify(NOTIF_ID, buildNotification(text))
     }
 

@@ -166,6 +166,9 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
     if (sub.status === 'suspended') {
       return res.status(403).json({ error: 'Abonnement suspendu' });
     }
+    if (sub.client?.status === 'suspended' || sub.client?.status === 'revoked' || sub.client?.status === 'disabled') {
+      return res.status(403).json({ error: 'Compte client suspendu ou révoqué' });
+    }
 
     // 4. Vérification de la limite d'appareils (schéma : deviceId unique sur Subscription)
     const registeredDeviceId = sub.deviceId as string | null;

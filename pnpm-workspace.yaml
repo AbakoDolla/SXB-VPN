@@ -36,6 +36,7 @@ minimumReleaseAgeExclude:
 
 packages:
   - app-mobile
+  - backend
   - artifacts/*
   - lib/*
   - lib/integrations/*

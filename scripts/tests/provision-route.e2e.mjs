@@ -318,6 +318,17 @@ for (const status of ['suspended', 'revoked']) {
   ok(`Abonnement ${status} → HTTP 403`);
 }
 
+// ── 5b. Compte client suspendu / révoqué → 403 ───────────────────────────────
+for (const clientStatus of ['suspended', 'revoked']) {
+  resetFixtures({ client: { id: 'client-001', status: clientStatus, user: { id: 'user-001' } } });
+  const res = await fetch(`${BASE}/activate`, {
+    method: 'POST', headers: authHeader(),
+    body: JSON.stringify({ dataToken: DATA_TOKEN, deviceId: DEVICE_ID }),
+  });
+  assert.equal(res.status, 403);
+  ok(`Compte client ${clientStatus} → HTTP 403`);
+}
+
 // ── 6. Token inconnu → 404 ───────────────────────────────────────────────────
 resetFixtures();
 {

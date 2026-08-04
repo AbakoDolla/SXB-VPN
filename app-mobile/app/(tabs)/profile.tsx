@@ -6,11 +6,13 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import Constants from "expo-constants";
 import { useAuthContext } from "@/contexts/AuthContext";
+import { useVpnContext } from "@/contexts/VpnContext";
 import Colors from "@/constants/colors";
 
 export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const { user, accountState, logout } = useAuthContext();
+  const { activeConnection } = useVpnContext();
 
   const handleLogout = () => {
     Alert.alert(
@@ -30,19 +32,34 @@ export default function ProfileScreen() {
     .toUpperCase()
     .slice(0, 2);
 
+  const isAccountActive =
+    accountState?.state === "ready" ||
+    accountState?.state === "connected" ||
+    (activeConnection && activeConnection.status === "active");
+
+  const effectiveState =
+    accountState?.state === "suspended" ? "suspended"
+    : accountState?.state === "expired" ? "expired"
+    : isAccountActive ? "ready"
+    : accountState?.state || "no_package";
+
   const stateColor = {
     ready: Colors.connected,
+    active: Colors.connected,
+    connected: Colors.connected,
     no_package: Colors.warning,
     expired: Colors.disconnected,
     suspended: Colors.disconnected,
-  }[accountState?.state || "no_package"] ?? Colors.textMuted;
+  }[effectiveState] ?? Colors.textMuted;
 
   const stateLabel = {
-    ready: "Compte actif",
+    ready: "Actif",
+    active: "Actif",
+    connected: "Actif",
     no_package: "Sans forfait",
     expired: "Expiré",
     suspended: "Suspendu",
-  }[accountState?.state || "no_package"] ?? "—";
+  }[effectiveState] ?? "—";
 
   return (
     <LinearGradient colors={["#060914", "#0A1025", "#060914"]} style={styles.container}>
@@ -80,21 +97,23 @@ export default function ProfileScreen() {
             <View style={styles.statsRow}>
               <View style={styles.statItem}>
                 <Text style={styles.statValue}>
-                  {Math.round(accountState.quotaRemainingGb ?? 0)} GB
-                </Text>
-                <Text style={styles.statLabel}>Restant</Text>
-              </View>
-              <View style={styles.statDivider} />
-              <View style={styles.statItem}>
-                <Text style={styles.statValue}>
                   {Math.round(accountState.quotaTotalGb ?? 0)} GB
                 </Text>
                 <Text style={styles.statLabel}>Total</Text>
               </View>
               <View style={styles.statDivider} />
               <View style={styles.statItem}>
-                <Text style={styles.statValue}>{accountState.deviceLimit ?? 1}</Text>
-                <Text style={styles.statLabel}>Appareils</Text>
+                <Text style={styles.statValue}>
+                  {Math.round(accountState.quotaUsedGb ?? 0)} GB
+                </Text>
+                <Text style={styles.statLabel}>Utilisé</Text>
+              </View>
+              <View style={styles.statDivider} />
+              <View style={styles.statItem}>
+                <Text style={styles.statValue}>
+                  {Math.round(accountState.quotaRemainingGb ?? 0)} GB
+                </Text>
+                <Text style={styles.statLabel}>Restant</Text>
               </View>
             </View>
             {accountState.expireAt && (
