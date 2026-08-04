@@ -16,6 +16,7 @@ import { useVpnContext, formatBytes, formatSpeed } from "@/contexts/VpnContext";
 import { ProtocolDetector } from "@/services/protocolDetector";
 import Colors from "@/constants/colors";
 import StepLogs from "@/components/StepLogs";
+import UpdatePrompt from "@/components/UpdatePrompt";
 import { useTranslation } from "@/localization";
 import type { VpnConnection } from "@/types/api";
 
@@ -56,6 +57,7 @@ function VpnLogsModal({
   visible: boolean; onClose: () => void;
 }) {
   const { vpnLogs: logs, isConnected, isConnecting, selectedProtocol } = useVpnContext();
+  const { t } = useTranslation();
   const scrollRef = useRef<ScrollView>(null);
 
   useEffect(() => {
@@ -87,16 +89,16 @@ function VpnLogsModal({
           <View style={logStyles.handle} />
           <View style={logStyles.header}>
             <View style={[logStyles.statusDot, { backgroundColor: isConnected ? Colors.connected : isConnecting ? Colors.primary : Colors.textMuted }]} />
-            <Text style={logStyles.title}>Logs moteur VPN (sing-box)</Text>
-            <Pressable onPress={copyAllLogs} style={logStyles.copyBtn} disabled={logs.length === 0} accessibilityLabel="Copier tous les logs">
+            <Text style={logStyles.title}>{t('logs_engine_title')}</Text>
+            <Pressable onPress={copyAllLogs} style={logStyles.copyBtn} disabled={logs.length === 0} accessibilityLabel={t('logs_copy_a11y')}>
               <Ionicons name="copy-outline" size={15} color={logs.length === 0 ? Colors.textMuted : Colors.primary} />
-              <Text style={[logStyles.copyBtnText, logs.length === 0 && { color: Colors.textMuted }]}>Copier</Text>
+              <Text style={[logStyles.copyBtnText, logs.length === 0 && { color: Colors.textMuted }]}>{t('logs_copy_all')}</Text>
             </Pressable>
             <Pressable onPress={onClose}>
               <Ionicons name="close" size={22} color={Colors.textSecondary} />
             </Pressable>
           </View>
-          <Text style={logStyles.hint}>Une touche « Copier » = tout l'historique (partage ou presse-papiers), prêt à coller.</Text>
+          <Text style={logStyles.hint}>{t('logs_copy_hint')}</Text>
           <ScrollView
             ref={scrollRef}
             style={logStyles.logScroll}
@@ -104,7 +106,7 @@ function VpnLogsModal({
           >
             {logs.length === 0 ? (
               <View style={logStyles.logLine}>
-                <Text style={logStyles.logText}>En attente de connexion...</Text>
+                <Text style={logStyles.logText}>{t('logs_waiting')}</Text>
               </View>
             ) : logs.map((line, i) => (
               <View key={i} style={logStyles.logLine}>
@@ -310,6 +312,8 @@ export default function HomeScreen() {
   const glowAnim  = useRef(new Animated.Value(0.5)).current;
   const ring1     = useRef(new Animated.Value(1)).current;
   const ring2     = useRef(new Animated.Value(1)).current;
+  // E4 — micro-animation de pression sur le bouton power (250 ms max).
+  const pressAnim = useRef(new Animated.Value(1)).current;
 
   const btnState = getButtonState(accountState, isConnected, isConnecting, hasValidConfig, activeConnection, quotaData ? quotaData.remainingQuota <= 0 : false);
 
@@ -401,12 +405,12 @@ export default function HomeScreen() {
   }[btnState];
 
   const btnLabel = {
-    no_account:  "Activer mon compte",
-    no_package:  "Activer un forfait",
-    connect:     "Se connecter",
-    connecting:  "Connexion...",
-    connected:   "Déconnecter",
-    expired:     "Forfait expiré",
+    no_account:  t('activate_account'),
+    no_package:  t('activate_plan'),
+    connect:     t('connect'),
+    connecting:  t('connecting'),
+    connected:   t('disconnect'),
+    expired:     t('expired_plan'),
   }[btnState];
 
   const btnIcon = {
@@ -445,8 +449,8 @@ export default function HomeScreen() {
         {/* Header */}
         <View style={styles.headerRow}>
           <View>
-            <Text style={styles.greeting}>Bonjour 👋</Text>
-            <Text style={styles.userName}>{user?.name || "Utilisateur"}</Text>
+            <Text style={styles.greeting}>{t('greeting_default')}</Text>
+            <Text style={styles.userName}>{user?.name || t('user_default')}</Text>
           </View>
           <View style={{ flexDirection: "row", gap: 10 }}>
             <Pressable onPress={handleRefresh} style={styles.notifBtn} disabled={isRefreshing}>
@@ -472,7 +476,7 @@ export default function HomeScreen() {
                   {revokedStatus === 'revoked' ? t('connection_revoked') : revokedStatus === 'suspended' ? t('connection_suspended') : revokedStatus === 'expired' ? t('connection_expired') : t('connection_disabled')}
                 </Text>
                 <Text style={{ fontSize: 12, color: Colors.textSecondary, fontFamily: 'Inter_400Regular', marginTop: 2 }}>
-                  {revokedStatus === 'revoked' ? 'Cette configuration a été révoquée par l\'administrateur.' : revokedStatus === 'suspended' ? 'Votre compte est suspendu. Contactez le support.' : revokedStatus === 'expired' ? 'Votre abonnement a expiré. Renouvelez-le.' : 'Cette configuration est désactivée.'}
+                  {revokedStatus === 'revoked' ? t('revocation_msg_revoked') : revokedStatus === 'suspended' ? t('revocation_msg_suspended') : revokedStatus === 'expired' ? t('revocation_msg_expired') : t('revocation_msg_disabled')}
                 </Text>
               </View>
             </View>
@@ -566,9 +570,16 @@ export default function HomeScreen() {
             {/* Glow */}
             <Animated.View style={[styles.btnGlow, { backgroundColor: btnColor + "18", opacity: glowAnim }]} />
 
-            {/* Main button */}
-            <Pressable onPress={handleVpnButton} disabled={isConnecting}>
-              <Animated.View style={[styles.vpnBtn, { borderColor: btnColor + "60", transform: [{ scale: pulseAnim }] }]}>
+            {/* Main button — micro-animation « press » (léger scale down) */}
+            <Pressable
+              onPress={handleVpnButton}
+              disabled={isConnecting}
+              onPressIn={() => Animated.spring(pressAnim, { toValue: 0.96, useNativeDriver: true, speed: 40, bounciness: 6 }).start()}
+              onPressOut={() => Animated.spring(pressAnim, { toValue: 1, useNativeDriver: true, speed: 30, bounciness: 8 }).start()}
+              accessibilityRole="button"
+              accessibilityLabel={btnLabel}
+            >
+              <Animated.View style={[styles.vpnBtn, { borderColor: btnColor + "60", transform: [{ scale: Animated.multiply(pulseAnim, pressAnim) }] }]}>
                 <LinearGradient
                   colors={[btnColor + "30", btnColor + "10"]}
                   style={styles.vpnBtnInner}
@@ -599,20 +610,23 @@ export default function HomeScreen() {
             <Text style={[styles.actionBtnText, { color: "#000" }]}>{btnLabel}</Text>
           </Pressable>
 
-          {/* StepLogs — modern step-by-step progress */}
-          {/* F4 — logs sur clic uniquement : StepLogs n'apparaît que si
-              l'utilisateur a ouvert les logs (visible={logsVisible}). */}
-          {isConnecting && stepLogs.length > 0 && (
+          {/* E1 — StepLogs est le SEUL parcours visible pendant la connexion :
+              affiché systématiquement dès que des étapes existent, avec messages
+              grand public + animations douces (250 ms) + état final « ✅ Connecté ».
+              Les logs techniques bruts restent dispo UNIQUEMENT via le bouton
+              « Voir les logs de connexion » (setLogsVisible n'est jamais appelé
+              automatiquement — clic explicite uniquement). */}
+          {(isConnecting || isConnected) && stepLogs.length > 0 && (
             <View style={{ width: '100%', marginTop: 8 }}>
-              <StepLogs steps={stepLogs} visible={logsVisible} />
+              <StepLogs steps={stepLogs} visible={true} />
             </View>
           )}
 
-          {/* Logs link */}
+          {/* Logs link — le SEUL point d'ouverture des logs techniques bruts */}
           {(isConnecting || isConnected) && (
             <Pressable onPress={() => setLogsVisible(true)} style={styles.logsLink}>
               <Ionicons name="terminal-outline" size={14} color={Colors.primary} />
-              <Text style={styles.logsLinkText}>{isConnecting ? 'Logs en cours...' : 'Voir les logs de connexion'}</Text>
+              <Text style={styles.logsLinkText}>{isConnecting ? t('logs_in_progress') : t('view_connection_logs')}</Text>
             </Pressable>
           )}
         </View>
@@ -620,7 +634,7 @@ export default function HomeScreen() {
         {/* Stats Row — Quota depuis accountState (fallback rapide, valeurs entières) */}
         {quota && quota.total > 0 && (
           <View style={styles.statsCard}>
-            <Text style={styles.cardLabel}>QUOTA DU FORFAIT</Text>
+            <Text style={styles.cardLabel}>{t('card_quota_plan')}</Text>
             <View style={styles.statsRow}>
               <View style={styles.statItem}>
                 <Text style={styles.statValue}>{quota.remain} GB</Text>
@@ -660,7 +674,7 @@ export default function HomeScreen() {
         {/* Traffic stats card — affiché uniquement quand connecté */}
         {isConnected && (
           <View style={styles.statsCard}>
-            <Text style={styles.cardLabel}>TRAFIC EN TEMPS RÉEL</Text>
+            <Text style={styles.cardLabel}>{t('card_traffic_realtime')}</Text>
             <View style={styles.statsRow}>
               <View style={styles.statItem}>
                 <Text style={styles.statValue}>{formatBytes(traffic.uploadBytes)}</Text>
@@ -685,7 +699,7 @@ export default function HomeScreen() {
         {/* F5 — Consommation par application */}
         {isConnected && (
           <View style={styles.statsCard}>
-            <Text style={styles.cardLabel}>CONSOMMATION PAR APPLICATION</Text>
+            <Text style={styles.cardLabel}>{t('card_traffic_per_app')}</Text>
             {perAppTraffic && perAppTraffic.length > 0 ? (
               perAppTraffic.map((appStat, index) => (
                 <View
@@ -719,7 +733,7 @@ export default function HomeScreen() {
               ))
             ) : (
               <Text style={{ fontSize: 13, color: Colors.textMuted, paddingVertical: 8, fontFamily: 'Inter_400Regular' }}>
-                Aucune donnée applicative disponible
+                {t('no_app_data')}
               </Text>
             )}
           </View>
@@ -727,10 +741,10 @@ export default function HomeScreen() {
 
         {/* Infos Connexion & Système */}
         <View style={styles.statsCard}>
-          <Text style={styles.cardLabel}>INFORMATIONS DE CONNEXION</Text>
+          <Text style={styles.cardLabel}>{t('card_connection_info')}</Text>
           <View style={styles.infoGrid}>
             <View style={styles.infoRow}>
-              <Text style={styles.infoKey}>Adresse IP</Text>
+              <Text style={styles.infoKey}>{t('info_ip_address')}</Text>
               <Text style={styles.infoVal}>{connectedIp}</Text>
             </View>
             <View style={styles.infoRow}>
@@ -743,7 +757,7 @@ export default function HomeScreen() {
               </Text>
             </View>
             <View style={styles.infoRow}>
-              <Text style={styles.infoKey}>Ping</Text>
+              <Text style={styles.infoKey}>{t('info_ping')}</Text>
               <Text style={styles.infoVal}>{ping ? `${ping} ms` : "—"}</Text>
             </View>
             <View style={styles.infoRow}>
@@ -761,7 +775,7 @@ export default function HomeScreen() {
         {/* ── QUOTA CARD ─────────────────────────────────────────────── */}
         {quotaData && quotaData.totalQuota > 0 && (
           <View style={styles.statsCard}>
-            <Text style={styles.cardLabel}>QUOTA DU FORFAIT</Text>
+            <Text style={styles.cardLabel}>{t('card_quota_plan')}</Text>
             {quotaData.remainingQuota <= 0 ? (
               <View style={{ alignItems: "center", paddingVertical: 8 }}>
                 <Ionicons name="warning-outline" size={24} color={Colors.disconnected} />
@@ -826,7 +840,7 @@ export default function HomeScreen() {
             <View style={{ alignItems: "center", paddingVertical: 16 }}>
               <Ionicons name="shield-outline" size={32} color={Colors.textMuted} style={{ marginBottom: 8 }} />
               <Text style={{ fontSize: 13, color: Colors.textMuted, fontFamily: "Inter_400Regular" }}>
-                {connectionsLoading ? "Chargement..." : t('no_vpn_connections')}
+                {connectionsLoading ? t('loading') : t('no_vpn_connections')}
               </Text>
               <Text style={{ fontSize: 11, color: Colors.textMuted, marginTop: 4, fontFamily: "Inter_400Regular" }}>
                 {t('ask_admin_for_plan')}
@@ -847,9 +861,9 @@ export default function HomeScreen() {
         {/* Quick actions */}
         <View style={styles.quickRow}>
           {[
-            { icon: "gift-outline", label: "Activer un forfait", action: () => router.push("/plan"), color: Colors.purple },
-            { icon: "time-outline", label: "Historique", action: () => router.push("/(tabs)/history"), color: Colors.primary },
-            { icon: "headset-outline", label: "Support", action: () => router.push("/support"), color: Colors.connected },
+            { icon: "gift-outline", label: t('activate_plan'), action: () => router.push("/plan"), color: Colors.purple },
+            { icon: "time-outline", label: t('history'), action: () => router.push("/(tabs)/history"), color: Colors.primary },
+            { icon: "headset-outline", label: t('support'), action: () => router.push("/support"), color: Colors.connected },
           ].map((item) => (
             <Pressable key={item.label} onPress={item.action} style={styles.quickItem}>
               <View style={[styles.quickIcon, { backgroundColor: item.color + "15", borderColor: item.color + "30" }]}>
@@ -861,11 +875,16 @@ export default function HomeScreen() {
         </View>
       </ScrollView>
 
-      {/* Logs Modal */}
+      {/* Logs Modal — ouvert UNIQUEMENT sur clic explicite */}
       <VpnLogsModal
         visible={logsVisible}
         onClose={() => setLogsVisible(false)}
       />
+
+      {/* E3 — Mise à jour in-app (comparaison versionCode, modale non bloquante).
+          Vérifie au montage + toutes les 24 h. Signatures stables ⇒ install
+          in-place, sans désinstaller (données conservées). */}
+      <UpdatePrompt />
     </LinearGradient>
   );
 }

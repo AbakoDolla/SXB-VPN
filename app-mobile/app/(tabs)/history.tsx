@@ -6,6 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import apiClient from "@/services/apiClient";
 import type { HistoryItem } from "@/types/api";
 import Colors from "@/constants/colors";
+import { useTranslation } from "@/localization";
 
 const ICON_MAP: Record<string, { icon: string; color: string }> = {
   connect:          { icon: "shield-checkmark", color: Colors.connected },
@@ -60,6 +61,7 @@ const rowStyles = StyleSheet.create({
 
 export default function HistoryScreen() {
   const insets = useSafeAreaInsets();
+  const { t } = useTranslation();
   // useAuthContext available if needed for user-specific features
   const [items, setItems]   = useState<HistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -89,16 +91,16 @@ export default function HistoryScreen() {
   });
 
   const FILTERS: { key: "all" | "connections" | "activations"; label: string }[] = [
-    { key: "all",         label: "Tout" },
-    { key: "connections", label: "Connexions" },
-    { key: "activations", label: "Activations" },
+    { key: "all",         label: t('filter_all') },
+    { key: "connections", label: t('filter_connections') },
+    { key: "activations", label: t('filter_activations') },
   ];
 
   return (
     <LinearGradient colors={["#060914", "#0A1025", "#060914"]} style={styles.container}>
       {/* Header */}
       <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
-        <Text style={styles.title}>Historique</Text>
+        <Text style={styles.title}>{t('history')}</Text>
         <View style={styles.filterRow}>
           {FILTERS.map((f) => (
             <Pressable

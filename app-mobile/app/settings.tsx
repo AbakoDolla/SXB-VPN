@@ -16,6 +16,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAuthContext } from "@/contexts/AuthContext";
 import { useVpnContext } from "@/contexts/VpnContext";
 import { useLanguageContext } from "@/contexts/LanguageContext";
+import { useTranslation } from "@/localization";
 import Colors from "@/constants/colors";
 
 // ── Row component ─────────────────────────────────────────────────────────────
@@ -218,6 +219,7 @@ export default function SettingsScreen() {
     traffic,
   } = useVpnContext();
   const { language, setLanguage } = useLanguageContext();
+  const { t } = useTranslation();
 
   // State
   const [notifPush,   setNotifPush]   = useState(true);
@@ -289,9 +291,9 @@ export default function SettingsScreen() {
     setRefreshingConfig(true);
     try {
       await refreshVpnConfig();
-      Alert.alert("✅ Configuration mise à jour", "La configuration VPN a été synchronisée depuis le serveur.");
+      Alert.alert("✅ " + t('refresh_config_success'), t('config_synced_title'));
     } catch {
-      Alert.alert("❌ Erreur", "Impossible de synchroniser la configuration. Vérifiez votre connexion.");
+      Alert.alert("❌ " + t('error_generic'), t('config_sync_error_msg'));
     } finally {
       setRefreshingConfig(false);
     }
@@ -306,24 +308,24 @@ export default function SettingsScreen() {
     setKillSwitch(v);
     await setKsCtx(v);
     if (v) {
-      Alert.alert("Kill Switch activé", "Toute connexion internet sera bloquée si le VPN se déconnecte.");
+      Alert.alert(t('kill_switch_enabled_title'), t('kill_switch_enabled_msg'));
     }
   };
 
   const handleClearData = () => {
     Alert.alert(
-      "Effacer les données locales",
-      "Cette action supprime la configuration VPN, les logs et les préférences locales. Votre compte ne sera pas supprimé.",
+      t('clear_local_data_title'),
+      t('clear_local_data_msg'),
       [
-        { text: "Annuler", style: "cancel" },
+        { text: t('cancel'), style: "cancel" },
         {
-          text: "Effacer", style: "destructive", onPress: async () => {
+          text: t('clear'), style: "destructive", onPress: async () => {
             setClearing(true);
             const keys = ["@sxb_vpn_config","@sxb_vpn_connected","@sxb_vpn_protocol",
               "@sxb_connection_uri","@sxb_pin","@sxb_kill_switch","@sxb_auto_reconnect"];
             await AsyncStorage.multiRemove(keys);
             setClearing(false);
-            Alert.alert("Données effacées", "Les données locales ont été supprimées.");
+            Alert.alert(t('data_cleared'), t('data_cleared_msg'));
           }
         },
       ]
@@ -332,12 +334,12 @@ export default function SettingsScreen() {
 
   const handleLogout = () => {
     Alert.alert(
-      "Se déconnecter",
-      "Votre session locale sera effacée.",
+      t('logout'),
+      t('logout_confirm_local_short'),
       [
-        { text: "Annuler", style: "cancel" },
+        { text: t('cancel'), style: "cancel" },
         {
-          text: "Se déconnecter", style: "destructive",
+          text: t('logout'), style: "destructive",
           onPress: () => logout().then(() => router.replace("/activate")),
         },
       ]
@@ -349,11 +351,11 @@ export default function SettingsScreen() {
   // Account state display
   const acctStatus = accountState?.state;
   const acctBadge = {
-    ready: { text: "Actif", color: Colors.connected },
-    no_package: { text: "Sans forfait", color: Colors.warning },
-    expired: { text: "Expiré", color: Colors.disconnected },
-    suspended: { text: "Suspendu", color: Colors.disconnected },
-  }[acctStatus || "no_package"] || { text: "Inconnu", color: Colors.textMuted };
+    ready: { text: t('active'), color: Colors.connected },
+    no_package: { text: t('status_no_package'), color: Colors.warning },
+    expired: { text: t('expired'), color: Colors.disconnected },
+    suspended: { text: t('suspended_status'), color: Colors.disconnected },
+  }[acctStatus || "no_package"] || { text: t('status_unknown'), color: Colors.textMuted };
 
   const formatExpiry = () => {
     if (!accountState?.expireAt) return "—";

@@ -4,18 +4,22 @@ import { Tabs, router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import Colors from "@/constants/colors";
+import { useTranslation } from "@/localization";
 
 type TabName = "index" | "history" | "profile" | "notifications";
 
-const TAB_ITEMS: { name: TabName; label: string; icon: string; iconFocused: string }[] = [
-  { name: "index",         label: "Accueil",   icon: "home-outline",         iconFocused: "home" },
-  { name: "history",       label: "Historique",icon: "time-outline",          iconFocused: "time" },
-  { name: "profile",       label: "Profil",    icon: "person-outline",        iconFocused: "person" },
-  { name: "notifications", label: "Alertes",   icon: "notifications-outline", iconFocused: "notifications" },
+type TabItem = { name: TabName; labelKey: 'home' | 'history' | 'profile' | 'alerts_tab'; icon: string; iconFocused: string };
+
+const TAB_ITEMS: TabItem[] = [
+  { name: "index",         labelKey: 'home',       icon: "home-outline",         iconFocused: "home" },
+  { name: "history",       labelKey: 'history',    icon: "time-outline",          iconFocused: "time" },
+  { name: "profile",       labelKey: 'profile',    icon: "person-outline",        iconFocused: "person" },
+  { name: "notifications", labelKey: 'alerts_tab', icon: "notifications-outline", iconFocused: "notifications" },
 ];
 
 function CustomTabBar({ state, descriptors, navigation }: any) {
   const insets = useSafeAreaInsets();
+  const { t } = useTranslation();
 
   return (
     <View style={[styles.tabBar, { paddingBottom: Math.max(insets.bottom, 12) }]}>
@@ -44,7 +48,7 @@ function CustomTabBar({ state, descriptors, navigation }: any) {
               color={isFocused ? Colors.primary : Colors.tabInactive}
             />
             <Text style={[styles.tabLabel, { color: isFocused ? Colors.primary : Colors.tabInactive }]}>
-              {tab?.label}
+              {tab ? t(tab.labelKey) : ''}
             </Text>
           </Pressable>
         );

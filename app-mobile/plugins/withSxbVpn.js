@@ -24,6 +24,11 @@ function withVpnManifest(config) {
     const perms = manifest['uses-permission'];
     const vpnPerms = [
       'android.permission.INTERNET',
+      // E3 — Mise à jour in-app : Android >= 8 exige REQUEST_INSTALL_PACKAGES
+      // pour lancer un installer d'APK via IntentLauncher. La demande
+      // « Installer » reste affichée à l'utilisateur (nous ne l'installons pas
+      // silencieusement, la signature stable évite juste la désinstallation).
+      'android.permission.REQUEST_INSTALL_PACKAGES',
       'android.permission.FOREGROUND_SERVICE',
       // FIX — WAKE_LOCK : empêche Android de tuer le service VPN quand l'écran est éteint.
       // Sans ce verrou, le foreground service peut être suspendu par Doze mode, causant
@@ -348,6 +353,63 @@ function withLibboxAar(config) {
   }]);
 }
 
+// ── 6. FileProvider (mise à jour in-app) ─────────────────────────────────────
+// Déclare androidx.core.content.FileProvider avec l'autorité
+// `<package>.provider` et un file_paths.xml minimal exposant le cache privé
+// (où est téléchargé l'APK). Nécessaire pour ouvrir l'installateur via un URI
+// content:// (les file:// sont interdits depuis Android 7 / N).
+//
+// Cible utilisée par UpdatePrompt : FileSystem.getContentUriAsync(uri) génère
+// un content://<package>.provider/... qui pointe dans cache-path/document-path.
+function withFileProvider(config) {
+  return withAndroidManifest(config, (mod) => {
+    const app = mod.modResults.manifest.application?.[0];
+    if (!app) return mod;
+    const packageName = mod.modResults.manifest.$['package'] || config.android?.package || 'com.sxbvpn.mobile';
+    const authority = `${packageName}.provider`;
+
+    if (!app.provider) app.provider = [];
+    if (!app.provider.find((p) => p.$?.['android:authorities'] === authority)) {
+      app.provider.push({
+        $: {
+          'android:name': 'androidx.core.content.FileProvider',
+          'android:authorities': authority,
+          'android:exported': 'false',
+          'android:grantUriPermissions': 'true',
+        },
+        'meta-data': [{
+          $: {
+            'android:name': 'android.support.FILE_PROVIDER_PATHS',
+            'android:resource': '@xml/sxb_file_paths',
+          },
+        }],
+      });
+    }
+    return mod;
+  });
+}
+
+function withFileProviderXml(config) {
+  return withDangerousMod(config, ['android', (cfg) => {
+    const platformRoot = cfg.modRequest.platformProjectRoot;
+    const xmlDir = path.join(platformRoot, 'app', 'src', 'main', 'res', 'xml');
+    fs.mkdirSync(xmlDir, { recursive: true });
+    const xmlPath = path.join(xmlDir, 'sxb_file_paths.xml');
+    // Autoriser cache-path (téléchargement d'APK) + files-path pour compat.
+    // Pas de external-path — l'APK reste dans le sandbox privé de l'app.
+    const content = `<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path name="sxb_cache" path="." />
+    <files-path name="sxb_files" path="." />
+    <external-cache-path name="sxb_ext_cache" path="." />
+</paths>
+`;
+    fs.writeFileSync(xmlPath, content);
+    console.log('[SXB VPN plugin] file_paths.xml écrit → ' + xmlPath);
+    return cfg;
+  }]);
+}
+
 // ── Export composite ──────────────────────────────────────────────────────────
 module.exports = function withSxbVpn(config) {
   config = withVpnManifest(config);
@@ -355,5 +417,7 @@ module.exports = function withSxbVpn(config) {
   config = withMainAppPackage(config);
   config = withJschDependency(config);
   config = withLibboxAar(config);
+  config = withFileProvider(config);
+  config = withFileProviderXml(config);
   return config;
 };
