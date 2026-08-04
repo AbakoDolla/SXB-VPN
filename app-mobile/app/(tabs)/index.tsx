@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Animated, Dimensions, Image, Modal, Pressable,
   ScrollView, Share, StyleSheet, Text, View, ActivityIndicator,
+  PermissionsAndroid, Platform,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -206,9 +207,16 @@ export default function HomeScreen() {
     hasValidConfig, activeConnection,
     connect, disconnect, trafficStats: traffic,
     refreshVpnConfig, syncFromConnection,
-    stepLogs, savedConfigs, activeConfigId, switchConfig, isSwitchingConfig, quotaData, revokedStatus,
+    stepLogs, savedConfigs, activeConfigId, switchConfig, isSwitchingConfig, quotaData, revokedStatus, perAppTraffic,
   } = useVpnContext();
   const { t } = useTranslation();
+
+  useEffect(() => {
+    // F6 — demander POST_NOTIFICATIONS au runtime (sans casser si refusé)
+    if (Platform.OS === 'android' && Platform.Version >= 33) {
+      PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS).catch(() => {});
+    }
+  }, []);
 
   const [logsVisible, setLogsVisible] = useState(false);
   const [timer, setTimer] = useState(0);
@@ -671,6 +679,49 @@ export default function HomeScreen() {
                 <Text style={styles.statLabel}>{t('traffic_speed')}</Text>
               </View>
             </View>
+          </View>
+        )}
+
+        {/* F5 — Consommation par application */}
+        {isConnected && (
+          <View style={styles.statsCard}>
+            <Text style={styles.cardLabel}>CONSOMMATION PAR APPLICATION</Text>
+            {perAppTraffic && perAppTraffic.length > 0 ? (
+              perAppTraffic.map((appStat, index) => (
+                <View
+                  key={`${appStat.packageName}-${index}`}
+                  style={{
+                    flexDirection: 'row',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    paddingVertical: 8,
+                    borderBottomWidth: index < perAppTraffic.length - 1 ? StyleSheet.hairlineWidth : 0,
+                    borderBottomColor: Colors.border,
+                  }}
+                >
+                  <View style={{ flex: 1, paddingRight: 8 }}>
+                    <Text style={{ fontSize: 14, color: Colors.text, fontFamily: 'Inter_500Medium' }} numberOfLines={1}>
+                      {appStat.appName || appStat.packageName}
+                    </Text>
+                    <Text style={{ fontSize: 11, color: Colors.textMuted, fontFamily: 'Inter_400Regular' }} numberOfLines={1}>
+                      {appStat.packageName}
+                    </Text>
+                  </View>
+                  <View style={{ alignItems: 'flex-end' }}>
+                    <Text style={{ fontSize: 13, color: Colors.text, fontFamily: 'Inter_600SemiBold' }}>
+                      {formatBytes(appStat.totalBytes)}
+                    </Text>
+                    <Text style={{ fontSize: 11, color: Colors.textSecondary, fontFamily: 'Inter_400Regular' }}>
+                      ↑ {formatBytes(appStat.uploadBytes)} · ↓ {formatBytes(appStat.downloadBytes)}
+                    </Text>
+                  </View>
+                </View>
+              ))
+            ) : (
+              <Text style={{ fontSize: 13, color: Colors.textMuted, paddingVertical: 8, fontFamily: 'Inter_400Regular' }}>
+                Aucune donnée applicative disponible
+              </Text>
+            )}
           </View>
         )}
 

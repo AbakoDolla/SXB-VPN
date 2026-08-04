@@ -42,6 +42,14 @@ export interface VpnTrafficStats {
   downloadSpeed: number;
 }
 
+export interface AppTrafficStat {
+  packageName: string;
+  appName: string;
+  uploadBytes: number;
+  downloadBytes: number;
+  totalBytes: number;
+}
+
 export interface StartVpnOptions extends VpnProfile {
   profileName?: string;
   dns?: string[];

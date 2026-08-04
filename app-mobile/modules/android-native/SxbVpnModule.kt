@@ -208,6 +208,41 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
         }
     }
 
+    // ── getPerAppStats ────────────────────────────────────────────────────────
+    @ReactMethod
+    fun getPerAppStats(promise: Promise) {
+        try {
+            val service = SxbVpnService.instance
+            val statsList = service?.getPerAppStats() ?: emptyList()
+
+            val array = Arguments.createArray()
+            for (stat in statsList) {
+                val map = Arguments.createMap().apply {
+                    putString("packageName", stat["packageName"] as? String ?: "")
+                    putString("appName",     stat["appName"] as? String ?: "")
+                    putDouble("uploadBytes", (stat["uploadBytes"] as? Long ?: 0L).toDouble())
+                    putDouble("downloadBytes", (stat["downloadBytes"] as? Long ?: 0L).toDouble())
+                    putDouble("totalBytes",  (stat["totalBytes"] as? Long ?: 0L).toDouble())
+                }
+                array.pushMap(map)
+            }
+            promise.resolve(array)
+        } catch (e: Exception) {
+            promise.resolve(Arguments.createArray())
+        }
+    }
+
+    // ── updateNotification ────────────────────────────────────────────────────
+    @ReactMethod
+    fun updateNotification(text: String, promise: Promise) {
+        try {
+            SxbVpnService.instance?.updateNotification(text)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.resolve(false)
+        }
+    }
+
     // ── setKillSwitch ─────────────────────────────────────────────────────────
     @ReactMethod
     fun setKillSwitch(enabled: Boolean) {

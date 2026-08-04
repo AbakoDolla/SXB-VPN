@@ -16,7 +16,7 @@ import React, {
 } from 'react';
 import { legacyDebugLog } from '@/services/secureLogger';
 import {
-  NativeModules, NativeEventEmitter, Platform,
+  NativeModules, NativeEventEmitter, Platform, PermissionsAndroid,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient from '@/services/apiClient';
@@ -77,6 +77,14 @@ export interface TrafficStats {
   downloadSpeed: number;   // bytes/sec
 }
 
+export interface AppTrafficStat {
+  packageName: string;
+  appName: string;
+  uploadBytes: number;
+  downloadBytes: number;
+  totalBytes: number;
+}
+
 // ── StepLogs types ────────────────────────────────────────────────────────────
 
 export interface StepLogItem {
@@ -111,6 +119,7 @@ interface VpnContextType {
   quotaData:          QuotaData | null;
   // Revocation
   revokedStatus:      'none' | 'revoked' | 'suspended' | 'expired' | 'disabled';
+  perAppTraffic:      AppTrafficStat[];
   logs:                string[];
   traffic:             TrafficStats;
   killSwitch:          boolean;
@@ -136,6 +145,7 @@ const VpnContext = createContext<VpnContextType>({
   savedConfigs: [], activeConfigId: null, switchConfig: async () => {}, isSwitchingConfig: false,
   quotaData: null,
   revokedStatus: 'none',
+  perAppTraffic: [],
   logs: [], traffic: DEFAULT_STATS,
   killSwitch: false, autoReconnect: true,
   setKillSwitch: () => {}, setAutoReconnect: () => {},
@@ -169,6 +179,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const [isSwitchingConfig,  setIsSwitchingConfig]     = useState<boolean>(false);
   const [quotaData,          setQuotaData]             = useState<QuotaData | null>(null);
   const [revokedStatus,      setRevokedStatus]        = useState<'none' | 'revoked' | 'suspended' | 'expired' | 'disabled'>('none');
+  const [perAppTraffic,      setPerAppTraffic]        = useState<AppTrafficStat[]>([]);
 
   const trafficTimerRef  = useRef<ReturnType<typeof setInterval> | null>(null);
   const reportTimerRef   = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -403,7 +414,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       if (!completeness.complete) {
         throw new Error(`config cible incomplète (manque : ${completeness.missing.join(', ')})`);
       }
-      const engineProtocol = (merged.protocol || targetConn.technicalProtocol.toLowerCase()).toLowerCase();
+      const engineProtocol = (merged.protocol || targetConn.technicalProtocol || 'vless').toLowerCase();
       const saved = await saveCompleteConfig(merged, engineProtocol, targetConn.id, freshResult.meta.configExpiresAt);
       if (!saved) throw new Error('sauvegarde de la config cible refusée');
       setVpnConfig(merged);
@@ -797,10 +808,20 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         legacyDebugLog('VPN_FAILED status=disconnected');
         addLog('🔴 VPN déconnecté');
         stopTrafficPolling();
-        reportUsageToBackend(0, 0);
-        // F1 — session terminée : remise à zéro des compteurs delta
-        lastReportUpRef.current = 0;
-        lastReportDownRef.current = 0;
+        if (IS_ANDROID && SxbVpnNative?.getTrafficStats) {
+          SxbVpnNative.getTrafficStats().then((stats: any) => {
+            reportUsageToBackend(stats?.uploadBytes || 0, stats?.downloadBytes || 0).finally(() => {
+              lastReportUpRef.current = 0;
+              lastReportDownRef.current = 0;
+            });
+          }).catch(() => {
+            lastReportUpRef.current = 0;
+            lastReportDownRef.current = 0;
+          });
+        } else {
+          lastReportUpRef.current = 0;
+          lastReportDownRef.current = 0;
+        }
       } else if (s === 'error') {
         addStepLog('error', 'step_error', 'error');
         legacyDebugLog('VPN_FAILED status=error');
@@ -842,6 +863,43 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     else stopTrafficPolling();
     return stopTrafficPolling;
   }, [isConnected, startTrafficPolling, stopTrafficPolling]);
+
+  // ── F5 — DATA PAR APPLICATION : agrégation par UID toutes les 30s ──────────
+  useEffect(() => {
+    if (!isConnected || !IS_ANDROID || !SxbVpnNative?.getPerAppStats) {
+      setPerAppTraffic([]);
+      return;
+    }
+    const fetchPerApp = async () => {
+      try {
+        const stats = await SxbVpnNative.getPerAppStats();
+        if (Array.isArray(stats)) {
+          setPerAppTraffic(stats);
+        }
+      } catch { /* ignore */ }
+    };
+    fetchPerApp();
+    const timer = setInterval(fetchPerApp, 30_000);
+    return () => clearInterval(timer);
+  }, [isConnected]);
+
+  // ── F6 — NOTIFICATION D'ÉTAT : statut réel via updateNotification ──────────
+  useEffect(() => {
+    if (!IS_ANDROID || !SxbVpnNative?.updateNotification) return;
+    const updateNativeNotif = async () => {
+      try {
+        if (isConnecting) {
+          await SxbVpnNative.updateNotification('SXB VPN — Connexion…');
+        } else if (isConnected) {
+          const planName = activeConnection?.name || 'SXB VPN';
+          await SxbVpnNative.updateNotification(`SXB VPN — Connecté — ${planName}`);
+        } else {
+          await SxbVpnNative.updateNotification('SXB VPN — Déconnecté');
+        }
+      } catch { /* ignore */ }
+    };
+    updateNativeNotif();
+  }, [isConnected, isConnecting, activeConnection?.name]);
 
   // ── F1 — QUOTA DELTA : envoi au backend en delta uniquement ────────────────
   // delta = max(0, courant - dernier) sur up et down ; on n'envoie QUE si
@@ -892,14 +950,31 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
               }).catch(() => {});
             }
           }
-          // If backend signals quota exhausted, stop VPN
-          if (result?.data?.quotaExhausted) {
-            addLog('❌ Quota épuisé — arrêt du VPN');
+          // F2 a) Surveillance statut compte dans le report trafic (≤60 s) :
+          // si state ∈ {suspended, revok*, expired, disabled} ou quotaExhausted → stopVpn natif,
+          // clearProvisionedConfig, setIsConnected(false), bannière persistante, blocage connect
+          const remoteState = result?.data?.state;
+          const isRevokedState =
+            remoteState === 'suspended' ||
+            remoteState?.startsWith('revok') ||
+            remoteState === 'expired' ||
+            remoteState === 'disabled';
+          if (isRevokedState || result?.data?.quotaExhausted) {
+            const statusToSet = remoteState === 'suspended' ? 'suspended'
+              : remoteState?.startsWith('revok') ? 'revoked'
+              : remoteState === 'expired' ? 'expired'
+              : remoteState === 'disabled' ? 'disabled'
+              : 'expired';
+            addLog(`❌ Compte ${statusToSet} ou quota épuisé — arrêt du VPN`);
             if (IS_ANDROID && SxbVpnNative) {
               try { await SxbVpnNative.stopVpn(); } catch { /* ignore */ }
             }
             setIsConnected(false);
+            setIsConnecting(false);
             setVpnState('disconnected');
+            await AsyncStorage.setItem('@sxb_vpn_connected', 'false').catch(() => {});
+            await clearProvisionedConfig().catch(() => {});
+            setRevokedStatus(statusToSet);
           }
         } catch { /* ignore — report is best-effort */ }
       }
@@ -1068,6 +1143,36 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     if (revokedStatus !== 'none') {
       addLog(`❌ Connexion impossible — compte ${revokedStatus === 'revoked' ? 'révoqué' : revokedStatus === 'suspended' ? 'suspendu' : revokedStatus === 'expired' ? 'expiré' : 'désactivé'}`);
       return;
+    }
+
+    // F2 b) Avant chaque connect() : GET état frais (/mobile/vpn/config) → refus explicite si suspendu/révoqué
+    try {
+      const freshRes = await apiClient.get('/mobile/vpn/config', { timeout: 4000 });
+      const freshState = freshRes?.data?.state;
+      if (
+        freshState === 'suspended' ||
+        freshState?.startsWith('revok') ||
+        freshState === 'expired' ||
+        freshState === 'disabled'
+      ) {
+        const statusToSet = freshState === 'suspended' ? 'suspended'
+          : freshState?.startsWith('revok') ? 'revoked'
+          : freshState === 'expired' ? 'expired'
+          : freshState === 'disabled' ? 'disabled'
+          : 'expired';
+        setRevokedStatus(statusToSet);
+        addLog(`❌ Connexion refusée par le serveur : compte ${statusToSet}`);
+        return;
+      }
+    } catch {
+      // Best-effort en cas de mode hors-ligne
+    }
+
+    // F6 — Demander POST_NOTIFICATIONS au premier connect (sans casser si refusé)
+    if (IS_ANDROID && Platform.Version >= 33) {
+      try {
+        await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
+      } catch { /* ignore */ }
     }
 
     setIsConnecting(true);
@@ -1408,6 +1513,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       savedConfigs, activeConfigId, switchConfig, isSwitchingConfig,
       quotaData,
       revokedStatus,
+      perAppTraffic,
       logs:          vpnLogs,
       traffic:       trafficStats,
       killSwitch,

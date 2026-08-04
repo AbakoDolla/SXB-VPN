@@ -44,20 +44,24 @@ function bytesToGb(bytes: bigint | number | null | undefined): number {
 async function findClientByAccountToken(rawToken: string) {
   const normalized = normalizeToken(rawToken);
   if (prisma) {
-    const clients = await prisma.vpnClient.findMany({ include: { user: true } });
-    return clients.find((c) => normalizeToken(c.token) === normalized) || null;
+    const clients = await (prisma as any).vpnClient.findMany({ include: { user: true, subscriptions: true } });
+    return clients.find((c: any) => normalizeToken(c.token) === normalized) || null;
   }
-  const client = inMemoryDb.vpnClients.find((c) => normalizeToken(c.token) === normalized);
+  const client: any = inMemoryDb.vpnClients.find((c) => normalizeToken(c.token) === normalized);
   if (!client) return null;
   const user = inMemoryDb.users.find((u) => u.id === client.userId);
-  return { ...client, user };
+  const subscriptions = inMemoryDb.subscriptions?.filter((s: any) => s.clientId === client.id) || [];
+  return { ...client, user, subscriptions };
 }
 
 async function findClientByUserId(userId: string) {
   if (prisma) {
-    return (prisma as any).vpnClient.findFirst({ where: { userId }, include: { user: true } });
+    return (prisma as any).vpnClient.findFirst({ where: { userId }, include: { user: true, subscriptions: true } });
   }
-  return inMemoryDb.vpnClients.find((c) => c.userId === userId) || null;
+  const client: any = inMemoryDb.vpnClients.find((c) => c.userId === userId);
+  if (!client) return null;
+  const subscriptions = inMemoryDb.subscriptions?.filter((s: any) => s.clientId === client.id) || [];
+  return { ...client, subscriptions };
 }
 
 // Compute the single source of truth for the mobile "smart button" state.
@@ -76,12 +80,17 @@ function computeAccountState(client: any): {
   const now = Date.now();
   const isExpired = !!client.expireAt && new Date(client.expireAt).getTime() < now;
 
+  // F3 — présence d'une souscription ACTIVE avec plan ⇒ état 'ready'/'active' jamais 'no_package'
+  const hasActiveSubscription = Array.isArray(client.subscriptions) && client.subscriptions.some(
+    (s: any) => s.status === "active" && (Number(s.quotaBytes || 0) > 0 || (s.durationDays && s.durationDays > 0) || s.name || s.plan || s.profileId)
+  );
+
   let state: "no_package" | "ready" | "connected" | "expired" | "suspended" = "no_package";
   if (client.status === "suspended") {
     state = "suspended";
-  } else if (!client.quotaTotal || Number(client.quotaTotal) === 0) {
+  } else if ((!client.quotaTotal || Number(client.quotaTotal) === 0) && !hasActiveSubscription && !client.plan) {
     state = "no_package";
-  } else if (isExpired || quotaRemainingGb <= 0) {
+  } else if (isExpired || (quotaRemainingGb <= 0 && (!hasActiveSubscription || Number(client.quotaTotal || 0) > 0))) {
     state = "expired";
   } else {
     state = "ready"; // vpn_connected is tracked client-side by the native tunnel, "ready" just means eligible
@@ -406,6 +415,13 @@ const sessionSchema = z.object({ action: z.enum(["connect", "disconnect"]) });
 router.post("/vpn/session", async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { action } = sessionSchema.parse(req.body);
+    const client: any = await findClientByUserId(req.user!.userId);
+    if (!client) {
+      return res.status(404).json({ error: "errors.mobile.no_account" });
+    }
+    if (client.status === "suspended" || client.status === "revoked" || client.status === "disabled") {
+      return res.status(403).json({ error: "errors.mobile.account_suspended", message: "Compte suspendu ou révoqué" });
+    }
     await logDbActivity(req.user!.userId, `Mobile VPN session ${action}`, "success", req.ip);
     return res.json({ message: "ok" });
   } catch (err) {
