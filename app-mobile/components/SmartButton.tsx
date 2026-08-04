@@ -83,6 +83,7 @@ export default function SmartButton({ state, onPress, disabled = false }: SmartB
       case 'connecting': return colors.connecting;
       case 'connected': return colors.connected;
       case 'disconnecting': return colors.connecting;
+      case 'exhausted': return colors.destructive;
       case 'expired': return colors.warning;
       case 'suspended': return colors.destructive;
       default: return colors.muted;
@@ -97,6 +98,7 @@ export default function SmartButton({ state, onPress, disabled = false }: SmartB
       case 'connecting': return 'shield';
       case 'connected': return 'shield-checkmark';
       case 'disconnecting': return 'shield';
+      case 'exhausted': return 'alert-circle-outline';
       case 'expired': return 'refresh-circle-outline';
       case 'suspended': return 'alert-circle-outline';
       default: return 'shield-outline';
@@ -111,6 +113,7 @@ export default function SmartButton({ state, onPress, disabled = false }: SmartB
       case 'connecting': return t('connecting');
       case 'connected': return t('disconnect');
       case 'disconnecting': return t('disconnecting');
+      case 'exhausted': return t('quota_exhausted');
       case 'expired': return t('renew_plan');
       case 'suspended': return t('contact_support');
       default: return '';

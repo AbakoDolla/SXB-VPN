@@ -17,6 +17,7 @@ import { useAuthContext } from "@/contexts/AuthContext";
 import { useVpnContext } from "@/contexts/VpnContext";
 import { useLanguageContext } from "@/contexts/LanguageContext";
 import { useTranslation } from "@/localization";
+import { deriveQuota, formatBytes } from "@/services/quotaState";
 import Colors from "@/constants/colors";
 
 // ── Row component ─────────────────────────────────────────────────────────────
@@ -363,8 +364,9 @@ export default function SettingsScreen() {
     return d.toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" });
   };
 
+  const derived = deriveQuota(accountState);
   const quotaUsed = accountState
-    ? `${accountState.quotaUsedGb?.toFixed(1) || 0} / ${accountState.quotaTotalGb?.toFixed(1) || 0} GB`
+    ? `${derived.formattedUsed} / ${derived.formattedTotal}`
     : "—";
 
   return (

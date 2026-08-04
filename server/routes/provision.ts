@@ -156,12 +156,15 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
     if (sub.status === 'revoked') {
       return res.status(403).json({ error: 'Cet abonnement a été révoqué' });
     }
+    if (sub.status === 'exhausted') {
+      return res.status(403).json({ error: 'Quota de cet abonnement épuisé', status: 'exhausted' });
+    }
     if (sub.status === 'expired' || (sub.expireAt && new Date(sub.expireAt) < new Date())) {
       await (prisma as any).subscription.update({
         where: { id: sub.id },
         data:  { status: 'expired' },
       });
-      return res.status(403).json({ error: 'Abonnement expiré' });
+      return res.status(403).json({ error: 'Abonnement expiré', status: 'expired' });
     }
     if (sub.status === 'suspended') {
       return res.status(403).json({ error: 'Abonnement suspendu' });

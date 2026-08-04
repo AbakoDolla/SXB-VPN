@@ -7,12 +7,15 @@ import { router } from "expo-router";
 import Constants from "expo-constants";
 import { useAuthContext } from "@/contexts/AuthContext";
 import { useVpnContext } from "@/contexts/VpnContext";
+import { deriveQuota, formatBytes } from "@/services/quotaState";
 import Colors from "@/constants/colors";
 
 export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const { user, accountState, logout } = useAuthContext();
   const { activeConnection } = useVpnContext();
+
+  const derived = deriveQuota(accountState);
 
   const handleLogout = () => {
     Alert.alert(
@@ -40,6 +43,7 @@ export default function ProfileScreen() {
   const effectiveState =
     accountState?.state === "suspended" ? "suspended"
     : accountState?.state === "expired" ? "expired"
+    : accountState?.state === "exhausted" ? "exhausted"
     : isAccountActive ? "ready"
     : accountState?.state || "no_package";
 
@@ -48,6 +52,7 @@ export default function ProfileScreen() {
     active: Colors.connected,
     connected: Colors.connected,
     no_package: Colors.warning,
+    exhausted: Colors.disconnected,
     expired: Colors.disconnected,
     suspended: Colors.disconnected,
   }[effectiveState] ?? Colors.textMuted;
@@ -57,6 +62,7 @@ export default function ProfileScreen() {
     active: "Actif",
     connected: "Actif",
     no_package: "Sans forfait",
+    exhausted: "Quota épuisé",
     expired: "Expiré",
     suspended: "Suspendu",
   }[effectiveState] ?? "—";
@@ -97,21 +103,21 @@ export default function ProfileScreen() {
             <View style={styles.statsRow}>
               <View style={styles.statItem}>
                 <Text style={styles.statValue}>
-                  {Math.round(accountState.quotaTotalGb ?? 0)} GB
+                  {derived.formattedTotal}
                 </Text>
                 <Text style={styles.statLabel}>Total</Text>
               </View>
               <View style={styles.statDivider} />
               <View style={styles.statItem}>
                 <Text style={styles.statValue}>
-                  {Math.round(accountState.quotaUsedGb ?? 0)} GB
+                  {derived.formattedUsed}
                 </Text>
                 <Text style={styles.statLabel}>Utilisé</Text>
               </View>
               <View style={styles.statDivider} />
               <View style={styles.statItem}>
                 <Text style={styles.statValue}>
-                  {Math.round(accountState.quotaRemainingGb ?? 0)} GB
+                  {derived.formattedRemaining}
                 </Text>
                 <Text style={styles.statLabel}>Restant</Text>
               </View>
@@ -198,7 +204,7 @@ const styles = StyleSheet.create({
   statsRow: { flexDirection: "row", justifyContent: "space-around" },
   statItem: { alignItems: "center", gap: 4 },
   statDivider: { width: 1, backgroundColor: Colors.border },
-  statValue: { fontSize: 22, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold" },
+  statValue: { fontSize: 18, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold" },
   statLabel: { fontSize: 11, color: Colors.textMuted, fontFamily: "Inter_400Regular" },
   expireRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   expireText: { fontSize: 12, color: Colors.textMuted, fontFamily: "Inter_400Regular" },

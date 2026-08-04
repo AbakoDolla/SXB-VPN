@@ -1,20 +1,15 @@
 import React from 'react';
-import { Platform, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 import { Ionicons } from '@expo/vector-icons';
 import { useColors } from '@/hooks/useColors';
 import { useTranslation } from '@/localization';
+import { deriveQuota, formatBytes } from '@/services/quotaState';
 import type { AccountState } from '@/types/api';
 
 interface SubscriptionCardProps {
   accountState: AccountState;
   onAddPlan?: () => void;
-}
-
-function formatQuota(gb: number, t: (key: any) => string): string {
-  if (gb >= 1) return `${gb.toFixed(1)} ${t('gb')}`;
-  if (gb * 1024 >= 1) return `${(gb * 1024).toFixed(0)} ${t('mb')}`;
-  return `${(gb * 1024 * 1024).toFixed(0)} ${t('kb')}`;
 }
 
 function formatDate(iso: string | null, t: (key: any) => string): string {
@@ -36,16 +31,18 @@ export default function SubscriptionCard({ accountState }: SubscriptionCardProps
   const colors = useColors();
   const { t } = useTranslation();
 
-  const { quotaRemainingGb, quotaTotalGb, expireAt, state } = accountState;
+  const derived = deriveQuota(accountState);
+  const { expireAt, state } = accountState;
   const daysLeft = getDaysLeft(expireAt);
   const isExpired = state === 'expired';
-  const ratio = quotaTotalGb > 0 ? Math.min(quotaRemainingGb / quotaTotalGb, 1) : 0;
+  const isExhausted = state === 'exhausted' || derived.isExhausted;
+  const ratio = derived.totalBytes > 0 ? Math.min(derived.remainingBytes / derived.totalBytes, 1) : 0;
 
   const r = (RING_SIZE - STROKE * 2) / 2;
   const circumference = 2 * Math.PI * r;
   const dash = circumference * ratio;
 
-  const ringColor = isExpired
+  const ringColor = isExpired || isExhausted
     ? colors.destructive
     : ratio < 0.2
     ? colors.warning
@@ -59,9 +56,11 @@ export default function SubscriptionCard({ accountState }: SubscriptionCardProps
       <View style={styles.header}>
         <Ionicons name="pie-chart" size={18} color={colors.primary} />
         <Text style={[styles.title, { color: colors.foreground }]}>{t('current_plan')}</Text>
-        {isExpired && (
+        {(isExpired || isExhausted) && (
           <View style={[styles.badge, { backgroundColor: `${colors.destructive}22` }]}>
-            <Text style={[styles.badgeText, { color: colors.destructive }]}>{t('expired')}</Text>
+            <Text style={[styles.badgeText, { color: colors.destructive }]}>
+              {isExhausted ? t('quota_exhausted') : t('expired')}
+            </Text>
           </View>
         )}
       </View>
@@ -103,7 +102,7 @@ export default function SubscriptionCard({ accountState }: SubscriptionCardProps
           <View style={styles.row}>
             <Text style={[styles.label, { color: colors.mutedForeground }]}>{t('quota_remaining')}</Text>
             <Text style={[styles.value, { color: colors.foreground }]}>
-              {formatQuota(quotaRemainingGb, t)}
+              {derived.formattedRemaining}
             </Text>
           </View>
           <View style={[styles.divider, { backgroundColor: colors.border }]} />
