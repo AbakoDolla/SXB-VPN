@@ -97,7 +97,13 @@ export const prisma = {
       return __fixtures.voucher;
     },
   },
-  async $transaction(promises) { return Promise.all(promises); },
+  async $transaction(arg) {
+    if (typeof arg === 'function') {
+      return arg(prisma);
+    }
+    return Promise.all(arg);
+  },
+  async $executeRawUnsafe() { return 1; },
 };
 
 export const inMemoryDb = {

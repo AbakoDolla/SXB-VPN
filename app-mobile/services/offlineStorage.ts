@@ -206,6 +206,11 @@ export async function consumeLocalQuota(bytes: number): Promise<QuotaData | null
 }
 
 /**
+ * Alias export pour la persistance locale à la déconnexion (B2).
+ */
+export const consumeQuotaLocally = consumeLocalQuota;
+
+/**
  * Vérifie si le quota est épuisé.
  * Retourne true si aucun quota n'est enregistré (pas de blocage par défaut).
  */

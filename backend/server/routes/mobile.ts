@@ -64,18 +64,111 @@ async function findClientByUserId(userId: string) {
   return { ...client, subscriptions };
 }
 
+// Deduplication memory store for (sessionId, seq)
+const processedReports = new Set<string>();
+const MAX_PROCESSED_REPORTS = 10000;
+
+/**
+ * A1 — Fonction unique d'application du delta de consommation data.
+ * Une seule transaction Prisma, une seule autorité de stockage (`subscription.quotaUsed` & `vpnClient.quotaUsed`).
+ * Idempotence par déduplication sur (sessionId, seq).
+ * Garde anti-abus : rejet si deltaBytes < 0 ou deltaBytes > 5 Go par appel.
+ */
+export async function applyUsageDelta(
+  clientId: string | null,
+  subscriptionId: string | null,
+  deltaBytes: bigint,
+  sessionId?: string,
+  seq?: number
+) {
+  // Garde anti-abus : rejet si <= 0 ou > 5 Go par appel
+  const MAX_DELTA = BigInt(5 * 1024 * 1024 * 1024); // 5 Go
+  if (deltaBytes <= 0n || deltaBytes > MAX_DELTA) {
+    return { applied: false, reason: "invalid_delta" };
+  }
+
+  // Idempotence : déduplication sur (sessionId, seq)
+  if (sessionId && seq !== undefined) {
+    const reportKey = `${sessionId}:${seq}`;
+    if (processedReports.has(reportKey)) {
+      return { applied: false, reason: "duplicate_report" };
+    }
+    processedReports.add(reportKey);
+    if (processedReports.size > MAX_PROCESSED_REPORTS) {
+      const first = processedReports.values().next().value;
+      if (first) processedReports.delete(first);
+    }
+  }
+
+  if (prisma) {
+    await (prisma as any).$transaction(async (tx: any) => {
+      let subId = subscriptionId;
+      if (!subId && clientId) {
+        const activeSub = await tx.subscription.findFirst({
+          where: { clientId, status: "active" },
+          orderBy: { createdAt: "desc" },
+        });
+        subId = activeSub?.id;
+      }
+
+      if (subId) {
+        await tx.subscription.update({
+          where: { id: subId },
+          data: { quotaUsed: { increment: deltaBytes } },
+        });
+      }
+
+      if (clientId) {
+        await tx.vpnClient.update({
+          where: { id: clientId },
+          data: { quotaUsed: { increment: deltaBytes } },
+        });
+      }
+    });
+
+    if (clientId) {
+      await (prisma as any).$executeRawUnsafe(
+        `INSERT INTO traffic_usage (id, "clientId", download, upload, timestamp)
+         VALUES (gen_random_uuid(), $1, $2, 0, NOW())`,
+        clientId,
+        deltaBytes,
+      ).catch(() => {});
+    }
+  } else {
+    // In-memory fallback
+    if (subscriptionId) {
+      const sub = inMemoryDb.subscriptions?.find((s: any) => s.id === subscriptionId);
+      if (sub) sub.quotaUsed = BigInt(sub.quotaUsed || 0) + deltaBytes;
+    }
+    if (clientId) {
+      const client = inMemoryDb.vpnClients?.find((c: any) => c.id === clientId);
+      if (client) client.quotaUsed = BigInt(client.quotaUsed || 0) + deltaBytes;
+    }
+  }
+
+  return { applied: true };
+}
+
 // Compute the single source of truth for the mobile "smart button" state.
 function computeAccountState(client: any): {
-  state: "no_package" | "ready" | "connected" | "expired" | "suspended";
+  state: "no_package" | "ready" | "connected" | "exhausted" | "expired" | "suspended";
   quotaTotalGb: number;
   quotaUsedGb: number;
   quotaRemainingGb: number;
+  quotaTotalBytes: number;
+  quotaUsedBytes: number;
+  quotaRemainingBytes: number;
   expireAt: string | null;
   deviceLimit: number;
 } {
+  const quotaTotalBytes = Number(client.quotaTotal || 0);
+  const quotaUsedBytes = Number(client.quotaUsed || 0);
+  const quotaRemainingBytes = Math.max(quotaTotalBytes - quotaUsedBytes, 0);
+
   const quotaTotalGb = bytesToGb(client.quotaTotal);
   const quotaUsedGb = bytesToGb(client.quotaUsed);
   const quotaRemainingGb = Math.max(quotaTotalGb - quotaUsedGb, 0);
+
   const expireAt: string | null = client.expireAt ? new Date(client.expireAt).toISOString() : null;
   const now = Date.now();
   const isExpired = !!client.expireAt && new Date(client.expireAt).getTime() < now;
@@ -85,13 +178,15 @@ function computeAccountState(client: any): {
     (s: any) => s.status === "active" && (Number(s.quotaBytes || 0) > 0 || (s.durationDays && s.durationDays > 0) || s.name || s.plan || s.profileId)
   );
 
-  let state: "no_package" | "ready" | "connected" | "expired" | "suspended" = "no_package";
+  let state: "no_package" | "ready" | "connected" | "exhausted" | "expired" | "suspended" = "no_package";
   if (client.status === "suspended") {
     state = "suspended";
   } else if ((!client.quotaTotal || Number(client.quotaTotal) === 0) && !hasActiveSubscription && !client.plan) {
     state = "no_package";
-  } else if (isExpired || (quotaRemainingGb <= 0 && (!hasActiveSubscription || Number(client.quotaTotal || 0) > 0))) {
+  } else if (isExpired) {
     state = "expired";
+  } else if ((quotaRemainingGb <= 0 || quotaRemainingBytes <= 0) && (quotaTotalBytes > 0 || Number(client.quotaTotal || 0) > 0)) {
+    state = "exhausted";
   } else {
     state = "ready"; // vpn_connected is tracked client-side by the native tunnel, "ready" just means eligible
   }
@@ -101,6 +196,9 @@ function computeAccountState(client: any): {
     quotaTotalGb,
     quotaUsedGb,
     quotaRemainingGb,
+    quotaTotalBytes,
+    quotaUsedBytes,
+    quotaRemainingBytes,
     expireAt,
     deviceLimit: client.deviceLimit || 1,
   };
@@ -449,6 +547,15 @@ router.get('/notifications', async (req: AuthenticatedRequest, res: Response) =>
         createdAt: now,
         read: false,
       });
+    } else if (state.state === 'exhausted') {
+      notifications.push({
+        id: 'notif-exhausted-' + Date.now(),
+        type: 'warning',
+        title: 'Quota épuisé',
+        message: 'Votre quota data est épuisé. Rechargez votre forfait pour continuer.',
+        createdAt: now,
+        read: false,
+      });
     } else if (state.quotaRemainingGb < 1 && state.state === 'ready') {
       notifications.push({
         id: 'notif-low-quota-' + Date.now(),
@@ -559,7 +666,7 @@ router.get('/history', async (req: AuthenticatedRequest, res: Response) => {
       const state = computeAccountState(client);
       history.unshift({
         id: 'account-state-current',
-        action: 'Etat du compte : ' + state.state + ' | Quota restant : ' + Math.round(state.quotaRemainingGb) + ' GB',
+        action: 'Etat du compte : ' + state.state + ' | Quota restant : ' + state.quotaRemainingGb.toFixed(2) + ' GB',
         type: 'info',
         timestamp: new Date().toISOString(),
         ipAddress: null,
@@ -575,53 +682,34 @@ router.get('/history', async (req: AuthenticatedRequest, res: Response) => {
 });
 
 // POST /api/mobile/vpn/traffic — synchronisation consommation data réelle
-// Appelé toutes les 90s par VpnContext quand VPN actif + à la déconnexion.
-// Décrémente le quota du client et enregistre dans traffic_usage.
+// Appelé toutes les 60s par VpnContext quand VPN actif + à la déconnexion.
+// Reçoit le DELTA et applique via applyUsageDelta (autorité unique).
 router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => {
   try {
     const schema = z.object({
       bytesUp:   z.number().int().min(0),
       bytesDown: z.number().int().min(0),
-      // F1 — QUOTA DELTA : l'app n'envoie plus que des deltas depuis le dernier
-      // envoi réussi (reportMode:'delta'). Le comptage reste un incrément :
-      // 1 Mo consommé = 1 Mo décompté. 'absolute' est toléré pour compat.
+      sessionId: z.string().optional(),
+      seq:       z.number().int().min(0).optional(),
       reportMode: z.enum(['delta','absolute']).optional(),
     });
-    const { bytesUp, bytesDown } = schema.parse(req.body);
+    const { bytesUp, bytesDown, sessionId, seq } = schema.parse(req.body);
     const totalBytes = BigInt(bytesUp + bytesDown);
-    if (totalBytes === 0n) return res.json({ ok: true });
 
     const client: any = await findClientByUserId(req.user!.userId);
     if (!client) return res.status(404).json({ error: "errors.mobile.no_account" });
 
-    if (prisma) {
-      // Incrémenter quotaUsed sur vpn_clients
-      await (prisma as any).vpnClient.update({
-        where: { id: client.id },
-        data: { quotaUsed: { increment: totalBytes } },
-      });
-      // Enregistrer dans traffic_usage
-      await prisma.$executeRawUnsafe(
-        `INSERT INTO traffic_usage (id, "clientId", upload, download, timestamp)
-         VALUES (gen_random_uuid(), $1, $2, $3, NOW())`,
-        client.id,
-        BigInt(bytesUp),
-        BigInt(bytesDown),
-      ).catch(() => {}); // table peut avoir une structure différente — non-bloquant
-    } else {
-      // In-memory fallback
-      if (client.quotaUsed !== undefined) {
-        client.quotaUsed = BigInt(client.quotaUsed || 0) + totalBytes;
-      }
+    if (totalBytes > 0n) {
+      await applyUsageDelta(client.id, null, totalBytes, sessionId, seq);
     }
 
-    // Retourner le quota restant mis à jour pour que l'app puisse alerter l'utilisateur
     const updatedClient: any = await findClientByUserId(req.user!.userId);
     const state = computeAccountState(updatedClient || client);
-    const quotaExhausted = state.quotaRemainingGb <= 0;
+    const quotaExhausted = state.quotaRemainingGb <= 0 || state.quotaRemainingBytes <= 0;
     return res.json({
       ok: true,
       quotaRemainingGb: state.quotaRemainingGb,
+      quotaRemainingBytes: state.quotaRemainingBytes,
       quotaExhausted,
       state: state.state,
     });
@@ -672,10 +760,14 @@ router.get("/connections", async (req: AuthenticatedRequest, res: Response) => {
       const remainingBytes = Math.max(totalBytes - usedBytes, 0);
       const GB             = 1024 ** 3;
 
-      // Calculer le statut réel (expired si dépassé la date)
+      // Calculer le statut réel (expired si dépassé la date, exhausted si quota dépassé)
       let status = sub.status;
-      if (status === "active" && sub.expireAt && new Date(sub.expireAt).getTime() < now) {
-        status = "expired";
+      if (status === "active") {
+        if (sub.expireAt && new Date(sub.expireAt).getTime() < now) {
+          status = "expired";
+        } else if (totalBytes > 0 && remainingBytes <= 0) {
+          status = "exhausted";
+        }
       }
 
       return {
@@ -683,10 +775,6 @@ router.get("/connections", async (req: AuthenticatedRequest, res: Response) => {
         name:              sub.name || "Connexion VPN",
         displayProtocol,
         technicalProtocol,
-        // ❌ « server » (host) et « port » SUPPRIMÉS (mission §6.4) :
-        //    l'adresse du serveur fournisseur est une donnée technique
-        //    confidentielle — elle ne transite que par le blob chiffré de
-        //    /provision/activate, jamais par ce endpoint de métadonnées.
         quota: {
           totalGB:     totalBytes / GB,
           usedGB:      usedBytes  / GB,
@@ -699,7 +787,6 @@ router.get("/connections", async (req: AuthenticatedRequest, res: Response) => {
         status,
         dataToken:  sub.dataToken,
         createdAt:  sub.createdAt ? new Date(sub.createdAt).toISOString() : new Date().toISOString(),
-        // §6.4 — métadonnées d'invalidation de cache mobile (jamais de technique)
         configVersion: configVersionForProfile(profile),
         configHash:    configHashForProfile(profile),
       };
@@ -712,6 +799,31 @@ router.get("/connections", async (req: AuthenticatedRequest, res: Response) => {
   }
 });
 
+// A4 — POST /api/mobile/connections/:id/status — marque un abonnement/connexion comme 'exhausted' ou 'expired'
+router.post("/connections/:id/status", async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const schema = z.object({
+      disabledReason: z.enum(['exhausted', 'expired']),
+    });
+    const { disabledReason } = schema.parse(req.body);
+
+    if (prisma) {
+      await (prisma as any).subscription.update({
+        where: { id },
+        data: { status: disabledReason },
+      }).catch(() => null);
+    } else {
+      const sub = inMemoryDb.subscriptions?.find((s: any) => s.id === id);
+      if (sub) sub.status = disabledReason;
+    }
+
+    return res.json({ success: true, id, status: disabledReason });
+  } catch (err) {
+    return res.status(400).json({ error: "errors.validation" });
+  }
+});
+
 // POST /api/mobile/vpn/usage — support usage data upload for V2Ray / general configs (Dashboard sync)
 const usageSchema = z.object({
   download:       z.number().int().min(0),       // bytes
@@ -719,11 +831,13 @@ const usageSchema = z.object({
   duration:       z.number().int().min(0),       // seconds
   deviceId:       z.string().optional(),
   subscriptionId: z.string().optional(),
+  sessionId:      z.string().optional(),
+  seq:            z.number().int().min(0).optional(),
 });
 
 router.post("/vpn/usage", async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { download, upload, duration, deviceId, subscriptionId } = usageSchema.parse(req.body);
+    const { download, upload, duration, deviceId, subscriptionId, sessionId, seq } = usageSchema.parse(req.body);
     const totalBytes = BigInt(download + upload);
 
     let client: any = await findClientByUserId(req.user!.userId);
@@ -735,38 +849,8 @@ router.post("/vpn/usage", async (req: AuthenticatedRequest, res: Response) => {
       return res.status(404).json({ error: "errors.mobile.no_account", message: "Client non trouvé" });
     }
 
-    if (prisma) {
-      // Mettre à jour vpnClient
-      await (prisma as any).vpnClient.update({
-        where: { id: client.id },
-        data: { quotaUsed: { increment: totalBytes } },
-      });
-
-      // Mettre à jour la subscription si fournie (ou trouver l'active)
-      let subId = subscriptionId;
-      if (!subId) {
-        const activeSub = await (prisma as any).subscription.findFirst({
-          where: { clientId: client.id, status: "active" },
-          orderBy: { createdAt: "desc" },
-        });
-        subId = activeSub?.id;
-      }
-
-      if (subId) {
-        await (prisma as any).subscription.update({
-          where: { id: subId },
-          data: { quotaUsed: { increment: totalBytes } },
-        });
-      }
-
-      // Enregistrer dans traffic_usage
-      await prisma.$executeRawUnsafe(
-        `INSERT INTO traffic_usage (id, "clientId", upload, download, timestamp)
-         VALUES (gen_random_uuid(), $1, $2, $3, NOW())`,
-        client.id,
-        BigInt(upload),
-        BigInt(download),
-      ).catch(() => {});
+    if (totalBytes > 0n) {
+      await applyUsageDelta(client.id, subscriptionId || null, totalBytes, sessionId, seq);
     }
 
     const updatedClient: any = await findClientByUserId(req.user!.userId);
@@ -776,6 +860,7 @@ router.post("/vpn/usage", async (req: AuthenticatedRequest, res: Response) => {
       success: true,
       message: "Usage enregistré avec succès",
       quotaRemainingGb: state.quotaRemainingGb,
+      quotaRemainingBytes: state.quotaRemainingBytes,
       state: state.state,
     });
   } catch (err: any) {

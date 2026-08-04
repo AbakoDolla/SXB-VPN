@@ -7,6 +7,7 @@ export interface User {
 export type AccountStateStatus =
   | 'no_package'
   | 'ready'
+  | 'exhausted'
   | 'expired'
   | 'suspended';
 
@@ -101,5 +102,6 @@ export type SmartButtonState =
   | 'connecting'
   | 'connected'
   | 'disconnecting'
+  | 'exhausted'
   | 'expired'
   | 'suspended';

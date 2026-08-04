@@ -13,7 +13,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import apiClient from "@/services/apiClient";
 import { useAuthContext } from "@/contexts/AuthContext";
 import { useVpnContext, formatBytes, formatSpeed } from "@/contexts/VpnContext";
-import { ProtocolDetector } from "@/services/protocolDetector";
+import { deriveQuota } from "@/services/quotaState";
 import Colors from "@/constants/colors";
 import StepLogs from "@/components/StepLogs";
 import UpdatePrompt from "@/components/UpdatePrompt";
@@ -24,7 +24,7 @@ const { width } = Dimensions.get("window");
 const LOGO = require("../../assets/images/icon.png");
 
 // ── VPN Button States ─────────────────────────────────────────────────────────
-type BtnState = "no_account" | "no_package" | "connect" | "connecting" | "connected" | "expired";
+type BtnState = "no_account" | "no_package" | "connect" | "connecting" | "connected" | "exhausted" | "expired";
 
 function getButtonState(
   accountState: any,
@@ -37,16 +37,14 @@ function getButtonState(
   if (!accountState) return "no_account";
   if (isConnecting) return "connecting";
   if (isConnected) return "connected";
-  // Quota épuisé → montrer "Forfait expiré"
-  if (quotaExhausted) return "expired";
-  // Priorité 1 : connexion active détectée depuis /mobile/connections → toujours "Se connecter"
+  if (quotaExhausted || accountState.state === "exhausted") return "exhausted";
+  if (accountState.state === "expired") return "expired";
   if (activeConnection && activeConnection.status === "active") return "connect";
-  // Priorité 2 : config locale valide (importée + sauvegardée)
   if (hasValidConfig) return "connect";
-  // Sinon : vérifier l'état du compte
   const s = accountState.state;
   if (s === "no_package") return "no_package";
   if (s === "expired") return "expired";
+  if (s === "exhausted") return "exhausted";
   return "connect";
 }
 
@@ -66,8 +64,6 @@ function VpnLogsModal({
     }
   }, [logs, visible]);
 
-  // ── Copie en UNE touche : feuille de partage native (tuile « Copier »,
-  // WhatsApp, e-mail…) avec en-tête de diagnostic — Diagnostic ultra-détaillé.
   const copyAllLogs = async () => {
     const header = [
       "═══ SXB VPN — Logs de diagnostic ═══",
@@ -79,7 +75,7 @@ function VpnLogsModal({
     ].join("\n");
     try {
       await Share.share({ message: `${header}\n${logs.join("\n")}`, title: "Logs SXB VPN" });
-    } catch { /* feuille fermée — sans conséquence */ }
+    } catch { /* ignore */ }
   };
 
   return (
@@ -132,21 +128,24 @@ function VpnLogsModal({
 function VpnConnectionCard({ conn, isActive }: { conn: VpnConnection; isActive: boolean }) {
   const now = Date.now();
   const isExpired  = conn.status === "expired" || (conn.expiresAt ? new Date(conn.expiresAt).getTime() < now : false);
+  const isExhausted = conn.status === "exhausted";
   const isRevoked  = conn.status === "revoked";
   const isSuspended = conn.status === "suspended";
 
-  const statusColor = isExpired || isRevoked || isSuspended
+  const statusColor = isExpired || isExhausted || isRevoked || isSuspended
     ? Colors.disconnected
     : isActive
     ? Colors.connected
     : Colors.primary;
 
-  const pct = conn.quota.totalGB > 0
-    ? Math.min((conn.quota.usedGB / conn.quota.totalGB) * 100, 100)
-    : 0;
+  const totalBytes = conn.quota.totalBytes || (conn.quota.totalGB * 1024 ** 3);
+  const usedBytes = conn.quota.usedBytes || (conn.quota.usedGB * 1024 ** 3);
+  const remainingBytes = conn.quota.totalBytes !== undefined ? Math.max(0, totalBytes - usedBytes) : (conn.quota.remainingGB * 1024 ** 3);
+
+  const pct = totalBytes > 0 ? Math.min((usedBytes / totalBytes) * 100, 100) : 0;
 
   const { t } = useTranslation();
-  const statusLabel = isExpired ? t('connection_expired') : isRevoked ? t('connection_revoked') : isSuspended ? t('connection_suspended') : isActive ? t('connection_active') : t('connection_active');
+  const statusLabel = isExhausted ? t('quota_exhausted') : isExpired ? t('connection_expired') : isRevoked ? t('connection_revoked') : isSuspended ? t('connection_suspended') : isActive ? t('connection_active') : t('connection_active');
 
   return (
     <View style={[connStyles.card, isActive && connStyles.cardActive]}>
@@ -170,17 +169,17 @@ function VpnConnectionCard({ conn, isActive }: { conn: VpnConnection; isActive: 
       {/* Quota */}
       <View style={connStyles.quotaRow}>
         <View style={connStyles.quotaItem}>
-          <Text style={connStyles.quotaVal}>{conn.quota.remainingGB.toFixed(1)} GB</Text>
+          <Text style={connStyles.quotaVal}>{formatBytes(remainingBytes)}</Text>
           <Text style={connStyles.quotaLbl}>{t('quota_remaining')}</Text>
         </View>
         <View style={connStyles.quotaDivider} />
         <View style={connStyles.quotaItem}>
-          <Text style={connStyles.quotaVal}>{conn.quota.usedGB.toFixed(1)} GB</Text>
+          <Text style={connStyles.quotaVal}>{formatBytes(usedBytes)}</Text>
           <Text style={connStyles.quotaLbl}>{t('quota_used')}</Text>
         </View>
         <View style={connStyles.quotaDivider} />
         <View style={connStyles.quotaItem}>
-          <Text style={connStyles.quotaVal}>{conn.quota.totalGB.toFixed(1)} GB</Text>
+          <Text style={connStyles.quotaVal}>{formatBytes(totalBytes)}</Text>
           <Text style={connStyles.quotaLbl}>{t('quota_total')}</Text>
         </View>
       </View>
@@ -213,8 +212,9 @@ export default function HomeScreen() {
   } = useVpnContext();
   const { t } = useTranslation();
 
+  const derivedQuota = deriveQuota(quotaData || accountState, traffic, isConnected);
+
   useEffect(() => {
-    // F6 — demander POST_NOTIFICATIONS au runtime (sans casser si refusé)
     if (Platform.OS === 'android' && Platform.Version >= 33) {
       PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS).catch(() => {});
     }
@@ -280,16 +280,12 @@ export default function HomeScreen() {
       const conns: VpnConnection[] = res.data?.connections || [];
       setConnections(conns);
 
-      // ── Phase 2 : synchronisation état global depuis connexion active ────────
-      // Chercher une connexion avec status="active" et alimenter VpnContext
-      // pour que le bouton principal affiche "Se connecter" et non "Activer un forfait"
       const activeConn = conns.find(c => c.status === "active");
       if (activeConn) {
-        console.log(`[SXB_DEBUG] ACTIVE_CONNECTION_FOUND id=${activeConn.id} proto=${activeConn.technicalProtocol}`);
         syncFromConnection(activeConn);
       }
     } catch {
-      // ignore — non-bloquant
+      // ignore
     } finally {
       setConnectionsLoading(false);
     }
@@ -312,12 +308,10 @@ export default function HomeScreen() {
   const glowAnim  = useRef(new Animated.Value(0.5)).current;
   const ring1     = useRef(new Animated.Value(1)).current;
   const ring2     = useRef(new Animated.Value(1)).current;
-  // E4 — micro-animation de pression sur le bouton power (250 ms max).
   const pressAnim = useRef(new Animated.Value(1)).current;
 
-  const btnState = getButtonState(accountState, isConnected, isConnecting, hasValidConfig, activeConnection, quotaData ? quotaData.remainingQuota <= 0 : false);
+  const btnState = getButtonState(accountState, isConnected, isConnecting, hasValidConfig, activeConnection, derivedQuota.isExhausted);
 
-  // Pulse animation
   useEffect(() => {
     const anim = Animated.loop(
       Animated.sequence([
@@ -330,7 +324,6 @@ export default function HomeScreen() {
     return () => anim.stop();
   }, [isConnected, isConnecting]);
 
-  // Ring animation when connected
   useEffect(() => {
     const anim = Animated.loop(
       Animated.parallel([
@@ -350,7 +343,6 @@ export default function HomeScreen() {
     return () => anim.stop();
   }, [isConnected]);
 
-  // Glow
   useEffect(() => {
     const anim = Animated.loop(
       Animated.sequence([
@@ -362,7 +354,6 @@ export default function HomeScreen() {
     return () => anim.stop();
   }, []);
 
-  // Timer when connected
   useEffect(() => {
     let interval: ReturnType<typeof setInterval> | null = null;
     if (isConnected) {
@@ -382,10 +373,8 @@ export default function HomeScreen() {
 
   const handleVpnButton = async () => {
     if (btnState === "no_account") { router.push("/activate"); return; }
-    if (btnState === "no_package" || btnState === "expired") { router.push("/plan"); return; }
+    if (btnState === "no_package" || btnState === "expired" || btnState === "exhausted") { router.push("/plan"); return; }
     if (btnState === "connect") {
-      // F4 — logs sur clic UNIQUEMENT : plus d'ouverture automatique des logs
-      // à la connexion ; l'utilisateur ouvre via le bouton « Voir les logs ».
       await connect();
       await refreshAccountState();
     } else if (btnState === "connected") {
@@ -394,13 +383,13 @@ export default function HomeScreen() {
     }
   };
 
-  // Button style based on state
   const btnColor = {
     no_account:  Colors.primary,
     no_package:  Colors.purple,
     connect:     Colors.primary,
     connecting:  Colors.warning,
     connected:   Colors.connected,
+    exhausted:   Colors.disconnected,
     expired:     Colors.disconnected,
   }[btnState];
 
@@ -410,6 +399,7 @@ export default function HomeScreen() {
     connect:     t('connect'),
     connecting:  t('connecting'),
     connected:   t('disconnect'),
+    exhausted:   t('quota_exhausted'),
     expired:     t('expired_plan'),
   }[btnState];
 
@@ -419,6 +409,7 @@ export default function HomeScreen() {
     connect:     "shield-checkmark",
     connecting:  "shield",
     connected:   "power",
+    exhausted:   "warning",
     expired:     "warning",
   }[btnState];
 
@@ -427,18 +418,6 @@ export default function HomeScreen() {
     : isConnecting
     ? "rgba(245,158,11,"
     : "rgba(0,212,255,";
-
-  const quota = accountState
-    ? {
-        total:  Math.round(accountState.quotaTotalGb ?? 0),
-        used:   Math.round(accountState.quotaUsedGb ?? 0),
-        remain: Math.round(accountState.quotaRemainingGb ?? 0),
-      }
-    : null;
-
-  const quotaPct = quota && quota.total > 0
-    ? Math.min((quota.used / quota.total) * 100, 100)
-    : 0;
 
   return (
     <LinearGradient colors={["#060914", "#0A1025", "#060914"]} style={styles.container}>
@@ -473,17 +452,17 @@ export default function HomeScreen() {
               <Ionicons name="warning" size={24} color={Colors.disconnected} />
               <View style={{ flex: 1 }}>
                 <Text style={{ fontSize: 14, fontWeight: '700', color: Colors.disconnected, fontFamily: 'Inter_700Bold' }}>
-                  {revokedStatus === 'revoked' ? t('connection_revoked') : revokedStatus === 'suspended' ? t('connection_suspended') : revokedStatus === 'expired' ? t('connection_expired') : t('connection_disabled')}
+                  {revokedStatus === 'exhausted' ? t('quota_exhausted') : revokedStatus === 'revoked' ? t('connection_revoked') : revokedStatus === 'suspended' ? t('connection_suspended') : revokedStatus === 'expired' ? t('connection_expired') : t('connection_disabled')}
                 </Text>
                 <Text style={{ fontSize: 12, color: Colors.textSecondary, fontFamily: 'Inter_400Regular', marginTop: 2 }}>
-                  {revokedStatus === 'revoked' ? t('revocation_msg_revoked') : revokedStatus === 'suspended' ? t('revocation_msg_suspended') : revokedStatus === 'expired' ? t('revocation_msg_expired') : t('revocation_msg_disabled')}
+                  {revokedStatus === 'exhausted' ? t('friendly_quota_exhausted') : revokedStatus === 'revoked' ? t('revocation_msg_revoked') : revokedStatus === 'suspended' ? t('revocation_msg_suspended') : revokedStatus === 'expired' ? t('revocation_msg_expired') : t('revocation_msg_disabled')}
                 </Text>
               </View>
             </View>
           </View>
         )}
 
-        {/* Saved Configs Selector (Multi-config, max 2) */}
+        {/* Saved Configs Selector */}
         {savedConfigs.length > 1 && (
           <View style={styles.statsCard}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -494,6 +473,7 @@ export default function HomeScreen() {
               {savedConfigs.map((cfg) => {
                 const isRevokedOrExpired = connections.find(c => c.id === cfg.id)?.status === 'revoked' ||
                   connections.find(c => c.id === cfg.id)?.status === 'expired' ||
+                  connections.find(c => c.id === cfg.id)?.status === 'exhausted' ||
                   connections.find(c => c.id === cfg.id)?.status === 'suspended';
                 const isActive = cfg.id === activeConfigId;
                 const isDisabled = isRevokedOrExpired && !isActive;
@@ -549,7 +529,6 @@ export default function HomeScreen() {
 
         {/* VPN Button Area */}
         <View style={styles.vpnSection}>
-          {/* Status label */}
           <View style={[styles.statusBadge, { borderColor: btnColor + "50", backgroundColor: btnColor + "10" }]}>
             <View style={[styles.statusDot, { backgroundColor: btnColor }]} />
             <Text style={[styles.statusText, { color: btnColor }]}>
@@ -557,9 +536,7 @@ export default function HomeScreen() {
             </Text>
           </View>
 
-          {/* Big Button */}
           <View style={styles.btnWrap}>
-            {/* Rings */}
             {(isConnected || isConnecting) && (
               <>
                 <Animated.View style={[styles.ring, { borderColor: ringColor + "0.15)", transform: [{ scale: ring1 }] }]} />
@@ -567,10 +544,8 @@ export default function HomeScreen() {
               </>
             )}
 
-            {/* Glow */}
             <Animated.View style={[styles.btnGlow, { backgroundColor: btnColor + "18", opacity: glowAnim }]} />
 
-            {/* Main button — micro-animation « press » (léger scale down) */}
             <Pressable
               onPress={handleVpnButton}
               disabled={isConnecting}
@@ -590,12 +565,10 @@ export default function HomeScreen() {
             </Pressable>
           </View>
 
-          {/* Timer */}
           {isConnected && (
             <Text style={styles.timer}>{formatTimer(timer)}</Text>
           )}
 
-          {/* Subtitle */}
           <Text style={styles.btnHint}>
             {isConnected
               ? t('protection_active')
@@ -604,25 +577,17 @@ export default function HomeScreen() {
               : t('tap_to_connect')}
           </Text>
 
-          {/* Action button */}
           <Pressable onPress={handleVpnButton} disabled={isConnecting} style={[styles.actionBtn, { backgroundColor: btnColor }]}>
-            <Ionicons name={btnIcon as any} size={18} color={isConnected ? "#000" : "#000"} />
+            <Ionicons name={btnIcon as any} size={18} color="#000" />
             <Text style={[styles.actionBtnText, { color: "#000" }]}>{btnLabel}</Text>
           </Pressable>
 
-          {/* E1 — StepLogs est le SEUL parcours visible pendant la connexion :
-              affiché systématiquement dès que des étapes existent, avec messages
-              grand public + animations douces (250 ms) + état final « ✅ Connecté ».
-              Les logs techniques bruts restent dispo UNIQUEMENT via le bouton
-              « Voir les logs de connexion » (setLogsVisible n'est jamais appelé
-              automatiquement — clic explicite uniquement). */}
           {(isConnecting || isConnected) && stepLogs.length > 0 && (
             <View style={{ width: '100%', marginTop: 8 }}>
               <StepLogs steps={stepLogs} visible={true} />
             </View>
           )}
 
-          {/* Logs link — le SEUL point d'ouverture des logs techniques bruts */}
           {(isConnecting || isConnected) && (
             <Pressable onPress={() => setLogsVisible(true)} style={styles.logsLink}>
               <Ionicons name="terminal-outline" size={14} color={Colors.primary} />
@@ -631,42 +596,57 @@ export default function HomeScreen() {
           )}
         </View>
 
-        {/* Stats Row — Quota depuis accountState (fallback rapide, valeurs entières) */}
-        {quota && quota.total > 0 && (
+        {/* ── QUOTA CARD — Consomme deriveQuota (B1/B4) ─────────────────── */}
+        {derivedQuota.totalBytes > 0 && (
           <View style={styles.statsCard}>
             <Text style={styles.cardLabel}>{t('card_quota_plan')}</Text>
-            <View style={styles.statsRow}>
-              <View style={styles.statItem}>
-                <Text style={styles.statValue}>{quota.remain} GB</Text>
-                <Text style={styles.statLabel}>{t('quota_remaining')}</Text>
+            {derivedQuota.isExhausted ? (
+              <View style={{ alignItems: "center", paddingVertical: 8 }}>
+                <Ionicons name="warning-outline" size={24} color={Colors.disconnected} />
+                <Text style={{ fontSize: 14, fontWeight: "700", color: Colors.disconnected, fontFamily: "Inter_700Bold", marginTop: 4 }}>
+                  {t('quota_exhausted')}
+                </Text>
+                <Text style={{ fontSize: 11, color: Colors.textMuted, fontFamily: "Inter_400Regular", marginTop: 2 }}>
+                  {t('quota_reload')}
+                </Text>
               </View>
-              <View style={styles.statDivider} />
-              <View style={styles.statItem}>
-                <Text style={styles.statValue}>{quota.used} GB</Text>
-                <Text style={styles.statLabel}>{t('quota_used')}</Text>
-              </View>
-              <View style={styles.statDivider} />
-              <View style={styles.statItem}>
-                <Text style={styles.statValue}>{quota.total} GB</Text>
-                <Text style={styles.statLabel}>{t('quota_total')}</Text>
-              </View>
-            </View>
-            {/* Progress bar */}
-            <View style={styles.progressBg}>
-              <View
-                style={[
-                  styles.progressFill,
-                  {
-                    width: `${quotaPct}%` as any,
-                    backgroundColor: quotaPct > 80 ? Colors.disconnected : Colors.primary,
-                  },
-                ]}
-              />
-            </View>
-            {accountState?.expireAt && (
-              <Text style={styles.expireText}>
-                {t('config_expires_at')} {new Date(accountState.expireAt).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" })}
-              </Text>
+            ) : (
+              <>
+                <View style={connStyles.quotaRow}>
+                  <View style={connStyles.quotaItem}>
+                    <Text style={connStyles.quotaVal}>{derivedQuota.formattedTotal}</Text>
+                    <Text style={connStyles.quotaLbl}>{t('quota_total')}</Text>
+                  </View>
+                  <View style={connStyles.quotaDivider} />
+                  <View style={connStyles.quotaItem}>
+                    <Text style={connStyles.quotaVal}>{derivedQuota.formattedUsed}</Text>
+                    <Text style={connStyles.quotaLbl}>{t('quota_used')}</Text>
+                  </View>
+                  <View style={connStyles.quotaDivider} />
+                  <View style={connStyles.quotaItem}>
+                    <Text style={connStyles.quotaVal}>{derivedQuota.formattedRemaining}</Text>
+                    <Text style={connStyles.quotaLbl}>{t('quota_remaining')}</Text>
+                  </View>
+                </View>
+
+                {/* Progress bar */}
+                <View style={styles.progressBg}>
+                  <View style={[styles.progressFill, {
+                    width: `${Math.min(derivedQuota.usedRatio * 100, 100)}%` as any,
+                    backgroundColor: derivedQuota.usedRatio > 0.8 ? Colors.disconnected : Colors.primary
+                  }]} />
+                </View>
+
+                <Text style={{ fontSize: 11, color: Colors.textMuted, fontFamily: "Inter_400Regular", textAlign: "center" }}>
+                  {(derivedQuota.usedRatio * 100).toFixed(0)}% {t('quota_used')}
+                </Text>
+
+                {derivedQuota.expiryDate && (
+                  <Text style={{ fontSize: 11, color: Colors.textMuted, fontFamily: "Inter_400Regular", textAlign: "center", marginTop: 4 }}>
+                    {t('config_expires_at')} {new Date(derivedQuota.expiryDate).toLocaleString("fr-FR", { dateStyle: "long", timeStyle: "short" })}
+                  </Text>
+                )}
+              </>
             )}
           </View>
         )}
@@ -696,7 +676,7 @@ export default function HomeScreen() {
           </View>
         )}
 
-        {/* F5 — Consommation par application */}
+        {/* Consommation par application */}
         {isConnected && (
           <View style={styles.statsCard}>
             <Text style={styles.cardLabel}>{t('card_traffic_per_app')}</Text>
@@ -764,65 +744,12 @@ export default function HomeScreen() {
               <Text style={styles.infoKey}>{t('info_last_conn')}</Text>
               <Text style={styles.infoVal}>{lastConnection}</Text>
             </View>
-            {/* Appareil ID supprimé du dashboard utilisateur — info interne uniquement */}
             <View style={styles.infoRow}>
               <Text style={styles.infoKey}>{t('app_version')}</Text>
               <Text style={styles.infoVal}>v{Constants.expoConfig?.version ?? "1.0.0"}</Text>
             </View>
           </View>
         </View>
-
-        {/* ── QUOTA CARD ─────────────────────────────────────────────── */}
-        {quotaData && quotaData.totalQuota > 0 && (
-          <View style={styles.statsCard}>
-            <Text style={styles.cardLabel}>{t('card_quota_plan')}</Text>
-            {quotaData.remainingQuota <= 0 ? (
-              <View style={{ alignItems: "center", paddingVertical: 8 }}>
-                <Ionicons name="warning-outline" size={24} color={Colors.disconnected} />
-                <Text style={{ fontSize: 14, fontWeight: "700", color: Colors.disconnected, fontFamily: "Inter_700Bold", marginTop: 4 }}>
-                  {t('quota_exhausted')}
-                </Text>
-                <Text style={{ fontSize: 11, color: Colors.textMuted, fontFamily: "Inter_400Regular", marginTop: 2 }}>
-                  {t('quota_reload')}
-                </Text>
-              </View>
-            ) : (
-              <>
-                <View style={connStyles.quotaRow}>
-                  <View style={connStyles.quotaItem}>
-                    <Text style={connStyles.quotaVal}>{formatBytes(quotaData.totalQuota)}</Text>
-                    <Text style={connStyles.quotaLbl}>{t('quota_total')}</Text>
-                  </View>
-                  <View style={connStyles.quotaDivider} />
-                  <View style={connStyles.quotaItem}>
-                    <Text style={connStyles.quotaVal}>{formatBytes(quotaData.usedQuota)}</Text>
-                    <Text style={connStyles.quotaLbl}>{t('quota_used')}</Text>
-                  </View>
-                  <View style={connStyles.quotaDivider} />
-                  <View style={connStyles.quotaItem}>
-                    <Text style={connStyles.quotaVal}>{formatBytes(quotaData.remainingQuota)}</Text>
-                    <Text style={connStyles.quotaLbl}>{t('quota_remaining')}</Text>
-                  </View>
-                </View>
-                {/* Progress bar */}
-                <View style={styles.progressBg}>
-                  <View style={[styles.progressFill, {
-                    width: `${Math.min((quotaData.usedQuota / quotaData.totalQuota) * 100, 100)}%` as any,
-                    backgroundColor: quotaData.usedQuota / quotaData.totalQuota > 0.8 ? Colors.disconnected : Colors.primary
-                  }]} />
-                </View>
-                <Text style={{ fontSize: 11, color: Colors.textMuted, fontFamily: "Inter_400Regular", textAlign: "center" }}>
-                  {Math.round((quotaData.usedQuota / quotaData.totalQuota) * 100)}% {t('quota_used')}
-                </Text>
-                {quotaData.expiryDate && (
-                  <Text style={{ fontSize: 11, color: Colors.textMuted, fontFamily: "Inter_400Regular", textAlign: "center", marginTop: 4 }}>
-                    {t('config_expires_at')} {new Date(quotaData.expiryDate).toLocaleString("fr-FR", { dateStyle: "long", timeStyle: "short" })}
-                  </Text>
-                )}
-              </>
-            )}
-          </View>
-        )}
 
         {/* ── VPN Connections ─────────────────────────────────────────── */}
         <View style={styles.statsCard}>
@@ -844,7 +771,6 @@ export default function HomeScreen() {
               </Text>
               <Text style={{ fontSize: 11, color: Colors.textMuted, marginTop: 4, fontFamily: "Inter_400Regular" }}>
                 {t('ask_admin_for_plan')}
-
               </Text>
             </View>
           ) : (
@@ -875,15 +801,12 @@ export default function HomeScreen() {
         </View>
       </ScrollView>
 
-      {/* Logs Modal — ouvert UNIQUEMENT sur clic explicite */}
+      {/* Logs Modal */}
       <VpnLogsModal
         visible={logsVisible}
         onClose={() => setLogsVisible(false)}
       />
 
-      {/* E3 — Mise à jour in-app (comparaison versionCode, modale non bloquante).
-          Vérifie au montage + toutes les 24 h. Signatures stables ⇒ install
-          in-place, sans désinstaller (données conservées). */}
       <UpdatePrompt />
     </LinearGradient>
   );
