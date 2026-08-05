@@ -2,7 +2,7 @@
  * UpdatePrompt — Mise à jour in-app (E3)
  *
  * Fonctionnement :
- *   1. À l'ouverture (+ toutes les 24 h) → GET /xapi/mobile/app-version
+ *   1. À l'ouverture (+ toutes les 24 h) → GET /api/mobile/app-version
  *   2. Compare le `versionCode` distant avec `Constants.expoConfig.android.versionCode`
  *   3. Si versionCode distant > installé → affiche une modale non bloquante
  *      « Nouvelle version disponible » avec :
@@ -36,7 +36,7 @@ import Colors from '@/constants/colors';
 import { useTranslation } from '@/localization';
 
 // Endpoint public (hors /api pour éviter la maintenanceGuard).
-const APP_VERSION_URL = 'https://vpnsxb.afrihall.com/xapi/mobile/app-version';
+const APP_VERSION_URL = 'https://vpnsxb.afrihall.com/api/mobile/app-version';
 
 // Intervalle de re-vérification : 24 h (mission).
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;

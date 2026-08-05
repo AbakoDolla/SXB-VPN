@@ -64,10 +64,7 @@ async function findClientByUserId(userId: string) {
   return { ...client, subscriptions };
 }
 
-// Deduplication memory store for (sessionId, seq)
-const processedReports = new Set<string>();
-const MAX_PROCESSED_REPORTS = 10000;
-
+// Report idempotency is persisted in PostgreSQL; process restarts must not recount a session.
 /**
  * A1 — Fonction unique d'application du delta de consommation data.
  * Une seule transaction Prisma, une seule autorité de stockage (`subscription.quotaUsed` & `vpnClient.quotaUsed`).
@@ -79,7 +76,8 @@ export async function applyUsageDelta(
   subscriptionId: string | null,
   deltaBytes: bigint,
   sessionId?: string,
-  seq?: number
+  seq?: number,
+  uploadBytes: bigint = 0n
 ) {
   // Garde anti-abus : rejet si <= 0 ou > 5 Go par appel
   const MAX_DELTA = BigInt(5 * 1024 * 1024 * 1024); // 5 Go
@@ -87,17 +85,13 @@ export async function applyUsageDelta(
     return { applied: false, reason: "invalid_delta" };
   }
 
-  // Idempotence : déduplication sur (sessionId, seq)
-  if (sessionId && seq !== undefined) {
-    const reportKey = `${sessionId}:${seq}`;
-    if (processedReports.has(reportKey)) {
-      return { applied: false, reason: "duplicate_report" };
-    }
-    processedReports.add(reportKey);
-    if (processedReports.size > MAX_PROCESSED_REPORTS) {
-      const first = processedReports.values().next().value;
-      if (first) processedReports.delete(first);
-    }
+  // Idempotence survives pm2/container restarts. The unique index is the arbiter.
+  if (prisma && sessionId && seq !== undefined) {
+    await (prisma as any).$executeRawUnsafe(`CREATE TABLE IF NOT EXISTS usage_reports ("sessionId" text NOT NULL, seq integer NOT NULL, "appliedAt" timestamptz NOT NULL DEFAULT NOW(), "clientId" text, UNIQUE ("sessionId", seq))`);
+    const inserted = await (prisma as any).$executeRawUnsafe(
+      `INSERT INTO usage_reports ("sessionId", seq, "clientId") VALUES ($1, $2, $3) ON CONFLICT ("sessionId", seq) DO NOTHING`, sessionId, seq, clientId,
+    );
+    if (Number(inserted) === 0) return { applied: false, reason: "duplicate_report" };
   }
 
   if (prisma) {
@@ -111,6 +105,10 @@ export async function applyUsageDelta(
         subId = activeSub?.id;
       }
 
+      if (subId && clientId) {
+        const owned = await tx.subscription.findFirst({ where: { id: subId, clientId } });
+        if (!owned) throw new Error('subscription_not_owned');
+      }
       if (subId) {
         await tx.subscription.update({
           where: { id: subId },
@@ -129,9 +127,10 @@ export async function applyUsageDelta(
     if (clientId) {
       await (prisma as any).$executeRawUnsafe(
         `INSERT INTO traffic_usage (id, "clientId", download, upload, timestamp)
-         VALUES (gen_random_uuid(), $1, $2, 0, NOW())`,
+         VALUES (gen_random_uuid(), $1, $2, $3, NOW())`,
         clientId,
-        deltaBytes,
+        deltaBytes - uploadBytes,
+        uploadBytes,
       ).catch(() => {});
     }
   } else {
@@ -692,15 +691,16 @@ router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => 
       sessionId: z.string().optional(),
       seq:       z.number().int().min(0).optional(),
       reportMode: z.enum(['delta','absolute']).optional(),
+      subscriptionId: z.string().optional(),
     });
-    const { bytesUp, bytesDown, sessionId, seq } = schema.parse(req.body);
+    const { bytesUp, bytesDown, sessionId, seq, subscriptionId } = schema.parse(req.body);
     const totalBytes = BigInt(bytesUp + bytesDown);
 
     const client: any = await findClientByUserId(req.user!.userId);
     if (!client) return res.status(404).json({ error: "errors.mobile.no_account" });
 
     if (totalBytes > 0n) {
-      await applyUsageDelta(client.id, null, totalBytes, sessionId, seq);
+      await applyUsageDelta(client.id, subscriptionId || null, totalBytes, sessionId, seq, BigInt(bytesUp));
     }
 
     const updatedClient: any = await findClientByUserId(req.user!.userId);
@@ -850,7 +850,7 @@ router.post("/vpn/usage", async (req: AuthenticatedRequest, res: Response) => {
     }
 
     if (totalBytes > 0n) {
-      await applyUsageDelta(client.id, subscriptionId || null, totalBytes, sessionId, seq);
+      await applyUsageDelta(client.id, subscriptionId || null, totalBytes, sessionId, seq, BigInt(upload));
     }
 
     const updatedClient: any = await findClientByUserId(req.user!.userId);

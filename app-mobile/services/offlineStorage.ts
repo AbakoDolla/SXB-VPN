@@ -19,8 +19,7 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as SecureStore from 'expo-secure-store';
-import { Platform } from 'react-native';
+import * as configStore from './configStore';
 
 // ── Clés de stockage ──────────────────────────────────────────────────────────
 
@@ -49,42 +48,8 @@ export interface OfflineConfig {
   expiresAt?: string | null;  // ISO date string — null/absent = pas d'expiration
 }
 
-// ── Helpers SecureStore / AsyncStorage ───────────────────────────────────────
-
-async function secureWrite(key: string, value: string): Promise<void> {
-  try {
-    if (Platform.OS !== 'web') {
-      await SecureStore.setItemAsync(key, value);
-    } else {
-      await AsyncStorage.setItem(`@secure_${key}`, value);
-    }
-  } catch {
-    // Fallback AsyncStorage si SecureStore indisponible (émulateur, etc.)
-    await AsyncStorage.setItem(`@secure_${key}`, value);
-  }
-}
-
-async function secureRead(key: string): Promise<string | null> {
-  try {
-    if (Platform.OS !== 'web') {
-      const val = await SecureStore.getItemAsync(key);
-      if (val !== null) return val;
-    }
-    // Fallback AsyncStorage (migration legacy ou web)
-    return await AsyncStorage.getItem(`@secure_${key}`);
-  } catch {
-    return null;
-  }
-}
-
-async function secureDelete(key: string): Promise<void> {
-  try {
-    if (Platform.OS !== 'web') await SecureStore.deleteItemAsync(key);
-  } catch { /* ignore */ }
-  try {
-    await AsyncStorage.removeItem(`@secure_${key}`);
-  } catch { /* ignore */ }
-}
+// ── Legacy adapter ─────────────────────────────────────────────────────────────
+// Credentials now live exclusively in configStore (AES-256-GCM payload + SecureStore master key).
 
 // ── Config VPN ───────────────────────────────────────────────────────────────
 
@@ -93,59 +58,29 @@ async function secureDelete(key: string): Promise<void> {
  * Appeler après validation réussie par configValidator.
  * @param expiresAt  Date d'expiration de la config (ISO). null = pas d'expiration.
  */
-export async function saveVpnConfig(
-  config: Record<string, any>,
-  protocol: string,
-  configId?: string,
-  expiresAt?: string | null,
-): Promise<void> {
-  const entry: OfflineConfig = {
-    config,
-    savedAt:  new Date().toISOString(),
-    protocol: protocol.toLowerCase(),
-    configId: configId ?? `local_${Date.now()}`,
-    expiresAt: expiresAt ?? null,
-  };
-  await secureWrite(KEYS.VPN_CONFIG, JSON.stringify(entry));
-  // Mettre à jour lastSync
+export async function saveVpnConfig(config: Record<string, any>, protocol: string, configId?: string, expiresAt?: string | null): Promise<void> {
+  const id = configId || config.configId || `local_${Date.now()}`;
+  const saved = await configStore.save(String(id), config, { configId: String(id), protocol: protocol.toLowerCase(), expiryDate: expiresAt ?? null });
+  if (saved.status !== 'ok') throw saved.error || new Error('Stockage chiffré indisponible');
   await AsyncStorage.setItem(KEYS.LAST_SYNC, new Date().toISOString());
 }
 
-/**
- * Restaure la configuration VPN depuis le stockage local.
- * Retourne null si aucune config n'a été sauvegardée.
- * Ne supprime PAS une config expirée — permet de la conserver pour
- * re-provisionnement intelligent. L'appelant décide de l'action.
- */
+/** Legacy-shaped active config for callers not yet migrated. */
 export async function loadVpnConfig(): Promise<OfflineConfig | null> {
-  try {
-    const raw = await secureRead(KEYS.VPN_CONFIG);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as OfflineConfig;
-    // Vérification minimale de structure
-    if (!parsed.config || !parsed.protocol) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
+  const result = await configStore.getActive();
+  if (result.status !== 'ok' || !result.value) return null;
+  const { config, meta } = result.value;
+  return { config, savedAt: meta.savedAt || '', protocol: meta.protocol || '', configId: meta.configId, expiresAt: meta.expiryDate || null };
 }
 
-/**
- * Vérifie si la config Offline est expirée (selon expiresAt).
- * Retourne false si pas d'expiration définie.
- */
 export async function isOfflineConfigExpired(): Promise<boolean> {
   const cfg = await loadVpnConfig();
-  if (!cfg?.expiresAt) return false;
-  return new Date() > new Date(cfg.expiresAt);
+  return !!cfg?.expiresAt && new Date() > new Date(cfg.expiresAt);
 }
 
-/**
- * Supprime la configuration VPN du stockage local.
- * Appeler à la désinscription ou réinitialisation.
- */
 export async function clearVpnConfig(): Promise<void> {
-  await secureDelete(KEYS.VPN_CONFIG);
+  const active = await configStore.getActive();
+  if (active.status === 'ok' && active.value) await configStore.remove(active.value.meta.configId);
 }
 
 /**
@@ -168,16 +103,20 @@ export async function saveQuotaData(data: Omit<QuotaData, 'lastSync' | 'remainin
     remainingQuota: Math.max(0, data.totalQuota - data.usedQuota),
     lastSync: new Date().toISOString(),
   };
-  await AsyncStorage.setItem(KEYS.QUOTA, JSON.stringify(quota));
+  await AsyncStorage.setItem(`sxb_quota_${data.configId}`, JSON.stringify(quota));
+  await configStore.updateQuota(data.configId, quota.usedQuota);
   return quota;
 }
 
 /**
  * Restaure les données de quota depuis le stockage local.
  */
-export async function loadQuotaData(): Promise<QuotaData | null> {
+export async function loadQuotaData(configId?: string): Promise<QuotaData | null> {
   try {
-    const raw = await AsyncStorage.getItem(KEYS.QUOTA);
+    const active = configId ? null : await configStore.getActive();
+    const id = configId || (active?.status === 'ok' ? active.value?.meta.configId : undefined);
+    if (!id) return null;
+    const raw = await AsyncStorage.getItem(`sxb_quota_${id}`);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as QuotaData;
     // Recalculer remainingQuota au cas où usedQuota aurait été mis à jour localement
@@ -193,15 +132,16 @@ export async function loadQuotaData(): Promise<QuotaData | null> {
  * @param bytes — nombre de bytes consommés depuis la dernière mesure
  * @returns QuotaData mis à jour, ou null si aucun quota en local
  */
-export async function consumeLocalQuota(bytes: number): Promise<QuotaData | null> {
-  const quota = await loadQuotaData();
+export async function consumeLocalQuota(bytes: number, configId?: string): Promise<QuotaData | null> {
+  const quota = await loadQuotaData(configId);
   if (!quota) return null;
 
   quota.usedQuota      = Math.min(quota.totalQuota, quota.usedQuota + bytes);
   quota.remainingQuota = Math.max(0, quota.totalQuota - quota.usedQuota);
   // lastSync n'est PAS mis à jour ici — il indique la dernière sync backend
 
-  await AsyncStorage.setItem(KEYS.QUOTA, JSON.stringify(quota));
+  await AsyncStorage.setItem(`sxb_quota_${quota.configId}`, JSON.stringify(quota));
+  await configStore.updateQuota(quota.configId, quota.usedQuota);
   return quota;
 }
 
@@ -264,7 +204,7 @@ export async function getOfflineStatus(): Promise<{
 export async function clearAllOfflineData(): Promise<void> {
   await Promise.all([
     clearVpnConfig(),
-    AsyncStorage.removeItem(KEYS.QUOTA),
+    // Quotas are per-config and are removed with their config payload,
     AsyncStorage.removeItem(KEYS.LAST_SYNC),
   ]);
 }
