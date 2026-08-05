@@ -14,6 +14,7 @@
  */
 import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as configStore from './configStore';
 import apiClient from './apiClient';
 import { decryptSxbBlob, utf8Decode } from './aesGcm';
 
@@ -151,8 +152,8 @@ export async function provisionAndStore(
   const decryptedJson = await decryptGCM(encryptedBlob, configKey);
   const vpnConfig     = JSON.parse(decryptedJson) as Record<string, any>;
 
-  // Stockage dans SecureStore (Android Keystore / iOS Keychain)
-  await SecureStore.setItemAsync(PROV_KEY, JSON.stringify(vpnConfig));
+  // The credential payload is encrypted with the app AES-GCM key in configStore;
+  // SecureStore only ever holds the 32-byte master key, never this potentially large blob.
 
   // Métadonnées non-sensibles dans AsyncStorage (quota, expiration, identifiants)
   const meta: ProvisionMeta = {
@@ -170,8 +171,14 @@ export async function provisionAndStore(
     configVersion:   typeof prov.configVersion === 'number' ? prov.configVersion : 1,
     configHash:      prov.configHash || null,
   };
-  await AsyncStorage.setItem(PROV_META_KEY, JSON.stringify(meta));
-
+  const id = meta.subscriptionId || String(vpnConfig.configId || `provision_${Date.now()}`);
+  const stored = await configStore.save(id, vpnConfig, {
+    configId: id, name: meta.profileName, protocol: meta.protocol, displayProtocol: meta.displayProtocol,
+    subscriptionId: meta.subscriptionId, quotaTotal: Math.round(meta.quotaGB * 1024 ** 3),
+    quotaUsed: Math.round(meta.quotaUsedGB * 1024 ** 3), expiryDate: meta.expireAt,
+    configVersion: meta.configVersion, configHash: meta.configHash, dataToken,
+  });
+  if (stored.status !== 'ok') throw stored.error || new Error('Stockage chiffré indisponible');
   return { config: vpnConfig, meta };
 }
 
@@ -179,40 +186,24 @@ export async function provisionAndStore(
  * Charge la config VPN provisionnée depuis SecureStore.
  * Retourne null si aucune config n'est disponible ou si elle est expirée.
  */
-export async function loadProvisionedConfig(): Promise<{
-  config: Record<string, any>;
-  meta:   ProvisionMeta;
-} | null> {
-  try {
-    const [rawConfig, rawMeta] = await Promise.all([
-      SecureStore.getItemAsync(PROV_KEY),
-      AsyncStorage.getItem(PROV_META_KEY),
-    ]);
-    if (!rawConfig || !rawMeta) return null;
-
-    const config = JSON.parse(rawConfig) as Record<string, any>;
-    const meta   = JSON.parse(rawMeta)   as ProvisionMeta;
-
-    // Vérification d'expiration locale
-    if (meta.configExpiresAt && new Date(meta.configExpiresAt) < new Date()) {
-      await clearProvisionedConfig();
-      return null;
-    }
-
-    return { config, meta };
-  } catch {
-    return null;
-  }
+export async function loadProvisionedConfig(): Promise<{ config: Record<string, any>; meta: ProvisionMeta } | null> {
+  const result = await configStore.getActive();
+  if (result.status !== 'ok' || !result.value) return null;
+  const m = result.value.meta;
+  return { config: result.value.config, meta: {
+    subscriptionId: m.subscriptionId || m.configId, profileId: '', profileName: m.name || '', protocol: m.protocol || '',
+    displayProtocol: m.displayProtocol || '', quotaGB: (m.quotaTotal || 0) / 1024 ** 3,
+    quotaUsedGB: (m.quotaUsed || 0) / 1024 ** 3, expireAt: m.expiryDate || null, configExpiresAt: m.expiryDate || '',
+    provisionedAt: m.savedAt || '', encVersion: 'gcm-local-v1', configVersion: m.configVersion || 1, configHash: m.configHash || null,
+  }};
 }
 
 /**
  * Supprime la config provisionnée (révocation, déconnexion, reset).
  */
 export async function clearProvisionedConfig(): Promise<void> {
-  await Promise.all([
-    SecureStore.deleteItemAsync(PROV_KEY).catch(() => null),
-    AsyncStorage.removeItem(PROV_META_KEY),
-  ]);
+  const active = await configStore.getActive();
+  if (active.status === 'ok' && active.value) await configStore.remove(active.value.meta.configId);
 }
 
 /**

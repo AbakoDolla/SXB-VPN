@@ -21,11 +21,12 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient from '@/services/apiClient';
 import {
-  saveVpnConfig, loadVpnConfig, saveQuotaData, loadQuotaData,
+  saveVpnConfig, saveQuotaData, loadQuotaData,
   isQuotaExhausted, isConfigExpired, consumeQuotaLocally,
 } from '@/services/offlineStorage';
 import type { QuotaData } from '@/services/offlineStorage';
 import { provisionAndStore, loadProvisionedConfig, clearProvisionedConfig } from '@/services/provisionClient';
+import * as configStore from '@/services/configStore';
 import {
   isCompleteOfflineConfig,
   mergeConnectionMetadata,
@@ -381,6 +382,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         sessionId: sessionIdRef.current,
         seq:       currentSeq,
         reportMode: 'delta',
+        subscriptionId: activeConfigId || (activeConnection as any)?.id || undefined,
       });
 
       // Mettre à jour lastReported SEULEMENT après envoi réussi
@@ -434,7 +436,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       // Rejet/Échec réseau : conserver le delta non envoyé pour le rejouer plus tard
       return undefined;
     }
-  }, [isAuthenticated, addLog]);
+  }, [isAuthenticated, addLog, activeConfigId, activeConnection]);
 
   // Polling rapport delta
   useEffect(() => {
@@ -457,13 +459,13 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       const NetInfo = require('@react-native-community/netinfo');
       unsubscribe = NetInfo.addEventListener((netState: any) => {
         if (netState.isConnected && netState.isInternetReachable) {
-          refreshVpnConfig().catch(() => {});
-          refreshAccountState().catch(() => {});
+          // refreshVpnConfig is declared below; defer lookup until this listener fires.
+          setTimeout(() => { apiClient.get('/mobile/vpn/config').catch(() => {}); refreshAccountState().catch(() => {}); }, 0);
         }
       });
     } catch { /* ignore */ }
     return () => { if (unsubscribe) unsubscribe(); };
-  }, [refreshVpnConfig, refreshAccountState]);
+  }, [refreshAccountState]);
 
   // ── B5 — GARDE DURE LOCALE (5 s) ─────────────────────────────────────────────
   useEffect(() => {
@@ -482,7 +484,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         );
 
         const activeConfig = await loadProvisionedConfig();
-        const configHash = activeConfig?.configHash;
+        const configHash = activeConfig?.meta?.configHash;
 
         if (derived.isExhausted || derived.isExpired) {
           const reason = derived.isExhausted ? 'exhausted' : 'expired';
@@ -507,7 +509,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           }
 
           if (activeConnection?.id) {
-            apiClient.post(`/xapi/mobile/connections/${activeConnection.id}/status`, { disabledReason: reason }).catch(() => {});
+            apiClient.post(`/mobile/connections/${activeConnection.id}/status`, { disabledReason: reason }).catch(() => {});
           }
         }
       } catch { /* ignore */ }
@@ -551,13 +553,38 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         await AsyncStorage.removeItem(`@sxb_blocked_hash_${data.vpnConfig.configHash}`).catch(() => {});
       }
 
-      setVpnConfig(data.vpnConfig || null);
+      // Server connections are the catalogue; local registry is the source for credentials.
+      const connectionsRes = await apiClient.get('/mobile/connections');
+      const connections = (connectionsRes.data?.connections || []).filter((c: any) =>
+        c.status === 'active' && (!c.expiresAt || new Date(c.expiresAt) > new Date()) && Number(c.quota?.remainingBytes ?? 1) > 0,
+      );
+      const local = await configStore.list();
+      const registered = local.status === 'ok' ? local.value || [] : [];
+      setSavedConfigs(connections.filter((c: any) => registered.some(r => r.configId === c.id || (r.configHash && r.configHash === c.configHash))).map((c: any) => ({
+        id: c.id, name: c.name, protocol: c.displayProtocol || c.technicalProtocol, isActive: c.id === activeConfigId,
+      })));
+      const active = connections.find((c: any) => c.id === activeConfigId) || connections[0];
+      if (active) { setActiveConnection(active); if (!activeConfigId) { await configStore.setActive(active.id); setActiveConfigId(active.id); } }
+      setVpnConfig(data.vpnConfig || active || null);
     } catch {
       // mode hors-ligne : ne jamais altérer l'état vers "expiré" sur échec réseau
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, activeConfigId]);
 
-  useEffect(() => { refreshVpnConfig(); }, [refreshVpnConfig]);
+  // Restore the selected profile before any network request; a transient keystore error is not "no config".
+  useEffect(() => {
+    (async () => {
+      const persistedId = await AsyncStorage.getItem('@sxb_active_config_id');
+      const local = await configStore.list();
+      if (local.status === 'ok') {
+        const id = persistedId && local.value?.some(c => c.configId === persistedId)
+          ? persistedId : local.value?.find(c => c.isActive)?.configId;
+        if (id) { await configStore.setActive(id); setActiveConfigId(id); }
+        setSavedConfigs((local.value || []).map(c => ({ id: c.configId, name: c.name || 'Connexion VPN', protocol: c.displayProtocol || c.protocol || 'VPN', isActive: !!c.isActive })));
+      }
+    })().catch(() => {});
+    refreshVpnConfig();
+  }, [refreshVpnConfig]);
 
   const syncFromConnection = useCallback((conn: VpnConnection) => {
     setActiveConnection(conn);
@@ -574,7 +601,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
     // B5 — Vérifier si bloqué par blockedByConfigHash
     const provConfig = await loadProvisionedConfig();
-    const blockedByConfigHashKey = provConfig?.configHash ? `@sxb_blocked_hash_${provConfig.configHash}` : null;
+    const blockedByConfigHashKey = provConfig?.meta?.configHash ? `@sxb_blocked_hash_${provConfig.meta.configHash}` : null;
     if (blockedByConfigHashKey) {
       const blockedByConfigHash = await AsyncStorage.getItem(blockedByConfigHashKey);
       if (blockedByConfigHash === 'true') {
@@ -644,7 +671,15 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         addLog('🔐 Chargement configuration sécurisée...');
         let configToUse: any = null;
 
-        const offlineEntry = await loadVpnConfig().catch(() => null);
+        const localResult = await configStore.getActive();
+        if (localResult.status === 'error') {
+          addLog('⚠️ Stockage temporairement illisible — nouvelle tentative…');
+          setIsConnecting(false);
+          return;
+        }
+        const offlineEntry = localResult.status === 'ok' && localResult.value
+          ? { config: localResult.value.config, configId: localResult.value.meta.configId, protocol: localResult.value.meta.protocol || '' }
+          : null;
 
         if (offlineEntry?.config) {
           const storedCheck = isCompleteOfflineConfig(offlineEntry.config);
@@ -681,6 +716,11 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
                 },
               );
 
+              const newlyBlocked = freshResult.meta.configHash && await AsyncStorage.getItem(`@sxb_blocked_hash_${freshResult.meta.configHash}`);
+              if (newlyBlocked === 'true' && freshResult.meta.quotaUsedGB >= freshResult.meta.quotaGB) {
+                await configStore.remove(freshResult.meta.subscriptionId);
+                throw new Error('Forfait épuisé — rechargez avant de vous reconnecter');
+              }
               await saveCompleteConfig(configToUse, (configToUse.protocol || 'vless').toLowerCase(), vpnConfig?.configId ?? activeConnection?.id, freshResult.meta.configExpiresAt);
 
               if (freshResult.meta.quotaGB > 0) {
@@ -692,10 +732,6 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
                   usedQuota:   usedB,
                   expiryDate:  freshResult.meta.expireAt,
                 }).catch(() => {});
-              }
-
-              if (freshResult.meta.configHash) {
-                await AsyncStorage.removeItem(`@sxb_blocked_hash_${freshResult.meta.configHash}`).catch(() => {});
               }
 
               addStepLog('provisioning', 'step_provisioned', 'done');
@@ -854,32 +890,33 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isConnecting, isConnected, addLog, reportUsageToBackend, addStepLog]);
 
-  // B8 — SWITCH TRANSACTIONNEL
+  // B8 — transaction: credentials are loaded first; failure always restores A and never removes either payload.
   const switchConfig = useCallback(async (configId: string) => {
-    if (isSwitchingConfig) return;
+    if (isSwitchingConfig || configId === activeConfigId) return;
     setIsSwitchingConfig(true);
+    const previousId = activeConfigId;
+    const target = await configStore.get(configId);
     try {
-      const oldConfig = await loadVpnConfig();
-      if (isConnected) {
-        addLog(`🔄 Basculement de configuration → ${configId}...`);
-        await disconnect();
-      }
+      if (target.status !== 'ok' || !target.value) throw new Error(target.status === 'error' ? 'Stockage temporairement illisible — nouvelle tentative…' : 'Configuration absente');
+      if (isConnected) { addLog(`🔄 Basculement de configuration → ${configId}...`); await disconnect(); }
+      // The active pointer is switched only while starting B, and is rolled back atomically on failure.
+      await configStore.setActive(configId);
       setActiveConfigId(configId);
-      await AsyncStorage.setItem('@sxb_active_config_id', configId);
-
-      try {
+      setVpnConfig({ ...target.value.config, configId, displayProtocol: target.value.meta.displayProtocol, dataToken: target.value.meta.dataToken });
+      await connect();
+      await configStore.setActive(configId);
+    } catch (err: any) {
+      if (previousId) {
+        await configStore.setActive(previousId);
+        setActiveConfigId(previousId);
+        const previous = await configStore.get(previousId);
+        if (previous.status === 'ok' && previous.value) setVpnConfig({ ...previous.value.config, configId: previousId, dataToken: previous.value.meta.dataToken });
+        if (isConnected) await disconnect();
         await connect();
-      } catch (err) {
-        if (oldConfig?.configId) {
-          setActiveConfigId(oldConfig.configId);
-          await AsyncStorage.setItem('@sxb_active_config_id', oldConfig.configId);
-        }
-        throw err;
       }
-    } finally {
-      setIsSwitchingConfig(false);
-    }
-  }, [isSwitchingConfig, isConnected, connect, disconnect, addLog]);
+      addLog(`⚠️ Basculement annulé : ${err?.message || 'erreur réseau'}`);
+    } finally { setIsSwitchingConfig(false); }
+  }, [isSwitchingConfig, isConnected, activeConfigId, connect, disconnect, addLog]);
 
   const selectProtocol = useCallback(async (name: string) => {
     setSelectedProtocol(name);
