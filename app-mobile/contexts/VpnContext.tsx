@@ -902,6 +902,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       // The active pointer is switched only while starting B, and is rolled back atomically on failure.
       await configStore.setActive(configId);
       setActiveConfigId(configId);
+      const targetQuota = await loadQuotaData(configId);
+      setQuotaData(targetQuota);
       setVpnConfig({ ...target.value.config, configId, displayProtocol: target.value.meta.displayProtocol, dataToken: target.value.meta.dataToken });
       await connect();
       await configStore.setActive(configId);
@@ -911,6 +913,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         setActiveConfigId(previousId);
         const previous = await configStore.get(previousId);
         if (previous.status === 'ok' && previous.value) setVpnConfig({ ...previous.value.config, configId: previousId, dataToken: previous.value.meta.dataToken });
+        setQuotaData(await loadQuotaData(previousId));
         if (isConnected) await disconnect();
         await connect();
       }
