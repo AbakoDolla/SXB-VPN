@@ -121,8 +121,20 @@ export class ProtocolDetector {
   // ── Heuristiques ──────────────────────────────────────────────────────────
 
   private static _guessFromFields(obj: Record<string, any>): DetectableProtocol | null {
-    // Sing-box JSON natif : tableau "outbounds"
-    if (Array.isArray(obj.outbounds) && obj.outbounds.length > 0) return 'singbox';
+    // Détection stricte sing-box natif : outbounds[] d'objets avec "type"
+    // (string) ET absence de markers Xray (PARTIE 1 — miroir backend).
+    const hasXrayMarkers = (o: Record<string, any>): boolean => {
+      const outbounds = Array.isArray(o.outbounds) ? o.outbounds : [];
+      return outbounds.some((x: any) => typeof x?.protocol === 'string')
+        || outbounds.some((x: any) => x?.settings?.vnext !== undefined)
+        || outbounds.some((x: any) => x?.streamSettings !== undefined)
+        || (Array.isArray(o.inbounds) && o.inbounds.some((i: any) => i?.protocol === 'dokodemo-door'))
+        || (Array.isArray(o.dns?.servers) && o.dns.servers.some((s: any) => typeof s === 'string' && /^(tcp|https)\+local:\/\//i.test(s)))
+        || outbounds.some((x: any) => x?.protocol === 'blackhole' || x?.protocol === 'freedom');
+    };
+    if (Array.isArray(obj.outbounds) && obj.outbounds.length > 0
+      && obj.outbounds.every((x: any) => x && typeof x.type === 'string')
+      && !hasXrayMarkers(obj)) return 'singbox';
 
     // VLESS : uuid + flow
     if (obj.uuid && obj.flow !== undefined)            return 'vless';

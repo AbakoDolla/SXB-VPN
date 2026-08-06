@@ -1,13 +1,16 @@
 /**
  * transport-probe.ts — Préflight SXB « Tester la configuration importée »
  *
- * Règles (mission §7) :
+ * Règles (mission §7 + PARTIE 4 — sonde v2) :
  *   - Ne crée/configure AUCUN serveur : teste uniquement le serveur EXTERNE fourni.
  *   - Aucune authentification par défaut (AUTH_* réservés, jamais de credential
  *     utilisé ni loggé dans ce module — la sonde est transport-only).
- *   - Résultats structurés : DNS_RESOLVED, TCP_CONNECTED, TLS_HANDSHAKE_OK,
- *     TLS_FAILED, SSH_BANNER_RECEIVED, SSH_BANNER_MISSING, HTTP_STATUS_101,
+ *   - Résultats structurés : DNS_RESOLVED, TCP_CONNECTED, PROXY_CONNECT,
+ *     TLS_HANDSHAKE, WS_HANDSHAKE, TLS_HANDSHAKE_OK, TLS_FAILED,
+ *     SSH_BANNER_RECEIVED, SSH_BANNER_MISSING, HTTP_STATUS_101,
  *     HTTP_STATUS_200, HTTP_STATUS_UNEXPECTED, LATENCY_MS.
+ *   - Sonde v2 (vless/vmess/trojan/shadowsocks/singbox) : étapes réelles
+ *     DNS → TCP → PROXY_CONNECT (amont http) → TLS_HANDSHAKE → WS_HANDSHAKE.
  *   - ssh direct : exige une bannière "SSH-" pour être déclaré compatible.
  *   - ssh+payload : substitue le payload ([crlf], [host], [ua]…), vérifie la
  *     réponse (101/200), et confirme que le flux sous-jacent devient SSH.
@@ -22,6 +25,7 @@ import crypto from 'node:crypto';
 
 export type ProbeEvent =
   | 'DNS_RESOLVED' | 'TCP_CONNECTED'
+  | 'PROXY_CONNECT' | 'TLS_HANDSHAKE' | 'WS_HANDSHAKE'
   | 'TLS_HANDSHAKE_OK' | 'TLS_FAILED'
   | 'SSH_BANNER_RECEIVED' | 'SSH_BANNER_MISSING'
   | 'HTTP_STATUS_101' | 'HTTP_STATUS_200' | 'HTTP_STATUS_UNEXPECTED'
@@ -30,6 +34,7 @@ export type ProbeEvent =
 export interface ProbeStep {
   event: ProbeEvent | string;
   ok: boolean;
+  step?: string;        // libellé humain (affiché par le dashboard)
   detail?: string;      // jamais de credential — bannière serveur tronquée autorisée
 }
 
@@ -141,15 +146,15 @@ async function probeWsTunnel(
   const statusMatch = text.match(/^HTTP\/\d\.\d (\d{3})/);
   const code = statusMatch ? Number(statusMatch[1]) : null;
 
-  if (code === 101) steps.push({ event: 'HTTP_STATUS_101', ok: true, detail: 'upgrade accepté' });
-  else if (code === 200) steps.push({ event: 'HTTP_STATUS_200', ok: true, detail: 'tunnel HTTP accepté' });
-  else steps.push({ event: 'HTTP_STATUS_UNEXPECTED', ok: false, detail: code ? `code ${code}` : 'réponse non-HTTP/vide' });
+  if (code === 101) steps.push({ event: 'HTTP_STATUS_101', ok: true, step: 'Réponse HTTP', detail: 'upgrade accepté' });
+  else if (code === 200) steps.push({ event: 'HTTP_STATUS_200', ok: true, step: 'Réponse HTTP', detail: 'tunnel HTTP accepté' });
+  else steps.push({ event: 'HTTP_STATUS_UNEXPECTED', ok: false, step: 'Réponse HTTP', detail: code ? `code ${code}` : 'réponse non-HTTP/vide' });
 
   if (code === 101 || code === 200) {
     // Le flux sous-jacent doit devenir SSH : chercher 'SSH-' (frames WS incluses)
     const m = text.match(/SSH-[0-9A-Za-z.\-_ ]+/);
     if (m) {
-      steps.push({ event: 'SSH_BANNER_RECEIVED', ok: true, detail: `derrière tunnel : ${m[0].slice(0, 48)}` });
+      steps.push({ event: 'SSH_BANNER_RECEIVED', ok: true, step: 'Bannière SSH', detail: `derrière tunnel : ${m[0].slice(0, 48)}` });
     } else {
       const more = await readUpTo(sock, 8192, Math.min(timeoutMs, 5000));
       const m2 = more.toString('latin1').match(/SSH-[0-9A-Za-z.\-_ ]+/);
@@ -158,6 +163,222 @@ async function probeWsTunnel(
         : { event: 'SSH_BANNER_MISSING', ok: false, detail: 'tunnel ouvert mais aucun flux SSH détecté (8s)' });
     }
   }
+}
+
+// ── Sonde v2 : protocoles sing-box natifs (vless/vmess/trojan/shadowsocks/singbox) ──
+// Étapes réelles : DNS → TCP → PROXY_CONNECT (amont http) → TLS_HANDSHAKE → WS_HANDSHAKE.
+
+const V2_PROTOS = ['vless', 'vmess', 'trojan', 'shadowsocks', 'singbox'];
+const V2_MAIN_TYPES = new Set(['vless', 'vmess', 'trojan', 'shadowsocks']);
+
+interface V2Endpoint {
+  server: string;
+  port: number;
+  tlsEnabled: boolean;
+  allowInsecure: boolean;
+  /** reality (Xray) : l'auth TLS reality n'est pas émulable par une sonde TLS standard */
+  reality: boolean;
+  sni?: string;
+  network: 'ws' | 'grpc' | 'tcp';
+  wsPath?: string;
+  wsHeaders?: Record<string, string>;
+  upstream?: { server: string; port: number; headers?: Record<string, string> };
+}
+
+/** Extrait l'outbound principal + son éventuel detour http depuis le canonique. */
+export function extractV2Endpoint(canonical: Record<string, any>): V2Endpoint | null {
+  const proto = String(canonical.protocol ?? '').toLowerCase();
+
+  if (proto === 'singbox') {
+    const outbounds = Array.isArray(canonical.outbounds) ? canonical.outbounds : [];
+    const main = outbounds.find((o: any) => o && V2_MAIN_TYPES.has(String(o.type ?? '')));
+    if (!main) return null;
+    const tlsObj = main.tls ?? {};
+    const transport = main.transport ?? {};
+    const ep: V2Endpoint = {
+      server: String(main.server ?? ''),
+      port: Number(main.server_port ?? 0),
+      tlsEnabled: tlsObj.enabled === true,
+      allowInsecure: tlsObj.insecure === true,
+      reality: tlsObj.reality?.enabled === true,
+      sni: tlsObj.server_name ? String(tlsObj.server_name) : undefined,
+      network: transport.type === 'ws' ? 'ws' : transport.type === 'grpc' ? 'grpc' : 'tcp',
+      wsPath: transport.path ? String(transport.path) : undefined,
+      wsHeaders: transport.headers && typeof transport.headers === 'object' ? transport.headers : undefined,
+    };
+    if (main.detour) {
+      const up = outbounds.find((o: any) => o && String(o.tag ?? '') === String(main.detour) && o.type === 'http');
+      if (up) {
+        ep.upstream = {
+          server: String(up.server ?? ''),
+          port: Number(up.server_port ?? 0),
+          headers: up.headers && typeof up.headers === 'object' ? up.headers : undefined,
+        };
+      }
+    }
+    if (!ep.server || !ep.port) return null;
+    return ep;
+  }
+
+  // Formats canoniques plats (URI/JSON SXB) : vless/vmess/trojan/shadowsocks
+  if (!V2_PROTOS.includes(proto)) return null;
+  const host = String(canonical.host ?? '');
+  const port = Number(canonical.port ?? 0);
+  if (!host || !port) return null;
+  return {
+    server: host,
+    port,
+    tlsEnabled: canonical.tls === true,
+    allowInsecure: canonical.insecure === true,
+    reality: !!canonical.publicKey,
+    sni: canonical.sni ? String(canonical.sni) : undefined,
+    network: String(canonical.network ?? 'tcp') === 'ws' ? 'ws'
+      : String(canonical.network ?? 'tcp') === 'grpc' ? 'grpc' : 'tcp',
+    wsPath: canonical.path ? String(canonical.path) : undefined,
+    wsHeaders: canonical.wsHeaders && typeof canonical.wsHeaders === 'object' ? canonical.wsHeaders : undefined,
+    // Les formats plats n'ont pas d'amont http (pas de chaînage proxySettings)
+    upstream: undefined,
+  };
+}
+
+/** PROXY_CONNECT : CONNECT <serveur>:<port> + headers configurés exacts. */
+async function probeProxyConnect(
+  sock: net.Socket | tls.TLSSocket,
+  targetHost: string,
+  targetPort: number,
+  headers: Record<string, string> | undefined,
+  timeoutMs: number,
+): Promise<{ ok: boolean; code: number | null; detail: string }> {
+  const lines = [
+    `CONNECT ${targetHost}:${targetPort} HTTP/1.1`,
+    `Host: ${targetHost}:${targetPort}`,
+    ...Object.entries(headers ?? {}).map(([k, v]) => `${k}: ${v}`),
+    '', '',
+  ];
+  sock.write(lines.join('\r\n'));
+  const head = await readUpTo(sock, 8192, timeoutMs);
+  const text = head.toString('latin1');
+  const m = text.match(/^HTTP\/\d(?:\.\d)? (\d{3})/);
+  const code = m ? Number(m[1]) : null;
+  if (code === 200) return { ok: true, code, detail: 'CONNECT accepté (200)' };
+  if (code === 403 || code === 407) {
+    return { ok: false, code, detail: `proxy amont refuse la cible (HTTP ${code})` };
+  }
+  return { ok: false, code, detail: code ? `code HTTP ${code}` : 'réponse non-HTTP/vide' };
+}
+
+/** WS_HANDSHAKE : GET <path> HTTP/1.1 + Upgrade: websocket + clé aléatoire. */
+async function probeWsHandshake(
+  sock: net.Socket | tls.TLSSocket,
+  host: string,
+  path: string,
+  headers: Record<string, string> | undefined,
+  timeoutMs: number,
+): Promise<{ code: number | null; detail: string }> {
+  const extra = { ...(headers ?? {}) };
+  const hostHeader = extra.Host || host;
+  delete extra.Host;
+  const lines = [
+    `GET ${path || '/'} HTTP/1.1`,
+    `Host: ${hostHeader}`,
+    'Upgrade: websocket',
+    'Connection: Upgrade',
+    `Sec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}`,
+    'Sec-WebSocket-Version: 13',
+    ...Object.entries(extra).map(([k, v]) => `${k}: ${v}`),
+    '', '',
+  ];
+  sock.write(lines.join('\r\n'));
+  const head = await readUpTo(sock, 8192, timeoutMs);
+  const text = head.toString('latin1');
+  const m = text.match(/^HTTP\/\d(?:\.\d)? (\d{3})/);
+  const code = m ? Number(m[1]) : null;
+  return { code, detail: code === 101 ? 'upgrade accepté (101)' : (code ? `code HTTP ${code} (attendu 101)` : 'réponse non-HTTP/vide') };
+}
+
+async function probeV2(
+  canonical: Record<string, any>,
+  timeoutMs: number,
+  started: number,
+  startedAt: string,
+  steps: ProbeStep[],
+  finish: (verdict: ProbeReport['verdict'], hint?: string) => ProbeReport,
+): Promise<ProbeReport> {
+  const proto = String(canonical.protocol ?? '').toLowerCase();
+  const ep = extractV2Endpoint(canonical);
+  if (!ep) {
+    return finish('unsupported', `sonde v2 : outbound principal (vless/vmess/trojan/shadowsocks) introuvable pour ${proto}`);
+  }
+  const target = ep.upstream ?? { server: ep.server, port: ep.port };
+
+  // 1. DNS (serveur ou proxy amont)
+  const resolved = await resolveAll(target.server);
+  if (resolved.length === 0) {
+    steps.push({ event: 'DNS_RESOLVED', ok: false, step: 'Résolution DNS', detail: 'aucune adresse' });
+    return finish('unreachable_from_probe',
+      `DNS non résolu depuis la sonde (${target.server}) — peut être géo/opérateur-restreint ; l'import reste possible en statut unreachable_from_probe`);
+  }
+  steps.push({ event: 'DNS_RESOLVED', ok: true, step: 'Résolution DNS', detail: `${resolved.length} adresse(s)` });
+
+  // 2. TCP (+ latence) — cible = proxy amont si présent, sinon serveur
+  const conn = await tcpConnect(target.server, target.port, timeoutMs);
+  if (!conn) {
+    steps.push({ event: 'TCP_CONNECTED', ok: false, step: 'Connexion TCP', detail: `échec ${timeoutMs}ms` });
+    return finish('unreachable_from_probe',
+      `TCP inaccessible depuis la sonde (${target.server}:${target.port}) — serveur éteint, filtré, ou géo-restreint`);
+  }
+  steps.push({ event: 'TCP_CONNECTED', ok: true, step: 'Connexion TCP', detail: `${conn.latencyMs}ms` });
+  steps.push({ event: 'LATENCY_MS', ok: true, step: 'Latence', detail: String(conn.latencyMs) });
+
+  let sock: net.Socket | tls.TLSSocket = conn.sock;
+
+  // 3. Amont http : PROXY_CONNECT
+  if (ep.upstream) {
+    const res = await probeProxyConnect(sock, ep.server, ep.port, ep.upstream.headers, timeoutMs);
+    steps.push({ event: 'PROXY_CONNECT', ok: res.ok, step: 'Proxy CONNECT', detail: res.detail });
+    if (!res.ok) {
+      try { sock.destroy(); } catch { /* ignore */ }
+      return finish('invalid', `Échec : PROXY_CONNECT — ${res.detail}`);
+    }
+  }
+
+  // 4. TLS : handshake + SNI (allowInsecure toléré mais noté)
+  if (ep.tlsEnabled) {
+    if (ep.reality) {
+      // reality (Xray) : l'auth reality (public key + short id) n'est pas
+      // émulable par un handshake TLS standard — on le note, pas de faux échec.
+      steps.push({
+        event: 'TLS_HANDSHAKE', ok: true, step: 'Handshake TLS/SNI',
+        detail: 'reality : auth TLS reality non émulable par la sonde — SNI vérifié au niveau TCP uniquement',
+      });
+    } else {
+      const up = await tlsUpgrade(sock, ep.server, ep.sni || undefined, timeoutMs);
+      if ('error' in up) {
+        steps.push({ event: 'TLS_HANDSHAKE', ok: false, step: 'Handshake TLS/SNI', detail: up.error.slice(0, 120) });
+        try { sock.destroy(); } catch { /* ignore */ }
+        return finish('invalid', 'Échec : TLS_HANDSHAKE — handshake TLS/SNI impossible');
+      }
+      const suffix = ep.allowInsecure ? ' (allowInsecure toléré par la config)' : '';
+      steps.push({
+        event: 'TLS_HANDSHAKE', ok: true, step: 'Handshake TLS/SNI',
+        detail: `handshake + SNI acceptés${suffix}${up.subject ? ` — CN=${up.subject}` : ''}`,
+      });
+      sock = up.sock;
+    }
+  }
+
+  // 5. WebSocket : GET path + Upgrade
+  if (ep.network === 'ws') {
+    const res = await probeWsHandshake(sock, ep.sni || ep.server, ep.wsPath || '/', ep.wsHeaders, timeoutMs);
+    steps.push({ event: 'WS_HANDSHAKE', ok: res.code === 101, step: 'Handshake WebSocket', detail: res.detail });
+    if (res.code !== 101) {
+      try { sock.destroy(); } catch { /* ignore */ }
+      return finish('invalid', `Échec : WS_HANDSHAKE — ${res.detail}`);
+    }
+  }
+
+  try { sock.destroy(); } catch { /* ignore */ }
+  return finish('transport_ok');
 }
 
 // ── Sonde principale ─────────────────────────────────────────────────────────
@@ -177,8 +398,12 @@ export async function probeConfig(
     startedAt, durationMs: Date.now() - started, hint,
   });
 
-  // Protocoles non sondables en v1 (validation syntaxique seule, hors transport)
-  if (['wireguard', 'shadowsocks', 'vmess', 'vless', 'trojan', 'hysteria2', 'tuic', 'singbox'].includes(proto)) {
+  // Sonde v2 : vless/vmess/trojan/shadowsocks + singbox (config traduite ou native)
+  if (V2_PROTOS.includes(proto)) {
+    return probeV2(canonical, timeoutMs, started, startedAt, steps, finish);
+  }
+  // Protocoles non sondables en v2 (validation syntaxique seule, hors transport)
+  if (['wireguard', 'hysteria2', 'tuic'].includes(proto)) {
     return finish('unsupported', `sonde transport v1 non applicable à ${proto} — validation syntaxique stricte effectuée à l'import`);
   }
   if (proto !== 'ssh' && proto !== 'ssh+payload') {
@@ -195,19 +420,19 @@ export async function probeConfig(
   // 1. DNS
   const resolved = await resolveAll(host);
   if (resolved.length === 0) {
-    steps.push({ event: 'DNS_RESOLVED', ok: false, detail: 'aucune adresse' });
+    steps.push({ event: 'DNS_RESOLVED', ok: false, step: 'Résolution DNS', detail: 'aucune adresse' });
     return finish('unreachable_from_probe', 'DNS non résolu depuis la sonde — peut être géo/opérateur-restreint ; l\'import reste possible en statut unreachable_from_probe');
   }
-  steps.push({ event: 'DNS_RESOLVED', ok: true, detail: `${resolved.length} adresse(s)` });
+  steps.push({ event: 'DNS_RESOLVED', ok: true, step: 'Résolution DNS', detail: `${resolved.length} adresse(s)` });
 
   // 2. TCP (+ latence)
   const conn = await tcpConnect(host, port, timeoutMs);
   if (!conn) {
-    steps.push({ event: 'TCP_CONNECTED', ok: false, detail: `échec ${timeoutMs}ms` });
+    steps.push({ event: 'TCP_CONNECTED', ok: false, step: 'Connexion TCP', detail: `échec ${timeoutMs}ms` });
     return finish('unreachable_from_probe', 'TCP inaccessible depuis la sonde — serveur éteint, filtré, ou géo-restreint');
   }
-  steps.push({ event: 'TCP_CONNECTED', ok: true, detail: `${conn.latencyMs}ms` });
-  steps.push({ event: 'LATENCY_MS', ok: true, detail: String(conn.latencyMs) });
+  steps.push({ event: 'TCP_CONNECTED', ok: true, step: 'Connexion TCP', detail: `${conn.latencyMs}ms` });
+  steps.push({ event: 'LATENCY_MS', ok: true, step: 'Latence', detail: String(conn.latencyMs) });
 
   let sock: net.Socket | tls.TLSSocket = conn.sock;
 
@@ -215,11 +440,11 @@ export async function probeConfig(
   if (canonical.tls === true) {
     const up = await tlsUpgrade(conn.sock, host, canonical.sni || undefined, timeoutMs);
     if ('error' in up) {
-      steps.push({ event: 'TLS_FAILED', ok: false, detail: up.error.slice(0, 120) });
+      steps.push({ event: 'TLS_FAILED', ok: false, step: 'Handshake TLS', detail: up.error.slice(0, 120) });
       try { conn.sock.destroy(); } catch { /* ignore */ }
       return finish('unreachable_from_probe', 'handshake TLS impossible — vérifiez que le serveur attend bien TLS sur ce port');
     }
-    steps.push({ event: 'TLS_HANDSHAKE_OK', ok: true, detail: up.subject ? `CN=${up.subject}` : 'handshake OK' });
+    steps.push({ event: 'TLS_HANDSHAKE_OK', ok: true, step: 'Handshake TLS', detail: up.subject ? `CN=${up.subject}` : 'handshake OK' });
     sock = up.sock;
   }
 
@@ -228,11 +453,11 @@ export async function probeConfig(
     const buf = await readUpTo(sock, 512, Math.min(timeoutMs, 8000));
     const m = buf.toString('latin1').match(/SSH-[0-9A-Za-z.\-_ ]+/);
     if (m) {
-      steps.push({ event: 'SSH_BANNER_RECEIVED', ok: true, detail: m[0].slice(0, 48) });
+      steps.push({ event: 'SSH_BANNER_RECEIVED', ok: true, step: 'Bannière SSH', detail: m[0].slice(0, 48) });
       try { sock.destroy(); } catch { /* ignore */ }
       return finish('transport_ok');
     }
-    steps.push({ event: 'SSH_BANNER_MISSING', ok: false, detail: 'aucune bannière SSH- en clair (le serveur attend probablement TLS ou WebSocket)' });
+    steps.push({ event: 'SSH_BANNER_MISSING', ok: false, step: 'Bannière SSH', detail: 'aucune bannière SSH- en clair (le serveur attend probablement TLS ou WebSocket)' });
     try { sock.destroy(); } catch { /* ignore */ }
     return finish('unreachable_from_probe',
       'Pas de bannière SSH en clair : si le serveur exige WS/TLS, importez en ssh+payload avec le payload du fournisseur');

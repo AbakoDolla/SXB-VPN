@@ -6,6 +6,12 @@ on:
     paths:
       - "app-mobile/**"
       - ".github/workflows/build-android.yml"
+  # Build de validation sur PR (mission : build Android VERT avant merge)
+  pull_request:
+    branches: [main]
+    paths:
+      - "app-mobile/**"
+      - ".github/workflows/build-android.yml"
   workflow_dispatch:
 
 permissions:

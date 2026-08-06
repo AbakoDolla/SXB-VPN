@@ -355,7 +355,7 @@ model VpnProfile {
   // Règle : quand canonicalConfig est présent, il est LA SEULE source de vérité
   // technique du profil. Les colonnes host/port/protocol/tls... restent pour
   // identification/affichage et DOIVENT refléter le contenu du canonique.
-  sourceFormat       String?      // ssh-json | ssh+payload-json | vless-uri | vmess-uri | trojan-uri | ss-uri | wireguard-conf | hysteria2-uri | tuic-uri | singbox-json | sxb-canonical
+  sourceFormat       String?      // ssh-json | ssh+payload-json | vless-uri | vmess-uri | trojan-uri | ss-uri | wireguard-conf | hysteria2-uri | tuic-uri | singbox-json | xray-json | sxb-canonical
   canonicalConfig    String?      // AES-256-GCM (préfixe gcm:) — config technique importée, JAMAIS en clair
   canonicalConfigHash String?     // sha256 hex (64) du JSON canonique normalisé
   configVersion      Int          @default(1) // incrémenté à chaque réimport explicite

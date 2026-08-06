@@ -15,6 +15,7 @@ package com.sxbvpn.vpnmodule
  *  WireGuard        → libbox
  *  Hysteria2        → libbox
  *  TUIC             → libbox
+ *  Sing-box (natif) → libbox (config importée fusionnée avec le TUN de l'app)
  *
  * ═══════════════════════════════════════════════════════════════════
  * CHANGEMENT MAJEUR v6 — POURQUOI LE VPN NE DÉMARRAIT PAS
@@ -834,6 +835,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             "ssh", "ssh+payload"                                        -> startSshTunnel(json)
             "vless", "vmess", "trojan", "shadowsocks",
             "wireguard", "hysteria2", "tuic"                            -> startSingBoxTunnel(json, proto)
+            "singbox"                                                   -> startSingBoxTunnelRaw(json)
             else -> {
                 Log.e("SXB_DEBUG", "[SXB_DEBUG] DISPATCH_ERROR proto_inconnu=$proto")
                 broadcastLog("[SXB] ❌ Protocole inconnu : $proto")
@@ -1117,6 +1119,54 @@ class SxbVpnService : VpnService(), PlatformInterface {
             broadcastLog("[SXB_DEBUG] SINGBOX_EXCEPTION code=$code")
             broadcastLog("[SXB_DEBUG] STACKTRACE:\n  ${SecurityModule.maskSensitive(stack)}")
             failVpn(code, "Erreur moteur ${protocol.uppercase()}")
+        } finally {
+            val willReconnect = ::autoReconnect.isInitialized && autoReconnect.isEnabled()
+            cleanup(stopService = !willReconnect, keepRunning = willReconnect)
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // SING-BOX TUNNEL RAW (JSON sing-box importé / traduit depuis Xray/v2ray)
+    // ═════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Démarre un tunnel à partir d'un JSON sing-box COMPLET stocké sur le
+     * profil (import sing-box natif ou config Xray/v2ray déjà traduite par le
+     * backend). Le JSON stocké n'est PAS utilisé tel quel : il est fusionné
+     * avec le gabarit de l'app (TUN de l'app, règles DNS/ip_cidr, final).
+     *
+     * Validation au démarrage (buildRawSingBoxConfig) : type connu pour chaque
+     * outbound, detours existants, au moins un outbound non spécial. Échec →
+     * log clair + état error (pas de crash muet).
+     */
+    private fun startSingBoxTunnelRaw(configJsonStr: String) {
+        try {
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_RAW_TUNNEL_START")
+            broadcastLog("[SXB] Initialisation VPN SINGBOX (config importée)...")
+            broadcastLog("[SXB] Préparation de la connexion...")
+            broadcastStatus("connecting"); setCurrentState("connecting")
+
+            val cfg = JSONObject(configJsonStr)
+            val sbConfigJson = buildRawSingBoxConfig(cfg)
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_RAW_CONFIG_BUILT len=${sbConfigJson.length}")
+            broadcastLog("[SXB] Config générée pour SINGBOX (importé)")
+
+            startLibboxService(sbConfigJson, "SINGBOX")
+
+            // ── Boucle de surveillance ────────────────────────────────────────
+            while (running.get()) {
+                if (boxService == null) break
+                Thread.sleep(5_000)
+            }
+        } catch (e: InterruptedException) {
+            Log.i(TAG, "Thread sing-box interrompu")
+        } catch (e: Exception) {
+            Log.e("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_RAW_EXCEPTION msg=${SecurityModule.maskSensitive(e.message ?: "")}", e)
+            val stack = e.stackTrace.take(8).joinToString("\n  ") { "at ${it.className}.${it.methodName}(${it.fileName}:${it.lineNumber})" }
+            val code = classifyVpnError(e.message ?: "")
+            broadcastLog("[SXB_DEBUG] SINGBOX_RAW_EXCEPTION code=$code")
+            broadcastLog("[SXB_DEBUG] STACKTRACE:\n  ${SecurityModule.maskSensitive(stack)}")
+            failVpn(code, "Erreur moteur SINGBOX — ${SecurityModule.maskSensitive(e.message ?: "configuration invalide").take(120)}")
         } finally {
             val willReconnect = ::autoReconnect.isInitialized && autoReconnect.isEnabled()
             cleanup(stopService = !willReconnect, keepRunning = willReconnect)
@@ -1548,36 +1598,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // « auto_route » doit valoir true : c'est lui qui demande à libbox
         // d'appeler openTun() avec des routes par défaut (0.0.0.0/0), donc
         // qui fait réellement passer le trafic du système dans le tunnel.
-        val tunInbound = JSONObject().apply {
-            put("type", "tun")
-            put("tag", "tun-in")
-            put("inet4_address", "172.19.0.1/30")
-            put("auto_route", true)
-            put("strict_route", false)
-            put("stack", "system")
-            put("mtu", 9000)
-            put("sniff", true)
-            put("sniff_override_destination", false)
-        }
+        val tunInbound = tunInbound()
 
         // DNS
-        val dnsObj = JSONObject().apply {
-            put("servers", JSONArray()
-                .put(JSONObject().put("tag", "dns-remote").put("address", "https://1.1.1.1/dns-query").put("strategy", "prefer_ipv4").put("detour", "proxy"))
-                .put(JSONObject().put("tag", "dns-local").put("address", "local").put("detour", "direct"))
-                .put(JSONObject().put("tag", "dns-fake").put("address", "fakeip").put("detour", "direct"))
-            )
-            put("fakeip", JSONObject()
-                .put("enabled", true)
-                .put("inet4_range", "198.18.0.0/15")
-            )
-            // D4 — DNS via tunnel : supprimer règle outbound=any → dns-local (garder fakeip + final dns-remote)
-            put("rules", JSONArray()
-                .put(JSONObject().put("query_type", JSONArray().put("A").put("AAAA")).put("server", "dns-fake"))
-            )
-            put("final", "dns-remote")
-            put("independent_cache", true)
-        }
+        val dnsObj = defaultDnsObject()
 
         // Outbound proxy selon protocole
         val proxyOutbound = when (protocol) {
@@ -1622,6 +1646,143 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 .put(JSONObject().put("type", "block").put("tag", "block"))
             )
             put("route", routeObj)
+        }.toString(2)
+    }
+
+    /**
+     * Gabarit TUN de l'app — partagé entre buildSingBoxConfig (protocoles SXB
+     * canoniques) et buildRawSingBoxConfig (sing-box importé / traduit).
+     * JAMAIS de inbounds provenant du JSON stocké : le TUN est toujours celui-ci.
+     */
+    private fun tunInbound(): JSONObject = JSONObject().apply {
+        put("type", "tun")
+        put("tag", "tun-in")
+        put("inet4_address", "172.19.0.1/30")
+        put("auto_route", true)
+        put("strict_route", false)
+        put("stack", "system")
+        put("mtu", 9000)
+        put("sniff", true)
+        put("sniff_override_destination", false)
+    }
+
+    /** DNS par défaut de l'app (utilisé quand le JSON stocké n'en fournit pas). */
+    private fun defaultDnsObject(): JSONObject = JSONObject().apply {
+        put("servers", JSONArray()
+            .put(JSONObject().put("tag", "dns-remote").put("address", "https://1.1.1.1/dns-query").put("strategy", "prefer_ipv4").put("detour", "proxy"))
+            .put(JSONObject().put("tag", "dns-local").put("address", "local").put("detour", "direct"))
+            .put(JSONObject().put("tag", "dns-fake").put("address", "fakeip").put("detour", "direct"))
+        )
+        put("fakeip", JSONObject()
+            .put("enabled", true)
+            .put("inet4_range", "198.18.0.0/15")
+        )
+        // D4 — DNS via tunnel : supprimer règle outbound=any → dns-local (garder fakeip + final dns-remote)
+        put("rules", JSONArray()
+            .put(JSONObject().put("query_type", JSONArray().put("A").put("AAAA")).put("server", "dns-fake"))
+        )
+        put("final", "dns-remote")
+        put("independent_cache", true)
+    }
+
+    /**
+     * Construit la config libbox complète à partir d'un JSON sing-box stocké
+     * (importé natif ou traduit depuis Xray/v2ray par le backend).
+     *
+     * RÈGLES (PARTIE 3) :
+     *  - inbounds = TOUJOURS le TUN de l'app (jamais celui du JSON stocké).
+     *  - dns = celui du JSON traduit sinon celui de l'app.
+     *  - route.rules = règles DNS hijack + ip_cidr→direct (F3) PUIS les règles
+     *    du JSON stocké ; route.final = celui du JSON stocké sinon tag du
+     *    premier outbound non spécial ; auto_detect_interface = true.
+     *  - log.level = warn.
+     *  - Validation au démarrage : chaque outbound a un type connu ; tout
+     *    detour référencé existe ; au moins un outbound non spécial.
+     *    Échec → Exception claire (état error, pas de crash muet).
+     */
+    private fun buildRawSingBoxConfig(cfg: JSONObject): String {
+        val knownTypes = setOf(
+            "vless", "vmess", "trojan", "shadowsocks", "wireguard", "hysteria2",
+            "tuic", "hysteria", "ssh", "http", "socks", "direct", "dns", "block",
+            "selector", "urltest",
+        )
+        val specialTypes = setOf("direct", "dns", "block")
+
+        val rawOutbounds = cfg.optJSONArray("outbounds")
+            ?: throw Exception("Configuration sing-box vide : champ \"outbounds\" manquant")
+        if (rawOutbounds.length() == 0) throw Exception("Configuration sing-box vide : aucun outbound")
+
+        val outbounds = JSONArray()
+        val tags = HashSet<String>()
+        var mainTag: String? = null
+        var mainServer = ""
+
+        for (i in 0 until rawOutbounds.length()) {
+            val o = rawOutbounds.optJSONObject(i) ?: continue
+            val type = o.optString("type", "")
+            if (type.isEmpty() || type !in knownTypes) {
+                throw Exception("outbound inconnu : \"$type\" (type manquant ou non supporté par le moteur)")
+            }
+            val tag = o.optString("tag", "")
+            tags.add(tag)
+            if (mainTag == null && type !in specialTypes) {
+                mainTag = tag
+                mainServer = o.optString("server", "")
+            }
+            outbounds.put(o)
+        }
+
+        // Au moins un outbound non spécial (≠ direct/block/dns)
+        if (mainTag.isNullOrEmpty()) {
+            throw Exception("aucun outbound de transport (proxy) dans la configuration sing-box")
+        }
+
+        // Tout detour référencé doit exister
+        for (i in 0 until outbounds.length()) {
+            val o = outbounds.optJSONObject(i) ?: continue
+            val detour = o.optString("detour", "")
+            if (detour.isNotEmpty() && !tags.contains(detour)) {
+                throw Exception("detour \"$detour\" référence un outbound inexistant")
+            }
+        }
+
+        // Compléter avec les outbounds système de l'app si absents
+        val appOutbounds = listOf("direct" to "direct", "dns" to "dns-out", "block" to "block")
+        for ((type, tag) in appOutbounds) {
+            if (!tags.contains(tag)) outbounds.put(JSONObject().put("type", type).put("tag", tag))
+        }
+
+        // DNS : celui du JSON stocké sinon celui de l'app
+        val dnsObj = cfg.optJSONObject("dns") ?: defaultDnsObject()
+
+        // Route : exclusion anti-boucle + DNS hijack + ip_is_private (F3) puis règles stockées
+        val routeObj = cfg.optJSONObject("route")
+        val storedRules = routeObj?.optJSONArray("rules") ?: JSONArray()
+        val exclusion = if (mainServer.isNotBlank()) carrierExclusionRule(mainServer) else null
+        val routeRules = JSONArray()
+        exclusion?.let { routeRules.put(it) }
+        routeRules
+            .put(JSONObject().put("protocol", "dns").put("outbound", "dns-out"))
+            .put(JSONObject().put("ip_is_private", true).put("outbound", "direct"))
+        for (i in 0 until storedRules.length()) {
+            val r = storedRules.optJSONObject(i) ?: continue
+            routeRules.put(r)
+        }
+
+        var finalTag = routeObj?.optString("final", "") ?: ""
+        if (finalTag.isEmpty()) finalTag = mainTag ?: "proxy"
+
+        return JSONObject().apply {
+            put("log", JSONObject().put("level", "warn").put("timestamp", true))
+            put("dns", dnsObj)
+            put("inbounds", JSONArray().put(tunInbound()))
+            put("outbounds", outbounds)
+            put("route", JSONObject().apply {
+                put("rules", routeRules)
+                put("final", finalTag)
+                // true → autoDetectInterfaceControl() → VpnService.protect() (anti-boucle)
+                put("auto_detect_interface", true)
+            })
         }.toString(2)
     }
 
