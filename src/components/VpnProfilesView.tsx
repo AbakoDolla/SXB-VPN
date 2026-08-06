@@ -3,7 +3,7 @@ import { UserRole } from "../types";
 import {
   fetchVpnProfiles, createVpnProfile, updateVpnProfile, deleteVpnProfile,
   fetchVpnProfileStats, testImportedConfig, testProfileConfig,
-  VpnProfile, ConfigTestResult,
+  VpnProfile, ConfigTestResult, ImportResult,
 } from "../api/vpnProfiles";
 import { fetchPayloads, SshPayload } from "../api/payload";
 import {
@@ -42,22 +42,52 @@ const DEFAULT_LEGACY_FORM = {
   method: 'aes-256-gcm', payloadId: '' as string,
 };
 
-// ── Verdicts du préflight (taxonomie mission §7) ──────────────────────────────
+// ── Verdicts du préflight (taxonomie mission §7 + PARTIE 4 sonde v2) ─────────
+// OK → « Testé ✓ » ; échec → « Échec : <étape> » ; unreachable → hint explicite.
 const VERDICT_STYLE: Record<string, { label: string; cls: string }> = {
-  transport_ok:           { label: 'Transport OK',              cls: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30' },
+  transport_ok:           { label: 'Testé ✓',              cls: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30' },
   unreachable_from_probe: { label: 'Injoignable depuis le sondeur', cls: 'text-amber-400 bg-amber-500/10 border-amber-500/30' },
-  invalid:                { label: 'Configuration invalide',    cls: 'text-rose-400 bg-rose-500/10 border-rose-500/30' },
-  unsupported:            { label: 'Format non testable',       cls: 'text-gray-300 bg-gray-500/10 border-gray-500/30' },
-  unknown:                { label: 'Jamais testé',              cls: 'text-gray-400 bg-gray-500/10 border-gray-500/30' },
+  invalid:                { label: 'Échec',                cls: 'text-rose-400 bg-rose-500/10 border-rose-500/30' },
+  unsupported:            { label: 'Format non testable',  cls: 'text-gray-300 bg-gray-500/10 border-gray-500/30' },
+  unknown:                { label: 'Jamais testé',         cls: 'text-gray-400 bg-gray-500/10 border-gray-500/30' },
 };
 
-function VerdictBadge({ status, className = '' }: { status?: string | null; className?: string }) {
-  const v = VERDICT_STYLE[status || 'unknown'] || VERDICT_STYLE.unknown;
+/** « Échec : PROXY_CONNECT — … » → « Échec : PROXY_CONNECT » */
+function failStepLabel(message: string): string {
+  const m = message.replace(/^Échec\s*:\s*/i, '').split(/[—–]/)[0].trim();
+  return m ? `Échec : ${m}` : 'Échec';
+}
+
+function VerdictBadge({ status, message, className = '' }: { status?: string | null; message?: string | null; className?: string }) {
+  let v = VERDICT_STYLE[status || 'unknown'] || VERDICT_STYLE.unknown;
+  let label = v.label;
+  if (status === 'invalid' && message) label = failStepLabel(message);
   return (
-    <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border ${v.cls} ${className}`}>
-      {v.label}
+    <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border ${v.cls} ${className}`} title={label}>
+      {label}
     </span>
   );
+}
+
+// ── Formats d'import détectés (PARTIE 1/2) ────────────────────────────────────
+const SOURCE_FORMAT_LABELS: Record<string, string> = {
+  'xray-json':        'Xray/v2ray → converti en sing-box',
+  'singbox-json':     'sing-box natif',
+  'ssh-json':         'JSON SSH',
+  'ssh+payload-json': 'JSON SSH+Payload',
+  'vless-uri':        'URI VLESS',
+  'vmess-uri':        'URI VMess',
+  'trojan-uri':       'URI Trojan',
+  'ss-uri':           'URI Shadowsocks',
+  'wireguard-conf':   'conf WireGuard',
+  'hysteria2-uri':    'URI Hysteria2',
+  'tuic-uri':         'URI TUIC',
+  'sxb-canonical':    'canonique SXB',
+};
+
+function formatLabel(sourceFormat?: string | null): string {
+  if (!sourceFormat) return '';
+  return SOURCE_FORMAT_LABELS[sourceFormat] ?? sourceFormat;
 }
 
 /** Panneau de résultat d'un préflight /api/config-test */
@@ -125,6 +155,8 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
   const [testResult, setTestResult] = useState<ConfigTestResult | null>(null);
   const [error, setError]       = useState('');
   const [fieldErrors, setFieldErrors] = useState<string[]>([]);
+  const [importSuccess, setImportSuccess] = useState<{ name: string; sourceFormat?: string | null; warnings: string[] } | null>(null);
+  const [showPreview, setShowPreview] = useState(false);
   const [filterProto, setFilterProto] = useState('all');
   const [search, setSearch]     = useState('');
   const [payloads, setPayloads] = useState<SshPayload[]>([]);
@@ -148,6 +180,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
   const resetModalState = () => {
     setError(''); setFieldErrors([]); setTestResult(null);
     setImportConfig(''); setReimportConfig(''); setShowReimport(false);
+    setImportSuccess(null); setShowPreview(false);
   };
 
   const openCreate = () => {
@@ -221,11 +254,12 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
     e.preventDefault();
     setSaving(true); setError(''); setFieldErrors([]);
     try {
+      let lastResult: ImportResult | null = null;
       if (editId) {
         const isImported = !!editingProfile?.hasCanonicalConfig;
         if (reimportConfig.trim()) {
           // Réimport EXPLICITE — seule voie de modification technique (§6.1)
-          await updateVpnProfile(editId, {
+          lastResult = await updateVpnProfile(editId, {
             importConfig: reimportConfig,
             name: adminForm.name, description: adminForm.description,
             displayProtocol: adminForm.displayProtocol,
@@ -269,7 +303,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
       } else if (createTab === 'import') {
         if (!adminForm.name) { setError('Le nom du profil est requis'); setSaving(false); return; }
         if (!importConfig.trim()) { setError('Collez la configuration fournisseur (URI ou JSON)'); setSaving(false); return; }
-        await createVpnProfile({
+        lastResult = await createVpnProfile({
           name: adminForm.name, description: adminForm.description,
           displayProtocol: adminForm.displayProtocol,
           status: adminForm.status,
@@ -281,7 +315,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
         if (!adminForm.name || !legacyForm.host || !legacyForm.port) {
           setError('Nom, hôte et port sont requis'); setSaving(false); return;
         }
-        await createVpnProfile({
+        lastResult = await createVpnProfile({
           name: adminForm.name, description: adminForm.description,
           displayProtocol: adminForm.displayProtocol,
           status: adminForm.status,
@@ -299,6 +333,17 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
           method: legacyForm.method,
           payloadId: legacyForm.payloadId || undefined,
         } as any);
+      }
+      // Bandeau post-import : format détecté + warnings de traduction (T-X1)
+      if (lastResult?.profile && lastResult.imported !== false) {
+        const sf = lastResult.profile.sourceFormat;
+        if (sf === 'xray-json' || (lastResult.warnings?.length ?? 0) > 0) {
+          setImportSuccess({
+            name: lastResult.profile.name,
+            sourceFormat: sf,
+            warnings: lastResult.warnings ?? [],
+          });
+        }
       }
       setShowForm(false); load();
     } catch (err: any) { setError(extractErrors(err)); }
@@ -367,6 +412,29 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
         ))}
       </div>
 
+      {/* Bandeau post-import : format détecté + warnings de traduction (T-X1) */}
+      {importSuccess && (
+        <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-4 flex items-start gap-3">
+          <Check className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0 space-y-1.5">
+            <p className="text-sm text-emerald-300 font-medium">
+              Import OK — « {importSuccess.name} »
+              {importSuccess.sourceFormat === 'xray-json' && (
+                <span className="ml-2 text-xs text-sky-400">Xray/v2ray → converti en sing-box</span>
+              )}
+            </p>
+            {importSuccess.warnings.length > 0 && (
+              <ul className="text-xs text-amber-400 space-y-0.5 pl-1">
+                {importSuccess.warnings.map((w, i) => <li key={i}>⚠ {w}</li>)}
+              </ul>
+            )}
+          </div>
+          <button onClick={() => setImportSuccess(null)} className="p-1 text-gray-400 hover:text-white rounded-lg">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Filters */}
       <div className="flex flex-col sm:flex-row gap-3">
         <div className="flex gap-1 flex-wrap">
@@ -410,11 +478,11 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
                   {p.hasCanonicalConfig && (
                     <span className="text-xs px-2 py-0.5 rounded-full text-sky-400 bg-sky-500/10" title={p.canonicalConfigHash || ''}>
                       <FileKey2 className="w-3 h-3 inline mr-0.5" />Importé v{p.configVersion ?? 1}
-                      {p.sourceFormat ? ` · ${p.sourceFormat}` : ''}
+                      {formatLabel(p.sourceFormat) ? ` · ${formatLabel(p.sourceFormat)}` : ''}
                     </span>
                   )}
                   {p.validationStatus && p.validationStatus !== 'unknown' && (
-                    <VerdictBadge status={p.validationStatus} />
+                    <VerdictBadge status={p.validationStatus} message={p.validationMessage} />
                   )}
                   {p._count && p._count.subscriptions > 0 && (
                     <span className="text-xs px-2 py-0.5 rounded-full text-amber-400 bg-amber-500/10">
@@ -454,7 +522,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
                 <p className="text-emerald-400">{p.hasCanonicalConfig ? 'Canonique AES-256-GCM' : 'Legacy AES-256-GCM'}</p>
               </div>
             </div>
-            {p.validationMessage && p.validationStatus !== 'transport_ok' && (
+            {p.validationMessage && (
               <p className="text-xs text-gray-500 truncate" title={p.validationMessage}>↳ {p.validationMessage}</p>
             )}
           </div>
@@ -576,7 +644,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
                     <p className="font-medium flex items-center gap-1.5">
                       <Lock className="w-3.5 h-3.5" />
                       Configuration importée v{editingProfile.configVersion ?? 1}
-                      {editingProfile.sourceFormat ? ` (${editingProfile.sourceFormat})` : ''} — technique immuable
+                      {formatLabel(editingProfile.sourceFormat) ? ` (${formatLabel(editingProfile.sourceFormat)})` : ''} — technique immuable
                     </p>
                     <p className="text-sky-400/80">
                       Les champs techniques (protocole, hôte, port, credentials, TLS/SNI, transport, payload…)
@@ -589,7 +657,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
                       </p>
                     )}
                     <div className="flex items-center gap-2 pt-1 flex-wrap">
-                      <VerdictBadge status={editingProfile.validationStatus} />
+                      <VerdictBadge status={editingProfile.validationStatus} message={editingProfile.validationMessage} />
                       {editingProfile.validatedAt && (
                         <span className="text-[11px] text-gray-500">testé le {new Date(editingProfile.validatedAt).toLocaleString('fr-FR')}</span>
                       )}
@@ -622,6 +690,25 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
                       <input value="(stockés chiffrés dans la configuration canonique — jamais affichés)" readOnly disabled className={readonlyCls} />
                     </div>
                   </div>
+
+                  {/* Aperçu du JSON traduit avec secrets masqués (uuid/password → ****) */}
+                  {editingProfile.configPreview && (
+                    <div className="border border-[#1a1f2e] rounded-xl overflow-hidden">
+                      <button type="button" onClick={() => setShowPreview(v => !v)}
+                        className="w-full flex items-center justify-between px-4 py-2.5 text-xs text-gray-400 hover:text-white bg-[#0a0d13]">
+                        <span className="flex items-center gap-1.5">
+                          <FileKey2 className="w-3.5 h-3.5" />
+                          Aperçu du JSON {editingProfile.sourceFormat === 'xray-json' ? 'traduit' : ''} (secrets masqués)
+                        </span>
+                        <span>{showPreview ? 'Masquer ▲' : 'Afficher ▼'}</span>
+                      </button>
+                      {showPreview && (
+                        <pre className="max-h-72 overflow-auto p-4 text-[11px] font-mono text-emerald-400/90 whitespace-pre-wrap break-all">
+                          {editingProfile.configPreview}
+                        </pre>
+                      )}
+                    </div>
+                  )}
 
                   <button type="button" onClick={() => handleTestProfile(editId!)} disabled={testing}
                     className="flex items-center gap-2 px-3 py-2 bg-sky-500/15 hover:bg-sky-500/25 text-sky-400 text-xs font-medium rounded-xl border border-sky-500/30 disabled:opacity-50">

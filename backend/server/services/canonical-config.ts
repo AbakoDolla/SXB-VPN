@@ -16,6 +16,7 @@
  * AUCUN appel réseau ici — le préflight vit dans transport-probe.ts.
  */
 import crypto from 'crypto';
+import { translateXrayToSingbox, isSingboxNativeJson, hasXrayMarkers } from './xray-translate';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -23,7 +24,7 @@ export type SourceFormat =
   | 'ssh-json' | 'ssh+payload-json'
   | 'vless-uri' | 'vmess-uri' | 'trojan-uri' | 'ss-uri'
   | 'wireguard-conf' | 'hysteria2-uri' | 'tuic-uri'
-  | 'singbox-json' | 'sxb-canonical';
+  | 'singbox-json' | 'xray-json' | 'sxb-canonical';
 
 export interface ParseResult {
   ok: boolean;
@@ -396,7 +397,7 @@ export function parseImportedConfig(raw: string): ParseResult {
     if (cfg) parsed = { cfg };
     sourceFormat = 'wireguard-conf';
   } else {
-    // JSON : singbox natif, canonique SXB, ou heuristiques par contenu
+    // JSON : détection stricte sing-box natif / Xray / canonique SXB
     let obj: any;
     try { obj = JSON.parse(text); }
     catch { errors.push('format non reconnu : ni URI (vless://, vmess://, trojan://, ss://, tuic://, hy2://) ni JSON ni WireGuard conf'); return { ok: false, errors, warnings }; }
@@ -404,15 +405,27 @@ export function parseImportedConfig(raw: string): ParseResult {
       errors.push('le JSON importé doit être un objet');
       return { ok: false, errors, warnings };
     }
-    if (Array.isArray(obj.outbounds)) {
+    // sing-box natif : outbounds[] d'objets ayant un champ type (string)
+    // ET absence de markers Xray (PARTIE 1 — détection stricte).
+    if (isSingboxNativeJson(obj)) {
       parsed = { cfg: { ...obj, protocol: 'singbox' } };
       sourceFormat = 'singbox-json';
+    } else if (hasXrayMarkers(obj)) {
+      // Xray/v2ray : traduction immédiate vers sing-box (PARTIE 2).
+      const t = translateXrayToSingbox(obj);
+      if (!t.ok) {
+        errors.push(...t.errors);
+        return { ok: false, errors, warnings };
+      }
+      warnings.push(...t.warnings);
+      parsed = { cfg: { ...t.singboxJson!, protocol: 'singbox' } };
+      sourceFormat = 'xray-json';
     } else if (obj.protocol) {
       const proto = String(obj.protocol).toLowerCase();
       parsed = { cfg: { ...obj, protocol: proto } };
       sourceFormat = proto === 'ssh' ? 'ssh-json' : proto === 'ssh+payload' ? 'ssh+payload-json' : 'sxb-canonical';
     } else {
-      errors.push('JSON SXB : champ "protocol" requis (ssh, ssh+payload, vless, vmess, trojan, shadowsocks, wireguard, hysteria2, tuic) ou format sing-box avec "outbounds"');
+      errors.push('JSON non reconnu : ni sing-box ni Xray — champ "protocol" requis (ssh, ssh+payload, vless, vmess, trojan, shadowsocks, wireguard, hysteria2, tuic) pour le format canonique SXB');
       return { ok: false, errors, warnings };
     }
   }

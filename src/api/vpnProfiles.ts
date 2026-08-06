@@ -34,6 +34,8 @@ export interface VpnProfile {
   validatedAt?: string | null;
   validationStatus?: string | null;  // transport_ok | unreachable_from_probe | invalid | unsupported | unknown
   validationMessage?: string | null;
+  /** Aperçu JSON du canonique (traduit pour xray-json) avec secrets masqués → **** */
+  configPreview?: string | null;
 }
 
 // ── Préflight /api/config-test (mission §7) ───────────────────────────────────
@@ -93,11 +95,18 @@ export const fetchVpnProfiles = (): Promise<VpnProfile[]> =>
 export const fetchVpnProfile = (id: string): Promise<VpnProfile> =>
   apiRequest<any>(`/vpn-profiles/${id}`).then(r => r.profile);
 
-export const createVpnProfile = (data: Partial<VpnProfile>): Promise<VpnProfile> =>
-  apiRequest<any>('/vpn-profiles', { method: 'POST', body: data }).then(r => r.profile);
+export interface ImportResult {
+  profile: VpnProfile;
+  warnings?: string[];
+  imported?: boolean;
+  reimported?: boolean;
+}
 
-export const updateVpnProfile = (id: string, data: Partial<VpnProfile>): Promise<VpnProfile> =>
-  apiRequest<any>(`/vpn-profiles/${id}`, { method: 'PUT', body: data }).then(r => r.profile);
+export const createVpnProfile = (data: Partial<VpnProfile>): Promise<ImportResult> =>
+  apiRequest<ImportResult>('/vpn-profiles', { method: 'POST', body: data });
+
+export const updateVpnProfile = (id: string, data: Partial<VpnProfile>): Promise<ImportResult> =>
+  apiRequest<ImportResult>(`/vpn-profiles/${id}`, { method: 'PUT', body: data });
 
 export const deleteVpnProfile = (id: string): Promise<void> =>
   apiRequest<any>(`/vpn-profiles/${id}`, { method: 'DELETE' });

@@ -78,13 +78,15 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
 
     // Traçabilité : si le test vise un profil stocké, consigner le verdict
     if (profileId) {
+      const failedStep = report.steps.find(s => !s.ok);
+      const message = report.hint
+        ?? (failedStep ? `Échec : ${failedStep.event} — ${failedStep.detail ?? ''}` : (report.steps.at(-1)?.detail ?? null));
       await (prisma as any).vpnProfile.update({
         where: { id: profileId },
         data: {
           validatedAt: new Date(),
           validationStatus,
-          validationMessage: report.hint
-            ?? (report.steps.find(s => !s.ok)?.detail ?? report.steps.at(-1)?.detail ?? null),
+          validationMessage: message,
         },
       }).catch(() => null);
       await logDbActivity(req.user!.userId, `Préflight profil ${profileId} → ${validationStatus}`, 'info', req.ip || '').catch(() => null);

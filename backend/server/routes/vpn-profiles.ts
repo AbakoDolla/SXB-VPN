@@ -10,7 +10,7 @@ import { requireAuth, requirePermission, AuthenticatedRequest } from '../middlew
 import { logDbActivity } from '../database';
 import crypto from 'crypto';
 import {
-  parseImportedConfig, canonicalJson, computeCanonicalHash, encryptCanonical,
+  parseImportedConfig, canonicalJson, computeCanonicalHash, encryptCanonical, decryptCanonical,
 } from '../services/canonical-config';
 
 const router = Router();
@@ -126,6 +126,8 @@ function maskProfile(p: any) {
     jsonConfig: p.jsonConfig ? '(chiffré — non exposé)' : null,
     hasCanonicalConfig: !!p.canonicalConfig,
     canonicalConfigHash: p.canonicalConfigHash ?? null,
+    // Aperçu JSON traduit avec secrets masqués (uuid/password → ****) — PARTIE 2
+    configPreview: p.canonicalConfig ? maskedConfigPreview(p.canonicalConfig) : null,
     configVersion: p.configVersion ?? 1,
     sourceFormat: p.sourceFormat ?? null,
     validationStatus: p.validationStatus ?? null,
@@ -133,6 +135,37 @@ function maskProfile(p: any) {
     validatedAt: p.validatedAt ?? null,
     importedAt: p.importedAt ?? null,
   };
+}
+
+// ── Aperçu JSON masqué (uuid/password/private_key → ****) ─────────────────────
+const SECRET_KEY_RE = /(^|_)(uuid|password|private_?key|peer_public_?key|public_?key|short_?id|spider_?x)$/i;
+
+function maskJsonSecrets(value: any): any {
+  if (Array.isArray(value)) return value.map(maskJsonSecrets);
+  if (value && typeof value === 'object') {
+    const out: Record<string, any> = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (SECRET_KEY_RE.test(k) || k.toLowerCase() === 'id') {
+        out[k] = (v && typeof v === 'object') ? maskJsonSecrets(v) : '****';
+      } else {
+        out[k] = maskJsonSecrets(v);
+      }
+    }
+    return out;
+  }
+  return value;
+}
+
+function maskedConfigPreview(encryptedCanonical: string, maxLen = 6000): string | null {
+  const plain = decryptCanonical(encryptedCanonical);
+  if (!plain) return null;
+  try {
+    const masked = maskJsonSecrets(JSON.parse(plain));
+    const out = JSON.stringify(masked, null, 2);
+    return out.length > maxLen ? `${out.slice(0, maxLen)}\n… (tronqué)` : out;
+  } catch {
+    return null;
+  }
 }
 
 // ─── GET /api/vpn-profiles ────────────────────────────────────────────────────

@@ -43,6 +43,42 @@ const REQUIRED_FIELDS: Record<SupportedProtocol, string[]> = {
   'singbox':     ['outbounds'],   // sing-box JSON natif
 };
 
+// ── Détection stricte du format JSON (PARTIE 1 — miroir du backend) ───────────
+
+/**
+ * Marqueurs Xray/v2ray : au moins un de ces éléments suffit à classer un
+ * JSON comme « Xray » (et non sing-box). Miroir de hasXrayMarkers() backend.
+ */
+export function hasXrayMarkers(obj: Record<string, any>): boolean {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
+  const outbounds = Array.isArray(obj.outbounds) ? obj.outbounds : [];
+  // outbounds[].protocol (string)
+  if (outbounds.some((o: any) => o && typeof o.protocol === 'string')) return true;
+  // settings.vnext
+  if (outbounds.some((o: any) => o?.settings?.vnext !== undefined)) return true;
+  // streamSettings
+  if (outbounds.some((o: any) => o?.streamSettings !== undefined)) return true;
+  // inbound protocol: dokodemo-door
+  if (Array.isArray(obj.inbounds) && obj.inbounds.some((i: any) => i?.protocol === 'dokodemo-door')) return true;
+  // dns.servers[] commençant par tcp+local:// ou https+local://
+  if (Array.isArray(obj.dns?.servers)
+    && obj.dns.servers.some((s: any) => typeof s === 'string' && /^(tcp|https)\+local:\/\//i.test(s))) return true;
+  // outbound protocol: blackhole | freedom
+  if (outbounds.some((o: any) => o?.protocol === 'blackhole' || o?.protocol === 'freedom')) return true;
+  return false;
+}
+
+/**
+ * sing-box natif : outbounds[] d'objets ayant un champ type (string) ET
+ * absence de markers Xray. Miroir de isSingboxNativeJson() backend.
+ */
+export function isSingboxNativeJson(obj: Record<string, any>): boolean {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
+  if (!Array.isArray(obj.outbounds) || obj.outbounds.length === 0) return false;
+  if (!obj.outbounds.every((o: any) => o && typeof o.type === 'string')) return false;
+  return !hasXrayMarkers(obj);
+}
+
 // ── Détection du protocole ────────────────────────────────────────────────────
 
 /**
@@ -66,8 +102,9 @@ function detectProtocol(obj: Record<string, any>): SupportedProtocol | null {
   if (raw === 'hysteria2' || raw === 'hy2')  return 'hysteria2';
   if (raw === 'tuic')             return 'tuic';
 
-  // Détection sing-box JSON natif (champ "outbounds" présent)
-  if (Array.isArray(obj.outbounds)) return 'singbox';
+  // Détection stricte sing-box natif : outbounds[] d'objets avec type (string)
+  // ET absence de markers Xray (PARTIE 1). Un JSON Xray n'est JAMAIS 'singbox'.
+  if (isSingboxNativeJson(obj)) return 'singbox';
 
   // Heuristiques
   if (obj.uuid && obj.flow)                        return 'vless';
@@ -183,6 +220,9 @@ function extraValidation(
     case 'singbox':
       if (!Array.isArray(obj.outbounds) || obj.outbounds.length === 0) {
         errors.push('Sing-box : "outbounds" doit être un tableau non vide');
+      } else if (!obj.outbounds.every((o: any) => o && typeof o.type === 'string')) {
+        // PARTIE 1 — détection stricte : outbounds sans type = ni sing-box ni Xray
+        errors.push('Sing-box : chaque outbound doit avoir un champ "type" (string)');
       }
       if (!obj.inbounds) {
         warnings.push('Sing-box : champ "inbounds" absent — le mode TUN peut ne pas fonctionner');
@@ -225,6 +265,27 @@ export function validateVpnConfig(raw: string | Record<string, any>): Validation
   // 3. Détecter protocole
   const protocol = detectProtocol(obj);
   if (!protocol) {
+    // Config stockée contenant des markers Xray (backend buggé) : message
+    // clair au lieu d'un plantage du moteur (PARTIE 3 §4).
+    if (hasXrayMarkers(obj)) {
+      return {
+        valid: false, protocol: null,
+        errors: [
+          'Format non pris en charge — réimportez la configuration (JSON Xray/v2ray détecté ; ' +
+          'convertissez-le en sing-box depuis le dashboard)',
+        ],
+        warnings, config: null,
+      };
+    }
+    if (Array.isArray(obj.outbounds)) {
+      return {
+        valid: false, protocol: null,
+        errors: [
+          'JSON non reconnu : ni sing-box ni Xray — les outbounds doivent avoir un champ "type" (string)',
+        ],
+        warnings, config: null,
+      };
+    }
     return {
       valid: false, protocol: null,
       errors: [
