@@ -21,9 +21,13 @@
   "admin": "Administrateur",
   "support": "Support",
   "reseller": "Revendeur",
+  "role_owner": "Propriétaire",
+  "role_super_admin": "Super Admin",
   "logout": "Déconnexion",
   "profile": "Profil",
   "language": "Langue",
+  "maintenance_active": "Mode maintenance actif",
+  "control_panel": "Panneau de contrôle",
   "sidebar": {
     "dashboard": "Tableau de bord",
     "clients": "Gestion Clients",

@@ -191,11 +191,11 @@ export default function Layout({
   };
 
   const roleLabels: Record<string, string> = {
-    OWNER: 'Propriétaire',
-    SUPER_ADMIN: 'Super Admin',
-    ADMIN: 'Administrateur',
-    SUPPORT: 'Support',
-    RESELLER: 'Revendeur',
+    OWNER: t('role_owner') || 'Propriétaire',
+    SUPER_ADMIN: t('role_super_admin') || 'Super Admin',
+    ADMIN: t('admin'),
+    SUPPORT: t('support'),
+    RESELLER: t('reseller'),
   };
 
   const isActive = (id: string) => activeRoute === id;
@@ -211,7 +211,7 @@ export default function Layout({
           </div>
           <div>
             <span className="text-white font-bold text-sm tracking-tight">SXB VPN</span>
-            <div className="text-[10px] text-gray-500 leading-none">Control Panel</div>
+            <div className="text-[10px] text-gray-500 leading-none">{t('control_panel')}</div>
           </div>
         </div>
         {onClose && (
@@ -304,7 +304,7 @@ export default function Layout({
           </div>
           <button
             onClick={onLogout}
-            title="Déconnexion"
+            title={t('logout')}
             className="text-gray-600 hover:text-rose-400 p-1.5 rounded-lg hover:bg-rose-500/10 transition-colors cursor-pointer shrink-0"
           >
             <LogOut className="w-3.5 h-3.5" />
@@ -355,7 +355,7 @@ export default function Layout({
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500" />
               </span>
-              Mode maintenance actif
+              {t('maintenance_active')}
             </div>
           )}
           {children}
