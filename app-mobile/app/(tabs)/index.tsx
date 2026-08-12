@@ -65,14 +65,14 @@ function VpnLogsModal({
   }, [logs, visible]);
 
   const copyAllLogs = async () => {
-    const header = [
-      "═══ SXB VPN — Logs de diagnostic ═══",
-      `Date      : ${new Date().toISOString()}`,
-      `Protocole : ${selectedProtocol ?? "-"}`,
-      `État      : ${isConnected ? "connecté" : isConnecting ? "connexion en cours" : "déconnecté"}`,
-      `Lignes    : ${logs.length}`,
-      "────────────────────────────────────────",
-    ].join("\n");
+const header = [
+	      "═══ SXB VPN — Logs de diagnostic ═══",
+	      `Date      : ${new Date().toISOString()}`,
+	      `Protocole : ${selectedProtocol ?? "-"}`,
+	      `État      : ${isConnected ? t("active") : isConnecting ? t("connecting") : t("inactive")}`,
+	      `Lignes    : ${logs.length}`,
+	      "────────────────────────────────────────",
+	    ].join("\n");
     try {
       await Share.share({ message: `${header}\n${logs.join("\n")}`, title: "Logs SXB VPN" });
     } catch { /* ignore */ }
@@ -145,7 +145,7 @@ function VpnConnectionCard({ conn, isActive }: { conn: VpnConnection; isActive: 
   const pct = totalBytes > 0 ? Math.min((usedBytes / totalBytes) * 100, 100) : 0;
 
   const { t } = useTranslation();
-  const statusLabel = isExhausted ? t('quota_exhausted') : isExpired ? t('connection_expired') : isRevoked ? t('connection_revoked') : isSuspended ? t('connection_suspended') : isActive ? t('connection_active') : t('connection_active');
+  const statusLabel = isExhausted ? t('friendly_quota_exhausted') : isExpired ? t('expired') : isRevoked ? t('connection_revoked') : isSuspended ? t('suspended_status') : isActive ? t('active') : t('active');
 
   return (
     <View style={[connStyles.card, isActive && connStyles.cardActive]}>
@@ -192,7 +192,7 @@ function VpnConnectionCard({ conn, isActive }: { conn: VpnConnection; isActive: 
       {/* Expiration */}
       {conn.expiresAt && (
         <Text style={connStyles.expire}>
-          {t('config_expires_at')} {new Date(conn.expiresAt).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" })}
+          {t('expires_on')} {new Date(conn.expiresAt).toLocaleString()}
         </Text>
       )}
     </View>

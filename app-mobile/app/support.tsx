@@ -6,13 +6,9 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import apiClient from "@/services/apiClient";
 import Colors from "@/constants/colors";
+import { useTranslation } from "@/localization";
 
-const FAQ = [
-  { q: "Comment activer mon compte ?", a: "Entrez votre token SXB-USER dans l'écran d'activation. Vous l'obtenez auprès de votre administrateur." },
-  { q: "Mon VPN ne se connecte pas", a: "Vérifiez votre connexion internet, puis assurez-vous que votre forfait est actif et non expiré." },
-  { q: "Comment renouveler mon forfait ?", a: "Utilisez un token SXB-DATA fourni par votre administrateur dans la section Activer un forfait." },
-  { q: "Combien d'appareils puis-je utiliser ?", a: "Le nombre d'appareils autorisés dépend de votre forfait. Consultez votre profil pour voir la limite." },
-];
+
 
 function FaqItem({ item }: { item: { q: string; a: string } }) {
   const [open, setOpen] = useState(false);
@@ -29,7 +25,15 @@ function FaqItem({ item }: { item: { q: string; a: string } }) {
 }
 
 export default function SupportScreen() {
+  const { t } = useTranslation();
   const insets = useSafeAreaInsets();
+
+  const FAQ = [
+    { q: t("faq_q1"), a: t("faq_a1") },
+    { q: t("faq_q2"), a: t("faq_a2") },
+    { q: t("faq_q3"), a: t("faq_a3") },
+    { q: t("faq_q4"), a: t("faq_a4") },
+  ];
   const [subject, setSubject] = useState("");
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
@@ -58,11 +62,11 @@ export default function SupportScreen() {
           <View style={styles.heroIcon}>
             <Ionicons name="headset" size={40} color={Colors.primary} />
           </View>
-          <Text style={styles.heroTitle}>Besoin d'aide ?</Text>
-          <Text style={styles.heroSub}>Notre équipe est disponible pour vous aider.</Text>
+          <Text style={styles.heroTitle}>{t("support")}</Text>
+          <Text style={styles.heroSub}>{t("hero_sub") || "Notre équipe est là pour vous aider."}</Text>
           <Pressable onPress={handleSend} style={styles.heroBtn}>
             <Ionicons name="create-outline" size={16} color="#000" />
-            <Text style={styles.heroBtnText}>Créer un ticket</Text>
+            <Text style={styles.heroBtnText}>{t("create_ticket")}</Text>
           </Pressable>
         </View>
 
@@ -84,7 +88,7 @@ export default function SupportScreen() {
         <View style={styles.faqSection}>
           <View style={styles.sectionHeader}>
             <Ionicons name="help-circle-outline" size={18} color={Colors.primary} />
-            <Text style={styles.sectionTitle}>Questions fréquentes</Text>
+            <Text style={styles.sectionTitle}>{t("faq")}</Text>
           </View>
           <View style={styles.faqCard}>
             {FAQ.map((item, i) => (
@@ -100,19 +104,19 @@ export default function SupportScreen() {
         <View style={styles.formSection}>
           <View style={styles.sectionHeader}>
             <Ionicons name="create-outline" size={18} color={Colors.primary} />
-            <Text style={styles.sectionTitle}>Nous contacter</Text>
+            <Text style={styles.sectionTitle}>{t("contact_us")}</Text>
           </View>
           <View style={styles.formCard}>
             <TextInput
               style={styles.input}
-              placeholder="Sujet"
+              placeholder={t("ticket_subject_placeholder")}
               placeholderTextColor={Colors.textMuted}
               value={subject}
               onChangeText={setSubject}
             />
             <TextInput
               style={[styles.input, styles.textarea]}
-              placeholder="Décrivez votre problème..."
+              placeholder={t("ticket_message_placeholder")}
               placeholderTextColor={Colors.textMuted}
               value={message}
               onChangeText={setMessage}
@@ -125,7 +129,7 @@ export default function SupportScreen() {
                 ? <ActivityIndicator size="small" color="#000" />
                 : <>
                     <Ionicons name={sent ? "checkmark" : "send"} size={16} color="#000" />
-                    <Text style={styles.sendBtnText}>{sent ? "Envoyé !" : "Envoyer"}</Text>
+                    <Text style={styles.sendBtnText}>{sent ? t("sent") : t("send")}</Text>
                   </>
               }
             </Pressable>
@@ -135,7 +139,7 @@ export default function SupportScreen() {
         {/* Ticket history */}
         <Pressable style={styles.historyBtn}>
           <Ionicons name="ticket-outline" size={18} color={Colors.textSecondary} />
-          <Text style={styles.historyBtnText}>Voir mes tickets</Text>
+          <Text style={styles.historyBtnText}>{t("my_tickets")}</Text>
           <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
         </Pressable>
       </ScrollView>

@@ -252,6 +252,7 @@ export const en = {
   ticket_submit: 'Send',
   ticket_submitting: 'Sending...',
   ticket_success: 'Your message has been sent successfully.',
+  hero_sub: 'Our team is here to help you.',
 
   error_invalid_token: 'Invalid token. Please check and try again.',
   error_expired_token: 'This token has expired.',

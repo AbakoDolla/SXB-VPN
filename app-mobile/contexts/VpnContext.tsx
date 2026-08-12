@@ -298,7 +298,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
       if (s === 'connected') {
         stopWatchdog();
-        addStepLog('connected', 'step_connected', 'done');
+        addStepLog('connected', 'step_vpn_active', 'done');
         setIsConnected(true);
         setIsConnecting(false);
         AsyncStorage.setItem('@sxb_vpn_connected', 'true').catch(() => {});

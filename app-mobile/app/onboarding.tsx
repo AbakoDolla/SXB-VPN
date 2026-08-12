@@ -8,36 +8,40 @@ import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuthContext } from "@/contexts/AuthContext";
 import Colors from "@/constants/colors";
+import { useTranslation } from "@/localization";
 
 const { width } = Dimensions.get("window");
 const LOGO = require("../assets/images/icon.png");
 
-const SLIDES = [
-  {
-    icon: "shield-checkmark" as const,
-    color: Colors.primary,
-    title: "Sécurité totale",
-    subtitle: "Votre connexion chiffrée, votre identité protégée. Partout. Toujours.",
-    bg: "rgba(0,212,255,0.08)",
-  },
-  {
-    icon: "flash" as const,
-    color: Colors.connected,
-    title: "Un clic suffit",
-    subtitle: "Activez la protection VPN en une seconde. Aucune configuration technique nécessaire.",
-    bg: "rgba(0,229,160,0.08)",
-  },
-  {
-    icon: "lock-closed" as const,
-    color: Colors.purple,
-    title: "Données 100% privées",
-    subtitle: "Zero-log policy. Vos données ne sont jamais conservées ni partagées.",
-    bg: "rgba(139,92,246,0.08)",
-  },
-];
+
 
 export default function OnboardingScreen() {
+  const { t } = useTranslation();
   const { markOnboardingDone } = useAuthContext();
+
+  const SLIDES = [
+    {
+      icon: "shield-checkmark" as const,
+      color: Colors.primary,
+      title: t("onboarding_security_title"),
+      subtitle: t("onboarding_security_desc"),
+      bg: "rgba(0,212,255,0.08)",
+    },
+    {
+      icon: "flash" as const,
+      color: Colors.connected,
+      title: t("onboarding_oneclick_title"),
+      subtitle: t("onboarding_desc_2"),
+      bg: "rgba(0,229,160,0.08)",
+    },
+    {
+      icon: "lock-closed" as const,
+      color: Colors.purple,
+      title: t("section_security_conn"),
+      subtitle: t("onboarding_desc_4"),
+      bg: "rgba(139,92,246,0.08)",
+    },
+  ];
   const [activeIndex, setActiveIndex] = useState(0);
   const scrollX = useRef(new Animated.Value(0)).current;
   const scrollRef = useRef<ScrollView>(null);
@@ -110,12 +114,12 @@ export default function OnboardingScreen() {
           onPress={goNext}
           style={[styles.btnPrimary, isLast && { backgroundColor: Colors.connected }]}
         >
-          <Text style={styles.btnPrimaryText}>{isLast ? "Commencer" : "Suivant"}</Text>
+          <Text style={styles.btnPrimaryText}>{isLast ? t("start") : t("next")}</Text>
           <Ionicons name={isLast ? "checkmark" : "arrow-forward"} size={18} color="#000" />
         </Pressable>
         {!isLast && (
           <Pressable onPress={handleStart} style={styles.btnSkip}>
-            <Text style={styles.btnSkipText}>Passer</Text>
+            <Text style={styles.btnSkipText}>{t("skip")}</Text>
           </Pressable>
         )}
       </View>

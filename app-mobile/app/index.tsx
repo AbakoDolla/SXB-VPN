@@ -4,11 +4,13 @@ import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import { useAuthContext } from "@/contexts/AuthContext";
 import Colors from "@/constants/colors";
+import { useTranslation } from "@/localization";
 
 const { width, height } = Dimensions.get("window");
 const LOGO = require("../assets/images/icon.png");
 
 export default function SplashScreen() {
+  const { t } = useTranslation();
   const { isLoading, isAuthenticated, hasSeenOnboarding } = useAuthContext();
 
   const logoOpacity = useRef(new Animated.Value(0)).current;
@@ -71,11 +73,11 @@ export default function SplashScreen() {
 
       {/* Text */}
       <Animated.View style={[styles.textWrap, { opacity: textOpacity }]}>
-        <Text style={styles.brand}>SXB VPN</Text>
+        <Text style={styles.brand}>{t("app_name")}</Text>
         <Text style={styles.tagline}>STUFF X BILAL</Text>
         <View style={styles.badge}>
           <View style={styles.badgeDot} />
-          <Text style={styles.badgeText}>Connexion sécurisée</Text>
+          <Text style={styles.badgeText}>{t("protection_active")}</Text>
         </View>
       </Animated.View>
     </LinearGradient>

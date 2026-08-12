@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { User, UserRole } from '../types';
+import { useTranslation } from '../contexts/I18nContext';
 import {
   LayoutDashboard, Users, Server, Shield, Key, Smartphone,
   Settings, LogOut, UserCog, Terminal, Code2, Zap, Box,
@@ -46,6 +47,7 @@ export default function Layout({
   onLogout,
   maintenanceEnabled = false,
 }: LayoutProps) {
+  const { t } = useTranslation();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
     clients: true,
@@ -87,29 +89,29 @@ export default function Layout({
     {
       kind: 'leaf',
       id: 'dashboard',
-      label: 'Dashboard',
+      label: t('sidebar.dashboard'),
       icon: LayoutDashboard,
       roles: ALL_ROLES,
     },
     {
       kind: 'group',
       id: 'clients',
-      label: 'Clients',
+      label: t('sidebar.clients'),
       icon: Users,
       color: 'text-cyan-400',
       roles: ALL_ROLES,
       items: [
-        { kind: 'leaf', id: 'clients', label: 'Clients VPN', icon: Users, roles: ALL_ROLES },
-        { kind: 'leaf', id: 'subscriptions', label: 'Forfaits Data', icon: PackageOpen, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
-        { kind: 'leaf', id: 'devices', label: 'Appareils', icon: Smartphone, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
-        { kind: 'leaf', id: 'tokens', label: 'Tokens SXB', icon: Key, roles: ALL_ROLES },
-        { kind: 'leaf', id: 'vouchers', label: 'Vouchers', icon: BadgePercent, roles: ALL_ROLES },
+        { kind: 'leaf', id: 'clients', label: t('sidebar.vpn_accounts'), icon: Users, roles: ALL_ROLES },
+        { kind: 'leaf', id: 'subscriptions', label: t('sidebar.subscriptions') || 'Forfaits Data', icon: PackageOpen, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
+        { kind: 'leaf', id: 'devices', label: t('sidebar.devices') || 'Appareils', icon: Smartphone, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
+        { kind: 'leaf', id: 'tokens', label: t('sidebar.tokens'), icon: Key, roles: ALL_ROLES },
+        { kind: 'leaf', id: 'vouchers', label: t('sidebar.vouchers'), icon: BadgePercent, roles: ALL_ROLES },
       ],
     },
     {
       kind: 'leaf',
       id: 'vpn-profiles',
-      label: 'Configurations & Profils VPN',
+      label: t('sidebar.configurations'),
       icon: GitBranch,
       color: 'text-violet-400',
       roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'],
@@ -117,42 +119,42 @@ export default function Layout({
     {
       kind: 'group',
       id: 'monitoring',
-      label: 'Monitoring',
+      label: t('sidebar.monitoring') || 'Monitoring',
       icon: Activity,
       color: 'text-emerald-400',
       roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'],
       items: [
-        { kind: 'leaf', id: 'sessions', label: 'Sessions', icon: Radio, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
-        { kind: 'leaf', id: 'analytics', label: 'Logs & Activité', icon: BarChart3, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
-        { kind: 'leaf', id: 'servers', label: 'Serveurs', icon: Server, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
+        { kind: 'leaf', id: 'sessions', label: t('sidebar.sessions') || 'Sessions', icon: Radio, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
+        { kind: 'leaf', id: 'analytics', label: t('sidebar.analytics'), icon: BarChart3, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
+        { kind: 'leaf', id: 'servers', label: t('sidebar.servers'), icon: Server, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
       ],
     },
     {
       kind: 'group',
       id: 'admin',
-      label: 'Administration',
+      label: t('sidebar.admin') || 'Administration',
       icon: Shield,
       color: 'text-amber-400',
       roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'],
       items: [
-        { kind: 'leaf', id: 'accounts', label: 'Comptes', icon: UserPlus, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
-        { kind: 'leaf', id: 'resellers', label: 'Revendeurs', icon: UserCog, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
-        { kind: 'leaf', id: 'rbac', label: 'Rôles & Permissions', icon: Shield, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
+        { kind: 'leaf', id: 'accounts', label: t('sidebar.accounts') || 'Comptes', icon: UserPlus, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
+        { kind: 'leaf', id: 'resellers', label: t('sidebar.resellers'), icon: UserCog, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
+        { kind: 'leaf', id: 'rbac', label: t('sidebar.rbac'), icon: Shield, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
       ],
     },
     {
       kind: 'leaf',
       id: 'support',
-      label: 'Support',
+      label: t('sidebar.support'),
       icon: HeadphonesIcon,
       roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'],
     },
-    {
+{
       kind: 'leaf',
       id: 'settings',
-      label: 'Paramètres',
+      label: t('sidebar.settings'),
       icon: Settings,
-      roles: ALL_ROLES,
+      roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'],
     },
     // ── Rôle racine OWNER uniquement ─────────────────────────────────────────
     {

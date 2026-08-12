@@ -7,8 +7,10 @@ import { router } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { useAuthContext } from "@/contexts/AuthContext";
 import Colors from "@/constants/colors";
+import { useTranslation } from "@/localization";
 
 export default function PlanScreen() {
+  const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const { activatePlan } = useAuthContext();
 
@@ -30,7 +32,7 @@ export default function PlanScreen() {
   };
 
   const handleActivate = async () => {
-    if (!token.trim()) { setError("Entrez votre token SXB-DATA-XXXX"); shake(); return; }
+    if (!token.trim()) { setError(t("token_data_placeholder")); shake(); return; }
     setError(""); setIsLoading(true);
     try {
       await activatePlan(token.trim());
@@ -42,10 +44,10 @@ export default function PlanScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       shake();
       const status = err?.response?.status;
-      if (status === 404) setError("Token introuvable. Vérifiez le code.");
-      else if (status === 409) setError("Token déjà utilisé.");
-      else if (status === 403) setError("Token expiré.");
-      else setError("Erreur réseau. Réessayez.");
+      if (status === 404) setError(t("token_not_found"));
+      else if (status === 409) setError(t("token_used"));
+      else if (status === 403) setError(t("token_expired_short"));
+      else setError(t("network_error"));
     } finally {
       setIsLoading(false);
     }
@@ -58,8 +60,8 @@ export default function PlanScreen() {
           <View style={[styles.iconCircle, { backgroundColor: Colors.connectedDim, borderColor: Colors.connected + "40" }]}>
             <Ionicons name="checkmark-circle" size={72} color={Colors.connected} />
           </View>
-          <Text style={{ fontSize: 26, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold" }}>Forfait activé !</Text>
-          <Text style={{ fontSize: 14, color: Colors.textSecondary, fontFamily: "Inter_400Regular" }}>Vos données ont été ajoutées</Text>
+          <Text style={{ fontSize: 26, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold" }}>{t("plan_success")}</Text>
+          <Text style={{ fontSize: 14, color: Colors.textSecondary, fontFamily: "Inter_400Regular" }}>{t("quota_added")}</Text>
         </Animated.View>
       </LinearGradient>
     );
@@ -83,10 +85,8 @@ export default function PlanScreen() {
           </View>
         </View>
 
-        <Text style={styles.title}>Activer un forfait</Text>
-        <Text style={styles.subtitle}>
-          Entrez votre token data pour ajouter du trafic à votre compte
-        </Text>
+        <Text style={styles.title}>{t("activate_plan_title")}</Text>
+        <Text style={styles.subtitle}>{t("activate_plan_desc")}</Text>
 
         {/* Input */}
         <Animated.View style={{ transform: [{ translateX: shakeAnim }] }}>
@@ -114,11 +114,11 @@ export default function PlanScreen() {
         <Pressable onPress={handleActivate} disabled={isLoading} style={[styles.btn, isLoading && { opacity: 0.6 }]}>
           <LinearGradient colors={[Colors.purple, "#6D28D9"]} style={styles.btnGrad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
             {isLoading
-              ? <Text style={styles.btnText}>Activation...</Text>
-              : <>
-                  <Ionicons name="gift" size={18} color="#FFF" />
-                  <Text style={styles.btnText}>Activer le forfait</Text>
-                </>
+? <Text style={styles.btnText}>{t("plan_activating")}</Text>
+	              : <>
+	                  <Ionicons name="gift" size={18} color="#FFF" />
+	                  <Text style={styles.btnText}>{t("activate_plan")}</Text>
+	                </>
             }
           </LinearGradient>
         </Pressable>
@@ -126,21 +126,19 @@ export default function PlanScreen() {
         {/* Info card */}
         <View style={styles.infoCard}>
           <Ionicons name="information-circle-outline" size={18} color={Colors.primary} />
-          <Text style={styles.infoText}>
-            Le token data est fourni par votre administrateur ou revendeur. Format : SXB-DATA-XXXX-XXXX-XXXX
-          </Text>
+<Text style={styles.infoText}>{t("faq_a2")}</Text>
         </View>
 
         {/* Separator */}
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
           <View style={{ flex: 1, height: 1, backgroundColor: Colors.border }} />
-          <Text style={{ fontSize: 12, color: Colors.textMuted, fontFamily: "Inter_400Regular" }}>ou</Text>
+          <Text style={{ fontSize: 12, color: Colors.textMuted, fontFamily: "Inter_400Regular" }}>{t("of")}</Text>
           <View style={{ flex: 1, height: 1, backgroundColor: Colors.border }} />
         </View>
 
         <Pressable style={styles.qrBtn}>
           <Ionicons name="qr-code-outline" size={20} color={Colors.textSecondary} />
-          <Text style={styles.qrBtnText}>Scanner un QR Code</Text>
+          <Text style={styles.qrBtnText}>{t("scan_qr")}</Text>
         </Pressable>
       </ScrollView>
     </LinearGradient>

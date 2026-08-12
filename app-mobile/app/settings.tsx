@@ -99,11 +99,12 @@ function LangModal({ visible, current, onSelect, onClose }: {
   visible: boolean; current: string;
   onSelect: (code: string) => void; onClose: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.modalOverlay} onPress={onClose}>
         <View style={styles.langSheet}>
-          <Text style={styles.langSheetTitle}>Langue / Language</Text>
+          <Text style={styles.langSheetTitle}>{t("language_row")} / Language</Text>
           {LANGS.map(l => (
             <Pressable
               key={l.code}
@@ -124,20 +125,21 @@ function LangModal({ visible, current, onSelect, onClose }: {
 // ── Logs modal ────────────────────────────────────────────────────────────────
 
 function LogsModal({ visible, logs, onClose }: { visible: boolean; logs: string[]; onClose: () => void }) {
+  const { t } = useTranslation();
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <View style={styles.logsOverlay}>
         <View style={styles.logsSheet}>
           <View style={styles.logsHeader}>
             <View style={styles.logsHandle} />
-            <Text style={styles.logsTitle}>Logs VPN</Text>
+            <Text style={styles.logsTitle}>{t("vpn_logs")}</Text>
             <Pressable onPress={onClose}>
               <Ionicons name="close" size={22} color={Colors.textSecondary} />
             </Pressable>
           </View>
           <ScrollView style={styles.logsScroll} showsVerticalScrollIndicator={false}>
             {logs.length === 0 ? (
-              <Text style={styles.logsEmpty}>Aucun log disponible</Text>
+              <Text style={styles.logsEmpty}>{t("logs_waiting")}</Text>
             ) : logs.map((l, i) => (
               <Text key={i} style={[
                 styles.logLine,
@@ -158,14 +160,15 @@ function PinModal({ visible, mode, onSuccess, onClose }: {
   visible: boolean; mode: "set" | "verify";
   onSuccess: (pin: string) => void; onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const [pin, setPin] = useState("");
   const [confirm, setConfirm] = useState("");
   const [err, setErr] = useState("");
 
   const handleSubmit = () => {
     if (mode === "set") {
-      if (pin.length < 4) { setErr("PIN minimum 4 chiffres"); return; }
-      if (pin !== confirm) { setErr("Les PIN ne correspondent pas"); return; }
+      if (pin.length < 4) { setErr(t("pin_lock_row")); return; }
+      if (pin !== confirm) { setErr(t("pin_lock_row")); return; }
       onSuccess(pin);
     } else {
       onSuccess(pin);
@@ -177,7 +180,7 @@ function PinModal({ visible, mode, onSuccess, onClose }: {
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.modalOverlay}>
         <View style={styles.pinSheet}>
-          <Text style={styles.pinTitle}>{mode === "set" ? "Définir un code PIN" : "Entrer le code PIN"}</Text>
+          <Text style={styles.pinTitle}>{mode === "set" ? t("pin_lock_row") : t("pin_lock_row")}</Text>
           {err ? <Text style={styles.pinErr}>{err}</Text> : null}
           <TextInput
             style={styles.pinInput}
@@ -191,15 +194,15 @@ function PinModal({ visible, mode, onSuccess, onClose }: {
               style={styles.pinInput}
               value={confirm} onChangeText={setConfirm}
               keyboardType="number-pad" secureTextEntry maxLength={8}
-              placeholder="Confirmer ••••" placeholderTextColor={Colors.textMuted}
+              placeholder={t("confirm") + " ••••"} placeholderTextColor={Colors.textMuted}
             />
           )}
           <View style={styles.pinBtns}>
             <Pressable onPress={onClose} style={styles.pinBtnCancel}>
-              <Text style={styles.pinBtnCancelText}>Annuler</Text>
+              <Text style={styles.pinBtnCancelText}>{t("cancel")}</Text>
             </Pressable>
             <Pressable onPress={handleSubmit} style={styles.pinBtnOk}>
-              <Text style={styles.pinBtnOkText}>Confirmer</Text>
+              <Text style={styles.pinBtnOkText}>{t("confirm")}</Text>
             </Pressable>
           </View>
         </View>
@@ -266,10 +269,10 @@ export default function SettingsScreen() {
     if (v) {
       setPinModal("set");
     } else {
-      Alert.alert("Désactiver le PIN ?", "Le verrouillage par code sera supprimé.", [
-        { text: "Annuler", style: "cancel" },
+      Alert.alert(t("pin_lock_row"), t("clear_local_data_msg"), [
+        { text: t("cancel"), style: "cancel" },
         {
-          text: "Désactiver", style: "destructive", onPress: async () => {
+          text: t("clear"), style: "destructive", onPress: async () => {
             await AsyncStorage.removeItem("@sxb_pin");
             setPinEnabled(false);
           }
@@ -284,7 +287,7 @@ export default function SettingsScreen() {
     await AsyncStorage.setItem("@sxb_pin", encoded);
     setPinEnabled(true);
     setPinModal(null);
-    Alert.alert("PIN activé", "Le verrouillage par code est maintenant actif.");
+    Alert.alert(t("pin_lock_row"), t("active"));
   };
 
   const handleRefreshConfig = async () => {
@@ -380,7 +383,7 @@ export default function SettingsScreen() {
           <Pressable onPress={() => router.back()} style={styles.backBtn}>
             <Ionicons name="arrow-back" size={20} color={Colors.textSecondary} />
           </Pressable>
-          <Text style={styles.pageTitle}>Paramètres</Text>
+          <Text style={styles.pageTitle}>{t("settings")}</Text>
           <View style={{ width: 36 }} />
         </View>
 
@@ -555,11 +558,11 @@ export default function SettingsScreen() {
         ) : (
           <Pressable onPress={handleLogout} style={styles.logoutBtn}>
             <Ionicons name="log-out-outline" size={18} color={Colors.disconnected} />
-            <Text style={styles.logoutText}>Se déconnecter</Text>
+            <Text style={styles.logoutText}>{t("logout")}</Text>
           </Pressable>
         )}
 
-        <Text style={styles.footer}>SXB VPN — STUFF X BILAL</Text>
+        <Text style={styles.footer}>{t("app_name")} — STUFF X BILAL</Text>
       </ScrollView>
 
       {/* Modals */}

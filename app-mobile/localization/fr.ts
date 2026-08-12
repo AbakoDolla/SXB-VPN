@@ -268,6 +268,7 @@ export const fr = {
   ticket_submit: 'Envoyer',
   ticket_submitting: 'Envoi en cours...',
   ticket_success: 'Votre message a été envoyé avec succès.',
+  hero_sub: 'Notre équipe est disponible pour vous aider.',
 
   // Errors
   error_invalid_token: 'Token invalide. Vérifiez et réessayez.',

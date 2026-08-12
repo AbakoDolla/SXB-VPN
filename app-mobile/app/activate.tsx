@@ -10,10 +10,12 @@ import { router } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { useAuthContext } from "@/contexts/AuthContext";
 import Colors from "@/constants/colors";
+import { useTranslation } from "@/localization";
 
 const LOGO = require("../assets/images/icon.png");
 
 export default function ActivateScreen() {
+  const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const { activateAccount, isAuthenticated, deviceId } = useAuthContext();
 
@@ -35,7 +37,7 @@ export default function ActivateScreen() {
   };
 
   const handleActivate = async () => {
-    if (!token.trim()) { setError("Entrez votre token SXB-USER-XXXX"); shake(); return; }
+    if (!token.trim()) { setError(t("error_invalid_token")); shake(); return; }
     setError(""); setIsLoading(true);
     try {
       await activateAccount(token.trim());
@@ -47,9 +49,9 @@ export default function ActivateScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       shake();
       const status = err?.response?.status;
-      if (status === 404) setError("Token introuvable. Vérifiez le code.");
-      else if (status === 403) setError("Token expiré ou déjà utilisé.");
-      else setError("Erreur réseau. Réessayez.");
+      if (status === 404) setError(t("token_not_found"));
+      else if (status === 403) setError(t("error_expired_token"));
+      else setError(t("network_error"));
     } finally {
       setIsLoading(false);
     }
@@ -62,8 +64,8 @@ export default function ActivateScreen() {
           <View style={styles.successIcon}>
             <Ionicons name="checkmark-circle" size={72} color={Colors.connected} />
           </View>
-          <Text style={styles.successTitle}>Compte activé !</Text>
-          <Text style={styles.successSub}>Bienvenue sur SXB VPN</Text>
+          <Text style={styles.successTitle}>{t("activation_success")}</Text>
+          <Text style={styles.successSub}>{t("onboarding_title_1")}</Text>
         </Animated.View>
       </LinearGradient>
     );
@@ -84,8 +86,8 @@ export default function ActivateScreen() {
           </View>
         </View>
 
-        <Text style={styles.title}>Activer mon compte</Text>
-        <Text style={styles.subtitle}>Entrez votre token utilisateur pour accéder à SXB VPN</Text>
+        <Text style={styles.title}>{t("activate_account_title")}</Text>
+        <Text style={styles.subtitle}>{t("activate_account_desc")}</Text>
 
         {/* Input */}
         <Animated.View style={{ transform: [{ translateX: shakeAnim }] }}>
@@ -113,11 +115,11 @@ export default function ActivateScreen() {
         <Pressable onPress={handleActivate} disabled={isLoading} style={[styles.activateBtn, isLoading && { opacity: 0.6 }]}>
           <LinearGradient colors={[Colors.primary, "#0080FF"]} style={styles.activateBtnGrad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
             {isLoading
-              ? <Text style={styles.activateBtnText}>Activation...</Text>
-              : <>
-                  <Ionicons name="shield-checkmark" size={18} color="#000" />
-                  <Text style={styles.activateBtnText}>Activer</Text>
-                </>
+? <Text style={styles.activateBtnText}>{t("activating")}</Text>
+	              : <>
+	                  <Ionicons name="shield-checkmark" size={18} color="#000" />
+	                  <Text style={styles.activateBtnText}>{t("activate")}</Text>
+	                </>
             }
           </LinearGradient>
         </Pressable>
@@ -127,17 +129,17 @@ export default function ActivateScreen() {
           <View style={styles.deviceBox}>
             <View style={styles.deviceBoxHeader}>
               <Ionicons name="phone-portrait-outline" size={13} color={Colors.primary} />
-              <Text style={styles.deviceBoxLabel}>ID de votre appareil</Text>
+              <Text style={styles.deviceBoxLabel}>{t("device_id_row")}</Text>
             </View>
             <Text style={styles.deviceId} selectable>{deviceId}</Text>
-            <Text style={styles.deviceHint}>Communiquez cet ID à votre administrateur pour obtenir votre token.</Text>
+            <Text style={styles.deviceHint}>{t("faq_a1")}</Text>
           </View>
         ) : null}
 
         {/* Separator */}
         <View style={styles.sep}>
           <View style={styles.sepLine} />
-          <Text style={styles.sepText}>ou</Text>
+          <Text style={styles.sepText}>{t("of")}</Text>
           <View style={styles.sepLine} />
         </View>
 
@@ -145,15 +147,15 @@ export default function ActivateScreen() {
         <Pressable
           style={styles.qrBtn}
           onPress={() =>
-            Alert.alert(
-              "QR Code",
-              "Le scan de QR Code sera disponible dans la prochaine version.\n\nEntrez votre token manuellement ci-dessus.",
-              [{ text: "OK" }]
-            )
+Alert.alert(
+	              t("qr_soon_title"),
+	              t("qr_soon_body"),
+	              [{ text: t("ok") }]
+	            )
           }
         >
           <Ionicons name="qr-code-outline" size={20} color={Colors.textSecondary} />
-          <Text style={styles.qrBtnText}>Scanner un QR Code</Text>
+          <Text style={styles.qrBtnText}>{t("scan_qr")}</Text>
         </Pressable>
       </ScrollView>
     </LinearGradient>

@@ -9,8 +9,10 @@ import { useAuthContext } from "@/contexts/AuthContext";
 import { useVpnContext } from "@/contexts/VpnContext";
 import { deriveQuota, formatBytes } from "@/services/quotaState";
 import Colors from "@/constants/colors";
+import { useTranslation } from "@/localization";
 
 export default function ProfileScreen() {
+  const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const { user, accountState, logout } = useAuthContext();
   const { activeConnection } = useVpnContext();
@@ -19,11 +21,11 @@ export default function ProfileScreen() {
 
   const handleLogout = () => {
     Alert.alert(
-      "Se déconnecter",
-      "Votre session locale sera effacée. Votre compte reste actif.",
+      t("logout"),
+      t("logout_confirm_local"),
       [
-        { text: "Annuler", style: "cancel" },
-        { text: "Se déconnecter", style: "destructive", onPress: () => logout().then(() => router.replace("/activate")) },
+        { text: t("cancel"), style: "cancel" },
+        { text: t("logout"), style: "destructive", onPress: () => logout().then(() => router.replace("/activate")) },
       ]
     );
   };
@@ -58,13 +60,13 @@ export default function ProfileScreen() {
   }[effectiveState] ?? Colors.textMuted;
 
   const stateLabel = {
-    ready: "Actif",
-    active: "Actif",
-    connected: "Actif",
-    no_package: "Sans forfait",
-    exhausted: "Quota épuisé",
-    expired: "Expiré",
-    suspended: "Suspendu",
+    ready: t("active"),
+    active: t("active"),
+    connected: t("active"),
+    no_package: t("status_no_package"),
+    exhausted: t("friendly_quota_exhausted"),
+    expired: t("expired"),
+    suspended: t("suspended_status"),
   }[effectiveState] ?? "—";
 
   return (
@@ -75,7 +77,7 @@ export default function ProfileScreen() {
       >
         {/* Header */}
         <View style={styles.headerRow}>
-          <Text style={styles.pageTitle}>Profil</Text>
+          <Text style={styles.pageTitle}>{t("profile")}</Text>
           <Pressable onPress={() => router.push("/settings")} style={styles.iconBtn}>
             <Ionicons name="settings-outline" size={20} color={Colors.textSecondary} />
           </Pressable>
@@ -87,7 +89,7 @@ export default function ProfileScreen() {
             <Text style={styles.avatarInitials}>{initials}</Text>
           </View>
           <View style={styles.avatarInfo}>
-            <Text style={styles.userName}>{user?.name || "Utilisateur"}</Text>
+            <Text style={styles.userName}>{user?.name || t("user_default")}</Text>
             <Text style={styles.userEmail}>{user?.email || ""}</Text>
             <View style={[styles.stateBadge, { borderColor: stateColor + "40", backgroundColor: stateColor + "15" }]}>
               <View style={[styles.stateDot, { backgroundColor: stateColor }]} />
@@ -99,34 +101,34 @@ export default function ProfileScreen() {
         {/* Stats Card */}
         {accountState && (
           <View style={styles.statsCard}>
-            <Text style={styles.sectionLabel}>FORFAIT ACTUEL</Text>
+            <Text style={styles.sectionLabel}>{t("current_plan").toUpperCase()}</Text>
             <View style={styles.statsRow}>
               <View style={styles.statItem}>
                 <Text style={styles.statValue}>
                   {derived.formattedTotal}
                 </Text>
-                <Text style={styles.statLabel}>Total</Text>
+                <Text style={styles.statLabel}>{t("quota_total")}</Text>
               </View>
               <View style={styles.statDivider} />
               <View style={styles.statItem}>
                 <Text style={styles.statValue}>
                   {derived.formattedUsed}
                 </Text>
-                <Text style={styles.statLabel}>Utilisé</Text>
+                <Text style={styles.statLabel}>{t("quota_used")}</Text>
               </View>
               <View style={styles.statDivider} />
               <View style={styles.statItem}>
                 <Text style={styles.statValue}>
                   {derived.formattedRemaining}
                 </Text>
-                <Text style={styles.statLabel}>Restant</Text>
+                <Text style={styles.statLabel}>{t("quota_remaining")}</Text>
               </View>
             </View>
             {accountState.expireAt && (
               <View style={styles.expireRow}>
                 <Ionicons name="calendar-outline" size={13} color={Colors.textMuted} />
                 <Text style={styles.expireText}>
-                  Expire le {new Date(accountState.expireAt).toLocaleDateString("fr-FR")}
+                  {t("expires_on")} {new Date(accountState.expireAt).toLocaleDateString()}
                 </Text>
               </View>
             )}
@@ -135,12 +137,12 @@ export default function ProfileScreen() {
 
         {/* Menu items */}
         <View style={styles.menuCard}>
-          <Text style={styles.sectionLabel}>INFORMATIONS</Text>
+          <Text style={styles.sectionLabel}>{t("section_personal_info").toUpperCase()}</Text>
           {[
-            { icon: "person-outline", label: "Informations personnelles", action: () => router.push("/settings") },
-            { icon: "phone-portrait-outline", label: "Appareils autorisés", value: `${accountState?.deviceLimit ?? 1} appareils` },
-            { icon: "shield-outline", label: "Sécurité & Connexion", action: () => router.push("/settings") },
-            { icon: "notifications-outline", label: "Notifications", action: () => router.push("/(tabs)/notifications") },
+            { icon: "person-outline", label: t("section_personal_info"), action: () => router.push("/settings") },
+            { icon: "phone-portrait-outline", label: t("section_authorized_devices"), value: `${accountState?.deviceLimit ?? 1} ${accountState?.deviceLimit && accountState.deviceLimit > 1 ? t("devices") : t("device")}` },
+            { icon: "shield-outline", label: t("section_security_conn"), action: () => router.push("/settings") },
+            { icon: "notifications-outline", label: t("notifications"), action: () => router.push("/(tabs)/notifications") },
           ].map((item, i) => (
             <Pressable
               key={i}
@@ -164,7 +166,7 @@ export default function ProfileScreen() {
         {/* Activate plan */}
         <Pressable onPress={() => router.push("/plan")} style={styles.planBtn}>
           <Ionicons name="gift-outline" size={18} color={Colors.purple} />
-          <Text style={styles.planBtnText}>Activer un forfait</Text>
+          <Text style={styles.planBtnText}>{t("activate_plan")}</Text>
           <Ionicons name="arrow-forward" size={16} color={Colors.purple} />
         </Pressable>
 
@@ -177,7 +179,7 @@ export default function ProfileScreen() {
         {/* Logout */}
         <Pressable onPress={handleLogout} style={styles.logoutBtn}>
           <Ionicons name="log-out-outline" size={18} color={Colors.disconnected} />
-          <Text style={styles.logoutText}>Se déconnecter</Text>
+          <Text style={styles.logoutText}>{t("logout")}</Text>
         </Pressable>
       </ScrollView>
     </LinearGradient>
