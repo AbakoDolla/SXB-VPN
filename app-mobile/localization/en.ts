@@ -247,8 +247,6 @@ export const en = {
   contact_us: 'Contact us',
   contact_via_whatsapp: 'WhatsApp',
   contact_via_email: 'Email',
-  ticket_subject: 'Subject',
-  ticket_message: 'Message',
   ticket_submit: 'Send',
   ticket_submitting: 'Sending...',
   ticket_success: 'Your message has been sent successfully.',

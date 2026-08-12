@@ -263,8 +263,6 @@ export const fr = {
   contact_us: 'Nous contacter',
   contact_via_whatsapp: 'WhatsApp',
   contact_via_email: 'Email',
-  ticket_subject: 'Sujet',
-  ticket_message: 'Message',
   ticket_submit: 'Envoyer',
   ticket_submitting: 'Envoi en cours...',
   ticket_success: 'Votre message a été envoyé avec succès.',
