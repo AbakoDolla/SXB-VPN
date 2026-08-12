@@ -113,6 +113,11 @@ export const en = {
   notif_expires_tomorrow: 'Your plan expires tomorrow.',
   notif_new_config: 'New VPN configuration available.',
   notif_sync_done: 'Synchronization complete.',
+  notifications_read_all: 'Mark all read',
+  notifications_empty_hint: 'You will be alerted about important events.',
+  time_minutes_short: ' min',
+  time_hours_short: ' h',
+  time_days_short: ' d',
 
   client_id: 'Client ID',
   plan_label: 'Plan',

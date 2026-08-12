@@ -113,11 +113,8 @@ private class WsOutputStream(
         if (len == 0) return
         val mask = ByteArray(4).also { rng.nextBytes(it) }
         val masked = ByteArray(len) { i -> (b[off + i].toInt() xor mask[i % 4].toInt()).toByte() }
-        // Télémétrie : aperçu clair (la bannière SSH-2.0 sort en clair, le kex est binaire)
-        val preview = (0 until minOf(len, 24)).joinToString("") { i ->
-            val v = b[off + i].toInt(); if (v in 32..126) v.toChar().toString() else "·"
-        }
-        onEvent("[SXB_DEBUG] WS_OUT len=$len txt=[$preview]")
+        // Diagnostic sans contenu : un payload ou une bannière peut contenir des secrets.
+        onEvent("[SXB_DEBUG] WS_OUT bytes=$len")
         val buf = ByteArrayOutputStream(len + 14)
         buf.write(0x82)                         // FIN=1, opcode=0x02 (binary)
         when {
@@ -222,15 +219,12 @@ private class WsInputStream(
             if (maskKey != null) {
                 for (i in payload.indices) payload[i] = (payload[i].toInt() xor maskKey[i % 4].toInt()).toByte()
             }
-            val preview = payload.take(24).joinToString("") {
-                val v = it.toInt(); if (v in 32..126) v.toChar().toString() else "·"
-            }
-            onEvent("[SXB_DEBUG] WS_IN opcode=$opcode len=${payload.size} txt=[$preview]")
-            Log.d("SXB_DEBUG", "[SXB_DEBUG] WS_FRAME_IN opcode=$opcode len=${payload.size}")
+            onEvent("[SXB_DEBUG] WS_IN opcode=$opcode bytes=${payload.size}")
+            SxbSecureLogger.debug("WS_FRAME_IN opcode=$opcode bytes=${payload.size}")
             payload
         } catch (e: Exception) {
-            onEvent("[SXB_DEBUG] WS_FRAME_READ_ERROR: ${e.message}")
-            Log.e("SXB_DEBUG", "[SXB_DEBUG] WS_FRAME_READ_ERROR: ${e.message}")
+            onEvent("[SXB_DEBUG] WS_FRAME_READ_ERROR")
+            SxbSecureLogger.warn("WS_FRAME_READ_ERROR")
             null
         }
     }
@@ -272,13 +266,13 @@ private class SxbPayloadProxy(
         Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_SOCKET_PROTECTED result=$protectedOk")
         onEvent("[SXB_DEBUG] SSH_SOCKET_PROTECTED result=$protectedOk")
         // Résolution DNS visible (diagnostic données cellulaires / split-DNS)
-        val ips = runCatching {
-            java.net.InetAddress.getAllByName(host).joinToString(", ") { it.hostAddress ?: "?" }
-        }.getOrDefault("ÉCHEC_DNS")
-        onEvent("[SXB_DEBUG] DNS_RESOLVE host=$host ips=[$ips] timeout=${connectTimeout}ms")
+        val dnsResolved = runCatching {
+            java.net.InetAddress.getAllByName(host).isNotEmpty()
+        }.getOrDefault(false)
+        onEvent("[SXB_DEBUG] DNS_RESOLVE success=$dnsResolved timeout=${connectTimeout}ms")
         val t0 = System.currentTimeMillis()
         rawSocket.connect(InetSocketAddress(host, port), connectTimeout)
-        onEvent("[SXB_DEBUG] TCP_CONNECTED host=$host port=$port en ${System.currentTimeMillis() - t0}ms")
+        onEvent("[SXB_DEBUG] TCP_CONNECTED elapsed_ms=${System.currentTimeMillis() - t0}")
         val transportSocket: Socket = if (tlsEnabled) {
             val tlsSocket = (SSLSocketFactory.getDefault() as SSLSocketFactory)
                 .createSocket(rawSocket, sni.ifBlank { host }, port, false) as SSLSocket
@@ -336,16 +330,10 @@ private class SxbPayloadProxy(
             Log.i("SXB_DEBUG", "[SXB_DEBUG] WS_KEY_INJECTED — handshake RFC 6455 complété (parité sonde)")
             onEvent("[SXB_DEBUG] WS_KEY_INJECTED — handshake RFC 6455 complété")
         }
-        // Debug SANS secret (le payload = modèle HTTP injecteur, jamais les
-        // identifiants SSH) : rend visible le handshake réellement envoyé.
-        onEvent("[SXB_DEBUG] PAYLOAD_HEAD " + payload.take(96)
-            .replace("\r", "\\r").replace("\n", "\\n"))
-        onEvent("[SXB_DEBUG] PAYLOAD_FULL " + payload.take(1024)
-            .replace("\r", "\\r").replace("\n", "\\n"))
-        Log.i("SXB", "[SXB_DEBUG] PAYLOAD_FULL " + payload.take(1024)
-            .replace("\r", "\\r").replace("\n", "\\n"))
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] PAYLOAD_START host=$host port=$port bytes=${payload.length}")
-        onEvent("[SXB_DEBUG] PAYLOAD_START host=$host port=$port bytes=${payload.length}")
+        // Le contenu d’un payload peut porter des en-têtes et des paramètres privés.
+        // Ne conserver que des métriques non identifiantes pour le diagnostic.
+        SxbSecureLogger.debug("PAYLOAD_READY bytes=${payload.length}")
+        onEvent("[SXB_DEBUG] PAYLOAD_READY bytes=${payload.length}")
         rawOut.write(payload.toByteArray(Charsets.ISO_8859_1))
         rawOut.flush()
         Log.i("SXB_DEBUG", "[SXB_DEBUG] PAYLOAD_SENT length=${payload.length}")
@@ -895,15 +883,15 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 usePayload -> {
                     // Payload WebSocket par défaut — garantit que le handshake HTTP
                     // est envoyé avant SSH, nécessaire pour les serveurs port 443/80
-                    Log.i("SXB_DEBUG", "[SXB_DEBUG] PAYLOAD_DEFAULT_USED host=$host port=$port")
-                    broadcastLog("[SXB_DEBUG] PAYLOAD_DEFAULT_USED — aucun payload configuré sur le profil, utilisation WebSocket défaut")
+                    SxbSecureLogger.debug("PAYLOAD_DEFAULT_USED")
+                    broadcastLog("[SXB_DEBUG] PAYLOAD_DEFAULT_USED — utilisation du transport par défaut")
                     "GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]"
                 }
                 else -> ""
             }
 
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_SOCKET_CONNECT_START port=$port usePayload=$usePayload payload_len=${payload.length} tls=$tlsEnabled ws=$websocketEnabled")
-            broadcastLog("[SXB_DEBUG] SSH_SOCKET_CONNECT_START port=$port usePayload=$usePayload payload_len=${payload.length} tls=$tlsEnabled ws=$websocketEnabled")
+            SxbSecureLogger.debug("SSH_SOCKET_CONNECT_START payload=$usePayload tls=$tlsEnabled ws=$websocketEnabled bytes=${payload.length}")
+            broadcastLog("[SXB_DEBUG] SSH_SOCKET_CONNECT_START payload=$usePayload tls=$tlsEnabled ws=$websocketEnabled")
 
             // ── Télémétrie JSch (kex/auth visible) — SANS secrets : JSch consigne
             // les méthodes, drapeaux et paquets, jamais le mot de passe.
@@ -917,7 +905,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
                         com.jcraft.jsch.Logger.ERROR -> "ERR"
                         else -> "FTL"
                     }
-                    broadcastLog("[JSch:$tag] ${message ?: ""}")
+                    // Les messages de bibliothèques peuvent contenir des hôtes ou des identifiants.
+                    broadcastLog("[JSch:$tag] événement SSH")
                 }
             })
 
@@ -976,13 +965,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 }
             }
 
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_HANDSHAKE_START port=$port timeout=30000ms usePayload=$usePayload")
-            broadcastLog("[SXB_DEBUG] SSH_HANDSHAKE_START port=$port usePayload=$usePayload")
-            broadcastLog("[SXB] Handshake SSH en cours... Port:$port")
+            SxbSecureLogger.debug("SSH_HANDSHAKE_START payload=$usePayload timeout_ms=30000")
+            broadcastLog("[SXB_DEBUG] SSH_HANDSHAKE_START payload=$usePayload")
+            broadcastLog("[SXB] Handshake SSH en cours...")
             session.connect(30_000)
 
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_CONNECTED session.isConnected=${session.isConnected} host=$host port=$port")
-            broadcastLog("[SXB_DEBUG] SSH_CONNECTED — handshake réussi sur $host:$port")
+            SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.TUNNEL_CONNECTED)
+            broadcastLog("[SXB_DEBUG] SSH_CONNECTED — handshake réussi")
 
             // P5 — Vérification fingerprint post-connexion (hors StrictHostKeyChecking)
             if (fingerprint.isNotEmpty()) {
@@ -993,7 +982,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     session.disconnect()
                     throw SecurityException("[SXB] ❌ Fingerprint SSH invalide\n  Attendu: $fingerprint\n  Reçu   : $actualFp")
                 }
-                broadcastLog("[SXB] ✅ Fingerprint SSH vérifié: $fingerprint")
+                broadcastLog("[SXB] ✅ Empreinte SSH vérifiée")
             } else {
                 broadcastLog("[SXB] ⚠️ Aucun fingerprint configuré — hôte non vérifié")
             }
@@ -1558,7 +1547,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
     override fun writeLog(message: String) {
         if (message.isBlank()) return
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] LIBBOX_LOG: $message")
+        SxbSecureLogger.debug("LIBBOX_LOG: $message")
         broadcastLog("[engine] ${SecurityModule.maskSensitive(message)}")
     }
 
@@ -1776,6 +1765,22 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     }
                     newOutbounds.put(sbOut)
                 }
+                "socks" -> {
+                    val srvs = settings?.optJSONArray("servers")?.optJSONObject(0)
+                    val addr = srvs?.optString("address", "") ?: ""
+                    val port = srvs?.optInt("port", 1080) ?: 1080
+                    if (addr.isBlank()) throw Exception("outbound Xray SOCKS \"$tag\" sans serveur")
+                    val sbOut = JSONObject().apply {
+                        put("type", "socks")
+                        put("tag", tag)
+                        put("server", addr)
+                        put("server_port", port)
+                        val user = srvs?.optJSONArray("users")?.optJSONObject(0)
+                        user?.optString("user", "")?.takeIf { it.isNotBlank() }?.let { put("username", it) }
+                        user?.optString("pass", "")?.takeIf { it.isNotBlank() }?.let { put("password", it) }
+                    }
+                    newOutbounds.put(sbOut)
+                }
                 "http" -> {
                     val srvs = settings?.optJSONArray("servers")?.optJSONObject(0)
                     val addr = srvs?.optString("address", "") ?: ""
@@ -1801,7 +1806,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     newOutbounds.put(JSONObject().put("type", "dns").put("tag", tag))
                 }
                 else -> {
-                    if (o.has("type")) newOutbounds.put(o)
+                    // Ne jamais ignorer un outbound Xray : une chaîne incomplète donnerait
+                    // un tunnel déclaré connecté mais incapable de transporter le trafic.
+                    throw Exception("outbound Xray non supporté par le moteur : \"$proto\"")
                 }
             }
         }

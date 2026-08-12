@@ -1,10 +1,15 @@
 package com.sxbvpn.vpnmodule
 
 import android.app.Activity
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import com.sxbvpn.vpnmodule.SxbSecureLogger
@@ -31,6 +36,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
 
     companion object {
         private const val VPN_REQUEST_CODE = 0x0F4C
+        private const val ANNOUNCEMENT_CHANNEL_ID = "SXB_ANNOUNCEMENTS"
     }
 
     private var vpnPermissionPromise: Promise? = null
@@ -239,6 +245,65 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             SxbVpnService.instance?.updateNotification(text)
             promise.resolve(true)
         } catch (e: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    // ── postAnnouncementNotification ─────────────────────────────────────────
+    /**
+     * Notification locale d’une annonce déjà reçue par l’API authentifiée.
+     * Android garde le contrôle final du son et de la vibration du canal.
+     */
+    @ReactMethod
+    fun postAnnouncementNotification(id: String, title: String, message: String, promise: Promise) {
+        try {
+            val ctx = reactApplicationContext
+            val manager = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = NotificationChannel(
+                    ANNOUNCEMENT_CHANNEL_ID,
+                    "SXB VPN Alerts",
+                    NotificationManager.IMPORTANCE_DEFAULT,
+                ).apply {
+                    description = "SXB VPN announcements and important account updates"
+                    enableVibration(true)
+                }
+                manager.createNotificationChannel(channel)
+            }
+
+            val intent = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)?.apply {
+                data = Uri.parse("sxbvpn://notifications")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            } ?: Intent(Intent.ACTION_VIEW, Uri.parse("sxbvpn://notifications")).apply {
+                setPackage(ctx.packageName)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            val pendingIntent = PendingIntent.getActivity(
+                ctx,
+                id.hashCode(),
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val safeTitle = SecurityModule.maskSensitive(title).take(120)
+            val safeMessage = SecurityModule.maskSensitive(message)
+            val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Notification.Builder(ctx, ANNOUNCEMENT_CHANNEL_ID)
+            } else {
+                Notification.Builder(ctx)
+            }
+            val notification = builder
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle(safeTitle)
+                .setContentText(safeMessage.take(240))
+                .setStyle(Notification.BigTextStyle().bigText(safeMessage.take(1000)))
+                .setAutoCancel(true)
+                .setContentIntent(pendingIntent)
+                .setCategory(Notification.CATEGORY_MESSAGE)
+                .build()
+            manager.notify("sxb_announcement", id.hashCode(), notification)
+            promise.resolve(true)
+        } catch (_: Exception) {
+            // Une notification est une amélioration non bloquante : ne jamais empêcher le VPN ou la synchronisation.
             promise.resolve(false)
         }
     }

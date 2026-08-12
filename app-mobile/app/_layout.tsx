@@ -9,9 +9,10 @@ import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { LanguageProvider } from "@/contexts/LanguageContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
-import { AuthProvider } from "@/contexts/AuthContext";
+import { AuthProvider, useAuthContext } from "@/contexts/AuthContext";
 import { VpnProvider } from "@/contexts/VpnContext";
 import { StatusBar } from "expo-status-bar";
+import { syncAnnouncementNotifications } from "@/services/announcementNotifications";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -20,6 +21,19 @@ const queryClient = new QueryClient({
     queries: { retry: 1, staleTime: 1000 * 60 * 3 },
   },
 });
+
+function AnnouncementNotificationSync() {
+  const { isAuthenticated } = useAuthContext();
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    void syncAnnouncementNotifications();
+    const timer = setInterval(() => { void syncAnnouncementNotifications(); }, 120_000);
+    return () => clearInterval(timer);
+  }, [isAuthenticated]);
+
+  return null;
+}
 
 function RootLayoutNav() {
   useEffect(() => {
@@ -31,6 +45,7 @@ function RootLayoutNav() {
   return (
     <>
       <StatusBar style="light" />
+      <AnnouncementNotificationSync />
       <Stack screenOptions={{ headerShown: false, animation: "fade", contentStyle: { backgroundColor: "#060914" } }}>
         <Stack.Screen name="index" options={{ animation: "fade" }} />
         <Stack.Screen name="onboarding" options={{ animation: "fade", gestureEnabled: false }} />

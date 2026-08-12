@@ -221,14 +221,10 @@ jobs:
             fi
           done
 
-      # FIX #3 : Keystore + signing config
-      # FIX CRITIQUE v2 : utiliser Node.js (déjà installé) au lieu de Python.
-      # Vérifier SPÉCIFIQUEMENT "keystore/release.keystore" — pas juste "signingConfigs"
-      # car Expo prebuild génère déjà signingConfigs { debug { ... } } sans release.
-      # L'ancienne condition `if "signingConfigs" not in c` était donc toujours fausse,
-      # le bloc release n'était jamais injecté, mais la référence signingConfigs.release
-      # était quand même ajoutée → BUILD FAILED "unknown property release".
-      - name: Configurer le keystore de release (Secrets GitHub ou CI fallback)
+      # Signature de production obligatoire : une clé éphémère rend toute mise à jour
+      # Android impossible au-dessus d’une APK déjà distribuée. La release échoue donc
+      # explicitement si les quatre secrets de signature ne sont pas configurés.
+      - name: Configurer le keystore de release persistant (Secrets GitHub obligatoires)
         env:
           KEYSTORE_FILE:     ${{ secrets.KEYSTORE_FILE }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -236,28 +232,15 @@ jobs:
           KEY_PASSWORD:      ${{ secrets.KEY_PASSWORD }}
         run: |
           mkdir -p android/app/keystore
-          if [ -n "$KEYSTORE_FILE" ]; then
-            echo "$KEYSTORE_FILE" | base64 -d > android/app/keystore/release.keystore
-            STORE_PASS="$KEYSTORE_PASSWORD"
-            KEY_AL="$KEY_ALIAS"
-            KEY_PW="$KEY_PASSWORD"
-            echo "✅ Keystore restauré depuis GitHub Secrets"
-          else
-            echo "⚠️  Secrets KEYSTORE_* non configurés — keystore CI éphémère (non-production)"
-            keytool -genkeypair -v \
-              -storetype PKCS12 \
-              -keystore android/app/keystore/release.keystore \
-              -alias sxbvpn \
-              -keyalg RSA -keysize 2048 \
-              -validity 10000 \
-              -dname "CN=SXB VPN,OU=Mobile,O=SXB,L=Paris,ST=IDF,C=FR" \
-              -storepass sxbvpn_ci_2026 \
-              -keypass sxbvpn_ci_2026 \
-              -noprompt
-            STORE_PASS="sxbvpn_ci_2026"
-            KEY_AL="sxbvpn"
-            KEY_PW="sxbvpn_ci_2026"
+          if [ -z "$KEYSTORE_FILE" ] || [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "::error::Secrets KEYSTORE_FILE, KEYSTORE_PASSWORD, KEY_ALIAS et KEY_PASSWORD requis pour publier une APK installable par mise à jour"
+            exit 1
           fi
+          echo "$KEYSTORE_FILE" | base64 -d > android/app/keystore/release.keystore
+          STORE_PASS="$KEYSTORE_PASSWORD"
+          KEY_AL="$KEY_ALIAS"
+          KEY_PW="$KEY_PASSWORD"
+          echo "✅ Keystore de release restauré depuis GitHub Secrets"
           echo "STORE_PASS=$STORE_PASS" >> $GITHUB_ENV
           echo "KEY_AL=$KEY_AL"         >> $GITHUB_ENV
           echo "KEY_PW=$KEY_PW"         >> $GITHUB_ENV
@@ -270,6 +253,28 @@ jobs:
           # Script JS encodé base64 — évite col-0 / heredoc incompatible avec YAML
           echo "Y29uc3QgZnMgPSByZXF1aXJlKCJmcyIpOwpjb25zdCBwID0gcHJvY2Vzcy5hcmd2WzJdOwpjb25zdCBzdG9yZVBhc3MgPSBwcm9jZXNzLmVudi5TVE9SRV9QQVNTIHx8ICIiOwpjb25zdCBrZXlBbCAgICA9IHByb2Nlc3MuZW52LktFWV9BTCAgICB8fCAiIjsKY29uc3Qga2V5UHcgICAgPSBwcm9jZXNzLmVudi5LRVlfUFcgICAgfHwgIiI7CmxldCBjID0gZnMucmVhZEZpbGVTeW5jKHAsICJ1dGY4Iik7CmlmICghYy5pbmNsdWRlcygia2V5c3RvcmUvcmVsZWFzZS5rZXlzdG9yZSIpKSB7CiAgY29uc3QgYmxvY2sgPSAicmVsZWFzZSB7XG4iICsKICAgICIgICAgICAgICAgICBzdG9yZUZpbGUgZmlsZShcImtleXN0b3JlL3JlbGVhc2Uua2V5c3RvcmVcIilcbiIgKwogICAgIiAgICAgICAgICAgIHN0b3JlUGFzc3dvcmQgXCIiICsgc3RvcmVQYXNzICsgIlwiXG4iICsKICAgICIgICAgICAgICAgICBrZXlBbGlhcyBcIiIgKyBrZXlBbCArICJcIlxuIiArCiAgICAiICAgICAgICAgICAga2V5UGFzc3dvcmQgXCIiICsga2V5UHcgKyAiXCJcbiIgKwogICAgIiAgICAgICAgfSI7CiAgaWYgKGMuaW5jbHVkZXMoInNpZ25pbmdDb25maWdzIHsiKSkgewogICAgYyA9IGMucmVwbGFjZSgic2lnbmluZ0NvbmZpZ3MgeyIsICJzaWduaW5nQ29uZmlncyB7XG4gICAgICAgICIgKyBibG9jayk7CiAgICBjb25zb2xlLmxvZygiW3NpZ25pbmddIHJlbGVhc2UgaW5qZWN0ZSBkYW5zIHNpZ25pbmdDb25maWdzIGV4aXN0YW50Iik7CiAgfSBlbHNlIHsKICAgIGMgPSBjLnJlcGxhY2UoImFuZHJvaWQgeyIsICJhbmRyb2lkIHtcbiAgICBzaWduaW5nQ29uZmlncyB7XG4gICAgICAgICIgKyBibG9jayArICJcbiAgICB9Iik7CiAgICBjb25zb2xlLmxvZygiW3NpZ25pbmddIG5vdXZlYXUgYmxvYyBzaWduaW5nQ29uZmlncy5yZWxlYXNlIGNyZWUiKTsKICB9Cn0KaWYgKCFjLmluY2x1ZGVzKCJzaWduaW5nQ29uZmlnIHNpZ25pbmdDb25maWdzLnJlbGVhc2UiKSkgewogIGMgPSBjLnJlcGxhY2UoLyhidWlsZFR5cGVzW1xzXFNdKj9yZWxlYXNlXHMqXHspLywgIiQxXG4gICAgICAgICAgICBzaWduaW5nQ29uZmlnIHNpZ25pbmdDb25maWdzLnJlbGVhc2UiKTsKICBjb25zb2xlLmxvZygiW3NpZ25pbmddIHNpZ25pbmdDb25maWcgcmVmZXJlbmNlIGFqb3V0ZWUgZGFucyBidWlsZFR5cGVzLnJlbGVhc2UiKTsKfQpmcy53cml0ZUZpbGVTeW5jKHAsIGMpOwpjb25zb2xlLmxvZygiT0sgU2lnbmF0dXJlIGNvbmZpZ3VyZWUgZGFucyBidWlsZC5ncmFkbGUiKTsK" | base64 -d > /tmp/signing_inject.js
           node /tmp/signing_inject.js "$BUILD_GRADLE"
+
+      # ── Versionnage Android monotone ───────────────────────────────────────────
+      # GitHub run_number est strictement croissant pour ce workflow et doit dépasser
+      # le versionCode existant afin de permettre une installation par-dessus l’APK.
+      - name: Imposer un versionCode de release croissant
+        env:
+          SXB_VERSION_CODE: ${{ github.run_number }}
+        run: |
+          node - << 'NODEJS_EOF'
+          const fs = require('fs');
+          const p = 'android/app/build.gradle';
+          const requested = Number(process.env.SXB_VERSION_CODE || 0);
+          if (!Number.isInteger(requested) || requested < 1) throw new Error('versionCode CI invalide');
+          let content = fs.readFileSync(p, 'utf8');
+          const match = content.match(/versionCode\s+(\d+)/);
+          if (!match) throw new Error('versionCode introuvable dans build.gradle');
+          const current = Number(match[1]);
+          const next = Math.max(current + 1, requested);
+          content = content.replace(/versionCode\s+\d+/, `versionCode ${next}`);
+          fs.writeFileSync(p, content);
+          console.log(`[version] versionCode ${current} → ${next}`);
+          NODEJS_EOF
 
       # FIX SIGNING — Supprimer signingConfig signingConfigs.debug du bloc release
       # Groovy : la DERNIÈRE affectation d'une propriété gagne. Expo prebuild injecte

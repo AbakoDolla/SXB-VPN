@@ -1,11 +1,15 @@
 import React, { useEffect, useState } from "react";
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import apiClient from "@/services/apiClient";
 import type { Notification } from "@/types/api";
 import Colors from "@/constants/colors";
+import { useTranslation } from "@/localization";
+
+const READ_NOTIFICATION_IDS_KEY = '@sxb_read_notification_ids_v1';
 
 const TYPE_MAP: Record<string, { icon: string; color: string }> = {
   warning: { icon: "warning",       color: Colors.warning },
@@ -15,14 +19,15 @@ const TYPE_MAP: Record<string, { icon: string; color: string }> = {
 };
 
 function NotifRow({ item, onMarkRead }: { item: Notification; onMarkRead: (id: string) => void }) {
+  const { t } = useTranslation();
   const meta = TYPE_MAP[item.type] || TYPE_MAP.info;
   const timeAgo = (() => {
     const diff = Date.now() - new Date(item.createdAt).getTime();
-    const m = Math.floor(diff / 60000);
-    if (m < 60) return `${m}min`;
+    const m = Math.max(0, Math.floor(diff / 60000));
+    if (m < 60) return `${m}${t('time_minutes_short')}`;
     const h = Math.floor(m / 60);
-    if (h < 24) return `${h}h`;
-    return `${Math.floor(h / 24)}j`;
+    if (h < 24) return `${h}${t('time_hours_short')}`;
+    return `${Math.floor(h / 24)}${t('time_days_short')}`;
   })();
 
   return (
@@ -45,32 +50,43 @@ function NotifRow({ item, onMarkRead }: { item: Notification; onMarkRead: (id: s
 
 export default function NotificationsScreen() {
   const insets = useSafeAreaInsets();
+  const { t } = useTranslation();
   const [items, setItems]   = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
-    apiClient.get("/mobile/notifications")
-      .then((r) => { if (!cancelled) setItems(r.data ?? []); })
-      .catch(() => {})
-      .finally(() => { if (!cancelled) setLoading(false); });
+    Promise.all([
+      apiClient.get('/mobile/notifications'),
+      AsyncStorage.getItem(READ_NOTIFICATION_IDS_KEY),
+    ]).then(([response, stored]) => {
+      if (cancelled) return;
+      const readIds = new Set<string>(stored ? JSON.parse(stored) : []);
+      const remoteItems = Array.isArray(response.data) ? response.data : [];
+      setItems(remoteItems.map((item: Notification) => ({ ...item, isRead: item.isRead || readIds.has(item.id) })));
+    }).catch(() => {}).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, []);
 
+  const persistReadIds = async (ids: string[]) => {
+    const unique = Array.from(new Set(ids)).slice(-200);
+    await AsyncStorage.setItem(READ_NOTIFICATION_IDS_KEY, JSON.stringify(unique)).catch(() => {});
+  };
+
   const markRead = async (id: string) => {
-    try {
-      await apiClient.patch(`/mobile/notifications/${id}/read`);
-      setItems((prev) => prev.map((n) => n.id === id ? { ...n, isRead: true } : n));
-    } catch (_) {
-      setItems((prev) => prev.map((n) => n.id === id ? { ...n, isRead: true } : n));
-    }
+    setItems((prev) => {
+      const next = prev.map((n) => n.id === id ? { ...n, isRead: true } : n);
+      void persistReadIds(next.filter((n) => n.isRead).map((n) => n.id));
+      return next;
+    });
   };
 
   const markAllRead = async () => {
-    try {
-      await apiClient.patch("/mobile/notifications/read-all");
-    } catch (_) {}
-    setItems((prev) => prev.map((n) => ({ ...n, isRead: true })));
+    setItems((prev) => {
+      const next = prev.map((n) => ({ ...n, isRead: true }));
+      void persistReadIds(next.map((n) => n.id));
+      return next;
+    });
   };
 
   const unreadCount = items.filter((n) => !n.isRead).length;
@@ -80,7 +96,7 @@ export default function NotificationsScreen() {
       {/* Header */}
       <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
         <View style={styles.headerLeft}>
-          <Text style={styles.title}>Notifications</Text>
+          <Text style={styles.title}>{t('notifications')}</Text>
           {unreadCount > 0 && (
             <View style={styles.badge}>
               <Text style={styles.badgeText}>{unreadCount}</Text>
@@ -89,7 +105,7 @@ export default function NotificationsScreen() {
         </View>
         {unreadCount > 0 && (
           <Pressable onPress={markAllRead} style={styles.markAllBtn}>
-            <Text style={styles.markAllText}>Tout lire</Text>
+            <Text style={styles.markAllText}>{t('notifications_read_all')}</Text>
           </Pressable>
         )}
       </View>
@@ -103,8 +119,8 @@ export default function NotificationsScreen() {
           <View style={styles.emptyIcon}>
             <Ionicons name="notifications-off-outline" size={36} color={Colors.textMuted} />
           </View>
-          <Text style={styles.emptyTitle}>Aucune notification</Text>
-          <Text style={styles.emptyHint}>Vous serez notifié des événements importants</Text>
+          <Text style={styles.emptyTitle}>{t('no_notifications')}</Text>
+          <Text style={styles.emptyHint}>{t('notifications_empty_hint')}</Text>
         </View>
       ) : (
         <FlatList

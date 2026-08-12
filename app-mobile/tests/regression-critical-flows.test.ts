@@ -80,6 +80,9 @@ describe('garde-fous contre les régressions Android', () => {
   const vpnContext = source('contexts/VpnContext.tsx');
   const canonicalConfig = source('../server/services/canonical-config.ts');
   const nativeService = source('modules/android-native/SxbVpnService.kt');
+  const nativeModule = source('modules/android-native/SxbVpnModule.kt');
+  const rootLayout = source('app/_layout.tsx');
+  const notificationsScreen = source('app/(tabs)/notifications.tsx');
 
   it('utilise Expo Crypto au lieu de dépendre de globalThis.crypto sous Hermes', () => {
     assert.match(configStore, /import \* as Crypto from 'expo-crypto';/);
@@ -129,5 +132,27 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(nativeService, /outboundTag.*outbound/);
     assert.match(nativeService, /ip_cidr/);
     assert.match(nativeService, /remove\("dns"\)/);
+  });
+
+  it('convertit le SOCKS Xray et refuse explicitement un outbound Xray inconnu', () => {
+    assert.match(nativeService, /"socks" ->/);
+    assert.match(nativeService, /outbound Xray non supporté par le moteur/);
+  });
+
+  it('n’expose plus le contenu du payload ou les hôtes dans les diagnostics natifs', () => {
+    assert.doesNotMatch(nativeService, /PAYLOAD_FULL/);
+    assert.doesNotMatch(nativeService, /DNS_RESOLVE host=/);
+    assert.doesNotMatch(nativeService, /TCP_CONNECTED host=/);
+    assert.doesNotMatch(nativeService, /SSH_CONNECTED.*host=\$host/);
+    assert.match(nativeService, /PAYLOAD_READY bytes=/);
+  });
+
+  it('synchronise les annonces vers un canal Android dédié et dédupliqué', () => {
+    assert.match(nativeModule, /SXB_ANNOUNCEMENTS/);
+    assert.match(nativeModule, /postAnnouncementNotification/);
+    assert.match(nativeModule, /SecurityModule\.maskSensitive\(message\)/);
+    assert.match(rootLayout, /syncAnnouncementNotifications/);
+    assert.match(notificationsScreen, /READ_NOTIFICATION_IDS_KEY/);
+    assert.doesNotMatch(notificationsScreen, /apiClient\.patch\(.*notifications/);
   });
 });

@@ -123,6 +123,11 @@ export const fr = {
   notif_expires_tomorrow: 'Votre forfait expire demain.',
   notif_new_config: 'Nouvelle configuration VPN disponible.',
   notif_sync_done: 'Synchronisation terminée.',
+  notifications_read_all: 'Tout lire',
+  notifications_empty_hint: 'Vous serez averti des événements importants.',
+  time_minutes_short: ' min',
+  time_hours_short: ' h',
+  time_days_short: ' j',
 
   // Profile
   client_id: 'Identifiant client',
