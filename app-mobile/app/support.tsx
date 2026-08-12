@@ -34,7 +34,7 @@ function FaqItem({ item }: { item: { q: string; a: string } }) {
 }
 
 export default function SupportScreen() {
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
   const insets = useSafeAreaInsets();
   const subjectRef = useRef<TextInput>(null);
   const [subject, setSubject] = useState("");
@@ -66,7 +66,10 @@ export default function SupportScreen() {
       setLoadingTickets(false);
       setRefreshing(false);
     }
-  }, [t]);
+  // `t` est recréée à chaque rendu par le contexte : dépendre d’elle ici
+  // relançait automatiquement l’effet et saturait l’API support. La langue,
+  // elle, ne change que lors d’un choix explicite de l’utilisateur.
+  }, [language]);
 
   useEffect(() => {
     loadTickets();

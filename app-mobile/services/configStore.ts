@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Crypto from 'expo-crypto';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import { encryptAes256Gcm, decryptAes256Gcm, hexToBytes, bytesToHex, utf8Decode, utf8Encode } from './aesGcm';
@@ -27,9 +28,10 @@ async function retry<T>(fn: () => Promise<T>): Promise<T> {
 }
 function randomBytes(length: number): Uint8Array {
   const out = new Uint8Array(length);
-  const c: any = globalThis.crypto;
-  if (!c?.getRandomValues) throw new Error('Générateur cryptographique indisponible');
-  c.getRandomValues(out); return out;
+  // Hermes n’expose pas systématiquement globalThis.crypto. Expo Crypto est
+  // fourni par Android/iOS et remplit le tableau avec un aléa cryptographiquement sûr.
+  Crypto.getRandomValues(out);
+  return out;
 }
 function encode(s: string) { return utf8Encode(s); }
 async function masterKey(): Promise<Uint8Array> {
