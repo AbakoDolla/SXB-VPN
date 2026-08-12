@@ -90,6 +90,11 @@ export function detectProtocolFromFields(obj: Record<string, any>): SupportedPro
 }
 
 function detectProtocol(obj: Record<string, any>): SupportedProtocol | null {
+  // Un JSON Xray complet transporte ses paramètres dans outbounds/settings et
+  // doit être remis tel quel au convertisseur Android, sans exiger host/port
+  // à la racine comme une URI VLESS aplatie.
+  if (hasXrayMarkers(obj) && Array.isArray(obj.outbounds)) return 'singbox';
+
   const raw = (obj.protocol ?? obj.type ?? '').toString().toLowerCase().trim();
 
   if (raw === 'ssh')              return 'ssh';
@@ -219,11 +224,10 @@ function extraValidation(
     case 'singbox':
       if (!Array.isArray(obj.outbounds) || obj.outbounds.length === 0) {
         errors.push('Sing-box : "outbounds" doit être un tableau non vide');
-      } else if (!obj.outbounds.every((o: any) => o && typeof o.type === 'string')) {
-        // PARTIE 1 — détection stricte : outbounds sans type = ni sing-box ni Xray
+      } else if (!hasXrayMarkers(obj) && !obj.outbounds.every((o: any) => o && typeof o.type === 'string')) {
         errors.push('Sing-box : chaque outbound doit avoir un champ "type" (string)');
       }
-      if (!obj.inbounds) {
+      if (!obj.inbounds && !hasXrayMarkers(obj)) {
         warnings.push('Sing-box : champ "inbounds" absent — le mode TUN peut ne pas fonctionner');
       }
       break;
@@ -351,13 +355,16 @@ export function isCompleteOfflineConfig(cfg: Record<string, any> | null | undefi
   }
 
   const protocol = (cfg.protocol ?? cfg.type ?? '').toString().toLowerCase().trim() || null;
+  const embeddedXray = hasXrayMarkers(cfg) && Array.isArray(cfg.outbounds) && cfg.outbounds.length > 0;
   const hasHost  = !!(cfg.host && String(cfg.host).trim());
   const hasPort  = cfg.port !== undefined && cfg.port !== null && Number(cfg.port) > 0;
   const hasPayload = !!(cfg.payload && String(cfg.payload).trim());
 
-  // Credentials selon le protocole
+  // Credentials selon le protocole. Un Xray complet les conserve dans vnext/users.
   let hasCreds = false;
-  if (protocol === 'ssh' || protocol === 'ssh+payload') {
+  if (embeddedXray) {
+    hasCreds = true;
+  } else if (protocol === 'ssh' || protocol === 'ssh+payload') {
     hasCreds = !!(cfg.username && (cfg.password || cfg.privateKeyBase64));
   } else if (protocol === 'vless' || protocol === 'vmess' || protocol === 'tuic') {
     hasCreds = !!(cfg.uuid);
@@ -374,8 +381,8 @@ export function isCompleteOfflineConfig(cfg: Record<string, any> | null | undefi
     hasCreds = !!(cfg.username || cfg.uuid || cfg.password);
   }
 
-  if (!hasHost && protocol !== 'wireguard' && protocol !== 'singbox') missing.push('host');
-  if (!hasPort && protocol !== 'wireguard') missing.push('port');
+  if (!hasHost && protocol !== 'wireguard' && protocol !== 'singbox' && !embeddedXray) missing.push('host');
+  if (!hasPort && protocol !== 'wireguard' && protocol !== 'singbox' && !embeddedXray) missing.push('port');
   if (!protocol) missing.push('protocol');
   if (!hasCreds) missing.push('credentials');
 

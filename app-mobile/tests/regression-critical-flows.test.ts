@@ -9,6 +9,23 @@ import {
   utf8Decode,
   utf8Encode,
 } from '../services/aesGcm';
+import { isCompleteOfflineConfig, validateVpnConfig } from '../services/configValidator';
+
+const XRAY_VLESS_WITH_HTTP_UPSTREAM = {
+  protocol: 'singbox',
+  dns: { servers: ['tcp+local://129.0.183.251'] },
+  inbounds: [{ tag: 'tun-inbound', protocol: 'dokodemo-door', settings: { followRedirect: true } }],
+  outbounds: [
+    {
+      tag: 'VLESS',
+      protocol: 'vless',
+      settings: { vnext: [{ address: 'megabdwap.tk', port: 443, users: [{ id: 'd3de1a66-2fc8-4f68-a4e8-73929df4664c', encryption: 'none' }] }] },
+      streamSettings: { network: 'ws', security: 'tls', tlsSettings: { serverName: 'megabdwap.tk' }, wsSettings: { path: '/', headers: { Host: 'megabdwap.tk' } } },
+      proxySettings: { tag: 'http-upstream', transportLayer: true },
+    },
+    { tag: 'http-upstream', protocol: 'http', settings: { servers: [{ address: '57.144.162.4', port: 8080 }] } },
+  ],
+};
 
 // La commande npm est exécutée depuis app-mobile, localement comme dans CI.
 const source = (relativePath: string) => readFileSync(relativePath, 'utf8');
@@ -42,6 +59,16 @@ describe('chiffrement de la configuration VPN', () => {
       () => decryptAes256Gcm(key, iv, encrypted.ciphertext, alteredTag),
       /authentification échouée/,
     );
+  });
+});
+
+describe('compatibilité Xray/VLESS complète', () => {
+  it('accepte et stocke un Xray VLESS avec proxy HTTP sans exiger port à la racine', () => {
+    const validation = validateVpnConfig(XRAY_VLESS_WITH_HTTP_UPSTREAM);
+    assert.equal(validation.valid, true, validation.errors.join(' | '));
+    assert.equal(validation.protocol, 'singbox');
+    const completeness = isCompleteOfflineConfig(validation.config);
+    assert.equal(completeness.complete, true, `champs manquants : ${completeness.missing.join(', ')}`);
   });
 });
 
