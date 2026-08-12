@@ -492,7 +492,6 @@ jobs:
           source: "app-mobile/build/sxb-vpn.apk"
           target: "/tmp/"
           strip_components: 2
-        continue-on-error: true
 
       - name: Installer APK dans dossier distribution VPS
         if: github.ref == 'refs/heads/main'
@@ -502,13 +501,13 @@ jobs:
           username: ubuntu
           password: ${{ secrets.VPS_SSH_PASSWORD }}
           script: |
-            sudo mkdir -p /var/www/apk
-            if [ -f /tmp/sxb-vpn.apk ]; then
-              sudo cp /tmp/sxb-vpn.apk /var/www/apk/sxbvpn-latest.apk
-              sudo cp /tmp/sxb-vpn.apk "/var/www/apk/sxbvpn-build-${{ github.run_number }}.apk"
-              echo "✅ Déployé: $(ls -lh /var/www/apk/sxbvpn-latest.apk)"
-            else
-              echo "⚠️  /tmp/sxb-vpn.apk absent — scp a peut-être échoué"
-              ls /tmp/*.apk 2>/dev/null || true
-            fi
-        continue-on-error: true
+            set -euo pipefail
+            test -f /tmp/sxb-vpn.apk
+            # Le téléchargement public /download/*.apk est servi depuis ce répertoire.
+            sudo mkdir -p /var/www/sxb-vpn/dist/download /var/www/apk
+            sudo install -m 0644 /tmp/sxb-vpn.apk /var/www/sxb-vpn/dist/download/.sxbvpn-latest.apk.tmp
+            sudo mv -f /var/www/sxb-vpn/dist/download/.sxbvpn-latest.apk.tmp /var/www/sxb-vpn/dist/download/sxbvpn-latest.apk
+            # Conserver l’archive hors du chemin public pour diagnostic et rollback maîtrisé.
+            sudo install -m 0644 /tmp/sxb-vpn.apk "/var/www/apk/sxbvpn-build-${{ github.run_number }}.apk"
+            sudo install -m 0644 /tmp/sxb-vpn.apk /var/www/apk/sxbvpn-latest.apk
+            echo "✅ Déployé: $(sha256sum /var/www/sxb-vpn/dist/download/sxbvpn-latest.apk)"
