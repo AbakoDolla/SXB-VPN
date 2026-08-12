@@ -360,6 +360,28 @@ jobs:
           fi
           echo "✅ Packaging META-INF configuré"
 
+      # ── Précharger Gradle avec reprises réseau ─────────────────────────────────
+      # services.gradle.org redirige vers GitHub Releases, qui peut répondre 503
+      # ponctuellement. Réessayer ici évite une release perdue avant compilation.
+      - name: Précharger Gradle avec reprises réseau
+        working-directory: app-mobile/android
+        run: |
+          set -o pipefail
+          chmod +x gradlew
+          for attempt in 1 2 3 4 5; do
+            if ./gradlew --version --no-daemon; then
+              echo "✅ Distribution Gradle disponible (tentative $attempt)"
+              exit 0
+            fi
+            if [ "$attempt" -lt 5 ]; then
+              delay=$((attempt * 20))
+              echo "⚠️ Téléchargement Gradle indisponible ; nouvelle tentative dans ${delay}s"
+              sleep "$delay"
+            fi
+          done
+          echo "::error::Distribution Gradle indisponible après 5 tentatives"
+          exit 1
+
       # ── Build APK release ─────────────────────────────────────────────────────
       - name: Build APK (release)
         working-directory: app-mobile/android
