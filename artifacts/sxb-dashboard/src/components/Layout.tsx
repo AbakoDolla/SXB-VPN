@@ -107,19 +107,12 @@ export default function Layout({
       ],
     },
     {
-      kind: 'group',
-      id: 'vpnengine',
-      label: 'VPN Engine',
-      icon: Network,
+      kind: 'leaf',
+      id: 'vpn-profiles',
+      label: 'Configurations & Profils VPN',
+      icon: GitBranch,
       color: 'text-violet-400',
       roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'],
-      items: [
-        { kind: 'leaf', id: 'vpn-profiles', label: 'Profils VPN', icon: GitBranch, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
-        { kind: 'leaf', id: 'vpn-engine', label: 'SSH & Configs', icon: Terminal, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
-        { kind: 'leaf', id: 'xray', label: 'Xray / Protocols', icon: Zap, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
-        { kind: 'leaf', id: 'singbox', label: 'Sing-box', icon: Box, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
-        { kind: 'leaf', id: 'payload', label: 'Payload Manager', icon: Code2, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
-      ],
     },
     {
       kind: 'group',
