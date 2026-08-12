@@ -215,6 +215,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
   const connectRef = useRef<(() => Promise<void>) | null>(null);
   const pendingAutoConnectRef = useRef<string | null>(null);
+  // Chaque appui invalide la tentative précédente : Déconnecter reste instantané,
+  // même si une vérification réseau ou un provisionnement est encore en attente.
+  const connectionAttemptRef = useRef(0);
   const watchdogRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastStepRef  = useRef<string>('INIT');
 
@@ -661,9 +664,15 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   // ── CONNECT ──────────────────────────────────────────────────────────────────
   const connect = useCallback(async () => {
     if (isConnecting || isConnected) return;
+    const attemptId = ++connectionAttemptRef.current;
+    // Retour UI immédiat : le bouton et l’animation changent avant toute E/S réseau.
+    setIsConnecting(true);
+    setVpnState('connecting');
 
     if (revokedStatus !== 'none') {
       addLog(`❌ Connexion impossible — compte ${revokedStatus === 'revoked' ? 'révoqué' : revokedStatus === 'suspended' ? 'suspendu' : revokedStatus === 'expired' ? 'expiré' : 'épuisé'}`);
+      setIsConnecting(false);
+      setVpnState('disconnected');
       return;
     }
 
@@ -679,6 +688,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           : 'Forfait expiré — configuration retirée. Renouvelez votre forfait.';
         addLog(`❌ ${msg}`);
         setIsConnecting(false);
+        setVpnState('disconnected');
         return;
       }
     }
@@ -711,7 +721,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       addLog('ℹ️ Vérification réseau impossible — connexion hors-ligne sur dernier état connu');
     }
 
-    setIsConnecting(true);
+    if (attemptId !== connectionAttemptRef.current) return;
     resetStepLogs();
     addStepLog('preparing', 'step_preparing', 'active');
     addLog('🔄 Initialisation du tunnel VPN...');
@@ -862,6 +872,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         }
         addStepLog('quota', 'step_quota_ok', 'done');
 
+        // Une déconnexion demandée pendant le provisionnement annule le départ
+        // avant tout appel natif long ou ouverture de tunnel.
+        if (attemptId !== connectionAttemptRef.current) return;
         const engineProtocol = (configToUse.protocol || selectedProtocol || 'vless').toLowerCase();
 
         // Capturer le baseline initial natif
@@ -903,6 +916,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         setIsConnecting(false);
       }
     } catch (err: any) {
+      if (attemptId !== connectionAttemptRef.current) return;
       addLog(`❌ Erreur : ${err?.message || 'Connexion échouée'}`);
       setVpnState('error');
       setIsConnecting(false);
@@ -922,8 +936,13 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
   // ── B2 — PERSISTANCE À LA DÉCONNEXION ────────────────────────────────────────
   const disconnect = useCallback(async () => {
-    if (isConnecting && !isConnected) return;
-    setIsConnecting(true);
+    if (!isConnecting && !isConnected) return;
+    // L’interface revient immédiatement à « Se connecter » ; l’arrêt natif et
+    // l’envoi du quota se poursuivent ensuite sans bloquer l’utilisateur.
+    ++connectionAttemptRef.current;
+    setIsConnecting(false);
+    setIsConnected(false);
+    setVpnState('disconnected');
     addStepLog('disconnecting', 'step_disconnecting', 'active');
     addLog('🔴 Déconnexion...');
 

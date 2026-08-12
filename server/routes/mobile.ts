@@ -4,6 +4,7 @@ import crypto from "crypto";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { generateTokens, requireAuth, AuthenticatedRequest } from "../middleware/auth";
 import { configHashForProfile, configVersionForProfile } from "../services/config-hash";
+import { getActiveAnnouncements } from "./announcements";
 
 // ── AES-256-CBC decrypt (same key as vpn-profiles.ts) ─────────────────────────
 const ENC_ALGO = "aes-256-cbc";
@@ -620,6 +621,23 @@ router.get('/notifications', async (req: AuthenticatedRequest, res: Response) =>
         read: false,
       });
     }
+
+    // Annonces administratives persistantes : visibles dans toutes les applications
+    // actives, sans donner accès aux données sensibles du dashboard.
+    try {
+      const announcements = await getActiveAnnouncements();
+      for (const announcement of announcements) {
+        notifications.push({
+          id: `announcement-${announcement.id}`,
+          type: announcement.level,
+          title: announcement.title,
+          message: announcement.message,
+          createdAt: announcement.createdAt,
+          read: false,
+          announcement: true,
+        });
+      }
+    } catch (_) { /* les alertes de compte restent disponibles si la DB est indisponible */ }
 
     // Ajouter les mises à jour support et les derniers logs d'audit si disponibles
     if (prisma) {

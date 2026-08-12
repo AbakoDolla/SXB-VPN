@@ -375,11 +375,12 @@ export default function HomeScreen() {
     if (btnState === "no_account") { router.push("/activate"); return; }
     if (btnState === "no_package" || btnState === "expired" || btnState === "exhausted") { router.push("/plan"); return; }
     if (btnState === "connect") {
-      await connect();
-      await refreshAccountState();
-    } else if (btnState === "connected") {
-      await disconnect();
-      await refreshAccountState();
+      // Ne pas attendre la résolution réseau : connect() met l’interface en état
+      // « connexion » immédiatement, puis poursuit le tunnel en arrière-plan.
+      void connect();
+    } else if (btnState === "connecting" || btnState === "connected") {
+      // Le même bouton devient immédiatement une annulation/déconnexion.
+      void disconnect();
     }
   };
 
@@ -397,7 +398,7 @@ export default function HomeScreen() {
     no_account:  t('activate_account'),
     no_package:  t('activate_plan'),
     connect:     t('connect'),
-    connecting:  t('connecting'),
+    connecting:  t('cancel'),
     connected:   t('disconnect'),
     exhausted:   t('quota_exhausted'),
     expired:     t('expired_plan'),
@@ -577,7 +578,7 @@ export default function HomeScreen() {
               : t('tap_to_connect')}
           </Text>
 
-          <Pressable onPress={handleVpnButton} disabled={isConnecting} style={[styles.actionBtn, { backgroundColor: btnColor }]}>
+          <Pressable onPress={handleVpnButton} style={[styles.actionBtn, { backgroundColor: btnColor }]}>
             <Ionicons name={btnIcon as any} size={18} color="#000" />
             <Text style={[styles.actionBtnText, { color: "#000" }]}>{btnLabel}</Text>
           </Pressable>

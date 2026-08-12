@@ -22,6 +22,7 @@ import MonitoringView from "./components/MonitoringView";
 import SubscriptionsView from "./components/SubscriptionsView";
 import VpnProfilesView from "./components/VpnProfilesView";
 import OwnerLogView from "./components/OwnerLogView";
+import AnnouncementsView from "./components/AnnouncementsView";
 import MaintenancePage from "./components/MaintenancePage";
 import Layout from "./components/Layout";
 import { useEffect, useState, useCallback } from 'react';
@@ -294,6 +295,8 @@ function MainApp() {
         return <VouchersView currentUserRole={role} />;
       case 'support':
         return <SupportView />;
+      case 'announcements':
+        return <AnnouncementsView />;
       case 'rbac':
         return <RBACView currentUserRole={role} onRolePermissionsUpdated={handleRolePermissionsUpdated} />;
       case 'accounts':

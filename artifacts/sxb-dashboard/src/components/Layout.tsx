@@ -6,7 +6,7 @@ import {
   Settings, LogOut, UserCog, Terminal, Code2, Zap, Box,
   Menu, X, UserPlus, HeadphonesIcon, BadgePercent, Activity,
   ChevronDown, Network, Radio, Cpu, BarChart3, Ticket,
-  PackageOpen, GitBranch, ScrollText,
+  PackageOpen, GitBranch, ScrollText, BellRing,
 } from 'lucide-react';
 
 interface LayoutProps {
@@ -73,7 +73,7 @@ export default function Layout({
       clients: 'clients', devices: 'clients', tokens: 'clients', vouchers: 'clients',
       subscriptions: 'clients',
       'vpn-engine': 'vpnengine', xray: 'vpnengine', singbox: 'vpnengine', payload: 'vpnengine',
-      'vpn-profiles': 'vpnengine',
+      'vpn-profiles': 'vpnengine', announcements: 'admin',
       sessions: 'monitoring', analytics: 'monitoring', servers: 'monitoring', monitoring: 'monitoring',
       accounts: 'admin', resellers: 'admin', rbac: 'admin',
     };
@@ -113,7 +113,6 @@ export default function Layout({
       id: 'vpn-profiles',
       label: t('sidebar.configurations'),
       icon: GitBranch,
-      color: 'text-violet-400',
       roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'],
     },
     {
@@ -135,11 +134,12 @@ export default function Layout({
       label: t('sidebar.admin') || 'Administration',
       icon: Shield,
       color: 'text-amber-400',
-      roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'],
+      roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'],
       items: [
         { kind: 'leaf', id: 'accounts', label: t('sidebar.accounts') || 'Comptes', icon: UserPlus, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
         { kind: 'leaf', id: 'resellers', label: t('sidebar.resellers'), icon: UserCog, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
         { kind: 'leaf', id: 'rbac', label: t('sidebar.rbac'), icon: Shield, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
+        { kind: 'leaf', id: 'announcements', label: 'Annonces', icon: BellRing, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
       ],
     },
     {

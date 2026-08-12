@@ -39,6 +39,7 @@ import singboxRouter from "./server/routes/singbox";
 import xpanelRouter from "./server/routes/xpanel";
 import opsRouter from "./server/routes/ops";
 import xapiRouter from "./server/routes/xapi";
+import announcementsRouter from "./server/routes/announcements";
 import { maintenanceGuard, MAINTENANCE_PAGE_HTML } from "./server/middleware/maintenance";
 import { getMaintenanceMode } from "./server/services/maintenance";
 
@@ -139,6 +140,7 @@ async function startServer() {
   app.use("/api/mobile", mobileRouter);
   app.use("/api/admin-tokens", adminTokensRouter);
   app.use("/api/support", supportRouter);
+  app.use("/api/announcements", announcementsRouter);
   app.use("/api/audit-logs", auditLogsRouter);
   app.use("/api/devices", devicesRouter);
   app.use("/api/ssh", sshRouter);
