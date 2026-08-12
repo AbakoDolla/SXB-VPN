@@ -212,7 +212,7 @@ export default function HomeScreen() {
   } = useVpnContext();
   const { t } = useTranslation();
 
-  const derivedQuota = deriveQuota(quotaData || accountState, traffic, isConnected);
+  const derivedQuota = deriveQuota(quotaData || (accountState as any), traffic as any, isConnected);
 
   useEffect(() => {
     if (Platform.OS === 'android' && Platform.Version >= 33) {
@@ -694,7 +694,7 @@ export default function HomeScreen() {
                   }}
                 >
                   <View style={{ flex: 1, paddingRight: 8 }}>
-                    <Text style={{ fontSize: 14, color: Colors.text, fontFamily: 'Inter_500Medium' }} numberOfLines={1}>
+                    <Text style={{ fontSize: 14, color: Colors.textPrimary, fontFamily: 'Inter_500Medium' }} numberOfLines={1}>
                       {appStat.appName || appStat.packageName}
                     </Text>
                     <Text style={{ fontSize: 11, color: Colors.textMuted, fontFamily: 'Inter_400Regular' }} numberOfLines={1}>
@@ -702,7 +702,7 @@ export default function HomeScreen() {
                     </Text>
                   </View>
                   <View style={{ alignItems: 'flex-end' }}>
-                    <Text style={{ fontSize: 13, color: Colors.text, fontFamily: 'Inter_600SemiBold' }}>
+                    <Text style={{ fontSize: 13, color: Colors.textPrimary, fontFamily: 'Inter_600SemiBold' }}>
                       {formatBytes(appStat.totalBytes)}
                     </Text>
                     <Text style={{ fontSize: 11, color: Colors.textSecondary, fontFamily: 'Inter_400Regular' }}>

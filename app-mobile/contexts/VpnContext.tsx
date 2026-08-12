@@ -553,21 +553,59 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         await AsyncStorage.removeItem(`@sxb_blocked_hash_${data.vpnConfig.configHash}`).catch(() => {});
       }
 
-      // Server connections are the catalogue; local registry is the source for credentials.
-      const connectionsRes = await apiClient.get('/mobile/connections');
+      // Multi-config & offline resilience: merge local registry and server connections
+      const connectionsRes = await apiClient.get('/mobile/connections').catch(() => ({ data: { connections: [] } }));
       const connections = (connectionsRes.data?.connections || []).filter((c: any) =>
         c.status === 'active' && (!c.expiresAt || new Date(c.expiresAt) > new Date()) && Number(c.quota?.remainingBytes ?? 1) > 0,
       );
       const local = await configStore.list();
       const registered = local.status === 'ok' ? local.value || [] : [];
-      setSavedConfigs(connections.filter((c: any) => registered.some(r => r.configId === c.id || (r.configHash && r.configHash === c.configHash))).map((c: any) => ({
-        id: c.id, name: c.name, protocol: c.displayProtocol || c.technicalProtocol, isActive: c.id === activeConfigId,
-      })));
-      const active = connections.find((c: any) => c.id === activeConfigId) || connections[0];
-      if (active) { setActiveConnection(active); if (!activeConfigId) { await configStore.setActive(active.id); setActiveConfigId(active.id); } }
-      setVpnConfig(data.vpnConfig || active || null);
+
+      const allConfigsMap = new Map();
+      registered.forEach((r: any) => allConfigsMap.set(r.configId, { id: r.configId, name: r.name || 'Connexion VPN', protocol: r.displayProtocol || r.protocol || 'VPN', isActive: r.isActive }));
+      connections.forEach((c: any) => {
+        allConfigsMap.set(c.id, { id: c.id, name: c.name, protocol: c.displayProtocol || c.technicalProtocol, isActive: c.id === activeConfigId });
+      });
+
+      const mergedSaved = Array.from(allConfigsMap.values());
+      setSavedConfigs(mergedSaved);
+
+      const activeId = activeConfigId || mergedSaved.find(s => s.isActive)?.id || mergedSaved[0]?.id;
+      if (activeId) {
+        setActiveConfigId(activeId);
+        await configStore.setActive(activeId);
+        const activeStore = await configStore.get(activeId);
+        if (activeStore.status === 'ok' && activeStore.value) {
+          setVpnConfig(activeStore.value.config);
+        } else {
+          setVpnConfig(data.vpnConfig || null);
+        }
+      } else {
+        setVpnConfig(data.vpnConfig || null);
+      }
     } catch {
-      // mode hors-ligne : ne jamais altérer l'état vers "expiré" sur échec réseau
+      // mode hors-ligne : chargement complet depuis le registre local (multi-config préservées)
+      try {
+        const local = await configStore.list();
+        if (local.status === 'ok' && local.value && local.value.length > 0) {
+          setSavedConfigs(local.value.map(c => ({
+            id: c.configId,
+            name: c.name || 'Connexion VPN',
+            protocol: c.displayProtocol || c.protocol || 'VPN',
+            isActive: !!c.isActive,
+          })));
+          const activeMeta = local.value.find(c => c.isActive) || local.value[0];
+          if (activeMeta) {
+            setActiveConfigId(activeMeta.configId);
+            const activeStore = await configStore.get(activeMeta.configId);
+            if (activeStore.status === 'ok' && activeStore.value) {
+              setVpnConfig(activeStore.value.config);
+            }
+          }
+        }
+      } catch (_offlineErr) {
+        // Ignorer
+      }
     }
   }, [isAuthenticated, activeConfigId]);
 
@@ -576,11 +614,18 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     (async () => {
       const persistedId = await AsyncStorage.getItem('@sxb_active_config_id');
       const local = await configStore.list();
-      if (local.status === 'ok') {
+      if (local.status === 'ok' && local.value) {
         const id = persistedId && local.value?.some(c => c.configId === persistedId)
-          ? persistedId : local.value?.find(c => c.isActive)?.configId;
-        if (id) { await configStore.setActive(id); setActiveConfigId(id); }
-        setSavedConfigs((local.value || []).map(c => ({ id: c.configId, name: c.name || 'Connexion VPN', protocol: c.displayProtocol || c.protocol || 'VPN', isActive: !!c.isActive })));
+          ? persistedId : local.value?.find(c => c.isActive)?.configId || local.value[0]?.configId;
+        if (id) {
+          await configStore.setActive(id);
+          setActiveConfigId(id);
+          const activeStore = await configStore.get(id);
+          if (activeStore.status === 'ok' && activeStore.value) {
+            setVpnConfig(activeStore.value.config);
+          }
+        }
+        setSavedConfigs(local.value.map(c => ({ id: c.configId, name: c.name || 'Connexion VPN', protocol: c.displayProtocol || c.protocol || 'VPN', isActive: !!c.isActive })));
       }
     })().catch(() => {});
     refreshVpnConfig();

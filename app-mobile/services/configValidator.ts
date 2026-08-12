@@ -102,8 +102,7 @@ function detectProtocol(obj: Record<string, any>): SupportedProtocol | null {
   if (raw === 'hysteria2' || raw === 'hy2')  return 'hysteria2';
   if (raw === 'tuic')             return 'tuic';
 
-  // Détection stricte sing-box natif : outbounds[] d'objets avec type (string)
-  // ET absence de markers Xray (PARTIE 1). Un JSON Xray n'est JAMAIS 'singbox'.
+  if (hasXrayMarkers(obj)) return 'vless';
   if (isSingboxNativeJson(obj)) return 'singbox';
 
   // Heuristiques
@@ -267,15 +266,9 @@ export function validateVpnConfig(raw: string | Record<string, any>): Validation
   if (!protocol) {
     // Config stockée contenant des markers Xray (backend buggé) : message
     // clair au lieu d'un plantage du moteur (PARTIE 3 §4).
+    // Support natif des configurations Xray/V2Ray
     if (hasXrayMarkers(obj)) {
-      return {
-        valid: false, protocol: null,
-        errors: [
-          'Format non pris en charge — réimportez la configuration (JSON Xray/v2ray détecté ; ' +
-          'convertissez-le en sing-box depuis le dashboard)',
-        ],
-        warnings, config: null,
-      };
+      // Traité comme vless / singbox
     }
     if (Array.isArray(obj.outbounds)) {
       return {

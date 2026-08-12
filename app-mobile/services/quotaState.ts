@@ -65,9 +65,10 @@ export function deriveQuota(
       baseUsedBytes = baseQuota.usedQuota || 0;
       expiryDate = baseQuota.expiryDate ?? null;
     } else {
-      totalBytes = (baseQuota.quotaTotalBytes ?? (baseQuota.quotaTotalGb ? baseQuota.quotaTotalGb * (1024 ** 3) : 0)) || 0;
-      baseUsedBytes = (baseQuota.quotaUsedBytes ?? (baseQuota.quotaUsedGb ? baseQuota.quotaUsedGb * (1024 ** 3) : 0)) || 0;
-      expiryDate = baseQuota.expiryDate || baseQuota.expireAt || null;
+      const b = baseQuota as any;
+      totalBytes = (b.quotaTotalBytes ?? (b.quotaTotalGb ? b.quotaTotalGb * (1024 ** 3) : 0)) || 0;
+      baseUsedBytes = (b.quotaUsedBytes ?? (b.quotaUsedGb ? b.quotaUsedGb * (1024 ** 3) : 0)) || 0;
+      expiryDate = b.expiryDate || b.expireAt || null;
     }
   }
 

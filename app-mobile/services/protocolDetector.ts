@@ -132,6 +132,7 @@ export class ProtocolDetector {
         || (Array.isArray(o.dns?.servers) && o.dns.servers.some((s: any) => typeof s === 'string' && /^(tcp|https)\+local:\/\//i.test(s)))
         || outbounds.some((x: any) => x?.protocol === 'blackhole' || x?.protocol === 'freedom');
     };
+    if (hasXrayMarkers(obj)) return 'vless';
     if (Array.isArray(obj.outbounds) && obj.outbounds.length > 0
       && obj.outbounds.every((x: any) => x && typeof x.type === 'string')
       && !hasXrayMarkers(obj)) return 'singbox';

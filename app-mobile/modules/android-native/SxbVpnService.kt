@@ -1701,7 +1701,118 @@ class SxbVpnService : VpnService(), PlatformInterface {
      *    detour référencé existe ; au moins un outbound non spécial.
      *    Échec → Exception claire (état error, pas de crash muet).
      */
-    private fun buildRawSingBoxConfig(cfg: JSONObject): String {
+    private fun convertXrayToSingBoxIfNeeded(cfg: JSONObject): JSONObject {
+        val rawOutbounds = cfg.optJSONArray("outbounds") ?: return cfg
+        var isXray = false
+        for (i in 0 until rawOutbounds.length()) {
+            val o = rawOutbounds.optJSONObject(i) ?: continue
+            if (o.has("protocol") || (o.has("settings") && o.optJSONObject("settings")?.has("vnext") == true)) {
+                isXray = true
+                break
+            }
+        }
+        if (!isXray) return cfg
+
+        val newOutbounds = JSONArray()
+        for (i in 0 until rawOutbounds.length()) {
+            val o = rawOutbounds.optJSONObject(i) ?: continue
+            val proto = o.optString("protocol", "").lowercase()
+            val tag = o.optString("tag", "proxy")
+            val settings = o.optJSONObject("settings")
+            val stream = o.optJSONObject("streamSettings")
+            val proxySettings = o.optJSONObject("proxySettings")
+
+            when (proto) {
+                "vless", "vmess" -> {
+                    val vnext = settings?.optJSONArray("vnext")?.optJSONObject(0)
+                    val address = vnext?.optString("address", "") ?: ""
+                    val port = vnext?.optInt("port", 443) ?: 443
+                    val user = vnext?.optJSONArray("users")?.optJSONObject(0)
+                    val uuid = user?.optString("id", "") ?: ""
+                    val flow = user?.optString("flow", "") ?: ""
+
+                    val sbOut = JSONObject().apply {
+                        put("type", proto)
+                        put("tag", tag)
+                        put("server", address)
+                        put("server_port", port)
+                        put("uuid", uuid)
+                        if (flow.isNotEmpty() && proto == "vless") put("flow", flow)
+
+                        if (stream != null) {
+                            val security = stream.optString("security", "none")
+                            if (security == "tls" || security == "reality") {
+                                val tlsObj = stream.optJSONObject("tlsSettings")
+                                put("tls", JSONObject().apply {
+                                    put("enabled", true)
+                                    put("server_name", tlsObj?.optString("serverName", address) ?: address)
+                                    put("insecure", tlsObj?.optBoolean("allowInsecure", true) ?: true)
+                                })
+                            }
+                            val network = stream.optString("network", "tcp")
+                            if (network == "ws" || network == "websocket") {
+                                val ws = stream.optJSONObject("wsSettings")
+                                put("transport", JSONObject().apply {
+                                    put("type", "ws")
+                                    put("path", ws?.optString("path", "/") ?: "/")
+                                    val headers = ws?.optJSONObject("headers")
+                                    if (headers != null) put("headers", headers)
+                                })
+                            } else if (network == "grpc") {
+                                val grpc = stream.optJSONObject("grpcSettings")
+                                put("transport", JSONObject().apply {
+                                    put("type", "grpc")
+                                    put("service_name", grpc?.optString("serviceName", "GunService") ?: "GunService")
+                                })
+                            }
+                        }
+
+                        if (proxySettings != null) {
+                            val proxyTag = proxySettings.optString("tag", "")
+                            if (proxyTag.isNotEmpty()) {
+                                put("detour", proxyTag)
+                            }
+                        }
+                    }
+                    newOutbounds.put(sbOut)
+                }
+                "http" -> {
+                    val srvs = settings?.optJSONArray("servers")?.optJSONObject(0)
+                    val addr = srvs?.optString("address", "") ?: ""
+                    val port = srvs?.optInt("port", 8080) ?: 8080
+                    val headers = settings?.optJSONObject("headers") ?: o.optJSONObject("headers")
+
+                    val sbOut = JSONObject().apply {
+                        put("type", "http")
+                        put("tag", tag)
+                        put("server", addr)
+                        put("server_port", port)
+                        if (headers != null) put("headers", headers)
+                    }
+                    newOutbounds.put(sbOut)
+                }
+                "freedom" -> {
+                    newOutbounds.put(JSONObject().put("type", "direct").put("tag", tag))
+                }
+                "blackhole" -> {
+                    newOutbounds.put(JSONObject().put("type", "block").put("tag", tag))
+                }
+                "dns" -> {
+                    newOutbounds.put(JSONObject().put("type", "dns").put("tag", tag))
+                }
+                else -> {
+                    if (o.has("type")) newOutbounds.put(o)
+                }
+            }
+        }
+
+        return JSONObject(cfg.toString()).apply {
+            put("outbounds", newOutbounds)
+        }
+    }
+
+    private fun buildRawSingBoxConfig(rawCfg: JSONObject): String {
+        val cfg = convertXrayToSingBoxIfNeeded(rawCfg)
         val knownTypes = setOf(
             "vless", "vmess", "trojan", "shadowsocks", "wireguard", "hysteria2",
             "tuic", "hysteria", "ssh", "http", "socks", "direct", "dns", "block",

@@ -350,13 +350,13 @@ export default function SettingsScreen() {
   const currentLang = LANGS.find(l => l.code === language) || LANGS[0];
 
   // Account state display
-  const acctStatus = accountState?.state;
-  const acctBadge = {
+  const acctStatus = (accountState as any)?.state;
+  const acctBadge: { text: string; color: string } = (({
     ready: { text: t('active'), color: Colors.connected },
     no_package: { text: t('status_no_package'), color: Colors.warning },
     expired: { text: t('expired'), color: Colors.disconnected },
     suspended: { text: t('suspended_status'), color: Colors.disconnected },
-  }[acctStatus || "no_package"] || { text: t('status_unknown'), color: Colors.textMuted };
+  } as Record<string, { text: string; color: string }>)[acctStatus || "no_package"]) || { text: t('status_unknown'), color: Colors.textMuted };
 
   const formatExpiry = () => {
     if (!accountState?.expireAt) return "—";

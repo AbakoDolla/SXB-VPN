@@ -36,8 +36,8 @@ export default function ProfileScreen() {
     .slice(0, 2);
 
   const isAccountActive =
-    accountState?.state === "ready" ||
-    accountState?.state === "connected" ||
+    (accountState as any)?.state === "ready" ||
+    (accountState as any)?.state === "connected" ||
     (activeConnection && activeConnection.status === "active");
 
   const effectiveState =
