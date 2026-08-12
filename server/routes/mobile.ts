@@ -607,9 +607,30 @@ router.get('/notifications', async (req: AuthenticatedRequest, res: Response) =>
       });
     }
 
-    // Ajouter les derniers logs d'audit si disponibles
+    // Ajouter les mises à jour support et les derniers logs d'audit si disponibles
     if (prisma) {
       try {
+        const resolvedTickets = await prisma.supportTicket.findMany({
+          where: {
+            userId: req.user!.userId,
+            status: { in: ['resolved', 'closed'] },
+            updatedAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+          },
+          orderBy: { updatedAt: 'desc' },
+          take: 5,
+          select: { id: true, title: true, status: true, updatedAt: true },
+        });
+        for (const ticket of resolvedTickets) {
+          notifications.push({
+            id: `ticket-${ticket.id}-${ticket.status}`,
+            type: 'success',
+            title: ticket.status === 'resolved' ? 'Ticket résolu' : 'Ticket clôturé',
+            message: `Votre demande « ${ticket.title} » a été ${ticket.status === 'resolved' ? 'résolue' : 'clôturée'}.`,
+            createdAt: ticket.updatedAt.toISOString(),
+            read: false,
+          });
+        }
+
         const logs = await prisma.auditLog.findMany({
           where: { userId: req.user!.userId },
           orderBy: { timestamp: 'desc' },
@@ -868,5 +889,73 @@ router.post("/vpn/usage", async (req: AuthenticatedRequest, res: Response) => {
     return res.status(500).json({ error: "errors.server", message: "Erreur enregistrement de consommation" });
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Support mobile — tickets associés exclusivement à l’utilisateur authentifié.
+// Le dashboard conserve l’administration complète via /api/support.
+// ─────────────────────────────────────────────────────────────────────────────
+const mobileTicketSchema = z.object({
+  subject: z.string().trim().min(3).max(200),
+  message: z.string().trim().min(5).max(5000),
+  priority: z.enum(['low', 'medium', 'high']).optional(),
+});
+
+router.get('/support/tickets', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (!prisma) {
+      return res.status(503).json({ error: 'DB_UNAVAILABLE', message: 'Support temporairement indisponible' });
+    }
+    const tickets = await prisma.supportTicket.findMany({
+      where: { userId: req.user!.userId },
+      orderBy: { updatedAt: 'desc' },
+      take: 50,
+      select: {
+        id: true, title: true, description: true, priority: true, status: true,
+        createdAt: true, updatedAt: true,
+      },
+    });
+    return res.json({ tickets });
+  } catch (err) {
+    console.error('Mobile support tickets fetch error:', err);
+    return res.status(500).json({ error: 'SERVER_ERROR', message: 'Impossible de récupérer les tickets' });
+  }
+});
+
+async function createMobileTicket(req: AuthenticatedRequest, res: Response) {
+  try {
+    if (!prisma) {
+      return res.status(503).json({ error: 'DB_UNAVAILABLE', message: 'Support temporairement indisponible' });
+    }
+    const body = mobileTicketSchema.parse(req.body);
+    const client: any = await findClientByUserId(req.user!.userId);
+    const clientName = String(client?.user?.name || 'Client SXB').slice(0, 100);
+    const ticket = await prisma.supportTicket.create({
+      data: {
+        title: body.subject,
+        description: body.message,
+        priority: body.priority || 'medium',
+        status: 'open',
+        clientName,
+        userId: req.user!.userId,
+      },
+      select: {
+        id: true, title: true, description: true, priority: true, status: true,
+        createdAt: true, updatedAt: true,
+      },
+    });
+    await logDbActivity(req.user!.userId, `Ticket mobile ouvert: "${body.subject}"`, 'info', req.ip || '');
+    return res.status(201).json({ ticket, message: 'Ticket envoyé au support' });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'Sujet ou message invalide' });
+    }
+    console.error('Mobile support ticket create error:', err);
+    return res.status(500).json({ error: 'SERVER_ERROR', message: 'Impossible de créer le ticket' });
+  }
+}
+
+// Compatibilité avec la première version de l’application, puis route plurielle.
+router.post('/support/ticket', createMobileTicket);
+router.post('/support/tickets', createMobileTicket);
 
 export default router;

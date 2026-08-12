@@ -25,7 +25,7 @@ import {
   isQuotaExhausted, isConfigExpired, consumeQuotaLocally,
 } from '@/services/offlineStorage';
 import type { QuotaData } from '@/services/offlineStorage';
-import { provisionAndStore, loadProvisionedConfig, clearProvisionedConfig } from '@/services/provisionClient';
+import { ProvisioningError, provisionAndStore, loadProvisionedConfig, clearProvisionedConfig } from '@/services/provisionClient';
 import * as configStore from '@/services/configStore';
 import {
   isCompleteOfflineConfig,
@@ -537,10 +537,18 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     try {
       const res = await apiClient.get('/mobile/vpn/config');
       const data = res.data;
+      // Le jeton SXB-DATA est fourni dans `subscription`, jamais dans les
+      // métadonnées `vpnConfig`. Il reste uniquement en mémoire jusqu’au
+      // provisionnement et n’est pas écrit dans le registre AsyncStorage.
+      const serverConfig = data.vpnConfig ? {
+        ...data.vpnConfig,
+        dataToken: data.subscription?.dataToken || undefined,
+        subscriptionId: data.subscription?.id || undefined,
+      } : null;
 
       if (data.quota && Number(data.quota.totalQuota) > 0) {
         await saveQuotaData({
-          configId:    data.vpnConfig?.configId ?? data.profile?.id ?? 'vpn_config',
+          configId:    serverConfig?.configId ?? data.profile?.id ?? 'vpn_config',
           totalQuota:  Number(data.quota.totalQuota) || 0,
           usedQuota:   Number(data.quota.usedQuota)   || 0,
           expiryDate:  data.quota.expiryDate ?? null,
@@ -549,8 +557,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         if (freshQuota) setQuotaData(freshQuota);
       }
 
-      if (data.vpnConfig?.configHash) {
-        await AsyncStorage.removeItem(`@sxb_blocked_hash_${data.vpnConfig.configHash}`).catch(() => {});
+      if (serverConfig?.configHash) {
+        await AsyncStorage.removeItem(`@sxb_blocked_hash_${serverConfig.configHash}`).catch(() => {});
       }
 
       // Multi-config & offline resilience: merge local registry and server connections
@@ -571,6 +579,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       setSavedConfigs(mergedSaved);
 
       const activeId = activeConfigId || mergedSaved.find(s => s.isActive)?.id || mergedSaved[0]?.id;
+      const activeRemote = connections.find((c: any) => c.id === activeId) || connections[0] || null;
+      setActiveConnection(activeRemote);
       if (activeId) {
         setActiveConfigId(activeId);
         await configStore.setActive(activeId);
@@ -578,10 +588,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         if (activeStore.status === 'ok' && activeStore.value) {
           setVpnConfig(activeStore.value.config);
         } else {
-          setVpnConfig(data.vpnConfig || null);
+          setVpnConfig(serverConfig);
         }
       } else {
-        setVpnConfig(data.vpnConfig || null);
+        setVpnConfig(serverConfig);
       }
     } catch {
       // mode hors-ligne : chargement complet depuis le registre local (multi-config préservées)
@@ -781,9 +791,14 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
               addStepLog('provisioning', 'step_provisioned', 'done');
               addLog('✅ Configuration provisionnée avec succès');
-            } catch (provErr: any) {
-              const httpMsg = provErr?.response?.data?.error ?? provErr?.response?.data?.message ?? '';
-              addLog(`⚠️ Provisionnement échoué : ${httpMsg || provErr?.message || 'erreur réseau'}`);
+            } catch (provErr: unknown) {
+              const diagnostic = provErr instanceof ProvisioningError ? provErr.diagnostic : undefined;
+              const details = diagnostic
+                ? ` [${diagnostic.code}; étape=${diagnostic.stage}; essais=${diagnostic.attempts}${diagnostic.httpStatus ? `; HTTP=${diagnostic.httpStatus}` : ''}${diagnostic.requestId ? `; req=${diagnostic.requestId}` : ''}]`
+                : '';
+              const message = provErr instanceof Error ? provErr.message : 'erreur inconnue';
+              addStepLog('provisioning', 'step_error', 'error', diagnostic?.code || 'PVN_UNKNOWN');
+              addLog(`⚠️ Provisionnement échoué : ${message}${details}`);
               setVpnState('error');
               setIsConnecting(false);
               return;

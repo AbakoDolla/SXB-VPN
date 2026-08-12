@@ -9,6 +9,8 @@ import { prisma, logDbActivity } from "../database";
 import { requireAuth, AuthenticatedRequest } from "../middleware/auth";
 
 const router = Router();
+const SUPPORT_STAFF_ROLES = new Set(['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT']);
+const isSupportStaff = (req: AuthenticatedRequest) => SUPPORT_STAFF_ROLES.has(req.user?.role || '');
 
 const createTicketSchema = z.object({
   title: z.string().min(3).max(200),
@@ -31,9 +33,13 @@ router.get("/", requireAuth, async (req: AuthenticatedRequest, res: Response) =>
       return res.status(503).json({ error: "DB_UNAVAILABLE", message: "Base de données indisponible" });
     }
     const { status, limit = "100" } = req.query;
+    const baseWhere = isSupportStaff(req)
+      ? {}
+      : { userId: req.user?.userId || '__no_user__' };
+    const where = status ? { ...baseWhere, status: String(status) } : baseWhere;
 
     const tickets = await prisma.supportTicket.findMany({
-      where: status ? { status: String(status) } : undefined,
+      where,
       include: { user: { select: { id: true, name: true, email: true } } },
       orderBy: [{ status: "asc" }, { createdAt: "desc" }],
       take: Math.min(Number(limit), 500),
@@ -56,7 +62,7 @@ router.get("/:id", requireAuth, async (req: AuthenticatedRequest, res: Response)
       where: { id: req.params.id },
       include: { user: { select: { id: true, name: true, email: true } } },
     });
-    if (!ticket) {
+    if (!ticket || (!isSupportStaff(req) && ticket.userId !== req.user?.userId)) {
       return res.status(404).json({ error: "NOT_FOUND", message: "Ticket introuvable" });
     }
     return res.json(ticket);
@@ -69,6 +75,9 @@ router.get("/:id", requireAuth, async (req: AuthenticatedRequest, res: Response)
 // POST /api/support — ouvre un nouveau ticket
 router.post("/", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
+    if (!isSupportStaff(req)) {
+      return res.status(403).json({ error: "FORBIDDEN", message: "Création réservée au support" });
+    }
     if (!prisma) {
       return res.status(503).json({ error: "DB_UNAVAILABLE", message: "Base de données indisponible" });
     }
@@ -106,6 +115,9 @@ router.post("/", requireAuth, async (req: AuthenticatedRequest, res: Response) =
 // PATCH /api/support/:id — mise à jour du statut ou des champs
 router.patch("/:id", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
+    if (!isSupportStaff(req)) {
+      return res.status(403).json({ error: "FORBIDDEN", message: "Mise à jour réservée au support" });
+    }
     if (!prisma) {
       return res.status(503).json({ error: "DB_UNAVAILABLE", message: "Base de données indisponible" });
     }

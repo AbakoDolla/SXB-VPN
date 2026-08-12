@@ -1,6 +1,7 @@
 import express, { Request, Response, NextFunction } from "express";
 import path from "path";
 import fs from "fs";
+import { randomUUID } from "crypto";
 import cors from "cors";
 import helmet from "helmet";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
@@ -78,10 +79,17 @@ async function startServer() {
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
 
-  // Request logger middleware
+  // Journal de diagnostic corrélé : aucun corps, jeton ni identifiant VPN n’est enregistré.
+  // L’identifiant est retourné au mobile, afin de relier un code PVN_* à un log serveur.
   app.use((req: Request, res: Response, next: NextFunction) => {
+    const requestId = randomUUID().replace(/-/g, '').slice(0, 12);
+    const startedAt = Date.now();
     const cleanIp = req.ip?.replace(/\\/g, '') || 'unknown';
-    console.log(`[${new Date().toISOString()}] 📡 ${req.method} ${req.url} - IP: ${cleanIp}`);
+    const route = (req.originalUrl || req.url || '/').split('?')[0];
+    res.setHeader('X-SXB-Request-ID', requestId);
+    res.on('finish', () => {
+      console.log(`[API] id=${requestId} method=${req.method} route=${route} status=${res.statusCode} durationMs=${Date.now() - startedAt} ip=${cleanIp}`);
+    });
     next();
   });
 

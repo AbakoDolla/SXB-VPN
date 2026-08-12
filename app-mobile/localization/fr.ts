@@ -266,6 +266,14 @@ export const fr = {
   ticket_submit: 'Envoyer',
   ticket_submitting: 'Envoi en cours...',
   ticket_success: 'Votre message a été envoyé avec succès.',
+  ticket_load_failed: 'Impossible de charger vos tickets. Vérifiez votre connexion.',
+  ticket_send_failed: 'Le ticket n’a pas été envoyé. Vérifiez votre connexion et réessayez.',
+  ticket_empty: 'Vous n’avez encore aucun ticket.',
+  ticket_open: 'Ouvert',
+  ticket_in_progress: 'En cours',
+  ticket_resolved: 'Résolu',
+  ticket_closed: 'Clôturé',
+  ticket_updated_at: 'Mis à jour',
   hero_sub: 'Notre équipe est disponible pour vous aider.',
 
   // Errors

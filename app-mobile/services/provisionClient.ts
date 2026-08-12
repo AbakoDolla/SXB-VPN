@@ -14,12 +14,86 @@
  */
 import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import axios from 'axios';
 import * as configStore from './configStore';
 import apiClient from './apiClient';
 import { decryptSxbBlob, utf8Decode } from './aesGcm';
 
 const PROV_KEY = 'sxb_prov_config_v2';
 const PROV_META_KEY = 'sxb_prov_meta_v2';
+const PROVISION_MAX_ATTEMPTS = 3;
+
+type ProvisionStage = 'request' | 'response' | 'decrypt' | 'parse' | 'store';
+
+export interface ProvisionDiagnostic {
+  code: string;
+  stage: ProvisionStage;
+  attempts: number;
+  retryable: boolean;
+  httpStatus?: number;
+  requestId?: string;
+}
+
+/** Erreur de provisionnement sûre à afficher dans les logs de l’application. */
+export class ProvisioningError extends Error {
+  readonly diagnostic: ProvisionDiagnostic;
+
+  constructor(message: string, diagnostic: ProvisionDiagnostic) {
+    super(message);
+    this.name = 'ProvisioningError';
+    this.diagnostic = diagnostic;
+  }
+}
+
+const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+function headerValue(headers: unknown, name: string): string | undefined {
+  if (!headers || typeof headers !== 'object') return undefined;
+  const value = (headers as Record<string, unknown>)[name] ?? (headers as Record<string, unknown>)[name.toLowerCase()];
+  return typeof value === 'string' && value.trim() ? value.trim().slice(0, 80) : undefined;
+}
+
+function toProvisioningError(error: unknown, attempts: number): ProvisioningError {
+  if (error instanceof ProvisioningError) return error;
+
+  if (axios.isAxiosError(error)) {
+    const httpStatus = error.response?.status;
+    const requestId = headerValue(error.response?.headers, 'x-sxb-request-id');
+    const retryable = !httpStatus || httpStatus >= 500 || httpStatus === 408 || httpStatus === 429;
+    const code = httpStatus
+      ? `PVN_HTTP_${httpStatus}`
+      : error.code === 'ECONNABORTED' || /timeout/i.test(error.message || '')
+        ? 'PVN_TIMEOUT'
+        : 'PVN_NETWORK';
+    const message = httpStatus
+      ? `Provisionnement refusé par le serveur (${httpStatus})`
+      : code === 'PVN_TIMEOUT'
+        ? 'Délai réseau dépassé pendant le provisionnement'
+        : 'La demande de provisionnement n’a pas atteint le serveur';
+    return new ProvisioningError(message, {
+      code, stage: 'request', attempts, retryable, httpStatus, requestId,
+    });
+  }
+
+  return new ProvisioningError('Échec inattendu du provisionnement', {
+    code: 'PVN_UNKNOWN', stage: 'request', attempts, retryable: false,
+  });
+}
+
+async function requestProvision(dataToken: string, deviceId: string) {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= PROVISION_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await apiClient.post('/provision/activate', { dataToken, deviceId }, { timeout: 15_000 });
+    } catch (error) {
+      lastError = error;
+      const diagnostic = toProvisioningError(error, attempt).diagnostic;
+      if (!diagnostic.retryable || attempt === PROVISION_MAX_ATTEMPTS) throw toProvisioningError(error, attempt);
+      await pause(350 * attempt);
+    }
+  }
+  throw toProvisioningError(lastError, PROVISION_MAX_ATTEMPTS);
+}
 
 export interface ProvisionMeta {
   subscriptionId:  string;
@@ -128,34 +202,47 @@ export async function provisionAndStore(
   dataToken: string,
   deviceId:  string,
 ): Promise<ProvisionResult> {
-  const res = await apiClient.post('/provision/activate', { dataToken, deviceId });
-  
-  // Support both nested (dev server) and flat (production VPS) response formats
-  const prov = res.data?.config ? res.data.config : res.data;
+  const res = await requestProvision(dataToken, deviceId);
 
+  // Support both nested (dev server) and flat (production VPS) response formats.
+  const prov = res.data?.config ? res.data.config : res.data;
   const encryptedBlob = prov?.encryptedBlob;
   const configKey = prov?.configKey;
   const configExpiresAt = prov?.configExpiresAt || prov?.expiresAt;
   const encVersion = prov?.encVersion || 'gcm-v2';
   const provisionedAt = prov?.provisionedAt || new Date().toISOString();
+  const requestId = headerValue(res.headers, 'x-sxb-request-id');
 
   if (!encryptedBlob || !configKey) {
-    throw new Error('Réponse provision invalide — champs manquants');
+    throw new ProvisioningError('Réponse de provisionnement incomplète', {
+      code: 'PVN_RESPONSE_INVALID', stage: 'response', attempts: 1, retryable: false, requestId,
+    });
   }
 
-  // Vérification expiration de la config
   if (configExpiresAt && new Date(configExpiresAt) < new Date()) {
-    throw new Error('Configuration expirée — re-provisionnement requis');
+    throw new ProvisioningError('Configuration expirée — re-provisionnement requis', {
+      code: 'PVN_CONFIG_EXPIRED', stage: 'response', attempts: 1, retryable: false, requestId,
+    });
   }
 
-  // Déchiffrement local (jamais envoyé en clair sur le réseau après ce point)
-  const decryptedJson = await decryptGCM(encryptedBlob, configKey);
-  const vpnConfig     = JSON.parse(decryptedJson) as Record<string, any>;
+  let decryptedJson: string;
+  try {
+    decryptedJson = await decryptGCM(encryptedBlob, configKey);
+  } catch {
+    throw new ProvisioningError('Déchiffrement local impossible', {
+      code: 'PVN_DECRYPT_FAILED', stage: 'decrypt', attempts: 1, retryable: false, requestId,
+    });
+  }
 
-  // The credential payload is encrypted with the app AES-GCM key in configStore;
-  // SecureStore only ever holds the 32-byte master key, never this potentially large blob.
+  let vpnConfig: Record<string, any>;
+  try {
+    vpnConfig = JSON.parse(decryptedJson) as Record<string, any>;
+  } catch {
+    throw new ProvisioningError('Configuration déchiffrée invalide', {
+      code: 'PVN_CONFIG_PARSE_FAILED', stage: 'parse', attempts: 1, retryable: false, requestId,
+    });
+  }
 
-  // Métadonnées non-sensibles dans AsyncStorage (quota, expiration, identifiants)
   const meta: ProvisionMeta = {
     subscriptionId:  prov.subscriptionId || '',
     profileId:       prov.profileId || '',
@@ -176,9 +263,13 @@ export async function provisionAndStore(
     configId: id, name: meta.profileName, protocol: meta.protocol, displayProtocol: meta.displayProtocol,
     subscriptionId: meta.subscriptionId, quotaTotal: Math.round(meta.quotaGB * 1024 ** 3),
     quotaUsed: Math.round(meta.quotaUsedGB * 1024 ** 3), expiryDate: meta.expireAt,
-    configVersion: meta.configVersion, configHash: meta.configHash, dataToken,
+    configVersion: meta.configVersion, configHash: meta.configHash,
   });
-  if (stored.status !== 'ok') throw stored.error || new Error('Stockage chiffré indisponible');
+  if (stored.status !== 'ok') {
+    throw new ProvisioningError('Stockage chiffré indisponible', {
+      code: 'PVN_STORE_FAILED', stage: 'store', attempts: 1, retryable: false, requestId,
+    });
+  }
   return { config: vpnConfig, meta };
 }
 
