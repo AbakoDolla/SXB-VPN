@@ -59,6 +59,12 @@ jobs:
         if: steps.cache-node.outputs.cache-hit != 'true'
         run: npm install --legacy-peer-deps
 
+      # ── Barrière qualité — bloque la release avant toute génération native ────
+      - name: Tests de non-régression mobile
+        run: |
+          npm run typecheck
+          npm run test:regression
+
       # FIX #1 : patch Kotlin metadata compat — après npm install (node_modules/ doit exister)
       - name: Patch expo-module-gradle-plugin (Kotlin metadata compat)
         run: |
