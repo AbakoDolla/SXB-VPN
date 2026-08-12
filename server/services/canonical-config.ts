@@ -23,7 +23,7 @@ export type SourceFormat =
   | 'ssh-json' | 'ssh+payload-json'
   | 'vless-uri' | 'vmess-uri' | 'trojan-uri' | 'ss-uri'
   | 'wireguard-conf' | 'hysteria2-uri' | 'tuic-uri'
-  | 'singbox-json' | 'sxb-canonical';
+  | 'singbox-json' | 'xray-json' | 'sxb-canonical';
 
 export interface ParseResult {
   ok: boolean;
@@ -405,8 +405,14 @@ export function parseImportedConfig(raw: string): ParseResult {
       return { ok: false, errors, warnings };
     }
     if (Array.isArray(obj.outbounds)) {
+      // Xray/v2ray et sing-box ont tous deux « outbounds », mais leur schéma
+      // diffère : protocol/settings/streamSettings doit rester intact pour la
+      // conversion native Android, au lieu d’être interprété comme du sing-box.
+      const isXray = obj.outbounds.some((o: any) => o && (
+        typeof o.protocol === 'string' || o.settings?.vnext !== undefined || o.streamSettings !== undefined
+      ));
       parsed = { cfg: { ...obj, protocol: 'singbox' } };
-      sourceFormat = 'singbox-json';
+      sourceFormat = isXray ? 'xray-json' : 'singbox-json';
     } else if (obj.protocol) {
       const proto = String(obj.protocol).toLowerCase();
       parsed = { cfg: { ...obj, protocol: proto } };

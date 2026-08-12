@@ -1808,6 +1808,38 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         return JSONObject(cfg.toString()).apply {
             put("outbounds", newOutbounds)
+
+            // Les règles Xray utilisent outboundTag/inboundTag/ip alors que
+            // sing-box attend outbound/inbound/ip_cidr. Sans conversion, un
+            // JSON Xray est accepté puis perd son routage au lancement.
+            val xrayRouting = cfg.optJSONObject("routing")
+            if (xrayRouting != null && !has("route")) {
+                val convertedRules = JSONArray()
+                val sourceRules = xrayRouting.optJSONArray("rules") ?: JSONArray()
+                for (i in 0 until sourceRules.length()) {
+                    val source = sourceRules.optJSONObject(i) ?: continue
+                    val rule = JSONObject()
+                    source.optString("outboundTag", "").takeIf { it.isNotBlank() }?.let { rule.put("outbound", it) }
+                    source.optJSONArray("inboundTag")?.let { rule.put("inbound", it) }
+                    source.optJSONArray("ip")?.let { rule.put("ip_cidr", it) }
+                    source.optJSONArray("domain")?.let { rule.put("domain", it) }
+                    if (source.has("port")) rule.put("port", source.opt("port"))
+                    val networks = source.optString("network", "")
+                    if (networks.isNotBlank()) {
+                        rule.put("network", JSONArray(networks.split(',').map { it.trim() }.filter { it.isNotBlank() }))
+                    }
+                    if (rule.length() > 0) convertedRules.put(rule)
+                }
+                put("route", JSONObject().put("rules", convertedRules))
+            }
+
+            // Les serveurs DNS Xray sous forme de chaînes tcp+local:// ne sont
+            // pas valides pour sing-box. Le DNS sûr de l'application sera alors
+            // appliqué par buildRawSingBoxConfig().
+            val xrayDns = cfg.optJSONObject("dns")?.optJSONArray("servers")
+            if (xrayDns != null && (0 until xrayDns.length()).any { xrayDns.opt(it) is String }) {
+                remove("dns")
+            }
         }
     }
 

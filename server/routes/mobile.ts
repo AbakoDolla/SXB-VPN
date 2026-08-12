@@ -409,18 +409,31 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
     if (!client) return res.status(404).json({ error: "errors.mobile.no_account" });
     const state = computeAccountState(client);
 
+    // Sans identifiant : dernier abonnement actif (compatibilité). Avec
+    // subscriptionId : ne jamais substituer un autre profil lors d'une bascule.
+    const requestedSubscriptionId = typeof req.query.subscriptionId === 'string'
+      ? req.query.subscriptionId.trim()
+      : '';
     let sub: any = null;
     if (prisma) {
-      // IMPORTANT : include { payload: true } pour éviter un second round-trip
-      // et garantir que le contenu du payload arrive même si payloadId est défini
       sub = await (prisma as any).subscription.findFirst({
-        where: { clientId: client.id, status: "active" },
+        where: requestedSubscriptionId
+          ? { clientId: client.id, id: requestedSubscriptionId }
+          : { clientId: client.id, status: "active" },
         include: { profile: true },
         orderBy: { createdAt: "desc" },
       });
     }
+    if (requestedSubscriptionId && !sub) {
+      return res.status(404).json({ error: 'errors.mobile.connection_not_found', message: 'Connexion VPN introuvable' });
+    }
 
-    const profile = sub?.profile || null;
+    let subscriptionState = sub?.status || state.state;
+    if (sub?.status === 'active') {
+      if (sub.expireAt && new Date(sub.expireAt).getTime() < Date.now()) subscriptionState = 'expired';
+      else if (Number(sub.quotaBytes ?? 0) > 0 && Number(sub.quotaUsed ?? 0) >= Number(sub.quotaBytes)) subscriptionState = 'exhausted';
+    }
+    const profile = subscriptionState === 'active' ? (sub?.profile || null) : null;
     const proto = (profile?.protocol || "ssh").toLowerCase(); // "ssh" | "ssh+payload" | "vless" …
 
     // ── Charger le payload SSH (via JOIN Prisma d'abord, puis requête séparée) ─
@@ -466,7 +479,7 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
     // plus exposés ici. Ils transitent uniquement via /api/provision/activate
     // (chiffrés AES-256-GCM, liés à l'appareil, stockés dans Android Keystore).
     return res.json({
-      state: state.state,
+      state: subscriptionState,
       protocols,
       serverInfo: { location: profile ? "SXB" : "Africa / Cameroun" },
       // connectionUri exposé uniquement pour affichage informatif (pas de credential)
@@ -488,18 +501,19 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
         configHash:      configHashForProfile(profile),
         // ❌ Champs supprimés : host, port, username, password, sni, uuid, payload, etc.
       } : null,
-      // quota : bytes — consommé par offlineStorage.ts en mode hors-ligne
+      // Quota de l'abonnement demandé. Le fallback client préserve les anciens comptes
+      // qui n'ont pas encore de quotas séparés par Subscription.
       quota: {
-        totalQuota:  client.quotaTotal ? Number(client.quotaTotal) : 0,
-        usedQuota:   Number(client.quotaUsed ?? 0),
-        expiryDate:  client.expireAt ? new Date(client.expireAt).toISOString() : null,
+        totalQuota:  sub?.quotaBytes !== undefined ? Number(sub.quotaBytes) : (client.quotaTotal ? Number(client.quotaTotal) : 0),
+        usedQuota:   sub?.quotaUsed  !== undefined ? Number(sub.quotaUsed)  : Number(client.quotaUsed ?? 0),
+        expiryDate:  sub?.expireAt ? new Date(sub.expireAt).toISOString() : (client.expireAt ? new Date(client.expireAt).toISOString() : null),
       },
       subscription: sub ? {
         id:        sub.id,
         name:      sub.name,
         dataToken: sub.dataToken,   // Token SXB-DATA — utilisé par le mobile pour /provision/activate
         expireAt:  sub.expireAt?.toISOString(),
-        status:    sub.status,
+        status:    subscriptionState,
       } : null,
     });
   } catch (err) {

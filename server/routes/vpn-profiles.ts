@@ -42,9 +42,16 @@ function buildImportData(rawImport: string, opts: { bumpVersion?: number | null 
     host = h; port = Number(p) || 0;
   }
   if (!host && proto === 'singbox') {
-    const out0 = Array.isArray(canon.outbounds) ? canon.outbounds[0] : null;
-    host = out0?.server ?? 'singbox-json';
-    port = Number(out0?.server_port ?? 0) || 0;
+    const outbounds = Array.isArray(canon.outbounds) ? canon.outbounds : [];
+    // sing-box natif : server/server_port. Xray : settings.vnext[0].
+    // On ignore direct/dns/block et les outbounds de contrôle éventuels.
+    const out0 = outbounds.find((o: any) => {
+      const p = String(o?.protocol || o?.type || '').toLowerCase();
+      return !['direct', 'freedom', 'dns', 'block', 'blackhole'].includes(p);
+    }) || outbounds[0];
+    const xrayServer = out0?.settings?.vnext?.[0];
+    host = out0?.server ?? xrayServer?.address ?? 'singbox-json';
+    port = Number(out0?.server_port ?? xrayServer?.port ?? 0) || 0;
   }
 
   return {

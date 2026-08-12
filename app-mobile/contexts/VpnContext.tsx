@@ -180,6 +180,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const [hasVpnPermission,   setHasVpnPermission]    = useState(false);
   const [vpnConfig,          setVpnConfig]           = useState<any>(null);
   const [activeConnection,   setActiveConnection]    = useState<VpnConnection | null>(null);
+  const [remoteConnections,  setRemoteConnections]   = useState<VpnConnection[]>([]);
   const [killSwitch,         setKillSwitchState]      = useState<boolean>(false);
   const [autoReconnect,      setAutoReconnectState]   = useState<boolean>(true);
   const [stepLogs,           setStepLogs]             = useState<StepLogItem[]>([]);
@@ -213,6 +214,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   };
 
   const connectRef = useRef<(() => Promise<void>) | null>(null);
+  const pendingAutoConnectRef = useRef<string | null>(null);
   const watchdogRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastStepRef  = useRef<string>('INIT');
 
@@ -561,11 +563,17 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         await AsyncStorage.removeItem(`@sxb_blocked_hash_${serverConfig.configHash}`).catch(() => {});
       }
 
-      // Multi-config & offline resilience: merge local registry and server connections
+      // Multi-config : chaque abonnement est identifiable et provisionnable séparément.
       const connectionsRes = await apiClient.get('/mobile/connections').catch(() => ({ data: { connections: [] } }));
-      const connections = (connectionsRes.data?.connections || []).filter((c: any) =>
+      const remote = (connectionsRes.data?.connections || []) as VpnConnection[];
+      setRemoteConnections(remote);
+      const connections = remote.filter((c: any) =>
         c.status === 'active' && (!c.expiresAt || new Date(c.expiresAt) > new Date()) && Number(c.quota?.remainingBytes ?? 1) > 0,
       );
+
+      // Un abonnement révoqué/expiré/épuisé ne doit jamais rester utilisable hors-ligne.
+      const invalidIds = remote.filter((c: any) => c.status !== 'active').map((c: any) => c.id);
+      await Promise.all(invalidIds.map(id => configStore.remove(id).catch(() => ({ status: 'error' }))));
       const local = await configStore.list();
       const registered = local.status === 'ok' ? local.value || [] : [];
 
@@ -578,20 +586,25 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       const mergedSaved = Array.from(allConfigsMap.values());
       setSavedConfigs(mergedSaved);
 
-      const activeId = activeConfigId || mergedSaved.find(s => s.isActive)?.id || mergedSaved[0]?.id;
+      const requestedActive = activeConfigId && connections.some(c => c.id === activeConfigId) ? activeConfigId : null;
+      const activeId = requestedActive || mergedSaved.find(s => s.isActive)?.id || connections[0]?.id;
       const activeRemote = connections.find((c: any) => c.id === activeId) || connections[0] || null;
       setActiveConnection(activeRemote);
+      if (activeRemote) setRevokedStatus('none');
       if (activeId) {
         setActiveConfigId(activeId);
         await configStore.setActive(activeId);
         const activeStore = await configStore.get(activeId);
         if (activeStore.status === 'ok' && activeStore.value) {
           setVpnConfig(activeStore.value.config);
+        } else if (activeRemote) {
+          // Métadonnées du profil précis : le jeton associé est utilisé au premier provisionnement.
+          setVpnConfig({ configId: activeRemote.id, displayProtocol: activeRemote.displayProtocol, dataToken: activeRemote.dataToken, configVersion: activeRemote.configVersion, configHash: activeRemote.configHash });
         } else {
           setVpnConfig(serverConfig);
         }
       } else {
-        setVpnConfig(serverConfig);
+        setVpnConfig(null);
       }
     } catch {
       // mode hors-ligne : chargement complet depuis le registre local (multi-config préservées)
@@ -672,7 +685,11 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
     // B6 — Échec vérification serveur = mode hors ligne honnête, pas de faux "expiré"
     try {
-      const freshRes = await apiClient.get('/mobile/vpn/config', { timeout: 4000 });
+      const selectedId = activeConfigId || activeConnection?.id;
+      const freshRes = await apiClient.get(
+        selectedId ? `/mobile/vpn/config?subscriptionId=${encodeURIComponent(selectedId)}` : '/mobile/vpn/config',
+        { timeout: 4000 },
+      );
       const freshState = freshRes?.data?.state;
       if (
         freshState === 'suspended' ||
@@ -894,6 +911,15 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => { connectRef.current = connect; });
 
+  // La reconnexion est différée au rendu suivant : connect() lit ainsi le profil B
+  // et non la fermeture React capturée avant setActiveConfigId.
+  useEffect(() => {
+    if (!pendingAutoConnectRef.current || pendingAutoConnectRef.current !== activeConfigId) return;
+    if (isConnecting || isConnected) return;
+    pendingAutoConnectRef.current = null;
+    void connectRef.current?.();
+  }, [activeConfigId, isConnecting, isConnected]);
+
   // ── B2 — PERSISTANCE À LA DÉCONNEXION ────────────────────────────────────────
   const disconnect = useCallback(async () => {
     if (isConnecting && !isConnected) return;
@@ -950,36 +976,66 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isConnecting, isConnected, addLog, reportUsageToBackend, addStepLog]);
 
-  // B8 — transaction: credentials are loaded first; failure always restores A and never removes either payload.
+  // B8 — Bascule atomique. Un abonnement distant actif peut être choisi avant
+  // son premier provisionnement local : il est alors provisionné avec SON jeton.
   const switchConfig = useCallback(async (configId: string) => {
     if (isSwitchingConfig || configId === activeConfigId) return;
+    const remoteTarget = remoteConnections.find(c => c.id === configId) || null;
+    if (remoteTarget && remoteTarget.status !== 'active') {
+      addLog(`❌ Cette configuration est ${remoteTarget.status} et ne peut pas être sélectionnée.`);
+      return;
+    }
+
     setIsSwitchingConfig(true);
     const previousId = activeConfigId;
-    const target = await configStore.get(configId);
+    const wasConnected = isConnected;
     try {
-      if (target.status !== 'ok' || !target.value) throw new Error(target.status === 'error' ? 'Stockage temporairement illisible — nouvelle tentative…' : 'Configuration absente');
-      if (isConnected) { addLog(`🔄 Basculement de configuration → ${configId}...`); await disconnect(); }
-      // The active pointer is switched only while starting B, and is rolled back atomically on failure.
+      let target = await configStore.get(configId);
+      if ((target.status !== 'ok' || !target.value) && remoteTarget) {
+        if (!deviceId) throw new Error('Identifiant appareil indisponible — reconnectez-vous puis réessayez');
+        addLog(`🔒 Provisionnement de « ${remoteTarget.name} »...`);
+        const fresh = await provisionAndStore(remoteTarget.dataToken, deviceId);
+        const provisioned = mergeConnectionMetadata(mergeProvisionedConfig(null, fresh.config), {
+          configId,
+          subscriptionId: fresh.meta.subscriptionId,
+          displayProtocol: remoteTarget.displayProtocol || fresh.meta.displayProtocol,
+          dataToken: remoteTarget.dataToken,
+          configVersion: fresh.meta.configVersion,
+          configHash: fresh.meta.configHash,
+        });
+        const stored = await saveCompleteConfig(provisioned, (provisioned.protocol || remoteTarget.technicalProtocol || 'vless').toLowerCase(), configId, fresh.meta.configExpiresAt);
+        if (!stored) throw new Error('La configuration reçue est incomplète');
+        target = await configStore.get(configId);
+      }
+      if (target.status !== 'ok' || !target.value) {
+        throw new Error(target.status === 'error' ? 'Stockage temporairement illisible — nouvelle tentative…' : 'Configuration absente');
+      }
+
+      if (wasConnected) { addLog(`🔄 Basculement de configuration → ${configId}...`); await disconnect(); }
       await configStore.setActive(configId);
       setActiveConfigId(configId);
-      const targetQuota = await loadQuotaData(configId);
-      setQuotaData(targetQuota);
-      setVpnConfig({ ...target.value.config, configId, displayProtocol: target.value.meta.displayProtocol, dataToken: target.value.meta.dataToken });
-      await connect();
-      await configStore.setActive(configId);
+      setActiveConnection(remoteTarget || activeConnection);
+      setRevokedStatus('none');
+      setQuotaData(await loadQuotaData(configId));
+      setVpnConfig({ ...target.value.config, configId, displayProtocol: target.value.meta.displayProtocol || remoteTarget?.displayProtocol, dataToken: (target.value.config as any).dataToken || remoteTarget?.dataToken });
+      if (wasConnected) pendingAutoConnectRef.current = configId;
     } catch (err: any) {
+      pendingAutoConnectRef.current = null;
       if (previousId) {
         await configStore.setActive(previousId);
         setActiveConfigId(previousId);
         const previous = await configStore.get(previousId);
-        if (previous.status === 'ok' && previous.value) setVpnConfig({ ...previous.value.config, configId: previousId, dataToken: previous.value.meta.dataToken });
+        const previousRemote = remoteConnections.find(c => c.id === previousId) || null;
+        if (previous.status === 'ok' && previous.value) {
+          setVpnConfig({ ...previous.value.config, configId: previousId, dataToken: (previous.value.config as any).dataToken || previousRemote?.dataToken });
+        }
+        setActiveConnection(previousRemote);
         setQuotaData(await loadQuotaData(previousId));
-        if (isConnected) await disconnect();
-        await connect();
+        if (wasConnected) pendingAutoConnectRef.current = previousId;
       }
       addLog(`⚠️ Basculement annulé : ${err?.message || 'erreur réseau'}`);
     } finally { setIsSwitchingConfig(false); }
-  }, [isSwitchingConfig, isConnected, activeConfigId, connect, disconnect, addLog]);
+  }, [isSwitchingConfig, isConnected, activeConfigId, activeConnection, remoteConnections, deviceId, disconnect, addLog]);
 
   const selectProtocol = useCallback(async (name: string) => {
     setSelectedProtocol(name);

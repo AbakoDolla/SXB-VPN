@@ -50,6 +50,9 @@ describe('garde-fous contre les régressions Android', () => {
   const supportScreen = source('app/support.tsx');
   const provisionClient = source('services/provisionClient.ts');
   const mobileRoutes = source('../server/routes/mobile.ts');
+  const vpnContext = source('contexts/VpnContext.tsx');
+  const canonicalConfig = source('../server/services/canonical-config.ts');
+  const nativeService = source('modules/android-native/SxbVpnService.kt');
 
   it('utilise Expo Crypto au lieu de dépendre de globalThis.crypto sous Hermes', () => {
     assert.match(configStore, /import \* as Crypto from 'expo-crypto';/);
@@ -74,5 +77,30 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(mobileRoutes, /router\.get\('\/support\/tickets'/);
     assert.match(mobileRoutes, /router\.post\('\/support\/ticket'/);
     assert.match(mobileRoutes, /router\.post\('\/support\/tickets'/);
+  });
+
+  it('préserve les JSON Xray complets au lieu de les confondre avec sing-box natif', () => {
+    assert.match(canonicalConfig, /sourceFormat = isXray \? 'xray-json' : 'singbox-json'/);
+    assert.match(canonicalConfig, /o\.settings\?\.vnext !== undefined/);
+    assert.match(canonicalConfig, /o\.streamSettings !== undefined/);
+  });
+
+  it('sélectionne la configuration demandée et non le dernier abonnement actif', () => {
+    assert.match(mobileRoutes, /requestedSubscriptionId/);
+    assert.match(mobileRoutes, /clientId: client\.id, id: requestedSubscriptionId/);
+    assert.match(vpnContext, /subscriptionId=\$\{encodeURIComponent\(selectedId\)\}/);
+    assert.match(vpnContext, /setRemoteConnections\(remote\)/);
+  });
+
+  it('retire les profils révoqués et provisionne indépendamment le second profil', () => {
+    assert.match(vpnContext, /invalidIds\.map\(id => configStore\.remove\(id\)/);
+    assert.match(vpnContext, /provisionAndStore\(remoteTarget\.dataToken, deviceId\)/);
+    assert.match(vpnContext, /pendingAutoConnectRef/);
+  });
+
+  it('convertit les règles et DNS Xray incompatibles avant le démarrage sing-box', () => {
+    assert.match(nativeService, /outboundTag.*outbound/);
+    assert.match(nativeService, /ip_cidr/);
+    assert.match(nativeService, /remove\("dns"\)/);
   });
 });
