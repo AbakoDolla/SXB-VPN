@@ -139,6 +139,15 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(nativeService, /outbound Xray non supporté par le moteur/);
   });
 
+  it('préserve les detours et convertit Trojan, Shadowsocks et les paramètres VMess Xray', () => {
+    assert.match(nativeService, /fun preserveXrayDetour\(outbound: JSONObject\)/);
+    assert.match(nativeService, /"trojan" ->/);
+    assert.match(nativeService, /"shadowsocks" ->/);
+    assert.match(nativeService, /put\("alter_id", alterId\)/);
+    assert.match(nativeService, /outbound Xray Trojan/);
+    assert.match(nativeService, /outbound Xray Shadowsocks/);
+  });
+
   it('n’expose plus le contenu du payload ou les hôtes dans les diagnostics natifs', () => {
     assert.doesNotMatch(nativeService, /PAYLOAD_FULL/);
     assert.doesNotMatch(nativeService, /DNS_RESOLVE host=/);

@@ -1711,6 +1711,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
             val stream = o.optJSONObject("streamSettings")
             val proxySettings = o.optJSONObject("proxySettings")
 
+            // Xray proxySettings.tag devient un detour sing-box. Toute conversion
+            // doit conserver ce chaînage, sinon le transport en amont disparaît.
+            fun preserveXrayDetour(outbound: JSONObject) {
+                val proxyTag = proxySettings?.optString("tag", "") ?: ""
+                if (proxyTag.isNotEmpty()) outbound.put("detour", proxyTag)
+            }
+
             when (proto) {
                 "vless", "vmess" -> {
                     val vnext = settings?.optJSONArray("vnext")?.optJSONObject(0)
@@ -1727,6 +1734,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
                         put("server_port", port)
                         put("uuid", uuid)
                         if (flow.isNotEmpty() && proto == "vless") put("flow", flow)
+                        if (proto == "vmess") {
+                            val alterId = user?.optInt("alterId", -1) ?: -1
+                            if (alterId >= 0) put("alter_id", alterId)
+                            user?.optString("security", "")
+                                ?.takeIf { it.isNotBlank() && it != "auto" }
+                                ?.let { put("security", it) }
+                        }
 
                         if (stream != null) {
                             val security = stream.optString("security", "none")
@@ -1756,13 +1770,69 @@ class SxbVpnService : VpnService(), PlatformInterface {
                             }
                         }
 
-                        if (proxySettings != null) {
-                            val proxyTag = proxySettings.optString("tag", "")
-                            if (proxyTag.isNotEmpty()) {
-                                put("detour", proxyTag)
+                    }
+                    preserveXrayDetour(sbOut)
+                    newOutbounds.put(sbOut)
+                }
+                "trojan" -> {
+                    val server = settings?.optJSONArray("servers")?.optJSONObject(0)
+                    val address = server?.optString("address", "") ?: ""
+                    val port = server?.optInt("port", 443) ?: 443
+                    val password = server?.optString("password", "") ?: ""
+                    if (address.isBlank() || password.isBlank()) {
+                        throw Exception("outbound Xray Trojan \"$tag\" incomplet : serveur ou mot de passe absent")
+                    }
+                    val sbOut = JSONObject().apply {
+                        put("type", "trojan")
+                        put("tag", tag)
+                        put("server", address)
+                        put("server_port", port)
+                        put("password", password)
+                        val tlsSettings = stream?.optJSONObject("tlsSettings")
+                        put("tls", JSONObject().apply {
+                            put("enabled", true)
+                            put("server_name", tlsSettings?.optString("serverName", address) ?: address)
+                            put("insecure", tlsSettings?.optBoolean("allowInsecure", true) ?: true)
+                        })
+                        when (stream?.optString("network", "tcp")) {
+                            "ws", "websocket" -> {
+                                val ws = stream.optJSONObject("wsSettings")
+                                put("transport", JSONObject().apply {
+                                    put("type", "ws")
+                                    put("path", ws?.optString("path", "/") ?: "/")
+                                    ws?.optJSONObject("headers")?.let { put("headers", it) }
+                                })
+                            }
+                            "grpc" -> {
+                                val grpc = stream.optJSONObject("grpcSettings")
+                                put("transport", JSONObject().apply {
+                                    put("type", "grpc")
+                                    put("service_name", grpc?.optString("serviceName", "GunService") ?: "GunService")
+                                })
                             }
                         }
                     }
+                    preserveXrayDetour(sbOut)
+                    newOutbounds.put(sbOut)
+                }
+                "shadowsocks" -> {
+                    val server = settings?.optJSONArray("servers")?.optJSONObject(0)
+                    val address = server?.optString("address", "") ?: ""
+                    val port = server?.optInt("port", 8388) ?: 8388
+                    val method = server?.optString("method", "") ?: ""
+                    val password = server?.optString("password", "") ?: ""
+                    if (address.isBlank() || method.isBlank() || password.isBlank()) {
+                        throw Exception("outbound Xray Shadowsocks \"$tag\" incomplet : serveur, méthode ou mot de passe absent")
+                    }
+                    val sbOut = JSONObject().apply {
+                        put("type", "shadowsocks")
+                        put("tag", tag)
+                        put("server", address)
+                        put("server_port", port)
+                        put("method", method)
+                        put("password", password)
+                    }
+                    preserveXrayDetour(sbOut)
                     newOutbounds.put(sbOut)
                 }
                 "socks" -> {
@@ -1779,6 +1849,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                         user?.optString("user", "")?.takeIf { it.isNotBlank() }?.let { put("username", it) }
                         user?.optString("pass", "")?.takeIf { it.isNotBlank() }?.let { put("password", it) }
                     }
+                    preserveXrayDetour(sbOut)
                     newOutbounds.put(sbOut)
                 }
                 "http" -> {
@@ -1794,6 +1865,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                         put("server_port", port)
                         if (headers != null) put("headers", headers)
                     }
+                    preserveXrayDetour(sbOut)
                     newOutbounds.put(sbOut)
                 }
                 "freedom" -> {
