@@ -170,4 +170,10 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(notificationsScreen, /READ_NOTIFICATION_IDS_KEY/);
     assert.doesNotMatch(notificationsScreen, /apiClient\.patch\(.*notifications/);
   });
+
+  it('supprime automatiquement les configurations orphelines supprimées du dashboard', () => {
+    assert.match(vpnContext, /remoteIds/);
+    assert.match(vpnContext, /orphanIds/);
+    assert.match(vpnContext, /configStore\.remove\(id\)/);
+  });
 });

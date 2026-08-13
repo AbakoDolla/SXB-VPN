@@ -577,6 +577,16 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       // Un abonnement révoqué/expiré/épuisé ne doit jamais rester utilisable hors-ligne.
       const invalidIds = remote.filter((c: any) => c.status !== 'active').map((c: any) => c.id);
       await Promise.all(invalidIds.map(id => configStore.remove(id).catch(() => ({ status: 'error' }))));
+
+      // Nettoyage des configurations orphelines supprimées du dashboard
+      const remoteIds = new Set(remote.map((c: any) => c.id));
+      const localListBefore = await configStore.list();
+      const registeredBefore = localListBefore.status === 'ok' ? localListBefore.value || [] : [];
+      const orphanIds = registeredBefore
+        .map((r: any) => r.configId)
+        .filter((id: string) => !remoteIds.has(id));
+      await Promise.all(orphanIds.map(id => configStore.remove(id).catch(() => ({ status: 'error' }))));
+
       const local = await configStore.list();
       const registered = local.status === 'ok' ? local.value || [] : [];
 
