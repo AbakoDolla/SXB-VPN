@@ -567,7 +567,11 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       }
 
       // Multi-config : chaque abonnement est identifiable et provisionnable séparément.
-      const connectionsRes = await apiClient.get('/mobile/connections').catch(() => ({ data: { connections: [] } }));
+      let isRemoteSuccess = true;
+      const connectionsRes = await apiClient.get('/mobile/connections').catch(() => {
+        isRemoteSuccess = false;
+        return { data: { connections: [] } };
+      });
       const remote = (connectionsRes.data?.connections || []) as VpnConnection[];
       setRemoteConnections(remote);
       const connections = remote.filter((c: any) =>
@@ -578,14 +582,16 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       const invalidIds = remote.filter((c: any) => c.status !== 'active').map((c: any) => c.id);
       await Promise.all(invalidIds.map(id => configStore.remove(id).catch(() => ({ status: 'error' }))));
 
-      // Nettoyage des configurations orphelines supprimées du dashboard
-      const remoteIds = new Set(remote.map((c: any) => c.id));
-      const localListBefore = await configStore.list();
-      const registeredBefore = localListBefore.status === 'ok' ? localListBefore.value || [] : [];
-      const orphanIds = registeredBefore
-        .map((r: any) => r.configId)
-        .filter((id: string) => !remoteIds.has(id));
-      await Promise.all(orphanIds.map(id => configStore.remove(id).catch(() => ({ status: 'error' }))));
+      // Nettoyage des configurations orphelines supprimées du dashboard (UNIQUEMENT si l'appel distant a réussi pour éviter de purger en mode hors-ligne)
+      if (isRemoteSuccess) {
+        const remoteIds = new Set(remote.map((c: any) => c.id));
+        const localListBefore = await configStore.list();
+        const registeredBefore = localListBefore.status === 'ok' ? localListBefore.value || [] : [];
+        const orphanIds = registeredBefore
+          .map((r: any) => r.configId)
+          .filter((id: string) => !remoteIds.has(id));
+        await Promise.all(orphanIds.map(id => configStore.remove(id).catch(() => ({ status: 'error' }))));
+      }
 
       const local = await configStore.list();
       const registered = local.status === 'ok' ? local.value || [] : [];
