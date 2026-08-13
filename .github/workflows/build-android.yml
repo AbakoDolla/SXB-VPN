@@ -368,9 +368,6 @@ jobs:
 
           # Build direct avec skips forcés (gain ~45s de scan de tâches)
           ./gradlew :app:assembleRelease \
-            -x :react-native-reanimated:assertWorkletsVersionTask \
-            -x :react-native-reanimated:assertMinimalReactNativeVersionTask \
-            -x :react-native-worklets:assertMinimalReactNativeVersionTask \
             -x :app:lintVitalRelease \
             -x :app:lintVitalAnalyzeRelease \
             --no-daemon \
