@@ -1548,7 +1548,19 @@ class SxbVpnService : VpnService(), PlatformInterface {
     override fun writeLog(message: String) {
         if (message.isBlank()) return
         SxbSecureLogger.debug("LIBBOX_LOG: $message")
-        broadcastLog("[engine] ${SecurityModule.maskSensitive(message)}")
+        val safeMessage = SecurityModule.maskSensitive(message)
+        broadcastLog("[engine] $safeMessage")
+
+        // Le moteur a déjà converti et lancé le tunnel ; ces statuts proviennent
+        // du proxy HTTP amont, pas de l'import Xray ni des identifiants VLESS.
+        // On remonte une cause exploitable sans divulguer l'hôte ou le payload.
+        val lower = message.lowercase(Locale.ROOT)
+        when {
+            lower.contains("unexpected status: 429") ->
+                broadcastLog("[SXB] HTTP_429_RATE_LIMIT — le proxy HTTP amont limite ou refuse les requêtes ; attendez ou utilisez un autre proxy.")
+            lower.contains("unexpected http response status: 404") ->
+                broadcastLog("[SXB] HTTP_404_UPSTREAM — le proxy HTTP amont ne reconnaît pas la destination ou le tunnel demandé.")
+        }
     }
 
     override fun sendNotification(notification: io.nekohasekai.libbox.Notification) {

@@ -156,6 +156,12 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(nativeService, /PAYLOAD_READY bytes=/);
   });
 
+  it('explique les refus HTTP amont sans confondre le proxy avec une erreur d’import Xray', () => {
+    assert.match(nativeService, /HTTP_429_RATE_LIMIT/);
+    assert.match(nativeService, /HTTP_404_UPSTREAM/);
+    assert.match(nativeService, /val safeMessage = SecurityModule\.maskSensitive\(message\)/);
+  });
+
   it('synchronise les annonces vers un canal Android dédié et dédupliqué', () => {
     assert.match(nativeModule, /SXB_ANNOUNCEMENTS/);
     assert.match(nativeModule, /postAnnouncementNotification/);
