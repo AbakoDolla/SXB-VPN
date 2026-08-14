@@ -902,19 +902,16 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         updateStepStatus('config', 'done');
         addStepLog('quota', 'step_quota_check', 'active');
 
+        // En mode hors-ligne / zero-rated, si une configuration locale complète existe,
+        // on autorise la tentative de connexion même si le quota enregistré localement semble épuisé,
+        // car l'opérateur mobile zero-rated permet d'atteindre le serveur VPN sans data classique.
         const exhausted = await isQuotaExhausted();
         if (exhausted) {
-          addStepLog('quota', 'step_quota_exhausted', 'error');
-          addLog('❌ Quota data épuisé — rechargez votre abonnement');
-          setIsConnecting(false);
-          return;
+          addLog('ℹ️ Quota local estimé épuisé — tentative de connexion quand même (zéro-rated / hors-ligne)');
         }
         const expired = await isConfigExpired();
         if (expired) {
-          addStepLog('quota', 'step_expired', 'error');
-          addLog('❌ Abonnement expiré — renouvelez votre abonnement');
-          setIsConnecting(false);
-          return;
+          addLog('ℹ️ Date d’expiration locale atteinte — tentative de connexion quand même en mode de secours');
         }
         addStepLog('quota', 'step_quota_ok', 'done');
 
