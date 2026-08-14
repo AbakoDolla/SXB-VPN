@@ -41,8 +41,7 @@ jobs:
 
       - name: Approve build scripts
         run: |
-          pnpm approve-builds esbuild 2>/dev/null || true
-          pnpm approve-builds @google/genai 2>/dev/null || true
+          pnpm config set ignore-build-scripts true 2>/dev/null || true
 
       - name: Install workspace dependencies
         run: pnpm install --no-frozen-lockfile
@@ -108,8 +107,8 @@ jobs:
             echo "🔑 Fix permissions complètes (évite EACCES pnpm)..."
             sudo chown -R ubuntu:ubuntu /var/www/sxb-vpn/ 2>/dev/null || true
             echo "📦 Sync deps (lockfile may differ from VPS)..."
-            pnpm approve-builds @google/genai 2>/dev/null || true
-            pnpm install --no-frozen-lockfile 2>&1 | tail -5
+            pnpm config set ignore-build-scripts true 2>/dev/null || true
+            pnpm install --no-frozen-lockfile --ignore-scripts 2>&1 | tail -5
 
             echo "🎨 Build Dashboard..."
             sudo chown -R ubuntu:ubuntu /var/www/sxb-vpn/artifacts/ 2>/dev/null || true
