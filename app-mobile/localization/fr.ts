@@ -267,8 +267,7 @@ export const fr = {
   create_ticket: 'Créer un ticket',
   my_tickets: 'Mes tickets',
   contact_us: 'Nous contacter',
-  contact_via_whatsapp: 'WhatsApp',
-  contact_via_email: 'Email',
+  // duplicate removed
   ticket_submit: 'Envoyer',
   ticket_submitting: 'Envoi en cours...',
   ticket_success: 'Votre message a été envoyé avec succès.',

@@ -251,8 +251,7 @@ export const en = {
   create_ticket: 'Create a ticket',
   my_tickets: 'My tickets',
   contact_us: 'Contact us',
-  contact_via_whatsapp: 'WhatsApp',
-  contact_via_email: 'Email',
+  // duplicate removed
   ticket_submit: 'Send',
   ticket_submitting: 'Sending...',
   ticket_success: 'Your message has been sent successfully.',
