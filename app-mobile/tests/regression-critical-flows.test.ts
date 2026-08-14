@@ -186,10 +186,10 @@ describe('garde-fous contre les régressions Android', () => {
   });
 
   it('gère le ciblage des annonces par identifiant d’appareil (Device ID)', () => {
-    const mobileRouteContent = source('/home/ubuntu/SXB-VPN/server/routes/mobile.ts');
+    const mobileRouteContent = source('../server/routes/mobile.ts');
     assert.match(mobileRouteContent, /targetDeviceId/);
     assert.match(mobileRouteContent, /x-sxb-device-id/);
-    const apiClientContent = source('/home/ubuntu/SXB-VPN/app-mobile/services/apiClient.ts');
+    const apiClientContent = source('services/apiClient.ts');
     assert.match(apiClientContent, /X-SXB-Device-ID/);
   });
 });
