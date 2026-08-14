@@ -23,6 +23,7 @@ export const fr = {
   paste: 'Coller',
   scan_qr: 'Scanner QR',
   activate: 'Activer',
+  activate_btn: 'Activer mon compte',
   activating: 'Activation en cours...',
   activation_success: 'Compte activé avec succès !',
   qr_soon_title: 'QR Code',

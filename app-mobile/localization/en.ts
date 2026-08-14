@@ -20,6 +20,7 @@ export const en = {
   paste: 'Paste',
   scan_qr: 'Scan QR',
   activate: 'Activate',
+  activate_btn: 'Activate my account',
   activating: 'Activating...',
   activation_success: 'Account activated successfully!',
   qr_soon_title: 'QR Code',
