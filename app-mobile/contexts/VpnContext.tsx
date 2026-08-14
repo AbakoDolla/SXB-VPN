@@ -593,6 +593,21 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         await Promise.all(orphanIds.map(id => configStore.remove(id).catch(() => ({ status: 'error' }))));
       }
 
+      // Provisionnement proactif : pour chaque connexion active ayant un token, on récupère la config complète.
+      // Cela permet la connexion ultérieure sans data (mode hors-ligne / zero-rated).
+      if (isRemoteSuccess && deviceId) {
+        const { provisionAndStore } = require('@/services/provisionClient');
+        for (const conn of connections) {
+          if (conn.dataToken && conn.status === 'active') {
+            try {
+              await provisionAndStore(conn.dataToken, deviceId);
+            } catch (pErr) {
+              console.warn(`[Refresh] Échec provisionnement proactif pour ${conn.id}:`, pErr);
+            }
+          }
+        }
+      }
+
       const local = await configStore.list();
       const registered = local.status === 'ok' ? local.value || [] : [];
 
