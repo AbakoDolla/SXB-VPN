@@ -176,4 +176,12 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(vpnContext, /orphanIds/);
     assert.match(vpnContext, /configStore\.remove\(id\)/);
   });
+
+  it('détecte de manière robuste le mode WebSocket vs SSH brut via peeking d’octet après 101', () => {
+    assert.match(nativeService, /val firstByte = if \(peekLen > 0\) peekBuf\[0\]\.toInt\(\) and 0xFF else -1/);
+    assert.match(nativeService, /if \(firstByte == 'S'\.code\)/);
+    assert.match(nativeService, /COSMETIC_101_DETECTED/);
+    assert.match(nativeService, /WEBSOCKET_MODE_ACTIVATED/);
+    assert.match(nativeService, /WsInputStream\(baseIn, rawOut, onEvent\)/);
+  });
 });
