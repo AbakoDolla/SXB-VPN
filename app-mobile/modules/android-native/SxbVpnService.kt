@@ -429,20 +429,29 @@ private class SxbPayloadProxy(
             return
         }
 
+        // ── 4. Lever l'ambiguïté du mode de transport (Peeking) ──────────────
+        // On lit le premier octet après les headers pour savoir si c'est du binaire WS (0x82)
+        // ou du texte SSH ('S'). Indispensable pour les serveurs qui répondent 101
+        // mais envoient du SSH brut (cosmétique) vs les vrais serveurs WebSocket.
+        val peekBuf = ByteArray(1)
+        var peekLen = 0
+        try {
+            transportSocket.soTimeout = 2000
+            peekLen = rawIn.read(peekBuf)
+            transportSocket.soTimeout = 0
+        } catch (_: Exception) {}
+        val firstByte = if (peekLen > 0) peekBuf[0].toInt() and 0xFF else -1
+
         when {
             isSshBanner || isEmpty -> {
                 // Serveur répond SSH directement (pas de proxy intermédiaire)
-                // Si le banner a déjà été consommé dans headerBuf, il faut le remettre en tête
                 if (isSshBanner) {
                     onEvent("[SXB_DEBUG] SSH_BANNER_RECEIVED")
-                    Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_BANNER_RECEIVED source=payload_response")
-                    Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_BANNER_PREPEND bytes=${response.length}")
                     inputStream = SequenceInputStream(
                         ByteArrayInputStream(response.toByteArray(Charsets.ISO_8859_1)),
                         rawIn
                     )
                 } else {
-                    Log.i("SXB_DEBUG", "[SXB_DEBUG] EMPTY_RESPONSE raw streams")
                     inputStream = rawIn
                 }
                 outputStream = rawOut
@@ -451,29 +460,31 @@ private class SxbPayloadProxy(
             isConnect -> {
                 // HTTP CONNECT 200 → tunnel TCP transparent, SSH direct
                 Log.i("SXB_DEBUG", "[SXB_DEBUG] HTTP_CONNECT_TUNNEL raw SSH streams")
-                inputStream  = rawIn
-                outputStream = rawOut
-            }
-
-            // Une charge CONNECT(*) demande un tunnel TCP transparent (sémantique proxy
-            // eProxy/SocksIP). Un 101 reçu ici est COSMÉTIQUE — certains panneaux
-            // répondent 101 à toute requête — et le SSH arrive derrière en FLUX BRUT,
-            // pas en trames WS. Preuve terrain 2026-07-31 (node05, HOST zéro-raté) :
-            // 101 Sec-WebSocket-Accept statique + « SSH-2.0-… » en clair ; l'adaptateur
-            // WS attendait des trames → 30 s de silence → « closed by foreign host ».
-            isConnectPayload -> {
-                onEvent("[SXB_DEBUG] CONNECT_PAYLOAD_RAW_TUNNEL — 101 cosmétique ignoré, SSH en flux brut")
-                Log.i("SXB_DEBUG", "[SXB_DEBUG] CONNECT_PAYLOAD_RAW_TUNNEL raw SSH streams (cosmetic 101 ignored)")
-                inputStream  = rawIn
+                inputStream  = if (peekLen > 0) SequenceInputStream(ByteArrayInputStream(peekBuf, 0, peekLen), rawIn) else rawIn
                 outputStream = rawOut
             }
 
             isWs -> {
-                // HTTP 101 WebSocket Upgrade → JSch doit passer par les frames WS
-                onEvent("[SXB_DEBUG] WEBSOCKET_MODE_ACTIVATED — trames RFC 6455 (masquage client)")
-                Log.i("SXB_DEBUG", "[SXB_DEBUG] WEBSOCKET_MODE_ACTIVATED wrapping streams with WS adapter")
-                inputStream  = WsInputStream(rawIn, rawOut) { ev -> onEvent(ev) }
-                outputStream = WsOutputStream(rawOut) { ev -> onEvent(ev) }
+                // HTTP 101 WebSocket Upgrade. 
+                // Si le premier octet est 'S' (SSH-...), le 101 est cosmétique (ex: node05).
+                // Sinon, on active l'adaptateur WebSocket RFC 6455.
+                if (firstByte == 'S'.code) {
+                    onEvent("[SXB_DEBUG] COSMETIC_101_DETECTED — SSH brut détecté après 101")
+                    inputStream  = if (peekLen > 0) SequenceInputStream(ByteArrayInputStream(peekBuf, 0, peekLen), rawIn) else rawIn
+                    outputStream = rawOut
+                } else {
+                    onEvent("[SXB_DEBUG] WEBSOCKET_MODE_ACTIVATED — trames RFC 6455")
+                    val baseIn = if (peekLen > 0) SequenceInputStream(ByteArrayInputStream(peekBuf, 0, peekLen), rawIn) else rawIn
+                    inputStream  = WsInputStream(baseIn, rawOut, onEvent)
+                    outputStream = WsOutputStream(rawOut, onEvent)
+                }
+            }
+
+            isConnectPayload -> {
+                // Cas d'un payload CONNECT sans réponse 101/200 explicite mais avec données derrière
+                onEvent("[SXB_DEBUG] CONNECT_PAYLOAD_FALLBACK — flux brut")
+                inputStream  = if (peekLen > 0) SequenceInputStream(ByteArrayInputStream(peekBuf, 0, peekLen), rawIn) else rawIn
+                outputStream = rawOut
             }
 
             else -> {
@@ -2261,9 +2272,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
             din.readFully(ByteArray(nMethods))
             dout.write(byteArrayOf(5, 0)); dout.flush()
 
-            // Requête CONNECT
+            // Requête CONNECT (1=Connect, 2=Bind, 3=UDP Associate)
             val cmd = ByteArray(4); din.readFully(cmd)
-            if (cmd[1].toInt() != 1) { dout.write(byteArrayOf(5, 7, 0, 1, 0, 0, 0, 0, 0, 0)); client.close(); return }
+            val command = cmd[1].toInt()
+            if (command != 1) {
+                Log.w(TAG, "[SXB_DEBUG] SOCKS5_COMMAND_NOT_SUPPORTED cmd=$command (only CONNECT=1 supported over SSH)")
+                dout.write(byteArrayOf(5, 7, 0, 1, 0, 0, 0, 0, 0, 0)); client.close(); return
+            }
 
             val atyp = cmd[3].toInt()
             val destHost: String
