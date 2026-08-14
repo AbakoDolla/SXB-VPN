@@ -836,15 +836,30 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
               addLog('✅ Configuration provisionnée avec succès');
             } catch (provErr: unknown) {
               const diagnostic = provErr instanceof ProvisioningError ? provErr.diagnostic : undefined;
-              const details = diagnostic
-                ? ` [${diagnostic.code}; étape=${diagnostic.stage}; essais=${diagnostic.attempts}${diagnostic.httpStatus ? `; HTTP=${diagnostic.httpStatus}` : ''}${diagnostic.requestId ? `; req=${diagnostic.requestId}` : ''}]`
-                : '';
-              const message = provErr instanceof Error ? provErr.message : 'erreur inconnue';
-              addStepLog('provisioning', 'step_error', 'error', diagnostic?.code || 'PVN_UNKNOWN');
-              addLog(`⚠️ Provisionnement échoué : ${message}${details}`);
-              setVpnState('error');
-              setIsConnecting(false);
-              return;
+              if (diagnostic?.code === 'PVN_NETWORK' || diagnostic?.code === 'PVN_TIMEOUT' || !diagnostic?.httpStatus) {
+                const fallbackLocal = await configStore.getActive();
+                if (fallbackLocal.status === 'ok' && fallbackLocal.value?.config) {
+                  configToUse = fallbackLocal.value.config;
+                  addLog('ℹ️ Réseau restreint / hors-ligne détecté — utilisation du profil local sécurisé');
+                } else if (activeConnection) {
+                  configToUse = { ...activeConnection };
+                  addLog('ℹ️ Réseau restreint / hors-ligne détecté — utilisation de la connexion active en cache');
+                }
+              }
+
+              if (!configToUse) {
+                const details = diagnostic
+                  ? ` [${diagnostic.code}; étape=${diagnostic.stage}; essais=${diagnostic.attempts}${diagnostic.httpStatus ? `; HTTP=${diagnostic.httpStatus}` : ''}${diagnostic.requestId ? `; req=${diagnostic.requestId}` : ''}]`
+                  : '';
+                const message = provErr instanceof Error ? provErr.message : 'erreur inconnue';
+                addStepLog('provisioning', 'step_error', 'error', diagnostic?.code || 'PVN_UNKNOWN');
+                addLog(`⚠️ Provisionnement échoué : ${message}${details}`);
+                setVpnState('error');
+                setIsConnecting(false);
+                return;
+              }
+              addStepLog('provisioning', 'step_provisioned', 'done');
+              addLog('✅ Configuration locale chargée en mode hors-ligne');
             }
           } else {
             addLog('❌ Aucune configuration disponible — activez un forfait');
