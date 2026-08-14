@@ -628,7 +628,7 @@ router.get('/notifications', async (req: AuthenticatedRequest, res: Response) =>
       const announcements = await getActiveAnnouncements();
       for (const announcement of announcements) {
         // Si une annonce est ciblée sur un appareil précis et que l'ID ne correspond pas, on l'ignore.
-        if (announcement.targetDeviceId && deviceIdHeader && announcement.targetDeviceId !== deviceIdHeader) {
+        if (announcement.targetDeviceId && announcement.targetDeviceId !== deviceIdHeader) {
           continue;
         }
         notifications.push({

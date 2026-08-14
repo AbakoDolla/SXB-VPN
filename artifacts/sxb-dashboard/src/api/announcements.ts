@@ -12,11 +12,13 @@ export interface Announcement {
   expiresAt: string | null;
   createdAt: string;
   updatedAt: string;
-}
+  targetDeviceId?: string | null;
+};
 
 export type AnnouncementInput = Pick<Announcement, 'title' | 'message' | 'level' | 'active'> & {
   startsAt?: string;
   expiresAt?: string | null;
+  targetDeviceId?: string | null;
 };
 
 export async function fetchAnnouncements(): Promise<Announcement[]> {
