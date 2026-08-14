@@ -694,6 +694,19 @@ router.get('/notifications', async (req: AuthenticatedRequest, res: Response) =>
   }
 });
 
+// GET /api/mobile/version & /api/mobile/app-version — vérification de version et lien de téléchargement APK
+router.get(['/version', '/app-version'], async (_req: Request, res: Response) => {
+  return res.json({
+    versionCode: 18,
+    versionName: "1.8.0",
+    minSupportedCode: 10,
+    apkUrl: "https://vpnsxb.afrihall.com/downloads/SXB-VPN-release.apk",
+    notes: "Refonte UI/UX complète, support Xray/VLESS et HTTP upstream optimisé, correctif des configurations orphelines et notifications ciblées.",
+    changelog: "Refonte UI/UX complète, support Xray/VLESS et HTTP upstream optimisé, correctif des configurations orphelines et notifications ciblées.",
+    forceUpdate: false,
+  });
+});
+
 // GET /api/mobile/history — historique des sessions VPN
 router.get('/history', async (req: AuthenticatedRequest, res: Response) => {
   try {
