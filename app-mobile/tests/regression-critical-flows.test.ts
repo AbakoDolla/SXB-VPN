@@ -184,4 +184,12 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(nativeService, /WEBSOCKET_MODE_ACTIVATED/);
     assert.match(nativeService, /WsInputStream\(baseIn, rawOut, onEvent\)/);
   });
+
+  it('gère le ciblage des annonces par identifiant d’appareil (Device ID)', () => {
+    const mobileRouteContent = source('/home/ubuntu/SXB-VPN/server/routes/mobile.ts');
+    assert.match(mobileRouteContent, /targetDeviceId/);
+    assert.match(mobileRouteContent, /x-sxb-device-id/);
+    const apiClientContent = source('/home/ubuntu/SXB-VPN/app-mobile/services/apiClient.ts');
+    assert.match(apiClientContent, /X-SXB-Device-ID/);
+  });
 });

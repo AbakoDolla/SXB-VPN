@@ -622,11 +622,15 @@ router.get('/notifications', async (req: AuthenticatedRequest, res: Response) =>
       });
     }
 
-    // Annonces administratives persistantes : visibles dans toutes les applications
-    // actives, sans donner accès aux données sensibles du dashboard.
+    // Annonces administratives persistantes : visibles globalement ou ciblées sur cet appareil précis.
     try {
+      const deviceIdHeader = String(req.headers['x-sxb-device-id'] || req.query.deviceId || '').trim();
       const announcements = await getActiveAnnouncements();
       for (const announcement of announcements) {
+        // Si une annonce est ciblée sur un appareil précis et que l'ID ne correspond pas, on l'ignore.
+        if (announcement.targetDeviceId && deviceIdHeader && announcement.targetDeviceId !== deviceIdHeader) {
+          continue;
+        }
         notifications.push({
           id: `announcement-${announcement.id}`,
           type: announcement.level,

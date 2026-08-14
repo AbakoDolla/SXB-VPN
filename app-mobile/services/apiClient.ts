@@ -57,6 +57,12 @@ apiClient.interceptors.request.use(
     if (token && config.headers) {
       config.headers['Authorization'] = `Bearer ${token}`;
     }
+    try {
+      const deviceId = await AsyncStorage.getItem('@sxb_device_id');
+      if (deviceId && config.headers) {
+        config.headers['X-SXB-Device-ID'] = deviceId;
+      }
+    } catch {}
     return config;
   },
   (error) => Promise.reject(error),

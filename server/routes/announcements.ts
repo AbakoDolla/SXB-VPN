@@ -14,6 +14,7 @@ export type Announcement = {
   message: string;
   level: 'info' | 'success' | 'warning' | 'error';
   active: boolean;
+  targetDeviceId?: string | null;
   startsAt: string;
   expiresAt: string | null;
   createdAt: string;
@@ -25,6 +26,7 @@ const announcementSchema = z.object({
   message: z.string().trim().min(3).max(2000),
   level: z.enum(['info', 'success', 'warning', 'error']).default('info'),
   active: z.boolean().default(true),
+  targetDeviceId: z.string().trim().nullable().optional(),
   startsAt: z.string().datetime().optional(),
   expiresAt: z.string().datetime().nullable().optional(),
 });
@@ -41,6 +43,7 @@ function normalize(raw: unknown): Announcement[] {
       message: value.message,
       level: ['info', 'success', 'warning', 'error'].includes(value.level) ? value.level : 'info',
       active: value.active !== false,
+      targetDeviceId: value.targetDeviceId || null,
       startsAt: value.startsAt || value.createdAt || new Date().toISOString(),
       expiresAt: value.expiresAt || null,
       createdAt: value.createdAt || new Date().toISOString(),
@@ -90,6 +93,7 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =
     const now = new Date().toISOString();
     const announcement: Announcement = {
       id: randomUUID(), title: input.title, message: input.message, level: input.level, active: input.active,
+      targetDeviceId: input.targetDeviceId || null,
       startsAt: input.startsAt || now, expiresAt: input.expiresAt || null, createdAt: now, updatedAt: now,
     };
     const all = await readAll();
