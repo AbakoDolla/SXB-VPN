@@ -39,7 +39,14 @@
     "configurations": "Configurations VPN",
     "tokens": "Tokens SXB",
     "vouchers": "Vouchers",
+    "subscriptions": "Forfaits Data",
+    "devices": "Appareils",
+    "monitoring": "Monitoring",
+    "sessions": "Sessions actives",
     "analytics": "Statistiques",
+    "admin": "Administration",
+    "accounts": "Comptes Admin",
+    "annonces": "Annonces",
     "rbac": "Contrôle RBAC",
     "settings": "Paramètres"
   }

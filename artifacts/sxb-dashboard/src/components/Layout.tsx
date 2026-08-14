@@ -102,8 +102,8 @@ export default function Layout({
       roles: ALL_ROLES,
       items: [
         { kind: 'leaf', id: 'clients', label: t('sidebar.vpn_accounts'), icon: Users, roles: ALL_ROLES },
-        { kind: 'leaf', id: 'subscriptions', label: t('sidebar.subscriptions') || 'Forfaits Data', icon: PackageOpen, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
-        { kind: 'leaf', id: 'devices', label: t('sidebar.devices') || 'Appareils', icon: Smartphone, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
+        { kind: 'leaf', id: 'subscriptions', label: t('sidebar.subscriptions'), icon: PackageOpen, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
+        { kind: 'leaf', id: 'devices', label: t('sidebar.devices'), icon: Smartphone, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
         { kind: 'leaf', id: 'tokens', label: t('sidebar.tokens'), icon: Key, roles: ALL_ROLES },
         { kind: 'leaf', id: 'vouchers', label: t('sidebar.vouchers'), icon: BadgePercent, roles: ALL_ROLES },
       ],
@@ -118,12 +118,12 @@ export default function Layout({
     {
       kind: 'group',
       id: 'monitoring',
-      label: t('sidebar.monitoring') || 'Monitoring',
+      label: t('sidebar.monitoring'),
       icon: Activity,
       color: 'text-emerald-400',
       roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'],
       items: [
-        { kind: 'leaf', id: 'sessions', label: t('sidebar.sessions') || 'Sessions', icon: Radio, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
+        { kind: 'leaf', id: 'sessions', label: t('sidebar.sessions'), icon: Radio, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
         { kind: 'leaf', id: 'analytics', label: t('sidebar.analytics'), icon: BarChart3, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
         { kind: 'leaf', id: 'servers', label: t('sidebar.servers'), icon: Server, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
       ],
@@ -131,15 +131,15 @@ export default function Layout({
     {
       kind: 'group',
       id: 'admin',
-      label: t('sidebar.admin') || 'Administration',
+      label: t('sidebar.admin'),
       icon: Shield,
       color: 'text-amber-400',
       roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'],
       items: [
-        { kind: 'leaf', id: 'accounts', label: t('sidebar.accounts') || 'Comptes', icon: UserPlus, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
+        { kind: 'leaf', id: 'accounts', label: t('sidebar.accounts'), icon: UserPlus, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
         { kind: 'leaf', id: 'resellers', label: t('sidebar.resellers'), icon: UserCog, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
         { kind: 'leaf', id: 'rbac', label: t('sidebar.rbac'), icon: Shield, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
-        { kind: 'leaf', id: 'announcements', label: 'Annonces', icon: BellRing, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
+        { kind: 'leaf', id: 'announcements', label: t('sidebar.annonces'), icon: BellRing, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
       ],
     },
     {
