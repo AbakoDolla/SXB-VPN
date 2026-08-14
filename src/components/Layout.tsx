@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react';
 import { User } from '../types';
+import { useTranslation } from '../contexts/I18nContext';
 import {
   LayoutDashboard, Users, Shield, Key, Smartphone,
   Settings, LogOut, Terminal, Zap, CreditCard,
   Menu, X, UserPlus, FileText, Layers, Network, Box,
+  LifeBuoy, Activity, Settings as SettingsIcon,
 } from 'lucide-react';
 
 interface LayoutProps {
@@ -22,6 +24,7 @@ export default function Layout({
   currentUser,
   onLogout,
 }: LayoutProps) {
+  const { t } = useTranslation();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   useEffect(() => {
@@ -38,32 +41,32 @@ export default function Layout({
   // ── Navigation organisée selon les besoins réels ──────────────────────────
   const navGroups = [
     {
-      label: 'PRINCIPAL',
+      label: t('sidebar.admin').toUpperCase(),
       items: [
-        { id: 'dashboard',     label: 'Dashboard',          icon: LayoutDashboard,  roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
-        { id: 'clients',       label: 'Clients VPN',         icon: Users,             roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
-        { id: 'subscriptions', label: 'Forfaits Data',       icon: CreditCard,        roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
-        { id: 'tokens',        label: 'Tokens SXB',          icon: Key,               roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
-        { id: 'devices',       label: 'Appareils',           icon: Smartphone,        roles: ['SUPER_ADMIN','ADMIN'] },
+        { id: 'dashboard',     label: t('sidebar.dashboard'),      icon: LayoutDashboard,  roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
+        { id: 'clients',       label: t('sidebar.clients'),        icon: Users,             roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
+        { id: 'vpn-accounts',  label: t('sidebar.vpn_accounts'),   icon: Shield,            roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
+        { id: 'subscriptions', label: t('sidebar.subscriptions'),  icon: CreditCard,        roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
+        { id: 'devices',       label: t('sidebar.devices'),        icon: Smartphone,        roles: ['SUPER_ADMIN','ADMIN','SUPPORT'] },
+        { id: 'tokens',        label: t('sidebar.tokens'),         icon: Key,               roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
+        { id: 'vouchers',      label: t('sidebar.vouchers'),       icon: FileText,          roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
       ],
     },
     {
-      label: 'PROTOCOLES VPN',
+      label: t('sidebar.configurations').toUpperCase(),
       items: [
-        { id: 'vpn-profiles',  label: 'Configurations VPN',  icon: Layers,            roles: ['SUPER_ADMIN','ADMIN'] },
-        { id: 'protocols',     label: 'Gestionnaire Proto.',  icon: Network,           roles: ['SUPER_ADMIN','ADMIN'] },
-        { id: 'ssh',           label: 'SSH Manager',          icon: Terminal,          roles: ['SUPER_ADMIN','ADMIN','SUPPORT'] },
-        { id: 'xray',          label: 'Xray / V2Ray',         icon: Zap,               roles: ['SUPER_ADMIN','ADMIN'] },
-        { id: 'singbox',       label: 'Sing-box',             icon: Box,               roles: ['SUPER_ADMIN','ADMIN'] },
+        { id: 'vpn-profiles',  label: t('sidebar.configurations'), icon: Layers,            roles: ['SUPER_ADMIN','ADMIN'] },
+        { id: 'ssh',           label: 'SSH Manager',               icon: Terminal,          roles: ['SUPER_ADMIN','ADMIN','SUPPORT'] },
+        { id: 'xray',          label: 'Xray / V2Ray',              icon: Zap,               roles: ['SUPER_ADMIN','ADMIN'] },
+        { id: 'singbox',       label: 'Sing-box',                  icon: Box,               roles: ['SUPER_ADMIN','ADMIN'] },
       ],
     },
     {
-      label: 'ADMINISTRATION',
+      label: t('sidebar.monitoring').toUpperCase(),
       items: [
-        { id: 'accounts',      label: 'Utilisateurs',         icon: UserPlus,          roles: ['SUPER_ADMIN','ADMIN'] },
-        { id: 'rbac',          label: 'Rôles & Permissions',  icon: Shield,            roles: ['SUPER_ADMIN','ADMIN'] },
-        { id: 'analytics',     label: 'Logs & Activité',      icon: FileText,          roles: ['SUPER_ADMIN','ADMIN','SUPPORT'] },
-        { id: 'settings',      label: 'Paramètres',           icon: Settings,          roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
+        { id: 'support',       label: t('sidebar.support'),        icon: LifeBuoy,          roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
+        { id: 'analytics',     label: t('sidebar.analytics'),      icon: Activity,          roles: ['SUPER_ADMIN','ADMIN','SUPPORT'] },
+        { id: 'settings',      label: t('sidebar.settings'),       icon: SettingsIcon,      roles: ['SUPER_ADMIN','ADMIN','SUPPORT','RESELLER'] },
       ],
     },
   ];

@@ -34,6 +34,10 @@
     "configurations": "VPN Configurations",
     "tokens": "SXB Tokens",
     "vouchers": "Vouchers",
+    "devices": "Devices",
+    "subscriptions": "Data Subscriptions",
+    "monitoring": "Monitoring",
+    "admin": "Administration",
     "analytics": "Analytics",
     "rbac": "RBAC Controls",
     "settings": "Settings"
