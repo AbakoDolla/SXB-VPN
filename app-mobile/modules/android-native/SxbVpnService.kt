@@ -464,8 +464,17 @@ private class SxbPayloadProxy(
                 outputStream = rawOut
             }
 
+            isConnectPayload -> {
+                // Un payload CONNECT crée un tunnel TCP brut. Certains proxys renvoient
+                // un 101 cosmétique au lieu de 200 : ce code ne doit jamais activer le
+                // framing WebSocket, sinon les octets SSH sont corrompus.
+                onEvent("[SXB_DEBUG] CONNECT_PAYLOAD_RAW_TUNNEL — flux SSH brut")
+                inputStream  = if (peekLen > 0) SequenceInputStream(ByteArrayInputStream(peekBuf, 0, peekLen), rawIn) else rawIn
+                outputStream = rawOut
+            }
+
             isWs -> {
-                // HTTP 101 WebSocket Upgrade. 
+                // HTTP 101 WebSocket Upgrade.
                 // Si le premier octet est 'S' (SSH-...), le 101 est cosmétique (ex: node05).
                 // Sinon, on active l'adaptateur WebSocket RFC 6455.
                 if (firstByte == 'S'.code) {
@@ -478,13 +487,6 @@ private class SxbPayloadProxy(
                     inputStream  = WsInputStream(baseIn, rawOut, onEvent)
                     outputStream = WsOutputStream(rawOut, onEvent)
                 }
-            }
-
-            isConnectPayload -> {
-                // Cas d'un payload CONNECT sans réponse 101/200 explicite mais avec données derrière
-                onEvent("[SXB_DEBUG] CONNECT_PAYLOAD_FALLBACK — flux brut")
-                inputStream  = if (peekLen > 0) SequenceInputStream(ByteArrayInputStream(peekBuf, 0, peekLen), rawIn) else rawIn
-                outputStream = rawOut
             }
 
             else -> {

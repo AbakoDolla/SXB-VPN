@@ -38,10 +38,12 @@ function getButtonState(
   if (!accountState) return "no_account";
   if (isConnecting) return "connecting";
   if (isConnected) return "connected";
-  if (quotaExhausted || accountState.state === "exhausted") return "exhausted";
-  if (accountState.state === "expired") return "expired";
+  // Un profil local chiffré reste connectable hors-ligne : les états de quota
+  // servent d'avertissement mais ne transforment pas le bouton en blocage.
   if (activeConnection && activeConnection.status === "active") return "connect";
   if (hasValidConfig) return "connect";
+  if (quotaExhausted || accountState.state === "exhausted") return "exhausted";
+  if (accountState.state === "expired") return "expired";
   const s = accountState.state;
   if (s === "no_package") return "no_package";
   if (s === "expired") return "expired";

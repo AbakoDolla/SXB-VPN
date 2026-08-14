@@ -177,6 +177,12 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(vpnContext, /configStore\.remove\(id\)/);
   });
 
+  it('préserve un profil local lors d’un quota estimé épuisé et ne purge que les révocations explicites', () => {
+    assert.match(vpnContext, /c\.status === 'revoked' \|\| c\.status === 'deleted'/);
+    assert.match(vpnContext, /profil sécurisé conservé/);
+    assert.match(vpnContext, /tentative de connexion quand même \(zéro-rated \/ hors-ligne\)/);
+  });
+
   it('détecte de manière robuste le mode WebSocket vs SSH brut via peeking d’octet après 101', () => {
     assert.match(nativeService, /val firstByte = if \(peekLen > 0\) peekBuf\[0\]\.toInt\(\) and 0xFF else -1/);
     assert.match(nativeService, /if \(firstByte == 'S'\.code\)/);

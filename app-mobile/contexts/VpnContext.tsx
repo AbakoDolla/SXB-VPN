@@ -410,21 +410,20 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       }
 
       const remoteState = result?.data?.state;
+      // Ne supprimer ou bloquer un profil local qu'après une révocation explicite
+      // confirmée par l'API. Les états quota/expiration sont indicatifs en mode
+      // zéro-rated : l'API peut être inaccessible ou en retard alors que le tunnel reste utilisable.
       const isRevokedState =
         remoteState === 'suspended' ||
         remoteState?.startsWith('revok') ||
-        remoteState === 'expired' ||
-        remoteState === 'disabled' ||
-        remoteState === 'exhausted';
+        remoteState === 'disabled';
 
-      if (isRevokedState || result?.data?.quotaExhausted) {
+      if (isRevokedState) {
         const statusToSet = remoteState === 'suspended' ? 'suspended'
           : remoteState?.startsWith('revok') ? 'revoked'
-          : remoteState === 'expired' ? 'expired'
-          : remoteState === 'exhausted' ? 'exhausted'
           : 'disabled';
 
-        addLog(`❌ Compte ${statusToSet} ou quota épuisé — arrêt du VPN`);
+        addLog(`❌ Révocation confirmée par le serveur : compte ${statusToSet} — arrêt du VPN`);
         if (IS_ANDROID && SxbVpnNative) {
           try { await SxbVpnNative.stopVpn(); } catch { /* ignore */ }
         }
@@ -472,56 +471,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     return () => { if (unsubscribe) unsubscribe(); };
   }, [refreshAccountState]);
 
-  // ── B5 — GARDE DURE LOCALE (5 s) ─────────────────────────────────────────────
-  useEffect(() => {
-    if (!isConnected) return;
-    guardTimerRef.current = setInterval(async () => {
-      try {
-        const derived = deriveQuota(
-          quotaData || accountState,
-          {
-            sessionUp: trafficStats.uploadBytes,
-            sessionDown: trafficStats.downloadBytes,
-            sessionBaselineUp: sessionBaselineRef.current.up,
-            sessionBaselineDown: sessionBaselineRef.current.down,
-          },
-          isConnected
-        );
-
-        const activeConfig = await loadProvisionedConfig();
-        const configHash = activeConfig?.meta?.configHash;
-
-        if (derived.isExhausted || derived.isExpired) {
-          const reason = derived.isExhausted ? 'exhausted' : 'expired';
-          const logMsg = derived.isExhausted
-            ? 'Forfait épuisé — configuration retirée. Rechargez pour une nouvelle configuration.'
-            : 'Forfait expiré — configuration retirée. Renouvelez votre forfait.';
-
-          addLog(`❌ ${logMsg}`);
-          if (IS_ANDROID && SxbVpnNative) {
-            try { await SxbVpnNative.stopVpn(); } catch { /* ignore */ }
-          }
-          setIsConnected(false);
-          setIsConnecting(false);
-          setVpnState('disconnected');
-          await AsyncStorage.setItem('@sxb_vpn_connected', 'false').catch(() => {});
-          await clearProvisionedConfig().catch(() => {});
-          setRevokedStatus(reason);
-
-          if (configHash) {
-            const blockedByConfigHashKey = `@sxb_blocked_hash_${configHash}`;
-            await AsyncStorage.setItem(blockedByConfigHashKey, 'true').catch(() => {});
-          }
-
-          if (activeConnection?.id) {
-            apiClient.post(`/mobile/connections/${activeConnection.id}/status`, { disabledReason: reason }).catch(() => {});
-          }
-        }
-      } catch { /* ignore */ }
-    }, 5000);
-
-    return () => { if (guardTimerRef.current) clearInterval(guardTimerRef.current); };
-  }, [isConnected, quotaData, accountState, trafficStats, activeConnection, addLog]);
+  // Les métadonnées de quota locales servent uniquement à l'affichage. Elles ne
+  // constituent pas une preuve de révocation et ne doivent donc pas effacer ou
+  // arrêter un profil provisionné. Les révocations sont traitées après une réponse
+  // API explicite dans le rapport d'usage ou lors d'une synchronisation réussie.
 
   // Quota polling
   const refreshQuotaData = useCallback(async () => {
@@ -574,12 +527,14 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       });
       const remote = (connectionsRes.data?.connections || []) as VpnConnection[];
       setRemoteConnections(remote);
-      const connections = remote.filter((c: any) =>
-        c.status === 'active' && (!c.expiresAt || new Date(c.expiresAt) > new Date()) && Number(c.quota?.remainingBytes ?? 1) > 0,
-      );
+      // Provisionner chaque abonnement encore actif, même si les métadonnées de
+      // quota ou d'échéance sont à zéro : le profil doit rester disponible pour une
+      // connexion ultérieure sur un réseau zéro-rated.
+      const connections = remote.filter((c: any) => c.status === 'active');
 
-      // Un abonnement révoqué/expiré/épuisé ne doit jamais rester utilisable hors-ligne.
-      const invalidIds = remote.filter((c: any) => c.status !== 'active').map((c: any) => c.id);
+      // Seule une révocation/suppression explicitement retournée par le dashboard
+      // purge le coffre local. Les états quota/expiration restent consultatifs.
+      const invalidIds = remote.filter((c: any) => c.status === 'revoked' || c.status === 'deleted').map((c: any) => c.id);
       await Promise.all(invalidIds.map(id => configStore.remove(id).catch(() => ({ status: 'error' }))));
 
       // Nettoyage des configurations orphelines supprimées du dashboard (UNIQUEMENT si l'appel distant a réussi pour éviter de purger en mode hors-ligne)
@@ -707,21 +662,14 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // B5 — Vérifier si bloqué par blockedByConfigHash
+    // Les anciennes versions pouvaient déposer un marqueur local de blocage à
+    // partir d'un quota estimé. Il ne correspond pas à une révocation serveur ;
+    // on le retire pour que le profil sécurisé puisse de nouveau être essayé.
     const provConfig = await loadProvisionedConfig();
     const blockedByConfigHashKey = provConfig?.meta?.configHash ? `@sxb_blocked_hash_${provConfig.meta.configHash}` : null;
-    if (blockedByConfigHashKey) {
-      const blockedByConfigHash = await AsyncStorage.getItem(blockedByConfigHashKey);
-      if (blockedByConfigHash === 'true') {
-        const isExhausted = await isQuotaExhausted();
-        const msg = isExhausted
-          ? 'Forfait épuisé — configuration retirée. Rechargez pour une nouvelle configuration.'
-          : 'Forfait expiré — configuration retirée. Renouvelez votre forfait.';
-        addLog(`❌ ${msg}`);
-        setIsConnecting(false);
-        setVpnState('disconnected');
-        return;
-      }
+    if (blockedByConfigHashKey && await AsyncStorage.getItem(blockedByConfigHashKey)) {
+      await AsyncStorage.removeItem(blockedByConfigHashKey).catch(() => {});
+      addLog('ℹ️ Ancien blocage local ignoré — profil sécurisé conservé');
     }
 
     // B6 — Échec vérification serveur = mode hors ligne honnête, pas de faux "expiré"
@@ -735,18 +683,17 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       if (
         freshState === 'suspended' ||
         freshState?.startsWith('revok') ||
-        freshState === 'expired' ||
-        freshState === 'disabled' ||
-        freshState === 'exhausted'
+        freshState === 'disabled'
       ) {
         const statusToSet = freshState === 'suspended' ? 'suspended'
           : freshState?.startsWith('revok') ? 'revoked'
-          : freshState === 'expired' ? 'expired'
-          : freshState === 'exhausted' ? 'exhausted'
           : 'disabled';
         setRevokedStatus(statusToSet);
-        addLog(`❌ Connexion refusée par le serveur : compte ${statusToSet}`);
+        addLog(`❌ Connexion refusée : révocation confirmée par le serveur (${statusToSet})`);
         return;
+      }
+      if (freshState === 'expired' || freshState === 'exhausted') {
+        addLog('ℹ️ État quota/échéance remonté par l’API — tentative conservée avec le profil local');
       }
     } catch {
       addLog('ℹ️ Vérification réseau impossible — connexion hors-ligne sur dernier état connu');
@@ -829,11 +776,6 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
                 },
               );
 
-              const newlyBlocked = freshResult.meta.configHash && await AsyncStorage.getItem(`@sxb_blocked_hash_${freshResult.meta.configHash}`);
-              if (newlyBlocked === 'true' && freshResult.meta.quotaUsedGB >= freshResult.meta.quotaGB) {
-                await configStore.remove(freshResult.meta.subscriptionId);
-                throw new Error('Forfait épuisé — rechargez avant de vous reconnecter');
-              }
               await saveCompleteConfig(configToUse, (configToUse.protocol || 'vless').toLowerCase(), vpnConfig?.configId ?? activeConnection?.id, freshResult.meta.configExpiresAt);
 
               if (freshResult.meta.quotaGB > 0) {
