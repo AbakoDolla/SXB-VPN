@@ -17,6 +17,7 @@ import { deriveQuota } from "@/services/quotaState";
 import Colors from "@/constants/colors";
 import StepLogs from "@/components/StepLogs";
 import UpdatePrompt from "@/components/UpdatePrompt";
+import InteractiveWalkthrough from "@/components/InteractiveWalkthrough";
 import { useTranslation } from "@/localization";
 import type { VpnConnection } from "@/types/api";
 
@@ -211,6 +212,23 @@ export default function HomeScreen() {
     stepLogs, savedConfigs, activeConfigId, switchConfig, isSwitchingConfig, quotaData, revokedStatus, perAppTraffic,
   } = useVpnContext();
   const { t } = useTranslation();
+  const [walkthroughVisible, setWalkthroughVisible] = useState(false);
+
+  useEffect(() => {
+    const checkWalkthrough = async () => {
+      const done = await AsyncStorage.getItem("@walkthrough_done");
+      if (!done && accountState?.state === 'ready') {
+        // Attendre un peu pour que l'écran soit bien chargé
+        setTimeout(() => setWalkthroughVisible(true), 1500);
+      }
+    };
+    checkWalkthrough();
+  }, [accountState]);
+
+  const finishWalkthrough = async () => {
+    await AsyncStorage.setItem("@walkthrough_done", "true");
+    setWalkthroughVisible(false);
+  };
 
   const derivedQuota = deriveQuota(quotaData || (accountState as any), traffic as any, isConnected);
 
@@ -809,6 +827,11 @@ export default function HomeScreen() {
       />
 
       <UpdatePrompt />
+
+      <InteractiveWalkthrough 
+        visible={walkthroughVisible} 
+        onFinish={finishWalkthrough} 
+      />
     </LinearGradient>
   );
 }
