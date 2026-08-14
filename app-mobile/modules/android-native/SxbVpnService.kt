@@ -262,9 +262,17 @@ private class SxbPayloadProxy(
     override fun connect(sf: SocketFactory?, host: String, port: Int, timeout: Int) {
         val connectTimeout = timeout.coerceIn(5_000, 30_000)
         val rawSocket = Socket()
+        // Socket() seul n'a pas forcément de descripteur natif. Créer le socket
+        // local avant protect() est indispensable : sinon VpnService.protect()
+        // retourne false sur certains appareils et le futur tunnel risquerait une
+        // boucle dès que l'interface TUN est établie.
+        val fdReady = runCatching {
+            rawSocket.bind(null)
+            rawSocket.isBound
+        }.getOrDefault(false)
         val protectedOk = protectSocket(rawSocket)
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_SOCKET_PROTECTED result=$protectedOk")
-        onEvent("[SXB_DEBUG] SSH_SOCKET_PROTECTED result=$protectedOk")
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_SOCKET_PROTECTED result=$protectedOk fd_ready=$fdReady")
+        onEvent("[SXB_DEBUG] SSH_SOCKET_PROTECTED result=$protectedOk fd_ready=$fdReady")
         // Résolution DNS visible (diagnostic données cellulaires / split-DNS)
         val dnsResolved = runCatching {
             java.net.InetAddress.getAllByName(host).isNotEmpty()
@@ -464,19 +472,15 @@ private class SxbPayloadProxy(
                 outputStream = rawOut
             }
 
-            isConnectPayload -> {
-                // Un payload CONNECT crée un tunnel TCP brut. Certains proxys renvoient
-                // un 101 cosmétique au lieu de 200 : ce code ne doit jamais activer le
-                // framing WebSocket, sinon les octets SSH sont corrompus.
-                onEvent("[SXB_DEBUG] CONNECT_PAYLOAD_RAW_TUNNEL — flux SSH brut")
-                inputStream  = if (peekLen > 0) SequenceInputStream(ByteArrayInputStream(peekBuf, 0, peekLen), rawIn) else rawIn
-                outputStream = rawOut
-            }
-
             isWs -> {
-                // HTTP 101 WebSocket Upgrade.
-                // Si le premier octet est 'S' (SSH-...), le 101 est cosmétique (ex: node05).
-                // Sinon, on active l'adaptateur WebSocket RFC 6455.
+                // HTTP 101 avec Upgrade: websocket est l'indication protocolaire
+                // déterminante. Un payload qui commence par CONNECT peut parfaitement
+                // être relayé par une passerelle WebSocket : le type du payload ne doit
+                // jamais prendre le pas sur la réponse réellement négociée.
+                //
+                // Certains serveurs abusent toutefois du code 101 puis exposent SSH en
+                // clair. Le premier octet 'S' permet de conserver ce repli sans rompre
+                // les vrais serveurs RFC 6455.
                 if (firstByte == 'S'.code) {
                     onEvent("[SXB_DEBUG] COSMETIC_101_DETECTED — SSH brut détecté après 101")
                     inputStream  = if (peekLen > 0) SequenceInputStream(ByteArrayInputStream(peekBuf, 0, peekLen), rawIn) else rawIn
@@ -487,6 +491,14 @@ private class SxbPayloadProxy(
                     inputStream  = WsInputStream(baseIn, rawOut, onEvent)
                     outputStream = WsOutputStream(rawOut, onEvent)
                 }
+            }
+
+            isConnectPayload -> {
+                // Aucun protocole HTTP explicite n'a été négocié. Dans ce seul cas,
+                // conserver le repli historique CONNECT vers un tunnel TCP brut.
+                onEvent("[SXB_DEBUG] CONNECT_PAYLOAD_RAW_TUNNEL — flux SSH brut")
+                inputStream  = if (peekLen > 0) SequenceInputStream(ByteArrayInputStream(peekBuf, 0, peekLen), rawIn) else rawIn
+                outputStream = rawOut
             }
 
             else -> {
@@ -554,8 +566,15 @@ private class SxbLoggingSocketFactory(
 ) : SocketFactory {
     override fun createSocket(host: String, port: Int): Socket =
         Socket().apply {
+            // Garantit un FD exploitable par VpnService.protect() avant connect().
+            // La liaison éphémère n'impose aucune adresse distante et évite qu'un
+            // socket SSH direct soit inclus dans le TUN qu'il doit alimenter.
+            val fdReady = runCatching {
+                bind(null)
+                isBound
+            }.getOrDefault(false)
             val ok = protectSocket(this)
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_SOCKET_PROTECTED result=$ok")
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_SOCKET_PROTECTED result=$ok fd_ready=$fdReady")
             connect(InetSocketAddress(host, port), timeoutMs)
         }
 

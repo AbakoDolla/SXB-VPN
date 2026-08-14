@@ -191,6 +191,23 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(nativeService, /WsInputStream\(baseIn, rawOut, onEvent\)/);
   });
 
+  it('donne priorité au WebSocket négocié par HTTP 101 sur un payload CONNECT', () => {
+    const wsBranch = nativeService.indexOf('isWs ->');
+    const connectPayloadBranch = nativeService.indexOf('isConnectPayload ->');
+    assert.ok(wsBranch >= 0, 'branche WebSocket absente');
+    assert.ok(connectPayloadBranch >= 0, 'repli CONNECT absent');
+    assert.ok(
+      wsBranch < connectPayloadBranch,
+      'un HTTP 101 Upgrade doit activer WebSocket avant le repli CONNECT brut',
+    );
+  });
+
+  it('prépare le descripteur réseau avant de protéger les sockets SSH', () => {
+    assert.match(nativeService, /rawSocket\.bind\(null\)[\s\S]{0,180}protectSocket\(rawSocket\)/);
+    assert.match(nativeService, /bind\(null\)[\s\S]{0,180}protectSocket\(this\)/);
+    assert.match(nativeService, /SSH_SOCKET_PROTECTED result=\$protectedOk fd_ready=\$fdReady/);
+  });
+
   it('gère le ciblage des annonces par identifiant d’appareil (Device ID)', () => {
     const mobileRouteContent = source('../server/routes/mobile.ts');
     assert.match(mobileRouteContent, /targetDeviceId/);
