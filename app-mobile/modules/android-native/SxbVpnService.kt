@@ -1739,6 +1739,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
             fun preserveXrayDetour(outbound: JSONObject) {
                 val proxyTag = proxySettings?.optString("tag", "") ?: ""
                 if (proxyTag.isNotEmpty()) outbound.put("detour", proxyTag)
+                
+                // Support sockopt (TCP Fast Open)
+                val sockopt = o.optJSONObject("sockopt")
+                if (sockopt?.optBoolean("tcpFastOpen", false) == true) {
+                    outbound.put("tcp_fast_open", true)
+                }
             }
 
             when (proto) {
@@ -1749,6 +1755,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     val user = vnext?.optJSONArray("users")?.optJSONObject(0)
                     val uuid = user?.optString("id", "") ?: ""
                     val flow = user?.optString("flow", "") ?: ""
+                    val encryption = user?.optString("encryption", "none") ?: "none"
 
                     val sbOut = JSONObject().apply {
                         put("type", proto)
@@ -1756,6 +1763,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                         put("server", address)
                         put("server_port", port)
                         put("uuid", uuid)
+                        if (proto == "vless") put("encryption", encryption)
                         if (flow.isNotEmpty() && proto == "vless") put("flow", flow)
                         if (proto == "vmess") {
                             val alterId = user?.optInt("alterId", -1) ?: -1
@@ -1768,11 +1776,18 @@ class SxbVpnService : VpnService(), PlatformInterface {
                         if (stream != null) {
                             val security = stream.optString("security", "none")
                             if (security == "tls" || security == "reality") {
-                                val tlsObj = stream.optJSONObject("tlsSettings")
+                                val tlsObj = stream.optJSONObject("tlsSettings") ?: stream.optJSONObject("realitySettings")
                                 put("tls", JSONObject().apply {
                                     put("enabled", true)
                                     put("server_name", tlsObj?.optString("serverName", address) ?: address)
                                     put("insecure", tlsObj?.optBoolean("allowInsecure", true) ?: true)
+                                    if (security == "reality") {
+                                        put("reality", JSONObject().apply {
+                                            put("enabled", true)
+                                            put("public_key", tlsObj?.optString("publicKey", ""))
+                                            put("short_id", tlsObj?.optString("shortId", ""))
+                                        })
+                                    }
                                 })
                             }
                             val network = stream.optString("network", "tcp")
@@ -1912,9 +1927,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
             put("outbounds", newOutbounds)
 
             // Les règles Xray utilisent outboundTag/inboundTag/ip alors que
-            // sing-box attend outbound/inbound/ip_cidr. Sans conversion, un
-            // JSON Xray est accepté puis perd son routage au lancement.
-            val xrayRouting = cfg.optJSONObject("routing")
+            // sing-box attend outbound/inbound/ip_cidr.
+            val xrayRouting = optJSONObject("routing")
             if (xrayRouting != null && !has("route")) {
                 val convertedRules = JSONArray()
                 val sourceRules = xrayRouting.optJSONArray("rules") ?: JSONArray()
@@ -1922,7 +1936,18 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     val source = sourceRules.optJSONObject(i) ?: continue
                     val rule = JSONObject()
                     source.optString("outboundTag", "").takeIf { it.isNotBlank() }?.let { rule.put("outbound", it) }
-                    source.optJSONArray("inboundTag")?.let { rule.put("inbound", it) }
+                    
+                    val inbounds = source.optJSONArray("inboundTag")
+                    if (inbounds != null) {
+                        val newInbounds = JSONArray()
+                        for (j in 0 until inbounds.length()) {
+                            val ib = inbounds.optString(j)
+                            // Map "tun" -> "tun-inbound" pour la cohérence avec le moteur
+                            if (ib == "tun") newInbounds.put("tun-inbound") else newInbounds.put(ib)
+                        }
+                        rule.put("inbound", newInbounds)
+                    }
+                    
                     source.optJSONArray("ip")?.let { rule.put("ip_cidr", it) }
                     source.optJSONArray("domain")?.let { rule.put("domain", it) }
                     if (source.has("port")) rule.put("port", source.opt("port"))
@@ -1935,12 +1960,27 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 put("route", JSONObject().put("rules", convertedRules))
             }
 
-            // Les serveurs DNS Xray sous forme de chaînes tcp+local:// ne sont
-            // pas valides pour sing-box. Le DNS sûr de l'application sera alors
-            // appliqué par buildRawSingBoxConfig().
-            val xrayDns = cfg.optJSONObject("dns")?.optJSONArray("servers")
-            if (xrayDns != null && (0 until xrayDns.length()).any { xrayDns.opt(it) is String }) {
-                remove("dns")
+            // Conversion DNS Xray (tcp+local://...) vers sing-box
+            val xrayDns = optJSONObject("dns")
+            if (xrayDns != null) {
+                val servers = xrayDns.optJSONArray("servers")
+                if (servers != null) {
+                    val newServers = JSONArray()
+                    for (i in 0 until servers.length()) {
+                        val s = servers.opt(i)
+                        if (s is String) {
+                            // Nettoyer les préfixes Xray tcp+local:// ou https://
+                            val cleanAddr = s.replace("tcp+local://", "").replace("https://", "")
+                            newServers.put(JSONObject().apply {
+                                put("address", cleanAddr)
+                                if (s.startsWith("https://")) put("address_resolver", "dns-direct")
+                            })
+                        } else {
+                            newServers.put(s)
+                        }
+                    }
+                    xrayDns.put("servers", newServers)
+                }
             }
         }
     }
