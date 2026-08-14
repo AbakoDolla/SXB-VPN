@@ -131,7 +131,7 @@ describe('garde-fous contre les régressions Android', () => {
   it('convertit les règles et DNS Xray incompatibles avant le démarrage sing-box', () => {
     assert.match(nativeService, /outboundTag.*outbound/);
     assert.match(nativeService, /ip_cidr/);
-    assert.match(nativeService, /remove\("dns"\)/);
+    assert.match(nativeService, /xrayDns\.put\("servers", newServers\)/);
   });
 
   it('convertit le SOCKS Xray et refuse explicitement un outbound Xray inconnu', () => {

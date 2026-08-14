@@ -111,15 +111,38 @@ export default function ActivateScreen() {
           </View>
         ) : null}
 
+        {/* Device ID Card with 1-click copy */}
+        {deviceId ? (
+          <View style={styles.deviceIdCard}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.deviceIdLabel}>ID de l'appareil (Device ID)</Text>
+              <Text style={styles.deviceIdValue} numberOfLines={1} ellipsizeMode="middle">{deviceId}</Text>
+            </View>
+            <Pressable
+              onPress={() => {
+                import("expo-clipboard").then(({ setStringAsync }) => {
+                  setStringAsync(deviceId);
+                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  Alert.alert("Copié !", "L'ID de l'appareil a été copié dans le presse-papier.");
+                });
+              }}
+              style={styles.copyBtn}
+            >
+              <Ionicons name="copy-outline" size={18} color={Colors.primary} />
+              <Text style={styles.copyBtnText}>Copier</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
         {/* Activate button */}
         <Pressable onPress={handleActivate} disabled={isLoading} style={[styles.activateBtn, isLoading && { opacity: 0.6 }]}>
           <LinearGradient colors={[Colors.primary, "#0080FF"]} style={styles.activateBtnGrad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
             {isLoading
-? <Text style={styles.activateBtnText}>{t("activating")}</Text>
-	              : <>
-	                  <Ionicons name="shield-checkmark" size={18} color="#000" />
-	                  <Text style={styles.activateBtnText}>{t("activate")}</Text>
-	                </>
+              ? <Text style={styles.activateBtnText}>{t("activating")}</Text>
+              : <>
+                  <Ionicons name="shield-checkmark" size={18} color="#000" />
+                  <Text style={styles.activateBtnText}>{t("activate_btn")}</Text>
+                </>
             }
           </LinearGradient>
         </Pressable>
@@ -176,6 +199,11 @@ const styles = StyleSheet.create({
   activateBtn: { borderRadius: 16, overflow: "hidden" },
   activateBtnGrad: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 16 },
   activateBtnText: { fontSize: 16, fontWeight: "700", color: "#000", fontFamily: "Inter_700Bold" },
+  deviceIdCard: { flexDirection: "row", alignItems: "center", backgroundColor: Colors.bgCard, borderRadius: 14, borderWidth: 1, borderColor: Colors.border, padding: 14, gap: 12 },
+  deviceIdLabel: { fontSize: 11, color: Colors.textMuted, fontFamily: "Inter_500Medium" },
+  deviceIdValue: { fontSize: 13, color: "#FFF", fontFamily: "Inter_700Bold", letterSpacing: 0.5, marginTop: 2 },
+  copyBtn: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: Colors.primaryDim, borderWidth: 1, borderColor: Colors.primary + "40", paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10 },
+  copyBtnText: { fontSize: 12, color: Colors.primary, fontFamily: "Inter_600SemiBold" },
   deviceBox: { backgroundColor: Colors.bgCard, borderRadius: 14, borderWidth: 1, borderColor: Colors.border, padding: 14, gap: 6 },
   deviceBoxHeader: { flexDirection: "row", alignItems: "center", gap: 6 },
   deviceBoxLabel: { fontSize: 12, color: Colors.primary, fontFamily: "Inter_600SemiBold" },
