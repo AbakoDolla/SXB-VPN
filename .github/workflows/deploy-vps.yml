@@ -113,6 +113,19 @@ jobs:
             echo "🎨 Build Dashboard..."
             sudo chown -R ubuntu:ubuntu /var/www/sxb-vpn/artifacts/ 2>/dev/null || true
             CI=true PORT=3000 BASE_PATH=/ pnpm --filter @workspace/sxb-dashboard run build
+            # Nginx sert /var/www/sxb-vpn/dist, tandis que Vite écrit dans
+            # artifacts/sxb-dashboard/dist/public. Copier explicitement le
+            # bundle frontend sans supprimer server.cjs ni download/*.apk.
+            test -f artifacts/sxb-dashboard/dist/public/index.html
+            rm -rf dist/assets
+            cp -a artifacts/sxb-dashboard/dist/public/assets dist/assets
+            cp -f artifacts/sxb-dashboard/dist/public/index.html dist/index.html
+            for asset in favicon.svg robots.txt; do
+              if [ -f "artifacts/sxb-dashboard/dist/public/$asset" ]; then
+                cp -f "artifacts/sxb-dashboard/dist/public/$asset" "dist/$asset"
+              fi
+            done
+            echo "✅ Dashboard bundle synchronized to dist/"
 
             echo "⚙️ Build Backend..."
             ESBUILD=$(find backend/node_modules/.bin -name "esbuild" -executable | head -1)
@@ -145,9 +158,16 @@ jobs:
         run: |
           sleep 10
           echo "=== Frontend ==="
-          HTTP=$(curl -s -o /dev/null -w "%{http_code}" https://vpnsxb.afrihall.com/)
-          echo "Frontend HTTP $HTTP"
-          [ "$HTTP" = "200" ] || (echo "❌ Frontend down" && exit 1)
+          INDEX=$(curl -fsSL https://vpnsxb.afrihall.com/)
+          HTTP=$(printf '%s' "$INDEX" | wc -c)
+          echo "Frontend index bytes $HTTP"
+          [ "$HTTP" -gt 500 ] || (echo "❌ Frontend index too small" && exit 1)
+          ASSET=$(printf '%s' "$INDEX" | grep -oE 'assets/[^\" ]+\.js' | head -1)
+          [ -n "$ASSET" ] || (echo "❌ Frontend JS asset missing" && exit 1)
+          JS=$(curl -fsSL "https://vpnsxb.afrihall.com/$ASSET")
+          printf '%s' "$JS" | grep -q 'V2Ray / Xray' || (echo "❌ New Xray editor marker missing from live bundle" && exit 1)
+          printf '%s' "$JS" | grep -q 'Valider le transport' || (echo "❌ New transport validation marker missing from live bundle" && exit 1)
+          echo "✅ Frontend bundle verified: $ASSET"
 
           echo "=== API health ==="
           # Accepte 200/400/401/403/422 — toute réponse HTTP valide du serveur

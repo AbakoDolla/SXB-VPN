@@ -46,3 +46,17 @@ Dans « Profils VPN », 38 profils sont chargés, avec les cartes canoniques AES
 ## Modal et saisie manuelle — vérification complémentaire
 
 Le modal JSON live est bien accessible et affiche les formats `hysteria2://` et `tuic://`, le stockage AES-256-GCM, le préflight de transport et le bouton d'import chiffré. Les interactions coordonnées avec l'onglet « Saisie manuelle (legacy) » n'ont pas changé l'onglet visible dans le navigateur automatisé; aucune configuration n'a été soumise. Le contenu du modal JSON est donc confirmé en ligne, tandis que la présence visuelle du textarea manuel doit être validée par une interaction utilisateur ou par un contrôle DOM plus ciblé.
+
+## Après ea1b3a5
+
+Le dashboard est accessible après le déploiement du commit `ea1b3a5`. La session superadmin charge les compteurs live (73 clients, 72 connectés, 73 appareils, 77 sessions) et les événements de login/provisioning. L'éditeur doit encore être contrôlé dans la section Profils VPN.
+
+## Profils après ea1b3a5
+
+La section live affiche 38 profils et 38 actifs, avec les cartes importées, le serveur, le réseau, la validité offline, le nombre d'abonnements et le stockage canonique AES-256-GCM. Le bundle est bien servi depuis le VPS; le modal doit confirmer les nouveaux libellés de l'éditeur JSON.
+
+## Vérification du nouvel éditeur après ea1b3a5
+
+Le workflow VPS et le workflow Android du commit `ea1b3a5` sont terminés avec succès. Le dashboard live est accessible et la section Profils VPN affiche 38 profils, 38 actifs, les cartes canoniques et les abonnements.
+
+Le modal live affiché après le déploiement contient encore le libellé « Saisie manuelle (legacy) » et le texte « Modèle intermédiaire », ainsi que l'ancien textarea avec l'exemple URI/JSON. Les nouveaux libellés « Éditeur V2Ray / Xray complet », « Formater », « Réduire », « Valider le transport » et « Saisie manuelle » ne sont pas visibles dans le bundle servi au navigateur. Cela indique que le VPS sert encore un bundle dashboard antérieur malgré le workflow de déploiement réussi, ou qu'un cache static persiste. Ne pas annoncer l'éditeur comme visible live tant que le bundle statique n'est pas effectivement renouvelé.
