@@ -89,6 +89,7 @@ import java.io.OutputStream
 import java.io.SequenceInputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.SocketTimeoutException
 import java.net.ServerSocket
 import java.net.Socket
 import java.security.SecureRandom
@@ -226,10 +227,13 @@ private class WsInputStream(
             onEvent("[SXB_DEBUG] WS_IN opcode=$opcode bytes=${payload.size}")
             SxbSecureLogger.debug("WS_FRAME_IN opcode=$opcode bytes=${payload.size}")
             payload
+        } catch (e: SocketTimeoutException) {
+            onEvent("[SXB_TRACE] stage=WS_FRAME_TIMEOUT timeout_propagated=true")
+            throw e
         } catch (e: Exception) {
-            onEvent("[SXB_DEBUG] WS_FRAME_READ_ERROR")
+            onEvent("[SXB_DEBUG] WS_FRAME_READ_ERROR type=${e.javaClass.simpleName}")
             SxbSecureLogger.warn("WS_FRAME_READ_ERROR")
-            null
+            throw e
         }
     }
 
@@ -320,7 +324,9 @@ private class SxbPayloadProxy(
 
         onEvent("[SXB_TRACE] stage=PAYLOAD_NORMALIZED bytes=${payload.length} has_connect=${payload.trimStart().startsWith("CONNECT ", ignoreCase = true)} has_upgrade=${payload.contains("upgrade", ignoreCase = true)} crlf_count=${payload.windowed(2).count { it == "\r\n" }}")
 
-        // ── 1b. Compléter le handshake WS si besoin — PARITÉ sonde backend ────
+        val connectPayload = payload.trimStart().startsWith("CONNECT ", ignoreCase = true)
+
+        // ── 1b. Compléter uniquement un vrai handshake WS — PARITÉ sonde backend ────
         // RFC 6455 §4.1 : Sec-WebSocket-Key + Version sont OBLIGATOIRES. Sans eux,
         // ce serveur (Accept valide = endpoint strict) répond 101 en façade mais le
         // backend WS ne livre jamais le flux SSH → JSch attend la bannière ~30 s →
@@ -332,7 +338,7 @@ private class SxbPayloadProxy(
         // laissait passer des payloads réels — jamais déclenchée (bytes inchangés,
         // pas de WS_KEY_INJECTED dans les logs terrain du 2026-07-31 03:26).
         val keyPresent = Regex("sec-websocket-key\\s*:", RegexOption.IGNORE_CASE).containsMatchIn(payload)
-        if (payload.contains("websocket", ignoreCase = true) && !keyPresent) {
+        if (!connectPayload && payload.contains("websocket", ignoreCase = true) && !keyPresent) {
             val wsKey = android.util.Base64.encodeToString(
                 ByteArray(16).also { java.security.SecureRandom().nextBytes(it) },
                 android.util.Base64.NO_WRAP)
@@ -390,16 +396,19 @@ private class SxbPayloadProxy(
         //   HTTP 200 = CONNECT tunnel     → SSH direct sur le même socket
         //   Réponse vide / "SSH-"         → SSH direct (pas de proxy HTTP)
         val statusLine  = response.substringBefore("\r\n")
+        val hasWsUpgradeHeader = Regex("(?im)^Upgrade\\s*:\\s*websocket\\s*$").containsMatchIn(payload)
+        val hasWsKey = Regex("(?im)^Sec-WebSocket-Key\\s*:").containsMatchIn(payload)
         val isWs        = response.contains("101") &&
                           (response.contains("websocket", ignoreCase = true) ||
-                           response.contains("Upgrade",   ignoreCase = true))
+                           response.contains("Upgrade",   ignoreCase = true)) &&
+                          hasWsUpgradeHeader && hasWsKey && !connectPayload
         val isConnect   = response.contains("200") &&
                           response.contains("Connection established", ignoreCase = true)
         val isSshBanner = response.startsWith("SSH-")
         val isEmpty     = response.isBlank()
         // Charge « CONNECT <cible> » (mode eProxy/SocksIP) = tunnel TCP transparent,
         // quelle que soit la réponse (101 cosmétique ignoré — voir branche when).
-        val isConnectPayload = payload.trimStart().startsWith("CONNECT ", ignoreCase = true)
+        val isConnectPayload = connectPayload
 
         Log.i("SXB_DEBUG", "[SXB_DEBUG] SERVER_MODE status='$statusLine' isWS=$isWs isConnect=$isConnect isSshBanner=$isSshBanner isEmpty=$isEmpty")
         onEvent("[SXB_TRACE] stage=MODE_CLASSIFIED status=${SecurityModule.maskSensitive(statusLine)} ws=$isWs connect200=$isConnect ssh_banner=$isSshBanner empty=$isEmpty connect_payload=$isConnectPayload")
@@ -488,15 +497,19 @@ private class SxbPayloadProxy(
                 outputStream = rawOut
             }
 
+            isConnectPayload -> {
+                // CONNECT n'est jamais interprété comme RFC6455 : le 101 renvoyé
+                // par certains eProxy/SocksIP est cosmétique pour ce type de payload.
+                onEvent("[SXB_DEBUG] CONNECT_PAYLOAD_RAW_TUNNEL — flux SSH brut")
+                onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=CONNECT_RAW reason=connect_payload")
+                inputStream  = if (peekLen > 0) SequenceInputStream(ByteArrayInputStream(peekBuf, 0, peekLen), rawIn) else rawIn
+                outputStream = rawOut
+            }
+
             isWs -> {
-                // HTTP 101 avec Upgrade: websocket est l'indication protocolaire
-                // déterminante. Un payload qui commence par CONNECT peut parfaitement
-                // être relayé par une passerelle WebSocket : le type du payload ne doit
-                // jamais prendre le pas sur la réponse réellement négociée.
-                //
-                // Certains serveurs abusent toutefois du code 101 puis exposent SSH en
-                // clair. Le premier octet 'S' permet de conserver ce repli sans rompre
-                // les vrais serveurs RFC 6455.
+                // RFC6455 est réservé à un payload GET/Upgrade contenant une clé.
+                // Certains serveurs répondent 101 puis exposent SSH en clair : le
+                // premier octet 'S' conserve le repli cosmétique.
                 if (firstByte == 'S'.code) {
                     onEvent("[SXB_DEBUG] COSMETIC_101_DETECTED — SSH brut détecté après 101")
                     onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=SSH_RAW reason=101_then_ssh_banner")
@@ -509,15 +522,6 @@ private class SxbPayloadProxy(
                     inputStream  = WsInputStream(baseIn, rawOut, onEvent)
                     outputStream = WsOutputStream(rawOut, onEvent)
                 }
-            }
-
-            isConnectPayload -> {
-                // Aucun protocole HTTP explicite n'a été négocié. Dans ce seul cas,
-                // conserver le repli historique CONNECT vers un tunnel TCP brut.
-                onEvent("[SXB_DEBUG] CONNECT_PAYLOAD_RAW_TUNNEL — flux SSH brut")
-                onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=CONNECT_RAW reason=payload_connect_without_http_negotiation")
-                inputStream  = if (peekLen > 0) SequenceInputStream(ByteArrayInputStream(peekBuf, 0, peekLen), rawIn) else rawIn
-                outputStream = rawOut
             }
 
             else -> {
@@ -1385,14 +1389,14 @@ class SxbVpnService : VpnService(), PlatformInterface {
         connectionWatchdog?.interrupt()
         connectionWatchdog = Thread({
             try {
-                Thread.sleep(45_000)
+                Thread.sleep(90_000)
                 if (running.get() && currentState == "connecting") {
                     Log.e("SXB_DEBUG", "[SXB_DEBUG] WATCHDOG_FIRED lastState=$currentState")
-                    broadcastLog("[SXB_DEBUG] WATCHDOG_FIRED lastState=$currentState")
+                    broadcastLog("[SXB_DEBUG] WATCHDOG_FIRED lastState=$currentState timeout_ms=90000")
                     // Invalider la session avant d'émettre l'erreur. Le bloc finally
                     // fermera ensuite JSch/libbox et empêchera tout connected tardif.
                     running.set(false)
-                    failVpn("SSH_TIMEOUT", "Connexion bloquée après 45 secondes")
+                    failVpn("SSH_TIMEOUT", "Connexion bloquée après 90 secondes")
                     cleanup()
                 }
             } catch (_: InterruptedException) {

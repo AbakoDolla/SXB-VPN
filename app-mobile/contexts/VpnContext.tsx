@@ -274,8 +274,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       if (attemptId !== connectionAttemptRef.current) return;
       connectionAttemptRef.current++;
       acceptNativeConnectedRef.current = false;
-      legacyDebugLog(`WATCHDOG_TIMEOUT step=${stepName} — aucun événement natif depuis 45s`);
-      addLog(`⚠️ Délai dépassé (45s) lors de : ${stepName}. Arrêt du service...`);
+      legacyDebugLog(`WATCHDOG_TIMEOUT step=${stepName} — aucun événement natif depuis 90s`);
+      addLog(`⚠️ Délai dépassé (90s) lors de : ${stepName}. Arrêt du service...`);
       if (IS_ANDROID && SxbVpnNative) {
         try { SxbVpnNative.stopVpn(); } catch { /* ignore */ }
       }
@@ -283,8 +283,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       setIsConnecting(false);
       setVpnState('error');
       watchdogRef.current = null;
-    }, 45_000);
-  }, [addLog]);
+    }, 90_000);
+    }, [addLog]);
 
   const stopWatchdog = useCallback(() => {
     if (watchdogRef.current) {
@@ -335,6 +335,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         
         refreshAccountState().catch(() => {});
       } else if (s === 'disconnected') {
+        stopWatchdog();
         setVpnState('disconnected');
         acceptNativeConnectedRef.current = false;
         addStepLog('disconnected', 'step_disconnected', 'done');
@@ -349,6 +350,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           }).catch(() => {});
         }
       } else if (s === 'error') {
+        stopWatchdog();
         setVpnState('error');
         acceptNativeConnectedRef.current = false;
         addStepLog('error', 'step_error', 'error');
@@ -764,16 +766,21 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           ? { config: localResult.value.config, configId: localResult.value.meta.configId, protocol: localResult.value.meta.protocol || '' }
           : null;
 
-        if (offlineEntry?.config) {
-          const storedCheck = isCompleteOfflineConfig(offlineEntry.config);
-          if (storedCheck.complete) {
+        const hasCompleteOfflineConfig = Boolean(
+          offlineEntry?.config && isCompleteOfflineConfig(offlineEntry.config).complete,
+        );
+        if (hasCompleteOfflineConfig && offlineEntry?.config) {
+          if (isCompleteOfflineConfig(offlineEntry.config).complete) {
             configToUse = { ...offlineEntry.config };
             if (vpnConfig?.displayProtocol) configToUse.displayProtocol = vpnConfig.displayProtocol;
             if (vpnConfig?.configId)        configToUse.configId        = vpnConfig.configId;
-            addLog('✅ Configuration sécurisée chargée');
+            addLog('✅ Configuration sécurisée chargée — mode hors-ligne, aucun provisionnement requis');
           }
         }
 
+        // Une configuration complète en cache est autonome : ne jamais appeler
+        // provisionAndStore() dans connect(). Le provisionnement initial s'effectue
+        // uniquement lors de l'activation/import ou lorsqu'aucun profil complet n'existe.
         if (!configToUse) {
           const dataToken =
             ((vpnConfig as any)?.dataToken as string | undefined) ??
