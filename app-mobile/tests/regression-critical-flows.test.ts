@@ -323,6 +323,21 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(transportProbe.includes("case 'unsupported': return 'unsupported'"));
   });
 
+  it('expose un éditeur JSON complet avec formatage, diagnostic et préflight', () => {
+    assert.ok(dashboardProfiles.includes('JsonConfigEditor'));
+    assert.ok(dashboardProfiles.includes('V2Ray / Xray détecté'));
+    assert.ok(dashboardProfiles.includes('Formater'));
+    assert.ok(dashboardProfiles.includes('Valider le transport'));
+    assert.ok(dashboardProfiles.includes('Configuration JSON V2Ray Xray complète'));
+    assert.ok(dashboardProfiles.includes('Saisie manuelle'));
+  });
+
+  it('conserve les options Xray de multiplexage lors de la conversion libbox', () => {
+    assert.ok(nativeService.includes('val mux = o.optJSONObject("mux")'));
+    assert.ok(nativeService.includes('put("multiplex", JSONObject()'));
+    assert.ok(nativeService.includes('put("max_streams", concurrency)'));
+  });
+
   it('évite le provisionnement réseau avec une configuration complète hors-ligne', () => {
     assert.ok(vpnContext.includes('hasCompleteOfflineConfig'));
     assert.ok(vpnContext.includes('mode hors-ligne, aucun provisionnement requis'));

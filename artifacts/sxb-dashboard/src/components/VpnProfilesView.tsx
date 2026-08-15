@@ -61,6 +61,106 @@ function VerdictBadge({ status, className = '' }: { status?: string | null; clas
   );
 }
 
+type JsonEditorInfo = {
+  valid: boolean;
+  label: string;
+  detail: string;
+  lineCount: number;
+};
+
+function inspectJsonEditor(raw: string): JsonEditorInfo {
+  const lineCount = Math.max(1, raw.split(/\r?\n/).length);
+  if (!raw.trim()) {
+    return { valid: false, label: 'En attente du JSON', detail: 'Collez une configuration complète V2Ray/Xray ou sing-box.', lineCount };
+  }
+  try {
+    const obj = JSON.parse(raw);
+    if (!obj || Array.isArray(obj) || typeof obj !== 'object') {
+      return { valid: false, label: 'Objet JSON attendu', detail: 'La racine doit être un objet JSON.', lineCount };
+    }
+    const outbounds = Array.isArray(obj.outbounds) ? obj.outbounds : [];
+    const isXray = outbounds.some((o: any) => o && (
+      typeof o.protocol === 'string' || o.settings?.vnext !== undefined || o.streamSettings !== undefined
+    ));
+    const isSingBox = outbounds.length > 0 && outbounds.every((o: any) => o && typeof o.type === 'string') && !isXray;
+    const explicit = typeof obj.protocol === 'string' ? obj.protocol.toUpperCase() : '';
+    const label = isXray ? 'V2Ray / Xray détecté' : isSingBox ? 'Sing-box natif détecté' : explicit ? `${explicit} détecté` : 'JSON valide';
+    const detail = isXray
+      ? `${outbounds.length} outbound(s) Xray conservé(s) intégralement; le moteur mobile les convertira pour libbox.`
+      : isSingBox
+        ? `${outbounds.length} outbound(s) sing-box détecté(s); le JSON sera provisionné sans troncature.`
+        : 'La syntaxe JSON est correcte; le préflight vérifiera le schéma et le transport.';
+    return { valid: true, label, detail, lineCount };
+  } catch (err: any) {
+    const message = err?.message ? String(err.message).replace(/^Unexpected token /, 'Syntaxe: ') : 'JSON invalide';
+    return { valid: false, label: 'JSON invalide', detail: message, lineCount };
+  }
+}
+
+function JsonConfigEditor({
+  value, onChange, onTest, testing, result,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  onTest: () => void;
+  testing: boolean;
+  result: ConfigTestResult | null;
+}) {
+  const info = inspectJsonEditor(value);
+  const format = (minify: boolean) => {
+    try {
+      const parsed = JSON.parse(value);
+      onChange(JSON.stringify(parsed, null, minify ? 0 : 2));
+    } catch {
+      // Le diagnostic affiché sous l'éditeur indique déjà la position de l'erreur.
+    }
+  };
+  const lineNumbers = Array.from({ length: info.lineCount }, (_, i) => i + 1).join('\n');
+  return (
+    <div className="space-y-3">
+      <div className="p-3 bg-indigo-500/5 border border-indigo-500/20 rounded-xl text-xs text-indigo-200 space-y-1.5">
+        <p className="font-medium flex items-center gap-1.5"><FileKey2 className="w-3.5 h-3.5" /> Éditeur V2Ray / Xray complet</p>
+        <p className="text-indigo-300/80">Collez le JSON exporté depuis V2Ray/Xray, comme dans l'application mobile. Les champs `dns`, `inbounds`, `outbounds`, `routing`, `streamSettings`, `proxySettings` et les en-têtes sont conservés; aucun résumé avec `…` ne doit être utilisé.</p>
+      </div>
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className={`text-xs ${info.valid ? 'text-emerald-400' : 'text-amber-400'}`}>
+          <span className="font-medium">{info.label}</span><span className="text-gray-500"> · {info.detail}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => format(false)} disabled={!value.trim()} className="px-2.5 py-1.5 rounded-lg border border-indigo-500/30 text-indigo-300 text-xs hover:bg-indigo-500/10 disabled:opacity-40">Formater</button>
+          <button type="button" onClick={() => format(true)} disabled={!value.trim()} className="px-2.5 py-1.5 rounded-lg border border-[#1a1f2e] text-gray-400 text-xs hover:bg-white/5 disabled:opacity-40">Réduire</button>
+          <button type="button" onClick={() => onChange('')} disabled={!value} className="px-2.5 py-1.5 rounded-lg border border-[#1a1f2e] text-gray-400 text-xs hover:bg-white/5 disabled:opacity-40">Effacer</button>
+        </div>
+      </div>
+      <div className="flex min-h-[260px] max-h-[520px] overflow-hidden rounded-xl border border-indigo-500/25 bg-[#07090e] focus-within:border-indigo-400/60">
+        <pre aria-hidden="true" className="select-none overflow-hidden py-3 px-3 text-right text-[11px] leading-5 text-gray-600 bg-black/20 border-r border-white/5 font-mono whitespace-pre">{lineNumbers}</pre>
+        <textarea
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          rows={12}
+          spellCheck={false}
+          wrap="off"
+          aria-label="Configuration JSON V2Ray Xray complète"
+          placeholder={'{\n  "inbounds": [],\n  "outbounds": [\n    {\n      "protocol": "vless",\n      "settings": { "vnext": [] },\n      "streamSettings": { "network": "ws", "security": "tls" }\n    }\n  ]\n}'}
+          className="flex-1 min-w-0 resize-y bg-transparent p-3 text-[12px] leading-5 text-emerald-300 font-mono outline-none whitespace-pre"
+        />
+      </div>
+      <div className="flex items-center justify-between gap-2 text-[11px] text-gray-600">
+        <span>{value.length.toLocaleString('fr-FR')} caractères · {info.lineCount} lignes</span>
+        <span>Le bouton Tester valide le transport; l'authentification n'est jamais effectuée par le dashboard.</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <button type="button" onClick={onTest} disabled={testing || !value.trim() || !info.valid}
+          className="flex items-center gap-2 px-3 py-2 bg-sky-500/15 hover:bg-sky-500/25 text-sky-400 text-xs font-medium rounded-xl border border-sky-500/30 disabled:opacity-50">
+          <FlaskConical className="w-3.5 h-3.5" /> {testing ? 'Test en cours…' : 'Valider le transport'}
+        </button>
+        <span className="text-[11px] text-gray-600">Import chiffré AES-256-GCM · provisioning mobile complet</span>
+      </div>
+      {result && <ProbeResultPanel result={result} />}
+    </div>
+  );
+}
+
 /** Panneau de résultat d'un préflight /api/config-test */
 function ProbeResultPanel({ result }: { result: ConfigTestResult }) {
   return (
@@ -533,37 +633,19 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
                     </button>
                     <button type="button" onClick={() => setCreateTab('manual')}
                       className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium border transition-colors ${createTab === 'manual' ? 'bg-white/5 border-white/20 text-gray-300' : 'border-[#1a1f2e] text-gray-500'}`}>
-                      Saisie manuelle (legacy)
+                      Saisie manuelle
                     </button>
                   </div>
 
                   {createTab === 'import' && (
                     <div className="space-y-3">
-                      <div className="p-3 bg-sky-500/5 border border-sky-500/20 rounded-xl text-xs text-sky-300 space-y-1">
-                        <p className="font-medium flex items-center gap-1.5"><FileKey2 className="w-3.5 h-3.5" /> Modèle « intermédiaire »</p>
-                        <p className="text-sky-400/80">
-                          Collez la configuration obtenue auprès de votre fournisseur. Elle sera stockée
-                          <strong> chiffrée (AES-256-GCM)</strong> et provisionnée à l'application mobile
-                          <strong> techniquement identique</strong> — aucune modification technique n'est possible ensuite
-                          (hors réimport explicite). Formats acceptés : vless://, vmess://, trojan://, ss://,
-                          hysteria2://, tuic://, conf WireGuard, JSON sing-box, JSON SSH/SSH+Payload, canonique SXB.
-                        </p>
-                      </div>
-                      <textarea
+                      <JsonConfigEditor
                         value={importConfig}
-                        onChange={e => setImportConfig(e.target.value)}
-                        rows={7}
-                        placeholder={'vless://uuid@host:443?security=tls&sni=cdn.example.com#MonProfil\n\n— ou —\n\n{ "protocol": "ssh+payload", "host": "…", "port": 443, "username": "…", "password": "…", "payload": "GET / HTTP/1.1[crlf]Host: [host][crlf]…" }'}
-                        className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-emerald-400 text-xs font-mono focus:outline-none focus:border-emerald-500/50 resize-y"
+                        onChange={setImportConfig}
+                        onTest={() => handleTestImport(importConfig)}
+                        testing={testing}
+                        result={testResult}
                       />
-                      <div className="flex items-center gap-2">
-                        <button type="button" onClick={() => handleTestImport(importConfig)} disabled={testing}
-                          className="flex items-center gap-2 px-3 py-2 bg-sky-500/15 hover:bg-sky-500/25 text-sky-400 text-xs font-medium rounded-xl border border-sky-500/30 disabled:opacity-50">
-                          <FlaskConical className="w-3.5 h-3.5" /> {testing ? 'Test en cours…' : 'Tester la configuration importée'}
-                        </button>
-                        <span className="text-[11px] text-gray-600">Transport uniquement — aucune authentification, aucun serveur créé</span>
-                      </div>
-                      {testResult && <ProbeResultPanel result={testResult} />}
                     </div>
                   )}
 
@@ -572,7 +654,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
                       <div className="p-3 bg-emerald-500/5 border border-emerald-500/20 rounded-xl text-xs text-emerald-300">
                         La saisie manuelle utilise maintenant le même import canonique chiffré que le collage JSON. Elle sera validée et provisionnée avec le même format mobile.
                       </div>
-                      <ManualForm form={legacyForm} f={fl} payloads={payloads} inputCls={inputCls} networks={NETWORKS} protocols={PROTOCOLS} />
+                          <ManualForm form={legacyForm} f={fl} payloads={payloads} inputCls={inputCls} networks={NETWORKS} protocols={PROTOCOLS} />
                       {legacyForm.protocol === 'ssh+payload' && (
                         <p className="text-[11px] text-gray-500">Collez le payload complet : aucun caractère `…` ou `...`, et terminez par deux `[crlf]`.</p>
                       )}

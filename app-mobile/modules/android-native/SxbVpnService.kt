@@ -2023,6 +2023,21 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 if (sockopt?.optBoolean("tcpFastOpen", false) == true) {
                     outbound.put("tcp_fast_open", true)
                 }
+
+                // Conserver le multiplexage Xray (mux) lorsqu'il est demandé.
+                // Sans cette conversion, le profil peut se connecter mais perdre
+                // le comportement de transport attendu par l'export fournisseur.
+                val mux = o.optJSONObject("mux")
+                if (mux?.optBoolean("enabled", false) == true) {
+                    outbound.put("multiplex", JSONObject().apply {
+                        put("enabled", true)
+                        mux.optString("protocol", "smux").takeIf { it.isNotBlank() }?.let { put("protocol", it) }
+                        val concurrency = mux.optInt("concurrency", 0)
+                        if (concurrency > 0) put("max_streams", concurrency)
+                        val xudpConcurrency = mux.optInt("xudpConcurrency", 0)
+                        if (xudpConcurrency > 0) put("max_connections", xudpConcurrency)
+                    })
+                }
             }
 
             when (proto) {
