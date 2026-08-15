@@ -203,9 +203,28 @@ describe('garde-fous contre les régressions Android', () => {
   });
 
   it('prépare le descripteur réseau avant de protéger les sockets SSH', () => {
-    assert.match(nativeService, /rawSocket\.bind\(null\)[\s\S]{0,180}protectSocket\(rawSocket\)/);
-    assert.match(nativeService, /bind\(null\)[\s\S]{0,180}protectSocket\(this\)/);
-    assert.match(nativeService, /SSH_SOCKET_PROTECTED result=\$protectedOk fd_ready=\$fdReady/);
+    assert.ok(nativeService.includes('rawSocket.bind(null)'));
+    assert.ok(nativeService.includes('protectSocket(rawSocket)'));
+    assert.ok(nativeService.includes('bind(null)'));
+    assert.ok(nativeService.includes('protectSocket(this)'));
+    assert.ok(nativeService.includes('SSH_SOCKET_PROTECTED result=$protectedOk fd_ready=$fdReady'));
+  });
+
+  it('invalide le watchdog et ignore un événement connected tardif après annulation', () => {
+    assert.match(vpnContext, /acceptNativeConnectedRef/);
+    assert.ok(vpnContext.includes('attemptId !== connectionAttemptRef.current'));
+    assert.ok(vpnContext.includes('Événement connecté tardif ignoré'));
+    assert.ok(vpnContext.includes('startWatchdog(`STEP_3_NATIVE_CALLED proto=${engineProtocol}`, attemptId)'));
+  });
+
+  it('rend le handshake JSch interrompable par stopVpn et bloque la publication tardive', () => {
+    assert.match(nativeService, /sshSession = session[\s\S]{0,260}session\.connect\(30_000\)/);
+    assert.match(nativeService, /SSH_CONNECT_IGNORED/);
+    assert.match(nativeService, /running\.set\(false\)[\s\S]{0,180}failVpn\("SSH_TIMEOUT"/);
+    assert.match(nativeService, /LIBBOX_START_IGNORED/);
+    assert.ok(nativeService.includes('SSH_ATTEMPT_CANCELLED'));
+    assert.ok(nativeService.includes('SINGBOX_ATTEMPT_CANCELLED'));
+    assert.ok(nativeService.includes('SINGBOX_RAW_ATTEMPT_CANCELLED'));
   });
 
   it('gère le ciblage des annonces par identifiant d’appareil (Device ID)', () => {

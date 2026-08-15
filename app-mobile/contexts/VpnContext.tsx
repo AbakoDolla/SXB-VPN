@@ -218,6 +218,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   // Chaque appui invalide la tentative précédente : Déconnecter reste instantané,
   // même si une vérification réseau ou un provisionnement est encore en attente.
   const connectionAttemptRef = useRef(0);
+  // Un événement native connected peut arriver après l'expiration du watchdog
+  // si JSch était encore bloqué dans session.connect(). Ce marqueur empêche
+  // l'ancienne tentative de ressusciter l'UI après une annulation.
+  const acceptNativeConnectedRef = useRef(false);
   const watchdogRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastStepRef  = useRef<string>('INIT');
 
@@ -262,16 +266,23 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     setVpnLogs(prev => [msg, ...prev.slice(0, 99)]);
   }, []);
 
-  const startWatchdog = useCallback((stepName: string) => {
+  const startWatchdog = useCallback((stepName: string, attemptId: number) => {
     if (watchdogRef.current) clearTimeout(watchdogRef.current);
     watchdogRef.current = setTimeout(() => {
+      // Une tentative plus récente ou une déconnexion explicite a déjà invalidé
+      // ce timer : il ne doit plus arrêter le tunnel courant.
+      if (attemptId !== connectionAttemptRef.current) return;
+      connectionAttemptRef.current++;
+      acceptNativeConnectedRef.current = false;
       legacyDebugLog(`WATCHDOG_TIMEOUT step=${stepName} — aucun événement natif depuis 45s`);
       addLog(`⚠️ Délai dépassé (45s) lors de : ${stepName}. Arrêt du service...`);
       if (IS_ANDROID && SxbVpnNative) {
         try { SxbVpnNative.stopVpn(); } catch { /* ignore */ }
       }
+      setIsConnected(false);
       setIsConnecting(false);
       setVpnState('error');
+      watchdogRef.current = null;
     }, 45_000);
   }, [addLog]);
 
@@ -299,9 +310,17 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
     const stateSub = vpnEmitter.addListener('onVpnStateChange', (e: { state: string }) => {
       const s = (e?.state || 'disconnected').toLowerCase();
-      setVpnState(s);
 
       if (s === 'connected') {
+        if (!acceptNativeConnectedRef.current) {
+          // Réponse tardive d'une tentative déjà annulée par le watchdog.
+          setVpnState('error');
+          addLog('ℹ️ Événement connecté tardif ignoré — tentative déjà annulée');
+          try { SxbVpnNative?.stopVpn(); } catch { /* ignore */ }
+          return;
+        }
+        setVpnState('connected');
+        acceptNativeConnectedRef.current = false;
         stopWatchdog();
         addStepLog('connected', 'step_vpn_active', 'done');
         setIsConnected(true);
@@ -316,6 +335,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         
         refreshAccountState().catch(() => {});
       } else if (s === 'disconnected') {
+        setVpnState('disconnected');
+        acceptNativeConnectedRef.current = false;
         addStepLog('disconnected', 'step_disconnected', 'done');
         legacyDebugLog('VPN_FAILED status=disconnected');
         addLog('🔴 VPN déconnecté');
@@ -328,6 +349,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           }).catch(() => {});
         }
       } else if (s === 'error') {
+        setVpnState('error');
+        acceptNativeConnectedRef.current = false;
         addStepLog('error', 'step_error', 'error');
         legacyDebugLog('VPN_FAILED status=error');
         addLog('❌ Erreur VPN — connexion perdue');
@@ -887,8 +910,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         addStepLog('connecting', 'step_connecting', 'active');
         addLog(`🚀 Démarrage tunnel ${engineProtocol.toUpperCase()}...`);
 
-        startWatchdog(`STEP_3_NATIVE_CALLED proto=${engineProtocol}`);
+        acceptNativeConnectedRef.current = true;
+        startWatchdog(`STEP_3_NATIVE_CALLED proto=${engineProtocol}`, attemptId);
         await SxbVpnNative.startVpn(optionsJson);
+        if (attemptId !== connectionAttemptRef.current) return;
         addStepLog('handshake', 'step_handshake', 'active');
         addLog('⏳ Connexion en cours...');
       } else {
@@ -925,6 +950,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     // L’interface revient immédiatement à « Se connecter » ; l’arrêt natif et
     // l’envoi du quota se poursuivent ensuite sans bloquer l’utilisateur.
     ++connectionAttemptRef.current;
+    acceptNativeConnectedRef.current = false;
+    stopWatchdog();
     setIsConnecting(false);
     setIsConnected(false);
     setVpnState('disconnected');

@@ -997,10 +997,23 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 }
             }
 
+            // Publier la session avant connect() permet à cleanup() de fermer le
+            // socket JSch si le watchdog ou l'utilisateur annule pendant le handshake.
+            // Auparavant sshSession restait null jusqu'après connect(), laissant le
+            // thread bloqué puis publier SSH_CONNECTED après l'arrêt du service.
+            sshSession = session
             SxbSecureLogger.debug("SSH_HANDSHAKE_START payload=$usePayload timeout_ms=30000")
             broadcastLog("[SXB_DEBUG] SSH_HANDSHAKE_START payload=$usePayload")
             broadcastLog("[SXB] Handshake SSH en cours...")
             session.connect(30_000)
+
+            // Un stopVpn() peut avoir fermé la session pendant connect(). Ne jamais
+            // ressusciter une tentative annulée ni créer un TUN après l'arrêt.
+            if (!running.get() || currentState != "connecting" || !session.isConnected) {
+                broadcastLog("[SXB_DEBUG] SSH_CONNECT_IGNORED — tentative annulée avant validation")
+                runCatching { session.disconnect() }
+                return
+            }
 
             SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.TUNNEL_CONNECTED)
             broadcastLog("[SXB_DEBUG] SSH_CONNECTED — handshake réussi")
@@ -1019,6 +1032,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 broadcastLog("[SXB] ⚠️ Aucun fingerprint configuré — hôte non vérifié")
             }
             sshSession = session
+            if (!running.get() || currentState != "connecting") {
+                broadcastLog("[SXB_DEBUG] SSH_TUNNEL_IGNORED — service arrêté avant création du relais")
+                return
+            }
             broadcastLog("[SXB] Tunnel SSH établi")
 
             // ── Serveur SOCKS5 local ──────────────────────────────────────────
@@ -1055,6 +1072,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
         } catch (e: InterruptedException) {
             Log.i(TAG, "Thread SSH interrompu")
         } catch (e: Exception) {
+            // Une fermeture provoquée par stopVpn()/watchdog n'est pas une nouvelle
+            // panne réseau : ne pas republier error depuis l'ancien thread.
+            if (!running.get()) {
+                broadcastLog("[SXB_DEBUG] SSH_ATTEMPT_CANCELLED — erreur tardive ignorée")
+                return
+            }
             val safeException = SecurityModule.maskSensitive(e.message ?: "erreur inconnue")
             Log.e("SXB_DEBUG", "[SXB_DEBUG] SSH_EXCEPTION at currentState=$currentState msg=$safeException")
             val msg = e.message ?: "erreur inconnue"
@@ -1134,6 +1157,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
         } catch (e: InterruptedException) {
             Log.i(TAG, "Thread sing-box interrompu")
         } catch (e: Exception) {
+            if (!running.get()) {
+                broadcastLog("[SXB_DEBUG] SINGBOX_ATTEMPT_CANCELLED — erreur tardive ignorée")
+                return
+            }
             Log.e("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_EXCEPTION proto=$protocol msg=${e.message}", e)
             val stack = e.stackTrace.take(8).joinToString("\n  ") { "at ${it.className}.${it.methodName}(${it.fileName}:${it.lineNumber})" }
             val msg = e.message ?: "erreur inconnue"
@@ -1183,6 +1210,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
         } catch (e: InterruptedException) {
             Log.i(TAG, "Thread sing-box interrompu")
         } catch (e: Exception) {
+            if (!running.get()) {
+                broadcastLog("[SXB_DEBUG] SINGBOX_RAW_ATTEMPT_CANCELLED — erreur tardive ignorée")
+                return
+            }
             Log.e("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_RAW_EXCEPTION msg=${SecurityModule.maskSensitive(e.message ?: "")}", e)
             val stack = e.stackTrace.take(8).joinToString("\n  ") { "at ${it.className}.${it.methodName}(${it.fileName}:${it.lineNumber})" }
             val code = classifyVpnError(e.message ?: "")
@@ -1240,6 +1271,15 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         service.start()
         boxService = service
+
+        // Le démarrage libbox peut être concurrent avec stopVpn(). Le TUN et le
+        // SOCKS ne doivent être annoncés que si la session est encore active.
+        if (!running.get() || currentState != "connecting") {
+            broadcastLog("[SXB_DEBUG] LIBBOX_START_IGNORED — tentative annulée")
+            runCatching { service.close() }
+            if (boxService === service) boxService = null
+            return
+        }
 
         Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_13_VPN_CONNECTED label=$label")
         broadcastLog("[SXB_DEBUG] TUNNEL_READY proto=$label")
@@ -1321,7 +1361,11 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 if (running.get() && currentState == "connecting") {
                     Log.e("SXB_DEBUG", "[SXB_DEBUG] WATCHDOG_FIRED lastState=$currentState")
                     broadcastLog("[SXB_DEBUG] WATCHDOG_FIRED lastState=$currentState")
+                    // Invalider la session avant d'émettre l'erreur. Le bloc finally
+                    // fermera ensuite JSch/libbox et empêchera tout connected tardif.
+                    running.set(false)
                     failVpn("SSH_TIMEOUT", "Connexion bloquée après 45 secondes")
+                    cleanup()
                 }
             } catch (_: InterruptedException) {
                 // Connexion terminée ou arrêt demandé.
