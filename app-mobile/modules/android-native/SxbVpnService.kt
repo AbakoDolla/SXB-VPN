@@ -715,7 +715,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         val normalized = payload
             .replace("[crlf]", "\r\n", ignoreCase = true)
             .replace("[lf]", "\n", ignoreCase = true)
-        return Regex("(?im)^Host\\s*:\s*([^\\s\\r\\n]+)")
+        return Regex("(?im)^Host\\s*:\\s*([^\\s\\r\\n]+)")
             .find(normalized)?.groupValues?.getOrNull(1)?.trim().orEmpty()
             .removePrefix("http://").removePrefix("https://")
             .substringBefore(":")
