@@ -49,6 +49,7 @@
     "@babel/core": "^7.25.2",
     "@expo/cli": "54.0.23",
     "@expo/config-plugins": "~54.0.5",
+    "@types/node": "^25.3.3",
     "@types/react": "~19.1.10",
     "@types/react-dom": "~19.1.7",
     "babel-preset-expo": "~54.0.12",

@@ -69,12 +69,12 @@ jobs:
       # Note: Caching is now handled by gradle/actions/setup-gradle for dependencies.
       # Local build artifacts are kept transiently to avoid corruption across runs.
 
-      # ── Expo prebuild — TOUJOURS (régénère build.gradle propre à chaque run) ──
-      # Sans --clean : préserve les artefacts Gradle dans android/app/build/
-      # Sans la condition cache-hit : garantit un build.gradle vierge avant les
-      # étapes de modification (signing, packaging, ABI) → pas de double-injection.
-      - name: Expo prebuild (Android)
-        run: npx expo prebuild --platform android --no-install
+      # ── Expo prebuild — TOUJOURS propre et déterministe ───────────────────────
+      # --clean élimine tout dossier Android résiduel et force la cohérence avec
+      # app.json (namespace, package, ressources launcher et classes Kotlin).
+      # Les dépendances Gradle restent réutilisables via setup-gradle et le cache.
+      - name: Expo prebuild (Android, clean)
+        run: npx expo prebuild --platform android --clean --no-install
         env:
           EXPO_NO_TELEMETRY: "1"
           EXPO_PUBLIC_API_URL: https://vpnsxb.afrihall.com/api

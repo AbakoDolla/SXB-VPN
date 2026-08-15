@@ -2235,8 +2235,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
                         val newInbounds = JSONArray()
                         for (j in 0 until inbounds.length()) {
                             val ib = inbounds.optString(j)
-                            // Map "tun" -> "tun-inbound" pour la cohérence avec le moteur
-                            if (ib == "tun") newInbounds.put("tun-inbound") else newInbounds.put(ib)
+                            // Le JSON Xray utilise "tun" ou "tun-inbound" ;
+                            // l'inbound Android réel créé par openTun() est "tun-in".
+                            if (ib == "tun" || ib == "tun-inbound" || ib == "tun-in") newInbounds.put("tun-in") else newInbounds.put(ib)
                         }
                         rule.put("inbound", newInbounds)
                     }
@@ -2253,27 +2254,45 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 put("route", JSONObject().put("rules", convertedRules))
             }
 
-            // Conversion DNS Xray (tcp+local://...) vers sing-box
+            // Conversion DNS Xray vers le schéma sing-box. Les champs Xray
+            // queryStrategy/serveStale/tag ne sont pas des champs DNS sing-box
+            // modernes et peuvent faire refuser toute la configuration.
             val xrayDns = optJSONObject("dns")
             if (xrayDns != null) {
-                val servers = xrayDns.optJSONArray("servers")
-                if (servers != null) {
-                    val newServers = JSONArray()
-                    for (i in 0 until servers.length()) {
-                        val s = servers.opt(i)
-                        if (s is String) {
-                            // Nettoyer les préfixes Xray tcp+local:// ou https://
-                            val cleanAddr = s.replace("tcp+local://", "").replace("https://", "")
-                            newServers.put(JSONObject().apply {
-                                put("address", cleanAddr)
-                                if (s.startsWith("https://")) put("address_resolver", "dns-direct")
-                            })
-                        } else {
-                            newServers.put(s)
+                val sourceServers = xrayDns.optJSONArray("servers") ?: JSONArray()
+                val newServers = JSONArray()
+                for (i in 0 until sourceServers.length()) {
+                    val source = sourceServers.opt(i)
+                    val server = when (source) {
+                        is String -> JSONObject().apply {
+                            val clean = source
+                                .replace("tcp+local://", "tcp://")
+                                .replace("udp+local://", "udp://")
+                            put("address", clean)
+                            put("detour", "direct")
                         }
+                        is JSONObject -> JSONObject(source.toString()).apply {
+                            // Le resolver d'une adresse IP n'est pas nécessaire;
+                            // garder un detour direct évite une boucle via VLESS.
+                            if (!has("detour")) put("detour", "direct")
+                        }
+                        else -> null
                     }
-                    xrayDns.put("servers", newServers)
+                    server?.let { newServers.put(it) }
                 }
+
+                val normalizedDns = JSONObject().apply {
+                    put("servers", newServers)
+                    val queryStrategy = xrayDns.optString("queryStrategy", "")
+                    when (queryStrategy.lowercase(Locale.ROOT)) {
+                        "useipv4", "ipv4_only" -> put("strategy", "prefer_ipv4")
+                        "useipv6", "ipv6_only" -> put("strategy", "prefer_ipv6")
+                    }
+                    xrayDns.optJSONArray("rules")?.let { put("rules", it) }
+                    xrayDns.optString("final", "").takeIf { it.isNotBlank() }?.let { put("final", it) }
+                    if (xrayDns.optBoolean("independent_cache", false)) put("independent_cache", true)
+                }
+                put("dns", normalizedDns)
             }
         }
     }

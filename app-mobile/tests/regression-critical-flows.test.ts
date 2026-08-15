@@ -133,7 +133,17 @@ describe('garde-fous contre les régressions Android', () => {
   it('convertit les règles et DNS Xray incompatibles avant le démarrage sing-box', () => {
     assert.match(nativeService, /outboundTag.*outbound/);
     assert.match(nativeService, /ip_cidr/);
-    assert.match(nativeService, /xrayDns\.put\("servers", newServers\)/);
+    assert.match(nativeService, /put\("dns", normalizedDns\)/);
+    assert.match(nativeService, /queryStrategy\.lowercase\(Locale\.ROOT\)/);
+    assert.ok(nativeService.includes('replace("tcp+local://", "tcp://")'));
+
+  });
+
+  it('route les inboundTag Xray vers l’inbound TUN Android réel et préserve le detour HTTP', () => {
+    assert.match(nativeService, /l'inbound Android réel créé par openTun\(\) est "tun-in"/);
+    assert.match(nativeService, /ib == "tun-inbound".*newInbounds\.put\("tun-in"\)/);
+    assert.match(nativeService, /proxySettings\?\.optString\("tag", ""\)/);
+    assert.match(nativeService, /outbound\.put\("detour", proxyTag\)/);
   });
 
   it('convertit le SOCKS Xray et refuse explicitement un outbound Xray inconnu', () => {
