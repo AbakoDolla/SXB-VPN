@@ -322,7 +322,7 @@ private class SxbPayloadProxy(
             .replace("[host]", host).replace("[Host]", host)
             .replace("[host_port]", "$host:$port")
 
-        onEvent("[SXB_TRACE] stage=PAYLOAD_NORMALIZED bytes=${payload.length} has_connect=${payload.trimStart().startsWith("CONNECT ", ignoreCase = true)} has_upgrade=${payload.contains("upgrade", ignoreCase = true)} crlf_count=${payload.windowed(2).count { it == "\r\n" }}")
+        onEvent("[SXB_TRACE] stage=PAYLOAD_NORMALIZED bytes=${payload.length} has_connect=${payload.trimStart().startsWith("CONNECT ", ignoreCase = true)} has_upgrade=${payload.contains("upgrade", ignoreCase = true)} crlf_count=${payload.windowed(2).count { it == "\r\n" }} placeholder_removed=${rawPayload.contains("…") || rawPayload.contains("...")}")
 
         val connectPayload = payload.trimStart().startsWith("CONNECT ", ignoreCase = true)
 
@@ -427,9 +427,10 @@ private class SxbPayloadProxy(
                 val body = response.substringAfter("\r\n\r\n", "")
                 val bodyLooksPortal = body.contains("<html", true) &&
                     (body.contains("captive", true) || body.contains("nointernet", true) || body.contains("portal", true))
-                val portal = statusCode == 301 || statusCode == 302 ||
-                    loc.contains("nointernet", true) || loc.contains("captive", true) ||
-                    loc.contains("portal", true) || bodyLooksPortal
+                                val portal = bodyLooksPortal ||
+                    loc.contains("nointernet", true) ||
+                    loc.contains("captive", true) ||
+                    loc.contains("portal", true)
                 val hint = if (portal)
                     " — portail captif détecté avec preuve HTTP/HTML : rechargez la ligne ou utilisez le Host zéro-rated"
                 else
@@ -693,6 +694,122 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private val cleanupStarted = AtomicBoolean(false)
     private val traceSequence = AtomicLong(0)
+
+    private data class SshTransportStrategy(
+        val mode: String,
+        val tls: Boolean,
+        val payload: String,
+        val sni: String,
+    )
+
+    private fun transportPreferences() = getSharedPreferences("sxb_transport_modes", MODE_PRIVATE)
+
+    private fun transportCacheKey(cfg: JSONObject): String {
+        val configId = cfg.optStringOrNull("configId", "").ifBlank {
+            cfg.optStringOrNull("id", "").ifBlank { "default" }
+        }
+        return "@sxb_transport_mode_${configId.take(96)}"
+    }
+
+    private fun extractPayloadHost(payload: String): String {
+        val normalized = payload
+            .replace("[crlf]", "\r\n", ignoreCase = true)
+            .replace("[lf]", "\n", ignoreCase = true)
+        return Regex("(?im)^Host\\s*:\s*([^\\s\\r\\n]+)")
+            .find(normalized)?.groupValues?.getOrNull(1)?.trim().orEmpty()
+            .removePrefix("http://").removePrefix("https://")
+            .substringBefore(":")
+    }
+
+    private fun normalizePayload(payload: String, host: String, port: Int): String {
+        val normalized = payload
+            .replace("[crlf]", "\r\n", ignoreCase = true)
+            .replace("[lf]", "\n", ignoreCase = true)
+            .replace("[cr]", "\r", ignoreCase = true)
+            .replace("[port]", port.toString())
+            .replace("[host_port]", "$host:$port", ignoreCase = true)
+            .replace("[host]", host, ignoreCase = true)
+        // Les caractères « … » ou « ... » sont fréquemment ajoutés par une
+        // interface de partage pour signifier « en-têtes omis ». Ils ne sont
+        // pas une ligne HTTP valide. Supprimer uniquement une ligne composée
+        // de ce marqueur, sans toucher aux autres en-têtes du fournisseur.
+        val withoutPlaceholders = normalized
+            .replace("…", "")
+            .replace(Regex("\\.{3,}"), "")
+        return withoutPlaceholders.split(Regex("\\r?\\n"))
+            .filterNot { it.trim().isEmpty() }
+            .joinToString("\r\n") + "\r\n\r\n"
+    }
+
+    private fun websocketPayload(payload: String, host: String, port: Int): String {
+        val normalized = normalizePayload(payload, host, port)
+        val lines = normalized.replace("\r\n", "\n").split("\n")
+        val first = lines.firstOrNull().orEmpty().trim()
+        if (!first.startsWith("CONNECT ", ignoreCase = true)) return normalized
+
+        val targetHost = extractPayloadHost(normalized).ifBlank { host }
+        val headers = lines.drop(1)
+            .map { it.trimEnd('\r') }
+            .filter { it.isNotBlank() }
+            .filterNot {
+                val name = it.substringBefore(":").trim().lowercase(Locale.ROOT)
+                name in setOf("upgrade", "connection", "sec-websocket-key", "sec-websocket-version", "sec-websocket-protocol", "content-length")
+            }
+            .toMutableList()
+        if (headers.none { it.startsWith("Host:", ignoreCase = true) }) headers += "Host: $targetHost"
+        val keyBytes = ByteArray(16).also { SecureRandom().nextBytes(it) }
+        val key = android.util.Base64.encodeToString(keyBytes, android.util.Base64.NO_WRAP)
+        headers += "Upgrade: websocket"
+        headers += "Connection: Upgrade"
+        headers += "Sec-WebSocket-Key: $key"
+        headers += "Sec-WebSocket-Version: 13"
+        headers += "Sec-WebSocket-Protocol: binary"
+        return (listOf("GET / HTTP/1.1") + headers).joinToString("\r\n") + "\r\n\r\n"
+    }
+
+    private fun sshTransportStrategies(
+        cfg: JSONObject,
+        rawPayload: String,
+        host: String,
+        port: Int,
+        tlsEnabled: Boolean,
+        configuredSni: String,
+    ): List<SshTransportStrategy> {
+        val normalized = normalizePayload(rawPayload, host, port)
+        val isConnect = normalized.trimStart().startsWith("CONNECT ", ignoreCase = true)
+        val sni = configuredSni.ifBlank { extractPayloadHost(normalized).ifBlank { host } }
+        val exactMode = if (tlsEnabled) "tls_raw" else "raw"
+        val exact = SshTransportStrategy(exactMode, tlsEnabled, normalized, sni)
+        if (!isConnect) return listOf(exact)
+        return listOf(
+            exact,
+            SshTransportStrategy("tls_raw", true, normalized, sni),
+            SshTransportStrategy("tls_ws", true, websocketPayload(normalized, host, port), sni),
+            SshTransportStrategy("ws", false, websocketPayload(normalized, host, port), sni),
+        ).distinctBy { "${it.mode}|${it.tls}|${it.payload}" }
+    }
+
+    private fun attemptResult(error: Throwable): String {
+        val message = generateSequence(error) { it.cause }
+            .joinToString(" ") { it.message.orEmpty() }
+            .lowercase(Locale.ROOT)
+        val httpCode = Regex("\\bhttp(?:/\\d(?:\\.\\d)?)?\\s+(\\d{3})\\b")
+            .find(message)?.groupValues?.getOrNull(1)
+        return when {
+            httpCode != null -> "http_$httpCode"
+            error is SocketTimeoutException || message.contains("timeout") || message.contains("timed out") -> "timeout"
+            error is javax.net.ssl.SSLException || message.contains("ssl") || message.contains("tls") -> "tls_error"
+            message.contains("closed") || message.contains("eof") || message.contains("end of stream") -> "closed"
+            else -> "closed"
+        }
+    }
+
+    private fun isAuthFailure(error: Throwable): Boolean {
+        val message = generateSequence(error) { it.cause }
+            .joinToString(" ") { it.message.orEmpty() }
+            .lowercase(Locale.ROOT)
+        return message.contains("auth fail") || message.contains("authentication") || message.contains("userauth")
+    }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -977,71 +1094,116 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 }
             })
 
-            // ── Session JSch ──────────────────────────────────────────────────
+            // ── Session JSch et ladder de transport ───────────────────────────
             val jsch = JSch()
-            val session: Session = if (usePayload) {
-                // SSH+Payload : injection HTTP avant le handshake SSH
-                // Le proxy SxbPayloadProxy envoie le payload, lit la réponse HTTP (101/200),
-                // et adapte les streams (WsOutputStream/WsInputStream si WebSocket 101)
+            val commonProps = Properties().apply {
+                set("StrictHostKeyChecking", "no")
+                set("PreferredAuthentications", "password")
+                set("ServerAliveInterval", "10")
+                set("ServerAliveCountMax", "3")
+            }
+
+            fun newSession(strategy: SshTransportStrategy? = null): Session =
+                jsch.getSession(username, host, port).also { s ->
+                    s.setPassword(password)
+                    s.setConfig(commonProps)
+                    if (strategy != null) {
+                        s.setProxy(SxbPayloadProxy(strategy.payload, strategy.tls, strategy.sni, ::protectSocket) { event ->
+                            broadcastLog(event)
+                        })
+                    } else {
+                        s.setSocketFactory(SxbLoggingSocketFactory(30_000, ::protectSocket) {
+                            broadcastLog("[SXB_DEBUG] SSH_BANNER_RECEIVED")
+                        })
+                    }
+                    s.timeout = if (strategy == null) 30_000 else 12_000
+                }
+
+            lateinit var session: Session
+            if (usePayload) {
                 Log.i("SXB_DEBUG", "[SXB_DEBUG] PAYLOAD_START mode=SSH+Payload payload_len=${payload.length}")
                 broadcastLog("[SXB_DEBUG] PAYLOAD_START mode=SSH+Payload payload_len=${payload.length}")
-                broadcastLog("[SXB] Mode SSH+Payload (HTTP Injector) — injection payload avant SSH")
-                jsch.getSession(username, host, port).also { s ->
-                    s.setProxy(SxbPayloadProxy(payload, tlsEnabled, sni, ::protectSocket) { event ->
-                        broadcastLog(event)
-                    })
-                    s.setPassword(password)
-                    val props = Properties().apply {
-                        // P5: fingerprint vérifié après connect — no bypass definitif
-                        set("StrictHostKeyChecking", "no")
-                        set("PreferredAuthentications", "password")
-                        set("ServerAliveInterval", "10")
-                        set("ServerAliveCountMax", "3")
+                broadcastLog("[SXB] Mode SSH+Payload — négociation du transport sécurisé")
+
+                val cacheKey = transportCacheKey(cfg)
+                val preferences = transportPreferences()
+                val cacheFingerprint = listOf(
+                    cfg.optStringOrNull("configVersion", ""),
+                    cfg.optStringOrNull("configHash", ""),
+                    payload.hashCode().toString(),
+                    tlsEnabled.toString(),
+                    sni,
+                ).joinToString("|")
+                val fingerprintKey = "${cacheKey}_fingerprint"
+                val previousFingerprint = preferences.getString(fingerprintKey, null)
+                if (previousFingerprint != null && previousFingerprint != cacheFingerprint) {
+                    preferences.edit().remove(cacheKey).remove(fingerprintKey).apply()
+                    broadcastLog("[SXB_TRACE] TRANSPORT_MODE_CACHE_PURGED reason=config_changed")
+                }
+                val cachedMode = preferences.getString(cacheKey, null)
+                val allStrategies = sshTransportStrategies(cfg, payload, host, port, tlsEnabled, sni)
+                val cachedStrategy = cachedMode?.let { mode -> allStrategies.firstOrNull { it.mode == mode } }
+                if (cachedStrategy != null) {
+                    broadcastLog("[SXB_TRACE] TRANSPORT_MODE_CACHED mode=${cachedStrategy.mode}")
+                }
+                val strategies = if (cachedStrategy != null) listOf(cachedStrategy) else allStrategies
+                val results = linkedMapOf<String, String>()
+                var selectedStrategy: SshTransportStrategy? = null
+
+                for ((index, strategy) in strategies.withIndex()) {
+                    if (!running.get()) throw InterruptedException("VPN arrêté")
+                    val attemptNumber = index + 1
+                    var candidate: Session? = null
+                    try {
+                        broadcastLog("[SXB_TRACE] ATTEMPT_STRATEGY n=$attemptNumber transport=${strategy.mode} result=started")
+                        trace("SSH_ATTEMPT_START", "n=$attemptNumber transport=${strategy.mode} tls=${strategy.tls}")
+                        candidate = newSession(strategy)
+                        sshSession = candidate
+                        trace("SSH_HANDSHAKE_START", "n=$attemptNumber transport=${strategy.mode} timeout_ms=12000")
+                        broadcastLog("[SXB_DEBUG] SSH_HANDSHAKE_START n=$attemptNumber transport=${strategy.mode}")
+                        candidate.connect(12_000)
+                        if (!candidate.isConnected) throw java.io.IOException("SSH session not connected")
+                        results[strategy.mode] = "banner_ok"
+                        selectedStrategy = strategy
+                        session = candidate
+                        preferences.edit()
+                            .putString(cacheKey, strategy.mode)
+                            .putString(fingerprintKey, cacheFingerprint)
+                            .apply()
+                        broadcastLog("[SXB_TRACE] ATTEMPT_STRATEGY n=$attemptNumber transport=${strategy.mode} result=banner_ok")
+                        broadcastLog("[SXB_TRACE] TRANSPORT_SELECTED mode=${strategy.mode} reason=ssh_banner")
+                        break
+                    } catch (attemptError: Throwable) {
+                        if (attemptError is InterruptedException || !running.get()) throw attemptError
+                        if (isAuthFailure(attemptError)) throw attemptError
+                        val result = attemptResult(attemptError)
+                        results[strategy.mode] = result
+                        broadcastLog("[SXB_TRACE] ATTEMPT_STRATEGY n=$attemptNumber transport=${strategy.mode} result=$result")
+                        runCatching { candidate?.disconnect() }
+                        if (sshSession === candidate) sshSession = null
                     }
-                    s.setConfig(props)
-                    s.timeout = 30_000
+                }
+
+                if (selectedStrategy == null) {
+                    val aggregate = allStrategies.joinToString(" · ") { strategy ->
+                        "${strategy.mode}:${results[strategy.mode] ?: "not_run"}"
+                    }
+                    throw java.io.IOException("SSH_MODE_UNKNOWN $aggregate — le fournisseur doit confirmer le mode attendu")
                 }
             } else {
                 Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_DIRECT_MODE")
                 broadcastLog("[SXB] Mode SSH direct")
-                // ── Avertissement explicite (mission §6.2) ────────────────────
-                // Le SSH direct utilise SxbLoggingSocketFactory = socket TCP BRUT :
-                // TLS n'est JAMAIS appliqué dans ce mode, même si la config le
-                // demande. C'est la cause du SSH_TIMEOUT de l'incident APK #165
-                // (profil ssh + tls=true sur un serveur WebSocket en clair).
-                // Le rejet de cette combinaison a lieu à l'import (backend) et à
-                // la validation (configValidator) — ici on journalise au cas où
-                // une vieille config provisionnée arriverait encore au natif.
                 if (tlsEnabled) {
-                    Log.w("SXB_DEBUG", "[SXB_DEBUG] TLS_IGNORED_SSH_DIRECT — tls=true ignoré : le tunnel SSH direct applique un socket TCP brut (pas de TLS)")
-                    broadcastLog("[SXB_DEBUG] TLS_IGNORED_SSH_DIRECT — TLS NON appliqué en SSH direct : si le serveur exige TLS/WebSocket, utilisez un profil ssh+payload")
+                    Log.w("SXB_DEBUG", "[SXB_DEBUG] TLS_IGNORED_SSH_DIRECT — tls=true ignoré en SSH direct")
+                    broadcastLog("[SXB_DEBUG] TLS NON appliqué en SSH direct : utilisez ssh+payload si le serveur exige TLS/WebSocket")
                 }
-                jsch.getSession(username, host, port).also { s ->
-                    s.setPassword(password)
-                    val props = Properties().apply {
-                        set("StrictHostKeyChecking", "no")
-                        set("PreferredAuthentications", "password")
-                        set("ServerAliveInterval", "10")
-                        set("ServerAliveCountMax", "3")
-                    }
-                    s.setConfig(props)
-                    s.setSocketFactory(SxbLoggingSocketFactory(30_000, ::protectSocket) {
-                        broadcastLog("[SXB_DEBUG] SSH_BANNER_RECEIVED")
-                    })
-                    s.timeout = 30_000
-                }
+                session = newSession()
+                sshSession = session
+                trace("SSH_HANDSHAKE_START", "payload=false timeout_ms=30000")
+                broadcastLog("[SXB_DEBUG] SSH_HANDSHAKE_START payload=false")
+                broadcastLog("[SXB] Handshake SSH en cours...")
+                session.connect(30_000)
             }
-
-            // Publier la session avant connect() permet à cleanup() de fermer le
-            // socket JSch si le watchdog ou l'utilisateur annule pendant le handshake.
-            // Auparavant sshSession restait null jusqu'après connect(), laissant le
-            // thread bloqué puis publier SSH_CONNECTED après l'arrêt du service.
-            sshSession = session
-            trace("SSH_HANDSHAKE_START", "payload=$usePayload timeout_ms=30000")
-            SxbSecureLogger.debug("SSH_HANDSHAKE_START payload=$usePayload timeout_ms=30000")
-            broadcastLog("[SXB_DEBUG] SSH_HANDSHAKE_START payload=$usePayload")
-            broadcastLog("[SXB] Handshake SSH en cours...")
-            session.connect(30_000)
 
             // Un stopVpn() peut avoir fermé la session pendant connect(). Ne jamais
             // ressusciter une tentative annulée ni créer un TUN après l'arrêt.
@@ -1134,6 +1296,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
             }
             broadcastLog("[SXB_DEBUG] SSH_CAUSE_CHAIN ${SecurityModule.maskSensitive(chain.toString())}")
             val display = when {
+                msg.contains("SSH_MODE_UNKNOWN") ->
+                    "⚠️ Aucun des transports autorisés n'a établi SSH — ${msg.removePrefix("SSH_MODE_UNKNOWN ").take(220)}"
                 msg.contains("CAPTIVE_PORTAL") ->
                     "🚫 Portail captif confirmé par la réponse HTTP/HTML — rechargez la ligne ou utilisez le Host zéro-rated."
                 msg.contains("TUNNEL_REFUSED") ->
@@ -1355,6 +1519,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private fun classifyVpnError(message: String): String {
         val lower = message.lowercase(Locale.ROOT)
         return when {
+            lower.contains("ssh_mode_unknown") -> "SSH_MODE_UNKNOWN"
             lower.contains("captive_portal") -> "CAPTIVE_PORTAL"
             lower.contains("tunnel_refused") -> "TUNNEL_REFUSED"
             lower.contains("auth fail") || lower.contains("authentication") ||

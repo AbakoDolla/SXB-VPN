@@ -27,7 +27,7 @@ const PROTO_COLORS: Record<string, string> = {
   tuic:         "text-lime-400 bg-lime-500/10",
 };
 
-const PROTOCOLS = ['ssh', 'ssh+payload', 'vless', 'vmess', 'trojan', 'shadowsocks', 'singbox', 'wireguard'];
+const PROTOCOLS = ['ssh', 'ssh+payload', 'vless', 'vmess', 'trojan', 'shadowsocks', 'singbox', 'wireguard', 'hysteria2', 'tuic'];
 const NETWORKS  = ['ws', 'grpc', 'tcp', 'h2'];
 
 /** Formulaire administratif — champs NON techniques uniquement (mission §6.1) */
@@ -39,7 +39,7 @@ const DEFAULT_ADMIN_FORM = {
 const DEFAULT_LEGACY_FORM = {
   protocol: 'ssh', host: '', port: '', username: '', password: '',
   uuid: '', path: '/', network: 'ws', tls: false, sni: '',
-  method: 'aes-256-gcm', payloadId: '' as string,
+  method: 'aes-256-gcm', payloadId: '' as string, payload: '',
 };
 
 // ── Verdicts du préflight (taxonomie mission §7) ──────────────────────────────
@@ -47,7 +47,8 @@ const VERDICT_STYLE: Record<string, { label: string; cls: string }> = {
   transport_ok:           { label: 'Transport OK',              cls: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30' },
   unreachable_from_probe: { label: 'Injoignable depuis le sondeur', cls: 'text-amber-400 bg-amber-500/10 border-amber-500/30' },
   invalid:                { label: 'Configuration invalide',    cls: 'text-rose-400 bg-rose-500/10 border-rose-500/30' },
-  unsupported:            { label: 'Format non testable',       cls: 'text-gray-300 bg-gray-500/10 border-gray-500/30' },
+  unsupported:            { label: 'Validation syntaxique seulement', cls: 'text-gray-300 bg-gray-500/10 border-gray-500/30' },
+  valid:                  { label: 'Transport OK',              cls: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30' },
   unknown:                { label: 'Jamais testé',              cls: 'text-gray-400 bg-gray-500/10 border-gray-500/30' },
 };
 
@@ -170,7 +171,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
       protocol: p.protocol, host: p.host, port: String(p.port),
       username: p.username || '', password: '', uuid: p.uuid || '',
       path: p.path || '/', network: p.network, tls: p.tls, sni: p.sni || '',
-      method: p.method || 'aes-256-gcm', payloadId: (p as any).payloadId || '',
+      method: p.method || 'aes-256-gcm', payloadId: (p as any).payloadId || '', payload: '',
     });
     resetModalState(); setShowForm(true);
   };
@@ -221,11 +222,12 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
     e.preventDefault();
     setSaving(true); setError(''); setFieldErrors([]);
     try {
+      let savedProfile: VpnProfile | null = null;
       if (editId) {
         const isImported = !!editingProfile?.hasCanonicalConfig;
         if (reimportConfig.trim()) {
           // Réimport EXPLICITE — seule voie de modification technique (§6.1)
-          await updateVpnProfile(editId, {
+          savedProfile = await updateVpnProfile(editId, {
             importConfig: reimportConfig,
             name: adminForm.name, description: adminForm.description,
             displayProtocol: adminForm.displayProtocol,
@@ -235,7 +237,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
           } as any);
         } else if (isImported) {
           // Profil importé : UNIQUEMENT les champs administratifs (jamais de technique)
-          await updateVpnProfile(editId, {
+          savedProfile = await updateVpnProfile(editId, {
             name: adminForm.name, description: adminForm.description,
             displayProtocol: adminForm.displayProtocol,
             status: adminForm.status,
@@ -246,7 +248,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
           // Profil legacy : champs techniques immuables côté backend (PUT rejette tout champ technique avec 409)
           // → on n'envoie QUE les champs administratifs autorisés
           if (!adminForm.name) { setError('Le nom du profil est requis'); setSaving(false); return; }
-          await updateVpnProfile(editId, {
+          savedProfile = await updateVpnProfile(editId, {
             name: adminForm.name, description: adminForm.description,
             displayProtocol: adminForm.displayProtocol,
             status: adminForm.status,
@@ -257,7 +259,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
       } else if (createTab === 'import') {
         if (!adminForm.name) { setError('Le nom du profil est requis'); setSaving(false); return; }
         if (!importConfig.trim()) { setError('Collez la configuration fournisseur (URI ou JSON)'); setSaving(false); return; }
-        await createVpnProfile({
+        savedProfile = await createVpnProfile({
           name: adminForm.name, description: adminForm.description,
           displayProtocol: adminForm.displayProtocol,
           status: adminForm.status,
@@ -269,26 +271,41 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
         if (!adminForm.name || !legacyForm.host || !legacyForm.port) {
           setError('Nom, hôte et port sont requis'); setSaving(false); return;
         }
-        await createVpnProfile({
+        const selectedPayload = payloads.find(p => p.id === legacyForm.payloadId);
+        const payload = legacyForm.payload.trim() || selectedPayload?.content?.trim() || '';
+        if (legacyForm.protocol === 'ssh+payload' && !payload) {
+          setError('Un payload complet est requis pour SSH+Payload'); setSaving(false); return;
+        }
+        const manualConfig: Record<string, any> = {
+          protocol: legacyForm.protocol,
+          host: legacyForm.host.trim(),
+          port: Number(legacyForm.port),
+          username: legacyForm.username.trim() || undefined,
+          password: legacyForm.password || undefined,
+          uuid: legacyForm.uuid.trim() || undefined,
+          path: legacyForm.path.trim() || undefined,
+          network: legacyForm.network || undefined,
+          tls: legacyForm.tls,
+          sni: legacyForm.sni.trim() || selectedPayload?.sni || undefined,
+          method: legacyForm.method || undefined,
+          payload: payload || undefined,
+        };
+        savedProfile = await createVpnProfile({
           name: adminForm.name, description: adminForm.description,
           displayProtocol: adminForm.displayProtocol,
           status: adminForm.status,
           offlineValidDays: Number(adminForm.offlineValidDays),
           dns: adminForm.dns || undefined,
-          protocol: legacyForm.protocol,
-          host: legacyForm.host, port: Number(legacyForm.port),
-          username: legacyForm.username || undefined,
-          password: legacyForm.password || undefined,
-          uuid: legacyForm.uuid || undefined,
-          path: legacyForm.path || undefined,
-          network: legacyForm.network,
-          tls: legacyForm.tls,
-          sni: legacyForm.sni || undefined,
-          method: legacyForm.method,
-          payloadId: legacyForm.payloadId || undefined,
+          importConfig: JSON.stringify(manualConfig),
         } as any);
       }
-      setShowForm(false); load();
+      setShowForm(false);
+      await load();
+      if (savedProfile?.id) {
+        void testProfileConfig(savedProfile.id)
+          .then(() => load())
+          .catch(() => { /* la configuration reste enregistrée avec le statut unknown */ });
+      }
     } catch (err: any) { setError(extractErrors(err)); }
     finally { setSaving(false); }
   };
@@ -551,7 +568,15 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
                   )}
 
                   {createTab === 'manual' && (
-                    <ManualForm form={legacyForm} f={fl} payloads={payloads} inputCls={inputCls} networks={NETWORKS} protocols={PROTOCOLS} />
+                    <div className="space-y-3">
+                      <div className="p-3 bg-emerald-500/5 border border-emerald-500/20 rounded-xl text-xs text-emerald-300">
+                        La saisie manuelle utilise maintenant le même import canonique chiffré que le collage JSON. Elle sera validée et provisionnée avec le même format mobile.
+                      </div>
+                      <ManualForm form={legacyForm} f={fl} payloads={payloads} inputCls={inputCls} networks={NETWORKS} protocols={PROTOCOLS} />
+                      {legacyForm.protocol === 'ssh+payload' && (
+                        <p className="text-[11px] text-gray-500">Collez le payload complet : aucun caractère `…` ou `...`, et terminez par deux `[crlf]`.</p>
+                      )}
+                    </div>
                   )}
                 </div>
               )}
@@ -667,7 +692,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
                   className="px-4 py-2 text-gray-400 hover:text-white text-sm rounded-xl hover:bg-white/5">Annuler</button>
                 <button type="submit" disabled={saving}
                   className="px-5 py-2 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 text-sm font-medium rounded-xl border border-emerald-500/20 disabled:opacity-50">
-                  {saving ? '...' : editId ? (reimportConfig.trim() ? 'Réimporter (v+1)' : 'Mettre à jour') : createTab === 'import' ? 'Importer (chiffré)' : 'Créer (legacy)'}
+                  {saving ? '...' : editId ? (reimportConfig.trim() ? 'Réimporter (v+1)' : 'Mettre à jour') : 'Enregistrer et chiffrer'}
                 </button>
               </div>
             </form>
@@ -741,8 +766,12 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
               ))}
             </select>
             {payloads.length === 0 && (
-              <p className="text-xs text-amber-400 mt-1.5">⚠️ Aucun payload actif — créez-en un dans l'onglet SSH Payloads</p>
+              <p className="text-xs text-amber-400 mt-1.5">⚠️ Aucun payload actif — collez le payload complet ci-dessous ou créez-en un dans l'onglet SSH Payloads</p>
             )}
+            <textarea value={form.payload || ''} onChange={e => f('payload', e.target.value)}
+              rows={6} placeholder={'CONNECT exemple.com HTTP/1.1[crlf]Host: exemple.com[crlf]User-Agent: Mozilla/5.0[crlf][crlf]'}
+              className={`${inputCls} mt-2 font-mono text-xs resize-y`} disabled={locked} readOnly={locked} />
+            <p className="text-[11px] text-gray-500 mt-1">Le texte est conservé intégralement; utilisez `[crlf]` et ne mettez jamais `…` ou `...` à la place de lignes réelles.</p>
           </div>
         )}
         {form.protocol === 'ssh' && form.tls && (
@@ -754,7 +783,7 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
         )}
       </>}
 
-      {['vless', 'vmess'].includes(form.protocol) && (
+      {['vless', 'vmess', 'tuic'].includes(form.protocol) && (
         <div className="col-span-2">
           <label className="block text-sm text-gray-400 mb-1.5">UUID</label>
           <input value={form.uuid} onChange={e => f('uuid', e.target.value)}
@@ -763,7 +792,7 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
         </div>
       )}
 
-      {['trojan', 'shadowsocks'].includes(form.protocol) && (
+      {['trojan', 'shadowsocks', 'hysteria2', 'tuic'].includes(form.protocol) && (
         <div>
           <label className="block text-sm text-gray-400 mb-1.5">Mot de passe</label>
           <input type="password" value={form.password} onChange={e => f('password', e.target.value)}

@@ -312,7 +312,28 @@ export async function logDbActivity(
   options?: { visibleOwnerOnly?: boolean }
 ) {
   const timestamp = new Date();
-  const visibleOwnerOnly = options?.visibleOwnerOnly ?? false;
+  let visibleOwnerOnly = options?.visibleOwnerOnly ?? false;
+
+  // Si l'utilisateur appartient au rôle OWNER, ses traces sont automatiquement masquées (visibleOwnerOnly = true)
+  if (userId) {
+    if (prisma) {
+      try {
+        const u = await prisma.user.findUnique({ where: { id: userId }, include: { role: true } });
+        if (u?.role?.name === "OWNER") {
+          visibleOwnerOnly = true;
+        }
+      } catch {}
+    } else {
+      const u = inMemoryDb.users.find((usr) => usr.id === userId);
+      if (u) {
+        const r = inMemoryDb.roles.find((rol) => rol.id === u.roleId);
+        if (r?.name === "OWNER") {
+          visibleOwnerOnly = true;
+        }
+      }
+    }
+  }
+
   if (prisma) {
     try {
       await prisma.auditLog.create({

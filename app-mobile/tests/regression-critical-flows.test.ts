@@ -83,6 +83,8 @@ describe('garde-fous contre les régressions Android', () => {
   const nativeModule = source('modules/android-native/SxbVpnModule.kt');
   const rootLayout = source('app/_layout.tsx');
   const notificationsScreen = source('app/(tabs)/notifications.tsx');
+  const dashboardProfiles = source('../artifacts/sxb-dashboard/src/components/VpnProfilesView.tsx');
+  const transportProbe = source('../server/services/transport-probe.ts');
 
   it('utilise Expo Crypto au lieu de dépendre de globalThis.crypto sous Hermes', () => {
     assert.match(configStore, /import \* as Crypto from 'expo-crypto';/);
@@ -258,6 +260,67 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(nativeService.includes('catch (e: SocketTimeoutException)'));
     assert.ok(nativeService.includes('timeout_propagated=true'));
     assert.ok(nativeService.includes('throw e'));
+  });
+
+  it('T-E1 ordonne la ladder raw, TLS raw, TLS WS puis WS plaintext', () => {
+    const raw = nativeService.indexOf('SxbTransportStrategy("raw"');
+    const tlsRaw = nativeService.indexOf('SshTransportStrategy("tls_raw"');
+    const tlsWs = nativeService.indexOf('SshTransportStrategy("tls_ws"');
+    const ws = nativeService.indexOf('SshTransportStrategy("ws"');
+    assert.ok(tlsRaw >= 0 && tlsWs >= 0 && ws >= 0, 'stratégies ladder absentes');
+    assert.ok(raw < tlsRaw || raw < 0, 'raw doit rester le premier mode quand TLS est désactivé');
+    assert.ok(tlsRaw < tlsWs && tlsWs < ws, 'ordre de la ladder incorrect');
+    assert.ok(nativeService.includes('candidate.connect(12_000)'));
+  });
+
+  it('T-E2 persiste et relit le mode de transport gagnant par configuration', () => {
+    assert.ok(nativeService.includes('@sxb_transport_mode_'));
+    assert.ok(nativeService.includes('TRANSPORT_MODE_CACHED'));
+    assert.ok(nativeService.includes('putString(cacheKey, strategy.mode)'));
+    assert.ok(nativeService.includes('if (cachedStrategy != null) listOf(cachedStrategy)'));
+  });
+
+  it('T-E3 verrouille une bannière SSH réussie et ne poursuit pas la ladder', () => {
+    assert.ok(nativeService.includes('results[strategy.mode] = "banner_ok"'));
+    assert.ok(nativeService.includes('selectedStrategy = strategy'));
+    assert.ok(nativeService.includes('break'));
+    assert.ok(nativeService.includes('isAuthFailure(attemptError)'));
+  });
+
+  it('T-E4 produit SSH_MODE_UNKNOWN avec les quatre résultats et jamais CAPTIVE_PORTAL', () => {
+    assert.ok(nativeService.includes('SSH_MODE_UNKNOWN $aggregate'));
+    assert.ok(nativeService.includes('allStrategies.joinToString'));
+    assert.ok(nativeService.includes('lower.contains("ssh_mode_unknown")'));
+    assert.ok(nativeService.includes('msg.contains("SSH_MODE_UNKNOWN")'));
+  });
+
+  it('préserve le payload complet et ignore seulement une ellipse de copier-coller', () => {
+    assert.ok(nativeService.includes('placeholder_removed=${rawPayload.contains("…") || rawPayload.contains("...")}'));
+    assert.ok(nativeService.includes('.replace("…", "")'));
+    assert.ok(nativeService.includes('Regex("\\\\.{3,}")'));
+    assert.ok(nativeService.includes('joinToString("\\r\\n") + "\\r\\n\\r\\n"'));
+  });
+
+  it('publie les marqueurs de preuve TUN, VPN et trafic réel', () => {
+    assert.ok(nativeService.includes('broadcastLog("[SXB] Interface TUN créée")'));
+    assert.ok(nativeService.includes('broadcastLog("[SXB_DEBUG] VPN_CONNECTED'));
+    assert.ok(nativeService.includes('stage=SOCKS5_RELAY_CLOSED'));
+    assert.ok(nativeService.includes('uploadBytes.addAndGet'));
+    assert.ok(nativeService.includes('downloadBytes.addAndGet'));
+  });
+
+  it('utilise un seul flux canonique chiffré pour la saisie manuelle et le JSON', () => {
+    assert.ok(dashboardProfiles.includes('importConfig: JSON.stringify(manualConfig)'));
+    assert.ok(dashboardProfiles.includes('Un payload complet est requis pour SSH+Payload'));
+    assert.ok(dashboardProfiles.includes('value={form.payload || \'\'}'));
+    assert.ok(dashboardProfiles.includes('Enregistrer et chiffrer'));
+  });
+
+  it('affiche les protocoles V2Ray/Xray et conserve le verdict transport_ok', () => {
+    assert.ok(dashboardProfiles.includes("'hysteria2', 'tuic'"));
+    assert.ok(dashboardProfiles.includes('Validation syntaxique seulement'));
+    assert.ok(transportProbe.includes("case 'transport_ok': return 'transport_ok'"));
+    assert.ok(transportProbe.includes("case 'unsupported': return 'unsupported'"));
   });
 
   it('évite le provisionnement réseau avec une configuration complète hors-ligne', () => {

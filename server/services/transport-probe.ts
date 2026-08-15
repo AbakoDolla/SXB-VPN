@@ -252,11 +252,12 @@ export async function probeConfig(
 }
 
 // ── Verdict d'import consolidé (syntaxe + transport) → validationStatus DB ───
-export function statusFromProbe(report: ProbeReport): 'valid' | 'invalid' | 'unreachable_from_probe' | 'unknown' {
+export function statusFromProbe(report: ProbeReport): 'transport_ok' | 'invalid' | 'unreachable_from_probe' | 'unsupported' | 'unknown' {
   switch (report.verdict) {
-    case 'transport_ok': return 'valid';
+    case 'transport_ok': return 'transport_ok';
     case 'invalid': return 'invalid';
     case 'unreachable_from_probe': return 'unreachable_from_probe';
+    case 'unsupported': return 'unsupported';
     default: return 'unknown';
   }
 }
