@@ -414,22 +414,30 @@ private class SxbPayloadProxy(
         onEvent("[SXB_TRACE] stage=MODE_CLASSIFIED status=${SecurityModule.maskSensitive(statusLine)} ws=$isWs connect200=$isConnect ssh_banner=$isSshBanner empty=$isEmpty connect_payload=$isConnectPayload")
 
         // ── 4. Lire les premiers octets utiles pour confirmer le mode ─────────
+        val httpTunnelCompatible = response.contains("101") || isConnect
         if (!isWs && !isConnect && !isSshBanner && !isEmpty) {
-            // Court-circuit « non-tunnel » : toute réponse HTTP qui n'est ni 101 ni
-            // CONNECT 200 (ex. 302 portail captif MTN nointernet = quota data épuisé,
-            // page d'erreur) ne livrera JAMAIS de bannière SSH — échouer ici avec un
-            // message actionnable au lieu d'un timeout muet suivi d'un crash.
+            // Un CONNECT avec réponse 101 est compatible avec le tunnel brut : le
+            // classifieur doit atteindre le when et ne doit pas fabriquer un portail.
+            // Les réponses 301/302 ou les pages HTML de portail restent toujours
+            // bloquantes, y compris pour un payload CONNECT.
             val statusForFail = response.substringBefore("\r\n")
-            if (statusForFail.startsWith("HTTP/")) {
+            if (statusForFail.startsWith("HTTP/") && !(isConnectPayload && httpTunnelCompatible)) {
                 val loc = Regex("(?i)location:\\s*(\\S+)").find(response)?.groupValues?.getOrNull(1) ?: ""
-                val portal = loc.contains("nointernet", true) || loc.contains("captive", true) ||
-                             loc.contains("portal", true)
+                val statusCode = Regex("^HTTP/\\S+\\s+(\\d{3})").find(statusForFail)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                val body = response.substringAfter("\r\n\r\n", "")
+                val bodyLooksPortal = body.contains("<html", true) &&
+                    (body.contains("captive", true) || body.contains("nointernet", true) || body.contains("portal", true))
+                val portal = statusCode == 301 || statusCode == 302 ||
+                    loc.contains("nointernet", true) || loc.contains("captive", true) ||
+                    loc.contains("portal", true) || bodyLooksPortal
                 val hint = if (portal)
-                    " — portail captif détecté : forfait data épuisé (rechargez) ou Host zéro-rated requis"
-                else ""
-                onEvent("[SXB_DEBUG] NON_TUNNEL_HTTP status='$statusForFail' location='$loc'$hint")
-                Log.w("SXB_DEBUG", "[SXB_DEBUG] NON_TUNNEL_HTTP status='$statusForFail' location='$loc'$hint")
-                throw java.io.IOException("NON_TUNNEL_HTTP $statusForFail$hint")
+                    " — portail captif détecté avec preuve HTTP/HTML : rechargez la ligne ou utilisez le Host zéro-rated"
+                else
+                    " — pas de tunnel sur cette réponse : vérifiez le Host zéro-rated et le payload"
+                val errorCode = if (portal) "CAPTIVE_PORTAL" else "TUNNEL_REFUSED"
+                onEvent("[SXB_DEBUG] NON_TUNNEL_HTTP code=$errorCode status='$statusForFail' location='$loc' proof=$portal")
+                Log.w("SXB_DEBUG", "[SXB_DEBUG] NON_TUNNEL_HTTP code=$errorCode status='$statusForFail' location='$loc' proof=$portal")
+                throw java.io.IOException("$errorCode $statusForFail$hint")
             }
             // Essayer de voir les premiers octets après les headers (ex: début SSH banner)
             val peekBuf = ByteArray(16)
@@ -1126,8 +1134,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
             }
             broadcastLog("[SXB_DEBUG] SSH_CAUSE_CHAIN ${SecurityModule.maskSensitive(chain.toString())}")
             val display = when {
+                msg.contains("CAPTIVE_PORTAL") ->
+                    "🚫 Portail captif confirmé par la réponse HTTP/HTML — rechargez la ligne ou utilisez le Host zéro-rated."
+                msg.contains("TUNNEL_REFUSED") ->
+                    "⚠️ Le serveur n'a pas ouvert de tunnel sur cette réponse — vérifiez le Host zéro-rated et le payload."
                 msg.contains("NON_TUNNEL_HTTP") ->
-                    "🚫 Réseau bloquant : réponse HTTP directe — portail captif / forfait data épuisé. Rechargez la ligne ou utilisez le Host zéro-rated."
+                    "⚠️ Réponse HTTP inattendue — aucun portail confirmé; vérifiez le Host zéro-rated et le payload."
                 msg.contains("Auth fail") || msg.contains("auth", true) ->
                     "❌ Auth SSH échouée — vérifiez username/password"
                 msg.contains("Connection refused") ->
@@ -1325,8 +1337,11 @@ class SxbVpnService : VpnService(), PlatformInterface {
     }
 
     /**
-     * Classification différenciée des erreurs VPN (mission §7) — alignée sur la
-     * taxonomie du préflight backend (transport-probe) :
+     * Classification différenciée des erreurs VPN. CAPTIVE_PORTAL n'est utilisé
+     * que lorsqu'un token explicite a été produit après une preuve HTTP/HTML;
+     * une réponse 101/4xx sans preuve est classée TUNNEL_REFUSED/HTTP_UNEXPECTED.
+     *
+     * Alignée sur la taxonomie du préflight backend :
      *   AUTH_FAILED         — credentials rejetés par le serveur
      *   TLS_FAILED          — handshake TLS/SSL échoué (SNI, certificat, ALPN)
      *   SSH_BANNER_MISSING  — le port ne parle pas SSH (pas de bannière SSH-2.0)
@@ -1340,9 +1355,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private fun classifyVpnError(message: String): String {
         val lower = message.lowercase(Locale.ROOT)
         return when {
-            lower.contains("non_tunnel_http") || lower.contains("portail captif") ||
-                lower.contains("nointernet") || lower.contains("quota") ->
-                "CAPTIVE_PORTAL"
+            lower.contains("captive_portal") -> "CAPTIVE_PORTAL"
+            lower.contains("tunnel_refused") -> "TUNNEL_REFUSED"
             lower.contains("auth fail") || lower.contains("authentication") ||
                 lower.contains("auth failure") -> "AUTH_FAILED"
             lower.contains("javax.net.ssl") || lower.contains("sslhandshake") ||
@@ -1351,7 +1365,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 "TLS_FAILED"
             lower.contains("invalid server's version string") ||
                 lower.contains("invalid server version") ||
-                lower.contains("banner") || lower.contains("ssh-2.0") ->
+                lower.contains("banner") ||             lower.contains("ssh-2.0") ->
                 "SSH_BANNER_MISSING"
             lower.contains("http 4") || lower.contains("http 5") ||
                 lower.contains("http status") || lower.contains("unexpected http") ||

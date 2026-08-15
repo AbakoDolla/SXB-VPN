@@ -191,6 +191,12 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(nativeService, /WsInputStream\(baseIn, rawOut, onEvent\)/);
   });
 
+  it('ne court-circuite pas un CONNECT compatible avec HTTP 101', () => {
+    assert.ok(nativeService.includes('val httpTunnelCompatible = response.contains("101") || isConnect'));
+    assert.ok(nativeService.includes('!(isConnectPayload && httpTunnelCompatible)'));
+    assert.ok(nativeService.includes('reason=connect_payload'));
+  });
+
   it('réserve WebSocket aux vrais handshakes et donne priorité au CONNECT brut', () => {
     const wsBranch = nativeService.indexOf('isWs ->');
     const connectPayloadBranch = nativeService.indexOf('isConnectPayload ->');
@@ -237,6 +243,15 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(nativeService.includes('trace("CLEANUP_COMPLETE"'));
     assert.doesNotMatch(nativeService, /PAYLOAD_FULL/);
     assert.doesNotMatch(nativeService, /password\\s*=/i);
+  });
+
+  it('mappe honnêtement les réponses HTTP sans accuser le forfait sans preuve', () => {
+    assert.ok(nativeService.includes('val errorCode = if (portal) "CAPTIVE_PORTAL" else "TUNNEL_REFUSED"'));
+    assert.ok(nativeService.includes('throw java.io.IOException("$errorCode'));
+    assert.ok(nativeService.includes('lower.contains("captive_portal")'));
+    assert.ok(nativeService.includes('lower.contains("tunnel_refused")'));
+    assert.ok(nativeService.includes("Le serveur n'a pas ouvert de tunnel"));
+    assert.ok(nativeService.includes('proof=$portal'));
   });
 
   it('propage les timeouts de lecture WebSocket vers JSch', () => {
