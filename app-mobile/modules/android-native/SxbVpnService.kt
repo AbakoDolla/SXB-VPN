@@ -353,7 +353,7 @@ private class SxbPayloadProxy(
         rawOut.write(payload.toByteArray(Charsets.ISO_8859_1))
         rawOut.flush()
         Log.i("SXB_DEBUG", "[SXB_DEBUG] PAYLOAD_SENT length=${payload.length}")
-        onEvent("[SXB_TRACE] stage=PAYLOAD_SENT bytes=${payload.size} flush=true")
+        onEvent("[SXB_TRACE] stage=PAYLOAD_SENT bytes=${payload.length} flush=true")
 
         // ── 2. Lire la réponse HTTP du serveur (headers jusqu'à \r\n\r\n) ────
         transportSocket.soTimeout = 10_000
