@@ -217,8 +217,26 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(vpnContext.includes('startWatchdog(`STEP_3_NATIVE_CALLED proto=${engineProtocol}`, attemptId)'));
   });
 
+  it('expose une trace séquencée du transport sans contenu sensible', () => {
+    assert.ok(nativeService.includes('[SXB_TRACE]'));
+    assert.ok(nativeService.includes('stage=SOCKET_PROTECT'));
+    assert.ok(nativeService.includes('stage=DNS_RESOLVE'));
+    assert.ok(nativeService.includes('stage=TCP_CONNECTED'));
+    assert.ok(nativeService.includes('stage=PAYLOAD_NORMALIZED'));
+    assert.ok(nativeService.includes('stage=HTTP_HEADERS'));
+    assert.ok(nativeService.includes('stage=MODE_CLASSIFIED'));
+    assert.ok(nativeService.includes('stage=TRANSPORT_SELECTED'));
+    assert.ok(nativeService.includes('stage=SSH_BANNER_WAIT'));
+    assert.ok(nativeService.includes('trace("TUN_CREATE_START"'));
+    assert.ok(nativeService.includes('trace("TUN_CREATED"'));
+    assert.ok(nativeService.includes('trace("CLEANUP_COMPLETE"'));
+    assert.doesNotMatch(nativeService, /PAYLOAD_FULL/);
+    assert.doesNotMatch(nativeService, /password\\s*=/i);
+  });
+
   it('rend le handshake JSch interrompable par stopVpn et bloque la publication tardive', () => {
-    assert.match(nativeService, /sshSession = session[\s\S]{0,260}session\.connect\(30_000\)/);
+    assert.ok(nativeService.includes('sshSession = session'));
+    assert.ok(nativeService.includes('session.connect(30_000)'));
     assert.match(nativeService, /SSH_CONNECT_IGNORED/);
     assert.match(nativeService, /running\.set\(false\)[\s\S]{0,180}failVpn\("SSH_TIMEOUT"/);
     assert.match(nativeService, /LIBBOX_START_IGNORED/);

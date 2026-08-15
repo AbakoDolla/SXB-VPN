@@ -63,6 +63,7 @@ import android.net.Network
 import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
+import android.os.SystemClock
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import com.jcraft.jsch.ChannelDirectTCPIP
@@ -114,7 +115,7 @@ private class WsOutputStream(
         val mask = ByteArray(4).also { rng.nextBytes(it) }
         val masked = ByteArray(len) { i -> (b[off + i].toInt() xor mask[i % 4].toInt()).toByte() }
         // Diagnostic sans contenu : un payload ou une bannière peut contenir des secrets.
-        onEvent("[SXB_DEBUG] WS_OUT bytes=$len")
+        onEvent("[SXB_TRACE] stage=WS_FRAME_OUT fin=true opcode=2 masked=true payload_bytes=$len")
         val buf = ByteArrayOutputStream(len + 14)
         buf.write(0x82)                         // FIN=1, opcode=0x02 (binary)
         when {
@@ -170,21 +171,18 @@ private class WsInputStream(
                 return null
             }
             val b1 = raw.read(); if (b1 == -1) return null
+            val fin = (b0 and 0x80) != 0
             val opcode = b0 and 0x0F
+            val masked = (b1 and 0x80) != 0
             // Répondre aux ping est nécessaire pour les serveurs WebSocket mobiles
             // qui ferment la connexion si aucun pong n'est reçu.
-            if (opcode == 0x08) {
-                onEvent("[SXB_DEBUG] WS_CLOSE_FRAME received — le serveur met fin au WebSocket")
-                Log.w("SXB_DEBUG", "[SXB_DEBUG] WS_CLOSE_FRAME received")
-                return null
-            }
-            val masked = (b1 and 0x80) != 0
             var payloadLen = (b1 and 0x7F).toLong()
             payloadLen = when (payloadLen) {
                 126L -> ((readByte() shl 8) or readByte()).toLong()
                 127L -> (0 until 8).fold(0L) { acc, _ -> (acc shl 8) or readByte().toLong() }
                 else -> payloadLen
             }
+            onEvent("[SXB_TRACE] stage=WS_FRAME_IN fin=$fin opcode=$opcode masked=$masked payload_bytes=$payloadLen")
             val maskKey = if (masked) ByteArray(4) { readByte().toByte() } else null
             val payload = ByteArray(payloadLen.toInt())
             var total = 0
@@ -192,6 +190,12 @@ private class WsInputStream(
                 val n = raw.read(payload, total, payload.size - total)
                 if (n == -1) break
                 total += n
+            }
+            if (opcode == 0x08) {
+                val closeCode = if (payload.size >= 2) ((payload[0].toInt() and 0xFF) shl 8) or (payload[1].toInt() and 0xFF) else -1
+                onEvent("[SXB_TRACE] stage=WS_CLOSE code=$closeCode payload_bytes=${payload.size}")
+                Log.w("SXB_DEBUG", "[SXB_DEBUG] WS_CLOSE_FRAME received")
+                return null
             }
             // FIX — RFC 6455 §5.1 : les frames client→serveur DOIVENT être masquées.
             // L'implémentation précédente envoyait un pong non masqué, ce qui provoque
@@ -213,7 +217,7 @@ private class WsInputStream(
                 pong.write(pongMask)
                 pong.write(pongMasked)
                 synchronized(rawOut) { rawOut.write(pong.toByteArray()); rawOut.flush() }
-                onEvent("[SXB_DEBUG] WS_PING len=${payload.size} → PONG masqué envoyé")
+                onEvent("[SXB_TRACE] stage=WS_PONG_SENT payload_bytes=${payload.size} masked=true")
                 return readNextFrame()
             }
             if (maskKey != null) {
@@ -262,6 +266,7 @@ private class SxbPayloadProxy(
     override fun connect(sf: SocketFactory?, host: String, port: Int, timeout: Int) {
         val connectTimeout = timeout.coerceIn(5_000, 30_000)
         val rawSocket = Socket()
+        onEvent("[SXB_TRACE] stage=SOCKET_CREATED timeout_ms=$connectTimeout tls=$tlsEnabled sni_present=${sni.isNotBlank()}")
         // Socket() seul n'a pas forcément de descripteur natif. Créer le socket
         // local avant protect() est indispensable : sinon VpnService.protect()
         // retourne false sur certains appareils et le futur tunnel risquerait une
@@ -272,15 +277,16 @@ private class SxbPayloadProxy(
         }.getOrDefault(false)
         val protectedOk = protectSocket(rawSocket)
         Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_SOCKET_PROTECTED result=$protectedOk fd_ready=$fdReady")
-        onEvent("[SXB_DEBUG] SSH_SOCKET_PROTECTED result=$protectedOk fd_ready=$fdReady")
+        onEvent("[SXB_TRACE] stage=SOCKET_PROTECT result=$protectedOk fd_ready=$fdReady")
         // Résolution DNS visible (diagnostic données cellulaires / split-DNS)
+        val dnsT0 = System.currentTimeMillis()
         val dnsResolved = runCatching {
             java.net.InetAddress.getAllByName(host).isNotEmpty()
         }.getOrDefault(false)
-        onEvent("[SXB_DEBUG] DNS_RESOLVE success=$dnsResolved timeout=${connectTimeout}ms")
+        onEvent("[SXB_TRACE] stage=DNS_RESOLVE success=$dnsResolved elapsed_ms=${System.currentTimeMillis() - dnsT0}")
         val t0 = System.currentTimeMillis()
         rawSocket.connect(InetSocketAddress(host, port), connectTimeout)
-        onEvent("[SXB_DEBUG] TCP_CONNECTED elapsed_ms=${System.currentTimeMillis() - t0}")
+        onEvent("[SXB_TRACE] stage=TCP_CONNECTED elapsed_ms=${System.currentTimeMillis() - t0} local_bound=${rawSocket.localPort > 0}")
         val transportSocket: Socket = if (tlsEnabled) {
             val tlsSocket = (SSLSocketFactory.getDefault() as SSLSocketFactory)
                 .createSocket(rawSocket, sni.ifBlank { host }, port, false) as SSLSocket
@@ -293,7 +299,7 @@ private class SxbPayloadProxy(
             tlsSocket.sslParameters = sslParams
             tlsSocket.startHandshake()
             Log.i("SXB_DEBUG", "[SXB_DEBUG] TLS_HANDSHAKE_SUCCESS")
-            onEvent("[SXB_DEBUG] TLS_HANDSHAKE_SUCCESS")
+            onEvent("[SXB_TRACE] stage=TLS_HANDSHAKE_SUCCESS protocol=${tlsSocket.session.protocol} cipher_present=${tlsSocket.session.cipherSuite.isNotBlank()}")
             tlsSocket.soTimeout = 0
             tlsSocket
         } else {
@@ -311,6 +317,8 @@ private class SxbPayloadProxy(
             .replace("[port]", port.toString())
             .replace("[host]", host).replace("[Host]", host)
             .replace("[host_port]", "$host:$port")
+
+        onEvent("[SXB_TRACE] stage=PAYLOAD_NORMALIZED bytes=${payload.length} has_connect=${payload.trimStart().startsWith("CONNECT ", ignoreCase = true)} has_upgrade=${payload.contains("upgrade", ignoreCase = true)} crlf_count=${payload.windowed(2).count { it == "\r\n" }}")
 
         // ── 1b. Compléter le handshake WS si besoin — PARITÉ sonde backend ────
         // RFC 6455 §4.1 : Sec-WebSocket-Key + Version sont OBLIGATOIRES. Sans eux,
@@ -345,7 +353,7 @@ private class SxbPayloadProxy(
         rawOut.write(payload.toByteArray(Charsets.ISO_8859_1))
         rawOut.flush()
         Log.i("SXB_DEBUG", "[SXB_DEBUG] PAYLOAD_SENT length=${payload.length}")
-        onEvent("[SXB_DEBUG] PAYLOAD_SENT length=${payload.length}")
+        onEvent("[SXB_TRACE] stage=PAYLOAD_SENT bytes=${payload.size} flush=true")
 
         // ── 2. Lire la réponse HTTP du serveur (headers jusqu'à \r\n\r\n) ────
         transportSocket.soTimeout = 10_000
@@ -367,10 +375,15 @@ private class SxbPayloadProxy(
         val response = headerBuf.toString()
         val logSafeStatus = response.substringBefore("\r\n").take(60)
             .replace(Regex("[^\\x20-\\x7E]"), "")
+        val headerNames = response.split("\r\n")
+            .drop(1)
+            .filter { it.contains(":") }
+            .map { it.substringBefore(":").trim().lowercase(Locale.ROOT) }
+            .distinct()
+            .joinToString(",")
         Log.i("SXB_DEBUG", "[SXB_DEBUG] SERVER_RESPONSE=${logSafeStatus} bytes=${response.length}")
-        onEvent("[SXB_DEBUG] SERVER_RESPONSE=${logSafeStatus} bytes=${response.length}")
-        onEvent("[SXB_DEBUG] RESPONSE_FULL " + response.take(512)
-            .replace("\r", "\\r").replace("\n", "\\n"))
+        onEvent("[SXB_TRACE] stage=HTTP_RESPONSE status=${SecurityModule.maskSensitive(logSafeStatus)} header_count=${headerNames.split(',').count { it.isNotBlank() }} body_bytes=unknown")
+        onEvent("[SXB_TRACE] stage=HTTP_HEADERS names=$headerNames raw_bytes=${response.length} terminator=${response.endsWith("\r\n\r\n")}")
 
         // ── 3. Détecter le mode transport ─────────────────────────────────────
         //   HTTP 101 = WebSocket upgrade  → adapter WS obligatoire
@@ -389,7 +402,7 @@ private class SxbPayloadProxy(
         val isConnectPayload = payload.trimStart().startsWith("CONNECT ", ignoreCase = true)
 
         Log.i("SXB_DEBUG", "[SXB_DEBUG] SERVER_MODE status='$statusLine' isWS=$isWs isConnect=$isConnect isSshBanner=$isSshBanner isEmpty=$isEmpty")
-        onEvent("[SXB_DEBUG] SERVER_MODE v235 isWS=$isWs isConnect=$isConnect isSshBanner=$isSshBanner isEmpty=$isEmpty")
+        onEvent("[SXB_TRACE] stage=MODE_CLASSIFIED status=${SecurityModule.maskSensitive(statusLine)} ws=$isWs connect200=$isConnect ssh_banner=$isSshBanner empty=$isEmpty connect_payload=$isConnectPayload")
 
         // ── 4. Lire les premiers octets utiles pour confirmer le mode ─────────
         if (!isWs && !isConnect && !isSshBanner && !isEmpty) {
@@ -449,12 +462,14 @@ private class SxbPayloadProxy(
             transportSocket.soTimeout = 0
         } catch (_: Exception) {}
         val firstByte = if (peekLen > 0) peekBuf[0].toInt() and 0xFF else -1
+        val firstHex = if (firstByte >= 0) "%02X".format(firstByte) else "NONE"
+        onEvent("[SXB_TRACE] stage=POST_HEADER_PEEK bytes=$peekLen first_byte_hex=$firstHex first_byte_ascii=${if (firstByte in 32..126) firstByte.toChar() else "NON_PRINTABLE"}")
 
         when {
             isSshBanner || isEmpty -> {
                 // Serveur répond SSH directement (pas de proxy intermédiaire)
                 if (isSshBanner) {
-                    onEvent("[SXB_DEBUG] SSH_BANNER_RECEIVED")
+                    onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=SSH_RAW reason=SSH_BANNER")
                     inputStream = SequenceInputStream(
                         ByteArrayInputStream(response.toByteArray(Charsets.ISO_8859_1)),
                         rawIn
@@ -468,6 +483,7 @@ private class SxbPayloadProxy(
             isConnect -> {
                 // HTTP CONNECT 200 → tunnel TCP transparent, SSH direct
                 Log.i("SXB_DEBUG", "[SXB_DEBUG] HTTP_CONNECT_TUNNEL raw SSH streams")
+                onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=CONNECT_RAW reason=http_200")
                 inputStream  = if (peekLen > 0) SequenceInputStream(ByteArrayInputStream(peekBuf, 0, peekLen), rawIn) else rawIn
                 outputStream = rawOut
             }
@@ -483,10 +499,12 @@ private class SxbPayloadProxy(
                 // les vrais serveurs RFC 6455.
                 if (firstByte == 'S'.code) {
                     onEvent("[SXB_DEBUG] COSMETIC_101_DETECTED — SSH brut détecté après 101")
+                    onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=SSH_RAW reason=101_then_ssh_banner")
                     inputStream  = if (peekLen > 0) SequenceInputStream(ByteArrayInputStream(peekBuf, 0, peekLen), rawIn) else rawIn
                     outputStream = rawOut
                 } else {
                     onEvent("[SXB_DEBUG] WEBSOCKET_MODE_ACTIVATED — trames RFC 6455")
+                    onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=WEBSOCKET_RFC6455 reason=http_101_upgrade")
                     val baseIn = if (peekLen > 0) SequenceInputStream(ByteArrayInputStream(peekBuf, 0, peekLen), rawIn) else rawIn
                     inputStream  = WsInputStream(baseIn, rawOut, onEvent)
                     outputStream = WsOutputStream(rawOut, onEvent)
@@ -497,12 +515,14 @@ private class SxbPayloadProxy(
                 // Aucun protocole HTTP explicite n'a été négocié. Dans ce seul cas,
                 // conserver le repli historique CONNECT vers un tunnel TCP brut.
                 onEvent("[SXB_DEBUG] CONNECT_PAYLOAD_RAW_TUNNEL — flux SSH brut")
+                onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=CONNECT_RAW reason=payload_connect_without_http_negotiation")
                 inputStream  = if (peekLen > 0) SequenceInputStream(ByteArrayInputStream(peekBuf, 0, peekLen), rawIn) else rawIn
                 outputStream = rawOut
             }
 
             else -> {
                 Log.w("SXB_DEBUG", "[SXB_DEBUG] UNKNOWN_RESPONSE_FALLBACK raw streams")
+                onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=RAW_FALLBACK reason=unknown_response")
                 inputStream  = rawIn
                 outputStream = rawOut
             }
@@ -516,6 +536,7 @@ private class SxbPayloadProxy(
         // Avec soTimeout=28s, JSch reçoit SocketTimeoutException → JSchException
         // → failVpn() → broadcast status=error → RN clearWatchdog() < 45s.
         try { transportSocket.soTimeout = 28_000 } catch (_: Exception) {}
+        onEvent("[SXB_TRACE] stage=SSH_BANNER_WAIT timeout_ms=28000")
     }
 
     override fun getInputStream(): InputStream  = inputStream!!
@@ -659,6 +680,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private var connectionWatchdog: Thread? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private val cleanupStarted = AtomicBoolean(false)
+    private val traceSequence = AtomicLong(0)
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -874,6 +896,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             broadcastLog("[SXB] Initialisation tunnel SSH...")
             broadcastLog("[SXB] Préparation de la connexion...")
             broadcastStatus("connecting"); setCurrentState("connecting")
+            trace("SSH_TUNNEL_START", "state=$currentState")
             val cfg = JSONObject(configJsonStr)
 
             val host       = cfg.optStringOrNull("host", "")
@@ -1002,6 +1025,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             // Auparavant sshSession restait null jusqu'après connect(), laissant le
             // thread bloqué puis publier SSH_CONNECTED après l'arrêt du service.
             sshSession = session
+            trace("SSH_HANDSHAKE_START", "payload=$usePayload timeout_ms=30000")
             SxbSecureLogger.debug("SSH_HANDSHAKE_START payload=$usePayload timeout_ms=30000")
             broadcastLog("[SXB_DEBUG] SSH_HANDSHAKE_START payload=$usePayload")
             broadcastLog("[SXB] Handshake SSH en cours...")
@@ -1015,6 +1039,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 return
             }
 
+            trace("SSH_HANDSHAKE_SUCCESS", "session_connected=${session.isConnected}")
             SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.TUNNEL_CONNECTED)
             broadcastLog("[SXB_DEBUG] SSH_CONNECTED — handshake réussi")
 
@@ -1043,6 +1068,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_12_SOCKS_STARTED port=$SOCKS5_PORT")
             broadcastLog("[SXB_DEBUG] STEP_12_SOCKS_STARTED port=$SOCKS5_PORT")
             broadcastLog("[SXB] SOCKS5 local actif (port $SOCKS5_PORT)")
+            trace("SOCKS5_READY", "listen_loopback=true port=$SOCKS5_PORT")
 
             // ── Pont TUN → SOCKS5 via libbox ─────────────────────────────────
             // Le TUN n'est plus construit ici : c'est libbox qui le réclame via
@@ -1281,6 +1307,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             return
         }
 
+        trace("LIBBOX_STARTED", "label=$label service_ready=${boxService != null}")
         Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_13_VPN_CONNECTED label=$label")
         broadcastLog("[SXB_DEBUG] TUNNEL_READY proto=$label")
         broadcastLog("[SXB_DEBUG] VPN_CONNECTED proto=$label")
@@ -1340,6 +1367,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
     private fun failVpn(code: String, displayMessage: String) {
         Log.e("SXB_DEBUG", "[SXB_DEBUG] VPN_FAILED code=$code")
+        trace("VPN_FAILED", "code=$code state=$currentState")
         broadcastLog("[SXB_DEBUG] VPN_FAILED code=$code")
         broadcastLog("[SXB] $code — ${displayMessage.removePrefix("❌ ").take(160)}")
         broadcastStatus("error")
@@ -1428,6 +1456,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             throw IllegalStateException("Permission VPN non accordée")
         }
 
+        trace("TUN_CREATE_START", "mtu=${options.mtu} auto_route=${options.autoRoute} strict_route=${options.strictRoute}")
         Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_6_TUN_CREATING mtu=${options.mtu} autoRoute=${options.autoRoute}")
         broadcastLog("[SXB] Création interface réseau TUN...")
         broadcastLog("[SXB] Établissement du tunnel sécurisé...")
@@ -1519,6 +1548,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 .firstOrNull { it.name.startsWith("tun") }?.name
         }.getOrNull()
 
+        trace("TUN_CREATED", "fd_ready=${pfd.fd >= 0} interface_name_present=${tunInterfaceName != null}")
         Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_7_TUN_CREATED fd=${pfd.fd} name=$tunInterfaceName")
         broadcastLog("[SXB_DEBUG] STEP_7_TUN_CREATED fd=${pfd.fd}")
         broadcastLog("[SXB] Interface TUN créée")
@@ -2353,6 +2383,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             while (!server.isClosed && session.isConnected && running.get()) {
                 try {
                     val client = server.accept()
+                    broadcastLog("[SXB_TRACE] stage=SOCKS5_CLIENT_ACCEPT local_port=${client.localPort} remote_port=${client.port}")
                     Thread({ handleSocks5Client(session, client) }, "Socks5Client")
                         .apply { isDaemon = true; start() }
                 } catch (e: Exception) {
@@ -2380,6 +2411,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             // Requête CONNECT (1=Connect, 2=Bind, 3=UDP Associate)
             val cmd = ByteArray(4); din.readFully(cmd)
             val command = cmd[1].toInt()
+            broadcastLog("[SXB_TRACE] stage=SOCKS5_REQUEST command=$command address_type=${cmd[3].toInt()}")
             if (command != 1) {
                 Log.w(TAG, "[SXB_DEBUG] SOCKS5_COMMAND_NOT_SUPPORTED cmd=$command (only CONNECT=1 supported over SSH)")
                 dout.write(byteArrayOf(5, 7, 0, 1, 0, 0, 0, 0, 0, 0)); client.close(); return
@@ -2396,6 +2428,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             }
             val pHigh = din.read(); val pLow = din.read()
             destPort = (pHigh shl 8) or pLow
+            broadcastLog("[SXB_TRACE] stage=SOCKS5_TARGET_RESOLVED port=$destPort host_present=${destHost.isNotBlank()}")
 
             // Ouvrir canal SSH direct-tcpip
             val channel = session.openChannel("direct-tcpip") as ChannelDirectTCPIP
@@ -2406,6 +2439,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
             dout.write(byteArrayOf(5, 0, 0, 1, 0, 0, 0, 0, 0, 0)); dout.flush()
             channel.connect(15_000)
+            broadcastLog("[SXB_TRACE] stage=SSH_DIRECT_TCPIP_CONNECTED port=$destPort")
 
             // Relay bidirectionnel
             val threadA = Thread({
@@ -2434,7 +2468,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
             threadA.join(300_000); threadB.join(5_000)
             channel.disconnect()
+            broadcastLog("[SXB_TRACE] stage=SOCKS5_RELAY_CLOSED upload_bytes=${uploadBytes.get()} download_bytes=${downloadBytes.get()}")
         } catch (e: Exception) {
+            broadcastLog("[SXB_TRACE] stage=SOCKS5_ERROR type=${e.javaClass.simpleName}")
             Log.d(TAG, "SOCKS5 fin: ${e.message?.take(60)}")
         } finally {
             runCatching { client.close() }
@@ -2575,12 +2611,21 @@ class SxbVpnService : VpnService(), PlatformInterface {
     // HANDOFF_LOGS_ULTRADETAIL — bouton Copier : persister les logs complets
     private val fullLogBuffer = StringBuilder()
 
+    /** Trace réseau détaillée, séquencée et systématiquement dépourvue de secrets. */
+    private fun trace(stage: String, detail: String = "") {
+        val seq = traceSequence.incrementAndGet()
+        val elapsed = SystemClock.elapsedRealtime()
+        val suffix = if (detail.isBlank()) "" else " ${SecurityModule.maskSensitive(detail)}"
+        broadcastLog("[SXB_TRACE] seq=$seq elapsed_ms=$elapsed stage=$stage$suffix")
+    }
+
     private fun broadcastLog(message: String) {
-        Log.i(TAG, message)
-        fullLogBuffer.append(message).append("\n")
+        val safeMessage = SecurityModule.maskSensitive(message)
+        Log.i(TAG, safeMessage)
+        fullLogBuffer.append(safeMessage).append("\n")
         // setPackage() obligatoire sur Android 14+ avec RECEIVER_NOT_EXPORTED
         val intent = Intent(BROADCAST_LOG).apply {
-            putExtra("log", SecurityModule.maskSensitive(message))
+            putExtra("log", safeMessage)
             setPackage(packageName)
         }
         sendBroadcast(intent)
@@ -2619,6 +2664,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             return
         }
 
+        trace("CLEANUP_START", "stop_service=$stopService keep_running=$keepRunning state=$currentState")
         if (!keepRunning) running.set(false)
         vpnThread?.interrupt()
         notifThread?.interrupt()
@@ -2654,6 +2700,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         if (stopService) {
             setCurrentState("disconnected")
+            trace("CLEANUP_COMPLETE", "state=$currentState")
             broadcastStatus("disconnected")
         }
         if (stopService) {
