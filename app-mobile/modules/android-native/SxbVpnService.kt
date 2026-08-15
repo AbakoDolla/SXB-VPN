@@ -389,7 +389,7 @@ private class SxbPayloadProxy(
         val isConnectPayload = payload.trimStart().startsWith("CONNECT ", ignoreCase = true)
 
         Log.i("SXB_DEBUG", "[SXB_DEBUG] SERVER_MODE status='$statusLine' isWS=$isWs isConnect=$isConnect isSshBanner=$isSshBanner isEmpty=$isEmpty")
-        onEvent("[SXB_DEBUG] SERVER_MODE isWS=$isWs isConnect=$isConnect isSshBanner=$isSshBanner isEmpty=$isEmpty")
+        onEvent("[SXB_DEBUG] SERVER_MODE v235 isWS=$isWs isConnect=$isConnect isSshBanner=$isSshBanner isEmpty=$isEmpty")
 
         // ── 4. Lire les premiers octets utiles pour confirmer le mode ─────────
         if (!isWs && !isConnect && !isSshBanner && !isEmpty) {
