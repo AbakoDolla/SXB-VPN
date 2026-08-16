@@ -70,6 +70,16 @@ export function isVpnPermissionGranted(): boolean {
   return SxbVpnNative.isVpnPermissionGranted() ?? false;
 }
 
+export async function setDiagnosticLogging(enabled: boolean): Promise<boolean> {
+  if (!SxbVpnNative || Platform.OS !== 'android' || !SxbVpnNative.setDiagnosticLogging) return false;
+  return Boolean(await SxbVpnNative.setDiagnosticLogging(enabled));
+}
+
+export async function getDiagnosticLogging(): Promise<boolean> {
+  if (!SxbVpnNative || Platform.OS !== 'android' || !SxbVpnNative.getDiagnosticLogging) return false;
+  return Boolean(await SxbVpnNative.getDiagnosticLogging());
+}
+
 export function addVpnStateListener(listener: (state: VpnState) => void) {
   return (emitter as any).addListener(EVENT_STATE_CHANGE, listener);
 }

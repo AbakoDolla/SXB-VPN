@@ -177,6 +177,7 @@ export const fr = {
   diagnostic_subtitle: 'Outils de débogage tunnel VPN (dev only)',
   diagnostic_row: 'Diagnostic VPN',
   dev_badge: 'DEV',
+  diagnostic_warning: 'Mode temporaire : les hôtes, IP, SNI, réponses serveur et payloads sont visibles dans les logs. Les mots de passe et tokens restent masqués. Désactivez-le après le test.',
   appearance_lang_section: 'APPARENCE & LANGUE',
   theme_dark_row: 'Thème sombre',
   language_row: 'Langue',

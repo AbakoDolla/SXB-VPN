@@ -30,6 +30,8 @@ import com.facebook.react.modules.core.DeviceEventManagerModule
  *  - setKillSwitch(bool)     → void
  *  - setAutoReconnect(bool)  → void
  *  - checkSecurity()         → Promise<object>
+ *  - setDiagnosticLogging()  → Promise<boolean>
+ *  - getDiagnosticLogging()  → Promise<boolean>
  */
 class SxbVpnModule(reactContext: ReactApplicationContext)
     : ReactContextBaseJavaModule(reactContext), ActivityEventListener {
@@ -43,11 +45,29 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
     private var statusReceiver: BroadcastReceiver? = null
     private var logReceiver: BroadcastReceiver? = null
 
-    init { reactContext.addActivityEventListener(this) }
+    init {
+        reactContext.addActivityEventListener(this)
+        SxbSecureLogger.initialize(reactContext)
+    }
 
     override fun getName() = "SxbVpnNative"
 
-    override fun initialize() { super.initialize(); registerReceivers() }
+    override fun initialize() { super.initialize(); SxbSecureLogger.initialize(reactApplicationContext); registerReceivers() }
+
+    @ReactMethod
+    fun setDiagnosticLogging(enabled: Boolean, promise: Promise) {
+        try {
+            SxbSecureLogger.setDiagnosticEnabled(reactApplicationContext, enabled)
+            promise.resolve(SxbSecureLogger.isDiagnosticEnabled())
+        } catch (e: Exception) {
+            promise.reject("DIAGNOSTIC_ERROR", e.message ?: "Impossible de modifier le diagnostic", e)
+        }
+    }
+
+    @ReactMethod
+    fun getDiagnosticLogging(promise: Promise) {
+        promise.resolve(SxbSecureLogger.isDiagnosticEnabled())
+    }
     override fun invalidate()  { super.invalidate();  unregisterReceivers() }
 
     // ── JS EventEmitter boilerplate ───────────────────────────────────────────

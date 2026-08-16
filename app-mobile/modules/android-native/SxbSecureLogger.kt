@@ -7,15 +7,15 @@ package com.sxbvpn.vpnmodule
  * RÈGLES DE SÉCURITÉ
  * ══════════════════════════════════════════════════════════════════════════════
  *
- * EN RELEASE (BuildConfig.DEBUG == false) :
- *   — TOUS les logs sont silencieux. Aucun appel android.util.Log ne passe.
- *   — Les codes d'événements sont des entiers opaques (non lisibles par adb).
- *   — Les données techniques (host, port, UUID, password, clés) ne sont
- *     JAMAIS transmises même sous forme masquée.
+ * PAR DÉFAUT (release) :
+ *   — Les logs structurés sont silencieux et les diagnostics UI masquent les
+ *     endpoints, hôtes, IP, UUID et payloads.
  *
- * EN DEBUG uniquement :
- *   — Les logs passent mais les champs sensibles sont remplacés par ******.
- *   — Le tag logcat est "SXB" (court, non évocateur) au lieu de "SXB_DEBUG".
+ * EN DEBUG ou après activation explicite du mode diagnostic local :
+ *   — Les événements et exceptions sont écrits dans Logcat.
+ *   — Les diagnostics réseau peuvent afficher les endpoints et le payload pour
+ *     isoler un échec de handshake ; les mots de passe/tokens restent masqués.
+ *   — Le mode est persistant sur l’appareil et doit être désactivé après test.
  *
  * UTILISATION :
  *   SxbSecureLogger.vpn(VpnEvent.CONNECTED)
@@ -26,6 +26,7 @@ package com.sxbvpn.vpnmodule
  * NE JAMAIS passer host, port, uuid, password, ou token comme argument.
  */
 
+import android.content.Context
 import android.util.Log
 import com.sxbvpn.mobile.BuildConfig
 
@@ -33,8 +34,43 @@ object SxbSecureLogger {
 
     // ── Tag logcat — court, non explicite en prod ─────────────────────────────
     private const val TAG = "SXB"
+    private const val PREFS = "sxb_diagnostics"
+    private const val KEY_VERBOSE = "verbose_logging"
+    private const val KEY_VERBOSE_UNTIL = "verbose_logging_until"
+    private const val DIAGNOSTIC_TTL_MS = 30 * 60 * 1000L
 
-    // ── Regex de masquage — appliquées uniquement en mode DEBUG ──────────────
+    @Volatile private var diagnosticEnabled: Boolean = BuildConfig.DEBUG
+    @Volatile private var diagnosticUntilMs: Long = if (BuildConfig.DEBUG) Long.MAX_VALUE else 0L
+
+    /** Recharge le mode local au démarrage du bridge et du service. */
+    fun initialize(context: Context) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val until = prefs.getLong(KEY_VERBOSE_UNTIL, 0L)
+        diagnosticUntilMs = until
+        diagnosticEnabled = BuildConfig.DEBUG || (prefs.getBoolean(KEY_VERBOSE, false) && until > System.currentTimeMillis())
+    }
+
+    /** Active les traces détaillées pendant 30 minutes pour ce seul appareil. */
+    fun setDiagnosticEnabled(context: Context, enabled: Boolean) {
+        val until = if (enabled) System.currentTimeMillis() + DIAGNOSTIC_TTL_MS else 0L
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_VERBOSE, enabled)
+            .putLong(KEY_VERBOSE_UNTIL, until)
+            .apply()
+        diagnosticUntilMs = until
+        diagnosticEnabled = BuildConfig.DEBUG || enabled
+    }
+
+    fun isDiagnosticEnabled(): Boolean {
+        if (BuildConfig.DEBUG) return true
+        if (diagnosticEnabled && System.currentTimeMillis() >= diagnosticUntilMs) {
+            diagnosticEnabled = false
+        }
+        return diagnosticEnabled
+    }
+
+    // ── Regex de masquage — appliquées au logger structuré ─────────────────────
     private val SENSITIVE_PATTERNS = listOf(
         // IPv4
         Regex("""(\d{1,3}\.){3}\d{1,3}(:\d+)?""") to "[ip:****]",
@@ -56,25 +92,25 @@ object SxbSecureLogger {
 
     /** Événement VPN structuré — visible en DEBUG, silencieux en RELEASE. */
     fun vpn(event: VpnEvent) {
-        if (!BuildConfig.DEBUG) return
+        if (!isDiagnosticEnabled()) return
         Log.i(TAG, event.code)
     }
 
     /** Événement VPN avec contexte additionnel (non-sensible). */
     fun vpn(event: VpnEvent, detail: String) {
-        if (!BuildConfig.DEBUG) return
+        if (!isDiagnosticEnabled()) return
         Log.i(TAG, "${event.code} — ${mask(detail)}")
     }
 
     /** Log de débogage libre — no-op en release. */
     fun debug(message: String) {
-        if (!BuildConfig.DEBUG) return
+        if (!isDiagnosticEnabled()) return
         Log.d(TAG, mask(message))
     }
 
     /** Avertissement — no-op en release. */
     fun warn(message: String) {
-        if (!BuildConfig.DEBUG) return
+        if (!isDiagnosticEnabled()) return
         Log.w(TAG, mask(message))
     }
 
@@ -84,7 +120,7 @@ object SxbSecureLogger {
      * Pour les erreurs fatales, utiliser un service de crash (Sentry) séparé.
      */
     fun error(event: VpnEvent, throwable: Throwable? = null) {
-        if (!BuildConfig.DEBUG) return
+        if (!isDiagnosticEnabled()) return
         if (throwable != null) {
             // Ne pas logger le message de throwable s'il contient des données réseau
             Log.e(TAG, "${event.code} — ${maskThrowable(throwable)}")
@@ -94,7 +130,7 @@ object SxbSecureLogger {
     }
 
     fun error(message: String, throwable: Throwable? = null) {
-        if (!BuildConfig.DEBUG) return
+        if (!isDiagnosticEnabled()) return
         Log.e(TAG, mask(message), throwable)
     }
 

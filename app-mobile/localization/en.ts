@@ -165,6 +165,7 @@ export const en = {
   diagnostic_subtitle: 'VPN tunnel debug tools (dev only)',
   diagnostic_row: 'VPN Diagnostic',
   dev_badge: 'DEV',
+  diagnostic_warning: 'Temporary mode: hosts, IPs, SNI, server responses and payloads are visible in logs. Passwords and tokens remain masked. Disable it after testing.',
   appearance_lang_section: 'APPEARANCE & LANGUAGE',
   theme_dark_row: 'Dark theme',
   language_row: 'Language',

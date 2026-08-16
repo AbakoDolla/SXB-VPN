@@ -19,6 +19,7 @@ import { useLanguageContext } from "@/contexts/LanguageContext";
 import { useTranslation } from "@/localization";
 import { deriveQuota, formatBytes } from "@/services/quotaState";
 import Colors from "@/constants/colors";
+import { getDiagnosticLogging, setDiagnosticLogging } from "@/modules/expo-sxb-vpn/src";
 
 // ── Row component ─────────────────────────────────────────────────────────────
 
@@ -237,6 +238,7 @@ export default function SettingsScreen() {
   const [storageSize,      setStorageSize]      = useState<string>("…");
   const [clearing,         setClearing]         = useState(false);
   const [refreshingConfig, setRefreshingConfig] = useState(false);
+  const [diagnosticLogging, setDiagnosticLoggingState] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -255,6 +257,8 @@ export default function SettingsScreen() {
       // auto reconnect + kill switch viennent du VpnContext (synchronisés avec le service natif)
       setAutoReconnect(arCtx);
       setKillSwitch(ksCtx);
+      const diagnosticEnabled = await getDiagnosticLogging().catch(() => false);
+      setDiagnosticLoggingState(diagnosticEnabled);
 
       // Estimate storage
       const keys = await AsyncStorage.getAllKeys();
@@ -313,6 +317,14 @@ export default function SettingsScreen() {
     await setKsCtx(v);
     if (v) {
       Alert.alert(t('kill_switch_enabled_title'), t('kill_switch_enabled_msg'));
+    }
+  };
+
+  const handleDiagnosticLogging = async (v: boolean) => {
+    const applied = await setDiagnosticLogging(v).catch(() => false);
+    setDiagnosticLoggingState(v && applied);
+    if (v && applied) {
+      Alert.alert(t('diagnostic_row'), t('diagnostic_warning'));
     }
   };
 
@@ -454,6 +466,22 @@ export default function SettingsScreen() {
             onPress={() => setLogsModal(true)} color={Colors.primary}
             badge={logs.length > 0 ? String(logs.length) : undefined}
           />
+        </Section>
+
+        <Section title={t('diagnostic_section')} subtitle={t('diagnostic_subtitle')}>
+          <Row
+            icon="bug-outline"
+            label={t('diagnostic_row')}
+            toggle
+            toggleValue={diagnosticLogging}
+            onToggle={handleDiagnosticLogging}
+            color={Colors.warning}
+            badge={diagnosticLogging ? t('dev_badge') : undefined}
+            badgeColor={Colors.warning}
+          />
+          {diagnosticLogging && (
+            <Text style={styles.sectionSubtitle}>{t('diagnostic_warning')}</Text>
+          )}
         </Section>
 
         {/* Security */}

@@ -81,6 +81,8 @@ describe('garde-fous contre les régressions Android', () => {
   const canonicalConfig = source('../server/services/canonical-config.ts');
   const nativeService = source('modules/android-native/SxbVpnService.kt');
   const nativeModule = source('modules/android-native/SxbVpnModule.kt');
+  const nativeLogger = source('modules/android-native/SxbSecureLogger.kt');
+  const securityModule = source('modules/android-native/SecurityModule.kt');
   const rootLayout = source('app/_layout.tsx');
   const notificationsScreen = source('app/(tabs)/notifications.tsx');
   const dashboardProfiles = source('../artifacts/sxb-dashboard/src/components/VpnProfilesView.tsx');
@@ -160,12 +162,19 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(nativeService, /outbound Xray Shadowsocks/);
   });
 
-  it('n’expose plus le contenu du payload ou les hôtes dans les diagnostics natifs', () => {
-    assert.doesNotMatch(nativeService, /PAYLOAD_FULL/);
-    assert.doesNotMatch(nativeService, /DNS_RESOLVE host=/);
-    assert.doesNotMatch(nativeService, /TCP_CONNECTED host=/);
-    assert.doesNotMatch(nativeService, /SSH_CONNECTED.*host=\$host/);
-    assert.match(nativeService, /PAYLOAD_READY bytes=/);
+  it('garde le masquage par défaut et expose un diagnostic réseau explicite sans mots de passe', () => {
+    assert.match(nativeLogger, /diagnosticEnabled/);
+    assert.match(nativeLogger, /setDiagnosticEnabled/);
+    assert.match(nativeLogger, /DIAGNOSTIC_TTL_MS/);
+    assert.match(nativeLogger, /KEY_VERBOSE_UNTIL/);
+    assert.match(nativeModule, /setDiagnosticLogging/);
+    assert.match(nativeModule, /getDiagnosticLogging/);
+    assert.match(nativeService, /PAYLOAD_FULL_BEGIN/);
+    assert.match(nativeService, /SERVER_RESPONSE_FULL_BEGIN/);
+    assert.match(nativeService, /if \(SxbSecureLogger\.isDiagnosticEnabled\(\)\)/);
+    assert.match(nativeService, /maskCredentialsOnly/);
+    assert.match(securityModule, /password/);
+    assert.match(securityModule, /redacted/);
   });
 
   it('explique les refus HTTP amont sans confondre le proxy avec une erreur d’import Xray', () => {
@@ -240,7 +249,7 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(vpnContext.includes('startWatchdog(`STEP_3_NATIVE_CALLED proto=${engineProtocol}`, attemptId)'));
   });
 
-  it('expose une trace séquencée du transport sans contenu sensible', () => {
+  it('expose une trace séquencée du transport avec diagnostic opt-in et secrets protégés', () => {
     assert.ok(nativeService.includes('[SXB_TRACE]'));
     assert.ok(nativeService.includes('stage=SOCKET_PROTECT'));
     assert.ok(nativeService.includes('stage=DNS_RESOLVE'));
@@ -253,8 +262,9 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(nativeService.includes('trace("TUN_CREATE_START"'));
     assert.ok(nativeService.includes('trace("TUN_CREATED"'));
     assert.ok(nativeService.includes('trace("CLEANUP_COMPLETE"'));
-    assert.doesNotMatch(nativeService, /PAYLOAD_FULL/);
-    assert.doesNotMatch(nativeService, /password\\s*=/i);
+    assert.match(nativeService, /PAYLOAD_FULL_BEGIN/);
+    assert.match(nativeService, /SxbSecureLogger\.isDiagnosticEnabled\(\)/);
+    assert.match(nativeService, /maskCredentialsOnly/);
   });
 
   it('mappe honnêtement les réponses HTTP sans accuser le forfait sans preuve', () => {

@@ -252,4 +252,20 @@ object SecurityModule {
         result = result.replace(Regex("""[A-Za-z0-9+/]{20,}={0,2}"""), "[b64:****]")
         return result
     }
+
+    /**
+     * Diagnostic local : conserve les endpoints, IP, Host et payload pour le
+     * diagnostic réseau, mais protège toujours les valeurs d’authentification.
+     */
+    fun maskCredentialsOnly(text: String): String {
+        val keys = listOf("password", "passwd", "token", "secret", "authorization", "cookie", "api-key", "api_key")
+        var result = text
+        for (key in keys) {
+            val pattern = Regex("(?i)(\\\"?$key\\\"?\\s*[:=]\\s*)(\\\"[^\\\"]*\\\"|'[^']*'|[^\\s,;}]+)")
+            result = pattern.replace(result) { match ->
+                "${match.groupValues[1]}[redacted]"
+            }
+        }
+        return result
+    }
 }

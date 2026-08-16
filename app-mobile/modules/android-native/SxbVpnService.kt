@@ -323,6 +323,10 @@ private class SxbPayloadProxy(
             .replace("[host_port]", "$host:$port")
 
         onEvent("[SXB_TRACE] stage=PAYLOAD_NORMALIZED bytes=${payload.length} has_connect=${payload.trimStart().startsWith("CONNECT ", ignoreCase = true)} has_upgrade=${payload.contains("upgrade", ignoreCase = true)} crlf_count=${payload.windowed(2).count { it == "\r\n" }} placeholder_removed=${rawPayload.contains("…") || rawPayload.contains("...")}")
+        if (SxbSecureLogger.isDiagnosticEnabled()) {
+            onEvent("[SXB_DIAGNOSTIC] CONNECT_TARGET host=$host port=$port tls=$tlsEnabled sni=${sni.ifBlank { "<none>" }}")
+            onEvent("[SXB_DIAGNOSTIC] PAYLOAD_FULL_BEGIN\n$payload\n[SXB_DIAGNOSTIC] PAYLOAD_FULL_END")
+        }
 
         val connectPayload = payload.trimStart().startsWith("CONNECT ", ignoreCase = true)
 
@@ -389,6 +393,9 @@ private class SxbPayloadProxy(
             .joinToString(",")
         Log.i("SXB_DEBUG", "[SXB_DEBUG] SERVER_RESPONSE=${logSafeStatus} bytes=${response.length}")
         onEvent("[SXB_TRACE] stage=HTTP_RESPONSE status=${SecurityModule.maskSensitive(logSafeStatus)} header_count=${headerNames.split(',').count { it.isNotBlank() }} body_bytes=unknown")
+        if (SxbSecureLogger.isDiagnosticEnabled()) {
+            onEvent("[SXB_DIAGNOSTIC] SERVER_RESPONSE_FULL_BEGIN\n$response\n[SXB_DIAGNOSTIC] SERVER_RESPONSE_FULL_END")
+        }
         onEvent("[SXB_TRACE] stage=HTTP_HEADERS names=$headerNames raw_bytes=${response.length} terminator=${response.endsWith("\r\n\r\n")}")
 
         // ── 3. Détecter le mode transport ─────────────────────────────────────
@@ -815,6 +822,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
     override fun onCreate() {
         super.onCreate()
+        SxbSecureLogger.initialize(this)
         Log.i(TAG, "[SXB_DEBUG] SERVICE_CREATE")
         broadcastLog("[SXB_DEBUG] ▶ SERVICE_CREATE (onCreate a démarré)")
         instance = this
@@ -2832,12 +2840,16 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private fun trace(stage: String, detail: String = "") {
         val seq = traceSequence.incrementAndGet()
         val elapsed = SystemClock.elapsedRealtime()
-        val suffix = if (detail.isBlank()) "" else " ${SecurityModule.maskSensitive(detail)}"
+        val suffix = if (detail.isBlank()) "" else " $detail"
         broadcastLog("[SXB_TRACE] seq=$seq elapsed_ms=$elapsed stage=$stage$suffix")
     }
 
     private fun broadcastLog(message: String) {
-        val safeMessage = SecurityModule.maskSensitive(message)
+        val safeMessage = if (SxbSecureLogger.isDiagnosticEnabled()) {
+            SecurityModule.maskCredentialsOnly(message)
+        } else {
+            SecurityModule.maskSensitive(message)
+        }
         Log.i(TAG, safeMessage)
         fullLogBuffer.append(safeMessage).append("\n")
         // setPackage() obligatoire sur Android 14+ avec RECEIVER_NOT_EXPORTED
