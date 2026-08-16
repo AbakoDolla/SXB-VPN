@@ -77,7 +77,8 @@ export async function applyUsageDelta(
   deltaBytes: bigint,
   sessionId?: string,
   seq?: number,
-  uploadBytes: bigint = 0n
+  uploadBytes: bigint = 0n,
+  deviceId: string | null = null,
 ) {
   // Garde anti-abus : rejet si <= 0 ou > 5 Go par appel
   const MAX_DELTA = BigInt(5 * 1024 * 1024 * 1024); // 5 Go
@@ -125,13 +126,22 @@ export async function applyUsageDelta(
     });
 
     if (clientId) {
-      await (prisma as any).$executeRawUnsafe(
-        `INSERT INTO traffic_usage (id, "clientId", download, upload, timestamp)
-         VALUES (gen_random_uuid(), $1, $2, $3, NOW())`,
-        clientId,
-        deltaBytes - uploadBytes,
-        uploadBytes,
-      ).catch(() => {});
+      await (prisma as any).trafficUsage.create({
+        data: {
+          clientId,
+          accountId: subscriptionId,
+          deviceId: deviceId || null,
+          accountType: 'subscription',
+          download: deltaBytes - uploadBytes,
+          upload: uploadBytes,
+        },
+      }).catch(() => {});
+      if (subscriptionId && deviceId && (prisma as any).subscriptionDevice) {
+        await (prisma as any).subscriptionDevice.updateMany({
+          where: { subscriptionId, deviceId },
+          data: { lastSeenAt: new Date() },
+        }).catch(() => {});
+      }
     }
   } else {
     // In-memory fallback
@@ -692,15 +702,16 @@ router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => 
       seq:       z.number().int().min(0).optional(),
       reportMode: z.enum(['delta','absolute']).optional(),
       subscriptionId: z.string().optional(),
+      deviceId: z.string().min(5).optional(),
     });
-    const { bytesUp, bytesDown, sessionId, seq, subscriptionId } = schema.parse(req.body);
+    const { bytesUp, bytesDown, sessionId, seq, subscriptionId, deviceId } = schema.parse(req.body);
     const totalBytes = BigInt(bytesUp + bytesDown);
 
     const client: any = await findClientByUserId(req.user!.userId);
     if (!client) return res.status(404).json({ error: "errors.mobile.no_account" });
 
     if (totalBytes > 0n) {
-      await applyUsageDelta(client.id, subscriptionId || null, totalBytes, sessionId, seq, BigInt(bytesUp));
+      await applyUsageDelta(client.id, subscriptionId || null, totalBytes, sessionId, seq, BigInt(bytesUp), deviceId || null);
     }
 
     const updatedClient: any = await findClientByUserId(req.user!.userId);
@@ -850,7 +861,7 @@ router.post("/vpn/usage", async (req: AuthenticatedRequest, res: Response) => {
     }
 
     if (totalBytes > 0n) {
-      await applyUsageDelta(client.id, subscriptionId || null, totalBytes, sessionId, seq, BigInt(upload));
+      await applyUsageDelta(client.id, subscriptionId || null, totalBytes, sessionId, seq, BigInt(upload), deviceId || null);
     }
 
     const updatedClient: any = await findClientByUserId(req.user!.userId);

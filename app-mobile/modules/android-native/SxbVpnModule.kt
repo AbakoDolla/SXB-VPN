@@ -227,6 +227,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                 putDouble("downloadBytes", stats["downloadBytes"]!!.toDouble())
                 putDouble("uploadSpeed",   stats["uploadSpeed"]!!.toDouble())
                 putDouble("downloadSpeed", stats["downloadSpeed"]!!.toDouble())
+                putBoolean("tunAttached", stats["tunAttached"] == 1L)
             }
             promise.resolve(map)
         } catch (e: Exception) {

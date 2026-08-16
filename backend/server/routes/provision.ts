@@ -393,6 +393,7 @@ router.post('/sync', requireAuth, async (req: AuthenticatedRequest, res: Respons
     await (prisma as any).trafficUsage.create({
       data: {
         accountId:   subscriptionId,
+        deviceId:     deviceId || null,
         accountType: 'subscription',
         download:    BigInt(downloadBytes || 0),
         upload:      BigInt(uploadBytes   || 0),

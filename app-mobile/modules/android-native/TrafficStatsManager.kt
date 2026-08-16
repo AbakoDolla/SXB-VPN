@@ -16,6 +16,7 @@ import android.content.pm.PackageManager
 import android.net.TrafficStats
 import android.os.Process
 import android.util.Log
+import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -44,10 +45,17 @@ class TrafficStatsManager {
     private val speedUpload   = AtomicLong(0L)
     private val speedDownload = AtomicLong(0L)
 
-    // Valeurs du dernier poll pour calcul du débit
+    // Valeurs du dernier poll UID pour calcul du débit de secours
     private var lastTx = 0L
     private var lastRx = 0L
     private var lastPollMs = 0L
+
+    // Compteurs noyau de l’interface TUN. Ils sont préférés aux compteurs UID
+    // du service, qui ne représentent pas le trafic des applications routées.
+    @Volatile private var tunInterface: String? = null
+    @Volatile private var tunAttached = false
+    private var lastTunTx = 0L
+    private var lastTunRx = 0L
 
     private val running = AtomicBoolean(false)
     private var pollThread: Thread? = null
@@ -67,6 +75,10 @@ class TrafficStatsManager {
         totalDownload.set(0L)
         speedUpload.set(0L)
         speedDownload.set(0L)
+        tunInterface = null
+        tunAttached = false
+        lastTunTx = 0L
+        lastTunRx = 0L
 
         uidRxBaseline.clear()
         uidTxBaseline.clear()
@@ -100,6 +112,8 @@ class TrafficStatsManager {
         running.set(false)
         pollThread?.interrupt()
         pollThread = null
+        tunAttached = false
+        tunInterface = null
         Log.i(TAG, "TrafficStats arrêté — total UP=${totalUpload.get()} DOWN=${totalDownload.get()}")
     }
 
@@ -107,28 +121,84 @@ class TrafficStatsManager {
 
     private fun poll() {
         val nowMs = System.currentTimeMillis()
+        val deltaMs = (nowMs - lastPollMs).coerceAtLeast(1L)
+
+        // Dès que le TUN est attaché, ne jamais retomber sur TrafficStats UID :
+        // le UID du service mesure surtout le contrôle/handshake et pas WhatsApp,
+        // Chrome ou les autres applications acheminées par le VPN.
+        if (tunAttached) {
+            val tun = readTunCounters()
+            if (tun == null) {
+                speedUpload.set(0L)
+                speedDownload.set(0L)
+                lastPollMs = nowMs
+                return
+            }
+            val deltaTx = (tun.first - lastTunTx).coerceAtLeast(0L)
+            val deltaRx = (tun.second - lastTunRx).coerceAtLeast(0L)
+            totalUpload.addAndGet(deltaTx)
+            totalDownload.addAndGet(deltaRx)
+            speedUpload.set(deltaTx * 1000L / deltaMs)
+            speedDownload.set(deltaRx * 1000L / deltaMs)
+            lastTunTx = tun.first
+            lastTunRx = tun.second
+            lastPollMs = nowMs
+            return
+        }
+
         val currentTx = safeGetTx()
         val currentRx = safeGetRx()
-
         if (currentTx == UID_REMOVED || currentRx == UID_REMOVED) return
 
         val deltaTx = (currentTx - lastTx).coerceAtLeast(0L)
         val deltaRx = (currentRx - lastRx).coerceAtLeast(0L)
-        val deltaMs = (nowMs - lastPollMs).coerceAtLeast(1L)
-
         totalUpload.addAndGet(deltaTx)
         totalDownload.addAndGet(deltaRx)
-
-        // Débit en octets/seconde
         speedUpload.set(deltaTx * 1000L / deltaMs)
         speedDownload.set(deltaRx * 1000L / deltaMs)
-
-        lastTx     = currentTx
-        lastRx     = currentRx
+        lastTx = currentTx
+        lastRx = currentRx
         lastPollMs = nowMs
     }
 
+    /** Appelé après Builder.establish(), quand le nom TUN est connu. */
+    fun attachTunInterface(name: String?) {
+        val clean = name?.trim().orEmpty()
+        if (clean.isBlank()) {
+            Log.w(TAG, "TUN attaché mais interface introuvable : compteurs TUN indisponibles")
+            return
+        }
+        val counters = readTunCounters(clean)
+        if (counters == null) {
+            Log.w(TAG, "Interface TUN $clean sans compteurs noyau lisibles")
+            return
+        }
+        tunInterface = clean
+        lastTunTx = counters.first
+        lastTunRx = counters.second
+        totalUpload.set(0L)
+        totalDownload.set(0L)
+        speedUpload.set(0L)
+        speedDownload.set(0L)
+        tunAttached = true
+        lastPollMs = System.currentTimeMillis()
+        Log.i(TAG, "Compteurs TUN attachés — interface=$clean baseline_tx=${counters.first} baseline_rx=${counters.second}")
+    }
+
+    private fun readTunCounters(): Pair<Long, Long>? = readTunCounters(tunInterface)
+
+    private fun readTunCounters(name: String?): Pair<Long, Long>? {
+        val iface = name?.takeIf { it.isNotBlank() } ?: return null
+        return runCatching {
+            val tx = File("/sys/class/net/$iface/statistics/tx_bytes").readText().trim().toLong()
+            val rx = File("/sys/class/net/$iface/statistics/rx_bytes").readText().trim().toLong()
+            tx to rx
+        }.getOrNull()
+    }
+
     // ── Getters ───────────────────────────────────────────────────────────────
+
+    fun hasTunCounters(): Boolean = tunAttached
 
     fun getStats(): TrafficSnapshot = TrafficSnapshot(
         uploadBytes   = totalUpload.get(),

@@ -83,6 +83,7 @@ describe('garde-fous contre les régressions Android', () => {
   const nativeModule = source('modules/android-native/SxbVpnModule.kt');
   const nativeLogger = source('modules/android-native/SxbSecureLogger.kt');
   const securityModule = source('modules/android-native/SecurityModule.kt');
+  const trafficManager = source('modules/android-native/TrafficStatsManager.kt');
   const rootLayout = source('app/_layout.tsx');
   const notificationsScreen = source('app/(tabs)/notifications.tsx');
   const dashboardProfiles = source('../artifacts/sxb-dashboard/src/components/VpnProfilesView.tsx');
@@ -240,6 +241,22 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(nativeService.includes('bind(null)'));
     assert.ok(nativeService.includes('protectSocket(this)'));
     assert.ok(nativeService.includes('SSH_SOCKET_PROTECTED result=$protectedOk fd_ready=$fdReady'));
+  });
+
+  it('réinitialise l’UI sur un événement natif disconnected même après un échec de tentative', () => {
+    assert.match(vpnContext, /s === 'disconnected'[\s\S]{0,260}setIsConnected\(false\)[\s\S]{0,120}setIsConnecting\(false\)/);
+  });
+
+  it('mesure les octets sur l’interface TUN et n’ajoute pas le relais SSH', () => {
+    assert.match(nativeService, /trafficManager\.attachTunInterface\(tunInterfaceName\)/);
+    assert.match(nativeService, /"tunAttached"\s+to if \(trafficManager\.hasTunCounters\(\)\)/);
+    assert.match(nativeModule, /putBoolean\("tunAttached"/);
+    assert.doesNotMatch(nativeService, /"uploadBytes"\s+to \(stats\.uploadBytes\s*\+\s*uploadBytes\.get\(\)\)/);
+    assert.match(trafficManager, /readTunCounters/);
+    assert.match(trafficManager, /sys\/class\/net/);
+    assert.match(vpnContext, /deviceId: deviceId \|\| undefined/);
+    assert.match(mobileRoutes, /deviceId: z\.string\(\)\.min\(5\)\.optional\(\)/);
+    assert.match(mobileRoutes, /deviceId: deviceId \|\| null/);
   });
 
   it('invalide le watchdog et ignore un événement connected tardif après annulation', () => {

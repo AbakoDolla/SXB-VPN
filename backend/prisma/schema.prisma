@@ -305,6 +305,7 @@ model TrafficUsage {
   id          String   @id @default(uuid())
   clientId    String?
   accountId   String?
+  deviceId    String?
   accountType String?  // ssh | xray | singbox
   download    BigInt   @default(0)
   upload      BigInt   @default(0)

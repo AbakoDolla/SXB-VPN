@@ -80,7 +80,8 @@ export interface TrafficStats {
   uploadBytes:   number;
   downloadBytes: number;
   uploadSpeed:   number;   // bytes/sec
-  downloadSpeed: number;   // bytes/sec
+  downloadSpeed:  number;   // bytes/sec
+  tunAttached:   boolean;   // true uniquement si les compteurs TUN noyau sont disponibles
 }
 
 export interface AppTrafficStat {
@@ -141,7 +142,7 @@ interface VpnContextType {
   requestPermission:  () => Promise<boolean>;
 }
 
-const DEFAULT_STATS: TrafficStats = { uploadBytes: 0, downloadBytes: 0, uploadSpeed: 0, downloadSpeed: 0 };
+const DEFAULT_STATS: TrafficStats = { uploadBytes: 0, downloadBytes: 0, uploadSpeed: 0, downloadSpeed: 0, tunAttached: false };
 const DEFAULT_DERIVED_QUOTA = deriveQuota(null, null, false);
 
 const VpnContext = createContext<VpnContextType>({
@@ -337,6 +338,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       } else if (s === 'disconnected') {
         stopWatchdog();
         setVpnState('disconnected');
+        setIsConnected(false);
+        setIsConnecting(false);
         acceptNativeConnectedRef.current = false;
         addStepLog('disconnected', 'step_disconnected', 'done');
         legacyDebugLog('VPN_FAILED status=disconnected');
@@ -378,6 +381,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           downloadBytes: stats.downloadBytes || 0,
           uploadSpeed:   stats.uploadSpeed   || 0,
           downloadSpeed: stats.downloadSpeed || 0,
+          tunAttached:   stats.tunAttached === true || stats.tunAttached === 1,
         });
       } catch { /* ignore */ }
     }, 1500);
@@ -413,6 +417,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         seq:       currentSeq,
         reportMode: 'delta',
         subscriptionId: activeConfigId || (activeConnection as any)?.id || undefined,
+        deviceId: deviceId || undefined,
       });
 
       // Mettre à jour lastReported SEULEMENT après envoi réussi
@@ -465,7 +470,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       // Rejet/Échec réseau : conserver le delta non envoyé pour le rejouer plus tard
       return undefined;
     }
-  }, [isAuthenticated, addLog, activeConfigId, activeConnection]);
+  }, [isAuthenticated, addLog, activeConfigId, activeConnection, deviceId]);
 
   // Polling rapport delta
   useEffect(() => {

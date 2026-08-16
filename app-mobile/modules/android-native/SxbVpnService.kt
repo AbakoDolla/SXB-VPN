@@ -1735,11 +1735,17 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         tunPfd = pfd
         tunInterfaceName = runCatching {
-            java.net.NetworkInterface.getNetworkInterfaces().toList()
-                .firstOrNull { it.name.startsWith("tun") }?.name
+            repeat(20) {
+                val found = java.net.NetworkInterface.getNetworkInterfaces().toList()
+                    .firstOrNull { it.name.startsWith("tun") }?.name
+                if (!found.isNullOrBlank()) return@runCatching found
+                Thread.sleep(50)
+            }
+            null
         }.getOrNull()
+        trafficManager.attachTunInterface(tunInterfaceName)
 
-        trace("TUN_CREATED", "fd_ready=${pfd.fd >= 0} interface_name_present=${tunInterfaceName != null}")
+        trace("TUN_CREATED", "fd_ready=${pfd.fd >= 0} interface_name=$tunInterfaceName tun_counters=${trafficManager.hasTunCounters()}")
         Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_7_TUN_CREATED fd=${pfd.fd} name=$tunInterfaceName")
         broadcastLog("[SXB_DEBUG] STEP_7_TUN_CREATED fd=${pfd.fd}")
         broadcastLog("[SXB] Interface TUN créée")
@@ -2725,11 +2731,15 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
     fun getTrafficStats(): Map<String, Long> {
         val stats = trafficManager.getStats()
+        // Les compteurs du relais SSH mesurent le contrôle/relayage et doublonnent
+        // les octets des applications déjà comptés sur le TUN. Ils ne servent pas
+        // de preuve de quota et ne sont jamais ajoutés aux statistiques exposées.
         return mapOf(
-            "uploadBytes"   to (stats.uploadBytes   + uploadBytes.get()),
-            "downloadBytes" to (stats.downloadBytes + downloadBytes.get()),
+            "uploadBytes"   to stats.uploadBytes,
+            "downloadBytes" to stats.downloadBytes,
             "uploadSpeed"   to stats.uploadSpeed,
             "downloadSpeed" to stats.downloadSpeed,
+            "tunAttached"   to if (trafficManager.hasTunCounters()) 1L else 0L,
         )
     }
 
