@@ -1999,6 +1999,18 @@ class SxbVpnService : VpnService(), PlatformInterface {
      *    detour référencé existe ; au moins un outbound non spécial.
      *    Échec → Exception claire (état error, pas de crash muet).
      */
+    private fun stripUnsupportedSingBoxVlessFields(cfg: JSONObject): JSONObject {
+        val outbounds = cfg.optJSONArray("outbounds") ?: return cfg
+        for (i in 0 until outbounds.length()) {
+            val outbound = outbounds.optJSONObject(i) ?: continue
+            if (outbound.optString("type", "").equals("vless", ignoreCase = true) && outbound.has("encryption")) {
+                outbound.remove("encryption")
+                SxbSecureLogger.warn("SINGBOX_VLESS_ENCRYPTION_REMOVED")
+            }
+        }
+        return cfg
+    }
+
     private fun convertXrayToSingBoxIfNeeded(cfg: JSONObject): JSONObject {
         val rawOutbounds = cfg.optJSONArray("outbounds") ?: return cfg
         var isXray = false
@@ -2009,8 +2021,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 break
             }
         }
-        if (!isXray) return cfg
-
+        if (!isXray) return stripUnsupportedSingBoxVlessFields(cfg)
         val newOutbounds = JSONArray()
         for (i in 0 until rawOutbounds.length()) {
             val o = rawOutbounds.optJSONObject(i) ?: continue
@@ -2056,7 +2067,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     val user = vnext?.optJSONArray("users")?.optJSONObject(0)
                     val uuid = user?.optString("id", "") ?: ""
                     val flow = user?.optString("flow", "") ?: ""
-                    val encryption = user?.optString("encryption", "none") ?: "none"
+                    val xrayEncryption = user?.optString("encryption", "none") ?: "none"
+                    // Xray place souvent `encryption: none` dans users[]. Sing-box
+                    // VLESS 1.11.x ne possède pas ce champ dans l’outbound : le
+                    // recopier produit `outbounds[0].encryption: unknown field`.
+                    if (proto == "vless" && xrayEncryption.isNotBlank() && xrayEncryption != "none") {
+                        SxbSecureLogger.warn("XRAY_VLESS_ENCRYPTION_UNSUPPORTED value=$xrayEncryption")
+                    }
 
                     val sbOut = JSONObject().apply {
                         put("type", proto)
@@ -2064,7 +2081,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                         put("server", address)
                         put("server_port", port)
                         put("uuid", uuid)
-                        if (proto == "vless") put("encryption", encryption)
+                        // Ne jamais mettre `encryption` dans l’outbound VLESS sing-box.
                         if (flow.isNotEmpty() && proto == "vless") put("flow", flow)
                         if (proto == "vmess") {
                             val alterId = user?.optInt("alterId", -1) ?: -1

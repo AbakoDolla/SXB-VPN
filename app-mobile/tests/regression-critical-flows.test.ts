@@ -138,6 +138,10 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(nativeService, /put\("dns", normalizedDns\)/);
     assert.match(nativeService, /queryStrategy\.lowercase\(Locale\.ROOT\)/);
     assert.ok(nativeService.includes('replace("tcp+local://", "tcp://")'));
+    assert.match(nativeService, /XRAY_VLESS_ENCRYPTION_UNSUPPORTED/);
+    assert.match(nativeService, /stripUnsupportedSingBoxVlessFields/);
+    assert.match(nativeService, /SINGBOX_VLESS_ENCRYPTION_REMOVED/);
+    assert.doesNotMatch(nativeService, /if \(proto == "vless"\) put\("encryption", encryption\)/);
 
   });
 
