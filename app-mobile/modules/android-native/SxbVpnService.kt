@@ -1483,8 +1483,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
             throw Exception("Configuration refusée par le moteur : ${e.message}")
         }
 
-        service.start()
         boxService = service
+        service.start()
 
         // Le démarrage libbox peut être concurrent avec stopVpn(). Le TUN et le
         // SOCKS ne doivent être annoncés que si la session est encore active.
@@ -2225,7 +2225,15 @@ class SxbVpnService : VpnService(), PlatformInterface {
                         put("tag", tag)
                         put("server", addr)
                         put("server_port", port)
-                        if (headers != null) put("headers", headers)
+                        // P7 — Fix headers http-upstream (MTN/Orange)
+                        if (headers != null) {
+                            // S'assurer que les headers sont bien propagés au CONNECT
+                            put("headers", headers)
+                            if (!headers.has("Host") && !headers.has("host")) {
+                                // Fallback Host header si manquant
+                                headers.put("Host", addr)
+                            }
+                        }
                     }
                     preserveXrayDetour(sbOut)
                     newOutbounds.put(sbOut)
@@ -2958,6 +2966,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
             setCurrentState("disconnected")
             trace("CLEANUP_COMPLETE", "state=$currentState")
             broadcastStatus("disconnected")
+        } else if (keepRunning) {
+            // Cas Auto-reconnect : garder l'UI en "connecting" ou "retrying"
+            // au lieu de retomber en "disconnected"
+            setCurrentState("connecting")
+            broadcastStatus("connecting")
+            broadcastLog("🔄 Reconnexion automatique en cours...")
         }
         if (stopService) {
             // FIX — stopForeground(boolean) est deprecated depuis API 33 (Android 13).

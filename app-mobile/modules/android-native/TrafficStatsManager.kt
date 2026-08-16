@@ -176,8 +176,8 @@ class TrafficStatsManager {
         tunInterface = clean
         lastTunTx = counters.first
         lastTunRx = counters.second
-        totalUpload.set(0L)
-        totalDownload.set(0L)
+        // totalUpload.set(0L) // Ne plus réinitialiser lors du rattachement TUN
+        // totalDownload.set(0L) // Conserver le cumul de la session globale
         speedUpload.set(0L)
         speedDownload.set(0L)
         tunAttached = true
