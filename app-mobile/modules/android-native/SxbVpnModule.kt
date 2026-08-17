@@ -378,8 +378,14 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
         statusReceiver = object : BroadcastReceiver() {
             override fun onReceive(c: Context?, i: Intent?) {
                 val status = i?.getStringExtra("status") ?: return
-                SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.TUNNEL_CONNECTED)
-                val p = Arguments.createMap().apply { putString("status", status) }
+                if (status == "connected") {
+                    SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.TUNNEL_CONNECTED)
+                }
+                // Envoi des deux clés pour compatibilité avec le listener JS (state vs status)
+                val p = Arguments.createMap().apply { 
+                    putString("status", status)
+                    putString("state", status) 
+                }
                 sendEvent("onVpnStateChange", p)
             }
         }

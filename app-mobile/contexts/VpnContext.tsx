@@ -309,8 +309,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!vpnEmitter) return;
 
-    const stateSub = vpnEmitter.addListener('onVpnStateChange', (e: { state: string }) => {
-      const s = (e?.state || 'disconnected').toLowerCase();
+    const stateSub = vpnEmitter.addListener('onVpnStateChange', (e: any) => {
+      const s = (e?.state || e?.status || 'disconnected').toLowerCase();
 
       if (s === 'connected') {
         if (!acceptNativeConnectedRef.current) {

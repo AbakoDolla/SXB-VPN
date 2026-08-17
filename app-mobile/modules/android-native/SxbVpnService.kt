@@ -1492,8 +1492,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         // Le démarrage libbox peut être concurrent avec stopVpn(). Le TUN et le
         // SOCKS ne doivent être annoncés que si la session est encore active.
-        if (!running.get() || currentState != "connecting") {
-            broadcastLog("[SXB_DEBUG] LIBBOX_START_IGNORED — tentative annulée")
+        // FIX — On autorise l'état "connected" ici car pour VLESS/Xray, openTun()
+        // a pu déjà faire basculer l'état en "connected" dès l'ouverture du TUN.
+        if (!running.get() || (currentState != "connecting" && currentState != "connected")) {
+            broadcastLog("[SXB_DEBUG] LIBBOX_START_IGNORED — tentative annulée (état=$currentState)")
             runCatching { service.close() }
             if (boxService === service) boxService = null
             return
