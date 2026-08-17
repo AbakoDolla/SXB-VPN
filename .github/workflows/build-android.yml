@@ -174,16 +174,22 @@ jobs:
             echo "[JitPack] Déjà présent ou settings.gradle absent"
           fi
 
-      # ── ABI filter : arm64-v8a seulement ─────────────────────────────────────
-      - name: Restreindre ABI à arm64-v8a
+      # ── ABI : compatibilité appareils 64 bits et 32 bits ─────────────────────
+      - name: Configurer les ABI arm64-v8a et armeabi-v7a
         run: |
           BUILD_GRADLE="android/app/build.gradle"
           if grep -q 'abiFilters' "$BUILD_GRADLE" 2>/dev/null; then
-            sed -i 's/abiFilters.*/abiFilters "arm64-v8a"/' "$BUILD_GRADLE"
+            sed -i 's/abiFilters.*/abiFilters "arm64-v8a", "armeabi-v7a"/' "$BUILD_GRADLE"
           else
-            sed -i '/defaultConfig {/a\            ndk { abiFilters "arm64-v8a" }' "$BUILD_GRADLE"
+            sed -i '/defaultConfig {/a\            ndk { abiFilters "arm64-v8a", "armeabi-v7a" }' "$BUILD_GRADLE"
           fi
-          echo "[ABI] Filtres appliqués"
+          GPROPS="android/gradle.properties"
+          if grep -q '^reactNativeArchitectures=' "$GPROPS" 2>/dev/null; then
+            sed -i 's/^reactNativeArchitectures=.*/reactNativeArchitectures=arm64-v8a,armeabi-v7a/' "$GPROPS"
+          else
+            echo 'reactNativeArchitectures=arm64-v8a,armeabi-v7a' >> "$GPROPS"
+          fi
+          echo "[ABI] Filtres appliqués : arm64-v8a, armeabi-v7a"
 
       # ── Copier sing-box vers Android assets natifs ────────────────────────────
       - name: Copier sing-box vers Android assets natifs
@@ -308,8 +314,12 @@ jobs:
           add_prop 'android.enableR8.fullMode=false'
           add_prop 'kotlin.incremental=true'
           add_prop 'newArchEnabled=false'
-          add_prop 'reactNativeArchitectures=arm64-v8a'
-          echo "[Gradle] gradle.properties configuré (newArchEnabled=false — old arch)"
+          if grep -q '^reactNativeArchitectures=' "$GPROPS" 2>/dev/null; then
+            sed -i 's/^reactNativeArchitectures=.*/reactNativeArchitectures=arm64-v8a,armeabi-v7a/' "$GPROPS"
+          else
+            echo 'reactNativeArchitectures=arm64-v8a,armeabi-v7a' >> "$GPROPS"
+          fi
+          echo "[Gradle] gradle.properties configuré (newArchEnabled=false, ABI arm64-v8a + armeabi-v7a)"
 
       # FIX #5 : Packaging META-INF — bash+sed pur (pas de Python, pas de heredoc)
       # Le plugin withJschDependency injecte packaging{} durant le prebuild.
@@ -402,6 +412,25 @@ jobs:
           cp "$APK" build/sxb-vpn.apk
           echo "✅ APK: $(ls -lh build/sxb-vpn.apk)"
           echo "APK_PATH=$APK" >> "$GITHUB_ENV"
+
+      # ── Validation installabilité avant artifact/release ─────────────────────
+      - name: Valider APK (archive, manifeste, signature et ABI)
+        run: |
+          set -euo pipefail
+          APK="app-mobile/build/sxb-vpn.apk"
+          test -s "$APK"
+          unzip -t "$APK" >/tmp/apk-zip-test.log
+          unzip -l "$APK" | grep -q 'AndroidManifest.xml'
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/'
+          unzip -l "$APK" | grep -q 'lib/armeabi-v7a/'
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          if [ -z "$APKSIGNER" ]; then
+            echo "::error::apksigner introuvable dans le SDK Android"
+            exit 1
+          fi
+          "$APKSIGNER" verify --verbose "$APK"
+          echo "✅ APK valide, signé et multi-ABI : $(stat -c%s "$APK") octets"
+          sha256sum "$APK"
 
       # ── Upload artifact CI ────────────────────────────────────────────────────
       - name: Upload APK (artifact CI)
