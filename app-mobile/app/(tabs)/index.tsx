@@ -443,6 +443,18 @@ export default function HomeScreen() {
 
   return (
     <LinearGradient colors={["#060914", "#0A1025", "#060914"]} style={styles.container}>
+      <AnnouncementModal
+        announcement={activeAnnouncement}
+        onClose={async () => {
+          if (activeAnnouncement) {
+            const seenStr = await AsyncStorage.getItem('@sxb_seen_announcements');
+            const seenIds = JSON.parse(seenStr || '[]');
+            seenIds.push(activeAnnouncement.id);
+            await AsyncStorage.setItem('@sxb_seen_announcements', JSON.stringify(seenIds));
+          }
+          setActiveAnnouncement(null);
+        }}
+      />
       <ScrollView
         contentContainerStyle={[styles.content, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 90 }]}
         showsVerticalScrollIndicator={false}

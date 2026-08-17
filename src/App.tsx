@@ -11,6 +11,7 @@ import SSHManagerView from "./components/SSHManagerView";
 import XrayManagerView from "./components/XrayManagerView";
 import SingboxManagerView from "./components/SingboxManagerView";
 import SubscriptionsView from "./components/SubscriptionsView";
+import AnnouncementsView from "./components/AnnouncementsView";
 import VpnProfilesView from "./components/VpnProfilesView";
 import ProtocolManagerView from "./components/ProtocolManagerView";
 import Layout from "./components/Layout";
@@ -240,6 +241,8 @@ function MainApp() {
         return <XrayManagerView currentUserRole={role} />;
       case 'singbox':
         return <SingboxManagerView currentUserRole={role} />;
+      case 'announcements':
+        return <AnnouncementsView />;
       case 'accounts':
         return <AccountsView currentUserRole={role} currentUserId={currentUser.id} />;
       case 'rbac':

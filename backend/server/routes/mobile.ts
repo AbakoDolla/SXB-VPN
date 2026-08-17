@@ -547,6 +547,45 @@ router.get('/notifications', async (req: AuthenticatedRequest, res: Response) =>
     const notifications: any[] = [];
     const now = new Date().toISOString();
 
+    // ── 1. Annonces administratives (globales ou ciblées par deviceId) ──────────
+    if (prisma) {
+      try {
+        const deviceId = req.headers['x-sxb-device-id'] as string;
+        const announcements = await prisma.announcement.findMany({
+          where: {
+            isActive: true,
+            AND: [
+              {
+                OR: [
+                  { target: null },
+                  { target: deviceId || 'unknown' }
+                ]
+              },
+              {
+                OR: [
+                  { expiresAt: null },
+                  { expiresAt: { gt: new Date() } }
+                ]
+              }
+            ]
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 5
+        });
+        for (const a of announcements) {
+          notifications.push({
+            id: 'ann-' + a.id,
+            type: a.type,
+            title: a.title,
+            message: a.content,
+            createdAt: a.createdAt.toISOString(),
+            read: false,
+            isAnnouncement: true
+          });
+        }
+      } catch (_) {}
+    }
+
     if (state.state === 'expired') {
       notifications.push({
         id: 'notif-expired-' + Date.now(),
