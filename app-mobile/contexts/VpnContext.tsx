@@ -172,7 +172,12 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
   const [isConnected,        setIsConnected]        = useState(false);
   const [isConnecting,       setIsConnecting]        = useState(false);
-  const [vpnState,           setVpnState]            = useState('disconnected');
+  const [vpnState, _setVpnState] = useState('disconnected');
+  const vpnStateRef = useRef('disconnected');
+  const setVpnState = useCallback((s: string) => {
+    _setVpnState(s);
+    vpnStateRef.current = s;
+  }, []);
   const [selectedProtocol,   setSelectedProtocol]    = useState<string | null>(null);
   const [connectedProtocol,  setConnectedProtocol]   = useState<string | null>(null);
   const [availableProtocols, setAvailableProtocols]  = useState<VpnProtocol[]>([]);
@@ -312,8 +317,13 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     const stateSub = vpnEmitter.addListener('onVpnStateChange', (e: any) => {
       const s = (e?.state || e?.status || 'disconnected').toLowerCase();
 
-      if (s === 'connected') {
-        if (!acceptNativeConnectedRef.current) {
+      if (s === 'handshaking') {
+        setVpnState('handshaking');
+        addLog('⏳ Tunnel établi — Négociation du flux...');
+        addStepLog('handshaking', 'step_handshake', 'pending');
+        startTrafficPolling();
+      } else if (s === 'connected') {
+        if (!acceptNativeConnectedRef.current && vpnState !== 'handshaking') {
           // Réponse tardive d'une tentative déjà annulée par le watchdog.
           setVpnState('error');
           addLog('ℹ️ Événement connecté tardif ignoré — tentative déjà annulée');
@@ -354,6 +364,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         }
         
         refreshAccountState().catch(() => {});
+        startTrafficPolling(); // S'assurer que le polling tourne
       } else if (s === 'disconnected') {
         stopWatchdog();
         setVpnState('disconnected');
@@ -402,6 +413,16 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           downloadSpeed: stats.downloadSpeed || 0,
           tunAttached:   stats.tunAttached === true || stats.tunAttached === 1,
         });
+
+        // FALLBACK HANDSHAKE — Si on est en "handshaking" et qu'on voit du trafic réel
+        // (plus de 500 octets reçus), on force le passage à "connected".
+        if (vpnStateRef.current === 'handshaking' && (stats.downloadBytes || 0) > 500) {
+          setVpnState('connected');
+          setIsConnected(true);
+          setIsConnecting(false);
+          stopWatchdog();
+          addLog('✅ Connexion vérifiée par le flux de données');
+        }
       } catch { /* ignore */ }
     }, 1500);
   }, []);

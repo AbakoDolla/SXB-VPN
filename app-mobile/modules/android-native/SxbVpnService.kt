@@ -1759,16 +1759,14 @@ class SxbVpnService : VpnService(), PlatformInterface {
         broadcastLog("[SXB_DEBUG] STEP_7_TUN_CREATED fd=${pfd.fd}")
         broadcastLog("[SXB] Interface TUN créée")
 
-        // FIX — Signalement immédiat de la connexion dès que le TUN est actif.
-        // Uniquement pour V2Ray/Xray/Singbox (isSshRelay == false).
-        // Pour SSH, on attend la fin de l'init du moteur (startLibboxService).
+        // FIX — Pour V2Ray/Xray, on passe en état "handshaking" au lieu de "connected".
+        // On attendra que le moteur sing-box confirme le flux réel dans writeLog()
+        // ou que les compteurs de trafic décollent.
         if (currentState == "connecting" && !isSshRelay) {
-            setCurrentState("connected")
-            broadcastStatus("connected")
-            broadcastLog("[SXB] ✅ VPN connecté (Tunnel établi)")
-            updateNotification("SXB VPN — Connecté")
-            startNotificationUpdater()
-            autoReconnect.onConnected()
+            setCurrentState("handshaking")
+            broadcastStatus("handshaking")
+            broadcastLog("[SXB] ⏳ Tunnel établi — Négociation du flux en cours...")
+            updateNotification("SXB VPN — Handshake...")
         }
 
         return pfd.fd
@@ -1876,15 +1874,31 @@ class SxbVpnService : VpnService(), PlatformInterface {
         val safeMessage = SecurityModule.maskSensitive(message)
         broadcastLog("[engine] $safeMessage")
 
-        // Le moteur a déjà converti et lancé le tunnel ; ces statuts proviennent
-        // du proxy HTTP amont, pas de l'import Xray ni des identifiants VLESS.
-        // On remonte une cause exploitable sans divulguer l'hôte ou le payload.
         val lower = message.lowercase(Locale.ROOT)
+        
+        // DÉTECTION HANDSHAKE RÉUSSI (V2Ray/Xray)
+        // sing-box logue "connection established" ou "handshake success" au niveau info.
+        if (currentState == "handshaking" && 
+            (lower.contains("established") || lower.contains("handshake success") || lower.contains("reality success"))) {
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] HANDSHAKE_VERIFIED via log: $message")
+            broadcastLog("[SXB] ✅ Handshake réussi — Données en transit")
+            setCurrentState("connected")
+            broadcastStatus("connected")
+            updateNotification("SXB VPN — Connecté")
+            startNotificationUpdater()
+            autoReconnect.onConnected()
+        }
+
         when {
             lower.contains("unexpected status: 429") ->
-                broadcastLog("[SXB] HTTP_429_RATE_LIMIT — le proxy HTTP amont limite ou refuse les requêtes ; attendez ou utilisez un autre proxy.")
+                broadcastLog("[SXB] HTTP_429_RATE_LIMIT — le proxy HTTP amont limite ou refuse les requêtes.")
             lower.contains("unexpected http response status: 404") ->
-                broadcastLog("[SXB] HTTP_404_UPSTREAM — le proxy HTTP amont ne reconnaît pas la destination ou le tunnel demandé.")
+                broadcastLog("[SXB] HTTP_404_UPSTREAM — le proxy HTTP amont ne reconnaît pas la destination.")
+            lower.contains("connection refused") || lower.contains("connection reset") -> {
+                if (currentState == "handshaking") {
+                    broadcastLog("[SXB] ⚠️ Échec handshake — Le serveur a refusé la connexion.")
+                }
+            }
         }
     }
 
@@ -1963,7 +1977,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         }
 
         return JSONObject().apply {
-            put("log", JSONObject().put("level", "warn").put("timestamp", true))
+            put("log", JSONObject().put("level", "info").put("timestamp", true))
             put("dns", dnsObj)
             put("inbounds", JSONArray().put(tunInbound))
             put("outbounds", JSONArray()
@@ -2432,7 +2446,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         if (finalTag.isEmpty()) finalTag = mainTag ?: "proxy"
 
         return JSONObject().apply {
-            put("log", JSONObject().put("level", "warn").put("timestamp", true))
+            put("log", JSONObject().put("level", "info").put("timestamp", true))
             put("dns", dnsObj)
             put("inbounds", JSONArray().put(tunInbound()))
             put("outbounds", outbounds)
@@ -2610,7 +2624,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             .put(JSONObject().put("ip_is_private", true).put("outbound", "direct"))
 
         return JSONObject().apply {
-            put("log", JSONObject().put("level", "warn").put("timestamp", true))
+            put("log", JSONObject().put("level", "info").put("timestamp", true))
             put("dns", JSONObject().apply {
                 put("servers", JSONArray()
                     .put(JSONObject().put("tag", "dns-r").put("address", "https://1.1.1.1/dns-query").put("strategy", "prefer_ipv4"))
