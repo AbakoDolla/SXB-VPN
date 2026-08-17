@@ -2137,10 +2137,17 @@ class SxbVpnService : VpnService(), PlatformInterface {
                             val security = stream.optString("security", "none")
                             if (security == "tls" || security == "reality") {
                                 val tlsObj = stream.optJSONObject("tlsSettings") ?: stream.optJSONObject("realitySettings")
+                                val fp = tlsObj?.optString("fingerprint", "") ?: ""
                                 put("tls", JSONObject().apply {
                                     put("enabled", true)
                                     put("server_name", tlsObj?.optString("serverName", address) ?: address)
                                     put("insecure", tlsObj?.optBoolean("allowInsecure", true) ?: true)
+                                    if (fp.isNotEmpty()) {
+                                        put("utls", JSONObject().apply {
+                                            put("enabled", true)
+                                            put("fingerprint", fp)
+                                        })
+                                    }
                                     if (security == "reality") {
                                         put("reality", JSONObject().apply {
                                             put("enabled", true)

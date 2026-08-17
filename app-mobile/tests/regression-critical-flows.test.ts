@@ -143,7 +143,12 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(nativeService, /stripUnsupportedSingBoxVlessFields/);
     assert.match(nativeService, /SINGBOX_VLESS_ENCRYPTION_REMOVED/);
     assert.doesNotMatch(nativeService, /if \(proto == "vless"\) put\("encryption", encryption\)/);
+  });
 
+  it('prend en charge le fingerprint uTLS (chrome, etc.) dans les configurations Xray converties', () => {
+    assert.match(nativeService, /val fp = tlsObj\?\./);
+    assert.match(nativeService, /put\("utls"/);
+    assert.match(nativeService, /put\("fingerprint", fp\)/);
   });
 
   it('route les inboundTag Xray vers l’inbound TUN Android réel et préserve le detour HTTP', () => {
