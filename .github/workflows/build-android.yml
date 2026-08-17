@@ -140,6 +140,39 @@ jobs:
             cp modules/android-native/*.kt "$KOTLIN_DIR/" && echo "✅ Copiés"
           fi
 
+      # ── JNI : rendre explicite le packaging des .so de libbox.aar ─────────────
+      # AGP peut consommer un AAR sans recopier ses jni/ dans l’APK selon la
+      # combinaison de plugins. On place donc les bibliothèques natives dans le
+      # dossier standard jniLibs de l’application avant Gradle.
+      - name: Extraire les bibliothèques natives libbox vers jniLibs
+        run: |
+          set -euo pipefail
+          AAR="android/app/libs/libbox.aar"
+          JNI_ROOT="android/app/src/main/jniLibs"
+          if [ ! -s "$AAR" ]; then
+            echo "::error::libbox.aar absent après expo prebuild"
+            exit 1
+          fi
+          rm -rf /tmp/libbox-aar-extract "$JNI_ROOT"
+          mkdir -p /tmp/libbox-aar-extract "$JNI_ROOT"
+          unzip -q "$AAR" 'jni/*' -d /tmp/libbox-aar-extract
+          SO_COUNT=0
+          while IFS= read -r -d '' SO; do
+            REL="${SO#/tmp/libbox-aar-extract/jni/}"
+            DEST="$JNI_ROOT/$REL"
+            mkdir -p "$(dirname "$DEST")"
+            cp "$SO" "$DEST"
+            SO_COUNT=$((SO_COUNT + 1))
+          done < <(find /tmp/libbox-aar-extract/jni -type f -name '*.so' -print0 2>/dev/null)
+          if [ "$SO_COUNT" -eq 0 ]; then
+            echo "::error::libbox.aar ne contient aucune bibliothèque jni/*.so"
+            unzip -l "$AAR" | head -80
+            exit 1
+          fi
+          zip -q -d "$AAR" 'jni/*' >/dev/null 2>&1 || true
+          echo "✅ $SO_COUNT bibliothèque(s) libbox extraites dans $JNI_ROOT"
+          find "$JNI_ROOT" -type f -name '*.so' -printf '%p %s octets\\n' | sort
+
       # ── P3 — ProGuard : règles R8 pour JSch + sing-box + modules SXB ──────────
       - name: Créer proguard-rules.pro (JSch + sing-box + natif SXB)
         run: |
@@ -424,9 +457,15 @@ jobs:
           ABI_LIST=$(unzip -l "$APK" | sed -n 's#.*lib/\([^/]\+\)/.*#\1#p' | sort -u | tr '\n' ' ')
           if [ -z "$ABI_LIST" ]; then
             echo "::error::Aucune bibliothèque native ABI n’est présente dans l’APK"
+            unzip -l "$APK" | grep -E '(^|/)lib/|libbox' | head -80 || true
             exit 1
           fi
-          echo "[APK] ABI natives présentes : $ABI_LIST"
+          if ! unzip -l "$APK" | grep -qE 'lib/[^/]+/libbox\.so'; then
+            echo "::error::libbox.so absent de l’APK final — moteur VPN non embarqué"
+            unzip -l "$APK" | grep -E '(^|/)lib/|libbox' | head -80 || true
+            exit 1
+          fi
+          echo "[APK] ABI natives présentes : $ABI_LIST ; libbox.so présent"
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
           if [ -z "$APKSIGNER" ]; then
             echo "::error::apksigner introuvable dans le SDK Android"
