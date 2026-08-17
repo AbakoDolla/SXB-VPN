@@ -9,15 +9,14 @@ import {
   Animated,
   StatusBar,
   RefreshControl,
-  Platform,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { useVpn } from '../../contexts/VpnContext';
-import { useAccount } from '../../contexts/AccountContext';
+import { useVpnContext } from '@/contexts/VpnContext';
+import { useAuthContext } from '@/contexts/AuthContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import apiClient from '../../services/apiClient';
-import AnnouncementModal from '../../components/AnnouncementModal';
+import apiClient from '@/services/apiClient';
+import AnnouncementModal from '@/components/AnnouncementModal';
 
 const { width } = Dimensions.get('window');
 
@@ -38,9 +37,9 @@ export default function HomeScreen() {
     disconnect,
     trafficStats,
     refreshVpnConfig,
-  } = useVpn();
+  } = useVpnContext();
 
-  const { account, refreshAccountState } = useAccount();
+  const { accountState, refreshAccountState } = useAuthContext();
 
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [ping, setPing] = useState<number | null>(null);
@@ -146,7 +145,6 @@ export default function HomeScreen() {
   };
 
   const pulseAnim = useRef(new Animated.Value(1)).current;
-  const glowAnim  = useRef(new Animated.Value(0.5)).current;
 
   useEffect(() => {
     if (isConnecting) {
