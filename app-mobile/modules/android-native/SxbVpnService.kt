@@ -682,6 +682,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private var configJson      = ""
     /** Nom de notre interface TUN — exclue de l'énumération pour éviter les boucles. */
     @Volatile private var tunInterfaceName: String? = null
+    private var isSshRelay: Boolean = false
 
     // Managers
     private val trafficManager  = TrafficStatsManager()
@@ -1030,6 +1031,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
     private fun startSshTunnel(configJsonStr: String) {
         try {
+            isSshRelay = true
             broadcastLog("[SXB] Initialisation tunnel SSH...")
             broadcastLog("[SXB] Préparation de la connexion...")
             broadcastStatus("connecting"); setCurrentState("connecting")
@@ -1347,6 +1349,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
      */
     private fun startSingBoxTunnel(configJsonStr: String, protocol: String) {
         try {
+            isSshRelay = false
             Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_TUNNEL_START proto=$protocol")
             broadcastLog("[SXB] Initialisation VPN ${protocol.uppercase()}...")
             broadcastLog("[SXB] Préparation de la connexion...")
@@ -1404,6 +1407,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
      */
     private fun startSingBoxTunnelRaw(configJsonStr: String) {
         try {
+            isSshRelay = false
             Log.i("SXB_DEBUG", "[SXB_DEBUG] SINGBOX_RAW_TUNNEL_START")
             broadcastLog("[SXB] Initialisation VPN SINGBOX (config importée)...")
             broadcastLog("[SXB] Préparation de la connexion...")
@@ -1754,9 +1758,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
         broadcastLog("[SXB] Interface TUN créée")
 
         // FIX — Signalement immédiat de la connexion dès que le TUN est actif.
-        // C'est le moment où la "clé" apparaît et où le surf devient possible.
-        // On n'attend plus la fin de l'init du moteur pour passer l'UI au vert.
-        if (currentState == "connecting") {
+        // Uniquement pour V2Ray/Xray/Singbox (isSshRelay == false).
+        // Pour SSH, on attend la fin de l'init du moteur (startLibboxService).
+        if (currentState == "connecting" && !isSshRelay) {
             setCurrentState("connected")
             broadcastStatus("connected")
             broadcastLog("[SXB] ✅ VPN connecté (Tunnel établi)")

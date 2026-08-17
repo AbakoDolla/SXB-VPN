@@ -484,6 +484,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         setRevokedStatus(statusToSet);
       }
 
+      legacyDebugLog(`TRAFFIC_REPORT_SUCCESS up=${deltaUp} down=${deltaDown}`);
       return result;
     } catch {
       // Rejet/Échec réseau : conserver le delta non envoyé pour le rejouer plus tard
@@ -501,7 +502,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           await reportUsageToBackend(stats.uploadBytes || 0, stats.downloadBytes || 0);
         } catch { /* ignore */ }
       }
-    }, 60_000);
+    }, 30_000);
     return () => { if (reportTimerRef.current) { clearInterval(reportTimerRef.current); reportTimerRef.current = null; } };
   }, [isConnected, isAuthenticated, reportUsageToBackend]);
 
