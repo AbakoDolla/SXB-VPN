@@ -550,7 +550,7 @@ router.get('/notifications', async (req: AuthenticatedRequest, res: Response) =>
     // ── 1. Annonces administratives (globales ou ciblées par deviceId) ──────────
     if (prisma) {
       try {
-        const deviceId = req.headers['x-sxb-device-id'] as string;
+        const targetDeviceId = req.headers['x-sxb-device-id'] as string;
         const announcements = await prisma.announcement.findMany({
           where: {
             isActive: true,
@@ -558,7 +558,7 @@ router.get('/notifications', async (req: AuthenticatedRequest, res: Response) =>
               {
                 OR: [
                   { target: null },
-                  { target: deviceId || 'unknown' }
+                  { target: targetDeviceId || 'unknown' }
                 ]
               },
               {
@@ -574,7 +574,7 @@ router.get('/notifications', async (req: AuthenticatedRequest, res: Response) =>
         });
         for (const a of announcements) {
           notifications.push({
-            id: 'ann-' + a.id,
+            id: 'announcement-' + a.id,
             type: a.type,
             title: a.title,
             message: a.content,
