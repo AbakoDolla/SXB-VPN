@@ -271,8 +271,9 @@ export default function HomeScreen() {
 
   useEffect(() => {
     if (isConnected) {
-      apiClient.get("https://api.ipify.org?format=json", { timeout: 5000 })
-        .then(res => setConnectedIp(res.data?.ip || "—"))
+      fetch("https://api.ipify.org?format=json", { signal: AbortSignal.timeout(5000) })
+        .then(res => res.json())
+        .then((data: any) => setConnectedIp(data?.ip || "—"))
         .catch(() => setConnectedIp("—"));
     } else {
       setConnectedIp("—");
