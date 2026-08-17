@@ -28,8 +28,8 @@
     },
     "android": {
       "package": "com.sxbvpn.mobile",
-      "versionCode": 7,
-      "versionName": "1.2.0",
+      "versionCode": 8,
+      "versionName": "1.2.1",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/icon.png",
         "backgroundColor": "#060914"
@@ -39,12 +39,9 @@
         "android.permission.ACCESS_NETWORK_STATE",
         "android.permission.ACCESS_WIFI_STATE",
         "android.permission.CAMERA",
-        "android.permission.READ_EXTERNAL_STORAGE",
-        "android.permission.WRITE_EXTERNAL_STORAGE",
         "android.permission.RECEIVE_BOOT_COMPLETED",
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
-        "android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE",
         "android.permission.BIND_VPN_SERVICE",
         "android.permission.POST_NOTIFICATIONS",
         "android.permission.WAKE_LOCK"

@@ -1498,14 +1498,17 @@ class SxbVpnService : VpnService(), PlatformInterface {
         trace("LIBBOX_STARTED", "label=$label service_ready=${boxService != null}")
         Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_13_VPN_CONNECTED label=$label")
         broadcastLog("[SXB_DEBUG] TUNNEL_READY proto=$label")
-        broadcastLog("[SXB_DEBUG] VPN_CONNECTED proto=$label")
         broadcastLog("[SXB] Tunnel sécurisé prêt")
-        broadcastLog("[SXB] ✅ VPN $label actif")
+        broadcastLog("[SXB] ✅ Moteur $label démarré")
         connectionWatchdog?.interrupt()
-        broadcastStatus("connected"); setCurrentState("connected")
-        autoReconnect.onConnected()
-        updateNotification("SXB VPN — $label connecté")
-        startNotificationUpdater()
+        
+        // On s'assure que l'état est bien "connected" (déjà fait normalement dans openTun)
+        if (currentState != "connected") {
+            broadcastStatus("connected"); setCurrentState("connected")
+            autoReconnect.onConnected()
+            updateNotification("SXB VPN — $label connecté")
+            startNotificationUpdater()
+        }
     }
 
     /**
@@ -1749,6 +1752,19 @@ class SxbVpnService : VpnService(), PlatformInterface {
         Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_7_TUN_CREATED fd=${pfd.fd} name=$tunInterfaceName")
         broadcastLog("[SXB_DEBUG] STEP_7_TUN_CREATED fd=${pfd.fd}")
         broadcastLog("[SXB] Interface TUN créée")
+
+        // FIX — Signalement immédiat de la connexion dès que le TUN est actif.
+        // C'est le moment où la "clé" apparaît et où le surf devient possible.
+        // On n'attend plus la fin de l'init du moteur pour passer l'UI au vert.
+        if (currentState == "connecting") {
+            setCurrentState("connected")
+            broadcastStatus("connected")
+            broadcastLog("[SXB] ✅ VPN connecté (Tunnel établi)")
+            updateNotification("SXB VPN — Connecté")
+            startNotificationUpdater()
+            autoReconnect.onConnected()
+        }
+
         return pfd.fd
     }
 

@@ -333,6 +333,25 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         // Initialisation de la session de rapport delta
         sessionIdRef.current = 'sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
         seqRef.current = 0;
+
+        // FIX — Capturer la baseline immédiatement pour que les compteurs UI 
+        // et le premier rapport delta soient précis dès la première seconde.
+        if (IS_ANDROID && SxbVpnNative?.getTrafficStats) {
+          SxbVpnNative.getTrafficStats().then((stats: any) => {
+            const up = stats?.uploadBytes || 0;
+            const down = stats?.downloadBytes || 0;
+            lastReportUpRef.current = up;
+            lastReportDownRef.current = down;
+            sessionBaselineRef.current = { up, down };
+            setTrafficStats({
+              uploadBytes: up,
+              downloadBytes: down,
+              uploadSpeed: 0,
+              downloadSpeed: 0,
+              tunAttached: stats?.tunAttached === true || stats?.tunAttached === 1
+            });
+          }).catch(() => {});
+        }
         
         refreshAccountState().catch(() => {});
       } else if (s === 'disconnected') {
