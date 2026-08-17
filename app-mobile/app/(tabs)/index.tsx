@@ -18,6 +18,7 @@ import Colors from "@/constants/colors";
 import StepLogs from "@/components/StepLogs";
 import UpdatePrompt from "@/components/UpdatePrompt";
 import InteractiveWalkthrough from "@/components/InteractiveWalkthrough";
+import AnnouncementModal from "@/components/AnnouncementModal";
 import { useTranslation } from "@/localization";
 import type { VpnConnection } from "@/types/api";
 
@@ -248,6 +249,21 @@ export default function HomeScreen() {
   const [lastConnection, setLastConnection] = useState<string>("—");
   const [connections, setConnections] = useState<VpnConnection[]>([]);
   const [connectionsLoading, setConnectionsLoading] = useState(false);
+  const [activeAnnouncement, setActiveAnnouncement] = useState<any>(null);
+
+  const checkAnnouncements = React.useCallback(async () => {
+    try {
+      const res = await apiClient.get('/mobile/notifications');
+      const ann = res.data?.find((n: any) => n.isAnnouncement && n.type === 'critical');
+      if (ann) {
+        const seenStr = await AsyncStorage.getItem('@sxb_seen_announcements');
+        const seenIds = JSON.parse(seenStr || '[]');
+        if (!seenIds.includes(ann.id)) {
+          setActiveAnnouncement(ann);
+        }
+      }
+    } catch {}
+  }, []);
 
   useEffect(() => {
     let timerId: ReturnType<typeof setInterval>;
@@ -294,7 +310,7 @@ export default function HomeScreen() {
     });
   }, []);
 
-  const fetchConnections = useCallback(async () => {
+  const fetchConnections = React.useCallback(async () => {
     try {
       setConnectionsLoading(true);
       const res = await apiClient.get("/mobile/connections");
@@ -312,7 +328,10 @@ export default function HomeScreen() {
     }
   }, [syncFromConnection]);
 
-  useEffect(() => { fetchConnections(); }, [fetchConnections]);
+  useEffect(() => {
+    fetchConnections();
+    checkAnnouncements();
+  }, [fetchConnections, checkAnnouncements]);
 
   const handleRefresh = async () => {
     if (isRefreshing) return;
