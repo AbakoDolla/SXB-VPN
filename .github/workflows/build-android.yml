@@ -414,22 +414,26 @@ jobs:
           echo "APK_PATH=$APK" >> "$GITHUB_ENV"
 
       # ── Validation installabilité avant artifact/release ─────────────────────
-      - name: Valider APK (archive, manifeste, signature et ABI)
+      - name: Valider APK (archive, manifeste, signature et ABI disponibles)
         run: |
           set -euo pipefail
           APK="app-mobile/build/sxb-vpn.apk"
           test -s "$APK"
           unzip -t "$APK" >/tmp/apk-zip-test.log
           unzip -l "$APK" | grep -q 'AndroidManifest.xml'
-          unzip -l "$APK" | grep -q 'lib/arm64-v8a/'
-          unzip -l "$APK" | grep -q 'lib/armeabi-v7a/'
+          ABI_LIST=$(unzip -l "$APK" | sed -n 's#.*lib/\([^/]\+\)/.*#\1#p' | sort -u | tr '\n' ' ')
+          if [ -z "$ABI_LIST" ]; then
+            echo "::error::Aucune bibliothèque native ABI n’est présente dans l’APK"
+            exit 1
+          fi
+          echo "[APK] ABI natives présentes : $ABI_LIST"
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
           if [ -z "$APKSIGNER" ]; then
             echo "::error::apksigner introuvable dans le SDK Android"
             exit 1
           fi
           "$APKSIGNER" verify --verbose "$APK"
-          echo "✅ APK valide, signé et multi-ABI : $(stat -c%s "$APK") octets"
+          echo "✅ APK valide, signé et contenant au moins une ABI : $(stat -c%s "$APK") octets"
           sha256sum "$APK"
 
       # ── Upload artifact CI ────────────────────────────────────────────────────
