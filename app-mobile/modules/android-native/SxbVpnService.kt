@@ -1494,7 +1494,11 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // SOCKS ne doivent être annoncés que si la session est encore active.
         // FIX — On autorise l'état "connected" ici car pour VLESS/Xray, openTun()
         // a pu déjà faire basculer l'état en "connected" dès l'ouverture du TUN.
-        if (!running.get() || (currentState != "connecting" && currentState != "connected")) {
+        // openTun() peut publier handshaking avant le retour de service.start().
+        // Cet état est une étape normale du même démarrage sing-box : ne pas fermer
+        // le service ni annuler la tentative, sinon le TUN reste ouvert mais aucun
+        // outbound ne peut transporter les données.
+        if (!running.get() || (currentState != "connecting" && currentState != "handshaking" && currentState != "connected")) {
             broadcastLog("[SXB_DEBUG] LIBBOX_START_IGNORED — tentative annulée (état=$currentState)")
             runCatching { service.close() }
             if (boxService === service) boxService = null

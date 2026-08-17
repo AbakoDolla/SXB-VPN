@@ -168,14 +168,24 @@ class TrafficStatsManager {
             Log.w(TAG, "TUN attaché mais interface introuvable : compteurs TUN indisponibles")
             return
         }
-        val counters = readTunCounters(clean)
-        if (counters == null) {
-            Log.w(TAG, "Interface TUN $clean sans compteurs noyau lisibles")
+        // Android peut publier le nom de l’interface avant que /sys/class/net/<if>/statistics
+        // soit immédiatement lisible. Réessayer brièvement évite de retomber sur les
+        // compteurs UID, qui ne représentent pas les applications routées dans le VPN.
+        var counters: Pair<Long, Long>? = null
+        for (attempt in 0 until 20) {
+            counters = readTunCounters(clean)
+            if (counters != null) break
+            if (attempt < 19) {
+                try { Thread.sleep(100L) } catch (_: InterruptedException) { return }
+            }
+        }
+        val baseline = counters ?: run {
+            Log.w(TAG, "Interface TUN $clean sans compteurs noyau lisibles après 2s")
             return
         }
         tunInterface = clean
-        lastTunTx = counters.first
-        lastTunRx = counters.second
+        lastTunTx = baseline.first
+        lastTunRx = baseline.second
         // totalUpload.set(0L) // Ne plus réinitialiser lors du rattachement TUN
         // totalDownload.set(0L) // Conserver le cumul de la session globale
         speedUpload.set(0L)
