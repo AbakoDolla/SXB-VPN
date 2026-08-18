@@ -452,7 +452,9 @@ jobs:
           ANDROID_HOME: /usr/local/lib/android/sdk
         run: |
           set -euo pipefail
-          APK="app-mobile/build/sxb-vpn.apk"
+          # Les étapes `run` héritent de defaults.run.working-directory: app-mobile.
+          # Utiliser un chemin absolu rend la validation indépendante de ce contexte.
+          APK="${GITHUB_WORKSPACE}/app-mobile/build/sxb-vpn.apk"
           test -s "$APK"
           unzip -t "$APK" >/tmp/apk-zip-test.log
           # Écrire la liste une seule fois : avec pipefail, grep -q peut fermer
