@@ -455,16 +455,19 @@ jobs:
           APK="app-mobile/build/sxb-vpn.apk"
           test -s "$APK"
           unzip -t "$APK" >/tmp/apk-zip-test.log
-          unzip -l "$APK" | grep -q 'AndroidManifest.xml'
-          ABI_LIST=$(unzip -l "$APK" | sed -n 's#.*lib/\([^/]\+\)/.*#\1#p' | sort -u | tr '\n' ' ')
+          # Écrire la liste une seule fois : avec pipefail, grep -q peut fermer
+          # prématurément unzip et transformer une vérification réussie en échec SIGPIPE.
+          unzip -l "$APK" >/tmp/apk-list.log
+          grep -q 'AndroidManifest.xml' /tmp/apk-list.log
+          ABI_LIST=$(sed -n 's#.*lib/\([^/]\+\)/.*#\1#p' /tmp/apk-list.log | sort -u | tr '\n' ' ')
           if [ -z "$ABI_LIST" ]; then
             echo "::error::Aucune bibliothèque native ABI n’est présente dans l’APK"
-            unzip -l "$APK" | grep -E '(^|/)lib/|libbox' | head -80 || true
+            grep -E '(^|/)lib/|libbox' /tmp/apk-list.log | head -80 || true
             exit 1
           fi
-          if ! unzip -l "$APK" | grep -qE 'lib/[^/]+/libbox\.so'; then
+          if ! grep -qE 'lib/[^/]+/libbox\.so' /tmp/apk-list.log; then
             echo "::error::libbox.so absent de l’APK final — moteur VPN non embarqué"
-            unzip -l "$APK" | grep -E '(^|/)lib/|libbox' | head -80 || true
+            grep -E '(^|/)lib/|libbox' /tmp/apk-list.log | head -80 || true
             exit 1
           fi
           echo "[APK] ABI natives présentes : $ABI_LIST ; libbox.so présent"
