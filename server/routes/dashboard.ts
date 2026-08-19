@@ -23,6 +23,7 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
     let activeUsers = 0;
     let expiredAccounts = 0;
     let consumedTrafficBytes = BigInt(0);
+    let provisionedTrafficBytes = BigInt(0);
     let activeServers = 0;
     let activeResellers = 0;
     let totalVouchers = 0;
@@ -42,24 +43,32 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
       ]);
 
       const clients = await prisma.vpnClient.findMany({
-        select: { quotaUsed: true },
+        select: { quotaTotal: true, quotaUsed: true },
         ...(clientStealthWhere ? { where: clientStealthWhere } : {}),
       });
+      provisionedTrafficBytes = clients.reduce((acc, c) => acc + (c.quotaTotal || BigInt(0)), BigInt(0));
       consumedTrafficBytes = clients.reduce((acc, c) => acc + c.quotaUsed, BigInt(0));
     } else {
       activeUsers = inMemoryDb.vpnClients.filter((c) => c.status === "active").length;
       expiredAccounts = inMemoryDb.vpnClients.filter((c) => c.status === "expired").length;
+      provisionedTrafficBytes = inMemoryDb.vpnClients.reduce((acc, c) => acc + (c.quotaTotal || BigInt(0)), BigInt(0));
       consumedTrafficBytes = inMemoryDb.vpnClients.reduce((acc, c) => acc + c.quotaUsed, BigInt(0));
       activeServers = inMemoryDb.vpsServers.filter((s) => s.status === "online").length;
       activeResellers = inMemoryDb.resellers.filter((r) => r.status === "active").length;
     }
 
-    const consumedTrafficGb = Number(consumedTrafficBytes) / (1024 * 1024 * 1024);
+    const GB = 1024 * 1024 * 1024;
+    const consumedTrafficGb = Number(consumedTrafficBytes) / GB;
+    const provisionedTrafficGb = Number(provisionedTrafficBytes) / GB;
 
     return res.json({
       activeUsers,
       expiredAccounts,
       consumedTraffic: Math.round(consumedTrafficGb * 100) / 100,
+      provisionedTraffic: Math.round(provisionedTrafficGb * 100) / 100,
+      remainingTraffic: Math.max(0, Math.round((provisionedTrafficGb - consumedTrafficGb) * 100) / 100),
+      consumedTrafficBytes: consumedTrafficBytes.toString(),
+      provisionedTrafficBytes: provisionedTrafficBytes.toString(),
       activeServers,
       activeResellers,
       totalVouchers,
@@ -88,42 +97,44 @@ router.get("/traffic", requireAuth, requirePermission("analytics.read"), async (
     const requesterIsOwner = isOwnerRequest(req);
     const clientStealthWhere = stealthWhere(requesterIsOwner);
     if (prisma) {
-      // Récupérer tous les clients avec leurs données de quota et date de mise à jour
-      const clients = await prisma.vpnClient.findMany({
-        select: { quotaUsed: true, quotaTotal: true, updatedAt: true, createdAt: true },
+      const clientIds = (await prisma.vpnClient.findMany({
+        select: { id: true },
         ...(clientStealthWhere ? { where: clientStealthWhere } : {}),
-      });
+      })).map((c) => c.id);
+      const firstDay = days[0];
+      const lastDay = new Date(days[days.length - 1]);
+      lastDay.setHours(23, 59, 59, 999);
+      const usageRows = clientIds.length
+        ? await (prisma as any).trafficUsage.findMany({
+            where: { clientId: { in: clientIds }, timestamp: { gte: firstDay, lte: lastDay } },
+            select: { download: true, upload: true, timestamp: true },
+          })
+        : [];
 
       const data = days.map((day) => {
         const dayEnd = new Date(day);
         dayEnd.setHours(23, 59, 59, 999);
-
-        // Clients mis à jour ce jour-là (proxy pour l'activité du jour)
-        const dayClients = clients.filter((c) => {
-          const ud = new Date(c.updatedAt);
-          return ud >= day && ud <= dayEnd;
+        const rows = usageRows.filter((row: any) => {
+          const timestamp = new Date(row.timestamp);
+          return timestamp >= day && timestamp <= dayEnd;
         });
-
-        const dayUsedBytes = dayClients.reduce((acc, c) => acc + Number(c.quotaUsed), 0);
-        const dayUsedGb = dayUsedBytes / (1024 * 1024 * 1024);
-
+        const downloadGb = rows.reduce((acc: number, row: any) => acc + Number(row.download || 0), 0) / (1024 ** 3);
+        const uploadGb = rows.reduce((acc: number, row: any) => acc + Number(row.upload || 0), 0) / (1024 ** 3);
         return {
           time: day.toLocaleDateString("fr-FR", { weekday: "short" }),
-          download: Number((dayUsedGb * 0.65).toFixed(2)),
-          upload: Number((dayUsedGb * 0.35).toFixed(2)),
+          download: Number(downloadGb.toFixed(3)),
+          upload: Number(uploadGb.toFixed(3)),
         };
       });
 
       return res.json(data);
     } else {
-      // Fallback in-memory: distribute total evenly
-      const total = inMemoryDb.vpnClients.reduce((acc, c) => acc + Number(c.quotaUsed), 0);
-      const totalGb = total / (1024 * 1024 * 1024);
-      const perDay = totalGb / 7;
+      // Sans base persistante, aucun historique journalier fiable n’existe.
+      // Retourner zéro est préférable à une répartition artificielle du total.
       const data = days.map((d) => ({
         time: d.toLocaleDateString("fr-FR", { weekday: "short" }),
-        download: Number((perDay * 0.65).toFixed(2)),
-        upload: Number((perDay * 0.35).toFixed(2)),
+        download: 0,
+        upload: 0,
       }));
       return res.json(data);
     }

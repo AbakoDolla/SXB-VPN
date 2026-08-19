@@ -12,7 +12,11 @@ function makeUserToken(): string {
   return `SXB-USER-${part()}-${part()}-${part()}`;
 }
 
-function sanitize(c: any) {
+function sanitize(c: any, usage?: { download?: bigint | number; upload?: bigint | number; lastSeenAt?: Date | null }) {
+  const quotaTotal = Number(c.quotaTotal ?? 0);
+  const quotaUsed = Number(c.quotaUsed ?? 0);
+  const trafficDownload = Number(usage?.download ?? 0);
+  const trafficUpload = Number(usage?.upload ?? 0);
   return {
     id: c.id,
     deviceId: c.deviceId,
@@ -22,8 +26,13 @@ function sanitize(c: any) {
     activatedAt: c.activatedAt,
     createdAt: c.createdAt,
     label: c.user?.name || null,
-    quotaTotal: c.quotaTotal ? c.quotaTotal.toString() : "0",
-    quotaUsed: c.quotaUsed ? c.quotaUsed.toString() : "0",
+    quotaTotal: quotaTotal.toString(),
+    quotaUsed: quotaUsed.toString(),
+    quotaRemaining: Math.max(quotaTotal - quotaUsed, 0).toString(),
+    trafficDownload: trafficDownload.toString(),
+    trafficUpload: trafficUpload.toString(),
+    trafficTotal: (trafficDownload + trafficUpload).toString(),
+    lastTrafficAt: usage?.lastSeenAt ? new Date(usage.lastSeenAt).toISOString() : null,
   };
 }
 
@@ -35,7 +44,23 @@ router.get("/", requireAuth, requirePermission("clients.view"), async (req: Auth
       include: { user: true },
       orderBy: { createdAt: "desc" },
     });
-    return res.json({ devices: clients.map(sanitize) });
+    const ids = clients.map((client) => client.id);
+    const usageRows = ids.length
+      ? await (prisma as any).trafficUsage.findMany({
+          where: { clientId: { in: ids } },
+          select: { clientId: true, download: true, upload: true, timestamp: true },
+          orderBy: { timestamp: "desc" },
+        })
+      : [];
+    const byClient = new Map<string, { download: bigint; upload: bigint; lastSeenAt: Date | null }>();
+    for (const row of usageRows as any[]) {
+      const current = byClient.get(row.clientId) || { download: 0n, upload: 0n, lastSeenAt: null };
+      current.download += BigInt(row.download || 0);
+      current.upload += BigInt(row.upload || 0);
+      if (!current.lastSeenAt && row.timestamp) current.lastSeenAt = new Date(row.timestamp);
+      byClient.set(row.clientId, current);
+    }
+    return res.json({ devices: clients.map((client) => sanitize(client, byClient.get(client.id))) });
   } catch (err) {
     console.error("List devices error:", err);
     return res.status(500).json({ error: "Server error" });
