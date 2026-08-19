@@ -6,6 +6,7 @@ import { fetchDevices } from "../api/devices";
 import { fetchSessions } from "../api/sessions";
 import { fetchServers } from "../api/servers";
 import { TrafficDataPoint, ActivityLog, VPSServer, UserRole } from "../types";
+import type { Device } from "../api/devices";
 import {
   Users, Server, RefreshCw, Activity, AlertTriangle, Wifi,
   Clock, ShieldCheck, HardDrive, Cpu, Upload, Download,
@@ -124,6 +125,7 @@ export default function DashboardView({
   const [logs, setLogs] = useState<ActivityLog[]>([]);
   const [totalClients, setTotalClients] = useState(0);
   const [totalDevices, setTotalDevices] = useState(0);
+  const [devices, setDevices] = useState<Device[]>([]);
   const [activeSessions, setActiveSessions] = useState(0);
   const [servers, setServers] = useState<VPSServer[]>([]);
 
@@ -143,6 +145,7 @@ export default function DashboardView({
       setLogs(lLogs);
       setTotalClients(clients.length);
       setTotalDevices(devices.length);
+      setDevices(devices);
       setActiveSessions(((sessions || []) as any[]).filter(s => s.status === 'active').length);
       setServers(srvs);
     } catch (error) {
@@ -175,8 +178,19 @@ export default function DashboardView({
   const provisionedTrafficGB = stats ? `${Number(stats.provisionedTraffic || 0).toFixed(2)} GB` : '—';
   const remainingTrafficGB = stats ? `${Number(stats.remainingTraffic || 0).toFixed(2)} GB` : '—';
 
-  // Alerts
+  // Alertes : le seuil est calculé par appareil à partir des octets réels
+  // renvoyés par /api/devices. Un quota total nul n’est jamais considéré comme
+  // « sous 10 % », car il signifie qu’aucun forfait n’est provisionné.
+  const lowQuotaDevices = devices.filter(device => {
+    const total = Number(device.quotaTotal || 0);
+    const remaining = Number(device.quotaRemaining || Math.max(total - Number(device.quotaUsed || 0), 0));
+    return device.status === 'active' && total > 0 && remaining / total < 0.10;
+  });
+  const lowQuotaMessage = lowQuotaDevices.length > 0
+    ? `Quota critique : ${lowQuotaDevices.length} appareil(s) ont moins de 10 % restant${lowQuotaDevices.length > 1 ? '' : ''} — ${lowQuotaDevices.slice(0, 3).map(device => `${device.label || device.deviceId} (${((Number(device.quotaRemaining || 0) / Math.max(Number(device.quotaTotal || 1), 1)) * 100).toFixed(1)} %)`).join(', ')}${lowQuotaDevices.length > 3 ? '…' : ''}`
+    : null;
   const alerts = [
+    lowQuotaMessage ? { type: 'quota', msg: lowQuotaMessage } : null,
     stats?.expiredAccounts && stats.expiredAccounts > 0 ? { type: 'warning', msg: `${stats.expiredAccounts} compte(s) expiré(s)` } : null,
     servers.some(s => s.status === 'offline') ? { type: 'danger', msg: 'Serveur(s) hors ligne détecté(s)' } : null,
     servers.some(s => s.cpuLoad > 80) ? { type: 'warning', msg: 'CPU critique sur un ou plusieurs serveurs' } : null,
@@ -213,9 +227,10 @@ export default function DashboardView({
       {alerts.length > 0 && (
         <div className="space-y-2">
           {alerts.map((a, i) => (
-            <div key={i} className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border text-xs font-medium ${
-              a.type === 'danger' ? 'bg-red-500/10 border-red-500/20 text-red-400' : 'bg-amber-500/10 border-amber-500/20 text-amber-400'
-            }`}>
+                          <div key={i} className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border text-xs font-medium ${
+                a.type === 'quota' ? 'bg-rose-500/15 border-rose-500/40 text-rose-300 animate-pulse' : a.type === 'danger' ? 'bg-red-500/10 border-red-500/20 text-red-400' : 'bg-amber-500/10 border-amber-500/20 text-amber-400'
+              }`}>
+
               <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
               {a.msg}
             </div>
