@@ -2390,12 +2390,90 @@ class SxbVpnService : VpnService(), PlatformInterface {
         }
     }
 
-    private fun buildRawSingBoxConfig(rawCfg: JSONObject): String {
-        val cfg = convertXrayToSingBoxIfNeeded(rawCfg)
-        // `protocol` est un marqueur SXB de dispatch, pas une clé sing-box.
-        // Le backend peut le conserver pour que le bridge choisisse `singbox`,
-        // mais libbox 1.11.15 le refuse avec `unknown field "protocol"`.
+    /**
+     * Normalise les profils importés plus anciens que le correctif du backend.
+     * Ces profils peuvent rester chiffrés hors ligne après une mise à jour et
+     * doivent donc être réparés côté mobile avant l'appel à libbox.
+     */
+    private fun normalizeRawSingBoxCompatibility(cfg: JSONObject): JSONObject {
         cfg.remove("protocol")
+
+        // Les anciens imports acceptaient `dns.servers: ["8.8.8.8"]`.
+        // sing-box 1.11 attend des objets DNSServerOptions.
+        cfg.optJSONObject("dns")?.let { dns ->
+            val servers = dns.optJSONArray("servers")
+            if (servers != null) {
+                val normalizedDnsServers = JSONArray()
+                for (i in 0 until servers.length()) {
+                    when (val source = servers.opt(i)) {
+                        is String -> normalizedDnsServers.put(JSONObject().apply {
+                            val address = source
+                                .replace("tcp+local://", "tcp://", ignoreCase = true)
+                                .replace("udp+local://", "udp://", ignoreCase = true)
+                            put("address", address)
+                            put("detour", "direct")
+                        })
+                        is JSONObject -> normalizedDnsServers.put(JSONObject(source.toString()).apply {
+                            if (!has("detour")) put("detour", "direct")
+                        })
+                    }
+                }
+                dns.put("servers", normalizedDnsServers)
+            }
+            // `dns.hosts` appartient aux anciens imports/Xray et n’existe pas
+            // dans le schéma sing-box 1.11. La retirer évite un rejet global.
+            if (dns.has("hosts")) {
+                dns.remove("hosts")
+                SxbSecureLogger.warn("SINGBOX_DNS_HOSTS_IGNORED_VERSION")
+            }
+        }
+
+        val raw = cfg.optJSONArray("outbounds") ?: return cfg
+        val normalized = JSONArray()
+        val byTag = HashMap<String, JSONObject>()
+        for (i in 0 until raw.length()) {
+            val outbound = raw.optJSONObject(i) ?: continue
+            val tag = outbound.optString("tag", "")
+            val existing = if (tag.isNotBlank()) byTag[tag] else null
+            if (existing != null) {
+                // Les anciennes traductions pouvaient matérialiser le même
+                // http-upstream deux fois. Fusionner uniquement les champs
+                // absents, puis ne garder qu’un tag pour sing-box.
+                if (existing.optString("type", "") != outbound.optString("type", "")) {
+                    throw Exception("outbound tag dupliqué avec types différents : $tag")
+                }
+                val keys = outbound.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    if (!existing.has(key) || existing.isNull(key)) existing.put(key, outbound.opt(key))
+                }
+                continue
+            }
+
+            val transport = outbound.optJSONObject("transport")
+            if (transport != null && transport.optString("type", "").equals("ws", ignoreCase = true) && transport.has("host")) {
+                val legacyHost = transport.opt("host")
+                val headers = transport.optJSONObject("headers") ?: JSONObject()
+                if (!headers.has("Host")) {
+                    when (legacyHost) {
+                        is String -> if (legacyHost.isNotBlank()) headers.put("Host", legacyHost)
+                        is JSONArray -> if (legacyHost.length() > 0) headers.put("Host", legacyHost.optString(0))
+                    }
+                }
+                transport.put("headers", headers)
+                transport.remove("host")
+                SxbSecureLogger.warn("SINGBOX_WS_HOST_NORMALIZED")
+            }
+
+            normalized.put(outbound)
+            if (tag.isNotBlank()) byTag[tag] = outbound
+        }
+        cfg.put("outbounds", normalized)
+        return cfg
+    }
+
+    private fun buildRawSingBoxConfig(rawCfg: JSONObject): String {
+        val cfg = normalizeRawSingBoxCompatibility(convertXrayToSingBoxIfNeeded(rawCfg))
         val knownTypes = setOf(
             "vless", "vmess", "trojan", "shadowsocks", "wireguard", "hysteria2",
             "tuic", "hysteria", "ssh", "http", "socks", "direct", "dns", "block",

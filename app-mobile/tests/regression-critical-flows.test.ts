@@ -348,6 +348,14 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(nativeService.includes('code != "CONFIG_INVALID"'));
   });
 
+  it('sing-box : normalise transport.host et déduplique les profils hors ligne hérités', () => {
+    assert.ok(nativeService.includes('normalizeRawSingBoxCompatibility'));
+    assert.ok(nativeService.includes('transport.has("host")'));
+    assert.ok(nativeService.includes('transport.remove("host")'));
+    assert.ok(nativeService.includes('SINGBOX_WS_HOST_NORMALIZED'));
+    assert.ok(nativeService.includes('HashMap<String, JSONObject>()'));
+  });
+
   it('préserve le payload complet et ignore seulement une ellipse de copier-coller', () => {
     assert.ok(nativeService.includes('placeholder_removed=${rawPayload.contains("…") || rawPayload.contains("...")}'));
     assert.ok(nativeService.includes('.replace("…", "")'));
