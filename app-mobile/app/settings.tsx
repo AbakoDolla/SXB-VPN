@@ -17,7 +17,6 @@ import { useAuthContext } from "@/contexts/AuthContext";
 import { useVpnContext } from "@/contexts/VpnContext";
 import { useLanguageContext } from "@/contexts/LanguageContext";
 import { useTranslation } from "@/localization";
-import { deriveQuota, formatBytes } from "@/services/quotaState";
 import Colors from "@/constants/colors";
 import { getDiagnosticLogging, setDiagnosticLogging } from "@/modules/expo-sxb-vpn/src";
 
@@ -221,7 +220,7 @@ export default function SettingsScreen() {
     logs, isConnected, selectedProtocol, availableProtocols, refreshVpnConfig,
     killSwitch: ksCtx, autoReconnect: arCtx,
     setKillSwitch: setKsCtx, setAutoReconnect: setArCtx,
-    traffic,
+    traffic, derivedQuota, activeConnection,
   } = useVpnContext();
   const { language, setLanguage } = useLanguageContext();
   const { t } = useTranslation();
@@ -373,15 +372,15 @@ export default function SettingsScreen() {
     suspended: { text: t('suspended_status'), color: Colors.disconnected },
   } as Record<string, { text: string; color: string }>)[acctStatus || "no_package"]) || { text: t('status_unknown'), color: Colors.textMuted };
 
+  const effectiveExpiry = derivedQuota.expiryDate || activeConnection?.expiresAt || accountState?.expireAt || null;
   const formatExpiry = () => {
-    if (!accountState?.expireAt) return "—";
-    const d = new Date(accountState.expireAt);
+    if (!effectiveExpiry) return "—";
+    const d = new Date(effectiveExpiry);
     return d.toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" });
   };
 
-  const derived = deriveQuota(accountState);
-  const quotaUsed = accountState
-    ? `${derived.formattedUsed} / ${derived.formattedTotal}`
+  const quotaUsed = (derivedQuota.totalBytes > 0 || derivedQuota.usedBytes > 0)
+    ? `${derivedQuota.formattedUsed} / ${derivedQuota.formattedTotal}`
     : "—";
 
   return (
@@ -419,7 +418,7 @@ export default function SettingsScreen() {
         </View>
 
         {/* Subscription info */}
-        <Section title="FORFAIT" subtitle={accountState?.expireAt ? `Expire le ${formatExpiry()}` : undefined}>
+        <Section title="FORFAIT" subtitle={effectiveExpiry ? `Expire le ${formatExpiry()}` : undefined}>
           <Row icon="data-usage-outline" label="Quota utilisé" value={quotaUsed} color={Colors.primary} />
           <View style={styles.divider} />
           <Row icon="calendar-outline" label="Expiration" value={formatExpiry()} color={Colors.warning} />

@@ -323,16 +323,18 @@ export default function HomeScreen() {
       const conns: VpnConnection[] = res.data?.connections || [];
       setConnections(conns);
 
-      const activeConn = conns.find(c => c.status === "active");
-      if (activeConn) {
-        syncFromConnection(activeConn);
-      }
+      // Le statut `active` est celui du serveur et peut concerner plusieurs
+      // abonnements. La sélection locale (`activeConfigId`) est l’autorité UI.
+      const activeConn = (activeConfigId && conns.find(c => c.id === activeConfigId))
+        || conns.find(c => c.status === "active")
+        || null;
+      if (activeConn) syncFromConnection(activeConn);
     } catch {
       // ignore
     } finally {
       setConnectionsLoading(false);
     }
-  }, [syncFromConnection]);
+  }, [syncFromConnection, activeConfigId]);
 
   useEffect(() => {
     fetchConnections();
@@ -837,7 +839,7 @@ export default function HomeScreen() {
               <VpnConnectionCard
                 key={conn.id}
                 conn={conn}
-                isActive={conn.status === "active"}
+                isActive={conn.id === activeConfigId}
               />
             ))
           )}

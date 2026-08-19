@@ -7,7 +7,7 @@ import { router } from "expo-router";
 import Constants from "expo-constants";
 import { useAuthContext } from "@/contexts/AuthContext";
 import { useVpnContext } from "@/contexts/VpnContext";
-import { deriveQuota, formatBytes } from "@/services/quotaState";
+import { formatBytes } from "@/services/quotaState";
 import Colors from "@/constants/colors";
 import { useTranslation } from "@/localization";
 
@@ -15,9 +15,10 @@ export default function ProfileScreen() {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const { user, accountState, logout } = useAuthContext();
-  const { activeConnection } = useVpnContext();
+  const { activeConnection, derivedQuota } = useVpnContext();
 
-  const derived = deriveQuota(accountState);
+  const derived = derivedQuota;
+  const effectiveExpiry = derived.expiryDate || activeConnection?.expiresAt || accountState?.expireAt || null;
 
   const handleLogout = () => {
     Alert.alert(
@@ -124,11 +125,11 @@ export default function ProfileScreen() {
                 <Text style={styles.statLabel}>{t("quota_remaining")}</Text>
               </View>
             </View>
-            {accountState.expireAt && (
+            {effectiveExpiry && (
               <View style={styles.expireRow}>
                 <Ionicons name="calendar-outline" size={13} color={Colors.textMuted} />
                 <Text style={styles.expireText}>
-                  {t("expires_on")} {new Date(accountState.expireAt).toLocaleDateString()}
+                  {t("expires_on")} {new Date(effectiveExpiry).toLocaleDateString()}
                 </Text>
               </View>
             )}

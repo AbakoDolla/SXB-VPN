@@ -104,6 +104,12 @@ function translateStreamSettings(
     } else {
       // tlsSettings.allowInsecure toléré mais noté
       tls.insecure = tlsSettings.allowInsecure === true;
+      if (typeof tlsSettings.fingerprint === 'string' && tlsSettings.fingerprint.trim()) {
+        tls.utls = { enabled: true, fingerprint: tlsSettings.fingerprint.trim().toLowerCase() };
+      }
+      if (Array.isArray(tlsSettings.alpn) && tlsSettings.alpn.length > 0) {
+        tls.alpn = tlsSettings.alpn.map((value: any) => String(value));
+      }
     }
     out.tls = tls;
   } else if (security !== 'none' && security !== '') {
@@ -129,7 +135,24 @@ function translateStreamSettings(
   }
 
   if (ss.sockopt && typeof ss.sockopt === 'object') {
-    warnings.push('sockopt ignoré (géré par le moteur mobile)');
+    const sockopt = ss.sockopt;
+    const domainStrategy = String(sockopt.domainStrategy || '').toLowerCase();
+    const domainStrategyMap: Record<string, string> = {
+      useip: 'prefer_ipv4', useipv4: 'ipv4_only', useipv6: 'ipv6_only',
+    };
+    if (domainStrategyMap[domainStrategy]) out.domain_strategy = domainStrategyMap[domainStrategy];
+    if (sockopt.tcpFastOpen === true) out.tcp_fast_open = true;
+    const happy = sockopt.happyEyeballs;
+    if (happy && typeof happy === 'object' && Number(happy.tryDelayMs) > 0) {
+      // sing-box expose le délai RFC 6555 sous fallback_delay ; les autres
+      // paramètres Xray n’ont pas d’équivalent stable dans sing-box 1.11.
+      out.fallback_delay = `${Math.round(Number(happy.tryDelayMs))}ms`;
+      if (happy.interleave !== undefined || happy.maxConcurrentTry !== undefined || happy.prioritizeIPv6 !== undefined) {
+        warnings.push('sockopt.happyEyeballs : tryDelayMs traduit en fallback_delay ; interleave/maxConcurrentTry/prioritizeIPv6 non disponibles dans sing-box 1.11');
+      }
+    }
+    const unsupported = Object.keys(sockopt).filter((key) => !['domainStrategy', 'tcpFastOpen', 'happyEyeballs'].includes(key));
+    if (unsupported.length > 0) warnings.push(`sockopt Xray partiellement ignoré : ${unsupported.join(', ')}`);
   }
 }
 
@@ -201,6 +224,12 @@ function translateDns(xrayDns: any, warnings: string[]): Record<string, any> | n
 
   if (operatorTrick) {
     warnings.push('astuce DNS opérateur perdue à la conversion (dns.servers tcp+local:// / https+local:// avec payload [crlf]) — DNS du moteur mobile utilisé');
+  }
+  if (xrayDns.hosts && typeof xrayDns.hosts === 'object' && Object.keys(xrayDns.hosts).length > 0) {
+    // Le moteur embarqué est sing-box 1.11.15 ; le serveur DNS `hosts` avec
+    // `predefined` n’existe qu’à partir de 1.12. On refuse la fausse promesse
+    // de l’appliquer et on laisse le DNS du moteur résoudre normalement.
+    warnings.push(`dns.hosts contient ${Object.keys(xrayDns.hosts).length} entrée(s), conservées dans le diagnostic mais ignorées par sing-box 1.11.15 (fonction hosts introduite en 1.12)`);
   }
   if (servers.length === 0) return null;
 
@@ -312,6 +341,7 @@ export function translateXrayToSingbox(xray: Record<string, any>): TranslationRe
     const settings = ob.settings ?? {};
 
     if (PROXY_PROTOCOLS.has(proto)) {
+      if (ob.mux && typeof ob.mux === 'object') warnings.push(`outbound ${proto} : mux Xray ignoré (le multiplexage est géré séparément par le moteur mobile)`);
       // ── VLESS / VMess / Trojan ────────────────────────────────────────────
       let server: string | null = null;
       let port = 0;
@@ -417,6 +447,12 @@ export function translateXrayToSingbox(xray: Record<string, any>): TranslationRe
   }
   if (!mainOutboundTag) {
     return { ok: false, warnings, errors: ['Xray : aucun outbound de transport (vless/vmess/trojan) trouvé'] };
+  }
+
+  if (xray.policy && typeof xray.policy === 'object') {
+    if (xray.policy.system?.statsOutboundUplink || xray.policy.system?.statsOutboundDownlink) {
+      warnings.push('policy.system.statsOutbound* Xray : compteurs ignorés, le mobile utilise les statistiques TUN noyau réelles');
+    }
   }
 
   // ── inbounds[] → ignorés + warning ────────────────────────────────────────

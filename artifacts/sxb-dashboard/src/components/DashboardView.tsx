@@ -94,7 +94,7 @@ const CustomTooltip = ({ active, payload, label }: any) => {
         <div key={i} className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full" style={{ backgroundColor: p.color }} />
           <span className="text-gray-300">{p.name}:</span>
-          <span className="text-white font-bold">{typeof p.value === 'number' ? p.value.toFixed(1) : p.value} MB</span>
+          <span className="text-white font-bold">{typeof p.value === 'number' ? p.value.toFixed(3) : p.value} GB</span>
         </div>
       ))}
     </div>
@@ -170,8 +170,10 @@ export default function DashboardView({
   const todayTraffic = trafficData.length > 0 ? trafficData[trafficData.length - 1] : null;
   const weeklyDownload = trafficData.slice(-7).reduce((acc, d) => acc + (d.download || 0), 0);
 
-  // Quota from clients (if API returns totalConsumed)
-  const consumedTrafficGB = stats?.consumedTraffic ? (Number(stats.consumedTraffic) / 1e9).toFixed(2) : '—';
+  // Les endpoints renvoient désormais des gigaoctets issus des compteurs réels.
+  const consumedTrafficGB = stats ? `${Number(stats.consumedTraffic || 0).toFixed(2)} GB` : '—';
+  const provisionedTrafficGB = stats ? `${Number(stats.provisionedTraffic || 0).toFixed(2)} GB` : '—';
+  const remainingTrafficGB = stats ? `${Number(stats.remainingTraffic || 0).toFixed(2)} GB` : '—';
 
   // Alerts
   const alerts = [
@@ -278,11 +280,13 @@ export default function DashboardView({
       {/* Row 2 — Trafic */}
       <div>
         <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-widest mb-3">Trafic & Quota</p>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <StatCard label="Download (total)" value={fmtBytes(totalDownload * 1e6)} icon={Download} color="text-sky-400" accent="bg-sky-500/10" />
-          <StatCard label="Upload (total)" value={fmtBytes(totalUpload * 1e6)} icon={Upload} color="text-indigo-400" accent="bg-indigo-500/10" />
-          <StatCard label="Trafic semaine" value={fmtBytes(weeklyDownload * 1e6)} icon={TrendingUp} color="text-teal-400" accent="bg-teal-500/10" />
-          <StatCard label="Quota consommé" value={consumedTrafficGB !== '—' ? consumedTrafficGB + ' GB' : '—'} icon={Database} color="text-orange-400" accent="bg-orange-500/10" />
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <StatCard label="Download (réel)" value={fmtBytes(totalDownload * 1024 ** 3)} icon={Download} color="text-sky-400" accent="bg-sky-500/10" />
+          <StatCard label="Upload (réel)" value={fmtBytes(totalUpload * 1024 ** 3)} icon={Upload} color="text-indigo-400" accent="bg-indigo-500/10" />
+          <StatCard label="Trafic semaine" value={fmtBytes(weeklyDownload * 1024 ** 3)} icon={TrendingUp} color="text-teal-400" accent="bg-teal-500/10" />
+          <StatCard label="Quota provisionné" value={provisionedTrafficGB} icon={HardDrive} color="text-blue-400" accent="bg-blue-500/10" />
+          <StatCard label="Quota consommé" value={consumedTrafficGB} icon={Database} color="text-orange-400" accent="bg-orange-500/10" />
+          <StatCard label="Quota restant" value={remainingTrafficGB} icon={TrendingUp} color="text-emerald-400" accent="bg-emerald-500/10" />
         </div>
       </div>
 

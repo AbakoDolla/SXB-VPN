@@ -5,6 +5,10 @@ export interface DashboardStats {
   activeUsers: number;
   expiredAccounts: number;
   consumedTraffic: number;
+  provisionedTraffic: number;
+  remainingTraffic: number;
+  consumedTrafficBytes?: string;
+  provisionedTrafficBytes?: string;
   activeServers: number;
   activeResellers: number;
   totalRevenue: number;
@@ -19,6 +23,8 @@ export async function fetchDashboardStats(): Promise<DashboardStats> {
       activeUsers: 0,
       expiredAccounts: 0,
       consumedTraffic: 0,
+      provisionedTraffic: 0,
+      remainingTraffic: 0,
       activeServers: 0,
       activeResellers: 0,
       totalRevenue: 0,

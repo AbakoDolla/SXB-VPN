@@ -25,6 +25,14 @@ function formatDate(dateStr: string | null): string {
   return new Date(dateStr).toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" });
 }
 
+function formatBytes(value: string | number | null | undefined): string {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 2)} ${units[index]}`;
+}
+
 export default function DevicesView() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
@@ -193,6 +201,8 @@ export default function DevicesView() {
                   <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Appareil</th>
                   <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Token d'activation</th>
                   <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Statut</th>
+                  <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Quota</th>
+                  <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Trafic réel</th>
                   <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Expiration</th>
                   <th className="text-right px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Actions</th>
                 </tr>
@@ -227,6 +237,20 @@ export default function DevicesView() {
                       </td>
                       <td className="px-5 py-4">
                         <span className={`inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium ${cls}`}>{sLabel}</span>
+                      </td>
+                      <td className="px-5 py-4">
+                        <div className="flex flex-col gap-1 text-xs">
+                          <span className="text-white">{formatBytes(device.quotaUsed)} utilisés</span>
+                          <span className="text-emerald-400">{formatBytes(device.quotaRemaining)} restants</span>
+                          <span className="text-gray-600">sur {formatBytes(device.quotaTotal)}</span>
+                        </div>
+                      </td>
+                      <td className="px-5 py-4">
+                        <div className="flex flex-col gap-1 text-xs">
+                          <span className="text-sky-400">↓ {formatBytes(device.trafficDownload)}</span>
+                          <span className="text-violet-400">↑ {formatBytes(device.trafficUpload)}</span>
+                          <span className="text-gray-600">total {formatBytes(device.trafficTotal)}</span>
+                        </div>
                       </td>
                       <td className="px-5 py-4">
                         <div className="flex flex-col gap-0.5">

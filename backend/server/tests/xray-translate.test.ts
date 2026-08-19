@@ -336,3 +336,58 @@ test('détection stricte : markers Xray détectés, sing-box natif détecté', (
   assert.equal(isSingboxNativeJson({ outbounds: [{ server: 'x', server_port: 1 }] }), false);
   assert.equal(hasXrayMarkers({ outbounds: [{ server: 'x', server_port: 1 }] }), false);
 });
+
+
+test('config jointe : VLESS WS TLS avec Host distinct, uTLS Chrome et happy eyeballs', () => {
+  const r = translateXrayToSingbox({
+    dns: {
+      hosts: { 'googleapis.cn': 'googleapis.com', 'hsnylstroom.co.za': ['45.60.38.117', '45.60.32.117'] },
+      servers: ['1.1.1.1'],
+    },
+    inbounds: [{ tag: 'socks', port: 10808, protocol: 'socks' }],
+    outbounds: [
+      {
+        tag: 'proxy',
+        protocol: 'vless',
+        settings: { vnext: [{ address: 'hsnylstroom.co.za', port: 443, users: [{ id: 'e3696a89-3e4a-493e-814b-1645adf0cc92', encryption: 'none' }] }] },
+        streamSettings: {
+          network: 'ws',
+          security: 'tls',
+          sockopt: { domainStrategy: 'UseIP', happyEyeballs: { tryDelayMs: 250, interleave: 2, maxConcurrentTry: 4, prioritizeIPv6: false } },
+          tlsSettings: { allowInsecure: true, fingerprint: 'chrome', serverName: 'hsnylstroom.co.za' },
+          wsSettings: { headers: { Host: 'live.faibakenya.app' }, path: '/lee' },
+        },
+        mux: { enabled: false, concurrency: -1 },
+      },
+      { tag: 'direct', protocol: 'freedom', settings: { domainStrategy: 'UseIP' } },
+      { tag: 'block', protocol: 'blackhole' },
+    ],
+    policy: { system: { statsOutboundUplink: true, statsOutboundDownlink: true } },
+    routing: { rules: [{ type: 'field', ip: ['8.8.8.8'], outboundTag: 'direct', port: '53' }] },
+  } as any);
+
+  assert.equal(r.ok, true, JSON.stringify(r.errors));
+  const proxy = r.singboxJson!.outbounds.find((out: any) => out.tag === 'proxy');
+  assert.equal(proxy.server, 'hsnylstroom.co.za');
+  assert.equal(proxy.tls.server_name, 'hsnylstroom.co.za');
+  assert.deepEqual(proxy.tls.utls, { enabled: true, fingerprint: 'chrome' });
+  assert.deepEqual(proxy.transport, { type: 'ws', path: '/lee', headers: { Host: 'live.faibakenya.app' } });
+  assert.equal(proxy.domain_strategy, 'prefer_ipv4');
+  assert.equal(proxy.fallback_delay, '250ms');
+  assert.ok(r.warnings.some((warning: string) => warning.includes('dns.hosts')));
+  assert.ok(r.warnings.some((warning: string) => warning.includes('happyEyeballs')));
+  assert.ok(r.warnings.some((warning: string) => warning.includes('statsOutbound')));
+});
+
+
+test('Xray alpn est conservé dans TLS sing-box', () => {
+  const r = translateXrayToSingbox({
+    outbounds: [{
+      protocol: 'vless',
+      settings: { vnext: [{ address: 'a.example.com', port: 443, users: [{ id: 'u' }] }] },
+      streamSettings: { network: 'ws', security: 'tls', tlsSettings: { serverName: 'a.example.com', alpn: ['h2', 'http/1.1'] }, wsSettings: { path: '/' } },
+    }],
+  } as any);
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.singboxJson!.outbounds[0].tls.alpn, ['h2', 'http/1.1']);
+});

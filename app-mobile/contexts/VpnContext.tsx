@@ -465,17 +465,20 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       lastReportDownRef.current = down;
 
       if (result?.data?.quotaRemainingBytes !== undefined) {
-        const remainingBytes = Number(result.data.quotaRemainingBytes);
-        const currentQuota = await loadQuotaData().catch(() => null);
-        if (currentQuota) {
-          const usedBytes = Math.max(0, currentQuota.totalQuota - remainingBytes);
-          setQuotaData(prev => prev ? { ...prev, usedQuota: usedBytes, remainingQuota: remainingBytes } : prev);
-          await saveQuotaData({
-            configId: currentQuota.configId,
-            totalQuota: currentQuota.totalQuota,
+        const currentQuota = await loadQuotaData(activeConfigId || undefined).catch(() => null);
+        const totalBytes = Number(result.data.quotaTotalBytes ?? currentQuota?.totalQuota ?? 0);
+        const usedBytes = Number(result.data.quotaUsedBytes ?? Math.max(0, totalBytes - Number(result.data.quotaRemainingBytes)));
+        const remainingBytes = Math.max(0, Number(result.data.quotaRemainingBytes));
+        const quotaConfigId = activeConfigId || currentQuota?.configId || (activeConnection as any)?.id || 'vpn_config';
+        if (totalBytes > 0 || currentQuota) {
+          const synced = await saveQuotaData({
+            configId: quotaConfigId,
+            totalQuota: totalBytes,
             usedQuota: usedBytes,
-            expiryDate: currentQuota.expiryDate,
-          }).catch(() => {});
+            expiryDate: result.data.expiresAt ?? currentQuota?.expiryDate ?? null,
+          }).catch(() => null);
+          if (synced) setQuotaData(synced);
+          else setQuotaData(prev => prev ? { ...prev, usedQuota: usedBytes, remainingQuota: remainingBytes } : prev);
         }
       }
 
@@ -550,10 +553,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   // Quota polling
   const refreshQuotaData = useCallback(async () => {
     try {
-      const loaded = await loadQuotaData();
+      const loaded = await loadQuotaData(activeConfigId || undefined);
       if (loaded) setQuotaData(loaded);
     } catch { /* ignore */ }
-  }, []);
+  }, [activeConfigId]);
 
   useEffect(() => {
     refreshQuotaData();
@@ -564,7 +567,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const refreshVpnConfig = useCallback(async () => {
     if (!isAuthenticated) return;
     try {
-      const res = await apiClient.get('/mobile/vpn/config');
+      const selectedQuery = activeConfigId
+        ? `?subscriptionId=${encodeURIComponent(activeConfigId)}`
+        : '';
+      const res = await apiClient.get(`/mobile/vpn/config${selectedQuery}`);
       const data = res.data;
       // Le jeton SXB-DATA est fourni dans `subscription`, jamais dans les
       // métadonnées `vpnConfig`. Il reste uniquement en mémoire jusqu’au
@@ -575,14 +581,15 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         subscriptionId: data.subscription?.id || undefined,
       } : null;
 
-      if (data.quota && Number(data.quota.totalQuota) > 0) {
+      if (data.quota && (data.subscription?.id || serverConfig?.configId || data.profile?.id)) {
+        const quotaConfigId = data.subscription?.id || serverConfig?.subscriptionId || serverConfig?.configId || data.profile?.id || 'vpn_config';
         await saveQuotaData({
-          configId:    serverConfig?.configId ?? data.profile?.id ?? 'vpn_config',
-          totalQuota:  Number(data.quota.totalQuota) || 0,
-          usedQuota:   Number(data.quota.usedQuota)   || 0,
-          expiryDate:  data.quota.expiryDate ?? null,
+          configId:    quotaConfigId,
+          totalQuota:  Number(data.quota.totalQuota ?? data.subscription?.quotaTotalBytes ?? 0),
+          usedQuota:   Number(data.quota.usedQuota ?? data.subscription?.quotaUsedBytes ?? 0),
+          expiryDate:  data.subscription?.expireAt ?? data.quota.expiryDate ?? null,
         });
-        const freshQuota = await loadQuotaData();
+        const freshQuota = await loadQuotaData(quotaConfigId);
         if (freshQuota) setQuotaData(freshQuota);
       }
 
@@ -650,7 +657,18 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       const activeId = requestedActive || mergedSaved.find(s => s.isActive)?.id || connections[0]?.id;
       const activeRemote = connections.find((c: any) => c.id === activeId) || connections[0] || null;
       setActiveConnection(activeRemote);
-      if (activeRemote) setRevokedStatus('none');
+      if (activeRemote) {
+        setRevokedStatus('none');
+        if (activeRemote.quota) {
+          const exactQuota = await saveQuotaData({
+            configId: activeRemote.id,
+            totalQuota: Number(activeRemote.quota.totalBytes ?? (activeRemote.quota.totalGB || 0) * 1024 ** 3),
+            usedQuota: Number(activeRemote.quota.usedBytes ?? (activeRemote.quota.usedGB || 0) * 1024 ** 3),
+            expiryDate: activeRemote.expiresAt ?? null,
+          }).catch(() => null);
+          if (exactQuota) setQuotaData(exactQuota);
+        }
+      }
       if (activeId) {
         setActiveConfigId(activeId);
         await configStore.setActive(activeId);
@@ -1034,8 +1052,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       const totalDelta = deltaUp + deltaDown;
 
       if (totalDelta > 0) {
-        await consumeQuotaLocally(totalDelta);
-        const loaded = await loadQuotaData();
+        await consumeQuotaLocally(totalDelta, activeConfigId || undefined);
+        const loaded = await loadQuotaData(activeConfigId || undefined);
         if (loaded) setQuotaData(loaded);
       }
 
@@ -1058,7 +1076,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       sessionIdRef.current = null;
       seqRef.current = 0;
     }
-  }, [isConnecting, isConnected, addLog, reportUsageToBackend, addStepLog]);
+  }, [isConnecting, isConnected, activeConfigId, addLog, reportUsageToBackend, addStepLog]);
 
   // B8 — Bascule atomique. Un abonnement distant actif peut être choisi avant
   // son premier provisionnement local : il est alors provisionné avec SON jeton.

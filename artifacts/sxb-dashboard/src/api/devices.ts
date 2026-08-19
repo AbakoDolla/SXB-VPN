@@ -11,6 +11,11 @@ export interface Device {
   label: string | null;
   quotaTotal: string;
   quotaUsed: string;
+  quotaRemaining: string;
+  trafficDownload: string;
+  trafficUpload: string;
+  trafficTotal: string;
+  lastTrafficAt: string | null;
 }
 
 export async function fetchDevices(): Promise<Device[]> {

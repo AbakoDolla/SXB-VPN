@@ -420,10 +420,16 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
 
     let sub: any = null;
     if (prisma) {
-      // IMPORTANT : include { payload: true } pour éviter un second round-trip
-      // et garantir que le contenu du payload arrive même si payloadId est défini
+      // Le mobile peut sélectionner plusieurs abonnements. Le quota affiché
+      // doit donc être celui de l’abonnement demandé, et non l’agrégat client.
+      const requestedSubscriptionId = typeof req.query.subscriptionId === "string"
+        ? req.query.subscriptionId.trim()
+        : "";
+      const where = requestedSubscriptionId
+        ? { id: requestedSubscriptionId, clientId: client.id }
+        : { clientId: client.id, status: "active" };
       sub = await (prisma as any).subscription.findFirst({
-        where: { clientId: client.id, status: "active" },
+        where,
         include: { profile: true },
         orderBy: { createdAt: "desc" },
       });
@@ -497,16 +503,28 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
         configHash:      configHashForProfile(profile),
         // ❌ Champs supprimés : host, port, username, password, sni, uuid, payload, etc.
       } : null,
-      // quota : bytes — consommé par offlineStorage.ts en mode hors-ligne
+      // quota : autorité de l’abonnement sélectionné. L’agrégat compte est
+      // retourné séparément pour éviter de mélanger plusieurs configurations.
       quota: {
-        totalQuota:  client.quotaTotal ? Number(client.quotaTotal) : 0,
-        usedQuota:   Number(client.quotaUsed ?? 0),
-        expiryDate:  client.expireAt ? new Date(client.expireAt).toISOString() : null,
+        totalQuota:  Number(sub?.quotaBytes ?? client.quotaTotal ?? 0),
+        usedQuota:   Number(sub?.quotaUsed ?? client.quotaUsed ?? 0),
+        expiryDate:  sub?.expireAt
+          ? new Date(sub.expireAt).toISOString()
+          : client.expireAt ? new Date(client.expireAt).toISOString() : null,
+      },
+      accountQuota: {
+        totalQuota: Number(client.quotaTotal ?? 0),
+        usedQuota: Number(client.quotaUsed ?? 0),
+        remainingQuota: Math.max(Number(client.quotaTotal ?? 0) - Number(client.quotaUsed ?? 0), 0),
+        expiryDate: client.expireAt ? new Date(client.expireAt).toISOString() : null,
       },
       subscription: sub ? {
         id:        sub.id,
         name:      sub.name,
         dataToken: sub.dataToken,   // Token SXB-DATA — utilisé par le mobile pour /provision/activate
+        quotaTotalBytes: Number(sub.quotaBytes ?? 0),
+        quotaUsedBytes: Number(sub.quotaUsed ?? 0),
+        quotaRemainingBytes: Math.max(Number(sub.quotaBytes ?? 0) - Number(sub.quotaUsed ?? 0), 0),
         expireAt:  sub.expireAt?.toISOString(),
         status:    sub.status,
       } : null,
@@ -755,12 +773,30 @@ router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => 
 
     const updatedClient: any = await findClientByUserId(req.user!.userId);
     const state = computeAccountState(updatedClient || client);
-    const quotaExhausted = state.quotaRemainingGb <= 0 || state.quotaRemainingBytes <= 0;
+    const selectedSub = subscriptionId
+      ? (updatedClient?.subscriptions || []).find((s: any) => s.id === subscriptionId)
+      : (updatedClient?.subscriptions || []).find((s: any) => s.status === "active");
+    const quotaTotalBytes = Number(selectedSub?.quotaBytes ?? updatedClient?.quotaTotal ?? client.quotaTotal ?? 0);
+    const quotaUsedBytes = Number(selectedSub?.quotaUsed ?? updatedClient?.quotaUsed ?? client.quotaUsed ?? 0);
+    const quotaRemainingBytes = Math.max(quotaTotalBytes - quotaUsedBytes, 0);
+    const quotaRemainingGb = quotaRemainingBytes / (1024 * 1024 * 1024);
+    const subscriptionState = selectedSub?.status === "suspended" || selectedSub?.status === "revoked"
+      ? selectedSub.status
+      : selectedSub?.expireAt && new Date(selectedSub.expireAt).getTime() < Date.now()
+        ? "expired"
+        : quotaTotalBytes > 0 && quotaRemainingBytes <= 0 ? "exhausted" : "ready";
     return res.json({
       ok: true,
-      quotaRemainingGb: state.quotaRemainingGb,
-      quotaRemainingBytes: state.quotaRemainingBytes,
-      quotaExhausted,
+      quotaTotalGb: quotaTotalBytes / (1024 * 1024 * 1024),
+      quotaUsedGb: quotaUsedBytes / (1024 * 1024 * 1024),
+      quotaRemainingGb,
+      quotaTotalBytes,
+      quotaUsedBytes,
+      quotaRemainingBytes,
+      quotaExhausted: quotaTotalBytes > 0 && quotaRemainingBytes <= 0,
+      expiresAt: selectedSub?.expireAt ? new Date(selectedSub.expireAt).toISOString() : state.expireAt,
+      subscriptionState,
+      // state reste l’état global du compte pour la compatibilité des anciennes apps.
       state: state.state,
     });
   } catch (err) {
