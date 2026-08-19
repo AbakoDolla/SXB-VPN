@@ -117,6 +117,29 @@ test('T-X1 : vless + ws + tls + amont http + dns local → traduction complète'
   assert.ok(r.warnings.some((w: string) => w.includes('inboundTag')));
 });
 
+test('proxySettings : un seul outbound HTTP amont et headers conservés', () => {
+  const r = translateXrayToSingbox({
+    outbounds: [
+      {
+        protocol: 'vless',
+        tag: 'proxy',
+        settings: { vnext: [{ address: 'edge.example.com', port: 443, users: [{ id: 'uuid' }] }] },
+        streamSettings: { network: 'ws', security: 'tls', wsSettings: { path: '/', headers: { Host: 'cdn.example.com' } } },
+        proxySettings: { tag: 'upstream-http', transportLayer: true },
+      },
+      {
+        protocol: 'http',
+        tag: 'upstream-http',
+        settings: { servers: [{ address: 'proxy.example.com', port: 8080 }], headers: { Host: 'cdn.example.com', 'X-Test': '1' } },
+      },
+    ],
+  } as any);
+  assert.equal(r.ok, true, JSON.stringify(r.errors));
+  const upstreams = r.singboxJson!.outbounds.filter((o: any) => o.tag === 'upstream-http');
+  assert.equal(upstreams.length, 1);
+  assert.deepEqual(upstreams[0].headers, { Host: 'cdn.example.com', 'X-Test': '1' });
+});
+
 test('dns : servers tcp+local:// non traduits, les serveurs simples restent', () => {
   const r = translateXrayToSingbox({
     outbounds: [{ protocol: 'vless', settings: { vnext: [{ address: 'a.example.com', port: 443, users: [{ id: 'u' }] }] }, tag: 'proxy' }],

@@ -1541,6 +1541,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
         val lower = message.lowercase(Locale.ROOT)
         return when {
             lower.contains("ssh_mode_unknown") -> "SSH_MODE_UNKNOWN"
+            lower.contains("configuration refusée") || lower.contains("decode config") ||
+                lower.contains("unknown field") || lower.contains("cannot unmarshal") ||
+                lower.contains("duplicate outbound") || lower.contains("outbound/endpoint tag") ->
+                "CONFIG_INVALID"
             lower.contains("captive_portal") -> "CAPTIVE_PORTAL"
             lower.contains("tunnel_refused") -> "TUNNEL_REFUSED"
             lower.contains("auth fail") || lower.contains("authentication") ||
@@ -1579,7 +1583,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // FIX — Ne pas appeler cleanup() ici : le bloc finally de startSshTunnel /
         // startSingBoxTunnel appelle déjà cleanup(). Un double appel provoquait un
         // stopForeground + stopSelf() en double, laissant l'UI dans un état incohérent.
-        if (::autoReconnect.isInitialized && autoReconnect.isEnabled() && running.get()) {
+        // Une erreur de schéma est permanente pour cette configuration :
+        // relancer automatiquement trois fois ne peut pas la corriger et masque
+        // la cause dans les logs. Les erreurs réseau/auth restent éligibles.
+        if (code != "CONFIG_INVALID" && ::autoReconnect.isInitialized && autoReconnect.isEnabled() && running.get()) {
             autoReconnect.onDisconnected()
         }
         // Pas de cleanup() ici : géré exclusivement dans le bloc finally du tunnel.
@@ -2385,6 +2392,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
     private fun buildRawSingBoxConfig(rawCfg: JSONObject): String {
         val cfg = convertXrayToSingBoxIfNeeded(rawCfg)
+        // `protocol` est un marqueur SXB de dispatch, pas une clé sing-box.
+        // Le backend peut le conserver pour que le bridge choisisse `singbox`,
+        // mais libbox 1.11.15 le refuse avec `unknown field "protocol"`.
+        cfg.remove("protocol")
         val knownTypes = setOf(
             "vless", "vmess", "trojan", "shadowsocks", "wireguard", "hysteria2",
             "tuic", "hysteria", "ssh", "http", "socks", "direct", "dns", "block",

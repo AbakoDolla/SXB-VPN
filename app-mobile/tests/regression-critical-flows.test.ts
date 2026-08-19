@@ -340,6 +340,14 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(nativeService.includes('msg.contains("SSH_MODE_UNKNOWN")'));
   });
 
+  it('sing-box : une configuration invalide est classée CONFIG_INVALID sans boucle auto-reconnect', () => {
+    assert.ok(nativeService.includes('lower.contains("decode config")'));
+    assert.ok(nativeService.includes('lower.contains("cannot unmarshal")'));
+    assert.ok(nativeService.includes('lower.contains("duplicate outbound")'));
+    assert.ok(nativeService.includes('"CONFIG_INVALID"'));
+    assert.ok(nativeService.includes('code != "CONFIG_INVALID"'));
+  });
+
   it('préserve le payload complet et ignore seulement une ellipse de copier-coller', () => {
     assert.ok(nativeService.includes('placeholder_removed=${rawPayload.contains("…") || rawPayload.contains("...")}'));
     assert.ok(nativeService.includes('.replace("…", "")'));

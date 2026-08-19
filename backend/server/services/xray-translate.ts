@@ -182,7 +182,10 @@ function applyProxySettings(
   const ref = rawOutbounds.find((o: any) => o && String(o.tag ?? '') === tag);
   let server = ref?.settings?.servers?.[0]?.address ?? null;
   let port = ref?.settings?.servers?.[0]?.port ?? null;
-  let headers = ref?.settings?.servers?.[0]?.headers ?? undefined;
+  let headers = ref?.settings?.headers
+    ?? ref?.settings?.servers?.[0]?.headers
+    ?? ref?.headers
+    ?? undefined;
 
   if (!server || !port) {
     errors.push(`Xray : proxySettings "${tag}" — outbound amont introuvable ou mal défini (settings.servers[0].address/port requis) — import refusé`);
@@ -407,14 +410,18 @@ export function translateXrayToSingbox(xray: Record<string, any>): TranslationRe
       outbounds.push(out);
       if (!mainOutboundTag) mainOutboundTag = tag;
     } else if (proto === 'http') {
-      // Outbound HTTP amont (peut être référencé par proxySettings)
+      // Outbound HTTP amont (peut être référencé par proxySettings).
+      // Si applyProxySettings l’a déjà matérialisé, ne pas l’ajouter une seconde
+      // fois : sing-box refuse les tags d’outbound dupliqués.
+      if (generatedTags.has(tag)) continue;
       const s = settings.servers?.[0];
       if (s?.address && s?.port) {
         const out: Record<string, any> = {
           type: 'http', tag, server: String(s.address), server_port: Number(s.port),
         };
-        if (s.headers && typeof s.headers === 'object' && Object.keys(s.headers).length > 0) {
-          out.headers = s.headers;
+        const headers = settings.headers ?? s.headers;
+        if (headers && typeof headers === 'object' && Object.keys(headers).length > 0) {
+          out.headers = headers;
         }
         outbounds.push(out);
         generatedTags.add(tag);
