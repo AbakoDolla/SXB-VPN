@@ -46,11 +46,16 @@ export function deriveQuota(
     usedQuota?: number;
     quotaTotalBytes?: number;
     quotaUsedBytes?: number;
+    totalBytes?: number;
+    usedBytes?: number;
+    totalGB?: number;
+    usedGB?: number;
     quotaTotalGb?: number;
     quotaUsedGb?: number;
     quotaRemainingGb?: number;
     expiryDate?: string | null;
     expireAt?: string | null;
+    expiresAt?: string | null;
   },
   sessionStats?: SessionCounters | null,
   isConnected?: boolean
@@ -66,9 +71,17 @@ export function deriveQuota(
       expiryDate = baseQuota.expiryDate ?? null;
     } else {
       const b = baseQuota as any;
-      totalBytes = (b.quotaTotalBytes ?? (b.quotaTotalGb ? b.quotaTotalGb * (1024 ** 3) : 0)) || 0;
-      baseUsedBytes = (b.quotaUsedBytes ?? (b.quotaUsedGb ? b.quotaUsedGb * (1024 ** 3) : 0)) || 0;
-      expiryDate = b.expiryDate || b.expireAt || null;
+      totalBytes = (
+        b.quotaTotalBytes ?? b.totalBytes ??
+        (b.quotaTotalGb != null ? Number(b.quotaTotalGb) * (1024 ** 3) :
+          b.totalGB != null ? Number(b.totalGB) * (1024 ** 3) : 0)
+      ) || 0;
+      baseUsedBytes = (
+        b.quotaUsedBytes ?? b.usedBytes ??
+        (b.quotaUsedGb != null ? Number(b.quotaUsedGb) * (1024 ** 3) :
+          b.usedGB != null ? Number(b.usedGB) * (1024 ** 3) : 0)
+      ) || 0;
+      expiryDate = b.expiryDate || b.expireAt || b.expiresAt || null;
     }
   }
 

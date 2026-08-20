@@ -671,6 +671,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       }
       if (activeId) {
         setActiveConfigId(activeId);
+        await refreshAccountState(activeId);
         await configStore.setActive(activeId);
         const activeStore = await configStore.get(activeId);
         if (activeStore.status === 'ok' && activeStore.value) {
@@ -708,7 +709,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         // Ignorer
       }
     }
-  }, [isAuthenticated, activeConfigId]);
+  }, [isAuthenticated, activeConfigId, refreshAccountState]);
 
   // Restore the selected profile before any network request; a transient keystore error is not "no config".
   useEffect(() => {

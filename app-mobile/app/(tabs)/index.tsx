@@ -233,7 +233,10 @@ export default function HomeScreen() {
     setWalkthroughVisible(false);
   };
 
-  const derivedQuota = deriveQuota(quotaData || (accountState as any), traffic as any, isConnected);
+  const activeQuotaSnapshot = quotaData && (!activeConfigId || quotaData.configId === activeConfigId)
+    ? quotaData
+    : (activeConnection as any)?.quota || null;
+  const derivedQuota = deriveQuota(activeQuotaSnapshot || (accountState as any), traffic as any, isConnected);
 
   useEffect(() => {
     if (Platform.OS === 'android' && Platform.Version >= 33) {

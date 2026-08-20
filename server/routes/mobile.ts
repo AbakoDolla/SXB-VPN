@@ -163,7 +163,18 @@ export async function applyUsageDelta(
 }
 
 // Compute the single source of truth for the mobile "smart button" state.
-function computeAccountState(client: any): {
+function selectMobileSubscription(client: any, requestedId?: string | null): any | null {
+  const subscriptions = Array.isArray(client?.subscriptions) ? client.subscriptions : [];
+  const requested = requestedId?.trim();
+  if (requested) {
+    return subscriptions.find((s: any) => s.id === requested) || null;
+  }
+  return subscriptions
+    .filter((s: any) => s.status === "active")
+    .sort((a: any, b: any) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())[0] || null;
+}
+
+function computeAccountState(client: any, selectedSubscription?: any | null): {
   state: "no_package" | "ready" | "connected" | "exhausted" | "expired" | "suspended";
   quotaTotalGb: number;
   quotaUsedGb: number;
@@ -174,17 +185,19 @@ function computeAccountState(client: any): {
   expireAt: string | null;
   deviceLimit: number;
 } {
-  const quotaTotalBytes = Number(client.quotaTotal || 0);
-  const quotaUsedBytes = Number(client.quotaUsed || 0);
+  const source = selectedSubscription || client;
+  const quotaTotalBytes = Number(source.quotaBytes ?? source.quotaTotal ?? 0);
+  const quotaUsedBytes = Number(source.quotaUsed ?? 0);
   const quotaRemainingBytes = Math.max(quotaTotalBytes - quotaUsedBytes, 0);
 
-  const quotaTotalGb = bytesToGb(client.quotaTotal);
-  const quotaUsedGb = bytesToGb(client.quotaUsed);
+  const quotaTotalGb = quotaTotalBytes / (1024 ** 3);
+  const quotaUsedGb = quotaUsedBytes / (1024 ** 3);
   const quotaRemainingGb = Math.max(quotaTotalGb - quotaUsedGb, 0);
 
-  const expireAt: string | null = client.expireAt ? new Date(client.expireAt).toISOString() : null;
+  const sourceExpireAt = source.expireAt ?? client.expireAt ?? null;
+  const expireAt: string | null = sourceExpireAt ? new Date(sourceExpireAt).toISOString() : null;
   const now = Date.now();
-  const isExpired = !!client.expireAt && new Date(client.expireAt).getTime() < now;
+  const isExpired = !!sourceExpireAt && new Date(sourceExpireAt).getTime() < now;
 
   // F3 — présence d'une souscription ACTIVE avec plan ⇒ état 'ready'/'active' jamais 'no_package'
   const hasActiveSubscription = Array.isArray(client.subscriptions) && client.subscriptions.some(
@@ -192,13 +205,15 @@ function computeAccountState(client: any): {
   );
 
   let state: "no_package" | "ready" | "connected" | "exhausted" | "expired" | "suspended" = "no_package";
-  if (client.status === "suspended") {
+  if (client.status === "suspended" || selectedSubscription?.status === "suspended") {
     state = "suspended";
-  } else if ((!client.quotaTotal || Number(client.quotaTotal) === 0) && !hasActiveSubscription && !client.plan) {
+  } else if (selectedSubscription?.status === "expired") {
+    state = "expired";
+  } else if (!selectedSubscription && (!client.quotaTotal || Number(client.quotaTotal) === 0) && !hasActiveSubscription && !client.plan) {
     state = "no_package";
   } else if (isExpired) {
     state = "expired";
-  } else if ((quotaRemainingGb <= 0 || quotaRemainingBytes <= 0) && (quotaTotalBytes > 0 || Number(client.quotaTotal || 0) > 0)) {
+  } else if ((quotaRemainingGb <= 0 || quotaRemainingBytes <= 0) && quotaTotalBytes > 0) {
     state = "exhausted";
   } else {
     state = "ready"; // vpn_connected is tracked client-side by the native tunnel, "ready" just means eligible
@@ -336,7 +351,9 @@ router.get("/me", async (req: AuthenticatedRequest, res: Response) => {
     if (!client) {
       return res.status(404).json({ error: "errors.mobile.no_account", message: "Aucun compte VPN associé" });
     }
-    return res.json({ accountState: computeAccountState(client), user: client.user ? { id: client.user.id, name: client.user.name } : { id: req.user.userId, name: "Utilisateur" }, accountToken: client.token });
+    const requestedSubscriptionId = typeof req.query.subscriptionId === "string" ? req.query.subscriptionId : null;
+    const selectedSubscription = selectMobileSubscription(client, requestedSubscriptionId);
+    return res.json({ accountState: computeAccountState(client, selectedSubscription), user: client.user ? { id: client.user.id, name: client.user.name } : { id: req.user.userId, name: "Utilisateur" }, accountToken: client.token });
   } catch (err) {
     console.error("Mobile /me error:", err);
     return res.status(500).json({ error: "errors.server", message: "Échec du chargement du compte" });
@@ -420,8 +437,6 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
   try {
     const client: any = await findClientByUserId(req.user!.userId);
     if (!client) return res.status(404).json({ error: "errors.mobile.no_account" });
-    const state = computeAccountState(client);
-
     // Sans identifiant : dernier abonnement actif (compatibilité). Avec
     // subscriptionId : ne jamais substituer un autre profil lors d'une bascule.
     const requestedSubscriptionId = typeof req.query.subscriptionId === 'string'
@@ -441,6 +456,7 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
       return res.status(404).json({ error: 'errors.mobile.connection_not_found', message: 'Connexion VPN introuvable' });
     }
 
+    const state = computeAccountState(client, sub);
     let subscriptionState = sub?.status || state.state;
     if (sub?.status === 'active') {
       if (sub.expireAt && new Date(sub.expireAt).getTime() < Date.now()) subscriptionState = 'expired';
@@ -561,7 +577,9 @@ router.get('/notifications', async (req: AuthenticatedRequest, res: Response) =>
     const client: any = await findClientByUserId(req.user!.userId);
     if (!client) return res.json([]);
 
-    const state = computeAccountState(client);
+    const requestedSubscriptionId = typeof req.query.subscriptionId === "string" ? req.query.subscriptionId : null;
+    const selectedSubscription = selectMobileSubscription(client, requestedSubscriptionId);
+    const state = computeAccountState(client, selectedSubscription);
     const notifications: any[] = [];
     const now = new Date().toISOString();
 
@@ -788,8 +806,11 @@ router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => 
     }
 
     const updatedClient: any = await findClientByUserId(req.user!.userId);
-    const state = computeAccountState(updatedClient || client);
-    const quotaExhausted = state.quotaRemainingGb <= 0 || state.quotaRemainingBytes <= 0;
+    const selectedSub = subscriptionId
+      ? (updatedClient?.subscriptions || []).find((s: any) => s.id === subscriptionId)
+      : (updatedClient?.subscriptions || []).find((s: any) => s.status === "active");
+    const state = computeAccountState(updatedClient || client, selectedSub);
+    const quotaExhausted = state.quotaTotalBytes > 0 && state.quotaRemainingBytes <= 0;
     return res.json({
       ok: true,
       quotaRemainingGb: state.quotaRemainingGb,
@@ -830,7 +851,7 @@ router.get("/connections", async (req: AuthenticatedRequest, res: Response) => {
     const now = Date.now();
 
     const connections = subscriptions.map((sub: any) => {
-      const profile = sub.profile || null;
+      const profile = sub?.profile || null;
 
       // Protocol technique (SSH, VLESS, Trojan…)
       const technicalProtocol = profile?.protocol || "ssh";

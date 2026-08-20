@@ -10,6 +10,7 @@ import {
   utf8Encode,
 } from '../services/aesGcm';
 import { isCompleteOfflineConfig, validateVpnConfig } from '../services/configValidator';
+import { deriveQuota } from '../services/quotaState';
 
 const XRAY_VLESS_WITH_HTTP_UPSTREAM = {
   protocol: 'singbox',
@@ -125,9 +126,16 @@ describe('garde-fous contre les régressions Android', () => {
 
   it('sélectionne la configuration demandée et non le dernier abonnement actif', () => {
     assert.match(mobileRoutes, /requestedSubscriptionId/);
-    assert.match(mobileRoutes, /clientId: client\.id, id: requestedSubscriptionId/);
+    assert.match(mobileRoutes, /selectMobileSubscription\(client, requestedSubscriptionId\)/);
+    assert.match(mobileRoutes, /subscriptionId/);
     assert.match(vpnContext, /subscriptionId=\$\{encodeURIComponent\(selectedId\)\}/);
     assert.match(vpnContext, /setRemoteConnections\(remote\)/);
+  });
+
+  it('ne déclare pas épuisé le quota réel de la souscription active', () => {
+    const quota = deriveQuota({ totalBytes: 512 * 1024 * 1024, usedBytes: 219624, expiresAt: '2099-01-01T00:00:00.000Z' });
+    assert.equal(quota.isExhausted, false);
+    assert.equal(quota.remainingBytes, 512 * 1024 * 1024 - 219624);
   });
 
   it('retire les profils révoqués et provisionne indépendamment le second profil', () => {

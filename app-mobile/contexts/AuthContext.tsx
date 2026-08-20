@@ -38,7 +38,7 @@ interface AuthContextType {
   deviceId: string;
   activateAccount: (token: string) => Promise<void>;
   activatePlan: (code: string) => Promise<void>;
-  refreshAccountState: () => Promise<void>;
+  refreshAccountState: (subscriptionId?: string | null) => Promise<void>;
   logout: () => Promise<void>;
   markOnboardingDone: () => Promise<void>;
 }
@@ -176,9 +176,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [user]);
 
-  const refreshAccountState = useCallback(async () => {
+  const refreshAccountState = useCallback(async (subscriptionId?: string | null) => {
     try {
-      const res = await apiClient.get('/mobile/me');
+      const query = subscriptionId ? `?subscriptionId=${encodeURIComponent(subscriptionId)}` : '';
+      const res = await apiClient.get(`/mobile/me${query}`);
       const { user: u, accountState: as } = res.data;
       setUser(u);
       setAccountState(as);
