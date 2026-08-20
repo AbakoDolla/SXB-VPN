@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useTranslation } from "../contexts/I18nContext";
 import { fetchDashboardStats, fetchTrafficAnalytics, fetchActivityLogs, DashboardStats } from "../api/analytics";
 import { fetchClients } from "../api/clients";
@@ -128,44 +128,122 @@ export default function DashboardView({
   const [devices, setDevices] = useState<Device[]>([]);
   const [activeSessions, setActiveSessions] = useState(0);
   const [servers, setServers] = useState<VPSServer[]>([]);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollInFlightRef = useRef(false);
+  const disposedRef = useRef(false);
 
-  const loadData = useCallback(async () => {
+  type LoadMode = "full" | "live";
+
+  const loadData = useCallback(async (mode: LoadMode = "full") => {
     try {
-      const [s, tData, lLogs, clients, devices, sessions, srvs] = await Promise.all([
-        fetchDashboardStats(),
-        fetchTrafficAnalytics(),
-        fetchActivityLogs(),
-        fetchClients().catch(() => []),
-        fetchDevices().catch(() => []),
-        fetchSessions().catch(() => []),
-        fetchServers().catch(() => []),
-      ]);
-      setStats(s);
-      setTrafficData(tData);
-      setLogs(lLogs);
-      setTotalClients(clients.length);
-      setTotalDevices(devices.length);
-      setDevices(devices);
-      setActiveSessions(((sessions || []) as any[]).filter(s => s.status === 'active').length);
-      setServers(srvs);
+      if (mode === "live") {
+        // Polling léger : uniquement les données volatiles nécessaires aux
+        // cartes quota, appareils et sessions. Les clients, logs et serveurs
+        // restent sur le chargement complet/Actualiser pour ne pas surcharger l'API.
+        const [s, tData, devices, sessions] = await Promise.all([
+          fetchDashboardStats(),
+          fetchTrafficAnalytics(),
+          fetchDevices(),
+          fetchSessions(),
+        ]);
+        if (disposedRef.current) return;
+        setStats(s);
+        setTrafficData(tData);
+        setTotalDevices(devices.length);
+        setDevices(devices);
+        setActiveSessions(((sessions || []) as any[]).filter(session => session.status === 'active').length);
+      } else {
+        const [s, tData, lLogs, clients, devices, sessions, srvs] = await Promise.all([
+          fetchDashboardStats(),
+          fetchTrafficAnalytics(),
+          fetchActivityLogs(),
+          fetchClients().catch(() => []),
+          fetchDevices().catch(() => []),
+          fetchSessions().catch(() => []),
+          fetchServers().catch(() => []),
+        ]);
+        if (disposedRef.current) return;
+        setStats(s);
+        setTrafficData(tData);
+        setLogs(lLogs);
+        setTotalClients(clients.length);
+        setTotalDevices(devices.length);
+        setDevices(devices);
+        setActiveSessions(((sessions || []) as any[]).filter(session => session.status === 'active').length);
+        setServers(srvs);
+      }
+      setLastUpdatedAt(new Date());
     } catch (error) {
+      // Un échec d’un cycle ne doit pas effacer les dernières données valides.
       console.error("Dashboard load error:", error);
     }
   }, []);
 
   const initialLoad = async () => {
     setLoading(true);
-    await loadData();
+    await loadData("full");
     setLoading(false);
   };
 
   const refresh = async () => {
     setRefreshing(true);
-    await loadData();
+    await loadData("full");
     setRefreshing(false);
   };
 
-  useEffect(() => { initialLoad(); }, []);
+  useEffect(() => {
+    disposedRef.current = false;
+    void initialLoad();
+    return () => { disposedRef.current = true; };
+  }, []);
+
+  // Polling sécurisé : 30 secondes, seulement quand l’onglet est visible,
+  // sans chevauchement de requêtes et avec arrêt propre au démontage.
+  useEffect(() => {
+    const POLL_INTERVAL_MS = 30_000;
+
+    const clearPollTimer = () => {
+      if (pollTimerRef.current !== null) {
+        clearTimeout(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+    };
+
+    const runPoll = async () => {
+      if (disposedRef.current || document.hidden || pollInFlightRef.current) return;
+      pollInFlightRef.current = true;
+      try {
+        await loadData("live");
+      } finally {
+        pollInFlightRef.current = false;
+      }
+    };
+
+    const schedulePoll = () => {
+      clearPollTimer();
+      if (disposedRef.current || document.hidden) return;
+      pollTimerRef.current = setTimeout(async () => {
+        await runPoll();
+        schedulePoll();
+      }, POLL_INTERVAL_MS);
+    };
+
+    const handleVisibilityChange = () => {
+      clearPollTimer();
+      if (!document.hidden) {
+        void runPoll();
+        schedulePoll();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    schedulePoll();
+    return () => {
+      clearPollTimer();
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [loadData]);
 
   // Compute traffic totals from data
   const totalDownload = trafficData.reduce((acc, d) => acc + (d.download || 0), 0);
@@ -211,7 +289,10 @@ export default function DashboardView({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold tracking-tight text-white">Dashboard</h1>
-          <p className="text-xs text-gray-500 mt-0.5">Vue d'ensemble du réseau SXB VPN</p>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Vue d'ensemble du réseau SXB VPN
+            {lastUpdatedAt ? ` · Mise à jour ${lastUpdatedAt.toLocaleTimeString()}` : ''}
+          </p>
         </div>
         <button
           onClick={refresh}

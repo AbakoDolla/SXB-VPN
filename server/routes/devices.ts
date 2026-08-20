@@ -3,6 +3,7 @@ import { z } from "zod";
 import crypto from "crypto";
 import { prisma, logDbActivity } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
+import { sanitizeDevice, selectDeviceSubscription } from "../services/device-quota";
 
 const router = Router();
 
@@ -12,55 +13,54 @@ function makeUserToken(): string {
   return `SXB-USER-${part()}-${part()}-${part()}`;
 }
 
-function sanitize(c: any, usage?: { download?: bigint | number; upload?: bigint | number; lastSeenAt?: Date | null }) {
-  const quotaTotal = Number(c.quotaTotal ?? 0);
-  const quotaUsed = Number(c.quotaUsed ?? 0);
-  const trafficDownload = Number(usage?.download ?? 0);
-  const trafficUpload = Number(usage?.upload ?? 0);
-  return {
-    id: c.id,
-    deviceId: c.deviceId,
-    token: c.token,
-    status: c.status,
-    expireAt: c.expireAt,
-    activatedAt: c.activatedAt,
-    createdAt: c.createdAt,
-    label: c.user?.name || null,
-    quotaTotal: quotaTotal.toString(),
-    quotaUsed: quotaUsed.toString(),
-    quotaRemaining: Math.max(quotaTotal - quotaUsed, 0).toString(),
-    trafficDownload: trafficDownload.toString(),
-    trafficUpload: trafficUpload.toString(),
-    trafficTotal: (trafficDownload + trafficUpload).toString(),
-    lastTrafficAt: usage?.lastSeenAt ? new Date(usage.lastSeenAt).toISOString() : null,
-  };
-}
 
 // GET /api/devices — list all VPN clients with device info
 router.get("/", requireAuth, requirePermission("clients.view"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     if (!prisma) return res.status(503).json({ error: "Database unavailable" });
     const clients = await prisma.vpnClient.findMany({
-      include: { user: true },
+      include: {
+        user: true,
+        subscriptions: {
+          where: { status: { not: "revoked" } },
+          include: { devices: true },
+          orderBy: [{ lastProvisionAt: "desc" }, { createdAt: "desc" }],
+        },
+      },
       orderBy: { createdAt: "desc" },
     });
     const ids = clients.map((client) => client.id);
     const usageRows = ids.length
       ? await (prisma as any).trafficUsage.findMany({
           where: { clientId: { in: ids } },
-          select: { clientId: true, download: true, upload: true, timestamp: true },
+          select: { clientId: true, accountId: true, deviceId: true, download: true, upload: true, timestamp: true },
           orderBy: { timestamp: "desc" },
         })
       : [];
     const byClient = new Map<string, { download: bigint; upload: bigint; lastSeenAt: Date | null }>();
+    const bySubscriptionDevice = new Map<string, { download: bigint; upload: bigint; lastSeenAt: Date | null }>();
     for (const row of usageRows as any[]) {
       const current = byClient.get(row.clientId) || { download: 0n, upload: 0n, lastSeenAt: null };
       current.download += BigInt(row.download || 0);
       current.upload += BigInt(row.upload || 0);
       if (!current.lastSeenAt && row.timestamp) current.lastSeenAt = new Date(row.timestamp);
       byClient.set(row.clientId, current);
+
+      if (row.accountId) {
+        const key = `${row.clientId}:${row.accountId}:${row.deviceId || ""}`;
+        const scoped = bySubscriptionDevice.get(key) || { download: 0n, upload: 0n, lastSeenAt: null };
+        scoped.download += BigInt(row.download || 0);
+        scoped.upload += BigInt(row.upload || 0);
+        if (!scoped.lastSeenAt && row.timestamp) scoped.lastSeenAt = new Date(row.timestamp);
+        bySubscriptionDevice.set(key, scoped);
+      }
     }
-    return res.json({ devices: clients.map((client) => sanitize(client, byClient.get(client.id))) });
+    return res.json({ devices: clients.map((client) => {
+      const subscription = selectDeviceSubscription(client);
+      const exactKey = subscription ? `${client.id}:${subscription.id}:${client.deviceId || ""}` : "";
+      const scopedUsage = exactKey ? bySubscriptionDevice.get(exactKey) : undefined;
+      return sanitizeDevice(client, scopedUsage || byClient.get(client.id), subscription);
+    }) });
   } catch (err) {
     console.error("List devices error:", err);
     return res.status(500).json({ error: "Server error" });
@@ -88,7 +88,7 @@ router.post("/generate-token", requireAuth, requirePermission("clients.manage"),
       return res.status(409).json({
         error: "DEVICE_ALREADY_REGISTERED",
         message: "Cet appareil a déjà un token actif",
-        device: sanitize(existing),
+        device: sanitizeDevice(existing),
       });
     }
 
@@ -145,7 +145,7 @@ router.post("/generate-token", requireAuth, requirePermission("clients.manage"),
       req.ip
     );
 
-    return res.status(201).json(sanitize(client));
+    return res.status(201).json(sanitizeDevice(client));
   } catch (err) {
     if (err instanceof z.ZodError) return res.status(400).json({ error: "Validation", details: err.issues });
     console.error("Generate device token error:", err);
@@ -163,7 +163,7 @@ router.post("/:id/revoke", requireAuth, requirePermission("clients.manage"), asy
       include: { user: true },
     });
     await logDbActivity(req.user?.userId || null, `Token révoqué: ${client.token}`, "warning", req.ip);
-    return res.json(sanitize(client));
+    return res.json(sanitizeDevice(client));
   } catch (err) {
     console.error("Revoke device error:", err);
     return res.status(500).json({ error: "Server error" });
@@ -188,7 +188,7 @@ router.post("/:id/renew", requireAuth, requirePermission("clients.manage"), asyn
       include: { user: true },
     });
     await logDbActivity(req.user?.userId || null, `Token renouvelé: ${client.token} → expire ${newExpiry.toLocaleDateString()}`, "success", req.ip);
-    return res.json(sanitize(client));
+    return res.json(sanitizeDevice(client));
   } catch (err) {
     console.error("Renew device error:", err);
     return res.status(500).json({ error: "Server error" });
