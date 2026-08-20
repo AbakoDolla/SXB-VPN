@@ -136,6 +136,12 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(vpnContext, /pendingAutoConnectRef/);
   });
 
+  it('utilise le detour réel pour le DNS de secours des profils importés', () => {
+    assert.match(nativeService, /defaultDnsObject\(detourTag: String = "proxy"\)/);
+    assert.match(nativeService, /defaultDnsObject\(mainTag \?: "proxy"\)/);
+    assert.match(nativeService, /https:\/\/1\.1\.1\.1\/dns-query/);
+  });
+
   it('convertit les règles et DNS Xray incompatibles avant le démarrage sing-box', () => {
     assert.match(nativeService, /outboundTag.*outbound/);
     assert.match(nativeService, /ip_cidr/);

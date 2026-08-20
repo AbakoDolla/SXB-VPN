@@ -2019,9 +2019,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
     }
 
     /** DNS par défaut de l'app (utilisé quand le JSON stocké n'en fournit pas). */
-    private fun defaultDnsObject(): JSONObject = JSONObject().apply {
+    private fun defaultDnsObject(detourTag: String = "proxy"): JSONObject = JSONObject().apply {
         put("servers", JSONArray()
-            .put(JSONObject().put("tag", "dns-remote").put("address", "https://1.1.1.1/dns-query").put("strategy", "prefer_ipv4").put("detour", "proxy"))
+            .put(JSONObject().put("tag", "dns-remote").put("address", "https://1.1.1.1/dns-query").put("strategy", "prefer_ipv4").put("detour", detourTag))
             .put(JSONObject().put("tag", "dns-local").put("address", "local").put("detour", "direct"))
             .put(JSONObject().put("tag", "dns-fake").put("address", "fakeip").put("detour", "direct"))
         )
@@ -2526,7 +2526,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
         }
 
         // DNS : celui du JSON stocké sinon celui de l'app
-        val dnsObj = cfg.optJSONObject("dns") ?: defaultDnsObject()
+        // Les traductions Xray peuvent supprimer les DNS `tcp+local://` non
+        // représentables dans sing-box. Le DNS DoH de secours doit alors sortir
+        // par l'outbound réellement importé (VLESS/VMess/Trojan), pas par un tag
+        // historique fixe `proxy` qui n'existe souvent pas.
+        val configuredDns = cfg.optJSONObject("dns")
+        val hasConfiguredDnsServers = configuredDns?.optJSONArray("servers")?.let { it.length() > 0 } == true
+        val dnsObj = if (hasConfiguredDnsServers) configuredDns!! else defaultDnsObject(mainTag ?: "proxy")
 
         // Route : exclusion anti-boucle + DNS hijack + ip_is_private (F3) puis règles stockées
         val routeObj = cfg.optJSONObject("route")
