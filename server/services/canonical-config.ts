@@ -16,6 +16,7 @@
  * AUCUN appel réseau ici — le préflight vit dans transport-probe.ts.
  */
 import crypto from 'crypto';
+import { translateXrayToSingbox, isSingboxNativeJson, hasXrayMarkers } from './xray-translate';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -396,7 +397,7 @@ export function parseImportedConfig(raw: string): ParseResult {
     if (cfg) parsed = { cfg };
     sourceFormat = 'wireguard-conf';
   } else {
-    // JSON : singbox natif, canonique SXB, ou heuristiques par contenu
+    // JSON : détection stricte sing-box natif / Xray / canonique SXB
     let obj: any;
     try { obj = JSON.parse(text); }
     catch { errors.push('format non reconnu : ni URI (vless://, vmess://, trojan://, ss://, tuic://, hy2://) ni JSON ni WireGuard conf'); return { ok: false, errors, warnings }; }
@@ -404,21 +405,27 @@ export function parseImportedConfig(raw: string): ParseResult {
       errors.push('le JSON importé doit être un objet');
       return { ok: false, errors, warnings };
     }
-    if (Array.isArray(obj.outbounds)) {
-      // Xray/v2ray et sing-box ont tous deux « outbounds », mais leur schéma
-      // diffère : protocol/settings/streamSettings doit rester intact pour la
-      // conversion native Android, au lieu d’être interprété comme du sing-box.
-      const isXray = obj.outbounds.some((o: any) => o && (
-        typeof o.protocol === 'string' || o.settings?.vnext !== undefined || o.streamSettings !== undefined
-      ));
+    // sing-box natif : outbounds[] d'objets ayant un champ type (string)
+    // ET absence de markers Xray (PARTIE 1 — détection stricte).
+    if (isSingboxNativeJson(obj)) {
       parsed = { cfg: { ...obj, protocol: 'singbox' } };
-      sourceFormat = isXray ? 'xray-json' : 'singbox-json';
+      sourceFormat = 'singbox-json';
+    } else if (hasXrayMarkers(obj)) {
+      // Xray/v2ray : traduction immédiate vers sing-box (PARTIE 2).
+      const t = translateXrayToSingbox(obj);
+      if (!t.ok) {
+        errors.push(...t.errors);
+        return { ok: false, errors, warnings };
+      }
+      warnings.push(...t.warnings);
+      parsed = { cfg: { ...t.singboxJson!, protocol: 'singbox' } };
+      sourceFormat = 'xray-json';
     } else if (obj.protocol) {
       const proto = String(obj.protocol).toLowerCase();
       parsed = { cfg: { ...obj, protocol: proto } };
       sourceFormat = proto === 'ssh' ? 'ssh-json' : proto === 'ssh+payload' ? 'ssh+payload-json' : 'sxb-canonical';
     } else {
-      errors.push('JSON SXB : champ "protocol" requis (ssh, ssh+payload, vless, vmess, trojan, shadowsocks, wireguard, hysteria2, tuic) ou format sing-box avec "outbounds"');
+      errors.push('JSON non reconnu : ni sing-box ni Xray — champ "protocol" requis (ssh, ssh+payload, vless, vmess, trojan, shadowsocks, wireguard, hysteria2, tuic) pour le format canonique SXB');
       return { ok: false, errors, warnings };
     }
   }
@@ -445,8 +452,38 @@ export function parseImportedConfig(raw: string): ParseResult {
   };
 }
 
-// ── Vue moteur : config technique canonique TELLE QUELLE (aucune altération) ─
-// Les métadonnées commerciales sont ajoutées SÉPARÉMENT par provision.ts.
+// ── Vue moteur : config technique prête pour le moteur mobile ────────────────
+// Les anciens profils peuvent avoir été stockés avant la traduction Xray. Leur
+// hash DB reste volontairement vérifié sur le contenu historique ; seule la
+// copie destinée à libbox est réparée à la volée.
+function normalizeSingboxTransportCompatibility(cfg: Record<string, any>): Record<string, any> {
+  const outbounds = Array.isArray(cfg.outbounds) ? cfg.outbounds : [];
+  for (const outbound of outbounds) {
+    if (!outbound || typeof outbound !== 'object') continue;
+    const transport = outbound.transport;
+    if (!transport || typeof transport !== 'object') continue;
+    if (String(transport.type ?? '').toLowerCase() !== 'ws' || transport.host === undefined) continue;
+    const headers = transport.headers && typeof transport.headers === 'object'
+      ? transport.headers
+      : {};
+    if (headers.Host === undefined && headers.host === undefined) {
+      const legacyHost = Array.isArray(transport.host) ? transport.host[0] : transport.host;
+      if (typeof legacyHost === 'string' && legacyHost.trim()) headers.Host = legacyHost;
+    }
+    transport.headers = headers;
+    delete transport.host;
+  }
+  return cfg;
+}
+
 export function engineConfigFromCanonical(canonical: Record<string, any>): Record<string, any> {
-  return normalizeCanonical(JSON.parse(JSON.stringify(canonical)));
+  const copy = JSON.parse(JSON.stringify(canonical)) as Record<string, any>;
+  if (hasXrayMarkers(copy)) {
+    const translated = translateXrayToSingbox(copy);
+    if (!translated.ok || !translated.singboxJson) {
+      throw new Error(`Configuration Xray historique non traduisible : ${translated.errors.join(' | ')}`);
+    }
+    return normalizeCanonical(normalizeSingboxTransportCompatibility({ ...translated.singboxJson, protocol: 'singbox' }));
+  }
+  return normalizeCanonical(normalizeSingboxTransportCompatibility(copy));
 }

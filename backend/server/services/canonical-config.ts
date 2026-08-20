@@ -452,8 +452,38 @@ export function parseImportedConfig(raw: string): ParseResult {
   };
 }
 
-// ── Vue moteur : config technique canonique TELLE QUELLE (aucune altération) ─
-// Les métadonnées commerciales sont ajoutées SÉPARÉMENT par provision.ts.
+// ── Vue moteur : config technique prête pour le moteur mobile ────────────────
+// Les anciens profils peuvent avoir été stockés avant la traduction Xray. Leur
+// hash DB reste volontairement vérifié sur le contenu historique ; seule la
+// copie destinée à libbox est réparée à la volée.
+function normalizeSingboxTransportCompatibility(cfg: Record<string, any>): Record<string, any> {
+  const outbounds = Array.isArray(cfg.outbounds) ? cfg.outbounds : [];
+  for (const outbound of outbounds) {
+    if (!outbound || typeof outbound !== 'object') continue;
+    const transport = outbound.transport;
+    if (!transport || typeof transport !== 'object') continue;
+    if (String(transport.type ?? '').toLowerCase() !== 'ws' || transport.host === undefined) continue;
+    const headers = transport.headers && typeof transport.headers === 'object'
+      ? transport.headers
+      : {};
+    if (headers.Host === undefined && headers.host === undefined) {
+      const legacyHost = Array.isArray(transport.host) ? transport.host[0] : transport.host;
+      if (typeof legacyHost === 'string' && legacyHost.trim()) headers.Host = legacyHost;
+    }
+    transport.headers = headers;
+    delete transport.host;
+  }
+  return cfg;
+}
+
 export function engineConfigFromCanonical(canonical: Record<string, any>): Record<string, any> {
-  return normalizeCanonical(JSON.parse(JSON.stringify(canonical)));
+  const copy = JSON.parse(JSON.stringify(canonical)) as Record<string, any>;
+  if (hasXrayMarkers(copy)) {
+    const translated = translateXrayToSingbox(copy);
+    if (!translated.ok || !translated.singboxJson) {
+      throw new Error(`Configuration Xray historique non traduisible : ${translated.errors.join(' | ')}`);
+    }
+    return normalizeCanonical(normalizeSingboxTransportCompatibility({ ...translated.singboxJson, protocol: 'singbox' }));
+  }
+  return normalizeCanonical(normalizeSingboxTransportCompatibility(copy));
 }

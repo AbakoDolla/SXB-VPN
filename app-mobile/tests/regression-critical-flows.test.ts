@@ -114,10 +114,13 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(mobileRoutes, /router\.post\('\/support\/tickets'/);
   });
 
-  it('préserve les JSON Xray complets au lieu de les confondre avec sing-box natif', () => {
-    assert.match(canonicalConfig, /sourceFormat = isXray \? 'xray-json' : 'singbox-json'/);
-    assert.match(canonicalConfig, /o\.settings\?\.vnext !== undefined/);
-    assert.match(canonicalConfig, /o\.streamSettings !== undefined/);
+  it('traduit les JSON Xray et répare les profils historiques avant libbox', () => {
+    assert.match(canonicalConfig, /sourceFormat = 'xray-json'/);
+    assert.match(canonicalConfig, /translateXrayToSingbox\(obj\)/);
+    assert.match(canonicalConfig, /engineConfigFromCanonical/);
+    assert.match(canonicalConfig, /normalizeSingboxTransportCompatibility/);
+    assert.match(canonicalConfig, /hasXrayMarkers\(obj\)/);
+    assert.match(canonicalConfig, /isSingboxNativeJson\(obj\)/);
   });
 
   it('sélectionne la configuration demandée et non le dernier abonnement actif', () => {

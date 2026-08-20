@@ -4,7 +4,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseImportedConfig } from '../services/canonical-config';
+import { parseImportedConfig, engineConfigFromCanonical } from '../services/canonical-config';
 
 // ── T-X1 : la config réelle du rapport → xray-json → traduit en singbox ──────
 const TX1_XRAY = {
@@ -123,6 +123,49 @@ test('T-X4 (non-régression) : conf WireGuard inchangée', () => {
   assert.equal(r.ok, true, r.errors.join(' | '));
   assert.equal(r.sourceFormat, 'wireguard-conf');
   assert.equal(r.canonical!.protocol, 'wireguard');
+});
+
+test('T-X4 : ancien canonique Xray est traduit avant envoi au moteur', () => {
+  const legacy = {
+    protocol: 'singbox',
+    outbounds: [
+      {
+        tag: 'VLESS',
+        protocol: 'vless',
+        settings: { vnext: [{ address: 'megabdwap.tk', port: 443, users: [{ id: 'uuid', encryption: 'none' }] }] },
+        streamSettings: {
+          network: 'ws',
+          security: 'tls',
+          tlsSettings: { serverName: 'megabdwap.tk', allowInsecure: true },
+          wsSettings: { path: '/', headers: { Host: 'megabdwap.tk' } },
+        },
+      },
+      { tag: 'direct', protocol: 'freedom' },
+    ],
+  };
+  const engine = engineConfigFromCanonical(legacy);
+  assert.equal(engine.protocol, 'singbox');
+  assert.equal(engine.outbounds[0].type, 'vless');
+  assert.equal(engine.outbounds[0].server, 'megabdwap.tk');
+  assert.equal(engine.outbounds[0].transport.type, 'ws');
+  assert.equal(engine.outbounds[0].transport.headers.Host, 'megabdwap.tk');
+  assert.equal('streamSettings' in engine.outbounds[0], false);
+  assert.equal('protocol' in engine.outbounds[0], false);
+});
+
+test('T-X4 : host legacy du transport WebSocket est converti vers headers.Host', () => {
+  const nativeLegacy = {
+    protocol: 'singbox',
+    outbounds: [
+      {
+        type: 'vless', tag: 'proxy', server: 's.example.com', server_port: 443, uuid: 'u',
+        transport: { type: 'ws', path: '/', host: 'cdn.example.com' },
+      },
+    ],
+  };
+  const engine = engineConfigFromCanonical(nativeLegacy);
+  assert.equal(engine.outbounds[0].transport.headers.Host, 'cdn.example.com');
+  assert.equal('host' in engine.outbounds[0].transport, false);
 });
 
 test('T-X4 (non-régression) : canonique SXB avec protocol singbox + outbounds traduits', () => {
