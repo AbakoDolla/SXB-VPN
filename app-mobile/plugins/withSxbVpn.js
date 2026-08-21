@@ -18,6 +18,8 @@ const { execFileSync } = require('child_process');
 function withVpnManifest(config) {
   return withAndroidManifest(config, (mod) => {
     const manifest = mod.modResults.manifest;
+    manifest.$ = manifest.$ || {};
+    manifest.$['xmlns:tools'] = manifest.$['xmlns:tools'] || 'http://schemas.android.com/tools';
 
     // Permissions
     if (!manifest['uses-permission']) manifest['uses-permission'] = [];
@@ -41,7 +43,6 @@ function withVpnManifest(config) {
       // mourait avant d'établir le tunnel (aucune clé VPN dans la barre d'état).
       // `specialUse` est le type correct pour une app VPN tierce.
       'android.permission.FOREGROUND_SERVICE_SPECIAL_USE',
-      'android.permission.RECEIVE_BOOT_COMPLETED',
       'android.permission.POST_NOTIFICATIONS',
       'android.permission.ACCESS_NETWORK_STATE',
       'android.permission.ACCESS_WIFI_STATE',
@@ -52,6 +53,19 @@ function withVpnManifest(config) {
         perms.push({ $: { 'android:name': perm } });
       }
     });
+
+    // Ces permissions proviennent de manifests de debug/Expo et ne sont pas
+    // utilisées par SXB VPN. Les retirer explicitement réduit la surface
+    // déclarée et évite qu’elles reviennent lors d’un prebuild propre.
+    for (const name of [
+      'android.permission.CAMERA',
+      'android.permission.RECEIVE_BOOT_COMPLETED',
+      'android.permission.SYSTEM_ALERT_WINDOW',
+    ]) {
+      const existing = perms.find(p => p.$?.['android:name'] === name);
+      if (existing) existing.$['tools:node'] = 'remove';
+      else perms.push({ $: { 'android:name': name, 'tools:node': 'remove' } });
+    }
 
     // BIND_VPN_SERVICE avec android:required=false (non-bloquant si absent)
     const bindVpnPerm = 'android.permission.BIND_VPN_SERVICE';
@@ -87,16 +101,6 @@ function withVpnManifest(config) {
       // Service déjà déclaré (prebuild incrémental) : corriger le type hérité.
       const svc = app.service.find(s => s.$?.['android:name'] === vpnSvcName);
       svc.$['android:foregroundServiceType'] = 'specialUse';
-    }
-
-    // Déclarer BootReceiver
-    if (!app.receiver) app.receiver = [];
-    const bootReceiverName = 'com.sxbvpn.vpnmodule.BootReceiver';
-    if (!app.receiver.find(r => r.$?.['android:name'] === bootReceiverName)) {
-      app.receiver.push({
-        $: { 'android:name': bootReceiverName, 'android:enabled': 'true', 'android:exported': 'false' },
-        'intent-filter': [{ action: [{ $: { 'android:name': 'android.intent.action.BOOT_COMPLETED' } }] }],
-      });
     }
 
     return mod;

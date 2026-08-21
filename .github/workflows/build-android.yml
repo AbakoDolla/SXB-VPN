@@ -39,6 +39,12 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Setup Go 1.23
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache: false
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -270,6 +276,30 @@ jobs:
           echo "Y29uc3QgZnMgPSByZXF1aXJlKCJmcyIpOwpjb25zdCBwID0gcHJvY2Vzcy5hcmd2WzJdOwpjb25zdCBzdG9yZVBhc3MgPSBwcm9jZXNzLmVudi5TVE9SRV9QQVNTIHx8ICIiOwpjb25zdCBrZXlBbCAgICA9IHByb2Nlc3MuZW52LktFWV9BTCAgICB8fCAiIjsKY29uc3Qga2V5UHcgICAgPSBwcm9jZXNzLmVudi5LRVlfUFcgICAgfHwgIiI7CmxldCBjID0gZnMucmVhZEZpbGVTeW5jKHAsICJ1dGY4Iik7CmlmICghYy5pbmNsdWRlcygia2V5c3RvcmUvcmVsZWFzZS5rZXlzdG9yZSIpKSB7CiAgY29uc3QgYmxvY2sgPSAicmVsZWFzZSB7XG4iICsKICAgICIgICAgICAgICAgICBzdG9yZUZpbGUgZmlsZShcImtleXN0b3JlL3JlbGVhc2Uua2V5c3RvcmVcIilcbiIgKwogICAgIiAgICAgICAgICAgIHN0b3JlUGFzc3dvcmQgXCIiICsgc3RvcmVQYXNzICsgIlwiXG4iICsKICAgICIgICAgICAgICAgICBrZXlBbGlhcyBcIiIgKyBrZXlBbCArICJcIlxuIiArCiAgICAiICAgICAgICAgICAga2V5UGFzc3dvcmQgXCIiICsga2V5UHcgKyAiXCJcbiIgKwogICAgIiAgICAgICAgfSI7CiAgaWYgKGMuaW5jbHVkZXMoInNpZ25pbmdDb25maWdzIHsiKSkgewogICAgYyA9IGMucmVwbGFjZSgic2lnbmluZ0NvbmZpZ3MgeyIsICJzaWduaW5nQ29uZmlncyB7XG4gICAgICAgICIgKyBibG9jayk7CiAgICBjb25zb2xlLmxvZygiW3NpZ25pbmddIHJlbGVhc2UgaW5qZWN0ZSBkYW5zIHNpZ25pbmdDb25maWdzIGV4aXN0YW50Iik7CiAgfSBlbHNlIHsKICAgIGMgPSBjLnJlcGxhY2UoImFuZHJvaWQgeyIsICJhbmRyb2lkIHtcbiAgICBzaWduaW5nQ29uZmlncyB7XG4gICAgICAgICIgKyBibG9jayArICJcbiAgICB9Iik7CiAgICBjb25zb2xlLmxvZygiW3NpZ25pbmddIG5vdXZlYXUgYmxvYyBzaWduaW5nQ29uZmlncy5yZWxlYXNlIGNyZWUiKTsKICB9Cn0KaWYgKCFjLmluY2x1ZGVzKCJzaWduaW5nQ29uZmlnIHNpZ25pbmdDb25maWdzLnJlbGVhc2UiKSkgewogIGMgPSBjLnJlcGxhY2UoLyhidWlsZFR5cGVzW1xzXFNdKj9yZWxlYXNlXHMqXHspLywgIiQxXG4gICAgICAgICAgICBzaWduaW5nQ29uZmlnIHNpZ25pbmdDb25maWdzLnJlbGVhc2UiKTsKICBjb25zb2xlLmxvZygiW3NpZ25pbmddIHNpZ25pbmdDb25maWcgcmVmZXJlbmNlIGFqb3V0ZWUgZGFucyBidWlsZFR5cGVzLnJlbGVhc2UiKTsKfQpmcy53cml0ZUZpbGVTeW5jKHAsIGMpOwpjb25zb2xlLmxvZygiT0sgU2lnbmF0dXJlIGNvbmZpZ3VyZWUgZGFucyBidWlsZC5ncmFkbGUiKTsK" | base64 -d > /tmp/signing_inject.js
           node /tmp/signing_inject.js "$BUILD_GRADLE"
 
+      # ── Compatibilité signature Android ───────────────────────────────────────
+      # Android 7+ accepte v2, mais certains installateurs/OEM attendent encore
+      # la signature JAR v1. La signature v1+v2 élargit la compatibilité sans
+      # changer le certificat de release persistant.
+      - name: Activer les signatures APK v1 et v2
+        run: |
+          node - << 'NODEJS_EOF'
+          const fs = require('fs');
+          const p = 'android/app/build.gradle';
+          let content = fs.readFileSync(p, 'utf8');
+          if (!content.includes('enableV1Signing true')) {
+            const signingStart = content.indexOf('signingConfigs');
+            const keyPassword = content.indexOf('keyPassword', signingStart);
+            if (signingStart < 0 || keyPassword < 0) throw new Error('Bloc signingConfigs.release introuvable');
+            const lineEnd = content.indexOf('\n', keyPassword);
+            const injection = '        enableV1Signing true\n        enableV2Signing true\n';
+            content = content.slice(0, lineEnd + 1) + injection + content.slice(lineEnd + 1);
+            fs.writeFileSync(p, content);
+            console.log('[signing] enableV1Signing=true, enableV2Signing=true');
+          } else {
+            console.log('[signing] signatures v1/v2 déjà activées');
+          }
+          NODEJS_EOF
+
       # ── Versionnage Android monotone ───────────────────────────────────────────
       # GitHub run_number est strictement croissant pour ce workflow et doit dépasser
       # le versionCode existant afin de permettre une installation par-dessus l’APK.
@@ -473,16 +503,31 @@ jobs:
             exit 1
           fi
           echo "[APK] ABI natives présentes : $ABI_LIST ; libbox.so présent"
+          ZIPALIGN=$(find "${ANDROID_HOME}/build-tools" -type f -name zipalign 2>/dev/null | sort -V | tail -1 || true)
+          if [ -z "$ZIPALIGN" ]; then
+            echo "::error::zipalign introuvable — validation de l’alignement impossible"
+            exit 1
+          fi
+          "$ZIPALIGN" -c -v 4 "$APK" >/tmp/apk-zipalign.log
           APKSIGNER=$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner 2>/dev/null | sort -V | tail -1 || true)
           if [ -z "$APKSIGNER" ]; then
-            APKSIGNER=$(find /usr/local/lib/android -type f -name apksigner 2>/dev/null | sort -V | tail -1 || true)
+            echo "::error::apksigner introuvable — validation cryptographique obligatoire"
+            exit 1
           fi
-          if [ -z "$APKSIGNER" ]; then
-            echo "::warning::apksigner introuvable — validation cryptographique ignorée, archive et bibliothèques déjà vérifiées"
-          else
-            "$APKSIGNER" verify --verbose "$APK"
+          VERIFY_OUTPUT=$("$APKSIGNER" verify --verbose "$APK" 2>&1)
+          printf '%s\n' "$VERIFY_OUTPUT"
+          printf '%s\n' "$VERIFY_OUTPUT" | grep -qE 'Verified using v1 scheme \(JAR signing\): true'
+          printf '%s\n' "$VERIFY_OUTPUT" | grep -qE 'Verified using v2 scheme \(APK Signature Scheme v2\): true'
+          AAPT=$(find "${ANDROID_HOME}/build-tools" -type f -name aapt 2>/dev/null | sort -V | tail -1 || true)
+          if [ -z "$AAPT" ]; then
+            echo "::error::aapt introuvable — validation du manifeste impossible"
+            exit 1
           fi
-          echo "✅ APK valide et contenant au moins une ABI : $(stat -c%s "$APK") octets"
+          BADGING=$("$AAPT" dump badging "$APK")
+          printf '%s\n' "$BADGING" | grep -q "package: name='com.sxbvpn.mobile'"
+          printf '%s\n' "$BADGING" | grep -q "sdkVersion:'24'"
+          printf '%s\n' "$BADGING" | grep -q "targetSdkVersion:'36'"
+          echo "✅ APK alignée, signée v1/v2, manifeste et ABI validés : $(stat -c%s "$APK") octets"
           sha256sum "$APK"
 
       # ── Upload artifact CI ────────────────────────────────────────────────────
