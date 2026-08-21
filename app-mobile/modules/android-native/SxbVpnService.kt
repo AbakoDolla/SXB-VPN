@@ -2321,8 +2321,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 val candidate = newOutbounds.optJSONObject(j) ?: continue
                 val candidateType = candidate.optString("type", "")
                 if (candidateType !in setOf("direct", "dns", "block")) {
-                    candidate.optString("tag", "").takeIf { it.isNotBlank() }?.let {
-                        dnsDetour = it
+                    val candidateTag = candidate.optString("tag", "")
+                    if (candidateTag.isNotBlank()) {
+                        dnsDetour = candidateTag
                         break
                     }
                 }
@@ -2423,11 +2424,11 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 val outbound = existingOutbounds.optJSONObject(i) ?: continue
                 val type = outbound.optString("type", "")
                 if (type !in setOf("direct", "dns", "block")) {
-                    outbound.optString("tag", "").takeIf { it.isNotBlank() }?.let {
-                        dnsDetour = it
-                        return@let
+                    val outboundTag = outbound.optString("tag", "")
+                    if (outboundTag.isNotBlank()) {
+                        dnsDetour = outboundTag
+                        break
                     }
-                    if (dnsDetour != "proxy") break
                 }
             }
         }
