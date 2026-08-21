@@ -472,6 +472,26 @@ jobs:
             grep -E "FAILED|error:|Error|BUILD" /tmp/gradle-build.log | tail -30 || true
             exit 1
           fi
+
+          # AGP peut conserver v2 uniquement malgré enableV1Signing. Re-signer
+          # explicitement avec le keystore persistant garantit la compatibilité
+          # des installateurs OEM et permet à la validation suivante de vérifier
+          # réellement v1 + v2.
+          APKSIGNER=$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner 2>/dev/null | sort -V | tail -1 || true)
+          if [ -z "$APKSIGNER" ]; then
+            echo "::error::apksigner introuvable avant re-signature post-build"
+            exit 1
+          fi
+          SIGNED_APK="${APK}.signed"
+          "$APKSIGNER" sign \
+            --ks "${GITHUB_WORKSPACE}/app-mobile/android/app/keystore/release.keystore" \
+            --ks-pass env:STORE_PASS \
+            --ks-key-alias "$KEY_AL" \
+            --key-pass env:KEY_PW \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --out "$SIGNED_APK" "$APK"
+          mv -f "$SIGNED_APK" "$APK"
           cp "$APK" build/sxb-vpn.apk
           echo "✅ APK: $(ls -lh build/sxb-vpn.apk)"
           echo "APK_PATH=$APK" >> "$GITHUB_ENV"
