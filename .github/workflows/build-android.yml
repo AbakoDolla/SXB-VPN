@@ -534,10 +534,15 @@ jobs:
             echo "::error::apksigner introuvable — validation cryptographique obligatoire"
             exit 1
           fi
-          VERIFY_OUTPUT=$("$APKSIGNER" verify --verbose "$APK" 2>&1)
-          printf '%s\n' "$VERIFY_OUTPUT"
-          printf '%s\n' "$VERIFY_OUTPUT" | grep -qE 'Verified using v1 scheme \(JAR signing\): true'
-          printf '%s\n' "$VERIFY_OUTPUT" | grep -qE 'Verified using v2 scheme \(APK Signature Scheme v2\): true'
+          # Avec minSdk 24, apksigner n’affiche pas v1 dans sa vérification
+          # par défaut, même si les entrées JAR sont présentes. Vérifier v1
+          # comme le ferait une plateforme API 23 et v2 comme la plateforme API 24+.
+          VERIFY_V1=$("$APKSIGNER" verify --verbose --min-sdk-version 23 "$APK" 2>&1)
+          VERIFY_PLATFORM=$("$APKSIGNER" verify --verbose "$APK" 2>&1)
+          printf '%s\n' "$VERIFY_V1"
+          printf '%s\n' "$VERIFY_PLATFORM"
+          printf '%s\n' "$VERIFY_V1" | grep -qE 'Verified using v1 scheme \(JAR signing\): true'
+          printf '%s\n' "$VERIFY_PLATFORM" | grep -qE 'Verified using v2 scheme \(APK Signature Scheme v2\): true'
           AAPT=$(find "${ANDROID_HOME}/build-tools" -type f -name aapt 2>/dev/null | sort -V | tail -1 || true)
           if [ -z "$AAPT" ]; then
             echo "::error::aapt introuvable — validation du manifeste impossible"
