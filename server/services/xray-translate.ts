@@ -209,7 +209,7 @@ function applyProxySettings(
   warnings.push(`chaînage proxySettings : trafic via l'amont HTTP "${tag}" (headers personnalisés conservés)`);
 }
 
-function translateDns(xrayDns: any, warnings: string[]): Record<string, any> | null {
+function translateDns(xrayDns: any, warnings: string[], mainOutboundTag: string): Record<string, any> | null {
   if (!xrayDns || !Array.isArray(xrayDns.servers) || xrayDns.servers.length === 0) return null;
   const servers: Array<{ tag: string; address: string; detour: string }> = [];
   let operatorTrick = false;
@@ -222,7 +222,11 @@ function translateDns(xrayDns: any, warnings: string[]): Record<string, any> | n
       continue;
     }
     if (!address || typeof address !== 'string') continue;
-    servers.push({ tag: '', address, detour: 'direct' });
+    // Xray peut router le DNS distant par le proxy principal. Cela évite
+    // qu’un DNS direct bloqué par l’opérateur rende le tunnel connecté mais
+    // inutilisable. La résolution bootstrap du serveur VLESS est protégée
+    // séparément par le TUN Android (carrier exclusion).
+    servers.push({ tag: '', address, detour: mainOutboundTag });
   }
 
   if (operatorTrick) {
@@ -468,7 +472,7 @@ export function translateXrayToSingbox(xray: Record<string, any>): TranslationRe
   }
 
   // ── DNS ───────────────────────────────────────────────────────────────────
-  const dns = translateDns(xray.dns, warnings);
+  const dns = translateDns(xray.dns, warnings, mainOutboundTag);
 
   // ── Routing ───────────────────────────────────────────────────────────────
   const route = translateRouting(xray.routing, mainOutboundTag, generatedTags, warnings);

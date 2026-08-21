@@ -2312,6 +2312,22 @@ class SxbVpnService : VpnService(), PlatformInterface {
         return JSONObject(cfg.toString()).apply {
             put("outbounds", newOutbounds)
 
+            // Le serveur VLESS est protégé par la règle carrier exclusion ;
+            // le DNS distant doit ensuite suivre ce proxy. Un detour direct
+            // peut être bloqué par l’opérateur et produit un tunnel connecté
+            // sans accès Internet.
+            var dnsDetour = "direct"
+            for (j in 0 until newOutbounds.length()) {
+                val candidate = newOutbounds.optJSONObject(j) ?: continue
+                val candidateType = candidate.optString("type", "")
+                if (candidateType !in setOf("direct", "dns", "block")) {
+                    candidate.optString("tag", "").takeIf { it.isNotBlank() }?.let {
+                        dnsDetour = it
+                        break
+                    }
+                }
+            }
+
             // Les règles Xray utilisent outboundTag/inboundTag/ip alors que
             // sing-box attend outbound/inbound/ip_cidr.
             val xrayRouting = optJSONObject("routing")
@@ -2362,12 +2378,15 @@ class SxbVpnService : VpnService(), PlatformInterface {
                                 .replace("tcp+local://", "tcp://")
                                 .replace("udp+local://", "udp://")
                             put("address", clean)
-                            put("detour", "direct")
+                            put("detour", if (clean.equals("local", ignoreCase = true) || clean.startsWith("local://", ignoreCase = true)) "direct" else dnsDetour)
                         }
                         is JSONObject -> JSONObject(source.toString()).apply {
-                            // Le resolver d'une adresse IP n'est pas nécessaire;
-                            // garder un detour direct évite une boucle via VLESS.
-                            if (!has("detour")) put("detour", "direct")
+                            // Les DNS distants suivent le proxy VLESS ; `local`
+                            // reste le seul resolver explicitement direct.
+                            if (!has("detour")) {
+                                val address = optString("address", "")
+                                put("detour", if (address.equals("local", ignoreCase = true) || address.startsWith("local://", ignoreCase = true)) "direct" else dnsDetour)
+                            }
                         }
                         else -> null
                     }
@@ -2398,6 +2417,21 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private fun normalizeRawSingBoxCompatibility(cfg: JSONObject): JSONObject {
         cfg.remove("protocol")
 
+        var dnsDetour = "proxy"
+        cfg.optJSONArray("outbounds")?.let { existingOutbounds ->
+            for (i in 0 until existingOutbounds.length()) {
+                val outbound = existingOutbounds.optJSONObject(i) ?: continue
+                val type = outbound.optString("type", "")
+                if (type !in setOf("direct", "dns", "block")) {
+                    outbound.optString("tag", "").takeIf { it.isNotBlank() }?.let {
+                        dnsDetour = it
+                        return@let
+                    }
+                    if (dnsDetour != "proxy") break
+                }
+            }
+        }
+
         // Les anciens imports acceptaient `dns.servers: ["8.8.8.8"]`.
         // sing-box 1.11 attend des objets DNSServerOptions.
         cfg.optJSONObject("dns")?.let { dns ->
@@ -2411,10 +2445,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
                                 .replace("tcp+local://", "tcp://", ignoreCase = true)
                                 .replace("udp+local://", "udp://", ignoreCase = true)
                             put("address", address)
-                            put("detour", "direct")
+                            put("detour", if (address.equals("local", ignoreCase = true) || address.startsWith("local://", ignoreCase = true)) "direct" else dnsDetour)
                         })
                         is JSONObject -> normalizedDnsServers.put(JSONObject(source.toString()).apply {
-                            if (!has("detour")) put("detour", "direct")
+                            if (!has("detour")) {
+                                val address = optString("address", "")
+                                put("detour", if (address.equals("local", ignoreCase = true) || address.startsWith("local://", ignoreCase = true)) "direct" else dnsDetour)
+                            }
                         })
                     }
                 }

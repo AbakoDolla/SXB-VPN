@@ -140,6 +140,26 @@ test('proxySettings : un seul outbound HTTP amont et headers conservés', () => 
   assert.deepEqual(upstreams[0].headers, { Host: 'cdn.example.com', 'X-Test': '1' });
 });
 
+test('dns distant : le resolver suit l\'outbound VLESS principal pour éviter le DNS direct bloqué', () => {
+  const r = translateXrayToSingbox({
+    dns: { servers: ['1.1.1.1'] },
+    outbounds: [{
+      protocol: 'vless',
+      tag: 'proxy',
+      settings: { vnext: [{ address: 'cdn.tribune.com.pk', port: 443, users: [{ id: '5bdb7c7e-2566-4309-b863-9f7b2a60860d' }] }] },
+      streamSettings: {
+        network: 'ws',
+        security: 'tls',
+        tlsSettings: { serverName: 'sg.netsafe.space', allowInsecure: true },
+        wsSettings: { path: '/vless', headers: { Host: 'sg.netsafe.space' } },
+      },
+    }],
+  } as any);
+  assert.equal(r.ok, true, JSON.stringify(r.errors));
+  assert.equal(r.singboxJson!.dns.servers[0].detour, 'proxy');
+  assert.equal(r.singboxJson!.route.final, 'proxy');
+});
+
 test('dns : servers tcp+local:// non traduits, les serveurs simples restent', () => {
   const r = translateXrayToSingbox({
     outbounds: [{ protocol: 'vless', settings: { vnext: [{ address: 'a.example.com', port: 443, users: [{ id: 'u' }] }] }, tag: 'proxy' }],
