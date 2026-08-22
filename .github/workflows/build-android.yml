@@ -85,6 +85,21 @@ jobs:
           EXPO_NO_TELEMETRY: "1"
           EXPO_PUBLIC_API_URL: https://vpnsxb.afrihall.com/api
 
+      # ── Packaging JNI robuste pour les installateurs OEM ──────────────────────
+      # Le mode legacy compresse les .so et laisse Android les extraire. Cela
+      # évite qu’un appareil refuse l’APK lorsque ses contraintes de page-memory
+      # ne correspondent pas à l’alignement produit par AGP/apksigner.
+      - name: Forcer le packaging JNI legacy
+        run: |
+          set -euo pipefail
+          if grep -q '^expo\.useLegacyPackaging=' android/gradle.properties; then
+            sed -i 's/^expo\.useLegacyPackaging=.*/expo.useLegacyPackaging=true/' android/gradle.properties
+          else
+            printf '\nexpo.useLegacyPackaging=true\n' >> android/gradle.properties
+          fi
+          grep -q '^expo\.useLegacyPackaging=true$' android/gradle.properties
+          echo "✅ Packaging JNI legacy activé"
+
       # ── P2b — GARANTIR SxbVpnPackage dans MainApplication.kt ─────────────────
       # Le plugin withMainAppPackage() peut échouer si le pattern de getPackages()
       # ne correspond à aucune regex. Ce step est le filet de sécurité : il injecte
