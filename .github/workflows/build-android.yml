@@ -473,10 +473,22 @@ jobs:
             exit 1
           fi
 
-          # AGP peut conserver v2 uniquement malgré enableV1Signing. Re-signer
-          # explicitement avec le keystore persistant garantit la compatibilité
-          # des installateurs OEM et permet à la validation suivante de vérifier
-          # réellement v1 + v2.
+          # AGP peut conserver v2 uniquement malgré enableV1Signing. Avant
+          # toute signature, page-aligner les .so pour les appareils dont le
+          # chargeur exige un alignement natif 16 KiB. Toute modification après
+          # signature invaliderait l’APK, donc cette étape précède apksigner.
+          ZIPALIGN=$(find "${ANDROID_HOME}/build-tools" -type f -name zipalign 2>/dev/null | sort -V | tail -1 || true)
+          if [ -z "$ZIPALIGN" ]; then
+            echo "::error::zipalign introuvable avant alignement natif"
+            exit 1
+          fi
+          ALIGNED_APK="${APK}.aligned"
+          "$ZIPALIGN" -P 16 -f 4 "$APK" "$ALIGNED_APK"
+          mv -f "$ALIGNED_APK" "$APK"
+
+          # Re-signer explicitement avec le keystore persistant garantit la
+          # compatibilité des installateurs OEM et permet à la validation
+          # suivante de vérifier réellement v1 + v2.
           APKSIGNER=$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner 2>/dev/null | sort -V | tail -1 || true)
           if [ -z "$APKSIGNER" ]; then
             echo "::error::apksigner introuvable avant re-signature post-build"
@@ -529,6 +541,7 @@ jobs:
             exit 1
           fi
           "$ZIPALIGN" -c -v 4 "$APK" >/tmp/apk-zipalign.log
+          "$ZIPALIGN" -c -P 16 -v 4 "$APK" >/tmp/apk-zipalign-page.log
           APKSIGNER=$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner 2>/dev/null | sort -V | tail -1 || true)
           if [ -z "$APKSIGNER" ]; then
             echo "::error::apksigner introuvable — validation cryptographique obligatoire"
