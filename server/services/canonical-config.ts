@@ -220,6 +220,8 @@ function applyCommonTransport(q: URLSearchParams, out: Record<string, any>): voi
   if (host) out.wsHost = decodeURIComponent(host);
   const fp = q.get('fp');
   if (fp) out.fingerprint = fp;
+  const insecure = q.get('allowInsecure') || q.get('insecure');
+  if (insecure) out.insecure = boolParam(insecure);
   const flow = q.get('flow');
   if (flow) out.flow = flow;
   // Reality
