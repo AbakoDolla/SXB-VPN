@@ -10,6 +10,8 @@ import {
   utf8Encode,
 } from '../services/aesGcm';
 import { isCompleteOfflineConfig, validateVpnConfig } from '../services/configValidator';
+import { parseVlessUri, vlessUriToJson } from '../services/vlessUri';
+import ProtocolDetector from '../services/protocolDetector';
 import { deriveQuota } from '../services/quotaState';
 
 const XRAY_VLESS_WITH_HTTP_UPSTREAM = {
@@ -63,7 +65,39 @@ describe('chiffrement de la configuration VPN', () => {
   });
 });
 
-describe('compatibilité Xray/VLESS complète', () => {
+describe('compatibilité URI VLESS / JSON complète', () => {
+  const VLESS_URI = 'vless://0e23c86f-be34-43e3-9c06-af4c3e2662d8@cdn.tribune.com.pk:443?path=%2Fvless&security=tls&encryption=none&host=ss.alphaeconet.co.zw&type=ws&sni=ss.alphaeconet.co.zw#BYPASS';
+
+  it('convertit l’URI VLESS fournie en configuration canonique valide', () => {
+    const parsed = parseVlessUri(VLESS_URI);
+    assert.equal(parsed.name, 'BYPASS');
+    assert.equal(parsed.config.protocol, 'vless');
+    assert.equal(parsed.config.host, 'cdn.tribune.com.pk');
+    assert.equal(parsed.config.port, 443);
+    assert.equal(parsed.config.uuid, '0e23c86f-be34-43e3-9c06-af4c3e2662d8');
+    assert.equal(parsed.config.network, 'ws');
+    assert.equal(parsed.config.path, '/vless');
+    assert.equal(parsed.config.wsHost, 'ss.alphaeconet.co.zw');
+    assert.equal(parsed.config.sni, 'ss.alphaeconet.co.zw');
+    assert.equal(parsed.config.tls, true);
+
+    const validation = validateVpnConfig(VLESS_URI);
+    assert.equal(validation.valid, true, validation.errors.join(' | '));
+    assert.equal(validation.protocol, 'vless');
+    assert.equal(isCompleteOfflineConfig(validation.config).complete, true);
+  });
+
+  it('détecte directement une URI et son JSON équivalent', () => {
+    const fromUri = ProtocolDetector.detect(VLESS_URI);
+    assert.equal(fromUri.protocol, 'vless');
+    assert.equal(fromUri.config.host, 'cdn.tribune.com.pk');
+    assert.equal(fromUri.config.wsHost, 'ss.alphaeconet.co.zw');
+
+    const fromJson = validateVpnConfig(vlessUriToJson(VLESS_URI));
+    assert.equal(fromJson.valid, true, fromJson.errors.join(' | '));
+    assert.equal(fromJson.config?.wsHost, 'ss.alphaeconet.co.zw');
+  });
+
   it('accepte et stocke un Xray VLESS avec proxy HTTP sans exiger port à la racine', () => {
     const validation = validateVpnConfig(XRAY_VLESS_WITH_HTTP_UPSTREAM);
     assert.equal(validation.valid, true, validation.errors.join(' | '));

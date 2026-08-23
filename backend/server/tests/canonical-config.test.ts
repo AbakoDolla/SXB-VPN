@@ -100,12 +100,19 @@ test('T-X4 (non-régression) : sing-box natif — le champ type prime sur protoc
   assert.equal(r.sourceFormat, 'singbox-json');
 });
 
-test('T-X4 (non-régression) : import SSH URI inchangé', () => {
-  const r = parseImportedConfig('vless://uuid-1111-2222-3333-444455556666@host.example.com:443?security=tls&sni=cdn.example.com&type=ws&path=%2Fws#MonProfil');
+test('T-X4 (non-régression) : import URI VLESS conserve Host WebSocket et SNI distincts', () => {
+  const r = parseImportedConfig('vless://0e23c86f-be34-43e3-9c06-af4c3e2662d8@cdn.tribune.com.pk:443?path=%2Fvless&security=tls&encryption=none&host=ss.alphaeconet.co.zw&type=ws&sni=ss.alphaeconet.co.zw#BYPASS');
   assert.equal(r.ok, true, r.errors.join(' | '));
   assert.equal(r.sourceFormat, 'vless-uri');
   assert.equal(r.canonical!.protocol, 'vless');
-  assert.equal(r.canonical!.host, 'host.example.com');
+  assert.equal(r.canonical!.host, 'cdn.tribune.com.pk');
+  assert.equal(r.canonical!.port, 443);
+  assert.equal(r.canonical!.uuid, '0e23c86f-be34-43e3-9c06-af4c3e2662d8');
+  assert.equal(r.canonical!.network, 'ws');
+  assert.equal(r.canonical!.path, '/vless');
+  assert.equal(r.canonical!.wsHost, 'ss.alphaeconet.co.zw');
+  assert.equal(r.canonical!.sni, 'ss.alphaeconet.co.zw');
+  assert.equal(r.canonical!.tls, true);
 });
 
 test('T-X4 (non-régression) : import SSH JSON inchangé', () => {

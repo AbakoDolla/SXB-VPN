@@ -1931,6 +1931,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
         val password = cfg.optStringOrNull("password", "")
         val method   = cfg.optStringOrNull("method", "aes-256-gcm")
         val sni      = cfg.optStringOrNull("sni", host)
+        // `host` dans une URI VLESS peut désigner l’en-tête WebSocket, tandis
+        // que l’autorité après @ reste l’adresse TCP. Ne jamais confondre les deux.
+        val wsHost   = cfg.optStringOrNull("wsHost", sni)
         val network  = cfg.optStringOrNull("network", "tcp")
         val path     = cfg.optStringOrNull("path", "/")
         val tls      = cfg.optBoolean("tls", true)
@@ -1957,9 +1960,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         // Outbound proxy selon protocole
         val proxyOutbound = when (protocol) {
-            "vless" -> buildVlessOutbound(host, port, uuid, sni, network, path, tls, flow)
-            "vmess" -> buildVmessOutbound(host, port, uuid, sni, network, path, tls)
-            "trojan" -> buildTrojanOutbound(host, port, password, sni, network, path, tls)
+            "vless" -> buildVlessOutbound(host, port, uuid, sni, wsHost, network, path, tls, flow)
+            "vmess" -> buildVmessOutbound(host, port, uuid, sni, wsHost, network, path, tls)
+            "trojan" -> buildTrojanOutbound(host, port, password, sni, wsHost, network, path, tls)
             "shadowsocks" -> buildShadowsocksOutbound(host, port, password, method)
             "wireguard" -> buildWireGuardOutbound(host, port, privKey, peerPub, localAddr)
             "hysteria2" -> buildHysteria2Outbound(host, port, password, sni, tls)
@@ -2606,7 +2609,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
     // ── Outbounds par protocole ───────────────────────────────────────────────
 
     private fun buildVlessOutbound(host: String, port: Int, uuid: String, sni: String,
-                                    network: String, path: String, tls: Boolean, flow: String): JSONObject {
+                                    wsHost: String, network: String, path: String,
+                                    tls: Boolean, flow: String): JSONObject {
         return JSONObject().apply {
             put("type", "vless")
             put("tag", "proxy")
@@ -2615,13 +2619,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
             put("uuid", uuid)
             if (flow.isNotEmpty()) put("flow", flow)
             put("tls", buildTlsObj(sni, tls))
-            if (network == "ws" || network == "websocket") put("transport", buildWsTransport(path, sni))
+            if (network == "ws" || network == "websocket") put("transport", buildWsTransport(path, wsHost))
             else if (network == "grpc") put("transport", buildGrpcTransport(path))
         }
     }
 
     private fun buildVmessOutbound(host: String, port: Int, uuid: String, sni: String,
-                                    network: String, path: String, tls: Boolean): JSONObject {
+                                    wsHost: String, network: String, path: String, tls: Boolean): JSONObject {
         return JSONObject().apply {
             put("type", "vmess")
             put("tag", "proxy")
@@ -2631,13 +2635,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
             put("security", "auto")
             put("alter_id", 0)
             put("tls", buildTlsObj(sni, tls))
-            if (network == "ws" || network == "websocket") put("transport", buildWsTransport(path, sni))
+            if (network == "ws" || network == "websocket") put("transport", buildWsTransport(path, wsHost))
             else if (network == "grpc") put("transport", buildGrpcTransport(path))
         }
     }
 
     private fun buildTrojanOutbound(host: String, port: Int, password: String, sni: String,
-                                     network: String, path: String, tls: Boolean): JSONObject {
+                                     wsHost: String, network: String, path: String, tls: Boolean): JSONObject {
         return JSONObject().apply {
             put("type", "trojan")
             put("tag", "proxy")
@@ -2645,7 +2649,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             put("server_port", port)
             put("password", password)
             put("tls", buildTlsObj(sni, tls))
-            if (network == "ws" || network == "websocket") put("transport", buildWsTransport(path, sni))
+            if (network == "ws" || network == "websocket") put("transport", buildWsTransport(path, wsHost))
             else if (network == "grpc") put("transport", buildGrpcTransport(path))
         }
     }

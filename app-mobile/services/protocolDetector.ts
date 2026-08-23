@@ -13,6 +13,8 @@
  *   if (result.protocol) startVpn({ ...rawConfig, protocol: result.protocol });
  */
 
+import { parseVpnUri } from './vlessUri';
+
 export type DetectableProtocol =
   | 'ssh' | 'ssh+payload'
   | 'vless' | 'vmess' | 'trojan' | 'shadowsocks'
@@ -67,19 +69,32 @@ export class ProtocolDetector {
    * Détecte le protocole depuis une configuration brute.
    * @param raw  Objet de configuration (peut venir du backend ou d'un import manuel)
    */
-  static detect(raw: Record<string, any>): DetectionResult {
-    if (!raw || typeof raw !== 'object') {
+  static detect(raw: Record<string, any> | string): DetectionResult {
+    let input: Record<string, any>;
+    if (typeof raw === 'string') {
+      const text = raw.trim();
+      if (!text) return { protocol: null, config: {}, certain: false, reason: 'Configuration vide' };
+      try {
+        const uri = parseVpnUri(text);
+        input = uri ? uri.config : JSON.parse(text);
+      } catch (error: any) {
+        return { protocol: null, config: {}, certain: false, reason: error?.message || 'URI/JSON invalide' };
+      }
+    } else {
+      input = raw;
+    }
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
       return { protocol: null, config: {}, certain: false, reason: 'Configuration nulle ou invalide' };
     }
 
     // 1. Champ "protocol" explicite → détection certaine
-    const explicitRaw = (raw.protocol ?? raw.type ?? '').toString().toLowerCase().trim();
+    const explicitRaw = (input.protocol ?? input.type ?? '').toString().toLowerCase().trim();
     if (explicitRaw) {
       const mapped = PROTOCOL_ALIASES[explicitRaw] ?? null;
       if (mapped) {
         return {
           protocol: mapped,
-          config:   ProtocolDetector._normalize(raw, mapped),
+          config:   ProtocolDetector._normalize(input, mapped),
           certain:  true,
           reason:   null,
         };
@@ -87,11 +102,11 @@ export class ProtocolDetector {
     }
 
     // 2. Heuristiques sur les champs présents
-    const guessed = ProtocolDetector._guessFromFields(raw);
+    const guessed = ProtocolDetector._guessFromFields(input);
     if (guessed) {
       return {
         protocol: guessed,
-        config:   ProtocolDetector._normalize(raw, guessed),
+        config:   ProtocolDetector._normalize(input, guessed),
         certain:  false,
         reason:   null,
       };
@@ -99,7 +114,7 @@ export class ProtocolDetector {
 
     return {
       protocol: null,
-      config:   raw,
+      config:   input,
       certain:  false,
       reason:
         'Protocole non détectable. Ajoutez le champ "protocol" avec une valeur parmi : ' +
@@ -110,7 +125,7 @@ export class ProtocolDetector {
   /**
    * Détecte et valide — lève une Error si le protocole est inconnu.
    */
-  static detectOrThrow(raw: Record<string, any>): Required<Omit<DetectionResult, 'reason'>> & { reason: null } {
+  static detectOrThrow(raw: Record<string, any> | string): Required<Omit<DetectionResult, 'reason'>> & { reason: null } {
     const result = ProtocolDetector.detect(raw);
     if (!result.protocol) {
       throw new Error(result.reason ?? 'Protocole VPN inconnu');

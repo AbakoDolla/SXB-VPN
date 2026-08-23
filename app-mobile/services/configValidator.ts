@@ -10,6 +10,8 @@
  *   if (!result.valid) console.error(result.errors);
  */
 
+import { parseVpnUri } from './vlessUri';
+
 export type SupportedProtocol =
   | 'ssh' | 'ssh+payload'
   | 'vless' | 'vmess' | 'trojan' | 'shadowsocks'
@@ -247,14 +249,32 @@ export function validateVpnConfig(raw: string | Record<string, any>): Validation
     if (!trimmed) {
       return { valid: false, protocol: null, errors: ['La configuration est vide'], warnings, config: null };
     }
-    try {
-      obj = JSON.parse(trimmed);
-    } catch {
-      return {
-        valid: false, protocol: null,
-        errors: ['JSON invalide — vérifiez la syntaxe de votre configuration'],
-        warnings, config: null,
-      };
+    // Les URI VLESS sont converties vers le même modèle plat que les JSON
+    // canoniques. Ainsi, l’interface mobile, le cache offline et le moteur
+    // Android utilisent exactement les mêmes champs techniques.
+    if (/^vless:\/\//i.test(trimmed)) {
+      try {
+        const parsed = parseVpnUri(trimmed);
+        if (!parsed) throw new Error('URI VLESS non reconnue');
+        obj = parsed.config;
+        if (parsed.name) obj.name = parsed.name;
+      } catch (error: any) {
+        return {
+          valid: false, protocol: null,
+          errors: [error?.message || 'URI VLESS invalide'],
+          warnings, config: null,
+        };
+      }
+    } else {
+      try {
+        obj = JSON.parse(trimmed);
+      } catch {
+        return {
+          valid: false, protocol: null,
+          errors: ['Format invalide — utilisez un JSON ou une URI VLESS vless://…'],
+          warnings, config: null,
+        };
+      }
     }
   } else {
     obj = raw;
