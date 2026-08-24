@@ -15,6 +15,7 @@ import { useAuthContext } from "@/contexts/AuthContext";
 import { useVpnContext, formatBytes, formatSpeed } from "@/contexts/VpnContext";
 import { deriveQuota } from "@/services/quotaState";
 import Colors from "@/constants/colors";
+import { useColors } from "@/hooks/useColors";
 import StepLogs from "@/components/StepLogs";
 import UpdatePrompt from "@/components/UpdatePrompt";
 import InteractiveWalkthrough from "@/components/InteractiveWalkthrough";
@@ -206,6 +207,7 @@ function VpnConnectionCard({ conn, isActive }: { conn: VpnConnection; isActive: 
 // ── Main Home Screen ──────────────────────────────────────────────────────────
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
+  const colors = useColors();
   const { user, accountState, refreshAccountState, deviceId } = useAuthContext();
   const {
     isConnected, isConnecting, selectedProtocol, connectedProtocol,
@@ -436,13 +438,13 @@ export default function HomeScreen() {
   };
 
   const btnColor = {
-    no_account:  Colors.primary,
-    no_package:  Colors.purple,
-    connect:     Colors.primary,
-    connecting:  Colors.warning,
-    connected:   Colors.connected,
-    exhausted:   Colors.disconnected,
-    expired:     Colors.disconnected,
+    no_account:  colors.primary,
+    no_package:  colors.purple,
+    connect:     colors.primary,
+    connecting:  colors.warning,
+    connected:   colors.connected,
+    exhausted:   colors.disconnected,
+    expired:     colors.disconnected,
   }[btnState];
 
   const btnLabel = {
@@ -472,7 +474,7 @@ export default function HomeScreen() {
     : "rgba(0,212,255,";
 
   return (
-    <LinearGradient colors={["#060914", "#0A1025", "#060914"]} style={styles.container}>
+    <LinearGradient colors={colors.gradients.bg as [string, string, string]} style={styles.container}>
       <AnnouncementModal
         announcement={activeAnnouncement}
         onClose={async () => {
@@ -612,7 +614,7 @@ export default function HomeScreen() {
 
             <Pressable
               onPress={handleVpnButton}
-              disabled={isConnecting}
+              disabled={false}
               onPressIn={() => Animated.spring(pressAnim, { toValue: 0.96, useNativeDriver: true, speed: 40, bounciness: 6 }).start()}
               onPressOut={() => Animated.spring(pressAnim, { toValue: 1, useNativeDriver: true, speed: 30, bounciness: 8 }).start()}
               accessibilityRole="button"
@@ -641,9 +643,9 @@ export default function HomeScreen() {
               : t('tap_to_connect')}
           </Text>
 
-          <Pressable onPress={handleVpnButton} style={[styles.actionBtn, { backgroundColor: btnColor }]}>
-            <Ionicons name={btnIcon as any} size={18} color="#000" />
-            <Text style={[styles.actionBtnText, { color: "#000" }]}>{btnLabel}</Text>
+          <Pressable onPress={handleVpnButton} style={({ pressed }) => [styles.actionBtn, { backgroundColor: btnColor }, pressed && { opacity: 0.82, transform: [{ scale: 0.985 }] }]}>
+            <Ionicons name={btnIcon as any} size={18} color={colors.primaryForeground} />
+            <Text style={[styles.actionBtnText, { color: colors.primaryForeground }]}>{btnLabel}</Text>
           </Pressable>
 
           {(isConnecting || isConnected) && stepLogs.length > 0 && (

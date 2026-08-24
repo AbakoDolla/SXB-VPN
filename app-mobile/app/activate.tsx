@@ -1,7 +1,7 @@
-import React, { useRef, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import {
-  Alert, Animated, Image, Pressable, ScrollView,
-  StyleSheet, Text, TextInput, View,
+  Alert, Animated, Image, KeyboardAvoidingView, Platform, Pressable,
+  ScrollView, StyleSheet, Text, TextInput, View,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -9,44 +9,49 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { useAuthContext } from "@/contexts/AuthContext";
-import Colors from "@/constants/colors";
+import { useColors } from "@/hooks/useColors";
 import { useTranslation } from "@/localization";
 
 const LOGO = require("../assets/images/icon.png");
 
 export default function ActivateScreen() {
   const { t } = useTranslation();
+  const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const insets = useSafeAreaInsets();
-  const { activateAccount, isAuthenticated, deviceId } = useAuthContext();
+  const { activateAccount, deviceId } = useAuthContext();
 
-  const [token, setToken]       = useState("");
+  const [token, setToken] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError]       = useState("");
-  const [success, setSuccess]   = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState(false);
+  const successScale = useRef(new Animated.Value(0.86)).current;
+  const shakeAnim = useRef(new Animated.Value(0)).current;
 
-  const successScale = useRef(new Animated.Value(0)).current;
-  const shakeAnim    = useRef(new Animated.Value(0)).current;
-
-  const shake = () => {
-    Animated.sequence([
-      Animated.timing(shakeAnim, { toValue: 10, duration: 60, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: -10, duration: 60, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: 6, duration: 60, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: 0, duration: 60, useNativeDriver: true }),
-    ]).start();
-  };
+  const shake = () => Animated.sequence([
+    Animated.timing(shakeAnim, { toValue: 10, duration: 55, useNativeDriver: true }),
+    Animated.timing(shakeAnim, { toValue: -10, duration: 55, useNativeDriver: true }),
+    Animated.timing(shakeAnim, { toValue: 5, duration: 55, useNativeDriver: true }),
+    Animated.timing(shakeAnim, { toValue: 0, duration: 55, useNativeDriver: true }),
+  ]).start();
 
   const handleActivate = async () => {
-    if (!token.trim()) { setError(t("error_invalid_token")); shake(); return; }
-    setError(""); setIsLoading(true);
+    const normalized = token.trim();
+    if (!normalized) {
+      setError(t("error_invalid_token"));
+      shake();
+      return;
+    }
+    setError("");
+    setIsLoading(true);
     try {
-      await activateAccount(token.trim());
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      await activateAccount(normalized);
+      if (Platform.OS !== "web") await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setSuccess(true);
-      Animated.spring(successScale, { toValue: 1, tension: 80, friction: 6, useNativeDriver: true }).start();
-      setTimeout(() => router.replace("/(tabs)/" as any), 1500);
+      Animated.timing(successScale, { toValue: 1, duration: 280, useNativeDriver: true }).start();
+      setTimeout(() => router.replace("/(tabs)/" as any), 1100);
     } catch (err: any) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      if (Platform.OS !== "web") await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       shake();
       const status = err?.response?.status;
       if (status === 404) setError(t("token_not_found"));
@@ -57,165 +62,180 @@ export default function ActivateScreen() {
     }
   };
 
+  const copyDeviceId = async () => {
+    if (!deviceId) return;
+    const { setStringAsync } = await import("expo-clipboard");
+    await setStringAsync(deviceId);
+    if (Platform.OS !== "web") await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    Alert.alert("Copié", "L’identifiant de cet appareil est maintenant dans le presse-papiers.");
+  };
+
   if (success) {
     return (
-      <LinearGradient colors={["#060914", "#0A1025", "#060914"]} style={[styles.container, { justifyContent: "center", alignItems: "center" }]}>
-        <Animated.View style={[styles.successWrap, { transform: [{ scale: successScale }] }]}>
-          <View style={styles.successIcon}>
-            <Ionicons name="checkmark-circle" size={72} color={Colors.connected} />
-          </View>
+      <LinearGradient colors={colors.gradients.bg as [string, string, string]} style={styles.container}>
+        <View style={styles.successScreen}>
+          <Animated.View style={[styles.successOrb, { transform: [{ scale: successScale }] }]}>
+            <Ionicons name="shield-checkmark" size={58} color={colors.connected} />
+          </Animated.View>
           <Text style={styles.successTitle}>{t("activation_success")}</Text>
           <Text style={styles.successSub}>{t("onboarding_title_1")}</Text>
-        </Animated.View>
+          <View style={styles.successPill}>
+            <View style={[styles.successDot, { backgroundColor: colors.connected }]} />
+            <Text style={styles.successPillText}>Session sécurisée</Text>
+          </View>
+        </View>
       </LinearGradient>
     );
   }
 
   return (
-    <LinearGradient colors={["#060914", "#0A1025", "#060914"]} style={styles.container}>
-      <ScrollView contentContainerStyle={[styles.content, { paddingTop: insets.top + 20, paddingBottom: 40 }]} showsVerticalScrollIndicator={false}>
-        {/* Back */}
-        <Pressable onPress={() => router.back()} style={styles.backBtn}>
-          <Ionicons name="arrow-back" size={22} color={Colors.textSecondary} />
-        </Pressable>
-
-        {/* Icon */}
-        <View style={styles.iconWrap}>
-          <View style={styles.iconCircle}>
-            <Ionicons name="key" size={52} color={Colors.primary} />
+    <LinearGradient colors={colors.gradients.bg as [string, string, string]} style={styles.container}>
+      <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <ScrollView
+          contentContainerStyle={[styles.content, { paddingTop: insets.top + 18, paddingBottom: insets.bottom + 28 }]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.topBar}>
+            <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]} accessibilityLabel="Retour">
+              <Ionicons name="arrow-back" size={20} color={colors.textSecondary} />
+            </Pressable>
+            <Text style={styles.topBarLabel}>SXB VPN</Text>
+            <View style={styles.iconButtonPlaceholder} />
           </View>
-        </View>
 
-        <Text style={styles.title}>{t("activate_account_title")}</Text>
-        <Text style={styles.subtitle}>{t("activate_account_desc")}</Text>
-
-        {/* Input */}
-        <Animated.View style={{ transform: [{ translateX: shakeAnim }] }}>
-          <TextInput
-            style={[styles.input, error && { borderColor: Colors.disconnected }]}
-            placeholder="SXB-USER-XXXX-XXXX-XXXX"
-            placeholderTextColor={Colors.textMuted}
-            value={token}
-            onChangeText={(t) => { setToken(t.toUpperCase()); setError(""); }}
-            autoCapitalize="characters"
-            autoCorrect={false}
-            returnKeyType="done"
-            onSubmitEditing={handleActivate}
-          />
-        </Animated.View>
-
-        {error ? (
-          <View style={styles.errorWrap}>
-            <Ionicons name="alert-circle" size={14} color={Colors.disconnected} />
-            <Text style={styles.errorText}>{error}</Text>
-          </View>
-        ) : null}
-
-        {/* Device ID Card with 1-click copy */}
-        {deviceId ? (
-          <View style={styles.deviceIdCard}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.deviceIdLabel}>ID de l'appareil (Device ID)</Text>
-              <Text style={styles.deviceIdValue} numberOfLines={1} ellipsizeMode="middle">{deviceId}</Text>
+          <View style={styles.brandBlock}>
+            <View style={styles.logoHalo}>
+              <Image source={LOGO} style={styles.logo} resizeMode="contain" />
             </View>
+            <Text style={styles.eyebrow}>CONNEXION SÉCURISÉE</Text>
+            <Text style={styles.title}>{t("activate_account_title")}</Text>
+            <Text style={styles.subtitle}>{t("activate_account_desc")}</Text>
+          </View>
+
+          <View style={styles.formCard}>
+            <View style={styles.formHeader}>
+              <View style={styles.formIcon}><Ionicons name="key-outline" size={19} color={colors.primary} /></View>
+              <View style={styles.formHeaderCopy}>
+                <Text style={styles.formTitle}>Votre token SXB</Text>
+                <Text style={styles.formHint}>Il active votre compte sur cet appareil.</Text>
+              </View>
+            </View>
+
+            <Animated.View style={{ transform: [{ translateX: shakeAnim }] }}>
+              <TextInput
+                style={[styles.input, error && { borderColor: colors.disconnected }]}
+                placeholder={t("token_user_placeholder")}
+                placeholderTextColor={colors.textMuted}
+                value={token}
+                onChangeText={(value) => { setToken(value.toUpperCase()); setError(""); }}
+                autoCapitalize="characters"
+                autoCorrect={false}
+                returnKeyType="done"
+                onSubmitEditing={handleActivate}
+                accessibilityLabel="Token d’activation"
+              />
+            </Animated.View>
+
+            {error ? (
+              <View style={styles.errorWrap}>
+                <Ionicons name="alert-circle" size={16} color={colors.disconnected} />
+                <Text style={styles.errorText}>{error}</Text>
+              </View>
+            ) : (
+              <Text style={styles.secureHint}><Ionicons name="lock-closed-outline" size={12} color={colors.textMuted} />  Votre token est transmis de manière sécurisée</Text>
+            )}
+
             <Pressable
-              onPress={() => {
-                import("expo-clipboard").then(({ setStringAsync }) => {
-                  setStringAsync(deviceId);
-                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                  Alert.alert("Copié !", "L'ID de l'appareil a été copié dans le presse-papier.");
-                });
-              }}
-              style={styles.copyBtn}
+              onPress={handleActivate}
+              disabled={isLoading}
+              style={({ pressed }) => [styles.primaryButton, isLoading && styles.disabled, pressed && !isLoading && styles.pressedLarge]}
             >
-              <Ionicons name="copy-outline" size={18} color={Colors.primary} />
-              <Text style={styles.copyBtnText}>Copier</Text>
+              <LinearGradient colors={colors.gradients.primary as [string, string]} style={styles.primaryButtonInner}>
+                <Ionicons name={isLoading ? "sync" : "shield-checkmark-outline"} size={19} color={colors.primaryForeground} />
+                <Text style={[styles.primaryButtonText, { color: colors.primaryForeground }]}>{isLoading ? t("activating") : t("activate_btn")}</Text>
+              </LinearGradient>
             </Pressable>
           </View>
-        ) : null}
 
-        {/* Activate button */}
-        <Pressable onPress={handleActivate} disabled={isLoading} style={[styles.activateBtn, isLoading && { opacity: 0.6 }]}>
-          <LinearGradient colors={[Colors.primary, "#0080FF"]} style={styles.activateBtnGrad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
-            {isLoading
-              ? <Text style={styles.activateBtnText}>{t("activating")}</Text>
-              : <>
-                  <Ionicons name="shield-checkmark" size={18} color="#000" />
-                  <Text style={styles.activateBtnText}>{t("activate_btn")}</Text>
-                </>
-            }
-          </LinearGradient>
-        </Pressable>
-
-        {/* Device ID */}
-        {deviceId ? (
-          <View style={styles.deviceBox}>
-            <View style={styles.deviceBoxHeader}>
-              <Ionicons name="phone-portrait-outline" size={13} color={Colors.primary} />
-              <Text style={styles.deviceBoxLabel}>{t("device_id_row")}</Text>
+          {deviceId ? (
+            <View style={styles.deviceCard}>
+              <View style={styles.deviceIcon}><Ionicons name="phone-portrait-outline" size={18} color={colors.primary} /></View>
+              <View style={styles.deviceCopy}>
+                <Text style={styles.deviceLabel}>ID de l’appareil</Text>
+                <Text style={styles.deviceValue} numberOfLines={1} ellipsizeMode="middle">{deviceId}</Text>
+              </View>
+              <Pressable onPress={copyDeviceId} style={({ pressed }) => [styles.copyButton, pressed && styles.pressed]} accessibilityLabel="Copier l’identifiant appareil">
+                <Ionicons name="copy-outline" size={17} color={colors.primary} />
+                <Text style={styles.copyText}>Copier</Text>
+              </Pressable>
             </View>
-            <Text style={styles.deviceId} selectable>{deviceId}</Text>
-            <Text style={styles.deviceHint}>{t("faq_a1")}</Text>
-          </View>
-        ) : null}
+          ) : null}
 
-        {/* Separator */}
-        <View style={styles.sep}>
-          <View style={styles.sepLine} />
-          <Text style={styles.sepText}>{t("of")}</Text>
-          <View style={styles.sepLine} />
-        </View>
+          <View style={styles.dividerRow}><View style={styles.divider} /><Text style={styles.dividerText}>{t("of")}</Text><View style={styles.divider} /></View>
 
-        {/* QR — bientôt disponible */}
-        <Pressable
-          style={styles.qrBtn}
-          onPress={() =>
-Alert.alert(
-	              t("qr_soon_title"),
-	              t("qr_soon_body"),
-	              [{ text: t("ok") }]
-	            )
-          }
-        >
-          <Ionicons name="qr-code-outline" size={20} color={Colors.textSecondary} />
-          <Text style={styles.qrBtnText}>{t("scan_qr")}</Text>
-        </Pressable>
-      </ScrollView>
+          <Pressable onPress={() => Alert.alert(t("qr_soon_title"), t("qr_soon_body"), [{ text: t("ok") }])} style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}>
+            <Ionicons name="qr-code-outline" size={19} color={colors.textSecondary} />
+            <Text style={styles.secondaryButtonText}>{t("scan_qr")}</Text>
+            <Ionicons name="arrow-forward" size={16} color={colors.textMuted} />
+          </Pressable>
+
+          <Text style={styles.footer}>SXB VPN · Protection réseau fiable</Text>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </LinearGradient>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1 },
-  content: { paddingHorizontal: 24, gap: 14 },
-  backBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: Colors.bgCard, borderWidth: 1, borderColor: Colors.border, alignItems: "center", justifyContent: "center", marginBottom: 8 },
-  iconWrap: { alignItems: "center", paddingVertical: 16 },
-  iconCircle: { width: 110, height: 110, borderRadius: 55, backgroundColor: Colors.primaryDim, borderWidth: 1, borderColor: Colors.primary + "40", alignItems: "center", justifyContent: "center" },
-  title: { fontSize: 26, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold", textAlign: "center" },
-  subtitle: { fontSize: 14, color: Colors.textSecondary, fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 22 },
-  input: { backgroundColor: Colors.bgInput, borderWidth: 1.5, borderColor: Colors.border, borderRadius: 14, paddingHorizontal: 18, paddingVertical: 16, fontSize: 15, color: "#FFF", fontFamily: "Inter_600SemiBold", letterSpacing: 1.5, textAlign: "center" },
-  errorWrap: { flexDirection: "row", alignItems: "center", gap: 6 },
-  errorText: { fontSize: 13, color: Colors.disconnected, fontFamily: "Inter_500Medium" },
-  activateBtn: { borderRadius: 16, overflow: "hidden" },
-  activateBtnGrad: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 16 },
-  activateBtnText: { fontSize: 16, fontWeight: "700", color: "#000", fontFamily: "Inter_700Bold" },
-  deviceIdCard: { flexDirection: "row", alignItems: "center", backgroundColor: Colors.bgCard, borderRadius: 14, borderWidth: 1, borderColor: Colors.border, padding: 14, gap: 12 },
-  deviceIdLabel: { fontSize: 11, color: Colors.textMuted, fontFamily: "Inter_500Medium" },
-  deviceIdValue: { fontSize: 13, color: "#FFF", fontFamily: "Inter_700Bold", letterSpacing: 0.5, marginTop: 2 },
-  copyBtn: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: Colors.primaryDim, borderWidth: 1, borderColor: Colors.primary + "40", paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10 },
-  copyBtnText: { fontSize: 12, color: Colors.primary, fontFamily: "Inter_600SemiBold" },
-  deviceBox: { backgroundColor: Colors.bgCard, borderRadius: 14, borderWidth: 1, borderColor: Colors.border, padding: 14, gap: 6 },
-  deviceBoxHeader: { flexDirection: "row", alignItems: "center", gap: 6 },
-  deviceBoxLabel: { fontSize: 12, color: Colors.primary, fontFamily: "Inter_600SemiBold" },
-  deviceId: { fontSize: 13, color: "#FFF", fontFamily: "Inter_700Bold", letterSpacing: 1 },
-  deviceHint: { fontSize: 11, color: Colors.textMuted, fontFamily: "Inter_400Regular", lineHeight: 17 },
-  sep: { flexDirection: "row", alignItems: "center", gap: 10 },
-  sepLine: { flex: 1, height: 1, backgroundColor: Colors.border },
-  sepText: { fontSize: 12, color: Colors.textMuted, fontFamily: "Inter_400Regular" },
-  qrBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, paddingVertical: 14, borderRadius: 14, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.bgCard },
-  qrBtnText: { fontSize: 14, color: Colors.textSecondary, fontFamily: "Inter_500Medium" },
-  successWrap: { alignItems: "center", gap: 16 },
-  successIcon: { width: 120, height: 120, borderRadius: 60, backgroundColor: Colors.connectedDim, borderWidth: 1, borderColor: Colors.connected + "40", alignItems: "center", justifyContent: "center" },
-  successTitle: { fontSize: 28, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold" },
-  successSub: { fontSize: 15, color: Colors.textSecondary, fontFamily: "Inter_400Regular" },
-});
+function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useColors>) {
+  return StyleSheet.create({
+    container: { flex: 1 },
+    content: { paddingHorizontal: 20, gap: 16 },
+    topBar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+    topBarLabel: { color: colors.textMuted, fontSize: 12, fontFamily: "Inter_600SemiBold", letterSpacing: 1.4 },
+    iconButton: { width: 40, height: 40, borderRadius: 14, backgroundColor: colors.bgCard + "D9", borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
+    iconButtonPlaceholder: { width: 40 },
+    pressed: { opacity: 0.68, transform: [{ scale: 0.97 }] },
+    pressedLarge: { transform: [{ scale: 0.985 }] },
+    brandBlock: { alignItems: "center", paddingTop: 12, paddingBottom: 6 },
+    logoHalo: { width: 82, height: 82, borderRadius: 28, backgroundColor: colors.primaryDim, borderWidth: 1, borderColor: colors.primary + "45", alignItems: "center", justifyContent: "center", marginBottom: 18, shadowColor: colors.primary, shadowOpacity: 0.25, shadowRadius: 20, shadowOffset: { width: 0, height: 6 }, elevation: 5 },
+    logo: { width: 62, height: 62, borderRadius: 18 },
+    eyebrow: { color: colors.primary, fontSize: 10, fontFamily: "Inter_700Bold", letterSpacing: 1.8, marginBottom: 8 },
+    title: { color: colors.textPrimary, fontSize: 28, lineHeight: 34, fontFamily: "Inter_700Bold", textAlign: "center" },
+    subtitle: { color: colors.textSecondary, fontSize: 14, lineHeight: 21, fontFamily: "Inter_400Regular", textAlign: "center", marginTop: 8, maxWidth: 340 },
+    formCard: { backgroundColor: colors.bgCard + "F2", borderWidth: 1, borderColor: colors.border, borderRadius: 24, padding: 18, gap: 14, shadowColor: "#000", shadowOpacity: 0.18, shadowRadius: 18, shadowOffset: { width: 0, height: 8 }, elevation: 7 },
+    formHeader: { flexDirection: "row", alignItems: "center", gap: 12 },
+    formIcon: { width: 40, height: 40, borderRadius: 14, backgroundColor: colors.primaryDim, alignItems: "center", justifyContent: "center" },
+    formHeaderCopy: { flex: 1, gap: 2 },
+    formTitle: { color: colors.textPrimary, fontSize: 15, fontFamily: "Inter_700Bold" },
+    formHint: { color: colors.textMuted, fontSize: 11, fontFamily: "Inter_400Regular" },
+    input: { backgroundColor: colors.bgInput, borderWidth: 1, borderColor: colors.border2, borderRadius: 15, paddingHorizontal: 15, paddingVertical: 16, color: colors.textPrimary, fontSize: 14, fontFamily: "Inter_600SemiBold", letterSpacing: 1.2, textAlign: "center" },
+    errorWrap: { flexDirection: "row", alignItems: "center", gap: 7 },
+    errorText: { color: colors.disconnected, fontSize: 12, flex: 1, fontFamily: "Inter_500Medium" },
+    secureHint: { color: colors.textMuted, fontSize: 11, fontFamily: "Inter_400Regular", textAlign: "center" },
+    primaryButton: { borderRadius: 15, overflow: "hidden" },
+    primaryButtonInner: { minHeight: 53, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 9, paddingHorizontal: 15 },
+    primaryButtonText: { fontSize: 15, fontFamily: "Inter_700Bold" },
+    disabled: { opacity: 0.6 },
+    deviceCard: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.bgCard + "CC", borderWidth: 1, borderColor: colors.border, borderRadius: 18, padding: 13 },
+    deviceIcon: { width: 36, height: 36, borderRadius: 12, backgroundColor: colors.primaryDim, alignItems: "center", justifyContent: "center" },
+    deviceCopy: { flex: 1, gap: 3 },
+    deviceLabel: { color: colors.textMuted, fontSize: 10, fontFamily: "Inter_600SemiBold", textTransform: "uppercase", letterSpacing: 0.8 },
+    deviceValue: { color: colors.textPrimary, fontSize: 12, fontFamily: "Inter_600SemiBold" },
+    copyButton: { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: colors.primaryDim, borderRadius: 11, paddingHorizontal: 10, paddingVertical: 8 },
+    copyText: { color: colors.primary, fontSize: 11, fontFamily: "Inter_700Bold" },
+    dividerRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+    divider: { height: 1, flex: 1, backgroundColor: colors.border },
+    dividerText: { color: colors.textMuted, fontSize: 11, fontFamily: "Inter_500Medium" },
+    secondaryButton: { minHeight: 50, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, backgroundColor: colors.bgCard + "A8", borderWidth: 1, borderColor: colors.border, borderRadius: 15 },
+    secondaryButtonText: { color: colors.textSecondary, fontSize: 14, fontFamily: "Inter_600SemiBold", flex: 1 },
+    footer: { color: colors.textMuted, textAlign: "center", fontSize: 10, fontFamily: "Inter_400Regular", letterSpacing: 0.8, paddingVertical: 4 },
+    successScreen: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24, gap: 14 },
+    successOrb: { width: 136, height: 136, borderRadius: 46, backgroundColor: colors.connectedDim, borderWidth: 1, borderColor: colors.connected + "55", alignItems: "center", justifyContent: "center", shadowColor: colors.connected, shadowOpacity: 0.28, shadowRadius: 30, shadowOffset: { width: 0, height: 8 }, elevation: 8 },
+    successTitle: { color: colors.textPrimary, fontSize: 25, fontFamily: "Inter_700Bold", textAlign: "center" },
+    successSub: { color: colors.textSecondary, fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" },
+    successPill: { flexDirection: "row", alignItems: "center", gap: 7, backgroundColor: colors.connectedDim, borderRadius: 99, paddingHorizontal: 12, paddingVertical: 8, marginTop: 6 },
+    successDot: { width: 7, height: 7, borderRadius: 4 },
+    successPillText: { color: colors.connected, fontSize: 11, fontFamily: "Inter_600SemiBold" },
+  });
+}

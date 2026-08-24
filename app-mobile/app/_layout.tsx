@@ -8,7 +8,7 @@ import { useFonts } from "expo-font";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { LanguageProvider } from "@/contexts/LanguageContext";
-import { ThemeProvider } from "@/contexts/ThemeContext";
+import { ThemeProvider, useThemeContext } from "@/contexts/ThemeContext";
 import { AuthProvider, useAuthContext } from "@/contexts/AuthContext";
 import { VpnProvider } from "@/contexts/VpnContext";
 import { StatusBar } from "expo-status-bar";
@@ -36,6 +36,8 @@ function AnnouncementNotificationSync() {
 }
 
 function RootLayoutNav() {
+  const { colorScheme } = useThemeContext();
+
   useEffect(() => {
     if (Platform.OS === "android" && Platform.Version >= 33) {
       PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS).catch(() => {});
@@ -44,34 +46,28 @@ function RootLayoutNav() {
 
   return (
     <>
-      <StatusBar style="light" />
+      <StatusBar style={colorScheme === "dark" ? "light" : "dark"} />
       <AnnouncementNotificationSync />
-      <Stack screenOptions={{ headerShown: false, animation: "fade", contentStyle: { backgroundColor: "#060914" } }}>
+      <Stack screenOptions={{ headerShown: false, animation: "fade", contentStyle: { backgroundColor: colorScheme === "dark" ? "#07101F" : "#F4F8FC" } }}>
         <Stack.Screen name="index" options={{ animation: "fade" }} />
         <Stack.Screen name="onboarding" options={{ animation: "fade", gestureEnabled: false }} />
         <Stack.Screen name="activate" options={{ animation: "slide_from_right" }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="plan" options={{ presentation: "modal", animation: "slide_from_bottom" }} />
-        <Stack.Screen
-          name="support"
-          options={{
-            headerShown: true,
-            animation: "slide_from_right",
-            headerTitle: "Support",
-            headerStyle: { backgroundColor: "#060914" },
-            headerTintColor: "#FFFFFF",
-          }}
-        />
-        <Stack.Screen
-          name="settings"
-          options={{
-            headerShown: true,
-            animation: "slide_from_right",
-            headerTitle: "Paramètres",
-            headerStyle: { backgroundColor: "#060914" },
-            headerTintColor: "#FFFFFF",
-          }}
-        />
+                <Stack.Screen name="support" options={{
+          headerShown: true,
+          animation: "slide_from_right",
+          headerTitle: "Support",
+          headerStyle: { backgroundColor: colorScheme === "dark" ? "#07101F" : "#F4F8FC" },
+          headerTintColor: colorScheme === "dark" ? "#F6FAFF" : "#102033",
+        }} />
+                <Stack.Screen name="settings" options={{
+          headerShown: false,
+          animation: "slide_from_right",
+          headerTitle: "Paramètres",
+          headerStyle: { backgroundColor: colorScheme === "dark" ? "#07101F" : "#F4F8FC" },
+          headerTintColor: colorScheme === "dark" ? "#F6FAFF" : "#102033",
+        }} />
         <Stack.Screen name="+not-found" />
       </Stack>
     </>
@@ -101,7 +97,7 @@ export default function RootLayout() {
           <LanguageProvider>
             <ThemeProvider>
               <AuthProvider>
-                <GestureHandlerRootView style={{ flex: 1, backgroundColor: "#060914" }}>
+                <GestureHandlerRootView style={{ flex: 1, backgroundColor: "#07101F" }}>
                   <VpnProvider>
                     <RootLayoutNav />
                   </VpnProvider>

@@ -18,6 +18,8 @@ import { useVpnContext } from "@/contexts/VpnContext";
 import { useLanguageContext } from "@/contexts/LanguageContext";
 import { useTranslation } from "@/localization";
 import Colors from "@/constants/colors";
+import { useColors } from "@/hooks/useColors";
+import { useThemeContext } from "@/contexts/ThemeContext";
 import { getDiagnosticLogging, setDiagnosticLogging } from "@/modules/expo-sxb-vpn/src";
 
 // ── Row component ─────────────────────────────────────────────────────────────
@@ -41,7 +43,8 @@ function Row({
   icon, label, value, toggle, toggleValue,
   onToggle, onPress, color, destructive, badge, badgeColor, disabled,
 }: RowProps) {
-  const c = destructive ? Colors.disconnected : (color || Colors.primary);
+  const colors = useColors();
+  const c = destructive ? colors.disconnected : (color || colors.primary);
   return (
     <Pressable
       onPress={onPress}
@@ -51,39 +54,40 @@ function Row({
       <View style={[styles.rowIcon, { backgroundColor: c + "15" }]}>
         <Ionicons name={icon as any} size={18} color={c} />
       </View>
-      <Text style={[styles.rowLabel, destructive && { color: Colors.disconnected }, disabled && { color: Colors.textMuted }]}>
+      <Text style={[styles.rowLabel, { color: destructive ? colors.disconnected : colors.textPrimary }, disabled && { color: colors.textMuted }]}>
         {label}
       </Text>
       {badge && (
         <View style={[styles.badge, { backgroundColor: (badgeColor || Colors.primary) + "20", borderColor: (badgeColor || Colors.primary) + "40" }]}>
-          <Text style={[styles.badgeText, { color: badgeColor || Colors.primary }]}>{badge}</Text>
+          <Text style={[styles.badgeText, { color: badgeColor || colors.primary }]}>{badge}</Text>
         </View>
       )}
       {toggle ? (
         <Switch
           value={toggleValue}
           onValueChange={onToggle}
-          trackColor={{ false: Colors.border, true: c + "60" }}
-          thumbColor={toggleValue ? c : Colors.textMuted}
+          trackColor={{ false: colors.border, true: c + "60" }}
+          thumbColor={toggleValue ? c : colors.textMuted}
           disabled={disabled}
         />
       ) : value ? (
-        <Text style={styles.rowValue} numberOfLines={1}>{value}</Text>
+        <Text style={[styles.rowValue, { color: colors.textMuted }]} numberOfLines={1}>{value}</Text>
       ) : onPress ? (
-        <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+        <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
       ) : null}
     </Pressable>
   );
 }
 
 function Section({ title, children, subtitle }: { title: string; children: React.ReactNode; subtitle?: string }) {
+  const colors = useColors();
   return (
     <View style={styles.section}>
       <View style={styles.sectionHeader}>
-        <Text style={styles.sectionLabel}>{title}</Text>
-        {subtitle && <Text style={styles.sectionSubtitle}>{subtitle}</Text>}
+        <Text style={[styles.sectionLabel, { color: colors.textMuted }]}>{title}</Text>
+        {subtitle && <Text style={[styles.sectionSubtitle, { color: colors.textMuted }]}>{subtitle}</Text>}
       </View>
-      <View style={styles.sectionCard}>{children}</View>
+      <View style={[styles.sectionCard, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>{children}</View>
     </View>
   );
 }
@@ -223,6 +227,8 @@ export default function SettingsScreen() {
     traffic, derivedQuota, activeConnection,
   } = useVpnContext();
   const { language, setLanguage } = useLanguageContext();
+  const { themePreference, setThemePreference } = useThemeContext();
+  const colors = useColors();
   const { t } = useTranslation();
 
   // State
@@ -384,7 +390,7 @@ export default function SettingsScreen() {
     : "—";
 
   return (
-    <LinearGradient colors={["#060914", "#0A1025", "#060914"]} style={styles.container}>
+    <LinearGradient colors={colors.gradients.bg as [string, string, string]} style={styles.container}>
       <ScrollView
         contentContainerStyle={[styles.content, { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 40 }]}
         showsVerticalScrollIndicator={false}
@@ -394,7 +400,7 @@ export default function SettingsScreen() {
           <Pressable onPress={() => router.back()} style={styles.backBtn}>
             <Ionicons name="arrow-back" size={20} color={Colors.textSecondary} />
           </Pressable>
-          <Text style={styles.pageTitle}>{t("settings")}</Text>
+          <Text style={[styles.pageTitle, { color: colors.textPrimary }]}>{t("settings")}</Text>
           <View style={{ width: 36 }} />
         </View>
 
@@ -449,7 +455,6 @@ export default function SettingsScreen() {
             color={Colors.warning}
             badge={killSwitch ? "ON" : undefined} badgeColor={Colors.warning}
           />
-          <View style={styles.divider} />
           <View style={styles.divider} />
           <Row
             icon="cloud-download-outline"
@@ -506,16 +511,32 @@ export default function SettingsScreen() {
 
         {/* Appearance */}
         <Section title="APPARENCE & LANGUE">
-          <Row
-            icon="moon-outline" label="Thème sombre"
-            toggle toggleValue={true} onToggle={() => {}}
-            color={Colors.primary} disabled
-          />
+          <View style={styles.themePicker}>
+            {([
+              ["system", "phone-portrait-outline", t("theme_system")],
+              ["light", "sunny-outline", t("theme_light")],
+              ["dark", "moon-outline", t("theme_dark")],
+            ] as const).map(([value, icon, label]) => {
+              const active = themePreference === value;
+              return (
+                <Pressable
+                  key={value}
+                  onPress={() => { void setThemePreference(value); }}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  style={[styles.themeChoice, { borderColor: active ? colors.primary : colors.border, backgroundColor: active ? colors.primaryDim : colors.bgCard2 }]}
+                >
+                  <Ionicons name={icon as any} size={17} color={active ? colors.primary : colors.textMuted} />
+                  <Text style={[styles.themeChoiceText, { color: active ? colors.primary : colors.textSecondary }]}>{label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
           <View style={styles.divider} />
           <Row
             icon="language-outline" label="Langue"
             value={`${currentLang.flag} ${currentLang.label}`}
-            onPress={() => setLangModal(true)} color={Colors.primary}
+            onPress={() => setLangModal(true)} color={colors.primary}
           />
         </Section>
 
@@ -637,6 +658,9 @@ const styles = StyleSheet.create({
   badge: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, borderWidth: 1 },
   badgeText: { fontSize: 10, fontWeight: "700", fontFamily: "Inter_700Bold" },
   divider: { height: 1, backgroundColor: Colors.border },
+  themePicker: { flexDirection: "row", gap: 8, paddingVertical: 13 },
+  themeChoice: { flex: 1, minHeight: 54, borderRadius: 13, borderWidth: 1, alignItems: "center", justifyContent: "center", gap: 5 },
+  themeChoiceText: { fontSize: 10, fontFamily: "Inter_600SemiBold" },
   logoutBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 14, borderRadius: 14, borderWidth: 1, borderColor: Colors.disconnected + "40", backgroundColor: Colors.disconnectedDim },
   logoutText: { fontSize: 15, fontWeight: "600", color: Colors.disconnected, fontFamily: "Inter_600SemiBold" },
   footer: { textAlign: "center", fontSize: 10, color: Colors.textMuted, fontFamily: "Inter_400Regular", letterSpacing: 2 },
