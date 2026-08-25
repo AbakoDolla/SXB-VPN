@@ -33,7 +33,7 @@ function StatCard({
   return (
     <div
       onClick={onClick}
-      className={`relative overflow-hidden rounded-xl border bg-[#0a0d14] p-4 flex flex-col gap-3 transition-all duration-200 ${onClick ? 'cursor-pointer hover:border-opacity-60 hover:scale-[1.01]' : ''} border-[#1a1f2e]`}
+      className={`relative overflow-hidden rounded-xl border bg-[#0a0d14] dashboard-card sxb-animated-card p-4 flex flex-col gap-3 transition-all duration-200 ${onClick ? 'cursor-pointer hover:border-opacity-60 hover:scale-[1.01]' : ''} border-[#1a1f2e]`}
     >
       <div className="flex items-start justify-between">
         <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${accent}`}>
@@ -54,7 +54,7 @@ function ServerHealthCard({ server }: { server: VPSServer }) {
   const cpuColor = server.cpuLoad > 80 ? 'text-red-400' : server.cpuLoad > 60 ? 'text-amber-400' : 'text-emerald-400';
   const ramColor = server.ramLoad > 80 ? 'text-red-400' : server.ramLoad > 60 ? 'text-amber-400' : 'text-emerald-400';
   return (
-    <div className="bg-[#0a0d14] border border-[#1a1f2e] rounded-xl p-4 space-y-3">
+    <div className="bg-[#0a0d14] dashboard-card sxb-animated-card border border-[#1a1f2e] rounded-xl p-4 space-y-3">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className={`w-2 h-2 rounded-full ${server.status === 'online' ? 'bg-emerald-400 shadow-sm shadow-emerald-400' : 'bg-red-400'}`} />
@@ -388,7 +388,7 @@ export default function DashboardView({
 
       {/* Traffic Chart */}
       {trafficData.length > 0 && (
-        <div className="bg-[#0a0d14] border border-[#1a1f2e] rounded-xl p-5">
+        <div className="bg-[#0a0d14] dashboard-card sxb-animated-card border border-[#1a1f2e] rounded-xl p-5">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <Activity className="w-4 h-4 text-cyan-400" />
@@ -444,7 +444,7 @@ export default function DashboardView({
         </div>
 
         {/* Activity log */}
-        <div className="lg:col-span-3 bg-[#0a0d14] border border-[#1a1f2e] rounded-xl p-4">
+        <div className="lg:col-span-3 bg-[#0a0d14] dashboard-card sxb-animated-card border border-[#1a1f2e] rounded-xl p-4">
           <div className="flex items-center gap-2 mb-4">
             <Clock className="w-4 h-4 text-cyan-400" />
             <h3 className="text-sm font-semibold text-white">Activité Récente</h3>

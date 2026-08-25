@@ -143,6 +143,13 @@ describe('garde-fous contre les régressions Android', () => {
     assert.doesNotMatch(supportScreen, /\}, \[t\]\);/);
   });
 
+  it('renvoie à Historique les champs créés par l’écran mobile', () => {
+    assert.match(mobileRoutes, /description: log\.action/);
+    assert.match(mobileRoutes, /createdAt: log\.timestamp\.toISOString\(\)/);
+    assert.match(mobileRoutes, /status: historyStatus/);
+    assert.doesNotMatch(mobileRoutes, /timestamp: log\.timestamp\.toISOString\(\)/);
+  });
+
   it('conserve les deux routes support nécessaires à la compatibilité mobile', () => {
     assert.match(mobileRoutes, /router\.get\('\/support\/tickets'/);
     assert.match(mobileRoutes, /router\.post\('\/support\/ticket'/);

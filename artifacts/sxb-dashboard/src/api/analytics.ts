@@ -14,21 +14,12 @@ export interface DashboardStats {
   totalRevenue: number;
 }
 
-export async function fetchDashboardStats(): Promise<DashboardStats> {
+export async function fetchDashboardStats(): Promise<DashboardStats | null> {
   try {
     return await apiRequest<DashboardStats>("/dashboard/stats");
   } catch (error) {
     console.error("Error fetching dashboard stats:", error);
-    return {
-      activeUsers: 0,
-      expiredAccounts: 0,
-      consumedTraffic: 0,
-      provisionedTraffic: 0,
-      remainingTraffic: 0,
-      activeServers: 0,
-      activeResellers: 0,
-      totalRevenue: 0,
-    };
+    return null;
   }
 }
 

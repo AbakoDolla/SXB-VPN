@@ -735,11 +735,13 @@ router.get('/history', async (req: AuthenticatedRequest, res: Response) => {
       });
 
       for (const log of logs) {
+        const historyStatus = log.type === 'success' || log.type === 'error' ? log.type : 'info';
         history.push({
           id: log.id,
           action: log.action,
-          type: log.type,
-          timestamp: log.timestamp.toISOString(),
+          description: log.action,
+          createdAt: log.timestamp.toISOString(),
+          status: historyStatus,
           ipAddress: log.ipAddress || null,
         });
       }
@@ -748,11 +750,13 @@ router.get('/history', async (req: AuthenticatedRequest, res: Response) => {
     // Ajouter info quota si disponible
     if (client) {
       const state = computeAccountState(client);
+      const summary = 'Etat du compte : ' + state.state + ' | Quota restant : ' + state.quotaRemainingGb.toFixed(2) + ' GB';
       history.unshift({
         id: 'account-state-current',
-        action: 'Etat du compte : ' + state.state + ' | Quota restant : ' + state.quotaRemainingGb.toFixed(2) + ' GB',
-        type: 'info',
-        timestamp: new Date().toISOString(),
+        action: 'account_state',
+        description: summary,
+        createdAt: new Date().toISOString(),
+        status: 'info',
         ipAddress: null,
         isAccountSummary: true,
       });

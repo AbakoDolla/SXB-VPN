@@ -45,7 +45,7 @@ export default function NotificationsScreen() {
         if (cancelled) return;
         const readIds = new Set<string>(stored ? JSON.parse(stored) : []);
         const remoteItems = Array.isArray(response.data) ? response.data : [];
-        setItems(remoteItems.map((item: Notification) => ({ ...item, isRead: item.isRead || readIds.has(item.id) })));
+        setItems(remoteItems.map((item: Notification & { read?: boolean }) => ({ ...item, isRead: item.isRead ?? item.read ?? readIds.has(item.id) })));
       }).catch(() => {}).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, []);

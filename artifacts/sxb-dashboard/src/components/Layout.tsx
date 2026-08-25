@@ -202,7 +202,7 @@ export default function Layout({
   const isGroupActive = (group: NavGroup) => group.items.some(item => item.id === activeRoute);
 
   const SidebarContent = ({ onClose }: { onClose?: () => void }) => (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full dashboard-sidebar">
       {/* Logo */}
       <div className="h-14 flex items-center justify-between px-4 border-b border-[#1a1f2e] shrink-0">
         <div className="flex items-center gap-2.5">
@@ -315,9 +315,9 @@ export default function Layout({
   );
 
   return (
-    <div className="flex h-screen bg-[#07090e] text-white overflow-hidden">
+    <div className="flex h-screen dashboard-shell text-white overflow-hidden">
       {/* Desktop sidebar */}
-      <aside className="hidden lg:flex w-56 shrink-0 flex-col bg-[#0a0d14] border-r border-[#1a1f2e]">
+      <aside className="hidden lg:flex w-56 shrink-0 flex-col dashboard-sidebar border-r border-[#1a1f2e]">
         <SidebarContent />
       </aside>
 
@@ -325,7 +325,7 @@ export default function Layout({
       {mobileNavOpen && (
         <div className="fixed inset-0 z-40 lg:hidden">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setMobileNavOpen(false)} />
-          <aside className="absolute left-0 top-0 bottom-0 w-64 bg-[#0a0d14] border-r border-[#1a1f2e] z-50">
+          <aside className="absolute left-0 top-0 bottom-0 w-64 dashboard-sidebar border-r border-[#1a1f2e] z-50">
             <SidebarContent onClose={() => setMobileNavOpen(false)} />
           </aside>
         </div>
@@ -334,7 +334,7 @@ export default function Layout({
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Mobile top bar */}
-        <div className="lg:hidden flex items-center justify-between px-4 h-12 border-b border-[#1a1f2e] bg-[#0a0d14] shrink-0">
+        <div className="lg:hidden dashboard-topbar flex items-center justify-between px-4 h-12 border-b border-[#1a1f2e] shrink-0">
           <button onClick={() => setMobileNavOpen(true)} className="text-gray-400 hover:text-white p-1.5 rounded-lg hover:bg-white/10 cursor-pointer">
             <Menu className="w-5 h-5" />
           </button>
@@ -347,7 +347,7 @@ export default function Layout({
           <div className="w-8" />
         </div>
 
-        <main className="flex-1 overflow-y-auto p-4 md:p-5 lg:p-6">
+        <main className="flex-1 overflow-y-auto p-4 md:p-5 lg:p-6 animate-fadeIn">
           {/* Bannière persistante « MODE MAINTENANCE ACTIF » — OWNER uniquement */}
           {maintenanceEnabled && role === 'OWNER' && (
             <div className="mb-4 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs font-bold tracking-widest uppercase">
