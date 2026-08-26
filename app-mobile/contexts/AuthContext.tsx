@@ -1,7 +1,9 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient, { getSecureToken, setSecureToken, removeSecureToken, SEC_KEYS } from '@/services/apiClient';
 import { clearProvisionedConfig, provisionAndStore } from '@/services/provisionClient';
+import { clearAllOfflineData } from '@/services/offlineStorage';
 import type { AccountState, User } from '@/types/api';
 
 // Clés non-sensibles restent dans AsyncStorage (infos user, onboarding...)
@@ -64,6 +66,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [accountState,     setAccountState]     = useState<AccountState | null>(null);
   const [hasSeenOnboarding,setHasSeenOnboarding]= useState(false);
   const [deviceId,         setDeviceId]         = useState<string>('');
+
+  const clearLocalSession = useCallback(async () => {
+    await Promise.all([
+      removeSecureToken(SEC_KEYS.ACCESS),
+      removeSecureToken(SEC_KEYS.REFRESH),
+      AsyncStorage.multiRemove([KEYS.USER, '@sxb_access_token', '@sxb_refresh_token', '@sxb_vpn_connected']),
+      clearProvisionedConfig().catch(() => {}),
+      clearAllOfflineData().catch(() => {}),
+    ]);
+    setIsAuthenticated(false);
+    setUser(null);
+    setAccountState(null);
+  }, []);
 
   useEffect(() => {
     initSession();
@@ -128,7 +143,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    * - 401    → session révoquée côté serveur → déconnecter
    * - Erreur réseau → session locale conservée (offline mode)
    */
-  const validateSession = async () => {
+  const validateSession = useCallback(async () => {
     try {
       const res = await apiClient.get('/mobile/me');
       const { user: u, accountState: as } = res.data;
@@ -137,19 +152,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setIsAuthenticated(true);
       await AsyncStorage.setItem(KEYS.USER, JSON.stringify({ user: u, accountState: as }));
     } catch (err: any) {
-      if (err?.response?.status === 401) {
-        await Promise.all([
-          removeSecureToken(SEC_KEYS.ACCESS),
-          removeSecureToken(SEC_KEYS.REFRESH),
-          AsyncStorage.removeItem(KEYS.USER),
-        ]);
-        setIsAuthenticated(false);
-        setUser(null);
-        setAccountState(null);
+      const status = err?.response?.status;
+      if (status === 401 || status === 403 || status === 404) {
+        // 403/404 ici signifient que le compte VPN lié n’est plus utilisable.
+        await clearLocalSession();
       }
       // Erreur réseau → session locale conservée
     }
-  };
+  }, [clearLocalSession]);
+
+  // Revalidation immédiate au retour au premier plan : le cache hors ligne ne
+  // doit jamais prolonger un compte suspendu ou supprimé après reconnexion.
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && isAuthenticated) validateSession().catch(() => {});
+    });
+    return () => subscription.remove();
+  }, [isAuthenticated, validateSession]);
 
   const activateAccount = useCallback(async (token: string) => {
     const did = await getOrCreateDeviceId();
@@ -199,23 +218,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(u);
       setAccountState(as);
       await AsyncStorage.setItem(KEYS.USER, JSON.stringify({ user: u, accountState: as }));
-    } catch (_) {
+    } catch (err: any) {
+      const status = err?.response?.status;
+      if (status === 401 || status === 403 || status === 404) await clearLocalSession();
       // Hors ligne → ne rien faire (état local conservé)
     }
-  }, []);
+  }, [clearLocalSession]);
 
   const logout = useCallback(async () => {
-    await Promise.all([
-      removeSecureToken(SEC_KEYS.ACCESS),
-      removeSecureToken(SEC_KEYS.REFRESH),
-      AsyncStorage.multiRemove([KEYS.USER, '@sxb_access_token', '@sxb_refresh_token']),
-      // Supprimer la config VPN provisionnée (Android Keystore / Keychain)
-      clearProvisionedConfig().catch(() => {}),
-    ]);
-    setUser(null);
-    setAccountState(null);
-    setIsAuthenticated(false);
-  }, []);
+    await clearLocalSession();
+  }, [clearLocalSession]);
 
   const markOnboardingDone = useCallback(async () => {
     await AsyncStorage.setItem(KEYS.ONBOARDING, 'true');

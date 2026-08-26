@@ -37,6 +37,7 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
     let permissions: string[] = [];
 
     let dbRoleName: string | null = null;
+    let mobileClientUsable: boolean | null = null;
     if (prisma) {
       const user = await prisma.user.findUnique({
         where: { id: decoded.userId },
@@ -51,8 +52,17 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
         }
       });
       if (user && user.status === "active") {
-        isActive = true;
         dbRoleName = user.role.name;
+        // Un JWT valide ne suffit pas pour un compte mobile : le compte VPN
+        // peut avoir été suspendu ou supprimé depuis le dashboard.
+        if (dbRoleName === "CLIENT") {
+          const client = await (prisma as any).vpnClient.findFirst({
+            where: { userId: user.id },
+            select: { status: true },
+          });
+          mobileClientUsable = client?.status === "active";
+        }
+        isActive = dbRoleName !== "CLIENT" || mobileClientUsable === true;
         if (dbRoleName === "OWNER") {
           // Le rôle racine OWNER dispose de toutes les permissions (bypass centralisé).
           const allPerms = await prisma.permission.findMany();
@@ -65,9 +75,13 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
       // In-Memory Database Fallback
       const user = inMemoryDb.users.find((u) => u.id === decoded.userId);
       if (user && user.status === "active") {
-        isActive = true;
         const roleRecord = inMemoryDb.roles.find((r) => r.id === user.roleId);
         dbRoleName = roleRecord?.name ?? null;
+        if (dbRoleName === "CLIENT") {
+          const client = inMemoryDb.vpnClients.find((c) => c.userId === user.id);
+          mobileClientUsable = client?.status === "active";
+        }
+        isActive = dbRoleName !== "CLIENT" || mobileClientUsable === true;
         const rolePermIds = inMemoryDb.rolePermissions
           .filter((rp) => rp.roleId === user.roleId)
           .map((rp) => rp.permissionId);

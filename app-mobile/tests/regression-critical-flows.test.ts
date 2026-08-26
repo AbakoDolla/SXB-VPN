@@ -127,6 +127,8 @@ describe('garde-fous contre les régressions Android', () => {
   const provisionRoutes = source('../server/routes/provision.ts');
   const rbacRoutes = source('../server/routes/rbac.ts');
   const authMiddleware = source('../server/middleware/auth.ts');
+  const clientRoutes = source('../server/routes/clients.ts');
+  const offlineStorage = source('services/offlineStorage.ts');
   const rbacView = source('../artifacts/sxb-dashboard/src/components/RBACView.tsx');
   const announcementsView = source('../artifacts/sxb-dashboard/src/components/AnnouncementsView.tsx');
   const appUpdateRoutes = source('../server/routes/app-updates.ts');
@@ -194,6 +196,19 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(notificationUpdateScreen, /downloadAndInstallAppUpdate/);
     assert.match(notificationUpdateScreen, /update_download/);
     assert.match(mobileRoutes, /actionType: 'download_app_update'/);
+  });
+
+  it('invalide immédiatement les comptes suspendus ou supprimés', () => {
+    assert.match(authMiddleware, /vpnClient\.findFirst/);
+    assert.match(authMiddleware, /mobileClientUsable/);
+    assert.match(clientRoutes, /syncClientAccessState\(id, 'suspended'\)/);
+    assert.match(clientRoutes, /syncClientAccessState\(id, 'deleted'\)/);
+    assert.match(mobileRoutes, /errors\.mobile\.account_blocked/);
+    assert.match(vpnContext, /invalidateRemoteAccess/);
+    assert.match(vpnContext, /setInterval\(\(\) => \{ void verifyRemoteAccess\(\); \}, 10_000\)/);
+    assert.match(vpnContext, /clearAllOfflineData/);
+    assert.match(rootLayout, /router\.replace\('\/activate'\)/);
+    assert.match(offlineStorage, /configStore\.clearAll\(\)/);
   });
 
   it('protège le cycle Foreground Android contre la désynchronisation', () => {

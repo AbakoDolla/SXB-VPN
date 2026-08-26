@@ -272,8 +272,8 @@ router.post("/auth/activate", async (req, res: Response) => {
       }
     }
     
-    if (client.status === "suspended") {
-      return res.status(403).json({ error: "errors.mobile.suspended", message: "Ce compte est suspendu" });
+    if (client.status === "suspended" || client.status === "revoked" || client.status === "disabled") {
+      return res.status(403).json({ error: "errors.mobile.account_blocked", message: "Ce compte VPN est suspendu, révoqué ou désactivé" });
     }
     if (!client.user) {
       return res.status(500).json({ error: "errors.server", message: "Compte client mal configuré" });
@@ -337,6 +337,10 @@ router.post("/auth/refresh", async (req, res: Response) => {
     const jwt = require("jsonwebtoken");
     const { config } = require("../config");
     const decoded = jwt.verify(refreshToken, config.REFRESH_SECRET);
+    const client = await findClientByUserId(decoded.userId);
+    if (!client || client.status !== 'active') {
+      return res.status(403).json({ error: 'errors.mobile.account_blocked', message: 'Compte VPN suspendu ou supprimé — réactivation requise' });
+    }
     const tokens = generateTokens({ userId: decoded.userId, email: decoded.email, role: decoded.role });
     return res.json(tokens);
   } catch (err) {

@@ -5,7 +5,7 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { useFonts } from "expo-font";
-import { Stack } from "expo-router";
+import { Stack, router, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { LanguageProvider } from "@/contexts/LanguageContext";
 import { ThemeProvider, useThemeContext } from "@/contexts/ThemeContext";
@@ -37,6 +37,17 @@ function AnnouncementNotificationSync() {
 
 function RootLayoutNav() {
   const { colorScheme } = useThemeContext();
+  const { isAuthenticated, isLoading } = useAuthContext();
+  const segments = useSegments();
+
+  useEffect(() => {
+    if (isLoading || isAuthenticated) return;
+    const firstSegment = segments[0] as string | undefined;
+    const publicSegments = new Set(['index', 'onboarding', 'activate', '+not-found']);
+    if (firstSegment && !publicSegments.has(firstSegment)) {
+      router.replace('/activate');
+    }
+  }, [isAuthenticated, isLoading, segments]);
 
   useEffect(() => {
     if (Platform.OS === "android" && Platform.Version >= 33) {

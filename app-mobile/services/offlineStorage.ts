@@ -202,9 +202,13 @@ export async function getOfflineStatus(): Promise<{
  * Supprime toutes les données offline (désinscription complète).
  */
 export async function clearAllOfflineData(): Promise<void> {
+  const keys = await AsyncStorage.getAllKeys().catch(() => [] as string[]);
+  const quotaKeys = keys.filter(key => key.startsWith('sxb_quota_'));
   await Promise.all([
-    clearVpnConfig(),
-    // Quotas are per-config and are removed with their config payload,
+    configStore.clearAll(),
+    ...quotaKeys.map(key => AsyncStorage.removeItem(key)),
+    AsyncStorage.removeItem(KEYS.VPN_CONFIG),
+    AsyncStorage.removeItem(KEYS.QUOTA),
     AsyncStorage.removeItem(KEYS.LAST_SYNC),
   ]);
 }

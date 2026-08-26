@@ -22,7 +22,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient from '@/services/apiClient';
 import {
   saveVpnConfig, saveQuotaData, loadQuotaData,
-  isQuotaExhausted, isConfigExpired, consumeQuotaLocally,
+  isQuotaExhausted, isConfigExpired, consumeQuotaLocally, clearAllOfflineData,
 } from '@/services/offlineStorage';
 import type { QuotaData } from '@/services/offlineStorage';
 import { ProvisioningError, provisionAndStore, loadProvisionedConfig, clearProvisionedConfig } from '@/services/provisionClient';
@@ -168,7 +168,7 @@ const VpnContext = createContext<VpnContextType>({
 // ── Provider ─────────────────────────────────────────────────────────────────
 
 export function VpnProvider({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, accountState, refreshAccountState, deviceId } = useAuthContext();
+  const { isAuthenticated, accountState, refreshAccountState, deviceId, logout } = useAuthContext();
 
   const [isConnected,        setIsConnected]        = useState(false);
   const [isConnecting,       setIsConnecting]        = useState(false);
@@ -431,6 +431,33 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     if (trafficTimerRef.current) { clearInterval(trafficTimerRef.current); trafficTimerRef.current = null; }
   }, []);
 
+  const invalidateRemoteAccess = useCallback(async (status: 'revoked' | 'suspended' | 'disabled') => {
+    ++connectionAttemptRef.current;
+    acceptNativeConnectedRef.current = false;
+    stopWatchdog();
+    if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
+    stopTrafficPolling();
+    if (reportTimerRef.current) { clearInterval(reportTimerRef.current); reportTimerRef.current = null; }
+    if (IS_ANDROID && SxbVpnNative) {
+      try { await SxbVpnNative.stopVpn(); } catch { /* le service peut déjà être arrêté */ }
+    }
+    setIsConnected(false);
+    setIsConnecting(false);
+    setVpnState('disconnected');
+    setRevokedStatus(status);
+    setActiveConnection(null);
+    setRemoteConnections([]);
+    setSavedConfigs([]);
+    setActiveConfigId(null);
+    setVpnConfig(null);
+    setQuotaData(null);
+    await AsyncStorage.multiRemove(['@sxb_vpn_connected', '@sxb_active_config_id']).catch(() => {});
+    await clearAllOfflineData().catch(() => {});
+    await clearProvisionedConfig().catch(() => {});
+    addLog(`❌ Accès mobile invalidé par le serveur (${status}) — réactivation requise`);
+    await logout();
+  }, [addLog, logout, stopTrafficPolling, stopWatchdog]);
+
   useEffect(() => {
     if (isConnected) startTrafficPolling();
     else stopTrafficPolling();
@@ -685,7 +712,12 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       } else {
         setVpnConfig(null);
       }
-    } catch {
+    } catch (err: any) {
+      const status = err?.response?.status;
+      if (status === 401 || status === 403 || status === 404) {
+        await invalidateRemoteAccess(status === 403 ? 'suspended' : 'revoked');
+        return;
+      }
       // mode hors-ligne : chargement complet depuis le registre local (multi-config préservées)
       try {
         const local = await configStore.list();
@@ -709,7 +741,41 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         // Ignorer
       }
     }
-  }, [isAuthenticated, activeConfigId, refreshAccountState]);
+  }, [isAuthenticated, activeConfigId, refreshAccountState, invalidateRemoteAccess]);
+
+  // Garde distant : une action dashboard doit couper l’accès même si le VPN
+  // était déjà connecté et que l’utilisateur reste sur l’écran courant.
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const verifyRemoteAccess = async () => {
+      try {
+        const res = await apiClient.get('/mobile/me', { timeout: 4000 });
+        const state = res.data?.accountState?.state;
+        if (state === 'suspended' || state === 'revoked') {
+          await invalidateRemoteAccess(state);
+        }
+      } catch (err: any) {
+        const status = err?.response?.status;
+        if (status === 401 || status === 403 || status === 404) {
+          await invalidateRemoteAccess(status === 403 ? 'suspended' : 'revoked');
+        }
+      }
+    };
+    void verifyRemoteAccess();
+    guardTimerRef.current = setInterval(() => { void verifyRemoteAccess(); }, 10_000);
+    return () => {
+      if (guardTimerRef.current) { clearInterval(guardTimerRef.current); guardTimerRef.current = null; }
+    };
+  }, [isAuthenticated, invalidateRemoteAccess]);
+
+  useEffect(() => {
+    const state = accountState?.state;
+    if (state === 'suspended' || state === 'revoked') {
+      void invalidateRemoteAccess(state);
+    } else if (state === 'ready') {
+      setRevokedStatus('none');
+    }
+  }, [accountState?.state, invalidateRemoteAccess]);
 
   // Restore the selected profile before any network request; a transient keystore error is not "no config".
   useEffect(() => {
@@ -784,7 +850,12 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       if (freshState === 'expired' || freshState === 'exhausted') {
         addLog('ℹ️ État quota/échéance remonté par l’API — tentative conservée avec le profil local');
       }
-    } catch {
+    } catch (err: any) {
+      const status = err?.response?.status;
+      if (status === 401 || status === 403 || status === 404) {
+        await invalidateRemoteAccess(status === 403 ? 'suspended' : 'revoked');
+        return;
+      }
       addLog('ℹ️ Vérification réseau impossible — connexion hors-ligne sur dernier état connu');
     }
 
@@ -1002,7 +1073,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       setVpnState('error');
       setIsConnecting(false);
     }
-  }, [isConnecting, isConnected, revokedStatus, vpnConfig, activeConnection, killSwitch, autoReconnect, deviceId, addLog, startWatchdog, resetStepLogs, addStepLog, updateStepStatus]);
+  }, [isConnecting, isConnected, revokedStatus, vpnConfig, activeConnection, killSwitch, autoReconnect, deviceId, addLog, startWatchdog, resetStepLogs, addStepLog, updateStepStatus, invalidateRemoteAccess]);
 
   useEffect(() => { connectRef.current = connect; });
 

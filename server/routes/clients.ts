@@ -6,6 +6,25 @@ import { canSeeUser, isOwnerRequest } from "../middleware/rbac/owner";
 
 const router = Router();
 
+async function syncClientAccessState(clientId: string, state: 'active' | 'suspended' | 'revoked' | 'deleted') {
+  if (!prisma) return;
+  await (prisma as any).activationSession.updateMany({
+    where: { clientId },
+    data: { status: state === 'active' ? 'active' : state },
+  }).catch(() => {});
+  if (state === 'active') {
+    await (prisma as any).appRegistration.updateMany({
+      where: { clientId },
+      data: { status: 'matched' },
+    }).catch(() => {});
+  } else {
+    await (prisma as any).appRegistration.updateMany({
+      where: { clientId },
+      data: { status: state === 'deleted' ? 'pending' : state },
+    }).catch(() => {});
+  }
+}
+
 // Zod Schema validations
 const createClientSchema = z.object({
   userId: z.string().optional(), // Optional for RESELLER (will use their own ID)
@@ -258,6 +277,9 @@ router.patch("/:id", requireAuth, requirePermission("clients.create"), async (re
       updated = { ...merged, user: u };
     }
 
+    if (body.status === 'active' || body.status === 'suspended' || body.status === 'revoked' || body.status === 'disabled') {
+      await syncClientAccessState(id, body.status === 'active' ? 'active' : body.status);
+    }
     await logDbActivity(req.user?.userId || null, `Modified VPN client details (ID: ${id})`, "info", req.ip);
 
     return res.json(sanitizeVpnClient(updated));
@@ -303,6 +325,7 @@ router.post("/:id/suspend", requireAuth, requirePermission("clients.manage"), as
       updated = { ...inMemoryDb.vpnClients[index], user: u };
     }
 
+    await syncClientAccessState(id, 'suspended');
     await logDbActivity(req.user?.userId || null, `Suspended VPN Client: ${client.token}`, "warning", req.ip);
     return res.json(sanitizeVpnClient(updated));
   } catch (err) {
@@ -343,6 +366,7 @@ router.post("/:id/activate", requireAuth, requirePermission("clients.create"), a
       updated = { ...inMemoryDb.vpnClients[index], user: u };
     }
 
+    await syncClientAccessState(id, 'active');
     await logDbActivity(req.user?.userId || null, `Activated VPN Client: ${client.token}`, "success", req.ip);
     return res.json(sanitizeVpnClient(updated));
   } catch (err) {
@@ -461,10 +485,16 @@ router.delete("/:id", requireAuth, requirePermission("clients.delete"), async (r
     }
 
     if (prisma) {
+      await syncClientAccessState(id, 'deleted');
       await prisma.vpnClient.delete({ where: { id } });
     } else {
       const index = inMemoryDb.vpnClients.findIndex((c) => c.id === id);
       inMemoryDb.vpnClients.splice(index, 1);
+    }
+
+    if (!prisma) {
+      const activationSessions = (inMemoryDb as any).activationSessions || [];
+      (inMemoryDb as any).activationSessions = activationSessions.filter((s: any) => s.clientId !== id);
     }
 
     await logDbActivity(req.user?.userId || null, `Deleted VPN Client account: ${client.token}`, "danger", req.ip);

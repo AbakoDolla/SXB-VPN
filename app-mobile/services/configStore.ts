@@ -77,4 +77,22 @@ export async function getActive(): Promise<StoreResult<StoredConfig>> { const mi
 export async function list(): Promise<StoreResult<ConfigMeta[]>> { try { await migrateLegacy(); return { status:'ok', value: await registry() }; } catch(error:any) { return {status:'error', error}; } }
 export async function setActive(id: string): Promise<StoreResult<void>> { try { const entries=await registry(); if (!entries.some(x=>x.configId===id)) return {status:'missing'}; await putRegistry(entries.map(x=>({...x,isActive:x.configId===id}))); await AsyncStorage.setItem('@sxb_active_config_id', id); return {status:'ok'}; } catch(error:any) { return {status:'error',error}; } }
 export async function remove(id: string): Promise<StoreResult<void>> { try { const entries=await registry(); await AsyncStorage.removeItem(payloadKey(id)); await putRegistry(entries.filter(x=>x.configId!==id)); return {status:'ok'}; } catch(error:any) {return {status:'error',error};} }
+/** Purge tous les payloads chiffrés et le registre après suppression/révocation. */
+export async function clearAll(): Promise<StoreResult<void>> {
+  try {
+    const entries = await registry();
+    await Promise.all(entries.map(entry => AsyncStorage.removeItem(payloadKey(entry.configId))));
+    await putRegistry([]);
+    await AsyncStorage.removeItem('@sxb_active_config_id');
+    await Promise.all([
+      AsyncStorage.removeItem(LEGACY_CONFIG),
+      AsyncStorage.removeItem(LEGACY_META),
+      AsyncStorage.removeItem(LEGACY_PROV),
+      Platform.OS === 'web' ? AsyncStorage.removeItem(`@secure_${LEGACY_CONFIG}`) : SecureStore.deleteItemAsync(LEGACY_CONFIG),
+      Platform.OS === 'web' ? AsyncStorage.removeItem(`@secure_${LEGACY_PROV}`) : SecureStore.deleteItemAsync(LEGACY_PROV),
+    ]);
+    return { status: 'ok' };
+  } catch (error: any) { return { status: 'error', error }; }
+}
+
 export async function updateQuota(id:string, usedBytes:number):Promise<StoreResult<ConfigMeta>> { try { const entries=await registry(); const old=entries.find(x=>x.configId===id); if(!old)return {status:'missing'}; const meta={...old,quotaUsed:Math.max(0,usedBytes)}; await putRegistry(entries.map(x=>x.configId===id?meta:x)); return {status:'ok',value:meta}; }catch(error:any){return {status:'error',error};} }
