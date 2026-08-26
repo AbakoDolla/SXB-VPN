@@ -2,7 +2,7 @@
  * UpdatePrompt — Mise à jour in-app (E3)
  *
  * Fonctionnement :
- *   1. À l'ouverture (+ toutes les 24 h) → GET /xapi/mobile/app-version
+ *   1. À l'ouverture (+ toutes les 24 h) → GET /api/mobile/notifications
  *   2. Compare le `versionCode` distant avec `Constants.expoConfig.android.versionCode`
  *   3. Si versionCode distant > installé → affiche une modale non bloquante
  *      « Nouvelle version disponible » avec :

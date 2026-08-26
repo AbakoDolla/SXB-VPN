@@ -189,7 +189,7 @@ describe('garde-fous contre les régressions Android', () => {
   });
 
   it('affiche un bouton de téléchargement direct dans le mobile', () => {
-    assert.match(updatePrompt, /xapi\/mobile\/app-version/);
+    assert.match(updatePrompt, /\/api\/mobile\/notifications/);
     assert.match(updatePrompt, /downloadAndInstallAppUpdate/);
     assert.match(notificationUpdateScreen, /downloadAndInstallAppUpdate/);
     assert.match(notificationUpdateScreen, /update_download/);

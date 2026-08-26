@@ -1,7 +1,7 @@
 import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import apiClient from '@/services/apiClient';
 
 export interface AppUpdateInfo {
   id?: string;
@@ -14,32 +14,26 @@ export interface AppUpdateInfo {
   publishedAt?: string;
 }
 
-export const APP_VERSION_URL = 'https://vpnsxb.afrihall.com/xapi/mobile/app-version';
-
 export async function fetchLatestAppUpdate(): Promise<AppUpdateInfo | null> {
   if (Platform.OS !== 'android') return null;
   try {
-    const deviceId = await AsyncStorage.getItem('@sxb_device_id');
-    const response = await fetch(APP_VERSION_URL, {
-      method: 'GET',
-      headers: {
-        Accept: 'application/json',
-        ...(deviceId ? { 'X-SXB-Device-ID': deviceId } : {}),
-      },
-    });
-    if (!response.ok) return null;
-    const json = await response.json();
-    if (typeof json?.versionCode !== 'number' || !json?.versionName || !json?.apkUrl) return null;
-    if (!String(json.apkUrl).startsWith('https://')) return null;
+    // Le mobile activé dispose déjà d’une session authentifiée et de son Device ID.
+    // Le serveur filtre la publication avant de la renvoyer dans les notifications.
+    const response = await apiClient.get('/mobile/notifications');
+    const item = (Array.isArray(response.data) ? response.data : []).find(
+      (notification: any) => notification?.appUpdate === true && notification?.actionType === 'download_app_update',
+    );
+    if (!item || typeof item.versionCode !== 'number' || !item.versionName || !item.downloadUrl) return null;
+    if (!String(item.downloadUrl).startsWith('https://')) return null;
     return {
-      id: json.id ? String(json.id) : undefined,
-      versionCode: json.versionCode,
-      versionName: String(json.versionName),
-      apkUrl: String(json.apkUrl),
-      notes: json.notes ? String(json.notes) : undefined,
-      minSupportedCode: Number.isInteger(json.minSupportedCode) ? json.minSupportedCode : undefined,
-      forceUpdate: json.forceUpdate === true,
-      publishedAt: json.publishedAt ? String(json.publishedAt) : undefined,
+      id: item.id ? String(item.id) : undefined,
+      versionCode: item.versionCode,
+      versionName: String(item.versionName),
+      apkUrl: String(item.downloadUrl),
+      notes: item.notes ? String(item.notes) : undefined,
+      minSupportedCode: Number.isInteger(item.minSupportedCode) ? item.minSupportedCode : undefined,
+      forceUpdate: item.forceUpdate === true,
+      publishedAt: item.createdAt ? String(item.createdAt) : undefined,
     };
   } catch {
     return null;
