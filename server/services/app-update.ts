@@ -90,10 +90,20 @@ export async function clearPublishedAppUpdate(): Promise<void> {
 export async function isActivatedDevice(deviceId: string): Promise<boolean> {
   const normalized = deviceId.trim();
   if (!normalized || !prisma) return false;
+
+  // Source de vérité principale : un client VPN actif avec un Device ID lié.
+  // Les anciennes installations peuvent ne pas encore avoir de ligne AppRegistration.
+  const client = await (prisma as any).vpnClient.findUnique({
+    where: { deviceId: normalized },
+    select: { id: true, status: true, activatedAt: true, appRegisteredAt: true },
+  });
+  if (client?.status === "active" && (client.activatedAt || client.appRegisteredAt || client.id)) return true;
+
+  // Compatibilité avec les appareils uniquement présents dans le registre d’app.
   const registration = await (prisma as any).appRegistration.findUnique({ where: { deviceId: normalized } });
   if (!registration || registration.status !== "matched" || !registration.clientId) return false;
-  const client = await (prisma as any).vpnClient.findUnique({ where: { id: registration.clientId }, select: { status: true } });
-  return client?.status === "active";
+  const registeredClient = await (prisma as any).vpnClient.findUnique({ where: { id: registration.clientId }, select: { status: true } });
+  return registeredClient?.status === "active";
 }
 
 export async function getMobileAppUpdate(deviceId: string | null | undefined): Promise<PublishedAppUpdate | null> {
