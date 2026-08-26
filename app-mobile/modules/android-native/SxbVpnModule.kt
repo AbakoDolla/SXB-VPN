@@ -11,6 +11,8 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.net.Uri
 import android.net.VpnService
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.os.Build
 import com.sxbvpn.vpnmodule.SxbSecureLogger
 import com.sxbvpn.vpnmodule.SxbSecureLogger.VpnEvent
@@ -38,7 +40,9 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
 
     companion object {
         private const val VPN_REQUEST_CODE = 0x0F4C
-        private const val ANNOUNCEMENT_CHANNEL_ID = "SXB_ANNOUNCEMENTS"
+        // V2 : l’identifiant versionné permet de recréer un canal sonore après
+        // une ancienne release qui avait pu enregistrer le canal sans son.
+        private const val ANNOUNCEMENT_CHANNEL_ID = "SXB_ANNOUNCEMENTS_V2"
     }
 
     private var vpnPermissionPromise: Promise? = null
@@ -280,7 +284,12 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
         try {
             val ctx = reactApplicationContext
             val manager = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val audioAttributes = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
                 val channel = NotificationChannel(
                     ANNOUNCEMENT_CHANNEL_ID,
                     "SXB VPN Alerts",
@@ -288,6 +297,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                 ).apply {
                     description = "SXB VPN announcements and important account updates"
                     enableVibration(true)
+                    setSound(soundUri, audioAttributes)
                 }
                 manager.createNotificationChannel(channel)
             }
@@ -320,6 +330,12 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                 .setAutoCancel(true)
                 .setContentIntent(pendingIntent)
                 .setCategory(Notification.CATEGORY_MESSAGE)
+                .apply {
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                        setSound(soundUri)
+                        setDefaults(Notification.DEFAULT_ALL)
+                    }
+                }
                 .build()
             manager.notify("sxb_announcement", id.hashCode(), notification)
             promise.resolve(true)

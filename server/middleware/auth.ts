@@ -121,7 +121,7 @@ export function requirePermission(permissionName: string) {
     if (req.user.role === "OWNER") {
       return next();
     }
-    const hasPermission = req.user.permissions.includes(permissionName) || req.user.role === "ADMIN" || req.user.role === "SUPER_ADMIN";
+    const hasPermission = req.user.permissions.includes(permissionName);
     if (!hasPermission) {
       return res.status(403).json({ error: "errors.auth.forbidden_permission", message: `Missing required permission: ${permissionName}` });
     }

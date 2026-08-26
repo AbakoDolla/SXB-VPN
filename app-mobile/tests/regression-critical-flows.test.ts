@@ -125,6 +125,11 @@ describe('garde-fous contre les régressions Android', () => {
   const dashboardProfiles = source('../artifacts/sxb-dashboard/src/components/VpnProfilesView.tsx');
   const transportProbe = source('../server/services/transport-probe.ts');
   const provisionRoutes = source('../server/routes/provision.ts');
+  const rbacRoutes = source('../server/routes/rbac.ts');
+  const authMiddleware = source('../server/middleware/auth.ts');
+  const rbacView = source('../artifacts/sxb-dashboard/src/components/RBACView.tsx');
+  const announcementsView = source('../artifacts/sxb-dashboard/src/components/AnnouncementsView.tsx');
+  const nativeModuleSource = source('modules/android-native/SxbVpnModule.kt');
 
   it('utilise Expo Crypto au lieu de dépendre de globalThis.crypto sous Hermes', () => {
     assert.match(configStore, /import \* as Crypto from 'expo-crypto';/);
@@ -151,6 +156,23 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(provisionRoutes, /sub\.status === 'exhausted'/);
     assert.match(provisionRoutes, /status: 'expired'/);
     assert.match(mobileRoutes, /subscriptionState === 'active'/);
+  });
+
+  it('autorise l’écriture RBAC au SUPER_ADMIN et applique réellement les permissions', () => {
+    assert.match(rbacRoutes, /requireRole\(\["SUPER_ADMIN"\]\)/);
+    assert.doesNotMatch(rbacRoutes, /requireRole\(\["SUPER_ADMIN", "ADMIN"\]\)/);
+    assert.match(authMiddleware, /const hasPermission = req\.user\.permissions\.includes\(permissionName\)/);
+    assert.doesNotMatch(authMiddleware, /role === "ADMIN" \|\| req\.user\.role === "SUPER_ADMIN"/);
+    assert.match(rbacView, /currentUserRole === UserRole\.SUPER_ADMIN/);
+    assert.match(rbacView, /min-w-\[780px\]/);
+  });
+
+  it('sélectionne un appareil réel pour les annonces et utilise un canal sonore versionné', () => {
+    assert.match(announcementsView, /fetchDevices\(\)/);
+    assert.match(announcementsView, /Tous les appareils actifs/);
+    assert.match(announcementsView, /device\.deviceId/);
+    assert.match(nativeModuleSource, /SXB_ANNOUNCEMENTS_V2/);
+    assert.match(nativeModuleSource, /setSound\(soundUri, audioAttributes\)/);
   });
 
   it('protège le cycle Foreground Android contre la désynchronisation', () => {

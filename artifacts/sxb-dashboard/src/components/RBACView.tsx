@@ -15,7 +15,7 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
   const [permissions, setPermissions] = useState<AppPermission[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const isAdmin = currentUserRole === UserRole.ADMIN || currentUserRole === UserRole.SUPER_ADMIN;
+  const canEdit = currentUserRole === UserRole.SUPER_ADMIN;
 
   const loadRBAC = async () => {
     setLoading(true);
@@ -35,10 +35,11 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
   }, []);
 
   const handleTogglePermission = async (roleId: string, permCode: string, isCurrentlyChecked: boolean) => {
-    if (!isAdmin) return;
+    if (!canEdit) return;
     
-    // Prevent locking Admin out of their own critical scopes
-    if (roleId === "role-admin" && (permCode === "rbac:write" || permCode === "rbac:read")) {
+    // Le SUPER_ADMIN ne peut pas supprimer ses propres garde-fous RBAC.
+    const editedRole = roles.find((r) => r.id === roleId);
+    if (editedRole?.name === UserRole.SUPER_ADMIN && (permCode === "rbac:write" || permCode === "rbac:read")) {
       alert("Interdiction de sécurité : L'administrateur système ne peut pas révoquer ses propres permissions d'administration RBAC !");
       return;
     }
@@ -87,19 +88,20 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
         <p className="text-sm text-gray-400 mt-1">Configurez les droits d'accès granulaires de chaque niveau d'habilitation (Admin, Support, Revendeur) de la plateforme.</p>
       </div>
 
-      {!isAdmin && (
+      {!canEdit && (
         <div className="p-4 border border-cyan-800 bg-cyan-950/20 text-cyan-300 rounded-lg text-xs leading-relaxed flex gap-3 items-start">
           <ShieldAlert className="h-5 w-5 text-cyan-400 shrink-0" />
           <div>
             <p className="font-bold">Mode Lecture Seule Actif</p>
-            <p className="mt-0.5">Seul un Administrateur système peut modifier la table de vérité RBAC ci-dessous.</p>
+            <p className="mt-0.5">Seul le SUPER_ADMIN peut modifier la table de vérité RBAC. Les autres rôles disposent d’un accès en lecture seule.</p>
           </div>
         </div>
       )}
 
       {/* RBAC Grid Matrix */}
-      <div className="border border-gray-800/80 rounded-xl bg-gray-950/20 overflow-hidden backdrop-blur-md">
-        <div className="overflow-x-auto">
+      <div className="dashboard-card border border-gray-800/80 rounded-2xl bg-gray-950/20 overflow-hidden backdrop-blur-md">
+        <div className="overflow-x-auto overscroll-x-contain">
+          <div className="min-w-[780px]">
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="border-b border-gray-800/80 bg-gray-900/40 text-xs font-semibold text-gray-400 uppercase tracking-wider">
@@ -154,10 +156,10 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
                           <input
                             type="checkbox"
                             checked={isChecked}
-                            disabled={!isAdmin}
+                            disabled={!canEdit}
                             onChange={() => handleTogglePermission(role.id, perm.code, isChecked)}
                             className={`h-4.5 w-4.5 rounded text-cyan-500 focus:ring-cyan-500/30 bg-gray-900 border-gray-800 transition-all ${
-                              isAdmin ? "cursor-pointer" : "cursor-not-allowed opacity-50"
+                              canEdit ? "cursor-pointer" : "cursor-not-allowed opacity-50"
                             }`}
                           />
                         </td>
@@ -168,6 +170,7 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
               })}
             </tbody>
           </table>
+          </div>
         </div>
       </div>
     </div>
