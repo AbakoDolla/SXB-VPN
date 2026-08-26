@@ -89,6 +89,14 @@ export interface Notification {
   type: 'info' | 'warning' | 'error' | 'success';
   isRead: boolean;
   createdAt: string;
+  appUpdate?: boolean;
+  actionType?: 'download_app_update';
+  downloadUrl?: string;
+  versionCode?: number;
+  versionName?: string;
+  minSupportedCode?: number;
+  forceUpdate?: boolean;
+  notes?: string;
 }
 
 export interface ApiError {

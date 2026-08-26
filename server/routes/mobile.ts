@@ -5,6 +5,7 @@ import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { generateTokens, requireAuth, AuthenticatedRequest } from "../middleware/auth";
 import { configHashForProfile, configVersionForProfile } from "../services/config-hash";
 import { getActiveAnnouncements } from "./announcements";
+import { getMobileAppUpdate, toMobileAppVersion } from "../services/app-update";
 
 // ── AES-256-CBC decrypt (same key as vpn-profiles.ts) ─────────────────────────
 const ENC_ALGO = "aes-256-cbc";
@@ -675,6 +676,31 @@ router.get('/notifications', async (req: AuthenticatedRequest, res: Response) =>
       }
     } catch (_) { /* les alertes de compte restent disponibles si la DB est indisponible */ }
 
+    // Mise à jour applicative : seulement pour une app enregistrée, activée et ciblée.
+    try {
+      const deviceId = String(req.headers['x-sxb-device-id'] || req.query.deviceId || '').trim();
+      const appUpdate = await getMobileAppUpdate(deviceId);
+      if (appUpdate) {
+        const version = toMobileAppVersion(appUpdate);
+        notifications.push({
+          id: `app-update-${version.versionCode}`,
+          type: 'info',
+          title: 'Nouvelle version SXB VPN disponible',
+          message: `${version.versionName} est disponible. Téléchargez-la depuis cette notification.`,
+          createdAt: version.publishedAt,
+          read: false,
+          appUpdate: true,
+          actionType: 'download_app_update',
+          downloadUrl: version.apkUrl,
+          versionCode: version.versionCode,
+          versionName: version.versionName,
+          minSupportedCode: version.minSupportedCode,
+          forceUpdate: version.forceUpdate,
+          notes: version.notes,
+        });
+      }
+    } catch (_) { /* une mise à jour indisponible ne bloque pas les notifications */ }
+
     // Ajouter les mises à jour support et les derniers logs d'audit si disponibles
     if (prisma) {
       try {
@@ -727,14 +753,16 @@ router.get('/notifications', async (req: AuthenticatedRequest, res: Response) =>
 });
 
 // GET /api/mobile/version & /api/mobile/app-version — vérification de version et lien de téléchargement APK
-router.get(['/version', '/app-version'], async (_req: Request, res: Response) => {
+router.get(['/version', '/app-version'], async (req: Request, res: Response) => {
+  const deviceId = String(req.headers['x-sxb-device-id'] || req.query.deviceId || '').trim();
+  const published = await getMobileAppUpdate(deviceId).catch(() => null);
+  if (published) return res.json(toMobileAppVersion(published));
   return res.json({
-    versionCode: 18,
-    versionName: "1.8.0",
-    minSupportedCode: 10,
-    apkUrl: "https://vpnsxb.afrihall.com/downloads/SXB-VPN-release.apk",
-    notes: "Refonte UI/UX complète, support Xray/VLESS et HTTP upstream optimisé, correctif des configurations orphelines et notifications ciblées.",
-    changelog: "Refonte UI/UX complète, support Xray/VLESS et HTTP upstream optimisé, correctif des configurations orphelines et notifications ciblées.",
+    versionCode: 0,
+    versionName: "",
+    minSupportedCode: 0,
+    apkUrl: "",
+    notes: "",
     forceUpdate: false,
   });
 });

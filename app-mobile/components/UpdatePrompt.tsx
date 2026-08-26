@@ -2,7 +2,7 @@
  * UpdatePrompt — Mise à jour in-app (E3)
  *
  * Fonctionnement :
- *   1. À l'ouverture (+ toutes les 24 h) → GET /api/mobile/app-version
+ *   1. À l'ouverture (+ toutes les 24 h) → GET /xapi/mobile/app-version
  *   2. Compare le `versionCode` distant avec `Constants.expoConfig.android.versionCode`
  *   3. Si versionCode distant > installé → affiche une modale non bloquante
  *      « Nouvelle version disponible » avec :
@@ -20,7 +20,7 @@
  *     autorité `<package>.provider`, chemins définis dans file_paths.xml).
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator, Modal, Platform, Pressable, StyleSheet, Text, View,
 } from 'react-native';
@@ -30,26 +30,15 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // L'API legacy est stable en SDK 54 (createDownloadResumable, getContentUriAsync).
 // Utiliser l'API par défaut casserait l'appel getContentUriAsync requis pour
 // ouvrir l'APK via un content:// URI compatible FileProvider.
-import * as FileSystem from 'expo-file-system/legacy';
-import * as IntentLauncher from 'expo-intent-launcher';
 import Colors from '@/constants/colors';
+import { downloadAndInstallAppUpdate, fetchLatestAppUpdate, type AppUpdateInfo } from '@/services/appUpdate';
 import { useTranslation } from '@/localization';
-
-// Endpoint public (hors /api pour éviter la maintenanceGuard).
-const APP_VERSION_URL = 'https://vpnsxb.afrihall.com/api/mobile/app-version';
 
 // Intervalle de re-vérification : 24 h (mission).
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const CHECK_KEY = '@sxb_last_update_check_v1';
 // Version « dismiss » : ne pas re-proposer immédiatement une version rejetée.
 const DISMISS_KEY = '@sxb_dismissed_version_v1';
-
-interface AppVersionPayload {
-  versionCode: number;
-  versionName: string;
-  apkUrl: string;
-  notes?: string;
-}
 
 function currentVersionCode(): number {
   const raw = (Constants.expoConfig as any)?.android?.versionCode;
@@ -61,37 +50,19 @@ function currentVersionName(): string {
   return (Constants.expoConfig?.version as string) || '0.0.0';
 }
 
-async function fetchLatest(): Promise<AppVersionPayload | null> {
-  try {
-    const res = await fetch(APP_VERSION_URL, {
-      method: 'GET',
-      headers: { 'Accept': 'application/json' },
-    });
-    if (!res.ok) return null;
-    const json = await res.json();
-    if (typeof json?.versionCode !== 'number' || !json?.versionName || !json?.apkUrl) return null;
-    return {
-      versionCode: json.versionCode,
-      versionName: String(json.versionName),
-      apkUrl: String(json.apkUrl),
-      notes: json.notes ? String(json.notes) : undefined,
-    };
-  } catch {
-    return null;
-  }
+async function fetchLatest(): Promise<AppUpdateInfo | null> {
+  return fetchLatestAppUpdate();
 }
 
 // ── Composant ────────────────────────────────────────────────────────────────
 export default function UpdatePrompt() {
-  const { t, language } = useTranslation();
-  const [remote, setRemote] = useState<AppVersionPayload | null>(null);
+  const { t } = useTranslation();
+  const [remote, setRemote] = useState<AppUpdateInfo | null>(null);
   const [visible, setVisible] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [installing, setInstalling] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const downloadRef = useRef<any>(null);
-
   const installedVc = useMemo(() => currentVersionCode(), []);
   const installedVn = useMemo(() => currentVersionName(), []);
 
@@ -142,49 +113,18 @@ export default function UpdatePrompt() {
     setDownloading(true);
     setErrorMsg(null);
     setProgress(0);
+    let installStarted = false;
     try {
-      // Cible : cache privé de l'app (nettoyable par le système, mais suffisant
-      // le temps de l'installation).
-      const cacheDir = FileSystem.cacheDirectory || FileSystem.documentDirectory || '';
-      const target = `${cacheDir}sxbvpn-${remote.versionCode}.apk`;
-
-      // Purger un précédent téléchargement pour la même cible (téléchargement
-      // partiel corrompu, autre versionCode…).
-      try {
-        const info = await FileSystem.getInfoAsync(target);
-        if (info.exists) await FileSystem.deleteAsync(target, { idempotent: true });
-      } catch { /* non bloquant */ }
-
-      const dl = FileSystem.createDownloadResumable(
-        remote.apkUrl,
-        target,
-        {},
-        (p) => {
-          const total = p.totalBytesExpectedToWrite || 1;
-          const written = p.totalBytesWritten || 0;
-          setProgress(Math.min(1, written / total));
-        },
-      );
-      downloadRef.current = dl;
-      const result = await dl.downloadAsync();
-      if (!result?.uri) throw new Error('download_no_uri');
-
-      // Ouvrir l'installateur système Android via FileProvider (content://).
-      setInstalling(true);
-      const contentUri = await FileSystem.getContentUriAsync(result.uri);
-      // FLAG_GRANT_READ_URI_PERMISSION = 1
-      // FLAG_ACTIVITY_NEW_TASK          = 268435456 (implicite via IntentLauncher)
-      await IntentLauncher.startActivityAsync('android.intent.action.INSTALL_PACKAGE', {
-        data: contentUri,
-        type: 'application/vnd.android.package-archive',
-        flags: 1,
+      await downloadAndInstallAppUpdate(remote, setProgress, () => {
+        installStarted = true;
+        setInstalling(true);
       });
       // La modale peut rester ouverte — l'utilisateur revient dans l'app une
       // fois l'installation terminée.
     } catch (e) {
       // Distinguer l'échec du téléchargement de celui de l'ouverture d'intent
       // pour aider l'utilisateur.
-      setErrorMsg(installing ? t('update_install_error') : t('update_download_error'));
+      setErrorMsg(installStarted ? t('update_install_error') : t('update_download_error'));
     } finally {
       setDownloading(false);
       // installing reste true jusqu'à ce que la modale soit fermée

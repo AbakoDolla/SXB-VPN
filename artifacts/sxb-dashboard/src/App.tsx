@@ -23,6 +23,7 @@ import SubscriptionsView from "./components/SubscriptionsView";
 import VpnProfilesView from "./components/VpnProfilesView";
 import OwnerLogView from "./components/OwnerLogView";
 import AnnouncementsView from "./components/AnnouncementsView";
+import AppUpdatesView from "./components/AppUpdatesView";
 import MaintenancePage from "./components/MaintenancePage";
 import Layout from "./components/Layout";
 import { useEffect, useState, useCallback } from 'react';
@@ -297,6 +298,8 @@ function MainApp() {
         return <SupportView />;
       case 'announcements':
         return <AnnouncementsView />;
+      case 'app-updates':
+        return <AppUpdatesView currentUserRole={role} />;
       case 'rbac':
         return <RBACView currentUserRole={role} onRolePermissionsUpdated={handleRolePermissionsUpdated} />;
       case 'accounts':

@@ -6,7 +6,7 @@ import {
   Settings, LogOut, UserCog, Terminal, Code2, Zap, Box,
   Menu, X, UserPlus, HeadphonesIcon, BadgePercent, Activity,
   ChevronDown, Network, Radio, Cpu, BarChart3, Ticket,
-  PackageOpen, GitBranch, ScrollText, BellRing,
+  PackageOpen, GitBranch, ScrollText, BellRing, Download,
 } from 'lucide-react';
 
 interface LayoutProps {
@@ -75,7 +75,7 @@ export default function Layout({
       'vpn-engine': 'vpnengine', xray: 'vpnengine', singbox: 'vpnengine', payload: 'vpnengine',
       'vpn-profiles': 'vpnengine', announcements: 'admin',
       sessions: 'monitoring', analytics: 'monitoring', servers: 'monitoring', monitoring: 'monitoring',
-      accounts: 'admin', resellers: 'admin', rbac: 'admin',
+      accounts: 'admin', resellers: 'admin', rbac: 'admin', 'app-updates': 'admin',
     };
     const group = groupMap[activeRoute];
     if (group) setOpenGroups(prev => ({ ...prev, [group]: true }));
@@ -140,6 +140,7 @@ export default function Layout({
         { kind: 'leaf', id: 'resellers', label: t('sidebar.resellers'), icon: UserCog, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
         { kind: 'leaf', id: 'rbac', label: t('sidebar.rbac'), icon: Shield, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
         { kind: 'leaf', id: 'announcements', label: t('sidebar.annonces'), icon: BellRing, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
+        { kind: 'leaf', id: 'app-updates', label: t('sidebar.app_updates'), icon: Download, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'] },
       ],
     },
     {

@@ -129,6 +129,10 @@ describe('garde-fous contre les régressions Android', () => {
   const authMiddleware = source('../server/middleware/auth.ts');
   const rbacView = source('../artifacts/sxb-dashboard/src/components/RBACView.tsx');
   const announcementsView = source('../artifacts/sxb-dashboard/src/components/AnnouncementsView.tsx');
+  const appUpdateRoutes = source('../server/routes/app-updates.ts');
+  const appUpdateView = source('../artifacts/sxb-dashboard/src/components/AppUpdatesView.tsx');
+  const updatePrompt = source('components/UpdatePrompt.tsx');
+  const notificationUpdateScreen = source('app/(tabs)/notifications.tsx');
   const nativeModuleSource = source('modules/android-native/SxbVpnModule.kt');
 
   it('utilise Expo Crypto au lieu de dépendre de globalThis.crypto sous Hermes', () => {
@@ -173,6 +177,23 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(announcementsView, /device\.deviceId/);
     assert.match(nativeModuleSource, /SXB_ANNOUNCEMENTS_V2/);
     assert.match(nativeModuleSource, /setSound\(soundUri, audioAttributes\)/);
+  });
+
+  it('publie les mises à jour uniquement par SUPER_ADMIN et cible des appareils activés', () => {
+    assert.match(appUpdateRoutes, /SUPER_ADMIN_ONLY/);
+    assert.match(appUpdateRoutes, /isActivatedDevice\(deviceId\)/);
+    assert.match(appUpdateRoutes, /targetDeviceIds/);
+    assert.match(appUpdateView, /Publier et distribuer/);
+    assert.match(appUpdateView, /SUPER_ADMIN/);
+    assert.match(appUpdateView, /activeDevices/);
+  });
+
+  it('affiche un bouton de téléchargement direct dans le mobile', () => {
+    assert.match(updatePrompt, /xapi\/mobile\/app-version/);
+    assert.match(updatePrompt, /downloadAndInstallAppUpdate/);
+    assert.match(notificationUpdateScreen, /downloadAndInstallAppUpdate/);
+    assert.match(notificationUpdateScreen, /update_download/);
+    assert.match(mobileRoutes, /actionType: 'download_app_update'/);
   });
 
   it('protège le cycle Foreground Android contre la désynchronisation', () => {

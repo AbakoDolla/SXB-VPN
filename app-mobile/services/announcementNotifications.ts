@@ -10,8 +10,8 @@ interface SxbAnnouncementNativeModule {
   postAnnouncementNotification?: (id: string, title: string, message: string) => Promise<boolean>;
 }
 
-function isAnnouncement(notification: MobileNotification): boolean {
-  return notification.id.startsWith('announcement-');
+function isDeliverableNotification(notification: MobileNotification): boolean {
+  return notification.id.startsWith('announcement-') || notification.id.startsWith('app-update-');
 }
 
 async function readDeliveredIds(): Promise<string[]> {
@@ -45,7 +45,7 @@ export async function syncAnnouncementNotifications(): Promise<void> {
   }
 
   const announcements = notifications
-    .filter(isAnnouncement)
+    .filter(isDeliverableNotification)
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   if (announcements.length === 0) return;
 

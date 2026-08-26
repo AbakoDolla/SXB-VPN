@@ -25,6 +25,7 @@ import adminTokensRouter from "./server/routes/admin-tokens";
 import supportRouter from "./server/routes/support";
 import auditLogsRouter from "./server/routes/audit-logs";
 import announcementsRouter from "./server/routes/announcements";
+import appUpdatesRouter from "./server/routes/app-updates";
 import devicesRouter from "./server/routes/devices";
 import sshRouter from "./server/routes/ssh";
 import payloadRouter from "./server/routes/payload";
@@ -134,6 +135,7 @@ async function startServer() {
   app.use("/api/support", supportRouter);
   app.use("/api/audit-logs", auditLogsRouter);
   app.use("/api/announcements", announcementsRouter);
+  app.use("/api/app-updates", appUpdatesRouter);
   app.use("/api/devices", devicesRouter);
   app.use("/api/ssh", sshRouter);
   app.use("/api/payload", payloadRouter);

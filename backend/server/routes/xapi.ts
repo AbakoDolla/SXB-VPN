@@ -9,6 +9,7 @@ import { Router, Request, Response } from "express";
 import fs from "fs";
 import path from "path";
 import { prisma, inMemoryDb } from "../database";
+import { getMobileAppUpdate, readPublishedAppUpdate, toMobileAppVersion } from "../services/app-update";
 
 const router = Router();
 
@@ -66,9 +67,14 @@ function fallbackVersion(): AppVersionPayload {
 // ── GET /xapi/mobile/app-version ─────────────────────────────────────────────
 // Endpoint public, sans authentification, léger : appelé au lancement de l'app
 // et toutes les 24 h. Renvoie versionCode/versionName/apkUrl (JSON).
-router.get("/mobile/app-version", (_req: Request, res: Response) => {
-  const payload = readVersionFile() || fallbackVersion();
-  res.set("Cache-Control", "public, max-age=300"); // 5 min côté CDN/proxy
+router.get("/mobile/app-version", async (req: Request, res: Response) => {
+  const deviceId = String(req.headers["x-sxb-device-id"] || req.query.deviceId || "").trim();
+  const storedPublication = await readPublishedAppUpdate().catch(() => null);
+  const published = storedPublication ? await getMobileAppUpdate(deviceId).catch(() => null) : null;
+  const payload = published
+    ? toMobileAppVersion(published)
+    : { versionCode: 0, versionName: "", apkUrl: "", notes: "", minSupportedCode: 0, forceUpdate: false };
+  res.set("Cache-Control", "private, max-age=300");
   res.json(payload);
 });
 

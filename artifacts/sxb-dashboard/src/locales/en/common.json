@@ -47,6 +47,7 @@
     "admin": "Administration",
     "accounts": "Admin Accounts",
     "annonces": "Announcements",
+    "app_updates": "App updates",
     "rbac": "RBAC Controls",
     "settings": "Settings"
   }

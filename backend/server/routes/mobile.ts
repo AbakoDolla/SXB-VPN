@@ -4,6 +4,8 @@ import crypto from "crypto";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { generateTokens, requireAuth, AuthenticatedRequest } from "../middleware/auth";
 import { configHashForProfile, configVersionForProfile } from "../services/config-hash";
+import { getActiveAnnouncements } from "./announcements";
+import { getMobileAppUpdate, toMobileAppVersion } from "../services/app-update";
 
 // ── AES-256-CBC decrypt (same key as vpn-profiles.ts) ─────────────────────────
 const ENC_ALGO = "aes-256-cbc";
@@ -64,7 +66,10 @@ async function findClientByUserId(userId: string) {
   return { ...client, subscriptions };
 }
 
-// Report idempotency is persisted in PostgreSQL; process restarts must not recount a session.
+// Deduplication memory store for (sessionId, seq)
+const processedReports = new Set<string>();
+const MAX_PROCESSED_REPORTS = 10000;
+
 /**
  * A1 — Fonction unique d'application du delta de consommation data.
  * Une seule transaction Prisma, une seule autorité de stockage (`subscription.quotaUsed` & `vpnClient.quotaUsed`).
@@ -86,13 +91,17 @@ export async function applyUsageDelta(
     return { applied: false, reason: "invalid_delta" };
   }
 
-  // Idempotence survives pm2/container restarts. The unique index is the arbiter.
-  if (prisma && sessionId && seq !== undefined) {
-    await (prisma as any).$executeRawUnsafe(`CREATE TABLE IF NOT EXISTS usage_reports ("sessionId" text NOT NULL, seq integer NOT NULL, "appliedAt" timestamptz NOT NULL DEFAULT NOW(), "clientId" text, UNIQUE ("sessionId", seq))`);
-    const inserted = await (prisma as any).$executeRawUnsafe(
-      `INSERT INTO usage_reports ("sessionId", seq, "clientId") VALUES ($1, $2, $3) ON CONFLICT ("sessionId", seq) DO NOTHING`, sessionId, seq, clientId,
-    );
-    if (Number(inserted) === 0) return { applied: false, reason: "duplicate_report" };
+  // Idempotence : déduplication sur (sessionId, seq)
+  if (sessionId && seq !== undefined) {
+    const reportKey = `${sessionId}:${seq}`;
+    if (processedReports.has(reportKey)) {
+      return { applied: false, reason: "duplicate_report" };
+    }
+    processedReports.add(reportKey);
+    if (processedReports.size > MAX_PROCESSED_REPORTS) {
+      const first = processedReports.values().next().value;
+      if (first) processedReports.delete(first);
+    }
   }
 
   if (prisma) {
@@ -106,10 +115,6 @@ export async function applyUsageDelta(
         subId = activeSub?.id;
       }
 
-      if (subId && clientId) {
-        const owned = await tx.subscription.findFirst({ where: { id: subId, clientId } });
-        if (!owned) throw new Error('subscription_not_owned');
-      }
       if (subId) {
         await tx.subscription.update({
           where: { id: subId },
@@ -435,25 +440,32 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
   try {
     const client: any = await findClientByUserId(req.user!.userId);
     if (!client) return res.status(404).json({ error: "errors.mobile.no_account" });
+    // Sans identifiant : dernier abonnement actif (compatibilité). Avec
+    // subscriptionId : ne jamais substituer un autre profil lors d'une bascule.
+    const requestedSubscriptionId = typeof req.query.subscriptionId === 'string'
+      ? req.query.subscriptionId.trim()
+      : '';
     let sub: any = null;
     if (prisma) {
-      // Le mobile peut sélectionner plusieurs abonnements. Le quota affiché
-      // doit donc être celui de l’abonnement demandé, et non l’agrégat client.
-      const requestedSubscriptionId = typeof req.query.subscriptionId === "string"
-        ? req.query.subscriptionId.trim()
-        : "";
-      const where = requestedSubscriptionId
-        ? { id: requestedSubscriptionId, clientId: client.id }
-        : { clientId: client.id, status: "active" };
       sub = await (prisma as any).subscription.findFirst({
-        where,
+        where: requestedSubscriptionId
+          ? { clientId: client.id, id: requestedSubscriptionId }
+          : { clientId: client.id, status: "active" },
         include: { profile: true },
         orderBy: { createdAt: "desc" },
       });
     }
+    if (requestedSubscriptionId && !sub) {
+      return res.status(404).json({ error: 'errors.mobile.connection_not_found', message: 'Connexion VPN introuvable' });
+    }
 
     const state = computeAccountState(client, sub);
-    const profile = sub?.profile || null;
+    let subscriptionState = sub?.status || state.state;
+    if (sub?.status === 'active') {
+      if (sub.expireAt && new Date(sub.expireAt).getTime() < Date.now()) subscriptionState = 'expired';
+      else if (Number(sub.quotaBytes ?? 0) > 0 && Number(sub.quotaUsed ?? 0) >= Number(sub.quotaBytes)) subscriptionState = 'exhausted';
+    }
+    const profile = subscriptionState === 'active' ? (sub?.profile || null) : null;
     const proto = (profile?.protocol || "ssh").toLowerCase(); // "ssh" | "ssh+payload" | "vless" …
 
     // ── Charger le payload SSH (via JOIN Prisma d'abord, puis requête séparée) ─
@@ -499,7 +511,7 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
     // plus exposés ici. Ils transitent uniquement via /api/provision/activate
     // (chiffrés AES-256-GCM, liés à l'appareil, stockés dans Android Keystore).
     return res.json({
-      state: state.state,
+      state: subscriptionState,
       protocols,
       serverInfo: { location: profile ? "SXB" : "Africa / Cameroun" },
       // connectionUri exposé uniquement pour affichage informatif (pas de credential)
@@ -521,30 +533,19 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
         configHash:      configHashForProfile(profile),
         // ❌ Champs supprimés : host, port, username, password, sni, uuid, payload, etc.
       } : null,
-      // quota : autorité de l’abonnement sélectionné. L’agrégat compte est
-      // retourné séparément pour éviter de mélanger plusieurs configurations.
+      // Quota de l'abonnement demandé. Le fallback client préserve les anciens comptes
+      // qui n'ont pas encore de quotas séparés par Subscription.
       quota: {
-        totalQuota:  Number(sub?.quotaBytes ?? client.quotaTotal ?? 0),
-        usedQuota:   Number(sub?.quotaUsed ?? client.quotaUsed ?? 0),
-        expiryDate:  sub?.expireAt
-          ? new Date(sub.expireAt).toISOString()
-          : client.expireAt ? new Date(client.expireAt).toISOString() : null,
-      },
-      accountQuota: {
-        totalQuota: Number(client.quotaTotal ?? 0),
-        usedQuota: Number(client.quotaUsed ?? 0),
-        remainingQuota: Math.max(Number(client.quotaTotal ?? 0) - Number(client.quotaUsed ?? 0), 0),
-        expiryDate: client.expireAt ? new Date(client.expireAt).toISOString() : null,
+        totalQuota:  sub?.quotaBytes !== undefined ? Number(sub.quotaBytes) : (client.quotaTotal ? Number(client.quotaTotal) : 0),
+        usedQuota:   sub?.quotaUsed  !== undefined ? Number(sub.quotaUsed)  : Number(client.quotaUsed ?? 0),
+        expiryDate:  sub?.expireAt ? new Date(sub.expireAt).toISOString() : (client.expireAt ? new Date(client.expireAt).toISOString() : null),
       },
       subscription: sub ? {
         id:        sub.id,
         name:      sub.name,
         dataToken: sub.dataToken,   // Token SXB-DATA — utilisé par le mobile pour /provision/activate
-        quotaTotalBytes: Number(sub.quotaBytes ?? 0),
-        quotaUsedBytes: Number(sub.quotaUsed ?? 0),
-        quotaRemainingBytes: Math.max(Number(sub.quotaBytes ?? 0) - Number(sub.quotaUsed ?? 0), 0),
         expireAt:  sub.expireAt?.toISOString(),
-        status:    sub.status,
+        status:    subscriptionState,
       } : null,
     });
   } catch (err) {
@@ -584,45 +585,6 @@ router.get('/notifications', async (req: AuthenticatedRequest, res: Response) =>
     const state = computeAccountState(client, selectedSubscription);
     const notifications: any[] = [];
     const now = new Date().toISOString();
-
-    // ── 1. Annonces administratives (globales ou ciblées par deviceId) ──────────
-    if (prisma) {
-      try {
-        const targetDeviceId = req.headers['x-sxb-device-id'] as string;
-        const announcements = await prisma.announcement.findMany({
-          where: {
-            isActive: true,
-            AND: [
-              {
-                OR: [
-                  { target: null },
-                  { target: targetDeviceId || 'unknown' }
-                ]
-              },
-              {
-                OR: [
-                  { expiresAt: null },
-                  { expiresAt: { gt: new Date() } }
-                ]
-              }
-            ]
-          },
-          orderBy: { createdAt: 'desc' },
-          take: 5
-        });
-        for (const a of announcements) {
-          notifications.push({
-            id: 'announcement-' + a.id,
-            type: a.type,
-            title: a.title,
-            message: a.content,
-            createdAt: a.createdAt.toISOString(),
-            read: false,
-            isAnnouncement: true
-          });
-        }
-      } catch (_) {}
-    }
 
     if (state.state === 'expired') {
       notifications.push({
@@ -693,9 +655,76 @@ router.get('/notifications', async (req: AuthenticatedRequest, res: Response) =>
       });
     }
 
-    // Ajouter les derniers logs d'audit si disponibles
+    // Annonces administratives persistantes : visibles globalement ou ciblées sur cet appareil précis.
+    try {
+      const deviceIdHeader = String(req.headers['x-sxb-device-id'] || req.query.deviceId || '').trim();
+      const announcements = await getActiveAnnouncements();
+      for (const announcement of announcements) {
+        // Si une annonce est ciblée sur un appareil précis et que l'ID ne correspond pas, on l'ignore.
+        if (announcement.targetDeviceId && announcement.targetDeviceId !== deviceIdHeader) {
+          continue;
+        }
+        notifications.push({
+          id: `announcement-${announcement.id}`,
+          type: announcement.level,
+          title: announcement.title,
+          message: announcement.message,
+          createdAt: announcement.createdAt,
+          read: false,
+          announcement: true,
+        });
+      }
+    } catch (_) { /* les alertes de compte restent disponibles si la DB est indisponible */ }
+
+    // Mise à jour applicative : seulement pour une app enregistrée, activée et ciblée.
+    try {
+      const deviceId = String(req.headers['x-sxb-device-id'] || req.query.deviceId || '').trim();
+      const appUpdate = await getMobileAppUpdate(deviceId);
+      if (appUpdate) {
+        const version = toMobileAppVersion(appUpdate);
+        notifications.push({
+          id: `app-update-${version.versionCode}`,
+          type: 'info',
+          title: 'Nouvelle version SXB VPN disponible',
+          message: `${version.versionName} est disponible. Téléchargez-la depuis cette notification.`,
+          createdAt: version.publishedAt,
+          read: false,
+          appUpdate: true,
+          actionType: 'download_app_update',
+          downloadUrl: version.apkUrl,
+          versionCode: version.versionCode,
+          versionName: version.versionName,
+          minSupportedCode: version.minSupportedCode,
+          forceUpdate: version.forceUpdate,
+          notes: version.notes,
+        });
+      }
+    } catch (_) { /* une mise à jour indisponible ne bloque pas les notifications */ }
+
+    // Ajouter les mises à jour support et les derniers logs d'audit si disponibles
     if (prisma) {
       try {
+        const resolvedTickets = await prisma.supportTicket.findMany({
+          where: {
+            userId: req.user!.userId,
+            status: { in: ['resolved', 'closed'] },
+            updatedAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+          },
+          orderBy: { updatedAt: 'desc' },
+          take: 5,
+          select: { id: true, title: true, status: true, updatedAt: true },
+        });
+        for (const ticket of resolvedTickets) {
+          notifications.push({
+            id: `ticket-${ticket.id}-${ticket.status}`,
+            type: 'success',
+            title: ticket.status === 'resolved' ? 'Ticket résolu' : 'Ticket clôturé',
+            message: `Votre demande « ${ticket.title} » a été ${ticket.status === 'resolved' ? 'résolue' : 'clôturée'}.`,
+            createdAt: ticket.updatedAt.toISOString(),
+            read: false,
+          });
+        }
+
         const logs = await prisma.auditLog.findMany({
           where: { userId: req.user!.userId },
           orderBy: { timestamp: 'desc' },
@@ -721,6 +750,21 @@ router.get('/notifications', async (req: AuthenticatedRequest, res: Response) =>
     console.error('Mobile notifications error:', err);
     return res.json([]);
   }
+});
+
+// GET /api/mobile/version & /api/mobile/app-version — vérification de version et lien de téléchargement APK
+router.get(['/version', '/app-version'], async (req: Request, res: Response) => {
+  const deviceId = String(req.headers['x-sxb-device-id'] || req.query.deviceId || '').trim();
+  const published = await getMobileAppUpdate(deviceId).catch(() => null);
+  if (published) return res.json(toMobileAppVersion(published));
+  return res.json({
+    versionCode: 0,
+    versionName: "",
+    minSupportedCode: 0,
+    apkUrl: "",
+    notes: "",
+    forceUpdate: false,
+  });
 });
 
 // GET /api/mobile/history — historique des sessions VPN
@@ -799,29 +843,14 @@ router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => 
     const selectedSub = subscriptionId
       ? (updatedClient?.subscriptions || []).find((s: any) => s.id === subscriptionId)
       : (updatedClient?.subscriptions || []).find((s: any) => s.status === "active");
-    const quotaTotalBytes = Number(selectedSub?.quotaBytes ?? updatedClient?.quotaTotal ?? client.quotaTotal ?? 0);
-    const quotaUsedBytes = Number(selectedSub?.quotaUsed ?? updatedClient?.quotaUsed ?? client.quotaUsed ?? 0);
-    const quotaRemainingBytes = Math.max(quotaTotalBytes - quotaUsedBytes, 0);
-    const quotaRemainingGb = quotaRemainingBytes / (1024 * 1024 * 1024);
     const state = computeAccountState(updatedClient || client, selectedSub);
-    const subscriptionState = selectedSub?.status === "suspended" || selectedSub?.status === "revoked"
-      ? selectedSub.status
-      : selectedSub?.expireAt && new Date(selectedSub.expireAt).getTime() < Date.now()
-        ? "expired"
-        : quotaTotalBytes > 0 && quotaRemainingBytes <= 0 ? "exhausted" : "ready";
+    const quotaExhausted = state.quotaTotalBytes > 0 && state.quotaRemainingBytes <= 0;
     return res.json({
       ok: true,
-      quotaTotalGb: quotaTotalBytes / (1024 * 1024 * 1024),
-      quotaUsedGb: quotaUsedBytes / (1024 * 1024 * 1024),
-      quotaRemainingGb,
-      quotaTotalBytes,
-      quotaUsedBytes,
-      quotaRemainingBytes,
-      quotaExhausted: quotaTotalBytes > 0 && quotaRemainingBytes <= 0,
-      expiresAt: selectedSub?.expireAt ? new Date(selectedSub.expireAt).toISOString() : state.expireAt,
-      subscriptionState,
-      // L’état et le quota correspondent à la souscription sélectionnée.
-      state: subscriptionState,
+      quotaRemainingGb: state.quotaRemainingGb,
+      quotaRemainingBytes: state.quotaRemainingBytes,
+      quotaExhausted,
+      state: state.state,
     });
   } catch (err) {
     if (err instanceof z.ZodError) {
@@ -856,7 +885,7 @@ router.get("/connections", async (req: AuthenticatedRequest, res: Response) => {
     const now = Date.now();
 
     const connections = subscriptions.map((sub: any) => {
-      const profile = sub.profile || null;
+      const profile = sub?.profile || null;
 
       // Protocol technique (SSH, VLESS, Trojan…)
       const technicalProtocol = profile?.protocol || "ssh";
@@ -978,5 +1007,73 @@ router.post("/vpn/usage", async (req: AuthenticatedRequest, res: Response) => {
     return res.status(500).json({ error: "errors.server", message: "Erreur enregistrement de consommation" });
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Support mobile — tickets associés exclusivement à l’utilisateur authentifié.
+// Le dashboard conserve l’administration complète via /api/support.
+// ─────────────────────────────────────────────────────────────────────────────
+const mobileTicketSchema = z.object({
+  subject: z.string().trim().min(3).max(200),
+  message: z.string().trim().min(5).max(5000),
+  priority: z.enum(['low', 'medium', 'high']).optional(),
+});
+
+router.get('/support/tickets', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (!prisma) {
+      return res.status(503).json({ error: 'DB_UNAVAILABLE', message: 'Support temporairement indisponible' });
+    }
+    const tickets = await prisma.supportTicket.findMany({
+      where: { userId: req.user!.userId },
+      orderBy: { updatedAt: 'desc' },
+      take: 50,
+      select: {
+        id: true, title: true, description: true, priority: true, status: true,
+        createdAt: true, updatedAt: true,
+      },
+    });
+    return res.json({ tickets });
+  } catch (err) {
+    console.error('Mobile support tickets fetch error:', err);
+    return res.status(500).json({ error: 'SERVER_ERROR', message: 'Impossible de récupérer les tickets' });
+  }
+});
+
+async function createMobileTicket(req: AuthenticatedRequest, res: Response) {
+  try {
+    if (!prisma) {
+      return res.status(503).json({ error: 'DB_UNAVAILABLE', message: 'Support temporairement indisponible' });
+    }
+    const body = mobileTicketSchema.parse(req.body);
+    const client: any = await findClientByUserId(req.user!.userId);
+    const clientName = String(client?.user?.name || 'Client SXB').slice(0, 100);
+    const ticket = await prisma.supportTicket.create({
+      data: {
+        title: body.subject,
+        description: body.message,
+        priority: body.priority || 'medium',
+        status: 'open',
+        clientName,
+        userId: req.user!.userId,
+      },
+      select: {
+        id: true, title: true, description: true, priority: true, status: true,
+        createdAt: true, updatedAt: true,
+      },
+    });
+    await logDbActivity(req.user!.userId, `Ticket mobile ouvert: "${body.subject}"`, 'info', req.ip || '');
+    return res.status(201).json({ ticket, message: 'Ticket envoyé au support' });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'Sujet ou message invalide' });
+    }
+    console.error('Mobile support ticket create error:', err);
+    return res.status(500).json({ error: 'SERVER_ERROR', message: 'Impossible de créer le ticket' });
+  }
+}
+
+// Compatibilité avec la première version de l’application, puis route plurielle.
+router.post('/support/ticket', createMobileTicket);
+router.post('/support/tickets', createMobileTicket);
 
 export default router;
