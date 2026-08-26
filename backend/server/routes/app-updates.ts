@@ -32,8 +32,8 @@ function isSuperAdmin(req: AuthenticatedRequest): boolean {
 
 async function countActivatedDevices(): Promise<number> {
   if (!prisma) return 0;
-  return (prisma as any).appRegistration.count({
-    where: { status: "matched", client: { status: "active" } },
+  return (prisma as any).vpnClient.count({
+    where: { status: "active", deviceId: { not: null } },
   }).catch(() => 0);
 }
 
