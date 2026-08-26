@@ -672,6 +672,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
     // ── État du service ───────────────────────────────────────────────────────
     private val running         = AtomicBoolean(false)
+    /** Vrai uniquement après un startForeground réussi — évite de continuer en arrière-plan sans notification. */
+    private val foregroundStarted = AtomicBoolean(false)
     private var tunPfd          : ParcelFileDescriptor? = null
     private var sshSession      : Session? = null
     private var socks5Server    : ServerSocket? = null
@@ -858,9 +860,11 @@ class SxbVpnService : VpnService(), PlatformInterface {
             } else {
                 startForeground(NOTIF_ID, buildNotification("SXB VPN — Démarrage..."))
             }
+            foregroundStarted.set(true)
             Log.i(TAG, "[SXB_DEBUG] FOREGROUND_STARTED")
             broadcastLog("[SXB_DEBUG] ✅ FOREGROUND_STARTED")
         } catch (e: Exception) {
+            foregroundStarted.set(false)
             Log.e(TAG, "[SXB_DEBUG] FOREGROUND_START_FAILED: " + e.message)
             broadcastLog("[SXB_DEBUG] ❌ FOREGROUND_START_FAILED: " + e.message)
         }
@@ -888,6 +892,14 @@ class SxbVpnService : VpnService(), PlatformInterface {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) { cleanup(); return START_NOT_STICKY }
 
+        // startForeground() doit avoir réussi avant de traiter une commande VPN.
+        // Continuer malgré une SecurityException laisserait un service « fantôme »
+        // susceptible d’être tué par Android et de désynchroniser l’interface.
+        if (!foregroundStarted.get()) {
+            broadcastLog("[SXB_DEBUG] ❌ FOREGROUND_REQUIRED — commande ignorée")
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
         // startForeground() déjà appelé dans onCreate() — mise à jour notification seule.
         try { updateNotification("SXB VPN — Connexion en cours...") } catch (_: Exception) {}
         Log.i(TAG, "[SXB_DEBUG] START_COMMAND_RECEIVED action=" + intent?.action)
@@ -996,10 +1008,19 @@ class SxbVpnService : VpnService(), PlatformInterface {
         vpnThread = Thread({ dispatchProtocol(json, proto) }, "SXB-VpnMain")
             .apply { isDaemon = false; start() }
 
+        // Le service doit être recréé si Android termine le process en arrière-plan.
+        // La configuration est relue depuis le fichier sécurisé/persisté au redémarrage.
         return START_STICKY
     }
 
-    override fun onDestroy() { cleanup(); instance = null; super.onDestroy() }
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Ne pas arrêter le VPN lorsque l’utilisateur balaie simplement la tâche UI.
+        // L’arrêt explicite passe par ACTION_STOP et cleanup().
+        Log.i(TAG, "[SXB_DEBUG] TASK_REMOVED — service Foreground conservé")
+        super.onTaskRemoved(rootIntent)
+    }
+
+    override fun onDestroy() { cleanup(); foregroundStarted.set(false); instance = null; super.onDestroy() }
     override fun onRevoke()  {
         broadcastLog("[SXB] ⚠️ VPN révoqué par le système")
         broadcastStatus("disconnected")

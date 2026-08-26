@@ -9,7 +9,8 @@ export type AccountStateStatus =
   | 'ready'
   | 'exhausted'
   | 'expired'
-  | 'suspended';
+  | 'suspended'
+  | 'revoked';
 
 export interface AccountState {
   state: AccountStateStatus;

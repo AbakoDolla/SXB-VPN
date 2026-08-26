@@ -86,6 +86,7 @@ function withVpnManifest(config) {
           'android:permission': 'android.permission.BIND_VPN_SERVICE',
           // Voir la note sur FOREGROUND_SERVICE_SPECIAL_USE ci-dessus.
           'android:foregroundServiceType': 'specialUse',
+          'android:stopWithTask': 'false',
           'android:exported': 'false',
         },
         'intent-filter': [{ action: [{ $: { 'android:name': 'android.net.VpnService' } }] }],
@@ -101,6 +102,7 @@ function withVpnManifest(config) {
       // Service déjà déclaré (prebuild incrémental) : corriger le type hérité.
       const svc = app.service.find(s => s.$?.['android:name'] === vpnSvcName);
       svc.$['android:foregroundServiceType'] = 'specialUse';
+      svc.$['android:stopWithTask'] = 'false';
     }
 
     return mod;

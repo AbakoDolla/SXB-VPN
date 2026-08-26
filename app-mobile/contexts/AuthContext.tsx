@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient, { getSecureToken, setSecureToken, removeSecureToken, SEC_KEYS } from '@/services/apiClient';
-import { clearProvisionedConfig } from '@/services/provisionClient';
+import { clearProvisionedConfig, provisionAndStore } from '@/services/provisionClient';
 import type { AccountState, User } from '@/types/api';
 
 // Clés non-sensibles restent dans AsyncStorage (infos user, onboarding...)
@@ -168,8 +168,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const activatePlan = useCallback(async (code: string) => {
-    const res = await apiClient.post('/mobile/packages/activate', { code });
-    const newState: AccountState = res.data.accountState ?? res.data;
+    const normalized = code.trim().toUpperCase();
+    let newState: AccountState;
+
+    // Les tokens créés par le dashboard sont des dataToken de Subscription.
+    // Ils doivent passer par le provisionnement chiffré lié à l’appareil, et non
+    // par l’ancien endpoint Voucher /packages/activate.
+    if (normalized.startsWith('SXB-DATA-')) {
+      const did = await getOrCreateDeviceId();
+      const provisioned = await provisionAndStore(normalized, did);
+      const stateResponse = await apiClient.get(`/mobile/me?subscriptionId=${encodeURIComponent(provisioned.meta.subscriptionId)}`);
+      newState = stateResponse.data.accountState ?? stateResponse.data;
+    } else {
+      // Compatibilité avec les anciens codes de recharge Voucher (VCH-...).
+      const res = await apiClient.post('/mobile/packages/activate', { code: normalized });
+      newState = res.data.accountState ?? res.data;
+    }
+
     setAccountState(newState);
     if (user) {
       await AsyncStorage.setItem(KEYS.USER, JSON.stringify({ user, accountState: newState }));

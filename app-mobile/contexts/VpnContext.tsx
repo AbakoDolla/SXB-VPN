@@ -770,13 +770,12 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         { timeout: 4000 },
       );
       const freshState = freshRes?.data?.state;
-      if (
-        freshState === 'suspended' ||
-        freshState?.startsWith('revok') ||
-        freshState === 'disabled'
-      ) {
-        const statusToSet = freshState === 'suspended' ? 'suspended'
-          : freshState?.startsWith('revok') ? 'revoked'
+      const freshSubscriptionStatus = freshRes?.data?.subscription?.status;
+      const remoteBlocked = freshState === 'suspended' || freshState?.startsWith('revok') || freshState === 'disabled'
+        || freshSubscriptionStatus === 'suspended' || freshSubscriptionStatus === 'revoked';
+      if (remoteBlocked) {
+        const statusToSet = freshState === 'suspended' || freshSubscriptionStatus === 'suspended' ? 'suspended'
+          : freshState?.startsWith('revok') || freshSubscriptionStatus === 'revoked' ? 'revoked'
           : 'disabled';
         setRevokedStatus(statusToSet);
         addLog(`❌ Connexion refusée : révocation confirmée par le serveur (${statusToSet})`);

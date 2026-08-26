@@ -175,7 +175,7 @@ function selectMobileSubscription(client: any, requestedId?: string | null): any
 }
 
 function computeAccountState(client: any, selectedSubscription?: any | null): {
-  state: "no_package" | "ready" | "connected" | "exhausted" | "expired" | "suspended";
+  state: "no_package" | "ready" | "connected" | "exhausted" | "expired" | "suspended" | "revoked";
   quotaTotalGb: number;
   quotaUsedGb: number;
   quotaRemainingGb: number;
@@ -204,8 +204,10 @@ function computeAccountState(client: any, selectedSubscription?: any | null): {
     (s: any) => s.status === "active" && (Number(s.quotaBytes || 0) > 0 || (s.durationDays && s.durationDays > 0) || s.name || s.plan || s.profileId)
   );
 
-  let state: "no_package" | "ready" | "connected" | "exhausted" | "expired" | "suspended" = "no_package";
-  if (client.status === "suspended" || selectedSubscription?.status === "suspended") {
+  let state: "no_package" | "ready" | "connected" | "exhausted" | "expired" | "suspended" | "revoked" = "no_package";
+  if (client.status === "revoked" || selectedSubscription?.status === "revoked") {
+    state = "revoked";
+  } else if (client.status === "suspended" || selectedSubscription?.status === "suspended") {
     state = "suspended";
   } else if (selectedSubscription?.status === "expired") {
     state = "expired";

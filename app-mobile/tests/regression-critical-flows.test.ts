@@ -109,6 +109,7 @@ describe('compatibilité URI VLESS / JSON complète', () => {
 
 describe('garde-fous contre les régressions Android', () => {
   const configStore = source('services/configStore.ts');
+  const authContext = source('contexts/AuthContext.tsx');
   const supportScreen = source('app/support.tsx');
   const provisionClient = source('services/provisionClient.ts');
   const mobileRoutes = source('../server/routes/mobile.ts');
@@ -123,6 +124,7 @@ describe('garde-fous contre les régressions Android', () => {
   const notificationsScreen = source('app/(tabs)/notifications.tsx');
   const dashboardProfiles = source('../artifacts/sxb-dashboard/src/components/VpnProfilesView.tsx');
   const transportProbe = source('../server/services/transport-probe.ts');
+  const provisionRoutes = source('../server/routes/provision.ts');
 
   it('utilise Expo Crypto au lieu de dépendre de globalThis.crypto sous Hermes', () => {
     assert.match(configStore, /import \* as Crypto from 'expo-crypto';/);
@@ -135,6 +137,29 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(provisionClient, /PVN_NETWORK/);
     assert.match(provisionClient, /PROVISION_MAX_ATTEMPTS = 3/);
     assert.match(provisionClient, /x-sxb-request-id/);
+  });
+
+  it('active un token SXB-DATA via le provisionnement lié à l’appareil', () => {
+    assert.match(authContext, /normalized\.startsWith\('SXB-DATA-'\)/);
+    assert.match(authContext, /provisionAndStore\(normalized, did\)/);
+    assert.match(authContext, /\/mobile\/me\?subscriptionId=/);
+  });
+
+  it('refuse le provisionnement d’une souscription révoquée ou suspendue', () => {
+    assert.match(provisionRoutes, /sub\.status === 'revoked'/);
+    assert.match(provisionRoutes, /sub\.status === 'suspended'/);
+    assert.match(provisionRoutes, /sub\.status === 'exhausted'/);
+    assert.match(provisionRoutes, /status: 'expired'/);
+    assert.match(mobileRoutes, /subscriptionState === 'active'/);
+  });
+
+  it('protège le cycle Foreground Android contre la désynchronisation', () => {
+    assert.match(nativeService, /foregroundStarted = AtomicBoolean\(false\)/);
+    assert.match(nativeService, /foregroundStarted\.set\(true\)/);
+    assert.match(nativeService, /FOREGROUND_REQUIRED/);
+    assert.match(nativeService, /return START_STICKY/);
+    assert.match(nativeService, /override fun onTaskRemoved/);
+    assert.match(nativeService, /TASK_REMOVED — service Foreground conservé/);
   });
 
   it('ne relance pas les tickets à chaque rendu du composant Support', () => {
