@@ -8,6 +8,33 @@ import {
   translateXrayToSingbox, hasXrayMarkers, isSingboxNativeJson,
 } from '../services/xray-translate';
 
+// Configuration fournie : VLESS WS/TLS avec adresse TCP et Host/SNI distincts.
+const D2L_VLESS_XRAY = {
+  remarks: 'BYPASS',
+  log: { loglevel: 'debug' },
+  inbounds: [{ tag: 'socks', port: 8080, protocol: 'socks', settings: { auth: 'noauth', udp: true, userLevel: 8 }, sniffing: { enabled: true, destOverride: ['fakedns'], routeOnly: false } }],
+  outbounds: [
+    { tag: 'proxy', protocol: 'vless', settings: { vnext: [{ address: 'community.d2l.com', port: 443, users: [{ id: '0e23c86f-be34-43e3-9c06-af4c3e2662d8', level: 8, encryption: 'none' }] }] }, streamSettings: { network: 'ws', security: 'tls', wsSettings: { path: '/vless', headers: { Host: 'ss.alphaeconet.co.zw' } }, tlsSettings: { allowInsecure: true, serverName: 'ss.alphaeconet.co.zw', show: false } }, mux: { enabled: true, concurrency: 8, xudpConcurrency: 16, xudpProxyUDP443: 'reject' } },
+    { tag: 'direct', protocol: 'freedom', settings: { domainStrategy: 'UseIP' } },
+    { tag: 'block', protocol: 'blackhole', settings: { response: { type: 'http' } } },
+  ],
+  dns: { servers: ['1.1.1.1'], hosts: { 'domain:googleapis.cn': 'googleapis.com', 'dns.google': ['8.8.8.8', '8.8.4.4'] } },
+  routing: { domainStrategy: 'IPIfNonMatch', rules: [{ type: 'field', ip: ['1.1.1.1'], outboundTag: 'proxy', port: '53' }, { type: 'field', ip: ['223.5.5.5'], outboundTag: 'direct', port: '53' }] },
+};
+
+test('configuration fournie : VLESS WS/TLS avec Host et SNI distincts', () => {
+  const result = translateXrayToSingbox(D2L_VLESS_XRAY);
+  assert.equal(result.ok, true, result.errors.join(' | '));
+  const proxy = result.singboxJson?.outbounds?.find((item: any) => item.tag === 'proxy');
+  assert.equal(proxy?.type, 'vless');
+  assert.equal(proxy?.server, 'community.d2l.com');
+  assert.equal(proxy?.server_port, 443);
+  assert.deepEqual(proxy?.transport, { type: 'ws', path: '/vless', headers: { Host: 'ss.alphaeconet.co.zw' } });
+  assert.deepEqual(proxy?.tls, { enabled: true, server_name: 'ss.alphaeconet.co.zw', insecure: true });
+  assert.ok(result.warnings.some((warning) => warning.includes('mux Xray ignoré')));
+  assert.ok(result.warnings.some((warning) => warning.includes('dns.hosts')));
+});
+
 // ── T-X1 : la config réelle du rapport (vless + ws + tls + amont http + dns local) ──
 const TX1_XRAY = {
   log: { access: 'none' },

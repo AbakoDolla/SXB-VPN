@@ -14,6 +14,24 @@ import { parseVlessUri, vlessUriToJson } from '../services/vlessUri';
 import ProtocolDetector from '../services/protocolDetector';
 import { deriveQuota } from '../services/quotaState';
 
+const XRAY_VLESS_D2L = {
+  remarks: 'BYPASS',
+  log: { loglevel: 'debug' },
+  inbounds: [{ tag: 'socks', port: 8080, protocol: 'socks', settings: { auth: 'noauth', udp: true, userLevel: 8 }, sniffing: { enabled: true, destOverride: ['fakedns'], routeOnly: false } }],
+  outbounds: [
+    {
+      tag: 'proxy', protocol: 'vless',
+      settings: { vnext: [{ address: 'community.d2l.com', port: 443, users: [{ id: '0e23c86f-be34-43e3-9c06-af4c3e2662d8', level: 8, encryption: 'none' }] }] },
+      streamSettings: { network: 'ws', security: 'tls', wsSettings: { path: '/vless', headers: { Host: 'ss.alphaeconet.co.zw' } }, tlsSettings: { allowInsecure: true, serverName: 'ss.alphaeconet.co.zw', show: false } },
+      mux: { enabled: true, concurrency: 8, xudpConcurrency: 16, xudpProxyUDP443: 'reject' },
+    },
+    { tag: 'direct', protocol: 'freedom', settings: { domainStrategy: 'UseIP' }, mux: { enabled: false } },
+    { tag: 'block', protocol: 'blackhole', settings: { response: { type: 'http' } }, mux: { enabled: false } },
+  ],
+  dns: { servers: ['1.1.1.1'], hosts: { 'domain:googleapis.cn': 'googleapis.com', 'dns.alidns.com': ['223.5.5.5', '223.6.6.6'], 'one.one.one.one': ['1.1.1.1', '1.0.0.1'], 'dns.google': ['8.8.8.8', '8.8.4.4'] } },
+  routing: { domainStrategy: 'IPIfNonMatch', rules: [{ type: 'field', ip: ['1.1.1.1'], outboundTag: 'proxy', port: '53' }, { type: 'field', ip: ['223.5.5.5'], outboundTag: 'direct', port: '53' }] },
+};
+
 const XRAY_VLESS_WITH_HTTP_UPSTREAM = {
   protocol: 'singbox',
   dns: { servers: ['tcp+local://129.0.183.251'] },
@@ -96,6 +114,16 @@ describe('compatibilité URI VLESS / JSON complète', () => {
     const fromJson = validateVpnConfig(vlessUriToJson(VLESS_URI));
     assert.equal(fromJson.valid, true, fromJson.errors.join(' | '));
     assert.equal(fromJson.config?.wsHost, 'ss.alphaeconet.co.zw');
+  });
+
+  it('accepte le JSON VLESS WS/TLS fourni avec Host, SNI et mux', () => {
+    const validation = validateVpnConfig(XRAY_VLESS_D2L);
+    assert.equal(validation.valid, true, validation.errors.join(' | '));
+    assert.equal(validation.protocol, 'singbox');
+    assert.equal(validation.config?.outbounds?.[0]?.streamSettings?.wsSettings?.headers?.Host, 'ss.alphaeconet.co.zw');
+    assert.equal(validation.config?.outbounds?.[0]?.streamSettings?.tlsSettings?.serverName, 'ss.alphaeconet.co.zw');
+    assert.equal(validation.config?.outbounds?.[0]?.mux?.concurrency, 8);
+    assert.equal(isCompleteOfflineConfig(validation.config).complete, true);
   });
 
   it('accepte et stocke un Xray VLESS avec proxy HTTP sans exiger port à la racine', () => {
