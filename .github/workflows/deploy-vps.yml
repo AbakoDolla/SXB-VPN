@@ -120,7 +120,7 @@ jobs:
             rm -rf dist/assets
             cp -a artifacts/sxb-dashboard/dist/public/assets dist/assets
             cp -f artifacts/sxb-dashboard/dist/public/index.html dist/index.html
-            for asset in favicon.svg robots.txt; do
+            for asset in favicon.svg favicon.png robots.txt; do
               if [ -f "artifacts/sxb-dashboard/dist/public/$asset" ]; then
                 cp -f "artifacts/sxb-dashboard/dist/public/$asset" "dist/$asset"
               fi
