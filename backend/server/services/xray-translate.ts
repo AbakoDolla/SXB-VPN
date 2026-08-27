@@ -288,7 +288,14 @@ function translateRouting(
       warnings.push(`règle routing basée sur inboundTag ignorée — gérée par le moteur mobile (TUN)`);
       continue;
     }
-    if (Array.isArray(r.port) && r.port.includes(53) || r.port === 53) {
+    // Xray accepte port sous forme de nombre, chaîne (`"53"`) ou tableau.
+    // Normaliser avant le test : sinon `1.1.1.1:53` pouvait être routé via
+    // l’outbound VLESS qui dépend lui-même de la résolution DNS, provoquant
+    // `DNS query loopback in transport[dns-remote]`.
+    const routingPorts = Array.isArray(r.port)
+      ? r.port.map((value: any) => Number(value)).filter((value: number) => Number.isFinite(value))
+      : (r.port !== undefined && r.port !== null && Number.isFinite(Number(r.port)) ? [Number(r.port)] : []);
+    if (routingPorts.includes(53)) {
       warnings.push('règle routing port 53 ignorée — gérée par le moteur mobile (DNS hijack)');
       continue;
     }
@@ -311,8 +318,8 @@ function translateRouting(
       // sémantique Xray ≈ sing-box (domain: / full: / keyword: / regexp:)
       rule.domain = r.domain.map((x: any) => String(x));
     }
-    if (Array.isArray(r.port) && r.port.length > 0) {
-      rule.port = r.port.map((x: any) => Number(x));
+    if (routingPorts.length > 0) {
+      rule.port = routingPorts;
     }
     if (r.network) {
       rule.network = String(r.network).toLowerCase();

@@ -33,6 +33,9 @@ test('configuration fournie : VLESS WS/TLS avec Host et SNI distincts', () => {
   assert.deepEqual(proxy?.tls, { enabled: true, server_name: 'ss.alphaeconet.co.zw', insecure: true });
   assert.ok(result.warnings.some((warning) => warning.includes('mux Xray ignoré')));
   assert.ok(result.warnings.some((warning) => warning.includes('dns.hosts')));
+  const routeRules = result.singboxJson?.route?.rules ?? [];
+  assert.equal(routeRules.some((rule: any) => rule.ip_cidr?.includes('1.1.1.1')), false);
+  assert.ok(result.warnings.some((warning) => warning.includes('port 53 ignorée')));
 });
 
 // ── T-X1 : la config réelle du rapport (vless + ws + tls + amont http + dns local) ──

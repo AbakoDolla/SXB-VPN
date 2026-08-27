@@ -2379,6 +2379,21 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     
                     source.optJSONArray("ip")?.let { rule.put("ip_cidr", it) }
                     source.optJSONArray("domain")?.let { rule.put("domain", it) }
+                    // Xray exporte parfois le port DNS sous forme de chaîne.
+                    // Ne jamais router 1.1.1.1:53 via l’outbound VLESS : cela
+                    // crée une boucle DNS (`DNS query loopback`) avant que le
+                    // proxy puisse lui-même résoudre son serveur.
+                    val sourcePort = source.opt("port")
+                    val isDnsPort = when (sourcePort) {
+                        is Number -> sourcePort.toInt() == 53
+                        is String -> sourcePort.split(',', '-', ' ').any { it.trim().toIntOrNull() == 53 }
+                        is JSONArray -> (0 until sourcePort.length()).any { sourcePort.optInt(it, -1) == 53 }
+                        else -> false
+                    }
+                    if (isDnsPort) {
+                        SxbSecureLogger.warn("XRAY_DNS_ROUTE_IGNORED port=53")
+                        continue
+                    }
                     if (source.has("port")) rule.put("port", source.opt("port"))
                     val networks = source.optString("network", "")
                     if (networks.isNotBlank()) {

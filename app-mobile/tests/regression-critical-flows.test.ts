@@ -306,6 +306,7 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(nativeService, /outboundTag.*outbound/);
     assert.match(nativeService, /ip_cidr/);
     assert.match(nativeService, /put\("dns", normalizedDns\)/);
+    assert.match(nativeService, /XRAY_DNS_ROUTE_IGNORED port=53/);
     assert.match(nativeService, /queryStrategy\.lowercase\(Locale\.ROOT\)/);
     assert.ok(nativeService.includes('replace("tcp+local://", "tcp://")'));
     assert.match(nativeService, /XRAY_VLESS_ENCRYPTION_UNSUPPORTED/);
