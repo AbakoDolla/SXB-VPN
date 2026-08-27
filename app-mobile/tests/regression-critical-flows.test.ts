@@ -328,6 +328,9 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(nativeService, /ip_cidr/);
     assert.match(nativeService, /put\("dns", normalizedDns\)/);
     assert.match(nativeService, /XRAY_DNS_ROUTE_IGNORED port=53/);
+    assert.match(nativeService, /SINGBOX_DNS_PORT_RULE_IGNORED port=53/);
+    assert.match(nativeService, /cfg\.optJSONObject\("route"\)\?\.optJSONArray\("rules"\)/);
+    assert.match(nativeService, /sourcePort\.split\(',', '-', ' '\)/);
     assert.match(nativeService, /queryStrategy\.lowercase\(Locale\.ROOT\)/);
     assert.ok(nativeService.includes('replace("tcp+local://", "tcp://")'));
     assert.match(nativeService, /XRAY_VLESS_ENCRYPTION_UNSUPPORTED/);
@@ -583,10 +586,12 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(dashboardProfiles.includes('Saisie manuelle'));
   });
 
-  it('conserve les options Xray de multiplexage lors de la conversion libbox', () => {
+  it('conserve le mux TCP Xray sans traduire les options XUDP en max_connections', () => {
     assert.ok(nativeService.includes('val mux = o.optJSONObject("mux")'));
     assert.ok(nativeService.includes('put("multiplex", JSONObject()'));
     assert.ok(nativeService.includes('put("max_streams", concurrency)'));
+    assert.ok(nativeService.includes('XRAY_XUDP_OPTIONS_IGNORED_FOR_TCP_TRANSPORT'));
+    assert.doesNotMatch(nativeService, /put\("max_connections", xudpConcurrency\)/);
   });
 
   it('évite le provisionnement réseau avec une configuration complète hors-ligne', () => {

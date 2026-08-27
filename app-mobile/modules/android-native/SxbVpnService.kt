@@ -2121,19 +2121,25 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     outbound.put("tcp_fast_open", true)
                 }
 
-                // Conserver le multiplexage Xray (mux) lorsqu'il est demandé.
-                // Sans cette conversion, le profil peut se connecter mais perdre
-                // le comportement de transport attendu par l'export fournisseur.
+                // Conserver uniquement le multiplexage TCP Xray pertinent pour
+                // le transport VLESS/VMess. `xudpConcurrency` et
+                // `xudpProxyUDP443` sont des réglages XUDP spécifiques à Xray :
+                // sing-box 1.11 ne les traduit pas dans `multiplex`, et
+                // `max_connections` est mutuellement exclusif avec `max_streams`.
+                // Les copier mécaniquement peut donc faire rejeter la config ou
+                // empoisonner le chemin TCP WS alors que le profil NPV ne fait
+                // que rejeter son trafic UDP/443.
                 val mux = o.optJSONObject("mux")
                 if (mux?.optBoolean("enabled", false) == true) {
+                    val concurrency = mux.optInt("concurrency", 0)
                     outbound.put("multiplex", JSONObject().apply {
                         put("enabled", true)
                         mux.optString("protocol", "smux").takeIf { it.isNotBlank() }?.let { put("protocol", it) }
-                        val concurrency = mux.optInt("concurrency", 0)
                         if (concurrency > 0) put("max_streams", concurrency)
-                        val xudpConcurrency = mux.optInt("xudpConcurrency", 0)
-                        if (xudpConcurrency > 0) put("max_connections", xudpConcurrency)
                     })
+                    if (mux.has("xudpConcurrency") || mux.has("xudpProxyUDP443")) {
+                        SxbSecureLogger.warn("XRAY_XUDP_OPTIONS_IGNORED_FOR_TCP_TRANSPORT")
+                    }
                 }
             }
 
@@ -2504,6 +2510,39 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 dns.remove("hosts")
                 SxbSecureLogger.warn("SINGBOX_DNS_HOSTS_IGNORED_VERSION")
             }
+        }
+
+        // Les profils sing-box traduits avant le correctif DNS peuvent déjà
+        // contenir une règle `route.rules[].port = 53` et ne repassent donc pas
+        // par la branche Xray ci-dessus. La conserver envoie les requêtes DNS
+        // vers l’outbound final (souvent VLESS) et recrée la dépendance
+        // circulaire observée dans les logs. Le TUN de l’application fournit
+        // déjà le hijack DNS : retirer uniquement ces règles historiques est
+        // donc sûr et ne modifie pas les autres ports.
+        cfg.optJSONObject("route")?.optJSONArray("rules")?.let { rules ->
+            val retained = JSONArray()
+            for (i in 0 until rules.length()) {
+                val rule = rules.optJSONObject(i) ?: continue
+                val sourcePort = rule.opt("port")
+                val isDnsPort = when (sourcePort) {
+                    is Number -> sourcePort.toInt() == 53
+                    is String -> sourcePort.split(',', '-', ' ').any { it.trim().toIntOrNull() == 53 }
+                    is JSONArray -> (0 until sourcePort.length()).any {
+                        when (val item = sourcePort.opt(it)) {
+                            is Number -> item.toInt() == 53
+                            is String -> item.trim().toIntOrNull() == 53
+                            else -> false
+                        }
+                    }
+                    else -> false
+                }
+                if (isDnsPort) {
+                    SxbSecureLogger.warn("SINGBOX_DNS_PORT_RULE_IGNORED port=53")
+                } else {
+                    retained.put(rule)
+                }
+            }
+            cfg.optJSONObject("route")?.put("rules", retained)
         }
 
         val raw = cfg.optJSONArray("outbounds") ?: return cfg
