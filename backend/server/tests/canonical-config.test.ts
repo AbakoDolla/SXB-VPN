@@ -36,6 +36,38 @@ const TX1_XRAY = {
   },
 };
 
+test('HTTP Tweak V2RAY : enveloppe BYPASS → VLESS canonique SXB', () => {
+  const exported = {
+    configs: [{
+      name: 'BYPASS',
+      address: 'community.d2l.com:443',
+      type: 'V2RAY',
+      v2rayProfile: {
+        configVersion: 4, configType: 5, remarks: 'BYPASS',
+        server: 'community.d2l.com', serverPort: '443',
+        password: '0e23c86f-be34-43e3-9c06-af4c3e2662d8', method: 'none',
+        network: 'ws', host: 'ss.alphaeconet.co.zw', path: '/vless',
+        security: 'tls', sni: 'ss.alphaeconet.co.zw', insecure: true,
+        v2rayJson: '', persistJson: true,
+      },
+      lockConfig: { version: 1, isLocked: true, blockRootedAndJailbroken: true },
+    }],
+  };
+  const r = parseImportedConfig(JSON.stringify(exported));
+  assert.equal(r.ok, true, r.errors.join(' | '));
+  assert.equal(r.sourceFormat, 'http-tweak-json');
+  assert.equal(r.displayName, 'BYPASS');
+  assert.equal(r.canonical!.protocol, 'vless');
+  assert.equal(r.canonical!.host, 'community.d2l.com');
+  assert.equal(r.canonical!.port, 443);
+  assert.equal(r.canonical!.uuid, '0e23c86f-be34-43e3-9c06-af4c3e2662d8');
+  assert.equal(r.canonical!.wsHost, 'ss.alphaeconet.co.zw');
+  assert.equal(r.canonical!.sni, 'ss.alphaeconet.co.zw');
+  assert.equal(r.canonical!.path, '/vless');
+  assert.equal(r.canonical!.tls, true);
+  assert.equal(r.canonical!.insecure, true);
+});
+
 test('T-X1 : JSON Xray → sourceFormat xray-json, protocol singbox, warnings', () => {
   const r = parseImportedConfig(JSON.stringify(TX1_XRAY));
   assert.equal(r.ok, true, r.errors.join(' | '));

@@ -24,7 +24,7 @@ export type SourceFormat =
   | 'ssh-json' | 'ssh+payload-json'
   | 'vless-uri' | 'vmess-uri' | 'trojan-uri' | 'ss-uri'
   | 'wireguard-conf' | 'hysteria2-uri' | 'tuic-uri'
-  | 'singbox-json' | 'xray-json' | 'sxb-canonical';
+  | 'singbox-json' | 'xray-json' | 'http-tweak-json' | 'sxb-canonical';
 
 export interface ParseResult {
   ok: boolean;
@@ -377,6 +377,44 @@ function parseWireguardConf(text: string, errors: string[]): Record<string, any>
   return cfg;
 }
 
+// ── Adaptateur HTTP Tweak V2RAY ──────────────────────────────────────────────
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function parseHttpTweakV2ray(obj: any, warnings: string[], errors: string[]): { cfg: Record<string, any>; name?: string } | null {
+  const entry = Array.isArray(obj?.configs) ? obj.configs[0] : null;
+  const profile = entry?.v2rayProfile;
+  if (!profile || typeof profile !== 'object') return null;
+
+  const uuid = String(profile.password ?? '').trim();
+  const host = String(profile.server ?? '').trim();
+  const port = Number(profile.serverPort ?? 0);
+  const network = String(profile.network ?? 'tcp').trim().toLowerCase();
+  const security = String(profile.security ?? 'none').trim().toLowerCase();
+  if (!UUID_RE.test(uuid)) errors.push('HTTP Tweak V2RAY : password doit contenir un UUID VLESS valide');
+  if (!host) errors.push('HTTP Tweak V2RAY : server manquant');
+  if (!Number.isInteger(port) || port < 1 || port > 65535) errors.push('HTTP Tweak V2RAY : serverPort invalide');
+  if (!['tcp', 'ws', 'grpc'].includes(network)) errors.push(`HTTP Tweak V2RAY : réseau "${network}" non supporté`);
+  if (security !== 'none' && security !== 'tls') errors.push(`HTTP Tweak V2RAY : security "${security}" non supportée`);
+  if (errors.length > 0) return null;
+
+  if (profile.method && String(profile.method).toLowerCase() !== 'none') {
+    warnings.push(`HTTP Tweak V2RAY : method "${profile.method}" ignorée pour le profil VLESS`);
+  }
+  warnings.push('HTTP Tweak V2RAY : enveloppe convertie en VLESS canonique SXB ; inbounds et lockConfig sont gérés par l’application');
+  const cfg: Record<string, any> = {
+    protocol: 'vless', host, port, uuid, network,
+    tls: security === 'tls',
+    insecure: profile.insecure === true,
+  };
+  if (network === 'ws') {
+    cfg.path = String(profile.path || '/');
+    cfg.wsHost = String(profile.host || profile.sni || host);
+  }
+  if (profile.sni) cfg.sni = String(profile.sni);
+  return { cfg, name: String(entry?.name || profile.remarks || '').trim() || undefined };
+}
+
 // ── Parseur principal ────────────────────────────────────────────────────────
 
 export function parseImportedConfig(raw: string): ParseResult {
@@ -407,9 +445,14 @@ export function parseImportedConfig(raw: string): ParseResult {
       errors.push('le JSON importé doit être un objet');
       return { ok: false, errors, warnings };
     }
+    const httpTweak = parseHttpTweakV2ray(obj, warnings, errors);
+    if (httpTweak) {
+      parsed = httpTweak;
+      sourceFormat = 'http-tweak-json';
+    }
     // sing-box natif : outbounds[] d'objets ayant un champ type (string)
     // ET absence de markers Xray (PARTIE 1 — détection stricte).
-    if (isSingboxNativeJson(obj)) {
+    else if (isSingboxNativeJson(obj)) {
       parsed = { cfg: { ...obj, protocol: 'singbox' } };
       sourceFormat = 'singbox-json';
     } else if (hasXrayMarkers(obj)) {

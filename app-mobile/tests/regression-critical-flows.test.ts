@@ -105,6 +105,27 @@ describe('compatibilité URI VLESS / JSON complète', () => {
     assert.equal(isCompleteOfflineConfig(validation.config).complete, true);
   });
 
+  it('accepte l’enveloppe HTTP Tweak V2RAY complète en import direct mobile', () => {
+    const exported = {
+      configs: [{
+        name: 'BYPASS',
+        v2rayProfile: {
+          server: 'community.d2l.com', serverPort: '443',
+          password: '0e23c86f-be34-43e3-9c06-af4c3e2662d8', method: 'none',
+          network: 'ws', host: 'ss.alphaeconet.co.zw', path: '/vless',
+          security: 'tls', sni: 'ss.alphaeconet.co.zw', insecure: true,
+        },
+      }],
+    };
+    const validation = validateVpnConfig(exported);
+    assert.equal(validation.valid, true, validation.errors.join(' | '));
+    assert.equal(validation.protocol, 'vless');
+    assert.equal(validation.config?.host, 'community.d2l.com');
+    assert.equal(validation.config?.wsHost, 'ss.alphaeconet.co.zw');
+    assert.equal(validation.config?.sni, 'ss.alphaeconet.co.zw');
+    assert.equal(validation.config?.path, '/vless');
+  });
+
   it('détecte directement une URI et son JSON équivalent', () => {
     const fromUri = ProtocolDetector.detect(VLESS_URI);
     assert.equal(fromUri.protocol, 'vless');

@@ -285,7 +285,41 @@ export function validateVpnConfig(raw: string | Record<string, any>): Validation
     return { valid: false, protocol: null, errors: ['La configuration doit être un objet JSON'], warnings, config: null };
   }
 
-  // 3. Détecter protocole
+  // 3. Déballer l’export HTTP Tweak V2RAY si l’utilisateur colle le JSON
+  // complet directement dans l’application (le dashboard effectue la même
+  // conversion côté serveur). Le champ `password` de cet export contient
+  // l’UUID VLESS, tandis que `server` reste l’adresse TCP et `host` le Host WS.
+  const tweakProfile = Array.isArray(obj.configs) ? obj.configs[0]?.v2rayProfile : null;
+  if (tweakProfile && typeof tweakProfile === 'object') {
+    const tweakUuid = String(tweakProfile.password ?? '').trim();
+    const tweakHost = String(tweakProfile.server ?? '').trim();
+    const tweakPort = Number(tweakProfile.serverPort ?? 0);
+    const tweakNetwork = String(tweakProfile.network ?? 'tcp').trim().toLowerCase();
+    const tweakSecurity = String(tweakProfile.security ?? 'none').trim().toLowerCase();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(tweakUuid)) {
+      errors.push('HTTP Tweak V2RAY : password doit contenir un UUID VLESS valide');
+    }
+    if (!tweakHost) errors.push('HTTP Tweak V2RAY : server manquant');
+    if (!Number.isInteger(tweakPort) || tweakPort < 1 || tweakPort > 65535) errors.push('HTTP Tweak V2RAY : serverPort invalide');
+    if (!['tcp', 'ws', 'grpc'].includes(tweakNetwork)) errors.push(`HTTP Tweak V2RAY : réseau "${tweakNetwork}" non supporté`);
+    if (tweakSecurity !== 'none' && tweakSecurity !== 'tls') errors.push(`HTTP Tweak V2RAY : security "${tweakSecurity}" non supportée`);
+    if (errors.length > 0) {
+      return { valid: false, protocol: null, errors, warnings, config: null };
+    }
+    const converted: Record<string, any> = {
+      protocol: 'vless', host: tweakHost, port: tweakPort, uuid: tweakUuid,
+      network: tweakNetwork, tls: tweakSecurity === 'tls', insecure: tweakProfile.insecure === true,
+    };
+    if (tweakNetwork === 'ws') {
+      converted.path = String(tweakProfile.path || '/');
+      converted.wsHost = String(tweakProfile.host || tweakProfile.sni || tweakHost);
+    }
+    if (tweakProfile.sni) converted.sni = String(tweakProfile.sni);
+    obj = converted;
+    warnings.push('HTTP Tweak V2RAY : export converti en VLESS canonique SXB');
+  }
+
+  // 4. Détecter protocole
   const protocol = detectProtocol(obj);
   if (!protocol) {
     // Config stockée contenant des markers Xray (backend buggé) : message
@@ -313,7 +347,7 @@ export function validateVpnConfig(raw: string | Record<string, any>): Validation
     };
   }
 
-  // 4. Vérifier champs obligatoires
+  // 5. Vérifier champs obligatoires
   const required = REQUIRED_FIELDS[protocol];
   for (const field of required) {
     if (obj[field] === undefined || obj[field] === null || obj[field] === '') {
@@ -321,10 +355,10 @@ export function validateVpnConfig(raw: string | Record<string, any>): Validation
     }
   }
 
-  // 5. Validations spécifiques
+  // 6. Validations spécifiques
   extraValidation(protocol, obj, errors, warnings);
 
-  // 6. Avertissements généraux
+  // 7. Avertissements généraux
   if (!obj.host && protocol !== 'wireguard' && protocol !== 'singbox') {
     warnings.push('Le champ "host" est absent — assurez-vous que le serveur est bien spécifié');
   }
