@@ -129,17 +129,7 @@ export default function PlanScreen() {
 <Text style={styles.infoText}>{t("faq_a2")}</Text>
         </View>
 
-        {/* Separator */}
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-          <View style={{ flex: 1, height: 1, backgroundColor: Colors.border }} />
-          <Text style={{ fontSize: 12, color: Colors.textMuted, fontFamily: "Inter_400Regular" }}>{t("of")}</Text>
-          <View style={{ flex: 1, height: 1, backgroundColor: Colors.border }} />
-        </View>
 
-        <Pressable style={styles.qrBtn}>
-          <Ionicons name="qr-code-outline" size={20} color={Colors.textSecondary} />
-          <Text style={styles.qrBtnText}>{t("scan_qr")}</Text>
-        </Pressable>
       </ScrollView>
     </LinearGradient>
   );
@@ -158,6 +148,4 @@ const styles = StyleSheet.create({
   btnText: { fontSize: 16, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold" },
   infoCard: { flexDirection: "row", alignItems: "flex-start", gap: 10, backgroundColor: Colors.bgCard, borderRadius: 12, borderWidth: 1, borderColor: Colors.border, padding: 14 },
   infoText: { flex: 1, fontSize: 12, color: Colors.textSecondary, fontFamily: "Inter_400Regular", lineHeight: 18 },
-  qrBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, paddingVertical: 14, borderRadius: 14, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.bgCard },
-  qrBtnText: { fontSize: 14, color: Colors.textSecondary, fontFamily: "Inter_500Medium" },
 });

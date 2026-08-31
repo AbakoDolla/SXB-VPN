@@ -165,6 +165,8 @@ describe('garde-fous contre les régressions Android', () => {
   const vpnContext = source('contexts/VpnContext.tsx');
   const canonicalConfig = source('../server/services/canonical-config.ts');
   const nativeService = source('modules/android-native/SxbVpnService.kt');
+  const activateScreen = source('app/activate.tsx');
+  const planScreen = source('app/plan.tsx');
   const nativeModule = source('modules/android-native/SxbVpnModule.kt');
   const nativeLogger = source('modules/android-native/SxbSecureLogger.kt');
   const securityModule = source('modules/android-native/SecurityModule.kt');
@@ -584,6 +586,12 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(dashboardProfiles.includes('Valider le transport'));
     assert.ok(dashboardProfiles.includes('Configuration JSON V2Ray Xray complète'));
     assert.ok(dashboardProfiles.includes('Saisie manuelle'));
+  });
+
+  it('réserve la gestion technique des configurations au dashboard', () => {
+    assert.doesNotMatch(activateScreen, /scan_qr|qr-code-outline/);
+    assert.doesNotMatch(planScreen, /scan_qr|qr-code-outline|qrBtn/);
+    assert.match(activateScreen, /Token d’activation/);
   });
 
   it('conserve le mux TCP Xray sans traduire les options XUDP en max_connections', () => {

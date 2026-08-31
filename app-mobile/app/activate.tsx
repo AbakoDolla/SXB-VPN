@@ -172,14 +172,6 @@ export default function ActivateScreen() {
             </View>
           ) : null}
 
-          <View style={styles.dividerRow}><View style={styles.divider} /><Text style={styles.dividerText}>{t("of")}</Text><View style={styles.divider} /></View>
-
-          <Pressable onPress={() => Alert.alert(t("qr_soon_title"), t("qr_soon_body"), [{ text: t("ok") }])} style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}>
-            <Ionicons name="qr-code-outline" size={19} color={colors.textSecondary} />
-            <Text style={styles.secondaryButtonText}>{t("scan_qr")}</Text>
-            <Ionicons name="arrow-forward" size={16} color={colors.textMuted} />
-          </Pressable>
-
           <Text style={styles.footer}>SXB VPN · Protection réseau fiable</Text>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -224,11 +216,6 @@ function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useCol
     deviceValue: { color: colors.textPrimary, fontSize: 12, fontFamily: "Inter_600SemiBold" },
     copyButton: { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: colors.primaryDim, borderRadius: 11, paddingHorizontal: 10, paddingVertical: 8 },
     copyText: { color: colors.primary, fontSize: 11, fontFamily: "Inter_700Bold" },
-    dividerRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-    divider: { height: 1, flex: 1, backgroundColor: colors.border },
-    dividerText: { color: colors.textMuted, fontSize: 11, fontFamily: "Inter_500Medium" },
-    secondaryButton: { minHeight: 50, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, backgroundColor: colors.bgCard + "A8", borderWidth: 1, borderColor: colors.border, borderRadius: 15 },
-    secondaryButtonText: { color: colors.textSecondary, fontSize: 14, fontFamily: "Inter_600SemiBold", flex: 1 },
     footer: { color: colors.textMuted, textAlign: "center", fontSize: 10, fontFamily: "Inter_400Regular", letterSpacing: 0.8, paddingVertical: 4 },
     successScreen: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24, gap: 14 },
     successOrb: { width: 136, height: 136, borderRadius: 46, backgroundColor: colors.connectedDim, borderWidth: 1, borderColor: colors.connected + "55", alignItems: "center", justifyContent: "center", shadowColor: colors.connected, shadowOpacity: 0.28, shadowRadius: 30, shadowOffset: { width: 0, height: 8 }, elevation: 8 },
