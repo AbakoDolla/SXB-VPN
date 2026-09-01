@@ -75,7 +75,6 @@ jobs:
           fingerprint: ${{ secrets.VPS_SSH_HOST_FINGERPRINT }}
           timeout: 30s
           command_timeout: 8m
-          script_stop: true
           script: |
             set -uo pipefail
 
