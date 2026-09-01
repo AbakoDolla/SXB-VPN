@@ -1,0 +1,251 @@
+name: Temporary VPS Project Inventory (Read Only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    name: Inventory production project
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+
+    steps:
+      - name: Validate production SSH secrets
+        shell: bash
+        env:
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          VPS_SSH_PASSPHRASE: ${{ secrets.VPS_SSH_PASSPHRASE }}
+          VPS_SSH_HOST_FINGERPRINT: ${{ secrets.VPS_SSH_HOST_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          for secret_name in VPS_SSH_PRIVATE_KEY VPS_SSH_PASSPHRASE VPS_SSH_HOST_FINGERPRINT; do
+            test -n "${!secret_name:-}" || {
+              echo "::error::Missing production environment secret: $secret_name"
+              exit 1
+            }
+          done
+          [[ "$VPS_SSH_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || {
+            echo "::error::Invalid OpenSSH SHA256 host fingerprint"
+            exit 1
+          }
+
+      - name: Inventory VPS project without changes
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 141.95.112.93
+          username: ubuntu
+          key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          passphrase: ${{ secrets.VPS_SSH_PASSPHRASE }}
+          fingerprint: ${{ secrets.VPS_SSH_HOST_FINGERPRINT }}
+          timeout: 30s
+          command_timeout: 20m
+          script: |
+            set -u
+            ROOT=/var/www/sxb-vpn
+
+            section() {
+              printf '\n===== %s =====\n' "$1"
+            }
+
+            if [ "$(id -un)" != "ubuntu" ] || [ "$(readlink -f "$ROOT")" != "$ROOT" ]; then
+              echo "Unexpected SSH user or project path"
+              exit 1
+            fi
+            if [ ! -r "$ROOT/.git/HEAD" ] || [ "$(git -C "$ROOT" rev-parse --is-inside-work-tree 2>/dev/null)" != "true" ]; then
+              echo "Project is not a readable Git worktree"
+              exit 1
+            fi
+
+            section "IDENTITY"
+            printf 'user=%s\n' "$(id -un)"
+            printf 'host=%s\n' "$(hostname)"
+            printf 'project=%s\n' "$ROOT"
+            printf 'branch=%s\n' "$(git -C "$ROOT" branch --show-current)"
+            printf 'head=%s\n' "$(git -C "$ROOT" rev-parse HEAD)"
+            printf 'origin_main=%s\n' "$(git -C "$ROOT" rev-parse --verify origin/main 2>/dev/null || echo unavailable)"
+            remote="$(git -C "$ROOT" remote get-url origin 2>/dev/null || true)"
+            case "$remote" in
+              https://*@*) echo 'origin_embeds_credential=yes' ;;
+              *) echo 'origin_embeds_credential=no' ;;
+            esac
+
+            section "PROJECT TOTAL AND TOP-LEVEL SIZE"
+            du -xsh "$ROOT" 2>/dev/null || true
+            find "$ROOT" -mindepth 1 -maxdepth 1 \
+              ! -name '.env' ! -name '.env.*' ! -name '.git' -print0 2>/dev/null |
+              xargs -0 -r du -xsh 2>/dev/null |
+              sort -h
+            du -xsh "$ROOT/.git" 2>/dev/null || true
+
+            section "GIT WORKTREE"
+            git -C "$ROOT" status --short --branch
+            printf 'tracked_files=%s\n' "$(git -C "$ROOT" ls-files | wc -l)"
+            printf 'modified_tracked_files=%s\n' "$(git -C "$ROOT" diff --name-only | wc -l)"
+            printf 'untracked_files=%s\n' "$(git -C "$ROOT" ls-files --others --exclude-standard | wc -l)"
+            echo '-- modified tracked paths --'
+            git -C "$ROOT" diff --name-status
+            echo '-- untracked paths --'
+            git -C "$ROOT" ls-files --others --exclude-standard | sed -n '1,300p'
+
+            section "GENERATED DEPENDENCY CACHE AND OUTPUT DIRECTORIES"
+            find "$ROOT" -xdev -type d \
+              \( -name node_modules -o -name dist -o -name build -o -name .cache \
+                 -o -name .expo -o -name .gradle -o -name coverage -o -name tmp \) \
+              -prune -print0 2>/dev/null |
+              while IFS= read -r -d '' dir; do
+                du -xsh "$dir" 2>/dev/null || true
+              done | sort -h
+
+            section "LARGEST PROJECT FILES"
+            find "$ROOT" -xdev -type f \
+              ! -path "$ROOT/.git/*" \
+              ! -path '*/node_modules/*' \
+              ! -path '*/.env' ! -path '*/.env.*' \
+              ! -iname '*.dump' ! -iname '*.sql.gz' \
+              ! -iname '*.pem' ! -iname '*.key' \
+              ! -iname '*.jks' ! -iname '*.keystore' \
+              -printf '%s\t%p\n' 2>/dev/null |
+              sort -nr |
+              head -100 |
+              awk -F '\t' '{printf "%.2f MiB\t%s\n", $1/1048576, $2}'
+
+            section "FILE COUNTS BY EXTENSION"
+            find "$ROOT" -xdev -type f \
+              ! -path "$ROOT/.git/*" ! -path '*/node_modules/*' \
+              ! -path '*/.env' ! -path '*/.env.*' \
+              -printf '%f\n' 2>/dev/null |
+              awk '
+                {
+                  name=$0
+                  if (name !~ /\./) ext="[none]"
+                  else {
+                    sub(/^.*\./, "", name)
+                    ext="." tolower(name)
+                  }
+                  count[ext]++
+                }
+                END { for (ext in count) print count[ext], ext }
+              ' |
+              sort -nr |
+              head -80
+
+            section "EXACT DUPLICATES OUTSIDE DEPENDENCIES AND SECRETS"
+            ROOT="$ROOT" python3 - <<'PY'
+            import hashlib
+            import os
+            from collections import defaultdict
+
+            root = os.environ["ROOT"]
+            skip_dirs = {
+                ".git", "node_modules", ".cache", ".gradle", ".expo",
+                "backups", "sxb-backups",
+            }
+            skip_suffixes = {
+                ".dump", ".gz", ".zip", ".tar", ".pem", ".key", ".jks",
+                ".keystore", ".sqlite", ".db",
+            }
+            by_size = defaultdict(list)
+            for current, dirs, files in os.walk(root):
+                dirs[:] = [d for d in dirs if d not in skip_dirs]
+                for name in files:
+                    lower = name.lower()
+                    if lower == ".env" or lower.startswith(".env.") or any(
+                        lower.endswith(suffix) for suffix in skip_suffixes
+                    ):
+                        continue
+                    path = os.path.join(current, name)
+                    try:
+                        size = os.path.getsize(path)
+                    except OSError:
+                        continue
+                    if size >= 1024:
+                        by_size[size].append(path)
+
+            duplicates = []
+            for size, paths in by_size.items():
+                if len(paths) < 2:
+                    continue
+                by_hash = defaultdict(list)
+                for path in paths:
+                    try:
+                        digest = hashlib.sha256()
+                        with open(path, "rb") as stream:
+                            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                                digest.update(chunk)
+                        by_hash[digest.hexdigest()].append(path)
+                    except OSError:
+                        pass
+                for paths_with_hash in by_hash.values():
+                    if len(paths_with_hash) > 1:
+                        duplicates.append(
+                            (size * (len(paths_with_hash) - 1), size, paths_with_hash)
+                        )
+
+            duplicates.sort(reverse=True)
+            print(f"duplicate_groups={len(duplicates)}")
+            print(
+                "potential_duplicate_bytes="
+                + str(sum(wasted for wasted, _, _ in duplicates))
+            )
+            for index, (wasted, size, paths) in enumerate(duplicates[:100], 1):
+                print(
+                    f"group={index} size={size} copies={len(paths)} "
+                    f"potential_waste={wasted}"
+                )
+                for path in sorted(paths):
+                    print("  " + os.path.relpath(path, root))
+            PY
+
+            section "SYMLINKS AND BROKEN SYMLINKS"
+            find "$ROOT" -xdev -type l -printf '%p -> %l\n' 2>/dev/null | sed -n '1,200p'
+            printf 'broken_symlinks=%s\n' "$(
+              find "$ROOT" -xdev -xtype l 2>/dev/null | wc -l
+            )"
+
+            section "APK AND ARCHIVE INVENTORY"
+            for base in "$ROOT" /var/www/html /home/ubuntu/sxb-backups; do
+              [ -d "$base" ] || continue
+              find "$base" -xdev -type f \
+                \( -iname '*.apk' -o -iname '*.aab' -o -iname '*.zip' \
+                   -o -iname '*.tar' -o -iname '*.tgz' -o -iname '*.gz' \
+                   -o -iname '*.dump' -o -iname '*.bak' \) \
+                -printf '%s\t%TY-%Tm-%TdT%TH:%TM:%TS\t%p\n' 2>/dev/null
+            done |
+              sort -nr |
+              head -150 |
+              awk -F '\t' '{printf "%.2f MiB\t%s\t%s\n", $1/1048576, $2, $3}'
+
+            section "PROJECT-RELATED LOG SIZES"
+            for log_dir in /home/ubuntu/.pm2/logs /var/log/nginx; do
+              [ -d "$log_dir" ] || continue
+              find "$log_dir" -maxdepth 1 -type f \
+                \( -iname '*sxb*' -o -iname '*vpn*' -o -iname 'access.log*' \
+                   -o -iname 'error.log*' \) \
+                -printf '%s\t%TY-%Tm-%TdT%TH:%TM:%TS\t%p\n' 2>/dev/null
+            done |
+              sort -nr |
+              head -100 |
+              awk -F '\t' '{printf "%.2f MiB\t%s\t%s\n", $1/1048576, $2, $3}'
+
+            section "USER PACKAGE CACHES"
+            for cache in /home/ubuntu/.npm /home/ubuntu/.cache /home/ubuntu/.local/share/pnpm /home/ubuntu/.pnpm-store; do
+              [ -e "$cache" ] && du -xsh "$cache" 2>/dev/null
+            done | sort -h
+
+            section "DOCKER STORAGE"
+            docker system df 2>&1 || sudo -n docker system df 2>&1 || true
+            docker ps -a --format 'container={{.Names}} image={{.Image}} status={{.Status}}' 2>/dev/null ||
+              sudo -n docker ps -a --format 'container={{.Names}} image={{.Image}} status={{.Status}}' 2>/dev/null ||
+              true
+
+            section "FILESYSTEM CAPACITY"
+            df -h "$ROOT"
+            df -i "$ROOT"
+
+            section "READ-ONLY GUARANTEE"
+            echo 'Only metadata, hashes, Git read commands, and file sizes were inspected.'
+            echo 'No VPS file, service, database row, firewall rule, or repository reference was changed.'
