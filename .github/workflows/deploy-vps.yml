@@ -23,10 +23,51 @@ jobs:
   deploy:
     name: Build & Deploy to VPS
     runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://vpnsxb.afrihall.com
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Validate production SSH secrets
+        shell: bash
+        env:
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          VPS_SSH_PASSPHRASE: ${{ secrets.VPS_SSH_PASSPHRASE }}
+          VPS_SSH_HOST_FINGERPRINT: ${{ secrets.VPS_SSH_HOST_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          for secret_name in VPS_SSH_PRIVATE_KEY VPS_SSH_PASSPHRASE VPS_SSH_HOST_FINGERPRINT; do
+            if [ -z "${!secret_name:-}" ]; then
+              echo "::error::Secret d'environnement production manquant: $secret_name"
+              exit 1
+            fi
+          done
+          if [[ ! "$VPS_SSH_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]]; then
+            echo "::error::VPS_SSH_HOST_FINGERPRINT doit être une empreinte SHA256 OpenSSH"
+            exit 1
+          fi
+
+      - name: Verify VPS access (read-only)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 141.95.112.93
+          username: ubuntu
+          key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          passphrase: ${{ secrets.VPS_SSH_PASSPHRASE }}
+          fingerprint: ${{ secrets.VPS_SSH_HOST_FINGERPRINT }}
+          timeout: 30s
+          command_timeout: 30s
+          script_stop: true
+          script: |
+            set -euo pipefail
+            test "$(id -un)" = "ubuntu"
+            test -r /var/www/sxb-vpn/.git/HEAD
+            test "$(git -C /var/www/sxb-vpn rev-parse --is-inside-work-tree)" = "true"
+            git -C /var/www/sxb-vpn rev-parse --verify HEAD >/dev/null
+            echo "✅ Accès SSH vérifié en lecture seule"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -81,7 +122,11 @@ jobs:
         with:
           host: 141.95.112.93
           username: ubuntu
-          password: ${{ secrets.VPS_SSH_PASSWORD }}
+          key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          passphrase: ${{ secrets.VPS_SSH_PASSPHRASE }}
+          fingerprint: ${{ secrets.VPS_SSH_HOST_FINGERPRINT }}
+          timeout: 30s
+          script_stop: true
           script: |
             set -e
             cd /var/www/sxb-vpn
