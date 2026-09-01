@@ -2,6 +2,11 @@ name: Temporary VPS Project Inventory (Read Only)
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - copilot/sxb-vpn-analysis
+    paths:
+      - .github/workflows/vps-project-inventory-readonly.yml
 
 permissions:
   contents: read
