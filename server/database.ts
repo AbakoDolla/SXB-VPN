@@ -212,16 +212,20 @@ class InMemoryDatabase {
       { roleId: resellerRole.id, permissionId: "p9" }  // clients.create
     );
 
-    // Mot de passe du jeu de données de démonstration (base en mémoire, utilisée
-    // uniquement lorsque Prisma est indisponible — jamais en production).
-    // Il était figé à « admin123 » et publié dans le README : n'importe qui
-    // pouvait ouvrir une session admin sur une instance démarrée sans base.
-    // Il provient désormais de SXB_SEED_ADMIN_PASSWORD, à défaut d'une valeur
-    // aléatoire imprimée une seule fois au démarrage.
+    // Mot de passe du jeu de données de démonstration. Il était figé à
+    // « admin123 » et publié dans le README : n'importe qui pouvait ouvrir une
+    // session admin sur une instance démarrée sans base.
+    //
+    // Cette classe est instanciée au chargement du module, AVANT même que
+    // Prisma ne soit initialisé, et donc y compris lorsque la base réelle est
+    // configurée. L'avertissement n'est émis que si la base en mémoire est
+    // effectivement la source active, sans quoi un mot de passe inutilisable
+    // était écrit dans les journaux de production à chaque redémarrage.
     const seedPassword =
       process.env.SXB_SEED_ADMIN_PASSWORD?.trim() ||
       crypto.randomBytes(12).toString("base64url");
-    if (!process.env.SXB_SEED_ADMIN_PASSWORD?.trim()) {
+    const usingInMemoryFallback = !config.DATABASE_URL;
+    if (usingInMemoryFallback && !process.env.SXB_SEED_ADMIN_PASSWORD?.trim()) {
       console.warn(
         `[seed] Base en mémoire — mot de passe admin généré : ${seedPassword}\n` +
         `[seed] Définissez SXB_SEED_ADMIN_PASSWORD pour le fixer.`,

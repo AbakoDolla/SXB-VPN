@@ -76,13 +76,31 @@ jobs:
             # Interroger directement le port applicatif contourne le reverse
             # proxy : si /xapi répond ici mais échoue depuis l'extérieur, la
             # cause est nécessairement dans la configuration Nginx.
-            PORT=$(pm2 jlist 2>/dev/null | grep -o '"PORT":"[0-9]*"' | head -1 | grep -o '[0-9]*' || true)
+            # Le port est lu depuis l'upstream Nginx, seule source fiable.
+            PORT=$(sudo grep -rhoP 'server\s+127\.0\.0\.1:\K[0-9]+' /etc/nginx/sites-enabled/sxb-vpn 2>/dev/null | head -1 || true)
             PORT=${PORT:-3000}
-            echo "port testé : $PORT"
+            echo "port applicatif détecté : $PORT"
             for p in /api/health /xapi/health /xapi/mobile/app-version /api/mobile/app-version; do
               code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "http://127.0.0.1:$PORT$p" || echo "ERR")
               echo "  $p -> $code"
             done
+
+            echo ""
+            echo "═══ 4b. BASE DE DONNÉES RÉELLEMENT UTILISÉE ═══"
+            # Question décisive : le backend utilise-t-il PostgreSQL ou son
+            # repli en mémoire ? Avec le repli, TOUTES les données (comptes,
+            # abonnements, quotas) disparaissent à chaque redémarrage.
+            # On teste uniquement la PRÉSENCE de DATABASE_URL — jamais sa valeur,
+            # qui contient un mot de passe.
+            if pm2 jlist 2>/dev/null | grep -q '"DATABASE_URL"'; then
+              echo "DATABASE_URL : présente dans l'environnement du processus"
+            else
+              echo "DATABASE_URL : ABSENTE — le backend tourne sur la base en mémoire"
+            fi
+            systemctl is-active postgresql 2>/dev/null | sed 's/^/postgresql : /' || echo "postgresql : introuvable"
+            # Nombre de comptes en base : preuve que Prisma lit bien PostgreSQL.
+            sudo -u postgres psql -tAc "SELECT count(*) FROM users;" sxbvpn 2>/dev/null | sed 's/^/comptes en base : /' || echo "comptes en base : requête impossible (nom de base différent ou accès refusé)"
+            sudo -u postgres psql -tAc "SELECT datname FROM pg_database WHERE datistemplate = false;" 2>/dev/null | sed 's/^/base présente : /' || true
 
             echo ""
             echo "═══ 5. ROUTAGE NGINX DE /xapi ═══"
