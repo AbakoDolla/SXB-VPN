@@ -401,6 +401,13 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
       }
       setShowForm(false);
       await load();
+      // Les avertissements du serveur (doublon de configuration notamment)
+      // doivent remonter à l'opérateur : ils étaient jusqu'ici perdus, donc un
+      // profil techniquement identique à un autre s'ajoutait sans un mot.
+      const warnings = (savedProfile as any)?._warnings as string[] | undefined;
+      if (warnings?.length) {
+        alert(`Profil enregistré, avec réserve :\n\n${warnings.map(w => `⚠ ${w}`).join('\n')}`);
+      }
       if (savedProfile?.id) {
         void testProfileConfig(savedProfile.id)
           .then(() => load())

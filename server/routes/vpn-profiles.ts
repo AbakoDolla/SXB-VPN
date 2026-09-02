@@ -255,6 +255,29 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
         throw e;
       }
       const parseWarnings = data._parseWarnings; delete data._parseWarnings;
+
+      // Détection de doublon : le hash canonique identifie un contenu technique
+      // strictement identique. Rien n'empêchait jusqu'ici de réimporter dix fois
+      // la même configuration sous des noms différents — la production en compte
+      // déjà six, dont quatre partageant le même hash, ce qui rend impossible de
+      // savoir lequel fait foi lors d'une rotation de serveur.
+      //
+      // L'import n'est PAS bloqué (un même serveur peut légitimement servir deux
+      // offres commerciales distinctes) : l'avertissement remonte au dashboard
+      // pour que l'opérateur décide en connaissance de cause.
+      const duplicateWarnings: string[] = [];
+      if (data.canonicalConfigHash) {
+        const twin = await (prisma as any).vpnProfile.findFirst({
+          where: { canonicalConfigHash: data.canonicalConfigHash, status: { not: 'archived' } },
+          select: { id: true, name: true },
+        });
+        if (twin) {
+          duplicateWarnings.push(
+            `Configuration technique identique au profil « ${twin.name} » — vérifiez qu'un doublon est bien voulu.`,
+          );
+        }
+      }
+
       const profile = await (prisma as any).vpnProfile.create({
         data: {
           name, description,
@@ -266,7 +289,12 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
         },
       });
       await logDbActivity(req.user!.userId, `Imported VPN profile: ${name} (${data.sourceFormat})`, 'info', req.ip || '');
-      return res.status(201).json({ success: true, profile: maskProfile(profile), warnings: parseWarnings, imported: true });
+      return res.status(201).json({
+        success: true,
+        profile: maskProfile(profile),
+        warnings: [...(parseWarnings || []), ...duplicateWarnings],
+        imported: true,
+      });
     }
 
     // ── FLUX LEGACY (colonnes) — conservé pour compatibilité ──────────────────

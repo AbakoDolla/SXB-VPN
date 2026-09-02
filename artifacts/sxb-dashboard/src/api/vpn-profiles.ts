@@ -94,8 +94,17 @@ export const fetchVpnProfiles = (): Promise<VpnProfile[]> =>
 export const fetchVpnProfile = (id: string): Promise<VpnProfile> =>
   apiRequest<any>(`/vpn-profiles/${id}`).then(r => r.profile);
 
-export const createVpnProfile = (data: Partial<VpnProfile>): Promise<VpnProfile> =>
-  apiRequest<any>('/vpn-profiles', { method: 'POST', body: data }).then(r => r.profile);
+/**
+ * Crée un profil VPN.
+ *
+ * Retourne aussi les avertissements du serveur (doublon de configuration,
+ * particularités de parsing). Ils étaient jusqu'ici écartés par `.then(r =>
+ * r.profile)` : un import strictement identique à un profil existant passait
+ * donc totalement inaperçu.
+ */
+export const createVpnProfile = (data: Partial<VpnProfile>): Promise<VpnProfile & { _warnings?: string[] }> =>
+  apiRequest<any>('/vpn-profiles', { method: 'POST', body: data })
+    .then(r => ({ ...r.profile, _warnings: r.warnings || [] }));
 
 export const updateVpnProfile = (id: string, data: Partial<VpnProfile>): Promise<VpnProfile> =>
   apiRequest<any>(`/vpn-profiles/${id}`, { method: 'PUT', body: data }).then(r => r.profile);
