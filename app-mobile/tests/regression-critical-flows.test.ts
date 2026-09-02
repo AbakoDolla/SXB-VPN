@@ -241,6 +241,49 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(appUpdateView, /activeDevices/);
   });
 
+  it('transmet au moteur tous les paramètres de transport du dashboard', () => {
+    // Reality : `pbk`/`sid` étaient parsés par le backend puis perdus avant le
+    // moteur, ce qui dégradait silencieusement le profil en TLS simple.
+    assert.match(canonicalConfig, /out\.publicKey = pbk/);
+    assert.match(nativeService, /realityPublicKey/);
+    assert.match(nativeService, /put\("reality", JSONObject\(\)/);
+    assert.match(nativeService, /put\("public_key", realityPublicKey\)/);
+    assert.match(nativeService, /put\("short_id", realityShortId\)/);
+
+    // ALPN et nom de service gRPC : parsés côté backend ET consommés côté moteur.
+    assert.match(canonicalConfig, /out\.alpn = decodeURIComponent\(alpn\)/);
+    assert.match(canonicalConfig, /out\.grpcServiceName = decodeURIComponent\(serviceName\)/);
+    assert.match(nativeService, /csvToJsonArray\(alpn\)\?\.let \{ put\("alpn", it\) \}/);
+    assert.match(nativeService, /grpcServiceName/);
+
+    // VMess : `security` et `alter_id` proviennent du profil, jamais figés.
+    assert.match(nativeService, /put\("security", security\.ifEmpty \{ "auto" \}\)/);
+    assert.match(nativeService, /put\("alter_id", alterId\)/);
+
+    // Le DNS du profil prime sur celui de l'application.
+    assert.match(nativeService, /profileDnsObject\(cfg\.optStringOrNull\("dns", ""\)\)/);
+  });
+
+  it('ne confond jamais server, SNI et en-tête Host', () => {
+    // §11 — trois valeurs distinctes qui doivent rester indépendantes.
+    assert.match(nativeService, /val wsHost\s+= cfg\.optStringOrNull\("wsHost", sni\)/);
+    assert.match(nativeService, /put\("headers", JSONObject\(\)\.put\("Host", host\)\)/);
+    assert.match(canonicalConfig, /out\.wsHost = decodeURIComponent\(host\)/);
+  });
+
+  it('ne déclare pas la connexion établie sur un outbound local', () => {
+    // §4 — « established » est journalisé à l'identique par direct/dns/block :
+    // s'y fier revenait à simuler la connexion.
+    assert.match(nativeService, /isProxyHandshakeProof/);
+    assert.match(nativeService, /LOCAL_OUTBOUND_MARKERS/);
+    assert.match(nativeService, /PROXY_OUTBOUND_MARKERS/);
+    assert.match(nativeService, /outbound\/direct/);
+    assert.doesNotMatch(
+      nativeService,
+      /currentState == "handshaking" &&\s*\n?\s*\(lower\.contains\("established"\)/,
+    );
+  });
+
   it('affiche un bouton de téléchargement direct dans le mobile', () => {
     assert.match(updatePrompt, /\/api\/mobile\/notifications/);
     assert.match(updatePrompt, /downloadAndInstallAppUpdate/);
@@ -544,7 +587,11 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(nativeService.includes('lower.contains("cannot unmarshal")'));
     assert.ok(nativeService.includes('lower.contains("duplicate outbound")'));
     assert.ok(nativeService.includes('"CONFIG_INVALID"'));
-    assert.ok(nativeService.includes('code != "CONFIG_INVALID"'));
+    // Les erreurs définitives sont désormais regroupées : CONFIG_INVALID (schéma
+    // illisible) et CONFIG_UNSUPPORTED (capacité absente du moteur) ne doivent
+    // ni l'une ni l'autre déclencher une boucle de reconnexion.
+    assert.ok(nativeService.includes('code !in PERMANENT_ERROR_CODES'));
+    assert.ok(nativeService.includes('PERMANENT_ERROR_CODES = setOf("CONFIG_INVALID", "CONFIG_UNSUPPORTED")'));
   });
 
   it('sing-box : normalise transport.host et déduplique les profils hors ligne hérités', () => {

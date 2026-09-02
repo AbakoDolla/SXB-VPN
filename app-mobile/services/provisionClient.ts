@@ -16,6 +16,7 @@ import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
 import * as configStore from './configStore';
+import { isCompleteOfflineConfig } from './configValidator';
 import apiClient from './apiClient';
 import { decryptSxbBlob, utf8Decode } from './aesGcm';
 
@@ -297,6 +298,22 @@ export async function provisionAndStore(
     configHash:      prov.configHash || null,
   };
   const id = meta.subscriptionId || String(vpnConfig.configId || `provision_${Date.now()}`);
+
+  // §28 — Une configuration invalide ne doit JAMAIS écraser la dernière
+  // configuration valide connue. Le déchiffrement peut réussir alors que le
+  // contenu est inexploitable (profil mal saisi côté dashboard, champ
+  // technique manquant) : l'écrire écraserait un profil qui fonctionnait et
+  // laisserait l'utilisateur sans VPN utilisable, y compris hors ligne.
+  const completeness = isCompleteOfflineConfig(vpnConfig);
+  if (!completeness.complete) {
+    throw new ProvisioningError(
+      `Configuration incomplète — champs manquants : ${completeness.missing.join(', ')}`,
+      {
+        code: 'PVN_CONFIG_INCOMPLETE', stage: 'parse', attempts: 1, retryable: false, requestId,
+      },
+    );
+  }
+
   const stored = await configStore.save(id, vpnConfig, {
     configId: id, name: meta.profileName, protocol: meta.protocol, displayProtocol: meta.displayProtocol,
     subscriptionId: meta.subscriptionId, quotaTotal: Math.round(meta.quotaGB * 1024 ** 3),

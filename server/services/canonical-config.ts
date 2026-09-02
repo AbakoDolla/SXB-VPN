@@ -224,6 +224,17 @@ function applyCommonTransport(q: URLSearchParams, out: Record<string, any>): voi
   if (insecure) out.insecure = boolParam(insecure);
   const flow = q.get('flow');
   if (flow) out.flow = flow;
+  // ALPN — imposé par certains serveurs (h2 seul). Il était ignoré, ce qui
+  // faisait échouer le handshake TLS sans diagnostic exploitable.
+  const alpn = q.get('alpn');
+  if (alpn) out.alpn = decodeURIComponent(alpn);
+  // gRPC — le nom de service est porté par `serviceName`, jamais par `path`.
+  // Sans lui le moteur retombait sur `path`, donc sur un service inexistant.
+  const serviceName = q.get('serviceName');
+  if (serviceName) out.grpcServiceName = decodeURIComponent(serviceName);
+  // Obfuscation d'en-tête TCP (`headerType=http`).
+  const headerType = q.get('headerType');
+  if (headerType && headerType.toLowerCase() !== 'none') out.headerType = headerType;
   // Reality
   const pbk = q.get('pbk');
   if (pbk) out.publicKey = pbk;

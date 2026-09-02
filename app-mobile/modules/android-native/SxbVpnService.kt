@@ -668,6 +668,26 @@ class SxbVpnService : VpnService(), PlatformInterface {
         private const val MAX_LOG_BUFFER_CHARS  = 512 * 1024
         private const val LOG_BUFFER_KEEP_CHARS = 384 * 1024
 
+        /**
+         * §4 — Marqueurs de journal sing-box. Les outbounds locaux ne prouvent
+         * jamais qu'un tunnel est monté ; seuls ceux du proxy le font.
+         */
+        private val LOCAL_OUTBOUND_MARKERS = listOf(
+            "outbound/direct", "outbound/dns", "outbound/block",
+            "[direct]", "[dns-out]", "[block]",
+        )
+        private val PROXY_OUTBOUND_MARKERS = listOf(
+            "[proxy]", "outbound/vless", "outbound/vmess", "outbound/trojan",
+            "outbound/shadowsocks", "outbound/hysteria", "outbound/tuic",
+            "outbound/wireguard", "outbound/ssh", "reality",
+        )
+
+        /**
+         * §30 — Erreurs définitives pour la configuration courante : réessayer
+         * ne peut pas les corriger et noierait la cause réelle dans les logs.
+         */
+        private val PERMANENT_ERROR_CODES = setOf("CONFIG_INVALID", "CONFIG_UNSUPPORTED")
+
         @Volatile var instance: SxbVpnService? = null
         @Volatile private var currentState: String = "disconnected"
 
@@ -1092,8 +1112,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
             "singbox"                                                   -> startSingBoxTunnelRaw(json)
             else -> {
                 Log.e("SXB_DEBUG", "[SXB_DEBUG] DISPATCH_ERROR proto_inconnu=$proto")
-                broadcastLog("[SXB] ❌ Protocole inconnu : $proto")
-                broadcastStatus("error"); setCurrentState("error"); stopSelf()
+                // §30 — Erreur structurée : le dashboard doit pouvoir distinguer
+                // « profil non supporté par le moteur » d'une panne réseau.
+                failVpn("CONFIG_UNSUPPORTED", "Protocole non supporté par le moteur")
+                stopSelf()
             }
         }
     }
@@ -1636,6 +1658,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
         val lower = message.lowercase(Locale.ROOT)
         return when {
             lower.contains("ssh_mode_unknown") -> "SSH_MODE_UNKNOWN"
+            // §30 — Le profil est valide mais demande une capacité que le moteur
+            // embarqué ne sait pas exécuter. À distinguer d'une config malformée :
+            // seul ce code indique au dashboard qu'il faut changer de profil.
+            lower.contains("non supporté") || lower.contains("non supporte") ||
+                lower.contains("unsupported") || lower.contains("not supported") ||
+                lower.contains("unknown outbound") || lower.contains("outbound inconnu") ->
+                "CONFIG_UNSUPPORTED"
             lower.contains("configuration refusée") || lower.contains("decode config") ||
                 lower.contains("unknown field") || lower.contains("cannot unmarshal") ||
                 lower.contains("duplicate outbound") || lower.contains("outbound/endpoint tag") ->
@@ -1656,6 +1685,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 lower.contains("http status") || lower.contains("unexpected http") ||
                 lower.contains("websocket handshake") || lower.contains("payload") ->
                 "HTTP_UNEXPECTED"
+            // §30 — La couche de transport (ws/grpc/http) a échoué alors que TCP
+            // et TLS étaient établis : typiquement un `path` ou un `service_name`
+            // qui ne correspond pas à celui du serveur.
+            lower.contains("grpc") || lower.contains("service_name") ||
+                lower.contains("websocket") || lower.contains("transport") ->
+                "TRANSPORT_ERROR"
             lower.contains("timeout") || lower.contains("timed out") ->
                 "TCP_TIMEOUT"
             lower.contains("refused") || lower.contains("unreachable") ||
@@ -1681,7 +1716,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // Une erreur de schéma est permanente pour cette configuration :
         // relancer automatiquement trois fois ne peut pas la corriger et masque
         // la cause dans les logs. Les erreurs réseau/auth restent éligibles.
-        if (code != "CONFIG_INVALID" && ::autoReconnect.isInitialized && autoReconnect.isEnabled() && running.get()) {
+        if (code !in PERMANENT_ERROR_CODES && ::autoReconnect.isInitialized && autoReconnect.isEnabled() && running.get()) {
             autoReconnect.onDisconnected()
         }
         // Pas de cleanup() ici : géré exclusivement dans le bloc finally du tunnel.
@@ -1985,12 +2020,20 @@ class SxbVpnService : VpnService(), PlatformInterface {
         broadcastLog("[engine] $safeMessage")
 
         val lower = message.lowercase(Locale.ROOT)
-        
-        // DÉTECTION HANDSHAKE RÉUSSI (V2Ray/Xray)
-        // sing-box logue "connection established" ou "handshake success" au niveau info.
-        if (currentState == "handshaking" && 
-            (lower.contains("established") || lower.contains("handshake success") || lower.contains("reality success"))) {
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] HANDSHAKE_VERIFIED via log: $message")
+
+        // DÉTECTION DU HANDSHAKE RÉELLEMENT ÉTABLI (§4 — ne jamais simuler).
+        //
+        // La condition précédente acceptait n'importe quelle ligne contenant
+        // « established ». Or sing-box journalise exactement le même message pour
+        // les outbounds `direct`, `dns` et `block` : une simple résolution DNS
+        // locale, qui ne traverse pas le tunnel, suffisait à publier l'état
+        // « connected ». L'application déclarait donc une connexion établie alors
+        // qu'aucun octet n'était passé par le proxy.
+        //
+        // On exige désormais une preuve provenant de l'outbound proxy lui-même et
+        // on écarte explicitement les outbounds locaux.
+        if (currentState == "handshaking" && isProxyHandshakeProof(lower)) {
+            Log.i("SXB_DEBUG", "[SXB_DEBUG] HANDSHAKE_VERIFIED via log")
             broadcastLog("[SXB] ✅ Handshake réussi — Données en transit")
             setCurrentState("connected")
             broadcastStatus("connected")
@@ -2010,6 +2053,24 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 }
             }
         }
+    }
+
+    /**
+     * §4 — Une ligne de journal ne prouve un tunnel établi que si elle provient
+     * de l'outbound proxy. Les outbounds locaux (`direct`, `dns`, `block`)
+     * produisent des messages identiques sans qu'aucune donnée n'ait transité par
+     * le serveur : les accepter revenait à simuler la connexion.
+     */
+    private fun isProxyHandshakeProof(lowerMessage: String): Boolean {
+        val successMarker = lowerMessage.contains("established") ||
+            lowerMessage.contains("handshake success") ||
+            lowerMessage.contains("reality success")
+        if (!successMarker) return false
+        // Outbounds locaux : jamais une preuve de tunnel.
+        val localOutbound = LOCAL_OUTBOUND_MARKERS.any { lowerMessage.contains(it) }
+        if (localOutbound) return false
+        // Preuve positive : le message cite l'outbound proxy ou un protocole distant.
+        return PROXY_OUTBOUND_MARKERS.any { lowerMessage.contains(it) }
     }
 
     override fun sendNotification(notification: io.nekohasekai.libbox.Notification) {
@@ -2043,6 +2104,34 @@ class SxbVpnService : VpnService(), PlatformInterface {
         val localAddr = cfg.optStringOrNull("localAddress", "10.0.0.2/32")
         val fingerprint = cfg.optStringOrNull("fingerprint", "")
 
+        // Champs produits par le dashboard (parseurs d'URI du backend) qui
+        // n'étaient jamais transmis au moteur — un profil Reality ou gRPC était
+        // donc traduit en TLS/WebSocket générique, que le serveur refuse.
+        val alpn            = cfg.optStringOrNull("alpn", "")
+        val grpcServiceName = cfg.optStringOrNull("grpcServiceName", "")
+        val headerType      = cfg.optStringOrNull("headerType", "")
+        val realityPubKey   = cfg.optStringOrNull("publicKey", "")
+        val realityShortId  = cfg.optStringOrNull("shortId", "")
+        val packetEncoding  = cfg.optStringOrNull("packetEncoding", "")
+        val vmessSecurity   = cfg.optStringOrNull("security", "")
+        val vmessAlterId    = cfg.optInt("alterId", 0)
+
+        val transport = EngineTransport(
+            sni = sni, wsHost = wsHost, network = network, path = path,
+            tls = tls, insecure = insecure, fingerprint = fingerprint, alpn = alpn,
+            grpcServiceName = grpcServiceName, headerType = headerType,
+            // WireGuard réutilise `publicKey` pour la clé du pair : ne jamais
+            // l'interpréter comme une clé Reality.
+            realityPublicKey = if (protocol == "wireguard") "" else realityPubKey,
+            realityShortId = realityShortId,
+        )
+
+        broadcastLog(
+            "[CONFIG] proto=$protocol transport=${network.lowercase()} " +
+            "tls=$tls reality=${transport.realityPublicKey.isNotBlank()} " +
+            "alpn=${alpn.isNotBlank()} sni_set=${sni.isNotBlank()} host_hdr_set=${wsHost.isNotBlank()}"
+        )
+
         // Inbound TUN
         //
         // NOTE — « file_descriptor » a été retiré volontairement : ce champ
@@ -2055,14 +2144,14 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // qui fait réellement passer le trafic du système dans le tunnel.
         val tunInbound = tunInbound()
 
-        // DNS
-        val dnsObj = defaultDnsObject()
+        // DNS — le serveur défini sur le profil prime sur celui de l'application (§21).
+        val dnsObj = profileDnsObject(cfg.optStringOrNull("dns", "")) ?: defaultDnsObject()
 
         // Outbound proxy selon protocole
         val proxyOutbound = when (protocol) {
-            "vless" -> buildVlessOutbound(host, port, uuid, sni, wsHost, network, path, tls, flow, insecure, fingerprint)
-            "vmess" -> buildVmessOutbound(host, port, uuid, sni, wsHost, network, path, tls, insecure, fingerprint)
-            "trojan" -> buildTrojanOutbound(host, port, password, sni, wsHost, network, path, tls, insecure, fingerprint)
+            "vless" -> buildVlessOutbound(host, port, uuid, flow, packetEncoding, transport)
+            "vmess" -> buildVmessOutbound(host, port, uuid, vmessSecurity, vmessAlterId, transport)
+            "trojan" -> buildTrojanOutbound(host, port, password, transport)
             "shadowsocks" -> buildShadowsocksOutbound(host, port, password, method)
             "wireguard" -> buildWireGuardOutbound(host, port, privKey, peerPub, localAddr)
             "hysteria2" -> buildHysteria2Outbound(host, port, password, sni, tls)
@@ -2122,6 +2211,40 @@ class SxbVpnService : VpnService(), PlatformInterface {
     }
 
     /** DNS par défaut de l'app (utilisé quand le JSON stocké n'en fournit pas). */
+    /**
+     * §21 — DNS défini sur le profil du dashboard. Le champ `dns` était lu par le
+     * backend et transmis jusqu'au mobile, mais le moteur imposait toujours son
+     * DNS par défaut : un profil exigeant un résolveur interne ne résolvait rien.
+     *
+     * Accepte une IP (`1.1.1.1`), une URL (`https://…/dns-query`, `tls://…`) ou
+     * `local`. Retourne null si la valeur est vide ou inexploitable, auquel cas
+     * l'appelant conserve le DNS par défaut de l'application.
+     */
+    private fun profileDnsObject(raw: String): JSONObject? {
+        val value = raw.trim()
+        if (value.isEmpty()) return null
+        val address = when {
+            value.equals("local", ignoreCase = true) -> "local"
+            value.contains("://") -> value
+            // Une IP nue est utilisée telle quelle par sing-box (DNS classique).
+            else -> value
+        }
+        return JSONObject().apply {
+            put("servers", JSONArray()
+                .put(JSONObject().put("tag", "dns-remote").put("address", address)
+                    .put("strategy", "prefer_ipv4").put("detour", "proxy"))
+                .put(JSONObject().put("tag", "dns-local").put("address", "local").put("detour", "direct"))
+                .put(JSONObject().put("tag", "dns-fake").put("address", "fakeip").put("detour", "direct"))
+            )
+            put("fakeip", JSONObject().put("enabled", true).put("inet4_range", "198.18.0.0/15"))
+            put("rules", JSONArray()
+                .put(JSONObject().put("query_type", JSONArray().put("A").put("AAAA")).put("server", "dns-fake"))
+            )
+            put("final", "dns-remote")
+            put("independent_cache", true)
+        }
+    }
+
     private fun defaultDnsObject(detourTag: String = "proxy"): JSONObject = JSONObject().apply {
         put("servers", JSONArray()
             .put(JSONObject().put("tag", "dns-remote").put("address", "https://1.1.1.1/dns-query").put("strategy", "prefer_ipv4").put("detour", detourTag))
@@ -2762,53 +2885,82 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
     // ── Outbounds par protocole ───────────────────────────────────────────────
 
-    private fun buildVlessOutbound(host: String, port: Int, uuid: String, sni: String,
-                                    wsHost: String, network: String, path: String,
-                                    tls: Boolean, flow: String, insecure: Boolean,
-                                    fingerprint: String): JSONObject {
-        return JSONObject().apply {
+    /**
+     * Paramètres de transport/sécurité d'un profil, extraits une seule fois puis
+     * passés tels quels aux constructeurs d'outbound. Regrouper ces valeurs évite
+     * qu'un champ du dashboard soit oublié au passage — cause principale des
+     * profils « importés mais non fonctionnels ».
+     */
+    private data class EngineTransport(
+        val sni: String,
+        val wsHost: String,
+        val network: String,
+        val path: String,
+        val tls: Boolean,
+        val insecure: Boolean,
+        val fingerprint: String,
+        val alpn: String,
+        val grpcServiceName: String,
+        val headerType: String,
+        val realityPublicKey: String,
+        val realityShortId: String,
+    )
+
+    /** Applique la sécurité TLS et le transport d'un profil à un outbound. */
+    private fun applyTransport(outbound: JSONObject, t: EngineTransport): JSONObject {
+        outbound.put(
+            "tls",
+            buildTlsObj(t.sni, t.tls, t.insecure, t.fingerprint, t.alpn, t.realityPublicKey, t.realityShortId),
+        )
+        buildTransportObj(t.network, t.path, t.wsHost, t.grpcServiceName, t.headerType)
+            ?.let { outbound.put("transport", it) }
+        return outbound
+    }
+
+    private fun buildVlessOutbound(host: String, port: Int, uuid: String, flow: String,
+                                    packetEncoding: String, t: EngineTransport): JSONObject {
+        val outbound = JSONObject().apply {
             put("type", "vless")
             put("tag", "proxy")
             put("server", host)
             put("server_port", port)
             put("uuid", uuid)
             if (flow.isNotEmpty()) put("flow", flow)
-            put("tls", buildTlsObj(sni, tls, insecure, fingerprint))
-            if (network == "ws" || network == "websocket") put("transport", buildWsTransport(path, wsHost))
-            else if (network == "grpc") put("transport", buildGrpcTransport(path))
+            // §16/§23 — `packet_encoding` n'est posé que si le profil le demande.
+            // L'imposer casserait le relais UDP sur les serveurs qui ne
+            // l'implémentent pas, et reviendrait à codifier une valeur qui doit
+            // venir du dashboard.
+            if (packetEncoding.isNotEmpty()) put("packet_encoding", packetEncoding)
         }
+        return applyTransport(outbound, t)
     }
 
-    private fun buildVmessOutbound(host: String, port: Int, uuid: String, sni: String,
-                                    wsHost: String, network: String, path: String, tls: Boolean,
-                                    insecure: Boolean, fingerprint: String): JSONObject {
-        return JSONObject().apply {
+    private fun buildVmessOutbound(host: String, port: Int, uuid: String, security: String,
+                                    alterId: Int, t: EngineTransport): JSONObject {
+        val outbound = JSONObject().apply {
             put("type", "vmess")
             put("tag", "proxy")
             put("server", host)
             put("server_port", port)
             put("uuid", uuid)
-            put("security", "auto")
-            put("alter_id", 0)
-            put("tls", buildTlsObj(sni, tls, insecure, fingerprint))
-            if (network == "ws" || network == "websocket") put("transport", buildWsTransport(path, wsHost))
-            else if (network == "grpc") put("transport", buildGrpcTransport(path))
+            // `security` et `alter_id` étaient figés à "auto"/0 : un profil VMess
+            // exigeant aes-128-gcm ou un alterId non nul échouait à l'authentification.
+            put("security", security.ifEmpty { "auto" })
+            put("alter_id", alterId)
         }
+        return applyTransport(outbound, t)
     }
 
-    private fun buildTrojanOutbound(host: String, port: Int, password: String, sni: String,
-                                     wsHost: String, network: String, path: String, tls: Boolean,
-                                    insecure: Boolean, fingerprint: String): JSONObject {
-        return JSONObject().apply {
+    private fun buildTrojanOutbound(host: String, port: Int, password: String,
+                                     t: EngineTransport): JSONObject {
+        val outbound = JSONObject().apply {
             put("type", "trojan")
             put("tag", "proxy")
             put("server", host)
             put("server_port", port)
             put("password", password)
-            put("tls", buildTlsObj(sni, tls, insecure, fingerprint))
-            if (network == "ws" || network == "websocket") put("transport", buildWsTransport(path, wsHost))
-            else if (network == "grpc") put("transport", buildGrpcTransport(path))
         }
+        return applyTransport(outbound, t)
     }
 
     private fun buildShadowsocksOutbound(host: String, port: Int, password: String, method: String): JSONObject {
@@ -2874,19 +3026,88 @@ class SxbVpnService : VpnService(), PlatformInterface {
         enabled: Boolean,
         insecure: Boolean = false,
         fingerprint: String = "",
+        alpn: String = "",
+        realityPublicKey: String = "",
+        realityShortId: String = "",
     ): JSONObject {
         return JSONObject().apply {
             put("enabled", enabled)
             if (sni.isNotEmpty()) put("server_name", sni)
             put("insecure", insecure)
             put("disable_sni", false)
-            if (fingerprint.isNotBlank()) {
+            // L'ALPN provient du profil (`alpn=h2,http/1.1`). Il était ignoré :
+            // un serveur qui impose h2 rejetait donc le handshake.
+            csvToJsonArray(alpn)?.let { put("alpn", it) }
+            // Reality — `pbk`/`sid` sont produits par le parseur d'URI du backend
+            // mais n'étaient jamais transmis au moteur : la couche Reality était
+            // silencieusement remplacée par du TLS classique, que le serveur
+            // rejette systématiquement.
+            if (realityPublicKey.isNotBlank()) {
+                put("reality", JSONObject().apply {
+                    put("enabled", true)
+                    put("public_key", realityPublicKey)
+                    if (realityShortId.isNotBlank()) put("short_id", realityShortId)
+                })
+            }
+            // uTLS est obligatoire pour Reality ; sinon il reste optionnel.
+            val effectiveFingerprint = when {
+                fingerprint.isNotBlank() -> fingerprint
+                realityPublicKey.isNotBlank() -> "chrome"
+                else -> ""
+            }
+            if (effectiveFingerprint.isNotBlank()) {
                 put("utls", JSONObject().apply {
                     put("enabled", true)
-                    put("fingerprint", fingerprint)
+                    put("fingerprint", effectiveFingerprint)
                 })
             }
         }
+    }
+
+    /** `h2,http/1.1` → ["h2","http/1.1"]. Retourne null si rien d'exploitable. */
+    private fun csvToJsonArray(csv: String): JSONArray? {
+        val items = csv.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+        if (items.isEmpty()) return null
+        return JSONArray().apply { items.forEach { put(it) } }
+    }
+
+    /**
+     * Couche de transport unifiée (§9) : un profil ne doit jamais recevoir le
+     * transport d'un autre. `null` signifie TCP nu — sing-box n'accepte pas de
+     * `transport.type = "tcp"`, il faut alors omettre complètement le champ.
+     *
+     * `wsHost` (en-tête Host HTTP) est volontairement distinct de `sni` et de
+     * `server` : ces trois valeurs peuvent différer et ne doivent jamais être
+     * confondues (§11).
+     */
+    private fun buildTransportObj(
+        network: String,
+        path: String,
+        wsHost: String,
+        grpcServiceName: String,
+        headerType: String,
+    ): JSONObject? = when (network.lowercase()) {
+        "ws", "websocket" -> buildWsTransport(path, wsHost)
+        "grpc" -> buildGrpcTransport(grpcServiceName.ifEmpty { path.trim('/') })
+        "http", "h2", "http2" -> JSONObject().apply {
+            put("type", "http")
+            if (path.isNotEmpty()) put("path", path)
+            csvToJsonArray(wsHost)?.let { put("host", it) }
+        }
+        "httpupgrade" -> JSONObject().apply {
+            put("type", "httpupgrade")
+            if (path.isNotEmpty()) put("path", path)
+            if (wsHost.isNotEmpty()) put("host", wsHost)
+        }
+        "quic" -> JSONObject().put("type", "quic")
+        // TCP : seul `headerType=http` correspond à un transport sing-box.
+        else -> if (headerType.equals("http", ignoreCase = true)) {
+            JSONObject().apply {
+                put("type", "http")
+                if (path.isNotEmpty()) put("path", path)
+                csvToJsonArray(wsHost)?.let { put("host", it) }
+            }
+        } else null
     }
 
     private fun buildWsTransport(path: String, host: String): JSONObject {
