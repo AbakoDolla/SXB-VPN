@@ -92,6 +92,8 @@ export interface Notification {
   appUpdate?: boolean;
   actionType?: 'download_app_update';
   downloadUrl?: string;
+  /** Condensat SHA-256 attendu de l'APK, publié par le serveur (C6). */
+  downloadSha256?: string;
   versionCode?: number;
   versionName?: string;
   minSupportedCode?: number;

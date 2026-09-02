@@ -97,7 +97,7 @@ export default function ActivateScreen() {
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.topBar}>
-            <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]} accessibilityLabel="Retour">
+            <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]} accessibilityLabel={t("back")}>
               <Ionicons name="arrow-back" size={20} color={colors.textSecondary} />
             </Pressable>
             <Text style={styles.topBarLabel}>SXB VPN</Text>
@@ -108,7 +108,7 @@ export default function ActivateScreen() {
             <View style={styles.logoHalo}>
               <Image source={LOGO} style={styles.logo} resizeMode="contain" />
             </View>
-            <Text style={styles.eyebrow}>CONNEXION SÉCURISÉE</Text>
+            <Text style={styles.eyebrow}>{t("activate_secure_badge")}</Text>
             <Text style={styles.title}>{t("activate_account_title")}</Text>
             <Text style={styles.subtitle}>{t("activate_account_desc")}</Text>
           </View>
@@ -117,8 +117,8 @@ export default function ActivateScreen() {
             <View style={styles.formHeader}>
               <View style={styles.formIcon}><Ionicons name="key-outline" size={19} color={colors.primary} /></View>
               <View style={styles.formHeaderCopy}>
-                <Text style={styles.formTitle}>Votre token SXB</Text>
-                <Text style={styles.formHint}>Il active votre compte sur cet appareil.</Text>
+                <Text style={styles.formTitle}>{t("activate_token_title")}</Text>
+                <Text style={styles.formHint}>{t("activate_token_hint")}</Text>
               </View>
             </View>
 
@@ -143,7 +143,7 @@ export default function ActivateScreen() {
                 <Text style={styles.errorText}>{error}</Text>
               </View>
             ) : (
-              <Text style={styles.secureHint}><Ionicons name="lock-closed-outline" size={12} color={colors.textMuted} />  Votre token est transmis de manière sécurisée</Text>
+              <Text style={styles.secureHint}><Ionicons name="lock-closed-outline" size={12} color={colors.textMuted} />  {t("activate_token_secure")}</Text>
             )}
 
             <Pressable
@@ -162,17 +162,17 @@ export default function ActivateScreen() {
             <View style={styles.deviceCard}>
               <View style={styles.deviceIcon}><Ionicons name="phone-portrait-outline" size={18} color={colors.primary} /></View>
               <View style={styles.deviceCopy}>
-                <Text style={styles.deviceLabel}>ID de l’appareil</Text>
+                <Text style={styles.deviceLabel}>{t("device_id")}</Text>
                 <Text style={styles.deviceValue} numberOfLines={1} ellipsizeMode="middle">{deviceId}</Text>
               </View>
-              <Pressable onPress={copyDeviceId} style={({ pressed }) => [styles.copyButton, pressed && styles.pressed]} accessibilityLabel="Copier l’identifiant appareil">
+              <Pressable onPress={copyDeviceId} style={({ pressed }) => [styles.copyButton, pressed && styles.pressed]} accessibilityLabel={t("device_id")}>
                 <Ionicons name="copy-outline" size={17} color={colors.primary} />
-                <Text style={styles.copyText}>Copier</Text>
+                <Text style={styles.copyText}>{t("copy")}</Text>
               </Pressable>
             </View>
           ) : null}
 
-          <Text style={styles.footer}>SXB VPN · Protection réseau fiable</Text>
+          <Text style={styles.footer}>{t("activate_footer")}</Text>
         </ScrollView>
       </KeyboardAvoidingView>
     </LinearGradient>

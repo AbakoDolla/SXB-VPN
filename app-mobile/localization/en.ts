@@ -97,6 +97,12 @@ export const en = {
 
   no_history: 'No activity recorded',
   history_empty_hint: 'Your account activity will appear here.',
+  activate_secure_badge: 'SECURE CONNECTION',
+  activate_token_title: 'Your SXB token',
+  activate_token_hint: 'It activates your account on this device.',
+  activate_token_secure: 'Your token is transmitted securely',
+  activate_footer: 'SXB VPN · Reliable network protection',
+  copy: 'Copy',
   account_activated_event: 'Account activated',
   plan_activated_event: 'Plan activated',
   vpn_connected_event: 'VPN connected',
