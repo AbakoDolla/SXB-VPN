@@ -8,7 +8,18 @@ WHERE "permissionId" IN (
 DELETE FROM "permissions"
 WHERE "name" IN ('xpanel.view', 'xpanel.manage', 'xpanel.sync', 'xpanel.access');
 
-ALTER TABLE "xpanel_configs" RENAME TO "server_configs";
+DO $$
+BEGIN
+    IF to_regclass('"xpanel_configs"') IS NOT NULL THEN
+        IF to_regclass('"server_configs"') IS NOT NULL THEN
+            RAISE EXCEPTION 'Both legacy and current server configuration tables exist';
+        END IF;
+        ALTER TABLE "xpanel_configs" RENAME TO "server_configs";
+    ELSIF to_regclass('"server_configs"') IS NULL THEN
+        RAISE EXCEPTION 'Server configuration table is missing';
+    END IF;
+END
+$$;
 
 DO $$
 DECLARE
@@ -48,4 +59,4 @@ BEGIN
 END
 $$;
 
-ALTER TABLE "vpn_clients" DROP COLUMN "xpanelUserId";
+ALTER TABLE "vpn_clients" DROP COLUMN IF EXISTS "xpanelUserId";

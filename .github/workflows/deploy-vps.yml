@@ -307,11 +307,6 @@ jobs:
               pnpm exec prisma migrate resolve \
                 --schema=prisma/schema.prisma \
                 --applied=20260902000000_baseline
-              if [ "$CURRENT_DIFF_STATUS" -eq 0 ]; then
-                pnpm exec prisma migrate resolve \
-                  --schema=prisma/schema.prisma \
-                  --applied=20260902060000_remove_retired_panel
-              fi
             fi
             pnpm exec prisma migrate deploy --schema=prisma/schema.prisma
 

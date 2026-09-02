@@ -62,7 +62,7 @@ console.log('\n══ B. DÉPLOIEMENT NON DESTRUCTIF ══\n');
       /^\s*(?:DROP|TRUNCATE)\b.*$|^\s*ALTER\s+TABLE\b.*\bDROP\b.*$/gim,
     ) || [];
     const approvedRetiredFieldRemoval =
-      `ALTER TABLE "vpn_clients" DROP COLUMN "${'x' + 'panel'}UserId";`;
+      `ALTER TABLE "vpn_clients" DROP COLUMN IF EXISTS "${'x' + 'panel'}UserId";`;
     const expectedStatements = migrationFile.includes('remove_retired_panel')
       ? [approvedRetiredFieldRemoval]
       : [];
