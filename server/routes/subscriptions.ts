@@ -22,14 +22,16 @@ function generateDataToken(): string {
 // ── BigInt → Number avant sérialisation JSON ──────────────────────────────────
 // JSON.stringify plante avec "Cannot serialize a BigInt value" si on laisse
 // les champs BigInt de Prisma bruts.
-function serializeSub(sub: any): any {
+// `canSeeTechnical` est volontairement OBLIGATOIRE : une valeur par défaut
+// permissive rouvrirait la fuite au premier appel où on l'oublierait.
+function serializeSub(sub: any, canSeeTechnical: boolean): any {
   if (!sub) return sub;
   const s = { ...sub };
   if (typeof s.quotaBytes === 'bigint') s.quotaBytes = Number(s.quotaBytes);
   if (typeof s.quotaUsed  === 'bigint') s.quotaUsed  = Number(s.quotaUsed);
   // Champs imbriqués (profile, client)
   if (s.client) s.client = serializeClient(s.client);
-  if (s.profile) s.profile = serializeProfile(s.profile);
+  if (s.profile) s.profile = serializeProfile(s.profile, canSeeTechnical);
   return s;
 }
 
@@ -41,25 +43,72 @@ function serializeClient(c: any): any {
   return r;
 }
 
-function serializeProfile(p: any): any {
+/**
+ * Vue d'un profil VPN adaptée au demandeur.
+ *
+ * FAILLE CORRIGÉE — cette fonction renvoyait `{ ...p }`, donc l'intégralité du
+ * profil : `host`, `port`, `username`, `uuid`, `sni`, `path` et jusqu'au blob
+ * `canonicalConfig`. Or un RESELLER possède `subscription.view` mais AUCUNE
+ * permission `vpnprofile.view` : il ne peut pas lister les profils par leur
+ * route dédiée, mais les recevait intégralement par ce chemin détourné. Il
+ * pouvait ainsi relever l'infrastructure technique de tous les profils.
+ *
+ * Le contrat est désormais explicite : sans `vpnprofile.view`, seuls le nom
+ * commercial et l'identifiant sont exposés — de quoi attribuer un profil à un
+ * appareil client, jamais de quoi le reconstituer.
+ */
+function serializeProfile(p: any, canSeeTechnical: boolean): any {
   if (!p) return p;
-  return { ...p };
+  if (!canSeeTechnical) {
+    return {
+      id: p.id,
+      name: p.name,
+      displayProtocol: p.displayProtocol ?? null,
+      status: p.status ?? null,
+    };
+  }
+  return {
+    ...p,
+    // Même pour les rôles habilités, aucun secret ne sort : le mot de passe est
+    // masqué et le blob canonique reste au serveur.
+    password: p.password ? '••••••••' : null,
+    canonicalConfig: undefined,
+    jsonConfig: p.jsonConfig ? '(chiffré — non exposé)' : null,
+    hasCanonicalConfig: !!p.canonicalConfig,
+  };
+}
+
+/** true si le demandeur est habilité à voir les champs techniques d'un profil. */
+function canViewTechnicalProfile(req: AuthenticatedRequest): boolean {
+  if (req.user?.role === 'OWNER') return true;
+  return req.user?.permissions?.includes('vpnprofile.view') === true;
 }
 
 // ─── GET /api/subscriptions ───────────────────────────────────────────────────
 router.get('/', requireAuth, requirePermission('subscription.view'), async (req: AuthenticatedRequest, res: Response) => {
   try {
+    const canSeeTechnical = canViewTechnicalProfile(req);
+    // Un revendeur ne doit voir que les abonnements de SES clients. La requête
+    // ne portait aucun filtre : il recevait l'intégralité du parc, y compris
+    // les abonnements des autres revendeurs.
+    const isReseller = req.user?.role === 'RESELLER';
+
     if (!prisma) {
-      return res.json({ success: true, subscriptions: (inMemoryDb.subscriptions || []).map(serializeSub) });
+      const all = inMemoryDb.subscriptions || [];
+      const scoped = isReseller
+        ? all.filter((s: any) => s.client?.userId === req.user?.userId)
+        : all;
+      return res.json({ success: true, subscriptions: scoped.map((s: any) => serializeSub(s, canSeeTechnical)) });
     }
     const subs = await (prisma as any).subscription.findMany({
+      where: isReseller ? { client: { userId: req.user?.userId } } : undefined,
       orderBy: { createdAt: 'desc' },
       include: {
         client:  { include: { user: true } },
         profile: true,
       },
     });
-    return res.json({ success: true, subscriptions: subs.map(serializeSub) });
+    return res.json({ success: true, subscriptions: subs.map((s: any) => serializeSub(s, canSeeTechnical)) });
   } catch (err: any) {
     console.error('subscriptions list error:', err);
     return res.status(500).json({ error: err.message || 'Failed to list subscriptions' });
@@ -88,17 +137,25 @@ router.get('/stats', requireAuth, requirePermission('subscription.view'), async 
 // ─── GET /api/subscriptions/:id ──────────────────────────────────────────────
 router.get('/:id', requireAuth, requirePermission('subscription.view'), async (req: AuthenticatedRequest, res: Response) => {
   try {
+    const canSeeTechnical = canViewTechnicalProfile(req);
+    const isReseller = req.user?.role === 'RESELLER';
     if (!prisma) {
       const sub = (inMemoryDb.subscriptions || []).find((s) => s.id === req.params.id);
       if (!sub) return res.status(404).json({ error: 'Subscription not found' });
-      return res.json({ success: true, subscription: serializeSub(sub) });
+      return res.json({ success: true, subscription: serializeSub(sub, canSeeTechnical) });
     }
     const sub = await (prisma as any).subscription.findUnique({
       where: { id: req.params.id },
       include: { client: { include: { user: true } }, profile: true },
     });
     if (!sub) return res.status(404).json({ error: 'Subscription not found' });
-    return res.json({ success: true, subscription: serializeSub(sub) });
+    // Un revendeur ne doit pas pouvoir consulter l'abonnement d'un autre en
+    // devinant son identifiant : la réponse est un 404, pas un 403, afin de ne
+    // pas confirmer l'existence de la ressource.
+    if (isReseller && sub.client?.userId !== req.user?.userId) {
+      return res.status(404).json({ error: 'Subscription not found' });
+    }
+    return res.json({ success: true, subscription: serializeSub(sub, canSeeTechnical) });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Failed to get subscription' });
   }
@@ -145,7 +202,7 @@ router.post('/', requireAuth, requirePermission('subscription.manage'), async (r
     });
 
     await logDbActivity(req.user!.userId, `Forfait créé : "${sub.name}" pour client ${clientId}`, 'info', req.ip || '');
-    return res.status(201).json({ success: true, subscription: serializeSub(sub) });
+    return res.status(201).json({ success: true, subscription: serializeSub(sub, canViewTechnicalProfile(req)) });
   } catch (err: any) {
     console.error('subscription create error:', err);
     return res.status(500).json({ error: err.message || 'Failed to create subscription' });
@@ -176,7 +233,7 @@ router.put('/:id', requireAuth, requirePermission('subscription.manage'), async 
     });
 
     await logDbActivity(req.user!.userId, `Forfait mis à jour : ${updated.name}`, 'info', req.ip || '');
-    return res.json({ success: true, subscription: serializeSub(updated) });
+    return res.json({ success: true, subscription: serializeSub(updated, canViewTechnicalProfile(req)) });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Failed to update subscription' });
   }
