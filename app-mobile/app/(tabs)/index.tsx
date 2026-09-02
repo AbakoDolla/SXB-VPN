@@ -16,7 +16,6 @@ import { useVpnContext, formatBytes, formatSpeed } from "@/contexts/VpnContext";
 import { deriveQuota } from "@/services/quotaState";
 import Colors from "@/constants/colors";
 import { useColors } from "@/hooks/useColors";
-import StepLogs from "@/components/StepLogs";
 import UpdatePrompt from "@/components/UpdatePrompt";
 import InteractiveWalkthrough from "@/components/InteractiveWalkthrough";
 import AnnouncementModal from "@/components/AnnouncementModal";
@@ -24,6 +23,7 @@ import { useTranslation } from "@/localization";
 import type { VpnConnection } from "@/types/api";
 import { alpha, elevation, layout, radius, spacing, type } from "@/constants/theme";
 import PowerButton from "@/components/ui/PowerButton";
+import ConfigPicker from "@/components/ui/ConfigPicker";
 import {
   EmptyState,
   IconButton,
@@ -68,82 +68,6 @@ function getButtonState(
   if (activeConnection?.status === "active") return "connect";
   if (hasValidConfig) return "connect";
   return "connect";
-}
-
-// ── VPN Logs Modal — VRAIS LOGS du moteur sing-box ───────────────────────────
-function VpnLogsModal({
-  visible, onClose,
-}: {
-  visible: boolean; onClose: () => void;
-}) {
-  const { vpnLogs: logs, isConnected, isConnecting, selectedProtocol } = useVpnContext();
-  const { t } = useTranslation();
-  const scrollRef = useRef<ScrollView>(null);
-
-  useEffect(() => {
-    if (visible && logs.length > 0) {
-      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
-    }
-  }, [logs, visible]);
-
-  const copyAllLogs = async () => {
-const header = [
-	      "═══ SXB VPN — Logs de diagnostic ═══",
-	      `Date      : ${new Date().toISOString()}`,
-	      `Protocole : ${selectedProtocol ?? "-"}`,
-	      `État      : ${isConnected ? t("active") : isConnecting ? t("connecting") : t("inactive")}`,
-	      `Lignes    : ${logs.length}`,
-	      "────────────────────────────────────────",
-	    ].join("\n");
-    try {
-      await Share.share({ message: `${header}\n${logs.join("\n")}`, title: "Logs SXB VPN" });
-    } catch { /* ignore */ }
-  };
-
-  return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={logStyles.overlay}>
-        <View style={logStyles.sheet}>
-          <View style={logStyles.handle} />
-          <View style={logStyles.header}>
-            <View style={[logStyles.statusDot, { backgroundColor: isConnected ? Colors.connected : isConnecting ? Colors.primary : Colors.textMuted }]} />
-            <Text style={logStyles.title}>{t('logs_engine_title')}</Text>
-            <Pressable onPress={copyAllLogs} style={logStyles.copyBtn} disabled={logs.length === 0} accessibilityLabel={t('logs_copy_a11y')}>
-              <Ionicons name="copy-outline" size={15} color={logs.length === 0 ? Colors.textMuted : Colors.primary} />
-              <Text style={[logStyles.copyBtnText, logs.length === 0 && { color: Colors.textMuted }]}>{t('logs_copy_all')}</Text>
-            </Pressable>
-            <Pressable onPress={onClose}>
-              <Ionicons name="close" size={22} color={Colors.textSecondary} />
-            </Pressable>
-          </View>
-          <Text style={logStyles.hint}>{t('logs_copy_hint')}</Text>
-          <ScrollView
-            ref={scrollRef}
-            style={logStyles.logScroll}
-            showsVerticalScrollIndicator={false}
-          >
-            {logs.length === 0 ? (
-              <View style={logStyles.logLine}>
-                <Text style={logStyles.logText}>{t('logs_waiting')}</Text>
-              </View>
-            ) : logs.map((line, i) => (
-              <View key={i} style={logStyles.logLine}>
-                <Text style={logStyles.logPrefix}>›</Text>
-                <Text selectable style={[
-                  logStyles.logText,
-                  line.startsWith("✅") && { color: Colors.connected },
-                  line.startsWith("❌") && { color: "#FF4444" },
-                  line.startsWith("[engine]") && { color: Colors.primary },
-                ]}>
-                  {line}
-                </Text>
-              </View>
-            ))}
-          </ScrollView>
-        </View>
-      </View>
-    </Modal>
-  );
 }
 
 // ── VPN Connection Card ───────────────────────────────────────────────────────
@@ -217,7 +141,8 @@ export default function HomeScreen() {
     hasValidConfig, activeConnection,
     connect, disconnect, trafficStats: traffic,
     refreshVpnConfig, syncFromConnection,
-    stepLogs, savedConfigs, activeConfigId, switchConfig, isSwitchingConfig, quotaData, revokedStatus, perAppTraffic,
+    savedConfigs, activeConfigId, switchConfig, isSwitchingConfig, quotaData, revokedStatus, perAppTraffic,
+    deleteConfig,
   } = useVpnContext();
   const { t } = useTranslation();
   const [walkthroughVisible, setWalkthroughVisible] = useState(false);
@@ -249,7 +174,7 @@ export default function HomeScreen() {
     }
   }, []);
 
-  const [logsVisible, setLogsVisible] = useState(false);
+  const [configPickerVisible, setConfigPickerVisible] = useState(false);
   const [timer, setTimer] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [ping, setPing] = useState<number | null>(null);
@@ -448,6 +373,8 @@ export default function HomeScreen() {
     || selectedProtocol
     || "—";
 
+  const activeConfig = savedConfigs.find((cfg) => cfg.id === activeConfigId) || savedConfigs[0] || null;
+
   return (
     <LinearGradient colors={colors.gradients.bg as [string, string, string]} style={styles.container}>
       <AnnouncementModal
@@ -516,54 +443,41 @@ export default function HomeScreen() {
           </Surface>
         )}
 
-        {/* Sélecteur de profil — présenté en pastilles horizontales, plus lisible
-            que des blocs empilés lorsque plusieurs profils coexistent. */}
-        {savedConfigs.length > 1 && (
+        {/* Sélecteur de profils. Les pastilles sur une ligne devenaient
+            illisibles au-delà de deux profils et ne permettaient aucune
+            suppression : l'accueil n'affiche plus que le profil courant et
+            ouvre une feuille dédiée pour gérer l'ensemble. */}
+        {savedConfigs.length > 0 && (
           <Surface>
             <SectionHeader
               title={t('config_switch')}
               icon="swap-horizontal-outline"
               trailing={isSwitchingConfig ? <ActivityIndicator size="small" color={colors.primary} /> : undefined}
             />
-            <View style={styles.configRow}>
-              {savedConfigs.map((cfg) => {
-                const connStatus = connections.find(c => c.id === cfg.id)?.status;
-                const isRevokedOrExpired = connStatus === 'revoked' || connStatus === 'expired'
-                  || connStatus === 'exhausted' || connStatus === 'suspended';
-                const isActive = cfg.id === activeConfigId;
-                const isDisabled = isRevokedOrExpired && !isActive;
-                const tone = isDisabled ? colors.disconnected : isActive ? colors.primary : colors.textMuted;
-                return (
-                  <Pressable
-                    key={cfg.id}
-                    onPress={() => !isSwitchingConfig && !isDisabled && switchConfig(cfg.id)}
-                    disabled={isSwitchingConfig || isDisabled}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: isActive, disabled: isDisabled }}
-                    style={[
-                      styles.configChip,
-                      {
-                        borderColor: isActive ? colors.primary + alpha.f60 : colors.border,
-                        backgroundColor: isActive ? colors.primaryDim : colors.bgCard2,
-                        opacity: isDisabled ? 0.5 : 1,
-                      },
-                    ]}
-                  >
-                    {isSwitchingConfig && isActive ? (
-                      <ActivityIndicator size="small" color={colors.primary} />
-                    ) : (
-                      <Ionicons name={isActive ? 'shield-checkmark' : 'shield-outline'} size={17} color={tone} />
-                    )}
-                    <Text style={[type.captionMedium, { color: isActive ? colors.primary : colors.textSecondary }]} numberOfLines={1}>
-                      {cfg.name}
-                    </Text>
-                    <Text style={[type.micro, { color: colors.textMuted }]} numberOfLines={1}>
-                      {cfg.protocol}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
+            <Pressable
+              onPress={() => setConfigPickerVisible(true)}
+              accessibilityRole="button"
+              accessibilityLabel={t('config_manage')}
+              style={({ pressed }) => [
+                styles.configCurrent,
+                { borderColor: colors.border, backgroundColor: colors.bgCard2 },
+                pressed && { opacity: 0.75 },
+              ]}
+            >
+              <View style={[styles.configIcon, { backgroundColor: colors.primaryDim }]}>
+                <Ionicons name="shield-checkmark" size={19} color={colors.primary} />
+              </View>
+              <View style={{ flex: 1, gap: spacing.xs }}>
+                <Text style={[type.h3, { color: colors.textPrimary }]} numberOfLines={1}>
+                  {activeConfig?.name || t('config_switch')}
+                </Text>
+                <Text style={[type.micro, { color: colors.textMuted }]} numberOfLines={1}>
+                  {activeConfig?.protocol || '—'}
+                  {savedConfigs.length > 1 ? ` · ${savedConfigs.length} ${t('config_plural')}` : ''}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+            </Pressable>
           </Surface>
         )}
 
@@ -618,20 +532,20 @@ export default function HomeScreen() {
             </StatRow>
           </Surface>
 
-          {(isConnecting || isConnected) && stepLogs.length > 0 && (
-            <View style={{ width: '100%' }}>
-              <StepLogs steps={stepLogs} visible={true} />
-            </View>
-          )}
-
-          {(isConnecting || isConnected) && (
-            <Pressable onPress={() => setLogsVisible(true)} style={styles.logsLink}>
-              <Ionicons name="terminal-outline" size={14} color={colors.primary} />
-              <Text style={[type.captionMedium, { color: colors.primary }]}>
-                {isConnecting ? t('logs_in_progress') : t('view_connection_logs')}
-              </Text>
-            </Pressable>
-          )}
+          {/* Les étapes et le flux brut vivent désormais dans l'écran unique de
+              diagnostic : l'accueil ne conserve qu'un lien, ce qui l'allège et
+              supprime le troisième emplacement où les journaux apparaissaient. */}
+          <Pressable
+            onPress={() => router.push("/diagnostics")}
+            accessibilityRole="button"
+            accessibilityLabel={t('diagnostic_title')}
+            style={styles.logsLink}
+          >
+            <Ionicons name="pulse-outline" size={14} color={colors.primary} />
+            <Text style={[type.captionMedium, { color: colors.primary }]}>
+              {isConnecting ? t('logs_in_progress') : t('diagnostic_title')}
+            </Text>
+          </Pressable>
         </View>
 
         {/* ── QUOTA — Consomme deriveQuota (B1/B4) ────────────────────────── */}
@@ -835,13 +749,18 @@ export default function HomeScreen() {
         </View>
       </ScrollView>
 
-      {/* Logs Modal */}
-      <VpnLogsModal
-        visible={logsVisible}
-        onClose={() => setLogsVisible(false)}
-      />
-
       <UpdatePrompt />
+
+      <ConfigPicker
+        visible={configPickerVisible}
+        onClose={() => setConfigPickerVisible(false)}
+        configs={savedConfigs}
+        activeConfigId={activeConfigId}
+        connections={connections}
+        switching={isSwitchingConfig}
+        onSelect={(id) => { setConfigPickerVisible(false); void switchConfig(id); }}
+        onDelete={deleteConfig}
+      />
 
       <InteractiveWalkthrough 
         visible={walkthroughVisible} 
@@ -851,21 +770,6 @@ export default function HomeScreen() {
   );
 }
 
-const logStyles = StyleSheet.create({
-  overlay: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(6,9,20,0.7)" },
-  sheet: { backgroundColor: "#0A0F1C", borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, maxHeight: "60%", minHeight: 300 },
-  handle: { width: 36, height: 4, backgroundColor: Colors.border, borderRadius: 2, alignSelf: "center", marginBottom: 16 },
-  header: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 8 },
-  statusDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.connected },
-  title: { flex: 1, fontSize: 16, fontWeight: "600", color: "#FFF", fontFamily: "Inter_600SemiBold" },
-  copyBtn: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 12, borderWidth: 1, borderColor: Colors.primary + "40", backgroundColor: Colors.primary + "15" },
-  copyBtnText: { fontSize: 12, color: Colors.primary, fontFamily: "Inter_600SemiBold" },
-  hint: { fontSize: 11, color: Colors.textMuted, fontFamily: "Inter_400Regular", marginBottom: 10 },
-  logScroll: { flex: 1 },
-  logLine: { flexDirection: "row", gap: 8, paddingVertical: 3 },
-  logPrefix: { color: Colors.primary, fontFamily: "Inter_700Bold", fontSize: 13 },
-  logText: { fontSize: 13, color: Colors.textSecondary, fontFamily: "Inter_400Regular", flex: 1 },
-});
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
@@ -905,15 +809,20 @@ const styles = StyleSheet.create({
   logsLink: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
 
   // ── Profils ────────────────────────────────────────────────────────────────
-  configRow: { flexDirection: "row", gap: spacing.sm },
-  configChip: {
-    flex: 1,
+  configCurrent: {
+    flexDirection: "row",
     alignItems: "center",
-    gap: spacing.xs,
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.sm,
+    gap: spacing.md,
+    padding: spacing.md,
     borderRadius: radius.md,
     borderWidth: 1,
+  },
+  configIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: radius.md,
+    alignItems: "center",
+    justifyContent: "center",
   },
 
   // ── Cartes de données ──────────────────────────────────────────────────────

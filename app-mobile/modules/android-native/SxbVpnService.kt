@@ -1,4 +1,4 @@
-package com.sxbvpn.vpnmodule
+﻿package com.sxbvpn.vpnmodule
 
 /**
  * SxbVpnService — Moteur VPN professionnel SXB v6 (libbox in-process)
@@ -688,6 +688,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
          */
         private val PERMANENT_ERROR_CODES = setOf("CONFIG_INVALID", "CONFIG_UNSUPPORTED")
 
+        /** ⚡ Plafond de diffusion des journaux vers l'interface (voir broadcastLog). */
+        private const val LOG_RATE_WINDOW_MS = 1_000L
+        private const val LOG_RATE_MAX_PER_WINDOW = 12
+
         @Volatile var instance: SxbVpnService? = null
         @Volatile private var currentState: String = "disconnected"
 
@@ -734,6 +738,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private var connectionWatchdog: Thread? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private val cleanupStarted = AtomicBoolean(false)
+    /** ⚡ Fenêtre glissante de limitation des journaux diffusés (voir broadcastLog). */
+    private val logRateWindowStart = AtomicLong(0L)
+    private val logRateCount = java.util.concurrent.atomic.AtomicInteger(0)
     private val traceSequence = AtomicLong(0)
 
     private data class SshTransportStrategy(
@@ -2180,7 +2187,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         }
 
         return JSONObject().apply {
-            put("log", JSONObject().put("level", "info").put("timestamp", true))
+            put("log", JSONObject().put("level", "warn").put("timestamp", true))
             put("dns", dnsObj)
             put("inbounds", JSONArray().put(tunInbound))
             put("outbounds", JSONArray()
@@ -2925,7 +2932,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         )
 
         return JSONObject().apply {
-            put("log", JSONObject().put("level", "info").put("timestamp", true))
+            put("log", JSONObject().put("level", "warn").put("timestamp", true))
             put("dns", dnsObj)
             put("inbounds", JSONArray().put(tunInbound()))
             put("outbounds", outbounds)
@@ -3216,7 +3223,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             .put(JSONObject().put("ip_is_private", true).put("outbound", "direct"))
 
         return JSONObject().apply {
-            put("log", JSONObject().put("level", "info").put("timestamp", true))
+            put("log", JSONObject().put("level", "warn").put("timestamp", true))
             put("dns", JSONObject().apply {
                 put("servers", JSONArray()
                     .put(JSONObject().put("tag", "dns-r").put("address", "https://1.1.1.1/dns-query").put("strategy", "prefer_ipv4"))
@@ -3604,9 +3611,34 @@ class SxbVpnService : VpnService(), PlatformInterface {
             fullLogBuffer.append(safeMessage).append("\n")
             trimLogBufferLocked()
         }
+
+        // ⚡ Limitation de débit vers l'interface.
+        //
+        // Chaque diffusion traverse le pont React Native et provoque un rendu.
+        // Le moteur peut émettre des rafales de plusieurs centaines de lignes par
+        // seconde : sans plafond, le thread JS était saturé et l'application se
+        // figeait. Le tampon complet, lui, conserve TOUTES les lignes et reste
+        // accessible via le bouton « copier les journaux » — le diagnostic n'est
+        // donc jamais amputé, seul l'affichage temps réel est allégé.
+        val now = SystemClock.elapsedRealtime()
+        val windowStart = logRateWindowStart.get()
+        if (now - windowStart >= LOG_RATE_WINDOW_MS) {
+            logRateWindowStart.set(now)
+            logRateCount.set(0)
+        }
+        if (logRateCount.incrementAndGet() > LOG_RATE_MAX_PER_WINDOW) {
+            if (logRateCount.get() == LOG_RATE_MAX_PER_WINDOW + 1) {
+                sendLogBroadcast("[SXB] … journaux abondants — affichage allégé (tout est conservé)")
+            }
+            return
+        }
+        sendLogBroadcast(safeMessage)
+    }
+
+    private fun sendLogBroadcast(text: String) {
         // setPackage() obligatoire sur Android 14+ avec RECEIVER_NOT_EXPORTED
         val intent = Intent(BROADCAST_LOG).apply {
-            putExtra("log", safeMessage)
+            putExtra("log", text)
             setPackage(packageName)
         }
         sendBroadcast(intent)

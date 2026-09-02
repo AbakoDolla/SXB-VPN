@@ -128,6 +128,17 @@ export async function loadQuotaData(configId?: string): Promise<QuotaData | null
 }
 
 /**
+ * Supprime les données de quota d'un profil.
+ *
+ * Sans cet appel, la consommation d'un profil supprimé subsistait dans le
+ * stockage et se retrouvait réattribuée à un profil réimporté sous le même
+ * identifiant d'abonnement.
+ */
+export async function clearQuotaData(configId: string): Promise<void> {
+  await AsyncStorage.removeItem(`sxb_quota_${configId}`).catch(() => {});
+}
+
+/**
  * Consomme du quota localement (mode hors-ligne).
  * @param bytes — nombre de bytes consommés depuis la dernière mesure
  * @returns QuotaData mis à jour, ou null si aucun quota en local

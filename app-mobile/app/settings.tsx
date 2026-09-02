@@ -127,36 +127,9 @@ function LangModal({ visible, current, onSelect, onClose }: {
 }
 
 // ── Logs modal ────────────────────────────────────────────────────────────────
-
-function LogsModal({ visible, logs, onClose }: { visible: boolean; logs: string[]; onClose: () => void }) {
-  const { t } = useTranslation();
-  return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={styles.logsOverlay}>
-        <View style={styles.logsSheet}>
-          <View style={styles.logsHeader}>
-            <View style={styles.logsHandle} />
-            <Text style={styles.logsTitle}>{t("vpn_logs")}</Text>
-            <Pressable onPress={onClose}>
-              <Ionicons name="close" size={22} color={Colors.textSecondary} />
-            </Pressable>
-          </View>
-          <ScrollView style={styles.logsScroll} showsVerticalScrollIndicator={false}>
-            {logs.length === 0 ? (
-              <Text style={styles.logsEmpty}>{t("logs_waiting")}</Text>
-            ) : logs.map((l, i) => (
-              <Text key={i} style={[
-                styles.logLine,
-                l.startsWith("✅") && { color: Colors.connected },
-                l.startsWith("❌") && { color: Colors.disconnected },
-              ]}>{l}</Text>
-            ))}
-          </ScrollView>
-        </View>
-      </View>
-    </Modal>
-  );
-}
+// Supprimée : les journaux sont désormais réunis dans l'écran unique
+// `app/diagnostics.tsx`. Ils apparaissaient auparavant ici, sur l'accueil, et en
+// ligne pendant la connexion — trois vues partielles sans source de vérité.
 
 // ── PIN modal ─────────────────────────────────────────────────────────────────
 
@@ -238,7 +211,6 @@ export default function SettingsScreen() {
   const [autoReconnect, setAutoReconnect] = useState(true);
   const [killSwitch,  setKillSwitch]  = useState(false);
   const [langModal,   setLangModal]   = useState(false);
-  const [logsModal,   setLogsModal]   = useState(false);
   const [deviceId,    setDeviceId]    = useState<string | null>(null);
   const [storageSize,      setStorageSize]      = useState<string>("…");
   const [clearing,         setClearing]         = useState(false);
@@ -466,8 +438,8 @@ export default function SettingsScreen() {
           />
           <View style={styles.divider} />
           <Row
-            icon="terminal-outline" label="Voir les logs VPN"
-            onPress={() => setLogsModal(true)} color={Colors.primary}
+            icon="pulse-outline" label={t('diagnostic_title')}
+            onPress={() => router.push("/diagnostics")} color={Colors.primary}
             badge={logs.length > 0 ? String(logs.length) : undefined}
           />
         </Section>
@@ -622,10 +594,6 @@ export default function SettingsScreen() {
         visible={langModal} current={language}
         onSelect={(code) => setLanguage(code as any)} onClose={() => setLangModal(false)}
       />
-      <LogsModal
-        visible={logsModal} logs={logs}
-        onClose={() => setLogsModal(false)}
-      />
       {pinModal && (
         <PinModal
           visible={true} mode={pinModal}
@@ -676,15 +644,6 @@ const styles = StyleSheet.create({
   langRowActive: { backgroundColor: Colors.primaryDim },
   langFlag: { fontSize: 24 },
   langLabel: { flex: 1, fontSize: 15, color: "#FFF", fontFamily: "Inter_500Medium" },
-  // Logs modal
-  logsOverlay: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(6,9,20,0.8)" },
-  logsSheet: { backgroundColor: "#0A0F1C", borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, maxHeight: "65%", minHeight: 250 },
-  logsHandle: { width: 36, height: 4, backgroundColor: Colors.border, borderRadius: 2, alignSelf: "center", marginBottom: 4 },
-  logsHeader: { flexDirection: "row", alignItems: "center", gap: 10, paddingBottom: 12 },
-  logsTitle: { flex: 1, fontSize: 16, fontWeight: "600", color: "#FFF", fontFamily: "Inter_600SemiBold" },
-  logsScroll: { flex: 1 },
-  logsEmpty: { color: Colors.textMuted, fontFamily: "Inter_400Regular", fontSize: 13, textAlign: "center", paddingTop: 20 },
-  logLine: { fontSize: 12, color: Colors.textSecondary, fontFamily: "Inter_400Regular", paddingVertical: 2 },
   // PIN modal
   pinSheet: { backgroundColor: "#0A0F1C", borderRadius: 20, padding: 24, borderWidth: 1, borderColor: Colors.border, gap: 14 },
   pinTitle: { fontSize: 16, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold", textAlign: "center" },

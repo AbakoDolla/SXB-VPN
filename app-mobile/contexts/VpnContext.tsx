@@ -21,7 +21,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient from '@/services/apiClient';
 import {
-  saveVpnConfig, saveQuotaData, loadQuotaData,
+  saveVpnConfig, saveQuotaData, loadQuotaData, clearQuotaData,
   isQuotaExhausted, isConfigExpired, consumeQuotaLocally, clearAllOfflineData,
 } from '@/services/offlineStorage';
 import type { QuotaData } from '@/services/offlineStorage';
@@ -140,6 +140,8 @@ interface VpnContextType {
   selectProtocol:     (name: string) => void;
   refreshVpnConfig:   () => Promise<void>;
   requestPermission:  () => Promise<boolean>;
+  /** Supprime un profil de cet appareil. Coupe le tunnel s'il est actif. */
+  deleteConfig:       (configId: string) => Promise<boolean>;
 }
 
 const DEFAULT_STATS: TrafficStats = { uploadBytes: 0, downloadBytes: 0, uploadSpeed: 0, downloadSpeed: 0, tunAttached: false };
@@ -163,6 +165,7 @@ const VpnContext = createContext<VpnContextType>({
   connect: async () => {}, disconnect: async () => {},
   selectProtocol: () => {}, refreshVpnConfig: async () => {},
   requestPermission: async () => false,
+  deleteConfig: async () => false,
 });
 
 // ── Provider ─────────────────────────────────────────────────────────────────
@@ -283,8 +286,43 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     ));
   }, []);
 
+  /**
+   * ⚡ Journalisation par lots.
+   *
+   * `addLog` déclenchait un `setState` à CHAQUE ligne émise par le moteur natif.
+   * Or sing-box et le tunnel SSH en produisent des dizaines par seconde pendant
+   * l'établissement : chaque ligne provoquait un rendu complet de tous les écrans
+   * abonnés au contexte, saturant le thread JS. C'est ce qui figeait l'interface
+   * et rendait la navigation impossible au moment précis de la connexion.
+   *
+   * Les lignes sont désormais accumulées dans une référence — qui ne déclenche
+   * aucun rendu — puis publiées à cadence fixe. Aucune ligne n'est perdue, mais
+   * l'interface ne se redessine qu'à intervalle maîtrisé.
+   */
+  const pendingLogsRef = useRef<string[]>([]);
+  const logFlushTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const addLog = useCallback((msg: string) => {
-    setVpnLogs(prev => [msg, ...prev.slice(0, 99)]);
+    pendingLogsRef.current.push(msg);
+    // Plafond de sécurité : si l'interface est en arrière-plan, la file ne doit
+    // pas croître indéfiniment entre deux publications.
+    if (pendingLogsRef.current.length > 400) {
+      pendingLogsRef.current = pendingLogsRef.current.slice(-200);
+    }
+  }, []);
+
+  useEffect(() => {
+    logFlushTimerRef.current = setInterval(() => {
+      if (pendingLogsRef.current.length === 0) return;
+      const batch = pendingLogsRef.current;
+      pendingLogsRef.current = [];
+      // Un seul rendu pour tout le lot, quel que soit son volume.
+      setVpnLogs(prev => [...batch.reverse(), ...prev].slice(0, 300));
+    }, 350);
+    return () => {
+      if (logFlushTimerRef.current) clearInterval(logFlushTimerRef.current);
+      logFlushTimerRef.current = null;
+    };
   }, []);
 
   const startWatchdog = useCallback((stepName: string, attemptId: number) => {
@@ -853,7 +891,24 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
   // ── CONNECT ──────────────────────────────────────────────────────────────────
   const connect = useCallback(async () => {
-    if (isConnecting || isConnected) return;
+    // ⚡ Réactivité immédiate.
+    //
+    // Le garde refusait tout appel dès que `isConnecting` était vrai, si bien
+    // qu'un appui pendant l'établissement ne produisait rien : l'utilisateur
+    // devait attendre la fin d'une tentative parfois longue. Un nouvel appui
+    // annule désormais la tentative en cours et en relance une immédiatement.
+    if (isConnected) return;
+    if (isConnecting) {
+      // Invalide la tentative précédente : ses résultats tardifs seront ignorés
+      // grâce au contrôle d'`attemptId` présent à chaque étape.
+      ++connectionAttemptRef.current;
+      acceptNativeConnectedRef.current = false;
+      stopWatchdog();
+      if (IS_ANDROID && SxbVpnNative) {
+        // Arrêt sans attente : l'interface ne doit jamais dépendre du natif.
+        void SxbVpnNative.stopVpn().catch(() => {});
+      }
+    }
     const attemptId = ++connectionAttemptRef.current;
     // Retour UI immédiat : le bouton et l’animation changent avant toute E/S réseau.
     setIsConnecting(true);
@@ -1153,13 +1208,19 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       let finalDown = 0;
 
       if (IS_ANDROID && SxbVpnNative) {
+        // ⚡ L'arrêt du tunnel part AVANT toute autre opération. Il était
+        // auparavant précédé d'une lecture des compteurs : le tunnel restait
+        // donc actif le temps de cet aller-retour, donnant l'impression que le
+        // bouton ne répondait pas.
+        const stopPromise = SxbVpnNative.stopVpn();
+
         try {
           const stats = await SxbVpnNative.getTrafficStats();
           finalUp = stats?.uploadBytes || 0;
           finalDown = stats?.downloadBytes || 0;
         } catch { /* ignore */ }
 
-        await SxbVpnNative.stopVpn();
+        await stopPromise.catch(() => {});
       } else {
         await apiClient.post('/mobile/vpn/session', { action: 'disconnect' });
         await new Promise(r => setTimeout(r, 600));
@@ -1197,8 +1258,56 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isConnecting, isConnected, activeConfigId, addLog, reportUsageToBackend, addStepLog]);
 
-  // B8 — Bascule atomique. Un abonnement distant actif peut être choisi avant
-  // son premier provisionnement local : il est alors provisionné avec SON jeton.
+  /**
+   * Suppression d'un profil local.
+   *
+   * Le stockage savait déjà supprimer une entrée mais rien ne l'exposait à
+   * l'interface : un profil révoqué ou obsolète restait indéfiniment dans la
+   * liste. La suppression coupe d'abord le tunnel si le profil concerné est
+   * celui en cours, puis bascule proprement sur un profil restant.
+   */
+  const deleteConfig = useCallback(async (configId: string) => {
+    const wasActive = configId === activeConfigId;
+    if (wasActive && (isConnected || isConnecting)) {
+      await disconnect();
+    }
+
+    const result = await configStore.remove(configId);
+    if (result.status !== 'ok') {
+      addLog('⚠️ Suppression impossible — stockage indisponible');
+      return false;
+    }
+
+    await clearQuotaData(configId).catch(() => {});
+
+    const remaining = await configStore.list();
+    const entries = remaining.status === 'ok' && remaining.value ? remaining.value : [];
+    setSavedConfigs(entries.map(entry => ({
+      id: entry.configId,
+      name: entry.name || entry.configId,
+      protocol: entry.displayProtocol || entry.protocol || '',
+      isActive: entry.isActive === true,
+    })));
+
+    if (wasActive) {
+      const next = entries[0]?.configId || null;
+      if (next) {
+        await configStore.setActive(next);
+        setActiveConfigId(next);
+        const target = await configStore.get(next);
+        setVpnConfig(target.status === 'ok' && target.value ? { ...target.value.config, configId: next } : null);
+        setQuotaData(await loadQuotaData(next));
+      } else {
+        setActiveConfigId(null);
+        setVpnConfig(null);
+        setQuotaData(null);
+      }
+    }
+
+    addLog('🗑️ Profil supprimé de cet appareil');
+    return true;
+  }, [activeConfigId, isConnected, isConnecting, disconnect, addLog]);
+
   const switchConfig = useCallback(async (configId: string) => {
     if (isSwitchingConfig || configId === activeConfigId) return;
     const remoteTarget = remoteConnections.find(c => c.id === configId) || null;
@@ -1277,30 +1386,50 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     [vpnConfig, activeConnection],
   );
 
+  /**
+   * ⚡ Valeur du contexte mémorisée.
+   *
+   * Cet objet était reconstruit littéralement à chaque rendu : sa référence
+   * changeait donc systématiquement, et TOUS les écrans abonnés se redessinaient
+   * même lorsque aucune donnée qui les concerne n'avait bougé. Combiné au flux de
+   * logs, c'est ce qui rendait l'application inutilisable pendant la connexion.
+   */
+  const contextValue = useMemo(() => ({
+    isConnected, isConnecting, vpnState,
+    selectedProtocol, connectedProtocol, availableProtocols,
+    trafficStats, vpnLogs,
+    hasVpnPermission,
+    hasValidConfig,
+    activeConnection,
+    stepLogs,
+    savedConfigs, activeConfigId, switchConfig, isSwitchingConfig,
+    quotaData,
+    derivedQuota: currentDerivedQuota,
+    revokedStatus,
+    perAppTraffic,
+    logs:          vpnLogs,
+    traffic:       trafficStats,
+    killSwitch,
+    autoReconnect,
+    setKillSwitch: setKillSwitchState,
+    setAutoReconnect: setAutoReconnectState,
+    syncFromConnection,
+    connect, disconnect, selectProtocol,
+    refreshVpnConfig, requestPermission,
+    deleteConfig,
+  }), [
+    isConnected, isConnecting, vpnState,
+    selectedProtocol, connectedProtocol, availableProtocols,
+    trafficStats, vpnLogs, hasVpnPermission, hasValidConfig,
+    activeConnection, stepLogs, savedConfigs, activeConfigId,
+    switchConfig, isSwitchingConfig, quotaData, currentDerivedQuota,
+    revokedStatus, perAppTraffic, killSwitch, autoReconnect,
+    syncFromConnection, connect, disconnect, selectProtocol,
+    refreshVpnConfig, requestPermission, deleteConfig,
+  ]);
+
   return (
-    <VpnContext.Provider value={{
-      isConnected, isConnecting, vpnState,
-      selectedProtocol, connectedProtocol, availableProtocols,
-      trafficStats, vpnLogs,
-      hasVpnPermission,
-      hasValidConfig,
-      activeConnection,
-      stepLogs,
-      savedConfigs, activeConfigId, switchConfig, isSwitchingConfig,
-      quotaData,
-      derivedQuota: currentDerivedQuota,
-      revokedStatus,
-      perAppTraffic,
-      logs:          vpnLogs,
-      traffic:       trafficStats,
-      killSwitch,
-      autoReconnect,
-      setKillSwitch: setKillSwitchState,
-      setAutoReconnect: setAutoReconnectState,
-      syncFromConnection,
-      connect, disconnect, selectProtocol,
-      refreshVpnConfig, requestPermission,
-    }}>
+    <VpnContext.Provider value={contextValue}>
       {children}
     </VpnContext.Provider>
   );
