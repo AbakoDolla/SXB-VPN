@@ -5,8 +5,8 @@ import { randomUUID } from "crypto";
 import cors from "cors";
 import helmet from "helmet";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
-import { createServer as createViteServer } from "vite";
 import { config } from "./server/config";
+import { prisma } from "./server/database";
 
 // Import Routers
 import authRouter from "./server/routes/auth";
@@ -45,6 +45,13 @@ import { maintenanceGuard, MAINTENANCE_PAGE_HTML } from "./server/middleware/mai
 import { getMaintenanceMode } from "./server/services/maintenance";
 
 async function startServer() {
+  if (config.NODE_ENV === "production") {
+    if (!prisma) {
+      throw new Error("Prisma is unavailable in production");
+    }
+    await prisma.$connect();
+  }
+
   const app = express();
   app.set("trust proxy", 1);
 
@@ -58,11 +65,11 @@ async function startServer() {
   // CORS configuration - whitelist allowed origins for production
   const allowedOrigins = config.NODE_ENV === "production" 
     ? [
+        config.FRONTEND_URL,
+        "https://sxbvpn.com",
         "https://vpnsxb.afrihall.com",
         "https://sxbvpn.afrihall.com",
         "https://api.sxbvpn.com",
-        "http://localhost:3000", // dev only
-        "http://localhost:5173", // dev only
       ]
     : "*"; // Allow all in development
     
@@ -115,8 +122,15 @@ async function startServer() {
   });
   app.use("/api/", limiter);
   // Health check endpoint
-  app.get("/api/health", (req: Request, res: Response) => {
-    res.json({ status: "ok", timestamp: new Date().toISOString(), service: "sxb-vpn-backend" });
+  app.get("/api/health", async (_req: Request, res: Response) => {
+    try {
+      if (prisma) {
+        await prisma.$queryRaw`SELECT 1`;
+      }
+      res.json({ status: "ok", timestamp: new Date().toISOString(), service: "sxb-vpn-backend" });
+    } catch {
+      res.status(503).json({ status: "unavailable", service: "sxb-vpn-backend" });
+    }
   });
 
   // 2. SaaS API Endpoints Gateway Routing
@@ -175,21 +189,19 @@ async function startServer() {
     const isEnglish = lang === "en";
     const status = err.status || 500;
     
+    const fallbackMessage = isEnglish ? "Internal error" : "Erreur interne";
+    const message = status >= 500 && config.NODE_ENV === "production"
+      ? fallbackMessage
+      : err.message || fallbackMessage;
+
     res.status(status).json({
       error: err.code || "errors.server.internal",
-      message: err.message || (isEnglish ? "Internal service malfunction occurred" : "Une erreur interne s'est produite"),
+      message,
     });
   });
 
   // 3. Frontend Static Assets / Vite Dev Middleware Integration
-  if (config.NODE_ENV !== "production") {
-    console.log("🚀 Mounting Vite development middleware for real-time React preview rendering...");
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
+  if (config.NODE_ENV === "production") {
     console.log("📦 Mounting production static file serving (Serving compiled React frontend)...");
     const distPath = path.join(process.cwd(), "dist");
     const _uploadDir = path.join(process.cwd(), "public", "uploads", "avatars"); if (!fs.existsSync(_uploadDir)) fs.mkdirSync(_uploadDir, { recursive: true }); app.use("/uploads", express.static(path.join(process.cwd(), "public", "uploads")));
@@ -229,15 +241,15 @@ async function startServer() {
 // Sans ces handlers, une exception non catchée tue le process → PM2 restart loop.
 // On log l'erreur et on continue sauf si c'est un crash fatal (SIGKILL etc).
 process.on("uncaughtException", (err: Error) => {
-  console.error("💥 [UNCAUGHT_EXCEPTION] Non-fatal — keeping process alive:", err.message);
+  console.error("💥 [UNCAUGHT_EXCEPTION] Fatal error:", err.message);
   console.error(err.stack);
-  // Ne pas appeler process.exit() ici — laisser PM2 décider
+  process.exit(1);
 });
 
-process.on("unhandledRejection", (reason: unknown, promise: Promise<unknown>) => {
+process.on("unhandledRejection", (reason: unknown) => {
   console.error("💥 [UNHANDLED_REJECTION] Promise rejected without handler:");
   console.error("  Reason:", reason);
-  // Log seulement, ne pas crasher
+  process.exit(1);
 });
 
 startServer().catch((err) => {

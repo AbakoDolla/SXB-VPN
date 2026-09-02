@@ -11,7 +11,7 @@
  *   5. jsonConfig ignoré par /provision/activate + aucun configVersion/configHash
  *
  * Exécution (depuis la racine du dépôt, après :
- *   cd backend && npm install --legacy-peer-deps --no-audit
+ *   pnpm install --frozen-lockfile
  *   cd ../app-mobile && npm ci --legacy-peer-deps --no-audit) :
  *     node --experimental-strip-types scripts/tests/incident-repro.e2e.mjs
  *

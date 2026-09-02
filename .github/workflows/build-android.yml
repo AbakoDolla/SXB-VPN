@@ -27,13 +27,32 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Validate VPS delivery secrets
+        env:
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          VPS_SSH_PASSPHRASE: ${{ secrets.VPS_SSH_PASSPHRASE }}
+          VPS_SSH_HOST_FINGERPRINT: ${{ secrets.VPS_SSH_HOST_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          for name in VPS_SSH_PRIVATE_KEY VPS_SSH_PASSPHRASE VPS_SSH_HOST_FINGERPRINT; do
+            [ -n "${!name:-}" ] || { echo "::error::$name is not configured"; exit 1; }
+          done
+          [[ "$VPS_SSH_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] \
+            || { echo "::error::Invalid VPS host fingerprint"; exit 1; }
+
       # ── Node.js & Optimized Caching ───────────────────────────────────────────
-      - name: Setup Node.js 24
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+          run_install: false
+
+      - name: Setup Node.js 20
         uses: actions/setup-node@v4
         with:
-          node-version: "24"
-          cache: "npm"
-          cache-dependency-path: app-mobile/package-lock.json
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: pnpm-lock.yaml
 
       # ── JDK 17 & Advanced Gradle Setup ────────────────────────────────────────
       - name: Setup JDK 17
@@ -56,15 +75,16 @@ jobs:
 
       # ── Install dependencies (CI mode) ────────────────────────────────────────
       - name: Install dependencies
-        run: npm ci --legacy-peer-deps
+        working-directory: .
+        run: pnpm install --frozen-lockfile
 
       # ── Barrière qualité — bloque la release avant toute génération native ────
       - name: Tests de non-régression mobile
         run: |
-          npm run typecheck
-          npm run test:regression
+          pnpm run typecheck
+          pnpm run test:regression
 
-      # FIX #1 : patch Kotlin metadata compat — après npm install (node_modules/ doit exister)
+      # FIX #1 : patch Kotlin metadata compat — après pnpm install
       - name: Patch expo-module-gradle-plugin (Kotlin metadata compat)
         run: |
           PLUGIN="node_modules/expo-modules-core/expo-module-gradle-plugin/build.gradle.kts"
@@ -83,7 +103,7 @@ jobs:
       # app.json (namespace, package, ressources launcher et classes Kotlin).
       # Les dépendances Gradle restent réutilisables via setup-gradle et le cache.
       - name: Expo prebuild (Android, clean)
-        run: npx expo prebuild --platform android --clean --no-install
+        run: pnpm exec expo prebuild --platform android --clean --no-install
         env:
           EXPO_NO_TELEMETRY: "1"
           EXPO_PUBLIC_API_URL: https://vpnsxb.afrihall.com/api
@@ -636,8 +656,8 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: appleboy/scp-action@v0.1.7
         with:
-          host: 141.95.112.93
-          username: ubuntu
+          host: ${{ secrets.VPS_HOST || '141.95.112.93' }}
+          username: ${{ secrets.VPS_USERNAME || 'ubuntu' }}
           key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
           passphrase: ${{ secrets.VPS_SSH_PASSPHRASE }}
           fingerprint: ${{ secrets.VPS_SSH_HOST_FINGERPRINT }}
@@ -651,8 +671,8 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: 141.95.112.93
-          username: ubuntu
+          host: ${{ secrets.VPS_HOST || '141.95.112.93' }}
+          username: ${{ secrets.VPS_USERNAME || 'ubuntu' }}
           key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
           passphrase: ${{ secrets.VPS_SSH_PASSPHRASE }}
           fingerprint: ${{ secrets.VPS_SSH_HOST_FINGERPRINT }}

@@ -1,71 +1,140 @@
 #!/usr/bin/env bash
-# backup-sxb.sh — Sauvegarde vérifiable AVANT migration (mission §10.1)
-# À EXÉCUTER PAR L'ADMINISTRATEUR SUR LE VPS (SSH ubuntu@141.95.112.93)
-# AUCUN secret n'est écrit dans ce script — DATABASE_URL est lu depuis .env
-# et n'est jamais affiché.
-set -euo pipefail
+# Verified production backup. Run before every schema or application deployment.
+set -Eeuo pipefail
+umask 077
 
-APP_DIR="${APP_DIR:-/var/www/sxb-vpn}"
-# Par défaut dans $HOME : /var/backups exige root, or la mission s'exécute en ubuntu.
-BACKUP_ROOT="${BACKUP_ROOT:-$HOME/sxb-backups}"
+APP_DIR="${SXB_APP_DIR:-/var/www/sxb-vpn}"
+BACKUP_ROOT="${SXB_BACKUP_ROOT:-${HOME}/sxb-backups}"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
-DEST="$BACKUP_ROOT/$TS"
-mkdir -p "$DEST"
+DEST="${BACKUP_ROOT}/${TS}"
 
-echo "═══ Sauvegarde SXB VPN — $TS ═══"
-cd "$APP_DIR"
+for command_name in pg_dump pg_restore psql sha256sum tar git; do
+  command -v "$command_name" >/dev/null || {
+    echo "Required command not found: $command_name" >&2
+    exit 1
+  }
+done
 
-# 1. État git exact (preuve de version avant migration)
-git rev-parse HEAD | tee "$DEST/git-head.txt"
-git status --porcelain > "$DEST/git-status.txt" || true
-echo "✅ 1/5 Version git enregistrée : $(cat "$DEST/git-head.txt")"
+[ -d "$APP_DIR/.git" ] || { echo "Application checkout not found: $APP_DIR" >&2; exit 1; }
+[ -f "$APP_DIR/.env" ] || { echo "Environment file not found: $APP_DIR/.env" >&2; exit 1; }
+mkdir -p "$BACKUP_ROOT"
+mkdir "$DEST"
+chmod 700 "$DEST"
 
-# 2. Dump PostgreSQL complet (compressé), sans jamais afficher le secret
-set -a; # exporte les variables du .env sans les afficher
-source "$APP_DIR/.env"
+set -a
+# shellcheck disable=SC1091
+. "$APP_DIR/.env"
 set +a
-: "${DATABASE_URL:?DATABASE_URL absent de .env — sauvegarde impossible}"
-# Prisma suffixe l'URI de "?schema=public", paramètre INCONNU de libpq (pg_dump/psql).
-# On retire UNIQUEMENT « schema » (sslmode & co. préservés) ; la valeur n'est jamais affichée.
+: "${DATABASE_URL:?DATABASE_URL is required in $APP_DIR/.env}"
+
+# Prisma's schema query parameter is not accepted by libpq clients.
 PGLIB_URL="$(printf '%s' "$DATABASE_URL" | sed -E 's/([?&])schema=[^&]*&?/\1/; s/[?&]$//')"
-pg_dump "$PGLIB_URL" --format=custom --compress=9 --file="$DEST/db-$(date -u +%Y%m%d).dump"
-echo "✅ 2/5 Dump PostgreSQL créé ($(du -h "$DEST"/db-*.dump | cut -f1))"
 
-# 3. VÉRIFICATION du dump (obligatoire : une sauvegarde non vérifiable ne compte pas)
-pg_restore --list "$DEST"/db-*.dump > "$DEST/db-manifest.txt"
-TABLES=$(grep -c " TABLE " "$DEST/db-manifest.txt" || true)
-[ "$TABLES" -gt 10 ] || { echo "❌ Dump suspect : seulement $TABLES tables listées"; exit 1; }
-sha256sum "$DEST"/db-*.dump | tee "$DEST/db-sha256.txt"
-echo "✅ 3/5 Dump vérifié : $TABLES tables, empreinte sha256 consignée"
+printf 'Created (UTC): %s\nHost: %s\nApp: %s\n' "$TS" "$(hostname)" "$APP_DIR" > "$DEST/README.txt"
 
-# 4. Compteurs de contrôle (comparaison post-migration)
-psql "$PGLIB_URL" -Atc "
-  SELECT 'vpn_profiles='      || count(*) FROM vpn_profiles;
-  SELECT 'subscriptions='     || count(*) FROM subscriptions;
-  SELECT 'vpn_clients='       || count(*) FROM vpn_clients;
-  SELECT 'users='             || count(*) FROM users;
-" | tee "$DEST/db-counts.txt"
-echo "✅ 4/5 Compteurs de contrôle : $(tr '\n' ' ' < "$DEST/db-counts.txt")"
+pg_dump "$PGLIB_URL" \
+  --format=custom \
+  --compress=9 \
+  --no-owner \
+  --no-acl \
+  --file="$DEST/db.dump"
+pg_restore --list "$DEST/db.dump" > "$DEST/db.restore-list.txt"
+TABLES="$(grep -c ' TABLE ' "$DEST/db.restore-list.txt" || true)"
+[ "$TABLES" -gt 10 ] || {
+  echo "Database dump verification failed: only $TABLES tables found" >&2
+  exit 1
+}
 
-# 5. Copie de .env (secrets → permissions strictes, hors git)
-install -m 600 "$APP_DIR/.env" "$DEST/env.backup"
-echo "✅ 5/5 .env sauvegardé (chmod 600)"
+count_table() {
+  local table="$1"
+  local label="$2"
+  psql "$PGLIB_URL" -Atqc "SELECT count(*) FROM \"$table\";" > "$DEST/${label}.count"
+}
 
-# 6. Script de restauration prêt à l'emploi (une sauvegarde n'a de valeur
-#    que si sa restauration est éprouvée — voir §Rollback du runbook)
-cat > "$DEST/restore.sh" <<'EOF'
+count_table users users
+count_table vpn_clients vpn-clients
+count_table vouchers vouchers
+count_table resellers resellers
+count_table roles roles
+count_table permissions permissions
+count_table subscriptions subscriptions
+count_table vpn_profiles vpn-profiles
+
+install -m 600 "$APP_DIR/.env" "$DEST/environment.env"
+
+tar -czf "$DEST/runtime-dist.tar.gz" \
+  --exclude='dist/download' \
+  -C "$APP_DIR" dist
+[ -s "$DEST/runtime-dist.tar.gz" ] || {
+  echo "Runtime artifact backup failed" >&2
+  exit 1
+}
+
+if [ -d "$APP_DIR/public/uploads" ]; then
+  tar -czf "$DEST/uploads.tar.gz" -C "$APP_DIR" public/uploads
+fi
+
+if command -v redis-cli >/dev/null 2>&1 && redis-cli ping >/dev/null 2>&1; then
+  redis-cli --rdb "$DEST/redis.rdb" >/dev/null
+fi
+
+for candidate in \
+  "$APP_DIR/xpanel.db" \
+  "$APP_DIR/data/xpanel.db" \
+  "/etc/x-ui/x-ui.db" \
+  "/etc/x-ui-english/x-ui.db"; do
+  if [ -f "$candidate" ] && [ -r "$candidate" ]; then
+    cp "$candidate" "$DEST/$(basename "$(dirname "$candidate")")-$(basename "$candidate")"
+  fi
+done
+
+(
+  cd "$APP_DIR"
+  git rev-parse HEAD > "$DEST/git-head.txt"
+  git status --short --branch > "$DEST/git-status.txt"
+  git diff --binary HEAD -- . > "$DEST/tracked-changes.patch"
+  git ls-files --others --exclude-standard -z > "$DEST/untracked-files.list0"
+  if [ -s "$DEST/untracked-files.list0" ]; then
+    tar --null --files-from="$DEST/untracked-files.list0" -czf "$DEST/untracked-files.tar.gz"
+  fi
+)
+
+cat > "$DEST/restore-db.sh" <<'RESTORE'
 #!/usr/bin/env bash
-# Restauration d'urgence — ROLLBACK UNIQUEMENT (écrase la base courante)
 set -euo pipefail
-DIR="$(cd "$(dirname "$0")" && pwd)"
-set -a; source "$DIR/env.backup"; set +a
-# Même nettoyage du paramètre Prisma « schema », inconnu de libpq
+umask 077
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+set -a
+# shellcheck disable=SC1091
+. "$HERE/environment.env"
+set +a
+: "${DATABASE_URL:?DATABASE_URL is required}"
 URL="$(printf '%s' "$DATABASE_URL" | sed -E 's/([?&])schema=[^&]*&?/\1/; s/[?&]$//')"
-pg_restore --clean --if-exists -d "$URL" "$DIR"/db-*.dump
-echo "🟢 Restauration terminée depuis : $DIR"
-EOF
-chmod 700 "$DEST/restore.sh"
+echo "This will replace database objects referenced by the backup."
+read -r -p "Type RESTORE to continue: " answer
+[ "$answer" = "RESTORE" ] || { echo "Cancelled"; exit 1; }
+pg_restore --clean --if-exists --no-owner --no-acl --dbname="$URL" "$HERE/db.dump"
+RESTORE
+chmod 700 "$DEST/restore-db.sh"
 
-echo
-echo "🟢 SAUVEGARDE COMPLÈTE ET VÉRIFIÉE : $DEST"
-echo "   Restauration d'urgence : bash $DEST/restore.sh"
+MANIFEST_TMP="$(mktemp)"
+trap 'rm -f "$MANIFEST_TMP"' EXIT
+(
+  cd "$DEST"
+  find . -type f ! -name manifest.sha256 -print0 \
+    | sort -z \
+    | xargs -0 sha256sum
+) > "$MANIFEST_TMP"
+mv "$MANIFEST_TMP" "$DEST/manifest.sha256"
+trap - EXIT
+(
+  cd "$DEST"
+  sha256sum --check manifest.sha256 >/dev/null
+)
+
+if [ -e "$BACKUP_ROOT/latest" ] && [ ! -L "$BACKUP_ROOT/latest" ]; then
+  echo "Cannot replace non-symlink path: $BACKUP_ROOT/latest" >&2
+  exit 1
+fi
+ln -sfn "$DEST" "$BACKUP_ROOT/latest"
+echo "Backup complete and verified: $DEST"

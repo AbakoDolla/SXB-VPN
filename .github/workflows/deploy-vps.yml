@@ -1,235 +1,288 @@
-name: 🚀 Deploy to VPS — SXB VPN
+name: Deploy to VPS
 
 on:
   push:
     branches: [main]
     paths:
-      - 'artifacts/sxb-dashboard/**'
-      - 'backend/**'
-      - 'server/**'
-      - 'server.ts'
-      - 'prisma/**'
-      - '.github/workflows/deploy-vps.yml'
-      - 'ecosystem.config.cjs'
+      - "artifacts/sxb-dashboard/**"
+      - "server.ts"
+      - "server/**"
+      - "prisma/**"
+      - "scripts/prod/backup-sxb.sh"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "tsconfig*.json"
+      - "ecosystem.config.cjs"
+      - ".github/workflows/deploy-vps.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
-env:
-  NODE_VERSION: '22'
+concurrency:
+  group: production-vps
+  cancel-in-progress: false
 
 jobs:
   deploy:
-    name: Build & Deploy to VPS
     runs-on: ubuntu-latest
-    environment:
-      name: production
-      url: https://vpnsxb.afrihall.com
+    timeout-minutes: 35
+    environment: production
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Validate production SSH secrets
-        shell: bash
+      - name: Validate deployment secrets
         env:
-          VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST || '141.95.112.93' }}
+          VPS_USERNAME: ${{ secrets.VPS_USERNAME || 'ubuntu' }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
           VPS_SSH_PASSPHRASE: ${{ secrets.VPS_SSH_PASSPHRASE }}
-          VPS_SSH_HOST_FINGERPRINT: ${{ secrets.VPS_SSH_HOST_FINGERPRINT }}
+          VPS_HOST_FINGERPRINT: ${{ secrets.VPS_SSH_HOST_FINGERPRINT }}
         run: |
           set -euo pipefail
-          for secret_name in VPS_SSH_PRIVATE_KEY VPS_SSH_PASSPHRASE VPS_SSH_HOST_FINGERPRINT; do
-            if [ -z "${!secret_name:-}" ]; then
-              echo "::error::Secret d'environnement production manquant: $secret_name"
-              exit 1
-            fi
+          for name in VPS_HOST VPS_USERNAME VPS_SSH_KEY VPS_SSH_PASSPHRASE VPS_HOST_FINGERPRINT; do
+            [ -n "${!name:-}" ] || { echo "::error::$name is not configured"; exit 1; }
           done
-          if [[ ! "$VPS_SSH_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]]; then
-            echo "::error::VPS_SSH_HOST_FINGERPRINT doit être une empreinte SHA256 OpenSSH"
+          if [ -n "${VPS_PORT:-}" ] && ! [[ "$VPS_PORT" =~ ^[0-9]+$ ]]; then
+            echo "::error::VPS_PORT must be numeric"
+            exit 1
+          fi
+          if [[ "$VPS_SSH_KEY" != *"BEGIN OPENSSH PRIVATE KEY"* && "$VPS_SSH_KEY" != *"BEGIN RSA PRIVATE KEY"* && "$VPS_SSH_KEY" != *"BEGIN EC PRIVATE KEY"* ]]; then
+            echo "::error::VPS_SSH_KEY must contain a private key"
+            exit 1
+          fi
+          if ! [[ "$VPS_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]]; then
+            echo "::error::VPS_HOST_FINGERPRINT must be an SHA256 fingerprint"
             exit 1
           fi
 
-      - name: Verify VPS access (read-only)
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: 141.95.112.93
-          username: ubuntu
-          key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
-          passphrase: ${{ secrets.VPS_SSH_PASSPHRASE }}
-          fingerprint: ${{ secrets.VPS_SSH_HOST_FINGERPRINT }}
-          timeout: 30s
-          command_timeout: 30s
-          script_stop: true
-          script: |
-            set -euo pipefail
-            test "$(id -un)" = "ubuntu"
-            test -r /var/www/sxb-vpn/.git/HEAD
-            test "$(git -C /var/www/sxb-vpn rev-parse --is-inside-work-tree)" = "true"
-            git -C /var/www/sxb-vpn rev-parse --verify HEAD >/dev/null
-            echo "✅ Accès SSH vérifié en lecture seule"
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 11.25.0
+          run_install: false
 
-      - name: Setup Node.js 22
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'pnpm'
+          node-version: 20
+          cache: pnpm
 
-      - name: Approve build scripts
-        run: |
-          pnpm config set ignore-build-scripts true 2>/dev/null || true
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
 
-      - name: Install workspace dependencies
-        run: pnpm install --no-frozen-lockfile
-
-      - name: Build Dashboard (React + Vite)
-        working-directory: artifacts/sxb-dashboard
+      - name: Generate Prisma client
+        run: pnpm exec prisma generate --schema=prisma/schema.prisma
         env:
-          PORT: '3000'
-          BASE_PATH: '/'
-          NODE_ENV: production
-        run: pnpm run build
+          DATABASE_URL: "postgresql://127.0.0.1:5432/sxb_ci"
 
-      - name: Build Backend (esbuild CJS bundle)
+      - name: Validate release
         run: |
-          pnpm --filter @workspace/api-spec run codegen 2>/dev/null || true
-          mkdir -p dist
-          # esbuild n'est pas à la racine du workspace — installer les deps backend d'abord
-          cd backend && npm install --legacy-peer-deps --no-audit --silent 2>&1 | tail -3 && cd ..
-          # Utiliser l'esbuild du backend
-          ESBUILD=$(find backend/node_modules/.bin -name "esbuild" -executable | head -1)
-          if [ -z "$ESBUILD" ]; then
-            # Fallback: npx
-            ESBUILD="npx --yes esbuild@0.27.3"
-          fi
-          echo "esbuild: $ESBUILD"
-          $ESBUILD server.ts \
-            --bundle \
-            --platform=node \
-            --format=cjs \
-            --packages=external \
-            --sourcemap \
-            --outfile=dist/server.cjs
-          echo "✅ Backend built: $(du -sh dist/server.cjs | cut -f1)"
+          set -euo pipefail
+          pnpm run test
+          pnpm run build
+          bash -n scripts/prod/backup-sxb.sh
+          test -s dist/server.cjs
+          test -s artifacts/sxb-dashboard/dist/public/index.html
 
-      - name: Deploy to VPS
-        uses: appleboy/ssh-action@v1.0.3
+      - name: Read-only VPS preflight
+        uses: appleboy/ssh-action@v1.2.0
         with:
-          host: 141.95.112.93
-          username: ubuntu
+          host: ${{ secrets.VPS_HOST || '141.95.112.93' }}
+          username: ${{ secrets.VPS_USERNAME || 'ubuntu' }}
           key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
           passphrase: ${{ secrets.VPS_SSH_PASSPHRASE }}
+          port: ${{ secrets.VPS_PORT || 22 }}
           fingerprint: ${{ secrets.VPS_SSH_HOST_FINGERPRINT }}
-          timeout: 30s
           script_stop: true
+          command_timeout: 5m
           script: |
-            set -e
-            cd /var/www/sxb-vpn
+            set -euo pipefail
+            APP_DIR="/var/www/sxb-vpn"
+            test -d "$APP_DIR/.git"
+            test -f "$APP_DIR/.env"
+            command -v git >/dev/null
+            command -v node >/dev/null
+            command -v pg_dump >/dev/null
+            command -v pm2 >/dev/null
+            command -v curl >/dev/null
+            node -e 'if (Number(process.versions.node.split(".")[0]) < 20) process.exit(1)'
+            test "$(df -Pk "$APP_DIR" | awk 'NR == 2 {print $4}')" -ge 2097152
+            pm2 describe sxb-backend >/dev/null
+            curl --fail --silent --show-error --max-time 10 http://127.0.0.1:3000/api/health >/dev/null
 
-            echo "📥 Fix permissions git + Pull latest code..."
-            sudo chown -R ubuntu:ubuntu /var/www/sxb-vpn/.git 2>/dev/null || true
-            sudo chmod -R u+rw /var/www/sxb-vpn/.git 2>/dev/null || true
-            git fetch origin 2>&1 | grep -v "jules-" || true
-            git reset --hard origin/main
+      - name: Backup, deploy and verify
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          DEPLOY_SHA: ${{ github.sha }}
+        with:
+          host: ${{ secrets.VPS_HOST || '141.95.112.93' }}
+          username: ${{ secrets.VPS_USERNAME || 'ubuntu' }}
+          key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          passphrase: ${{ secrets.VPS_SSH_PASSPHRASE }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          fingerprint: ${{ secrets.VPS_SSH_HOST_FINGERPRINT }}
+          envs: DEPLOY_SHA
+          script_stop: true
+          command_timeout: 25m
+          script: |
+            set -Eeuo pipefail
+            umask 077
 
-            echo "📦 Install backend dependencies..."
-            cd backend
-            npm install --legacy-peer-deps --no-audit 2>&1 | tail -3
-            # Generate the client in backend/node_modules, which is the directory
-            # PM2 resolves through NODE_PATH at runtime. Generating from /tmp
-            # leaves the deployed client without runtime/library.js.
-            NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
-              node /var/www/sxb-vpn/backend/node_modules/prisma/build/index.js generate \
-              --schema=/var/www/sxb-vpn/backend/prisma/schema.prisma
-            test -f /var/www/sxb-vpn/backend/node_modules/@prisma/client/runtime/library.js
-            cd /var/www/sxb-vpn
+            APP_DIR="/var/www/sxb-vpn"
+            RELEASES_DIR="$APP_DIR/releases"
+            RELEASE_DIR="$RELEASES_DIR/$DEPLOY_SHA"
+            CURRENT_LINK="$APP_DIR/current"
+            DASHBOARD_STAGE="$APP_DIR/.deploy/dashboard-$DEPLOY_SHA"
+            OLD_CURRENT="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
+            LEGACY_ECOSYSTEM="$APP_DIR/ecosystem.config.cjs"
+            DASHBOARD_PUBLISHED=0
+            BACKEND_PUBLISHED=0
 
-            echo "🔑 Fix permissions complètes (évite EACCES pnpm)..."
-            sudo chown -R ubuntu:ubuntu /var/www/sxb-vpn/ 2>/dev/null || true
-            echo "📦 Sync deps (lockfile may differ from VPS)..."
-            pnpm config set ignore-build-scripts true 2>/dev/null || true
-            pnpm install --no-frozen-lockfile --ignore-scripts 2>&1 | tail -5
+            probe() {
+              local url="$1"
+              local attempts="${2:-12}"
+              local delay="${3:-5}"
+              local i
+              for ((i = 1; i <= attempts; i++)); do
+                if curl --fail --silent --show-error --max-time 10 "$url" >/dev/null; then
+                  return 0
+                fi
+                sleep "$delay"
+              done
+              return 1
+            }
 
-            echo "🎨 Build Dashboard..."
-            sudo chown -R ubuntu:ubuntu /var/www/sxb-vpn/artifacts/ 2>/dev/null || true
-            CI=true PORT=3000 BASE_PATH=/ pnpm --filter @workspace/sxb-dashboard run build
-            # Nginx sert /var/www/sxb-vpn/dist, tandis que Vite écrit dans
-            # artifacts/sxb-dashboard/dist/public. Copier explicitement le
-            # bundle frontend sans supprimer server.cjs ni download/*.apk.
-            test -f artifacts/sxb-dashboard/dist/public/index.html
-            rm -rf dist/assets
-            cp -a artifacts/sxb-dashboard/dist/public/assets dist/assets
-            cp -f artifacts/sxb-dashboard/dist/public/index.html dist/index.html
-            for asset in favicon.svg favicon.png robots.txt; do
-              if [ -f "artifacts/sxb-dashboard/dist/public/$asset" ]; then
-                cp -f "artifacts/sxb-dashboard/dist/public/$asset" "dist/$asset"
+            rollback() {
+              local status="$1"
+              trap - ERR
+              set +e
+              echo "Deployment failed; restoring the previous release"
+
+              if [ "$BACKEND_PUBLISHED" -eq 1 ]; then
+                if [ -n "$OLD_CURRENT" ] && [ -d "$OLD_CURRENT" ]; then
+                  ln -sfn "$OLD_CURRENT" "$CURRENT_LINK.rollback"
+                  mv -Tf "$CURRENT_LINK.rollback" "$CURRENT_LINK"
+                  pm2 startOrReload "$OLD_CURRENT/ecosystem.config.cjs" --update-env
+                else
+                  rm -f "$CURRENT_LINK"
+                  pm2 startOrReload "$LEGACY_ECOSYSTEM" --update-env
+                fi
+                pm2 save
               fi
+
+              if [ "$DASHBOARD_PUBLISHED" -eq 1 ] && [ -n "${BACKUP_DIR:-}" ]; then
+                tar -xzf "$BACKUP_DIR/runtime-dist.tar.gz" -C "$APP_DIR"
+              fi
+
+              probe http://127.0.0.1:3000/api/health 6 5 || true
+              exit "$status"
+            }
+            trap 'rollback $?' ERR
+
+            cd "$APP_DIR"
+            mkdir -p "$RELEASES_DIR" "$APP_DIR/.deploy"
+            git fetch --filter=blob:none origin main
+            git cat-file -e "$DEPLOY_SHA^{commit}"
+
+            BACKUP_SCRIPT="$(mktemp)"
+            git show "$DEPLOY_SHA:scripts/prod/backup-sxb.sh" > "$BACKUP_SCRIPT"
+            chmod 700 "$BACKUP_SCRIPT"
+            SXB_APP_DIR="$APP_DIR" "$BACKUP_SCRIPT"
+            rm -f "$BACKUP_SCRIPT"
+
+            BACKUP_DIR="$(readlink -f "$HOME/sxb-backups/latest")"
+            test -s "$BACKUP_DIR/manifest.sha256"
+            test -s "$BACKUP_DIR/db.dump"
+            test -s "$BACKUP_DIR/runtime-dist.tar.gz"
+            (cd "$BACKUP_DIR" && sha256sum --check manifest.sha256)
+
+            if ! git diff --quiet --ignore-submodules -- || ! git diff --cached --quiet --ignore-submodules --; then
+              echo "Tracked production changes were backed up; deployment stopped for manual reconciliation"
+              exit 1
+            fi
+
+            rm -rf "$RELEASE_DIR" "$DASHBOARD_STAGE"
+            mkdir -p "$RELEASE_DIR" "$DASHBOARD_STAGE"
+            git archive "$DEPLOY_SHA" | tar -x -C "$RELEASE_DIR"
+
+            cd "$RELEASE_DIR"
+            corepack enable
+            corepack prepare pnpm@11.25.0 --activate
+            pnpm install --frozen-lockfile
+            DATABASE_URL="postgresql://127.0.0.1:5432/sxb_build" \
+              pnpm exec prisma generate --schema=prisma/schema.prisma
+            pnpm --filter sxb-dashboard run build
+            pnpm run build:backend
+
+            test -s "$RELEASE_DIR/dist/server.cjs"
+            test -s "$RELEASE_DIR/artifacts/sxb-dashboard/dist/public/index.html"
+            cp -a "$RELEASE_DIR/artifacts/sxb-dashboard/dist/public/." "$DASHBOARD_STAGE/"
+
+            set -a
+            # shellcheck disable=SC1091
+            . "$APP_DIR/.env"
+            set +a
+
+            PGLIB_URL="$(printf '%s' "$DATABASE_URL" | sed -E 's/([?&])schema=[^&]*&?/\1/; s/[?&]$//')"
+            MIGRATIONS_TABLE="$(psql "$PGLIB_URL" -Atqc "SELECT to_regclass('public._prisma_migrations') IS NOT NULL;")"
+            if [ "$MIGRATIONS_TABLE" != "t" ]; then
+              set +e
+              pnpm exec prisma migrate diff \
+                --from-schema-datasource prisma/schema.prisma \
+                --to-schema-datamodel prisma/schema.prisma \
+                --exit-code
+              DIFF_STATUS=$?
+              set -e
+              if [ "$DIFF_STATUS" -ne 0 ]; then
+                echo "The existing database does not exactly match the migration baseline"
+                exit 1
+              fi
+              pnpm exec prisma migrate resolve \
+                --schema=prisma/schema.prisma \
+                --applied=20260902000000_baseline
+            fi
+            pnpm exec prisma migrate deploy --schema=prisma/schema.prisma
+
+            mkdir -p "$APP_DIR/dist"
+            for entry in "$DASHBOARD_STAGE"/*; do
+              [ "$(basename "$entry")" = "index.html" ] && continue
+              cp -a "$entry" "$APP_DIR/dist/"
             done
-            echo "✅ Dashboard bundle synchronized to dist/"
+            install -m 644 "$DASHBOARD_STAGE/index.html" "$APP_DIR/dist/index.html.next"
+            mv -f "$APP_DIR/dist/index.html.next" "$APP_DIR/dist/index.html"
+            DASHBOARD_PUBLISHED=1
 
-            echo "⚙️ Build Backend..."
-            ESBUILD=$(find backend/node_modules/.bin -name "esbuild" -executable | head -1)
-            if [ -z "$ESBUILD" ]; then ESBUILD="npx --yes esbuild@0.27.3"; fi
-            $ESBUILD server.ts \
-              --bundle \
-              --platform=node \
-              --format=cjs \
-              --packages=external \
-              --sourcemap \
-              --outfile=dist/server.cjs
+            ln -sfn "$RELEASE_DIR" "$CURRENT_LINK.next"
+            mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"
+            BACKEND_PUBLISHED=1
+            pm2 startOrReload "$RELEASE_DIR/ecosystem.config.cjs" --update-env
 
-            echo "🗄️ Push Prisma schema..."
-            DB_URL=$(grep DATABASE_URL .env | cut -d= -f2-)
-            NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
-              node /var/www/sxb-vpn/backend/node_modules/prisma/build/index.js db push \
-              --schema=backend/prisma/schema.prisma \
-              --accept-data-loss 2>&1 | tail -5
+            probe http://127.0.0.1:3000/api/health
+            probe https://vpnsxb.afrihall.com/
+            probe https://vpnsxb.afrihall.com/api/health
+            pm2 describe sxb-backend >/dev/null
+            test -n "$(pm2 pid sxb-backend)"
+            test "$(pm2 pid sxb-backend)" != "0"
+            pm2 save
 
-            echo "🔄 Reload PM2..."
-            pm2 restart ecosystem.config.cjs --update-env || pm2 start ecosystem.config.cjs
+            cd "$APP_DIR"
+            printf '%s\n' "$DEPLOY_SHA" > "$APP_DIR/.last-deployed-sha"
+            for pattern in /current /releases/ /.deploy/ /.last-deployed-sha; do
+              grep -qxF "$pattern" .git/info/exclude || printf '%s\n' "$pattern" >> .git/info/exclude
+            done
 
-            echo "🔄 Reload Nginx..."
-            sudo nginx -t && sudo systemctl reload nginx
+            trap - ERR
+            rm -rf "$DASHBOARD_STAGE"
+            find "$RELEASES_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' \
+              | sort -nr \
+              | awk 'NR > 3 {$1=""; sub(/^ /, ""); print}' \
+              | while IFS= read -r old_release; do
+                  [ "$(readlink -f "$CURRENT_LINK")" = "$old_release" ] || rm -rf "$old_release"
+                done
 
-            echo "✅ Deployment complete!"
-            pm2 list
-
-      - name: Validate production
-        run: |
-          sleep 10
-          echo "=== Frontend ==="
-          INDEX=$(curl -fsSL https://vpnsxb.afrihall.com/)
-          HTTP=$(printf '%s' "$INDEX" | wc -c)
-          echo "Frontend index bytes $HTTP"
-          [ "$HTTP" -gt 500 ] || (echo "❌ Frontend index too small" && exit 1)
-          ASSET=$(printf '%s' "$INDEX" | grep -oE 'assets/[^\" ]+\.js' | head -1)
-          [ -n "$ASSET" ] || (echo "❌ Frontend JS asset missing" && exit 1)
-          JS=$(curl -fsSL "https://vpnsxb.afrihall.com/$ASSET")
-          printf '%s' "$JS" | grep -q 'V2Ray / Xray' || (echo "❌ New Xray editor marker missing from live bundle" && exit 1)
-          printf '%s' "$JS" | grep -q 'Valider le transport' || (echo "❌ New transport validation marker missing from live bundle" && exit 1)
-          echo "✅ Frontend bundle verified: $ASSET"
-
-          echo "=== API health ==="
-          # Accepte 200/400/401/403/422 — toute réponse HTTP valide du serveur
-          # (400 = bad request pour creds invalides = serveur UP)
-          API=$(curl -s -o /dev/null -w "%{http_code}" \
-            -X POST https://vpnsxb.afrihall.com/xapi/auth/login \
-            -H "Content-Type: application/json" \
-            -d '{"email":"test","password":"test"}')
-          echo "API HTTP $API"
-          case "$API" in
-            200|400|401|403|422)
-              echo "✅ API up (HTTP $API — réponse valide du serveur)" ;;
-            000)
-              echo "❌ API unreachable (timeout/DNS)" && exit 1 ;;
-            502|503|504)
-              echo "❌ API down (gateway error $API)" && exit 1 ;;
-            *)
-              echo "⚠️  API HTTP $API — considéré OK (pas une erreur réseau)" ;;
-          esac
-          echo "✅ Production OK"
+            echo "Deployment $DEPLOY_SHA completed and verified"

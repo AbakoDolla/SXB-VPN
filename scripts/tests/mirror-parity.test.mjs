@@ -1,9 +1,8 @@
 /**
- * mirror-parity.test.mjs — Anti-divergence + fidélité §8.1
+ * mirror-parity.test.mjs — Source canonique + fidélité §8.1
  * ═══════════════════════════════════════════════════════════════════════════
- * A. ANTI-DIVERGENCE MIROIRS : tout fichier de server/, server.ts et
- *    prisma/schema.prisma doit être STRICTEMENT IDENTIQUE à son miroir
- *    backend/ (le VPS exécute backend/). Une divergence = bug de déploiement.
+ * A. SOURCE CANONIQUE : server.ts, server/ et prisma/ à la racine sont les
+ *    seules sources applicatives. Aucun miroir backend n'est autorisé.
  *
  * B. FIDÉLITÉ §8.1 MULTI-PROTOCOLES : pour chaque format d'import, la config
  *    moteur restituée (canonical → chiffré → déchiffré → engine) doit être
@@ -15,7 +14,6 @@
 import { strict as assert } from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -28,49 +26,48 @@ let passed = 0;
 const ok = (msg) => { passed++; console.log(`  ✅ ${msg}`); };
 
 // ═══════════════════════════════════════════════════════════════════════════
-console.log('\n══ A. ANTI-DIVERGENCE MIROIRS server/ ↔ backend/server/ ══\n');
+console.log('\n══ A. SOURCE CANONIQUE server.ts + server/ + prisma/ ══\n');
 {
-  const walk = (dir) => {
-    const out = [];
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      const p = path.join(dir, e.name);
-      if (e.isDirectory()) out.push(...walk(p)); else out.push(p);
-    }
-    return out;
-  };
-
-  const srcFiles = walk(path.join(ROOT, 'server'))
-    .map(p => path.relative(path.join(ROOT, 'server'), p));
-  assert.ok(srcFiles.length >= 30, `inventaire server/ suspect (${srcFiles.length})`);
-
-  const divergents = [];
-  for (const rel of srcFiles) {
-    const a = path.join(ROOT, 'server', rel);
-    const b = path.join(ROOT, 'backend', 'server', rel);
-    if (!fs.existsSync(b)) { divergents.push(`${rel} — ABSENT du miroir`); continue; }
-    const ha = crypto.createHash('sha256').update(fs.readFileSync(a)).digest('hex');
-    const hb = crypto.createHash('sha256').update(fs.readFileSync(b)).digest('hex');
-    if (ha !== hb) divergents.push(rel);
+  for (const canonical of [
+    'server.ts',
+    'server',
+    'prisma/schema.prisma',
+    'prisma/seed.ts',
+    'prisma/migrations/20260902000000_baseline/migration.sql',
+  ]) {
+    assert.ok(fs.existsSync(path.join(ROOT, canonical)), `source canonique absente : ${canonical}`);
   }
-  assert.deepEqual(divergents, [],
-    `miroirs divergents (à re-synchroniser) : ${divergents.join(', ')}`);
-  ok(`${srcFiles.length} fichiers server/ ≡ backend/server/ (sha256 identique)`);
-
-  for (const top of ['server.ts', 'prisma/schema.prisma', 'prisma/migrations_manual.sql']) {
-    const a = path.join(ROOT, top);
-    const b = path.join(ROOT, 'backend', top);
-    if (!fs.existsSync(a) || !fs.existsSync(b)) { ok(`${top} — miroir N/A (absent d'un côté, toléré)`); continue; }
-    assert.equal(
-      crypto.createHash('sha256').update(fs.readFileSync(a)).digest('hex'),
-      crypto.createHash('sha256').update(fs.readFileSync(b)).digest('hex'),
-      `${top} diverge de son miroir backend/`,
-    );
+  for (const legacyMirror of ['backend/package.json', 'backend/server.ts', 'backend/prisma/schema.prisma']) {
+    assert.ok(!fs.existsSync(path.join(ROOT, legacyMirror)), `miroir interdit : ${legacyMirror}`);
   }
-  ok('server.ts + prisma/schema.prisma + migrations_manual.sql ≡ miroirs');
+  ok('une seule source backend/Prisma, à la racine du dépôt');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-console.log('\n══ B. FIDÉLITÉ §8.1 — import → canonique chiffré → moteur (multi-protocoles) ══\n');
+console.log('\n══ B. DÉPLOIEMENT NON DESTRUCTIF ══\n');
+{
+  const workflow = fs.readFileSync(path.join(ROOT, '.github/workflows/deploy-vps.yml'), 'utf8');
+  assert.ok(workflow.includes('prisma migrate deploy'), 'le déploiement doit appliquer les migrations suivies');
+  assert.ok(!workflow.includes('prisma db push'), 'prisma db push est interdit en production');
+  assert.ok(!workflow.includes('--accept-data-loss'), '--accept-data-loss est interdit');
+
+  const migrationsRoot = path.join(ROOT, 'prisma/migrations');
+  const migrationFiles = fs.readdirSync(migrationsRoot, { recursive: true })
+    .filter((entry) => entry.endsWith('migration.sql'));
+  assert.ok(migrationFiles.length > 0, 'historique de migrations absent');
+  for (const migrationFile of migrationFiles) {
+    const sql = fs.readFileSync(path.join(migrationsRoot, migrationFile), 'utf8');
+    assert.doesNotMatch(
+      sql,
+      /^\s*(?:DROP|TRUNCATE)\b|^\s*ALTER\s+TABLE\b.*\bDROP\b/im,
+      `migration destructive interdite : ${migrationFile}`,
+    );
+  }
+  ok('migrations suivies et garde-fous de déploiement non destructif');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n══ C. FIDÉLITÉ §8.1 — import → canonique chiffré → moteur (multi-protocoles) ══\n');
 
 const {
   parseImportedConfig, canonicalJson, computeCanonicalHash,
@@ -197,4 +194,4 @@ function fidelityRoundtrip(label, raw) {
   ok('CONTRÔLE — ssh direct tls:false reste valide');
 }
 
-console.log(`\n🏁 RÉSULTAT : ${passed} groupes de tests réussis — miroirs synchronisés + fidélité §8.1 verrouillée`);
+console.log(`\n🏁 RÉSULTAT : ${passed} groupes de tests réussis — source canonique + fidélité §8.1 verrouillée`);

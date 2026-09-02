@@ -1,5 +1,4 @@
 import { PrismaClient } from '@prisma/client';
-import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
@@ -79,6 +78,11 @@ async function main() {
     { name: 'servers.edit',   description: 'Modifier des serveurs' },
     { name: 'servers.delete', description: 'Supprimer des serveurs' },
     { name: 'server.manage',  description: 'Alias gestion serveur (legacy)' },
+    // XPanel
+    { name: 'xpanel.view',   description: 'Voir le panel XPanel' },
+    { name: 'xpanel.manage', description: 'Gérer XPanel' },
+    { name: 'xpanel.sync',   description: 'Synchroniser XPanel' },
+    { name: 'xpanel.access', description: 'Accès XPanel (legacy)' },
     // Analytics
     { name: 'analytics.view', description: 'Voir les analytiques et logs' },
     // RBAC
@@ -166,70 +170,9 @@ async function main() {
 
   console.log('  ✓ Permissions attribuées à tous les rôles\n');
 
-  // ─── 4. COMPTES UTILISATEURS ─────────────────────────────────────
-  console.log('[4/5] Création des comptes administrateurs...');
-
-  // Super Admin
-  const superAdminHash = await bcrypt.hash('SuperAdmin2026!', 12);
-  await prisma.user.upsert({
-    where: { email: 'superadmin@sxbvpn.com' },
-    update: { passwordHash: superAdminHash, roleId: superAdminRole.id, status: 'active' },
-    create: {
-      name: 'Super Administrateur',
-      email: 'superadmin@sxbvpn.com',
-      phone: '+00000000000',
-      passwordHash: superAdminHash,
-      roleId: superAdminRole.id,
-      status: 'active',
-    },
-  });
-  console.log('  ✓ superadmin@sxbvpn.com / SuperAdmin2026!');
-
-  // Admin
-  const adminHash = await bcrypt.hash('Admin2026!', 12);
-  await prisma.user.upsert({
-    where: { email: 'admin@sxbvpn.com' },
-    update: { passwordHash: adminHash, roleId: adminRole.id },
-    create: {
-      name: 'Administrateur',
-      email: 'admin@sxbvpn.com',
-      phone: '+00000000001',
-      passwordHash: adminHash,
-      roleId: adminRole.id,
-      status: 'active',
-    },
-  });
-  console.log('  ✓ admin@sxbvpn.com / Admin2026!');
-
-  // Support
-  const supportHash = await bcrypt.hash('Support2026!', 12);
-  await prisma.user.upsert({
-    where: { email: 'support@sxbvpn.com' },
-    update: { passwordHash: supportHash, roleId: supportRole.id, status: 'active' },
-    create: {
-      name: 'Agent Support',
-      email: 'support@sxbvpn.com',
-      phone: '+00000000002',
-      passwordHash: supportHash,
-      roleId: supportRole.id,
-      status: 'active',
-    },
-  });
-  console.log('  ✓ support@sxbvpn.com / Support2026!');
-
-  console.log('\n[5/5] Initialisation terminée ✓');
-
-  // ─── RÉSUMÉ ──────────────────────────────────────────────────────
-  console.log('\n=== RÉSUMÉ ===');
-  console.log('Comptes créés :');
-  console.log('  ┌────────────────────────────────┬─────────────────────┬────────────────┐');
-  console.log('  │ Email                          │ Mot de passe        │ Rôle           │');
-  console.log('  ├────────────────────────────────┼─────────────────────┼────────────────┤');
-  console.log('  │ superadmin@sxbvpn.com          │ SuperAdmin2026!     │ SUPER_ADMIN    │');
-  console.log('  │ admin@sxbvpn.com               │ Admin2026!          │ ADMIN          │');
-  console.log('  │ support@sxbvpn.com             │ Support2026!        │ SUPPORT        │');
-  console.log('  └────────────────────────────────┴─────────────────────┴────────────────┘');
-  console.log('\n✅ Base de données prête pour la production\n');
+  console.log('\n[4/4] Initialisation RBAC terminée ✓');
+  console.log('Aucun compte ni mot de passe n’a été créé.');
+  console.log('Utilisez scripts/setup-super-admin.js avec des identifiants fournis par variables d’environnement.\n');
 }
 
 main()

@@ -1,8 +1,7 @@
 /**
  * device-sim.e2e.mjs — Simulation d'appareil Android SXB VPN (ÉTAPES 2→9)
  *
- * Exécution (après `cd backend && npm install --legacy-peer-deps --no-audit`
- * et `cd app-mobile && npm install --legacy-peer-deps --no-audit`) :
+ * Exécution (après `pnpm install --frozen-lockfile`) :
  *   node scripts/tests/device-sim.e2e.mjs
  *
  * Monte le VRAI backend (routes mobile.ts + provision.ts compilées par esbuild,

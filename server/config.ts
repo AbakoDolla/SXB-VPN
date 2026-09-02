@@ -6,32 +6,46 @@ dotenv.config();
 const configSchema = z.object({
   PORT: z.coerce.number().default(3000),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
-  DATABASE_URL: z.string().optional(),
-  JWT_SECRET: z.string().default("sxb-vpn-jwt-secure-access-token-key-for-saas-platform"),
-  REFRESH_SECRET: z.string().default("sxb-vpn-jwt-secure-refresh-token-key-for-saas-platform"),
+  DATABASE_URL: z.string().min(1).optional(),
+  FRONTEND_URL: z.url().default("https://vpnsxb.afrihall.com"),
+  JWT_SECRET: z.string().min(32, "JWT secret must contain at least 32 characters"),
+  REFRESH_SECRET: z.string().min(32, "Refresh secret must contain at least 32 characters"),
   // X-Panel Configuration
   XPANEL_URL: z.string().default("http://localhost:18790"),
   XPANEL_JWT_SECRET: z.string().optional(),
   XPANEL_ADMIN_USERNAME: z.string().default("admin"),
   XPANEL_ADMIN_PASSWORD: z.string().optional(),
-  ENCRYPTION_KEY: z.string().length(32, "Encryption key must be exactly 32 characters").default("sxb-vpn-32-byte-encryption-key-!"),
+  ENCRYPTION_KEY: z.string().length(32, "Encryption key must be exactly 32 characters"),
+}).superRefine((value, context) => {
+  if (value.NODE_ENV === "production" && !value.DATABASE_URL) {
+    context.addIssue({
+      code: "custom",
+      path: ["DATABASE_URL"],
+      message: "DATABASE_URL is required in production",
+    });
+  }
 });
 
-const parsed = configSchema.safeParse(process.env);
+export function loadConfig(environment: NodeJS.ProcessEnv) {
+  const isProduction = environment.NODE_ENV === "production";
+  const parsed = configSchema.safeParse({
+    ...environment,
+    JWT_SECRET: environment.JWT_SECRET || (isProduction ? undefined : "dev-only-access-token-key-32-bytes"),
+    REFRESH_SECRET:
+      environment.REFRESH_SECRET ||
+      environment.JWT_REFRESH_SECRET ||
+      (isProduction ? undefined : "dev-only-refresh-token-key-32-byte"),
+    ENCRYPTION_KEY: environment.ENCRYPTION_KEY || (isProduction ? undefined : "dev-only-encryption-key-32-byte!"),
+  });
 
-if (!parsed.success) {
-  console.warn("⚠️ Configuration Validation Warnings:", parsed.error.format());
+  if (!parsed.success) {
+    const details = parsed.error.issues
+      .map((issue) => `${issue.path.join(".") || "configuration"}: ${issue.message}`)
+      .join("; ");
+    throw new Error(`Invalid SXB configuration: ${details}`);
+  }
+
+  return parsed.data;
 }
 
-export const config = parsed.success ? parsed.data : configSchema.parse({
-  PORT: 3000,
-  NODE_ENV: "development",
-  DATABASE_URL: process.env.DATABASE_URL,
-  JWT_SECRET: process.env.JWT_SECRET || "sxb-vpn-jwt-secure-access-token-key-for-saas-platform",
-  REFRESH_SECRET: process.env.REFRESH_SECRET || "sxb-vpn-jwt-secure-refresh-token-key-for-saas-platform",
-  XPANEL_URL: process.env.XPANEL_URL || "http://localhost:18790",
-  XPANEL_JWT_SECRET: process.env.XPANEL_JWT_SECRET,
-  XPANEL_ADMIN_USERNAME: process.env.XPANEL_ADMIN_USERNAME || "admin",
-  XPANEL_ADMIN_PASSWORD: process.env.XPANEL_ADMIN_PASSWORD,
-  ENCRYPTION_KEY: process.env.ENCRYPTION_KEY || "sxb-vpn-32-byte-encryption-key-!",
-});
+export const config = loadConfig(process.env);

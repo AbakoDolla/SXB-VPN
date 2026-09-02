@@ -1,12 +1,14 @@
 /**
  * SXB VPN - Super Admin Setup Script
- * Run this ONCE during initial deployment to create the SUPER_ADMIN account
+ * Idempotent setup for the SUPER_ADMIN role and account.
  * 
- * Usage: node scripts/setup-super-admin.js
+ * Usage:
+ *   SUPER_ADMIN_EMAIL='…' SUPER_ADMIN_PASSWORD='…' node scripts/setup-super-admin.js
  */
 
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import "dotenv/config";
 
 const prisma = new PrismaClient();
 
@@ -16,6 +18,18 @@ async function setupSuperAdmin() {
   console.log("==================================================\n");
 
   try {
+    const email = (process.env.SUPER_ADMIN_EMAIL || "").trim().toLowerCase();
+    const password = process.env.SUPER_ADMIN_PASSWORD || "";
+    const name = (process.env.SUPER_ADMIN_NAME || "Super Administrator").trim();
+    const phone = (process.env.SUPER_ADMIN_PHONE || "").trim() || null;
+
+    if (!email || !password) {
+      throw new Error("SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD are required");
+    }
+    if (password.length < 12) {
+      throw new Error("SUPER_ADMIN_PASSWORD must contain at least 12 characters");
+    }
+
     // Check if SUPER_ADMIN role exists
     let superAdminRole = await prisma.role.findUnique({
       where: { name: "SUPER_ADMIN" }
@@ -60,48 +74,28 @@ async function setupSuperAdmin() {
       console.log("✅ SUPER_ADMIN already has all permissions");
     }
 
-    // Create default SUPER_ADMIN user if none exists
-    const existingSuperAdmins = await prisma.user.findMany({
-      where: { roleId: superAdminRole.id }
+    const passwordHash = await bcrypt.hash(password, 12);
+    const superAdmin = await prisma.user.upsert({
+      where: { email },
+      update: {
+        name,
+        phone,
+        passwordHash,
+        roleId: superAdminRole.id,
+        status: "active"
+      },
+      create: {
+        name,
+        email,
+        phone,
+        passwordHash,
+        roleId: superAdminRole.id,
+        status: "active"
+      }
     });
 
-    if (existingSuperAdmins.length === 0) {
-      const email = process.env.SUPER_ADMIN_EMAIL || "superadmin@sxbvpn.com";
-      const password = process.env.SUPER_ADMIN_PASSWORD || "SxBvpn2026";
-      const name = process.env.SUPER_ADMIN_NAME || "Super Administrator";
-
-      console.log("\n📧 Creating default SUPER_ADMIN user...");
-      const salt = bcrypt.genSaltSync(10);
-      const passwordHash = bcrypt.hashSync(password, salt);
-
-      const superAdmin = await prisma.user.create({
-        data: {
-          name,
-          email,
-          phone: process.env.SUPER_ADMIN_PHONE || "+00000000000",
-          passwordHash,
-          roleId: superAdminRole.id,
-          status: "active"
-        }
-      });
-
-      console.log("\n==================================================");
-      console.log("  🎉 SUPER ADMIN CREATED SUCCESSFULLY!");
-      console.log("==================================================");
-      console.log("\n📧 Email:    " + email);
-      console.log("🔐 Password: " + password);
-      console.log("\n⚠️  IMPORTANT: Change this password after first login!");
-      console.log("⚠️  Set environment variables for production:");
-      console.log("    SUPER_ADMIN_EMAIL");
-      console.log("    SUPER_ADMIN_PASSWORD");
-      console.log("    SUPER_ADMIN_NAME");
-      console.log("==================================================\n");
-    } else {
-      console.log(`✅ ${existingSuperAdmins.length} SUPER_ADMIN(s) already exist:`);
-      existingSuperAdmins.forEach(admin => {
-        console.log(`   - ${admin.email} (${admin.name})`);
-      });
-    }
+    console.log(`✅ SUPER_ADMIN ready: ${superAdmin.email}`);
+    console.log("🔐 Password accepted from the environment and not displayed");
 
     // Create audit log entry
     await prisma.auditLog.create({
@@ -115,7 +109,7 @@ async function setupSuperAdmin() {
     console.log("\n✨ Super Admin setup completed successfully!");
   } catch (error) {
     console.error("❌ Setup failed:", error);
-    process.exit(1);
+    process.exitCode = 1;
   } finally {
     await prisma.$disconnect();
   }

@@ -449,3 +449,17 @@ model ActivationSession {
   @@unique([clientId, deviceId])
   @@map("activation_sessions")
 }
+
+model Announcement {
+  id        String   @id @default(uuid())
+  title     String
+  content   String
+  type      String   @default("info") // info, warning, success, critical
+  target    String?  // deviceId (null = all)
+  isActive  Boolean  @default(true)
+  expiresAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("announcements")
+}

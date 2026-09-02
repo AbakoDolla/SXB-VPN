@@ -1,5 +1,4 @@
 import { PrismaClient } from "@prisma/client";
-import bcrypt from "bcryptjs";
 import { config } from "./config";
 
 // Interface definitions reflecting the Prisma database schema
@@ -210,49 +209,6 @@ class InMemoryDatabase {
       { roleId: resellerRole.id, permissionId: "p8" }, // clients.view
       { roleId: resellerRole.id, permissionId: "p9" }  // clients.create
     );
-
-    // Default Password is 'admin123'
-    const salt = bcrypt.genSaltSync(10);
-    const passwordHash = bcrypt.hashSync("admin123", salt);
-
-    // Create Admin User
-    this.users.push({
-      id: "user-admin",
-      name: "SXB Admin",
-      email: "admin@sxb-vpn.com",
-      phone: "+33123456789",
-      passwordHash,
-      roleId: adminRole.id,
-      status: "active",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-
-    // Create Support User
-    this.users.push({
-      id: "user-support",
-      name: "SXB Support",
-      email: "support@sxb-vpn.com",
-      phone: "+33987654321",
-      passwordHash,
-      roleId: supportRole.id,
-      status: "active",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-
-    // Create Reseller User
-    this.users.push({
-      id: "user-reseller",
-      name: "SXB Reseller Partner",
-      email: "reseller@sxb-vpn.com",
-      phone: "+33555555555",
-      passwordHash,
-      roleId: resellerRole.id,
-      status: "active",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
 
     // Seed some initial servers
     this.vpsServers.push(

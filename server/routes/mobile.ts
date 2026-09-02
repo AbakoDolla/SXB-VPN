@@ -1,4 +1,4 @@
-import { Router, Response } from "express";
+import { Router, Request, Response } from "express";
 import { z } from "zod";
 import crypto from "crypto";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
@@ -6,10 +6,11 @@ import { generateTokens, requireAuth, AuthenticatedRequest } from "../middleware
 import { configHashForProfile, configVersionForProfile } from "../services/config-hash";
 import { getActiveAnnouncements } from "./announcements";
 import { getMobileAppUpdate, toMobileAppVersion } from "../services/app-update";
+import { config } from "../config";
 
 // ── AES-256-CBC decrypt (same key as vpn-profiles.ts) ─────────────────────────
 const ENC_ALGO = "aes-256-cbc";
-const ENC_KEY = (() => { const k = process.env.ENCRYPTION_KEY; if (!k) console.error("[SECURITY] ENCRYPTION_KEY not set — insecure fallback active!"); return k || "sxb-vpn-32-byte-encryption-key-!"; })();
+const ENC_KEY = config.ENCRYPTION_KEY;
 
 function decryptField(enc: string | null | undefined): string | null {
   if (!enc) return null;
@@ -335,7 +336,6 @@ router.post("/auth/refresh", async (req, res: Response) => {
   try {
     const { refreshToken } = refreshSchema.parse(req.body);
     const jwt = require("jsonwebtoken");
-    const { config } = require("../config");
     const decoded = jwt.verify(refreshToken, config.REFRESH_SECRET);
     const client = await findClientByUserId(decoded.userId);
     if (!client || client.status !== 'active') {

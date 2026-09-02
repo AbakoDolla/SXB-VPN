@@ -223,7 +223,7 @@ router.get("/overview", requireAuth, requirePermission("analytics.read"), async 
         prisma.tokenSXB.count(),
         prisma.tokenSXB.count({ where: { status: "used" } }),
         prisma.voucher.count(),
-        prisma.voucher.count({ where: { status: "used" } }),
+        prisma.voucher.count({ where: { isRedeemed: true } }),
         prisma.vpnClient.aggregate({ _sum: { quotaUsed: true }, ...(clientStealthWhere ? { where: clientStealthWhere } : {}) }),
       ]);
       return res.json({

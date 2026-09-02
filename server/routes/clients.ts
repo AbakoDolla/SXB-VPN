@@ -6,7 +6,7 @@ import { canSeeUser, isOwnerRequest } from "../middleware/rbac/owner";
 
 const router = Router();
 
-async function syncClientAccessState(clientId: string, state: 'active' | 'suspended' | 'revoked' | 'deleted') {
+async function syncClientAccessState(clientId: string, state: 'active' | 'suspended' | 'expired' | 'revoked' | 'deleted') {
   if (!prisma) return;
   await (prisma as any).activationSession.updateMany({
     where: { clientId },
@@ -277,8 +277,8 @@ router.patch("/:id", requireAuth, requirePermission("clients.create"), async (re
       updated = { ...merged, user: u };
     }
 
-    if (body.status === 'active' || body.status === 'suspended' || body.status === 'revoked' || body.status === 'disabled') {
-      await syncClientAccessState(id, body.status === 'active' ? 'active' : body.status);
+    if (body.status !== undefined) {
+      await syncClientAccessState(id, body.status);
     }
     await logDbActivity(req.user?.userId || null, `Modified VPN client details (ID: ${id})`, "info", req.ip);
 

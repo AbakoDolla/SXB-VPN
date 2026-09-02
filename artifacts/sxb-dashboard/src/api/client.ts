@@ -4,7 +4,7 @@
 /// erreurs.
 
 // Base URL — utilise /xapi (proxifié par Vite → vpnsxb.afrihall.com/api)
-// On évite /api/* car l'artifact api-server Replit l'intercepte en priorité.
+// En développement, Vite redirige ce préfixe vers l’API de production.
 const API_BASE = "/xapi";
 
 const ACCESS_TOKEN_KEY = "sxb_access_token";

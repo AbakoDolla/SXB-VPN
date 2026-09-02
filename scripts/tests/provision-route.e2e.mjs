@@ -2,7 +2,7 @@
  * provision-route.e2e.mjs — Test d'intégration HTTP RÉEL de /api/provision/activate
  *
  * Exécution :
- *   cd backend && npm install --legacy-peer-deps --no-audit   (dépendances)
+ *   pnpm install --frozen-lockfile
  *   node --experimental-strip-types --import ../scripts/tests/register-hooks.mjs \
  *        ../scripts/tests/provision-route.e2e.mjs        (depuis backend/)
  *
@@ -39,8 +39,7 @@ const esbuild = await import(path.join(BACKEND, 'node_modules/esbuild/lib/main.j
 const STUB_PATH = fileURLToPath(new URL('./stubs/database-stub.mjs', import.meta.url));
 let __fixtures; // initialisé depuis le bundle (même instance inline que la route)
 const ENTRY_PATH = path.join(__dirname, '.entry-provision.ts');
-// Bundle placé sous backend/node_modules (gitignored) : les paquets externes
-// (express, jsonwebtoken, zod, dotenv) se résolvent depuis backend/node_modules.
+// Les paquets externes du bundle se résolvent depuis le node_modules racine.
 const BUNDLE_DIR  = path.join(BACKEND, 'node_modules/.sxb-test');
 const BUNDLE_PATH = path.join(BUNDLE_DIR, 'provision-bundle.mjs');
 const fs = await import('node:fs/promises');

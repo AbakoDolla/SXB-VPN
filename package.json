@@ -1,21 +1,49 @@
 {
   "name": "workspace",
   "version": "0.0.0",
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": ">=20 <25",
+    "pnpm": "11.25.0"
+  },
   "license": "MIT",
   "scripts": {
-    "preinstall": "node -e \"const fs=require('fs');const ua=process.env.npm_config_user_agent||'';if(!ua.startsWith('pnpm/')){console.error('Use pnpm instead');process.exit(1)}['package-lock.json','yarn.lock'].forEach(f=>{try{fs.unlinkSync(f)}catch(e){}})\"",
-    "build": "pnpm run typecheck && pnpm -r --if-present run build",
-    "typecheck:libs": "tsc --build",
-    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
+    "preinstall": "node -e \"const fs=require('fs');const ua=process.env.npm_config_user_agent||'';if(!ua.startsWith('pnpm/')){console.error('Use pnpm 11.25.0');process.exit(1)}const foreign=['package-lock.json','yarn.lock'].filter(fs.existsSync);if(foreign.length){console.error('Remove foreign lockfiles: '+foreign.join(', '));process.exit(1)}\"",
+    "dev": "tsx server.ts",
+    "build": "pnpm run typecheck && pnpm --filter @workspace/sxb-dashboard run build && pnpm run build:backend",
+    "build:backend": "esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "start": "node dist/server.cjs",
+    "test": "pnpm run test:backend && pnpm --dir app-mobile run test:regression",
+    "test:backend": "tsx --test server/tests/*.test.ts && tsx scripts/tests/mirror-parity.test.mjs",
+    "typecheck:backend": "tsc --noEmit -p tsconfig.server.json",
+    "typecheck": "pnpm run typecheck:backend && pnpm --filter @workspace/sxb-dashboard run typecheck && pnpm --dir app-mobile run typecheck"
   },
   "private": true,
   "dependencies": {
-    "@replit/connectors-sdk": "^0.4.1"
+    "@prisma/client": "5.22.0",
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "express-rate-limit": "^8.5.2",
+    "helmet": "^8.3.0",
+    "jsonwebtoken": "^9.0.3",
+    "multer": "^2.2.0",
+    "prisma": "5.22.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@prisma/client": "5.22.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/multer": "1.4.13",
+    "@types/node": "^22.14.0",
+    "esbuild": "0.27.3",
     "prettier": "^3.9.5",
-    "prisma": "5.22.0",
+    "tsx": "^4.21.0",
     "typescript": "~5.9.3"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
   }
 }

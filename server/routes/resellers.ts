@@ -250,7 +250,6 @@ router.post("/:id/create-client", requireAuth, async (req: AuthenticatedRequest,
     if (prisma) {
       newClient = await prisma.vpnClient.create({
         data: {
-          name: body.name,
           token: tokenValue,
           userId: resellerUserId,
           quotaTotal: quotaBytes,

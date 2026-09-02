@@ -1,180 +1,97 @@
-# SXB VPN - Plateforme SaaS de Gestion VPN
+# SXB VPN
 
-![SXB VPN Banner](https://via.placeholder.com/1200x475/0077FF/FFFFFF?text=SXB+VPN+Platform)
+SXB VPN est une plateforme de gestion d’accès VPN composée d’un dashboard web,
+d’une API, d’une application mobile et d’intégrations avec des serveurs VPN.
 
-## 🚀 Vue d'ensemble
+## Architecture
 
-SXB VPN est une plateforme SaaS complète de gestion VPN comprenant :
-- **Dashboard Admin** - Interface de gestion complète
-- **Backend API** - API REST pour la gestion des clients et tokens
-- **Base de données** - PostgreSQL avec Prisma ORM
-- **Cache** - Redis pour les sessions
-- **Intégration XPanel** - Gestion des serveurs VPN
+| Composant | Emplacement | Technologie |
+|---|---|---|
+| API | `server.ts`, `server/` | Node.js, Express, TypeScript |
+| Dashboard | `artifacts/sxb-dashboard/` | React, Vite, Tailwind CSS |
+| Mobile | `app-mobile/` | React Native, Expo |
+| Modèle de données | `prisma/schema.prisma` | PostgreSQL, Prisma |
+| Déploiement | `.github/workflows/deploy-vps.yml` | GitHub Actions, PM2, Nginx |
 
-## 🏗️ Architecture
+PostgreSQL est utilisé directement par l’API. Redis est présent sur le VPS mais
+le code applicatif actuel ne l’utilise pas. XPanel/XNet est une intégration
+distincte accessible par l’API sur `127.0.0.1:18790`; son cycle de vie n’est pas
+géré par le processus PM2 de SXB VPN.
 
-```
-SXB MOBILE APP
-      │
-      │
-SXB BACKEND API (Node.js + Express)
-      │
-     ┌─┼─────────────┐
-     │ │             │
-PostgreSQL       Redis
-     │             │
-     │        XPanel
-     │             │
-     │    SSH + Sing-box
-     │
-Dashboard Web (React + Vite)
-```
+Production :
 
-## 🌐 URLs de Production
+- dashboard et API : <https://vpnsxb.afrihall.com>
+- santé API : <https://vpnsxb.afrihall.com/api/health>
 
-| Service | URL |
-|---------|-----|
-| Dashboard | https://vpnsxb.afrihall.com |
-| API | https://vpnsxb.afrihall.com/api |
+## Prérequis
 
-## 🔐 Comptes par défaut
+- Node.js 20
+- Corepack et pnpm 11.25.0
+- PostgreSQL
 
-| Role | Email | Mot de passe |
-|------|-------|--------------|
-| Admin | admin@sxbvpn.com | admin123 |
-
-## 🚀 Installation Locale
-
-### Prérequis
-- Node.js 22+
-- PostgreSQL 16
-- Redis 7
-- Docker & Docker Compose (optionnel)
-
-### Étapes
+## Installation locale
 
 ```bash
-# 1. Cloner le repository
-git clone https://github.com/AbakoDolla/SXB-VPN.git
-cd SXB-VPN
-
-# 2. Installer les dépendances
-npm install
-
-# 3. Configurer l'environnement
+corepack enable
+corepack prepare pnpm@11.25.0 --activate
+pnpm install --frozen-lockfile
 cp .env.example .env
-# Éditer .env avec vos paramètres
-
-# 4. Initialiser la base de données
-npx prisma generate
-npx prisma db push
-npx tsx prisma/seed.ts
-
-# 5. Démarrer l'application
-npm run dev
+pnpm exec prisma generate --schema=prisma/schema.prisma
+pnpm exec prisma migrate deploy --schema=prisma/schema.prisma
+pnpm exec prisma db seed
+pnpm run dev
 ```
 
-## 🐳 Déploiement Docker
+Renseignez dans `.env` des valeurs uniques pour `JWT_SECRET`,
+`REFRESH_SECRET` et `ENCRYPTION_KEY`. En production, l’API refuse de démarrer si
+ces secrets sont absents ou invalides.
+
+Le seed crée les rôles et permissions, jamais de compte avec un mot de passe
+par défaut. Pour créer ou réinitialiser explicitement le super administrateur :
 
 ```bash
-# Démarrer tous les services
-docker-compose up -d
-
-# Vérifier les logs
-docker-compose logs -f
+SUPER_ADMIN_EMAIL='admin@example.com' \
+SUPER_ADMIN_PASSWORD='mot-de-passe-long-et-unique' \
+node scripts/setup-super-admin.js
 ```
 
-## 📁 Structure du projet
+## Commandes
 
-```
-SXB-VPN/
-├── docker-compose.yml      # Configuration Docker
-├── Dockerfile.backend       # Image backend
-├── Dockerfile.dashboard    # Image dashboard
-├── prisma/                 # Schéma de base de données
-│   └── schema.prisma
-├── server/                 # Routes et services backend
-│   ├── routes/
-│   └── services/
-├── src/                    # Frontend React
-│   ├── components/
-│   ├── contexts/
-│   └── api/
-├── scripts/                # Scripts de déploiement
-│   ├── install.sh
-│   ├── deploy.sh
-│   ├── backup.sh
-│   └── restore.sh
-└── infrastructure/        # Configurations serveur
-    └── nginx/
+```bash
+pnpm run typecheck       # API, dashboard et mobile
+pnpm run test            # tests API et régressions mobiles
+pnpm run build           # dashboard et bundle API
+pnpm run test:backend    # tests API uniquement
+pnpm run build:backend   # bundle API uniquement
 ```
 
-## 🔧 Configuration
+## Déploiement
 
-Variables d'environnement principales :
+Le push sur `main` déclenche d’abord la CI puis le workflow de production
+protégé. Le workflow :
 
-```env
-NODE_ENV=production
-PORT=4000
-DATABASE_URL=postgresql://user:pass@host:5432/sxb_vpn
-REDIS_URL=redis://host:6379
-JWT_SECRET=your-secret-key
-XPANEL_URL=http://localhost:2080
-```
+1. valide les tests, types, builds et le schéma Prisma ;
+2. vérifie le VPS sans le modifier ;
+3. crée et vérifie une sauvegarde PostgreSQL, Redis, artefacts et état Git ;
+4. construit une release isolée avec le lockfile pnpm ;
+5. refuse les changements Prisma destructifs ;
+6. bascule PM2 sur la release versionnée ;
+7. vérifie l’API locale et les URL publiques ;
+8. restaure automatiquement la release précédente si une vérification échoue.
 
-## 🌐 API Endpoints
+Les procédures d’exploitation et de restauration sont dans
+[`PROD_RUNBOOK.md`](PROD_RUNBOOK.md).
 
-### Authentification
-- `POST /api/auth/login` - Connexion
-- `POST /api/auth/refresh` - Rafraîchir le token
-- `POST /api/auth/logout` - Déconnexion
+## Sécurité
 
-### Utilisateurs
-- `GET /api/users` - Liste des utilisateurs
-- `POST /api/users` - Créer un utilisateur
-- `GET /api/users/:id` - Détails utilisateur
-- `PATCH /api/users/:id` - Modifier utilisateur
-- `DELETE /api/users/:id` - Supprimer utilisateur
+- JWT d’accès et de rafraîchissement séparés ;
+- mots de passe hachés avec bcrypt ;
+- contrôle d’accès RBAC ;
+- chiffrement applicatif des données sensibles ;
+- limitation de débit et en-têtes Helmet ;
+- audit applicatif ;
+- secrets de déploiement dans l’environnement GitHub `production` ;
+- authentification SSH par clé et empreinte hôte stricte.
 
-### Clients VPN
-- `GET /api/clients` - Liste des clients
-- `POST /api/clients` - Créer un client
-- `GET /api/clients/:id` - Détails client
-- `PATCH /api/clients/:id` - Modifier client
-
-### Serveurs
-- `GET /api/servers` - Liste des serveurs
-- `POST /api/servers` - Ajouter serveur
-- `GET /api/servers/:id` - Détails serveur
-
-### Tokens
-- `GET /api/tokens` - Liste des tokens
-- `POST /api/tokens` - Générer token
-- `DELETE /api/tokens/:id` - Révoquer token
-
-## 🔒 Sécurité
-
-- ✅ Authentification JWT
-- ✅ Mots de passe hashés avec bcrypt
-- ✅ Rate limiting sur les endpoints API
-- ✅ Headers de sécurité Helmet
-- ✅ RBAC (Role-Based Access Control)
-- ✅ Audit logs
-
-## 📊 Technologies
-
-- **Frontend**: React 19, Vite, TailwindCSS, Recharts
-- **Backend**: Node.js, Express, TypeScript
-- **Base de données**: PostgreSQL 16, Prisma ORM
-- **Cache**: Redis 7
-- **Containerisation**: Docker, Docker Compose
-- **Serveur web**: Nginx
-- **Process Manager**: PM2
-
-## 📝 Licence
-
-MIT License - Voir [LICENSE](LICENSE) pour plus de détails.
-
----
-
-**Développé avec ❤️ pour le Continent Africain** 🇿🇦
+Aucun identifiant de connexion ne doit être stocké dans Git, un rapport ou une
+commande partagée.
