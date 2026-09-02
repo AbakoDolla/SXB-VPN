@@ -55,14 +55,26 @@ export function substitutePayload(template: string, host: string, sni?: string |
 }
 
 // ── Lecture bornée d'un préfixe de flux ──────────────────────────────────────
-function readUpTo(sock: net.Socket | tls.TLSSocket, maxBytes: number, timeoutMs: number): Promise<Buffer> {
+/**
+ * `stopWhen` permet de rendre la main dès que le préfixe lu suffit (fin d'un
+ * bloc d'en-têtes HTTP, par exemple). Sans lui, la lecture attendait toujours
+ * l'expiration du délai, ce qui immobilisait le préflight une douzaine de
+ * secondes alors que la réponse était arrivée en 200 ms.
+ */
+function readUpTo(
+  sock: net.Socket | tls.TLSSocket,
+  maxBytes: number,
+  timeoutMs: number,
+  stopWhen?: (buf: Buffer) => boolean,
+): Promise<Buffer> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
     let total = 0;
     const timer = setTimeout(done, timeoutMs);
     const onData = (b: Buffer) => {
       chunks.push(b); total += b.length;
-      if (total >= maxBytes) done();
+      if (total >= maxBytes) return done();
+      if (stopWhen && stopWhen(Buffer.concat(chunks))) done();
     };
     const onErr = () => done();
     function done() {
@@ -73,6 +85,12 @@ function readUpTo(sock: net.Socket | tls.TLSSocket, maxBytes: number, timeoutMs:
     sock.on('data', onData); sock.on('error', onErr); sock.setTimeout(timeoutMs, onErr);
   });
 }
+
+/** Vrai dès que le bloc d'en-têtes HTTP est complet (CRLF CRLF ou LF LF). */
+const HTTP_HEAD_COMPLETE = (buf: Buffer): boolean => {
+  const s = buf.toString('latin1');
+  return s.includes('\r\n\r\n') || s.includes('\n\n');
+};
 
 function resolveAll(host: string): Promise<string[]> {
   // dns.lookup n'a pas de timeout natif (résolveurs pouvant ignorer les NXDOMAIN
@@ -160,7 +178,44 @@ async function probeWsTunnel(
   }
 }
 
-// ── Sonde principale ─────────────────────────────────────────────────────────
+// ── Sonde WebSocket des proxys (VLESS / VMess / Trojan) ─────────────────────
+
+/**
+ * Rejoue l'Upgrade WebSocket exactement comme le fera le moteur mobile.
+ * L'authentification (UUID, mot de passe) n'est JAMAIS tentée : le dashboard
+ * ne s'authentifie pas auprès d'un fournisseur. Seul le transport est jugé.
+ *
+ * C'est la seule sonde capable de départager les trois noms d'hôte d'un lien
+ * VLESS — adresse TCP après « @ », en-tête Host, SNI — dont la confusion est la
+ * première cause d'un profil importé « valide » mais inutilisable sur mobile.
+ */
+async function probeWebsocketUpgrade(
+  sock: net.Socket | tls.TLSSocket,
+  opts: { path: string; hostHeader: string },
+  timeoutMs: number,
+  steps: ProbeStep[],
+): Promise<number | null> {
+  const path = opts.path.startsWith('/') ? opts.path : `/${opts.path}`;
+  const request =
+    `GET ${path} HTTP/1.1\r\n` +
+    `Host: ${opts.hostHeader}\r\n` +
+    'Upgrade: websocket\r\n' +
+    'Connection: Upgrade\r\n' +
+    `Sec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\n` +
+    'Sec-WebSocket-Version: 13\r\n' +
+    'User-Agent: Mozilla/5.0\r\n' +
+    '\r\n';
+  sock.write(request);
+  const text = (await readUpTo(sock, 8192, timeoutMs, HTTP_HEAD_COMPLETE)).toString('latin1');
+  const m = text.match(/^HTTP\/\d\.\d (\d{3})/);
+  const code = m ? Number(m[1]) : null;
+  const where = `Host: ${opts.hostHeader}, path: ${path}`;
+  steps.push(code === 101
+    ? { event: 'HTTP_STATUS_101', ok: true, detail: `upgrade accepté (${where})` }
+    : { event: 'HTTP_STATUS_UNEXPECTED', ok: false, detail: code ? `code ${code} (${where})` : `réponse non-HTTP/vide (${where})` });
+  return code;
+}
+
 
 export async function probeConfig(
   canonical: Record<string, any>,
@@ -177,11 +232,19 @@ export async function probeConfig(
     startedAt, durationMs: Date.now() - started, hint,
   });
 
+  // Proxys à transport WebSocket : la chaîne DNS → TCP → TLS(SNI) → Upgrade est
+  // celle que rejoue le moteur mobile, donc réellement sondable. Elle était
+  // classée « non applicable », ce qui laissait passer sans un mot un profil
+  // dont l'en-tête Host ou le path ne correspondait pas au fournisseur.
+  const network = String(canonical.network ?? '').toLowerCase();
+  const isWsProxy = ['vless', 'vmess', 'trojan'].includes(proto)
+    && (network === 'ws' || network === 'websocket');
+
   // Protocoles non sondables en v1 (validation syntaxique seule, hors transport)
-  if (['wireguard', 'shadowsocks', 'vmess', 'vless', 'trojan', 'hysteria2', 'tuic', 'singbox'].includes(proto)) {
+  if (!isWsProxy && ['wireguard', 'shadowsocks', 'vmess', 'vless', 'trojan', 'hysteria2', 'tuic', 'singbox'].includes(proto)) {
     return finish('unsupported', `sonde transport v1 non applicable à ${proto} — validation syntaxique stricte effectuée à l'import`);
   }
-  if (proto !== 'ssh' && proto !== 'ssh+payload') {
+  if (!isWsProxy && proto !== 'ssh' && proto !== 'ssh+payload') {
     return finish('invalid', `protocol inconnu : ${proto}`);
   }
   if (proto === 'ssh' && canonical.tls === true) {
@@ -221,6 +284,30 @@ export async function probeConfig(
     }
     steps.push({ event: 'TLS_HANDSHAKE_OK', ok: true, detail: up.subject ? `CN=${up.subject}` : 'handshake OK' });
     sock = up.sock;
+  }
+
+  // 3bis. Proxy WebSocket : Upgrade avec l'en-tête Host et le path du profil.
+  if (isWsProxy) {
+    const hostHeader = String(canonical.wsHost || canonical.sni || host);
+    const code = await probeWebsocketUpgrade(
+      sock, { path: String(canonical.path || '/'), hostHeader }, timeoutMs, steps,
+    );
+    try { sock.destroy(); } catch { /* ignore */ }
+    if (code === 101) return finish('transport_ok');
+    // Jamais « invalid » : un fournisseur peut légitimement masquer son endpoint
+    // aux requêtes non authentifiées. On rapporte donc un doute, pas un rejet.
+    if (code === 400 || code === 404) {
+      return finish('unreachable_from_probe',
+        `Le serveur répond ${code} sur « ${canonical.path || '/'} » avec l'en-tête Host « ${hostHeader} » : ` +
+        'vérifiez le path et le paramètre host du fournisseur (le SNI et l\'adresse TCP, eux, ont bien répondu)');
+    }
+    if (code === null) {
+      return finish('unreachable_from_probe',
+        'Aucune réponse HTTP à l\'Upgrade WebSocket — le port répond mais ne sert pas ce transport');
+    }
+    return finish('unreachable_from_probe',
+      `Le serveur répond ${code} au lieu de 101 — endpoint possiblement masqué aux requêtes non authentifiées, ` +
+      'ou path/Host incorrects');
   }
 
   // 4a. SSH direct : bannière obligatoire

@@ -1128,7 +1128,19 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         // Une déconnexion demandée pendant le provisionnement annule le départ
         // avant tout appel natif long ou ouverture de tunnel.
         if (attemptId !== connectionAttemptRef.current) return;
-        const engineProtocol = (configToUse.protocol || selectedProtocol || 'vless').toLowerCase();
+        // Le protocole technique vient EXCLUSIVEMENT de la configuration
+        // provisionnée. À défaut d'un champ explicite, il est DÉDUIT de la forme
+        // de la config (marqueurs Xray, uuid+flow, username+password…) au lieu
+        // d'être supposé « vless » : ce repli en dur envoyait une configuration
+        // SSH au constructeur sing-box, qui échouait sans diagnostic utile.
+        // `selectedProtocol` reste en dernier recours : c'est un choix d'IHM,
+        // pas une donnée technique de la configuration.
+        const engineProtocol = (
+          configToUse.protocol
+          || detectProtocolFromFields(configToUse)
+          || selectedProtocol
+          || 'vless'
+        ).toLowerCase();
 
         // Capturer le baseline initial natif
         try {

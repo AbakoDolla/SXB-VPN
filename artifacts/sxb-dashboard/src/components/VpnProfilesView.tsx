@@ -38,7 +38,7 @@ const DEFAULT_ADMIN_FORM = {
 /** Formulaire legacy (colonnes) — maintenu pour compat, déconseillé */
 const DEFAULT_LEGACY_FORM = {
   protocol: 'ssh', host: '', port: '', username: '', password: '',
-  uuid: '', path: '/', network: 'ws', tls: false, sni: '',
+  uuid: '', path: '/', network: 'ws', tls: false, sni: '', wsHost: '',
   method: 'aes-256-gcm', payloadId: '' as string, payload: '',
 };
 
@@ -66,12 +66,79 @@ type JsonEditorInfo = {
   label: string;
   detail: string;
   lineCount: number;
+  /** true pour une URI de partage : le formatage JSON ne s'y applique pas. */
+  isUri?: boolean;
 };
+
+/**
+ * Schémas d'URI de partage acceptés par parseImportedConfig() côté serveur.
+ * L'éditeur les refusait auparavant (JSON.parse échouait), ce qui affichait
+ * « JSON invalide » et désactivait le bouton de préflight : une URI restait
+ * donc impossible à valider depuis le dashboard alors que le backend la gère.
+ */
+const SHARE_URI_SCHEMES: Array<{ re: RegExp; label: string }> = [
+  { re: /^vless:\/\//i,           label: 'VLESS' },
+  { re: /^vmess:\/\//i,           label: 'VMess' },
+  { re: /^trojan:\/\//i,          label: 'Trojan' },
+  { re: /^ss:\/\//i,              label: 'Shadowsocks' },
+  { re: /^(hysteria2|hy2):\/\//i, label: 'Hysteria2' },
+  { re: /^tuic:\/\//i,            label: 'TUIC' },
+];
+
+/**
+ * Décrit une URI de partage sans la parser strictement (le backend reste seul
+ * juge). Le but est de montrer à l'opérateur les trois noms d'hôte distincts
+ * d'un lien VLESS WebSocket, qui sont la première cause d'erreur d'import :
+ *   - l'autorité après « @ » = adresse TCP réellement contactée,
+ *   - le paramètre « host » = en-tête Host WebSocket,
+ *   - le paramètre « sni »  = nom présenté pendant le handshake TLS.
+ */
+function inspectShareUri(raw: string, protoLabel: string, lineCount: number): JsonEditorInfo {
+  const text = raw.trim();
+  const authority = text.match(/^[a-z0-9+]+:\/\/(?:[^@/?#]*@)?([^:/?#]+)(?::(\d+))?/i);
+  const address = authority?.[1] ?? '';
+  const port = authority?.[2] ?? '';
+  const queryStart = text.indexOf('?');
+  const hashStart = text.lastIndexOf('#');
+  const query = queryStart === -1 ? '' : text.slice(queryStart + 1, hashStart > queryStart ? hashStart : undefined);
+  const q = new URLSearchParams(query);
+  const network = q.get('type') || q.get('network') || '';
+  const security = q.get('security') || '';
+  const wsHost = q.get('host') || '';
+  const sni = q.get('sni') || '';
+  const name = hashStart === -1 ? '' : decodeURIComponent(text.slice(hashStart + 1));
+
+  if (!address) {
+    return {
+      valid: false, isUri: true, lineCount,
+      label: `URI ${protoLabel} incomplète`,
+      detail: 'Forme attendue : protocole://identifiant@hôte:port?paramètres#nom',
+    };
+  }
+
+  const bits = [`serveur ${address}${port ? `:${port}` : ''}`];
+  if (network) bits.push(`transport ${network}`);
+  if (security) bits.push(security.toLowerCase() === 'reality' ? 'Reality' : security.toUpperCase());
+  if (wsHost) bits.push(`Host « ${wsHost} »`);
+  if (sni) bits.push(sni === wsHost ? 'SNI identique au Host' : `SNI « ${sni} »`);
+  if (name) bits.push(`libellé « ${name} »`);
+
+  const detail = wsHost && wsHost !== address
+    ? `${bits.join(' · ')}. L'adresse après « @ » reste le point TCP joint ; « host » n'est que l'en-tête WebSocket.`
+    : `${bits.join(' · ')}.`;
+
+  return { valid: true, isUri: true, lineCount, label: `URI ${protoLabel} détectée`, detail };
+}
 
 function inspectJsonEditor(raw: string): JsonEditorInfo {
   const lineCount = Math.max(1, raw.split(/\r?\n/).length);
   if (!raw.trim()) {
-    return { valid: false, label: 'En attente du JSON', detail: 'Collez une configuration complète V2Ray/Xray ou sing-box.', lineCount };
+    return { valid: false, label: 'En attente de la configuration', detail: 'Collez une URI de partage (vless://, vmess://, trojan://, ss://, hy2://, tuic://) ou une configuration complète V2Ray/Xray ou sing-box.', lineCount };
+  }
+  const scheme = SHARE_URI_SCHEMES.find(s => s.re.test(raw.trim()));
+  if (scheme) return inspectShareUri(raw, scheme.label, lineCount);
+  if (/^\s*\[Interface\]/im.test(raw)) {
+    return { valid: true, isUri: true, lineCount, label: 'Configuration WireGuard détectée', detail: 'Bloc [Interface]/[Peer] conservé tel quel ; le préflight vérifiera les clés et l\'endpoint.' };
   }
   try {
     const obj = JSON.parse(raw);
@@ -93,7 +160,12 @@ function inspectJsonEditor(raw: string): JsonEditorInfo {
     return { valid: true, label, detail, lineCount };
   } catch (err: any) {
     const message = err?.message ? String(err.message).replace(/^Unexpected token /, 'Syntaxe: ') : 'JSON invalide';
-    return { valid: false, label: 'JSON invalide', detail: message, lineCount };
+    return {
+      valid: false,
+      label: 'Format non reconnu',
+      detail: `${message} — attendu : une URI de partage (vless://, vmess://, trojan://, ss://, hy2://, tuic://), un JSON V2Ray/Xray ou sing-box, ou une conf WireGuard.`,
+      lineCount,
+    };
   }
 }
 
@@ -119,16 +191,16 @@ function JsonConfigEditor({
   return (
     <div className="space-y-3">
       <div className="p-3 bg-indigo-500/5 border border-indigo-500/20 rounded-xl text-xs text-indigo-200 space-y-1.5">
-        <p className="font-medium flex items-center gap-1.5"><FileKey2 className="w-3.5 h-3.5" /> Éditeur V2Ray / Xray complet</p>
-        <p className="text-indigo-300/80">Collez le JSON exporté depuis V2Ray/Xray, comme dans l'application mobile. Les champs `dns`, `inbounds`, `outbounds`, `routing`, `streamSettings`, `proxySettings` et les en-têtes sont conservés; aucun résumé avec `…` ne doit être utilisé.</p>
+        <p className="font-medium flex items-center gap-1.5"><FileKey2 className="w-3.5 h-3.5" /> Éditeur V2Ray / Xray complet + URI de partage</p>
+        <p className="text-indigo-300/80">Collez soit une URI de partage (`vless://`, `vmess://`, `trojan://`, `ss://`, `hy2://`, `tuic://`), soit le JSON exporté depuis V2Ray/Xray, comme dans l'application mobile. Les champs `dns`, `inbounds`, `outbounds`, `routing`, `streamSettings`, `proxySettings` et les en-têtes sont conservés; aucun résumé avec `…` ne doit être utilisé.</p>
       </div>
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className={`text-xs ${info.valid ? 'text-emerald-400' : 'text-amber-400'}`}>
           <span className="font-medium">{info.label}</span><span className="text-gray-500"> · {info.detail}</span>
         </div>
         <div className="flex items-center gap-2">
-          <button type="button" onClick={() => format(false)} disabled={!value.trim()} className="px-2.5 py-1.5 rounded-lg border border-indigo-500/30 text-indigo-300 text-xs hover:bg-indigo-500/10 disabled:opacity-40">Formater</button>
-          <button type="button" onClick={() => format(true)} disabled={!value.trim()} className="px-2.5 py-1.5 rounded-lg border border-[#1a1f2e] text-gray-400 text-xs hover:bg-white/5 disabled:opacity-40">Réduire</button>
+          <button type="button" onClick={() => format(false)} disabled={!value.trim() || info.isUri} className="px-2.5 py-1.5 rounded-lg border border-indigo-500/30 text-indigo-300 text-xs hover:bg-indigo-500/10 disabled:opacity-40">Formater</button>
+          <button type="button" onClick={() => format(true)} disabled={!value.trim() || info.isUri} className="px-2.5 py-1.5 rounded-lg border border-[#1a1f2e] text-gray-400 text-xs hover:bg-white/5 disabled:opacity-40">Réduire</button>
           <button type="button" onClick={() => onChange('')} disabled={!value} className="px-2.5 py-1.5 rounded-lg border border-[#1a1f2e] text-gray-400 text-xs hover:bg-white/5 disabled:opacity-40">Effacer</button>
         </div>
       </div>
@@ -140,8 +212,8 @@ function JsonConfigEditor({
           rows={12}
           spellCheck={false}
           wrap="off"
-          aria-label="Configuration JSON V2Ray Xray complète"
-          placeholder={'{\n  "inbounds": [],\n  "outbounds": [\n    {\n      "protocol": "vless",\n      "settings": { "vnext": [] },\n      "streamSettings": { "network": "ws", "security": "tls" }\n    }\n  ]\n}'}
+          aria-label="Configuration JSON V2Ray Xray complète ou URI de partage"
+          placeholder={'vless://uuid@cdn.exemple.com:443?path=%2Fvless&security=tls&encryption=none&host=ws.exemple.com&type=ws&sni=ws.exemple.com#Mon profil\n\n— ou un JSON complet —\n\n{\n  "inbounds": [],\n  "outbounds": [\n    {\n      "protocol": "vless",\n      "settings": { "vnext": [] },\n      "streamSettings": { "network": "ws", "security": "tls" }\n    }\n  ]\n}'}
           className="flex-1 min-w-0 resize-y bg-transparent p-3 text-[12px] leading-5 text-emerald-300 font-mono outline-none whitespace-pre"
         />
       </div>
@@ -270,7 +342,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
     setLegacyForm({
       protocol: p.protocol, host: p.host, port: String(p.port),
       username: p.username || '', password: '', uuid: p.uuid || '',
-      path: p.path || '/', network: p.network, tls: p.tls, sni: p.sni || '',
+      path: p.path || '/', network: p.network, tls: p.tls, sni: p.sni || '', wsHost: '',
       method: p.method || 'aes-256-gcm', payloadId: (p as any).payloadId || '', payload: '',
     });
     resetModalState(); setShowForm(true);
@@ -387,6 +459,10 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
           network: legacyForm.network || undefined,
           tls: legacyForm.tls,
           sni: legacyForm.sni.trim() || selectedPayload?.sni || undefined,
+          // En-tête Host WebSocket — distinct de l'adresse TCP et du SNI. Sans
+          // lui, un fournisseur qui route par le Host renvoie une 404 alors que
+          // le handshake TLS a réussi, panne indiscernable d'un serveur mort.
+          wsHost: legacyForm.wsHost.trim() || undefined,
           method: legacyForm.method || undefined,
           payload: payload || undefined,
         };
@@ -903,6 +979,16 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
         <input value={form.sni} onChange={e => f('sni', e.target.value)}
           placeholder="example.com" className={lockedCls} disabled={locked} readOnly={locked} />
       </div>
+      {form.protocol !== 'ssh' && (
+        <div>
+          <label className="block text-sm text-gray-400 mb-1.5">
+            Host (en-tête WebSocket)
+            <span className="ml-1.5 text-[11px] text-gray-600">équivaut à « host= » d'une URI</span>
+          </label>
+          <input value={form.wsHost} onChange={e => f('wsHost', e.target.value)}
+            placeholder="Laissez vide pour réutiliser le SNI" className={lockedCls} disabled={locked} readOnly={locked} />
+        </div>
+      )}
       <div>
         <label className="block text-sm text-gray-400 mb-1.5">Path</label>
         <input value={form.path} onChange={e => f('path', e.target.value)}

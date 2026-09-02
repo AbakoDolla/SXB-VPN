@@ -9,7 +9,7 @@ import {
   utf8Decode,
   utf8Encode,
 } from '../services/aesGcm';
-import { isCompleteOfflineConfig, validateVpnConfig } from '../services/configValidator';
+import { isCompleteOfflineConfig, validateVpnConfig, detectProtocolFromFields } from '../services/configValidator';
 import { parseVlessUri, vlessUriToJson } from '../services/vlessUri';
 import ProtocolDetector from '../services/protocolDetector';
 import { deriveQuota } from '../services/quotaState';
@@ -135,6 +135,29 @@ describe('compatibilité URI VLESS / JSON complète', () => {
     const fromJson = validateVpnConfig(vlessUriToJson(VLESS_URI));
     assert.equal(fromJson.valid, true, fromJson.errors.join(' | '));
     assert.equal(fromJson.config?.wsHost, 'ss.alphaeconet.co.zw');
+  });
+
+  it('importe l’URI VLESS ws+tls du dashboard en distinguant les trois noms d’hôte', () => {
+    // Cas réel fourni par l'exploitant : l'adresse TCP, l'en-tête Host et le SNI
+    // sont trois valeurs indépendantes. Les confondre produit un profil accepté
+    // à l'import mais qui ne monte jamais sur mobile.
+    const uri = 'vless://bdebc18f-9f2f-4084-ae1f-210aad4629c2@cdn.tribune.com.pk:443?path=%2Fvless&security=tls&encryption=none&host=net.josefvpn.com&type=ws&sni=net.josefvpn.com#stuff';
+    const parsed = parseVlessUri(uri);
+    assert.equal(parsed.name, 'stuff');
+    assert.equal(parsed.config.host, 'cdn.tribune.com.pk');   // adresse TCP jointe
+    assert.equal(parsed.config.wsHost, 'net.josefvpn.com');   // en-tête Host WS
+    assert.equal(parsed.config.sni, 'net.josefvpn.com');      // nom TLS présenté
+    assert.equal(parsed.config.path, '/vless');
+    assert.equal(parsed.config.network, 'ws');
+    assert.equal(parsed.config.tls, true);
+    assert.equal(parsed.config.uuid, 'bdebc18f-9f2f-4084-ae1f-210aad4629c2');
+
+    const validation = validateVpnConfig(uri);
+    assert.equal(validation.valid, true, validation.errors.join(' | '));
+    assert.equal(validation.protocol, 'vless');
+    assert.equal(isCompleteOfflineConfig(validation.config).complete, true);
+    // Le protocole doit être déduit sans champ « protocol » explicite.
+    assert.equal(ProtocolDetector.detect(uri).protocol, 'vless');
   });
 
   it('accepte le JSON VLESS WS/TLS fourni avec Host, SNI et mux', () => {
@@ -664,6 +687,74 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(dashboardProfiles.includes('Valider le transport'));
     assert.ok(dashboardProfiles.includes('Configuration JSON V2Ray Xray complète'));
     assert.ok(dashboardProfiles.includes('Saisie manuelle'));
+  });
+
+  it('accepte les URI de partage dans l’éditeur d’import du dashboard', () => {
+    // L'éditeur ne faisait qu'un JSON.parse : une URI vless:// était étiquetée
+    // « JSON invalide » et désactivait le bouton de préflight, alors que le
+    // backend (parseImportedConfig) la gère depuis toujours.
+    assert.ok(dashboardProfiles.includes('SHARE_URI_SCHEMES'));
+    assert.ok(dashboardProfiles.includes('inspectShareUri'));
+    for (const scheme of ['vless', 'vmess', 'trojan', 'ss', 'hysteria2|hy2', 'tuic']) {
+      assert.ok(
+        dashboardProfiles.includes(`^(${scheme}):\\/\\/`) || dashboardProfiles.includes(`^${scheme}:\\/\\/`),
+        `schéma d'URI non reconnu par l'éditeur : ${scheme}`,
+      );
+    }
+    // Une URI reste non formatable en JSON : les boutons doivent se désactiver.
+    assert.ok(dashboardProfiles.includes('!value.trim() || info.isUri'));
+    assert.doesNotMatch(dashboardProfiles, /label: 'JSON invalide'/);
+  });
+
+  it('expose l’en-tête Host WebSocket dans la saisie manuelle du dashboard', () => {
+    // Sans ce champ, un profil ws saisi à la main partait avec le SNI en guise
+    // d'en-tête Host — silencieux, et faux dès que le fournisseur les dissocie.
+    assert.ok(dashboardProfiles.includes('Host (en-tête WebSocket)'));
+    assert.ok(dashboardProfiles.includes("f('wsHost', e.target.value)"));
+    assert.ok(dashboardProfiles.includes('wsHost: legacyForm.wsHost.trim() || undefined'));
+  });
+
+  it('sonde réellement le transport WebSocket des proxys VLESS/VMess/Trojan', () => {
+    // Ces protocoles étaient classés « non sondables », donc importés sans
+    // aucune vérification de transport.
+    assert.ok(transportProbe.includes('probeWebsocketUpgrade'));
+    assert.ok(transportProbe.includes('const isWsProxy'));
+    assert.match(transportProbe, /\['vless', 'vmess', 'trojan'\]\.includes\(proto\)/);
+    // L'en-tête Host suit wsHost puis le SNI, jamais l'adresse TCP en premier.
+    assert.ok(transportProbe.includes('canonical.wsHost || canonical.sni || host'));
+    assert.ok(transportProbe.includes("'Sec-WebSocket-Version: 13\\r\\n'"));
+    // Le préflight ne doit jamais rejeter : un endpoint peut être masqué.
+    assert.doesNotMatch(transportProbe, /if \(code === 404\) return finish\('invalid'/);
+  });
+
+  it('rend la main dès la fin des en-têtes HTTP au lieu d’attendre le délai', () => {
+    // La lecture attendait systématiquement l'expiration du timeout : un
+    // préflight prenait ~13 s pour une réponse arrivée en 200 ms.
+    assert.ok(transportProbe.includes('HTTP_HEAD_COMPLETE'));
+    assert.ok(transportProbe.includes('stopWhen?: (buf: Buffer) => boolean'));
+    assert.ok(transportProbe.includes('readUpTo(sock, 8192, timeoutMs, HTTP_HEAD_COMPLETE)'));
+  });
+
+  it('déduit le protocole moteur de la config au lieu de supposer VLESS', () => {
+    // Le repli était « vless » en dur : une config SSH sans champ protocol
+    // partait au constructeur sing-box et échouait sans diagnostic utile.
+    assert.ok(vpnContext.includes('detectProtocolFromFields(configToUse)'));
+    assert.doesNotMatch(vpnContext, /\(configToUse\.protocol \|\| selectedProtocol \|\| 'vless'\)/);
+
+    // La détection couvre chaque protocole que le dispatch natif sait traiter.
+    assert.equal(detectProtocolFromFields({ protocol: 'vless', host: 'a', port: 443, uuid: 'u' }), 'vless');
+    assert.equal(detectProtocolFromFields({ username: 'root', password: 'x' }), 'ssh');
+    assert.equal(detectProtocolFromFields({ username: 'root', payload: 'GET / HTTP/1.1' }), 'ssh+payload');
+    assert.equal(detectProtocolFromFields({ method: 'aes-256-gcm', password: 'x' }), 'shadowsocks');
+    assert.equal(detectProtocolFromFields({ privateKey: 'k', endpoint: 'h:1' }), 'wireguard');
+    assert.equal(detectProtocolFromFields({ uuid: 'u', alterId: 0 }), 'vmess');
+    assert.equal(detectProtocolFromFields({ password: 'p', sni: 's' }), 'trojan');
+
+    // Chaque valeur produite doit être acceptée par le dispatch natif, sinon la
+    // connexion se solde par CONFIG_UNSUPPORTED.
+    for (const proto of ['ssh', 'ssh+payload', 'vless', 'vmess', 'trojan', 'shadowsocks', 'wireguard', 'hysteria2', 'tuic', 'singbox']) {
+      assert.ok(nativeService.includes(`"${proto}"`), `protocole absent du dispatch natif : ${proto}`);
+    }
   });
 
   it('réserve la gestion technique des configurations au dashboard', () => {
