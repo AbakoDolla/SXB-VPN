@@ -581,7 +581,11 @@ export default function SettingsScreen() {
           <Row icon="document-text-outline" label="CGU / Politique de confidentialité"
             onPress={() => Alert.alert(
               "CGU & Politique de confidentialité",
-              "Disponible sur https://sxbvpn.com/legal\n\nSXB VPN ne collecte aucune donnée de navigation ni log de connexion.",
+              "Disponible sur https://sxbvpn.com/legal\n\n" +
+              "SXB VPN ne collecte aucune donnée de navigation ni journal de connexion, " +
+              "et ne transmet rien à des tiers.\n\n" +
+              "Seuls le volume de données consommé et l'identifiant de votre appareil " +
+              "sont envoyés à nos serveurs, afin de gérer votre forfait.",
               [{ text: "Fermer" }]
             )} />
         </Section>

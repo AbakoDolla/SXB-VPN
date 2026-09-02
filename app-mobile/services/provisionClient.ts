@@ -219,6 +219,27 @@ export async function provisionAndStore(
     });
   }
 
+  // ── C3 — Vérification de la liaison réponse ↔ appareil ──────────────────────
+  // La réponse porte une `signature` HMAC calculée avec PROVISION_SECRET, un
+  // secret que le mobile ne possède pas : elle est donc invérifiable côté client
+  // et était silencieusement ignorée. À défaut, on contrôle ce qui est
+  // vérifiable — que la réponse concerne bien CET appareil et CET abonnement —
+  // afin qu'une réponse interceptée puis rejouée vers un autre appareil (ou une
+  // réponse mal aiguillée par un cache/proxy) soit rejetée au lieu d'être
+  // stockée dans le Keystore.
+  //
+  // Limitation connue (C2) : le serveur renvoie `encryptedBlob` ET `configKey`
+  // dans la même réponse. Quiconque observe le corps de la réponse en clair peut
+  // donc déchiffrer la configuration. Le chiffrement de bout en bout n'est pas
+  // réalisable sans un échange de clés (ECDH) côté serveur ; TLS reste la seule
+  // protection en transit. À traiter par un endpoint de provisionnement v3.
+  const responseDeviceId = typeof prov?.deviceId === 'string' ? prov.deviceId.trim() : '';
+  if (responseDeviceId && responseDeviceId !== deviceId) {
+    throw new ProvisioningError('Réponse de provisionnement destinée à un autre appareil', {
+      code: 'PVN_DEVICE_MISMATCH', stage: 'response', attempts: 1, retryable: false, requestId,
+    });
+  }
+
   if (configExpiresAt && new Date(configExpiresAt) < new Date()) {
     throw new ProvisioningError('Configuration expirée — re-provisionnement requis', {
       code: 'PVN_CONFIG_EXPIRED', stage: 'response', attempts: 1, retryable: false, requestId,
@@ -240,6 +261,23 @@ export async function provisionAndStore(
   } catch {
     throw new ProvisioningError('Configuration déchiffrée invalide', {
       code: 'PVN_CONFIG_PARSE_FAILED', stage: 'parse', attempts: 1, retryable: false, requestId,
+    });
+  }
+
+  // C3 — Le contenu déchiffré doit lui aussi concerner cet appareil et cet
+  // abonnement : le blob est authentifié par AES-GCM, ces champs sont donc
+  // inforgeables et constituent la vraie preuve de liaison.
+  const payloadDeviceId = typeof vpnConfig?.deviceId === 'string' ? vpnConfig.deviceId.trim() : '';
+  if (payloadDeviceId && payloadDeviceId !== deviceId) {
+    throw new ProvisioningError('Configuration liée à un autre appareil', {
+      code: 'PVN_PAYLOAD_DEVICE_MISMATCH', stage: 'parse', attempts: 1, retryable: false, requestId,
+    });
+  }
+  const responseSubscriptionId = typeof prov?.subscriptionId === 'string' ? prov.subscriptionId.trim() : '';
+  const payloadSubscriptionId = typeof vpnConfig?.subscriptionId === 'string' ? vpnConfig.subscriptionId.trim() : '';
+  if (responseSubscriptionId && payloadSubscriptionId && responseSubscriptionId !== payloadSubscriptionId) {
+    throw new ProvisioningError('Configuration liée à un autre abonnement', {
+      code: 'PVN_PAYLOAD_SUBSCRIPTION_MISMATCH', stage: 'parse', attempts: 1, retryable: false, requestId,
     });
   }
 

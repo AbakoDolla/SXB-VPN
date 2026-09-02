@@ -363,7 +363,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
     @ReactMethod
     fun checkSecurity(promise: Promise) {
         try {
-            val report = SecurityModule.audit(reactApplicationContext)
+            val report = SecurityModule.audit(reactApplicationContext, deep = true)
             val map = Arguments.createMap().apply {
                 putBoolean("isRooted",   report.isRooted)
                 putBoolean("hasFrida",   report.hasFrida)
@@ -375,6 +375,39 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             promise.resolve(map)
         } catch (e: Exception) {
             promise.reject("SECURITY_ERROR", e.message, e)
+        }
+    }
+
+    // ── sha256File ────────────────────────────────────────────────────────────
+    /**
+     * C6 — Condensat SHA-256 d'un fichier local, calculé en flux.
+     *
+     * Utilisé pour contrôler l'intégrité d'un APK de mise à jour avant de le
+     * confier à l'installeur du système. Le calcul est fait en Kotlin car
+     * `expo-crypto` n'accepte que des chaînes : hacher un APK côté JavaScript
+     * imposerait de le charger intégralement en base64 en mémoire.
+     */
+    @ReactMethod
+    fun sha256File(path: String, promise: Promise) {
+        try {
+            val normalized = path.removePrefix("file://")
+            val file = java.io.File(java.net.URLDecoder.decode(normalized, "UTF-8"))
+            if (!file.exists() || !file.isFile) {
+                promise.reject("FILE_NOT_FOUND", "Fichier introuvable")
+                return
+            }
+            val digest = java.security.MessageDigest.getInstance("SHA-256")
+            java.io.FileInputStream(file).use { input ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read <= 0) break
+                    digest.update(buffer, 0, read)
+                }
+            }
+            promise.resolve(digest.digest().joinToString("") { "%02x".format(it) })
+        } catch (e: Exception) {
+            promise.reject("HASH_ERROR", e.message ?: "Calcul du condensat impossible")
         }
     }
 

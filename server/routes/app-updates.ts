@@ -18,6 +18,15 @@ const appUpdateSchema = z.object({
   versionCode: z.number().int().positive(),
   versionName: z.string().trim().min(1).max(40),
   apkUrl: z.string().url().refine((value) => value.startsWith("https://"), "L’URL APK doit utiliser HTTPS"),
+  // Optionnel pour rester compatible avec les intégrations existantes : quand il
+  // est fourni, l'application mobile refuse d'installer un APK dont le condensat
+  // diffère.
+  apkSha256: z
+    .string()
+    .trim()
+    .transform((value) => value.replace(/^sha256:/i, "").replace(/[:\s]/g, ""))
+    .refine((value) => value === "" || /^[0-9a-f]{64}$/i.test(value), "Le condensat SHA-256 doit comporter 64 caractères hexadécimaux")
+    .default(""),
   notes: z.string().trim().max(2000).default(""),
   minSupportedCode: z.number().int().nonnegative().default(0),
   forceUpdate: z.boolean().default(false),

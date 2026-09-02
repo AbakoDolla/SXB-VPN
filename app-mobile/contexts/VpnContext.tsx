@@ -12,11 +12,11 @@
  */
 
 import React, {
-  createContext, useCallback, useContext, useEffect, useRef, useState,
+  createContext, useCallback, useContext, useEffect, useMemo, useRef, useState,
 } from 'react';
 import { legacyDebugLog } from '@/services/secureLogger';
 import {
-  NativeModules, NativeEventEmitter, Platform, PermissionsAndroid,
+  AppState, NativeModules, NativeEventEmitter, Platform, PermissionsAndroid,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient from '@/services/apiClient';
@@ -203,6 +203,21 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const expiryTimerRef   = useRef<ReturnType<typeof setInterval> | null>(null);
   const guardTimerRef    = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionStartRef  = useRef<number>(0);
+
+  // B12 — Les sondes périodiques (garde distant, trafic, quota) tournaient à la
+  // même cadence application au premier plan ou en arrière-plan, ce qui vidait la
+  // batterie et générait des requêtes inutiles. On suit l'état applicatif pour
+  // court-circuiter le travail pendant que l'app n'est pas visible ; le tunnel
+  // reste géré par le service natif de premier plan, rien n'est interrompu.
+  const appActiveRef     = useRef<boolean>(AppState.currentState !== 'background');
+  const perAppTickRef    = useRef<number>(0);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      appActiveRef.current = next !== 'background' && next !== 'inactive';
+    });
+    return () => sub.remove();
+  }, []);
 
   // ── B3 — RAPPORT DELTA + SESSION ID ──────────────────────────────────────────
   const lastReportUpRef    = useRef(0);
@@ -404,6 +419,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     if (!IS_ANDROID || !SxbVpnNative) return;
     if (trafficTimerRef.current) return;
     trafficTimerRef.current = setInterval(async () => {
+      // B12 — Rien à rafraîchir tant que l'interface n'est pas visible, sauf
+      // pendant la poignée de main où ce sondage sert de repli de détection.
+      if (!appActiveRef.current && vpnStateRef.current !== 'handshaking') return;
       try {
         const stats = await SxbVpnNative.getTrafficStats();
         setTrafficStats({
@@ -423,12 +441,25 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           stopWatchdog();
           addLog('✅ Connexion vérifiée par le flux de données');
         }
+
+        // B6 — `perAppTraffic` était exposé par le contexte mais jamais alimenté :
+        // l'écran par application restait vide en permanence. Le calcul parcourt
+        // les applications installées, on l'espace donc à ~30 s (1 tick sur 20).
+        perAppTickRef.current = (perAppTickRef.current + 1) % 20;
+        if (perAppTickRef.current === 1 && appActiveRef.current) {
+          try {
+            const perApp = await SxbVpnNative.getPerAppStats?.();
+            if (Array.isArray(perApp)) setPerAppTraffic(perApp as AppTrafficStat[]);
+          } catch { /* fonctionnalité optionnelle : ignorer */ }
+        }
       } catch { /* ignore */ }
     }, 1500);
   }, []);
 
   const stopTrafficPolling = useCallback(() => {
     if (trafficTimerRef.current) { clearInterval(trafficTimerRef.current); trafficTimerRef.current = null; }
+    perAppTickRef.current = 0;
+    setPerAppTraffic([]);
   }, []);
 
   const invalidateRemoteAccess = useCallback(async (status: 'revoked' | 'suspended' | 'disabled') => {
@@ -587,7 +618,11 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     refreshQuotaData();
-    quotaTimerRef.current = setInterval(refreshQuotaData, 60_000);
+    // B12 — Lecture purement locale : inutile de la maintenir en arrière-plan.
+    quotaTimerRef.current = setInterval(() => {
+      if (!appActiveRef.current) return;
+      void refreshQuotaData();
+    }, 60_000);
     return () => { if (quotaTimerRef.current) { clearInterval(quotaTimerRef.current); quotaTimerRef.current = null; } };
   }, [refreshQuotaData]);
 
@@ -762,9 +797,22 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       }
     };
     void verifyRemoteAccess();
-    guardTimerRef.current = setInterval(() => { void verifyRemoteAccess(); }, 10_000);
+    // B12 — Cette sonde interrogeait /mobile/me toutes les 10 s sans jamais
+    // s'interrompre, y compris application fermée : ~8 640 requêtes par jour et
+    // par appareil. La cadence de premier plan est conservée (la révocation
+    // depuis le dashboard doit rester immédiate), mais le tick est ignoré tant
+    // que l'application n'est pas visible et un contrôle est déclenché dès le
+    // retour au premier plan : même réactivité, plus aucun trafic en veille.
+    guardTimerRef.current = setInterval(() => {
+      if (!appActiveRef.current) return;
+      void verifyRemoteAccess();
+    }, 10_000);
+    const foregroundSub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') void verifyRemoteAccess();
+    });
     return () => {
       if (guardTimerRef.current) { clearInterval(guardTimerRef.current); guardTimerRef.current = null; }
+      foregroundSub.remove();
     };
   }, [isAuthenticated, invalidateRemoteAccess]);
 
@@ -1220,7 +1268,14 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isConnected, connect, disconnect, addLog]);
 
-  const hasValidConfig = vpnConfig !== null || activeConnection !== null;
+  // B5 — `vpnConfig !== null` suffisait à activer le bouton alors qu'un profil
+  // partiel (champs manquants) fait échouer le démarrage du tunnel côté natif.
+  // On exige désormais un profil réellement complet, tout en conservant le repli
+  // sur une connexion serveur active pour ne bloquer personne.
+  const hasValidConfig = useMemo(
+    () => (vpnConfig !== null && isCompleteOfflineConfig(vpnConfig).complete) || activeConnection !== null,
+    [vpnConfig, activeConnection],
+  );
 
   return (
     <VpnContext.Provider value={{

@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Crypto from 'expo-crypto';
 import apiClient, { getSecureToken, setSecureToken, removeSecureToken, SEC_KEYS } from '@/services/apiClient';
 import { clearProvisionedConfig, provisionAndStore } from '@/services/provisionClient';
 import { clearAllOfflineData } from '@/services/offlineStorage';
@@ -14,20 +15,50 @@ const KEYS = {
   DEVICE_ID:  '@sxb_device_id',
 };
 
+const DEVICE_ID_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+const DEVICE_ID_LENGTH = 15;
+
+/**
+ * C4 — Identifiant d'appareil tiré d'un générateur cryptographique.
+ *
+ * `Math.random()` n'est pas un CSPRNG : sous Hermes il s'agit d'un xorshift128+
+ * initialisé sur l'horloge, ce qui rend l'identifiant prédictible alors qu'il
+ * sert de facteur de liaison entre un abonnement et un appareil (et entre dans
+ * la dérivation de la clé de configuration côté serveur).
+ *
+ * `expo-crypto` s'appuie sur `SecureRandom` (Android) / `SecRandomCopyBytes` (iOS).
+ */
+function randomDeviceId(): string {
+  const bytes = new Uint8Array(DEVICE_ID_LENGTH);
+  Crypto.getRandomValues(bytes);
+  let out = '';
+  for (let i = 0; i < DEVICE_ID_LENGTH; i += 1) {
+    // Le rejet du biais modulo est inutile ici : 256 % 36 introduit un écart
+    // négligeable devant les 36^15 (~2^77) combinaisons possibles.
+    out += DEVICE_ID_ALPHABET[bytes[i] % DEVICE_ID_ALPHABET.length];
+  }
+  return 'SXB' + out;
+}
+
 // Generate a unique device ID stored permanently (survives app restarts)
 async function getOrCreateDeviceId(): Promise<string> {
   try {
     const stored = await AsyncStorage.getItem(KEYS.DEVICE_ID);
+    // MIGRATION — un identifiant déjà émis n'est jamais régénéré : il est lié
+    // côté serveur à l'abonnement (`Subscription.deviceId`). Le remplacer
+    // ferait perdre son activation à tout le parc déjà installé.
     if (stored) return stored;
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    const rand = Array.from({ length: 15 }, () =>
-      chars[Math.floor(Math.random() * chars.length)]
-    ).join('');
-    const id = 'SXB' + rand;
+    const id = randomDeviceId();
     await AsyncStorage.setItem(KEYS.DEVICE_ID, id);
     return id;
   } catch {
-    return 'SXB' + Math.random().toString(36).toUpperCase().slice(2, 17);
+    // AsyncStorage indisponible : identifiant éphémère, mais toujours issu du
+    // CSPRNG. Le fallback historique retombait sur Math.random().
+    try {
+      return randomDeviceId();
+    } catch {
+      return '';
+    }
   }
 }
 

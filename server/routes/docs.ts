@@ -104,7 +104,7 @@ const openApiSpec = {
                 required: ["email", "password"],
                 properties: {
                   email: { type: "string", example: "admin@sxb-vpn.com" },
-                  password: { type: "string", example: "admin123" }
+                  password: { type: "string", example: "••••••••" }
                 }
               }
             }

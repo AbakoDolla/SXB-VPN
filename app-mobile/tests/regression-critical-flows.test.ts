@@ -256,7 +256,10 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(clientRoutes, /syncClientAccessState\(id, 'deleted'\)/);
     assert.match(mobileRoutes, /errors\.mobile\.account_blocked/);
     assert.match(vpnContext, /invalidateRemoteAccess/);
-    assert.match(vpnContext, /setInterval\(\(\) => \{ void verifyRemoteAccess\(\); \}, 10_000\)/);
+    // La sonde de révocation conserve sa cadence de 10 s au premier plan ; elle est
+    // simplement suspendue en arrière-plan et relancée au retour (B12).
+    assert.match(vpnContext, /void verifyRemoteAccess\(\);\s*\n\s*\}, 10_000\)/);
+    assert.match(vpnContext, /if \(next === 'active'\) void verifyRemoteAccess\(\)/);
     assert.match(vpnContext, /clearAllOfflineData/);
     assert.match(rootLayout, /router\.replace\('\/activate'\)/);
     assert.match(offlineStorage, /configStore\.clearAll\(\)/);

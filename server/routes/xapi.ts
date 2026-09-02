@@ -3,6 +3,7 @@
  *
  * Contient l'endpoint de mise à jour in-app et le statut de connexion :
  *   GET /xapi/mobile/app-version → { versionCode, versionName, apkUrl, notes? }
+ *   GET /xapi/mobile/ip → { ip }
  *   POST /xapi/mobile/connections/:id/status → { disabledReason: 'exhausted' | 'expired' }
  */
 import { Router, Request, Response } from "express";
@@ -73,7 +74,7 @@ router.get("/mobile/app-version", async (req: Request, res: Response) => {
   const published = storedPublication ? await getMobileAppUpdate(deviceId).catch(() => null) : null;
   const payload = published
     ? toMobileAppVersion(published)
-    : { versionCode: 0, versionName: "", apkUrl: "", notes: "", minSupportedCode: 0, forceUpdate: false };
+    : { versionCode: 0, versionName: "", apkUrl: "", apkSha256: "", notes: "", minSupportedCode: 0, forceUpdate: false };
   res.set("Cache-Control", "private, max-age=300");
   res.json(payload);
 });

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Animated, Dimensions, Image, Modal, Pressable,
+  Animated, AppState, Dimensions, Image, Modal, Pressable,
   ScrollView, Share, StyleSheet, Text, View, ActivityIndicator,
   PermissionsAndroid, Platform,
 } from "react-native";
@@ -40,16 +40,22 @@ function getButtonState(
   if (!accountState) return "no_account";
   if (isConnecting) return "connecting";
   if (isConnected) return "connected";
-  // Un profil local chiffré reste connectable hors-ligne : les états de quota
-  // servent d'avertissement mais ne transforment pas le bouton en blocage.
-  if (activeConnection && activeConnection.status === "active") return "connect";
+
+  // B4 — L'ordre des tests précédait toute prise en compte de l'état du compte :
+  // `hasValidConfig` renvoyait « connect » avant même d'avoir regardé
+  // exhausted/expired, rendant ces deux branches inatteignables (elles étaient
+  // en plus dupliquées juste en dessous). Le quota et l'expiration sont
+  // désormais évalués d'abord ; un profil hors-ligne ne peut pas servir à
+  // contourner un forfait épuisé côté serveur.
+  const state = accountState.state;
+  if (quotaExhausted || state === "exhausted") return "exhausted";
+  if (state === "expired") return "expired";
+  if (state === "no_package") return "no_package";
+
+  // Un profil local chiffré reste connectable hors-ligne tant que le compte
+  // n'est ni épuisé ni expiré.
+  if (activeConnection?.status === "active") return "connect";
   if (hasValidConfig) return "connect";
-  if (quotaExhausted || accountState.state === "exhausted") return "exhausted";
-  if (accountState.state === "expired") return "expired";
-  const s = accountState.state;
-  if (s === "no_package") return "no_package";
-  if (s === "expired") return "expired";
-  if (s === "exhausted") return "exhausted";
   return "connect";
 }
 
@@ -284,7 +290,12 @@ export default function HomeScreen() {
         }
       };
       measurePing();
-      timerId = setInterval(measurePing, 10_000);
+      // B12 — La latence n'a de sens que si l'écran est visible : le tick est
+      // ignoré en arrière-plan et une mesure est relancée au retour.
+      timerId = setInterval(() => {
+        if (AppState.currentState !== "active") return;
+        void measurePing();
+      }, 10_000);
     } else {
       setPing(null);
     }
@@ -292,19 +303,23 @@ export default function HomeScreen() {
   }, [isConnected]);
 
   useEffect(() => {
-    if (isConnected) {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-      fetch("https://api.ipify.org?format=json", { signal: controller.signal })
-        .then(res => res.json())
-        .then((data: any) => {
-          clearTimeout(timeoutId);
-          setConnectedIp(data?.ip || "—");
-        })
-        .catch(() => setConnectedIp("—"));
-    } else {
+    if (!isConnected) {
       setConnectedIp("—");
+      return;
     }
+    // C7 — L'adresse de sortie est demandée à notre propre backend et non plus à
+    // api.ipify.org : aucun tiers n'apprend l'IP de sortie du tunnel ni l'instant
+    // de connexion (cf. mention « aucune donnée transmise à des tiers »).
+    let cancelled = false;
+    apiClient
+      .get("/mobile/ip", { timeout: 5000 })
+      .then((res) => {
+        if (!cancelled) setConnectedIp(res.data?.ip || "—");
+      })
+      .catch(() => {
+        if (!cancelled) setConnectedIp("—");
+      });
+    return () => { cancelled = true; };
   }, [isConnected]);
 
   useEffect(() => {

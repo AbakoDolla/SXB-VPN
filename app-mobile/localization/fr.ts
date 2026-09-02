@@ -455,6 +455,7 @@ export const fr = {
   update_install_prompt: 'Ouverture du programme d\'installation…',
   update_install_error: 'Impossible d\'ouvrir l\'installation. Réessayez.',
   update_download_error: 'Le téléchargement a échoué. Vérifiez votre connexion.',
+  update_integrity_error: 'Fichier corrompu ou altéré — installation annulée. Réessayez.',
   update_up_to_date: 'Application à jour',
   update_check_failed: 'Impossible de vérifier les mises à jour',
 } as const;

@@ -8,6 +8,8 @@ export interface AppUpdate {
   versionCode: number;
   versionName: string;
   apkUrl: string;
+  /** Condensat SHA-256 de l'APK ; vide si non renseigné. */
+  apkSha256: string;
   notes: string;
   minSupportedCode: number;
   forceUpdate: boolean;

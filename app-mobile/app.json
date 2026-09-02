@@ -17,13 +17,9 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.sxbvpn.mobile",
       "infoPlist": {
-        "NSAppTransportSecurity": {
-          "NSAllowsArbitraryLoads": true
-        },
         "NSLocationWhenInUseUsageDescription": "SXB VPN uses your location to select the optimal server.",
         "NSPhotoLibraryUsageDescription": "SXB VPN may access photos for profile customization.",
-        "NSCameraUsageDescription": "SXB VPN uses the camera for QR code scanning.",
-        "NEVPNConnectionErrorDomain": "SXB VPN network extension"
+        "NSCameraUsageDescription": "SXB VPN uses the camera for QR code scanning."
       }
     },
     "android": {

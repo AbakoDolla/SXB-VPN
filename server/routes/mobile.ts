@@ -367,6 +367,25 @@ router.get("/me", async (req: AuthenticatedRequest, res: Response) => {
   }
 });
 
+// GET /api/mobile/ip — adresse de sortie observée par le backend
+//
+// C7 — L'application affichait l'IP de sortie du tunnel en interrogeant
+// api.ipify.org pendant que le VPN était actif. Ce tiers apprenait ainsi, à
+// chaque connexion, l'adresse de sortie corrélée à un instant précis, alors que
+// la page « mentions légales » de l'application affirme qu'aucune donnée n'est
+// transmise à des tiers.
+//
+// Le backend voit déjà cette adresse à chaque requête de l'application : la lui
+// renvoyer n'expose rien de nouveau et supprime le tiers. Rien n'est journalisé.
+router.get("/ip", (req: AuthenticatedRequest, res: Response) => {
+  // `trust proxy` vaut 1 dans server.ts : req.ip reflète l'en-tête
+  // X-Forwarded-For réécrit par le reverse proxy.
+  // Normaliser la forme IPv4 encapsulée en IPv6 (::ffff:203.0.113.7).
+  const ip = String(req.ip || "").trim().replace(/^::ffff:/i, "");
+  res.set("Cache-Control", "no-store");
+  return res.json({ ip });
+});
+
 // POST /api/mobile/packages/activate — redeem a SXB-DATA-XXXX-XXXX-XXXX code
 const activatePackageSchema = z.object({ code: z.string().min(5) });
 router.post("/packages/activate", async (req: AuthenticatedRequest, res: Response) => {
@@ -696,6 +715,9 @@ router.get('/notifications', async (req: AuthenticatedRequest, res: Response) =>
           appUpdate: true,
           actionType: 'download_app_update',
           downloadUrl: version.apkUrl,
+          // Champ additif : les APK antérieurs l'ignorent, les nouveaux s'en
+          // servent pour vérifier l'intégrité avant installation.
+          downloadSha256: version.apkSha256,
           versionCode: version.versionCode,
           versionName: version.versionName,
           minSupportedCode: version.minSupportedCode,

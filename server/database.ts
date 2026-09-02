@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
 import { config } from "./config";
 
 // Interface definitions reflecting the Prisma database schema
@@ -211,9 +212,23 @@ class InMemoryDatabase {
       { roleId: resellerRole.id, permissionId: "p9" }  // clients.create
     );
 
-    // Default Password is 'admin123'
+    // Mot de passe du jeu de données de démonstration (base en mémoire, utilisée
+    // uniquement lorsque Prisma est indisponible — jamais en production).
+    // Il était figé à « admin123 » et publié dans le README : n'importe qui
+    // pouvait ouvrir une session admin sur une instance démarrée sans base.
+    // Il provient désormais de SXB_SEED_ADMIN_PASSWORD, à défaut d'une valeur
+    // aléatoire imprimée une seule fois au démarrage.
+    const seedPassword =
+      process.env.SXB_SEED_ADMIN_PASSWORD?.trim() ||
+      crypto.randomBytes(12).toString("base64url");
+    if (!process.env.SXB_SEED_ADMIN_PASSWORD?.trim()) {
+      console.warn(
+        `[seed] Base en mémoire — mot de passe admin généré : ${seedPassword}\n` +
+        `[seed] Définissez SXB_SEED_ADMIN_PASSWORD pour le fixer.`,
+      );
+    }
     const salt = bcrypt.genSaltSync(10);
-    const passwordHash = bcrypt.hashSync("admin123", salt);
+    const passwordHash = bcrypt.hashSync(seedPassword, salt);
 
     // Create Admin User
     this.users.push({

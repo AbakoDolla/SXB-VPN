@@ -3,7 +3,32 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 
-export const API_BASE_URL = 'https://vpnsxb.afrihall.com/api';
+/**
+ * B7 — URL de l'API.
+ *
+ * `EXPO_PUBLIC_API_URL` est déjà défini dans `eas.json` et dans le workflow CI,
+ * mais n'était jamais lu : l'URL de production était figée dans le binaire, ce
+ * qui rendait impossible tout build de recette. La valeur historique reste le
+ * repli par défaut afin qu'un build sans variable produise exactement l'APK
+ * actuellement distribué.
+ *
+ * Seules les URL HTTPS sont acceptées : une variable mal renseignée ne doit pas
+ * pouvoir rétrograder silencieusement le trafic en clair.
+ */
+const DEFAULT_API_BASE_URL = 'https://vpnsxb.afrihall.com/api';
+
+function resolveApiBaseUrl(): string {
+  const configured = process.env.EXPO_PUBLIC_API_URL?.trim();
+  if (!configured) return DEFAULT_API_BASE_URL;
+  const normalized = configured.replace(/\/+$/, '');
+  const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1|10\.0\.2\.2)(:\d+)?(\/|$)/i.test(normalized);
+  if (!/^https:\/\//i.test(normalized) && !(__DEV__ && isLocal)) {
+    return DEFAULT_API_BASE_URL;
+  }
+  return normalized;
+}
+
+export const API_BASE_URL = resolveApiBaseUrl();
 const TIMEOUT = 15000;
 
 // ── Secure token storage ───────────────────────────────────────────────────────

@@ -25,6 +25,15 @@ object SecurityModule {
 
     private const val TAG = "SXB-Security"
 
+    /** Empreinte SHA-256 attendue de la signature APK, injectée au build. */
+    private const val META_EXPECTED_SIGNATURE = "com.sxbvpn.EXPECTED_SIGNATURE_SHA256"
+
+    /**
+     * Les sondes réseau tournent sur le thread appelant : un délai court évite
+     * de figer l'interface au démarrage du service.
+     */
+    private const val PROBE_TIMEOUT_MS = 100
+
     // ── Résultat de l'audit de sécurité ──────────────────────────────────────
     data class SecurityReport(
         val isRooted: Boolean,
@@ -36,11 +45,17 @@ object SecurityModule {
     )
 
     // ── Audit complet ─────────────────────────────────────────────────────────
-    fun audit(ctx: Context): SecurityReport {
+    /**
+     * @param deep exécute également les sondes coûteuses (détection d'émulateur via
+     *        `getprop`, qui lance un processus). L'audit est invoqué depuis
+     *        `onStartCommand()`, donc sur le thread principal : les sondes lentes
+     *        sont désactivées par défaut pour ne pas provoquer d'ANR.
+     */
+    fun audit(ctx: Context, deep: Boolean = false): SecurityReport {
         val rooted  = isRooted(ctx)
         val frida   = hasFrida()
         val xposed  = hasXposed()
-        val emulator = isEmulator()
+        val emulator = if (deep) isEmulator() else false
         val hooked   = isHooked()
 
         if (rooted)  Log.w(TAG, "⚠️ Appareil rooté détecté")
@@ -51,6 +66,19 @@ object SecurityModule {
 
         return SecurityReport(rooted, frida, xposed, emulator, hooked)
     }
+
+    /**
+     * Politique d'application des détections, explicite et unique.
+     *
+     * Instrumentation active (Frida, Xposed, Substrate) : blocage. Ces outils
+     * permettent d'extraire en direct les identifiants VPN du processus.
+     *
+     * Root seul : avertissement. Un appareil rooté n'implique pas une
+     * compromission et bloquer ces utilisateurs constituerait une régression
+     * fonctionnelle pour une partie du parc installé.
+     */
+    fun shouldBlock(report: SecurityReport): Boolean =
+        report.hasFrida || report.hasXposed || report.isHooked
 
     // ── Détection de hook (analyse de la stack trace) ─────────────────────────
     fun isHooked(): Boolean {
@@ -71,7 +99,37 @@ object SecurityModule {
     }
 
     // ── Vérification de signature ────────────────────────────────────────────
+    /**
+     * Compare la signature APK courante au condensat SHA-256 attendu.
+     *
+     * L'empreinte attendue est lue depuis la `<meta-data>` de manifeste
+     * `com.sxbvpn.EXPECTED_SIGNATURE_SHA256`. Tant qu'elle n'est pas renseignée,
+     * la vérification est explicitement « non configurée » : elle ne bloque rien
+     * et le fait est journalisé, plutôt que de renvoyer silencieusement un
+     * succès trompeur comme auparavant.
+     */
+    enum class SignatureStatus { VALID, INVALID, NOT_CONFIGURED, UNAVAILABLE }
+
+    fun expectedSignatureHash(ctx: Context): String = try {
+        val flags = android.content.pm.PackageManager.GET_META_DATA
+        val appInfo = ctx.packageManager.getApplicationInfo(ctx.packageName, flags)
+        appInfo.metaData?.getString(META_EXPECTED_SIGNATURE)?.trim().orEmpty()
+    } catch (_: Exception) { "" }
+
+    fun checkSignature(ctx: Context): SignatureStatus {
+        val expected = expectedSignatureHash(ctx)
+        if (expected.isEmpty()) return SignatureStatus.NOT_CONFIGURED
+        return try {
+            if (verifySignature(ctx, expected)) SignatureStatus.VALID else SignatureStatus.INVALID
+        } catch (_: Exception) {
+            SignatureStatus.UNAVAILABLE
+        }
+    }
+
     fun verifySignature(ctx: Context, expectedSignatureHash: String): Boolean {
+        // Une empreinte vide ne peut pas valider quoi que ce soit : ne jamais
+        // renvoyer `true` par défaut (échec ouvert).
+        if (expectedSignatureHash.isBlank()) return false
         try {
             val pm = ctx.packageManager
             val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -90,17 +148,18 @@ object SecurityModule {
             }
 
             if (signatures != null) {
+                val normalizedExpected = expectedSignatureHash.replace(":", "").trim()
                 for (sig in signatures) {
                     val md = java.security.MessageDigest.getInstance("SHA-256")
                     md.update(sig.toByteArray())
                     val hash = md.digest().joinToString("") { "%02x".format(it) }
-                    if (hash.equals(expectedSignatureHash, ignoreCase = true)) {
+                    if (hash.equals(normalizedExpected, ignoreCase = true)) {
                         return true
                     }
                 }
             }
         } catch (_: Exception) {}
-        return expectedSignatureHash.isEmpty()
+        return false
     }
 
     // ── Détection Root ────────────────────────────────────────────────────────
@@ -164,7 +223,7 @@ object SecurityModule {
         return ports.any { port ->
             try {
                 Socket().use { s ->
-                    s.connect(InetSocketAddress("127.0.0.1", port), 200)
+                    s.connect(InetSocketAddress("127.0.0.1", port), PROBE_TIMEOUT_MS)
                     true
                 }
             } catch (_: Exception) { false }

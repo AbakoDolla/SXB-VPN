@@ -435,6 +435,7 @@ export const en = {
   update_install_prompt: 'Opening installer…',
   update_install_error: 'Cannot open installer. Please retry.',
   update_download_error: 'Download failed. Check your connection.',
+  update_integrity_error: 'Corrupted or tampered file — install cancelled. Please retry.',
   update_up_to_date: 'App is up to date',
   update_check_failed: 'Unable to check for updates',
 } as const;

@@ -231,16 +231,19 @@ function withMainAppPackage(config) {
       fs.writeFileSync(mainAppPath, src);
       console.log('[SXB VPN plugin] SxbVpnPackage enregistré dans MainApplication.kt');
 
-      // Vérification post-écriture
+      // Vérification post-écriture — une injection ratée produit un APK qui se
+      // lance normalement mais dont le module VPN est introuvable côté JS. Le
+      // build doit échouer ici plutôt que de livrer une application sans VPN.
       const written = fs.readFileSync(mainAppPath, 'utf8');
       if (!written.includes('SxbVpnPackage')) {
-        console.error('[SXB VPN plugin] ⚠️  INJECTION ÉCHOUÉE — SxbVpnPackage absent de MainApplication.kt');
-        console.error('[SXB VPN plugin] Contenu autour de getPackages :');
         const idx = written.indexOf('getPackages');
-        if (idx !== -1) console.error(written.slice(Math.max(0, idx - 100), idx + 500));
-      } else {
-        console.log('[SXB VPN plugin] ✅ Vérification OK — SxbVpnPackage présent');
+        const excerpt = idx !== -1 ? written.slice(Math.max(0, idx - 100), idx + 500) : '(getPackages introuvable)';
+        throw new Error(
+          '[SXB VPN plugin] INJECTION ÉCHOUÉE — SxbVpnPackage absent de MainApplication.kt.\n' +
+          'Contenu autour de getPackages :\n' + excerpt
+        );
       }
+      console.log('[SXB VPN plugin] ✅ Vérification OK — SxbVpnPackage présent');
     } else {
       console.log('[SXB VPN plugin] SxbVpnPackage déjà présent dans MainApplication.kt — skip');
     }

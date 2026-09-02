@@ -290,6 +290,14 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
 
     // 8. Chiffrement AES-256-GCM lié à l'appareil
     const token = sub.dataToken;
+    // C3 — Liaison vérifiable côté client : ces deux champs voyagent DANS le blob
+    // authentifié par AES-GCM, ils sont donc inforgeables sans la clé par-appareil.
+    // Le mobile peut ainsi rejeter une réponse rejouée vers un autre appareil ou
+    // un autre abonnement (la `signature` HMAC de la réponse, elle, repose sur
+    // PROVISION_SECRET que le client ne possède pas et reste invérifiable).
+    // Champs de métadonnées additifs : les clients antérieurs les ignorent.
+    (rawConfig as any).deviceId = deviceId;
+    (rawConfig as any).subscriptionId = sub.id;
     const { encryptedBlob, configKey } = encryptForDevice(
       JSON.stringify(rawConfig),
       deviceId,

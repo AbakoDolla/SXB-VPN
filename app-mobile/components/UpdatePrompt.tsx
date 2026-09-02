@@ -124,7 +124,14 @@ export default function UpdatePrompt() {
     } catch (e) {
       // Distinguer l'échec du téléchargement de celui de l'ouverture d'intent
       // pour aider l'utilisateur.
-      setErrorMsg(installStarted ? t('update_install_error') : t('update_download_error'));
+      const code = e instanceof Error ? e.message : '';
+      if (code === 'integrity_mismatch' || code === 'integrity_unavailable') {
+        // C6 — Le condensat SHA-256 publié ne correspond pas au fichier reçu :
+        // l'APK a été supprimé sans être installé.
+        setErrorMsg(t('update_integrity_error'));
+      } else {
+        setErrorMsg(installStarted ? t('update_install_error') : t('update_download_error'));
+      }
     } finally {
       setDownloading(false);
       // installing reste true jusqu'à ce que la modale soit fermée

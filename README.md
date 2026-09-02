@@ -39,9 +39,13 @@ Dashboard Web (React + Vite)
 
 ## 🔐 Comptes par défaut
 
+Aucun mot de passe par défaut n'est publié. En développement, la base en mémoire
+génère un mot de passe administrateur aléatoire, affiché une seule fois dans les
+journaux au démarrage. Pour le fixer, définissez `SXB_SEED_ADMIN_PASSWORD`.
+
 | Role | Email | Mot de passe |
 |------|-------|--------------|
-| Admin | admin@sxbvpn.com | admin123 |
+| Admin | admin@sxb-vpn.com | `SXB_SEED_ADMIN_PASSWORD` (sinon généré au démarrage) |
 
 ## 🚀 Installation Locale
 

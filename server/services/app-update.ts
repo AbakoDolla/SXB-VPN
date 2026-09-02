@@ -9,6 +9,8 @@ export interface PublishedAppUpdate {
   versionCode: number;
   versionName: string;
   apkUrl: string;
+  /** Condensat SHA-256 hexadécimal de l'APK publié. Vide = non renseigné. */
+  apkSha256: string;
   notes: string;
   minSupportedCode: number;
   forceUpdate: boolean;
@@ -17,6 +19,12 @@ export interface PublishedAppUpdate {
   targetDeviceIds: string[];
   publishedAt: string;
   updatedAt: string;
+}
+
+/** Un condensat SHA-256 est exactement 64 caractères hexadécimaux. */
+export function normalizeApkSha256(value: unknown): string {
+  const raw = String(value ?? "").trim().replace(/^sha256:/i, "").replace(/[:\s]/g, "");
+  return /^[0-9a-f]{64}$/i.test(raw) ? raw.toLowerCase() : "";
 }
 
 function normalize(value: unknown): PublishedAppUpdate | null {
@@ -32,6 +40,7 @@ function normalize(value: unknown): PublishedAppUpdate | null {
     versionCode,
     versionName,
     apkUrl,
+    apkSha256: normalizeApkSha256(item.apkSha256),
     notes: String(item.notes || "").trim(),
     minSupportedCode: Number.isInteger(minSupportedCode) && minSupportedCode >= 0 ? minSupportedCode : 0,
     forceUpdate: item.forceUpdate === true,
@@ -65,6 +74,7 @@ export async function writePublishedAppUpdate(input: Omit<PublishedAppUpdate, "i
     versionCode: input.versionCode,
     versionName: input.versionName,
     apkUrl: input.apkUrl,
+    apkSha256: normalizeApkSha256(input.apkSha256),
     notes: input.notes,
     minSupportedCode: input.minSupportedCode,
     forceUpdate: input.forceUpdate,
@@ -119,6 +129,7 @@ export function toMobileAppVersion(update: PublishedAppUpdate) {
     versionCode: update.versionCode,
     versionName: update.versionName,
     apkUrl: update.apkUrl,
+    apkSha256: update.apkSha256,
     notes: update.notes,
     minSupportedCode: update.minSupportedCode,
     forceUpdate: update.forceUpdate,
@@ -136,6 +147,7 @@ export function toPublicAppUpdate(update: PublishedAppUpdate) {
     versionCode: update.versionCode,
     versionName: update.versionName,
     apkUrl: update.apkUrl,
+    apkSha256: update.apkSha256,
     notes: update.notes,
     minSupportedCode: update.minSupportedCode,
     forceUpdate: update.forceUpdate,

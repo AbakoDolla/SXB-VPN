@@ -131,7 +131,11 @@ object SxbSecureLogger {
 
     fun error(message: String, throwable: Throwable? = null) {
         if (!isDiagnosticEnabled()) return
-        Log.e(TAG, mask(message), throwable)
+        // Le throwable n'est jamais transmis tel quel : `Log.e(tag, msg, tr)` écrit
+        // la stack trace ET le message d'exception bruts dans logcat, ce qui
+        // réintroduit hôtes et identifiants que `mask()` venait de retirer.
+        val suffix = throwable?.let { " — ${maskThrowable(it)}" } ?: ""
+        Log.e(TAG, mask(message) + suffix)
     }
 
     // ════════════════════════════════════════════════════════════════════════

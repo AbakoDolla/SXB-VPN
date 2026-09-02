@@ -660,6 +660,14 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         private const val SOCKS5_PORT  = 1080
 
+        /** B10 — Adresses de l'interface de blocage du kill switch. */
+        private const val KILL_SWITCH_ADDR_V4 = "10.63.63.1"
+        private const val KILL_SWITCH_ADDR_V6 = "fd63:5842:5850::1"
+
+        /** B8 — Plafond du tampon de logs de diagnostic (fenêtre glissante). */
+        private const val MAX_LOG_BUFFER_CHARS  = 512 * 1024
+        private const val LOG_BUFFER_KEEP_CHARS = 384 * 1024
+
         @Volatile var instance: SxbVpnService? = null
         @Volatile private var currentState: String = "disconnected"
 
@@ -681,6 +689,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private var boxService      : BoxService? = null
     private var vpnThread       : Thread? = null
     private var killSwitchEnabled = false
+    /** B10 — Interface de blocage maintenue quand le tunnel réel est indisponible. */
+    @Volatile private var killSwitchPfd: ParcelFileDescriptor? = null
+    @Volatile private var killSwitchThread: Thread? = null
     private var configJson      = ""
     /** Nom de notre interface TUN — exclue de l'énumération pour éviter les boucles. */
     @Volatile private var tunInterfaceName: String? = null
@@ -879,10 +890,20 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 }
             },
             onGiveUp = {
-                broadcastLog("[SXB] ❌ Auto-reconnect échoué — arrêt")
-                broadcastStatus("error")
-                setCurrentState("error")
-                stopSelf()
+                if (killSwitchEnabled) {
+                    // B10 — L'abandon des reconnexions ne doit pas rendre le réseau
+                    // en clair : on maintient le service et l'interface de blocage
+                    // jusqu'à une déconnexion explicite de l'utilisateur.
+                    broadcastLog("[SXB] ⛔ Reconnexion impossible — Kill Switch : trafic maintenu bloqué")
+                    broadcastStatus("error")
+                    setCurrentState("error")
+                    installKillSwitchBlackhole("reconnexions épuisées")
+                } else {
+                    broadcastLog("[SXB] ❌ Auto-reconnect échoué — arrêt")
+                    broadcastStatus("error")
+                    setCurrentState("error")
+                    stopSelf()
+                }
             },
             onLog = { broadcastLog(it) },
         )
@@ -907,9 +928,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         // Vérifications de sécurité — OK to run after startForeground()
         val secReport = SecurityModule.audit(this)
-        if (secReport.hasFrida || secReport.hasXposed) {
-            Log.e("SXB_DEBUG", "[SXB_DEBUG] SECURITY_BLOCK hasFrida=${secReport.hasFrida} hasXposed=${secReport.hasXposed}")
-            broadcastLog("[SXB_DEBUG] ❌ SECURITY_BLOCK hasFrida=${secReport.hasFrida} hasXposed=${secReport.hasXposed}")
+        if (SecurityModule.shouldBlock(secReport)) {
+            Log.e("SXB_DEBUG", "[SXB_DEBUG] SECURITY_BLOCK hasFrida=${secReport.hasFrida} hasXposed=${secReport.hasXposed} isHooked=${secReport.isHooked}")
+            broadcastLog("[SXB_DEBUG] ❌ SECURITY_BLOCK hasFrida=${secReport.hasFrida} hasXposed=${secReport.hasXposed} isHooked=${secReport.isHooked}")
             broadcastLog("[SXB] ❌ Environnement compromis — connexion refusée")
             broadcastStatus("error")
             stopSelf()
@@ -919,6 +940,20 @@ class SxbVpnService : VpnService(), PlatformInterface {
             Log.w("SXB_DEBUG", "[SXB_DEBUG] SECURITY_WARN isRooted=true")
             broadcastLog("[SXB_DEBUG] ⚠️ SECURITY_WARN: appareil rooté")
             broadcastLog("[SXB] ⚠️ Appareil rooté — risque de sécurité")
+        }
+        // C8 — Contrôle d'intégrité de la signature APK. Informatif tant que
+        // l'empreinte attendue n'est pas injectée dans le manifeste de release :
+        // une signature invalide ne coupe pas le service pour ne pas rendre
+        // l'application inutilisable sur une variante de build légitime.
+        when (SecurityModule.checkSignature(this)) {
+            SecurityModule.SignatureStatus.INVALID ->
+                broadcastLog("[SXB] ⚠️ Signature de l'application non reconnue — build non officiel")
+            SecurityModule.SignatureStatus.NOT_CONFIGURED ->
+                Log.i(TAG, "[SXB_DEBUG] SIGNATURE_CHECK_NOT_CONFIGURED")
+            SecurityModule.SignatureStatus.UNAVAILABLE ->
+                Log.w(TAG, "[SXB_DEBUG] SIGNATURE_CHECK_UNAVAILABLE")
+            SecurityModule.SignatureStatus.VALID ->
+                Log.i(TAG, "[SXB_DEBUG] SIGNATURE_CHECK_OK")
         }
 
         Log.i(TAG, "[SXB_DEBUG] CONFIG_LOADING")
@@ -991,7 +1026,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
         broadcastLog("[SXB_DEBUG] ✅ STEP_5_CONFIG_LOADED proto='$proto' len=${json.length}")
 
         // P1 — Persister config chiffrée pour démarrage hors-ligne
-        if (json.isNotEmpty()) { try { persistEncryptedConfig(json) } catch (_: Exception) {} }
+        // S1 — puis purger immédiatement les copies en clair (voir purgePlaintextConfigArtifacts).
+        if (json.isNotEmpty()) {
+            val vaulted = try { persistEncryptedConfig(json) } catch (_: Exception) { false }
+            if (vaulted) {
+                try { purgePlaintextConfigArtifacts(configFilePath) } catch (_: Exception) {}
+            }
+        }
         killSwitchEnabled = intent?.getBooleanExtra("killSwitch", false) ?: false
         if (intent?.getBooleanExtra("autoReconnect", false) == true) {
             autoReconnect.enable()
@@ -1020,11 +1061,22 @@ class SxbVpnService : VpnService(), PlatformInterface {
         super.onTaskRemoved(rootIntent)
     }
 
-    override fun onDestroy() { cleanup(); foregroundStarted.set(false); instance = null; super.onDestroy() }
+    override fun onDestroy() {
+        cleanup()
+        // B10 — Filet de sécurité : `cleanup()` peut être court-circuité par la
+        // garde anti-double-appel. Le descripteur de l'interface de blocage doit
+        // impérativement être fermé ici, sinon il survivrait à la destruction du
+        // service et laisserait l'appareil sans réseau, sans notification ni
+        // moyen de le débloquer autrement qu'en tuant le processus.
+        removeKillSwitchBlackhole()
+        foregroundStarted.set(false); instance = null; super.onDestroy()
+    }
     override fun onRevoke()  {
         broadcastLog("[SXB] ⚠️ VPN révoqué par le système")
         broadcastStatus("disconnected")
         cleanup()
+        // Le système a repris la main sur l'interface VPN : ne pas la réinstaller.
+        removeKillSwitchBlackhole()
         super.onRevoke()
     }
 
@@ -1127,8 +1179,25 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
             // ── Session JSch et ladder de transport ───────────────────────────
             val jsch = JSch()
+
+            // C5 — La clé d'hôte est contrôlée pendant l'échange de clés, donc avant
+            // que JSch ne transmette le mot de passe. `StrictHostKeyChecking=yes` n'est
+            // activé que si le backend a fourni une empreinte : sans empreinte le
+            // comportement historique est conservé pour ne pas rompre les connexions
+            // existantes (voir SxbHostKeyVerifier).
+            val hostKeyVerifier = SxbHostKeyVerifier(this, fingerprint) { event -> broadcastLog(event) }
+            jsch.hostKeyRepository = hostKeyVerifier
+            if (hostKeyVerifier.ignoredFingerprint) {
+                // Le champ `fingerprint` sert aussi de profil uTLS pour sing-box
+                // (« chrome », « firefox »…) : une telle valeur n'est pas une
+                // empreinte de clé et ne doit pas bloquer la connexion SSH.
+                broadcastLog("[SXB] ⚠️ Valeur 'fingerprint' non exploitable comme empreinte SSH — hôte non vérifié")
+            } else if (!hostKeyVerifier.strict) {
+                broadcastLog("[SXB] ⚠️ Aucun fingerprint configuré — hôte non vérifié")
+            }
+
             val commonProps = Properties().apply {
-                set("StrictHostKeyChecking", "no")
+                set("StrictHostKeyChecking", if (hostKeyVerifier.strict) "yes" else "no")
                 set("PreferredAuthentications", "password")
                 set("ServerAliveInterval", "10")
                 set("ServerAliveCountMax", "3")
@@ -1248,18 +1317,23 @@ class SxbVpnService : VpnService(), PlatformInterface {
             SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.TUNNEL_CONNECTED)
             broadcastLog("[SXB_DEBUG] SSH_CONNECTED — handshake réussi")
 
-            // P5 — Vérification fingerprint post-connexion (hors StrictHostKeyChecking)
-            if (fingerprint.isNotEmpty()) {
-                val hostKey  = session.hostKey
-                val actualFp = hostKey?.getFingerPrint(jsch) ?: ""
-                val fpNorm   = { s: String -> s.replace(":", "").lowercase() }
-                if (fpNorm(actualFp) != fpNorm(fingerprint)) {
+            // C5 — Défense en profondeur : l'empreinte a déjà été validée avant
+            // l'authentification par SxbHostKeyVerifier. On confirme ici que la clé
+            // effectivement négociée est bien celle attendue, au cas où une couche
+            // de transport intermédiaire aurait rejoué la session.
+            if (hostKeyVerifier.strict) {
+                val negotiated = session.hostKey
+                val negotiatedKey = runCatching {
+                    android.util.Base64.decode(negotiated?.key, android.util.Base64.DEFAULT)
+                }.getOrNull()
+                val matches = negotiatedKey != null &&
+                    SxbHostKeyVerifier.fingerprints(negotiatedKey)
+                        .contains(SxbHostKeyVerifier.normalize(fingerprint))
+                if (!matches) {
                     session.disconnect()
-                    throw SecurityException("[SXB] ❌ Fingerprint SSH invalide\n  Attendu: $fingerprint\n  Reçu   : $actualFp")
+                    throw SecurityException("[SXB] ❌ Empreinte SSH invalide — connexion interrompue")
                 }
-                broadcastLog("[SXB] ✅ Empreinte SSH vérifiée")
-            } else {
-                broadcastLog("[SXB] ⚠️ Aucun fingerprint configuré — hôte non vérifié")
+                broadcastLog("[SXB] ✅ Empreinte SSH confirmée après handshake")
             }
             sshSession = session
             if (!running.get() || currentState != "connecting") {
@@ -1687,6 +1761,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
         if (VpnService.prepare(this) != null) {
             throw IllegalStateException("Permission VPN non accordée")
         }
+
+        // B10 — Le tunnel réel remplace l'interface de blocage : libérer le
+        // descripteur et son lecteur avant d'appeler establish().
+        removeKillSwitchBlackhole()
 
         trace("TUN_CREATE_START", "mtu=${options.mtu} auto_route=${options.autoRoute} strict_route=${options.strictRoute}")
         Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_6_TUN_CREATING mtu=${options.mtu} autoRoute=${options.autoRoute}")
@@ -3045,6 +3123,73 @@ class SxbVpnService : VpnService(), PlatformInterface {
         killSwitchEnabled = enabled
         // Le kill switch est appliqué à la prochaine connexion (reconstruit le TUN)
         broadcastLog("[SXB] Kill Switch : ${if (enabled) "activé" else "désactivé"}")
+        if (!enabled) removeKillSwitchBlackhole()
+    }
+
+    /**
+     * B10 — Interface « trou noir » du kill switch.
+     *
+     * Sans elle, le kill switch se résumait à ne pas appeler `allowBypass()` sur le
+     * TUN applicatif : dès que le tunnel tombait (fenêtre de reconnexion, ou abandon
+     * après trois tentatives suivi d'un `stopSelf()`), l'interface disparaissait et
+     * tout le trafic repartait en clair par le réseau sous-jacent — exactement ce que
+     * l'option est censée empêcher.
+     *
+     * On installe donc une interface VPN sans route de sortie qui capte l'intégralité
+     * du trafic IPv4 et IPv6 et le laisse mourir. Elle n'est créée que lorsque
+     * l'utilisateur a explicitement activé le kill switch et qu'aucun tunnel réel
+     * n'est actif : le comportement est inchangé pour tous les autres utilisateurs.
+     */
+    private fun installKillSwitchBlackhole(reason: String) {
+        if (!killSwitchEnabled) return
+        // Un arrêt définitif est en cours : ne pas créer une interface que
+        // personne ne pourra plus retirer.
+        if (cleanupStarted.get()) return
+        if (killSwitchPfd != null) return
+        if (tunPfd != null || boxService != null) return
+        if (VpnService.prepare(this) != null) return
+
+        val pfd = runCatching {
+            val builder = Builder()
+                .setSession("SXB VPN — Kill Switch")
+                .setMtu(1500)
+                .addAddress(KILL_SWITCH_ADDR_V4, 32)
+                .addRoute("0.0.0.0", 0)
+            runCatching { builder.addAddress(KILL_SWITCH_ADDR_V6, 128).addRoute("::", 0) }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
+            // Aucun allowBypass() : aucune application ne peut contourner l'interface.
+            builder.establish()
+        }.getOrNull()
+
+        if (pfd == null) {
+            Log.w(TAG, "[SXB_DEBUG] KILL_SWITCH_BLACKHOLE_FAILED reason=$reason")
+            broadcastLog("[SXB] ⚠️ Kill Switch : blocage du trafic impossible")
+            return
+        }
+
+        killSwitchPfd = pfd
+        broadcastLog("[SXB] ⛔ Kill Switch actif — trafic bloqué ($reason)")
+        runCatching { updateNotification("SXB VPN — Kill Switch : trafic bloqué") }
+
+        // Purge du tampon d'entrée : sans lecteur, la file du TUN sature et
+        // certaines versions d'Android journalisent des erreurs en boucle.
+        killSwitchThread = Thread({
+            val buffer = ByteArray(32 * 1024)
+            runCatching {
+                java.io.FileInputStream(pfd.fileDescriptor).use { input ->
+                    while (killSwitchPfd === pfd && input.read(buffer) >= 0) { /* rejeté */ }
+                }
+            }
+        }, "SXB-KillSwitch").apply { isDaemon = true; start() }
+    }
+
+    private fun removeKillSwitchBlackhole() {
+        val pfd = killSwitchPfd ?: return
+        killSwitchPfd = null
+        killSwitchThread?.interrupt()
+        killSwitchThread = null
+        runCatching { pfd.close() }
+        Log.i(TAG, "[SXB_DEBUG] KILL_SWITCH_BLACKHOLE_RELEASED")
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -3123,7 +3268,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
     // ═════════════════════════════════════════════════════════════════════════
 
     fun copyFullLogs(): String {
-        val copy = fullLogBuffer.toString()
+        val copy = synchronized(fullLogBuffer) { fullLogBuffer.toString() }
         if (copy.isNotEmpty()) {
             File(filesDir, "full_logs_copy.txt").writeText(copy, Charsets.UTF_8)
             Log.i(TAG, "[SXB_DEBUG] FULL_LOGS_COPIED bytes=${copy.length}")
@@ -3145,6 +3290,25 @@ class SxbVpnService : VpnService(), PlatformInterface {
     // HANDOFF_LOGS_ULTRADETAIL — bouton Copier : persister les logs complets
     private val fullLogBuffer = StringBuilder()
 
+    /**
+     * B8 — Plafond du tampon de logs.
+     *
+     * `broadcastLog()` est appelé plusieurs fois par seconde pendant une session
+     * (statistiques de trafic, sondes réseau, traces libbox). Sans plafond, le
+     * StringBuilder n'était jamais purgé et croissait indéfiniment jusqu'à
+     * l'OutOfMemory sur les sessions longues. On conserve une fenêtre glissante
+     * suffisante pour le diagnostic (~512 Ko ≈ dernières dizaines de milliers de
+     * lignes) en découpant sur une fin de ligne pour ne pas tronquer au milieu.
+     */
+    private fun trimLogBufferLocked() {
+        if (fullLogBuffer.length <= MAX_LOG_BUFFER_CHARS) return
+        val target = fullLogBuffer.length - LOG_BUFFER_KEEP_CHARS
+        val newlineAfterTarget = fullLogBuffer.indexOf("\n", target)
+        val cutAt = if (newlineAfterTarget >= 0) newlineAfterTarget + 1 else target
+        fullLogBuffer.delete(0, cutAt)
+        fullLogBuffer.insert(0, "[SXB] … logs plus anciens tronqués (limite ${MAX_LOG_BUFFER_CHARS / 1024} Ko)\n")
+    }
+
     /** Trace réseau détaillée, séquencée et systématiquement dépourvue de secrets. */
     private fun trace(stage: String, detail: String = "") {
         val seq = traceSequence.incrementAndGet()
@@ -3160,7 +3324,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
             SecurityModule.maskSensitive(message)
         }
         Log.i(TAG, safeMessage)
-        fullLogBuffer.append(safeMessage).append("\n")
+        synchronized(fullLogBuffer) {
+            fullLogBuffer.append(safeMessage).append("\n")
+            trimLogBufferLocked()
+        }
         // setPackage() obligatoire sur Android 14+ avec RECEIVER_NOT_EXPORTED
         val intent = Intent(BROADCAST_LOG).apply {
             putExtra("log", safeMessage)
@@ -3179,14 +3346,58 @@ class SxbVpnService : VpnService(), PlatformInterface {
     // n'y a plus ni binaire à extraire, ni fichier de config à écrire sur
     // disque, ni descripteur à récupérer par réflexion.
 
-    /** P1 — Chiffre configJson (credentials VPN) avec AES-256-GCM Android Keystore */
-    private fun persistEncryptedConfig(originalConfigJson: String) {
-        try {
+    /**
+     * P1 — Chiffre configJson (credentials VPN) avec AES-256-GCM Android Keystore.
+     * @return true si le coffre chiffré `sxb_creds.enc` contient bien la configuration.
+     *         Le résultat conditionne la purge des copies en clair : on ne supprime
+     *         jamais la seule source de configuration encore lisible.
+     */
+    private fun persistEncryptedConfig(originalConfigJson: String): Boolean {
+        return try {
             File(filesDir, "sxb_creds.enc").writeText(KeystoreManager.encrypt(originalConfigJson), Charsets.UTF_8)
             Log.i(TAG, "[P1] Config VPN chiffrée et persistée (AES-256-GCM) ✅")
+            true
         } catch (e: Exception) {
             Log.w(TAG, "[P1] Chiffrement config échoué (Keystore non disponible?): ${e.message}")
+            false
         }
+    }
+
+    /**
+     * S1 — Purge des copies en clair des identifiants VPN.
+     *
+     * `SxbVpnModule.startVpn()` doit écrire la configuration complète (host, port,
+     * username, password, uuid, clés privées) dans `sxb_pending_config.json` pour
+     * contourner la limite ~1 Mo du Binder IPC. Ce fichier — ainsi que l'ancien
+     * `sb_config.json` — restait ensuite indéfiniment en clair dans le stockage
+     * privé de l'application, ce qui annulait le chiffrement AES-GCM ci-dessus.
+     *
+     * La purge n'est déclenchée qu'une fois `sxb_creds.enc` écrit et non vide :
+     * un redémarrage START_STICKY dispose ainsi toujours d'une source de config.
+     */
+    private fun purgePlaintextConfigArtifacts(vararg extraPaths: String?) {
+        val vault = File(filesDir, "sxb_creds.enc")
+        if (!vault.exists() || vault.length() <= 0L) {
+            Log.w(TAG, "[S1] Purge des copies en clair ignorée — coffre chiffré indisponible")
+            return
+        }
+        val targets = mutableListOf(
+            File(filesDir, "sxb_pending_config.json"),
+            File(filesDir, "sb_config.json"),
+        )
+        extraPaths.filterNotNull().filter { it.isNotBlank() }.forEach { targets.add(File(it)) }
+
+        targets.distinctBy { it.absolutePath }
+            .filter { it.exists() && it.absolutePath != vault.absolutePath }
+            .forEach { file ->
+                val erased = runCatching {
+                    // Écraser avant suppression : sur certains systèmes de fichiers un
+                    // simple delete() laisse le contenu récupérable.
+                    file.writeText("", Charsets.UTF_8)
+                    file.delete()
+                }.getOrDefault(false)
+                Log.i(TAG, "[S1] Copie en clair purgée=${erased} name=${file.name}")
+            }
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -3219,6 +3430,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         runCatching { socks5Server?.close() };  socks5Server    = null
 
+        // S1 — Ne jamais laisser une copie en clair des identifiants survivre à la session.
+        if (stopService) runCatching { purgePlaintextConfigArtifacts() }
+
         // Arrêt du moteur libbox AVANT la fermeture du TUN : sing-box doit
         // pouvoir vider ses connexions avant que le descripteur disparaisse.
         boxService?.let { svc ->
@@ -3231,6 +3445,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         runCatching { tunPfd?.close() };  tunPfd = null
         tunInterfaceName = null
+        // B10 — Fenêtre de reconnexion : sans interface de blocage le trafic
+        // repartirait en clair entre deux tentatives.
+        if (stopService) removeKillSwitchBlackhole()
+        else if (keepRunning) runCatching { installKillSwitchBlackhole("reconnexion en cours") }
         if (stopService) SxbDefaultNetworkMonitor.stop()
 
         trafficManager.stop()
