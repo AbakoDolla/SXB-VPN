@@ -33,6 +33,13 @@ jobs:
   audit:
     name: Diagnostic lecture seule
     runs-on: ubuntu-latest
+    # Les secrets SSH sont attachés à l'environnement « production » : sans cette
+    # déclaration ils sont résolus à vide et la connexion échoue immédiatement.
+    # L'environnement peut par ailleurs exiger une approbation manuelle, ce qui
+    # constitue un garde-fou supplémentaire pour un accès au serveur.
+    environment:
+      name: production
+      url: https://vpnsxb.afrihall.com
     steps:
       - name: Auditer le VPS (aucune modification)
         uses: appleboy/ssh-action@v1.0.3
