@@ -135,18 +135,22 @@ jobs:
             sudo chown -R ubuntu:ubuntu /var/www/sxb-vpn/.git 2>/dev/null || true
             sudo chmod -R u+rw /var/www/sxb-vpn/.git 2>/dev/null || true
 
-            # Un `git fetch` en échec était silencieusement absorbé par le
-            # `|| true` : `git reset --hard origin/main` se calait alors sur la
-            # référence LOCALE périmée et réussissait. Le déploiement rapportait
-            # donc « succès » tout en reconstruisant l'ancien code — le VPS est
-            # resté bloqué plusieurs commits en arrière sans aucune alerte.
-            if ! git fetch origin main 2>&1 | grep -v "jules-"; then
-              # grep renvoie 1 quand il ne filtre aucune ligne : seul l'échec de
-              # git lui-même doit être fatal.
-              if ! git rev-parse --verify FETCH_HEAD >/dev/null 2>&1; then
-                echo "❌ git fetch a échoué — déploiement interrompu"
-                exit 1
-              fi
+            # Le VPS tirait le code avec SES propres identifiants GitHub, qui ont
+            # expiré : `git fetch` échoue en HTTP 401. Comme l'échec était absorbé
+            # par un `|| true`, `git reset --hard origin/main` se calait ensuite
+            # sur la référence LOCALE périmée et réussissait. Le déploiement
+            # rapportait donc « succès » tout en reconstruisant l'ancien code, et
+            # la production est restée bloquée plusieurs commits en arrière sans
+            # la moindre alerte.
+            #
+            # Le jeton du workflow est désormais utilisé pour l'authentification :
+            # il est valable le temps de l'exécution et n'est jamais écrit sur le
+            # disque du VPS (`-c` ne modifie pas la configuration persistante).
+            # Le déploiement ne dépend donc plus d'identifiants stockés là-bas.
+            if ! git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' '${{ secrets.GITHUB_TOKEN }}' | base64 -w0)" \
+                 fetch origin main; then
+              echo "❌ git fetch a échoué — déploiement interrompu"
+              exit 1
             fi
             git reset --hard FETCH_HEAD
 
