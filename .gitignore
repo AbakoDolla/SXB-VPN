@@ -44,9 +44,6 @@ testem.log
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
-.cursor/rules/nx-rules.mdc
-.github/instructions/nx.instructions.md
-
 # ── System ────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
@@ -55,7 +52,7 @@ Thumbs.db
 /coverage
 /typings
 
-# ── Replit ────────────────────────────────────────────────────────────────────
+# ── Local tool caches ─────────────────────────────────────────────────────────
 .cache/
 .local/
 

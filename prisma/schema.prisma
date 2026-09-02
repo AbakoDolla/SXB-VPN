@@ -81,7 +81,6 @@ model VpnClient {
   expireAt        DateTime?
   status          String     @default("active") // active, suspended
   avatarUrl       String?
-  xpanelUserId    String?    // External xPanel user ID
   deviceLimit     Int        @default(1)
   deviceId        String?    @unique
   activatedAt     DateTime?
@@ -148,7 +147,7 @@ model ServerConfig {
   configurationEncrypted String
   createdAt              DateTime  @default(now())
 
-  @@map("xpanel_configs")
+  @@map("server_configs")
 }
 
 model Voucher {

@@ -10,11 +10,6 @@ const configSchema = z.object({
   FRONTEND_URL: z.url().default("https://vpnsxb.afrihall.com"),
   JWT_SECRET: z.string().min(32, "JWT secret must contain at least 32 characters"),
   REFRESH_SECRET: z.string().min(32, "Refresh secret must contain at least 32 characters"),
-  // X-Panel Configuration
-  XPANEL_URL: z.string().default("http://localhost:18790"),
-  XPANEL_JWT_SECRET: z.string().optional(),
-  XPANEL_ADMIN_USERNAME: z.string().default("admin"),
-  XPANEL_ADMIN_PASSWORD: z.string().optional(),
   ENCRYPTION_KEY: z.string().length(32, "Encryption key must be exactly 32 characters"),
 }).superRefine((value, context) => {
   if (value.NODE_ENV === "production" && !value.DATABASE_URL) {

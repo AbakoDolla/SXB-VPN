@@ -118,7 +118,6 @@ Get all VPN clients.
       "quotaUsed": "0",
       "expireAt": "2026-08-14T08:56:14.922Z",
       "status": "active",
-      "xpanelUserId": "uuid",
       "user": {
         "id": "uuid",
         "name": "Client Name",
@@ -280,31 +279,6 @@ Update reseller.
 
 ### DELETE /resellers/:id
 Delete reseller.
-
-## X-Panel
-
-### GET /xpanel/status
-Get X-Panel connection status.
-
-**Response:**
-```json
-{
-  "status": "online|offline",
-  "connectedServers": 2,
-  "synchronizedUsers": 42,
-  "availableConfigs": 4,
-  "isSyncing": false
-}
-```
-
-### POST /xpanel/sync
-Trigger X-Panel synchronization.
-
-### GET /xpanel/users
-Get X-Panel users.
-
-### GET /xpanel/configs
-Get VPN configurations from X-Panel.
 
 ## Activity Logs
 

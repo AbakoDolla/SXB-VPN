@@ -36,7 +36,6 @@ import provisionRouter from "./server/routes/provision";
 import configTestRouter from "./server/routes/config-test";
 import xrayRouter from "./server/routes/xray";
 import singboxRouter from "./server/routes/singbox";
-import xpanelRouter from "./server/routes/xpanel";
 import opsRouter from "./server/routes/ops";
 import xapiRouter from "./server/routes/xapi";
 import announcementsRouter from "./server/routes/announcements";
@@ -165,7 +164,6 @@ async function startServer() {
   app.use("/api/vpn-profiles", vpnProfilesRouter);
   app.use("/api/xray", xrayRouter);
   app.use("/api/singbox", singboxRouter);
-  app.use("/api/xpanel", xpanelRouter);
   app.use("/api/subscriptions", subscriptionsRouter);
   app.use("/api/app",           appRegisterRouter);
   app.use("/api/provision", provisionRouter);

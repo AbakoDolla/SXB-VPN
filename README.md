@@ -14,9 +14,7 @@ d’une API, d’une application mobile et d’intégrations avec des serveurs V
 | Déploiement | `.github/workflows/deploy-vps.yml` | GitHub Actions, PM2, Nginx |
 
 PostgreSQL est utilisé directement par l’API. Redis est présent sur le VPS mais
-le code applicatif actuel ne l’utilise pas. XPanel/XNet est une intégration
-distincte accessible par l’API sur `127.0.0.1:18790`; son cycle de vie n’est pas
-géré par le processus PM2 de SXB VPN.
+le code applicatif actuel ne l’utilise pas.
 
 Production :
 

@@ -1,7 +1,6 @@
 # Runbook de production SXB VPN
 
-Ce document couvre l’API et le dashboard SXB VPN. XPanel/XNet doit faire
-l’objet d’une maintenance séparée.
+Ce document couvre l’API et le dashboard SXB VPN.
 
 ## Déploiement normal
 
@@ -94,21 +93,6 @@ suivi a été modifié, afin de ne pas écraser un correctif de production non
 réconcilié. Examiner `git-status.txt`, `tracked-changes.patch` et
 `untracked-files.tar.gz` dans la dernière sauvegarde, puis intégrer ou retirer
 le changement manuellement avant de relancer.
-
-## XPanel/XNet
-
-Un `502` sur le port public XPanel ne doit pas entraîner de modification de
-l’API SXB VPN. Diagnostiquer séparément :
-
-```bash
-sudo systemctl status xnet --no-pager
-sudo journalctl -u xnet -n 100 --no-pager
-curl --max-time 5 http://127.0.0.1:18790/
-sudo nginx -t
-```
-
-Avant tout redémarrage, identifier le nom réel de l’unité, sauvegarder sa base
-et sa configuration, puis prévoir la commande inverse.
 
 ## Rotation des accès
 

@@ -1,7 +1,7 @@
 /**
  * Xray Manager Routes — SXB VPN
  * Standalone V2Ray/Xray account manager (VLESS, VMess, Trojan, Shadowsocks)
- * Stores configs in local DB — no X-Panel dependency required.
+ * Stores configs in the local database.
  */
 import { Router, Response } from "express";
 import { prisma } from "../database";

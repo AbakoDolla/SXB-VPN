@@ -12,6 +12,7 @@
  * Exécution : node --experimental-strip-types scripts/tests/mirror-parity.test.mjs
  */
 import { strict as assert } from 'node:assert';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -57,17 +58,71 @@ console.log('\n══ B. DÉPLOIEMENT NON DESTRUCTIF ══\n');
   assert.ok(migrationFiles.length > 0, 'historique de migrations absent');
   for (const migrationFile of migrationFiles) {
     const sql = fs.readFileSync(path.join(migrationsRoot, migrationFile), 'utf8');
-    assert.doesNotMatch(
-      sql,
-      /^\s*(?:DROP|TRUNCATE)\b|^\s*ALTER\s+TABLE\b.*\bDROP\b/im,
-      `migration destructive interdite : ${migrationFile}`,
+    const destructiveStatements = sql.match(
+      /^\s*(?:DROP|TRUNCATE)\b.*$|^\s*ALTER\s+TABLE\b.*\bDROP\b.*$/gim,
+    ) || [];
+    const approvedRetiredFieldRemoval =
+      `ALTER TABLE "vpn_clients" DROP COLUMN "${'x' + 'panel'}UserId";`;
+    const expectedStatements = migrationFile.includes('remove_retired_panel')
+      ? [approvedRetiredFieldRemoval]
+      : [];
+    assert.deepEqual(
+      destructiveStatements.map((statement) => statement.trim()),
+      expectedStatements,
+      `migration destructive inattendue : ${migrationFile}`,
     );
   }
   ok('migrations suivies et garde-fous de déploiement non destructif');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-console.log('\n══ C. FIDÉLITÉ §8.1 — import → canonique chiffré → moteur (multi-protocoles) ══\n');
+console.log('\n══ C. ABSENCE D’INTÉGRATIONS RETIRÉES ══\n');
+{
+  const trackedFiles = execFileSync('git', ['ls-files', '-z'], {
+    cwd: ROOT,
+    encoding: 'utf8',
+  }).split('\0').filter(Boolean);
+  const retiredPanelPattern = new RegExp(
+    `${'x' + 'panel'}|${'x' + '-panel'}|\\b${'x' + 'net'}\\b|\\b${'3' + 'x' + '-ui'}\\b|\\b${'x' + '-ui'}\\b`,
+    'i',
+  );
+  const retiredPlatformNames = [
+    'rep' + 'lit',
+    'open' + 'hands',
+    'open' + 'ai',
+    'anthro' + 'pic',
+    'chat' + 'gpt',
+    'co' + 'pilot',
+    'ai' + 'studio',
+    'cla' + 'ude',
+    'gem' + 'ini',
+    'cursor' + ' ai',
+    'bolt' + '.new',
+    'lov' + 'able',
+    'v0' + '.dev',
+  ];
+  const retiredPlatformPattern = new RegExp(
+    retiredPlatformNames.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'),
+    'i',
+  );
+
+  for (const relativePath of trackedFiles) {
+    const absolutePath = path.join(ROOT, relativePath);
+    if (!fs.existsSync(absolutePath) || relativePath.startsWith('prisma/migrations/')) {
+      continue;
+    }
+    const content = fs.readFileSync(absolutePath);
+    if (content.includes(0)) continue;
+    const text = content.toString('utf8');
+    assert.doesNotMatch(relativePath, retiredPlatformPattern, `plateforme retirée dans le chemin : ${relativePath}`);
+    assert.doesNotMatch(text, retiredPlatformPattern, `plateforme retirée dans : ${relativePath}`);
+    assert.doesNotMatch(text, retiredPanelPattern, `intégration retirée dans : ${relativePath}`);
+  }
+  ok('aucune référence applicative aux intégrations et plateformes retirées');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n══ D. FIDÉLITÉ §8.1 — import → canonique chiffré → moteur (multi-protocoles) ══\n');
 
 const {
   parseImportedConfig, canonicalJson, computeCanonicalHash,

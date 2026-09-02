@@ -42,20 +42,11 @@ pm2 describe sxb-backend || true
 
 echo
 echo "Listening TCP ports"
-ss -lntp 2>/dev/null | grep -E ':(3000|3001|4000|8443|9090|18790)\b' || true
+ss -lntp 2>/dev/null | grep -E ':(3000|3001|4000|9090)\b' || true
 
 echo
 echo "Firewall"
 sudo -n ufw status verbose 2>/dev/null || echo "UFW status requires administrator access."
-
-echo
-echo "XPanel/XNet"
-systemctl --no-pager --full status xnet 2>/dev/null \
-  || systemctl --no-pager --full status x-ui 2>/dev/null \
-  || echo "No known XPanel unit found. No service was changed."
-curl --silent --show-error --max-time 5 http://127.0.0.1:18790/ >/dev/null \
-  && echo "XPanel responds on 127.0.0.1:18790" \
-  || echo "XPanel does not respond on 127.0.0.1:18790"
 
 echo
 echo "Diagnostics complete. No service, firewall rule or database was changed."

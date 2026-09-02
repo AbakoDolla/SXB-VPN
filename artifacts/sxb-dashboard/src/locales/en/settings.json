@@ -1,17 +1,15 @@
 {
   "title": "System Settings",
-  "subtitle": "Configure regional preferences, SXB API security keys, and global XPanel connections.",
+  "subtitle": "Configure regional preferences and SXB API security keys.",
   "sections": {
     "profile": "User Profile",
     "language_selection": "Language Selection",
-    "security": "API Keys & Security",
-    "xpanel_config": "XPanel Connection Settings"
+    "security": "API Keys & Security"
   },
   "fields": {
     "current_lang": "Current Interface Language",
     "browser_lang_detected": "Detected Browser Language",
     "api_endpoint": "SXB VPN API Endpoint",
-    "xpanel_endpoint": "XPanel Host (SSH/Sing-box)",
     "secret_key": "Secret Admin Key"
   }
 }

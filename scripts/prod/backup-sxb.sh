@@ -78,16 +78,6 @@ if command -v redis-cli >/dev/null 2>&1 && redis-cli ping >/dev/null 2>&1; then
   redis-cli --rdb "$DEST/redis.rdb" >/dev/null
 fi
 
-for candidate in \
-  "$APP_DIR/xpanel.db" \
-  "$APP_DIR/data/xpanel.db" \
-  "/etc/x-ui/x-ui.db" \
-  "/etc/x-ui-english/x-ui.db"; do
-  if [ -f "$candidate" ] && [ -r "$candidate" ]; then
-    cp "$candidate" "$DEST/$(basename "$(dirname "$candidate")")-$(basename "$candidate")"
-  fi
-done
-
 (
   cd "$APP_DIR"
   git rev-parse HEAD > "$DEST/git-head.txt"
