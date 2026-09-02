@@ -134,8 +134,30 @@ jobs:
             echo "📥 Fix permissions git + Pull latest code..."
             sudo chown -R ubuntu:ubuntu /var/www/sxb-vpn/.git 2>/dev/null || true
             sudo chmod -R u+rw /var/www/sxb-vpn/.git 2>/dev/null || true
-            git fetch origin 2>&1 | grep -v "jules-" || true
-            git reset --hard origin/main
+
+            # Un `git fetch` en échec était silencieusement absorbé par le
+            # `|| true` : `git reset --hard origin/main` se calait alors sur la
+            # référence LOCALE périmée et réussissait. Le déploiement rapportait
+            # donc « succès » tout en reconstruisant l'ancien code — le VPS est
+            # resté bloqué plusieurs commits en arrière sans aucune alerte.
+            if ! git fetch origin main 2>&1 | grep -v "jules-"; then
+              # grep renvoie 1 quand il ne filtre aucune ligne : seul l'échec de
+              # git lui-même doit être fatal.
+              if ! git rev-parse --verify FETCH_HEAD >/dev/null 2>&1; then
+                echo "❌ git fetch a échoué — déploiement interrompu"
+                exit 1
+              fi
+            fi
+            git reset --hard FETCH_HEAD
+
+            # Garde-fou : la version déployée DOIT être celle qui a déclenché ce
+            # workflow. Sans ce contrôle, toute divergence repasse inaperçue.
+            DEPLOYED_SHA=$(git rev-parse HEAD)
+            if [ "$DEPLOYED_SHA" != "${{ github.sha }}" ]; then
+              echo "❌ Version déployée ($DEPLOYED_SHA) ≠ version attendue (${{ github.sha }})"
+              exit 1
+            fi
+            echo "✅ Code à jour : $DEPLOYED_SHA"
 
             echo "📦 Install backend dependencies..."
             cd backend
