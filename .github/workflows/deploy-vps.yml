@@ -285,15 +285,33 @@ jobs:
                 --from-schema-datasource prisma/schema.prisma \
                 --to-schema-datamodel prisma/migrations/20260902000000_baseline/schema.prisma \
                 --exit-code
-              DIFF_STATUS=$?
+              BASELINE_DIFF_STATUS=$?
+              if [ "$BASELINE_DIFF_STATUS" -eq 2 ]; then
+                pnpm exec prisma migrate diff \
+                  --from-schema-datasource prisma/schema.prisma \
+                  --to-schema-datamodel prisma/schema.prisma \
+                  --exit-code
+                CURRENT_DIFF_STATUS=$?
+              else
+                CURRENT_DIFF_STATUS=2
+              fi
               set -e
-              if [ "$DIFF_STATUS" -ne 0 ]; then
-                echo "The existing database does not exactly match the migration baseline"
+              if [ "$BASELINE_DIFF_STATUS" -eq 1 ] || [ "$CURRENT_DIFF_STATUS" -eq 1 ]; then
+                echo "Unable to validate the existing database schema"
+                exit 1
+              fi
+              if [ "$BASELINE_DIFF_STATUS" -ne 0 ] && [ "$CURRENT_DIFF_STATUS" -ne 0 ]; then
+                echo "The existing database matches neither the migration baseline nor the current schema"
                 exit 1
               fi
               pnpm exec prisma migrate resolve \
                 --schema=prisma/schema.prisma \
                 --applied=20260902000000_baseline
+              if [ "$CURRENT_DIFF_STATUS" -eq 0 ]; then
+                pnpm exec prisma migrate resolve \
+                  --schema=prisma/schema.prisma \
+                  --applied=20260902060000_remove_retired_panel
+              fi
             fi
             pnpm exec prisma migrate deploy --schema=prisma/schema.prisma
 

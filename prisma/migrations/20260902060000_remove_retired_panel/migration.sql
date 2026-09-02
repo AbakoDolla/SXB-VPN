@@ -9,9 +9,43 @@ DELETE FROM "permissions"
 WHERE "name" IN ('xpanel.view', 'xpanel.manage', 'xpanel.sync', 'xpanel.access');
 
 ALTER TABLE "xpanel_configs" RENAME TO "server_configs";
-ALTER TABLE "server_configs"
-    RENAME CONSTRAINT "xpanel_configs_pkey" TO "server_configs_pkey";
-ALTER TABLE "server_configs"
-    RENAME CONSTRAINT "xpanel_configs_serverId_fkey" TO "server_configs_serverId_fkey";
+
+DO $$
+DECLARE
+    constraint_name TEXT;
+BEGIN
+    SELECT conname
+    INTO constraint_name
+    FROM pg_constraint
+    WHERE conrelid = '"server_configs"'::regclass
+      AND contype = 'p';
+
+    IF constraint_name IS NOT NULL AND constraint_name <> 'server_configs_pkey' THEN
+        EXECUTE format(
+            'ALTER TABLE %I RENAME CONSTRAINT %I TO %I',
+            'server_configs',
+            constraint_name,
+            'server_configs_pkey'
+        );
+    END IF;
+
+    SELECT conname
+    INTO constraint_name
+    FROM pg_constraint
+    WHERE conrelid = '"server_configs"'::regclass
+      AND confrelid = '"servers"'::regclass
+      AND contype = 'f';
+
+    IF constraint_name IS NOT NULL
+       AND constraint_name <> 'server_configs_serverId_fkey' THEN
+        EXECUTE format(
+            'ALTER TABLE %I RENAME CONSTRAINT %I TO %I',
+            'server_configs',
+            constraint_name,
+            'server_configs_serverId_fkey'
+        );
+    END IF;
+END
+$$;
 
 ALTER TABLE "vpn_clients" DROP COLUMN "xpanelUserId";
