@@ -36,12 +36,15 @@ export type ThemeColors = {
 };
 
 const darkColors: ThemeColors = {
-  bg: "#07101F",
-  bgCard: "#0D1B2E",
-  bgCard2: "#12243A",
-  bgInput: "#091729",
-  border: "#203754",
-  border2: "#2A4667",
+  // Fond nettement plus profond et légèrement désaturé vers le bleu nuit : il
+  // fait ressortir le halo du bouton de connexion, qui est le point focal de
+  // l'écran d'accueil. L'ancien #07101F restait trop clair pour cela.
+  bg: "#050B16",
+  bgCard: "#0C1526",
+  bgCard2: "#131F33",
+  bgInput: "#0A1220",
+  border: "#1D2C44",
+  border2: "#294059",
   primary: "#41D8FF",
   primaryDim: "rgba(65,216,255,0.14)",
   primaryGlow: "rgba(65,216,255,0.28)",
@@ -55,18 +58,20 @@ const darkColors: ThemeColors = {
   purple: "#A78BFA",
   purpleDim: "rgba(167,139,250,0.14)",
   textPrimary: "#F6FAFF",
-  textSecondary: "#B3C3D8",
-  textMuted: "#7086A4",
+  textSecondary: "#AFC0D6",
+  textMuted: "#6B819F",
   textAccent: "#41D8FF",
   tabActive: "#41D8FF",
-  tabInactive: "#7086A4",
-  overlay: "rgba(4,10,20,0.88)",
+  tabInactive: "#6B819F",
+  overlay: "rgba(3,7,14,0.9)",
   gradients: {
-    bg: ["#07101F", "#0B1A31", "#07101F"],
+    // Dégradé en trois temps : le point le plus clair est légèrement au-dessus
+    // du centre, là où se trouve le bouton, ce qui crée une lumière naturelle.
+    bg: ["#050B16", "#0A1729", "#050B16"],
     primary: ["#41D8FF", "#3E7BFF"],
     connected: ["#39E6B0", "#159A8A"],
     shield: ["rgba(65,216,255,0.20)", "rgba(65,216,255,0)", "rgba(57,230,176,0.12)"],
-    card: ["#0D1B2E", "#12243A"],
+    card: ["#0C1526", "#131F33"],
   },
 };
 

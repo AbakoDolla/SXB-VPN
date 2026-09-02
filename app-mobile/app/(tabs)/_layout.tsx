@@ -5,6 +5,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
 import { useTranslation } from "@/localization";
+import { alpha, elevation, radius, spacing, type } from "@/constants/theme";
 
 type TabName = "index" | "history" | "profile" | "notifications";
 type TabItem = { name: TabName; labelKey: "home" | "history" | "profile" | "alerts_tab"; icon: string; iconFocused: string };
@@ -20,11 +21,17 @@ function CustomTabBar({ state, navigation }: any) {
   const insets = useSafeAreaInsets();
   const colors = useColors();
   const { t } = useTranslation();
-  const bottomPadding = Platform.OS === "web" ? 10 : Math.max(insets.bottom, 10);
+  const bottomPadding = Platform.OS === "web" ? spacing.md : Math.max(insets.bottom, spacing.md);
 
   return (
-    <View style={[styles.shell, { backgroundColor: colors.bg, borderTopColor: colors.border, paddingBottom: bottomPadding }]}>
-      <View style={[styles.tabBar, { backgroundColor: colors.bgCard + "F2", borderColor: colors.border }]}>
+    <View style={[styles.shell, { paddingBottom: bottomPadding }]}>
+      <View
+        style={[
+          styles.tabBar,
+          { backgroundColor: colors.bgCard, borderColor: colors.border },
+          elevation.lg,
+        ]}
+      >
         {state.routes.map((route: any, index: number) => {
           const tab = TAB_ITEMS[index];
           const isFocused = state.index === index;
@@ -45,11 +52,29 @@ function CustomTabBar({ state, navigation }: any) {
               style={({ pressed }) => [styles.tabItem, pressed && styles.pressed]}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              <View style={[styles.iconWrap, isFocused && { backgroundColor: colors.primaryDim }]}>
-                <Ionicons name={(isFocused ? tab.iconFocused : tab.icon) as any} size={21} color={isFocused ? colors.primary : colors.tabInactive} />
-                {isFocused && <View style={[styles.activeDot, { backgroundColor: colors.primary }]} />}
+              {/* Pastille pleine derrière l'onglet actif : repère plus lisible
+                  qu'un simple changement de teinte, notamment en plein soleil. */}
+              <View
+                style={[
+                  styles.iconWrap,
+                  isFocused && { backgroundColor: colors.primary + alpha.f16 },
+                ]}
+              >
+                <Ionicons
+                  name={(isFocused ? tab.iconFocused : tab.icon) as any}
+                  size={20}
+                  color={isFocused ? colors.primary : colors.tabInactive}
+                />
               </View>
-              <Text style={[styles.tabLabel, { color: isFocused ? colors.primary : colors.tabInactive }]}>{t(tab.labelKey)}</Text>
+              <Text
+                style={[
+                  type.micro,
+                  { color: isFocused ? colors.primary : colors.tabInactive },
+                ]}
+                numberOfLines={1}
+              >
+                {t(tab.labelKey)}
+              </Text>
             </Pressable>
           );
         })}
@@ -70,11 +95,24 @@ export default function TabLayout() {
 }
 
 const styles = StyleSheet.create({
-  shell: { paddingTop: 8, paddingHorizontal: 14 },
-  tabBar: { flexDirection: "row", borderWidth: 1, borderRadius: 24, paddingHorizontal: 8, paddingTop: 7, shadowColor: "#000", shadowOpacity: 0.14, shadowRadius: 14, shadowOffset: { width: 0, height: 5 }, elevation: 8 },
-  tabItem: { flex: 1, alignItems: "center", gap: 3, minHeight: 53 },
+  // La barre flotte au-dessus du contenu, sans fond plein ni filet supérieur :
+  // le dégradé de l'écran reste visible en dessous, ce qui allège l'ensemble.
+  shell: { paddingTop: spacing.sm, paddingHorizontal: spacing.lg, backgroundColor: "transparent" },
+  tabBar: {
+    flexDirection: "row",
+    borderWidth: 1,
+    borderRadius: radius.xl,
+    paddingHorizontal: spacing.sm,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.xs,
+  },
+  tabItem: { flex: 1, alignItems: "center", gap: spacing.xs, minHeight: 52 },
   pressed: { opacity: 0.68, transform: [{ scale: 0.97 }] },
-  iconWrap: { width: 38, height: 30, borderRadius: 14, alignItems: "center", justifyContent: "center" },
-  activeDot: { position: "absolute", bottom: 1, width: 4, height: 4, borderRadius: 2 },
-  tabLabel: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 0.15 },
+  iconWrap: {
+    width: 40,
+    height: 30,
+    borderRadius: radius.md,
+    alignItems: "center",
+    justifyContent: "center",
+  },
 });

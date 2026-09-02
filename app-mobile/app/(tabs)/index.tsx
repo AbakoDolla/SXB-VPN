@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+﻿import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Animated, AppState, Dimensions, Image, Modal, Pressable,
+  AppState, Image, Modal, Pressable,
   ScrollView, Share, StyleSheet, Text, View, ActivityIndicator,
   PermissionsAndroid, Platform,
 } from "react-native";
@@ -22,8 +22,19 @@ import InteractiveWalkthrough from "@/components/InteractiveWalkthrough";
 import AnnouncementModal from "@/components/AnnouncementModal";
 import { useTranslation } from "@/localization";
 import type { VpnConnection } from "@/types/api";
+import { alpha, elevation, layout, radius, spacing, type } from "@/constants/theme";
+import PowerButton from "@/components/ui/PowerButton";
+import {
+  EmptyState,
+  IconButton,
+  Pill,
+  ProgressBar,
+  SectionHeader,
+  StatRow,
+  StatTile,
+  Surface,
+} from "@/components/ui/Primitives";
 
-const { width } = Dimensions.get("window");
 const LOGO = require("../../assets/images/icon.png");
 
 // ── VPN Button States ─────────────────────────────────────────────────────────
@@ -156,57 +167,43 @@ function VpnConnectionCard({ conn, isActive }: { conn: VpnConnection; isActive: 
   const pct = totalBytes > 0 ? Math.min((usedBytes / totalBytes) * 100, 100) : 0;
 
   const { t } = useTranslation();
+  const colors = useColors();
   const statusLabel = isExhausted ? t('friendly_quota_exhausted') : isExpired ? t('expired') : isRevoked ? t('connection_revoked') : isSuspended ? t('suspended_status') : isActive ? t('active') : t('active');
 
   return (
-    <View style={[connStyles.card, isActive && connStyles.cardActive]}>
-      {/* Header */}
-      <View style={connStyles.cardHeader}>
-        <View style={{ flex: 1 }}>
-          <Text style={connStyles.connName} numberOfLines={1}>{conn.name}</Text>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 }}>
-            <View style={[connStyles.protoBadge, { borderColor: statusColor + "40", backgroundColor: statusColor + "15" }]}>
-              <Text style={[connStyles.protoText, { color: statusColor }]}>{conn.displayProtocol}</Text>
-            </View>
+    <Surface
+      tone={isActive ? colors.connected : undefined}
+      style={{ marginTop: spacing.md }}
+    >
+      <View style={styles.connHeader}>
+        <View style={{ flex: 1, gap: spacing.xs }}>
+          <Text style={[type.h3, { color: colors.textPrimary }]} numberOfLines={1}>{conn.name}</Text>
+          <View style={styles.connProtoRow}>
+            <Pill label={conn.displayProtocol} tone={statusColor} />
             {conn.displayProtocol !== conn.technicalProtocol.toUpperCase() && (
-              <Text style={connStyles.techProto}>{conn.technicalProtocol.toUpperCase()}</Text>
+              <Text style={[type.micro, { color: colors.textMuted }]}>
+                {conn.technicalProtocol.toUpperCase()}
+              </Text>
             )}
           </View>
         </View>
-        <View style={[connStyles.statusDot, { backgroundColor: statusColor }]} />
-        <Text style={[connStyles.statusLabel, { color: statusColor }]}>{statusLabel}</Text>
+        <Pill label={statusLabel} tone={statusColor} dot />
       </View>
 
-      {/* Quota */}
-      <View style={connStyles.quotaRow}>
-        <View style={connStyles.quotaItem}>
-          <Text style={connStyles.quotaVal}>{formatBytes(remainingBytes)}</Text>
-          <Text style={connStyles.quotaLbl}>{t('quota_remaining')}</Text>
-        </View>
-        <View style={connStyles.quotaDivider} />
-        <View style={connStyles.quotaItem}>
-          <Text style={connStyles.quotaVal}>{formatBytes(usedBytes)}</Text>
-          <Text style={connStyles.quotaLbl}>{t('quota_used')}</Text>
-        </View>
-        <View style={connStyles.quotaDivider} />
-        <View style={connStyles.quotaItem}>
-          <Text style={connStyles.quotaVal}>{formatBytes(totalBytes)}</Text>
-          <Text style={connStyles.quotaLbl}>{t('quota_total')}</Text>
-        </View>
-      </View>
+      <StatRow>
+        <StatTile label={t('quota_remaining')} value={formatBytes(remainingBytes)} tone={colors.connected} monospace />
+        <StatTile label={t('quota_used')} value={formatBytes(usedBytes)} monospace />
+        <StatTile label={t('quota_total')} value={formatBytes(totalBytes)} monospace />
+      </StatRow>
 
-      {/* Progress */}
-      <View style={connStyles.progressBg}>
-        <View style={[connStyles.progressFill, { width: `${pct}%` as any, backgroundColor: pct > 80 ? Colors.disconnected : statusColor }]} />
-      </View>
+      <ProgressBar progress={pct / 100} tone={statusColor} warnTone={colors.disconnected} />
 
-      {/* Expiration */}
       {conn.expiresAt && (
-        <Text style={connStyles.expire}>
-          {t('expires_on')} {new Date(conn.expiresAt).toLocaleString()}
+        <Text style={[type.caption, { color: colors.textMuted }]}>
+          {t('expires_on')} {new Date(conn.expiresAt).toLocaleDateString("fr-FR", { dateStyle: "medium" })}
         </Text>
       )}
-    </View>
+    </Surface>
   );
 }
 
@@ -372,55 +369,9 @@ export default function HomeScreen() {
     }
   };
 
-  const pulseAnim = useRef(new Animated.Value(1)).current;
-  const glowAnim  = useRef(new Animated.Value(0.5)).current;
-  const ring1     = useRef(new Animated.Value(1)).current;
-  const ring2     = useRef(new Animated.Value(1)).current;
-  const pressAnim = useRef(new Animated.Value(1)).current;
-
+  // Les animations du bouton (anneaux, respiration, appui) sont désormais
+  // encapsulées dans `PowerButton`. L'écran ne conserve que l'état métier.
   const btnState = getButtonState(accountState, isConnected, isConnecting, hasValidConfig, activeConnection, derivedQuota.isExhausted);
-
-  useEffect(() => {
-    const anim = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseAnim, { toValue: 1.06, duration: 1200, useNativeDriver: true }),
-        Animated.timing(pulseAnim, { toValue: 1, duration: 1200, useNativeDriver: true }),
-      ])
-    );
-    if (isConnected || isConnecting) anim.start();
-    else { anim.stop(); pulseAnim.setValue(1); }
-    return () => anim.stop();
-  }, [isConnected, isConnecting]);
-
-  useEffect(() => {
-    const anim = Animated.loop(
-      Animated.parallel([
-        Animated.sequence([
-          Animated.timing(ring1, { toValue: 1.4, duration: 2000, useNativeDriver: true }),
-          Animated.timing(ring1, { toValue: 1,   duration: 2000, useNativeDriver: true }),
-        ]),
-        Animated.sequence([
-          Animated.delay(700),
-          Animated.timing(ring2, { toValue: 1.65, duration: 2200, useNativeDriver: true }),
-          Animated.timing(ring2, { toValue: 1,    duration: 2200, useNativeDriver: true }),
-        ]),
-      ])
-    );
-    if (isConnected) anim.start();
-    else { anim.stop(); ring1.setValue(1); ring2.setValue(1); }
-    return () => anim.stop();
-  }, [isConnected]);
-
-  useEffect(() => {
-    const anim = Animated.loop(
-      Animated.sequence([
-        Animated.timing(glowAnim, { toValue: 1, duration: 1500, useNativeDriver: true }),
-        Animated.timing(glowAnim, { toValue: 0.5, duration: 1500, useNativeDriver: true }),
-      ])
-    );
-    anim.start();
-    return () => anim.stop();
-  }, []);
 
   useEffect(() => {
     let interval: ReturnType<typeof setInterval> | null = null;
@@ -480,13 +431,22 @@ export default function HomeScreen() {
     connected:   "power",
     exhausted:   "warning",
     expired:     "warning",
-  }[btnState];
+  }[btnState] as keyof typeof Ionicons.glyphMap;
 
-  const ringColor = isConnected
-    ? "rgba(0,229,160,"
+  // Message sous le bouton : il doit répondre à « que se passe-t-il ? » sans
+  // que l'utilisateur ait à interpréter une couleur.
+  const heroCaption = isConnected
+    ? t('protection_active')
     : isConnecting
-    ? "rgba(245,158,11,"
-    : "rgba(0,212,255,";
+    ? t('connecting_status')
+    : btnState === 'connect'
+    ? t('tap_to_connect')
+    : btnLabel;
+
+  const protocolLabel = connectedProtocol
+    || (activeConnection ? activeConnection.displayProtocol : null)
+    || selectedProtocol
+    || "—";
 
   return (
     <LinearGradient colors={colors.gradients.bg as [string, string, string]} style={styles.container}>
@@ -503,357 +463,338 @@ export default function HomeScreen() {
         }}
       />
       <ScrollView
-        contentContainerStyle={[styles.content, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 90 }]}
+        contentContainerStyle={[
+          styles.content,
+          {
+            paddingTop: insets.top + spacing.sm,
+            // La barre d'onglets flotte au-dessus du contenu : cette marge
+            // garantit que la dernière carte reste entièrement atteignable.
+            paddingBottom: insets.bottom + layout.tabBarClearance,
+          },
+        ]}
         showsVerticalScrollIndicator={false}
       >
-        {/* Header */}
+        {/* En-tête : identité à gauche, actions à droite. */}
         <View style={styles.headerRow}>
-          <View>
-            <Text style={styles.greeting}>{t('greeting_default')}</Text>
-            <Text style={styles.userName}>{user?.name || t('user_default')}</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={[type.caption, { color: colors.textMuted }]}>{t('greeting_default')}</Text>
+            <Text style={[type.h1, { color: colors.textPrimary }]} numberOfLines={1}>
+              {user?.name || t('user_default')}
+            </Text>
           </View>
-          <View style={{ flexDirection: "row", gap: 10 }}>
-            <Pressable onPress={handleRefresh} style={styles.notifBtn} disabled={isRefreshing}>
-              {isRefreshing ? (
-                <ActivityIndicator size="small" color={Colors.primary} />
-              ) : (
-                <Ionicons name="refresh" size={20} color={Colors.textSecondary} />
-              )}
-            </Pressable>
-            <Pressable onPress={() => router.push("/settings")} style={styles.notifBtn}>
-              <Ionicons name="settings-outline" size={20} color={Colors.textSecondary} />
-            </Pressable>
+          <View style={styles.headerActions}>
+            <IconButton
+              icon="refresh"
+              onPress={handleRefresh}
+              disabled={isRefreshing}
+              accessibilityLabel={t('refresh_config')}
+            >
+              {isRefreshing ? <ActivityIndicator size="small" color={colors.primary} /> : undefined}
+            </IconButton>
+            <IconButton
+              icon="settings-outline"
+              onPress={() => router.push("/settings")}
+              accessibilityLabel={t('settings')}
+            />
           </View>
         </View>
 
-        {/* Revocation Warning Banner */}
+        {/* Bandeau de révocation — le plus haut placé : il conditionne tout le reste. */}
         {revokedStatus !== 'none' && (
-          <View style={[styles.statsCard, { borderColor: Colors.disconnected + '60', backgroundColor: Colors.disconnectedDim }]}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-              <Ionicons name="warning" size={24} color={Colors.disconnected} />
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 14, fontWeight: '700', color: Colors.disconnected, fontFamily: 'Inter_700Bold' }}>
+          <Surface tone={colors.disconnected}>
+            <View style={styles.bannerRow}>
+              <Ionicons name="warning" size={22} color={colors.disconnected} />
+              <View style={{ flex: 1, gap: 2 }}>
+                <Text style={[type.h3, { color: colors.disconnected }]}>
                   {revokedStatus === 'exhausted' ? t('quota_exhausted') : revokedStatus === 'revoked' ? t('connection_revoked') : revokedStatus === 'suspended' ? t('connection_suspended') : revokedStatus === 'expired' ? t('connection_expired') : t('connection_disabled')}
                 </Text>
-                <Text style={{ fontSize: 12, color: Colors.textSecondary, fontFamily: 'Inter_400Regular', marginTop: 2 }}>
+                <Text style={[type.caption, { color: colors.textSecondary }]}>
                   {revokedStatus === 'exhausted' ? t('friendly_quota_exhausted') : revokedStatus === 'revoked' ? t('revocation_msg_revoked') : revokedStatus === 'suspended' ? t('revocation_msg_suspended') : revokedStatus === 'expired' ? t('revocation_msg_expired') : t('revocation_msg_disabled')}
                 </Text>
               </View>
             </View>
-          </View>
+          </Surface>
         )}
 
-        {/* Saved Configs Selector */}
+        {/* Sélecteur de profil — présenté en pastilles horizontales, plus lisible
+            que des blocs empilés lorsque plusieurs profils coexistent. */}
         {savedConfigs.length > 1 && (
-          <View style={styles.statsCard}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Text style={styles.cardLabel}>{t('config_switch')}</Text>
-              {isSwitchingConfig && <ActivityIndicator size="small" color={Colors.primary} />}
-            </View>
-            <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+          <Surface>
+            <SectionHeader
+              title={t('config_switch')}
+              icon="swap-horizontal-outline"
+              trailing={isSwitchingConfig ? <ActivityIndicator size="small" color={colors.primary} /> : undefined}
+            />
+            <View style={styles.configRow}>
               {savedConfigs.map((cfg) => {
-                const isRevokedOrExpired = connections.find(c => c.id === cfg.id)?.status === 'revoked' ||
-                  connections.find(c => c.id === cfg.id)?.status === 'expired' ||
-                  connections.find(c => c.id === cfg.id)?.status === 'exhausted' ||
-                  connections.find(c => c.id === cfg.id)?.status === 'suspended';
+                const connStatus = connections.find(c => c.id === cfg.id)?.status;
+                const isRevokedOrExpired = connStatus === 'revoked' || connStatus === 'expired'
+                  || connStatus === 'exhausted' || connStatus === 'suspended';
                 const isActive = cfg.id === activeConfigId;
                 const isDisabled = isRevokedOrExpired && !isActive;
+                const tone = isDisabled ? colors.disconnected : isActive ? colors.primary : colors.textMuted;
                 return (
                   <Pressable
                     key={cfg.id}
                     onPress={() => !isSwitchingConfig && !isDisabled && switchConfig(cfg.id)}
                     disabled={isSwitchingConfig || isDisabled}
-                    style={{
-                      flex: 1,
-                      paddingVertical: 10,
-                      paddingHorizontal: 12,
-                      borderRadius: 12,
-                      borderWidth: 1,
-                      borderColor: isActive ? Colors.primary + '60' : isDisabled ? Colors.disconnected + '30' : Colors.border,
-                      backgroundColor: isActive ? Colors.primaryDim : isDisabled ? Colors.bgCard + '60' : Colors.bgCard,
-                      alignItems: 'center',
-                      gap: 4,
-                      opacity: isDisabled ? 0.5 : 1,
-                    }}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: isActive, disabled: isDisabled }}
+                    style={[
+                      styles.configChip,
+                      {
+                        borderColor: isActive ? colors.primary + alpha.f60 : colors.border,
+                        backgroundColor: isActive ? colors.primaryDim : colors.bgCard2,
+                        opacity: isDisabled ? 0.5 : 1,
+                      },
+                    ]}
                   >
                     {isSwitchingConfig && isActive ? (
-                      <ActivityIndicator size="small" color={Colors.primary} />
+                      <ActivityIndicator size="small" color={colors.primary} />
                     ) : (
-                      <Ionicons
-                        name={isActive ? 'shield-checkmark' : 'shield-outline'}
-                        size={18}
-                        color={isDisabled ? Colors.disconnected : isActive ? Colors.primary : Colors.textMuted}
-                      />
+                      <Ionicons name={isActive ? 'shield-checkmark' : 'shield-outline'} size={17} color={tone} />
                     )}
-                    <Text style={{ fontSize: 12, fontWeight: '600', color: isDisabled ? Colors.disconnected : isActive ? Colors.primary : Colors.textSecondary, fontFamily: 'Inter_600SemiBold' }} numberOfLines={1}>
+                    <Text style={[type.captionMedium, { color: isActive ? colors.primary : colors.textSecondary }]} numberOfLines={1}>
                       {cfg.name}
                     </Text>
-                    <Text style={{ fontSize: 10, color: Colors.textMuted, fontFamily: 'Inter_400Regular' }}>
+                    <Text style={[type.micro, { color: colors.textMuted }]} numberOfLines={1}>
                       {cfg.protocol}
                     </Text>
-                    <View style={{
-                      paddingHorizontal: 6,
-                      paddingVertical: 2,
-                      borderRadius: 6,
-                      backgroundColor: isDisabled ? Colors.disconnected + '15' : isActive ? Colors.connected + '20' : Colors.textMuted + '15',
-                    }}>
-                      <Text style={{ fontSize: 9, color: isDisabled ? Colors.disconnected : isActive ? Colors.connected : Colors.textMuted, fontFamily: 'Inter_600SemiBold' }}>
-                        {isDisabled ? t('config_expired') : isActive ? t('config_active') : t('config_inactive')}
-                      </Text>
-                    </View>
                   </Pressable>
                 );
               })}
             </View>
-          </View>
+          </Surface>
         )}
 
-        {/* VPN Button Area */}
-        <View style={styles.vpnSection}>
-          <View style={[styles.statusBadge, { borderColor: btnColor + "50", backgroundColor: btnColor + "10" }]}>
-            <View style={[styles.statusDot, { backgroundColor: btnColor }]} />
-            <Text style={[styles.statusText, { color: btnColor }]}>
-              {isConnected ? t('protection_active') : isConnecting ? t('connecting_status') : t('protection_inactive')}
-            </Text>
-          </View>
+        {/* ── ZONE HÉROS ──────────────────────────────────────────────────
+            Statut, bouton et informations vives forment un bloc unique : c'est
+            la seule partie de l'écran qui doit être lisible à bout de bras. */}
+        <View style={styles.hero}>
+          <Pill
+            label={isConnected ? t('protection_active') : isConnecting ? t('connecting_status') : t('protection_inactive')}
+            tone={btnColor}
+            dot
+          />
 
-          <View style={styles.btnWrap}>
-            {(isConnected || isConnecting) && (
-              <>
-                <Animated.View style={[styles.ring, { borderColor: ringColor + "0.15)", transform: [{ scale: ring1 }] }]} />
-                <Animated.View style={[styles.ring, { borderColor: ringColor + "0.08)", transform: [{ scale: ring2 }], width: 240, height: 240 }]} />
-              </>
-            )}
+          <PowerButton
+            tone={btnColor}
+            icon={btnIcon}
+            caption={heroCaption}
+            timer={isConnected ? formatTimer(timer) : null}
+            active={isConnected}
+            busy={isConnecting}
+            onPress={handleVpnButton}
+            accessibilityLabel={btnLabel}
+          />
 
-            <Animated.View style={[styles.btnGlow, { backgroundColor: btnColor + "18", opacity: glowAnim }]} />
-
-            <Pressable
-              onPress={handleVpnButton}
-              disabled={false}
-              onPressIn={() => Animated.spring(pressAnim, { toValue: 0.96, useNativeDriver: true, speed: 40, bounciness: 6 }).start()}
-              onPressOut={() => Animated.spring(pressAnim, { toValue: 1, useNativeDriver: true, speed: 30, bounciness: 8 }).start()}
-              accessibilityRole="button"
-              accessibilityLabel={btnLabel}
-            >
-              <Animated.View style={[styles.vpnBtn, { borderColor: btnColor + "60", transform: [{ scale: Animated.multiply(pulseAnim, pressAnim) }] }]}>
-                <LinearGradient
-                  colors={[btnColor + "30", btnColor + "10"]}
-                  style={styles.vpnBtnInner}
-                >
-                  <Ionicons name={btnIcon as any} size={44} color={btnColor} />
-                </LinearGradient>
-              </Animated.View>
-            </Pressable>
-          </View>
-
-          {isConnected && (
-            <Text style={styles.timer}>{formatTimer(timer)}</Text>
-          )}
-
-          <Text style={styles.btnHint}>
-            {isConnected
-              ? t('protection_active')
-              : isConnecting
-              ? t('connecting_status')
-              : t('tap_to_connect')}
-          </Text>
-
-          <Pressable onPress={handleVpnButton} style={({ pressed }) => [styles.actionBtn, { backgroundColor: btnColor }, pressed && { opacity: 0.82, transform: [{ scale: 0.985 }] }]}>
-            <Ionicons name={btnIcon as any} size={18} color={colors.primaryForeground} />
-            <Text style={[styles.actionBtnText, { color: colors.primaryForeground }]}>{btnLabel}</Text>
+          <Pressable
+            onPress={handleVpnButton}
+            accessibilityRole="button"
+            accessibilityLabel={btnLabel}
+            style={({ pressed }) => [
+              styles.cta,
+              { backgroundColor: btnColor },
+              pressed && { opacity: 0.85, transform: [{ scale: 0.985 }] },
+            ]}
+          >
+            <Ionicons name={btnIcon} size={18} color={colors.primaryForeground} />
+            <Text style={[type.h3, { color: colors.primaryForeground }]}>{btnLabel}</Text>
           </Pressable>
 
+          {/* Bandeau vif : IP, protocole et latence côte à côte, comme sur les
+              applications VPN de référence, plutôt que noyés dans une liste. */}
+          <Surface style={styles.liveStrip} padded={false}>
+            <StatRow>
+              <StatTile label={t('info_ip_address')} value={connectedIp} icon="globe-outline" monospace />
+              <StatTile label={t('info_protocol')} value={protocolLabel} icon="git-branch-outline" />
+              <StatTile
+                label={t('info_ping')}
+                value={ping ? `${ping} ms` : "—"}
+                icon="pulse-outline"
+                tone={colors.connected}
+                monospace
+              />
+            </StatRow>
+          </Surface>
+
           {(isConnecting || isConnected) && stepLogs.length > 0 && (
-            <View style={{ width: '100%', marginTop: 8 }}>
+            <View style={{ width: '100%' }}>
               <StepLogs steps={stepLogs} visible={true} />
             </View>
           )}
 
           {(isConnecting || isConnected) && (
             <Pressable onPress={() => setLogsVisible(true)} style={styles.logsLink}>
-              <Ionicons name="terminal-outline" size={14} color={Colors.primary} />
-              <Text style={styles.logsLinkText}>{isConnecting ? t('logs_in_progress') : t('view_connection_logs')}</Text>
+              <Ionicons name="terminal-outline" size={14} color={colors.primary} />
+              <Text style={[type.captionMedium, { color: colors.primary }]}>
+                {isConnecting ? t('logs_in_progress') : t('view_connection_logs')}
+              </Text>
             </Pressable>
           )}
         </View>
 
-        {/* ── QUOTA CARD — Consomme deriveQuota (B1/B4) ─────────────────── */}
+        {/* ── QUOTA — Consomme deriveQuota (B1/B4) ────────────────────────── */}
         {derivedQuota.totalBytes > 0 && (
-          <View style={styles.statsCard}>
-            <Text style={styles.cardLabel}>{t('card_quota_plan')}</Text>
+          <Surface>
+            <SectionHeader title={t('card_quota_plan')} icon="cellular-outline" />
             {derivedQuota.isExhausted ? (
-              <View style={{ alignItems: "center", paddingVertical: 8 }}>
-                <Ionicons name="warning-outline" size={24} color={Colors.disconnected} />
-                <Text style={{ fontSize: 14, fontWeight: "700", color: Colors.disconnected, fontFamily: "Inter_700Bold", marginTop: 4 }}>
-                  {t('quota_exhausted')}
-                </Text>
-                <Text style={{ fontSize: 11, color: Colors.textMuted, fontFamily: "Inter_400Regular", marginTop: 2 }}>
-                  {t('quota_reload')}
-                </Text>
-              </View>
+              <EmptyState icon="warning-outline" title={t('quota_exhausted')} description={t('quota_reload')} />
             ) : (
               <>
-                <View style={connStyles.quotaRow}>
-                  <View style={connStyles.quotaItem}>
-                    <Text style={connStyles.quotaVal}>{derivedQuota.formattedTotal}</Text>
-                    <Text style={connStyles.quotaLbl}>{t('quota_total')}</Text>
-                  </View>
-                  <View style={connStyles.quotaDivider} />
-                  <View style={connStyles.quotaItem}>
-                    <Text style={connStyles.quotaVal}>{derivedQuota.formattedUsed}</Text>
-                    <Text style={connStyles.quotaLbl}>{t('quota_used')}</Text>
-                  </View>
-                  <View style={connStyles.quotaDivider} />
-                  <View style={connStyles.quotaItem}>
-                    <Text style={connStyles.quotaVal}>{derivedQuota.formattedRemaining}</Text>
-                    <Text style={connStyles.quotaLbl}>{t('quota_remaining')}</Text>
-                  </View>
-                </View>
+                <StatRow>
+                  <StatTile label={t('quota_total')} value={derivedQuota.formattedTotal} monospace />
+                  <StatTile label={t('quota_used')} value={derivedQuota.formattedUsed} monospace />
+                  <StatTile
+                    label={t('quota_remaining')}
+                    value={derivedQuota.formattedRemaining}
+                    tone={colors.connected}
+                    monospace
+                  />
+                </StatRow>
 
-                {/* Progress bar */}
-                <View style={styles.progressBg}>
-                  <View style={[styles.progressFill, {
-                    width: `${Math.min(derivedQuota.usedRatio * 100, 100)}%` as any,
-                    backgroundColor: derivedQuota.usedRatio > 0.8 ? Colors.disconnected : Colors.primary
-                  }]} />
-                </View>
+                <ProgressBar
+                  progress={derivedQuota.usedRatio}
+                  tone={colors.primary}
+                  warnTone={colors.disconnected}
+                />
 
-                <Text style={{ fontSize: 11, color: Colors.textMuted, fontFamily: "Inter_400Regular", textAlign: "center" }}>
-                  {(derivedQuota.usedRatio * 100).toFixed(0)}% {t('quota_used')}
-                </Text>
-
-                {derivedQuota.expiryDate && (
-                  <Text style={{ fontSize: 11, color: Colors.textMuted, fontFamily: "Inter_400Regular", textAlign: "center", marginTop: 4 }}>
-                    {t('config_expires_at')} {new Date(derivedQuota.expiryDate).toLocaleString("fr-FR", { dateStyle: "long", timeStyle: "short" })}
+                <View style={styles.metaRow}>
+                  <Text style={[type.caption, { color: colors.textMuted }]}>
+                    {(derivedQuota.usedRatio * 100).toFixed(0)}% {t('quota_used')}
                   </Text>
-                )}
+                  {derivedQuota.expiryDate && (
+                    <Text style={[type.caption, { color: colors.textMuted }]} numberOfLines={1}>
+                      {t('config_expires_at')} {new Date(derivedQuota.expiryDate).toLocaleDateString("fr-FR", { dateStyle: "medium" })}
+                    </Text>
+                  )}
+                </View>
               </>
             )}
-          </View>
+          </Surface>
         )}
 
-        {/* Traffic stats card — affiché uniquement quand connecté */}
+        {/* Trafic temps réel — visible seulement quand il y a du trafic à montrer. */}
         {isConnected && (
-          <View style={styles.statsCard}>
-            <Text style={styles.cardLabel}>{t('card_traffic_realtime')}</Text>
-            <View style={styles.statsRow}>
-              <View style={styles.statItem}>
-                <Text style={styles.statValue}>{formatBytes(traffic.uploadBytes)}</Text>
-                <Text style={styles.statLabel}>↑ {t('traffic_sent')}</Text>
-              </View>
-              <View style={styles.statDivider} />
-              <View style={styles.statItem}>
-                <Text style={styles.statValue}>{formatBytes(traffic.downloadBytes)}</Text>
-                <Text style={styles.statLabel}>↓ {t('traffic_received')}</Text>
-              </View>
-              <View style={styles.statDivider} />
-              <View style={styles.statItem}>
-                <Text style={[styles.statValue, { fontSize: 14 }]}>
-                  ↑{formatSpeed(traffic.uploadSpeed)}{"\n"}↓{formatSpeed(traffic.downloadSpeed)}
+          <Surface>
+            <SectionHeader
+              title={t('card_traffic_realtime')}
+              icon="swap-vertical-outline"
+              trailing={<Pill label={t('protection_active')} tone={colors.connected} dot />}
+            />
+            <StatRow>
+              <StatTile
+                label={t('traffic_sent')}
+                value={formatBytes(traffic.uploadBytes)}
+                icon="arrow-up-outline"
+                tone={colors.primary}
+                monospace
+              />
+              <StatTile
+                label={t('traffic_received')}
+                value={formatBytes(traffic.downloadBytes)}
+                icon="arrow-down-outline"
+                tone={colors.connected}
+                monospace
+              />
+            </StatRow>
+            {/* Les débits instantanés sont séparés des volumes cumulés : ce sont
+                deux natures de mesure, les mêler nuisait à la lecture. */}
+            <View style={[styles.speedRow, { borderTopColor: colors.border }]}>
+              <View style={styles.speedItem}>
+                <Ionicons name="arrow-up" size={13} color={colors.primary} />
+                <Text style={[type.captionMedium, { color: colors.textSecondary, fontVariant: ['tabular-nums' as const] }]}>
+                  {formatSpeed(traffic.uploadSpeed)}
                 </Text>
-                <Text style={styles.statLabel}>{t('traffic_speed')}</Text>
               </View>
+              <View style={styles.speedItem}>
+                <Ionicons name="arrow-down" size={13} color={colors.connected} />
+                <Text style={[type.captionMedium, { color: colors.textSecondary, fontVariant: ['tabular-nums' as const] }]}>
+                  {formatSpeed(traffic.downloadSpeed)}
+                </Text>
+              </View>
+              <Text style={[type.micro, { color: colors.textMuted }]}>{t('traffic_speed')}</Text>
             </View>
-          </View>
+          </Surface>
         )}
 
         {/* Consommation par application */}
         {isConnected && (
-          <View style={styles.statsCard}>
-            <Text style={styles.cardLabel}>{t('card_traffic_per_app')}</Text>
+          <Surface>
+            <SectionHeader title={t('card_traffic_per_app')} icon="apps-outline" />
             {perAppTraffic && perAppTraffic.length > 0 ? (
               perAppTraffic.map((appStat, index) => (
                 <View
                   key={`${appStat.packageName}-${index}`}
-                  style={{
-                    flexDirection: 'row',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    paddingVertical: 8,
-                    borderBottomWidth: index < perAppTraffic.length - 1 ? StyleSheet.hairlineWidth : 0,
-                    borderBottomColor: Colors.border,
-                  }}
+                  style={[
+                    styles.appRow,
+                    index < perAppTraffic.length - 1 && {
+                      borderBottomWidth: StyleSheet.hairlineWidth,
+                      borderBottomColor: colors.border,
+                    },
+                  ]}
                 >
-                  <View style={{ flex: 1, paddingRight: 8 }}>
-                    <Text style={{ fontSize: 14, color: Colors.textPrimary, fontFamily: 'Inter_500Medium' }} numberOfLines={1}>
+                  <View style={{ flex: 1, paddingRight: spacing.sm }}>
+                    <Text style={[type.bodyMedium, { color: colors.textPrimary }]} numberOfLines={1}>
                       {appStat.appName || appStat.packageName}
                     </Text>
-                    <Text style={{ fontSize: 11, color: Colors.textMuted, fontFamily: 'Inter_400Regular' }} numberOfLines={1}>
+                    <Text style={[type.micro, { color: colors.textMuted }]} numberOfLines={1}>
                       {appStat.packageName}
                     </Text>
                   </View>
                   <View style={{ alignItems: 'flex-end' }}>
-                    <Text style={{ fontSize: 13, color: Colors.textPrimary, fontFamily: 'Inter_600SemiBold' }}>
+                    <Text style={[type.h3, { color: colors.textPrimary, fontVariant: ['tabular-nums' as const] }]}>
                       {formatBytes(appStat.totalBytes)}
                     </Text>
-                    <Text style={{ fontSize: 11, color: Colors.textSecondary, fontFamily: 'Inter_400Regular' }}>
+                    <Text style={[type.micro, { color: colors.textMuted }]}>
                       ↑ {formatBytes(appStat.uploadBytes)} · ↓ {formatBytes(appStat.downloadBytes)}
                     </Text>
                   </View>
                 </View>
               ))
             ) : (
-              <Text style={{ fontSize: 13, color: Colors.textMuted, paddingVertical: 8, fontFamily: 'Inter_400Regular' }}>
-                {t('no_app_data')}
-              </Text>
+              <EmptyState icon="apps-outline" title={t('no_app_data')} />
             )}
-          </View>
+          </Surface>
         )}
 
-        {/* Infos Connexion & Système */}
-        <View style={styles.statsCard}>
-          <Text style={styles.cardLabel}>{t('card_connection_info')}</Text>
+        {/* Détails secondaires. IP, protocole et latence figurent déjà dans le
+            bandeau vif : ne restent ici que les informations de contexte. */}
+        <Surface>
+          <SectionHeader title={t('card_connection_info')} icon="information-circle-outline" />
           <View style={styles.infoGrid}>
             <View style={styles.infoRow}>
-              <Text style={styles.infoKey}>{t('info_ip_address')}</Text>
-              <Text style={styles.infoVal}>{connectedIp}</Text>
+              <Text style={[type.caption, { color: colors.textMuted }]}>{t('info_last_conn')}</Text>
+              <Text style={[type.captionMedium, { color: colors.textPrimary }]}>{lastConnection}</Text>
             </View>
             <View style={styles.infoRow}>
-              <Text style={styles.infoKey}>{t('info_protocol')}</Text>
-              <Text style={styles.infoVal}>
-                {connectedProtocol
-                  || (activeConnection ? activeConnection.displayProtocol : null)
-                  || selectedProtocol
-                  || "—"}
+              <Text style={[type.caption, { color: colors.textMuted }]}>{t('app_version')}</Text>
+              <Text style={[type.captionMedium, { color: colors.textPrimary }]}>
+                v{Constants.expoConfig?.version ?? "1.0.0"}
               </Text>
             </View>
-            <View style={styles.infoRow}>
-              <Text style={styles.infoKey}>{t('info_ping')}</Text>
-              <Text style={styles.infoVal}>{ping ? `${ping} ms` : "—"}</Text>
-            </View>
-            <View style={styles.infoRow}>
-              <Text style={styles.infoKey}>{t('info_last_conn')}</Text>
-              <Text style={styles.infoVal}>{lastConnection}</Text>
-            </View>
-            <View style={styles.infoRow}>
-              <Text style={styles.infoKey}>{t('app_version')}</Text>
-              <Text style={styles.infoVal}>v{Constants.expoConfig?.version ?? "1.0.0"}</Text>
-            </View>
           </View>
-        </View>
+        </Surface>
 
-        {/* ── VPN Connections ─────────────────────────────────────────── */}
-        <View style={styles.statsCard}>
-          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-            <Text style={styles.cardLabel}>{t('vpn_connections')}</Text>
-            <Pressable onPress={fetchConnections} disabled={connectionsLoading} style={{ padding: 4 }}>
-              {connectionsLoading
-                ? <ActivityIndicator size="small" color={Colors.primary} />
-                : <Ionicons name="refresh" size={16} color={Colors.primary} />
-              }
-            </Pressable>
-          </View>
-
+        {/* ── Connexions VPN ──────────────────────────────────────────────── */}
+        <Surface>
+          <SectionHeader
+            title={t('vpn_connections')}
+            icon="server-outline"
+            trailing={
+              <Pressable onPress={fetchConnections} disabled={connectionsLoading} hitSlop={10}>
+                {connectionsLoading
+                  ? <ActivityIndicator size="small" color={colors.primary} />
+                  : <Ionicons name="refresh" size={16} color={colors.primary} />}
+              </Pressable>
+            }
+          />
           {connections.length === 0 ? (
-            <View style={{ alignItems: "center", paddingVertical: 16 }}>
-              <Ionicons name="shield-outline" size={32} color={Colors.textMuted} style={{ marginBottom: 8 }} />
-              <Text style={{ fontSize: 13, color: Colors.textMuted, fontFamily: "Inter_400Regular" }}>
-                {connectionsLoading ? t('loading') : t('no_vpn_connections')}
-              </Text>
-              <Text style={{ fontSize: 11, color: Colors.textMuted, marginTop: 4, fontFamily: "Inter_400Regular" }}>
-                {t('ask_admin_for_plan')}
-              </Text>
-            </View>
+            <EmptyState
+              icon="shield-outline"
+              title={connectionsLoading ? t('loading') : t('no_vpn_connections')}
+              description={t('ask_admin_for_plan')}
+            />
           ) : (
             connections.map((conn) => (
               <VpnConnectionCard
@@ -863,20 +804,32 @@ export default function HomeScreen() {
               />
             ))
           )}
-        </View>
+        </Surface>
 
-        {/* Quick actions */}
+        {/* Accès rapides */}
         <View style={styles.quickRow}>
           {[
-            { icon: "gift-outline", label: t('activate_plan'), action: () => router.push("/plan"), color: Colors.purple },
-            { icon: "time-outline", label: t('history'), action: () => router.push("/(tabs)/history"), color: Colors.primary },
-            { icon: "headset-outline", label: t('support'), action: () => router.push("/support"), color: Colors.connected },
+            { icon: "gift-outline", label: t('activate_plan'), action: () => router.push("/plan"), color: colors.purple },
+            { icon: "time-outline", label: t('history'), action: () => router.push("/(tabs)/history"), color: colors.primary },
+            { icon: "headset-outline", label: t('support'), action: () => router.push("/support"), color: colors.connected },
           ].map((item) => (
-            <Pressable key={item.label} onPress={item.action} style={styles.quickItem}>
-              <View style={[styles.quickIcon, { backgroundColor: item.color + "15", borderColor: item.color + "30" }]}>
-                <Ionicons name={item.icon as any} size={20} color={item.color} />
+            <Pressable
+              key={item.label}
+              onPress={item.action}
+              accessibilityRole="button"
+              accessibilityLabel={item.label}
+              style={({ pressed }) => [
+                styles.quickItem,
+                { borderColor: colors.border, backgroundColor: colors.bgCard },
+                pressed && { opacity: 0.75, transform: [{ scale: 0.97 }] },
+              ]}
+            >
+              <View style={[styles.quickIcon, { backgroundColor: item.color + alpha.f12 }]}>
+                <Ionicons name={item.icon as any} size={19} color={item.color} />
               </View>
-              <Text style={styles.quickLabel}>{item.label}</Text>
+              <Text style={[type.micro, { color: colors.textSecondary }]} numberOfLines={1}>
+                {item.label}
+              </Text>
             </Pressable>
           ))}
         </View>
@@ -916,144 +869,92 @@ const logStyles = StyleSheet.create({
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  content: { paddingHorizontal: 20, gap: 16 },
-  headerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 8 },
-  greeting: { fontSize: 13, color: Colors.textMuted, fontFamily: "Inter_400Regular" },
-  userName: { fontSize: 20, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold" },
-  notifBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: Colors.bgCard, borderWidth: 1, borderColor: Colors.border, alignItems: "center", justifyContent: "center" },
-  vpnSection: { alignItems: "center", paddingVertical: 24, gap: 16 },
-  statusBadge: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, borderWidth: 1 },
-  statusDot: { width: 7, height: 7, borderRadius: 4 },
-  statusText: { fontSize: 13, fontWeight: "600", fontFamily: "Inter_600SemiBold" },
-  btnWrap: { width: 200, height: 200, alignItems: "center", justifyContent: "center" },
-  ring: { position: "absolute", width: 190, height: 190, borderRadius: 95, borderWidth: 1 },
-  btnGlow: { position: "absolute", width: 170, height: 170, borderRadius: 85 },
-  vpnBtn: { width: 150, height: 150, borderRadius: 75, borderWidth: 2, overflow: "hidden" },
-  vpnBtnInner: { flex: 1, alignItems: "center", justifyContent: "center" },
-  timer: { fontSize: 32, fontWeight: "700", color: Colors.connected, fontFamily: "Inter_700Bold", letterSpacing: 2 },
-  btnHint: { fontSize: 13, color: Colors.textMuted, fontFamily: "Inter_400Regular", textAlign: "center" },
-  actionBtn: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 32, paddingVertical: 14, borderRadius: 16 },
-  actionBtnText: { fontSize: 15, fontWeight: "700", fontFamily: "Inter_700Bold" },
-  logsLink: { flexDirection: "row", alignItems: "center", gap: 6 },
-  logsLinkText: { fontSize: 12, color: Colors.primary, fontFamily: "Inter_500Medium" },
-  statsCard: { backgroundColor: Colors.bgCard, borderRadius: 20, borderWidth: 1, borderColor: Colors.border, padding: 16, gap: 12 },
-  cardLabel: { fontSize: 10, fontWeight: "700", color: Colors.textMuted, letterSpacing: 1.5, fontFamily: "Inter_700Bold" },
-  infoGrid: { gap: 8, marginTop: 4 },
-  infoRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  infoKey: { fontSize: 12, color: Colors.textMuted, fontFamily: "Inter_400Regular" },
-  infoVal: { fontSize: 13, color: "#FFF", fontFamily: "Inter_600SemiBold" },
-  statsRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  statItem: { flex: 1, alignItems: "center", gap: 4 },
-  statDivider: { width: 1, height: 36, backgroundColor: Colors.border },
-  statValue: { fontSize: 20, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold" },
-  statLabel: { fontSize: 11, color: Colors.textMuted, fontFamily: "Inter_400Regular" },
-  progressBg: { height: 4, backgroundColor: Colors.border, borderRadius: 2 },
-  progressFill: { height: 4, borderRadius: 2 },
-  expireText: { fontSize: 11, color: Colors.textMuted, fontFamily: "Inter_400Regular" },
-  protoCard: { backgroundColor: Colors.bgCard, borderRadius: 16, borderWidth: 1, borderColor: Colors.border, padding: 14, gap: 10 },
-  protoRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-  protoLabel: { flex: 1, fontSize: 13, color: Colors.textSecondary, fontFamily: "Inter_400Regular" },
-  protoBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, backgroundColor: Colors.primaryDim, borderWidth: 1, borderColor: Colors.primary + "40" },
-  protoBadgeText: { fontSize: 11, fontWeight: "700", color: Colors.primary, fontFamily: "Inter_700Bold" },
-  quickRow: { flexDirection: "row", gap: 10 },
-  quickItem: { flex: 1, alignItems: "center", gap: 8 },
-  quickIcon: { width: 52, height: 52, borderRadius: 16, borderWidth: 1, alignItems: "center", justifyContent: "center" },
-  quickLabel: { fontSize: 11, color: Colors.textSecondary, fontFamily: "Inter_500Medium", textAlign: "center" },
-});
+  content: { paddingHorizontal: layout.screenPadding, gap: spacing.lg },
 
-// ── VPN Connection Card Styles ────────────────────────────────────────────────
-const connStyles = StyleSheet.create({
-  card: {
-    backgroundColor: Colors.bgCard,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    padding: 14,
-    gap: 10,
-    marginTop: 10,
-  },
-  cardActive: {
-    borderColor: Colors.primary + "30",
-  },
-  cardHeader: {
+  headerRow: {
     flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 8,
+    alignItems: "center",
+    gap: spacing.md,
+    paddingVertical: spacing.sm,
   },
-  connName: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#FFF",
-    fontFamily: "Inter_600SemiBold",
+  headerActions: { flexDirection: "row", gap: spacing.sm },
+
+  bannerRow: { flexDirection: "row", alignItems: "center", gap: spacing.md },
+
+  // ── Zone héros ─────────────────────────────────────────────────────────────
+  // Le rythme vertical y est plus généreux qu'ailleurs : cet espace vide est ce
+  // qui distingue une interface premium d'un empilement de composants.
+  hero: {
+    alignItems: "center",
+    gap: spacing.xl,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.md,
+  },
+  cta: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.sm,
+    paddingHorizontal: spacing['3xl'],
+    paddingVertical: spacing.lg,
+    borderRadius: radius.lg,
+    minWidth: 220,
+    ...elevation.sm,
+  },
+  liveStrip: { width: "100%", paddingVertical: spacing.lg, paddingHorizontal: spacing.md },
+  logsLink: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+
+  // ── Profils ────────────────────────────────────────────────────────────────
+  configRow: { flexDirection: "row", gap: spacing.sm },
+  configChip: {
     flex: 1,
-  },
-  protoBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
+    alignItems: "center",
+    gap: spacing.xs,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radius.md,
     borderWidth: 1,
   },
-  protoText: {
-    fontSize: 10,
-    fontWeight: "700",
-    fontFamily: "Inter_700Bold",
-    letterSpacing: 0.5,
+
+  // ── Cartes de données ──────────────────────────────────────────────────────
+  metaRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: spacing.sm },
+  speedRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.lg,
+    paddingTop: spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
   },
-  techProto: {
-    fontSize: 10,
-    color: Colors.textMuted,
-    fontFamily: "Inter_400Regular",
-  },
-  statusDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    marginTop: 6,
-  },
-  statusLabel: {
-    fontSize: 11,
-    fontFamily: "Inter_500Medium",
-    marginTop: 4,
-  },
-  quotaRow: {
+  speedItem: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
+  appRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+    paddingVertical: spacing.md,
   },
-  quotaItem: {
+  infoGrid: { gap: spacing.md },
+  infoRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: spacing.md },
+
+  // ── Carte de connexion ─────────────────────────────────────────────────────
+  connHeader: { flexDirection: "row", alignItems: "flex-start", gap: spacing.md },
+  connProtoRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+
+  // ── Accès rapides ──────────────────────────────────────────────────────────
+  quickRow: { flexDirection: "row", gap: spacing.md },
+  quickItem: {
     flex: 1,
     alignItems: "center",
-    gap: 2,
+    gap: spacing.sm,
+    paddingVertical: spacing.lg,
+    borderRadius: radius.lg,
+    borderWidth: 1,
   },
-  quotaDivider: {
-    width: 1,
-    height: 28,
-    backgroundColor: Colors.border,
-  },
-  quotaVal: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: "#FFF",
-    fontFamily: "Inter_700Bold",
-  },
-  quotaLbl: {
-    fontSize: 10,
-    color: Colors.textMuted,
-    fontFamily: "Inter_400Regular",
-  },
-  progressBg: {
-    height: 3,
-    backgroundColor: Colors.border,
-    borderRadius: 2,
-  },
-  progressFill: {
-    height: 3,
-    borderRadius: 2,
-  },
-  expire: {
-    fontSize: 11,
-    color: Colors.textMuted,
-    fontFamily: "Inter_400Regular",
-    textAlign: "right",
+  quickIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: radius.md,
+    alignItems: "center",
+    justifyContent: "center",
   },
 });
