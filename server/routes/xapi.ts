@@ -21,10 +21,17 @@ const VERSION_JSON_PATH =
   "/var/www/apk/version.json";
 
 // URL publique par défaut de l'APK distribué (surchargeable par variable d'env).
-// Le workflow CI dépose sxbvpn-latest.apk sous /var/www/apk/ (servi par Nginx).
+//
+// Le workflow CI dépose l'APK à DEUX endroits (build-android.yml) :
+//   • /var/www/sxb-vpn/dist/download/  → servi publiquement sous /download/
+//   • /var/www/apk/                    → archive de diagnostic, NON publique
+//
+// Cette constante pointait vers le second : l'URL renvoyait la page HTML de
+// repli du dashboard (SPA) au lieu du binaire, et l'application téléchargeait
+// donc un fichier de 1,5 Ko impossible à installer.
 const DEFAULT_APK_URL =
   process.env.MOBILE_APP_APK_URL ||
-  "https://vpnsxb.afrihall.com/apk/sxbvpn-latest.apk";
+  "https://vpnsxb.afrihall.com/download/sxbvpn-latest.apk";
 
 interface AppVersionPayload {
   versionCode: number;
