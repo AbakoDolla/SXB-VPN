@@ -139,9 +139,28 @@ jobs:
             CURRENT_LINK="$APP_DIR/current"
             DASHBOARD_STAGE="$APP_DIR/.deploy/dashboard-$DEPLOY_SHA"
             OLD_CURRENT="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
-            LEGACY_ECOSYSTEM="$APP_DIR/ecosystem.config.cjs"
             DASHBOARD_PUBLISHED=0
             BACKEND_PUBLISHED=0
+
+            mapfile -t LEGACY_PM2_STATE < <(
+              pm2 jlist | node -e '
+                let input = "";
+                process.stdin.on("data", (chunk) => { input += chunk; });
+                process.stdin.on("end", () => {
+                  const app = JSON.parse(input).find((entry) => entry.name === "sxb-backend");
+                  if (!app) process.exit(1);
+                  console.log(app.pm2_env.pm_exec_path || "");
+                  console.log(app.pm2_env.pm_cwd || "");
+                  console.log(app.pm2_env.NODE_PATH || "");
+                  console.log(app.pm2_env.NODE_ENV || "production");
+                });
+              '
+            )
+            LEGACY_PM2_SCRIPT="${LEGACY_PM2_STATE[0]:-}"
+            LEGACY_PM2_CWD="${LEGACY_PM2_STATE[1]:-$APP_DIR}"
+            LEGACY_NODE_PATH="${LEGACY_PM2_STATE[2]:-}"
+            LEGACY_NODE_ENV="${LEGACY_PM2_STATE[3]:-production}"
+            test -f "$LEGACY_PM2_SCRIPT"
 
             probe() {
               local url="$1"
@@ -170,7 +189,12 @@ jobs:
                   pm2 startOrReload "$OLD_CURRENT/ecosystem.config.cjs" --update-env
                 else
                   rm -f "$CURRENT_LINK"
-                  pm2 startOrReload "$LEGACY_ECOSYSTEM" --update-env
+                  pm2 delete sxb-backend
+                  NODE_PATH="$LEGACY_NODE_PATH" NODE_ENV="$LEGACY_NODE_ENV" \
+                    pm2 start "$LEGACY_PM2_SCRIPT" \
+                      --name sxb-backend \
+                      --cwd "$LEGACY_PM2_CWD" \
+                      --update-env
                 fi
                 pm2 save
               fi
@@ -228,9 +252,34 @@ jobs:
             . "$APP_DIR/.env"
             set +a
 
-            PGLIB_URL="$(printf '%s' "$DATABASE_URL" | sed -E 's/([?&])schema=[^&]*&?/\1/; s/[?&]$//')"
-            MIGRATIONS_TABLE="$(psql "$PGLIB_URL" -Atqc "SELECT to_regclass('public._prisma_migrations') IS NOT NULL;")"
-            if [ "$MIGRATIONS_TABLE" != "t" ]; then
+            MIGRATION_STATE="$(
+              node --input-type=module <<'NODE'
+            import { PrismaClient } from "@prisma/client";
+            const prisma = new PrismaClient();
+            try {
+              const [table] = await prisma.$queryRaw`
+                SELECT to_regclass('_prisma_migrations') IS NOT NULL AS "exists"
+              `;
+              if (!table.exists) {
+                console.log("absent");
+              } else {
+                const [baseline] = await prisma.$queryRaw`
+                  SELECT EXISTS (
+                    SELECT 1
+                    FROM "_prisma_migrations"
+                    WHERE migration_name = '20260902000000_baseline'
+                      AND finished_at IS NOT NULL
+                      AND rolled_back_at IS NULL
+                  ) AS "exists"
+                `;
+                console.log(baseline.exists ? "applied" : "unapplied");
+              }
+            } finally {
+              await prisma.$disconnect();
+            }
+            NODE
+            )"
+            if [ "$MIGRATION_STATE" != "applied" ]; then
               set +e
               pnpm exec prisma migrate diff \
                 --from-schema-datasource prisma/schema.prisma \
@@ -269,6 +318,7 @@ jobs:
             test -n "$(pm2 pid sxb-backend)"
             test "$(pm2 pid sxb-backend)" != "0"
             pm2 save
+            find "$APP_DIR/dist/assets" -type f -mtime +30 -delete 2>/dev/null || true
 
             cd "$APP_DIR"
             printf '%s\n' "$DEPLOY_SHA" > "$APP_DIR/.last-deployed-sha"

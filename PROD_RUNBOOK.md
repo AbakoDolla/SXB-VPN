@@ -20,6 +20,12 @@ Le workflow de déploiement ne réutilise pas le `node_modules` du processus en
 cours. Il construit sous `/var/www/sxb-vpn/releases/<sha>`, puis bascule le lien
 `current` et redémarre PM2 seulement quand la release est prête.
 
+Lors de l’adoption initiale de Prisma Migrate, le workflow compare la base
+existante au schéma de référence avant d’enregistrer la migration de base. La
+moindre dérive arrête le déploiement avant la bascule. Elle doit alors être
+analysée et réconciliée manuellement, jamais contournée avec une option de perte
+de données.
+
 ## Sauvegardes
 
 Chaque déploiement exécute automatiquement :

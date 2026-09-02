@@ -117,7 +117,7 @@ async function startServer() {
     },
     skip: (req: Request) => {
       // Skip rate limiting for health checks
-      return req.url === '/metrics' || req.url === '/health';
+      return req.originalUrl === '/api/health' || req.originalUrl === '/api/metrics';
     },
   });
   app.use("/api/", limiter);

@@ -126,7 +126,7 @@ Les deux chemins de production sont préservés :
 ```bash
 # Le prebuild construit libbox.aar automatiquement s'il est absent (~10 min).
 cd app-mobile
-npx expo prebuild --platform android --no-install
+pnpm exec expo prebuild --platform android --no-install
 cd android && ./gradlew :app:assembleRelease
 ```
 
@@ -135,12 +135,10 @@ Pour construire le moteur séparément (ou le régénérer) :
 ```bash
 cd app-mobile && ./scripts/build-libbox.sh          # nécessite Go + NDK
 SING_BOX_VERSION=v1.11.15 ./scripts/build-libbox.sh # version explicite
-SXB_SKIP_LIBBOX_BUILD=1 npx expo prebuild ...       # sauter la construction
+SXB_SKIP_LIBBOX_BUILD=1 pnpm exec expo prebuild ... # sauter la construction
 ```
 
-Le build est autonome : aucune modification du workflow n'est nécessaire. Le
-patch optionnel `ci-patches/` ajoute simplement une mise en cache de l'AAR
-pour économiser ~10 min par exécution CI.
+Le build est autonome et le workflow vérifie la présence de l’AAR produit.
 
 ### Ce qu'il faut voir dans logcat
 
