@@ -67,15 +67,16 @@ function serializeProfile(p: any, canSeeTechnical: boolean): any {
       status: p.status ?? null,
     };
   }
-  return {
-    ...p,
-    // Même pour les rôles habilités, aucun secret ne sort : le mot de passe est
-    // masqué et le blob canonique reste au serveur.
-    password: p.password ? '••••••••' : null,
-    canonicalConfig: undefined,
-    jsonConfig: p.jsonConfig ? '(chiffré — non exposé)' : null,
-    hasCanonicalConfig: !!p.canonicalConfig,
-  };
+  // Un rôle habilité voit les champs techniques, jamais les secrets.
+  // `delete` est indispensable : affecter `undefined` ne supprime pas la clé
+  // pour Prisma, et JSON.stringify la conserve dès qu'elle a été copiée par le
+  // spread — le blob chiffré continuait donc de sortir.
+  const out: any = { ...p };
+  delete out.canonicalConfig;
+  out.password = p.password ? '••••••••' : null;
+  out.jsonConfig = p.jsonConfig ? '(chiffré — non exposé)' : null;
+  out.hasCanonicalConfig = !!p.canonicalConfig;
+  return out;
 }
 
 /** true si le demandeur est habilité à voir les champs techniques d'un profil. */

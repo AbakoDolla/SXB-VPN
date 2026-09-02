@@ -125,21 +125,21 @@ function decrypt(enc: string): string {
 }
 
 function maskProfile(p: any) {
-  return {
-    ...p,
-    password: p.password ? '••••••••' : null,
-    // Jamais de contenu chiffré ni clair exposé — seulement les métadonnées
-    canonicalConfig: undefined,
-    jsonConfig: p.jsonConfig ? '(chiffré — non exposé)' : null,
-    hasCanonicalConfig: !!p.canonicalConfig,
-    canonicalConfigHash: p.canonicalConfigHash ?? null,
-    configVersion: p.configVersion ?? 1,
-    sourceFormat: p.sourceFormat ?? null,
-    validationStatus: p.validationStatus ?? null,
-    validationMessage: p.validationMessage ?? null,
-    validatedAt: p.validatedAt ?? null,
-    importedAt: p.importedAt ?? null,
-  };
+  // `delete` est indispensable : affecter `undefined` ne retire pas la clé
+  // copiée par le spread, et le blob chiffré ressortait donc dans la réponse.
+  const out: any = { ...p };
+  delete out.canonicalConfig;
+  out.password = p.password ? '••••••••' : null;
+  out.jsonConfig = p.jsonConfig ? '(chiffré — non exposé)' : null;
+  out.hasCanonicalConfig = !!p.canonicalConfig;
+  out.canonicalConfigHash = p.canonicalConfigHash ?? null;
+  out.configVersion = p.configVersion ?? 1;
+  out.sourceFormat = p.sourceFormat ?? null;
+  out.validationStatus = p.validationStatus ?? null;
+  out.validationMessage = p.validationMessage ?? null;
+  out.validatedAt = p.validatedAt ?? null;
+  out.importedAt = p.importedAt ?? null;
+  return out;
 }
 
 // ─── GET /api/vpn-profiles ────────────────────────────────────────────────────
