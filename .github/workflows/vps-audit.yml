@@ -90,17 +90,31 @@ jobs:
             # Question décisive : le backend utilise-t-il PostgreSQL ou son
             # repli en mémoire ? Avec le repli, TOUTES les données (comptes,
             # abonnements, quotas) disparaissent à chaque redémarrage.
-            # On teste uniquement la PRÉSENCE de DATABASE_URL — jamais sa valeur,
-            # qui contient un mot de passe.
+            #
+            # On teste uniquement la PRÉSENCE de la clé DATABASE_URL — jamais sa
+            # valeur, qui contient un mot de passe. La configuration peut venir
+            # de l'environnement pm2 OU d'un fichier .env lu au démarrage : les
+            # deux sources sont donc vérifiées.
             if pm2 jlist 2>/dev/null | grep -q '"DATABASE_URL"'; then
-              echo "DATABASE_URL : présente dans l'environnement du processus"
+              echo "DATABASE_URL (env pm2)   : déclarée"
             else
-              echo "DATABASE_URL : ABSENTE — le backend tourne sur la base en mémoire"
+              echo "DATABASE_URL (env pm2)   : absente"
             fi
+            for f in /var/www/sxb-vpn/.env /var/www/sxb-vpn/.env.production /var/www/sxb-vpn/ecosystem.config.cjs; do
+              if [ -f "$f" ]; then
+                n=$(grep -c 'DATABASE_URL' "$f" 2>/dev/null || echo 0)
+                echo "$f : présent, mentions de DATABASE_URL = $n"
+              else
+                echo "$f : absent"
+              fi
+            done
             systemctl is-active postgresql 2>/dev/null | sed 's/^/postgresql : /' || echo "postgresql : introuvable"
-            # Nombre de comptes en base : preuve que Prisma lit bien PostgreSQL.
-            sudo -u postgres psql -tAc "SELECT count(*) FROM users;" sxbvpn 2>/dev/null | sed 's/^/comptes en base : /' || echo "comptes en base : requête impossible (nom de base différent ou accès refusé)"
-            sudo -u postgres psql -tAc "SELECT datname FROM pg_database WHERE datistemplate = false;" 2>/dev/null | sed 's/^/base présente : /' || true
+            # Contenu réel des bases : une base vide confirme qu'elle n'est pas utilisée.
+            for db in sxbvpn sxb_vpn; do
+              t=$(sudo -u postgres psql -tAc "SELECT count(*) FROM pg_tables WHERE schemaname='public';" "$db" 2>/dev/null || echo "?")
+              u=$(sudo -u postgres psql -tAc "SELECT count(*) FROM users;" "$db" 2>/dev/null || echo "?")
+              echo "base $db : tables=$t comptes=$u"
+            done
 
             echo ""
             echo "═══ 5. ROUTAGE NGINX DE /xapi ═══"
