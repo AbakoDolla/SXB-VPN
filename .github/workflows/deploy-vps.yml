@@ -280,19 +280,13 @@ jobs:
             NODE
             )"
             if [ "$MIGRATION_STATE" != "applied" ]; then
-              BASELINE_SCHEMA="$(mktemp)"
-              node \
-                prisma/migrations/20260902060000_remove_retired_panel/render-baseline-schema.mjs \
-                prisma/schema.prisma \
-                "$BASELINE_SCHEMA"
               set +e
               pnpm exec prisma migrate diff \
                 --from-schema-datasource prisma/schema.prisma \
-                --to-schema-datamodel "$BASELINE_SCHEMA" \
+                --to-schema-datamodel prisma/migrations/20260902000000_baseline/schema.prisma \
                 --exit-code
               DIFF_STATUS=$?
               set -e
-              rm -f "$BASELINE_SCHEMA"
               if [ "$DIFF_STATUS" -ne 0 ]; then
                 echo "The existing database does not exactly match the migration baseline"
                 exit 1

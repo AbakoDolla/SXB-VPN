@@ -112,9 +112,10 @@ console.log('\n══ C. ABSENCE D’INTÉGRATIONS RETIRÉES ══\n');
       continue;
     }
     const content = fs.readFileSync(absolutePath);
+    assert.doesNotMatch(relativePath, retiredPlatformPattern, `plateforme retirée dans le chemin : ${relativePath}`);
+    assert.doesNotMatch(relativePath, retiredPanelPattern, `intégration retirée dans le chemin : ${relativePath}`);
     if (content.includes(0)) continue;
     const text = content.toString('utf8');
-    assert.doesNotMatch(relativePath, retiredPlatformPattern, `plateforme retirée dans le chemin : ${relativePath}`);
     assert.doesNotMatch(text, retiredPlatformPattern, `plateforme retirée dans : ${relativePath}`);
     assert.doesNotMatch(text, retiredPanelPattern, `intégration retirée dans : ${relativePath}`);
   }
