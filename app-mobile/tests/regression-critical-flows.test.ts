@@ -164,6 +164,7 @@ describe('garde-fous contre les régressions Android', () => {
   const mobileRoutes = source('../server/routes/mobile.ts');
   const vpnContext = source('contexts/VpnContext.tsx');
   const canonicalConfig = source('../server/services/canonical-config.ts');
+  const xrayTranslate = source('../server/services/xray-translate.ts');
   const nativeService = source('modules/android-native/SxbVpnService.kt');
   const activateScreen = source('app/activate.tsx');
   const planScreen = source('app/plan.tsx');
@@ -284,6 +285,28 @@ describe('garde-fous contre les régressions Android', () => {
     );
   });
 
+  it('route le DNS et l’exclusion par le bon maillon d’une chaîne proxy', () => {
+    // Config chaînée (Xray `proxySettings` → sing-box `detour`) : le trafic entre
+    // par l'outbound chiffré (VLESS) puis ressort par l'amont HTTP en clair.
+    //
+    // `mainTag` est le PREMIER outbound non spécial du tableau, soit l'amont
+    // HTTP. L'utiliser pour le DNS envoyait les requêtes en clair par cet amont,
+    // hors du tunnel, exposant les domaines visités. Le DNS suit désormais
+    // `route.final`, et la tête de chaîne est identifiée comme l'outbound qui
+    // n'est cité en `detour` par aucun autre.
+    assert.match(nativeService, /defaultDnsObject\(finalTag\)/);
+    assert.match(nativeService, /val detourTargets = HashSet<String>\(\)/);
+    assert.match(nativeService, /if \(tag\.isEmpty\(\) \|\| tag in detourTargets\) continue/);
+    // L'exclusion anti-boucle doit viser le serveur du BOUT de la chaîne :
+    // c'est lui que le socket physique contacte réellement.
+    assert.match(nativeService, /chainEndServer/);
+    assert.match(nativeService, /if \(chainEndServer\.isNotBlank\(\)\) mainServer = chainEndServer/);
+    // Le traducteur backend conserve les en-têtes personnalisés de l'amont.
+    assert.match(canonicalConfig, /translateXrayToSingbox|hasXrayMarkers/);
+    assert.match(xrayTranslate, /httpOut\.headers = headers/);
+    assert.match(xrayTranslate, /out\.detour = tag/);
+  });
+
   it('affiche un bouton de téléchargement direct dans le mobile', () => {
     assert.match(updatePrompt, /\/api\/mobile\/notifications/);
     assert.match(updatePrompt, /downloadAndInstallAppUpdate/);
@@ -367,7 +390,12 @@ describe('garde-fous contre les régressions Android', () => {
 
   it('utilise le detour réel pour le DNS de secours des profils importés', () => {
     assert.match(nativeService, /defaultDnsObject\(detourTag: String = "proxy"\)/);
-    assert.match(nativeService, /defaultDnsObject\(mainTag \?: "proxy"\)/);
+    // Le DNS de secours suivait `mainTag`, c'est-à-dire le PREMIER outbound non
+    // spécial. Sur une chaîne (Xray `proxySettings` → sing-box `detour`), c'est
+    // l'amont HTTP en clair, pas le tunnel : les requêtes DNS sortaient donc
+    // hors du tunnel. Il suit désormais `route.final`.
+    assert.match(nativeService, /defaultDnsObject\(finalTag\)/);
+    assert.doesNotMatch(nativeService, /defaultDnsObject\(mainTag \?: "proxy"\)/);
     assert.match(nativeService, /https:\/\/1\.1\.1\.1\/dns-query/);
   });
 

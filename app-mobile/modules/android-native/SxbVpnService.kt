@@ -2805,6 +2805,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         val outbounds = JSONArray()
         val tags = HashSet<String>()
+        val byTag = HashMap<String, JSONObject>()
         var mainTag: String? = null
         var mainServer = ""
 
@@ -2816,6 +2817,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             }
             val tag = o.optString("tag", "")
             tags.add(tag)
+            if (tag.isNotEmpty()) byTag[tag] = o
             if (mainTag == null && type !in specialTypes) {
                 mainTag = tag
                 mainServer = o.optString("server", "")
@@ -2837,24 +2839,75 @@ class SxbVpnService : VpnService(), PlatformInterface {
             }
         }
 
+        // Exclusion anti-boucle : c'est le serveur réellement contacté par le
+        // socket sortant qui doit être exclu du TUN. Sur une configuration
+        // chaînée (`proxySettings` Xray → `detour` sing-box), ce serveur est
+        // celui du BOUT de la chaîne — l'amont HTTP — et non celui de l'outbound
+        // principal. Exclure la mauvaise adresse laissait le socket physique
+        // repasser par le tunnel qu'il alimente : boucle de routage immédiate.
+        //
+        // On repère d'abord la TÊTE de chaîne : un outbound cité en `detour` par
+        // un autre est un maillon intermédiaire, jamais le point d'entrée du
+        // trafic. Ce repli n'est utilisé que si `route.final` est absent.
+        val detourTargets = HashSet<String>()
+        for (i in 0 until outbounds.length()) {
+            val o = outbounds.optJSONObject(i) ?: continue
+            val detour = o.optString("detour", "")
+            if (detour.isNotEmpty()) detourTargets.add(detour)
+        }
+        for (i in 0 until outbounds.length()) {
+            val o = outbounds.optJSONObject(i) ?: continue
+            val tag = o.optString("tag", "")
+            if (tag.isEmpty() || tag in detourTargets) continue
+            if (o.optString("type", "") in specialTypes) continue
+            mainTag = tag
+            break
+        }
+
+        mainTag?.let { start ->
+            var current = byTag[start]
+            val seen = HashSet<String>()
+            var guard = 0
+            while (current != null && guard++ < 8) {
+                val detour = current.optString("detour", "")
+                if (detour.isEmpty() || !seen.add(detour)) break
+                current = byTag[detour] ?: break
+            }
+            val chainEndServer = current?.optString("server", "").orEmpty()
+            if (chainEndServer.isNotBlank()) mainServer = chainEndServer
+        }
+
         // Compléter avec les outbounds système de l'app si absents
         val appOutbounds = listOf("direct" to "direct", "dns" to "dns-out", "block" to "block")
         for ((type, tag) in appOutbounds) {
             if (!tags.contains(tag)) outbounds.put(JSONObject().put("type", type).put("tag", tag))
         }
 
-        // DNS : celui du JSON stocké sinon celui de l'app
-        // Les traductions Xray peuvent supprimer les DNS `tcp+local://` non
-        // représentables dans sing-box. Le DNS DoH de secours doit alors sortir
-        // par l'outbound réellement importé (VLESS/VMess/Trojan), pas par un tag
-        // historique fixe `proxy` qui n'existe souvent pas.
-        val configuredDns = cfg.optJSONObject("dns")
-        val hasConfiguredDnsServers = configuredDns?.optJSONArray("servers")?.let { it.length() > 0 } == true
-        val dnsObj = if (hasConfiguredDnsServers) configuredDns!! else defaultDnsObject(mainTag ?: "proxy")
-
         // Route : exclusion anti-boucle + DNS hijack + ip_is_private (F3) puis règles stockées
         val routeObj = cfg.optJSONObject("route")
         val storedRules = routeObj?.optJSONArray("rules") ?: JSONArray()
+
+        // L'outbound qui porte réellement le trafic est celui désigné par
+        // `route.final`. `mainTag` n'est qu'un repli : c'est le PREMIER outbound
+        // non spécial du tableau, ce qui, sur une configuration chaînée
+        // (`proxySettings` Xray → `detour`), désigne l'amont HTTP en clair et non
+        // le tunnel chiffré.
+        var finalTag = routeObj?.optString("final", "") ?: ""
+        if (finalTag.isEmpty() || !tags.contains(finalTag)) finalTag = mainTag ?: "proxy"
+
+        // DNS : celui du JSON stocké sinon celui de l'app
+        // Les traductions Xray peuvent supprimer les DNS `tcp+local://` non
+        // représentables dans sing-box. Le DNS DoH de secours doit alors sortir
+        // par l'outbound qui transporte réellement les données.
+        //
+        // Il utilisait `mainTag` : sur une configuration à amont HTTP, les
+        // requêtes DNS sortaient donc par le proxy en clair au lieu du tunnel,
+        // exposant les domaines visités à l'opérateur de cet amont alors même que
+        // l'utilisateur se croyait protégé. On suit désormais `route.final`.
+        val configuredDns = cfg.optJSONObject("dns")
+        val hasConfiguredDnsServers = configuredDns?.optJSONArray("servers")?.let { it.length() > 0 } == true
+        val dnsObj = if (hasConfiguredDnsServers) configuredDns!! else defaultDnsObject(finalTag)
+
         val exclusion = if (mainServer.isNotBlank()) carrierExclusionRule(mainServer) else null
         val routeRules = JSONArray()
         exclusion?.let { routeRules.put(it) }
@@ -2866,8 +2919,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
             routeRules.put(r)
         }
 
-        var finalTag = routeObj?.optString("final", "") ?: ""
-        if (finalTag.isEmpty()) finalTag = mainTag ?: "proxy"
+        broadcastLog(
+            "[CONFIG] singbox importé — outbounds=${outbounds.length()} final=$finalTag " +
+            "chaînage=${finalTag != mainTag} dns=${if (hasConfiguredDnsServers) "profil" else "moteur→$finalTag"}"
+        )
 
         return JSONObject().apply {
             put("log", JSONObject().put("level", "info").put("timestamp", true))
