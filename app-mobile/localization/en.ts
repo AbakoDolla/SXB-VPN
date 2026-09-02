@@ -96,6 +96,7 @@ export const en = {
   alerts_tab: 'Alerts',
 
   no_history: 'No activity recorded',
+  history_empty_hint: 'Your account activity will appear here.',
   account_activated_event: 'Account activated',
   plan_activated_event: 'Plan activated',
   vpn_connected_event: 'VPN connected',

@@ -105,6 +105,7 @@ export const fr = {
 
   // History
   no_history: 'Aucune activité enregistrée',
+  history_empty_hint: 'Les événements de votre compte apparaîtront ici.',
   account_activated_event: 'Compte activé',
   plan_activated_event: 'Forfait activé',
   vpn_connected_event: 'VPN connecté',
