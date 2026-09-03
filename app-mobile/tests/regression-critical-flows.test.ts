@@ -1278,4 +1278,17 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(accueil, /info_ping/);
     assert.match(accueil, /Abakodollar\$/);
   });
+
+  it('numérote les publications à partir de 1 sans toucher au versionCode Android', () => {
+    const build = source('../.github/workflows/build-android.yml');
+    // Le numéro de publication repart de 1…
+    assert.match(build, /n=\$\(\( \$\{\{ github\.run_number \}\} - 314 \)\)/);
+    assert.match(build, /tag_name: apk-\$\{\{ steps\.relno\.outputs\.n \}\}/);
+    assert.doesNotMatch(build, /tag_name: apk-\$\{\{ github\.run_number \}\}/);
+
+    // …mais le versionCode reste github.run_number, strictement croissant :
+    // Android refuse d'installer un APK dont le versionCode n'augmente pas,
+    // donc le renuméroter bloquerait toute mise à jour des appareils installés.
+    assert.match(build, /SXB_VERSION_CODE: \$\{\{ github\.run_number \}\}/);
+  });
 });

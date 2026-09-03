@@ -596,14 +596,24 @@ jobs:
           retention-days: 30
 
       # ── GitHub Release ────────────────────────────────────────────────────────
+      #
+      # Le numéro de publication repart de 1, mais le versionCode Android reste
+      # `github.run_number`, strictement croissant. Les deux ne peuvent pas être
+      # confondus : Android refuse d'installer un APK dont le versionCode est
+      # inférieur ou égal à celui déjà présent, si bien que renuméroter le
+      # versionCode empêcherait toute mise à jour sur les appareils installés.
+      - name: Numéro de publication
+        id: relno
+        run: echo "n=$(( ${{ github.run_number }} - 314 ))" >> "$GITHUB_OUTPUT"
+
       - name: GitHub Release
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: apk-${{ github.run_number }}
-          name: "SXB VPN APK #${{ github.run_number }}"
+          tag_name: apk-${{ steps.relno.outputs.n }}
+          name: "SXB VPN APK #${{ steps.relno.outputs.n }}"
           body: |
-            ## SXB VPN — APK Android #${{ github.run_number }}
+            ## SXB VPN — APK Android #${{ steps.relno.outputs.n }}
 
             Build depuis commit `${{ github.sha }}`
 
@@ -625,7 +635,7 @@ jobs:
             3. Installer et activer avec votre token `SXB-USER-XXXX-XXXX-XXXX`
 
             ### Lien de téléchargement direct (à renseigner dans le dashboard)
-            `https://github.com/${{ github.repository }}/releases/download/apk-${{ github.run_number }}/sxb-vpn.apk`
+            `https://github.com/${{ github.repository }}/releases/download/apk-${{ steps.relno.outputs.n }}/sxb-vpn.apk`
 
             ### Backend
             `https://vpnsxb.afrihall.com/api`
@@ -691,5 +701,5 @@ jobs:
               ! -name 'sxbvpn-latest.apk' -delete 2>/dev/null || true
 
             echo "✅ Déployé: $(sha256sum /var/www/sxb-vpn/dist/download/sxbvpn-latest.apk)"
-            echo "📦 Release GitHub: https://github.com/${{ github.repository }}/releases/download/apk-${{ github.run_number }}/sxb-vpn.apk"
+            echo "📦 Release GitHub: https://github.com/${{ github.repository }}/releases/download/apk-${{ steps.relno.outputs.n }}/sxb-vpn.apk"
             df -h / | tail -1
