@@ -1,3 +1,0 @@
-- [VPN Connections Feature](vpn-connections-feature.md) — displayProtocol (commercial) vs protocol (technique) séparés dans VpnProfile; stash requis avant git pull sur VPS si modifications locales
-- [VPS SSH Servers](vps-ssh-servers.md) — Dropbear:444 + websockify:2082 + sshd:2223 + Nginx /ssh-ws; stunnel non utilisable (port 443 = Nginx)
-- [Prisma VPS Fix](prisma-vps-fix.md) — prisma generate échoue dans pnpm workspace (pnpm add hook); utiliser /tmp/prisma-clean hors workspace + copier runtime/ aussi
