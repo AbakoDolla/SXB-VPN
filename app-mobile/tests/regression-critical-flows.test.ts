@@ -199,6 +199,8 @@ describe('garde-fous contre les régressions Android', () => {
   const subscriptionsView = source('../artifacts/sxb-dashboard/src/components/SubscriptionsView.tsx');
   const vpnProfilesView = source('../artifacts/sxb-dashboard/src/components/VpnProfilesView.tsx');
   const apiClient = source('../artifacts/sxb-dashboard/src/api/client.ts');
+  const devicesRoutes = source('../server/routes/devices.ts');
+  const dashboardRoutes = source('../server/routes/dashboard.ts');
   const nativeLogger = source('modules/android-native/SxbSecureLogger.kt');
   const securityModule = source('modules/android-native/SecurityModule.kt');
   const trafficManager = source('modules/android-native/TrafficStatsManager.kt');
@@ -1092,6 +1094,36 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(apiClient.includes('const hadSession'));
     assert.ok(apiClient.includes('if (hadSession && typeof window !== "undefined")'));
     assert.doesNotMatch(apiClient, /window\.location\.pathname !== "\/login"/);
+  });
+
+  it('cloisonne le revendeur : ses clients, jamais l’infrastructure', () => {
+    // Le revendeur vend un service ; il n'exploite pas la plateforme. Lui ouvrir
+    // un écran sans cloisonner la route correspondante exposerait les clients de
+    // l'administrateur et ceux des autres revendeurs.
+    const layout = source('../artifacts/sxb-dashboard/src/components/Layout.tsx');
+    // Aucune entrée d'infrastructure ni d'administration pour lui.
+    assert.ok(layout.includes("id: 'vpn-profiles'"));
+    assert.match(layout, /id: 'vpn-profiles'[\s\S]{0,120}roles: STAFF/);
+    assert.match(layout, /id: 'monitoring'[\s\S]{0,200}roles: STAFF/);
+    assert.match(layout, /id: 'admin'[\s\S]{0,400}roles: STAFF/);
+    // À la place : les services qui lui sont attribués.
+    assert.ok(layout.includes("id: 'reseller-services'"));
+    assert.match(layout, /id: 'reseller-services'[\s\S]{0,120}roles: \['RESELLER'\]/);
+
+    // Les routes correspondantes doivent filtrer sur SES clients.
+    assert.ok(devicesRoutes.includes('where: isReseller ? { userId: req.user?.userId } : undefined'));
+    assert.ok(dashboardRoutes.includes('const ownScope = isReseller ? { userId: req.user?.userId } : {}'));
+    // Le compte de serveurs ne doit jamais lui être communiqué.
+    assert.ok(dashboardRoutes.includes('isReseller ? Promise.resolve(0) : prisma.vPSServer.count'));
+  });
+
+  it('n’expose que le nom commercial des services au revendeur', () => {
+    const view = source('../artifacts/sxb-dashboard/src/components/ResellerServicesView.tsx');
+    assert.ok(view.includes("apiRequest<{ profiles: AssignedService[] }>('/vpn-profiles/assigned')"));
+    // Aucun champ technique ne doit apparaître dans cet écran.
+    for (const champ of ['host', 'port', 'uuid', 'sni', 'password', 'canonicalConfig']) {
+      assert.doesNotMatch(view, new RegExp(`s\\.${champ}\\b`), `champ technique exposé : ${champ}`);
+    }
   });
 
   it('réserve la gestion technique des configurations au dashboard', () => {

@@ -5,12 +5,13 @@ import { fetchClients } from "../api/clients";
 import { fetchDevices } from "../api/devices";
 import { fetchSessions } from "../api/sessions";
 import { fetchServers } from "../api/servers";
+import { apiRequest } from "../api/client";
 import { TrafficDataPoint, ActivityLog, VPSServer, UserRole } from "../types";
 import type { Device } from "../api/devices";
 import {
   Users, Server, RefreshCw, Activity, AlertTriangle, Wifi,
   Clock, ShieldCheck, HardDrive, Cpu, Upload, Download,
-  Database, TrendingUp, Radio, Zap, ArrowUpRight, PauseCircle, PlayCircle, Settings2,
+  Database, TrendingUp, Radio, Zap, ArrowUpRight, PauseCircle, PlayCircle, Settings2, GitBranch,
 } from "lucide-react";
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -118,6 +119,10 @@ export default function DashboardView({
   const { t } = useTranslation();
   const [maintenanceBusy, setMaintenanceBusy] = useState(false);
   const isOwner = currentUserRole === UserRole.OWNER;
+  // Le revendeur vend un service : l'infrastructure, les autres revendeurs et
+  // les réglages système lui sont invisibles.
+  const isReseller = currentUserRole === UserRole.RESELLER;
+  const [assignedServices, setAssignedServices] = useState(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [stats, setStats] = useState<DashboardStats | null>(null);
@@ -197,6 +202,17 @@ export default function DashboardView({
     void initialLoad();
     return () => { disposedRef.current = true; };
   }, []);
+
+  // Nombre de services attribués — remplace la carte « Serveurs » pour le
+  // revendeur, qui n'a pas à connaître l'infrastructure.
+  useEffect(() => {
+    if (!isReseller) return;
+    let cancelled = false;
+    apiRequest<{ profiles: unknown[] }>('/vpn-profiles/assigned')
+      .then((d: { profiles: unknown[] }) => { if (!cancelled) setAssignedServices(Array.isArray(d.profiles) ? d.profiles.length : 0); })
+      .catch(() => { /* carte à zéro : jamais bloquant pour le tableau de bord */ });
+    return () => { cancelled = true; };
+  }, [isReseller]);
 
   // Polling sécurisé : 30 secondes, seulement quand l’onglet est visible,
   // sans chevauchement de requêtes et avec arrêt propre au démontage.
@@ -362,13 +378,22 @@ export default function DashboardView({
 
       {/* Row 1 — Clients & Réseau */}
       <div>
-        <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-widest mb-3">Clients & Réseau</p>
+        <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-widest mb-3">
+          {isReseller ? 'Mes clients' : 'Clients & Réseau'}
+        </p>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-          <StatCard label="Total Clients" value={totalClients} sub="enregistrés" icon={Users} color="text-cyan-400" accent="bg-cyan-500/10" onClick={() => onNavigate('clients')} />
-          <StatCard label="Connectés" value={stats?.activeUsers || 0} sub="sessions actives" icon={Wifi} color="text-emerald-400" accent="bg-emerald-500/10" onClick={() => onNavigate('sessions')} />
+          <StatCard label={isReseller ? 'Mes clients' : 'Total Clients'} value={totalClients} sub="enregistrés" icon={Users} color="text-cyan-400" accent="bg-cyan-500/10" onClick={() => onNavigate('clients')} />
+          <StatCard label="Connectés" value={stats?.activeUsers || 0} sub="sessions actives" icon={Wifi} color="text-emerald-400" accent="bg-emerald-500/10" onClick={() => onNavigate(isReseller ? 'clients' : 'sessions')} />
           <StatCard label="Appareils" value={totalDevices} sub="enregistrés" icon={HardDrive} color="text-blue-400" accent="bg-blue-500/10" onClick={() => onNavigate('devices')} />
-          <StatCard label="Sessions" value={activeSessions} sub="actives" icon={Radio} color="text-violet-400" accent="bg-violet-500/10" onClick={() => onNavigate('sessions')} />
-          <StatCard label="Serveurs" value={servers.filter(s => s.status === 'online').length} sub={`/ ${servers.length} total`} icon={Server} color="text-amber-400" accent="bg-amber-500/10" onClick={() => onNavigate('servers')} />
+          <StatCard label={isReseller ? 'Forfaits' : 'Sessions'} value={activeSessions} sub="actives" icon={Radio} color="text-violet-400" accent="bg-violet-500/10" onClick={() => onNavigate(isReseller ? 'subscriptions' : 'sessions')} />
+          {/* L'infrastructure ne concerne pas le revendeur : il vend un service,
+              il n'exploite pas les serveurs. On montre à la place les services
+              qui lui sont attribués. */}
+          {isReseller ? (
+            <StatCard label="Mes services" value={assignedServices} sub="attribués" icon={GitBranch} color="text-amber-400" accent="bg-amber-500/10" onClick={() => onNavigate('reseller-services')} />
+          ) : (
+            <StatCard label="Serveurs" value={servers.filter(s => s.status === 'online').length} sub={`/ ${servers.length} total`} icon={Server} color="text-amber-400" accent="bg-amber-500/10" onClick={() => onNavigate('servers')} />
+          )}
           <StatCard label="Expirés" value={stats?.expiredAccounts || 0} sub="à renouveler" icon={AlertTriangle} color="text-rose-400" accent="bg-rose-500/10" onClick={() => onNavigate('clients')} />
         </div>
       </div>
@@ -424,27 +449,30 @@ export default function DashboardView({
 
       {/* Bottom row — Server Health + Activity */}
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-        {/* Server health */}
-        <div className="lg:col-span-2 space-y-3">
-          <div className="flex items-center gap-2">
-            <ShieldCheck className="w-4 h-4 text-emerald-400" />
-            <h3 className="text-sm font-semibold text-white">Santé des Serveurs</h3>
+        {/* Santé des serveurs — masquée au revendeur : l'infrastructure ne le
+            regarde pas, et l'afficher vide lui suggérerait un problème. */}
+        {!isReseller && (
+          <div className="lg:col-span-2 space-y-3">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-emerald-400" />
+              <h3 className="text-sm font-semibold text-white">Santé des Serveurs</h3>
+            </div>
+            {servers.length > 0 ? (
+              <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                {servers.map(server => <ServerHealthCard key={server.id} server={server} />)}
+              </div>
+            ) : (
+              <div className="bg-[#0a0d14] border border-[#1a1f2e] rounded-xl p-6 text-center">
+                <Server className="w-8 h-8 text-gray-700 mx-auto mb-2" />
+                <p className="text-xs text-gray-500">Aucun serveur configuré</p>
+                <button onClick={() => onNavigate('servers')} className="mt-2 text-xs text-cyan-400 hover:underline cursor-pointer">Ajouter un serveur</button>
+              </div>
+            )}
           </div>
-          {servers.length > 0 ? (
-            <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
-              {servers.map(server => <ServerHealthCard key={server.id} server={server} />)}
-            </div>
-          ) : (
-            <div className="bg-[#0a0d14] border border-[#1a1f2e] rounded-xl p-6 text-center">
-              <Server className="w-8 h-8 text-gray-700 mx-auto mb-2" />
-              <p className="text-xs text-gray-500">Aucun serveur configuré</p>
-              <button onClick={() => onNavigate('servers')} className="mt-2 text-xs text-cyan-400 hover:underline cursor-pointer">Ajouter un serveur</button>
-            </div>
-          )}
-        </div>
+        )}
 
         {/* Activity log */}
-        <div className="lg:col-span-3 bg-[#0a0d14] dashboard-card sxb-animated-card border border-[#1a1f2e] rounded-xl p-4">
+        <div className={`${isReseller ? 'lg:col-span-5' : 'lg:col-span-3'} bg-[#0a0d14] dashboard-card sxb-animated-card border border-[#1a1f2e] rounded-xl p-4`}>
           <div className="flex items-center gap-2 mb-4">
             <Clock className="w-4 h-4 text-cyan-400" />
             <h3 className="text-sm font-semibold text-white">Activité Récente</h3>
@@ -485,12 +513,22 @@ export default function DashboardView({
       <div>
         <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-widest mb-3">Accès Rapide</p>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          {[
-            { label: 'Nouveau client', route: 'clients', icon: Users, color: 'text-cyan-400' },
-            { label: 'Sessions actives', route: 'sessions', icon: Activity, color: 'text-emerald-400' },
-            { label: 'VPN Engine', route: 'vpn-engine', icon: Zap, color: 'text-violet-400' },
-            { label: 'Serveurs', route: 'servers', icon: Server, color: 'text-amber-400' },
-          ].map(item => (
+          {(isReseller
+            ? [
+                // Les raccourcis du revendeur pointent vers ses propres outils :
+                // aucun accès moteur ni serveur.
+                { label: 'Mes clients', route: 'clients', icon: Users, color: 'text-cyan-400' },
+                { label: 'Forfaits data', route: 'subscriptions', icon: Activity, color: 'text-emerald-400' },
+                { label: 'Tokens SXB', route: 'tokens', icon: Zap, color: 'text-violet-400' },
+                { label: 'Mes services', route: 'reseller-services', icon: GitBranch, color: 'text-amber-400' },
+              ]
+            : [
+                { label: 'Nouveau client', route: 'clients', icon: Users, color: 'text-cyan-400' },
+                { label: 'Sessions actives', route: 'sessions', icon: Activity, color: 'text-emerald-400' },
+                { label: 'VPN Engine', route: 'vpn-engine', icon: Zap, color: 'text-violet-400' },
+                { label: 'Serveurs', route: 'servers', icon: Server, color: 'text-amber-400' },
+              ]
+          ).map(item => (
             <button
               key={item.route}
               onClick={() => onNavigate(item.route)}

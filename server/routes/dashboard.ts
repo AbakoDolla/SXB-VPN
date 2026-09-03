@@ -30,21 +30,29 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
     let redeemedVouchers = 0;
 
     const requesterIsOwner = isOwnerRequest(req);
+    // Cloisonnement REVENDEUR — ses indicateurs ne portent que sur SES clients.
+    // Sans ce filtre, il lisait les chiffres globaux de la plateforme : clients
+    // de l'administrateur, clients des autres revendeurs, et le nombre de
+    // serveurs, qui relève de l'infrastructure et ne le concerne pas.
+    const isReseller = req.user?.role === "RESELLER";
+    const ownScope = isReseller ? { userId: req.user?.userId } : {};
     if (prisma) {
-      const clientStealthWhere = stealthWhere(requesterIsOwner);
+      const clientStealthWhere = { ...stealthWhere(requesterIsOwner), ...ownScope };
       const resellerStealthWhere = stealthWhere(requesterIsOwner);
       [activeUsers, expiredAccounts, activeServers, activeResellers, totalVouchers, redeemedVouchers] = await Promise.all([
         prisma.vpnClient.count({ where: { status: "active", ...clientStealthWhere } }),
         prisma.vpnClient.count({ where: { status: "expired", ...clientStealthWhere } }),
-        prisma.vPSServer.count({ where: { status: "online" } }),
-        prisma.reseller.count({ where: { status: "active", ...resellerStealthWhere } }),
+        // Le revendeur ne pilote aucun serveur : la valeur reste à zéro et la
+        // carte correspondante est remplacée côté interface.
+        isReseller ? Promise.resolve(0) : prisma.vPSServer.count({ where: { status: "online" } }),
+        isReseller ? Promise.resolve(0) : prisma.reseller.count({ where: { status: "active", ...resellerStealthWhere } }),
         prisma.voucher.count(),
         prisma.voucher.count({ where: { isRedeemed: true } }),
       ]);
 
       const clients = await prisma.vpnClient.findMany({
         select: { quotaTotal: true, quotaUsed: true },
-        ...(clientStealthWhere ? { where: clientStealthWhere } : {}),
+        ...(Object.keys(clientStealthWhere).length ? { where: clientStealthWhere } : {}),
       });
       provisionedTrafficBytes = clients.reduce((acc, c) => acc + (c.quotaTotal || BigInt(0)), BigInt(0));
       consumedTrafficBytes = clients.reduce((acc, c) => acc + c.quotaUsed, BigInt(0));

@@ -18,7 +18,12 @@ function makeUserToken(): string {
 router.get("/", requireAuth, requirePermission("clients.view"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     if (!prisma) return res.status(503).json({ error: "Database unavailable" });
+    // Cloisonnement REVENDEUR — il ne voit que les appareils de SES clients.
+    // Sans ce filtre, l'écran Appareils exposait tout le parc : les clients de
+    // l'administrateur comme ceux des autres revendeurs.
+    const isReseller = req.user?.role === "RESELLER";
     const clients = await prisma.vpnClient.findMany({
+      where: isReseller ? { userId: req.user?.userId } : undefined,
       include: {
         user: true,
         subscriptions: {

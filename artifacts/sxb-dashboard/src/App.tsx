@@ -10,6 +10,7 @@ import VouchersView from "./components/VouchersView";
 import SupportView from "./components/SupportView";
 import RBACView from "./components/RBACView";
 import SettingsView from "./components/SettingsView";
+import ResellerServicesView from "./components/ResellerServicesView";
 import AccountsView from "./components/AccountsView";
 import DevicesView from "./components/DevicesView";
 import SSHManagerView from "./components/SSHManagerView";
@@ -311,6 +312,8 @@ function MainApp() {
         return <RBACView currentUserRole={role} onRolePermissionsUpdated={handleRolePermissionsUpdated} />;
       case 'accounts':
         return <AccountsView currentUserRole={role} currentUserId={currentUser.id} />;
+      case 'reseller-services':
+        return <ResellerServicesView />;
       case 'settings':
         return <SettingsView currentUser={currentUser} onUserUpdated={handleUserChanged} onNavigate={(route) => setActiveRoute(route)} />;
       case 'devices':

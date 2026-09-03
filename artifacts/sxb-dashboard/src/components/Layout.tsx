@@ -84,6 +84,10 @@ export default function Layout({
   const role = currentUser.role;
 
   const ALL_ROLES = ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'];
+  // Rôles internes : tout ce qui touche à l'infrastructure, aux autres
+  // revendeurs ou à la configuration du système leur est réservé.
+  const STAFF = ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'];
+  const ADMINS = ['OWNER', 'SUPER_ADMIN', 'ADMIN'];
 
   const navStructure: NavEntry[] = [
     {
@@ -103,17 +107,29 @@ export default function Layout({
       items: [
         { kind: 'leaf', id: 'clients', label: t('sidebar.vpn_accounts'), icon: Users, roles: ALL_ROLES },
         { kind: 'leaf', id: 'subscriptions', label: t('sidebar.subscriptions'), icon: PackageOpen, roles: ALL_ROLES },
-        { kind: 'leaf', id: 'devices', label: t('sidebar.devices'), icon: Smartphone, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
+        // Le revendeur doit suivre les appareils de SES clients : c'est là
+        // qu'il constate une activation ou une consommation anormale.
+        { kind: 'leaf', id: 'devices', label: t('sidebar.devices'), icon: Smartphone, roles: ALL_ROLES },
         { kind: 'leaf', id: 'tokens', label: t('sidebar.tokens'), icon: Key, roles: ALL_ROLES },
         { kind: 'leaf', id: 'vouchers', label: t('sidebar.vouchers'), icon: BadgePercent, roles: ALL_ROLES },
       ],
     },
+    // Configurations techniques : jamais pour un revendeur. Il dispose à la
+    // place de « Services VPN disponibles », qui n'expose que les noms
+    // commerciaux des configurations qui lui sont attribuées.
     {
       kind: 'leaf',
       id: 'vpn-profiles',
       label: t('sidebar.configurations'),
       icon: GitBranch,
-      roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'],
+      roles: STAFF,
+    },
+    {
+      kind: 'leaf',
+      id: 'reseller-services',
+      label: 'Services VPN disponibles',
+      icon: GitBranch,
+      roles: ['RESELLER'],
     },
     {
       kind: 'group',
@@ -121,11 +137,11 @@ export default function Layout({
       label: t('sidebar.monitoring'),
       icon: Activity,
       color: 'text-emerald-400',
-      roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'],
+      roles: STAFF,
       items: [
-        { kind: 'leaf', id: 'sessions', label: t('sidebar.sessions'), icon: Radio, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
-        { kind: 'leaf', id: 'analytics', label: t('sidebar.analytics'), icon: BarChart3, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
-        { kind: 'leaf', id: 'servers', label: t('sidebar.servers'), icon: Server, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
+        { kind: 'leaf', id: 'sessions', label: t('sidebar.sessions'), icon: Radio, roles: ADMINS },
+        { kind: 'leaf', id: 'analytics', label: t('sidebar.analytics'), icon: BarChart3, roles: STAFF },
+        { kind: 'leaf', id: 'servers', label: t('sidebar.servers'), icon: Server, roles: STAFF },
       ],
     },
     {
@@ -134,13 +150,16 @@ export default function Layout({
       label: t('sidebar.admin'),
       icon: Shield,
       color: 'text-amber-400',
-      roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'],
+      // Le revendeur y figurait pour la seule entrée « Mises à jour de l'app »,
+      // ce qui lui affichait un menu « Administration ». Un revendeur ne doit
+      // voir aucun panneau d'administration.
+      roles: STAFF,
       items: [
-        { kind: 'leaf', id: 'accounts', label: t('sidebar.accounts'), icon: UserPlus, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
-        { kind: 'leaf', id: 'resellers', label: t('sidebar.resellers'), icon: UserCog, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
-        { kind: 'leaf', id: 'rbac', label: t('sidebar.rbac'), icon: Shield, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
-        { kind: 'leaf', id: 'announcements', label: t('sidebar.annonces'), icon: BellRing, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
-        { kind: 'leaf', id: 'app-updates', label: t('sidebar.app_updates'), icon: Download, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'] },
+        { kind: 'leaf', id: 'accounts', label: t('sidebar.accounts'), icon: UserPlus, roles: ADMINS },
+        { kind: 'leaf', id: 'resellers', label: t('sidebar.resellers'), icon: UserCog, roles: ADMINS },
+        { kind: 'leaf', id: 'rbac', label: t('sidebar.rbac'), icon: Shield, roles: ADMINS },
+        { kind: 'leaf', id: 'announcements', label: t('sidebar.annonces'), icon: BellRing, roles: STAFF },
+        { kind: 'leaf', id: 'app-updates', label: t('sidebar.app_updates'), icon: Download, roles: STAFF },
       ],
     },
     {
@@ -148,14 +167,17 @@ export default function Layout({
       id: 'support',
       label: t('sidebar.support'),
       icon: HeadphonesIcon,
-      roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'],
+      // Ouvrir un ticket fait partie des actions attendues d'un revendeur.
+      roles: ALL_ROLES,
     },
-{
+    {
       kind: 'leaf',
       id: 'settings',
       label: t('sidebar.settings'),
       icon: Settings,
-      roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'],
+      // Profil et préférences ; la création de comptes reste hors de portée
+      // (l'onglet Équipe renvoie vers la page Comptes, réservée aux admins).
+      roles: ALL_ROLES,
     },
     // ── Rôle racine OWNER uniquement ─────────────────────────────────────────
     {
