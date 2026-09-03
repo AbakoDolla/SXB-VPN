@@ -257,12 +257,28 @@ jobs:
           HTTP=$(printf '%s' "$INDEX" | wc -c)
           echo "Frontend index bytes $HTTP"
           [ "$HTTP" -gt 500 ] || (echo "❌ Frontend index too small" && exit 1)
-          ASSET=$(printf '%s' "$INDEX" | grep -oE 'assets/[^\" ]+\.js' | head -1)
-          [ -n "$ASSET" ] || (echo "❌ Frontend JS asset missing" && exit 1)
-          JS=$(curl -fsSL "https://vpnsxb.afrihall.com/$ASSET")
-          printf '%s' "$JS" | grep -q 'V2Ray / Xray' || (echo "❌ New Xray editor marker missing from live bundle" && exit 1)
-          printf '%s' "$JS" | grep -q 'Valider le transport' || (echo "❌ New transport validation marker missing from live bundle" && exit 1)
-          echo "✅ Frontend bundle verified: $ASSET"
+
+          # Le paquet est désormais découpé en plusieurs morceaux : un marqueur
+          # donné ne vit que dans l'un d'eux. On les concatène donc tous avant
+          # de chercher, sinon la validation dépendrait de l'ordre des fichiers.
+          ASSETS=$(printf '%s' "$INDEX" | grep -oE 'assets/[^\" ]+\.js' | sort -u)
+          [ -n "$ASSETS" ] || (echo "❌ Frontend JS asset missing" && exit 1)
+          ALL=""
+          for A in $ASSETS; do
+            DECLARED=$(curl -sI "https://vpnsxb.afrihall.com/$A" | grep -i '^content-length' | tr -d '\r' | awk '{print $2}')
+            GOT=$(curl -fsS -o /tmp/chunk.js -w '%{size_download}' "https://vpnsxb.afrihall.com/$A")
+            echo "  $A : $GOT / $DECLARED octets"
+            # Un morceau tronqué casse le module et laisse une page vide : on
+            # préfère faire échouer le déploiement que livrer un écran blanc.
+            if [ -n "$DECLARED" ] && [ "$GOT" != "$DECLARED" ]; then
+              echo "❌ Chunk tronqué : $A ($GOT au lieu de $DECLARED)"
+              exit 1
+            fi
+            ALL="$ALL$(cat /tmp/chunk.js)"
+          done
+          printf '%s' "$ALL" | grep -q 'V2Ray / Xray' || (echo "❌ New Xray editor marker missing from live bundle" && exit 1)
+          printf '%s' "$ALL" | grep -q 'Valider le transport' || (echo "❌ New transport validation marker missing from live bundle" && exit 1)
+          echo "✅ Frontend bundle verified ($(printf '%s\n' "$ASSETS" | wc -l) morceaux)"
 
           echo "=== API health ==="
           # Accepte 200/400/401/403/422 — toute réponse HTTP valide du serveur

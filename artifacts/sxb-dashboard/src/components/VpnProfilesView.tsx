@@ -742,7 +742,11 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
                         })}
                         className="rounded border-[#1a1f2e] bg-[#07090e] accent-violet-500 cursor-pointer"
                       />
-                      <span className="text-xs text-gray-200 truncate">{r.user?.name || r.user?.email || r.id}</span>
+                      {/* `/api/resellers` aplatit le nom et l'e-mail à la racine
+                          (il n'y a pas d'objet `user` imbriqué) : lire `r.user.name`
+                          renvoyait undefined et l'interface retombait sur l'UUID,
+                          affichant des identifiants illisibles à la place des noms. */}
+                      <span className="text-xs text-gray-200 truncate">{r.name || r.email || r.user?.name || r.user?.email || r.id}</span>
                     </label>
                   ))}
                 </div>

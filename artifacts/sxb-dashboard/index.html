@@ -1,17 +1,17 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="fr">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
     <title>SXB VPN Dashboard</title>
-    <meta name="description" content="SXB VPN Dashboard — built on Replit. Update this description to reflect the app." />
-    <meta name="robots" content="index, follow" />
+    <meta name="description" content="SXB VPN — tableau de bord d'administration : clients, forfaits, appareils et configurations." />
+    <meta name="robots" content="noindex, nofollow" />
     <meta property="og:title" content="SXB VPN Dashboard" />
-    <meta property="og:description" content="SXB VPN Dashboard — built on Replit. Update this description to reflect the app." />
+    <meta property="og:description" content="Tableau de bord d'administration SXB VPN." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="SXB VPN Dashboard" />
-    <meta name="twitter:description" content="SXB VPN Dashboard — built on Replit. Update this description to reflect the app." />
+    <meta name="twitter:description" content="Tableau de bord d'administration SXB VPN." />
     <link rel="icon" type="image/png" sizes="512x512" href="/favicon.png" />
     <link rel="apple-touch-icon" sizes="512x512" href="/favicon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -21,5 +21,52 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      // Filet de sécurité au démarrage.
+      //
+      // Si un fichier de l'application n'arrive pas entier — liaison qui coupe
+      // les gros transferts, coupure réseau, cache corrompu — le module échoue
+      // et React ne monte jamais. Sans ce filet la page reste simplement vide
+      // sur le fond bleu, sans le moindre message : l'utilisateur n'a aucun
+      // moyen de comprendre, et seul un rafraîchissement manuel s'en sort.
+      //
+      // On tente donc un rechargement automatique (une seule fois, sinon une
+      // panne durable boucle à l'infini), puis on affiche un message explicite.
+      (function () {
+        var RETRY_KEY = 'sxb_boot_retry';
+        function mounted() {
+          var r = document.getElementById('root');
+          return r && r.children.length > 0;
+        }
+        setTimeout(function () {
+          if (mounted()) { sessionStorage.removeItem(RETRY_KEY); return; }
+
+          if (!sessionStorage.getItem(RETRY_KEY)) {
+            sessionStorage.setItem(RETRY_KEY, '1');
+            location.reload();
+            return;
+          }
+
+          var root = document.getElementById('root');
+          if (!root) return;
+          root.innerHTML =
+            '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;' +
+            'font-family:Inter,system-ui,sans-serif;color:#e5e7eb;padding:24px;text-align:center">' +
+            '<div style="max-width:420px">' +
+            '<div style="font-size:15px;font-weight:600;margin-bottom:8px">Chargement interrompu</div>' +
+            '<div style="font-size:13px;color:#9ca3af;line-height:1.6;margin-bottom:20px">' +
+            'L\'application n\'a pas pu se charger entièrement. La connexion a probablement ' +
+            'coupé le transfert en cours de route.</div>' +
+            '<button id="sxb-retry" style="background:#06b6d4;color:#04202a;border:0;border-radius:10px;' +
+            'padding:10px 18px;font-size:13px;font-weight:600;cursor:pointer">Réessayer</button>' +
+            '</div></div>';
+          var btn = document.getElementById('sxb-retry');
+          if (btn) btn.onclick = function () {
+            sessionStorage.removeItem(RETRY_KEY);
+            location.reload();
+          };
+        }, 10000);
+      })();
+    </script>
   </body>
 </html>
