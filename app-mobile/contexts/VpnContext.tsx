@@ -193,7 +193,18 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const [killSwitch,         setKillSwitchState]      = useState<boolean>(false);
   const [autoReconnect,      setAutoReconnectState]   = useState<boolean>(true);
   const [stepLogs,           setStepLogs]             = useState<StepLogItem[]>([]);
-  const [savedConfigs,       setSavedConfigs]         = useState<Array<{ id: string; name: string; protocol: string; isActive: boolean }>>([]);
+  const [savedConfigs,       _setSavedConfigs]        = useState<Array<{ id: string; name: string; protocol: string; isActive: boolean }>>([]);
+  // Miroir synchrone de la liste : deleteConfig doit pouvoir rétablir l'état
+  // exact d'avant le retrait optimiste sans dépendre de `savedConfigs`, ce qui
+  // changerait l'identité du callback et redessinerait tous les écrans.
+  const savedConfigsRef = useRef<Array<{ id: string; name: string; protocol: string; isActive: boolean }>>([]);
+  const setSavedConfigs = useCallback<React.Dispatch<React.SetStateAction<Array<{ id: string; name: string; protocol: string; isActive: boolean }>>>>((value) => {
+    _setSavedConfigs(prev => {
+      const next = typeof value === 'function' ? (value as (p: typeof prev) => typeof prev)(prev) : value;
+      savedConfigsRef.current = next;
+      return next;
+    });
+  }, []);
   const [activeConfigId,     setActiveConfigId]       = useState<string | null>(null);
   const [isSwitchingConfig,  setIsSwitchingConfig]     = useState<boolean>(false);
   const [quotaData,          setQuotaData]             = useState<QuotaData | null>(null);
@@ -703,7 +714,16 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         isRemoteSuccess = false;
         return { data: { connections: [] } };
       });
-      const remote = (connectionsRes.data?.connections || []) as VpnConnection[];
+      const remoteAll = (connectionsRes.data?.connections || []) as VpnConnection[];
+      // Les profils supprimés sur cet appareil sont écartés AVANT tout usage :
+      // sans ce filtre, la boucle de provisionnement ci-dessous les réécrivait
+      // dans le coffre et la fusion les remettait dans la liste — la suppression
+      // paraissait sans effet dès le premier rafraîchissement.
+      const dismissed = await configStore.listDismissed();
+      const dismissedSet = new Set(dismissed.status === 'ok' ? dismissed.value ?? [] : []);
+      const remote = dismissedSet.size
+        ? remoteAll.filter((c: any) => !dismissedSet.has(c.id))
+        : remoteAll;
       setRemoteConnections(remote);
       // Provisionner chaque abonnement encore actif, même si les métadonnées de
       // quota ou d'échéance sont à zéro : le profil doit rester disponible pour une
@@ -1280,16 +1300,32 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
    */
   const deleteConfig = useCallback(async (configId: string) => {
     const wasActive = configId === activeConfigId;
+
+    // Retrait IMMÉDIAT de l'affichage : l'entrée disparaît au doigt levé, sans
+    // attendre la coupure du tunnel ni les écritures chiffrées du coffre, qui
+    // prenaient jusqu'à plusieurs secondes et donnaient un bouton sans effet.
+    const previousSaved = savedConfigsRef.current;
+    setSavedConfigs(prev => prev.filter(c => c.id !== configId));
+    setRemoteConnections(prev => prev.filter(c => c.id !== configId));
+
     if (wasActive && (isConnected || isConnecting)) {
+      // L'attente est conservée : disconnect() reporte le quota de CE profil.
+      // Lancé en tâche de fond, il réécrivait les compteurs après leur purge et
+      // pouvait afficher le quota du profil supprimé sur le profil suivant.
+      // L'entrée a déjà disparu de l'écran, donc l'attente reste invisible.
       await disconnect();
     }
 
     const result = await configStore.remove(configId);
     if (result.status !== 'ok') {
+      setSavedConfigs(previousSaved);   // rétablir : rien n'a été supprimé
       addLog('⚠️ Suppression impossible — stockage indisponible');
       return false;
     }
 
+    // Trace persistante : l'abonnement existe toujours côté dashboard, donc
+    // sans elle le prochain /mobile/connections reprovisionnerait le profil.
+    await configStore.dismiss(configId);
     await clearQuotaData(configId).catch(() => {});
 
     const remaining = await configStore.list();

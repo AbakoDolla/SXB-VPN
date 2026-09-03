@@ -56,6 +56,46 @@ function decrypt(value: string, key: Uint8Array): Record<string, any> {
 async function registry(): Promise<ConfigMeta[]> { const raw = await AsyncStorage.getItem(REGISTRY_KEY); return raw ? JSON.parse(raw) : []; }
 async function putRegistry(entries: ConfigMeta[]) { await AsyncStorage.setItem(REGISTRY_KEY, JSON.stringify(entries)); }
 
+// ── Suppressions locales (« pierres tombales ») ──────────────────────────────
+// Une configuration supprimée depuis l'application doit le RESTER. Sans trace
+// persistante, le rafraîchissement suivant la reprovisionnait depuis
+// /mobile/connections et elle réapparaissait aussitôt dans la liste.
+// L'abonnement reste intact côté dashboard : la suppression est volontairement
+// limitée à cet appareil, et une réactivation explicite du jeton la relève.
+const DISMISSED_KEY = 'sxb_cfg_dismissed_v1';
+
+async function dismissedIds(): Promise<string[]> {
+  const raw = await AsyncStorage.getItem(DISMISSED_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((x: any) => typeof x === 'string' && x) : [];
+  } catch { return []; }
+}
+
+export async function listDismissed(): Promise<StoreResult<string[]>> {
+  try { return { status: 'ok', value: await dismissedIds() }; }
+  catch (error: any) { return { status: 'error', error }; }
+}
+
+/** Marque une configuration comme supprimée sur cet appareil. */
+export async function dismiss(id: string): Promise<StoreResult<void>> {
+  try {
+    const ids = await dismissedIds();
+    if (!ids.includes(id)) await AsyncStorage.setItem(DISMISSED_KEY, JSON.stringify([...ids, id]));
+    return { status: 'ok' };
+  } catch (error: any) { return { status: 'error', error }; }
+}
+
+/** Lève la suppression — réactivation explicite du jeton par l'utilisateur. */
+export async function restore(id: string): Promise<StoreResult<void>> {
+  try {
+    const ids = await dismissedIds();
+    if (ids.includes(id)) await AsyncStorage.setItem(DISMISSED_KEY, JSON.stringify(ids.filter(x => x !== id)));
+    return { status: 'ok' };
+  } catch (error: any) { return { status: 'error', error }; }
+}
+
 export async function migrateLegacy(): Promise<StoreResult<void>> {
   try {
     if ((await registry()).length) return { status: 'ok' };
@@ -84,6 +124,10 @@ export async function clearAll(): Promise<StoreResult<void>> {
     await Promise.all(entries.map(entry => AsyncStorage.removeItem(payloadKey(entry.configId))));
     await putRegistry([]);
     await AsyncStorage.removeItem('@sxb_active_config_id');
+    // Réinitialisation complète (déconnexion/révocation) : les pierres tombales
+    // n'ont plus d'objet, sinon un profil resterait invisible après un nouvel
+    // enrôlement de l'appareil.
+    await AsyncStorage.removeItem(DISMISSED_KEY);
     await Promise.all([
       AsyncStorage.removeItem(LEGACY_CONFIG),
       AsyncStorage.removeItem(LEGACY_META),

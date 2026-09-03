@@ -4,6 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Crypto from 'expo-crypto';
 import apiClient, { getSecureToken, setSecureToken, removeSecureToken, SEC_KEYS } from '@/services/apiClient';
 import { clearProvisionedConfig, provisionAndStore } from '@/services/provisionClient';
+import * as configStore from '@/services/configStore';
 import { clearAllOfflineData } from '@/services/offlineStorage';
 import type { AccountState, User } from '@/types/api';
 
@@ -227,6 +228,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (normalized.startsWith('SXB-DATA-')) {
       const did = await getOrCreateDeviceId();
       const provisioned = await provisionAndStore(normalized, did);
+      // Réactiver un jeton est une intention explicite : elle lève la
+      // suppression locale éventuelle, sinon le profil resterait masqué par sa
+      // pierre tombale et l'activation semblerait sans effet.
+      await configStore.restore(provisioned.meta.subscriptionId).catch(() => {});
       const stateResponse = await apiClient.get(`/mobile/me?subscriptionId=${encodeURIComponent(provisioned.meta.subscriptionId)}`);
       newState = stateResponse.data.accountState ?? stateResponse.data;
     } else {

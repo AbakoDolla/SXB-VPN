@@ -757,6 +757,42 @@ describe('garde-fous contre les régressions Android', () => {
     }
   });
 
+  it('rend la suppression d’une configuration réellement définitive', () => {
+    // La suppression n'était que locale : /mobile/connections reprovisionnait le
+    // profil au rafraîchissement suivant et il réapparaissait dans la liste.
+    assert.ok(configStore.includes('DISMISSED_KEY'));
+    assert.ok(configStore.includes('export async function dismiss('));
+    assert.ok(configStore.includes('export async function restore('));
+    assert.ok(configStore.includes('export async function listDismissed('));
+    // Une réinitialisation complète purge aussi les pierres tombales.
+    assert.match(configStore, /removeItem\(DISMISSED_KEY\)/);
+
+    // Le filtre s'applique AVANT la boucle de provisionnement proactif.
+    assert.ok(vpnContext.includes('configStore.listDismissed()'));
+    assert.ok(vpnContext.includes('remoteAll.filter((c: any) => !dismissedSet.has(c.id))'));
+    assert.ok(vpnContext.indexOf('const dismissedSet') < vpnContext.indexOf('provisionAndStore(conn.dataToken, deviceId)'));
+
+    // La suppression pose la pierre tombale et purge la liste distante en mémoire.
+    assert.ok(vpnContext.includes('configStore.dismiss(configId)'));
+    assert.ok(vpnContext.includes('setRemoteConnections(prev => prev.filter(c => c.id !== configId))'));
+
+    // Réactiver le jeton lève la suppression, sinon le profil resterait masqué.
+    assert.ok(authContext.includes('configStore.restore(provisioned.meta.subscriptionId)'));
+  });
+
+  it('retire la configuration de l’écran sans attendre le coffre ni la coupure', () => {
+    // L'entrée disparaissait seulement après disconnect() + écritures chiffrées,
+    // donc le bouton paraissait sans effet pendant plusieurs secondes.
+    assert.ok(vpnContext.includes('const previousSaved = savedConfigsRef.current'));
+    assert.ok(vpnContext.includes('setSavedConfigs(prev => prev.filter(c => c.id !== configId))'));
+    // Échec d'écriture : la liste doit revenir à son état exact d'avant.
+    assert.ok(vpnContext.includes('setSavedConfigs(previousSaved)'));
+    // Le retrait optimiste précède la coupure du tunnel ET l'appel au coffre.
+    const retrait = vpnContext.indexOf('setSavedConfigs(prev => prev.filter(c => c.id !== configId))');
+    assert.ok(retrait > -1 && retrait < vpnContext.indexOf('await configStore.remove(configId)'));
+    assert.ok(retrait < vpnContext.indexOf('await disconnect();'));
+  });
+
   it('réserve la gestion technique des configurations au dashboard', () => {
     assert.doesNotMatch(activateScreen, /scan_qr|qr-code-outline/);
     assert.doesNotMatch(planScreen, /scan_qr|qr-code-outline|qrBtn/);
