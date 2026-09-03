@@ -1,4 +1,5 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import { isSuperAdmin as isSuperAdminRole } from '../lib/roles';
+﻿import React, { useEffect, useState, useMemo } from 'react';
 import { useTranslation } from '../contexts/I18nContext';
 import { toast } from 'sonner';
 import Pagination from './ui/Pagination';
@@ -59,10 +60,10 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
   const [generatingTokenFor, setGeneratingTokenFor] = useState<string | null>(null);
   const [tokenResult, setTokenResult] = useState<{ userId: string; token: string; expiresAt: string } | null>(null);
 
-  const isSuperAdmin = currentUserRole === UserRole.SUPER_ADMIN;
+  const isSuperAdmin = isSuperAdminRole(currentUserRole);
   const isAdmin = currentUserRole === UserRole.ADMIN || isSuperAdmin;
 
-  // ── Load data ──────────────────────────────────────────────────
+  // â”€â”€ Load data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const loadAll = async () => {
     setLoading(true);
     try {
@@ -83,7 +84,7 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
 
   useEffect(() => { loadAll(); }, []);
 
-  // ── Create account ─────────────────────────────────────────────
+  // â”€â”€ Create account â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     setCreateError('');
@@ -117,46 +118,46 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
       setFormPassword('');
       await loadAll();
     } catch (err: any) {
-      setCreateError(err?.message || 'Erreur lors de la création');
+      setCreateError(err?.message || 'Erreur lors de la crÃ©ation');
     } finally {
       setCreating(false);
     }
   };
 
-  // ── Generate admin token ───────────────────────────────────────
+  // â”€â”€ Generate admin token â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleGenerateToken = async (userId: string) => {
     setGeneratingTokenFor(userId);
     try {
       const data = await generateAdminToken(userId, 24);
       setTokenResult({ userId, token: data.token, expiresAt: data.expiresAt });
-      toast.success('Token généré avec succès');
+      toast.success('Token gÃ©nÃ©rÃ© avec succÃ¨s');
       await loadAll();
     } catch (err: any) {
-      toast.error(err?.message || 'Erreur lors de la génération du token');
+      toast.error(err?.message || 'Erreur lors de la gÃ©nÃ©ration du token');
     } finally {
       setGeneratingTokenFor(null);
     }
   };
 
-  // ── Delete account ─────────────────────────────────────────────
+  // â”€â”€ Delete account â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleDelete = async (id: string, name: string) => {
     if (id === currentUserId) { toast.error('Vous ne pouvez pas supprimer votre propre compte'); return; }
-    if (!window.confirm(`Supprimer le compte de "${name}" ? Cette action est irréversible.`)) return;
+    if (!window.confirm(`Supprimer le compte de "${name}" ? Cette action est irrÃ©versible.`)) return;
     try {
       await deleteAccount(id);
-      toast.success('Compte supprimé');
+      toast.success('Compte supprimÃ©');
       await loadAll();
     } catch (err: any) {
       toast.error(err?.message || 'Erreur lors de la suppression');
     }
   };
 
-  // ── Revoke token ───────────────────────────────────────────────
+  // â”€â”€ Revoke token â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleRevokeToken = async (id: string) => {
-    if (!window.confirm('Révoquer ce token d\'accès ?')) return;
+    if (!window.confirm('RÃ©voquer ce token d\'accÃ¨s ?')) return;
     try {
       await revokeAdminToken(id);
-      toast.success('Token révoqué');
+      toast.success('Token rÃ©voquÃ©');
       await loadAll();
     } catch (err: any) {
       toast.error(err?.message || 'Erreur');
@@ -166,7 +167,7 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
 
-  // ── Copy helper ────────────────────────────────────────────────
+  // â”€â”€ Copy helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const copy = (field: string, value: string) => {
     navigator.clipboard.writeText(value).catch(() => {});
     setCopiedField(field);
@@ -195,7 +196,7 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-white">Gestion des Comptes</h1>
           <p className="text-sm text-gray-400 mt-1">
-            Créez et gérez les comptes d'accès au dashboard SXB VPN
+            CrÃ©ez et gÃ©rez les comptes d'accÃ¨s au dashboard SXB VPN
           </p>
         </div>
         {isAdmin && (
@@ -204,7 +205,7 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
             className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-medium text-sm rounded-lg shadow-lg transition-all"
           >
             <UserPlus className="h-4 w-4" />
-            Créer un compte
+            CrÃ©er un compte
           </button>
         )}
       </div>
@@ -216,7 +217,7 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
             <div className="flex items-center gap-2">
               <BadgeCheck className="w-5 h-5 text-emerald-400 shrink-0" />
               <span className="text-emerald-400 font-semibold">
-                Compte créé — {createdResult.name} ({createdResult.role})
+                Compte crÃ©Ã© â€” {createdResult.name} ({createdResult.role})
               </span>
             </div>
             <button onClick={() => setCreatedResult(null)} className="text-gray-500 hover:text-white">
@@ -224,7 +225,7 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
             </button>
           </div>
           <div className="space-y-2">
-            <p className="text-sm text-gray-300">Transmettez ces informations de façon sécurisée :</p>
+            <p className="text-sm text-gray-300">Transmettez ces informations de faÃ§on sÃ©curisÃ©e :</p>
 
             {/* Email */}
             <div className="flex items-center gap-2 bg-gray-900/60 rounded-lg px-3 py-2">
@@ -272,7 +273,7 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
           <div className="flex items-start justify-between mb-3">
             <div className="flex items-center gap-2">
               <Key className="w-4 h-4 text-cyan-400" />
-              <span className="text-cyan-400 font-semibold text-sm">Token admin généré</span>
+              <span className="text-cyan-400 font-semibold text-sm">Token admin gÃ©nÃ©rÃ©</span>
             </div>
             <button onClick={() => setTokenResult(null)} className="text-gray-500 hover:text-white">
               <X className="w-4 h-4" />
@@ -295,7 +296,7 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
         <Search className="absolute left-3 top-2.5 h-4 w-4 text-gray-500" />
         <input
           type="text"
-          placeholder="Rechercher par nom, email, rôle..."
+          placeholder="Rechercher par nom, email, rÃ´le..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="w-full pl-9 pr-4 py-2 text-sm bg-gray-900/60 border border-gray-800 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
@@ -315,16 +316,16 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
               <thead>
                 <tr className="border-b border-[#1a1f2e]">
                   <th className="text-left px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Compte</th>
-                  <th className="text-left px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Rôle</th>
+                  <th className="text-left px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">RÃ´le</th>
                   <th className="text-left px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Statut</th>
-                  <th className="text-left px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Créé le</th>
+                  <th className="text-left px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">CrÃ©Ã© le</th>
                   <th className="text-right px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#1a1f2e]">
                 {filtered.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="text-center py-12 text-gray-500">Aucun compte trouvé</td>
+                    <td colSpan={5} className="text-center py-12 text-gray-500">Aucun compte trouvÃ©</td>
                   </tr>
                 )}
                 {filtered.map((account) => {
@@ -357,13 +358,13 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
                             ? 'text-emerald-400 bg-emerald-500/10'
                             : 'text-rose-400 bg-rose-500/10'
                         }`}>
-                          {(account as any).status === 'active' ? '● Actif' : '● Suspendu'}
+                          {(account as any).status === 'active' ? 'â— Actif' : 'â— Suspendu'}
                         </span>
                       </td>
                       <td className="px-5 py-3.5 text-gray-500 text-xs">
                         {(account as any).createdAt
                           ? new Date((account as any).createdAt).toLocaleDateString('fr-FR')
-                          : '—'}
+                          : 'â€”'}
                       </td>
                       <td className="px-5 py-3.5">
                         <div className="flex items-center justify-end gap-2">
@@ -372,7 +373,7 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
                               <button
                                 onClick={() => handleGenerateToken(account.id)}
                                 disabled={generatingTokenFor === account.id}
-                                title="Générer un token d'accès"
+                                title="GÃ©nÃ©rer un token d'accÃ¨s"
                                 className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 transition-colors disabled:opacity-50"
                               >
                                 {generatingTokenFor === account.id
@@ -409,7 +410,7 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
       {isAdmin && adminTokens.length > 0 && (
         <div className="space-y-3">
           <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">
-            Tokens admin actifs récents
+            Tokens admin actifs rÃ©cents
           </h2>
           <div className="bg-[#0f1218] border border-[#1a1f2e] rounded-xl overflow-hidden">
             <div className="overflow-x-auto">
@@ -434,14 +435,14 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
                           </button>
                         </div>
                       </td>
-                      <td className="px-4 py-2.5 text-gray-300 text-xs">{tok.user?.email ?? "—"}</td>
+                      <td className="px-4 py-2.5 text-gray-300 text-xs">{tok.user?.email ?? "â€”"}</td>
                       <td className="px-4 py-2.5">
                         <span className={`text-xs font-medium ${
                           tok.status === 'active' ? 'text-emerald-400' :
                           tok.status === 'used'   ? 'text-blue-400' :
                           'text-gray-500'
                         }`}>
-                          {tok.status === 'active' ? '● Actif' : tok.status === 'used' ? '✓ Utilisé' : '✗ Révoqué'}
+                          {tok.status === 'active' ? 'â— Actif' : tok.status === 'used' ? 'âœ“ UtilisÃ©' : 'âœ— RÃ©voquÃ©'}
                         </span>
                       </td>
                       <td className="px-4 py-2.5 text-gray-500 text-xs">
@@ -453,7 +454,7 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
                             onClick={() => handleRevokeToken(tok.id)}
                             className="text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 px-2 py-1 rounded"
                           >
-                            Révoquer
+                            RÃ©voquer
                           </button>
                         )}
                       </td>
@@ -473,7 +474,7 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
             <div className="flex items-center justify-between px-6 py-4 border-b border-[#1a1f2e]">
               <div className="flex items-center gap-2">
                 <UserPlus className="w-5 h-5 text-cyan-400" />
-                <h2 className="text-base font-semibold text-white">Créer un compte</h2>
+                <h2 className="text-base font-semibold text-white">CrÃ©er un compte</h2>
               </div>
               <button onClick={() => setShowCreateModal(false)} className="text-gray-500 hover:text-white">
                 <X className="w-5 h-5" />
@@ -516,7 +517,7 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
 
               <div>
                 <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">
-                  Téléphone
+                  TÃ©lÃ©phone
                 </label>
                 <input
                   type="text"
@@ -529,7 +530,7 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
 
               <div>
                 <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">
-                  Rôle *
+                  RÃ´le *
                 </label>
                 <div className="relative">
                   <select
@@ -538,9 +539,9 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
                     onChange={(e) => setForm({ ...form, roleId: e.target.value })}
                     className="w-full appearance-none px-3 py-2 text-sm bg-gray-900 border border-gray-800 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50 pr-8"
                   >
-                    <option value="">Sélectionner un rôle...</option>
+                    <option value="">SÃ©lectionner un rÃ´le...</option>
                     {roles.map(r => (
-                      <option key={r.id} value={r.id}>{r.name} — {r.description}</option>
+                      <option key={r.id} value={r.id}>{r.name} â€” {r.description}</option>
                     ))}
                   </select>
                   <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" />
@@ -559,7 +560,7 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
                       onChange={(e) => setAutoGenPassword(e.target.checked)}
                       className="rounded border-gray-700 bg-gray-900 text-cyan-500"
                     />
-                    <span className="text-xs text-gray-500">Auto-générer</span>
+                    <span className="text-xs text-gray-500">Auto-gÃ©nÃ©rer</span>
                   </label>
                 </div>
                 {!autoGenPassword && (
@@ -570,7 +571,7 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
                       value={formPassword}
                       onChange={(e) => setFormPassword(e.target.value)}
                       minLength={6}
-                      placeholder="Min. 6 caractères"
+                      placeholder="Min. 6 caractÃ¨res"
                       className="w-full px-3 py-2 pr-10 text-sm bg-gray-900 border border-gray-800 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
                     />
                     <button
@@ -584,7 +585,7 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
                 )}
                 {autoGenPassword && (
                   <p className="text-xs text-gray-600 mt-1">
-                    Un mot de passe sécurisé sera généré automatiquement et affiché après création.
+                    Un mot de passe sÃ©curisÃ© sera gÃ©nÃ©rÃ© automatiquement et affichÃ© aprÃ¨s crÃ©ation.
                   </p>
                 )}
               </div>
@@ -615,7 +616,7 @@ export default function AccountsView({ currentUserRole, currentUserId }: Account
                   className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black shadow-lg disabled:opacity-50"
                 >
                   {creating && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
-                  Créer le compte
+                  CrÃ©er le compte
                 </button>
               </div>
             </form>

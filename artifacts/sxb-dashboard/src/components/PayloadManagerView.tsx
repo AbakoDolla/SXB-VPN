@@ -1,3 +1,4 @@
+import { isAdmin as isAdminRole } from '../lib/roles';
 import React, { useEffect, useState } from "react";
 import { UserRole } from "../types";
 import {
@@ -18,7 +19,7 @@ const DEFAULT_FORM = {
 };
 
 export default function PayloadManagerView({ currentUserRole }: Props) {
-  const isAdmin = currentUserRole === UserRole.ADMIN || currentUserRole === UserRole.SUPER_ADMIN;
+  const isAdmin = isAdminRole(currentUserRole);
   const [payloads, setPayloads] = useState<SshPayload[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);

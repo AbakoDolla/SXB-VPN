@@ -1211,4 +1211,71 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(deploy, /Amorçage OWNER ignoré/);
     assert.match(deploy, /seed-owner\.cjs/);
   });
+
+  it('découpe le paquet du dashboard pour qu’aucun morceau ne soit tronqué en route', () => {
+    // Un fichier unique de près d'un mégaoctet arrivait coupé sur une liaison
+    // lente : le module échouait et la page restait vide sur le fond bleu.
+    const vite = source('../artifacts/sxb-dashboard/vite.config.ts');
+    assert.match(vite, /manualChunks\(id\)/);
+    assert.match(vite, /return 'charts'/);
+    assert.match(vite, /return 'react-dom'/);
+    // Les greffons Replit du gabarit d'origine ne doivent pas revenir.
+    assert.doesNotMatch(vite, /@replit\//);
+
+    const pkg = source('../artifacts/sxb-dashboard/package.json');
+    for (const mort of ['@replit/vite-plugin-runtime-error-modal', 'wouter', 'framer-motion', '@tanstack/react-query']) {
+      assert.ok(!pkg.includes(`"${mort}"`), `dépendance morte réintroduite : ${mort}`);
+    }
+  });
+
+  it('affiche un message plutôt qu’une page vide quand un fichier n’arrive pas', () => {
+    const html = source('../artifacts/sxb-dashboard/index.html');
+    assert.match(html, /sxb_boot_retry/);
+    assert.match(html, /Chargement interrompu/);
+    // Un rechargement non gardé bouclerait à l'infini sur une panne durable.
+    assert.match(html, /sessionStorage\.setItem\(RETRY_KEY/);
+    assert.doesNotMatch(html, /built on Replit/);
+  });
+
+  it('n’exclut plus le rôle OWNER des commandes d’administration du dashboard', () => {
+    // Huit vues recalculaient `ADMIN || SUPER_ADMIN` sans OWNER : le
+    // propriétaire racine voyait moins de boutons qu'un simple admin, alors
+    // que le serveur l'autorise. Une source unique évite la neuvième copie.
+    const roles = source('../artifacts/sxb-dashboard/src/lib/roles.ts');
+    assert.match(roles, /export function isOwner/);
+    assert.match(roles, /export function isAdmin/);
+    assert.match(roles, /role === UserRole\.ADMIN \|\| isSuperAdmin\(role\)/);
+
+    const vues = [
+      'PayloadManagerView', 'ServersView', 'SingboxManagerView', 'XrayManagerView',
+      'VpnProfilesView', 'SSHManagerView', 'SubscriptionsView',
+    ];
+    for (const v of vues) {
+      const s = source(`../artifacts/sxb-dashboard/src/components/${v}.tsx`);
+      assert.match(s, /isAdminRole\(currentUserRole\)/, `${v} n'utilise pas l'assistant partagé`);
+      assert.doesNotMatch(
+        s,
+        /const isAdmin = currentUserRole === UserRole\.(ADMIN|SUPER_ADMIN)/,
+        `${v} recalcule le rôle localement et oublierait OWNER`,
+      );
+    }
+  });
+
+  it('affiche le nom des revendeurs, jamais leur identifiant technique', () => {
+    // `/api/resellers` aplatit nom et e-mail à la racine : lire `r.user.name`
+    // renvoyait undefined et l'interface retombait sur l'UUID.
+    const vue = source('../artifacts/sxb-dashboard/src/components/VpnProfilesView.tsx');
+    assert.match(vue, /\{r\.name \|\| r\.email \|\| r\.user\?\.name/);
+  });
+
+  it('n’affiche plus l’adresse de sortie dans l’application mobile', () => {
+    const accueil = source('app/(tabs)/index.tsx');
+    assert.doesNotMatch(accueil, /connectedIp/);
+    assert.doesNotMatch(accueil, /info_ip_address/);
+    // L'adresse n'est même plus demandée au serveur.
+    assert.doesNotMatch(accueil, /["'`]\/mobile\/ip["'`]/);
+    // La latence, elle, reste affichée.
+    assert.match(accueil, /info_ping/);
+    assert.match(accueil, /Abakodollar\$/);
+  });
 });

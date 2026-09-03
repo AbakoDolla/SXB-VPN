@@ -1,3 +1,4 @@
+import { isAdmin as isAdminRole } from '../lib/roles';
 import React, { useEffect, useState } from "react";
 import { UserRole } from "../types";
 import {
@@ -145,7 +146,7 @@ function fmtBytes(b: string | null): string {
 }
 
 export default function XrayManagerView({ currentUserRole }: Props) {
-  const isAdmin = currentUserRole === UserRole.ADMIN || currentUserRole === UserRole.SUPER_ADMIN;
+  const isAdmin = isAdminRole(currentUserRole);
   const [accounts, setAccounts] = useState<XrayAccount[]>([]);
   const [stats, setStats] = useState({ total: 0, active: 0, byProtocol: [] as any[] });
   const [protocols, setProtocols] = useState<string[]>(['vless', 'vmess', 'trojan', 'shadowsocks']);

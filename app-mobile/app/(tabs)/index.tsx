@@ -178,7 +178,6 @@ export default function HomeScreen() {
   const [timer, setTimer] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [ping, setPing] = useState<number | null>(null);
-  const [connectedIp, setConnectedIp] = useState<string>("—");
   const [lastConnection, setLastConnection] = useState<string>("—");
   const [connections, setConnections] = useState<VpnConnection[]>([]);
   const [connectionsLoading, setConnectionsLoading] = useState(false);
@@ -222,26 +221,6 @@ export default function HomeScreen() {
       setPing(null);
     }
     return () => clearInterval(timerId);
-  }, [isConnected]);
-
-  useEffect(() => {
-    if (!isConnected) {
-      setConnectedIp("—");
-      return;
-    }
-    // C7 — L'adresse de sortie est demandée à notre propre backend et non plus à
-    // api.ipify.org : aucun tiers n'apprend l'IP de sortie du tunnel ni l'instant
-    // de connexion (cf. mention « aucune donnée transmise à des tiers »).
-    let cancelled = false;
-    apiClient
-      .get("/mobile/ip", { timeout: 5000 })
-      .then((res) => {
-        if (!cancelled) setConnectedIp(res.data?.ip || "—");
-      })
-      .catch(() => {
-        if (!cancelled) setConnectedIp("—");
-      });
-    return () => { cancelled = true; };
   }, [isConnected]);
 
   useEffect(() => {
@@ -516,11 +495,15 @@ export default function HomeScreen() {
             <Text style={[type.h3, { color: colors.primaryForeground }]}>{btnLabel}</Text>
           </Pressable>
 
-          {/* Bandeau vif : IP, protocole et latence côte à côte, comme sur les
-              applications VPN de référence, plutôt que noyés dans une liste. */}
+          {/* Bandeau vif : protocole et latence côte à côte, comme sur les
+              applications VPN de référence, plutôt que noyés dans une liste.
+
+              L'adresse de sortie n'y figure plus et n'est même plus demandée :
+              l'afficher revenait à exposer en clair, sur l'écran principal, la
+              donnée qui identifie le serveur derrière le tunnel. La durée de
+              session est déjà lisible dans l'en-tête. */}
           <Surface style={styles.liveStrip} padded={false}>
             <StatRow>
-              <StatTile label={t('info_ip_address')} value={connectedIp} icon="globe-outline" monospace />
               <StatTile label={t('info_protocol')} value={protocolLabel} icon="git-branch-outline" />
               <StatTile
                 label={t('info_ping')}
@@ -672,7 +655,7 @@ export default function HomeScreen() {
           </Surface>
         )}
 
-        {/* Détails secondaires. IP, protocole et latence figurent déjà dans le
+        {/* Détails secondaires. Le protocole et la latence figurent déjà dans le
             bandeau vif : ne restent ici que les informations de contexte. */}
         <Surface>
           <SectionHeader title={t('card_connection_info')} icon="information-circle-outline" />
@@ -688,6 +671,7 @@ export default function HomeScreen() {
               </Text>
             </View>
           </View>
+          <Text style={[styles.signature, { color: colors.textMuted }]} accessibilityRole="text">Abakodollar$</Text>
         </Surface>
 
         {/* ── Connexions VPN ──────────────────────────────────────────────── */}
@@ -844,6 +828,18 @@ const styles = StyleSheet.create({
   },
   infoGrid: { gap: spacing.md },
   infoRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: spacing.md },
+
+  // Signature discrète de l'auteur, volontairement très effacée : présente
+  // sans jamais concurrencer l'information utile de la carte. La couleur est
+  // appliquée à l'usage, comme partout ailleurs dans ce fichier (la feuille de
+  // styles est définie hors du composant, où le thème n'est pas accessible).
+  signature: {
+    marginTop: spacing.md,
+    textAlign: "center",
+    fontSize: 9,
+    letterSpacing: 1.2,
+    opacity: 0.35,
+  },
 
   // ── Carte de connexion ─────────────────────────────────────────────────────
   connHeader: { flexDirection: "row", alignItems: "flex-start", gap: spacing.md },

@@ -1,3 +1,4 @@
+import { isAdmin as isAdminRole } from '../lib/roles';
 import React, { useEffect, useState } from "react";
 import { UserRole } from "../types";
 import {
@@ -282,7 +283,7 @@ function ProbeResultPanel({ result }: { result: ConfigTestResult }) {
 }
 
 export default function VpnProfilesView({ currentUserRole }: Props) {
-  const isAdmin = currentUserRole === UserRole.ADMIN || currentUserRole === UserRole.SUPER_ADMIN;
+  const isAdmin = isAdminRole(currentUserRole);
   const [profiles, setProfiles] = useState<VpnProfile[]>([]);
   const [stats, setStats]       = useState({ total: 0, active: 0, byProtocol: [] as any[] });
   const [loading, setLoading]   = useState(true);

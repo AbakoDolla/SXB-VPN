@@ -1,3 +1,4 @@
+import { isAdmin as isAdminRole } from '../lib/roles';
 import React, { useEffect, useState } from "react";
 import { useTranslation } from "../contexts/I18nContext";
 import { fetchServers, createServer, updateServer, deleteServer } from "../api/servers";
@@ -20,7 +21,7 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
   const [location, setLocation] = useState("Paris, France 🇫🇷");
   const [ip, setIp] = useState("");
 
-  const isAdmin = currentUserRole === UserRole.ADMIN || currentUserRole === UserRole.SUPER_ADMIN;
+  const isAdmin = isAdminRole(currentUserRole);
   const isSupport = currentUserRole === UserRole.SUPPORT;
 
   const loadServers = async () => {

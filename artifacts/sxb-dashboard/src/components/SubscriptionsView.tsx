@@ -1,3 +1,4 @@
+import { isAdmin as isAdminRole } from '../lib/roles';
 import React, { useEffect, useState, useMemo } from 'react';
 import { UserRole } from '../types';
 import {
@@ -53,7 +54,7 @@ const BULK_ACTIONS: Array<{ id: BulkAction; label: string; hint: string; needsPr
 ];
 
 export default function SubscriptionsView({ currentUserRole }: Props) {
-  const isAdmin = currentUserRole === UserRole.SUPER_ADMIN || currentUserRole === UserRole.ADMIN;
+  const isAdmin = isAdminRole(currentUserRole);
 
   const [subs, setSubs] = useState<Subscription[]>([]);
   const [stats, setStats] = useState({ total: 0, active: 0, expired: 0 });
