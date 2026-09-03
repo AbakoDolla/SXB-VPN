@@ -198,6 +198,7 @@ describe('garde-fous contre les régressions Android', () => {
   const prismaSchema = source('../prisma/schema.prisma');
   const subscriptionsView = source('../artifacts/sxb-dashboard/src/components/SubscriptionsView.tsx');
   const vpnProfilesView = source('../artifacts/sxb-dashboard/src/components/VpnProfilesView.tsx');
+  const apiClient = source('../artifacts/sxb-dashboard/src/api/client.ts');
   const nativeLogger = source('modules/android-native/SxbSecureLogger.kt');
   const securityModule = source('modules/android-native/SecurityModule.kt');
   const trafficManager = source('modules/android-native/TrafficStatsManager.kt');
@@ -1081,6 +1082,16 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(vpnProfilesView.includes('Tout retirer'));
     // L'échec du chargement des revendeurs ne doit pas masquer les profils.
     assert.ok(vpnProfilesView.includes('fetchResellers().catch(() => [] as any[])'));
+  });
+
+  it('ne recharge pas la page en boucle quand aucune session n’existe', () => {
+    // L'application est servie à la racine et n'a PAS de route « /login » : la
+    // condition `pathname !== "/login"` était donc toujours vraie. Un visiteur
+    // non connecté enchaînait chargement → 401 → rechargement → 401, et le
+    // dashboard restait bloqué sur « Initialisation… ».
+    assert.ok(apiClient.includes('const hadSession'));
+    assert.ok(apiClient.includes('if (hadSession && typeof window !== "undefined")'));
+    assert.doesNotMatch(apiClient, /window\.location\.pathname !== "\/login"/);
   });
 
   it('réserve la gestion technique des configurations au dashboard', () => {

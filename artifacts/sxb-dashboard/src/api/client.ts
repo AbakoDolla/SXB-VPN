@@ -42,9 +42,24 @@ class ApiError extends Error {
 
 let refreshPromise: Promise<boolean> | null = null;
 
+/**
+ * Ramène l'utilisateur à l'écran de connexion après la perte d'une session.
+ *
+ * BOUCLE CORRIGÉE — cette fonction rechargeait la page dès qu'une réponse 401
+ * arrivait, y compris au tout premier appel d'un visiteur non connecté. Or
+ * l'application est servie à la racine et n'a pas de route « /login » : la
+ * condition `pathname !== "/login"` était donc toujours vraie. Chargement →
+ * 401 → rechargement → 401… le dashboard restait bloqué sur « Initialisation… »
+ * et devenait inaccessible.
+ *
+ * Le rechargement n'a de sens que si une session existait VRAIMENT : sans
+ * jeton, il n'y a rien à invalider, et le composant racine sait déjà afficher
+ * le formulaire de connexion.
+ */
 function forceLoginRedirect() {
+  const hadSession = typeof window !== "undefined" && !!getAccessToken();
   clearTokens();
-  if (typeof window !== "undefined" && window.location.pathname !== "/login") {
+  if (hadSession && typeof window !== "undefined") {
     window.location.assign("/");
   }
 }
