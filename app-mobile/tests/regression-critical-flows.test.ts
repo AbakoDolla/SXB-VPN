@@ -805,7 +805,17 @@ describe('garde-fous contre les régressions Android', () => {
     // Un serveur joignable sans le proxy existe toujours, même si le JSON
     // fournisseur n'en déclare aucun (cas des traductions Xray).
     assert.ok(nativeService.includes('directTag = "dns-bootstrap"'));
-    assert.ok(nativeService.includes('put("address", "local").put("detour", "direct")'));
+    // Il doit s'appuyer sur le résolveur RÉEL du réseau : `local` délègue au
+    // résolveur Go, qui cherche /etc/resolv.conf — absent sous Android, d'où
+    // les « lookup … i/o timeout » et « connect: connection refused » constatés.
+    assert.ok(nativeService.includes('private fun systemDnsServers('));
+    assert.ok(nativeService.includes('private fun bootstrapDnsAddress('));
+    assert.ok(nativeService.includes('put("address", bootstrapDnsAddress()).put("detour", "direct")'));
+    assert.doesNotMatch(nativeService, /put\("tag", "dns-local"\)\.put\("address", "local"\)/);
+    // Le résolveur d'amorçage ne doit jamais être notre propre TUN.
+    assert.ok(nativeService.includes('NetworkCapabilities.TRANSPORT_VPN'));
+    // Un serveur d'amorçage doit être une IP littérale ET sortir en direct.
+    assert.ok(nativeService.includes('if (host.isNotEmpty() && isLiteralIp(host)) { directTag = tag; break }'));
 
     // Un DNS distant désigné par un nom doit dire comment résoudre son propre nom.
     assert.ok(nativeService.includes('s.put("address_resolver", directTag)'));
@@ -819,6 +829,30 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(nativeService.includes('outboundServerHosts,'));
     // Sur une chaîne de proxys, chaque maillon nommé doit être résolu hors tunnel.
     assert.ok(nativeService.includes('val outboundServerHosts = LinkedHashSet<String>()'));
+  });
+
+  it('signale un tunnel connecté qui ne transporte aucune donnée', () => {
+    // Le moteur journalise en niveau `warn` : il n'émet jamais la ligne
+    // « connection established » qui prouverait le handshake, mais il émet
+    // TOUTES les erreurs de sortie. On surveille donc l'échec, faute de quoi
+    // l'application affiche un état sain pendant que rien ne passe.
+    assert.ok(nativeService.includes('put("log", JSONObject().put("level", "warn")'));
+    assert.ok(nativeService.includes('private fun noteOutboundFailure('));
+    assert.ok(nativeService.includes('TUNNEL_SANS_TRAFIC'));
+    // Le diagnostic distingue une panne de résolution d'un refus du serveur.
+    assert.ok(nativeService.includes('if (dnsFailureSeen)'));
+    // Aucun changement d'état : couper sur un pic d'erreurs boucherait en
+    // reconnexions sur un réseau lent.
+    assert.doesNotMatch(nativeService, /noteOutboundFailure[\s\S]{0,1200}failVpn\(/);
+    // Les compteurs repartent de zéro à chaque connexion.
+    assert.ok(nativeService.includes('dnsFailureSeen = false'));
+  });
+
+  it('publie la séparation des rôles server / SNI / Host WebSocket', () => {
+    // Les noms d'hôte étant masqués dans les journaux, on publie la RELATION
+    // entre les trois valeurs — seule information exploitable au diagnostic.
+    assert.ok(nativeService.includes('[CONFIG] rôles: server≠sni='));
+    assert.ok(nativeService.includes('sni=wsHost=${sni.equals(wsHost, true)}'));
   });
 
   it('réserve la gestion technique des configurations au dashboard', () => {
