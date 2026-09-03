@@ -142,6 +142,27 @@ function maskProfile(p: any) {
   return out;
 }
 
+/**
+ * Profil masqué + liste des revendeurs attribués, aplatie pour l'interface.
+ *
+ * `resellers` vide signifie « aucune restriction » : la configuration est alors
+ * disponible pour TOUS les revendeurs (voir le modèle VpnProfileReseller). Le
+ * drapeau `unrestricted` évite à l'interface de réinterpréter ce cas.
+ */
+function withResellers(p: any) {
+  const out = maskProfile(p);
+  const links = Array.isArray(p.assignedResellers) ? p.assignedResellers : [];
+  out.resellers = links.map((l: any) => ({
+    resellerId: l.resellerId,
+    name: l.reseller?.user?.name ?? null,
+    email: l.reseller?.user?.email ?? null,
+    assignedAt: l.assignedAt ?? null,
+  }));
+  out.unrestricted = out.resellers.length === 0;
+  delete out.assignedResellers;
+  return out;
+}
+
 // ─── GET /api/vpn-profiles ────────────────────────────────────────────────────
 router.get('/', requireAuth, requirePermission('vpnprofile.view'), async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -150,12 +171,66 @@ router.get('/', requireAuth, requirePermission('vpnprofile.view'), async (req: A
     }
     const profiles = await (prisma as any).vpnProfile.findMany({
       orderBy: { createdAt: 'desc' },
-      include: { _count: { select: { subscriptions: true } } },
+      include: {
+        _count: { select: { subscriptions: true } },
+        // Attributions : l'administrateur doit voir d'un coup d'œil quels
+        // revendeurs reçoivent chaque configuration.
+        assignedResellers: {
+          include: { reseller: { include: { user: { select: { id: true, name: true, email: true } } } } },
+        },
+      },
     });
-    return res.json({ success: true, profiles: profiles.map(maskProfile) });
+    return res.json({ success: true, profiles: profiles.map(withResellers) });
   } catch (err) {
     console.error('vpn-profiles list error:', err);
     return res.status(500).json({ error: 'Failed to list VPN profiles' });
+  }
+});
+
+// ─── GET /api/vpn-profiles/assigned ──────────────────────────────────────────
+//
+// Vue du REVENDEUR. Il ne possède pas `vpnprofile.view` — il ne peut donc pas
+// lister les profils par la route ci-dessus, et c'est voulu : les champs
+// techniques (hôte, port, identifiants, blob canonique) ne doivent jamais lui
+// parvenir. Il a néanmoins besoin de choisir une configuration pour créer un
+// forfait à ses clients : cette route ne renvoie que le nom commercial et
+// l'identifiant des configurations qui LUI sont attribuées.
+router.get('/assigned', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (!prisma) return res.json({ success: true, profiles: [] });
+
+    // Les rôles disposant de la vue technique voient tout : la route sert alors
+    // simplement de liste de sélection.
+    if (req.user?.role !== 'RESELLER') {
+      const all = await (prisma as any).vpnProfile.findMany({
+        where: { status: 'active' },
+        select: { id: true, name: true, displayProtocol: true, protocol: true },
+        orderBy: { name: 'asc' },
+      });
+      return res.json({ success: true, profiles: all });
+    }
+
+    const reseller = await (prisma as any).reseller.findUnique({ where: { userId: req.user.userId } });
+    if (!reseller) return res.json({ success: true, profiles: [] });
+
+    // Un profil sans AUCUNE attribution reste accessible à tous (voir le
+    // commentaire du modèle VpnProfileReseller) : restreindre d'office aurait
+    // coupé les revendeurs déjà en production.
+    const profiles = await (prisma as any).vpnProfile.findMany({
+      where: {
+        status: 'active',
+        OR: [
+          { assignedResellers: { none: {} } },
+          { assignedResellers: { some: { resellerId: reseller.id } } },
+        ],
+      },
+      select: { id: true, name: true, displayProtocol: true },
+      orderBy: { name: 'asc' },
+    });
+    return res.json({ success: true, profiles });
+  } catch (err) {
+    console.error('vpn-profiles assigned error:', err);
+    return res.status(500).json({ error: 'Failed to list assigned profiles' });
   }
 });
 
@@ -223,6 +298,84 @@ router.get('/:id', requireAuth, requirePermission('vpnprofile.view'), async (req
     return res.json({ success: true, profile: maskProfile(p) });
   } catch (err) {
     return res.status(500).json({ error: 'Failed to get VPN profile' });
+  }
+});
+
+// ─── GET /api/vpn-profiles/:id/resellers ─────────────────────────────────────
+router.get('/:id/resellers', requireAuth, requirePermission('vpnprofile.manage'), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (!prisma) return res.json({ success: true, resellers: [], unrestricted: true });
+    const links = await (prisma as any).vpnProfileReseller.findMany({
+      where: { profileId: req.params.id },
+      include: { reseller: { include: { user: { select: { id: true, name: true, email: true } } } } },
+    });
+    return res.json({
+      success: true,
+      resellers: links.map((l: any) => ({
+        resellerId: l.resellerId,
+        name: l.reseller?.user?.name ?? null,
+        email: l.reseller?.user?.email ?? null,
+        assignedAt: l.assignedAt,
+      })),
+      unrestricted: links.length === 0,
+    });
+  } catch (err: any) {
+    console.error('vpn-profiles get resellers error:', err);
+    return res.status(500).json({ error: 'Failed to list assigned resellers' });
+  }
+});
+
+// ─── PUT /api/vpn-profiles/:id/resellers ─────────────────────────────────────
+//
+// Remplace l'ENSEMBLE des attributions en un appel : ajouter, retirer, ou tout
+// retirer relèvent de la même opération. Un tableau vide rend la configuration
+// disponible à tous les revendeurs, ce qui est le comportement par défaut des
+// profils historiques.
+router.put('/:id/resellers', requireAuth, requirePermission('vpnprofile.manage'), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (!prisma) return res.status(503).json({ error: 'errors.db.unavailable' });
+    const { resellerIds } = req.body ?? {};
+    if (!Array.isArray(resellerIds)) {
+      return res.status(400).json({ error: 'errors.profiles.invalid_resellers', message: 'resellerIds doit être un tableau' });
+    }
+
+    const profile = await (prisma as any).vpnProfile.findUnique({ where: { id: req.params.id }, select: { id: true, name: true } });
+    if (!profile) return res.status(404).json({ error: 'Profil VPN introuvable' });
+
+    // Écarter les identifiants inconnus plutôt que d'échouer : l'interface
+    // pourrait référencer un revendeur supprimé entre-temps.
+    const known = await (prisma as any).reseller.findMany({
+      where: { id: { in: resellerIds } },
+      select: { id: true },
+    });
+    const validIds: string[] = known.map((r: any) => r.id);
+
+    await (prisma as any).$transaction([
+      (prisma as any).vpnProfileReseller.deleteMany({ where: { profileId: profile.id } }),
+      ...(validIds.length
+        ? [(prisma as any).vpnProfileReseller.createMany({
+            data: validIds.map((resellerId) => ({
+              profileId: profile.id,
+              resellerId,
+              assignedBy: req.user!.userId,
+            })),
+            skipDuplicates: true,
+          })]
+        : []),
+    ]);
+
+    await logDbActivity(
+      req.user!.userId,
+      validIds.length
+        ? `Configuration "${profile.name}" attribuée à ${validIds.length} revendeur(s)`
+        : `Configuration "${profile.name}" rendue disponible à tous les revendeurs`,
+      'info',
+      req.ip || '',
+    );
+    return res.json({ success: true, assigned: validIds.length, unrestricted: validIds.length === 0 });
+  } catch (err: any) {
+    console.error('vpn-profiles set resellers error:', err);
+    return res.status(500).json({ error: err.message || 'Failed to assign resellers' });
   }
 });
 

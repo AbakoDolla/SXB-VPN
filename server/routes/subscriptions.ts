@@ -248,6 +248,189 @@ router.post('/', requireAuth, requirePermission('subscription.manage'), async (r
   }
 });
 
+// ─── POST /api/subscriptions/bulk ────────────────────────────────────────────
+//
+// Opérations groupées. L'exploitation porte sur des centaines de clients :
+// les éditer un par un n'est pas tenable.
+//
+// Quatre actions dont la sémantique ne doit JAMAIS être confondue :
+//   deploy          — crée un forfait (profil + quota + durée) pour N clients
+//   set             — REMPLACE quota et/ou durée des forfaits visés
+//   add_data        — AJOUTE du quota au solde existant (ne l'écrase pas)
+//   extend_duration — AJOUTE des jours à l'échéance existante
+//
+// « set » et « add » restent deux actions distinctes et nommées : c'est la
+// confusion entre les deux qui fait perdre le solde d'un client.
+router.post('/bulk', requireAuth, requirePermission('subscription.manage'), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { action, clientIds, subscriptionIds, profileId, quotaGB, durationDays } = req.body ?? {};
+    const ACTIONS = ['deploy', 'set', 'add_data', 'extend_duration'];
+    if (!ACTIONS.includes(String(action))) {
+      return res.status(400).json({ error: 'errors.bulk.invalid_action', message: `action doit valoir : ${ACTIONS.join(', ')}` });
+    }
+    if (!prisma) return res.status(503).json({ error: 'errors.db.unavailable', message: 'Base de données indisponible' });
+
+    const isReseller = req.user?.role === 'RESELLER';
+    const gbToBytes = (gb: any) => BigInt(Math.round(Number(gb) * 1024 ** 3));
+    const details: Array<{ id: string; status: string; reason?: string }> = [];
+    let succeeded = 0, skipped = 0, failed = 0;
+
+    // ── Cibles ──────────────────────────────────────────────────────────────
+    // `deploy` crée des forfaits : il vise des CLIENTS. Les autres actions
+    // modifient l'existant : elles visent des ABONNEMENTS.
+    const targetIds: string[] = (action === 'deploy' ? clientIds : subscriptionIds) ?? [];
+    if (!Array.isArray(targetIds) || targetIds.length === 0) {
+      return res.status(400).json({
+        error: 'errors.bulk.no_target',
+        message: action === 'deploy' ? 'clientIds est requis' : 'subscriptionIds est requis',
+      });
+    }
+
+    // ── Contrôle du quota revendeur sur le CUMUL ────────────────────────────
+    // Vérifier client par client laisserait passer 100 × 5 Go pour un
+    // revendeur qui n'a que 100 Go : chaque appel isolé serait valide. Le
+    // total est donc évalué AVANT toute écriture, et l'opération entière est
+    // refusée plutôt qu'appliquée à moitié.
+    if (isReseller && (action === 'deploy' || action === 'set' || action === 'add_data')) {
+      const reseller = await (prisma as any).reseller.findUnique({ where: { userId: req.user!.userId } });
+      if (!reseller) return res.status(404).json({ error: 'errors.resellers.not_found', message: 'Revendeur introuvable' });
+      const quotaLimit: bigint = reseller.quotaBytes ?? BigInt(0);
+      if (quotaLimit > BigInt(0)) {
+        const aggregate = await (prisma as any).subscription.aggregate({
+          where: { client: { userId: req.user!.userId } },
+          _sum: { quotaBytes: true },
+        });
+        const currentUsed: bigint = aggregate._sum.quotaBytes ?? BigInt(0);
+        const unit = quotaGB !== undefined ? gbToBytes(quotaGB) : BigInt(0);
+
+        let projected = currentUsed;
+        if (action === 'deploy') {
+          projected = currentUsed + unit * BigInt(targetIds.length);
+        } else if (action === 'add_data') {
+          projected = currentUsed + unit * BigInt(targetIds.length);
+        } else if (action === 'set' && quotaGB !== undefined) {
+          // « set » remplace : on retire les quotas actuels des forfaits visés
+          // avant d'ajouter les nouveaux, sinon on compterait deux fois.
+          const current = await (prisma as any).subscription.aggregate({
+            where: { id: { in: targetIds }, client: { userId: req.user!.userId } },
+            _sum: { quotaBytes: true },
+          });
+          projected = currentUsed - (current._sum.quotaBytes ?? BigInt(0)) + unit * BigInt(targetIds.length);
+        }
+        if (projected > quotaLimit) {
+          const toGb = (b: bigint) => (Number(b) / 1024 ** 3).toFixed(2);
+          return res.status(409).json({
+            error: 'errors.resellers.quota_exceeded',
+            message: `Quota revendeur insuffisant : cette opération porterait le total à ${toGb(projected)} Go pour une limite de ${toGb(quotaLimit)} Go.`,
+          });
+        }
+      }
+    }
+
+    // ── deploy ──────────────────────────────────────────────────────────────
+    if (action === 'deploy') {
+      if (!profileId || quotaGB === undefined || durationDays === undefined) {
+        return res.status(400).json({ error: 'errors.bulk.missing_fields', message: 'profileId, quotaGB et durationDays sont requis' });
+      }
+      const profile = await (prisma as any).vpnProfile.findUnique({ where: { id: profileId } });
+      if (!profile) return res.status(404).json({ error: 'Profil VPN introuvable' });
+
+      const quotaBytes = gbToBytes(quotaGB);
+      for (const clientId of targetIds) {
+        try {
+          const client = await prisma.vpnClient.findUnique({ where: { id: clientId }, select: { id: true, userId: true } });
+          // 404 et non 403 : ne pas confirmer l'existence d'une ressource
+          // appartenant à autrui (convention du dépôt).
+          if (!client || (isReseller && client.userId !== req.user!.userId)) {
+            failed++; details.push({ id: clientId, status: 'failed', reason: 'Client introuvable' });
+            continue;
+          }
+          const startAt  = new Date();
+          const expireAt = new Date(startAt.getTime() + Number(durationDays) * 24 * 3600 * 1000);
+          await (prisma as any).subscription.create({
+            data: {
+              name: `${profile.name} — ${Number(durationDays)}j`,
+              clientId, profileId,
+              dataToken: generateDataToken(),
+              quotaBytes, quotaUsed: BigInt(0),
+              durationDays: Number(durationDays),
+              deviceLimit: 1,
+              startAt, expireAt,
+              status: 'active',
+              createdBy: req.user!.userId,
+            },
+          });
+          succeeded++; details.push({ id: clientId, status: 'ok' });
+        } catch (e: any) {
+          // Un échec isolé ne doit pas interrompre les autres : sur 150 clients,
+          // l'opérateur veut le maximum de réussites et la liste des échecs.
+          failed++; details.push({ id: clientId, status: 'failed', reason: e?.message || 'Erreur inconnue' });
+        }
+      }
+    } else {
+      // ── set / add_data / extend_duration ──────────────────────────────────
+      for (const subId of targetIds) {
+        try {
+          const sub = await (prisma as any).subscription.findUnique({
+            where: { id: subId },
+            include: { client: { select: { userId: true } } },
+          });
+          if (!sub || (isReseller && sub.client?.userId !== req.user!.userId)) {
+            failed++; details.push({ id: subId, status: 'failed', reason: 'Forfait introuvable' });
+            continue;
+          }
+
+          const data: Record<string, any> = {};
+          if (action === 'set') {
+            if (quotaGB !== undefined) data.quotaBytes = gbToBytes(quotaGB);
+            if (durationDays !== undefined) {
+              data.durationDays = Number(durationDays);
+              data.expireAt = new Date(Date.now() + Number(durationDays) * 24 * 3600 * 1000);
+            }
+          } else if (action === 'add_data') {
+            if (quotaGB === undefined) {
+              failed++; details.push({ id: subId, status: 'failed', reason: 'quotaGB requis' });
+              continue;
+            }
+            data.quotaBytes = (sub.quotaBytes ?? BigInt(0)) + gbToBytes(quotaGB);
+          } else {
+            if (durationDays === undefined) {
+              failed++; details.push({ id: subId, status: 'failed', reason: 'durationDays requis' });
+              continue;
+            }
+            // Prolonger un forfait DÉJÀ EXPIRÉ doit le réactiver : repartir de
+            // son ancienne échéance laisserait la nouvelle date dans le passé.
+            const base = sub.expireAt && new Date(sub.expireAt) > new Date() ? new Date(sub.expireAt) : new Date();
+            data.expireAt = new Date(base.getTime() + Number(durationDays) * 24 * 3600 * 1000);
+            data.durationDays = Number(sub.durationDays ?? 0) + Number(durationDays);
+            if (sub.status === 'expired') data.status = 'active';
+          }
+
+          if (Object.keys(data).length === 0) {
+            skipped++; details.push({ id: subId, status: 'skipped', reason: 'Aucune modification demandée' });
+            continue;
+          }
+          await (prisma as any).subscription.update({ where: { id: subId }, data });
+          succeeded++; details.push({ id: subId, status: 'ok' });
+        } catch (e: any) {
+          failed++; details.push({ id: subId, status: 'failed', reason: e?.message || 'Erreur inconnue' });
+        }
+      }
+    }
+
+    await logDbActivity(
+      req.user!.userId,
+      `Opération groupée "${action}" : ${succeeded} réussis, ${skipped} ignorés, ${failed} échoués (${targetIds.length} sélectionnés)`,
+      failed > 0 ? 'warning' : 'info',
+      req.ip || '',
+    );
+    return res.json({ success: true, action, selected: targetIds.length, succeeded, skipped, failed, details });
+  } catch (err: any) {
+    console.error('subscription bulk error:', err);
+    return res.status(500).json({ error: err.message || 'Échec de l’opération groupée' });
+  }
+});
+
 // ─── PUT /api/subscriptions/:id ──────────────────────────────────────────────
 router.put('/:id', requireAuth, requirePermission('subscription.manage'), async (req: AuthenticatedRequest, res: Response) => {
   try {

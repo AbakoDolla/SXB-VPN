@@ -193,6 +193,9 @@ describe('garde-fous contre les régressions Android', () => {
   const planScreen = source('app/plan.tsx');
   const nativeModule = source('modules/android-native/SxbVpnModule.kt');
   const diagnosticsScreen = source('app/diagnostics.tsx');
+  const subscriptionRoutes = source('../server/routes/subscriptions.ts');
+  const vpnProfileRoutes = source('../server/routes/vpn-profiles.ts');
+  const prismaSchema = source('../prisma/schema.prisma');
   const nativeLogger = source('modules/android-native/SxbSecureLogger.kt');
   const securityModule = source('modules/android-native/SecurityModule.kt');
   const trafficManager = source('modules/android-native/TrafficStatsManager.kt');
@@ -970,6 +973,58 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(vpnContext.includes('configStore.purgeExpired()'));
     assert.ok(vpnContext.indexOf('configStore.purgeExpired()') < vpnContext.indexOf("apiClient.get(`/mobile/vpn/config"));
     assert.ok(vpnContext.includes('Configuration expirée'));
+  });
+
+  it('distingue remplacer, ajouter et prolonger dans les opérations groupées', () => {
+    // L'exploitant gère des centaines de clients : les éditer un par un n'est
+    // pas tenable. Confondre « définir » et « ajouter » ferait perdre le solde
+    // d'un client, d'où quatre actions explicitement nommées.
+    assert.ok(subscriptionRoutes.includes("router.post('/bulk'"));
+    for (const action of ['deploy', 'set', 'add_data', 'extend_duration']) {
+      assert.ok(subscriptionRoutes.includes(`'${action}'`), `action absente : ${action}`);
+    }
+    // « ajouter » part du solde existant, « définir » l'écrase.
+    assert.ok(subscriptionRoutes.includes('data.quotaBytes = (sub.quotaBytes ?? BigInt(0)) + gbToBytes(quotaGB)'));
+    // Prolonger un forfait déjà expiré doit le réactiver, sinon la nouvelle
+    // échéance resterait dans le passé.
+    assert.ok(subscriptionRoutes.includes('new Date(sub.expireAt) > new Date() ? new Date(sub.expireAt) : new Date()'));
+    assert.ok(subscriptionRoutes.includes("if (sub.status === 'expired') data.status = 'active'"));
+    // Un échec isolé ne doit pas interrompre le lot, et l'opérateur veut savoir
+    // quels clients ont échoué et pourquoi.
+    assert.ok(subscriptionRoutes.includes('selected: targetIds.length'));
+    assert.ok(subscriptionRoutes.includes('details'));
+  });
+
+  it('contrôle le quota revendeur sur le cumul d’une opération groupée', () => {
+    // Vérifier client par client laisserait passer 100 × 5 Go pour un revendeur
+    // limité à 100 Go : chaque appel isolé serait valide.
+    assert.ok(subscriptionRoutes.includes('unit * BigInt(targetIds.length)'));
+    // Le total est évalué AVANT toute écriture : on refuse l'opération entière
+    // plutôt que de l'appliquer à moitié.
+    const bulk = subscriptionRoutes.slice(subscriptionRoutes.indexOf("router.post('/bulk'"));
+    assert.ok(bulk.indexOf('quota_exceeded') < bulk.indexOf('subscription.create'));
+    // « set » remplace : ne pas compter deux fois les forfaits visés.
+    assert.ok(subscriptionRoutes.includes("currentUsed - (current._sum.quotaBytes ?? BigInt(0))"));
+    // Cloisonnement : 404 et non 403 sur la ressource d'autrui.
+    assert.ok(subscriptionRoutes.includes("isReseller && client.userId !== req.user!.userId"));
+  });
+
+  it('attribue les configurations VPN aux revendeurs sans exposer la technique', () => {
+    // L'administrateur importe une configuration une fois puis coche les
+    // revendeurs qui la reçoivent.
+    assert.ok(prismaSchema.includes('model VpnProfileReseller'));
+    assert.ok(prismaSchema.includes('@@id([profileId, resellerId])'));
+    assert.ok(vpnProfileRoutes.includes("router.put('/:id/resellers'"));
+    assert.ok(vpnProfileRoutes.includes("router.get('/:id/resellers'"));
+    // Le revendeur n'a pas `vpnprofile.view` : sa route dédiée ne doit jamais
+    // renvoyer les champs techniques, seulement le nom commercial.
+    assert.ok(vpnProfileRoutes.includes("router.get('/assigned'"));
+    assert.ok(vpnProfileRoutes.includes('select: { id: true, name: true, displayProtocol: true }'));
+    // Compatibilité : un profil sans attribution reste visible par tous, sinon
+    // les revendeurs déjà en production seraient coupés du jour au lendemain.
+    assert.ok(vpnProfileRoutes.includes('assignedResellers: { none: {} }'));
+    // Le masquage du blob canonique reste intact.
+    assert.ok(vpnProfileRoutes.includes('delete out.canonicalConfig'));
   });
 
   it('réserve la gestion technique des configurations au dashboard', () => {
