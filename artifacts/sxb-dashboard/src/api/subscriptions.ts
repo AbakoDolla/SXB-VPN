@@ -65,3 +65,32 @@ export async function deleteSubscription(id: string): Promise<void> {
 export async function revokeSubscription(id: string, reason?: string): Promise<void> {
   await apiRequest(`/subscriptions/${id}/revoke`, { method: 'POST', body: { reason } });
 }
+
+// ── Opérations groupées ──────────────────────────────────────────────────────
+//
+// Quatre actions dont la sémantique ne doit jamais être confondue :
+//   deploy          crée un forfait (config + quota + durée) pour N clients
+//   set             REMPLACE le quota et/ou la durée des forfaits visés
+//   add_data        AJOUTE du quota au solde existant, sans l'écraser
+//   extend_duration AJOUTE des jours à l'échéance existante
+export type BulkAction = 'deploy' | 'set' | 'add_data' | 'extend_duration';
+
+export interface BulkResult {
+  action: BulkAction;
+  selected: number;
+  succeeded: number;
+  skipped: number;
+  failed: number;
+  details: Array<{ id: string; status: string; reason?: string }>;
+}
+
+export async function bulkSubscriptions(payload: {
+  action: BulkAction;
+  clientIds?: string[];
+  subscriptionIds?: string[];
+  profileId?: string;
+  quotaGB?: number;
+  durationDays?: number;
+}): Promise<BulkResult> {
+  return await apiRequest<BulkResult>('/subscriptions/bulk', { method: 'POST', body: payload });
+}

@@ -196,6 +196,8 @@ describe('garde-fous contre les régressions Android', () => {
   const subscriptionRoutes = source('../server/routes/subscriptions.ts');
   const vpnProfileRoutes = source('../server/routes/vpn-profiles.ts');
   const prismaSchema = source('../prisma/schema.prisma');
+  const subscriptionsView = source('../artifacts/sxb-dashboard/src/components/SubscriptionsView.tsx');
+  const vpnProfilesView = source('../artifacts/sxb-dashboard/src/components/VpnProfilesView.tsx');
   const nativeLogger = source('modules/android-native/SxbSecureLogger.kt');
   const securityModule = source('modules/android-native/SecurityModule.kt');
   const trafficManager = source('modules/android-native/TrafficStatsManager.kt');
@@ -1051,6 +1053,34 @@ describe('garde-fous contre les régressions Android', () => {
       vpnProfileRoutes.indexOf("router.get('/assigned'"),
     );
     assert.ok(listRoute.includes('profiles.map(maskProfile)'), 'le repli doit renvoyer les profils masqués');
+  });
+
+  it('expose les opérations groupées avec confirmation et récapitulatif', () => {
+    // Une opération groupée touche des centaines de clients d'un coup : elle
+    // exige une confirmation, et l'opérateur doit ensuite savoir qui a échoué.
+    assert.ok(subscriptionsView.includes('BULK_ACTIONS'));
+    assert.ok(subscriptionsView.includes('bulkConfirm'));
+    assert.ok(subscriptionsView.includes('Confirmer l’opération'));
+    assert.ok(subscriptionsView.includes('bulkResult'));
+    assert.ok(subscriptionsView.includes("d.status === 'failed'"), 'le récapitulatif doit lister les échecs');
+    // Les libellés disent ce que l'action FAIT : confondre « définir » et
+    // « ajouter » ferait perdre le solde d'un client.
+    assert.ok(subscriptionsView.includes('Définir (remplace)'));
+    assert.ok(subscriptionsView.includes('Ajouter des données (+Go)'));
+    assert.ok(subscriptionsView.includes('Prolonger la durée (+jours)'));
+    // « Tout sélectionner » doit porter sur le filtre, pas sur la page affichée.
+    assert.ok(subscriptionsView.includes('const selectAllFiltered = () => setSelected(new Set(filtered.map(s => s.id)))'));
+  });
+
+  it('permet d’attribuer une configuration à des revendeurs depuis le dashboard', () => {
+    assert.ok(vpnProfilesView.includes('setProfileResellers'));
+    assert.ok(vpnProfilesView.includes('openAssign'));
+    // Le cas « aucune attribution » doit être explicite, sinon l'opérateur
+    // croirait la configuration inaccessible alors qu'elle est ouverte à tous.
+    assert.ok(vpnProfilesView.includes('Tous les revendeurs'));
+    assert.ok(vpnProfilesView.includes('Tout retirer'));
+    // L'échec du chargement des revendeurs ne doit pas masquer les profils.
+    assert.ok(vpnProfilesView.includes('fetchResellers().catch(() => [] as any[])'));
   });
 
   it('réserve la gestion technique des configurations au dashboard', () => {

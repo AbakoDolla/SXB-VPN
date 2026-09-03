@@ -3,6 +3,7 @@ import { UserRole } from '../types';
 import {
   fetchSubscriptions, fetchSubStats, createSubscription,
   updateSubscription, deleteSubscription, revokeSubscription,
+  bulkSubscriptions, BulkAction, BulkResult,
   Subscription,
 } from '../api/subscriptions';
 import { fetchVpnProfiles, VpnProfile } from '../api/vpn-profiles';
@@ -40,6 +41,17 @@ const DEFAULT_FORM = {
   clientId: '', profileId: '', name: '', quotaGB: 5, durationDays: 30, deviceLimit: 1,
 };
 
+// ── Opérations groupées ──────────────────────────────────────────────────────
+// « Définir » et « Ajouter » sont volontairement deux entrées distinctes : les
+// confondre ferait perdre le solde d'un client. Le libellé dit ce que l'action
+// FAIT, pas seulement son nom.
+const BULK_ACTIONS: Array<{ id: BulkAction; label: string; hint: string; needsProfile: boolean; needsQuota: boolean; needsDuration: boolean }> = [
+  { id: 'deploy',          label: 'Déployer une configuration', hint: 'Crée un nouveau forfait pour chaque client sélectionné.', needsProfile: true,  needsQuota: true,  needsDuration: true },
+  { id: 'set',             label: 'Définir (remplace)',          hint: 'Remplace le quota et/ou la durée existants par les valeurs saisies.', needsProfile: false, needsQuota: true,  needsDuration: true },
+  { id: 'add_data',        label: 'Ajouter des données (+Go)',   hint: 'Ajoute au solde existant sans l’écraser. 2 Go + 5 Go = 7 Go.', needsProfile: false, needsQuota: true,  needsDuration: false },
+  { id: 'extend_duration', label: 'Prolonger la durée (+jours)', hint: 'Ajoute des jours à l’échéance. Un forfait expiré est réactivé.', needsProfile: false, needsQuota: false, needsDuration: true },
+];
+
 export default function SubscriptionsView({ currentUserRole }: Props) {
   const isAdmin = currentUserRole === UserRole.SUPER_ADMIN || currentUserRole === UserRole.ADMIN;
 
@@ -63,6 +75,16 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
   const [form, setForm] = useState({ ...DEFAULT_FORM });
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
+
+  // Sélection et opérations groupées
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkAction, setBulkAction] = useState<BulkAction>('add_data');
+  const [bulkQuota, setBulkQuota] = useState(5);
+  const [bulkDays, setBulkDays] = useState(30);
+  const [bulkProfile, setBulkProfile] = useState('');
+  const [bulkConfirm, setBulkConfirm] = useState(false);
+  const [bulkRunning, setBulkRunning] = useState(false);
+  const [bulkResult, setBulkResult] = useState<BulkResult | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -192,6 +214,49 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
 
   const clientMap = useMemo(() => Object.fromEntries(clients.map(c => [c.id, c])), [clients]);
 
+  // ── Opérations groupées ────────────────────────────────────────────────────
+  const bulkCfg = BULK_ACTIONS.find(a => a.id === bulkAction)!;
+
+  const toggleOne = (id: string) => setSelected(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+  // « Tout sélectionner » porte sur la sélection FILTRÉE, pas sur la page
+  // courante : sinon l'opérateur croirait viser 150 forfaits et n'en toucherait
+  // que les 20 affichés.
+  const selectAllFiltered = () => setSelected(new Set(filtered.map(s => s.id)));
+  const clearSelection = () => setSelected(new Set());
+
+  const runBulk = async () => {
+    setBulkRunning(true);
+    try {
+      const ids = Array.from(selected);
+      // `deploy` crée des forfaits : il vise des CLIENTS. Les autres modifient
+      // l'existant : elles visent des ABONNEMENTS.
+      const clientIds = bulkAction === 'deploy'
+        ? Array.from(new Set(subs.filter(s => selected.has(s.id)).map(s => s.clientId)))
+        : undefined;
+
+      const result = await bulkSubscriptions({
+        action: bulkAction,
+        ...(bulkAction === 'deploy' ? { clientIds } : { subscriptionIds: ids }),
+        ...(bulkCfg.needsProfile ? { profileId: bulkProfile } : {}),
+        ...(bulkCfg.needsQuota ? { quotaGB: bulkQuota } : {}),
+        ...(bulkCfg.needsDuration ? { durationDays: bulkDays } : {}),
+      });
+      setBulkResult(result);
+      setBulkConfirm(false);
+      if (result.failed > 0) toast.warning(`${result.succeeded} réussis, ${result.failed} échoués`);
+      else toast.success(`${result.succeeded} forfait(s) mis à jour`);
+      clearSelection();
+      await load();
+    } catch (err: any) {
+      toast.error(err?.message || 'Échec de l’opération groupée');
+      setBulkConfirm(false);
+    } finally { setBulkRunning(false); }
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -257,6 +322,134 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
         </div>
       </div>
 
+      {/* Opérations groupées — visibles dès qu'un forfait est sélectionné */}
+      {selected.size > 0 && (
+        <div className="bg-[#0f1218] border border-cyan-500/30 rounded-xl p-4 space-y-3">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <p className="text-sm font-semibold text-white">
+              {selected.size} forfait{selected.size > 1 ? 's' : ''} sélectionné{selected.size > 1 ? 's' : ''}
+            </p>
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={selectAllFiltered}
+                className="px-2.5 py-1.5 text-xs rounded-lg border border-[#1a1f2e] text-gray-300 hover:bg-white/5 cursor-pointer">
+                Tout sélectionner ({filtered.length})
+              </button>
+              <button type="button" onClick={clearSelection}
+                className="px-2.5 py-1.5 text-xs rounded-lg border border-[#1a1f2e] text-gray-400 hover:bg-white/5 cursor-pointer">
+                Effacer la sélection
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+            <div className="sm:col-span-2">
+              <label className="block text-xs text-gray-400 mb-1.5">Action</label>
+              <select value={bulkAction} onChange={e => { setBulkAction(e.target.value as BulkAction); setBulkResult(null); }}
+                className="w-full px-3 py-2 text-sm bg-[#0a0d14] border border-[#1a1f2e] rounded-lg text-white focus:outline-none focus:border-cyan-500">
+                {BULK_ACTIONS.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
+              </select>
+              <p className="text-[11px] text-gray-500 mt-1">{bulkCfg.hint}</p>
+            </div>
+            {bulkCfg.needsProfile && (
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5">Configuration</label>
+                <select value={bulkProfile} onChange={e => setBulkProfile(e.target.value)}
+                  className="w-full px-3 py-2 text-sm bg-[#0a0d14] border border-[#1a1f2e] rounded-lg text-white focus:outline-none focus:border-cyan-500">
+                  <option value="">Choisir…</option>
+                  {profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
+            )}
+            {bulkCfg.needsQuota && (
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5">
+                  {bulkAction === 'add_data' ? 'Données à ajouter (Go)' : 'Données (Go)'}
+                </label>
+                <input type="number" min={0} step={0.5} value={bulkQuota}
+                  onChange={e => setBulkQuota(Number(e.target.value))}
+                  className="w-full px-3 py-2 text-sm bg-[#0a0d14] border border-[#1a1f2e] rounded-lg text-white focus:outline-none focus:border-cyan-500" />
+              </div>
+            )}
+            {bulkCfg.needsDuration && (
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5">
+                  {bulkAction === 'extend_duration' ? 'Jours à ajouter' : 'Durée (jours)'}
+                </label>
+                <input type="number" min={0} value={bulkDays}
+                  onChange={e => setBulkDays(Number(e.target.value))}
+                  className="w-full px-3 py-2 text-sm bg-[#0a0d14] border border-[#1a1f2e] rounded-lg text-white focus:outline-none focus:border-cyan-500" />
+              </div>
+            )}
+          </div>
+
+          <button type="button" onClick={() => setBulkConfirm(true)}
+            disabled={bulkRunning || (bulkCfg.needsProfile && !bulkProfile)}
+            className="flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black transition-all disabled:opacity-50 cursor-pointer">
+            {bulkRunning ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
+            Appliquer à {selected.size} forfait{selected.size > 1 ? 's' : ''}
+          </button>
+        </div>
+      )}
+
+      {/* Récapitulatif d'exécution — l'opérateur doit savoir QUI a échoué et POURQUOI */}
+      {bulkResult && (
+        <div className="bg-[#0f1218] border border-[#1a1f2e] rounded-xl p-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-semibold text-white">Opération terminée</p>
+            <button type="button" onClick={() => setBulkResult(null)}
+              className="text-gray-500 hover:text-gray-300 cursor-pointer"><X className="w-4 h-4" /></button>
+          </div>
+          <div className="flex gap-4 text-xs flex-wrap">
+            <span className="text-gray-400">{bulkResult.selected} sélectionné(s)</span>
+            <span className="text-emerald-400">{bulkResult.succeeded} réussi(s)</span>
+            {bulkResult.skipped > 0 && <span className="text-gray-400">{bulkResult.skipped} ignoré(s)</span>}
+            {bulkResult.failed > 0 && <span className="text-rose-400">{bulkResult.failed} échoué(s)</span>}
+          </div>
+          {bulkResult.failed > 0 && (
+            <ul className="text-[11px] text-rose-300/80 space-y-0.5 max-h-40 overflow-y-auto">
+              {bulkResult.details.filter(d => d.status === 'failed').map(d => (
+                <li key={d.id}>• {d.id} — {d.reason || 'motif inconnu'}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {/* Confirmation — une opération groupée touche beaucoup de clients d'un coup */}
+      {bulkConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="bg-[#0f1218] border border-[#252b3b] rounded-xl p-5 max-w-md w-full space-y-3">
+            <h3 className="text-base font-semibold text-white flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-400" /> Confirmer l’opération
+            </h3>
+            <div className="text-sm text-gray-300 space-y-1">
+              <p><span className="text-gray-500">Action :</span> {bulkCfg.label}</p>
+              <p><span className="text-gray-500">Forfaits :</span> {selected.size}</p>
+              {bulkCfg.needsProfile && (
+                <p><span className="text-gray-500">Configuration :</span> {profiles.find(p => p.id === bulkProfile)?.name || '—'}</p>
+              )}
+              {bulkCfg.needsQuota && (
+                <p><span className="text-gray-500">Données :</span> {bulkAction === 'add_data' ? `+${bulkQuota}` : bulkQuota} Go</p>
+              )}
+              {bulkCfg.needsDuration && (
+                <p><span className="text-gray-500">Durée :</span> {bulkAction === 'extend_duration' ? `+${bulkDays}` : bulkDays} jours</p>
+              )}
+            </div>
+            <p className="text-[11px] text-amber-300/80">{bulkCfg.hint}</p>
+            <div className="flex gap-2 justify-end pt-1">
+              <button type="button" onClick={() => setBulkConfirm(false)}
+                className="px-3 py-2 text-xs rounded-lg border border-[#1a1f2e] text-gray-300 hover:bg-white/5 cursor-pointer">
+                Annuler
+              </button>
+              <button type="button" onClick={runBulk} disabled={bulkRunning}
+                className="px-3 py-2 text-xs font-semibold rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black disabled:opacity-50 cursor-pointer">
+                {bulkRunning ? 'Application…' : 'Confirmer'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Table */}
       <div className="bg-[#0f1218] border border-[#1a1f2e] rounded-xl overflow-hidden">
         {loading ? (
@@ -280,6 +473,19 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-[#1a1f2e] bg-[#0a0d14]">
+                    <th className="px-4 py-3 w-10">
+                      <input
+                        type="checkbox"
+                        aria-label="Tout sélectionner sur cette page"
+                        checked={paginated.length > 0 && paginated.every(s => selected.has(s.id))}
+                        onChange={e => setSelected(prev => {
+                          const next = new Set(prev);
+                          paginated.forEach(s => e.target.checked ? next.add(s.id) : next.delete(s.id));
+                          return next;
+                        })}
+                        className="rounded border-[#1a1f2e] bg-[#07090e] accent-cyan-500 cursor-pointer"
+                      />
+                    </th>
                     {['Nom', 'Client', 'Profil VPN', 'Quota', 'Durée', 'Expiration', 'Statut', ''].map(h => (
                       <th key={h} className="text-left text-xs text-gray-500 font-semibold uppercase tracking-wider px-4 py-3">{h}</th>
                     ))}
@@ -291,7 +497,16 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                     const cfg = STATUS_CFG[sub.status] || STATUS_CFG.active;
                     const client = clientMap[sub.clientId];
                     return (
-                      <tr key={sub.id} className="hover:bg-white/[0.02] transition-colors">
+                      <tr key={sub.id} className={`hover:bg-white/[0.02] transition-colors ${selected.has(sub.id) ? 'bg-cyan-500/5' : ''}`}>
+                        <td className="px-4 py-3">
+                          <input
+                            type="checkbox"
+                            aria-label={`Sélectionner ${sub.name}`}
+                            checked={selected.has(sub.id)}
+                            onChange={() => toggleOne(sub.id)}
+                            className="rounded border-[#1a1f2e] bg-[#07090e] accent-cyan-500 cursor-pointer"
+                          />
+                        </td>
                         <td className="px-4 py-3">
                           <p className="text-white font-medium">{sub.name}</p>
                           <p className="text-xs text-gray-600 font-mono">{sub.dataToken}</p>

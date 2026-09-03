@@ -3,13 +3,15 @@ import { UserRole } from "../types";
 import {
   fetchVpnProfiles, createVpnProfile, updateVpnProfile, deleteVpnProfile,
   fetchVpnProfileStats, testImportedConfig, testProfileConfig,
+  setProfileResellers,
   VpnProfile, ConfigTestResult,
 } from "../api/vpn-profiles";
+import { fetchResellers } from "../api/resellers";
 import { fetchPayloads, SshPayload } from "../api/payload";
 import {
   ShieldCheck, Plus, Trash2, RefreshCw, Edit3, X, AlertTriangle,
   Check, Wifi, Activity, Lock, Globe, UploadCloud, FlaskConical,
-  FileKey2, RotateCcw, Info,
+  FileKey2, RotateCcw, Info, Users,
 } from "lucide-react";
 
 interface Props { currentUserRole: UserRole }
@@ -302,18 +304,45 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
   const [search, setSearch]     = useState('');
   const [payloads, setPayloads] = useState<SshPayload[]>([]);
 
+  // Attribution aux revendeurs
+  const [resellersList, setResellersList] = useState<any[]>([]);
+  const [assignProfile, setAssignProfile] = useState<VpnProfile | null>(null);
+  const [assignSelected, setAssignSelected] = useState<Set<string>>(new Set());
+  const [assignSaving, setAssignSaving] = useState(false);
+
   const load = async () => {
     setLoading(true);
     try {
-      const [profs, st, pays] = await Promise.all([
+      const [profs, st, pays, rs] = await Promise.all([
         fetchVpnProfiles(),
         fetchVpnProfileStats(),
         fetchPayloads().catch(() => [] as SshPayload[]),
+        // La liste des revendeurs n'est pas critique : son échec ne doit pas
+        // empêcher l'affichage des configurations.
+        fetchResellers().catch(() => [] as any[]),
       ]);
       setProfiles(profs);
       setStats(st);
       setPayloads(pays);
+      setResellersList(Array.isArray(rs) ? rs : []);
     } catch { /* ignore */ } finally { setLoading(false); }
+  };
+
+  const openAssign = (p: VpnProfile) => {
+    setAssignProfile(p);
+    setAssignSelected(new Set((p.resellers || []).map(r => r.resellerId)));
+  };
+
+  const saveAssign = async () => {
+    if (!assignProfile) return;
+    setAssignSaving(true);
+    try {
+      await setProfileResellers(assignProfile.id, Array.from(assignSelected));
+      setAssignProfile(null);
+      await load();
+    } catch (err: any) {
+      alert(err?.message || 'Échec de l’attribution');
+    } finally { setAssignSaving(false); }
   };
 
   useEffect(() => { load(); }, []);
@@ -645,9 +674,93 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
             {p.validationMessage && p.validationStatus !== 'transport_ok' && (
               <p className="text-xs text-gray-500 truncate" title={p.validationMessage}>↳ {p.validationMessage}</p>
             )}
+
+            {/* Attribution aux revendeurs — une configuration sans attribution
+                reste disponible pour tous, c'est le cas des profils historiques. */}
+            <div className="flex items-center justify-between gap-2 pt-2 mt-1 border-t border-[#1a1f2e]">
+              <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+                <Users className="w-3 h-3 text-gray-500 shrink-0" />
+                {p.unrestricted !== false && (!p.resellers || p.resellers.length === 0) ? (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-500/10 text-gray-400 border border-gray-500/20">
+                    Tous les revendeurs
+                  </span>
+                ) : (
+                  (p.resellers || []).slice(0, 3).map(r => (
+                    <span key={r.resellerId} className="text-[10px] px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-300 border border-violet-500/20 truncate max-w-[110px]">
+                      {r.name || r.email || r.resellerId}
+                    </span>
+                  ))
+                )}
+                {(p.resellers?.length || 0) > 3 && (
+                  <span className="text-[10px] text-gray-500">+{(p.resellers!.length - 3)}</span>
+                )}
+              </div>
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => openAssign(p)}
+                  className="shrink-0 text-[11px] px-2 py-1 rounded-lg border border-violet-500/30 text-violet-300 hover:bg-violet-500/10 cursor-pointer"
+                >
+                  Attribuer
+                </button>
+              )}
+            </div>
           </div>
         ))}
       </div>
+
+      {/* Modale d'attribution aux revendeurs */}
+      {assignProfile && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#0f1218] border border-[#1a1f2e] rounded-2xl w-full max-w-md max-h-[85vh] overflow-y-auto">
+            <div className="flex items-center justify-between p-5 border-b border-[#1a1f2e]">
+              <h2 className="text-white font-semibold text-sm">Attribuer « {assignProfile.name} »</h2>
+              <button onClick={() => setAssignProfile(null)} className="p-1.5 text-gray-400 hover:text-white rounded-lg">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 space-y-3">
+              <p className="text-xs text-gray-400">
+                Cochez les revendeurs qui reçoivent cette configuration. Elle apparaîtra aussitôt sur leur tableau de bord.
+                <span className="block mt-1 text-gray-500">
+                  Aucune case cochée = disponible pour <span className="text-gray-300">tous</span> les revendeurs.
+                </span>
+              </p>
+              {resellersList.length === 0 ? (
+                <p className="text-xs text-gray-500">Aucun revendeur enregistré.</p>
+              ) : (
+                <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                  {resellersList.map(r => (
+                    <label key={r.id} className="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-[#07090e] border border-[#1a1f2e] cursor-pointer hover:border-violet-500/30">
+                      <input
+                        type="checkbox"
+                        checked={assignSelected.has(r.id)}
+                        onChange={() => setAssignSelected(prev => {
+                          const next = new Set(prev);
+                          next.has(r.id) ? next.delete(r.id) : next.add(r.id);
+                          return next;
+                        })}
+                        className="rounded border-[#1a1f2e] bg-[#07090e] accent-violet-500 cursor-pointer"
+                      />
+                      <span className="text-xs text-gray-200 truncate">{r.user?.name || r.user?.email || r.id}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+              <div className="flex gap-2 justify-end pt-1">
+                <button type="button" onClick={() => setAssignSelected(new Set())}
+                  className="px-3 py-2 text-xs rounded-lg border border-[#1a1f2e] text-gray-400 hover:bg-white/5 cursor-pointer">
+                  Tout retirer
+                </button>
+                <button type="button" onClick={saveAssign} disabled={assignSaving}
+                  className="px-3 py-2 text-xs font-semibold rounded-lg bg-violet-500 hover:bg-violet-400 text-white disabled:opacity-50 cursor-pointer">
+                  {assignSaving ? 'Enregistrement…' : 'Enregistrer'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Form Modal */}
       {showForm && (

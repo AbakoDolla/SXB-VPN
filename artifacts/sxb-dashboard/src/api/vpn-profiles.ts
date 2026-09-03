@@ -35,6 +35,11 @@ export interface VpnProfile {
   validatedAt?: string | null;
   validationStatus?: string | null;  // transport_ok | unreachable_from_probe | invalid | unsupported | unknown
   validationMessage?: string | null;
+
+  // ── Attribution aux revendeurs ────────────────────────────────────────────
+  /** Revendeurs autorisés ; vide + `unrestricted` = disponible pour tous. */
+  resellers?: Array<{ resellerId: string; name: string | null; email: string | null }>;
+  unrestricted?: boolean;
 }
 
 // ── Préflight /api/config-test (mission §7) ───────────────────────────────────
@@ -114,6 +119,33 @@ export const deleteVpnProfile = (id: string): Promise<void> =>
 
 export const fetchVpnProfileStats = (): Promise<{ total: number; active: number; byProtocol: any[] }> =>
   apiRequest<any>('/vpn-profiles/stats/all').then(r => r);
+
+// ── Attribution aux revendeurs ───────────────────────────────────────────────
+//
+// Une configuration sans AUCUNE attribution reste disponible pour TOUS les
+// revendeurs : c'est le cas des profils historiques, qu'on ne veut pas couper
+// du jour au lendemain. Le drapeau `unrestricted` porte cette information.
+export interface ProfileReseller {
+  resellerId: string;
+  name: string | null;
+  email: string | null;
+  assignedAt?: string;
+}
+
+export const fetchProfileResellers = (
+  profileId: string,
+): Promise<{ resellers: ProfileReseller[]; unrestricted: boolean }> =>
+  apiRequest<any>(`/vpn-profiles/${profileId}/resellers`).then(r => ({
+    resellers: r.resellers || [],
+    unrestricted: r.unrestricted === true,
+  }));
+
+/** Remplace l'ensemble des attributions ; un tableau vide les retire toutes. */
+export const setProfileResellers = (
+  profileId: string,
+  resellerIds: string[],
+): Promise<{ assigned: number; unrestricted: boolean }> =>
+  apiRequest<any>(`/vpn-profiles/${profileId}/resellers`, { method: 'PUT', body: { resellerIds } });
 
 export const fetchSubscriptions = (): Promise<Subscription[]> =>
   apiRequest<any>('/subscriptions').then(r => r.subscriptions);
