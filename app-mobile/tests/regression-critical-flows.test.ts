@@ -1330,13 +1330,44 @@ describe('garde-fous contre les régressions Android', () => {
   });
 
   it('propose au revendeur ses configurations attribuées dans le formulaire de forfait', () => {
-    // `/vpn-profiles` répond 403 au revendeur : sa liste restait vide et il ne
-    // pouvait créer aucun forfait pour les clients qu'il avait activés.
     const api = source('../artifacts/sxb-dashboard/src/api/vpn-profiles.ts');
     assert.match(api, /fetchAssignedVpnProfiles/);
     assert.match(api, /'\/vpn-profiles\/assigned'/);
 
     const vue = source('../artifacts/sxb-dashboard/src/components/SubscriptionsView.tsx');
     assert.match(vue, /isReseller \? fetchAssignedVpnProfiles\(\) : fetchVpnProfiles\(\)/);
+  });
+
+  it('garde un catalogue pnpm complet pour toutes les références du workspace', () => {
+    // Retirer une entrée encore référencée par « catalog: » fait échouer
+    // `pnpm install` avec ERR_PNPM_CATALOG_ENTRY_NOT_FOUND_FOR_SPEC et bloque
+    // tout le déploiement — panne constatée après un nettoyage de dépendances.
+    const ws = source('../pnpm-workspace.yaml');
+    const bloc = ws.split(/^catalog:\s*$/m)[1] || '';
+    const entrees = new Set<string>();
+    for (const l of bloc.split('\n')) {
+      if (/^\S/.test(l)) break;
+      const m = l.match(/^\s+'?([^':]+)'?\s*:/);
+      if (m) entrees.add(m[1].trim());
+    }
+
+    const paquets = [
+      '../lib/db/package.json',
+      '../lib/api-zod/package.json',
+      '../lib/api-client-react/package.json',
+      '../artifacts/api-server/package.json',
+      '../artifacts/mockup-sandbox/package.json',
+      '../artifacts/sxb-dashboard/package.json',
+    ];
+    for (const rel of paquets) {
+      const j = JSON.parse(source(rel));
+      for (const section of ['dependencies', 'devDependencies', 'peerDependencies']) {
+        for (const [nom, spec] of Object.entries(j[section] || {})) {
+          if (typeof spec === 'string' && spec.startsWith('catalog:')) {
+            assert.ok(entrees.has(nom), `entrée de catalogue manquante : ${nom} (requise par ${rel})`);
+          }
+        }
+      }
+    }
   });
 });
