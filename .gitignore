@@ -76,3 +76,6 @@ backend/reset_admin.mjs
 
 # Artefacts d'entrypoints generes par les suites e2e
 scripts/tests/.entry-*.ts
+
+# Artefacts temporaires de diagnostic (jamais versionnes)
+tmp-*
