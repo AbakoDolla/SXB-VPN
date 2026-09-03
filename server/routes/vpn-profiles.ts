@@ -223,33 +223,29 @@ router.get('/assigned', requireAuth, async (req: AuthenticatedRequest, res: Resp
     const reseller = await (prisma as any).reseller.findUnique({ where: { userId: req.user.userId } });
     if (!reseller) return res.json({ success: true, profiles: [] });
 
-    // Un profil sans AUCUNE attribution reste accessible à tous (voir le
-    // commentaire du modèle VpnProfileReseller) : restreindre d'office aurait
-    // coupé les revendeurs déjà en production.
+    // STRICTEMENT les configurations attribuées par l'administrateur.
     //
-    // Repli si la table d'attribution n'est pas encore en base : mieux vaut
-    // proposer les configurations actives que de renvoyer une liste vide, qui
-    // empêcherait le revendeur de créer le moindre forfait.
+    // La règle précédente considérait qu'un profil sans aucune attribution
+    // restait ouvert à tous : comme la quasi-totalité du parc n'en portait
+    // aucune, le revendeur voyait 45 configurations sur 47 et l'écran
+    // d'attribution ne servait à rien. L'attribution devient la seule porte
+    // d'entrée : un revendeur sans rien d'attribué ne vend rien, ce qui est le
+    // comportement attendu et se corrige d'un clic côté administrateur.
     try {
       const profiles = await (prisma as any).vpnProfile.findMany({
         where: {
           status: 'active',
-          OR: [
-            { assignedResellers: { none: {} } },
-            { assignedResellers: { some: { resellerId: reseller.id } } },
-          ],
+          assignedResellers: { some: { resellerId: reseller.id } },
         },
         select: { id: true, name: true, displayProtocol: true },
         orderBy: { name: 'asc' },
       });
       return res.json({ success: true, profiles });
     } catch {
-      const profiles = await (prisma as any).vpnProfile.findMany({
-        where: { status: 'active' },
-        select: { id: true, name: true, displayProtocol: true },
-        orderBy: { name: 'asc' },
-      });
-      return res.json({ success: true, profiles });
+      // Table d'attribution absente : renvoyer tout le parc reviendrait à
+      // ouvrir l'ensemble des configurations à chaque revendeur. Une liste
+      // vide est un défaut visible et réparable, pas une fuite silencieuse.
+      return res.json({ success: true, profiles: [] });
     }
   } catch (err) {
     console.error('vpn-profiles assigned error:', err);

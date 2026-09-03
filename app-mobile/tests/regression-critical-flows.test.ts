@@ -1025,9 +1025,11 @@ describe('garde-fous contre les régressions Android', () => {
     // renvoyer les champs techniques, seulement le nom commercial.
     assert.ok(vpnProfileRoutes.includes("router.get('/assigned'"));
     assert.ok(vpnProfileRoutes.includes('select: { id: true, name: true, displayProtocol: true }'));
-    // Compatibilité : un profil sans attribution reste visible par tous, sinon
-    // les revendeurs déjà en production seraient coupés du jour au lendemain.
-    assert.ok(vpnProfileRoutes.includes('assignedResellers: { none: {} }'));
+    // L'attribution est la SEULE porte d'entrée : un profil sans attribution
+    // n'est plus visible par tous. La règle précédente ouvrait la quasi-totalité
+    // du parc à chaque revendeur, ce qui vidait l'écran d'attribution de son sens.
+    assert.ok(!vpnProfileRoutes.includes('assignedResellers: { none: {} }'));
+    assert.ok(vpnProfileRoutes.includes('assignedResellers: { some: { resellerId: reseller.id } }'));
     // Le masquage du blob canonique reste intact.
     assert.ok(vpnProfileRoutes.includes('delete out.canonicalConfig'));
   });
@@ -1323,8 +1325,10 @@ describe('garde-fous contre les régressions Android', () => {
     // Appliqué à la création ET à la modification d'un forfait.
     const appels = subs.match(/assertResellerCanUseProfile\(req, profileId\)/g) || [];
     assert.ok(appels.length >= 2, `garde-fou non appliqué partout (${appels.length})`);
-    // Un profil sans aucune attribution reste ouvert à tous (profils historiques).
-    assert.match(subs, /if \(liens\.length === 0\) return null/);
+    // Un profil sans attribution n'est plus ouvert à tous : seule une
+    // attribution explicite de l'administrateur donne accès.
+    assert.match(subs, /assignedResellers.*|vpnProfileReseller\.findFirst/);
+    assert.doesNotMatch(subs, /if \(liens\.length === 0\) return null/);
     // Le forfait peut changer de configuration sans recréer le jeton data.
     assert.match(subs, /\.\.\.\(profileId\s+!== undefined && \{ profileId \}\)/);
   });
@@ -1336,6 +1340,13 @@ describe('garde-fous contre les régressions Android', () => {
 
     const vue = source('../artifacts/sxb-dashboard/src/components/SubscriptionsView.tsx');
     assert.match(vue, /isReseller \? fetchAssignedVpnProfiles\(\) : fetchVpnProfiles\(\)/);
+
+    // La liste doit être strictement celle des attributions : la règle
+    // précédente ouvrait tout profil sans attribution, si bien que le revendeur
+    // voyait 45 configurations sur 47 et l'écran d'attribution ne servait à rien.
+    const route = source('../server/routes/vpn-profiles.ts');
+    assert.match(route, /assignedResellers: \{ some: \{ resellerId: reseller\.id \} \}/);
+    assert.doesNotMatch(route, /\{ assignedResellers: \{ none: \{\} \} \}/);
   });
 
   it('garde un catalogue pnpm complet pour toutes les références du workspace', () => {

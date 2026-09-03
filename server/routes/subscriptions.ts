@@ -122,8 +122,10 @@ async function assertResellerCanAssignQuota(req: AuthenticatedRequest, clientId:
 // n'était qu'un affichage : l'API acceptait n'importe quel profileId, et un
 // revendeur pouvait revendre une configuration réservée à un concurrent.
 //
-// Un profil SANS aucune attribution reste ouvert à tous : c'est la convention
-// retenue pour les profils historiques, antérieurs à cette fonctionnalité.
+// La règle est la même que celle de `/vpn-profiles/assigned` : seule une
+// attribution explicite ouvre l'accès. L'API ne doit jamais être plus
+// permissive que l'écran qui la précède, sinon la restriction n'est qu'une
+// convention d'affichage contournable par un appel direct.
 async function assertResellerCanUseProfile(req: AuthenticatedRequest, profileId: string) {
   if (req.user?.role !== 'RESELLER') return null;
 
@@ -136,17 +138,14 @@ async function assertResellerCanUseProfile(req: AuthenticatedRequest, profileId:
   }
 
   try {
-    const liens = await (prisma as any).vpnProfileReseller.findMany({
-      where: { profileId },
-      select: { resellerId: true },
+    const lien = await (prisma as any).vpnProfileReseller.findFirst({
+      where: { profileId, resellerId: reseller.id },
+      select: { profileId: true },
     });
-    if (liens.length === 0) return null; // profil ouvert à tous
-    if (liens.some((l: any) => l.resellerId === reseller.id)) return null;
+    if (lien) return null;
   } catch {
-    // La table d'attribution peut manquer si le schéma n'a pas encore été
-    // poussé. Refuser ici bloquerait tous les revendeurs sur une base saine :
-    // on laisse alors passer, le cloisonnement des clients restant assuré.
-    return null;
+    // Table d'attribution absente : refuser est le comportement sûr, et la
+    // panne se voit immédiatement côté administrateur.
   }
 
   return {
