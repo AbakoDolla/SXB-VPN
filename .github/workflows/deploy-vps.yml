@@ -119,6 +119,9 @@ jobs:
 
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+          OWNER_PASSWORD: ${{ secrets.OWNER_PASSWORD }}
         with:
           host: 141.95.112.93
           username: ubuntu
@@ -127,6 +130,9 @@ jobs:
           fingerprint: ${{ secrets.VPS_SSH_HOST_FINGERPRINT }}
           timeout: 30s
           script_stop: true
+          # Transmis au shell distant pour l'amorçage du compte OWNER. Ces deux
+          # valeurs restent des secrets : elles ne transitent jamais par le dépôt.
+          envs: OWNER_EMAIL,OWNER_PASSWORD
           script: |
             set -e
             cd /var/www/sxb-vpn
@@ -215,6 +221,24 @@ jobs:
               node /var/www/sxb-vpn/backend/node_modules/prisma/build/index.js db push \
               --schema=backend/prisma/schema.prisma \
               --accept-data-loss 2>&1 | tail -5
+
+            # Amorçage du compte propriétaire racine. `POST /api/users` refuse de
+            # créer un OWNER si le demandeur n'en est pas un : le tout premier ne
+            # peut donc naître que hors API. Idempotent — sert aussi à réinitialiser
+            # le mot de passe si l'accès est perdu.
+            if [ -n "$OWNER_EMAIL" ] && [ -n "$OWNER_PASSWORD" ]; then
+              echo "👑 Amorçage du compte OWNER..."
+              $ESBUILD backend/prisma/seed-owner.ts \
+                --bundle --platform=node --format=cjs --packages=external \
+                --outfile=dist/seed-owner.cjs
+              # PrismaClient ne lit pas .env depuis un bundle CJS : on l'exporte.
+              # `cut` conserve les guillemets éventuels du .env — on les retire.
+              export DATABASE_URL=$(printf '%s' "$DB_URL" | sed 's/^"\(.*\)"$/\1/; s/^'"'"'\(.*\)'"'"'$/\1/')
+              NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
+                node dist/seed-owner.cjs
+            else
+              echo "ℹ️ Amorçage OWNER ignoré (secrets OWNER_EMAIL/OWNER_PASSWORD absents)."
+            fi
 
             echo "🔄 Reload PM2..."
             pm2 restart ecosystem.config.cjs --update-env || pm2 start ecosystem.config.cjs

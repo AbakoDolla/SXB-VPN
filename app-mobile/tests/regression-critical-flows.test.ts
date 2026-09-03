@@ -1164,4 +1164,51 @@ describe('garde-fous contre les régressions Android', () => {
     const apiClientContent = source('services/apiClient.ts');
     assert.match(apiClientContent, /X-SXB-Device-ID/);
   });
+
+  it('permet d’amorcer le compte OWNER hors API sans écrire le mot de passe dans le dépôt', () => {
+    // `POST /api/users` refuse de créer un OWNER si le demandeur n'en est pas
+    // un : sans ce script, aucun propriétaire ne peut jamais exister.
+    const seedOwner = source('../prisma/seed-owner.ts');
+    assert.match(seedOwner, /process\.env\.OWNER_EMAIL/);
+    assert.match(seedOwner, /process\.env\.OWNER_PASSWORD/);
+    assert.match(seedOwner, /prisma\.role\.upsert/);
+    assert.match(seedOwner, /prisma\.user\.upsert/);
+    assert.match(seedOwner, /bcrypt\.hash\(password, 12\)/);
+
+    // Un mot de passe en dur dans le dépôt annulerait l'intérêt du secret.
+    assert.doesNotMatch(seedOwner, /password\s*=\s*['"][^'"]{6,}['"]/);
+    // Le mot de passe ne doit jamais être journalisé.
+    assert.doesNotMatch(seedOwner, /console\.log\([^)]*password/i);
+
+    // Le script est déployé depuis backend/prisma (cf. deploy-vps.yml), pas
+    // depuis la racine : les deux copies doivent rester identiques.
+    assert.equal(seedOwner, source('../backend/prisma/seed-owner.ts'));
+  });
+
+  it('n’exige aucune permission en base pour OWNER (point de contournement unique)', () => {
+    const auth = source('../server/middleware/auth.ts');
+    assert.match(auth, /if \(req\.user\.role === "OWNER"\)[\s\S]{0,40}return next\(\)/);
+  });
+
+  it('masque d’office les actions et connexions de l’OWNER dans les journaux', () => {
+    // L'utilisateur exige que ses traces ne soient visibles que de lui-même.
+    const db = source('../server/database.ts');
+    assert.match(db, /visibleOwnerOnly = true/);
+    const auditLogs = source('../server/routes/audit-logs.ts');
+    assert.match(auditLogs, /requesterIsOwner \? \{\} : \{ visibleOwnerOnly: false \}/);
+    const auth = source('../server/routes/auth.ts');
+    assert.match(auth, /visibleOwnerOnly: isOwnerLogin|isOwnerLogin/);
+  });
+
+  it('amorce le compte OWNER au déploiement sans faire échouer les déploiements sans secret', () => {
+    const deploy = source('../.github/workflows/deploy-vps.yml');
+    assert.match(deploy, /OWNER_EMAIL: \$\{\{ secrets\.OWNER_EMAIL \}\}/);
+    assert.match(deploy, /OWNER_PASSWORD: \$\{\{ secrets\.OWNER_PASSWORD \}\}/);
+    assert.match(deploy, /envs: OWNER_EMAIL,OWNER_PASSWORD/);
+    // `script_stop: true` ferait échouer tout le déploiement si l'amorçage
+    // s'exécutait sans secrets : il doit rester conditionnel.
+    assert.match(deploy, /if \[ -n "\$OWNER_EMAIL" \] && \[ -n "\$OWNER_PASSWORD" \]; then/);
+    assert.match(deploy, /Amorçage OWNER ignoré/);
+    assert.match(deploy, /seed-owner\.cjs/);
+  });
 });
