@@ -15,11 +15,20 @@ import { requireOwner, isOwnerRequest } from "../middleware/rbac/owner";
 const router = Router();
 
 // GET /api/audit-logs?limit=50&type=success
+//
+// CLOISONNEMENT REVENDEUR — un revendeur ne voit que ses propres actions.
+// Cette route n'exigeait qu'une authentification : n'importe quel compte
+// connecté, revendeur compris, lisait le journal complet de la plateforme —
+// connexions des administrateurs, jetons émis, noms des clients des autres.
+// Le revendeur est un partenaire commercial, pas un exploitant : l'activité
+// de la plateforme ne le regarde pas, la sienne oui.
 router.get("/", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 50, 500);
     const type = req.query.type as string | undefined;
     const requesterIsOwner = isOwnerRequest(req);
+    const isReseller = req.user?.role === "RESELLER";
+    const ownScope = isReseller ? { userId: req.user?.userId } : {};
 
     let logs: any[] = [];
 
@@ -29,6 +38,7 @@ router.get("/", requireAuth, async (req: AuthenticatedRequest, res: Response) =>
         where: {
           ...(type ? { type } : {}),
           ...(requesterIsOwner ? {} : { visibleOwnerOnly: false }),
+          ...ownScope,
         },
         include: {
           user: { select: { id: true, name: true, email: true } },
@@ -39,6 +49,7 @@ router.get("/", requireAuth, async (req: AuthenticatedRequest, res: Response) =>
     } else {
       logs = inMemoryDb.auditLogs
         .filter((log) => requesterIsOwner || !log.visibleOwnerOnly)
+        .filter((log) => !isReseller || log.userId === req.user?.userId)
         .filter((log) => !type || log.type === type)
         .slice(0, limit);
     }

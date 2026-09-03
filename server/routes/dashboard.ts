@@ -46,8 +46,10 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
         // carte correspondante est remplacée côté interface.
         isReseller ? Promise.resolve(0) : prisma.vPSServer.count({ where: { status: "online" } }),
         isReseller ? Promise.resolve(0) : prisma.reseller.count({ where: { status: "active", ...resellerStealthWhere } }),
-        prisma.voucher.count(),
-        prisma.voucher.count({ where: { isRedeemed: true } }),
+        // Les bons de recharge sont comptés à l'échelle de la plateforme : un
+        // revendeur n'a pas à connaître le volume émis par les autres.
+        isReseller ? Promise.resolve(0) : prisma.voucher.count(),
+        isReseller ? Promise.resolve(0) : prisma.voucher.count({ where: { isRedeemed: true } }),
       ]);
 
       const clients = await prisma.vpnClient.findMany({
@@ -103,11 +105,17 @@ router.get("/traffic", requireAuth, requirePermission("analytics.read"), async (
     });
 
     const requesterIsOwner = isOwnerRequest(req);
-    const clientStealthWhere = stealthWhere(requesterIsOwner);
+    // Le graphique portait sur TOUS les clients de la plateforme : un revendeur
+    // y lisait le trafic cumulé de ses concurrents. Il ne doit voir que le sien.
+    const isReseller = req.user?.role === "RESELLER";
+    const clientStealthWhere = {
+      ...stealthWhere(requesterIsOwner),
+      ...(isReseller ? { userId: req.user?.userId } : {}),
+    };
     if (prisma) {
       const clientIds = (await prisma.vpnClient.findMany({
         select: { id: true },
-        ...(clientStealthWhere ? { where: clientStealthWhere } : {}),
+        ...(Object.keys(clientStealthWhere).length ? { where: clientStealthWhere } : {}),
       })).map((c) => c.id);
       const firstDay = days[0];
       const lastDay = new Date(days[days.length - 1]);
@@ -165,7 +173,14 @@ router.get("/users", requireAuth, requirePermission("analytics.read"), async (re
     });
 
     const requesterIsOwner = isOwnerRequest(req);
-    const clientStealthWhere = stealthWhere(requesterIsOwner);
+    // Même cloisonnement que pour le trafic : la courbe comptait l'ensemble des
+    // comptes de la plateforme, si bien qu'un revendeur sans aucun client voyait
+    // malgré tout une courbe à 82.
+    const isReseller = req.user?.role === "RESELLER";
+    const clientStealthWhere = {
+      ...stealthWhere(requesterIsOwner),
+      ...(isReseller ? { userId: req.user?.userId } : {}),
+    };
     if (prisma) {
       // Compter les clients VPN créés jusqu'à chaque jour (cumulatif)
       const data = await Promise.all(

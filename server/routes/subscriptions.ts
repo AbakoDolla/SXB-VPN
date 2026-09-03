@@ -117,6 +117,47 @@ async function assertResellerCanAssignQuota(req: AuthenticatedRequest, clientId:
   return null;
 }
 
+// Un revendeur ne peut construire un forfait qu'avec une configuration que
+// l'administrateur lui a attribuée. Sans ce contrôle, la page d'attribution
+// n'était qu'un affichage : l'API acceptait n'importe quel profileId, et un
+// revendeur pouvait revendre une configuration réservée à un concurrent.
+//
+// Un profil SANS aucune attribution reste ouvert à tous : c'est la convention
+// retenue pour les profils historiques, antérieurs à cette fonctionnalité.
+async function assertResellerCanUseProfile(req: AuthenticatedRequest, profileId: string) {
+  if (req.user?.role !== 'RESELLER') return null;
+
+  const reseller = await (prisma as any).reseller.findUnique({
+    where: { userId: req.user.userId },
+    select: { id: true },
+  });
+  if (!reseller) {
+    return { status: 404, body: { error: 'errors.resellers.not_found', message: 'Revendeur introuvable' } };
+  }
+
+  try {
+    const liens = await (prisma as any).vpnProfileReseller.findMany({
+      where: { profileId },
+      select: { resellerId: true },
+    });
+    if (liens.length === 0) return null; // profil ouvert à tous
+    if (liens.some((l: any) => l.resellerId === reseller.id)) return null;
+  } catch {
+    // La table d'attribution peut manquer si le schéma n'a pas encore été
+    // poussé. Refuser ici bloquerait tous les revendeurs sur une base saine :
+    // on laisse alors passer, le cloisonnement des clients restant assuré.
+    return null;
+  }
+
+  return {
+    status: 403,
+    body: {
+      error: 'errors.vpnprofile.not_assigned',
+      message: 'Cette configuration ne vous est pas attribuée.',
+    },
+  };
+}
+
 // ─── GET /api/subscriptions ───────────────────────────────────────────────────
 router.get('/', requireAuth, requirePermission('subscription.view'), async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -217,6 +258,8 @@ router.post('/', requireAuth, requirePermission('subscription.manage'), async (r
     const quotaBytes = BigInt(Math.round(Number(quotaGB) * 1024 * 1024 * 1024));
     const quotaError = await assertResellerCanAssignQuota(req, clientId, quotaBytes);
     if (quotaError) return res.status(quotaError.status).json(quotaError.body);
+    const profileError = await assertResellerCanUseProfile(req, profileId);
+    if (profileError) return res.status(profileError.status).json(profileError.body);
     const startAt    = new Date();
     const expireAt   = new Date(startAt.getTime() + Number(durationDays) * 24 * 3600 * 1000);
     const dataToken  = generateDataToken();
@@ -436,7 +479,7 @@ router.put('/:id', requireAuth, requirePermission('subscription.manage'), async 
   try {
     const existing = await (prisma as any).subscription.findUnique({ where: { id: req.params.id } });
     if (!existing) return res.status(404).json({ error: 'Subscription not found' });
-    const { name, quotaGB, durationDays, deviceLimit, status } = req.body;
+    const { name, quotaGB, durationDays, deviceLimit, status, profileId } = req.body;
     if (req.user?.role === 'RESELLER') {
       const quotaBytes = quotaGB !== undefined
         ? BigInt(Math.round(Number(quotaGB) * 1024 ** 3))
@@ -445,10 +488,22 @@ router.put('/:id', requireAuth, requirePermission('subscription.manage'), async 
       if (quotaError) return res.status(quotaError.status).json(quotaError.body);
     }
 
+    // Changer la configuration d'un forfait existant évitait jusqu'ici de passer
+    // par une suppression puis une recréation — laquelle change le jeton data et
+    // oblige le client à réactiver son appareil. Le revendeur reste tenu de
+    // choisir parmi les configurations qui lui sont attribuées.
+    if (profileId !== undefined && profileId !== existing.profileId) {
+      const profil = await (prisma as any).vpnProfile.findUnique({ where: { id: profileId } });
+      if (!profil) return res.status(404).json({ error: 'Profil VPN introuvable' });
+      const profileError = await assertResellerCanUseProfile(req, profileId);
+      if (profileError) return res.status(profileError.status).json(profileError.body);
+    }
+
     const updated = await (prisma as any).subscription.update({
       where: { id: req.params.id },
       data: {
         ...(name         !== undefined && { name }),
+        ...(profileId    !== undefined && { profileId }),
         ...(quotaGB      !== undefined && { quotaBytes: BigInt(Math.round(Number(quotaGB) * 1024 ** 3)) }),
         ...(durationDays !== undefined && {
           durationDays: Number(durationDays),

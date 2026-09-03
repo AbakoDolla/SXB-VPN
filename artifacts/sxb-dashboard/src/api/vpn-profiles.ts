@@ -96,6 +96,18 @@ export interface Subscription {
 export const fetchVpnProfiles = (): Promise<VpnProfile[]> =>
   apiRequest<any>('/vpn-profiles').then(r => r.profiles);
 
+/**
+ * Configurations attribuées au revendeur connecté.
+ *
+ * Le revendeur ne possède pas `vpnprofile.view` : `/vpn-profiles` lui répond
+ * 403, et sa liste de configurations restait donc vide — il ne pouvait créer
+ * aucun forfait, alors même que l'administrateur lui avait attribué des
+ * services. Cette route ne renvoie que le nom commercial, sans aucun paramètre
+ * technique.
+ */
+export const fetchAssignedVpnProfiles = (): Promise<VpnProfile[]> =>
+  apiRequest<any>('/vpn-profiles/assigned').then(r => r.profiles || []);
+
 export const fetchVpnProfile = (id: string): Promise<VpnProfile> =>
   apiRequest<any>(`/vpn-profiles/${id}`).then(r => r.profile);
 

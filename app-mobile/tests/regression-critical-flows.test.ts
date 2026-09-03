@@ -1291,4 +1291,52 @@ describe('garde-fous contre les régressions Android', () => {
     // donc le renuméroter bloquerait toute mise à jour des appareils installés.
     assert.match(build, /SXB_VERSION_CODE: \$\{\{ github\.run_number \}\}/);
   });
+
+  it('ne montre au revendeur que sa propre activité, jamais celle de la plateforme', () => {
+    // La route n'exigeait qu'une authentification : un revendeur lisait le
+    // journal complet — connexions des administrateurs, jetons émis, noms des
+    // clients des autres revendeurs.
+    const logs = source('../server/routes/audit-logs.ts');
+    assert.match(logs, /const isReseller = req\.user\?\.role === "RESELLER"/);
+    assert.match(logs, /ownScope = isReseller \? \{ userId: req\.user\?\.userId \} : \{\}/);
+    assert.match(logs, /\.\.\.ownScope/);
+
+    // La carte disparaît aussi du tableau de bord, et les journaux ne sont
+    // même plus demandés.
+    const vue = source('../artifacts/sxb-dashboard/src/components/DashboardView.tsx');
+    assert.match(vue, /isReseller \? Promise\.resolve\(\[\]\) : fetchActivityLogs\(\)/);
+  });
+
+  it('cloisonne les graphiques et les compteurs du tableau de bord par revendeur', () => {
+    const dash = source('../server/routes/dashboard.ts');
+    // /traffic et /users portaient sur TOUS les clients de la plateforme : un
+    // revendeur sans aucun client y voyait malgré tout une courbe à 82.
+    const portees = dash.match(/isReseller \? \{ userId: req\.user\?\.userId \} : \{\}/g) || [];
+    assert.ok(portees.length >= 2, `cloisonnement absent de /traffic ou /users (${portees.length})`);
+    // Les bons de recharge étaient comptés à l'échelle de la plateforme.
+    assert.match(dash, /isReseller \? Promise\.resolve\(0\) : prisma\.voucher\.count\(\)/);
+  });
+
+  it('limite le revendeur aux configurations qui lui sont attribuées', () => {
+    const subs = source('../server/routes/subscriptions.ts');
+    assert.match(subs, /async function assertResellerCanUseProfile/);
+    // Appliqué à la création ET à la modification d'un forfait.
+    const appels = subs.match(/assertResellerCanUseProfile\(req, profileId\)/g) || [];
+    assert.ok(appels.length >= 2, `garde-fou non appliqué partout (${appels.length})`);
+    // Un profil sans aucune attribution reste ouvert à tous (profils historiques).
+    assert.match(subs, /if \(liens\.length === 0\) return null/);
+    // Le forfait peut changer de configuration sans recréer le jeton data.
+    assert.match(subs, /\.\.\.\(profileId\s+!== undefined && \{ profileId \}\)/);
+  });
+
+  it('propose au revendeur ses configurations attribuées dans le formulaire de forfait', () => {
+    // `/vpn-profiles` répond 403 au revendeur : sa liste restait vide et il ne
+    // pouvait créer aucun forfait pour les clients qu'il avait activés.
+    const api = source('../artifacts/sxb-dashboard/src/api/vpn-profiles.ts');
+    assert.match(api, /fetchAssignedVpnProfiles/);
+    assert.match(api, /'\/vpn-profiles\/assigned'/);
+
+    const vue = source('../artifacts/sxb-dashboard/src/components/SubscriptionsView.tsx');
+    assert.match(vue, /isReseller \? fetchAssignedVpnProfiles\(\) : fetchVpnProfiles\(\)/);
+  });
 });

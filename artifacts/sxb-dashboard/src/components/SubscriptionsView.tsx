@@ -1,4 +1,4 @@
-import { isAdmin as isAdminRole } from '../lib/roles';
+import { isAdmin as isAdminRole, isReseller as isResellerRole } from '../lib/roles';
 import React, { useEffect, useState, useMemo } from 'react';
 import { UserRole } from '../types';
 import {
@@ -7,7 +7,7 @@ import {
   bulkSubscriptions, BulkAction, BulkResult,
   Subscription,
 } from '../api/subscriptions';
-import { fetchVpnProfiles, VpnProfile } from '../api/vpn-profiles';
+import { fetchVpnProfiles, fetchAssignedVpnProfiles, VpnProfile } from '../api/vpn-profiles';
 import { fetchClients } from '../api/clients';
 import { Client } from '../types';
 import {
@@ -55,6 +55,7 @@ const BULK_ACTIONS: Array<{ id: BulkAction; label: string; hint: string; needsPr
 
 export default function SubscriptionsView({ currentUserRole }: Props) {
   const isAdmin = isAdminRole(currentUserRole);
+  const isReseller = isResellerRole(currentUserRole);
 
   const [subs, setSubs] = useState<Subscription[]>([]);
   const [stats, setStats] = useState({ total: 0, active: 0, expired: 0 });
@@ -94,7 +95,11 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
         fetchSubscriptions(),
         fetchSubStats(),
         fetchClients(),
-        fetchVpnProfiles(),
+        // Le revendeur n'a pas accès à `/vpn-profiles` (403) : sa liste de
+        // configurations restait vide et le formulaire refusait toute création,
+        // faute de profil sélectionnable. Il lit donc celles qui lui sont
+        // attribuées, sans aucun paramètre technique.
+        isReseller ? fetchAssignedVpnProfiles() : fetchVpnProfiles(),
       ]);
       setSubs(s);
       setStats(st);

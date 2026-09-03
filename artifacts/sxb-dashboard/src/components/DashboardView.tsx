@@ -162,7 +162,9 @@ export default function DashboardView({
         const [s, tData, lLogs, clients, devices, sessions, srvs] = await Promise.all([
           fetchDashboardStats(),
           fetchTrafficAnalytics(),
-          fetchActivityLogs(),
+          // Le journal d'activité relève de l'exploitation de la plateforme :
+          // il n'est ni affiché ni même demandé pour un revendeur.
+          isReseller ? Promise.resolve([]) : fetchActivityLogs(),
           fetchClients().catch(() => []),
           fetchDevices().catch(() => []),
           fetchSessions().catch(() => []),
@@ -447,32 +449,31 @@ export default function DashboardView({
         </div>
       )}
 
-      {/* Bottom row — Server Health + Activity */}
+      {/* Rangée basse — santé des serveurs et activité.
+          Ces deux cartes relèvent de l'exploitation de la plateforme : aucune
+          ne concerne un revendeur, et la rangée disparaît donc entièrement pour
+          lui, plutôt que de laisser une grille vide. */}
+      {!isReseller && (
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-        {/* Santé des serveurs — masquée au revendeur : l'infrastructure ne le
-            regarde pas, et l'afficher vide lui suggérerait un problème. */}
-        {!isReseller && (
-          <div className="lg:col-span-2 space-y-3">
-            <div className="flex items-center gap-2">
-              <ShieldCheck className="w-4 h-4 text-emerald-400" />
-              <h3 className="text-sm font-semibold text-white">Santé des Serveurs</h3>
-            </div>
-            {servers.length > 0 ? (
-              <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
-                {servers.map(server => <ServerHealthCard key={server.id} server={server} />)}
-              </div>
-            ) : (
-              <div className="bg-[#0a0d14] border border-[#1a1f2e] rounded-xl p-6 text-center">
-                <Server className="w-8 h-8 text-gray-700 mx-auto mb-2" />
-                <p className="text-xs text-gray-500">Aucun serveur configuré</p>
-                <button onClick={() => onNavigate('servers')} className="mt-2 text-xs text-cyan-400 hover:underline cursor-pointer">Ajouter un serveur</button>
-              </div>
-            )}
+        <div className="lg:col-span-2 space-y-3">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-emerald-400" />
+            <h3 className="text-sm font-semibold text-white">Santé des Serveurs</h3>
           </div>
-        )}
+          {servers.length > 0 ? (
+            <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+              {servers.map(server => <ServerHealthCard key={server.id} server={server} />)}
+            </div>
+          ) : (
+            <div className="bg-[#0a0d14] border border-[#1a1f2e] rounded-xl p-6 text-center">
+              <Server className="w-8 h-8 text-gray-700 mx-auto mb-2" />
+              <p className="text-xs text-gray-500">Aucun serveur configuré</p>
+              <button onClick={() => onNavigate('servers')} className="mt-2 text-xs text-cyan-400 hover:underline cursor-pointer">Ajouter un serveur</button>
+            </div>
+          )}
+        </div>
 
-        {/* Activity log */}
-        <div className={`${isReseller ? 'lg:col-span-5' : 'lg:col-span-3'} bg-[#0a0d14] dashboard-card sxb-animated-card border border-[#1a1f2e] rounded-xl p-4`}>
+        <div className="lg:col-span-3 bg-[#0a0d14] dashboard-card sxb-animated-card border border-[#1a1f2e] rounded-xl p-4">
           <div className="flex items-center gap-2 mb-4">
             <Clock className="w-4 h-4 text-cyan-400" />
             <h3 className="text-sm font-semibold text-white">Activité Récente</h3>
@@ -508,6 +509,7 @@ export default function DashboardView({
           )}
         </div>
       </div>
+      )}
 
       {/* Quick-access row */}
       <div>
