@@ -2152,7 +2152,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
         val tunInbound = tunInbound()
 
         // DNS — le serveur défini sur le profil prime sur celui de l'application (§21).
-        val dnsObj = profileDnsObject(cfg.optStringOrNull("dns", "")) ?: defaultDnsObject()
+        // Le domaine du serveur doit être résolu HORS tunnel, sinon sing-box
+        // boucle : joindre le proxy exige sa résolution, qui exige le proxy.
+        val dnsObj = applyDnsLoopGuard(
+            profileDnsObject(cfg.optStringOrNull("dns", "")) ?: defaultDnsObject(),
+            listOf(host),
+        )
 
         // Outbound proxy selon protocole
         val proxyOutbound = when (protocol) {
@@ -2268,6 +2273,97 @@ class SxbVpnService : VpnService(), PlatformInterface {
         )
         put("final", "dns-remote")
         put("independent_cache", true)
+    }
+
+    // ── Garde anti-boucle DNS ────────────────────────────────────────────────
+    //
+    // Symptôme corrigé ici : le tunnel monte, l'interface affiche « connecté »,
+    // mais AUCUNE donnée ne passe et le moteur répète
+    //   « DNS query loopback in transport[dns-remote] ».
+    //
+    // Cause : pour ouvrir la connexion vers un serveur désigné par un NOM DE
+    // DOMAINE (`cdn.exemple.com`), sing-box doit d'abord le résoudre. Cette
+    // résolution suit `dns.final` → `dns-remote`, qui porte `detour: proxy`.
+    // Interroger ce DNS exige donc le proxy, dont l'ouverture exige la
+    // résolution : sing-box détecte la récursion et casse toutes les
+    // connexions. L'exclusion de route existante ne corrige pas ce cas — elle
+    // agit sur des IP déjà résolues, jamais sur la résolution elle-même.
+    //
+    // Correctif : le domaine des serveurs de sortie est résolu par un serveur
+    // joignable SANS le proxy, et tout DNS distant désigné par un nom d'hôte
+    // reçoit un `address_resolver`.
+
+    /** Vrai si la valeur est une IP littérale (aucune résolution nécessaire). */
+    private fun isLiteralIp(value: String): Boolean {
+        val v = value.trim().removePrefix("[").removeSuffix("]")
+        if (v.isEmpty()) return false
+        if (v.contains(':')) return true                       // IPv6
+        if (!v.matches(Regex("^\\d{1,3}(\\.\\d{1,3}){3}$"))) return false
+        return v.split('.').all { (it.toIntOrNull() ?: 256) <= 255 }
+    }
+
+    /** Nom d'hôte d'une adresse DNS ; vide pour `local`, `fakeip`, `dhcp://…`. */
+    private fun dnsAddressHost(address: String): String {
+        val a = address.trim()
+        if (a.isEmpty()) return ""
+        if (a.equals("local", ignoreCase = true) || a.equals("fakeip", ignoreCase = true)) return ""
+        if (a.startsWith("local://", ignoreCase = true) || a.startsWith("dhcp://", ignoreCase = true)) return ""
+        val afterScheme = if (a.contains("://")) a.substringAfter("://") else a
+        val hostPort = afterScheme.substringBefore('/')
+        if (hostPort.startsWith("[")) return hostPort.substringAfter('[').substringBefore(']')
+        return hostPort.substringBefore(':')
+    }
+
+    /**
+     * Insère l'exclusion anti-boucle dans un bloc `dns` déjà construit.
+     * `serverHosts` = adresses des serveurs de sortie (outbounds) ; seules les
+     * valeurs non littérales exigent une résolution, donc un traitement.
+     */
+    private fun applyDnsLoopGuard(dns: JSONObject, serverHosts: Collection<String>): JSONObject {
+        val servers = dns.optJSONArray("servers") ?: return dns
+
+        // 1. Un serveur joignable sans le proxy — sinon on en ajoute un.
+        var directTag = ""
+        for (i in 0 until servers.length()) {
+            val s = servers.optJSONObject(i) ?: continue
+            val tag = s.optString("tag", "")
+            if (tag.isEmpty()) continue
+            val addr = s.optString("address", "")
+            if (addr.equals("fakeip", ignoreCase = true)) continue
+            val isLocal = addr.equals("local", ignoreCase = true) || addr.startsWith("local://", ignoreCase = true)
+            if (isLocal || s.optString("detour", "") == "direct") { directTag = tag; break }
+        }
+        if (directTag.isEmpty()) {
+            directTag = "dns-bootstrap"
+            servers.put(JSONObject().put("tag", directTag).put("address", "local").put("detour", "direct"))
+        }
+
+        // 2. Un DNS distant nommé (ex. https://dns.google/…) doit indiquer par
+        //    quel serveur résoudre son PROPRE nom, sinon il boucle sur lui-même.
+        for (i in 0 until servers.length()) {
+            val s = servers.optJSONObject(i) ?: continue
+            if (s.optString("tag", "") == directTag || s.has("address_resolver")) continue
+            val host = dnsAddressHost(s.optString("address", ""))
+            if (host.isNotEmpty() && !isLiteralIp(host)) s.put("address_resolver", directTag)
+        }
+
+        // 3. Les domaines des serveurs de sortie se résolvent hors tunnel. Cette
+        //    règle passe EN TÊTE : la règle fakeip capture sinon tout A/AAAA et
+        //    renverrait une adresse fictive pour le serveur à joindre.
+        val domains = serverHosts
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && !isLiteralIp(it) }
+            .distinct()
+        if (domains.isEmpty()) return dns
+
+        val previous = dns.optJSONArray("rules") ?: JSONArray()
+        val rules = JSONArray().put(
+            JSONObject().put("domain", JSONArray(domains)).put("server", directTag)
+        )
+        for (i in 0 until previous.length()) rules.put(previous.opt(i))
+        dns.put("rules", rules)
+        broadcastLog("[DNS] résolution hors tunnel pour ${domains.joinToString(", ")} (anti-boucle)")
+        return dns
     }
 
     /**
@@ -2815,6 +2911,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
         val byTag = HashMap<String, JSONObject>()
         var mainTag: String? = null
         var mainServer = ""
+        // Adresses de TOUS les maillons de sortie : sur une chaîne
+        // (`detour`/`proxySettings`), chaque maillon désigné par un domaine doit
+        // être résolu hors tunnel, pas seulement le premier.
+        val outboundServerHosts = LinkedHashSet<String>()
 
         for (i in 0 until rawOutbounds.length()) {
             val o = rawOutbounds.optJSONObject(i) ?: continue
@@ -2825,6 +2925,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
             val tag = o.optString("tag", "")
             tags.add(tag)
             if (tag.isNotEmpty()) byTag[tag] = o
+            if (type !in specialTypes) {
+                o.optString("server", "").takeIf { it.isNotBlank() }?.let { outboundServerHosts.add(it) }
+            }
             if (mainTag == null && type !in specialTypes) {
                 mainTag = tag
                 mainServer = o.optString("server", "")
@@ -2913,7 +3016,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // l'utilisateur se croyait protégé. On suit désormais `route.final`.
         val configuredDns = cfg.optJSONObject("dns")
         val hasConfiguredDnsServers = configuredDns?.optJSONArray("servers")?.let { it.length() > 0 } == true
-        val dnsObj = if (hasConfiguredDnsServers) configuredDns!! else defaultDnsObject(finalTag)
+        // Le garde s'applique aussi au DNS venu du profil : un JSON fournisseur
+        // qui route son DNS par le proxy produit exactement la même récursion.
+        val dnsObj = applyDnsLoopGuard(
+            if (hasConfiguredDnsServers) configuredDns!! else defaultDnsObject(finalTag),
+            outboundServerHosts,
+        )
 
         val exclusion = if (mainServer.isNotBlank()) carrierExclusionRule(mainServer) else null
         val routeRules = JSONArray()

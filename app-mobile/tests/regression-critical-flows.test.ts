@@ -793,6 +793,34 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(retrait < vpnContext.indexOf('await disconnect();'));
   });
 
+  it('empêche la boucle de résolution DNS qui bloquait tout le trafic', () => {
+    // Symptôme : tunnel « connecté » mais aucune donnée, avec le moteur qui
+    // répète « DNS query loopback in transport[dns-remote] ». Joindre un serveur
+    // désigné par un domaine exigeait une résolution qui passait elle-même par
+    // le proxy à ouvrir.
+    assert.ok(nativeService.includes('private fun applyDnsLoopGuard('));
+    assert.ok(nativeService.includes('private fun isLiteralIp('));
+    assert.ok(nativeService.includes('private fun dnsAddressHost('));
+
+    // Un serveur joignable sans le proxy existe toujours, même si le JSON
+    // fournisseur n'en déclare aucun (cas des traductions Xray).
+    assert.ok(nativeService.includes('directTag = "dns-bootstrap"'));
+    assert.ok(nativeService.includes('put("address", "local").put("detour", "direct")'));
+
+    // Un DNS distant désigné par un nom doit dire comment résoudre son propre nom.
+    assert.ok(nativeService.includes('s.put("address_resolver", directTag)'));
+
+    // La règle d'exclusion passe EN TÊTE, sinon fakeip capture le domaine du
+    // serveur et renvoie une adresse fictive pour la machine à joindre.
+    assert.ok(nativeService.includes('JSONObject().put("domain", JSONArray(domains)).put("server", directTag)'));
+
+    // Les deux chemins moteur sont couverts : profil plat ET sing-box importé.
+    assert.ok(nativeService.includes('profileDnsObject(cfg.optStringOrNull("dns", "")) ?: defaultDnsObject(),'));
+    assert.ok(nativeService.includes('outboundServerHosts,'));
+    // Sur une chaîne de proxys, chaque maillon nommé doit être résolu hors tunnel.
+    assert.ok(nativeService.includes('val outboundServerHosts = LinkedHashSet<String>()'));
+  });
+
   it('réserve la gestion technique des configurations au dashboard', () => {
     assert.doesNotMatch(activateScreen, /scan_qr|qr-code-outline/);
     assert.doesNotMatch(planScreen, /scan_qr|qr-code-outline|qrBtn/);
