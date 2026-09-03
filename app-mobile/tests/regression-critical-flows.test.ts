@@ -810,8 +810,10 @@ describe('garde-fous contre les régressions Android', () => {
     // les « lookup … i/o timeout » et « connect: connection refused » constatés.
     assert.ok(nativeService.includes('private fun systemDnsServers('));
     assert.ok(nativeService.includes('private fun bootstrapDnsAddress('));
-    assert.ok(nativeService.includes('put("address", bootstrapDnsAddress()).put("detour", "direct")'));
+    assert.ok(nativeService.includes('put("address", bootstrapDnsAddress())'));
     assert.doesNotMatch(nativeService, /put\("tag", "dns-local"\)\.put\("address", "local"\)/);
+    // Le chemin SSH partageait le même défaut : plus aucun résolveur `local`.
+    assert.doesNotMatch(nativeService, /put\("tag", "dns-l"\)\.put\("address", "local"\)/);
     // Le résolveur d'amorçage ne doit jamais être notre propre TUN.
     assert.ok(nativeService.includes('NetworkCapabilities.TRANSPORT_VPN'));
     // Un serveur d'amorçage doit être une IP littérale ET sortir en direct.
@@ -848,11 +850,71 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(nativeService.includes('dnsFailureSeen = false'));
   });
 
+  it('présente une empreinte TLS de navigateur plutôt que celle de Go', () => {
+    // Sans uTLS, sing-box émet le ClientHello de la bibliothèque Go : une
+    // signature atypique que les équipements d'inspection des opérateurs
+    // mobiles reconnaissent et brident. Un client comme HTTP Custom présente
+    // « chrome » par défaut sur le même profil, d'où sa stabilité.
+    assert.ok(nativeService.includes('enabled -> "chrome"'));
+    assert.ok(nativeService.includes('put("utls", JSONObject().apply {'));
+    // Une empreinte demandée par le profil reste prioritaire.
+    assert.ok(nativeService.includes('fingerprint.isNotBlank() -> fingerprint'));
+    // TLS désactivé : aucun bloc uTLS, sinon la configuration est incohérente.
+    assert.ok(nativeService.includes('else -> ""'));
+  });
+
+  it('court-circuite les requêtes HTTPS/SVCB qui gelaient la navigation 10 s', () => {
+    // Navigateurs et applications Android émettent une requête HTTPS (RFC 9460)
+    // avant chaque navigation. Aucune règle ne les capturait : elles partaient
+    // sur `final` → DoH à travers le tunnel et expiraient au bout de 10 s
+    // (« IN HTTPS: context deadline exceeded ») avant le repli sur A/AAAA.
+    assert.ok(nativeService.includes('put("address", "rcode://success")'));
+    assert.ok(nativeService.includes('.put("query_type", JSONArray().put("HTTPS").put("SVCB"))'));
+    // Rien ne part sur le réseau : aucun domaine n'est exposé à l'opérateur.
+    assert.doesNotMatch(nativeService, /query_type.*HTTPS.*server", *"dns-local/);
+  });
+
+  it('n’interroge pas l’IPv6 sur un réseau qui n’en a pas', () => {
+    // Chaque AAAA sans réponse occupait le résolveur jusqu'à expiration : ce
+    // sont les attentes de 10 s visibles dans les journaux.
+    assert.ok(nativeService.includes('private fun networkHasIpv6('));
+    assert.ok(nativeService.includes('private fun dnsStrategy('));
+    assert.ok(nativeService.includes('if (networkHasIpv6()) "prefer_ipv4" else "ipv4_only"'));
+    // La détection ne doit jamais confondre le TUN avec le réseau physique.
+    assert.match(nativeService, /networkHasIpv6[\s\S]{0,600}TRANSPORT_VPN/);
+    // Plus aucune stratégie figée en dur dans les générateurs DNS.
+    assert.doesNotMatch(nativeService, /put\("strategy", "prefer_ipv4"\)/);
+  });
+
+  it('ne déclare pas un échec pendant que des octets circulent', () => {
+    // Le moteur ouvre des dizaines de connexions en parallèle : il est normal
+    // qu'une partie échoue pendant que le tunnel fonctionne. Le verdict exige
+    // donc des compteurs de trafic restés immobiles sur toute la fenêtre.
+    assert.ok(nativeService.includes('trafficAtWindowStart'));
+    assert.ok(nativeService.includes('if (bytes > trafficAtWindowStart) return'));
+    // Un « connection refused » isolé ne doit plus conclure au refus du serveur.
+    assert.doesNotMatch(nativeService, /Échec handshake — Le serveur a refusé la connexion/);
+    // Sans preuve TCP/TLS, ne jamais affirmer que le serveur est joignable.
+    assert.doesNotMatch(nativeService, /le serveur est joignable mais refuse/);
+  });
+
   it('publie la séparation des rôles server / SNI / Host WebSocket', () => {
     // Les noms d'hôte étant masqués dans les journaux, on publie la RELATION
     // entre les trois valeurs — seule information exploitable au diagnostic.
-    assert.ok(nativeService.includes('[CONFIG] rôles: server≠sni='));
-    assert.ok(nativeService.includes('sni=wsHost=${sni.equals(wsHost, true)}'));
+    assert.ok(nativeService.includes('[CONFIG] rôles: adresse_tcp_differe_du_sni='));
+    assert.ok(nativeService.includes('sni_egale_entete_ws='));
+    assert.ok(nativeService.includes('entete_ws_renseigne='));
+    // Aucun libellé ne doit contenir un mot masqué par SecurityModule
+    // (host, server, user, key, token…), sinon la valeur est remplacée par
+    // « [****] » et le diagnostic devient trompeur — c'est ce qui a fait croire
+    // à un en-tête Host vide alors qu'il était correctement renseigné.
+    const masked = /(password|passwd|key|token|secret|uuid|user|username|deviceId|payload|host|server)[=:]/i;
+    const rolesLine = nativeService
+      .split('\n')
+      .filter(l => l.includes('[CONFIG] rôles:') || l.includes('sni_egale_entete_ws') || l.includes('entete_ws_renseigne'))
+      .join('\n')
+      .replace(/\$\{[^}]*\}/g, '');
+    assert.doesNotMatch(rolesLine, masked);
   });
 
   it('réserve la gestion technique des configurations au dashboard', () => {

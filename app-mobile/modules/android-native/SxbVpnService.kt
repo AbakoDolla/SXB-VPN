@@ -757,6 +757,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
     @Volatile private var outboundFailureWindowStart = 0L
     @Volatile private var lastOutboundDiagnosisAt = 0L
     @Volatile private var dnsFailureSeen = false
+    /** Compteur de trafic au début de la fenêtre : preuve qu'un octet a circulé. */
+    @Volatile private var trafficAtWindowStart = 0L
 
     private data class SshTransportStrategy(
         val mode: String,
@@ -1131,6 +1133,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         outboundFailureWindowStart = 0L
         lastOutboundDiagnosisAt = 0L
         dnsFailureSeen = false
+        trafficAtWindowStart = 0L
         Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_2_CONFIG_RECEIVED proto=$proto")
         broadcastLog("[SXB_DEBUG] ▶ STEP_2_DISPATCH proto='$proto'")
         when (proto) {
@@ -2075,11 +2078,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 broadcastLog("[SXB] HTTP_429_RATE_LIMIT — le proxy HTTP amont limite ou refuse les requêtes.")
             lower.contains("unexpected http response status: 404") ->
                 broadcastLog("[SXB] HTTP_404_UPSTREAM — le proxy HTTP amont ne reconnaît pas la destination.")
-            lower.contains("connection refused") || lower.contains("connection reset") -> {
-                if (currentState == "handshaking") {
-                    broadcastLog("[SXB] ⚠️ Échec handshake — Le serveur a refusé la connexion.")
-                }
-            }
+            // Volontairement AUCUN message ici sur « connection refused ».
+            // L'état « handshaking » dure tant que le moteur n'a pas produit de
+            // preuve de flux, et le moteur ouvre en permanence des connexions
+            // parallèles : une seule d'entre elles refusée faisait conclure « le
+            // serveur a refusé » alors que le tunnel transportait des données.
+            // Le verdict est désormais rendu par noteOutboundFailure(), qui exige
+            // une accumulation d'échecs ET l'absence de trafic réel.
         }
 
         noteOutboundFailure(lower)
@@ -2094,6 +2099,11 @@ class SxbVpnService : VpnService(), PlatformInterface {
      * succès — sinon l'application affiche un état sain pendant que chaque
      * connexion échoue, ce qui était impossible à diagnostiquer pour l'utilisateur.
      *
+     * Un échec isolé ne prouve toutefois RIEN : le moteur ouvre des dizaines de
+     * connexions en parallèle et il est normal qu'une partie échoue pendant que
+     * le tunnel fonctionne. Le verdict exige donc deux conditions cumulées :
+     * une accumulation d'échecs ET des compteurs de trafic restés immobiles.
+     *
      * Aucun changement d'état n'est provoqué ici : couper ou relancer sur un pic
      * d'erreurs déclencherait des reconnexions en boucle sur un réseau lent. On
      * NOMME la panne, une seule fois, dans le journal unifié.
@@ -2106,15 +2116,26 @@ class SxbVpnService : VpnService(), PlatformInterface {
         if (!isDnsFailure && !isOutboundFailure) return
 
         val now = SystemClock.elapsedRealtime()
+        val bytes = runCatching {
+            val s = trafficManager.getStats()
+            s.uploadBytes + s.downloadBytes
+        }.getOrDefault(0L)
+
         if (now - outboundFailureWindowStart > OUTBOUND_FAILURE_WINDOW_MS) {
             outboundFailureWindowStart = now
             outboundFailureCount = 0
+            dnsFailureSeen = false
+            trafficAtWindowStart = bytes
         }
         if (isDnsFailure) dnsFailureSeen = true
         if (++outboundFailureCount < OUTBOUND_FAILURE_THRESHOLD) return
         if (now - lastOutboundDiagnosisAt < OUTBOUND_DIAGNOSIS_COOLDOWN_MS) return
-        lastOutboundDiagnosisAt = now
 
+        // Des octets ont circulé pendant la fenêtre : le tunnel fonctionne, les
+        // échecs sont ceux de connexions annexes. Aucun verdict d'échec.
+        if (bytes > trafficAtWindowStart) return
+
+        lastOutboundDiagnosisAt = now
         if (dnsFailureSeen) {
             broadcastLog(
                 "[SXB] ⛔ TUNNEL_SANS_TRAFIC — la résolution DNS échoue : aucune adresse " +
@@ -2122,9 +2143,14 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 "réseau mobile fournit bien un résolveur (mode avion/APN), puis reconnectez."
             )
         } else {
+            // Sans preuve TCP/TLS, on ne peut PAS affirmer que le serveur est
+            // joignable : « connection refused » peut survenir bien avant que
+            // VLESS, TLS ou WebSocket n'entrent en jeu. On décrit le fait
+            // observé — aucun octet ne circule — sans en inventer la cause.
             broadcastLog(
-                "[SXB] ⛔ TUNNEL_SANS_TRAFIC — le serveur est joignable mais refuse les " +
-                "connexions sortantes : vérifiez l'UUID, le chemin WebSocket et l'en-tête Host du profil."
+                "[SXB] ⛔ TUNNEL_SANS_TRAFIC — les connexions sortantes échouent et aucun octet " +
+                "ne circule. Le serveur peut être injoignable depuis ce réseau, ou refuser le " +
+                "profil (UUID, chemin WebSocket, en-tête Host)."
             )
         }
     }
@@ -2213,9 +2239,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // `wsHost` = en-tête Host WebSocket. Les confondre est la panne classique
         // d'un profil « importé mais qui ne connecte pas ».
         broadcastLog(
-            "[CONFIG] rôles: server≠sni=${!sni.equals(host, true)} " +
-            "sni=wsHost=${sni.equals(wsHost, true)} " +
-            "server_est_une_ip=${isLiteralIp(host)} path=${if (path.isBlank()) "/" else path}"
+            "[CONFIG] rôles: adresse_tcp_differe_du_sni=${!sni.equals(host, true)} " +
+            "sni_egale_entete_ws=${sni.equals(wsHost, true)} " +
+            "entete_ws_renseigne=${wsHost.isNotBlank()} " +
+            "adresse_tcp_est_une_ip=${isLiteralIp(host)} chemin_ws=${if (path.isBlank()) "/" else path}"
         )
 
         // Inbound TUN
@@ -2323,10 +2350,11 @@ class SxbVpnService : VpnService(), PlatformInterface {
         return JSONObject().apply {
             put("servers", JSONArray()
                 .put(JSONObject().put("tag", "dns-remote").put("address", address)
-                    .put("strategy", "prefer_ipv4").put("detour", "proxy"))
+                    .put("strategy", dnsStrategy()).put("detour", "proxy"))
                 // `local` déléguerait au résolveur Go, sans /etc/resolv.conf
                 // sous Android : ce serveur ne résolvait donc jamais rien.
-                .put(JSONObject().put("tag", "dns-local").put("address", bootstrapDnsAddress()).put("detour", "direct"))
+                .put(JSONObject().put("tag", "dns-local").put("address", bootstrapDnsAddress())
+                    .put("strategy", dnsStrategy()).put("detour", "direct"))
                 .put(JSONObject().put("tag", "dns-fake").put("address", "fakeip").put("detour", "direct"))
             )
             put("fakeip", JSONObject().put("enabled", true).put("inet4_range", "198.18.0.0/15"))
@@ -2340,9 +2368,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
     private fun defaultDnsObject(detourTag: String = "proxy"): JSONObject = JSONObject().apply {
         put("servers", JSONArray()
-            .put(JSONObject().put("tag", "dns-remote").put("address", "https://1.1.1.1/dns-query").put("strategy", "prefer_ipv4").put("detour", detourTag))
+            .put(JSONObject().put("tag", "dns-remote").put("address", "https://1.1.1.1/dns-query").put("strategy", dnsStrategy()).put("detour", detourTag))
             // Résolveur du réseau plutôt que `local` : voir systemDnsServers().
-            .put(JSONObject().put("tag", "dns-local").put("address", bootstrapDnsAddress()).put("detour", "direct"))
+            .put(JSONObject().put("tag", "dns-local").put("address", bootstrapDnsAddress())
+                .put("strategy", dnsStrategy()).put("detour", "direct"))
             .put(JSONObject().put("tag", "dns-fake").put("address", "fakeip").put("detour", "direct"))
         )
         put("fakeip", JSONObject()
@@ -2389,7 +2418,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
         val a = address.trim()
         if (a.isEmpty()) return ""
         if (a.equals("local", ignoreCase = true) || a.equals("fakeip", ignoreCase = true)) return ""
-        if (a.startsWith("local://", ignoreCase = true) || a.startsWith("dhcp://", ignoreCase = true)) return ""
+        // `rcode://` ne désigne aucun serveur : la réponse est fabriquée sur
+        // place. Sans cette exclusion, « rcode://success » passait pour l'hôte
+        // « success » et se voyait attribuer un address_resolver inutile — cas
+        // atteignable dès qu'une configuration sing-box importée en déclare un.
+        if (a.startsWith("local://", ignoreCase = true) ||
+            a.startsWith("dhcp://", ignoreCase = true) ||
+            a.startsWith("rcode://", ignoreCase = true)) return ""
         val afterScheme = if (a.contains("://")) a.substringAfter("://") else a
         val hostPort = afterScheme.substringBefore('/')
         if (hostPort.startsWith("[")) return hostPort.substringAfter('[').substringBefore(']')
@@ -2440,6 +2475,31 @@ class SxbVpnService : VpnService(), PlatformInterface {
     }
 
     /**
+     * Vrai si le réseau physique porte une adresse IPv6 routable.
+     *
+     * Sur un réseau mobile IPv4 seul — le cas courant chez les opérateurs
+     * africains — chaque requête AAAA reste sans réponse et occupe le résolveur
+     * jusqu'à expiration (les 10 s visibles dans les journaux). Interroger
+     * uniquement l'IPv4 supprime cette moitié perdue. La détection évite de
+     * casser un réseau réellement IPv6.
+     */
+    private fun networkHasIpv6(): Boolean = runCatching {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return@runCatching false
+        cm.allNetworks.any { network ->
+            val caps = cm.getNetworkCapabilities(network) ?: return@any false
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return@any false
+            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return@any false
+            cm.getLinkProperties(network)?.linkAddresses.orEmpty().any { linkAddress ->
+                val addr = linkAddress.address
+                addr is java.net.Inet6Address && !addr.isLinkLocalAddress && !addr.isLoopbackAddress
+            }
+        }
+    }.getOrDefault(false)
+
+    /** Stratégie de résolution adaptée à la pile IP réellement disponible. */
+    private fun dnsStrategy(): String = if (networkHasIpv6()) "prefer_ipv4" else "ipv4_only"
+
+    /**
      * Insère l'exclusion anti-boucle dans un bloc `dns` déjà construit.
      * `serverHosts` = adresses des serveurs de sortie (outbounds) ; seules les
      * valeurs non littérales exigent une résolution, donc un traitement.
@@ -2464,8 +2524,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
         if (directTag.isEmpty()) {
             directTag = "dns-bootstrap"
             val bootstrap = bootstrapDnsAddress()
-            servers.put(JSONObject().put("tag", directTag).put("address", bootstrap).put("detour", "direct"))
-            broadcastLog("[DNS] amorçage via le résolveur du réseau ($bootstrap)")
+            val strategy = dnsStrategy()
+            servers.put(JSONObject().put("tag", directTag).put("address", bootstrap)
+                .put("strategy", strategy).put("detour", "direct"))
+            broadcastLog("[DNS] amorçage via le résolveur du réseau ($bootstrap, $strategy)")
         }
 
         // 2. Un DNS distant nommé (ex. https://dns.google/…) doit indiquer par
@@ -2477,22 +2539,50 @@ class SxbVpnService : VpnService(), PlatformInterface {
             if (host.isNotEmpty() && !isLiteralIp(host)) s.put("address_resolver", directTag)
         }
 
-        // 3. Les domaines des serveurs de sortie se résolvent hors tunnel. Cette
+        // 3. Requêtes HTTPS/SVCB (RFC 9460) — cause directe des pages qui mettent
+        //    dix secondes à démarrer. Navigateurs et applications Android les
+        //    émettent avant chaque navigation. Aucune règle ne les capturait :
+        //    elles partaient donc sur `final` → DoH À TRAVERS LE TUNNEL, et
+        //    expiraient au bout de 10 s (« IN HTTPS: context deadline exceeded »)
+        //    avant le repli sur A/AAAA.
+        //
+        //    `rcode://success` répond immédiatement NOERROR sans réponse : le
+        //    client conclut « pas d'enregistrement HTTPS » et bascule aussitôt sur
+        //    A/AAAA, qui sont servis par fakeip. Rien n'est émis sur le réseau,
+        //    donc aucun domaine n'est exposé au résolveur de l'opérateur.
+        //    (Adresse `rcode://` : syntaxe historique, valide en 1.11.)
+        val blockTag = "dns-block"
+        var hasBlockServer = false
+        for (i in 0 until servers.length()) {
+            if (servers.optJSONObject(i)?.optString("tag", "") == blockTag) { hasBlockServer = true; break }
+        }
+        if (!hasBlockServer) {
+            servers.put(JSONObject().put("tag", blockTag).put("address", "rcode://success"))
+        }
+
+        // 4. Les domaines des serveurs de sortie se résolvent hors tunnel. Cette
         //    règle passe EN TÊTE : la règle fakeip capture sinon tout A/AAAA et
         //    renverrait une adresse fictive pour le serveur à joindre.
         val domains = serverHosts
             .map { it.trim() }
             .filter { it.isNotEmpty() && !isLiteralIp(it) }
             .distinct()
-        if (domains.isEmpty()) return dns
 
         val previous = dns.optJSONArray("rules") ?: JSONArray()
-        val rules = JSONArray().put(
-            JSONObject().put("domain", JSONArray(domains)).put("server", directTag)
-        )
+        val rules = JSONArray()
+        rules.put(JSONObject()
+            .put("query_type", JSONArray().put("HTTPS").put("SVCB"))
+            .put("server", blockTag))
+        if (domains.isNotEmpty()) {
+            rules.put(JSONObject().put("domain", JSONArray(domains)).put("server", directTag))
+        }
         for (i in 0 until previous.length()) rules.put(previous.opt(i))
         dns.put("rules", rules)
-        broadcastLog("[DNS] résolution hors tunnel pour ${domains.joinToString(", ")} (anti-boucle)")
+
+        if (domains.isNotEmpty()) {
+            broadcastLog("[DNS] résolution hors tunnel pour ${domains.joinToString(", ")} (anti-boucle)")
+        }
+        broadcastLog("[DNS] requêtes HTTPS/SVCB court-circuitées (fin des attentes de 10 s)")
         return dns
     }
 
@@ -2878,8 +2968,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     put("servers", newServers)
                     val queryStrategy = xrayDns.optString("queryStrategy", "")
                     when (queryStrategy.lowercase(Locale.ROOT)) {
-                        "useipv4", "ipv4_only" -> put("strategy", "prefer_ipv4")
-                        "useipv6", "ipv6_only" -> put("strategy", "prefer_ipv6")
+                        // « UseIPv4 » signifie IPv4 SEULE. La traduire en
+                        // `prefer_ipv4` laissait partir une requête AAAA par
+                        // résolution ; sans réponse sur un réseau IPv4, elle
+                        // occupait le résolveur jusqu'à expiration (10 s).
+                        "useipv4", "ipv4_only" -> put("strategy", "ipv4_only")
+                        "useipv6", "ipv6_only" -> put("strategy", "ipv6_only")
                     }
                     xrayDns.optJSONArray("rules")?.let { put("rules", it) }
                     xrayDns.optString("final", "").takeIf { it.isNotBlank() }?.let { put("final", it) }
@@ -3349,10 +3443,22 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     if (realityShortId.isNotBlank()) put("short_id", realityShortId)
                 })
             }
-            // uTLS est obligatoire pour Reality ; sinon il reste optionnel.
+            // uTLS — empreinte du ClientHello TLS.
+            //
+            // Sans lui, sing-box émet le ClientHello de la bibliothèque Go :
+            // une signature atypique, que les équipements d'inspection des
+            // opérateurs mobiles reconnaissent et brident volontiers. C'est ce
+            // qui distinguait SXB d'un client comme HTTP Custom sur le même
+            // profil — ce dernier présente « chrome » par défaut et passe donc
+            // pour un navigateur ordinaire.
+            //
+            // On aligne ce comportement : « chrome » dès que TLS est actif, sauf
+            // empreinte explicitement demandée par le profil. uTLS reste par
+            // ailleurs obligatoire pour Reality.
             val effectiveFingerprint = when {
                 fingerprint.isNotBlank() -> fingerprint
                 realityPublicKey.isNotBlank() -> "chrome"
+                enabled -> "chrome"
                 else -> ""
             }
             if (effectiveFingerprint.isNotBlank()) {
@@ -3462,14 +3568,18 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         return JSONObject().apply {
             put("log", JSONObject().put("level", "warn").put("timestamp", true))
-            put("dns", JSONObject().apply {
+            put("dns", applyDnsLoopGuard(JSONObject().apply {
                 put("servers", JSONArray()
-                    .put(JSONObject().put("tag", "dns-r").put("address", "https://1.1.1.1/dns-query").put("strategy", "prefer_ipv4"))
-                    .put(JSONObject().put("tag", "dns-l").put("address", "local").put("detour", "direct"))
+                    // Le DoH sort par `proxy` (le SOCKS local alimenté par SSH) ;
+                    // `dns-l` utilisait `local`, inopérant sous Android — même
+                    // panne que sur le chemin sing-box (voir systemDnsServers()).
+                    .put(JSONObject().put("tag", "dns-r").put("address", "https://1.1.1.1/dns-query").put("strategy", dnsStrategy()))
+                    .put(JSONObject().put("tag", "dns-l").put("address", bootstrapDnsAddress())
+                        .put("strategy", dnsStrategy()).put("detour", "direct"))
                 )
                 // D4 — DNS via tunnel : supprimer règle outbound=any → dns-l
                 put("final", "dns-r")
-            })
+            }, listOfNotNull(host.takeIf { it.isNotBlank() })))
             put("inbounds", JSONArray().put(JSONObject().apply {
                 put("type", "tun")
                 put("tag", "tun-in")
