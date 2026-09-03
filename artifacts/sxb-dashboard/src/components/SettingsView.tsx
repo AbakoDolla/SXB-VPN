@@ -69,6 +69,8 @@ function CredentialsModal({ credentials, onClose }: { credentials: GeneratedCred
 interface SettingsViewProps {
   currentUser: any;
   onUserUpdated?: (user: any) => void;
+  /** Renvoi vers une autre vue — utilisé pour pointer la page Comptes unique. */
+  onNavigate?: (view: string) => void;
 }
 
 const TABS = [
@@ -79,7 +81,7 @@ const TABS = [
   { id: "language", label: "Langue & Région", icon: Globe },
 ];
 
-export default function SettingsView({ currentUser, onUserUpdated }: SettingsViewProps) {
+export default function SettingsView({ currentUser, onUserUpdated, onNavigate }: SettingsViewProps) {
   const { t, language, setLanguage } = useTranslation();
   const [activeTab, setActiveTab] = useState("profile");
 
@@ -96,12 +98,9 @@ export default function SettingsView({ currentUser, onUserUpdated }: SettingsVie
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Team state
+  // Team state — le formulaire de création a été retiré (doublon de la page
+  // Comptes) ; `roles` reste utilisé ailleurs dans l'écran.
   const [roles, setRoles] = useState<any[]>([]);
-  const [teamForm, setTeamForm] = useState({ name: "", email: "", phone: "", role: "", password: "" });
-  const [autoGen, setAutoGen] = useState(true);
-  const [teamCreating, setTeamCreating] = useState(false);
-  const [teamError, setTeamError] = useState("");
   const [createdCreds, setCreatedCreds] = useState<GeneratedCreds | null>(null);
 
   // Admin tokens state
@@ -178,25 +177,6 @@ export default function SettingsView({ currentUser, onUserUpdated }: SettingsVie
       setProfileError(err.message || "Erreur lors de la sauvegarde");
     } finally {
       setProfileSaving(false);
-    }
-  };
-
-  const handleTeamCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setTeamCreating(true);
-    setTeamError("");
-    try {
-      const genPass = autoGen ? Math.random().toString(36).slice(-10).toUpperCase() + "!" : teamForm.password;
-      const data = await apiRequest<any>("/users", {
-        method: "POST",
-        body: { name: teamForm.name, email: teamForm.email, phone: teamForm.phone, role: teamForm.role, password: genPass },
-      });
-      setCreatedCreds({ name: teamForm.name, email: teamForm.email, password: genPass, role: teamForm.role });
-      setTeamForm({ name: "", email: "", phone: "", role: "", password: "" });
-    } catch (err: any) {
-      setTeamError(err.message || "Erreur lors de la création");
-    } finally {
-      setTeamCreating(false);
     }
   };
 
@@ -321,50 +301,30 @@ export default function SettingsView({ currentUser, onUserUpdated }: SettingsVie
         </div>
       )}
 
-      {/* Team tab */}
+      {/* Team tab
+          Ce panneau proposait un second formulaire de création de comptes,
+          identique à celui d'Administration → Comptes. Deux points d'entrée
+          pour la même opération, c'est autant de risques de divergence (rôles,
+          quotas revendeur, journalisation). La création vit désormais à un seul
+          endroit ; on renvoie ici vers lui. */}
       {activeTab === "team" && (
         <div className={sectionClass}>
-          <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2"><Users className="w-4 h-4 text-cyan-400" />Créer un membre d'équipe</h3>
-          <form onSubmit={handleTeamCreate} className="space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className={labelClass}>Nom complet *</label>
-                <input value={teamForm.name} onChange={e => setTeamForm(f => ({ ...f, name: e.target.value }))} type="text" className={inputClass} placeholder="Jean Dupont" required />
-              </div>
-              <div>
-                <label className={labelClass}>Email *</label>
-                <input value={teamForm.email} onChange={e => setTeamForm(f => ({ ...f, email: e.target.value }))} type="email" className={inputClass} placeholder="jean@example.com" required />
-              </div>
-              <div>
-                <label className={labelClass}>Téléphone</label>
-                <input value={teamForm.phone} onChange={e => setTeamForm(f => ({ ...f, phone: e.target.value }))} type="tel" className={inputClass} placeholder="+225 07 XX XX XX" />
-              </div>
-              <div>
-                <label className={labelClass}>Rôle *</label>
-                <select value={teamForm.role} onChange={e => setTeamForm(f => ({ ...f, role: e.target.value }))} className={inputClass} required>
-                  <option value="">Choisir un rôle</option>
-                  {roles.map(r => <option key={r.id} value={r.name}>{r.name}</option>)}
-                </select>
-              </div>
-            </div>
-            <div>
-              <div className="flex items-center gap-3 mb-2">
-                <label className="flex items-center gap-2 cursor-pointer text-xs text-gray-400">
-                  <input type="checkbox" checked={autoGen} onChange={e => setAutoGen(e.target.checked)} className="rounded border-[#1a1f2e] bg-[#07090e] accent-cyan-500" />
-                  Générer le mot de passe automatiquement
-                </label>
-              </div>
-              {!autoGen && (
-                <input value={teamForm.password} onChange={e => setTeamForm(f => ({ ...f, password: e.target.value }))} type="password" className={inputClass} placeholder="Mot de passe" required />
-              )}
-            </div>
-            {teamError && <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{teamError}</p>}
-            <button type="submit" disabled={teamCreating} className="flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black transition-all disabled:opacity-60 cursor-pointer">
-              {teamCreating ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Users className="w-3.5 h-3.5" />}
-              Créer le compte
-            </button>
-          </form>
-          {createdCreds && <CredentialsModal credentials={createdCreds} onClose={() => setCreatedCreds(null)} />}
+          <h3 className="text-sm font-semibold text-white mb-2 flex items-center gap-2">
+            <Users className="w-4 h-4 text-cyan-400" />Gestion de l'équipe
+          </h3>
+          <p className="text-xs text-gray-400 mb-4">
+            La création et la gestion des comptes se font désormais à un seul endroit :
+            <span className="text-gray-200"> Administration → Comptes</span>. Vous y retrouvez
+            l'attribution des rôles, la suspension d'un compte et le quota des revendeurs.
+          </p>
+          <button
+            type="button"
+            onClick={() => onNavigate?.('accounts')}
+            className="flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black transition-all cursor-pointer"
+          >
+            <Users className="w-3.5 h-3.5" />
+            Ouvrir la gestion des comptes
+          </button>
         </div>
       )}
 

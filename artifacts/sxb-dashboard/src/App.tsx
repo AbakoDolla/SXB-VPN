@@ -223,8 +223,15 @@ function MainApp() {
 
   // Bannière « MODE MAINTENANCE ACTIF » persistante pour l'OWNER :
   // rafraîchissement périodique tant que la session est ouverte.
+  //
+  // Réservé à l'OWNER : /ops/maintenance lui est exclusif, donc tout autre rôle
+  // recevait un 403 toutes les 45 secondes. Fonctionnellement inoffensif (le
+  // catch retombait sur « service normal »), mais la console se remplissait
+  // d'erreurs et masquait les vraies. L'état d'une maintenance déclenchée
+  // pendant la session reste connu : le serveur répond alors 503 sur les appels
+  // ordinaires, ce que l'intercepteur traite déjà.
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser || currentUser.role !== UserRole.OWNER) return;
     const interval = setInterval(() => { refreshMaintenance(); }, 45000);
     return () => clearInterval(interval);
   }, [currentUser, refreshMaintenance]);
@@ -305,7 +312,7 @@ function MainApp() {
       case 'accounts':
         return <AccountsView currentUserRole={role} currentUserId={currentUser.id} />;
       case 'settings':
-        return <SettingsView currentUser={currentUser} onUserUpdated={handleUserChanged} />;
+        return <SettingsView currentUser={currentUser} onUserUpdated={handleUserChanged} onNavigate={(route) => setActiveRoute(route)} />;
       case 'devices':
         return <DevicesView />;
       case 'sessions':
