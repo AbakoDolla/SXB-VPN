@@ -140,3 +140,40 @@ export async function clearAll(): Promise<StoreResult<void>> {
 }
 
 export async function updateQuota(id:string, usedBytes:number):Promise<StoreResult<ConfigMeta>> { try { const entries=await registry(); const old=entries.find(x=>x.configId===id); if(!old)return {status:'missing'}; const meta={...old,quotaUsed:Math.max(0,usedBytes)}; await putRegistry(entries.map(x=>x.configId===id?meta:x)); return {status:'ok',value:meta}; }catch(error:any){return {status:'error',error};} }
+
+/**
+ * Retire les configurations dont la date limite est dépassée.
+ *
+ * Le forfait défini au dashboard doit fonctionner jusqu'à son échéance, puis la
+ * configuration doit disparaître de l'appareil — sans jamais désactiver
+ * l'application, qui reste enrôlée et prête à recevoir un nouveau forfait.
+ *
+ * La purge est locale et n'appelle aucun service : elle fonctionne donc aussi
+ * hors ligne, y compris si l'appareil n'a plus de données pour joindre le
+ * dashboard. Retourne les configurations retirées afin que l'appelant puisse
+ * l'annoncer à l'utilisateur.
+ */
+export async function purgeExpired(now: Date = new Date()): Promise<StoreResult<ConfigMeta[]>> {
+  try {
+    const entries = await registry();
+    const expired = entries.filter(entry => {
+      if (!entry.expiryDate) return false;
+      const deadline = new Date(entry.expiryDate);
+      // Une date illisible ne doit jamais provoquer une suppression.
+      return !Number.isNaN(deadline.getTime()) && now > deadline;
+    });
+    if (expired.length === 0) return { status: 'ok', value: [] };
+
+    await Promise.all(expired.map(entry => AsyncStorage.removeItem(payloadKey(entry.configId))));
+    const remaining = entries.filter(entry => !expired.some(e => e.configId === entry.configId));
+    // Si la configuration active vient d'expirer, une autre prend le relais :
+    // sans cela le sélecteur resterait sur une entrée devenue introuvable.
+    if (remaining.length > 0 && !remaining.some(entry => entry.isActive)) {
+      remaining[0] = { ...remaining[0], isActive: true };
+      await AsyncStorage.setItem('@sxb_active_config_id', remaining[0].configId);
+    }
+    if (remaining.length === 0) await AsyncStorage.removeItem('@sxb_active_config_id');
+    await putRegistry(remaining);
+    return { status: 'ok', value: expired };
+  } catch (error: any) { return { status: 'error', error }; }
+}

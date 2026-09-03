@@ -8,15 +8,22 @@ import { canSeeUser } from "../middleware/rbac/owner";
 
 const router = Router();
 
-// Helper : aplatit les données reseller pour correspondre au type frontend { name, email, balance, clientsCount }
+// Helper : aplatit les données reseller et convertit les BigInt avant JSON.
 function flattenReseller(r: any, clientsCount = 0): any {
+  const quotaBytes = r.quotaBytes ?? BigInt(0);
+  const quotaUsedBytes = r.quotaUsedBytes ?? BigInt(0);
+  const quotaGB = Number(quotaBytes) / (1024 ** 3);
   return {
     id: r.id,
     name: r.user?.name || r.name || "",
     email: r.user?.email || r.email || "",
     phone: r.user?.phone || null,
-    balance: r.commission ?? 0,
+    balance: quotaGB,
     commission: r.commission ?? 0,
+    quotaBytes: Number(quotaBytes),
+    quotaUsedBytes: Number(quotaUsedBytes),
+    quotaGB,
+    quotaUsedGB: Number(quotaUsedBytes) / (1024 ** 3),
     status: r.status,
     clientsCount,
     createdAt: r.createdAt,
@@ -31,6 +38,7 @@ const createResellerSchema = z.object({
   email: z.string().email().optional(),
   phone: z.string().optional(),
   balance: z.coerce.number().min(0).optional(),
+  quotaGB: z.coerce.number().min(0).optional(),
   userId: z.string().optional(),
   commission: z.coerce.number().min(0).max(100).default(20),
   status: z.enum(["active", "suspended"]).default("active"),
@@ -55,7 +63,15 @@ router.get("/", requireAuth, requirePermission("reseller.manage"), async (req: A
           .filter((r) => canSeeUser(req, r.user))
           .map(async (r) => {
             const clientsCount = await prisma.vpnClient.count({ where: { userId: r.userId } });
-            return flattenReseller(r, clientsCount);
+            const quotaUsed = await (prisma as any).subscription.aggregate({
+              where: { client: { userId: r.userId } },
+              _sum: { quotaBytes: true },
+            });
+            const quotaUsedBytes = quotaUsed._sum.quotaBytes ?? BigInt(0);
+            if ((r.quotaUsedBytes ?? BigInt(0)) !== quotaUsedBytes) {
+              await (prisma as any).reseller.update({ where: { id: r.id }, data: { quotaUsedBytes } }).catch(() => {});
+            }
+            return flattenReseller({ ...r, quotaUsedBytes }, clientsCount);
           })
       );
     } else {
@@ -77,7 +93,8 @@ router.post("/", requireAuth, requirePermission("reseller.manage"), async (req: 
   try {
     const body = createResellerSchema.parse(req.body);
     let resolvedUserId = body.userId;
-    const commission = body.balance ?? body.commission ?? 20;
+    const commission = body.commission ?? 20;
+    const quotaBytes = BigInt(Math.round(Number(body.quotaGB ?? body.balance ?? 0) * 1024 ** 3));
     let generatedPassword: string | undefined;
 
     // Si le frontend envoie name+email → créer l'utilisateur d'abord
@@ -121,7 +138,7 @@ router.post("/", requireAuth, requirePermission("reseller.manage"), async (req: 
         return res.status(400).json({ error: "errors.resellers.exists", message: "User is already a reseller" });
       }
       const newReseller = await prisma.reseller.create({
-        data: { userId: resolvedUserId, commission, status: body.status },
+        data: { userId: resolvedUserId, commission, quotaBytes, quotaUsedBytes: BigInt(0), status: body.status },
         include: { user: true },
       });
       await logDbActivity(req.user?.userId || null, `Reseller created: ${body.email || resolvedUserId}`, "success", req.ip);
@@ -137,6 +154,8 @@ router.post("/", requireAuth, requirePermission("reseller.manage"), async (req: 
         id: `reseller-${Date.now()}`,
         userId: resolvedUserId,
         commission,
+        quotaBytes,
+        quotaUsedBytes: BigInt(0),
         status: body.status,
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -299,6 +318,7 @@ router.post("/:id/create-client", requireAuth, async (req: AuthenticatedRequest,
 const updateResellerSchema = z.object({
   commission: z.coerce.number().min(0).max(100).optional(),
   balance: z.coerce.number().min(0).optional(),
+  quotaGB: z.coerce.number().min(0).optional(),
   status: z.enum(["active", "suspended"]).optional(),
 });
 
@@ -308,7 +328,8 @@ router.patch("/:id", requireAuth, requirePermission("reseller.manage"), async (r
     const body = updateResellerSchema.parse(req.body);
     const updateData: any = {};
     if (body.commission !== undefined) updateData.commission = body.commission;
-    if (body.balance !== undefined) updateData.commission = body.balance; // balance maps to commission
+    if (body.balance !== undefined) updateData.quotaBytes = BigInt(Math.round(Number(body.balance) * 1024 ** 3));
+    if (body.quotaGB !== undefined) updateData.quotaBytes = BigInt(Math.round(Number(body.quotaGB) * 1024 ** 3));
     if (body.status !== undefined) updateData.status = body.status;
 
     if (prisma) {

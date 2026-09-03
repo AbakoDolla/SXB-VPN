@@ -33,12 +33,39 @@ function makeSxbToken(): string {
   return `SXB-${part()}-${part()}-${part()}`;
 }
 
+async function assertResellerTokenQuota(req: AuthenticatedRequest, clientId: string, quotaBytes: bigint) {
+  if (req.user?.role !== "RESELLER" || !prisma) return null;
+  const client = await prisma.vpnClient.findUnique({ where: { id: clientId }, select: { userId: true } });
+  if (!client || client.userId !== req.user.userId) {
+    return { status: 404, body: { error: "errors.clients.not_found", message: "Client VPN introuvable" } };
+  }
+  const reseller = await (prisma as any).reseller.findUnique({ where: { userId: req.user.userId } });
+  const quotaLimit = reseller?.quotaBytes ?? BigInt(0);
+  if (quotaLimit === BigInt(0)) return null;
+  const aggregate = await (prisma as any).subscription.aggregate({
+    where: { client: { userId: req.user.userId } },
+    _sum: { quotaBytes: true },
+  });
+  const currentUsed = aggregate._sum.quotaBytes ?? BigInt(0);
+  if (currentUsed + quotaBytes > quotaLimit) {
+    return {
+      status: 409,
+      body: {
+        error: "errors.resellers.quota_exceeded",
+        message: "Quota revendeur insuffisant : impossible de créer ou d’attribuer ce forfait data.",
+      },
+    };
+  }
+  return null;
+}
+
 // GET /api/tokens — liste tous les tokens SXB (ADMIN/RESELLER)
 router.get("/", requireAuth, requirePermission("tokens.view"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     let tokens: any[] = [];
     if (prisma) {
       tokens = await prisma.tokenSXB.findMany({
+        where: req.user?.role === "RESELLER" ? { client: { userId: req.user.userId } } : undefined,
         include: { client: { include: { user: true } } },
         orderBy: { createdAt: "desc" },
       });
@@ -48,6 +75,9 @@ router.get("/", requireAuth, requirePermission("tokens.view"), async (req: Authe
         const user = client ? inMemoryDb.users.find((u) => u.id === client.userId) : null;
         return { ...t, client: client ? { ...client, user } : null };
       });
+      if (req.user?.role === "RESELLER") {
+        tokens = tokens.filter((t) => t.client?.userId === req.user?.userId);
+      }
     }
     return res.json({ tokens: tokens.map(sanitizeToken) });
   } catch (err) {
@@ -57,10 +87,13 @@ router.get("/", requireAuth, requirePermission("tokens.view"), async (req: Authe
 });
 
 // POST /api/tokens — crée un nouveau token (alias pour /generate)
-router.post("/", requireAuth, requirePermission("tokens.view"), async (req: AuthenticatedRequest, res: Response) => {
+router.post("/", requireAuth, requirePermission("tokens.create"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     console.log("[TOKEN_DEBUG] REQUEST_RECEIVED", JSON.stringify({ clientId: req.body?.clientId, quotaGb: req.body?.quotaGb, durationDays: req.body?.durationDays }));
     const body = generateTokenSchema.parse(req.body);
+    const quotaBytes = BigInt(body.quotaGb) * BigInt(1024 * 1024 * 1024);
+    const quotaError = await assertResellerTokenQuota(req, body.clientId, quotaBytes);
+    if (quotaError) return res.status(quotaError.status).json(quotaError.body);
 
     // [TOKEN_DEBUG] CLIENT_VALIDATED — verify client exists to avoid FK 500
     if (prisma) {
@@ -73,7 +106,6 @@ router.post("/", requireAuth, requirePermission("tokens.view"), async (req: Auth
       console.log("[TOKEN_DEBUG] CLIENT_VALIDATED: OK →", body.clientId);
     }
     const tokenStr = makeSxbToken();
-    const quotaBytes = BigInt(body.quotaGb) * BigInt(1024 * 1024 * 1024);
     const expiration = new Date();
     expiration.setDate(expiration.getDate() + body.durationDays);
 
@@ -130,6 +162,11 @@ router.post("/:id/revoke", requireAuth, requirePermission("tokens.view"), async 
     const { id } = req.params;
     let updated: any = null;
     if (prisma) {
+      const existing = await prisma.tokenSXB.findUnique({ where: { id }, include: { client: true } });
+      if (!existing) return res.status(404).json({ error: "errors.tokens.not_found" });
+      if (req.user?.role === "RESELLER" && existing.client?.userId !== req.user.userId) {
+        return res.status(404).json({ error: "errors.tokens.not_found" });
+      }
       updated = await prisma.tokenSXB.update({ where: { id }, data: { status: "revoked" } });
     } else {
       const index = inMemoryDb.tokens.findIndex((t) => t.id === id);
@@ -151,6 +188,11 @@ router.delete("/:id", requireAuth, requirePermission("tokens.view"), async (req:
     const { id } = req.params;
     let updated: any = null;
     if (prisma) {
+      const existing = await prisma.tokenSXB.findUnique({ where: { id }, include: { client: true } });
+      if (!existing) return res.status(404).json({ error: "errors.tokens.not_found" });
+      if (req.user?.role === "RESELLER" && existing.client?.userId !== req.user.userId) {
+        return res.status(404).json({ error: "errors.tokens.not_found" });
+      }
       updated = await prisma.tokenSXB.update({ where: { id }, data: { status: "revoked" } });
     } else {
       const index = inMemoryDb.tokens.findIndex((t) => t.id === id);
@@ -167,11 +209,13 @@ router.delete("/:id", requireAuth, requirePermission("tokens.view"), async (req:
 });
 
 // POST /api/tokens/generate
-router.post("/generate", requireAuth, requirePermission("tokens.view"), async (req: AuthenticatedRequest, res: Response) => {
+router.post("/generate", requireAuth, requirePermission("tokens.create"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const body = generateTokenSchema.parse(req.body);
     const tokenStr = makeSxbToken();
     const quotaBytes = BigInt(body.quotaGb) * BigInt(1024 * 1024 * 1024);
+    const quotaError = await assertResellerTokenQuota(req, body.clientId, quotaBytes);
+    if (quotaError) return res.status(quotaError.status).json(quotaError.body);
     const expiration = new Date();
     expiration.setDate(expiration.getDate() + body.durationDays);
 
@@ -234,6 +278,9 @@ router.get("/:token", requireAuth, async (req: AuthenticatedRequest, res: Respon
     if (!tokenRecord) {
       return res.status(404).json({ error: "errors.tokens.not_found", message: "Token not found" });
     }
+    if (req.user?.role === "RESELLER" && tokenRecord.client?.userId !== req.user.userId) {
+      return res.status(404).json({ error: "errors.tokens.not_found", message: "Token not found" });
+    }
 
     return res.json(sanitizeToken(tokenRecord));
   } catch (err) {
@@ -262,6 +309,9 @@ router.post("/validate", requireAuth, async (req: AuthenticatedRequest, res: Res
     }
 
     if (!tokenRecord) {
+      return res.status(404).json({ error: "errors.tokens.invalid", message: "Invalid activation token" });
+    }
+    if (req.user?.role === "RESELLER" && tokenRecord.client?.userId !== req.user.userId) {
       return res.status(404).json({ error: "errors.tokens.invalid", message: "Invalid activation token" });
     }
 

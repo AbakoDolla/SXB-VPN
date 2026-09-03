@@ -52,7 +52,6 @@ export default function DiagnosticsScreen() {
   const [pingHistory, setPingHistory] = useState<number[]>([]);
   const [copied, setCopied] = useState(false);
   const [sessionSeconds, setSessionSeconds] = useState(0);
-  const startedAtRef = useRef<number | null>(null);
 
   // Latence mesurée uniquement pendant la consultation de cet écran.
   useEffect(() => {
@@ -80,20 +79,19 @@ export default function DiagnosticsScreen() {
     return () => { cancelled = true; clearInterval(timer); };
   }, [isConnected]);
 
+  // Durée de session : la valeur de référence vient du service natif, qui
+  // continue de compter application fermée. On avance la seconde localement
+  // entre deux relevés pour que l'affichage reste fluide, et on se recale sur
+  // le natif dès qu'un relevé arrive.
   useEffect(() => {
     if (!isConnected) {
-      startedAtRef.current = null;
       setSessionSeconds(0);
       return;
     }
-    if (startedAtRef.current === null) startedAtRef.current = Date.now();
-    const timer = setInterval(() => {
-      if (startedAtRef.current !== null) {
-        setSessionSeconds(Math.floor((Date.now() - startedAtRef.current) / 1000));
-      }
-    }, 1000);
+    setSessionSeconds(trafficStats.connectedSeconds || 0);
+    const timer = setInterval(() => setSessionSeconds(prev => prev + 1), 1000);
     return () => clearInterval(timer);
-  }, [isConnected]);
+  }, [isConnected, trafficStats.connectedSeconds]);
 
   const avgPing = pingHistory.length
     ? Math.round(pingHistory.reduce((a, b) => a + b, 0) / pingHistory.length)

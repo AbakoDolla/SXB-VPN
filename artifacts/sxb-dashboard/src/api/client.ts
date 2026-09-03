@@ -42,6 +42,13 @@ class ApiError extends Error {
 
 let refreshPromise: Promise<boolean> | null = null;
 
+function forceLoginRedirect() {
+  clearTokens();
+  if (typeof window !== "undefined" && window.location.pathname !== "/login") {
+    window.location.assign("/");
+  }
+}
+
 async function tryRefreshToken(): Promise<boolean> {
   const refreshToken = getRefreshToken();
   if (!refreshToken) return false;
@@ -95,7 +102,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}, 
     if (refreshed) {
       return apiRequest<T>(path, options, true);
     }
-    clearTokens();
+    forceLoginRedirect();
     throw new ApiError("Session expirée, veuillez vous reconnecter", 401, "session_expired");
   }
 
@@ -110,6 +117,9 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}, 
   }
 
   if (!res.ok) {
+    if (!skipAuth && (res.status === 401 || (res.status === 403 && data?.error === "errors.auth.suspended"))) {
+      forceLoginRedirect();
+    }
     const message = data?.message
       ? (Array.isArray(data.message) ? data.message.map((m: any) => m.message).join(", ") : data.message)
       : `Erreur ${res.status}`;

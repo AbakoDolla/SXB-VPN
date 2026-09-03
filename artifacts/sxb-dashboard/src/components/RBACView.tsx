@@ -39,7 +39,7 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
     
     // Le SUPER_ADMIN ne peut pas supprimer ses propres garde-fous RBAC.
     const editedRole = roles.find((r) => r.id === roleId);
-    if (editedRole?.name === UserRole.SUPER_ADMIN && (permCode === "rbac:write" || permCode === "rbac:read")) {
+    if (editedRole?.name === UserRole.SUPER_ADMIN && (permCode === "rbac:write" || permCode === "rbac:read" || permCode === "rbac.manage")) {
       alert("Interdiction de sécurité : L'administrateur système ne peut pas révoquer ses propres permissions d'administration RBAC !");
       return;
     }

@@ -3,6 +3,25 @@ import jwt from "jsonwebtoken";
 import { config } from "../config";
 import { prisma, inMemoryDb } from "../database";
 
+const RESELLER_REQUIRED_PERMISSIONS = [
+  "clients.view",
+  "clients.view_own",
+  "clients.create",
+  "clients.edit",
+  "tokens.view",
+  "tokens.create",
+  "subscription.view",
+  "subscription.manage",
+  "resellers.view",
+];
+
+const CORE_DATA_PERMISSIONS = [
+  "tokens.view",
+  "tokens.create",
+  "subscription.view",
+  "subscription.manage",
+];
+
 export interface TokenPayload {
   userId: string;
   email: string;
@@ -69,6 +88,15 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
           permissions = allPerms.map((p) => p.name);
         } else {
           permissions = user.role.permissions.map((rp) => rp.permission.name);
+          if (dbRoleName === "SUPER_ADMIN" || dbRoleName === "ADMIN") {
+            permissions = Array.from(new Set([...permissions, ...CORE_DATA_PERMISSIONS]));
+          }
+          if (dbRoleName === "SUPPORT") {
+            permissions = Array.from(new Set([...permissions, "tokens.view", "subscription.view"]));
+          }
+          if (dbRoleName === "RESELLER") {
+            permissions = Array.from(new Set([...permissions, ...RESELLER_REQUIRED_PERMISSIONS]));
+          }
         }
       }
     } else {
@@ -88,6 +116,15 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
         permissions = inMemoryDb.permissions
           .filter((p) => rolePermIds.includes(p.id))
           .map((p) => p.name);
+        if (dbRoleName === "SUPER_ADMIN" || dbRoleName === "ADMIN") {
+          permissions = Array.from(new Set([...permissions, ...CORE_DATA_PERMISSIONS]));
+        }
+        if (dbRoleName === "SUPPORT") {
+          permissions = Array.from(new Set([...permissions, "tokens.view", "subscription.view"]));
+        }
+        if (dbRoleName === "RESELLER") {
+          permissions = Array.from(new Set([...permissions, ...RESELLER_REQUIRED_PERMISSIONS]));
+        }
       }
     }
 

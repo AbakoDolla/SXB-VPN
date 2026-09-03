@@ -232,6 +232,9 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                 putDouble("uploadSpeed",   stats["uploadSpeed"]!!.toDouble())
                 putDouble("downloadSpeed", stats["downloadSpeed"]!!.toDouble())
                 putBoolean("tunAttached", stats["tunAttached"] == 1L)
+                // Durée détenue par le service : elle continue de courir quand
+                // l'application est fermée, contrairement à un compteur JS.
+                putDouble("connectedSeconds", (stats["connectedSeconds"] ?: 0L).toDouble())
             }
             promise.resolve(map)
         } catch (e: Exception) {

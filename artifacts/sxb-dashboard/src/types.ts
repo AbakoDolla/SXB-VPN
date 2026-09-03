@@ -34,9 +34,14 @@ export interface Client {
 
 export interface Reseller {
   id: string;
+  userId?: string;
   name: string;
   email: string;
   balance: number; // in GB
+  quotaBytes?: number;
+  quotaUsedBytes?: number;
+  quotaGB?: number;
+  quotaUsedGB?: number;
   clientsCount: number;
   status: "active" | "suspended";
   createdAt: string;

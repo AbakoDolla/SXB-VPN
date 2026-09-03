@@ -102,7 +102,7 @@ export default function Layout({
       roles: ALL_ROLES,
       items: [
         { kind: 'leaf', id: 'clients', label: t('sidebar.vpn_accounts'), icon: Users, roles: ALL_ROLES },
-        { kind: 'leaf', id: 'subscriptions', label: t('sidebar.subscriptions'), icon: PackageOpen, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT'] },
+        { kind: 'leaf', id: 'subscriptions', label: t('sidebar.subscriptions'), icon: PackageOpen, roles: ALL_ROLES },
         { kind: 'leaf', id: 'devices', label: t('sidebar.devices'), icon: Smartphone, roles: ['OWNER', 'SUPER_ADMIN', 'ADMIN'] },
         { kind: 'leaf', id: 'tokens', label: t('sidebar.tokens'), icon: Key, roles: ALL_ROLES },
         { kind: 'leaf', id: 'vouchers', label: t('sidebar.vouchers'), icon: BadgePercent, roles: ALL_ROLES },

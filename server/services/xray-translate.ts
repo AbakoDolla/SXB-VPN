@@ -63,9 +63,6 @@ export function isSingboxNativeJson(obj: any): boolean {
 
 // ── Traduction ───────────────────────────────────────────────────────────────
 
-/** Réseaux Xray traduisibles vers sing-box. */
-const SUPPORTED_NETWORKS = new Set(['tcp', 'ws', 'grpc']);
-
 /** Outbounds « spéciaux » (non transport) — utilisés pour la route.final. */
 const SPECIAL_TYPES = new Set(['direct', 'block', 'dns']);
 
@@ -129,8 +126,32 @@ function translateStreamSettings(
   } else if (network === 'grpc') {
     const grpc = ss.grpcSettings ?? {};
     out.transport = { type: 'grpc', service_name: grpc.serviceName || 'GunService' };
+  } else if (network === 'h2' || network === 'http') {
+    const http = ss.httpSettings ?? {};
+    const transport: Record<string, any> = { type: 'http', path: http.path || '/' };
+    if (Array.isArray(http.host) && http.host.length > 0) transport.host = http.host.map((value: any) => String(value));
+    else if (typeof http.host === 'string' && http.host.trim()) transport.host = [http.host.trim()];
+    out.transport = transport;
+  } else if (network === 'kcp') {
+    const kcp = ss.kcpSettings ?? {};
+    const transport: Record<string, any> = { type: 'kcp' };
+    for (const [from, to] of [['mtu', 'mtu'], ['tti', 'tti'], ['uplinkCapacity', 'uplink_capacity'], ['downlinkCapacity', 'downlink_capacity'], ['readBufferSize', 'read_buffer_size'], ['writeBufferSize', 'write_buffer_size']] as const) {
+      if (kcp[from] !== undefined) transport[to] = Number(kcp[from]);
+    }
+    if (kcp.congestion !== undefined) transport.congestion = kcp.congestion === true;
+    if (kcp.seed) transport.seed = String(kcp.seed);
+    if (kcp.header?.type) transport.header = { type: String(kcp.header.type) };
+    out.transport = transport;
+  } else if (network === 'quic') {
+    const quic = ss.quicSettings ?? {};
+    const transport: Record<string, any> = { type: 'quic' };
+    if (quic.security && String(quic.security).toLowerCase() !== 'none') warnings.push(`QUIC security "${quic.security}" conservée comme paramètre de transport expérimental`);
+    if (quic.security) transport.security = String(quic.security);
+    if (quic.key) transport.key = String(quic.key);
+    if (quic.header?.type) transport.header = { type: String(quic.header.type) };
+    out.transport = transport;
   } else {
-    // kcp, quic, h2, httpupgrade, xhttp… → REFUS avec nom de la feature
+    // httpupgrade, xhttp… → REFUS avec nom de la feature
     errors.push(`Xray : réseau "${network}" non supporté par sing-box — import refusé`);
   }
 
@@ -362,6 +383,7 @@ export function translateXrayToSingbox(xray: Record<string, any>): TranslationRe
       let uuid = '';
       let password = '';
       let flow = '';
+      let alterId = 0;
 
       if (proto === 'trojan') {
         server = settings.servers?.[0]?.address ?? null;
@@ -376,6 +398,7 @@ export function translateXrayToSingbox(xray: Record<string, any>): TranslationRe
         port = Number(vnext.port ?? settings.port ?? 0);
         uuid = user ? String(user.id ?? '') : '';
         flow = user ? String(user.flow ?? '') : '';
+        alterId = Number((user?.alterId ?? settings.clients?.[0]?.alterId) ?? 0);
         if (Array.isArray(users) && users.length > 1) {
           warnings.push(`outbound ${proto} : plusieurs users dans vnext — seul le premier est traduit`);
         }
@@ -411,7 +434,7 @@ export function translateXrayToSingbox(xray: Record<string, any>): TranslationRe
       } else {
         out.uuid = uuid;
         if (proto === 'vmess') {
-          out.alter_id = Number((settings.clients?.[0]?.alterId) ?? 0);
+          out.alter_id = alterId;
           out.security = 'auto';
         }
       }

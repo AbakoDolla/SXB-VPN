@@ -192,6 +192,7 @@ describe('garde-fous contre les régressions Android', () => {
   const activateScreen = source('app/activate.tsx');
   const planScreen = source('app/plan.tsx');
   const nativeModule = source('modules/android-native/SxbVpnModule.kt');
+  const diagnosticsScreen = source('app/diagnostics.tsx');
   const nativeLogger = source('modules/android-native/SxbSecureLogger.kt');
   const securityModule = source('modules/android-native/SecurityModule.kt');
   const trafficManager = source('modules/android-native/TrafficStatsManager.kt');
@@ -915,6 +916,60 @@ describe('garde-fous contre les régressions Android', () => {
       .join('\n')
       .replace(/\$\{[^}]*\}/g, '');
     assert.doesNotMatch(rolesLine, masked);
+  });
+
+  it('classe les événements du moteur au lieu de tout afficher en erreur', () => {
+    // Chaque ligne du moteur était relayée telle quelle : sing-box journalise en
+    // ERROR des événements normaux (connexion annulée par l'application,
+    // requête recyclée), le journal se remplissait donc de rouge alors que le
+    // tunnel fonctionnait et les vraies pannes devenaient introuvables.
+    assert.ok(nativeService.includes('private enum class EngineEvent'));
+    assert.ok(nativeService.includes('private fun classifyEngineEvent('));
+    // « context canceled » = le demandeur a renoncé : jamais une panne.
+    assert.match(nativeService, /lower\.contains\("context canceled"\) -> EngineEvent\.NORMAL/);
+    // Les échecs de connexions isolées n'ont d'intérêt que pendant l'établissement.
+    assert.ok(nativeService.includes('EngineEvent.RECOVERABLE -> if (currentState != "connected")'));
+    // Le métier passe toujours : quota épuisé et redirection HTTP 302.
+    assert.ok(nativeService.includes('QUOTA_EXHAUSTED'));
+    assert.ok(nativeService.includes('HOST_REDIRECT'));
+    // Rien n'est perdu : tout reste dans le journal sécurisé pour diagnostic.
+    assert.ok(nativeService.includes('SxbSecureLogger.debug("LIBBOX_LOG: $message")'));
+    // Plus de diffusion inconditionnelle de chaque ligne du moteur.
+    assert.doesNotMatch(nativeService, /val safeMessage = SecurityModule\.maskSensitive\(message\)\s*\n\s*broadcastLog\("\[engine\] \$safeMessage"\)/);
+  });
+
+  it('compte la durée de session dans le service, pas dans le JavaScript', () => {
+    // Le compteur JS repartait de zéro dès que l'application était fermée ou
+    // évincée, alors que le tunnel continuait de tourner.
+    assert.ok(nativeService.includes('connectedSinceMs'));
+    assert.ok(nativeService.includes('fun getConnectedSeconds()'));
+    // elapsedRealtime : insensible aux changements d'heure, court en veille.
+    assert.match(nativeService, /connectedSinceMs = SystemClock\.elapsedRealtime\(\)/);
+    // Une promotion répétée ne doit pas réarmer le compteur.
+    assert.ok(nativeService.includes('if (connectedSinceMs == 0L) connectedSinceMs'));
+    // La valeur traverse le pont natif puis le contexte jusqu'à l'écran.
+    assert.ok(nativeModule.includes('putDouble("connectedSeconds"'));
+    assert.ok(vpnContext.includes('connectedSeconds: stats.connectedSeconds || 0'));
+    assert.ok(diagnosticsScreen.includes('trafficStats.connectedSeconds'));
+    // L'ancien compteur local, qui repartait à l'ouverture de l'écran, a disparu.
+    assert.doesNotMatch(diagnosticsScreen, /startedAtRef/);
+    // La notification persistante porte l'état et la durée : c'est le seul
+    // indicateur visible quand l'application est fermée.
+    assert.ok(nativeService.includes('formatUptime(getConnectedSeconds())'));
+  });
+
+  it('retire les configurations arrivées à leur date limite', () => {
+    // Le forfait doit fonctionner jusqu'à son échéance puis disparaître de
+    // l'appareil, sans jamais désactiver l'application elle-même.
+    assert.ok(configStore.includes('export async function purgeExpired('));
+    // Une date illisible ne doit jamais provoquer de suppression.
+    assert.ok(configStore.includes('!Number.isNaN(deadline.getTime())'));
+    // Si la configuration active expire, une autre prend le relais.
+    assert.ok(configStore.includes("remaining[0] = { ...remaining[0], isActive: true }"));
+    // La purge précède tout appel réseau : elle vaut aussi hors ligne.
+    assert.ok(vpnContext.includes('configStore.purgeExpired()'));
+    assert.ok(vpnContext.indexOf('configStore.purgeExpired()') < vpnContext.indexOf("apiClient.get(`/mobile/vpn/config"));
+    assert.ok(vpnContext.includes('Configuration expirée'));
   });
 
   it('réserve la gestion technique des configurations au dashboard', () => {

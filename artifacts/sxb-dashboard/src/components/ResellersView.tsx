@@ -1,122 +1,14 @@
 import React, { useEffect, useState } from "react";
 import { useTranslation } from "../contexts/I18nContext";
 import { toast } from "sonner";
-import { fetchResellers, createReseller, updateReseller } from "../api/resellers";
-import { fetchClients, createClient } from "../api/clients";
-import { Reseller, Client, UserRole } from "../types";
-import { ShieldCheck, Plus, Search, RefreshCw, Key, Landmark, UserPlus, Coins, UserCheck, Copy, CheckCheck, KeyRound } from "lucide-react";
+import { fetchResellers, updateReseller } from "../api/resellers";
+import { createClient } from "../api/clients";
+import { Reseller, UserRole } from "../types";
+import { ShieldCheck, Search, RefreshCw, Landmark, UserPlus, Coins, UserCheck } from "lucide-react";
 
 interface ResellersViewProps {
   currentUserRole: UserRole;
   actorName: string;
-}
-
-// Modal affichant les identifiants générés après création d'un compte
-function CredentialsModal({ credentials, onClose }: {
-  credentials: { name: string; email: string; password: string; role: string };
-  onClose: () => void;
-}) {
-  const [copiedEmail, setCopiedEmail] = useState(false);
-  const [copiedPass, setCopiedPass] = useState(false);
-  const [copiedAll, setCopiedAll] = useState(false);
-
-  const copy = (text: string, setter: (v: boolean) => void) => {
-    navigator.clipboard.writeText(text).then(() => {
-      setter(true);
-      setTimeout(() => setter(false), 2000);
-    });
-  };
-
-  const copyAll = () => {
-    const text = `Dashboard SXB VPN\nURL: https://vpnsxb.afrihall.com\nNom: ${credentials.name}\nEmail: ${credentials.email}\nMot de passe: ${credentials.password}\nRôle: ${credentials.role}`;
-    copy(text, setCopiedAll);
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-      <div className="w-full max-w-md p-6 bg-[#0a0d14] border border-[#1a2535] rounded-2xl shadow-2xl relative">
-        {/* Header */}
-        <div className="flex items-center gap-3 mb-5">
-          <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
-            <KeyRound className="h-5 w-5 text-emerald-400" />
-          </div>
-          <div>
-            <h2 className="text-base font-bold text-white">Compte créé avec succès</h2>
-            <p className="text-xs text-gray-400">Transmettez ces identifiants au revendeur</p>
-          </div>
-        </div>
-
-        {/* Warning */}
-        <div className="mb-4 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300">
-          ⚠️ Le mot de passe ne sera plus affiché après fermeture. Copiez-le maintenant.
-        </div>
-
-        {/* Credentials */}
-        <div className="space-y-3">
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Nom</label>
-            <div className="px-3 py-2 bg-[#0f1218] border border-[#1a1f2e] rounded-lg text-sm text-white font-medium">
-              {credentials.name}
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Email (identifiant)</label>
-            <div className="flex gap-2">
-              <div className="flex-1 px-3 py-2 bg-[#0f1218] border border-[#1a1f2e] rounded-lg text-sm text-cyan-400 font-mono">
-                {credentials.email}
-              </div>
-              <button
-                onClick={() => copy(credentials.email, setCopiedEmail)}
-                className="px-3 py-2 rounded-lg bg-[#0f1218] border border-[#1a1f2e] text-gray-400 hover:text-white transition-colors"
-              >
-                {copiedEmail ? <CheckCheck size={14} className="text-emerald-400" /> : <Copy size={14} />}
-              </button>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Mot de passe</label>
-            <div className="flex gap-2">
-              <div className="flex-1 px-3 py-2 bg-[#0f1218] border border-emerald-500/30 rounded-lg text-sm text-emerald-400 font-mono font-bold tracking-wide">
-                {credentials.password}
-              </div>
-              <button
-                onClick={() => copy(credentials.password, setCopiedPass)}
-                className="px-3 py-2 rounded-lg bg-[#0f1218] border border-[#1a1f2e] text-gray-400 hover:text-white transition-colors"
-              >
-                {copiedPass ? <CheckCheck size={14} className="text-emerald-400" /> : <Copy size={14} />}
-              </button>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">URL Dashboard</label>
-            <div className="px-3 py-2 bg-[#0f1218] border border-[#1a1f2e] rounded-lg text-sm text-gray-300 font-mono">
-              https://vpnsxb.afrihall.com
-            </div>
-          </div>
-        </div>
-
-        {/* Actions */}
-        <div className="flex gap-2 mt-5">
-          <button
-            onClick={copyAll}
-            className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-[#5B8DEF] hover:bg-[#4a7de0] text-white text-sm font-semibold transition-colors"
-          >
-            {copiedAll ? <CheckCheck size={14} /> : <Copy size={14} />}
-            {copiedAll ? "Copié !" : "Tout copier"}
-          </button>
-          <button
-            onClick={onClose}
-            className="flex-1 px-4 py-2.5 rounded-lg bg-[#0f1218] border border-[#1a1f2e] text-gray-300 hover:text-white text-sm font-semibold transition-colors"
-          >
-            Fermer
-          </button>
-        </div>
-      </div>
-    </div>
-  );
 }
 
 export default function ResellersView({ currentUserRole, actorName }: ResellersViewProps) {
@@ -126,15 +18,8 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
   const [search, setSearch] = useState("");
   
   // Modals
-  const [showAddReseller, setShowAddReseller] = useState(false);
   const [showAddResellerClient, setShowAddResellerClient] = useState(false);
   const [selectedResellerId, setSelectedResellerId] = useState<string | null>(null);
-  const [createdCredentials, setCreatedCredentials] = useState<{ name: string; email: string; password: string; role: string } | null>(null);
-
-  // Form states (Reseller)
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [balance, setBalance] = useState(500);
 
   // Form states (Reseller Client)
   const [clientName, setClientName] = useState("");
@@ -159,47 +44,16 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
     loadResellers();
   }, []);
 
-  const handleCreateReseller = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!name || !email) return;
-
-    try {
-      const result = await createReseller({
-        name,
-        email,
-        balance: Number(balance),
-        status: "active",
-      }) as any;
-
-      // Afficher les identifiants si un mot de passe a été généré
-      if (result.generatedPassword) {
-        setCreatedCredentials({
-          name: result.name || name,
-          email: result.email || email,
-          password: result.generatedPassword,
-          role: "RESELLER",
-        });
-      }
-
-      setName("");
-      setEmail("");
-      setBalance(500);
-      setShowAddReseller(false);
-      toast.success("Revendeur créé avec succès");
-      loadResellers();
-    } catch (err) {
-      toast.error("Erreur lors de la création");
-    }
-  };
-
   const handleCreateResellerClient = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedResellerId || !clientName) return;
 
     try {
+      const selected = resellers.find((r) => r.id === selectedResellerId);
       await createClient({
         name: clientName,
         email: clientEmail || undefined,
+        userId: selected?.userId,
       });
 
       setClientName("");
@@ -213,14 +67,14 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
   };
 
   const handleAdjustBalance = async (id: string, currentBalance: number) => {
-    const promptAmount = window.prompt("Saisir la quantité de crédit en Go à attribuer (positif pour ajouter, négatif pour retirer) :");
+    const promptAmount = window.prompt("Saisir la quantité de quota en Go à attribuer (positif pour ajouter, négatif pour retirer) :");
     if (promptAmount === null) return;
     const amount = Number(promptAmount);
     if (isNaN(amount)) { toast.error("Veuillez saisir un nombre valide"); return; }
 
     try {
       await updateReseller(id, { balance: Math.max(0, currentBalance + amount) });
-      toast.success("Crédits mis à jour");
+      toast.success("Quota revendeur mis à jour");
       loadResellers();
     } catch (err) {
       toast.error("Erreur lors de l'attribution des crédits");
@@ -231,6 +85,14 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
     return (r.name || "").toLowerCase().includes(search.toLowerCase()) || 
            (r.email || "").toLowerCase().includes(search.toLowerCase());
   });
+
+  const formatBytes = (bytes = 0) => {
+    if (!bytes) return "0 Go";
+    return `${(bytes / (1024 ** 3)).toLocaleString("fr-FR", { maximumFractionDigits: 1 })} Go`;
+  };
+
+  const quotaBytesOf = (r: Reseller) => r.quotaBytes ?? Math.round((r.quotaGB ?? r.balance ?? 0) * 1024 ** 3);
+  const quotaUsedBytesOf = (r: Reseller) => r.quotaUsedBytes ?? Math.round((r.quotaUsedGB ?? 0) * 1024 ** 3);
 
   if (isReseller) {
     return (
@@ -246,14 +108,6 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
 
   return (
     <div className="space-y-6">
-      {/* Credentials modal après création */}
-      {createdCredentials && (
-        <CredentialsModal
-          credentials={createdCredentials}
-          onClose={() => setCreatedCredentials(null)}
-        />
-      )}
-
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -263,11 +117,11 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
 
         {!isSupport && (
           <button
-            onClick={() => setShowAddReseller(true)}
+            onClick={() => toast.info("La création des revendeurs se fait dans Administration → Comptes, en choisissant le rôle RESELLER.")}
             className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-medium text-sm rounded-lg shadow-lg shadow-cyan-950/20 transition-all cursor-pointer"
           >
-            <Plus className="h-4 w-4" />
-            {t("resellers.add_reseller")}
+            <UserPlus className="h-4 w-4" />
+            Créer via Comptes
           </button>
         )}
       </div>
@@ -298,7 +152,7 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
                 <tr className="border-b border-gray-800/80 bg-gray-900/40 text-xs font-semibold text-gray-400 uppercase tracking-wider">
                   <th className="py-3 px-4">{t("resellers.fields.name")}</th>
                   <th className="py-3 px-4">{t("resellers.fields.email")}</th>
-                  <th className="py-3 px-4">{t("resellers.fields.balance")}</th>
+                  <th className="py-3 px-4">Quota data</th>
                   <th className="py-3 px-4 text-center">{t("resellers.fields.clients_count")}</th>
                   <th className="py-3 px-4 text-center">{t("resellers.fields.status")}</th>
                   <th className="py-3 px-4">{t("resellers.fields.created_at")}</th>
@@ -315,7 +169,24 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
                       </div>
                     </td>
                     <td className="py-4 px-4 text-gray-400">{r.email}</td>
-                    <td className="py-4 px-4 font-mono font-semibold text-cyan-400">{r.balance} Go</td>
+                    <td className="py-4 px-4 min-w-56">
+                      {quotaBytesOf(r) === 0 ? (
+                        <div className="text-cyan-400 font-semibold">Illimité</div>
+                      ) : (
+                        <div>
+                          <div className="flex justify-between text-xs font-mono mb-1">
+                            <span className="text-cyan-400">{formatBytes(quotaUsedBytesOf(r))}</span>
+                            <span className="text-gray-500">{formatBytes(quotaBytesOf(r))}</span>
+                          </div>
+                          <div className="h-2 rounded-full bg-gray-900 overflow-hidden">
+                            <div
+                              className="h-full bg-gradient-to-r from-cyan-500 to-blue-500"
+                              style={{ width: `${Math.min(100, (quotaUsedBytesOf(r) / quotaBytesOf(r)) * 100)}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </td>
                     <td className="py-4 px-4 text-center text-white">{r.clientsCount}</td>
                     <td className="py-4 px-4 text-center">
                       <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${
@@ -336,7 +207,7 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
                             onClick={() => handleAdjustBalance(r.id, r.balance)}
                             className="flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded bg-cyan-950 text-cyan-400 hover:bg-cyan-900/50 border border-cyan-800/20 cursor-pointer"
                           >
-                            <Coins className="h-3.5 w-3.5" /> Allouer
+                            <Coins className="h-3.5 w-3.5" /> Quota
                           </button>
                           <button
                             onClick={() => {
@@ -363,79 +234,12 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
           <p className="text-sm text-gray-400 max-w-sm mx-auto mt-1">{t("resellers.empty_state_desc")}</p>
           {!isSupport && (
             <button
-              onClick={() => setShowAddReseller(true)}
+              onClick={() => toast.info("Ouvrez Administration → Comptes pour créer un compte avec le rôle RESELLER.")}
               className="mt-5 px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-950 text-cyan-400 border border-cyan-800/40 hover:bg-cyan-900/50 transition-all cursor-pointer"
             >
-              Inviter un revendeur partenaire
+              Créer le revendeur depuis Comptes
             </button>
           )}
-        </div>
-      )}
-
-      {/* Modal Créer Revendeur */}
-      {showAddReseller && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-          <div className="w-full max-w-md p-6 bg-gray-950 border border-gray-800 rounded-xl shadow-2xl relative">
-            <h2 className="text-lg font-bold text-white mb-1 flex items-center gap-2">
-              <Plus className="h-5 w-5 text-cyan-400" />
-              {t("resellers.add_reseller")}
-            </h2>
-            <p className="text-xs text-gray-500 mb-4">Un compte dashboard sera créé automatiquement avec un mot de passe généré.</p>
-            
-            <form onSubmit={handleCreateReseller} className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">{t("resellers.fields.name")}</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Nom de la société / du partenaire"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full px-3 py-2 text-sm bg-gray-900 border border-gray-800 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">{t("resellers.fields.email")}</label>
-                <input
-                  type="email"
-                  required
-                  placeholder="contact@partenaire.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full px-3 py-2 text-sm bg-gray-900 border border-gray-800 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">Allocation de crédits initiaux (Go)</label>
-                <input
-                  type="number"
-                  required
-                  min="0"
-                  value={balance}
-                  onChange={(e) => setBalance(Number(e.target.value))}
-                  className="w-full px-3 py-2 text-sm bg-gray-900 border border-gray-800 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
-                />
-              </div>
-
-              <div className="flex gap-2 justify-end mt-6 pt-4 border-t border-gray-900">
-                <button
-                  type="button"
-                  onClick={() => setShowAddReseller(false)}
-                  className="px-4 py-2 text-xs font-semibold rounded-lg bg-gray-900 text-gray-400 hover:bg-gray-800 cursor-pointer"
-                >
-                  {t("common.cancel")}
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black shadow-lg shadow-cyan-950/20 cursor-pointer"
-                >
-                  Créer le compte
-                </button>
-              </div>
-            </form>
-          </div>
         </div>
       )}
 

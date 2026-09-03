@@ -82,6 +82,12 @@ export interface TrafficStats {
   uploadSpeed:   number;   // bytes/sec
   downloadSpeed:  number;   // bytes/sec
   tunAttached:   boolean;   // true uniquement si les compteurs TUN noyau sont disponibles
+  /**
+   * Durée de la session détenue par le service natif. Elle survit à la
+   * fermeture de l'application : tant que le tunnel tourne, le décompte
+   * continue. Un compteur JavaScript repartait de zéro à chaque relance.
+   */
+  connectedSeconds: number;
 }
 
 export interface AppTrafficStat {
@@ -144,7 +150,7 @@ interface VpnContextType {
   deleteConfig:       (configId: string) => Promise<boolean>;
 }
 
-const DEFAULT_STATS: TrafficStats = { uploadBytes: 0, downloadBytes: 0, uploadSpeed: 0, downloadSpeed: 0, tunAttached: false };
+const DEFAULT_STATS: TrafficStats = { uploadBytes: 0, downloadBytes: 0, uploadSpeed: 0, downloadSpeed: 0, tunAttached: false, connectedSeconds: 0 };
 const DEFAULT_DERIVED_QUOTA = deriveQuota(null, null, false);
 
 const VpnContext = createContext<VpnContextType>({
@@ -422,7 +428,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
               downloadBytes: down,
               uploadSpeed: 0,
               downloadSpeed: 0,
-              tunAttached: stats?.tunAttached === true || stats?.tunAttached === 1
+              tunAttached: stats?.tunAttached === true || stats?.tunAttached === 1,
+              connectedSeconds: stats?.connectedSeconds || 0,
             });
           }).catch(() => {});
         }
@@ -479,6 +486,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           uploadSpeed:   stats.uploadSpeed   || 0,
           downloadSpeed: stats.downloadSpeed || 0,
           tunAttached:   stats.tunAttached === true || stats.tunAttached === 1,
+          connectedSeconds: stats.connectedSeconds || 0,
         });
 
         // FALLBACK HANDSHAKE — Si on est en "handshaking" et qu'on voit du trafic réel
@@ -677,6 +685,34 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
   const refreshVpnConfig = useCallback(async () => {
     if (!isAuthenticated) return;
+    // Échéance des forfaits — vérifiée AVANT tout appel réseau, pour que la
+    // règle s'applique aussi hors ligne. La configuration disparaît de
+    // l'appareil à sa date limite ; l'application, elle, reste enrôlée et prête
+    // à recevoir un nouveau forfait.
+    try {
+      const purged = await configStore.purgeExpired();
+      if (purged.status === 'ok' && purged.value?.length) {
+        for (const entry of purged.value) {
+          await clearQuotaData(entry.configId).catch(() => {});
+          addLog(`⌛ Configuration expirée — « ${entry.name || entry.configId} » a été retirée de cet appareil`);
+        }
+        const after = await configStore.list();
+        const rows = after.status === 'ok' ? after.value ?? [] : [];
+        setSavedConfigs(rows.map(entry => ({
+          id: entry.configId,
+          name: entry.name || entry.configId,
+          protocol: entry.displayProtocol || entry.protocol || '',
+          isActive: entry.isActive === true,
+        })));
+        if (rows.length === 0) {
+          setActiveConfigId(null);
+          setVpnConfig(null);
+          setQuotaData(null);
+        } else if (purged.value.some(e => e.configId === activeConfigId)) {
+          setActiveConfigId(rows[0].configId);
+        }
+      }
+    } catch { /* la purge ne doit jamais empêcher le rafraîchissement */ }
     try {
       const selectedQuery = activeConfigId
         ? `?subscriptionId=${encodeURIComponent(activeConfigId)}`
@@ -834,7 +870,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         // Ignorer
       }
     }
-  }, [isAuthenticated, activeConfigId, refreshAccountState, invalidateRemoteAccess]);
+  }, [isAuthenticated, activeConfigId, refreshAccountState, invalidateRemoteAccess, addLog, setSavedConfigs]);
 
   // Garde distant : une action dashboard doit couper l’accès même si le VPN
   // était déjà connecté et que l’utilisateur reste sur l’écran courant.

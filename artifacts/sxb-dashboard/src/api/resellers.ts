@@ -25,6 +25,7 @@ export async function createReseller(data: {
   email: string;
   phone?: string;
   balance?: number;
+  quotaGB?: number;
   status?: "active" | "suspended";
 }): Promise<Reseller> {
   return await apiRequest<Reseller>("/resellers", {
@@ -46,8 +47,8 @@ export async function deleteReseller(id: string): Promise<void> {
 
 export async function fetchResellerClients(resellerId: string): Promise<Client[]> {
   try {
-    const data = await apiRequest<{ clients: Client[] }>(`/resellers/${resellerId}/clients`);
-    return data.clients || [];
+    const data = await apiRequest<Client[] | { clients: Client[] }>(`/resellers/${resellerId}/clients`);
+    return Array.isArray(data) ? data : data.clients || [];
   } catch (error) {
     console.error("Error fetching reseller clients:", error);
     return [];

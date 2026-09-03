@@ -700,8 +700,36 @@ class SxbVpnService : VpnService(), PlatformInterface {
         @Volatile var instance: SxbVpnService? = null
         @Volatile private var currentState: String = "disconnected"
 
+        /**
+         * Horodatage d'entrée dans l'état « connected », en temps monotone.
+         *
+         * La durée de session était comptée côté JavaScript : elle repartait de
+         * zéro dès que l'application était fermée ou évincée de la mémoire, alors
+         * que le tunnel, lui, continuait de tourner dans le service de premier
+         * plan. La source de vérité est donc ici, dans le service.
+         *
+         * `elapsedRealtime()` est insensible aux changements d'heure du système
+         * et continue de courir en veille, contrairement à `currentTimeMillis()`.
+         */
+        @Volatile private var connectedSinceMs: Long = 0L
+
         fun getCurrentState() = currentState
-        private fun setCurrentState(s: String) { currentState = s }
+        private fun setCurrentState(s: String) {
+            if (s == "connected") {
+                // Ne pas réarmer sur une promotion répétée : la session doit
+                // rester continue tant que le tunnel n'est pas retombé.
+                if (connectedSinceMs == 0L) connectedSinceMs = SystemClock.elapsedRealtime()
+            } else if (s == "disconnected" || s == "connecting") {
+                connectedSinceMs = 0L
+            }
+            currentState = s
+        }
+
+        /** Durée de la session en cours, en secondes ; 0 si non connecté. */
+        fun getConnectedSeconds(): Long {
+            val since = connectedSinceMs
+            return if (since == 0L) 0L else (SystemClock.elapsedRealtime() - since) / 1000L
+        }
 
         /** `Libbox.setup()` ne doit être appelé qu'une seule fois par process. */
         @Volatile private var libboxInitialized = false
@@ -2047,10 +2075,30 @@ class SxbVpnService : VpnService(), PlatformInterface {
     override fun writeLog(message: String) {
         if (message.isBlank()) return
         SxbSecureLogger.debug("LIBBOX_LOG: $message")
-        val safeMessage = SecurityModule.maskSensitive(message)
-        broadcastLog("[engine] $safeMessage")
-
         val lower = message.lowercase(Locale.ROOT)
+
+        // ── Classement avant diffusion ───────────────────────────────────────
+        //
+        // Toute ligne du moteur était auparavant relayée telle quelle vers
+        // l'interface. Or sing-box journalise en ERROR des événements parfaitement
+        // normaux : une connexion annulée parce que l'application a fermé son
+        // socket, une requête recyclée, un changement de réseau. Le journal se
+        // remplissait donc d'erreurs rouges alors que le tunnel fonctionnait, et
+        // les vraies pannes devenaient impossibles à repérer.
+        //
+        // On classe désormais chaque ligne, et seules celles qui apprennent
+        // quelque chose à l'utilisateur atteignent l'interface. Rien n'est perdu :
+        // l'intégralité reste dans SxbSecureLogger pour le diagnostic.
+        val safeMessage = SecurityModule.maskSensitive(message)
+        when (classifyEngineEvent(lower)) {
+            EngineEvent.BUSINESS -> broadcastLog("[SXB] ℹ️ ${businessEventLabel(lower)}")
+            EngineEvent.FATAL -> broadcastLog("[engine] $safeMessage")
+            // Utile pendant l'établissement (on cherche pourquoi ça n'accroche
+            // pas), inutile une fois connecté : ce sont des connexions annexes.
+            EngineEvent.RECOVERABLE -> if (currentState != "connected") broadcastLog("[engine] $safeMessage")
+            // Jamais affiché : ni erreur, ni information exploitable.
+            EngineEvent.NORMAL -> { /* conservé dans SxbSecureLogger uniquement */ }
+        }
 
         // DÉTECTION DU HANDSHAKE RÉELLEMENT ÉTABLI (§4 — ne jamais simuler).
         //
@@ -2153,6 +2201,66 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 "profil (UUID, chemin WebSocket, en-tête Host)."
             )
         }
+    }
+
+    /**
+     * Nature d'un événement du moteur, du plus anodin au plus grave.
+     *
+     * NORMAL      — fonctionnement ordinaire, jamais montré à l'utilisateur.
+     * RECOVERABLE — l'échec d'UNE connexion parmi des dizaines. Le moteur
+     *               réessaie ; utile pendant l'établissement, bruit une fois
+     *               connecté.
+     * BUSINESS    — événement métier à remonter : quota épuisé, redirection HTTP.
+     * FATAL       — le tunnel ne peut pas fonctionner : authentification refusée,
+     *               configuration invalide.
+     */
+    private enum class EngineEvent { NORMAL, RECOVERABLE, BUSINESS, FATAL }
+
+    private fun classifyEngineEvent(lower: String): EngineEvent = when {
+        // ── Métier : à remonter même connecté (demande explicite de l'exploitant)
+        // Un 302 sur un service zéro-rated signale en général la fin du forfait
+        // ou un portail opérateur ; le quota parle de lui-même.
+        lower.contains("quota") || lower.contains("traffic exhausted") -> EngineEvent.BUSINESS
+        lower.contains("302") && (lower.contains("http") || lower.contains("redirect")) -> EngineEvent.BUSINESS
+        lower.contains("payment required") || lower.contains("status: 402") -> EngineEvent.BUSINESS
+
+        // ── Fatal : le profil lui-même est refusé, réessayer n'y changera rien.
+        lower.contains("authentication failed") || lower.contains("auth failed") -> EngineEvent.FATAL
+        lower.contains("invalid user") || lower.contains("unauthorized") -> EngineEvent.FATAL
+        lower.contains("decode config") || lower.contains("parse config") -> EngineEvent.FATAL
+        lower.contains("start service") && lower.contains("error") -> EngineEvent.FATAL
+
+        // ── Normal : annulations. `context canceled` signifie que le DEMANDEUR
+        // a renoncé — application qui ferme son socket, onglet fermé, tunnel en
+        // cours d'arrêt. Ce n'est pas une panne, et c'est le motif le plus
+        // fréquent dans les journaux.
+        lower.contains("context canceled") -> EngineEvent.NORMAL
+        lower.contains("use of closed network connection") -> EngineEvent.NORMAL
+        lower.contains("broken pipe") || lower.contains("eof") -> EngineEvent.NORMAL
+        lower.contains("connection reset by peer") -> EngineEvent.NORMAL
+        // Le moteur signale l'ouverture/fermeture de chaque connexion : bruit pur.
+        lower.contains("inbound connection") || lower.contains("inbound packet connection") -> EngineEvent.NORMAL
+
+        // ── Récupérable : l'échec d'une connexion isolée ou d'une résolution.
+        lower.contains("context deadline exceeded") -> EngineEvent.RECOVERABLE
+        lower.contains("i/o timeout") || lower.contains("connection refused") -> EngineEvent.RECOVERABLE
+        lower.contains("dns: exchange failed") || lower.contains("name error") -> EngineEvent.RECOVERABLE
+        lower.contains("open outbound connection") -> EngineEvent.RECOVERABLE
+        lower.contains("listen outbound packet connection") -> EngineEvent.RECOVERABLE
+
+        // Une ligne inconnue de niveau error mérite d'être vue ; le reste non.
+        lower.contains("error") || lower.contains("fatal") -> EngineEvent.RECOVERABLE
+        else -> EngineEvent.NORMAL
+    }
+
+    /** Message métier lisible, sans jargon moteur. */
+    private fun businessEventLabel(lower: String): String = when {
+        lower.contains("quota") || lower.contains("traffic exhausted") ->
+            "QUOTA_EXHAUSTED — le forfait de données de cette configuration est épuisé."
+        lower.contains("302") ->
+            "HOST_REDIRECT — le réseau redirige la connexion (302) : forfait terminé ou portail opérateur."
+        else ->
+            "PAYMENT_REQUIRED — le serveur exige un renouvellement du forfait."
     }
 
     /**
@@ -3731,6 +3839,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
             "uploadSpeed"   to stats.uploadSpeed,
             "downloadSpeed" to stats.downloadSpeed,
             "tunAttached"   to if (trafficManager.hasTunCounters()) 1L else 0L,
+            // Durée détenue par le service : elle survit à la fermeture de
+            // l'application, contrairement au compteur JavaScript d'origine.
+            "connectedSeconds" to getConnectedSeconds(),
         )
     }
 
@@ -3879,11 +3990,28 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     val stats  = trafficManager.getStats()
                     val upKB   = formatSpeed(stats.uploadSpeed)
                     val downKB = formatSpeed(stats.downloadSpeed)
-                    updateNotification("SXB VPN — ↑$upKB ↓$downKB")
+                    // La notification est le SEUL indicateur visible quand
+                    // l'application est fermée : elle doit porter l'état du
+                    // tunnel et sa durée, pas seulement des débits.
+                    updateNotification(
+                        "🟢 Connecté · ${formatUptime(getConnectedSeconds())} — ↑$upKB ↓$downKB",
+                    )
                     Thread.sleep(5_000)
                 } catch (_: InterruptedException) { break }
             }
         }, "SXB-NotifUpdater").apply { isDaemon = true; start() }
+    }
+
+    /** Durée lisible pour la notification : 5 s → « 5s », 3 h → « 3h 04m ». */
+    private fun formatUptime(seconds: Long): String {
+        val h = seconds / 3600
+        val m = (seconds % 3600) / 60
+        val s = seconds % 60
+        return when {
+            h > 0 -> String.format(Locale.US, "%dh %02dm", h, m)
+            m > 0 -> String.format(Locale.US, "%dm %02ds", m, s)
+            else  -> "${s}s"
+        }
     }
 
     private fun formatSpeed(bytesPerSec: Long): String {

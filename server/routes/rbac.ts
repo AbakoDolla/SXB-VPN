@@ -11,11 +11,40 @@ const updateRolePermissionsSchema = z.object({
   permissions: z.array(z.string()).optional(), // accepte aussi les codes/noms
 });
 
+const resellerBaselinePermissions = [
+  "clients.view",
+  "clients.view_own",
+  "clients.create",
+  "clients.edit",
+  "tokens.view",
+  "tokens.create",
+  "subscription.view",
+  "subscription.manage",
+  "resellers.view",
+];
+
+const baselinePermissionDescriptions: Record<string, string> = {
+  "subscription.view": "Voir les forfaits data",
+  "subscription.manage": "Créer et gérer les forfaits data",
+};
+
+async function ensureBaselinePermissions() {
+  if (!prisma) return;
+  for (const name of Object.keys(baselinePermissionDescriptions)) {
+    await prisma.permission.upsert({
+      where: { name },
+      update: { description: baselinePermissionDescriptions[name] },
+      create: { name, description: baselinePermissionDescriptions[name] },
+    });
+  }
+}
+
 // GET /api/rbac/roles — liste des rôles avec leurs permissions actuelles
 router.get("/roles", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     let roles: any[] = [];
     if (prisma) {
+      await ensureBaselinePermissions();
       roles = await prisma.role.findMany({
         include: { permissions: { include: { permission: true } } },
       });
@@ -23,7 +52,9 @@ router.get("/roles", requireAuth, async (req: AuthenticatedRequest, res: Respons
         id: r.id,
         name: r.name,
         description: r.description,
-        permissions: r.permissions.map((rp: any) => rp.permission.name),
+        permissions: r.name === "RESELLER"
+          ? Array.from(new Set([...r.permissions.map((rp: any) => rp.permission.name), ...resellerBaselinePermissions]))
+          : r.permissions.map((rp: any) => rp.permission.name),
       }));
     } else {
       roles = inMemoryDb.roles.map((r) => {
@@ -48,6 +79,7 @@ router.get("/permissions", requireAuth, async (req: AuthenticatedRequest, res: R
   try {
     let permissions: any[] = [];
     if (prisma) {
+      await ensureBaselinePermissions();
       const raw = await prisma.permission.findMany({ orderBy: { name: "asc" } });
       permissions = raw.map((p: any) => ({
         id: p.id,

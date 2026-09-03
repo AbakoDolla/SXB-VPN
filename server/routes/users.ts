@@ -220,6 +220,7 @@ router.post("/", requireAuth, requirePermission("users.create"), async (req: Aut
 
     let newUser: any = null;
     if (prisma) {
+      const targetRole = await prisma.role.findUnique({ where: { id: body.roleId } });
       newUser = await prisma.user.create({
         data: {
           name: body.name,
@@ -228,8 +229,9 @@ router.post("/", requireAuth, requirePermission("users.create"), async (req: Aut
           passwordHash,
           roleId: body.roleId,
           status: body.status,
+          ...(targetRole?.name === "RESELLER" && { resellerInfo: { create: { status: "active" } } }),
         },
-        include: { role: true },
+        include: { role: true, resellerInfo: true },
       });
     } else {
       newUser = {
@@ -309,7 +311,11 @@ router.patch("/:id", requireAuth, requirePermission("users.create"), async (req:
 
     let updatedUser: any = null;
     if (prisma) {
-      updatedUser = await prisma.user.update({ where: { id }, data: updates, include: { role: true } });
+      updatedUser = await prisma.user.update({ where: { id }, data: updates, include: { role: true, resellerInfo: true } });
+      if (body.roleId && updatedUser.role?.name === "RESELLER" && !updatedUser.resellerInfo) {
+        await (prisma as any).reseller.create({ data: { userId: updatedUser.id, status: "active" } });
+        updatedUser = await prisma.user.findUnique({ where: { id }, include: { role: true, resellerInfo: true } });
+      }
     } else {
       const index = inMemoryDb.users.findIndex((u) => u.id === id);
       const old = inMemoryDb.users[index];

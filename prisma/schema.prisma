@@ -102,13 +102,15 @@ model VpnClient {
 }
 
 model Reseller {
-  id         String   @id @default(uuid())
-  userId     String   @unique
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  commission Float    @default(0.0)
-  status     String   @default("active")
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id             String   @id @default(uuid())
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  commission     Float    @default(0.0)
+  quotaBytes     BigInt   @default(0)
+  quotaUsedBytes BigInt   @default(0)
+  status         String   @default("active")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   @@map("resellers")
 }

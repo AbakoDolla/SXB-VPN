@@ -624,6 +624,9 @@ jobs:
             2. Android → Paramètres → Sécurité → Sources inconnues → Activer
             3. Installer et activer avec votre token `SXB-USER-XXXX-XXXX-XXXX`
 
+            ### Lien de téléchargement direct (à renseigner dans le dashboard)
+            `https://github.com/${{ github.repository }}/releases/download/apk-${{ github.run_number }}/sxb-vpn.apk`
+
             ### Backend
             `https://vpnsxb.afrihall.com/api`
           files: app-mobile/build/sxb-vpn.apk
@@ -663,10 +666,30 @@ jobs:
             set -euo pipefail
             test -f /tmp/sxb-vpn.apk
             # Le téléchargement public /download/*.apk est servi depuis ce répertoire.
-            sudo mkdir -p /var/www/sxb-vpn/dist/download /var/www/apk
+            sudo mkdir -p /var/www/sxb-vpn/dist/download
             sudo install -m 0644 /tmp/sxb-vpn.apk /var/www/sxb-vpn/dist/download/.sxbvpn-latest.apk.tmp
             sudo mv -f /var/www/sxb-vpn/dist/download/.sxbvpn-latest.apk.tmp /var/www/sxb-vpn/dist/download/sxbvpn-latest.apk
-            # Conserver l’archive hors du chemin public pour diagnostic et rollback maîtrisé.
-            sudo install -m 0644 /tmp/sxb-vpn.apk "/var/www/apk/sxbvpn-build-${{ github.run_number }}.apk"
-            sudo install -m 0644 /tmp/sxb-vpn.apk /var/www/apk/sxbvpn-latest.apk
+
+            # Purge des archives par build.
+            #
+            # Chaque build déposait une copie de 52 Mo dans /var/www/apk, jamais
+            # supprimée : le disque du VPS approchait la saturation. La source de
+            # référence est désormais la release GitHub (dépôt public, donc
+            # téléchargeable sans jeton), qui archive déjà chaque build.
+            # Seul le fichier servi à la mise à jour intégrée reste sur le VPS.
+            #
+            # Seuls les .apk sont supprimés : `version.json` sert de repli hérité
+            # à /xapi/mobile/app-version et doit survivre au nettoyage.
+            if [ -d /var/www/apk ]; then
+              BEFORE=$(sudo du -sm /var/www/apk 2>/dev/null | cut -f1 || echo 0)
+              sudo find /var/www/apk -maxdepth 1 -name '*.apk' -delete 2>/dev/null || true
+              AFTER=$(sudo du -sm /var/www/apk 2>/dev/null | cut -f1 || echo 0)
+              echo "🧹 Archives APK supprimées du VPS ($((BEFORE - AFTER)) Mo libérés)"
+            fi
+            # Ne conserver que la version courante dans le chemin public.
+            sudo find /var/www/sxb-vpn/dist/download -maxdepth 1 -name '*.apk' \
+              ! -name 'sxbvpn-latest.apk' -delete 2>/dev/null || true
+
             echo "✅ Déployé: $(sha256sum /var/www/sxb-vpn/dist/download/sxbvpn-latest.apk)"
+            echo "📦 Release GitHub: https://github.com/${{ github.repository }}/releases/download/apk-${{ github.run_number }}/sxb-vpn.apk"
+            df -h / | tail -1

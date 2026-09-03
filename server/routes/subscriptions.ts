@@ -85,6 +85,38 @@ function canViewTechnicalProfile(req: AuthenticatedRequest): boolean {
   return req.user?.permissions?.includes('vpnprofile.view') === true;
 }
 
+async function assertResellerCanAssignQuota(req: AuthenticatedRequest, clientId: string, quotaBytes: bigint, previousQuotaBytes = BigInt(0)) {
+  if (req.user?.role !== 'RESELLER') return null;
+  const client = await prisma.vpnClient.findUnique({ where: { id: clientId }, select: { userId: true } });
+  if (!client || client.userId !== req.user.userId) {
+    return { status: 404, body: { error: 'errors.clients.not_found', message: 'Client VPN introuvable' } };
+  }
+
+  const reseller = await (prisma as any).reseller.findUnique({ where: { userId: req.user.userId } });
+  if (!reseller) {
+    return { status: 404, body: { error: 'errors.resellers.not_found', message: 'Revendeur introuvable' } };
+  }
+  const quotaLimit = reseller.quotaBytes ?? BigInt(0);
+  if (quotaLimit === BigInt(0)) return null;
+
+  const aggregate = await (prisma as any).subscription.aggregate({
+    where: { client: { userId: req.user.userId } },
+    _sum: { quotaBytes: true },
+  });
+  const currentUsed = aggregate._sum.quotaBytes ?? BigInt(0);
+  const nextUsed = currentUsed - previousQuotaBytes + quotaBytes;
+  if (nextUsed > quotaLimit) {
+    return {
+      status: 409,
+      body: {
+        error: 'errors.resellers.quota_exceeded',
+        message: 'Quota revendeur insuffisant : impossible de créer ou d’attribuer ce forfait data.',
+      },
+    };
+  }
+  return null;
+}
+
 // ─── GET /api/subscriptions ───────────────────────────────────────────────────
 router.get('/', requireAuth, requirePermission('subscription.view'), async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -117,18 +149,22 @@ router.get('/', requireAuth, requirePermission('subscription.view'), async (req:
 });
 
 // ─── GET /api/subscriptions/stats ────────────────────────────────────────────
-router.get('/stats', requireAuth, requirePermission('subscription.view'), async (_req: AuthenticatedRequest, res: Response) => {
+router.get('/stats', requireAuth, requirePermission('subscription.view'), async (req: AuthenticatedRequest, res: Response) => {
   try {
+    const isReseller = req.user?.role === 'RESELLER';
     if (!prisma) {
-      const subs = inMemoryDb.subscriptions || [];
+      const subs = isReseller
+        ? (inMemoryDb.subscriptions || []).filter((s: any) => s.client?.userId === req.user?.userId)
+        : inMemoryDb.subscriptions || [];
       const total   = subs.length;
       const active  = subs.filter(s => s.status === 'active').length;
       const expired = subs.filter(s => s.status === 'expired').length;
       return res.json({ success: true, total, active, expired });
     }
-    const total   = await (prisma as any).subscription.count();
-    const active  = await (prisma as any).subscription.count({ where: { status: 'active' } });
-    const expired = await (prisma as any).subscription.count({ where: { status: 'expired' } });
+    const scope = isReseller ? { client: { userId: req.user?.userId } } : undefined;
+    const total   = await (prisma as any).subscription.count({ where: scope });
+    const active  = await (prisma as any).subscription.count({ where: { ...(scope || {}), status: 'active' } });
+    const expired = await (prisma as any).subscription.count({ where: { ...(scope || {}), status: 'expired' } });
     return res.json({ success: true, total, active, expired });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Failed to get stats' });
@@ -179,6 +215,8 @@ router.post('/', requireAuth, requirePermission('subscription.manage'), async (r
     if (!profile) return res.status(404).json({ error: 'Profil VPN introuvable' });
 
     const quotaBytes = BigInt(Math.round(Number(quotaGB) * 1024 * 1024 * 1024));
+    const quotaError = await assertResellerCanAssignQuota(req, clientId, quotaBytes);
+    if (quotaError) return res.status(quotaError.status).json(quotaError.body);
     const startAt    = new Date();
     const expireAt   = new Date(startAt.getTime() + Number(durationDays) * 24 * 3600 * 1000);
     const dataToken  = generateDataToken();
@@ -215,8 +253,14 @@ router.put('/:id', requireAuth, requirePermission('subscription.manage'), async 
   try {
     const existing = await (prisma as any).subscription.findUnique({ where: { id: req.params.id } });
     if (!existing) return res.status(404).json({ error: 'Subscription not found' });
-
     const { name, quotaGB, durationDays, deviceLimit, status } = req.body;
+    if (req.user?.role === 'RESELLER') {
+      const quotaBytes = quotaGB !== undefined
+        ? BigInt(Math.round(Number(quotaGB) * 1024 ** 3))
+        : existing.quotaBytes;
+      const quotaError = await assertResellerCanAssignQuota(req, existing.clientId, quotaBytes, existing.quotaBytes);
+      if (quotaError) return res.status(quotaError.status).json(quotaError.body);
+    }
 
     const updated = await (prisma as any).subscription.update({
       where: { id: req.params.id },
@@ -243,8 +287,14 @@ router.put('/:id', requireAuth, requirePermission('subscription.manage'), async 
 // ─── DELETE /api/subscriptions/:id ───────────────────────────────────────────
 router.delete('/:id', requireAuth, requirePermission('subscription.manage'), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const existing = await (prisma as any).subscription.findUnique({ where: { id: req.params.id } });
+    const existing = await (prisma as any).subscription.findUnique({
+      where: { id: req.params.id },
+      include: req.user?.role === 'RESELLER' ? { client: true } : undefined,
+    });
     if (!existing) return res.status(404).json({ error: 'Subscription not found' });
+    if (req.user?.role === 'RESELLER' && existing.client?.userId !== req.user.userId) {
+      return res.status(404).json({ error: 'Subscription not found' });
+    }
     await (prisma as any).subscription.delete({ where: { id: req.params.id } });
     await logDbActivity(req.user!.userId, `Forfait supprimé : ${existing.name}`, 'warning', req.ip || '');
     return res.json({ success: true, message: 'Forfait supprimé' });
@@ -256,6 +306,12 @@ router.delete('/:id', requireAuth, requirePermission('subscription.manage'), asy
 // ─── POST /api/subscriptions/:id/revoke ──────────────────────────────────────
 router.post('/:id/revoke', requireAuth, requirePermission('subscription.manage'), async (req: AuthenticatedRequest, res: Response) => {
   try {
+    if (req.user?.role === 'RESELLER') {
+      const existing = await (prisma as any).subscription.findUnique({ where: { id: req.params.id }, include: { client: true } });
+      if (!existing || existing.client?.userId !== req.user.userId) {
+        return res.status(404).json({ error: 'Subscription not found' });
+      }
+    }
     const sub = await (prisma as any).subscription.update({
       where: { id: req.params.id },
       data: { status: 'revoked', revokedAt: new Date(), revokeReason: req.body.reason || 'Révoqué par admin' },
