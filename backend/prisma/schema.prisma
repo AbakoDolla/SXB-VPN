@@ -102,15 +102,41 @@ model VpnClient {
 }
 
 model Reseller {
-  id         String   @id @default(uuid())
-  userId     String   @unique
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  commission Float    @default(0.0)
-  status     String   @default("active")
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id             String   @id @default(uuid())
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  commission     Float    @default(0.0)
+  quotaBytes     BigInt   @default(0)
+  quotaUsedBytes BigInt   @default(0)
+  status         String   @default("active")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  assignedProfiles VpnProfileReseller[]
 
   @@map("resellers")
+}
+
+// Attribution d'une configuration VPN à un revendeur.
+//
+// L'administrateur importe une configuration UNE FOIS puis coche les
+// revendeurs qui la reçoivent ; elle apparaît aussitôt sur leur tableau de
+// bord, sans avoir à la recréer ni la reconfigurer.
+//
+// COMPATIBILITÉ ASCENDANTE : un profil SANS aucune attribution reste visible
+// par tous les revendeurs. Les 45 profils déjà en production n'en ont aucune ;
+// les restreindre d'office couperait les revendeurs actifs du jour au
+// lendemain. L'interface signale ce cas par « Tous les revendeurs ».
+model VpnProfileReseller {
+  profileId  String
+  profile    VpnProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  resellerId String
+  reseller   Reseller   @relation(fields: [resellerId], references: [id], onDelete: Cascade)
+  assignedAt DateTime   @default(now())
+  assignedBy String?
+
+  @@id([profileId, resellerId])
+  @@map("vpn_profile_resellers")
 }
 
 model TokenSXB {
@@ -356,7 +382,7 @@ model VpnProfile {
   // Règle : quand canonicalConfig est présent, il est LA SEULE source de vérité
   // technique du profil. Les colonnes host/port/protocol/tls... restent pour
   // identification/affichage et DOIVENT refléter le contenu du canonique.
-  sourceFormat       String?      // ssh-json | ssh+payload-json | vless-uri | vmess-uri | trojan-uri | ss-uri | wireguard-conf | hysteria2-uri | tuic-uri | singbox-json | sxb-canonical
+  sourceFormat       String?      // ssh-json | ssh+payload-json | vless-uri | vmess-uri | trojan-uri | ss-uri | wireguard-conf | hysteria2-uri | tuic-uri | singbox-json | xray-json | sxb-canonical
   canonicalConfig    String?      // AES-256-GCM (préfixe gcm:) — config technique importée, JAMAIS en clair
   canonicalConfigHash String?     // sha256 hex (64) du JSON canonique normalisé
   configVersion      Int          @default(1) // incrémenté à chaque réimport explicite
@@ -370,6 +396,7 @@ model VpnProfile {
   updatedAt        DateTime       @updatedAt
 
   subscriptions    Subscription[]
+  assignedResellers VpnProfileReseller[]
 
   @@map("vpn_profiles")
 }
@@ -448,18 +475,4 @@ model ActivationSession {
 
   @@unique([clientId, deviceId])
   @@map("activation_sessions")
-}
-
-model Announcement {
-  id        String   @id @default(uuid())
-  title     String
-  content   String
-  type      String   @default("info") // info, warning, success, critical
-  target    String?  // deviceId (null = all)
-  isActive  Boolean  @default(true)
-  expiresAt DateTime?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@map("announcements")
 }

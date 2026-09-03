@@ -1027,6 +1027,32 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(vpnProfileRoutes.includes('delete out.canonicalConfig'));
   });
 
+  it('garde le schéma Prisma déployé identique à celui de la racine', () => {
+    // Le déploiement pousse `backend/prisma/schema.prisma`, PAS celui de la
+    // racine. Une modification faite uniquement à la racine n'atteint donc
+    // jamais la base : les tables n'existent pas, et toute requête qui les
+    // référence tombe en 500 en production. C'est arrivé.
+    const deployed = source('../backend/prisma/schema.prisma');
+    assert.equal(
+      deployed.replace(/\r\n/g, '\n').trim(),
+      prismaSchema.replace(/\r\n/g, '\n').trim(),
+      'backend/prisma/schema.prisma doit être identique à prisma/schema.prisma — c’est lui qui est poussé en base',
+    );
+  });
+
+  it('ne laisse pas une fonctionnalité secondaire casser la liste des profils', () => {
+    // Tant que le schéma n'est pas poussé, l'`include` des attributions échoue.
+    // Sans repli, c'est toute la page Configurations qui tombe en 500.
+    assert.ok(vpnProfileRoutes.includes('const profiles = await (prisma as any).vpnProfile.findMany({'));
+    assert.ok(vpnProfileRoutes.includes('} catch {'));
+    // Le repli doit rendre les profils, pas une liste vide.
+    const listRoute = vpnProfileRoutes.slice(
+      vpnProfileRoutes.indexOf("router.get('/', requireAuth, requirePermission('vpnprofile.view')"),
+      vpnProfileRoutes.indexOf("router.get('/assigned'"),
+    );
+    assert.ok(listRoute.includes('profiles.map(maskProfile)'), 'le repli doit renvoyer les profils masqués');
+  });
+
   it('réserve la gestion technique des configurations au dashboard', () => {
     assert.doesNotMatch(activateScreen, /scan_qr|qr-code-outline/);
     assert.doesNotMatch(planScreen, /scan_qr|qr-code-outline|qrBtn/);

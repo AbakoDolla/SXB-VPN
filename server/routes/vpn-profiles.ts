@@ -169,18 +169,28 @@ router.get('/', requireAuth, requirePermission('vpnprofile.view'), async (req: A
     if (!prisma) {
       return res.json({ success: true, profiles: (inMemoryDb.vpnProfiles || []).map(maskProfile) });
     }
-    const profiles = await (prisma as any).vpnProfile.findMany({
-      orderBy: { createdAt: 'desc' },
-      include: {
-        _count: { select: { subscriptions: true } },
-        // Attributions : l'administrateur doit voir d'un coup d'œil quels
-        // revendeurs reçoivent chaque configuration.
-        assignedResellers: {
-          include: { reseller: { include: { user: { select: { id: true, name: true, email: true } } } } },
+    // Les attributions sont chargées si la table existe. Elles ont été ajoutées
+    // après coup : tant que le schéma n'est pas poussé en base, l'`include`
+    // échoue. Sans ce repli, c'est TOUTE la page Configurations qui tombe en
+    // 500 — une fonctionnalité secondaire ne doit jamais emporter l'essentiel.
+    try {
+      const profiles = await (prisma as any).vpnProfile.findMany({
+        orderBy: { createdAt: 'desc' },
+        include: {
+          _count: { select: { subscriptions: true } },
+          assignedResellers: {
+            include: { reseller: { include: { user: { select: { id: true, name: true, email: true } } } } },
+          },
         },
-      },
-    });
-    return res.json({ success: true, profiles: profiles.map(withResellers) });
+      });
+      return res.json({ success: true, profiles: profiles.map(withResellers) });
+    } catch {
+      const profiles = await (prisma as any).vpnProfile.findMany({
+        orderBy: { createdAt: 'desc' },
+        include: { _count: { select: { subscriptions: true } } },
+      });
+      return res.json({ success: true, profiles: profiles.map(maskProfile) });
+    }
   } catch (err) {
     console.error('vpn-profiles list error:', err);
     return res.status(500).json({ error: 'Failed to list VPN profiles' });
@@ -216,18 +226,31 @@ router.get('/assigned', requireAuth, async (req: AuthenticatedRequest, res: Resp
     // Un profil sans AUCUNE attribution reste accessible à tous (voir le
     // commentaire du modèle VpnProfileReseller) : restreindre d'office aurait
     // coupé les revendeurs déjà en production.
-    const profiles = await (prisma as any).vpnProfile.findMany({
-      where: {
-        status: 'active',
-        OR: [
-          { assignedResellers: { none: {} } },
-          { assignedResellers: { some: { resellerId: reseller.id } } },
-        ],
-      },
-      select: { id: true, name: true, displayProtocol: true },
-      orderBy: { name: 'asc' },
-    });
-    return res.json({ success: true, profiles });
+    //
+    // Repli si la table d'attribution n'est pas encore en base : mieux vaut
+    // proposer les configurations actives que de renvoyer une liste vide, qui
+    // empêcherait le revendeur de créer le moindre forfait.
+    try {
+      const profiles = await (prisma as any).vpnProfile.findMany({
+        where: {
+          status: 'active',
+          OR: [
+            { assignedResellers: { none: {} } },
+            { assignedResellers: { some: { resellerId: reseller.id } } },
+          ],
+        },
+        select: { id: true, name: true, displayProtocol: true },
+        orderBy: { name: 'asc' },
+      });
+      return res.json({ success: true, profiles });
+    } catch {
+      const profiles = await (prisma as any).vpnProfile.findMany({
+        where: { status: 'active' },
+        select: { id: true, name: true, displayProtocol: true },
+        orderBy: { name: 'asc' },
+      });
+      return res.json({ success: true, profiles });
+    }
   } catch (err) {
     console.error('vpn-profiles assigned error:', err);
     return res.status(500).json({ error: 'Failed to list assigned profiles' });
