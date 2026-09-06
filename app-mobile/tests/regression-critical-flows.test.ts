@@ -1487,4 +1487,28 @@ describe('garde-fous contre les régressions Android', () => {
     );
     assert.match(pr, /permissions:\s*[\r\n]+\s+contents:\s+read/, 'jeton en lecture seule');
   });
+
+  it('ne laisse pas les publications APK périmées s\'accumuler', () => {
+    // Chaque build publie une release. Sans purge, la page des releases
+    // accumule des APK qu'aucun appareil ne peut installer : Android refuse un
+    // versionCode inférieur à celui déjà présent, donc revenir en arrière est
+    // impossible. Le VPS ne conserve lui aussi que la version courante.
+    const build = source('../.github/workflows/build-android.yml');
+
+    assert.match(build, /gh release delete .*--cleanup-tag/, 'doit supprimer les publications périmées et leur tag');
+    assert.match(build, /\[ "\$tag" = "\$COURANTE" \] && continue/, 'doit préserver la publication du build courant');
+
+    // La purge doit suivre le déploiement, jamais le précéder : tant que la
+    // nouvelle APK n'est pas servie par le VPS, l'ancienne reste la seule
+    // copie téléchargeable.
+    const purge = build.indexOf('Ne conserver que la dernière publication');
+    const deploiement = build.indexOf('Déployer APK sur VPS');
+    assert.ok(purge > 0 && deploiement > 0, 'les deux étapes doivent exister');
+    assert.ok(purge > deploiement, 'la purge doit venir après le déploiement de l\'APK');
+    assert.match(
+      build.slice(purge, purge + 400),
+      /if:\s*success\(\)/,
+      'la purge ne doit pas s\'exécuter si une étape précédente a échoué',
+    );
+  });
 });

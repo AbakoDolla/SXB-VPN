@@ -703,3 +703,36 @@ jobs:
             echo "✅ Déployé: $(sha256sum /var/www/sxb-vpn/dist/download/sxbvpn-latest.apk)"
             echo "📦 Release GitHub: https://github.com/${{ github.repository }}/releases/download/apk-${{ steps.relno.outputs.n }}/sxb-vpn.apk"
             df -h / | tail -1
+
+      # ── Ne conserver qu'une seule publication ─────────────────────────────────
+      #
+      # Chaque build publiait une release supplémentaire, si bien que la page des
+      # releases accumulait des APK périmées. Aucune ne peut servir : Android
+      # refuse d'installer un APK dont le versionCode est inférieur à celui déjà
+      # présent, donc revenir à une version antérieure est impossible côté
+      # appareil. Le VPS ne garde lui aussi que la version courante.
+      #
+      # Cette étape ne s'exécute qu'après un déploiement réussi : tant que l'APK
+      # courante n'est pas servie par le VPS, l'ancienne reste la seule copie
+      # téléchargeable et ne doit pas être supprimée.
+      - name: Ne conserver que la dernière publication
+        if: success() && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          COURANTE: apk-${{ steps.relno.outputs.n }}
+        run: |
+          supprimees=0
+          for tag in $(gh release list --limit 100 --json tagName --jq '.[].tagName'); do
+            case "$tag" in
+              apk-*) ;;
+              *) continue ;;
+            esac
+            [ "$tag" = "$COURANTE" ] && continue
+            if gh release delete "$tag" --yes --cleanup-tag; then
+              supprimees=$((supprimees + 1))
+            else
+              echo "⚠️  Publication $tag non supprimée — sans conséquence sur la distribution"
+            fi
+          done
+          echo "🧹 $supprimees publication(s) périmée(s) supprimée(s), $COURANTE conservée"
