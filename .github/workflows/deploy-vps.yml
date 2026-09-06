@@ -237,11 +237,33 @@ jobs:
             echo "💾 Sauvegarde de la base avant migration..."
             DB_URL=$(grep DATABASE_URL .env | cut -d= -f2-)
             DB_URL=$(printf '%s' "$DB_URL" | sed 's/^"\(.*\)"$/\1/; s/^'"'"'\(.*\)'"'"'$/\1/')
-            mkdir -p /var/backups/sxb-vpn
+            # Prisma accepte `?schema=public` dans l'URL ; libpq, sur lequel
+            # repose pg_dump, refuse ce paramètre. On ne le passe donc qu'à
+            # Prisma et on donne à pg_dump l'URL débarrassée de sa requête.
+            PG_URL="${DB_URL%%\?*}"
+            # /var/backups appartient à root : le compte de déploiement ne peut
+            # pas y écrire sans qu'on lui en donne le droit une première fois.
+            REP_SAUVEGARDE=/var/backups/sxb-vpn
+            if [ ! -w "$REP_SAUVEGARDE" ]; then
+              sudo mkdir -p "$REP_SAUVEGARDE" 2>/dev/null || mkdir -p "$REP_SAUVEGARDE" 2>/dev/null || true
+              sudo chown "$(id -u):$(id -g)" "$REP_SAUVEGARDE" 2>/dev/null || true
+            fi
+            if [ ! -w "$REP_SAUVEGARDE" ]; then
+              # Repli sur un chemin que le compte de déploiement possède déjà :
+              # une sauvegarde ailleurs vaut mieux que pas de sauvegarde.
+              REP_SAUVEGARDE=/var/www/sxb-vpn/.sauvegardes
+              mkdir -p "$REP_SAUVEGARDE"
+            fi
             HORODATAGE=$(date +%Y%m%d-%H%M%S)
-            DUMP="/var/backups/sxb-vpn/avant-migration-$HORODATAGE.sql.gz"
+            DUMP="$REP_SAUVEGARDE/avant-migration-$HORODATAGE.sql.gz"
             if command -v pg_dump >/dev/null 2>&1; then
-              pg_dump "$DB_URL" | gzip > "$DUMP"
+              # Sans pipefail, l'échec de pg_dump serait masqué par le succès de gzip.
+              set -o pipefail
+              if ! pg_dump "$PG_URL" | gzip > "$DUMP"; then
+                echo "::error::pg_dump a échoué — migration annulée"
+                exit 1
+              fi
+              set +o pipefail
               TAILLE=$(stat -c %s "$DUMP" 2>/dev/null || echo 0)
               # Un dump vide ou minuscule signale un échec que le code de retour
               # de `gzip` masquerait : on le refuse explicitement.
@@ -251,7 +273,7 @@ jobs:
               fi
               echo "✅ Sauvegarde : $DUMP ($(du -h "$DUMP" | cut -f1))"
               # Rotation : au-delà de 14 jours, la place compte plus que l'archive.
-              find /var/backups/sxb-vpn -name 'avant-migration-*.sql.gz' -mtime +14 -delete 2>/dev/null || true
+              find "$REP_SAUVEGARDE" -name 'avant-migration-*.sql.gz' -mtime +14 -delete 2>/dev/null || true
             else
               echo "::error::pg_dump introuvable — impossible de sauvegarder avant une migration destructive"
               exit 1

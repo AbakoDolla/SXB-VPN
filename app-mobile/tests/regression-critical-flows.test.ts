@@ -1428,6 +1428,12 @@ describe('garde-fous contre les régressions Android', () => {
     );
     // Un dump vide passerait inaperçu : gzip renvoie 0 même sans données.
     assert.match(deploy, /Sauvegarde suspecte/);
+    // …et sans pipefail, l'échec de pg_dump lui-même serait masqué par le
+    // succès du gzip placé derrière le tube.
+    assert.match(deploy, /set -o pipefail/);
+    // libpq refuse le `?schema=public` que Prisma exige : passer l'URL brute
+    // à pg_dump le fait échouer avant même de se connecter.
+    assert.match(deploy, /PG_URL="\$\{DB_URL%%\\\?\*\}"/);
 
     // Les garde-fous ne protégeaient que la construction Android : le serveur
     // partait en production sans qu'aucun test ne s'exécute.
