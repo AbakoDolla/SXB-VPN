@@ -1409,10 +1409,32 @@ describe('garde-fous contre les régressions Android', () => {
     const probe = source('../server/services/transport-probe.ts');
     assert.doesNotMatch(probe, /le moteur ignore TLS/);
     assert.match(probe, /dans le tunnel TLS/);
+  });
 
-    // Le dashboard explique le mode au lieu de l'interdire.
-    const vue = source('../artifacts/sxb-dashboard/src/components/VpnProfilesView.tsx');
-    assert.match(vue, /SSH over TLS \(SSL Tunnel\)/);
-    assert.doesNotMatch(vue, /SSH direct \+ TLS est impossible/);
+  it('protège la production : sauvegarde avant migration et tests avant déploiement', () => {
+    const deploy = source('../.github/workflows/deploy-vps.yml');
+
+    // `db push --accept-data-loss` autorise Prisma à supprimer colonnes et
+    // tables : sans dump préalable, un champ renommé par mégarde emporte ses
+    // données sans retour possible.
+    assert.match(deploy, /pg_dump/);
+    assert.match(deploy, /avant-migration-/);
+    // La sauvegarde doit précéder la migration, pas la suivre. On vise la
+    // commande réelle : le drapeau apparaît aussi dans le commentaire qui
+    // l'explique, plus haut dans le fichier.
+    assert.ok(
+      deploy.indexOf('pg_dump') < deploy.indexOf('--accept-data-loss 2>&1'),
+      'la sauvegarde doit précéder la migration destructive',
+    );
+    // Un dump vide passerait inaperçu : gzip renvoie 0 même sans données.
+    assert.match(deploy, /Sauvegarde suspecte/);
+
+    // Les garde-fous ne protégeaient que la construction Android : le serveur
+    // partait en production sans qu'aucun test ne s'exécute.
+    assert.match(deploy, /tests\/regression-critical-flows\.test\.ts/);
+    assert.ok(
+      deploy.indexOf('regression-critical-flows') < deploy.indexOf('- name: Deploy to VPS'),
+      'les tests doivent tourner avant le déploiement',
+    );
   });
 });

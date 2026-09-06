@@ -87,6 +87,15 @@ jobs:
       - name: Install workspace dependencies
         run: pnpm install --no-frozen-lockfile
 
+      # Les garde-fous ne protégeaient que la construction Android : le serveur
+      # et le tableau de bord partaient en production sans qu'aucun ne s'exécute.
+      # Or ces tests verrouillent précisément des règles serveur — parité des
+      # schémas Prisma, cloisonnement des rôles, complétude du catalogue pnpm —
+      # dont l'oubli a déjà provoqué des pannes ici.
+      - name: Garde-fous contre les régressions
+        working-directory: app-mobile
+        run: npx tsx --test tests/regression-critical-flows.test.ts
+
       - name: Build Dashboard (React + Vite)
         working-directory: artifacts/sxb-dashboard
         env:
@@ -215,8 +224,40 @@ jobs:
               --sourcemap \
               --outfile=dist/server.cjs
 
-            echo "🗄️ Push Prisma schema..."
+            # ── Sauvegarde AVANT toute migration ──────────────────────────────
+            #
+            # `db push --accept-data-loss` autorise Prisma à supprimer colonnes et
+            # tables pour aligner la base sur le schéma. C'est commode, mais sans
+            # filet : un champ renommé par mégarde emporte ses données, et rien ne
+            # permet de revenir en arrière.
+            #
+            # Le dump est pris avant la migration et conservé 14 jours. Si la
+            # sauvegarde échoue, le déploiement s'arrête : mieux vaut ne pas
+            # déployer que migrer une base qu'on ne saurait pas restaurer.
+            echo "💾 Sauvegarde de la base avant migration..."
             DB_URL=$(grep DATABASE_URL .env | cut -d= -f2-)
+            DB_URL=$(printf '%s' "$DB_URL" | sed 's/^"\(.*\)"$/\1/; s/^'"'"'\(.*\)'"'"'$/\1/')
+            mkdir -p /var/backups/sxb-vpn
+            HORODATAGE=$(date +%Y%m%d-%H%M%S)
+            DUMP="/var/backups/sxb-vpn/avant-migration-$HORODATAGE.sql.gz"
+            if command -v pg_dump >/dev/null 2>&1; then
+              pg_dump "$DB_URL" | gzip > "$DUMP"
+              TAILLE=$(stat -c %s "$DUMP" 2>/dev/null || echo 0)
+              # Un dump vide ou minuscule signale un échec que le code de retour
+              # de `gzip` masquerait : on le refuse explicitement.
+              if [ "$TAILLE" -lt 1024 ]; then
+                echo "::error::Sauvegarde suspecte ($TAILLE octets) — migration annulée"
+                exit 1
+              fi
+              echo "✅ Sauvegarde : $DUMP ($(du -h "$DUMP" | cut -f1))"
+              # Rotation : au-delà de 14 jours, la place compte plus que l'archive.
+              find /var/backups/sxb-vpn -name 'avant-migration-*.sql.gz' -mtime +14 -delete 2>/dev/null || true
+            else
+              echo "::error::pg_dump introuvable — impossible de sauvegarder avant une migration destructive"
+              exit 1
+            fi
+
+            echo "🗄️ Push Prisma schema..."
             NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
               node /var/www/sxb-vpn/backend/node_modules/prisma/build/index.js db push \
               --schema=backend/prisma/schema.prisma \
@@ -232,8 +273,8 @@ jobs:
                 --bundle --platform=node --format=cjs --packages=external \
                 --outfile=dist/seed-owner.cjs
               # PrismaClient ne lit pas .env depuis un bundle CJS : on l'exporte.
-              # `cut` conserve les guillemets éventuels du .env — on les retire.
-              export DATABASE_URL=$(printf '%s' "$DB_URL" | sed 's/^"\(.*\)"$/\1/; s/^'"'"'\(.*\)'"'"'$/\1/')
+              # DB_URL a déjà été nettoyé de ses guillemets plus haut.
+              export DATABASE_URL="$DB_URL"
               NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
                 node dist/seed-owner.cjs
             else
