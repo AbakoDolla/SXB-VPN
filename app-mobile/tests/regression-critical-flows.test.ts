@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import {
   bytesToHex,
@@ -1510,5 +1510,30 @@ describe('garde-fous contre les régressions Android', () => {
       /if:\s*success\(\)/,
       'la purge ne doit pas s\'exécuter si une étape précédente a échoué',
     );
+  });
+
+  it('ne laisse pas de script de mot de passe traîner à la racine du dépôt', () => {
+    // Le dépôt est public. `set_password.mjs` y portait le mot de passe du
+    // compte superadmin en clair, lisible par n'importe qui. Ces scripts
+    // jetables n'étaient importés nulle part : ils ne servaient qu'à une
+    // manipulation ponctuelle, mais restaient publiés indéfiniment.
+    // Les chemins sont relatifs au dossier de lancement (app-mobile/), comme
+    // pour source() plus haut.
+    const racine = '..';
+
+    for (const mort of ['set_password.mjs', 'update_passwords.cjs', 'server-api-only.ts', 'DashboardView.tsx']) {
+      assert.ok(!existsSync(`${racine}/${mort}`), `${mort} doit rester supprimé de la racine`);
+    }
+
+    // Aucun script exécutable de la racine ne doit porter de secret en dur.
+    const scripts = readdirSync(racine).filter((f) => /\.(mjs|cjs|js|ts)$/.test(f));
+    for (const script of scripts) {
+      const contenu = readFileSync(`${racine}/${script}`, 'utf8');
+      assert.doesNotMatch(
+        contenu,
+        /(password|passwd|motdepasse)\s*[:=]\s*['"][^'"]{6,}['"]/i,
+        `${script} ne doit pas contenir de mot de passe en dur`,
+      );
+    }
   });
 });
