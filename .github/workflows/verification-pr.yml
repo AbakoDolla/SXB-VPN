@@ -83,18 +83,25 @@ jobs:
 
       # Le serveur est livré en bundle esbuild, sans vérification de types :
       # seule cette construction révèle une erreur de syntaxe ou un import
-      # cassé avant qu'ils n'atteignent la production.
-      # `--packages=external` laisse les dépendances hors du bundle, il n'y a
-      # donc rien à installer au préalable ; le déploiement, lui, tente un
-      # esbuild local et retombe en pratique toujours sur npx.
+      # cassé avant qu'ils n'atteignent la production. Étape reprise telle
+      # quelle du déploiement, pour vérifier ce qui sera réellement joué.
+      # Pas de `set -e` ici : le `npm install` du backend sort en code non nul
+      # sur ses avertissements de peer dependencies alors qu'il a bien
+      # installé esbuild. Le résultat est contrôlé explicitement à la fin.
       - name: Construction du serveur
         run: |
-          set -euo pipefail
           mkdir -p dist
-          npx --yes esbuild@0.27.3 server.ts \
+          cd backend && npm install --legacy-peer-deps --no-audit --silent 2>&1 | tail -3 && cd ..
+          ESBUILD=$(find backend/node_modules/.bin -name "esbuild" -executable | head -1)
+          if [ -z "$ESBUILD" ]; then
+            ESBUILD="npx --yes esbuild@0.27.3"
+          fi
+          echo "esbuild : $ESBUILD"
+          $ESBUILD server.ts \
             --bundle \
             --platform=node \
             --format=cjs \
             --packages=external \
             --outfile=dist/server.cjs
+          test -s dist/server.cjs
           echo "Serveur construit : $(du -sh dist/server.cjs | cut -f1)"
