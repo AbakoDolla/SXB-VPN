@@ -1,0 +1,104 @@
+# Jusqu'ici, rien ne s'exécutait sur une pull request : les trois autres
+# workflows ne se déclenchent que sur un push vers main. Une proposition
+# n'était donc vérifiée qu'une fois fusionnée, c'est-à-dire en production.
+#
+# Ce workflow rejoue exactement les contrôles de construction du déploiement,
+# mais sans jamais toucher au VPS : ni secret, ni connexion SSH, ni migration.
+# Il n'a besoin que de lire le dépôt.
+name: Vérification des propositions — SXB VPN
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verification-pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  verifier:
+    name: Tests et construction
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@v4
+
+      - name: Installer pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9
+
+      - name: Installer Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Installer les dépendances du workspace
+        run: pnpm install --no-frozen-lockfile
+
+      # Le même jeu d'assertions que celui exigé avant tout déploiement :
+      # parité des schémas Prisma, cloisonnement des rôles, cohérence des
+      # transports, épinglage des actions.
+      - name: Garde-fous contre les régressions
+        working-directory: app-mobile
+        run: npx tsx --test tests/regression-critical-flows.test.ts
+
+      # Une erreur de syntaxe dans un workflow ne se voit qu'au moment où
+      # GitHub tente de le lancer, donc trop tard pour celui qui déploie.
+      - name: Syntaxe des workflows
+        working-directory: app-mobile
+        run: |
+          node -e "
+          const yaml = require('js-yaml');
+          const fs = require('fs');
+          const dossier = '../.github/workflows';
+          let erreurs = 0;
+          for (const nom of fs.readdirSync(dossier)) {
+            if (!/\.ya?ml$/.test(nom)) continue;
+            try {
+              yaml.load(fs.readFileSync(dossier + '/' + nom, 'utf8'));
+              console.log('ok   ' + nom);
+            } catch (e) {
+              console.log('::error::' + nom + ' : ' + e.message);
+              erreurs++;
+            }
+          }
+          if (erreurs) process.exit(1);
+          "
+
+      - name: Construction du tableau de bord
+        working-directory: artifacts/sxb-dashboard
+        env:
+          PORT: '3000'
+          BASE_PATH: '/'
+          NODE_ENV: production
+        run: pnpm run build
+
+      # Le serveur est livré en bundle esbuild, sans vérification de types :
+      # seule cette construction révèle une erreur de syntaxe ou un import
+      # cassé avant qu'ils n'atteignent la production.
+      - name: Construction du serveur
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cd backend && npm install --legacy-peer-deps --no-audit --silent 2>&1 | tail -3 && cd ..
+          ESBUILD=$(find backend/node_modules/.bin -name "esbuild" -executable | head -1)
+          if [ -z "$ESBUILD" ]; then
+            ESBUILD="npx --yes esbuild@0.27.3"
+          fi
+          $ESBUILD server.ts \
+            --bundle \
+            --platform=node \
+            --format=cjs \
+            --packages=external \
+            --outfile=dist/server.cjs
+          echo "Serveur construit : $(du -sh dist/server.cjs | cut -f1)"

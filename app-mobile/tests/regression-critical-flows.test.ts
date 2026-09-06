@@ -1449,7 +1449,7 @@ describe('garde-fous contre les régressions Android', () => {
     // sa phrase de passe. Référencées par tag, elles restent modifiables :
     // `v1.0.3` peut être repointé vers un autre code, qui s'exécuterait avec
     // ces identifiants. Seul un SHA de commit désigne un contenu figé.
-    const workflows = ['deploy-vps', 'vps-audit', 'build-android'].map((n) =>
+    const workflows = ['deploy-vps', 'vps-audit', 'build-android', 'verification-pr'].map((n) =>
       source(`../.github/workflows/${n}.yml`),
     );
     const tiers = /uses:\s+(?!actions\/)([\w.-]+\/[\w./-]+)@(\S+)/g;
@@ -1462,5 +1462,29 @@ describe('garde-fous contre les régressions Android', () => {
         );
       }
     }
+  });
+
+  it('vérifie les propositions avant fusion, sans leur donner les secrets', () => {
+    // Les trois autres workflows ne se déclenchent que sur un push vers main :
+    // sans celui-ci, une proposition n'est vérifiée qu'une fois fusionnée,
+    // c'est-à-dire directement en production.
+    const pr = source('../.github/workflows/verification-pr.yml');
+
+    assert.match(pr, /^on:\s*[\r\n]+\s+pull_request:/m, 'doit se déclencher sur pull_request');
+    assert.match(pr, /regression-critical-flows\.test\.ts/, 'doit lancer les garde-fous');
+    assert.match(pr, /pnpm run build/, 'doit construire le tableau de bord');
+    assert.match(pr, /--outfile=dist\/server\.cjs/, 'doit construire le serveur');
+
+    // Une pull request peut venir de n'importe où. Lui ouvrir les secrets du
+    // VPS reviendrait à confier la clé de production à du code non relu.
+    assert.ok(
+      !/secrets\./.test(pr),
+      'la vérification des propositions ne doit référencer aucun secret',
+    );
+    assert.ok(
+      !/environment:/.test(pr),
+      "aucun environnement GitHub, sinon les secrets de production redeviennent accessibles",
+    );
+    assert.match(pr, /permissions:\s*[\r\n]+\s+contents:\s+read/, 'jeton en lecture seule');
   });
 });
