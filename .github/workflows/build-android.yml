@@ -49,7 +49,7 @@ jobs:
           cache: false
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         with:
           gradle-version: wrapper
           cache-read-only: false
@@ -608,7 +608,7 @@ jobs:
 
       - name: GitHub Release
         if: github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: apk-${{ steps.relno.outputs.n }}
           name: "SXB VPN APK #${{ steps.relno.outputs.n }}"
@@ -647,7 +647,7 @@ jobs:
       # ── Déployer APK sur VPS ──────────────────────────────────────────────────
       - name: Déployer APK sur VPS (scp)
         if: github.ref == 'refs/heads/main'
-        uses: appleboy/scp-action@917f8b81dfc1ccd331fef9e2d61bdc6c8be94634 # v0.1.7
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1.0.0
         with:
           host: 141.95.112.93
           username: ubuntu
@@ -662,7 +662,7 @@ jobs:
 
       - name: Installer APK dans dossier distribution VPS
         if: github.ref == 'refs/heads/main'
-        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262 # v1.0.3
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: 141.95.112.93
           username: ubuntu
