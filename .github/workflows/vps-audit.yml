@@ -109,6 +109,12 @@ jobs:
               fi
             done
             systemctl is-active postgresql 2>/dev/null | sed 's/^/postgresql : /' || echo "postgresql : introuvable"
+            # Le déploiement refuse de migrer sans dump préalable : si pg_dump
+            # manque ici, chaque déploiement s'arrêtera avant la migration.
+            command -v pg_dump >/dev/null 2>&1 \
+              && echo "pg_dump : $(pg_dump --version)" \
+              || echo "pg_dump : ABSENT — installer postgresql-client"
+            df -h /var 2>/dev/null | tail -1 | sed 's/^/espace \/var : /'
             # Contenu réel des bases : une base vide confirme qu'elle n'est pas utilisée.
             for db in sxbvpn sxb_vpn; do
               t=$(sudo -u postgres psql -tAc "SELECT count(*) FROM pg_tables WHERE schemaname='public';" "$db" 2>/dev/null || echo "?")
