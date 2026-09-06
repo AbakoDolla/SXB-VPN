@@ -11,6 +11,14 @@ on:
 permissions:
   contents: write
 
+# Deux builds simultanés publient deux releases puis se purgent mutuellement :
+# le second peut supprimer la publication du premier avant que celui-ci ne
+# l'ait déposée sur le VPS. Un build à la fois, et jamais d'annulation en
+# cours de route — le transfert `scp` de l'APK ne doit pas être interrompu.
+concurrency:
+  group: publication-apk
+  cancel-in-progress: false
+
 jobs:
   build-android:
     name: Build Android APK

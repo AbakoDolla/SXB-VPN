@@ -1536,4 +1536,37 @@ describe('garde-fous contre les régressions Android', () => {
       );
     }
   });
+
+  it('ne laisse pas deux déploiements ou deux publications se chevaucher', () => {
+    // Sans garde-fou, deux poussées rapprochées lancent deux workflows en
+    // parallèle sur la même cible : migrations Prisma concurrentes et
+    // `pm2 restart` qui se croisent côté VPS, purge de release qui supprime
+    // la publication de l'autre build côté APK.
+    for (const [fichier, groupe] of [
+      ['../.github/workflows/deploy-vps.yml', 'deploiement-production'],
+      ['../.github/workflows/build-android.yml', 'publication-apk'],
+    ]) {
+      const flux = source(fichier);
+      const bloc = flux.indexOf('concurrency:');
+      assert.ok(bloc > 0, `${fichier} doit déclarer un groupe de concurrence`);
+      assert.match(flux.slice(bloc, bloc + 200), new RegExp(`group:\\s*${groupe}`), `groupe attendu : ${groupe}`);
+
+      // Annuler en cours de route est pire que d'attendre : l'interruption
+      // peut tomber entre la migration et le redémarrage, ou pendant le
+      // transfert de l'APK vers le VPS.
+      assert.match(
+        flux.slice(bloc, bloc + 200),
+        /cancel-in-progress:\s*false/,
+        `${fichier} ne doit pas annuler un déploiement ou un transfert en cours`,
+      );
+
+      // Le groupe doit être global, pas par branche : deux branches qui
+      // déploient sur le même VPS entreraient malgré tout en collision.
+      assert.doesNotMatch(
+        flux.slice(bloc, bloc + 200),
+        /group:.*github\.ref/,
+        `${fichier} ne doit pas segmenter la concurrence par branche`,
+      );
+    }
+  });
 });

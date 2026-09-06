@@ -16,6 +16,16 @@ on:
 permissions:
   contents: read
 
+# Deux poussées rapprochées lançaient deux déploiements en parallèle sur le
+# même VPS : migrations Prisma concurrentes, `pm2 restart` qui se croisent,
+# et une sauvegarde écrasée par la suivante. Les déploiements se font donc
+# un par un. On n'annule jamais celui en cours (`cancel-in-progress: false`) :
+# l'interrompre entre la migration et le redémarrage laisserait la production
+# sur un schéma migré servi par l'ancien code.
+concurrency:
+  group: deploiement-production
+  cancel-in-progress: false
+
 env:
   NODE_VERSION: '22'
 
