@@ -51,7 +51,7 @@ jobs:
           fi
 
       - name: Verify VPS access (read-only)
-        uses: appleboy/ssh-action@v1.0.3
+        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262 # v1.0.3
         with:
           host: 141.95.112.93
           username: ubuntu
@@ -70,7 +70,7 @@ jobs:
             echo "✅ Accès SSH vérifié en lecture seule"
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 9
 
@@ -127,7 +127,7 @@ jobs:
           echo "✅ Backend built: $(du -sh dist/server.cjs | cut -f1)"
 
       - name: Deploy to VPS
-        uses: appleboy/ssh-action@v1.0.3
+        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262 # v1.0.3
         env:
           OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
           OWNER_PASSWORD: ${{ secrets.OWNER_PASSWORD }}

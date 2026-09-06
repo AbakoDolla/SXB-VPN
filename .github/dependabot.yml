@@ -1,0 +1,53 @@
+# Surveillance des dépendances — GitHub Actions
+#
+# Pourquoi les actions, et pas (encore) npm
+# -----------------------------------------
+# Les workflows de ce dépôt confient à des actions tierces la clé SSH privée
+# du VPS de production et sa phrase de passe : appleboy/ssh-action pour le
+# déploiement et l'audit, appleboy/scp-action pour la livraison de l'APK.
+# Une action reçoit ces secrets en clair dans son environnement.
+#
+# Ces actions sont désormais épinglées à un SHA de commit plutôt qu'à un tag,
+# parce qu'un tag est mutable : `v1.0.3` peut être repointé vers un autre code
+# par son mainteneur — ou par qui prendrait son compte — et ce code s'exécute
+# alors avec nos identifiants de production. Le SHA, lui, désigne un contenu
+# qui ne peut plus changer.
+#
+# Mais épingler sans surveiller revient à figer d'éventuelles failles. C'est
+# le rôle de ce fichier : Dependabot propose la mise à jour du SHA quand une
+# nouvelle version paraît, et la modification passe alors par une revue.
+#
+# Le côté npm n'est volontairement pas activé. Le workspace impose déjà
+# `minimumReleaseAge: 1440` (aucun paquet publié depuis moins d'un jour) dans
+# pnpm-workspace.yaml, et fixe des versions exactes via `overrides` — dont
+# esbuild, épinglé pour contourner une vulnérabilité de drizzle-kit. Des
+# propositions automatiques entreraient en conflit avec ces choix et
+# casseraient le fichier de verrouillage. À reconsidérer si le catalogue pnpm
+# venait à être simplifié.
+
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: actions
+    labels:
+      - dependencies
+      - securite
+    # Les actions publiées par GitHub et celles fournies par des tiers ne
+    # présentent pas le même risque : les regrouper séparément permet de
+    # traiter les secondes avec l'attention qu'elles demandent.
+    groups:
+      actions-github:
+        patterns:
+          - actions/*
+      actions-tierces:
+        patterns:
+          - '*'
+        exclude-patterns:
+          - actions/*

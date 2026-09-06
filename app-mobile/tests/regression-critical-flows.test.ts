@@ -1443,4 +1443,24 @@ describe('garde-fous contre les régressions Android', () => {
       'les tests doivent tourner avant le déploiement',
     );
   });
+
+  it('épingle les actions tierces qui reçoivent les secrets de production', () => {
+    // appleboy/ssh-action et scp-action reçoivent la clé SSH privée du VPS et
+    // sa phrase de passe. Référencées par tag, elles restent modifiables :
+    // `v1.0.3` peut être repointé vers un autre code, qui s'exécuterait avec
+    // ces identifiants. Seul un SHA de commit désigne un contenu figé.
+    const workflows = ['deploy-vps', 'vps-audit', 'build-android'].map((n) =>
+      source(`../.github/workflows/${n}.yml`),
+    );
+    const tiers = /uses:\s+(?!actions\/)([\w.-]+\/[\w./-]+)@(\S+)/g;
+    for (const contenu of workflows) {
+      for (const [, action, ref] of contenu.matchAll(tiers)) {
+        assert.match(
+          ref,
+          /^[0-9a-f]{40}$/,
+          `${action} doit être épinglée à un SHA de commit, pas à « ${ref} »`,
+        );
+      }
+    }
+  });
 });
