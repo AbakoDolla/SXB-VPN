@@ -1569,4 +1569,35 @@ describe('garde-fous contre les régressions Android', () => {
       );
     }
   });
+
+  it('arrête les scripts distants à la première erreur', () => {
+    // `script_stop: true` remplissait ce rôle, mais l'entrée a disparu de
+    // appleboy/ssh-action v1.2.5 : GitHub Actions ignore en silence une entrée
+    // inconnue, donc le paramètre ne protégeait plus rien tout en en donnant
+    // l'apparence. L'arrêt doit désormais être écrit dans le script lui-même.
+    for (const fichier of [
+      '../.github/workflows/deploy-vps.yml',
+      '../.github/workflows/build-android.yml',
+      '../.github/workflows/vps-audit.yml',
+    ]) {
+      const flux = source(fichier);
+      assert.doesNotMatch(flux, /script_stop:/, `${fichier} : script_stop n'existe plus, il ne protège rien`);
+    }
+
+    // Les scripts qui écrivent sur le VPS doivent s'arrêter net : poursuivre
+    // après une commande en échec peut redémarrer un service sur un dépôt à
+    // moitié mis à jour, et faire passer l'exécution pour un succès.
+    for (const fichier of ['../.github/workflows/deploy-vps.yml', '../.github/workflows/build-android.yml']) {
+      const flux = source(fichier);
+      const scripts = flux.split(/^\s+script: \|\s*$/m).slice(1);
+      assert.ok(scripts.length > 0, `${fichier} doit contenir au moins un script distant`);
+      for (const bloc of scripts) {
+        assert.match(
+          bloc.slice(0, 200),
+          /^\s*set -e/m,
+          `${fichier} : chaque script distant doit commencer par « set -e »`,
+        );
+      }
+    }
+  });
 });

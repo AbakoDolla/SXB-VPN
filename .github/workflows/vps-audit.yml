@@ -51,7 +51,10 @@ jobs:
           fingerprint: ${{ secrets.VPS_SSH_HOST_FINGERPRINT }}
           timeout: 60s
           command_timeout: 120s
-          script_stop: false
+          # Pas de `set -e` ici, volontairement : l'audit doit dérouler toutes
+          # ses sections même quand l'une d'elles échoue. C'est un constat, pas
+          # un déploiement — s'arrêter à la première anomalie masquerait les
+          # suivantes. Chaque commande porte son propre `|| true`.
           script: |
             echo "═══ 1. VERSION DÉPLOYÉE ═══"
             git -C /var/www/sxb-vpn rev-parse HEAD 2>/dev/null || echo "dépôt introuvable"
