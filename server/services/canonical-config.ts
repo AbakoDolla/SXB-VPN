@@ -121,16 +121,17 @@ export function validateTransportCoherence(cfg: Record<string, any>): { errors: 
     return { errors, warnings };
   }
 
-  // ── Règle #1 incident APK #165 : SSH direct + TLS est IMPOSSIBLE au moteur ──
-  // En SSH direct, SxbVpnService ouvre une socket TCP brute (le bouton TLS est
-  // ignoré). Décision produit validée : REJET à l'import (pas de SSH-over-TLS).
-  if (proto === 'ssh' && cfg.tls === true) {
-    errors.push(
-      'Combinaison impossible : "ssh" direct avec tls=true — le moteur mobile ignore TLS en SSH direct ' +
-      '(socket TCP brute). Choix : 1) tls=false pour du SSH direct, ou 2) protocol "ssh+payload" ' +
-      'avec un payload WebSocket/TLS fourni par le fournisseur.'
-    );
-  }
+  // SSH over TLS (« SSL Tunnel ») — anciennement rejeté à l'import.
+  //
+  // Le moteur ouvrait une socket TCP brute en SSH direct et ignorait le drapeau
+  // TLS : contre un serveur qui n'accepte que du TLS sur 443, le handshake SSH
+  // partait en clair et la connexion expirait sans message exploitable. Le rejet
+  // à l'import était donc justifié tant que le moteur ne savait pas faire.
+  //
+  // SxbTlsSocketFactory monte désormais TLS avant SSH, sans payload HTTP, ce qui
+  // correspond au « SSL Tunnel » des clients de tunneling. La combinaison est
+  // donc valide, et la sonde de transport la vérifie réellement : handshake TLS
+  // puis recherche de la bannière SSH dans le tunnel.
 
   // ── Champs requis par protocole ──
   const req = (fields: string[]) => {

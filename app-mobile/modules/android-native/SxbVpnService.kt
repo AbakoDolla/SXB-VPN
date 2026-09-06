@@ -626,6 +626,73 @@ private class SxbLoggingSocketFactory(
     override fun getOutputStream(socket: Socket): OutputStream = socket.getOutputStream()
 }
 
+/**
+ * SSH encapsulé dans TLS, sans payload HTTP — le « SSL Tunnel » des clients de
+ * tunneling (HTTP Injector, HTTP Custom).
+ *
+ * Le mode SSH direct ignorait `tls=true` et ouvrait un socket en clair : contre
+ * un serveur qui n'accepte que du TLS sur le port 443, le handshake SSH partait
+ * en clair dans un flux attendu chiffré et la connexion expirait sans message
+ * exploitable. Seul `ssh+payload` savait monter TLS, alors que beaucoup de
+ * fournisseurs proposent le SSL nu, sans en-tête HTTP à injecter.
+ *
+ * Le flux est donc : TCP → handshake TLS (avec SNI) → SSH par-dessus.
+ */
+private class SxbTlsSocketFactory(
+    private val timeoutMs: Int,
+    private val sni: String,
+    private val protectSocket: (Socket) -> Boolean,
+    private val onEvent: (String) -> Unit,
+) : SocketFactory {
+    override fun createSocket(host: String, port: Int): Socket {
+        val rawSocket = Socket()
+        // Même précaution qu'en SSH direct : protéger le socket AVANT connect(),
+        // sinon il repasserait par le TUN qu'il est censé alimenter.
+        val fdReady = runCatching {
+            rawSocket.bind(null)
+            rawSocket.isBound
+        }.getOrDefault(false)
+        val ok = protectSocket(rawSocket)
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_SOCKET_PROTECTED result=$ok fd_ready=$fdReady")
+        onEvent("[SXB_TRACE] stage=SOCKET_PROTECT result=$ok fd_ready=$fdReady")
+
+        val t0 = System.currentTimeMillis()
+        rawSocket.connect(InetSocketAddress(host, port), timeoutMs)
+        onEvent("[SXB_TRACE] stage=TCP_CONNECTED elapsed_ms=${System.currentTimeMillis() - t0}")
+
+        val serverName = sni.ifBlank { host }
+        val tlsSocket = (SSLSocketFactory.getDefault() as SSLSocketFactory)
+            .createSocket(rawSocket, serverName, port, true) as SSLSocket
+        tlsSocket.useClientMode = true
+        tlsSocket.soTimeout = timeoutMs
+        val sslParams = SSLParameters()
+        if (serverName.isNotBlank() && !isIpLiteral(serverName)) {
+            // Une IP littérale n'est pas un nom d'hôte valide : l'envoyer en SNI
+            // fait rejeter le handshake par les serveurs stricts.
+            sslParams.serverNames = listOf(javax.net.ssl.SNIHostName(serverName))
+        }
+        tlsSocket.sslParameters = sslParams
+        val tlsT0 = System.currentTimeMillis()
+        tlsSocket.startHandshake()
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] TLS_HANDSHAKE_SUCCESS mode=ssh_over_tls")
+        onEvent(
+            "[SXB_TRACE] stage=TLS_HANDSHAKE_SUCCESS mode=ssh_over_tls " +
+                "elapsed_ms=${System.currentTimeMillis() - tlsT0} protocol=${tlsSocket.session.protocol}"
+        )
+        // Le handshake SSH qui suit peut rester silencieux plusieurs secondes :
+        // un timeout de lecture hérité de la phase TLS le couperait à tort.
+        tlsSocket.soTimeout = 0
+        return tlsSocket
+    }
+
+    private fun isIpLiteral(value: String): Boolean =
+        value.matches(Regex("^\\d{1,3}(\\.\\d{1,3}){3}$")) || value.contains(':')
+
+    override fun getInputStream(socket: Socket): InputStream = socket.getInputStream()
+
+    override fun getOutputStream(socket: Socket): OutputStream = socket.getOutputStream()
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // SxbVpnService
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1292,6 +1359,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
                         s.setProxy(SxbPayloadProxy(strategy.payload, strategy.tls, strategy.sni, ::protectSocket) { event ->
                             broadcastLog(event)
                         })
+                    } else if (tlsEnabled) {
+                        // SSH over TLS (« SSL Tunnel ») : pas de payload HTTP, mais
+                        // le flux SSH voyage dans une session TLS.
+                        s.setSocketFactory(
+                            SxbTlsSocketFactory(30_000, sni, ::protectSocket) { event -> broadcastLog(event) }
+                        )
                     } else {
                         s.setSocketFactory(SxbLoggingSocketFactory(30_000, ::protectSocket) {
                             broadcastLog("[SXB_DEBUG] SSH_BANNER_RECEIVED")
@@ -1373,15 +1446,17 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 }
             } else {
                 Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_DIRECT_MODE")
-                broadcastLog("[SXB] Mode SSH direct")
                 if (tlsEnabled) {
-                    Log.w("SXB_DEBUG", "[SXB_DEBUG] TLS_IGNORED_SSH_DIRECT — tls=true ignoré en SSH direct")
-                    broadcastLog("[SXB_DEBUG] TLS NON appliqué en SSH direct : utilisez ssh+payload si le serveur exige TLS/WebSocket")
+                    Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_OVER_TLS_MODE sni_set=${sni.isNotBlank()}")
+                    broadcastLog("[SXB] Mode SSH over TLS (SSL Tunnel)")
+                    trace("SSH_OVER_TLS_START", "sni_set=${sni.isNotBlank()}")
+                } else {
+                    broadcastLog("[SXB] Mode SSH direct")
                 }
                 session = newSession()
                 sshSession = session
-                trace("SSH_HANDSHAKE_START", "payload=false timeout_ms=30000")
-                broadcastLog("[SXB_DEBUG] SSH_HANDSHAKE_START payload=false")
+                trace("SSH_HANDSHAKE_START", "payload=false tls=$tlsEnabled timeout_ms=30000")
+                broadcastLog("[SXB_DEBUG] SSH_HANDSHAKE_START payload=false tls=$tlsEnabled")
                 broadcastLog("[SXB] Handshake SSH en cours...")
                 session.connect(30_000)
             }

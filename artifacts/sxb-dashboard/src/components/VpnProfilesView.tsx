@@ -1058,10 +1058,12 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
           </div>
         )}
         {form.protocol === 'ssh' && form.tls && (
-          <div className="col-span-2 p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-xs text-rose-400">
-            ⛔ <strong>SSH direct + TLS est impossible</strong> : le tunnel SSH direct n'applique pas TLS
-            (cause du SSH_TIMEOUT). Choisissez « ssh+payload » si le serveur exige TLS/WebSocket,
-            ou désactivez TLS. Cette combinaison est <strong>rejetée à l'import</strong> par le backend.
+          <div className="col-span-2 p-3 bg-cyan-500/10 border border-cyan-500/20 rounded-xl text-xs text-cyan-300">
+            🔒 <strong>SSH over TLS (SSL Tunnel)</strong> : le flux SSH voyage dans une session TLS,
+            sans en-tête HTTP à injecter. C'est le mode « SSL » des clients de tunneling.
+            Renseignez le <strong>SNI</strong> si le fournisseur en impose un ;
+            à défaut, l'adresse du serveur est utilisée.
+            Si le fournisseur exige en plus un en-tête HTTP, choisissez « ssh+payload ».
           </div>
         )}
       </>}

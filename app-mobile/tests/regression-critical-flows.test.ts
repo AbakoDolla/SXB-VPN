@@ -1381,4 +1381,38 @@ describe('garde-fous contre les régressions Android', () => {
       }
     }
   });
+
+  it('prend en charge SSH encapsulé dans TLS (SSL Tunnel)', () => {
+    // Le moteur ouvrait une socket TCP brute en SSH direct et ignorait tls=true :
+    // contre un serveur qui n'accepte que du TLS sur 443, le handshake SSH
+    // partait en clair et expirait sans message exploitable. La combinaison était
+    // donc rejetée à l'import — ce qui fermait le mode « SSL » proposé par
+    // beaucoup de fournisseurs, sans en-tête HTTP à injecter.
+    assert.match(nativeService, /class SxbTlsSocketFactory/);
+    assert.match(nativeService, /SSH_OVER_TLS_MODE/);
+    // Le socket doit être protégé AVANT connect(), sinon il repasse par le TUN
+    // qu'il est censé alimenter.
+    assert.match(
+      nativeService,
+      /SxbTlsSocketFactory[\s\S]{0,1800}protectSocket\(rawSocket\)[\s\S]{0,400}rawSocket\.connect/,
+    );
+    // Une IP littérale n'est pas un nom d'hôte : l'envoyer en SNI fait rejeter
+    // le handshake par les serveurs stricts.
+    assert.match(nativeService, /isIpLiteral\(serverName\)/);
+    // L'ancien contournement ne doit pas revenir.
+    assert.doesNotMatch(nativeService, /TLS_IGNORED_SSH_DIRECT/);
+
+    // L'import ne rejette plus la combinaison…
+    const canonical = source('../server/services/canonical-config.ts');
+    assert.doesNotMatch(canonical, /Combinaison impossible/);
+    // …et la sonde la vérifie réellement : TLS puis bannière SSH dans le tunnel.
+    const probe = source('../server/services/transport-probe.ts');
+    assert.doesNotMatch(probe, /le moteur ignore TLS/);
+    assert.match(probe, /dans le tunnel TLS/);
+
+    // Le dashboard explique le mode au lieu de l'interdire.
+    const vue = source('../artifacts/sxb-dashboard/src/components/VpnProfilesView.tsx');
+    assert.match(vue, /SSH over TLS \(SSL Tunnel\)/);
+    assert.doesNotMatch(vue, /SSH direct \+ TLS est impossible/);
+  });
 });

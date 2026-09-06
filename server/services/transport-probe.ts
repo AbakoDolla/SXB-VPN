@@ -247,9 +247,6 @@ export async function probeConfig(
   if (!isWsProxy && proto !== 'ssh' && proto !== 'ssh+payload') {
     return finish('invalid', `protocol inconnu : ${proto}`);
   }
-  if (proto === 'ssh' && canonical.tls === true) {
-    return finish('invalid', 'ssh direct + tls=true : le moteur ignore TLS — corrigez le profil (ssh+payload ou tls=false) avant tout test');
-  }
 
   const host = String(canonical.host ?? '');
   const port = Number(canonical.port ?? 0);
@@ -274,7 +271,8 @@ export async function probeConfig(
 
   let sock: net.Socket | tls.TLSSocket = conn.sock;
 
-  // 3. TLS éventuel (ssh+payload TLS ; ssh direct TLS a déjà été rejeté)
+  // 3. TLS éventuel — `ssh+payload` avec TLS, et `ssh` direct encapsulé dans TLS
+  // (« SSL Tunnel »), désormais pris en charge par le moteur mobile.
   if (canonical.tls === true) {
     const up = await tlsUpgrade(conn.sock, host, canonical.sni || undefined, timeoutMs);
     if ('error' in up) {
@@ -310,19 +308,33 @@ export async function probeConfig(
       'ou path/Host incorrects');
   }
 
-  // 4a. SSH direct : bannière obligatoire
+  // 4a. SSH direct : bannière obligatoire (en clair, ou dans le tunnel TLS
+  // quand le profil active le « SSL Tunnel »).
   if (proto === 'ssh') {
     const buf = await readUpTo(sock, 512, Math.min(timeoutMs, 8000));
     const m = buf.toString('latin1').match(/SSH-[0-9A-Za-z.\-_ ]+/);
     if (m) {
-      steps.push({ event: 'SSH_BANNER_RECEIVED', ok: true, detail: m[0].slice(0, 48) });
+      steps.push({
+        event: 'SSH_BANNER_RECEIVED',
+        ok: true,
+        detail: (canonical.tls === true ? 'dans le tunnel TLS : ' : '') + m[0].slice(0, 48),
+      });
       try { sock.destroy(); } catch { /* ignore */ }
       return finish('transport_ok');
     }
-    steps.push({ event: 'SSH_BANNER_MISSING', ok: false, detail: 'aucune bannière SSH- en clair (le serveur attend probablement TLS ou WebSocket)' });
+    const dansTls = canonical.tls === true;
+    steps.push({
+      event: 'SSH_BANNER_MISSING',
+      ok: false,
+      detail: dansTls
+        ? 'handshake TLS réussi mais aucun flux SSH derrière — ce port sert probablement autre chose'
+        : 'aucune bannière SSH- en clair (le serveur attend probablement TLS ou WebSocket)',
+    });
     try { sock.destroy(); } catch { /* ignore */ }
     return finish('unreachable_from_probe',
-      'Pas de bannière SSH en clair : si le serveur exige WS/TLS, importez en ssh+payload avec le payload du fournisseur');
+      dansTls
+        ? 'TLS établi, mais rien de SSH derrière : vérifiez le port, ou passez en ssh+payload si le fournisseur impose un en-tête HTTP'
+        : 'Pas de bannière SSH en clair : activez TLS sur le profil (SSL Tunnel), ou importez en ssh+payload avec le payload du fournisseur');
   }
 
   // 4b. SSH+Payload : substitutions → envoi → 101/200 → flux SSH
