@@ -25,11 +25,11 @@ jobs:
     steps:
       # ── Checkout ──────────────────────────────────────────────────────────────
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # ── Node.js & Optimized Caching ───────────────────────────────────────────
       - name: Setup Node.js 24
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: "npm"
@@ -37,13 +37,13 @@ jobs:
 
       # ── JDK 17 & Advanced Gradle Setup ────────────────────────────────────────
       - name: Setup JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "17"
 
       - name: Setup Go 1.23
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: "1.23.x"
           cache: false
@@ -588,7 +588,7 @@ jobs:
 
       # ── Upload artifact CI ────────────────────────────────────────────────────
       - name: Upload APK (artifact CI)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sxb-vpn-android-apk-${{ github.run_number }}
           path: app-mobile/build/sxb-vpn.apk
