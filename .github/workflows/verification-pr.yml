@@ -54,26 +54,24 @@ jobs:
 
       # Une erreur de syntaxe dans un workflow ne se voit qu'au moment où
       # GitHub tente de le lancer, donc trop tard pour celui qui déploie.
+      # Python plutôt que js-yaml : pnpm n'aplatit pas les dépendances
+      # transitives, ce module n'est donc pas résolvable ici.
       - name: Syntaxe des workflows
-        working-directory: app-mobile
         run: |
-          node -e "
-          const yaml = require('js-yaml');
-          const fs = require('fs');
-          const dossier = '../.github/workflows';
-          let erreurs = 0;
-          for (const nom of fs.readdirSync(dossier)) {
-            if (!/\.ya?ml$/.test(nom)) continue;
-            try {
-              yaml.load(fs.readFileSync(dossier + '/' + nom, 'utf8'));
-              console.log('ok   ' + nom);
-            } catch (e) {
-              console.log('::error::' + nom + ' : ' + e.message);
-              erreurs++;
-            }
-          }
-          if (erreurs) process.exit(1);
-          "
+          set -euo pipefail
+          python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml
+          python3 - <<'VERIF'
+          import pathlib, sys, yaml
+          erreurs = 0
+          for fichier in sorted(pathlib.Path('.github/workflows').glob('*.y*ml')):
+              try:
+                  yaml.safe_load(fichier.read_text(encoding='utf-8'))
+                  print(f'ok   {fichier.name}')
+              except yaml.YAMLError as e:
+                  print(f'::error::{fichier.name} : {e}')
+                  erreurs += 1
+          sys.exit(1 if erreurs else 0)
+          VERIF
 
       - name: Construction du tableau de bord
         working-directory: artifacts/sxb-dashboard
