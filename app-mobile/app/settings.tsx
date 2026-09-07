@@ -24,6 +24,7 @@ import {
   areAnnouncementNotificationsEnabled,
   setAnnouncementNotificationsEnabled,
 } from "@/services/announcementNotifications";
+import { useAppLock } from "@/contexts/AppLockContext";
 
 // ── Row component ─────────────────────────────────────────────────────────────
 
@@ -73,6 +74,9 @@ function Row({
           trackColor={{ false: colors.border, true: c + "60" }}
           thumbColor={toggleValue ? c : colors.textMuted}
           disabled={disabled}
+          accessibilityLabel={label}
+          accessibilityRole="switch"
+          accessibilityState={{ checked: toggleValue, disabled }}
         />
       ) : value ? (
         <Text style={[styles.rowValue, { color: colors.textMuted }]} numberOfLines={1}>{value}</Text>
@@ -140,9 +144,9 @@ function LangModal({ visible, current, onSelect, onClose }: {
 
 // ── PIN modal ─────────────────────────────────────────────────────────────────
 
-function PinModal({ visible, mode, onSuccess, onClose }: {
+function PinModal({ visible, mode, onSubmit, onClose }: {
   visible: boolean; mode: "set" | "verify";
-  onSuccess: (pin: string) => void; onClose: () => void;
+  onSubmit: (pin: string) => Promise<string | null>; onClose: () => void;
 }) {
   const { t } = useTranslation();
   const colors = useColors();
@@ -150,45 +154,69 @@ function PinModal({ visible, mode, onSuccess, onClose }: {
   const [pin, setPin] = useState("");
   const [confirm, setConfirm] = useState("");
   const [err, setErr] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (mode === "set") {
-      if (pin.length < 4) { setErr(t("pin_lock_row")); return; }
-      if (pin !== confirm) { setErr(t("pin_lock_row")); return; }
-      onSuccess(pin);
-    } else {
-      onSuccess(pin);
+      if (!/^\d{4,8}$/.test(pin)) { setErr(t("pin_format_error")); return; }
+      if (pin !== confirm) { setErr(t("pin_mismatch_error")); return; }
     }
-    setPin(""); setConfirm(""); setErr("");
+    setSubmitting(true);
+    try {
+      const submissionError = await onSubmit(pin);
+      if (submissionError) {
+        setErr(submissionError);
+        setPin("");
+        return;
+      }
+      setPin("");
+      setConfirm("");
+      setErr("");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.modalOverlay}>
         <View style={styles.pinSheet}>
-          <Text style={styles.pinTitle}>{mode === "set" ? t("pin_lock_row") : t("pin_lock_row")}</Text>
-          {err ? <Text style={styles.pinErr}>{err}</Text> : null}
+          <Text style={styles.pinTitle}>{mode === "set" ? t("pin_setup_title") : t("pin_verify_title")}</Text>
+          <Text style={styles.pinHint}>{mode === "set" ? t("pin_setup_hint") : t("pin_verify_hint")}</Text>
+          {err ? <Text style={styles.pinErr} accessibilityRole="alert">{err}</Text> : null}
           <TextInput
             style={styles.pinInput}
-            value={pin} onChangeText={setPin}
+            value={pin} onChangeText={(value) => { setPin(value.replace(/\D/g, "")); setErr(""); }}
             keyboardType="number-pad" secureTextEntry maxLength={8}
             placeholder="••••" placeholderTextColor={colors.textMuted}
+            accessibilityLabel={t("app_lock_pin_label")}
+            autoComplete="off"
             autoFocus
           />
           {mode === "set" && (
             <TextInput
               style={styles.pinInput}
-              value={confirm} onChangeText={setConfirm}
+              value={confirm} onChangeText={(value) => { setConfirm(value.replace(/\D/g, "")); setErr(""); }}
               keyboardType="number-pad" secureTextEntry maxLength={8}
               placeholder={t("confirm") + " ••••"} placeholderTextColor={colors.textMuted}
+              accessibilityLabel={t("pin_confirm_label")}
+              autoComplete="off"
             />
           )}
           <View style={styles.pinBtns}>
-            <Pressable onPress={onClose} style={styles.pinBtnCancel}>
+            <Pressable onPress={onClose} disabled={submitting} style={styles.pinBtnCancel} accessibilityRole="button">
               <Text style={styles.pinBtnCancelText}>{t("cancel")}</Text>
             </Pressable>
-            <Pressable onPress={handleSubmit} style={styles.pinBtnOk}>
-              <Text style={styles.pinBtnOkText}>{t("confirm")}</Text>
+            <Pressable
+              onPress={() => { void handleSubmit(); }}
+              disabled={submitting}
+              style={[styles.pinBtnOk, submitting && { opacity: 0.5 }]}
+              accessibilityRole="button"
+              accessibilityState={{ busy: submitting }}
+            >
+              {submitting
+                ? <ActivityIndicator color={colors.primary} />
+                : <Text style={styles.pinBtnOkText}>{t("confirm")}</Text>}
             </Pressable>
           </View>
         </View>
@@ -210,13 +238,23 @@ export default function SettingsScreen() {
   } = useVpnContext();
   const { language, setLanguage } = useLanguageContext();
   const { themePreference, setThemePreference } = useThemeContext();
+  const {
+    preferences: appLockPreferences,
+    biometricCapability,
+    isAuthenticating: appLockAuthenticating,
+    setPin,
+    removePin,
+    enableBiometrics,
+    disableBiometrics,
+    unlockWithPin,
+    clearAppLock,
+  } = useAppLock();
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const { t } = useTranslation();
 
   // State
   const [notifPush,   setNotifPush]   = useState(true);
-  const [pinEnabled,  setPinEnabled]  = useState(false);
   const [pinModal,    setPinModal]    = useState<"set"|"verify"|null>(null);
   const [autoReconnect, setAutoReconnect] = useState(true);
   const [killSwitch,  setKillSwitch]  = useState(false);
@@ -236,10 +274,6 @@ export default function SettingsScreen() {
         await AsyncStorage.setItem("@sxb_device_id", did);
       }
       setDeviceId(did);
-
-      // Load PIN setting
-      const storedPin = await AsyncStorage.getItem("@sxb_pin");
-      setPinEnabled(!!storedPin);
 
       // auto reconnect + kill switch viennent du VpnContext (synchronisés avec le service natif)
       setAutoReconnect(arCtx);
@@ -271,25 +305,55 @@ export default function SettingsScreen() {
     if (v) {
       setPinModal("set");
     } else {
-      Alert.alert(t("pin_lock_row"), t("clear_local_data_msg"), [
-        { text: t("cancel"), style: "cancel" },
-        {
-          text: t("clear"), style: "destructive", onPress: async () => {
-            await AsyncStorage.removeItem("@sxb_pin");
-            setPinEnabled(false);
-          }
-        },
-      ]);
+      setPinModal("verify");
     }
   };
 
-  const handlePinSet = async (pin: string) => {
-    // btoa-encoded PIN for minimal obfuscation
-    const encoded = btoa(pin);
-    await AsyncStorage.setItem("@sxb_pin", encoded);
-    setPinEnabled(true);
-    setPinModal(null);
-    Alert.alert(t("pin_lock_row"), t("active"));
+  const handlePinSubmit = async (pin: string): Promise<string | null> => {
+    try {
+      if (pinModal === "set") {
+        await setPin(pin);
+        setPinModal(null);
+        Alert.alert(t("pin_lock_row"), t("pin_enabled_message"));
+        return null;
+      }
+
+      const verification = await unlockWithPin(pin);
+      if (!verification.success) {
+        return verification.reason === "throttled"
+          ? t("app_lock_pin_throttled")
+          : t("app_lock_pin_invalid");
+      }
+      if (appLockPreferences.biometricsEnabled) await disableBiometrics();
+      await removePin();
+      setPinModal(null);
+      Alert.alert(t("pin_lock_row"), t("pin_disabled_message"));
+      return null;
+    } catch {
+      return t("app_lock_storage_error");
+    }
+  };
+
+  const handleBiometricToggle = async (enabled: boolean) => {
+    if (!enabled) {
+      try {
+        await disableBiometrics();
+      } catch {
+        Alert.alert(t("error_generic"), t("app_lock_storage_error"));
+      }
+      return;
+    }
+
+    const result = await enableBiometrics(t("biometric_enable_prompt"), t("cancel"))
+      .catch(() => "authentication_failed" as const);
+    const messages = {
+      enabled: t("biometric_enabled_message"),
+      pin_required: t("biometric_pin_required"),
+      unavailable: t("biometric_unavailable"),
+      not_enrolled: t("biometric_not_enrolled"),
+      authentication_failed: t("biometric_auth_failed"),
+    } as const;
+    Alert.alert(t("biometrics_row"), messages[result]);
   };
 
   const handleRefreshConfig = async () => {
@@ -335,11 +399,16 @@ export default function SettingsScreen() {
         {
           text: t('clear'), style: "destructive", onPress: async () => {
             setClearing(true);
-            const keys = ["@sxb_vpn_config","@sxb_vpn_connected","@sxb_vpn_protocol",
-              "@sxb_connection_uri","@sxb_pin","@sxb_kill_switch","@sxb_auto_reconnect"];
-            await AsyncStorage.multiRemove(keys);
-            setClearing(false);
-            Alert.alert(t('data_cleared'), t('data_cleared_msg'));
+            try {
+              const keys = ["@sxb_vpn_config","@sxb_vpn_connected","@sxb_vpn_protocol",
+                "@sxb_connection_uri","@sxb_kill_switch","@sxb_auto_reconnect"];
+              await Promise.all([AsyncStorage.multiRemove(keys), clearAppLock()]);
+              Alert.alert(t('data_cleared'), t('data_cleared_msg'));
+            } catch {
+              Alert.alert(t("error_generic"), t("app_lock_storage_error"));
+            } finally {
+              setClearing(false);
+            }
           }
         },
       ]
@@ -484,15 +553,19 @@ export default function SettingsScreen() {
         {/* Security */}
         <Section title="SÉCURITÉ">
           <Row
-            icon="lock-closed-outline" label="Verrouillage par code PIN"
-            toggle toggleValue={pinEnabled} onToggle={handlePinToggle}
+            icon="lock-closed-outline" label={t("pin_lock_row")}
+            toggle toggleValue={appLockPreferences.pinEnabled} onToggle={handlePinToggle}
             color={colors.warning}
           />
           <View style={styles.divider} />
           <Row
-            icon="finger-print-outline" label="Authentification biométrique"
-            toggle toggleValue={false} onToggle={() => Alert.alert("Bientôt disponible", "La biométrie sera activée dans la prochaine version.")}
-            color={colors.warning} disabled
+            icon="finger-print-outline" label={t("biometrics_row")}
+            toggle toggleValue={appLockPreferences.biometricsEnabled}
+            onToggle={(value) => { void handleBiometricToggle(value); }}
+            color={colors.warning}
+            disabled={appLockAuthenticating}
+            badge={!biometricCapability.hasHardware || !biometricCapability.isEnrolled ? t("unavailable_badge") : undefined}
+            badgeColor={colors.textMuted}
           />
           <View style={styles.divider} />
           <Row
@@ -646,7 +719,7 @@ export default function SettingsScreen() {
       {pinModal && (
         <PinModal
           visible={true} mode={pinModal}
-          onSuccess={handlePinSet}
+          onSubmit={handlePinSubmit}
           onClose={() => setPinModal(null)}
         />
       )}
@@ -703,6 +776,7 @@ function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useCol
   // PIN modal
   pinSheet: { backgroundColor: colors.bgCard, borderRadius: 20, padding: 24, borderWidth: 1, borderColor: colors.border, gap: 14 },
   pinTitle: { fontSize: 16, fontWeight: "700", color: colors.textPrimary, fontFamily: "Inter_700Bold", textAlign: "center" },
+  pinHint: { color: colors.textSecondary, fontSize: 12, lineHeight: 17, fontFamily: "Inter_400Regular", textAlign: "center" },
   pinErr: { color: colors.disconnected, fontSize: 12, fontFamily: "Inter_400Regular", textAlign: "center" },
   pinInput: { backgroundColor: colors.bgInput, borderWidth: 1, borderColor: colors.border, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 16, color: colors.textPrimary, fontSize: 20, fontFamily: "Inter_700Bold", textAlign: "center", letterSpacing: 8 },
   pinBtns: { flexDirection: "row", gap: 10, marginTop: 4 },

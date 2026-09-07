@@ -14,6 +14,8 @@ import { VpnProvider } from "@/contexts/VpnContext";
 import { StatusBar } from "expo-status-bar";
 import { syncAnnouncementNotifications } from "@/services/announcementNotifications";
 import { useColors } from "@/hooks/useColors";
+import { AppLockProvider } from "@/contexts/AppLockContext";
+import { AppLockGate } from "@/components/AppLockGate";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -118,7 +120,11 @@ function ThemedAppShell() {
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.bg }}>
       <VpnProvider>
-        <RootLayoutNav />
+        <AppLockProvider>
+          <AppLockGate>
+            <RootLayoutNav />
+          </AppLockGate>
+        </AppLockProvider>
       </VpnProvider>
     </GestureHandlerRootView>
   );

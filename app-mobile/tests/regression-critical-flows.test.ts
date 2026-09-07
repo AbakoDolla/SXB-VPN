@@ -13,6 +13,12 @@ import { isCompleteOfflineConfig, validateVpnConfig, detectProtocolFromFields } 
 import { parseVlessUri, vlessUriToJson } from '../services/vlessUri';
 import ProtocolDetector from '../services/protocolDetector';
 import { deriveQuota } from '../services/quotaState';
+import {
+  APP_LOCK_DELAY_MS,
+  constantTimeEqual,
+  isValidPin,
+  shouldLockAfterBackground,
+} from '../services/appLockPolicy';
 
 const XRAY_VLESS_D2L = {
   remarks: 'BYPASS',
@@ -80,6 +86,96 @@ describe('chiffrement de la configuration VPN', () => {
       () => decryptAes256Gcm(key, iv, encrypted.ciphertext, alteredTag),
       /authentification échouée/,
     );
+  });
+});
+
+describe('verrouillage local biométrique et PIN', () => {
+  it('valide strictement un PIN numérique de 4 à 8 chiffres', () => {
+    assert.equal(isValidPin('1234'), true);
+    assert.equal(isValidPin('12345678'), true);
+    assert.equal(isValidPin('123'), false);
+    assert.equal(isValidPin('123456789'), false);
+    assert.equal(isValidPin('12a4'), false);
+  });
+
+  it('ne verrouille le retour au premier plan qu’après le délai prévu', () => {
+    const backgroundedAt = 1_000;
+    assert.equal(
+      shouldLockAfterBackground(backgroundedAt, backgroundedAt + APP_LOCK_DELAY_MS - 1),
+      false,
+    );
+    assert.equal(
+      shouldLockAfterBackground(backgroundedAt, backgroundedAt + APP_LOCK_DELAY_MS),
+      true,
+    );
+    assert.equal(shouldLockAfterBackground(null, Date.now()), false);
+  });
+
+  it('compare les empreintes sans sortie anticipée liée à leur contenu', () => {
+    assert.equal(constantTimeEqual('abcdef', 'abcdef'), true);
+    assert.equal(constantTimeEqual('abcdef', 'abcdeg'), false);
+    assert.equal(constantTimeEqual('short', 'longer'), false);
+  });
+
+  it('stocke seulement une empreinte salée du PIN dans SecureStore', () => {
+    const stockage = source('services/appLock.ts');
+    const reglages = source('app/settings.tsx');
+
+    assert.match(stockage, /Crypto\.getRandomBytesAsync\(32\)/);
+    assert.match(stockage, /Crypto\.CryptoDigestAlgorithm\.SHA256/);
+    assert.match(stockage, /SecureStore\.setItemAsync\(PIN_CREDENTIAL_KEY/);
+    assert.match(stockage, /SecureStore\.WHEN_UNLOCKED_THIS_DEVICE_ONLY/);
+    assert.match(stockage, /constantTimeEqual/);
+    assert.match(stockage, /decodeLegacyPin/);
+    assert.match(stockage, /await storePin\(decodedPin\)/);
+    assert.match(stockage, /await AsyncStorage\.removeItem\(LEGACY_PIN_KEY\)/);
+    assert.doesNotMatch(stockage, /AsyncStorage\.setItem\(LEGACY_PIN_KEY/);
+    assert.doesNotMatch(reglages, /btoa\(pin\)/);
+    assert.doesNotMatch(reglages, /AsyncStorage\.setItem\(["']@sxb_pin/);
+  });
+
+  it('exige capacité, enrôlement et succès biométrique avant activation', () => {
+    const stockage = source('services/appLock.ts');
+    const contexte = source('contexts/AppLockContext.tsx');
+
+    assert.match(stockage, /LocalAuthentication\.hasHardwareAsync\(\)/);
+    assert.match(stockage, /LocalAuthentication\.isEnrolledAsync\(\)/);
+    assert.match(stockage, /LocalAuthentication\.supportedAuthenticationTypesAsync\(\)/);
+    assert.match(stockage, /disableDeviceFallback: true/);
+    assert.match(stockage, /biometricsSecurityLevel: "strong"/);
+    assert.match(contexte, /if \(!preferencesRef\.current\.pinEnabled\) return "pin_required"/);
+    assert.match(contexte, /if \(!capability\.hasHardware\) return "unavailable"/);
+    assert.match(contexte, /if \(!capability\.isEnrolled\) return "not_enrolled"/);
+    assert.match(contexte, /if \(!result\.success\) return "authentication_failed"/);
+  });
+
+  it('verrouille uniquement l’interface et laisse le tunnel VPN monté', () => {
+    const contexte = source('contexts/AppLockContext.tsx');
+    const barriere = source('components/AppLockGate.tsx');
+    const racine = source('app/_layout.tsx');
+    const verrou = `${contexte}\n${barriere}`;
+
+    assert.match(contexte, /AppState\.addEventListener\("change"/);
+    assert.match(contexte, /shouldLockAfterBackground/);
+    assert.match(contexte, /setTimeout\(\(\) =>/);
+    assert.match(racine, /<VpnProvider>[\s\S]*<AppLockProvider>[\s\S]*<AppLockGate>/);
+    assert.match(barriere, /StyleSheet\.absoluteFillObject/);
+    assert.match(barriere, /importantForAccessibility=\{gateVisible \? "no-hide-descendants"/);
+    assert.match(barriere, /accessibilityElementsHidden=\{gateVisible\}/);
+    assert.doesNotMatch(verrou, /SxbVpnNative|VpnService|disconnect\(|stopVpn|stopService/);
+  });
+
+  it('épingle le module natif compatible Expo SDK 54 et son plugin', () => {
+    const packageJson = JSON.parse(source('package.json')) as {
+      dependencies: Record<string, string>;
+    };
+    const packageLock = source('package-lock.json');
+    const appJson = source('app.json');
+
+    assert.equal(packageJson.dependencies['expo-local-authentication'], '~17.0.9');
+    assert.match(packageLock, /"node_modules\/expo-local-authentication"/);
+    assert.match(packageLock, /"version": "17\.0\.9"/);
+    assert.match(appJson, /"expo-local-authentication"/);
   });
 });
 

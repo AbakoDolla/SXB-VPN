@@ -47,6 +47,12 @@
     "plugins": [
       "expo-router",
       "expo-font",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Autoriser SXB VPN à utiliser Face ID pour déverrouiller l’application."
+        }
+      ],
       "expo-web-browser",
       "./plugins/withSxbVpn"
     ],
