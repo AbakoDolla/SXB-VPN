@@ -1,5 +1,5 @@
 import React, { useEffect } from "react";
-import { PermissionsAndroid, Platform } from "react-native";
+import { AppState, PermissionsAndroid, Platform } from "react-native";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -13,6 +13,7 @@ import { AuthProvider, useAuthContext } from "@/contexts/AuthContext";
 import { VpnProvider } from "@/contexts/VpnContext";
 import { StatusBar } from "expo-status-bar";
 import { syncAnnouncementNotifications } from "@/services/announcementNotifications";
+import { useColors } from "@/hooks/useColors";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -27,9 +28,36 @@ function AnnouncementNotificationSync() {
 
   useEffect(() => {
     if (!isAuthenticated) return;
-    void syncAnnouncementNotifications();
-    const timer = setInterval(() => { void syncAnnouncementNotifications(); }, 120_000);
-    return () => clearInterval(timer);
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const start = () => {
+      if (!timer) {
+        timer = setInterval(() => { void syncAnnouncementNotifications(); }, 15 * 60_000);
+      }
+    };
+    const stop = () => {
+      if (timer) clearInterval(timer);
+      timer = null;
+    };
+    if (AppState.currentState === "active") {
+      void syncAnnouncementNotifications();
+      start();
+    }
+    // Deux minutes réveillaient le réseau 720 fois par jour. Les annonces ne
+    // sont pas un transport push : quinze minutes au premier plan, plus une
+    // synchronisation immédiate à chaque retour dans l'app, donnent la même
+    // expérience sans coût de veille.
+    const foregroundSub = AppState.addEventListener("change", (next) => {
+      if (next === "active") {
+        void syncAnnouncementNotifications();
+        start();
+      } else {
+        stop();
+      }
+    });
+    return () => {
+      stop();
+      foregroundSub.remove();
+    };
   }, [isAuthenticated]);
 
   return null;
@@ -85,6 +113,17 @@ function RootLayoutNav() {
   );
 }
 
+function ThemedAppShell() {
+  const colors = useColors();
+  return (
+    <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.bg }}>
+      <VpnProvider>
+        <RootLayoutNav />
+      </VpnProvider>
+    </GestureHandlerRootView>
+  );
+}
+
 export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({
     Inter_400Regular: require("../assets/fonts/Inter_400Regular.ttf"),
@@ -108,11 +147,7 @@ export default function RootLayout() {
           <LanguageProvider>
             <ThemeProvider>
               <AuthProvider>
-                <GestureHandlerRootView style={{ flex: 1, backgroundColor: "#07101F" }}>
-                  <VpnProvider>
-                    <RootLayoutNav />
-                  </VpnProvider>
-                </GestureHandlerRootView>
+                <ThemedAppShell />
               </AuthProvider>
             </ThemeProvider>
           </LanguageProvider>

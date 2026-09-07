@@ -14,10 +14,8 @@ import apiClient from "@/services/apiClient";
 import { useAuthContext } from "@/contexts/AuthContext";
 import { useVpnContext, formatBytes, formatSpeed } from "@/contexts/VpnContext";
 import { deriveQuota } from "@/services/quotaState";
-import Colors from "@/constants/colors";
 import { useColors } from "@/hooks/useColors";
 import UpdatePrompt from "@/components/UpdatePrompt";
-import InteractiveWalkthrough from "@/components/InteractiveWalkthrough";
 import AnnouncementModal from "@/components/AnnouncementModal";
 import { useTranslation } from "@/localization";
 import type { VpnConnection } from "@/types/api";
@@ -34,6 +32,7 @@ import {
   StatTile,
   Surface,
 } from "@/components/ui/Primitives";
+import { useConnectionDuration } from "@/hooks/useConnectionDuration";
 
 const LOGO = require("../../assets/images/icon.png");
 
@@ -78,12 +77,6 @@ function VpnConnectionCard({ conn, isActive }: { conn: VpnConnection; isActive: 
   const isRevoked  = conn.status === "revoked";
   const isSuspended = conn.status === "suspended";
 
-  const statusColor = isExpired || isExhausted || isRevoked || isSuspended
-    ? Colors.disconnected
-    : isActive
-    ? Colors.connected
-    : Colors.primary;
-
   const totalBytes = conn.quota.totalBytes || (conn.quota.totalGB * 1024 ** 3);
   const usedBytes = conn.quota.usedBytes || (conn.quota.usedGB * 1024 ** 3);
   const remainingBytes = conn.quota.totalBytes !== undefined ? Math.max(0, totalBytes - usedBytes) : (conn.quota.remainingGB * 1024 ** 3);
@@ -92,6 +85,11 @@ function VpnConnectionCard({ conn, isActive }: { conn: VpnConnection; isActive: 
 
   const { t } = useTranslation();
   const colors = useColors();
+  const statusColor = isExpired || isExhausted || isRevoked || isSuspended
+    ? colors.disconnected
+    : isActive
+    ? colors.connected
+    : colors.primary;
   const statusLabel = isExhausted ? t('friendly_quota_exhausted') : isExpired ? t('expired') : isRevoked ? t('connection_revoked') : isSuspended ? t('suspended_status') : isActive ? t('active') : t('active');
 
   return (
@@ -145,28 +143,11 @@ export default function HomeScreen() {
     deleteConfig,
   } = useVpnContext();
   const { t } = useTranslation();
-  const [walkthroughVisible, setWalkthroughVisible] = useState(false);
-
-  useEffect(() => {
-    const checkWalkthrough = async () => {
-      const done = await AsyncStorage.getItem("@walkthrough_done");
-      if (!done && accountState?.state === 'ready') {
-        // Attendre un peu pour que l'écran soit bien chargé
-        setTimeout(() => setWalkthroughVisible(true), 1500);
-      }
-    };
-    checkWalkthrough();
-  }, [accountState]);
-
-  const finishWalkthrough = async () => {
-    await AsyncStorage.setItem("@walkthrough_done", "true");
-    setWalkthroughVisible(false);
-  };
-
   const activeQuotaSnapshot = quotaData && (!activeConfigId || quotaData.configId === activeConfigId)
     ? quotaData
     : (activeConnection as any)?.quota || null;
   const derivedQuota = deriveQuota(activeQuotaSnapshot || (accountState as any), traffic as any, isConnected);
+  const connectedSeconds = useConnectionDuration(isConnected, traffic.connectedSeconds);
 
   useEffect(() => {
     if (Platform.OS === 'android' && Platform.Version >= 33) {
@@ -175,7 +156,6 @@ export default function HomeScreen() {
   }, []);
 
   const [configPickerVisible, setConfigPickerVisible] = useState(false);
-  const [timer, setTimer] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [ping, setPing] = useState<number | null>(null);
   const [lastConnection, setLastConnection] = useState<string>("—");
@@ -276,16 +256,6 @@ export default function HomeScreen() {
   // Les animations du bouton (anneaux, respiration, appui) sont désormais
   // encapsulées dans `PowerButton`. L'écran ne conserve que l'état métier.
   const btnState = getButtonState(accountState, isConnected, isConnecting, hasValidConfig, activeConnection, derivedQuota.isExhausted);
-
-  useEffect(() => {
-    let interval: ReturnType<typeof setInterval> | null = null;
-    if (isConnected) {
-      interval = setInterval(() => setTimer((t) => t + 1), 1000);
-    } else {
-      setTimer(0);
-    }
-    return () => { if (interval) clearInterval(interval); };
-  }, [isConnected]);
 
   const formatTimer = (s: number) => {
     const h = Math.floor(s / 3600).toString().padStart(2, "0");
@@ -474,7 +444,10 @@ export default function HomeScreen() {
             tone={btnColor}
             icon={btnIcon}
             caption={heroCaption}
-            timer={isConnected ? formatTimer(timer) : null}
+            // Le service natif possède l'horloge autoritaire. Cette durée
+            // continue pendant que l'app est en arrière-plan ou que React est
+            // recréé ; l'ancien compteur JS repartait alors de 00:00:00.
+            timer={isConnected ? formatTimer(connectedSeconds) : null}
             active={isConnected}
             busy={isConnecting}
             onPress={handleVpnButton}
@@ -746,10 +719,6 @@ export default function HomeScreen() {
         onDelete={deleteConfig}
       />
 
-      <InteractiveWalkthrough 
-        visible={walkthroughVisible} 
-        onFinish={finishWalkthrough} 
-      />
     </LinearGradient>
   );
 }

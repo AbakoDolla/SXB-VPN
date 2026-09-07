@@ -779,15 +779,27 @@ class SxbVpnService : VpnService(), PlatformInterface {
          * et continue de courir en veille, contrairement à `currentTimeMillis()`.
          */
         @Volatile private var connectedSinceMs: Long = 0L
+        /** Équivalent horloge murale, stable pour le chronomètre Android. */
+        @Volatile private var connectedSinceWallClockMs: Long = 0L
 
         fun getCurrentState() = currentState
         private fun setCurrentState(s: String) {
+            if (currentState == "connected" && s != "connected") {
+                // La boucle des débits dort jusqu'à 15 s : l'interrompre évite
+                // qu'un dernier rafraîchissement « connecté » arrive après la
+                // déconnexion.
+                instance?.notifThread?.interrupt()
+            }
             if (s == "connected") {
                 // Ne pas réarmer sur une promotion répétée : la session doit
                 // rester continue tant que le tunnel n'est pas retombé.
-                if (connectedSinceMs == 0L) connectedSinceMs = SystemClock.elapsedRealtime()
+                if (connectedSinceMs == 0L) {
+                    connectedSinceMs = SystemClock.elapsedRealtime()
+                    connectedSinceWallClockMs = System.currentTimeMillis()
+                }
             } else if (s == "disconnected" || s == "connecting") {
                 connectedSinceMs = 0L
+                connectedSinceWallClockMs = 0L
             }
             currentState = s
         }
@@ -797,6 +809,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
             val since = connectedSinceMs
             return if (since == 0L) 0L else (SystemClock.elapsedRealtime() - since) / 1000L
         }
+
+        fun getConnectedSinceWallClockMs(): Long = connectedSinceWallClockMs
 
         /** `Libbox.setup()` ne doit être appelé qu'une seule fois par process. */
         @Volatile private var libboxInitialized = false
@@ -4031,6 +4045,14 @@ class SxbVpnService : VpnService(), PlatformInterface {
     }
 
     private fun buildNotification(text: String): Notification {
+        val connected = currentState == "connected"
+        val stateLabel = when (currentState) {
+            "connected" -> "Protection active"
+            "handshaking" -> "Sécurisation en cours"
+            "connecting", "retrying" -> "Connexion en cours"
+            "error" -> "Connexion interrompue"
+            else -> "Service VPN"
+        }
         val open = PendingIntent.getActivity(
             this, 0,
             packageManager.getLaunchIntentForPackage(packageName),
@@ -4047,12 +4069,22 @@ class SxbVpnService : VpnService(), PlatformInterface {
             @Suppress("DEPRECATION") Notification.Builder(this)
 
         return b
-            .setContentTitle("SXB VPN")
+            .setContentTitle("SXB VPN • $stateLabel")
             .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setColor(0xFF0AAE8FL.toInt())
+            .setCategory(Notification.CATEGORY_SERVICE)
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
+            .setSubText(if (connected) "Tunnel sécurisé" else "SXB VPN")
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            // Android anime lui-même ce chronomètre, sans réveiller notre
+            // thread toutes les secondes. La valeur de départ vient de la même
+            // horloge monotone que l'accueil React.
+            .setShowWhen(connected)
+            .setWhen(if (connected) getConnectedSinceWallClockMs() else 0L)
+            .setUsesChronometer(connected)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Déconnecter", stop)
             .build()
     }
@@ -4073,24 +4105,15 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     // l'application est fermée : elle doit porter l'état du
                     // tunnel et sa durée, pas seulement des débits.
                     updateNotification(
-                        "🟢 Connecté · ${formatUptime(getConnectedSeconds())} — ↑$upKB ↓$downKB",
+                        "↑ $upKB · ↓ $downKB",
                     )
-                    Thread.sleep(5_000)
+                    // Le chronomètre système se met à jour tout seul. Ce réveil
+                    // ne sert qu'aux débits ; 15 s est assez réactif pour une
+                    // notification et divise par trois les réveils CPU.
+                    Thread.sleep(15_000)
                 } catch (_: InterruptedException) { break }
             }
         }, "SXB-NotifUpdater").apply { isDaemon = true; start() }
-    }
-
-    /** Durée lisible pour la notification : 5 s → « 5s », 3 h → « 3h 04m ». */
-    private fun formatUptime(seconds: Long): String {
-        val h = seconds / 3600
-        val m = (seconds % 3600) / 60
-        val s = seconds % 60
-        return when {
-            h > 0 -> String.format(Locale.US, "%dh %02dm", h, m)
-            m > 0 -> String.format(Locale.US, "%dm %02ds", m, s)
-            else  -> "${s}s"
-        }
     }
 
     private fun formatSpeed(bytesPerSec: Long): String {

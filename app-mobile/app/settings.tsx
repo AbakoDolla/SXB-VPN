@@ -2,7 +2,7 @@
  * SettingsScreen — SXB VPN Mobile
  * Paramètres enrichis : compte, sécurité fonctionnelle, langue, VPN, données
  */
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
 import {
   Alert, Pressable, ScrollView, StyleSheet,
   Switch, Text, View, ActivityIndicator, TextInput, Modal,
@@ -17,10 +17,13 @@ import { useAuthContext } from "@/contexts/AuthContext";
 import { useVpnContext } from "@/contexts/VpnContext";
 import { useLanguageContext } from "@/contexts/LanguageContext";
 import { useTranslation } from "@/localization";
-import Colors from "@/constants/colors";
 import { useColors } from "@/hooks/useColors";
 import { useThemeContext } from "@/contexts/ThemeContext";
 import { getDiagnosticLogging, setDiagnosticLogging } from "@/modules/expo-sxb-vpn/src";
+import {
+  areAnnouncementNotificationsEnabled,
+  setAnnouncementNotificationsEnabled,
+} from "@/services/announcementNotifications";
 
 // ── Row component ─────────────────────────────────────────────────────────────
 
@@ -44,6 +47,7 @@ function Row({
   onToggle, onPress, color, destructive, badge, badgeColor, disabled,
 }: RowProps) {
   const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const c = destructive ? colors.disconnected : (color || colors.primary);
   return (
     <Pressable
@@ -58,7 +62,7 @@ function Row({
         {label}
       </Text>
       {badge && (
-        <View style={[styles.badge, { backgroundColor: (badgeColor || Colors.primary) + "20", borderColor: (badgeColor || Colors.primary) + "40" }]}>
+        <View style={[styles.badge, { backgroundColor: (badgeColor || colors.primary) + "20", borderColor: (badgeColor || colors.primary) + "40" }]}>
           <Text style={[styles.badgeText, { color: badgeColor || colors.primary }]}>{badge}</Text>
         </View>
       )}
@@ -81,6 +85,7 @@ function Row({
 
 function Section({ title, children, subtitle }: { title: string; children: React.ReactNode; subtitle?: string }) {
   const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   return (
     <View style={styles.section}>
       <View style={styles.sectionHeader}>
@@ -104,6 +109,8 @@ function LangModal({ visible, current, onSelect, onClose }: {
   onSelect: (code: string) => void; onClose: () => void;
 }) {
   const { t } = useTranslation();
+  const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.modalOverlay} onPress={onClose}>
@@ -116,8 +123,8 @@ function LangModal({ visible, current, onSelect, onClose }: {
               style={[styles.langRow, current === l.code && styles.langRowActive]}
             >
               <Text style={styles.langFlag}>{l.flag}</Text>
-              <Text style={[styles.langLabel, current === l.code && { color: Colors.primary }]}>{l.label}</Text>
-              {current === l.code && <Ionicons name="checkmark" size={18} color={Colors.primary} />}
+              <Text style={[styles.langLabel, current === l.code && { color: colors.primary }]}>{l.label}</Text>
+              {current === l.code && <Ionicons name="checkmark" size={18} color={colors.primary} />}
             </Pressable>
           ))}
         </View>
@@ -138,6 +145,8 @@ function PinModal({ visible, mode, onSuccess, onClose }: {
   onSuccess: (pin: string) => void; onClose: () => void;
 }) {
   const { t } = useTranslation();
+  const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const [pin, setPin] = useState("");
   const [confirm, setConfirm] = useState("");
   const [err, setErr] = useState("");
@@ -163,7 +172,7 @@ function PinModal({ visible, mode, onSuccess, onClose }: {
             style={styles.pinInput}
             value={pin} onChangeText={setPin}
             keyboardType="number-pad" secureTextEntry maxLength={8}
-            placeholder="••••" placeholderTextColor={Colors.textMuted}
+            placeholder="••••" placeholderTextColor={colors.textMuted}
             autoFocus
           />
           {mode === "set" && (
@@ -171,7 +180,7 @@ function PinModal({ visible, mode, onSuccess, onClose }: {
               style={styles.pinInput}
               value={confirm} onChangeText={setConfirm}
               keyboardType="number-pad" secureTextEntry maxLength={8}
-              placeholder={t("confirm") + " ••••"} placeholderTextColor={Colors.textMuted}
+              placeholder={t("confirm") + " ••••"} placeholderTextColor={colors.textMuted}
             />
           )}
           <View style={styles.pinBtns}>
@@ -202,6 +211,7 @@ export default function SettingsScreen() {
   const { language, setLanguage } = useLanguageContext();
   const { themePreference, setThemePreference } = useThemeContext();
   const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const { t } = useTranslation();
 
   // State
@@ -243,8 +253,19 @@ export default function SettingsScreen() {
       const pairs = await AsyncStorage.multiGet(keys as string[]);
       pairs.forEach(([_, v]) => { total += (v?.length || 0); });
       setStorageSize(total < 1024 ? `${total} o` : `${(total/1024).toFixed(1)} ko`);
+      setNotifPush(await areAnnouncementNotificationsEnabled());
     })();
   }, []);
+
+  const handleNotifications = async (enabled: boolean) => {
+    setNotifPush(enabled);
+    try {
+      await setAnnouncementNotificationsEnabled(enabled);
+    } catch {
+      setNotifPush(!enabled);
+      Alert.alert(t("network_error"));
+    }
+  };
 
   const handlePinToggle = (v: boolean) => {
     if (v) {
@@ -344,11 +365,11 @@ export default function SettingsScreen() {
   // Account state display
   const acctStatus = (accountState as any)?.state;
   const acctBadge: { text: string; color: string } = (({
-    ready: { text: t('active'), color: Colors.connected },
-    no_package: { text: t('status_no_package'), color: Colors.warning },
-    expired: { text: t('expired'), color: Colors.disconnected },
-    suspended: { text: t('suspended_status'), color: Colors.disconnected },
-  } as Record<string, { text: string; color: string }>)[acctStatus || "no_package"]) || { text: t('status_unknown'), color: Colors.textMuted };
+    ready: { text: t('active'), color: colors.connected },
+    no_package: { text: t('status_no_package'), color: colors.warning },
+    expired: { text: t('expired'), color: colors.disconnected },
+    suspended: { text: t('suspended_status'), color: colors.disconnected },
+  } as Record<string, { text: string; color: string }>)[acctStatus || "no_package"]) || { text: t('status_unknown'), color: colors.textMuted };
 
   const effectiveExpiry = derivedQuota.expiryDate || activeConnection?.expiresAt || accountState?.expireAt || null;
   const formatExpiry = () => {
@@ -370,7 +391,7 @@ export default function SettingsScreen() {
         {/* Header */}
         <View style={styles.pageHeader}>
           <Pressable onPress={() => router.back()} style={styles.backBtn}>
-            <Ionicons name="arrow-back" size={20} color={Colors.textSecondary} />
+            <Ionicons name="arrow-back" size={20} color={colors.textSecondary} />
           </Pressable>
           <Text style={[styles.pageTitle, { color: colors.textPrimary }]}>{t("settings")}</Text>
           <View style={{ width: 36 }} />
@@ -391,19 +412,19 @@ export default function SettingsScreen() {
             </View>
           </View>
           <View style={styles.accountDotWrap}>
-            <View style={[styles.accountDot, { backgroundColor: isConnected ? Colors.connected : Colors.disconnected }]} />
+            <View style={[styles.accountDot, { backgroundColor: isConnected ? colors.connected : colors.disconnected }]} />
           </View>
         </View>
 
         {/* Subscription info */}
         <Section title="FORFAIT" subtitle={effectiveExpiry ? `Expire le ${formatExpiry()}` : undefined}>
-          <Row icon="data-usage-outline" label="Quota utilisé" value={quotaUsed} color={Colors.primary} />
+          <Row icon="data-usage-outline" label="Quota utilisé" value={quotaUsed} color={colors.primary} />
           <View style={styles.divider} />
-          <Row icon="calendar-outline" label="Expiration" value={formatExpiry()} color={Colors.warning} />
+          <Row icon="calendar-outline" label="Expiration" value={formatExpiry()} color={colors.warning} />
           <View style={styles.divider} />
           <Row
             icon="gift-outline" label="Activer un forfait"
-            onPress={() => router.push("/plan")} color={Colors.purple}
+            onPress={() => router.push("/plan")} color={colors.purple}
           />
         </Section>
 
@@ -411,35 +432,35 @@ export default function SettingsScreen() {
         <Section title="VPN">
           <Row
             icon="globe-outline" label="Protocole actif"
-            value={selectedProtocol || "AUTO"} color={Colors.primary}
+            value={selectedProtocol || "AUTO"} color={colors.primary}
           />
           {/* V2Ray JSON editor removed — SXB VPN is a pure SaaS client; server config is managed by backend */}
           <View style={styles.divider} />
           <Row
             icon="refresh-outline" label="Reconnexion automatique"
             toggle toggleValue={autoReconnect} onToggle={handleAutoReconnect}
-            color={Colors.primary}
+            color={colors.primary}
           />
           <View style={styles.divider} />
           <Row
             icon="shield-outline" label="Kill Switch"
             toggle toggleValue={killSwitch} onToggle={handleKillSwitch}
-            color={Colors.warning}
-            badge={killSwitch ? "ON" : undefined} badgeColor={Colors.warning}
+            color={colors.warning}
+            badge={killSwitch ? "ON" : undefined} badgeColor={colors.warning}
           />
           <View style={styles.divider} />
           <Row
             icon="cloud-download-outline"
             label={refreshingConfig ? "Synchronisation..." : "Actualiser la configuration"}
             onPress={handleRefreshConfig}
-            color={Colors.primary}
+            color={colors.primary}
             disabled={refreshingConfig}
             badge={refreshingConfig ? "…" : undefined}
           />
           <View style={styles.divider} />
           <Row
             icon="pulse-outline" label={t('diagnostic_title')}
-            onPress={() => router.push("/diagnostics")} color={Colors.primary}
+            onPress={() => router.push("/diagnostics")} color={colors.primary}
             badge={logs.length > 0 ? String(logs.length) : undefined}
           />
         </Section>
@@ -451,9 +472,9 @@ export default function SettingsScreen() {
             toggle
             toggleValue={diagnosticLogging}
             onToggle={handleDiagnosticLogging}
-            color={Colors.warning}
+            color={colors.warning}
             badge={diagnosticLogging ? t('dev_badge') : undefined}
-            badgeColor={Colors.warning}
+            badgeColor={colors.warning}
           />
           {diagnosticLogging && (
             <Text style={styles.sectionSubtitle}>{t('diagnostic_warning')}</Text>
@@ -465,24 +486,50 @@ export default function SettingsScreen() {
           <Row
             icon="lock-closed-outline" label="Verrouillage par code PIN"
             toggle toggleValue={pinEnabled} onToggle={handlePinToggle}
-            color={Colors.warning}
+            color={colors.warning}
           />
           <View style={styles.divider} />
           <Row
             icon="finger-print-outline" label="Authentification biométrique"
             toggle toggleValue={false} onToggle={() => Alert.alert("Bientôt disponible", "La biométrie sera activée dans la prochaine version.")}
-            color={Colors.warning} disabled
+            color={colors.warning} disabled
           />
           <View style={styles.divider} />
           <Row
             icon="phone-portrait-outline" label="ID Appareil"
             value={deviceId ? deviceId.slice(0,14) + "…" : "…"}
-            color={Colors.textMuted}
+            color={colors.textMuted}
           />
         </Section>
 
         {/* Appearance */}
         <Section title="APPARENCE & LANGUE">
+          {/* Aperçu réel des deux surfaces principales : le choix ne ressemble
+              plus à trois boutons abstraits, l'utilisateur voit immédiatement
+              la hiérarchie, le contraste et la couleur d'état. */}
+          <View style={styles.themePreview}>
+            <View style={styles.themePreviewCopy}>
+              <Text style={styles.themePreviewTitle}>{t("theme_light")} / {t("theme_dark")}</Text>
+              <Text style={styles.themePreviewText}>{themePreference === "system" ? t("theme_system") : themePreference === "light" ? t("theme_light") : t("theme_dark")}</Text>
+            </View>
+            <View style={styles.themePreviewCards}>
+              <View style={[styles.themeMiniCard, { backgroundColor: "#FFFFFF", borderColor: "#D7E2EE" }]}>
+                <View style={{ width: 13, height: 13, borderRadius: 5, backgroundColor: "#1769E8" }} />
+                <View style={{ flex: 1, gap: 4 }}>
+                  <View style={{ width: "72%", height: 5, borderRadius: 4, backgroundColor: "#102033" }} />
+                  <View style={{ width: "50%", height: 4, borderRadius: 4, backgroundColor: "#71869D" }} />
+                </View>
+              </View>
+              <View style={[styles.themeMiniCard, { backgroundColor: "#0C1526", borderColor: "#294059" }]}>
+                <View style={{ width: 13, height: 13, borderRadius: 5, backgroundColor: "#41D8FF" }} />
+                <View style={{ flex: 1, gap: 4 }}>
+                  <View style={{ width: "72%", height: 5, borderRadius: 4, backgroundColor: "#F6FAFF" }} />
+                  <View style={{ width: "50%", height: 4, borderRadius: 4, backgroundColor: "#6B819F" }} />
+                </View>
+              </View>
+            </View>
+          </View>
+          <View style={styles.divider} />
           <View style={styles.themePicker}>
             {([
               ["system", "phone-portrait-outline", t("theme_system")],
@@ -510,19 +557,21 @@ export default function SettingsScreen() {
             value={`${currentLang.flag} ${currentLang.label}`}
             onPress={() => setLangModal(true)} color={colors.primary}
           />
+          <View style={styles.divider} />
+          <Row
+            icon="school-outline"
+            label={t("replay_tutorial")}
+            value={t("replay_tutorial_hint")}
+            onPress={() => router.push({ pathname: "/onboarding", params: { replay: "1" } })}
+            color={colors.purple}
+          />
         </Section>
 
         {/* Notifications */}
         <Section title="NOTIFICATIONS">
           <Row
-            icon="notifications-outline" label="Notifications push"
-            toggle toggleValue={notifPush} onToggle={setNotifPush}
-          />
-          <View style={styles.divider} />
-          <Row
-            icon="warning-outline" label="Alertes expiration forfait"
-            toggle toggleValue={notifPush} onToggle={setNotifPush}
-            color={Colors.warning}
+            icon="notifications-outline" label={t("notification_alerts")}
+            toggle toggleValue={notifPush} onToggle={handleNotifications}
           />
         </Section>
 
@@ -530,7 +579,7 @@ export default function SettingsScreen() {
         <Section title="DONNÉES LOCALES">
           <Row
             icon="folder-outline" label="Données stockées"
-            value={storageSize} color={Colors.textMuted}
+            value={storageSize} color={colors.textMuted}
           />
           <View style={styles.divider} />
           <Row
@@ -547,7 +596,7 @@ export default function SettingsScreen() {
           <View style={styles.divider} />
           <Row
             icon="headset-outline" label="Support"
-            onPress={() => router.push("/support")} color={Colors.connected}
+            onPress={() => router.push("/support")} color={colors.connected}
           />
           <View style={styles.divider} />
           <Row icon="document-text-outline" label="CGU / Politique de confidentialité"
@@ -578,10 +627,10 @@ export default function SettingsScreen() {
 
         {/* Logout */}
         {clearing ? (
-          <ActivityIndicator color={Colors.primary} style={{ marginTop: 8 }} />
+          <ActivityIndicator color={colors.primary} style={{ marginTop: 8 }} />
         ) : (
           <Pressable onPress={handleLogout} style={styles.logoutBtn}>
-            <Ionicons name="log-out-outline" size={18} color={Colors.disconnected} />
+            <Ionicons name="log-out-outline" size={18} color={colors.disconnected} />
             <Text style={styles.logoutText}>{t("logout")}</Text>
           </Pressable>
         )}
@@ -605,53 +654,61 @@ export default function SettingsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1 },
+function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useColors>) {
+ return StyleSheet.create({
+  container: { flex: 1, backgroundColor: colors.bg },
   content: { paddingHorizontal: 20, gap: 20 },
   pageHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 4 },
-  backBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: Colors.bgCard, borderWidth: 1, borderColor: Colors.border, alignItems: "center", justifyContent: "center" },
-  pageTitle: { fontSize: 18, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold" },
-  accountCard: { flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: Colors.bgCard, borderRadius: 20, borderWidth: 1, borderColor: Colors.border, padding: 16 },
-  accountAvatar: { width: 52, height: 52, borderRadius: 26, backgroundColor: Colors.primaryDim, borderWidth: 1.5, borderColor: Colors.primary + "50", alignItems: "center", justifyContent: "center", flexShrink: 0 },
-  accountInitials: { fontSize: 20, fontWeight: "700", color: Colors.primary, fontFamily: "Inter_700Bold" },
-  accountName: { fontSize: 16, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold" },
-  accountEmail: { fontSize: 12, color: Colors.textMuted, fontFamily: "Inter_400Regular" },
+  backBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.bgCard, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
+  pageTitle: { fontSize: 18, fontWeight: "700", color: colors.textPrimary, fontFamily: "Inter_700Bold" },
+  accountCard: { flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: colors.bgCard, borderRadius: 20, borderWidth: 1, borderColor: colors.border, padding: 16, shadowColor: "#000", shadowOpacity: 0.12, shadowRadius: 16, shadowOffset: { width: 0, height: 6 }, elevation: 4 },
+  accountAvatar: { width: 52, height: 52, borderRadius: 26, backgroundColor: colors.primaryDim, borderWidth: 1.5, borderColor: colors.primary + "50", alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  accountInitials: { fontSize: 20, fontWeight: "700", color: colors.primary, fontFamily: "Inter_700Bold" },
+  accountName: { fontSize: 16, fontWeight: "700", color: colors.textPrimary, fontFamily: "Inter_700Bold" },
+  accountEmail: { fontSize: 12, color: colors.textMuted, fontFamily: "Inter_400Regular" },
   accountDotWrap: { alignItems: "center", justifyContent: "center" },
   accountDot: { width: 10, height: 10, borderRadius: 5 },
   section: { gap: 6 },
   sectionHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingLeft: 4 },
-  sectionLabel: { fontSize: 10, fontWeight: "700", color: Colors.textMuted, letterSpacing: 1.5, fontFamily: "Inter_700Bold" },
-  sectionSubtitle: { fontSize: 10, color: Colors.textMuted, fontFamily: "Inter_400Regular" },
-  sectionCard: { backgroundColor: Colors.bgCard, borderRadius: 16, borderWidth: 1, borderColor: Colors.border, paddingHorizontal: 14 },
+  sectionLabel: { fontSize: 10, fontWeight: "700", color: colors.textMuted, letterSpacing: 1.5, fontFamily: "Inter_700Bold" },
+  sectionSubtitle: { fontSize: 10, color: colors.textMuted, fontFamily: "Inter_400Regular" },
+  sectionCard: { backgroundColor: colors.bgCard, borderRadius: 18, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14 },
   row: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 13 },
   rowIcon: { width: 36, height: 36, borderRadius: 10, alignItems: "center", justifyContent: "center" },
-  rowLabel: { flex: 1, fontSize: 14, color: "#FFF", fontFamily: "Inter_500Medium" },
-  rowValue: { fontSize: 12, color: Colors.textMuted, fontFamily: "Inter_400Regular", maxWidth: 120 },
+  rowLabel: { flex: 1, fontSize: 14, color: colors.textPrimary, fontFamily: "Inter_500Medium" },
+  rowValue: { fontSize: 12, color: colors.textMuted, fontFamily: "Inter_400Regular", maxWidth: 140 },
   badge: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, borderWidth: 1 },
   badgeText: { fontSize: 10, fontWeight: "700", fontFamily: "Inter_700Bold" },
-  divider: { height: 1, backgroundColor: Colors.border },
+  divider: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border },
+  themePreview: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 14 },
+  themePreviewCopy: { flex: 1, gap: 3 },
+  themePreviewTitle: { color: colors.textPrimary, fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  themePreviewText: { color: colors.textMuted, fontSize: 10, fontFamily: "Inter_400Regular" },
+  themePreviewCards: { width: 108, gap: 5 },
+  themeMiniCard: { height: 31, borderRadius: 9, borderWidth: 1, paddingHorizontal: 7, flexDirection: "row", alignItems: "center", gap: 6 },
   themePicker: { flexDirection: "row", gap: 8, paddingVertical: 13 },
   themeChoice: { flex: 1, minHeight: 54, borderRadius: 13, borderWidth: 1, alignItems: "center", justifyContent: "center", gap: 5 },
   themeChoiceText: { fontSize: 10, fontFamily: "Inter_600SemiBold" },
-  logoutBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 14, borderRadius: 14, borderWidth: 1, borderColor: Colors.disconnected + "40", backgroundColor: Colors.disconnectedDim },
-  logoutText: { fontSize: 15, fontWeight: "600", color: Colors.disconnected, fontFamily: "Inter_600SemiBold" },
-  footer: { textAlign: "center", fontSize: 10, color: Colors.textMuted, fontFamily: "Inter_400Regular", letterSpacing: 2 },
+  logoutBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 14, borderRadius: 14, borderWidth: 1, borderColor: colors.disconnected + "40", backgroundColor: colors.disconnectedDim },
+  logoutText: { fontSize: 15, fontWeight: "600", color: colors.disconnected, fontFamily: "Inter_600SemiBold" },
+  footer: { textAlign: "center", fontSize: 10, color: colors.textMuted, fontFamily: "Inter_400Regular", letterSpacing: 2 },
   // Lang modal
-  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.7)", justifyContent: "center", padding: 20 },
-  langSheet: { backgroundColor: "#0A0F1C", borderRadius: 20, padding: 20, borderWidth: 1, borderColor: Colors.border },
-  langSheetTitle: { fontSize: 16, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold", marginBottom: 14, textAlign: "center" },
+  modalOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: "center", padding: 20 },
+  langSheet: { backgroundColor: colors.bgCard, borderRadius: 20, padding: 20, borderWidth: 1, borderColor: colors.border },
+  langSheetTitle: { fontSize: 16, fontWeight: "700", color: colors.textPrimary, fontFamily: "Inter_700Bold", marginBottom: 14, textAlign: "center" },
   langRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 12, paddingHorizontal: 10, borderRadius: 12 },
-  langRowActive: { backgroundColor: Colors.primaryDim },
+  langRowActive: { backgroundColor: colors.primaryDim },
   langFlag: { fontSize: 24 },
-  langLabel: { flex: 1, fontSize: 15, color: "#FFF", fontFamily: "Inter_500Medium" },
+  langLabel: { flex: 1, fontSize: 15, color: colors.textPrimary, fontFamily: "Inter_500Medium" },
   // PIN modal
-  pinSheet: { backgroundColor: "#0A0F1C", borderRadius: 20, padding: 24, borderWidth: 1, borderColor: Colors.border, gap: 14 },
-  pinTitle: { fontSize: 16, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold", textAlign: "center" },
-  pinErr: { color: Colors.disconnected, fontSize: 12, fontFamily: "Inter_400Regular", textAlign: "center" },
-  pinInput: { backgroundColor: "#060914", borderWidth: 1, borderColor: Colors.border, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 16, color: "#FFF", fontSize: 20, fontFamily: "Inter_700Bold", textAlign: "center", letterSpacing: 8 },
+  pinSheet: { backgroundColor: colors.bgCard, borderRadius: 20, padding: 24, borderWidth: 1, borderColor: colors.border, gap: 14 },
+  pinTitle: { fontSize: 16, fontWeight: "700", color: colors.textPrimary, fontFamily: "Inter_700Bold", textAlign: "center" },
+  pinErr: { color: colors.disconnected, fontSize: 12, fontFamily: "Inter_400Regular", textAlign: "center" },
+  pinInput: { backgroundColor: colors.bgInput, borderWidth: 1, borderColor: colors.border, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 16, color: colors.textPrimary, fontSize: 20, fontFamily: "Inter_700Bold", textAlign: "center", letterSpacing: 8 },
   pinBtns: { flexDirection: "row", gap: 10, marginTop: 4 },
-  pinBtnCancel: { flex: 1, paddingVertical: 12, borderRadius: 12, borderWidth: 1, borderColor: Colors.border, alignItems: "center" },
-  pinBtnCancelText: { color: Colors.textMuted, fontFamily: "Inter_500Medium", fontSize: 14 },
-  pinBtnOk: { flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: Colors.primaryDim, borderWidth: 1, borderColor: Colors.primary + "40", alignItems: "center" },
-  pinBtnOkText: { color: Colors.primary, fontFamily: "Inter_600SemiBold", fontSize: 14 },
-});
+  pinBtnCancel: { flex: 1, paddingVertical: 12, borderRadius: 12, borderWidth: 1, borderColor: colors.border, alignItems: "center" },
+  pinBtnCancelText: { color: colors.textMuted, fontFamily: "Inter_500Medium", fontSize: 14 },
+  pinBtnOk: { flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: colors.primaryDim, borderWidth: 1, borderColor: colors.primary + "40", alignItems: "center" },
+  pinBtnOkText: { color: colors.primary, fontFamily: "Inter_600SemiBold", fontSize: 14 },
+ });
+}

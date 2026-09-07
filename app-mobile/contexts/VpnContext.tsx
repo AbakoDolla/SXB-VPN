@@ -260,6 +260,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   // Chaque appui invalide la tentative précédente : Déconnecter reste instantané,
   // même si une vérification réseau ou un provisionnement est encore en attente.
   const connectionAttemptRef = useRef(0);
+  /** Empêche une lecture native tardive de ressusciter l'UI pendant stopVpn(). */
+  const disconnectInFlightRef = useRef(false);
   // Un événement native connected peut arriver après l'expiration du watchdog
   // si JSch était encore bloqué dans session.connect(). Ce marqueur empêche
   // l'ancienne tentative de ressusciter l'UI après une annulation.
@@ -330,16 +332,32 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    logFlushTimerRef.current = setInterval(() => {
+    const flush = () => {
       if (pendingLogsRef.current.length === 0) return;
       const batch = pendingLogsRef.current;
       pendingLogsRef.current = [];
       // Un seul rendu pour tout le lot, quel que soit son volume.
       setVpnLogs(prev => [...batch.reverse(), ...prev].slice(0, 300));
-    }, 350);
-    return () => {
+    };
+    const start = () => {
+      if (!logFlushTimerRef.current) logFlushTimerRef.current = setInterval(flush, 350);
+    };
+    const stop = () => {
       if (logFlushTimerRef.current) clearInterval(logFlushTimerRef.current);
       logFlushTimerRef.current = null;
+    };
+    if (appActiveRef.current) start();
+    const foregroundSub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') {
+        flush();
+        start();
+      } else {
+        stop();
+      }
+    });
+    return () => {
+      stop();
+      foregroundSub.remove();
     };
   }, []);
 
@@ -478,7 +496,13 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     trafficTimerRef.current = setInterval(async () => {
       // B12 — Rien à rafraîchir tant que l'interface n'est pas visible, sauf
       // pendant la poignée de main où ce sondage sert de repli de détection.
-      if (!appActiveRef.current && vpnStateRef.current !== 'handshaking') return;
+      if (!appActiveRef.current && vpnStateRef.current !== 'handshaking') {
+        // Si le handshake s'est terminé pendant que l'app était masquée, ce
+        // même intervalle n'a plus aucune raison de continuer à se réveiller.
+        if (trafficTimerRef.current) clearInterval(trafficTimerRef.current);
+        trafficTimerRef.current = null;
+        return;
+      }
       try {
         const stats = await SxbVpnNative.getTrafficStats();
         setTrafficStats({
@@ -511,7 +535,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           } catch { /* fonctionnalité optionnelle : ignorer */ }
         }
       } catch { /* ignore */ }
-    }, 1500);
+    }, 2_000);
   }, []);
 
   const stopTrafficPolling = useCallback(() => {
@@ -519,6 +543,68 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     perAppTickRef.current = 0;
     setPerAppTraffic([]);
   }, []);
+
+  /**
+   * Réconcilie React avec le service natif.
+   *
+   * Android peut garder le VpnService en vie alors que l'activité React est
+   * détruite (écran éteint, pression mémoire, retour depuis le lanceur).
+   * Sans cette lecture, l'accueil revenait « déconnecté » et son chrono à zéro
+   * alors que la notification et le tunnel continuaient correctement.
+   */
+  const syncNativeRuntime = useCallback(async () => {
+    if (!IS_ANDROID || !SxbVpnNative?.getVpnState) return;
+    try {
+      const attempt = connectionAttemptRef.current;
+      const state = String(await SxbVpnNative.getVpnState()).toLowerCase();
+      if (attempt !== connectionAttemptRef.current || disconnectInFlightRef.current) return;
+      // Le dialogue d'autorisation Android place brièvement l'activité en
+      // arrière-plan avant que startVpn() ait eu le temps de changer l'état
+      // natif. Ne jamais écraser une transition locale encore légitime avec ce
+      // « disconnected » transitoire : le watchdog couvrira un vrai blocage.
+      if (
+        state === 'disconnected' &&
+        (vpnStateRef.current === 'connecting' || vpnStateRef.current === 'handshaking' || vpnStateRef.current === 'retrying')
+      ) return;
+      const connected = state === 'connected';
+      const connecting = state === 'connecting' || state === 'handshaking' || state === 'retrying';
+      setVpnState(state);
+      setIsConnected(connected);
+      setIsConnecting(connecting);
+
+      if (connected || connecting) {
+        const stats = await SxbVpnNative.getTrafficStats();
+        setTrafficStats({
+          uploadBytes: stats.uploadBytes || 0,
+          downloadBytes: stats.downloadBytes || 0,
+          uploadSpeed: stats.uploadSpeed || 0,
+          downloadSpeed: stats.downloadSpeed || 0,
+          tunAttached: stats.tunAttached === true || stats.tunAttached === 1,
+          connectedSeconds: stats.connectedSeconds || 0,
+        });
+        startTrafficPolling();
+      } else {
+        stopTrafficPolling();
+        setTrafficStats(DEFAULT_STATS);
+      }
+    } catch {
+      // Le pont peut être indisponible pendant la reconstruction de l'activité.
+      // L'événement natif suivant réconciliera l'état ; ne jamais inventer une
+      // déconnexion sur une simple erreur de lecture.
+    }
+  }, [startTrafficPolling, stopTrafficPolling]);
+
+  useEffect(() => {
+    void syncNativeRuntime();
+    const foregroundSub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') void syncNativeRuntime();
+      // Pendant le handshake, le polling est aussi le filet de détection qui
+      // promeut le tunnel dès que les premiers octets passent. Le supprimer
+      // ferait échouer une connexion lorsque l'utilisateur change d'app.
+      else if (vpnStateRef.current !== 'handshaking') stopTrafficPolling();
+    });
+    return () => foregroundSub.remove();
+  }, [stopTrafficPolling, syncNativeRuntime]);
 
   const invalidateRemoteAccess = useCallback(async (status: 'revoked' | 'suspended' | 'disabled') => {
     ++connectionAttemptRef.current;
@@ -635,15 +721,36 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   // Polling rapport delta
   useEffect(() => {
     if (!isConnected || !isAuthenticated) return;
-    reportTimerRef.current = setInterval(async () => {
+    const report = async () => {
       if (IS_ANDROID && SxbVpnNative) {
         try {
           const stats = await SxbVpnNative.getTrafficStats();
           await reportUsageToBackend(stats.uploadBytes || 0, stats.downloadBytes || 0);
         } catch { /* ignore */ }
       }
-    }, 30_000);
-    return () => { if (reportTimerRef.current) { clearInterval(reportTimerRef.current); reportTimerRef.current = null; } };
+    };
+    const start = () => {
+      if (!reportTimerRef.current) reportTimerRef.current = setInterval(report, 30_000);
+    };
+    const stop = () => {
+      if (reportTimerRef.current) clearInterval(reportTimerRef.current);
+      reportTimerRef.current = null;
+    };
+    if (appActiveRef.current) start();
+    const foregroundSub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') {
+        // Envoie immédiatement le delta accumulé pendant la veille, puis
+        // reprend la cadence de premier plan.
+        void report();
+        start();
+      } else {
+        stop();
+      }
+    });
+    return () => {
+      stop();
+      foregroundSub.remove();
+    };
   }, [isConnected, isAuthenticated, reportUsageToBackend]);
 
   // B6 — LISTENER NETINFO : re-synchro automatique dès le retour du réseau
@@ -676,12 +783,28 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     refreshQuotaData();
-    // B12 — Lecture purement locale : inutile de la maintenir en arrière-plan.
-    quotaTimerRef.current = setInterval(() => {
-      if (!appActiveRef.current) return;
-      void refreshQuotaData();
-    }, 60_000);
-    return () => { if (quotaTimerRef.current) { clearInterval(quotaTimerRef.current); quotaTimerRef.current = null; } };
+    const start = () => {
+      if (!quotaTimerRef.current) {
+        quotaTimerRef.current = setInterval(() => { void refreshQuotaData(); }, 60_000);
+      }
+    };
+    const stop = () => {
+      if (quotaTimerRef.current) clearInterval(quotaTimerRef.current);
+      quotaTimerRef.current = null;
+    };
+    if (appActiveRef.current) start();
+    const foregroundSub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') {
+        void refreshQuotaData();
+        start();
+      } else {
+        stop();
+      }
+    });
+    return () => {
+      stop();
+      foregroundSub.remove();
+    };
   }, [refreshQuotaData]);
 
   const refreshVpnConfig = useCallback(async () => {
@@ -898,15 +1021,26 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     // depuis le dashboard doit rester immédiate), mais le tick est ignoré tant
     // que l'application n'est pas visible et un contrôle est déclenché dès le
     // retour au premier plan : même réactivité, plus aucun trafic en veille.
-    guardTimerRef.current = setInterval(() => {
-      if (!appActiveRef.current) return;
-      void verifyRemoteAccess();
-    }, 10_000);
+    const start = () => {
+      if (!guardTimerRef.current) {
+        guardTimerRef.current = setInterval(() => { void verifyRemoteAccess(); }, 10_000);
+      }
+    };
+    const stop = () => {
+      if (guardTimerRef.current) clearInterval(guardTimerRef.current);
+      guardTimerRef.current = null;
+    };
+    if (appActiveRef.current) start();
     const foregroundSub = AppState.addEventListener('change', (next) => {
-      if (next === 'active') void verifyRemoteAccess();
+      if (next === 'active') {
+        void verifyRemoteAccess();
+        start();
+      } else {
+        stop();
+      }
     });
     return () => {
-      if (guardTimerRef.current) { clearInterval(guardTimerRef.current); guardTimerRef.current = null; }
+      stop();
       foregroundSub.remove();
     };
   }, [isAuthenticated, invalidateRemoteAccess]);
@@ -1274,6 +1408,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     // L’interface revient immédiatement à « Se connecter » ; l’arrêt natif et
     // l’envoi du quota se poursuivent ensuite sans bloquer l’utilisateur.
     ++connectionAttemptRef.current;
+    disconnectInFlightRef.current = true;
     acceptNativeConnectedRef.current = false;
     stopWatchdog();
     setIsConnecting(false);
@@ -1334,6 +1469,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       sessionBaselineRef.current = { up: 0, down: 0 };
       sessionIdRef.current = null;
       seqRef.current = 0;
+      disconnectInFlightRef.current = false;
     }
   }, [isConnecting, isConnected, activeConfigId, addLog, reportUsageToBackend, addStepLog]);
 

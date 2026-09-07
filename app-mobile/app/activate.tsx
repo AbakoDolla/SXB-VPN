@@ -19,7 +19,7 @@ export default function ActivateScreen() {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const insets = useSafeAreaInsets();
-  const { activateAccount, deviceId } = useAuthContext();
+  const { activateAccount, deviceId, hasSeenOnboarding } = useAuthContext();
 
   const [token, setToken] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -49,7 +49,13 @@ export default function ActivateScreen() {
       if (Platform.OS !== "web") await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setSuccess(true);
       Animated.timing(successScale, { toValue: 1, duration: 280, useNativeDriver: true }).start();
-      setTimeout(() => router.replace("/(tabs)/" as any), 1100);
+      // Le guide a besoin d'un compte activé pour présenter les vraies notions
+      // de configuration, quota et connexion. Il est donc la première étape
+      // post-activation, et non un écran promotionnel avant le token.
+      setTimeout(
+        () => router.replace((hasSeenOnboarding ? "/(tabs)/" : "/onboarding") as any),
+        1100,
+      );
     } catch (err: any) {
       if (Platform.OS !== "web") await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       shake();

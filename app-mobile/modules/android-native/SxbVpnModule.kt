@@ -327,9 +327,12 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             }
             val notification = builder
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setContentTitle(safeTitle)
+                .setContentTitle("SXB VPN • $safeTitle")
                 .setContentText(safeMessage.take(240))
                 .setStyle(Notification.BigTextStyle().bigText(safeMessage.take(1000)))
+                .setSubText("Centre de notifications")
+                .setColor(0xFF1769E8L.toInt())
+                .setVisibility(Notification.VISIBILITY_PRIVATE)
                 .setAutoCancel(true)
                 .setContentIntent(pendingIntent)
                 .setCategory(Notification.CATEGORY_MESSAGE)

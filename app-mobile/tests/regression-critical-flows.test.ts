@@ -354,10 +354,11 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(clientRoutes, /syncClientAccessState\(id, 'deleted'\)/);
     assert.match(mobileRoutes, /errors\.mobile\.account_blocked/);
     assert.match(vpnContext, /invalidateRemoteAccess/);
-    // La sonde de révocation conserve sa cadence de 10 s au premier plan ; elle est
-    // simplement suspendue en arrière-plan et relancée au retour (B12).
-    assert.match(vpnContext, /void verifyRemoteAccess\(\);\s*\n\s*\}, 10_000\)/);
-    assert.match(vpnContext, /if \(next === 'active'\) void verifyRemoteAccess\(\)/);
+    // La sonde de révocation conserve sa cadence de 10 s au premier plan. Son
+    // intervalle est détruit en arrière-plan — pas seulement court-circuité —
+    // puis le contrôle est relancé immédiatement au retour.
+    assert.match(vpnContext, /setInterval\(\(\) => \{ void verifyRemoteAccess\(\); \}, 10_000\)/);
+    assert.match(vpnContext, /if \(next === 'active'\) \{[\s\S]{0,100}void verifyRemoteAccess\(\);[\s\S]{0,80}start\(\);[\s\S]{0,80}else \{[\s\S]{0,80}stop\(\);/);
     assert.match(vpnContext, /clearAllOfflineData/);
     assert.match(rootLayout, /router\.replace\('\/activate'\)/);
     assert.match(offlineStorage, /configStore\.clearAll\(\)/);
@@ -954,16 +955,17 @@ describe('garde-fous contre les régressions Android', () => {
     // elapsedRealtime : insensible aux changements d'heure, court en veille.
     assert.match(nativeService, /connectedSinceMs = SystemClock\.elapsedRealtime\(\)/);
     // Une promotion répétée ne doit pas réarmer le compteur.
-    assert.ok(nativeService.includes('if (connectedSinceMs == 0L) connectedSinceMs'));
+    assert.match(nativeService, /if \(connectedSinceMs == 0L\) \{[\s\S]{0,180}connectedSinceMs = SystemClock\.elapsedRealtime\(\)/);
     // La valeur traverse le pont natif puis le contexte jusqu'à l'écran.
     assert.ok(nativeModule.includes('putDouble("connectedSeconds"'));
     assert.ok(vpnContext.includes('connectedSeconds: stats.connectedSeconds || 0'));
     assert.ok(diagnosticsScreen.includes('trafficStats.connectedSeconds'));
     // L'ancien compteur local, qui repartait à l'ouverture de l'écran, a disparu.
     assert.doesNotMatch(diagnosticsScreen, /startedAtRef/);
-    // La notification persistante porte l'état et la durée : c'est le seul
-    // indicateur visible quand l'application est fermée.
-    assert.ok(nativeService.includes('formatUptime(getConnectedSeconds())'));
+    // La notification persistante laisse Android dessiner le chronomètre à
+    // partir de la même ancre, sans thread réveillé chaque seconde.
+    assert.ok(nativeService.includes('getConnectedSinceWallClockMs()'));
+    assert.ok(nativeService.includes('.setUsesChronometer(connected)'));
   });
 
   it('retire les configurations arrivées à leur date limite', () => {
@@ -1715,5 +1717,108 @@ describe('garde-fous contre les régressions Android', () => {
     // sans fiche revendeur en face, le rôle ne vaut rien. Cela rétablit du même
     // coup le contrôle de suspension, réservé jusque-là au rôle CLIENT.
     assert.match(authentification, /if \(dbRoleName === "RESELLER"\) \{[\s\S]{0,320}if \(!fiche\) dbRoleName = "CLIENT";/);
+  });
+
+  it('présente le tutoriel complet uniquement après la première activation', () => {
+    const activation = source('app/activate.tsx');
+    const splash = source('app/index.tsx');
+    const guide = source('app/onboarding.tsx');
+    const accueil = source('app/(tabs)/index.tsx');
+
+    // L'ancien parcours expliquait une configuration et un quota avant même que
+    // le token ait donné accès à ces données. Le compte doit être activé avant
+    // d'ouvrir le guide.
+    assert.match(activation, /hasSeenOnboarding \? "\/\(tabs\)\/" : "\/onboarding"/);
+    assert.match(splash, /!isAuthenticated[\s\S]{0,80}\? "\/activate"/);
+    assert.match(splash, /hasSeenOnboarding[\s\S]{0,80}\? "\/\(tabs\)\/"[\s\S]{0,80}: "\/onboarding"/);
+
+    // Le guide couvre les fonctions réelles, et son achèvement est persistant.
+    for (const id of ['welcome', 'connection', 'profiles', 'quota', 'navigation', 'theme', 'background']) {
+      assert.match(guide, new RegExp(`id: "${id}"`), `étape manquante : ${id}`);
+    }
+    assert.match(guide, /await Promise\.all\(\[[\s\S]{0,200}markOnboardingDone\(\)/);
+    assert.match(guide, /router\.replace\("\/\(tabs\)\/"/);
+
+    // Une seule expérience : l'ancienne surimpression absolue est supprimée.
+    assert.doesNotMatch(accueil, /InteractiveWalkthrough/);
+    assert.ok(!existsSync('components/InteractiveWalkthrough.tsx'));
+  });
+
+  it('garde une durée de connexion identique entre accueil et service Android', () => {
+    const accueil = source('app/(tabs)/index.tsx');
+    const chrono = source('hooks/useConnectionDuration.ts');
+    const contexte = source('contexts/VpnContext.tsx');
+    const service = source('modules/android-native/SxbVpnService.kt');
+
+    // L'accueil ne possède plus son propre compteur : il lit l'horloge
+    // monotone du service puis l'interpole à 1 Hz pour un rendu fluide.
+    assert.match(accueil, /formatTimer\(connectedSeconds\)/);
+    assert.match(accueil, /useConnectionDuration\(isConnected, traffic\.connectedSeconds\)/);
+    assert.doesNotMatch(accueil, /setTimer\(\(t\) => t \+ 1\)/);
+    assert.match(chrono, /setInterval\(update, 1_000\)/);
+    assert.match(chrono, /nativeSecondsRef\.current \+ Math\.max\(0, elapsed\)/);
+    assert.match(contexte, /const syncNativeRuntime = useCallback/);
+    assert.match(contexte, /await SxbVpnNative\.getVpnState\(\)/);
+    // Le retour du dialogue d'autorisation ne doit pas écraser la transition
+    // locale avec le « disconnected » natif transitoire.
+    assert.match(contexte, /attempt !== connectionAttemptRef\.current \|\| disconnectInFlightRef\.current/);
+    assert.match(contexte, /state === 'disconnected'[\s\S]{0,220}vpnStateRef\.current === 'connecting'/);
+    assert.match(contexte, /connectedSeconds: stats\.connectedSeconds \|\| 0/);
+
+    // La notification Android repart de la même durée et laisse le système
+    // dessiner le chronomètre sans réveil Java/Kotlin chaque seconde.
+    assert.match(service, /getConnectedSinceWallClockMs\(\)/);
+    assert.match(service, /\.setUsesChronometer\(connected\)/);
+    assert.match(service, /Thread\.sleep\(15_000\)/);
+    assert.doesNotMatch(service, /formatUptime\(getConnectedSeconds\(\)\)/);
+  });
+
+  it('réduit les réveils et requêtes quand l’application est en arrière-plan', () => {
+    const contexte = source('contexts/VpnContext.tsx');
+    const racine = source('app/_layout.tsx');
+
+    // Les rapports de trafic ne réveillent plus le modem toutes les 30 s en
+    // veille : l'intervalle est détruit. Au retour, le delta accumulé par les
+    // compteurs natifs est envoyé immédiatement.
+    const report = contexte.slice(contexte.indexOf('// Polling rapport delta'));
+    assert.match(report.slice(0, 1800), /if \(next === 'active'\)[\s\S]{0,180}void report\(\);[\s\S]{0,100}start\(\);[\s\S]{0,100}else \{[\s\S]{0,80}stop\(\);/);
+    // Les lots de logs ne conservent plus un intervalle à trois ticks par
+    // seconde pendant la veille.
+    const logs = contexte.slice(contexte.indexOf('logFlushTimerRef.current = setInterval'));
+    assert.match(logs.slice(0, 900), /if \(next === 'active'\)[\s\S]{0,100}flush\(\);[\s\S]{0,100}start\(\);[\s\S]{0,100}else \{[\s\S]{0,80}stop\(\);/);
+    // Les annonces passent de 2 minutes permanentes à 15 minutes uniquement
+    // au premier plan, avec synchronisation immédiate au retour.
+    assert.match(racine, /15 \* 60_000/);
+    assert.match(racine, /AppState\.currentState === "active"/);
+    assert.doesNotMatch(racine, /120_000/);
+    // Exception nécessaire : pendant le handshake, le polling détecte le
+    // premier trafic si le moteur natif n'émet pas de preuve dans ses logs.
+    assert.match(contexte, /else if \(vpnStateRef\.current !== 'handshaking'\) stopTrafficPolling\(\)/);
+    // Une fois le handshake terminé en arrière-plan, l'intervalle s'autodétruit.
+    assert.match(contexte, /!appActiveRef\.current && vpnStateRef\.current !== 'handshaking'[\s\S]{0,220}clearInterval\(trafficTimerRef\.current\)/);
+  });
+
+  it('applique réellement les thèmes clair et sombre aux surfaces importantes', () => {
+    const reglages = source('app/settings.tsx');
+    const notifications = source('app/(tabs)/notifications.tsx');
+    const racine = source('app/_layout.tsx');
+
+    // Les réglages et leurs modales ne doivent plus importer la palette sombre
+    // statique : toutes leurs couleurs viennent de useColors().
+    assert.doesNotMatch(reglages, /import Colors from/);
+    assert.match(reglages, /function makeStyles\(colors:/);
+    assert.match(reglages, /backgroundColor: colors\.bgCard/);
+    assert.match(reglages, /backgroundColor: colors\.overlay/);
+    assert.match(reglages, /label=\{t\("replay_tutorial"\)\}/);
+    assert.match(reglages, /params: \{ replay: "1" \}/);
+
+    // L'enveloppe racine suit également le thème, évitant un flash bleu nuit
+    // pendant les transitions en mode clair.
+    assert.match(racine, /backgroundColor: colors\.bg/);
+
+    // L'écran Alertes reprend l'état, la durée et les débits de l'accueil.
+    assert.match(notifications, /useConnectionDuration\(isConnected, traffic\.connectedSeconds\)/);
+    assert.match(notifications, /formatSpeed\(traffic\.uploadSpeed\)/);
+    assert.match(notifications, /formatSpeed\(traffic\.downloadSpeed\)/);
   });
 });

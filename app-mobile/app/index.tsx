@@ -38,7 +38,17 @@ export default function SplashScreen() {
 
   useEffect(() => {
     if (isLoading) return;
-    const timer = setTimeout(() => router.replace(!isAuthenticated ? (hasSeenOnboarding ? "/activate" : "/onboarding") : "/(tabs)/" as any), 1800);
+    // Le tutoriel présente des fonctions qui n'existent qu'après activation
+    // (configuration attribuée, quota, notifications et tunnel). Le montrer
+    // avant la saisie du token produisait une visite abstraite, puis une seconde
+    // visite en surimpression sur l'accueil. Désormais : activation d'abord,
+    // tutoriel une seule fois ensuite.
+    const destination = !isAuthenticated
+      ? "/activate"
+      : hasSeenOnboarding
+        ? "/(tabs)/"
+        : "/onboarding";
+    const timer = setTimeout(() => router.replace(destination as any), 1800);
     return () => clearTimeout(timer);
   }, [isLoading, isAuthenticated, hasSeenOnboarding]);
 

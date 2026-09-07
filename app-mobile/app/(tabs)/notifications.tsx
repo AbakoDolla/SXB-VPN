@@ -11,6 +11,8 @@ import { useTranslation } from "@/localization";
 import { downloadAndInstallAppUpdate } from "@/services/appUpdate";
 import { alpha, layout, radius, spacing, type } from "@/constants/theme";
 import { EmptyState } from "@/components/ui/Primitives";
+import { useVpnContext, formatSpeed } from "@/contexts/VpnContext";
+import { useConnectionDuration } from "@/hooks/useConnectionDuration";
 
 const READ_NOTIFICATION_IDS_KEY = "@sxb_read_notification_ids_v1";
 const TYPE_ICONS: Record<string, string> = {
@@ -19,6 +21,14 @@ const TYPE_ICONS: Record<string, string> = {
   success: "checkmark-circle",
   info: "information-circle",
 };
+
+function formatDuration(seconds: number): string {
+  const safe = Math.max(0, Math.floor(seconds || 0));
+  const hours = Math.floor(safe / 3600).toString().padStart(2, "0");
+  const minutes = Math.floor((safe % 3600) / 60).toString().padStart(2, "0");
+  const secs = (safe % 60).toString().padStart(2, "0");
+  return `${hours}:${minutes}:${secs}`;
+}
 
 function NotifRow({ item, onMarkRead }: { item: Notification; onMarkRead: (id: string) => void }) {
   const colors = useColors();
@@ -132,6 +142,8 @@ export default function NotificationsScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const { t } = useTranslation();
+  const { isConnected, isConnecting, traffic } = useVpnContext();
+  const connectedSeconds = useConnectionDuration(isConnected, traffic.connectedSeconds);
   const [items, setItems] = React.useState<Notification[]>([]);
   const [loading, setLoading] = React.useState(true);
 
@@ -168,6 +180,12 @@ export default function NotificationsScreen() {
   });
 
   const unreadCount = items.filter((item) => !item.isRead).length;
+  const connectionTone = isConnected ? colors.connected : isConnecting ? colors.warning : colors.textMuted;
+  const connectionLabel = isConnected
+    ? t("protection_active")
+    : isConnecting
+      ? t("connecting_status")
+      : t("protection_inactive");
 
   return (
     <LinearGradient colors={colors.gradients.bg as [string, string, string]} style={styles.container}>
@@ -197,6 +215,37 @@ export default function NotificationsScreen() {
             <Text style={[type.captionMedium, { color: colors.primary }]}>{t("notifications_read_all")}</Text>
           </Pressable>
         )}
+      </View>
+
+      {/* Même langage que l'accueil et la notification Android : l'utilisateur
+          ne doit jamais voir trois états ou trois chronomètres différents. */}
+      <View
+        style={[
+          styles.connectionCard,
+          {
+            backgroundColor: connectionTone + alpha.f08,
+            borderColor: connectionTone + alpha.f40,
+          },
+        ]}
+      >
+        <View style={[styles.connectionIcon, { backgroundColor: connectionTone + alpha.f16 }]}>
+          <Ionicons
+            name={isConnected ? "shield-checkmark" : isConnecting ? "sync" : "shield-outline"}
+            size={20}
+            color={connectionTone}
+          />
+        </View>
+        <View style={{ flex: 1, gap: spacing.xs }}>
+          <View style={styles.connectionTitleRow}>
+            <Text style={[type.bodyMedium, { color: colors.textPrimary }]}>{connectionLabel}</Text>
+            <View style={[styles.liveDot, { backgroundColor: connectionTone }]} />
+          </View>
+          <Text style={[type.micro, { color: colors.textMuted, fontVariant: ["tabular-nums"] }]}>
+            {isConnected
+              ? `${t("connection_duration")} ${formatDuration(connectedSeconds)} · ↑ ${formatSpeed(traffic.uploadSpeed)} · ↓ ${formatSpeed(traffic.downloadSpeed)}`
+              : t("vpn_notification_idle")}
+          </Text>
+        </View>
       </View>
 
       {loading ? (
@@ -249,6 +298,25 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     borderWidth: 1,
   },
+  connectionCard: {
+    marginHorizontal: layout.screenPadding,
+    marginTop: spacing.lg,
+    borderWidth: 1,
+    borderRadius: radius.lg,
+    padding: spacing.md,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+  },
+  connectionIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: radius.md,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  connectionTitleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.sm },
+  liveDot: { width: 7, height: 7, borderRadius: radius.full },
 
   list: { paddingHorizontal: layout.screenPadding, paddingTop: spacing.lg, gap: spacing.md },
   notifCard: {

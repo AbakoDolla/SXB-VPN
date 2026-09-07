@@ -4,6 +4,7 @@ import apiClient from '@/services/apiClient';
 import type { Notification as MobileNotification } from '@/types/api';
 
 const DELIVERED_ANNOUNCEMENTS_KEY = '@sxb_delivered_announcement_ids_v1';
+export const ANNOUNCEMENT_NOTIFICATIONS_ENABLED_KEY = '@sxb_announcement_notifications_enabled_v1';
 const MAX_REMEMBERED_IDS = 100;
 
 interface SxbAnnouncementNativeModule {
@@ -24,6 +25,15 @@ async function readDeliveredIds(): Promise<string[]> {
   }
 }
 
+export async function areAnnouncementNotificationsEnabled(): Promise<boolean> {
+  const stored = await AsyncStorage.getItem(ANNOUNCEMENT_NOTIFICATIONS_ENABLED_KEY).catch(() => null);
+  return stored !== 'false';
+}
+
+export async function setAnnouncementNotificationsEnabled(enabled: boolean): Promise<void> {
+  await AsyncStorage.setItem(ANNOUNCEMENT_NOTIFICATIONS_ENABLED_KEY, enabled ? 'true' : 'false');
+}
+
 /**
  * Fait remonter les annonces actives depuis l’API authentifiée vers Android.
  * Ce mécanisme est volontairement local : il ne prétend pas être un push lorsque
@@ -32,6 +42,7 @@ async function readDeliveredIds(): Promise<string[]> {
  */
 export async function syncAnnouncementNotifications(): Promise<void> {
   if (Platform.OS !== 'android') return;
+  if (!(await areAnnouncementNotificationsEnabled())) return;
 
   const nativeModule = NativeModules.SxbVpnNative as SxbAnnouncementNativeModule | undefined;
   if (!nativeModule?.postAnnouncementNotification) return;
