@@ -1,6 +1,5 @@
 CREATE TABLE "mobile_health_devices" (
     "id" TEXT NOT NULL,
-    "reportId" TEXT NOT NULL,
     "pseudonym" TEXT NOT NULL,
     "appVersion" TEXT NOT NULL,
     "versionCode" INTEGER NOT NULL,
@@ -25,6 +24,7 @@ CREATE TABLE "mobile_health_devices" (
 
 CREATE TABLE "mobile_health_reports" (
     "id" TEXT NOT NULL,
+    "reportId" TEXT NOT NULL,
     "deviceId" TEXT NOT NULL,
     "reportedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "tunnelState" TEXT NOT NULL,

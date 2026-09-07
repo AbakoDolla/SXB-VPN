@@ -221,19 +221,32 @@ async function deliver(
   }
 
   const uniqueDeviceIds = [...new Set(targetDeviceIds.map((value) => value.trim()).filter(Boolean))];
-  let tokens: Array<{ id: string; token: string }>;
+  let tokens: Array<{ id: string; token: string; userId: string; deviceId: string }>;
   try {
     tokens = await (prisma as any).pushToken.findMany({
       where: {
         active: true,
-        user: {
-          status: "active",
-          vpnClients: { some: { status: "active" } },
-        },
+        user: { status: "active" },
         ...(uniqueDeviceIds.length > 0 ? { deviceId: { in: uniqueDeviceIds } } : {}),
       },
-      select: { id: true, token: true },
-    }) as Array<{ id: string; token: string }>;
+      select: { id: true, token: true, userId: true, deviceId: true },
+    }) as Array<{ id: string; token: string; userId: string; deviceId: string }>;
+
+    // Un même utilisateur (notamment un revendeur) possède plusieurs clients.
+    // L'éligibilité doit porter sur LA paire du jeton, pas sur « au moins un
+    // client actif » du même utilisateur, sinon un appareil révoqué continue à
+    // recevoir les annonces tant qu'un autre appareil reste actif.
+    if (tokens.length > 0) {
+      const activeClients = await (prisma as any).vpnClient.findMany({
+        where: {
+          status: "active",
+          OR: tokens.map((entry) => ({ userId: entry.userId, deviceId: entry.deviceId })),
+        },
+        select: { userId: true, deviceId: true },
+      }) as Array<{ userId: string; deviceId: string | null }>;
+      const activePairs = new Set(activeClients.map((client) => `${client.userId}\0${client.deviceId || ""}`));
+      tokens = tokens.filter((entry) => activePairs.has(`${entry.userId}\0${entry.deviceId}`));
+    }
   } catch {
     return {
       status: "failed",

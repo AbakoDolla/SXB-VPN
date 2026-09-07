@@ -118,6 +118,33 @@ model Reseller {
   @@map("resellers")
 }
 
+// Grand livre immuable des changements de plafond et des engagements de quota.
+// Les identifiants sont des instantanes sans FK afin qu'une suppression
+// ulterieure ne puisse ni reecrire ni effacer une ligne d'audit.
+model ResellerQuotaMovement {
+  id                   String   @id @default(uuid())
+  resellerId           String
+  resellerUserId       String
+  resellerName         String
+  actorUserId           String?
+  actorName             String
+  kind                 String
+  reason               String
+  deltaBytes           BigInt
+  quotaBeforeBytes     BigInt
+  quotaAfterBytes      BigInt
+  allocatedBeforeBytes BigInt
+  allocatedAfterBytes  BigInt
+  referenceType        String?
+  referenceId          String?
+  createdAt            DateTime @default(now())
+
+  @@index([resellerUserId, createdAt])
+  @@index([resellerId, createdAt])
+  @@index([createdAt])
+  @@map("reseller_quota_movements")
+}
+
 // Attribution d'une configuration VPN à un revendeur.
 //
 // L'administrateur importe une configuration UNE FOIS puis coche les

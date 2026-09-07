@@ -29,6 +29,31 @@ CREATE TABLE IF NOT EXISTS "reseller_quota_movements" (
   )
 );
 
+-- `prisma db push` peut avoir créé la table avant l'exécution de ce SQL. Dans
+-- ce cas, le CHECK inline ci-dessus n'est jamais installé. L'ajout explicite
+-- rend la protection idempotente quel que soit l'ordre db push / migration.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'reseller_quota_movements_kind_check'
+      AND conrelid = 'reseller_quota_movements'::regclass
+  ) THEN
+    ALTER TABLE "reseller_quota_movements"
+      ADD CONSTRAINT "reseller_quota_movements_kind_check" CHECK (
+        "kind" IN (
+          'ADMIN_ALLOCATION',
+          'ADMIN_WITHDRAWAL',
+          'ADMIN_CORRECTION',
+          'QUOTA_COMMITMENT',
+          'QUOTA_RELEASE'
+        )
+      );
+  END IF;
+END
+$$;
+
 CREATE INDEX IF NOT EXISTS "reseller_quota_movements_resellerUserId_createdAt_idx"
   ON "reseller_quota_movements" ("resellerUserId", "createdAt");
 CREATE INDEX IF NOT EXISTS "reseller_quota_movements_resellerId_createdAt_idx"

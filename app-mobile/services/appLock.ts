@@ -12,7 +12,10 @@ import {
 export const APP_LOCK_PREFERENCES_KEY = "@sxb_app_lock_preferences";
 export const LEGACY_PIN_KEY = "@sxb_pin";
 const PIN_CREDENTIAL_KEY = "sxb.app-lock.pin.v1";
+const PIN_THROTTLE_KEY = "sxb.app-lock.throttle.v1";
 const PIN_HASH_VERSION = 1;
+const PIN_LOCK_BASE_MS = 30_000;
+const PIN_LOCK_MAX_MS = 15 * 60_000;
 
 export type AppLockPreferences = {
   version: 1;
@@ -32,6 +35,11 @@ type StoredPinCredential = {
   algorithm: "sha256";
   salt: string;
   digest: string;
+};
+
+export type PinThrottleState = {
+  failures: number;
+  retryAt: number;
 };
 
 const DEFAULT_PREFERENCES: AppLockPreferences = {
@@ -95,6 +103,52 @@ async function readPinCredential(): Promise<StoredPinCredential | null> {
   }
 }
 
+async function readPinThrottleState(): Promise<PinThrottleState> {
+  if (Platform.OS === "web") return { failures: 0, retryAt: 0 };
+  const serialized = await SecureStore.getItemAsync(PIN_THROTTLE_KEY);
+  if (!serialized) return { failures: 0, retryAt: 0 };
+  try {
+    const parsed = JSON.parse(serialized) as Partial<PinThrottleState>;
+    const failures = Number.isInteger(parsed.failures) && Number(parsed.failures) >= 0
+      ? Number(parsed.failures)
+      : 0;
+    const retryAt = Number.isFinite(parsed.retryAt) && Number(parsed.retryAt) > 0
+      ? Number(parsed.retryAt)
+      : 0;
+    return { failures, retryAt };
+  } catch {
+    return { failures: 0, retryAt: 0 };
+  }
+}
+
+async function writePinThrottleState(state: PinThrottleState): Promise<void> {
+  if (Platform.OS === "web") return;
+  await SecureStore.setItemAsync(PIN_THROTTLE_KEY, JSON.stringify(state), {
+    keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+  });
+}
+
+export async function getPinThrottleState(): Promise<PinThrottleState> {
+  return readPinThrottleState();
+}
+
+export async function registerFailedPinAttempt(now = Date.now()): Promise<PinThrottleState> {
+  const current = await readPinThrottleState();
+  if (current.retryAt > now) return current;
+  const failures = current.failures + 1;
+  const exponent = Math.max(0, failures - 5);
+  const retryAt = failures >= 5
+    ? now + Math.min(PIN_LOCK_BASE_MS * (2 ** exponent), PIN_LOCK_MAX_MS)
+    : 0;
+  const next = { failures, retryAt };
+  await writePinThrottleState(next);
+  return next;
+}
+
+export async function clearPinThrottleState(): Promise<void> {
+  if (Platform.OS !== "web") await SecureStore.deleteItemAsync(PIN_THROTTLE_KEY);
+}
+
 export async function loadAppLockPreferences(): Promise<AppLockPreferences> {
   const [serializedPreferences, initialCredential, legacyPin] = await Promise.all([
     AsyncStorage.getItem(APP_LOCK_PREFERENCES_KEY),
@@ -156,6 +210,7 @@ export async function storePin(pin: string): Promise<void> {
   await SecureStore.setItemAsync(PIN_CREDENTIAL_KEY, JSON.stringify(credential), {
     keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
   });
+  await clearPinThrottleState();
 }
 
 export async function verifyPin(pin: string): Promise<boolean> {
@@ -167,7 +222,10 @@ export async function verifyPin(pin: string): Promise<boolean> {
 
 export async function deletePin(): Promise<void> {
   if (Platform.OS !== "web") {
-    await SecureStore.deleteItemAsync(PIN_CREDENTIAL_KEY);
+    await Promise.all([
+      SecureStore.deleteItemAsync(PIN_CREDENTIAL_KEY),
+      SecureStore.deleteItemAsync(PIN_THROTTLE_KEY),
+    ]);
   }
   await AsyncStorage.removeItem(LEGACY_PIN_KEY);
 }
@@ -178,7 +236,10 @@ export async function clearStoredAppLock(): Promise<void> {
     AsyncStorage.removeItem(LEGACY_PIN_KEY),
     Platform.OS === "web"
       ? Promise.resolve()
-      : SecureStore.deleteItemAsync(PIN_CREDENTIAL_KEY),
+      : Promise.all([
+          SecureStore.deleteItemAsync(PIN_CREDENTIAL_KEY),
+          SecureStore.deleteItemAsync(PIN_THROTTLE_KEY),
+        ]),
   ]);
 }
 

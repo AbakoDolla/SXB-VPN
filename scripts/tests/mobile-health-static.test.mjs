@@ -31,6 +31,15 @@ describe('mobile health wiring and privacy', () => {
     }
     assert.match(deviceModel, /@@map\("mobile_health_devices"\)/);
     assert.match(deviceModel, /@@map\("mobile_health_reports"\)/);
+
+    const migration = source('backend/prisma/migrations/202609070507_mobile_health/migration.sql');
+    const deviceTable = migration.slice(
+      migration.indexOf('CREATE TABLE "mobile_health_devices"'),
+      migration.indexOf('CREATE TABLE "mobile_health_reports"'),
+    );
+    const reportTable = migration.slice(migration.indexOf('CREATE TABLE "mobile_health_reports"'));
+    assert.doesNotMatch(deviceTable, /"reportId"/);
+    assert.match(reportTable, /"reportId" TEXT NOT NULL/);
   });
 
   it('reports on lifecycle/session events without adding telemetry polling', () => {

@@ -12,9 +12,12 @@ import {
   type AppLockPreferences,
   type BiometricCapability,
   clearStoredAppLock,
+  clearPinThrottleState,
   deletePin,
   getBiometricCapability,
+  getPinThrottleState,
   loadAppLockPreferences,
+  registerFailedPinAttempt,
   requestBiometricAuthentication,
   saveAppLockPreferences,
   storePin,
@@ -76,8 +79,6 @@ export function AppLockProvider({ children }: { children: React.ReactNode }) {
   const preferencesRef = useRef(preferences);
   const backgroundedAtRef = useRef<number | null>(null);
   const lockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const failedPinAttemptsRef = useRef(0);
-  const pinRetryAtRef = useRef(0);
 
   useEffect(() => {
     preferencesRef.current = preferences;
@@ -218,8 +219,7 @@ export function AppLockProvider({ children }: { children: React.ReactNode }) {
     try {
       const result = await requestBiometricAuthentication(promptMessage, cancelLabel);
       if (!result.success) return false;
-      failedPinAttemptsRef.current = 0;
-      pinRetryAtRef.current = 0;
+      await clearPinThrottleState();
       setIsLocked(false);
       return true;
     } finally {
@@ -229,26 +229,29 @@ export function AppLockProvider({ children }: { children: React.ReactNode }) {
 
   const unlockWithPin = useCallback(async (pin: string): Promise<PinUnlockResult> => {
     const now = Date.now();
-    if (pinRetryAtRef.current > now) {
+    const throttle = await getPinThrottleState();
+    if (throttle.retryAt > now) {
       return {
         success: false,
         reason: "throttled",
-        retryAfterMs: pinRetryAtRef.current - now,
+        retryAfterMs: throttle.retryAt - now,
       };
     }
 
     const matches = await verifyPin(pin);
     if (matches) {
-      failedPinAttemptsRef.current = 0;
-      pinRetryAtRef.current = 0;
+      await clearPinThrottleState();
       setIsLocked(false);
       return { success: true };
     }
 
-    failedPinAttemptsRef.current += 1;
-    if (failedPinAttemptsRef.current >= 5) {
-      pinRetryAtRef.current = now + 30_000;
-      failedPinAttemptsRef.current = 0;
+    const failed = await registerFailedPinAttempt(now);
+    if (failed.retryAt > now) {
+      return {
+        success: false,
+        reason: "throttled",
+        retryAfterMs: failed.retryAt - now,
+      };
     }
     return { success: false, reason: "invalid" };
   }, []);

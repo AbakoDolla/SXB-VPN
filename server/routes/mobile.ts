@@ -360,13 +360,26 @@ const pushTokenSchema = z.object({
 });
 
 async function validatePushDevice(req: AuthenticatedRequest, deviceId: string): Promise<any | null> {
-  const client: any = await findClientByUserId(req.user!.userId);
-  if (!client || client.status !== "active") return null;
-  const registeredDeviceId = String(client.deviceId || "").trim();
   const headerDeviceId = String(req.headers["x-sxb-device-id"] || "").trim();
-  if (!registeredDeviceId || registeredDeviceId !== deviceId) return null;
   if (headerDeviceId && headerDeviceId !== deviceId) return null;
-  return client;
+  if (prisma) {
+    // Un revendeur peut posséder plusieurs lignes VpnClient. `findFirst` par
+    // userId choisissait une ligne arbitraire et refusait tous les autres
+    // appareils. La paire exacte utilisateur/appareil est l'autorité.
+    return (prisma as any).vpnClient.findFirst({
+      where: {
+        userId: req.user!.userId,
+        deviceId,
+        status: "active",
+      },
+      include: { user: true, subscriptions: true },
+    });
+  }
+  return inMemoryDb.vpnClients.find((client) =>
+    client.userId === req.user!.userId
+    && String(client.deviceId || "").trim() === deviceId
+    && client.status === "active"
+  ) || null;
 }
 
 // Le jeton FCM n'est accepté qu'après authentification et pour l'appareil déjà

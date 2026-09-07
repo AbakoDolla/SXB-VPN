@@ -142,6 +142,11 @@ jobs:
         env:
           OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
           OWNER_PASSWORD: ${{ secrets.OWNER_PASSWORD }}
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          FIREBASE_CLIENT_EMAIL: ${{ secrets.FIREBASE_CLIENT_EMAIL }}
+          FIREBASE_PRIVATE_KEY: ${{ secrets.FIREBASE_PRIVATE_KEY }}
+          MOBILE_HEALTH_PSEUDONYM_SECRET: ${{ secrets.MOBILE_HEALTH_PSEUDONYM_SECRET }}
         with:
           host: 141.95.112.93
           username: ubuntu
@@ -151,7 +156,7 @@ jobs:
           timeout: 30s
           # Transmis au shell distant pour l'amorçage du compte OWNER. Ces deux
           # valeurs restent des secrets : elles ne transitent jamais par le dépôt.
-          envs: OWNER_EMAIL,OWNER_PASSWORD
+          envs: OWNER_EMAIL,OWNER_PASSWORD,FIREBASE_SERVICE_ACCOUNT_JSON,FIREBASE_PROJECT_ID,FIREBASE_CLIENT_EMAIL,FIREBASE_PRIVATE_KEY,MOBILE_HEALTH_PSEUDONYM_SECRET
           script: |
             set -e
             cd /var/www/sxb-vpn
@@ -187,6 +192,25 @@ jobs:
               exit 1
             fi
             echo "✅ Code à jour : $DEPLOYED_SHA"
+
+            # Le pseudonyme de santé doit rester stable après redémarrage. Si le
+            # secret GitHub n'est pas encore configuré, réutiliser celui du VPS
+            # ou en générer un une seule fois, puis le conserver dans .env.
+            ENV_FILE="/var/www/sxb-vpn/.env"
+            if [ -z "$MOBILE_HEALTH_PSEUDONYM_SECRET" ] && [ -f "$ENV_FILE" ]; then
+              MOBILE_HEALTH_PSEUDONYM_SECRET=$(sed -n 's/^MOBILE_HEALTH_PSEUDONYM_SECRET=//p' "$ENV_FILE" | tail -1)
+            fi
+            if [ -z "$MOBILE_HEALTH_PSEUDONYM_SECRET" ]; then
+              MOBILE_HEALTH_PSEUDONYM_SECRET=$(openssl rand -hex 32)
+            fi
+            TMP_ENV=$(mktemp)
+            if [ -f "$ENV_FILE" ]; then
+              grep -v '^MOBILE_HEALTH_PSEUDONYM_SECRET=' "$ENV_FILE" > "$TMP_ENV" || true
+            fi
+            printf 'MOBILE_HEALTH_PSEUDONYM_SECRET=%s\n' "$MOBILE_HEALTH_PSEUDONYM_SECRET" >> "$TMP_ENV"
+            mv "$TMP_ENV" "$ENV_FILE"
+            chmod 600 "$ENV_FILE"
+            export MOBILE_HEALTH_PSEUDONYM_SECRET
 
             echo "📦 Install backend dependencies..."
             cd backend
@@ -295,6 +319,28 @@ jobs:
               --schema=backend/prisma/schema.prisma \
               --accept-data-loss 2>&1 | tail -5
 
+            # Prisma ne sait pas représenter un trigger append-only ni le CHECK
+            # des types de mouvement. `db push` crée les colonnes, puis ce SQL
+            # idempotent installe et vérifie les protections PostgreSQL.
+            LEDGER_SQL="backend/prisma/migrations/20260907050730_reseller_quota_ledger/migration.sql"
+            if [ -f "$LEDGER_SQL" ]; then
+              if ! command -v psql >/dev/null 2>&1; then
+                echo "::error::psql introuvable — protection append-only non installable"
+                exit 1
+              fi
+              PSQL_URL="${DB_URL%%\?*}"
+              psql "$PSQL_URL" -v ON_ERROR_STOP=1 -f "$LEDGER_SQL" >/tmp/sxb-ledger-migration.log
+              TRIGGER_OK=$(psql "$PSQL_URL" -Atc \
+                "SELECT count(*) FROM pg_trigger WHERE tgname='reseller_quota_movements_append_only' AND NOT tgisinternal")
+              CHECK_OK=$(psql "$PSQL_URL" -Atc \
+                "SELECT count(*) FROM pg_constraint WHERE conname='reseller_quota_movements_kind_check'")
+              if [ "$TRIGGER_OK" != "1" ] || [ "$CHECK_OK" != "1" ]; then
+                echo "::error::Protections du grand livre absentes (trigger=$TRIGGER_OK check=$CHECK_OK)"
+                exit 1
+              fi
+              echo "✅ Grand livre quota protégé en append-only"
+            fi
+
             # Amorçage du compte propriétaire racine. `POST /api/users` refuse de
             # créer un OWNER si le demandeur n'en est pas un : le tout premier ne
             # peut donc naître que hors API. Idempotent — sert aussi à réinitialiser
@@ -315,6 +361,8 @@ jobs:
 
             echo "🔄 Reload PM2..."
             pm2 restart ecosystem.config.cjs --update-env || pm2 start ecosystem.config.cjs
+            # Conserve les variables FCM/santé après un redémarrage du VPS.
+            pm2 save
 
             echo "🔄 Reload Nginx..."
             sudo nginx -t && sudo systemctl reload nginx

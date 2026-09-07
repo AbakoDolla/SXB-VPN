@@ -134,6 +134,23 @@ describe('verrouillage local biométrique et PIN', () => {
     assert.doesNotMatch(reglages, /AsyncStorage\.setItem\(["']@sxb_pin/);
   });
 
+  it('persiste et renforce le délai après les échecs PIN', () => {
+    const stockage = source('services/appLock.ts');
+    const contexte = source('contexts/AppLockContext.tsx');
+
+    // Des refs React repartaient à zéro après un force-stop : cinq nouvelles
+    // tentatives étaient alors disponibles à chaque redémarrage.
+    assert.match(stockage, /PIN_THROTTLE_KEY/);
+    assert.match(stockage, /SecureStore\.setItemAsync\(PIN_THROTTLE_KEY/);
+    assert.match(stockage, /export async function registerFailedPinAttempt/);
+    assert.match(stockage, /PIN_LOCK_BASE_MS \* \(2 \*\* exponent\)/);
+    assert.match(stockage, /PIN_LOCK_MAX_MS/);
+    assert.match(contexte, /await getPinThrottleState\(\)/);
+    assert.match(contexte, /await registerFailedPinAttempt\(now\)/);
+    assert.match(contexte, /await clearPinThrottleState\(\)/);
+    assert.doesNotMatch(contexte, /failedPinAttemptsRef|pinRetryAtRef/);
+  });
+
   it('exige capacité, enrôlement et succès biométrique avant activation', () => {
     const stockage = source('services/appLock.ts');
     const contexte = source('contexts/AppLockContext.tsx');
@@ -381,8 +398,8 @@ describe('garde-fous contre les régressions Android', () => {
 
   it('enregistre et désenregistre les jetons FCM avec auth et liaison appareil', () => {
     assert.match(mobileRoutes, /router\.use\(requireAuth\)[\s\S]*router\.post\("\/push-tokens"/);
-    assert.match(mobileRoutes, /registeredDeviceId !== deviceId/);
     assert.match(mobileRoutes, /headerDeviceId !== deviceId/);
+    assert.match(mobileRoutes, /userId: req\.user!\.userId,[\s\S]{0,80}deviceId,[\s\S]{0,80}status: "active"/);
     assert.match(mobileRoutes, /pushToken\.upsert/);
     assert.match(mobileRoutes, /router\.delete\("\/push-tokens"/);
     assert.match(prismaSchema, /model PushToken/);
@@ -401,6 +418,10 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(fcmService, /error: "FCM_NOT_CONFIGURED"/);
     assert.match(fcmService, /firebase\.messaging/);
     assert.match(fcmService, /messages:send/);
+    // L'appareil du jeton lui-même doit être actif : « un autre client actif
+    // du même revendeur » ne suffit pas à rendre un appareil révoqué éligible.
+    assert.match(fcmService, /OR: tokens\.map\(\(entry\) => \(\{ userId: entry\.userId, deviceId: entry\.deviceId \}\)\)/);
+    assert.match(fcmService, /tokens = tokens\.filter\(\(entry\) => activePairs\.has/);
     assert.doesNotMatch(fcmService, /data:\s*\{[\s\S]{0,300}apkUrl/);
     assert.doesNotMatch(fcmService, /data:\s*\{[\s\S]{0,300}(vpnHost|serverHost|configuration)/);
     assert.match(announcementsRoutes, /sendAnnouncementPush\(announcement\)/);
