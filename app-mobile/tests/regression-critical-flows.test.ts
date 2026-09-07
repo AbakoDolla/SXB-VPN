@@ -1862,7 +1862,7 @@ describe('garde-fous contre les régressions Android', () => {
     // consultait aucun plafond alors qu'il alloue bel et bien du quota. Le
     // contrôle vise le revendeur destinataire, pas l'auteur de l'appel : un
     // administrateur qui crée un client sous un revendeur puise dans son quota.
-    assert.match(revendeurs, /const refus = await verifierPlafond\(prisma, resellerUserId, quotaBytes\)/);
+    assert.match(revendeurs, /newClient = await executerMutationQuota\(prisma, \{[\s\S]{0,240}resellerUserId,[\s\S]{0,240}referenceType: "vpn_client"/);
     assert.match(quota, /export async function verifierPlafond/);
 
     // VpnClient n'a pas de champ `name` : le transmettre faisait échouer Prisma,
