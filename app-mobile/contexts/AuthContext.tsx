@@ -6,6 +6,7 @@ import apiClient, { getSecureToken, setSecureToken, removeSecureToken, SEC_KEYS 
 import { clearProvisionedConfig, provisionAndStore } from '@/services/provisionClient';
 import * as configStore from '@/services/configStore';
 import { clearAllOfflineData } from '@/services/offlineStorage';
+import { unregisterPushToken } from '@/services/pushNotifications';
 import type { AccountState, User } from '@/types/api';
 
 // Clés non-sensibles restent dans AsyncStorage (infos user, onboarding...)
@@ -262,8 +263,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [clearLocalSession]);
 
   const logout = useCallback(async () => {
-    await clearLocalSession();
-  }, [clearLocalSession]);
+    try {
+      await unregisterPushToken(deviceId);
+    } catch (error: any) {
+      console.warn('[Push] Désenregistrement distant impossible:', error?.response?.status || error?.code || 'NETWORK');
+    } finally {
+      await clearLocalSession();
+    }
+  }, [clearLocalSession, deviceId]);
 
   const markOnboardingDone = useCallback(async () => {
     await AsyncStorage.setItem(KEYS.ONBOARDING, 'true');

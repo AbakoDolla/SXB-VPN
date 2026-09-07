@@ -25,6 +25,7 @@ model User {
   auditLogs    AuditLog[]
   adminTokens     AdminToken[]
   supportTickets SupportTicket[]
+  pushTokens     PushToken[]
 
   @@map("users")
 }
@@ -445,6 +446,24 @@ model AppRegistration {
   lastSeenAt  DateTime   @default(now())
 
   @@map("app_registrations")
+}
+
+model PushToken {
+  id         String   @id @default(uuid())
+  token      String   @unique
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deviceId   String
+  platform   String   @default("android")
+  appVersion String?
+  active     Boolean  @default(true)
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([userId, deviceId])
+  @@index([deviceId])
+  @@map("push_tokens")
 }
 
 model SubscriptionDevice {

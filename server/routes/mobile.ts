@@ -352,6 +352,98 @@ router.post("/auth/refresh", async (req, res: Response) => {
 // All routes below require a valid mobile session
 router.use(requireAuth);
 
+const pushTokenSchema = z.object({
+  token: z.string().trim().min(20).max(4096),
+  deviceId: z.string().trim().min(4).max(160),
+  platform: z.literal("android"),
+  appVersion: z.string().trim().max(40).nullable().optional(),
+});
+
+async function validatePushDevice(req: AuthenticatedRequest, deviceId: string): Promise<any | null> {
+  const client: any = await findClientByUserId(req.user!.userId);
+  if (!client || client.status !== "active") return null;
+  const registeredDeviceId = String(client.deviceId || "").trim();
+  const headerDeviceId = String(req.headers["x-sxb-device-id"] || "").trim();
+  if (!registeredDeviceId || registeredDeviceId !== deviceId) return null;
+  if (headerDeviceId && headerDeviceId !== deviceId) return null;
+  return client;
+}
+
+// Le jeton FCM n'est accepté qu'après authentification et pour l'appareil déjà
+// lié au compte VPN. Il ne donne accès à aucune configuration ni aucun hôte VPN.
+router.post("/push-tokens", async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (!prisma) {
+      return res.status(503).json({ error: "DB_UNAVAILABLE", message: "Enregistrement push indisponible" });
+    }
+    const input = pushTokenSchema.parse(req.body);
+    if (!(await validatePushDevice(req, input.deviceId))) {
+      return res.status(403).json({ error: "PUSH_DEVICE_MISMATCH", message: "Appareil non lié à ce compte" });
+    }
+
+    await (prisma as any).$transaction(async (tx: any) => {
+      await tx.pushToken.deleteMany({
+        where: {
+          userId: req.user!.userId,
+          deviceId: input.deviceId,
+          token: { not: input.token },
+        },
+      });
+      await tx.pushToken.upsert({
+        where: { token: input.token },
+        create: {
+          token: input.token,
+          userId: req.user!.userId,
+          deviceId: input.deviceId,
+          platform: input.platform,
+          appVersion: input.appVersion || null,
+        },
+        update: {
+          userId: req.user!.userId,
+          deviceId: input.deviceId,
+          platform: input.platform,
+          appVersion: input.appVersion || null,
+          active: true,
+          lastSeenAt: new Date(),
+        },
+      });
+    });
+    return res.status(201).json({ registered: true, deviceId: input.deviceId });
+  } catch (err: any) {
+    if (err instanceof z.ZodError) {
+      return res.status(422).json({ error: "VALIDATION", message: err.issues[0]?.message || "Jeton push invalide" });
+    }
+    console.error("[FCM] Push token registration failed:", err?.code || err?.name || "UNKNOWN");
+    return res.status(503).json({ error: "PUSH_REGISTRATION_FAILED", message: "Enregistrement push impossible" });
+  }
+});
+
+router.delete("/push-tokens", async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (!prisma) {
+      return res.status(503).json({ error: "DB_UNAVAILABLE", message: "Désenregistrement push indisponible" });
+    }
+    const input = pushTokenSchema.pick({ token: true, deviceId: true }).parse(req.body);
+    if (!(await validatePushDevice(req, input.deviceId))) {
+      return res.status(403).json({ error: "PUSH_DEVICE_MISMATCH", message: "Appareil non lié à ce compte" });
+    }
+    const removed = await (prisma as any).pushToken.deleteMany({
+      where: {
+        token: input.token,
+        userId: req.user!.userId,
+        deviceId: input.deviceId,
+      },
+    });
+    return res.json({ deregistered: removed.count > 0, removed: removed.count });
+  } catch (err: any) {
+    if (err instanceof z.ZodError) {
+      return res.status(422).json({ error: "VALIDATION", message: err.issues[0]?.message || "Jeton push invalide" });
+    }
+    console.error("[FCM] Push token deregistration failed:", err?.code || err?.name || "UNKNOWN");
+    return res.status(503).json({ error: "PUSH_DEREGISTRATION_FAILED", message: "Désenregistrement push impossible" });
+  }
+});
+
 // GET /api/mobile/me — everything the smart button + home screen needs
 router.get("/me", async (req: AuthenticatedRequest, res: Response) => {
   try {

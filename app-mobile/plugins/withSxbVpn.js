@@ -5,9 +5,10 @@
  *    (type de service en premier plan `specialUse` — requis Android 14+)
  * 2. Copie tous les fichiers Kotlin (modules/android-native/) dans android/
  * 3. Enregistre SxbVpnPackage dans MainApplication.kt
- * 4. Ajoute les dépendances JSch + Coroutines + libbox.aar dans app/build.gradle
- * 5. Copie libs/libbox.aar dans android/app/libs/
- * 6. Injecte les règles ProGuard R8
+ * 4. Ajoute les dépendances JSch + Coroutines + FCM + libbox.aar dans app/build.gradle
+ * 5. Injecte la configuration Firebase publique lorsqu'elle est disponible
+ * 6. Copie libs/libbox.aar dans android/app/libs/
+ * 7. Injecte les règles ProGuard R8
  */
 const { withAndroidManifest, withDangerousMod, withAppBuildGradle } = require('@expo/config-plugins');
 const path = require('path');
@@ -103,6 +104,32 @@ function withVpnManifest(config) {
       const svc = app.service.find(s => s.$?.['android:name'] === vpnSvcName);
       svc.$['android:foregroundServiceType'] = 'specialUse';
       svc.$['android:stopWithTask'] = 'false';
+    }
+
+    const messagingServiceName = 'com.sxbvpn.vpnmodule.SxbFirebaseMessagingService';
+    if (!app.service.find(s => s.$?.['android:name'] === messagingServiceName)) {
+      app.service.push({
+        $: {
+          'android:name': messagingServiceName,
+          'android:exported': 'false',
+        },
+        'intent-filter': [{
+          action: [{ $: { 'android:name': 'com.google.firebase.MESSAGING_EVENT' } }],
+        }],
+      });
+    }
+
+    if (!app.provider) app.provider = [];
+    const firebaseProviderName = 'com.sxbvpn.vpnmodule.SxbFirebaseInitProvider';
+    if (!app.provider.find(p => p.$?.['android:name'] === firebaseProviderName)) {
+      app.provider.push({
+        $: {
+          'android:name': firebaseProviderName,
+          'android:authorities': '${applicationId}.sxb-firebase-init',
+          'android:exported': 'false',
+          'android:initOrder': '100',
+        },
+      });
     }
 
     return mod;
@@ -261,6 +288,10 @@ function withJschDependency(config) {
       "implementation(\"org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3\")",
       "implementation(\"org.bouncycastle:bcprov-jdk18on:1.78.1\")",
       "implementation(\"org.bouncycastle:bcutil-jdk18on:1.78.1\")",
+      // Aucun plugin google-services et aucun google-services.json : les
+      // identifiants publics sont injectés seulement quand les 4 variables
+      // EXPO_PUBLIC_FIREBASE_* sont présentes au prebuild.
+      "implementation(\"com.google.firebase:firebase-messaging:24.1.2\")",
       // Moteur sing-box embarqué (libbox.aar déposé dans android/app/libs/).
       // Remplace l'ancien binaire exécuté par ProcessBuilder — interdit depuis
       // Android 10 (W^X) et incapable de recevoir le descripteur du TUN.
@@ -300,7 +331,45 @@ function withJschDependency(config) {
   });
 }
 
-// ── 5. Moteur libbox (AAR) dans android/app/libs ──────────────────────────────
+function escapeXml(value) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+// ── 5. Configuration publique Firebase optionnelle ──────────────────────────
+function withOptionalFirebaseResources(config) {
+  return withDangerousMod(config, ['android', (cfg) => {
+    const platformRoot = cfg.modRequest.platformProjectRoot;
+    const valuesDir = path.join(platformRoot, 'app', 'src', 'main', 'res', 'values');
+    const output = path.join(valuesDir, 'sxb_firebase.xml');
+    const values = {
+      sxb_firebase_api_key: process.env.EXPO_PUBLIC_FIREBASE_API_KEY?.trim() || '',
+      sxb_firebase_project_id: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID?.trim() || '',
+      sxb_firebase_app_id: process.env.EXPO_PUBLIC_FIREBASE_APP_ID?.trim() || '',
+      sxb_firebase_sender_id: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID?.trim() || '',
+    };
+    const configured = Object.values(values).every(Boolean);
+    if (!configured) {
+      if (fs.existsSync(output)) fs.unlinkSync(output);
+      console.log('[SXB VPN plugin] Firebase non configuré — FCM désactivé sans bloquer le build');
+      return cfg;
+    }
+
+    fs.mkdirSync(valuesDir, { recursive: true });
+    const resources = Object.entries(values)
+      .map(([name, value]) => `    <string name="${name}" translatable="false">${escapeXml(value)}</string>`)
+      .join('\n');
+    fs.writeFileSync(output, `<?xml version="1.0" encoding="utf-8"?>\n<resources>\n${resources}\n</resources>\n`);
+    console.log('[SXB VPN plugin] Configuration publique Firebase injectée');
+    return cfg;
+  }]);
+}
+
+// ── 6. Moteur libbox (AAR) dans android/app/libs ──────────────────────────────
 //
 // Remplace l'ancienne copie des binaires sing-box dans les assets. Ces binaires
 // ne pouvaient de toute façon pas être exécutés (Android 10+ interdit l'exécution
@@ -362,7 +431,7 @@ function withLibboxAar(config) {
   }]);
 }
 
-// ── 6. FileProvider (mise à jour in-app) ─────────────────────────────────────
+// ── 7. FileProvider (mise à jour in-app) ─────────────────────────────────────
 // Déclare androidx.core.content.FileProvider avec l'autorité
 // `<package>.provider` et un file_paths.xml minimal exposant le cache privé
 // (où est téléchargé l'APK). Nécessaire pour ouvrir l'installateur via un URI
@@ -425,6 +494,7 @@ module.exports = function withSxbVpn(config) {
   config = withKotlinSources(config);
   config = withMainAppPackage(config);
   config = withJschDependency(config);
+  config = withOptionalFirebaseResources(config);
   config = withLibboxAar(config);
   config = withFileProvider(config);
   config = withFileProviderXml(config);

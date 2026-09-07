@@ -36,9 +36,8 @@ export async function setAnnouncementNotificationsEnabled(enabled: boolean): Pro
 
 /**
  * Fait remonter les annonces actives depuis l’API authentifiée vers Android.
- * Ce mécanisme est volontairement local : il ne prétend pas être un push lorsque
- * l’application est arrêtée. Un transport FCM côté serveur reste nécessaire pour
- * la réception immédiate sur application complètement fermée.
+ * Ce mécanisme reste le repli au premier plan lorsque FCM n'est pas configuré ou
+ * que l'appareil n'a pas encore enregistré son jeton.
  */
 export async function syncAnnouncementNotifications(): Promise<void> {
   if (Platform.OS !== 'android') return;

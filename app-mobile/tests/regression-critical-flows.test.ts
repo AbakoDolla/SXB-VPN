@@ -316,6 +316,15 @@ describe('garde-fous contre les régressions Android', () => {
   const updatePrompt = source('components/UpdatePrompt.tsx');
   const notificationUpdateScreen = source('app/(tabs)/notifications.tsx');
   const nativeModuleSource = source('modules/android-native/SxbVpnModule.kt');
+  const nativePushSource = source('modules/android-native/SxbPushNotifications.kt');
+  const nativeFirebaseService = source('modules/android-native/SxbFirebaseMessagingService.kt');
+  const nativeFirebaseProvider = source('modules/android-native/SxbFirebaseInitProvider.kt');
+  const pushNotificationService = source('services/pushNotifications.ts');
+  const fcmService = source('../server/services/fcm.ts');
+  const announcementsRoutes = source('../server/routes/announcements.ts');
+  const firebasePlugin = source('plugins/withSxbVpn.js');
+  const firebaseEnvironment = source('../.env.example');
+  const pushMigration = source('../backend/prisma/migrations/20260907050000_add_push_tokens/migration.sql');
 
   it('utilise Expo Crypto au lieu de dépendre de globalThis.crypto sous Hermes', () => {
     assert.match(configStore, /import \* as Crypto from 'expo-crypto';/);
@@ -357,8 +366,8 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(announcementsView, /fetchDevices\(\)/);
     assert.match(announcementsView, /Tous les appareils actifs/);
     assert.match(announcementsView, /device\.deviceId/);
-    assert.match(nativeModuleSource, /SXB_ANNOUNCEMENTS_V2/);
-    assert.match(nativeModuleSource, /setSound\(soundUri, audioAttributes\)/);
+    assert.match(nativePushSource, /SXB_ANNOUNCEMENTS_V2/);
+    assert.match(nativePushSource, /setSound\(soundUri, audioAttributes\)/);
   });
 
   it('publie les mises à jour uniquement par SUPER_ADMIN et cible des appareils activés', () => {
@@ -368,6 +377,59 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(appUpdateView, /Publier et distribuer/);
     assert.match(appUpdateView, /SUPER_ADMIN/);
     assert.match(appUpdateView, /activeDevices/);
+  });
+
+  it('enregistre et désenregistre les jetons FCM avec auth et liaison appareil', () => {
+    assert.match(mobileRoutes, /router\.use\(requireAuth\)[\s\S]*router\.post\("\/push-tokens"/);
+    assert.match(mobileRoutes, /registeredDeviceId !== deviceId/);
+    assert.match(mobileRoutes, /headerDeviceId !== deviceId/);
+    assert.match(mobileRoutes, /pushToken\.upsert/);
+    assert.match(mobileRoutes, /router\.delete\("\/push-tokens"/);
+    assert.match(prismaSchema, /model PushToken/);
+    assert.match(prismaSchema, /@@unique\(\[userId, deviceId\]\)/);
+    assert.match(prismaSchema, /token\s+String\s+@unique/);
+    assert.match(pushMigration, /CREATE TABLE "push_tokens"/);
+    assert.match(pushMigration, /ON DELETE CASCADE/);
+  });
+
+  it('désactive explicitement FCM sans credentials et ne simule jamais un envoi', () => {
+    assert.match(fcmService, /FIREBASE_SERVICE_ACCOUNT_JSON/);
+    assert.match(fcmService, /FIREBASE_PROJECT_ID/);
+    assert.match(fcmService, /FIREBASE_CLIENT_EMAIL/);
+    assert.match(fcmService, /FIREBASE_PRIVATE_KEY/);
+    assert.match(fcmService, /status: "disabled"/);
+    assert.match(fcmService, /error: "FCM_NOT_CONFIGURED"/);
+    assert.match(fcmService, /firebase\.messaging/);
+    assert.match(fcmService, /messages:send/);
+    assert.doesNotMatch(fcmService, /data:\s*\{[\s\S]{0,300}apkUrl/);
+    assert.doesNotMatch(fcmService, /data:\s*\{[\s\S]{0,300}(vpnHost|serverHost|configuration)/);
+    assert.match(announcementsRoutes, /sendAnnouncementPush\(announcement\)/);
+    assert.match(announcementsRoutes, /json\(\{ announcement, push \}\)/);
+    assert.match(appUpdateRoutes, /sendAppUpdatePush\(update\)/);
+    assert.match(appUpdateRoutes, /eligibleDeviceCount:[\s\S]{0,100}push/);
+  });
+
+  it('initialise Firebase dynamiquement et compile sans google-services.json', () => {
+    assert.match(firebasePlugin, /com\.google\.firebase:firebase-messaging/);
+    assert.match(firebasePlugin, /withOptionalFirebaseResources/);
+    assert.match(firebasePlugin, /Firebase non configuré — FCM désactivé sans bloquer le build/);
+    assert.doesNotMatch(firebasePlugin, /com\.google\.gms\.google-services/);
+    assert.match(nativeFirebaseProvider, /ensureFirebaseInitialized/);
+    assert.match(nativeFirebaseService, /FirebaseMessagingService/);
+    assert.match(nativeFirebaseService, /data\["screen"\] != "notifications"/);
+    assert.match(nativePushSource, /sxbvpn:\/\/notifications/);
+    assert.match(nativeModuleSource, /fun getPushToken/);
+    assert.match(nativeModuleSource, /fun deletePushToken/);
+  });
+
+  it('synchronise le jeton uniquement avec la session mobile authentifiée', () => {
+    assert.match(pushNotificationService, /apiClient\.post\('\/mobile\/push-tokens'/);
+    assert.match(pushNotificationService, /apiClient\.delete\('\/mobile\/push-tokens'/);
+    assert.match(rootLayout, /syncPushTokenRegistration\(deviceId\)/);
+    assert.match(authContext, /unregisterPushToken\(deviceId\)/);
+    assert.match(firebaseEnvironment, /FIREBASE_SERVICE_ACCOUNT_JSON/);
+    assert.match(firebaseEnvironment, /EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID/);
+    assert.match(firebaseEnvironment, /aucun google-services\.json/);
   });
 
   it('transmet au moteur tous les paramètres de transport du dashboard', () => {

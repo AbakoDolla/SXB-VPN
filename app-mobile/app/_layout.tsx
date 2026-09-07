@@ -13,6 +13,7 @@ import { AuthProvider, useAuthContext } from "@/contexts/AuthContext";
 import { VpnProvider } from "@/contexts/VpnContext";
 import { StatusBar } from "expo-status-bar";
 import { syncAnnouncementNotifications } from "@/services/announcementNotifications";
+import { syncPushTokenRegistration } from "@/services/pushNotifications";
 import { useColors } from "@/hooks/useColors";
 import { AppLockProvider } from "@/contexts/AppLockContext";
 import { AppLockGate } from "@/components/AppLockGate";
@@ -26,7 +27,7 @@ const queryClient = new QueryClient({
 });
 
 function AnnouncementNotificationSync() {
-  const { isAuthenticated } = useAuthContext();
+  const { isAuthenticated, deviceId } = useAuthContext();
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -42,6 +43,11 @@ function AnnouncementNotificationSync() {
     };
     if (AppState.currentState === "active") {
       void syncAnnouncementNotifications();
+      if (deviceId) {
+        void syncPushTokenRegistration(deviceId).catch((error: any) => {
+          console.warn("[Push] Enregistrement impossible:", error?.response?.status || error?.code || "NETWORK");
+        });
+      }
       start();
     }
     // Deux minutes réveillaient le réseau 720 fois par jour. Les annonces ne
@@ -51,6 +57,11 @@ function AnnouncementNotificationSync() {
     const foregroundSub = AppState.addEventListener("change", (next) => {
       if (next === "active") {
         void syncAnnouncementNotifications();
+        if (deviceId) {
+          void syncPushTokenRegistration(deviceId).catch((error: any) => {
+            console.warn("[Push] Enregistrement impossible:", error?.response?.status || error?.code || "NETWORK");
+          });
+        }
         start();
       } else {
         stop();
@@ -60,7 +71,7 @@ function AnnouncementNotificationSync() {
       stop();
       foregroundSub.remove();
     };
-  }, [isAuthenticated]);
+  }, [deviceId, isAuthenticated]);
 
   return null;
 }

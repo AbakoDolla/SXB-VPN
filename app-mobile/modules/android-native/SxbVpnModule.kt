@@ -18,6 +18,7 @@ import com.sxbvpn.vpnmodule.SxbSecureLogger
 import com.sxbvpn.vpnmodule.SxbSecureLogger.VpnEvent
 import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import com.google.firebase.messaging.FirebaseMessaging
 
 /**
  * SxbVpnModule — Bridge React Native ↔ SxbVpnService v4
@@ -348,6 +349,36 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
         } catch (_: Exception) {
             // Une notification est une amélioration non bloquante : ne jamais empêcher le VPN ou la synchronisation.
             promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun getPushToken(promise: Promise) {
+        if (SxbPushNotifications.ensureFirebaseInitialized(reactApplicationContext) == null) {
+            promise.resolve(null)
+            return
+        }
+        FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+            if (task.isSuccessful && !task.result.isNullOrBlank()) {
+                promise.resolve(task.result)
+            } else {
+                promise.reject("FCM_TOKEN_FAILED", "Impossible d'obtenir le jeton FCM", task.exception)
+            }
+        }
+    }
+
+    @ReactMethod
+    fun deletePushToken(promise: Promise) {
+        if (SxbPushNotifications.ensureFirebaseInitialized(reactApplicationContext) == null) {
+            promise.resolve(false)
+            return
+        }
+        FirebaseMessaging.getInstance().deleteToken().addOnCompleteListener { task ->
+            if (task.isSuccessful) {
+                promise.resolve(true)
+            } else {
+                promise.reject("FCM_DELETE_FAILED", "Impossible de supprimer le jeton FCM", task.exception)
+            }
         }
     }
 

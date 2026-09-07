@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { prisma, logDbActivity } from '../database';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth';
+import { sendAnnouncementPush } from '../services/fcm';
 
 const router = Router();
 const SETTINGS_KEY = 'sxb.announcements.v1';
@@ -100,7 +101,8 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =
     all.push(announcement);
     await writeAll(all);
     await logDbActivity(req.user?.userId || null, `Annonce publiée: "${announcement.title}"`, 'success', req.ip || '');
-    return res.status(201).json({ announcement });
+    const push = await sendAnnouncementPush(announcement);
+    return res.status(201).json({ announcement, push });
   } catch (err: any) {
     if (err instanceof z.ZodError) return res.status(422).json({ error: 'VALIDATION', message: err.issues[0]?.message || 'Annonce invalide' });
     return res.status(503).json({ error: 'DB_UNAVAILABLE', message: err.message || 'Publication impossible' });
@@ -122,7 +124,8 @@ router.patch('/:id', requireAuth, async (req: AuthenticatedRequest, res: Respons
     all[index] = next;
     await writeAll(all);
     await logDbActivity(req.user?.userId || null, `Annonce modifiée: "${next.title}"`, 'info', req.ip || '');
-    return res.json({ announcement: next });
+    const push = await sendAnnouncementPush(next);
+    return res.json({ announcement: next, push });
   } catch (err: any) {
     if (err instanceof z.ZodError) return res.status(422).json({ error: 'VALIDATION', message: err.issues[0]?.message || 'Annonce invalide' });
     return res.status(503).json({ error: 'DB_UNAVAILABLE', message: err.message || 'Modification impossible' });

@@ -11,6 +11,7 @@ import {
   writePublishedAppUpdate,
   clearPublishedAppUpdate,
 } from "../services/app-update";
+import { sendAppUpdatePush } from "../services/fcm";
 
 const router = Router();
 const roleSchema = z.enum(DISTRIBUTABLE_ROLES);
@@ -77,7 +78,12 @@ router.post("/publish", requireAuth, async (req: AuthenticatedRequest, res: Resp
     }
     const update = await writePublishedAppUpdate({ ...input, targetDeviceIds: uniqueDeviceIds });
     await logDbActivity(req.user.userId, `Mise à jour publiée: ${update.versionName} (${update.versionCode})`, "success", req.ip || "");
-    return res.status(201).json({ update: toPublicAppUpdate(update), eligibleDeviceCount: await countActivatedDevices() });
+    const push = await sendAppUpdatePush(update);
+    return res.status(201).json({
+      update: toPublicAppUpdate(update),
+      eligibleDeviceCount: await countActivatedDevices(),
+      push,
+    });
   } catch (err: any) {
     if (err instanceof z.ZodError) {
       return res.status(422).json({ error: "VALIDATION", message: err.issues[0]?.message || "Version invalide" });
