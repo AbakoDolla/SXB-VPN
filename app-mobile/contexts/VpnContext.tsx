@@ -38,6 +38,11 @@ import {
 import { deriveQuota, formatBytes, type DerivedQuota } from '@/services/quotaState';
 import { useAuthContext } from './AuthContext';
 import type { VpnConnection } from '@/types/api';
+import {
+  noteMobileHealthAppState,
+  noteMobileHealthReconnect,
+  reportMobileHealth,
+} from '@/services/mobileHealth';
 
 export { formatBytes, deriveQuota, DerivedQuota };
 
@@ -190,6 +195,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   }, []);
   const [selectedProtocol,   setSelectedProtocol]    = useState<string | null>(null);
   const [connectedProtocol,  setConnectedProtocol]   = useState<string | null>(null);
+  const connectedProtocolRef = useRef<string | null>(null);
   const [availableProtocols, setAvailableProtocols]  = useState<VpnProtocol[]>([]);
   const [trafficStats,       setTrafficStats]        = useState<TrafficStats>(DEFAULT_STATS);
   const [vpnLogs,            setVpnLogs]             = useState<string[]>([]);
@@ -224,6 +230,11 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const expiryTimerRef   = useRef<ReturnType<typeof setInterval> | null>(null);
   const guardTimerRef    = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionStartRef  = useRef<number>(0);
+  const lastHealthStateRef = useRef<string>('disconnected');
+
+  useEffect(() => {
+    connectedProtocolRef.current = connectedProtocol;
+  }, [connectedProtocol]);
 
   // B12 — Les sondes périodiques (garde distant, trafic, quota) tournaient à la
   // même cadence application au premier plan ou en arrière-plan, ce qui vidait la
@@ -234,11 +245,65 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const perAppTickRef    = useRef<number>(0);
 
   useEffect(() => {
+    if (isAuthenticated && AppState.currentState === 'active') {
+      void reportMobileHealth({
+        tunnelState: (
+          ['disconnected', 'connecting', 'connected', 'error'].includes(vpnStateRef.current)
+            ? vpnStateRef.current
+            : 'disconnected'
+        ) as 'disconnected' | 'connecting' | 'connected' | 'error',
+        protocol: connectedProtocolRef.current,
+      });
+    }
     const sub = AppState.addEventListener('change', (next) => {
       appActiveRef.current = next !== 'background' && next !== 'inactive';
+      void noteMobileHealthAppState(next).then((becameActive) => {
+        if (!becameActive || !isAuthenticated) return;
+        void reportMobileHealth({
+          tunnelState: (
+            ['disconnected', 'connecting', 'connected', 'error'].includes(vpnStateRef.current)
+              ? vpnStateRef.current
+              : 'disconnected'
+          ) as 'disconnected' | 'connecting' | 'connected' | 'error',
+          protocol: connectedProtocolRef.current,
+        });
+      });
     });
     return () => sub.remove();
-  }, []);
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    const previous = lastHealthStateRef.current;
+    lastHealthStateRef.current = vpnState;
+    if (!isAuthenticated || previous === vpnState) return;
+
+    if (vpnState === 'connected') {
+      sessionStartRef.current = sessionStartRef.current || Date.now();
+      return;
+    }
+
+    const sessionDurationSeconds = sessionStartRef.current > 0
+      ? Math.max(0, Math.round((Date.now() - sessionStartRef.current) / 1000))
+      : 0;
+    if (vpnState === 'error') {
+      void reportMobileHealth({
+        tunnelState: 'error',
+        protocol: connectedProtocolRef.current,
+        outcome: 'failure',
+        errorCode: previous === 'connected' ? 'TUNNEL_INTERRUPTED' : 'UNKNOWN',
+        sessionDurationSeconds,
+      });
+      sessionStartRef.current = 0;
+    } else if (vpnState === 'disconnected' && previous === 'connected') {
+      void reportMobileHealth({
+        tunnelState: 'disconnected',
+        protocol: connectedProtocolRef.current,
+        outcome: 'success',
+        sessionDurationSeconds,
+      });
+      sessionStartRef.current = 0;
+    }
+  }, [isAuthenticated, vpnState]);
 
   // ── B3 — RAPPORT DELTA + SESSION ID ──────────────────────────────────────────
   const lastReportUpRef    = useRef(0);
@@ -484,6 +549,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     });
 
     const logSub = vpnEmitter.addListener('onVpnLog', (e: { message: string }) => {
+      if (e.message?.includes('AUTO_RECONNECT_TRIGGERED')) noteMobileHealthReconnect();
       addLog(e.message);
     });
 
@@ -1342,6 +1408,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           || selectedProtocol
           || 'vless'
         ).toLowerCase();
+        connectedProtocolRef.current = engineProtocol;
+        setConnectedProtocol(engineProtocol);
 
         // Capturer le baseline initial natif
         try {
@@ -1375,6 +1443,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         addStepLog('handshake', 'step_handshake', 'active');
         addLog('⏳ Connexion en cours...');
       } else {
+        connectedProtocolRef.current = (selectedProtocol || 'vless').toLowerCase();
+        setConnectedProtocol(connectedProtocolRef.current);
         await apiClient.post('/mobile/vpn/session', { action: 'connect', protocol: selectedProtocol || 'VLESS' });
         await new Promise(r => setTimeout(r, 1200));
         setIsConnected(true);

@@ -1979,4 +1979,31 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(notifications, /formatSpeed\(traffic\.uploadSpeed\)/);
     assert.match(notifications, /formatSpeed\(traffic\.downloadSpeed\)/);
   });
+
+  it('rapporte la santé mobile sans secret et sans polling supplémentaire', () => {
+    const telemetry = source('services/mobileHealth.ts');
+    const contexte = source('contexts/VpnContext.tsx');
+    const nativeModule = source('modules/android-native/SxbVpnModule.kt');
+
+    assert.match(telemetry, /apiClient\.post\('\/mobile-health\/report'/);
+    assert.match(telemetry, /activeDurationSeconds/);
+    assert.match(telemetry, /backgroundDurationSeconds/);
+    assert.match(telemetry, /wakeCount/);
+    assert.match(telemetry, /batteryOptimization/);
+    assert.doesNotMatch(telemetry, /setInterval\(/);
+
+    const payload = telemetry.slice(
+      telemetry.indexOf('const payload ='),
+      telemetry.indexOf("apiClient.post('/mobile-health/report'"),
+    );
+    for (const forbidden of ['host:', 'ip:', 'payload:', 'credentials:', 'rawLog:']) {
+      assert.equal(payload.includes(forbidden), false, `${forbidden} ne doit jamais être envoyé`);
+    }
+
+    assert.match(contexte, /noteMobileHealthAppState\(next\)/);
+    assert.match(contexte, /previous === 'connected' \? 'TUNNEL_INTERRUPTED' : 'UNKNOWN'/);
+    assert.match(contexte, /AUTO_RECONNECT_TRIGGERED/);
+    assert.match(nativeModule, /isIgnoringBatteryOptimizations/);
+    assert.doesNotMatch(nativeModule, /REQUEST_IGNORE_BATTERY_OPTIMIZATIONS/);
+  });
 });

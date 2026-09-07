@@ -25,6 +25,7 @@ import VpnProfilesView from "./components/VpnProfilesView";
 import OwnerLogView from "./components/OwnerLogView";
 import AnnouncementsView from "./components/AnnouncementsView";
 import AppUpdatesView from "./components/AppUpdatesView";
+import MobileHealthView from "./components/MobileHealthView";
 import MaintenancePage from "./components/MaintenancePage";
 import Layout from "./components/Layout";
 import { useEffect, useState, useCallback } from 'react';
@@ -308,6 +309,11 @@ function MainApp() {
         return <AnnouncementsView />;
       case 'app-updates':
         return <AppUpdatesView currentUserRole={role} />;
+      case 'mobile-health':
+        if (role !== UserRole.OWNER && role !== UserRole.SUPER_ADMIN && role !== UserRole.ADMIN) {
+          return <DashboardView onNavigate={(route) => setActiveRoute(route)} currentUserRole={role} />;
+        }
+        return <MobileHealthView />;
       case 'rbac':
         return <RBACView currentUserRole={role} onRolePermissionsUpdated={handleRolePermissionsUpdated} />;
       case 'accounts':

@@ -7,6 +7,7 @@ import {
   Menu, X, UserPlus, HeadphonesIcon, BadgePercent, Activity,
   ChevronDown, Network, Radio, Cpu, BarChart3, Ticket,
   PackageOpen, GitBranch, ScrollText, BellRing, Download,
+  HeartPulse,
 } from 'lucide-react';
 
 interface LayoutProps {
@@ -75,7 +76,7 @@ export default function Layout({
       'vpn-engine': 'vpnengine', xray: 'vpnengine', singbox: 'vpnengine', payload: 'vpnengine',
       'vpn-profiles': 'vpnengine', announcements: 'admin',
       sessions: 'monitoring', analytics: 'monitoring', servers: 'monitoring', monitoring: 'monitoring',
-      accounts: 'admin', resellers: 'admin', rbac: 'admin', 'app-updates': 'admin',
+      accounts: 'admin', resellers: 'admin', rbac: 'admin', 'app-updates': 'admin', 'mobile-health': 'admin',
     };
     const group = groupMap[activeRoute];
     if (group) setOpenGroups(prev => ({ ...prev, [group]: true }));
@@ -160,6 +161,7 @@ export default function Layout({
         { kind: 'leaf', id: 'rbac', label: t('sidebar.rbac'), icon: Shield, roles: ADMINS },
         { kind: 'leaf', id: 'announcements', label: t('sidebar.annonces'), icon: BellRing, roles: STAFF },
         { kind: 'leaf', id: 'app-updates', label: t('sidebar.app_updates'), icon: Download, roles: STAFF },
+        { kind: 'leaf', id: 'mobile-health', label: 'Santé mobile', icon: HeartPulse, roles: ADMINS },
       ],
     },
     {

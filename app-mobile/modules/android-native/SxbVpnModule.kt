@@ -14,6 +14,7 @@ import android.net.VpnService
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.os.Build
+import android.os.PowerManager
 import com.sxbvpn.vpnmodule.SxbSecureLogger
 import com.sxbvpn.vpnmodule.SxbSecureLogger.VpnEvent
 import com.facebook.react.bridge.*
@@ -216,6 +217,23 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
     @ReactMethod
     fun getVpnState(promise: Promise) {
         promise.resolve(SxbVpnService.getCurrentState())
+    }
+
+    // Lecture passive de l'état système, sans permission ni demande d'exemption.
+    // Il s'agit d'un contexte d'exécution Android, pas d'une mesure de mAh.
+    @ReactMethod
+    fun getBatteryOptimizationState(promise: Promise) {
+        try {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+                promise.resolve("unknown")
+                return
+            }
+            val powerManager = reactApplicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager
+            val unrestricted = powerManager.isIgnoringBatteryOptimizations(reactApplicationContext.packageName)
+            promise.resolve(if (unrestricted) "unrestricted" else "optimized")
+        } catch (_: Exception) {
+            promise.resolve("unknown")
+        }
     }
 
     // ── getTrafficStats ───────────────────────────────────────────────────────
