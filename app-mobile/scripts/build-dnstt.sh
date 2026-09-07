@@ -69,7 +69,12 @@ build_abi() {
   (( built == 1 )) || { echo "Échec compilation DNSTT ${abi} après 3 tentatives" >&2; exit 1; }
   [[ -s "${destination}" ]]
   echo "[dnstt] ${abi} construit : $(stat -c %s "${destination}") octets"
-  "${TOOLCHAIN}/llvm-readelf" -h "${destination}" | grep -q 'Type:.*DYN'
+  # Ne pas canaliser llvm-readelf vers `grep -q` sous pipefail : grep ferme le
+  # pipe après le match et llvm-readelf sort alors avec SIGPIPE/code 74 malgré
+  # un binaire parfaitement valide.
+  local elf_header
+  elf_header="$("${TOOLCHAIN}/llvm-readelf" -h "${destination}")"
+  grep -q 'Type:.*DYN' <<<"${elf_header}"
   local align found=0
   while read -r align; do
     found=1

@@ -24,6 +24,8 @@ describe('Android SSH native transports', () => {
     assert.ok(build.includes('"arm64-v8a" "arm64"'));
     assert.ok(build.includes('"armeabi-v7a" "arm"'));
     assert.ok(build.includes('/libdnstt.so'));
+    assert.doesNotMatch(build, /llvm-readelf" -h "\$\{destination\}" \| grep -q/);
+    assert.match(build, /elf_header="\$\("\$\{TOOLCHAIN\}\/llvm-readelf" -h "\$\{destination\}"\)"/);
   });
 
   it('protects DNSTT sockets passed with SCM_RIGHTS and owns process cleanup', () => {
