@@ -182,7 +182,8 @@ export default function MobileHealthView() {
           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-gray-500">
             <span>Générée le {formatDate(summary.generatedAt)}</span>
             <span>Fenêtre active : {formatNumber(summary.activeWindowHours)} h</span>
-            <span>Rétention : {formatNumber(summary.retentionDays)} jours</span>
+            <span>Signaux : {formatNumber(summary.retentionDays)} jours</span>
+            <span>Appareils inactifs : {formatNumber(summary.deviceRetentionDays)} jours</span>
           </div>
         </div>
         <button
@@ -313,6 +314,7 @@ export default function MobileHealthView() {
             </h2>
             <p className="mt-1 text-[11px] text-gray-500">
               Uniquement les pseudonymes et métriques anonymisées prévus par le résumé de santé mobile.
+              {summary.detailsTruncated ? ` Affichage limité aux ${summary.detailsLimit} derniers appareils.` : ''}
             </p>
           </div>
           <div className="flex items-center gap-1.5 text-xs text-gray-500">

@@ -30,6 +30,7 @@ const protocols = [
 ] as const;
 
 export const mobileHealthReportSchema = z.object({
+  reportId: z.string().uuid(),
   appVersion: z.string().trim().min(1).max(40).regex(/^[0-9A-Za-z._+-]+$/),
   versionCode: z.number().int().positive().max(2_147_483_647),
   androidApi: z.number().int().min(21).max(100).nullable().default(null),
@@ -158,13 +159,18 @@ let lastRetentionRunAt = 0;
 
 async function applyRetention(now: Date): Promise<void> {
   if (!prisma || now.getTime() - lastRetentionRunAt < 6 * 60 * 60 * 1000) return;
-  lastRetentionRunAt = now.getTime();
   const reportCutoff = new Date(now.getTime() - MOBILE_HEALTH_REPORT_RETENTION_DAYS * 86_400_000);
   const deviceCutoff = new Date(now.getTime() - MOBILE_HEALTH_DEVICE_RETENTION_DAYS * 86_400_000);
-  await (prisma as any).$transaction([
-    (prisma as any).mobileHealthReport.deleteMany({ where: { reportedAt: { lt: reportCutoff } } }),
-    (prisma as any).mobileHealthDevice.deleteMany({ where: { lastSeenAt: { lt: deviceCutoff } } }),
-  ]);
+  try {
+    await (prisma as any).$transaction([
+      (prisma as any).mobileHealthReport.deleteMany({ where: { reportedAt: { lt: reportCutoff } } }),
+      (prisma as any).mobileHealthDevice.deleteMany({ where: { lastSeenAt: { lt: deviceCutoff } } }),
+    ]);
+    lastRetentionRunAt = now.getTime();
+  } catch (error) {
+    lastRetentionRunAt = 0;
+    throw error;
+  }
 }
 
 export async function storeMobileHealthReport(
@@ -178,71 +184,89 @@ export async function storeMobileHealthReport(
     where: { userId, deviceId, status: "active" },
     select: { id: true },
   });
-  if (!activatedClient) return "device_not_activated";
+  const legacyRegistration = activatedClient ? null : await (prisma as any).appRegistration.findFirst({
+    where: {
+      deviceId,
+      status: "matched",
+      client: { userId, status: "active" },
+    },
+    select: { id: true },
+  });
+  if (!activatedClient && !legacyRegistration) return "device_not_activated";
 
   const now = new Date();
   const pseudonym = pseudonymizeMobileDevice(userId, deviceId, secret);
-  await (prisma as any).$transaction(async (tx: any) => {
-    const device = await tx.mobileHealthDevice.upsert({
-      where: { pseudonym },
-      create: {
-        pseudonym,
-        appVersion: input.appVersion,
-        versionCode: input.versionCode,
-        androidApi: input.androidApi,
-        deviceModel: input.deviceModel,
-        lastSeenAt: now,
-        tunnelState: input.tunnelState,
-        protocol: input.protocol,
-        lastOutcome: input.outcome,
-        lastErrorCode: input.errorCode,
-        sessionDurationSeconds: input.sessionDurationSeconds,
-        reconnectCount: input.reconnectCount,
-        activeDurationSeconds: input.activeDurationSeconds,
-        backgroundDurationSeconds: input.backgroundDurationSeconds,
-        wakeCount: input.wakeCount,
-        reportCount: 1,
-        batteryOptimization: input.batteryOptimization,
-      },
-      update: {
-        appVersion: input.appVersion,
-        versionCode: input.versionCode,
-        androidApi: input.androidApi,
-        deviceModel: input.deviceModel,
-        lastSeenAt: now,
-        tunnelState: input.tunnelState,
-        protocol: input.protocol,
-        ...(input.outcome === "none" ? {} : {
+  try {
+    await (prisma as any).$transaction(async (tx: any) => {
+      const device = await tx.mobileHealthDevice.upsert({
+        where: { pseudonym },
+        create: {
+          pseudonym,
+          appVersion: input.appVersion,
+          versionCode: input.versionCode,
+          androidApi: input.androidApi,
+          deviceModel: input.deviceModel,
+          lastSeenAt: now,
+          tunnelState: input.tunnelState,
+          protocol: input.protocol,
           lastOutcome: input.outcome,
           lastErrorCode: input.errorCode,
-        }),
-        sessionDurationSeconds: { increment: input.sessionDurationSeconds },
-        reconnectCount: { increment: input.reconnectCount },
-        activeDurationSeconds: { increment: input.activeDurationSeconds },
-        backgroundDurationSeconds: { increment: input.backgroundDurationSeconds },
-        wakeCount: { increment: input.wakeCount },
-        reportCount: { increment: 1 },
-        batteryOptimization: input.batteryOptimization,
-      },
-      select: { id: true },
+          sessionDurationSeconds: input.sessionDurationSeconds,
+          reconnectCount: input.reconnectCount,
+          activeDurationSeconds: input.activeDurationSeconds,
+          backgroundDurationSeconds: input.backgroundDurationSeconds,
+          wakeCount: input.wakeCount,
+          reportCount: 1,
+          batteryOptimization: input.batteryOptimization,
+        },
+        update: {
+          appVersion: input.appVersion,
+          versionCode: input.versionCode,
+          androidApi: input.androidApi,
+          deviceModel: input.deviceModel,
+          lastSeenAt: now,
+          tunnelState: input.tunnelState,
+          protocol: input.protocol,
+          ...(input.outcome === "none" ? {} : {
+            lastOutcome: input.outcome,
+            lastErrorCode: input.errorCode,
+          }),
+          sessionDurationSeconds: { increment: input.sessionDurationSeconds },
+          reconnectCount: { increment: input.reconnectCount },
+          activeDurationSeconds: { increment: input.activeDurationSeconds },
+          backgroundDurationSeconds: { increment: input.backgroundDurationSeconds },
+          wakeCount: { increment: input.wakeCount },
+          reportCount: { increment: 1 },
+          batteryOptimization: input.batteryOptimization,
+        },
+        select: { id: true },
+      });
+      await tx.mobileHealthReport.create({
+        data: {
+          reportId: input.reportId,
+          deviceId: device.id,
+          reportedAt: now,
+          tunnelState: input.tunnelState,
+          protocol: input.protocol,
+          outcome: input.outcome,
+          errorCode: input.errorCode,
+          sessionDurationSeconds: input.sessionDurationSeconds,
+          reconnectCount: input.reconnectCount,
+          activeDurationSeconds: input.activeDurationSeconds,
+          backgroundDurationSeconds: input.backgroundDurationSeconds,
+          wakeCount: input.wakeCount,
+        },
+      });
     });
-    await tx.mobileHealthReport.create({
-      data: {
-        deviceId: device.id,
-        reportedAt: now,
-        tunnelState: input.tunnelState,
-        protocol: input.protocol,
-        outcome: input.outcome,
-        errorCode: input.errorCode,
-        sessionDurationSeconds: input.sessionDurationSeconds,
-        reconnectCount: input.reconnectCount,
-        activeDurationSeconds: input.activeDurationSeconds,
-        backgroundDurationSeconds: input.backgroundDurationSeconds,
-        wakeCount: input.wakeCount,
-      },
-    });
+  } catch (error: any) {
+    const target = Array.isArray(error?.meta?.target)
+      ? error.meta.target.join(",")
+      : String(error?.meta?.target || "");
+    if (error?.code !== "P2002" || !target.includes("reportId")) throw error;
+  }
+  void applyRetention(now).catch((error) => {
+    console.error("[mobile-health] retention failed:", error?.message || error);
   });
-  await applyRetention(now);
   return "accepted";
 }
 
@@ -251,18 +275,87 @@ export async function getMobileHealthSummary() {
   const now = new Date();
   await applyRetention(now);
   const reportCutoff = new Date(now.getTime() - MOBILE_HEALTH_REPORT_RETENTION_DAYS * 86_400_000);
-  const [devices, groupedOutcomes, update] = await Promise.all([
-    (prisma as any).mobileHealthDevice.findMany({ orderBy: { lastSeenAt: "desc" } }),
+  const [deviceRows, groupedOutcomes, versionRows, totalDevices, activeDevices, update] = await Promise.all([
+    (prisma as any).mobileHealthDevice.findMany({
+      orderBy: { lastSeenAt: "desc" },
+      take: 500,
+      select: {
+        pseudonym: true,
+        appVersion: true,
+        versionCode: true,
+        androidApi: true,
+        deviceModel: true,
+        lastSeenAt: true,
+        tunnelState: true,
+        protocol: true,
+        lastOutcome: true,
+        lastErrorCode: true,
+        batteryOptimization: true,
+        reports: {
+          where: { reportedAt: { gte: reportCutoff } },
+          select: {
+            sessionDurationSeconds: true,
+            reconnectCount: true,
+            activeDurationSeconds: true,
+            backgroundDurationSeconds: true,
+            wakeCount: true,
+          },
+        },
+      },
+    }),
     (prisma as any).mobileHealthReport.groupBy({
       by: ["outcome"],
       where: { reportedAt: { gte: reportCutoff } },
       _count: { _all: true },
     }),
+    (prisma as any).mobileHealthDevice.groupBy({
+      by: ["appVersion", "versionCode"],
+      _count: { _all: true },
+      orderBy: { versionCode: "desc" },
+    }),
+    (prisma as any).mobileHealthDevice.count(),
+    (prisma as any).mobileHealthDevice.count({
+      where: {
+        lastSeenAt: {
+          gte: new Date(now.getTime() - MOBILE_HEALTH_ACTIVE_WINDOW_HOURS * 60 * 60 * 1000),
+        },
+      },
+    }),
     readPublishedAppUpdate(),
   ]);
+  const devices = deviceRows.map((row: any) => {
+    const { reports, ...device } = row;
+    return {
+      ...device,
+      sessionDurationSeconds: reports.reduce((sum: number, item: any) => sum + item.sessionDurationSeconds, 0),
+      reconnectCount: reports.reduce((sum: number, item: any) => sum + item.reconnectCount, 0),
+      activeDurationSeconds: reports.reduce((sum: number, item: any) => sum + item.activeDurationSeconds, 0),
+      backgroundDurationSeconds: reports.reduce((sum: number, item: any) => sum + item.backgroundDurationSeconds, 0),
+      wakeCount: reports.reduce((sum: number, item: any) => sum + item.wakeCount, 0),
+      reportCount: reports.length,
+    };
+  });
   const reportOutcomes = groupedOutcomes.map((item: any) => ({
     outcome: item.outcome,
     count: item._count._all,
   }));
-  return summarizeMobileHealth(devices, update?.versionCode ?? null, reportOutcomes, now);
+  const summary = summarizeMobileHealth(devices, update?.versionCode ?? null, reportOutcomes, now);
+  const latestVersionCode = update?.versionCode ?? null;
+  summary.totals.devices = totalDevices;
+  summary.totals.active = activeDevices;
+  summary.totals.inactive = totalDevices - activeDevices;
+  summary.totals.updatesNeeded = latestVersionCode === null
+    ? 0
+    : await (prisma as any).mobileHealthDevice.count({ where: { versionCode: { lt: latestVersionCode } } });
+  summary.versions = versionRows.map((row: any) => ({
+    appVersion: row.appVersion,
+    versionCode: row.versionCode,
+    devices: row._count._all,
+    updatesNeeded: latestVersionCode !== null && row.versionCode < latestVersionCode ? row._count._all : 0,
+  }));
+  return {
+    ...summary,
+    detailsLimit: 500,
+    detailsTruncated: totalDevices > devices.length,
+  };
 }

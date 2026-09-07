@@ -43,6 +43,9 @@ export interface MobileHealthSummary {
   generatedAt: string;
   retentionDays: number;
   activeWindowHours: number;
+  deviceRetentionDays: number;
+  detailsLimit: number;
+  detailsTruncated: boolean;
   latestVersionCode: number | null;
   totals: MobileHealthTotals;
   versions: MobileHealthVersion[];

@@ -555,6 +555,7 @@ model MobileHealthDevice {
 
 model MobileHealthReport {
   id                        String             @id @default(uuid())
+  reportId                  String             @unique
   deviceId                  String
   device                    MobileHealthDevice @relation(fields: [deviceId], references: [id], onDelete: Cascade)
   reportedAt                DateTime           @default(now())

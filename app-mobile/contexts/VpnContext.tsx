@@ -279,6 +279,11 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
     if (vpnState === 'connected') {
       sessionStartRef.current = sessionStartRef.current || Date.now();
+      void reportMobileHealth({
+        tunnelState: 'connected',
+        protocol: connectedProtocolRef.current,
+        outcome: 'success',
+      });
       return;
     }
 
@@ -294,14 +299,23 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         sessionDurationSeconds,
       });
       sessionStartRef.current = 0;
+    } else if (vpnState === 'disconnected' && previous === 'connecting') {
+      void reportMobileHealth({
+        tunnelState: 'disconnected',
+        protocol: connectedProtocolRef.current,
+        outcome: 'failure',
+        errorCode: 'UNKNOWN',
+      });
+      sessionStartRef.current = 0;
     } else if (vpnState === 'disconnected' && previous === 'connected') {
       void reportMobileHealth({
         tunnelState: 'disconnected',
         protocol: connectedProtocolRef.current,
-        outcome: 'success',
         sessionDurationSeconds,
       });
       sessionStartRef.current = 0;
+      connectedProtocolRef.current = null;
+      setConnectedProtocol(null);
     }
   }, [isAuthenticated, vpnState]);
 

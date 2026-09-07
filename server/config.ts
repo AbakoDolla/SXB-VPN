@@ -15,6 +15,7 @@ const configSchema = z.object({
   XPANEL_ADMIN_USERNAME: z.string().default("admin"),
   XPANEL_ADMIN_PASSWORD: z.string().optional(),
   ENCRYPTION_KEY: z.string().length(32, "Encryption key must be exactly 32 characters").default("sxb-vpn-32-byte-encryption-key-!"),
+  MOBILE_HEALTH_PSEUDONYM_SECRET: z.string().min(32).optional(),
 });
 
 const parsed = configSchema.safeParse(process.env);
@@ -34,4 +35,5 @@ export const config = parsed.success ? parsed.data : configSchema.parse({
   XPANEL_ADMIN_USERNAME: process.env.XPANEL_ADMIN_USERNAME || "admin",
   XPANEL_ADMIN_PASSWORD: process.env.XPANEL_ADMIN_PASSWORD,
   ENCRYPTION_KEY: process.env.ENCRYPTION_KEY || "sxb-vpn-32-byte-encryption-key-!",
+  MOBILE_HEALTH_PSEUDONYM_SECRET: process.env.MOBILE_HEALTH_PSEUDONYM_SECRET,
 });

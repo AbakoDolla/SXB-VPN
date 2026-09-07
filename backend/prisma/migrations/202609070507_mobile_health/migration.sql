@@ -1,5 +1,6 @@
 CREATE TABLE "mobile_health_devices" (
     "id" TEXT NOT NULL,
+    "reportId" TEXT NOT NULL,
     "pseudonym" TEXT NOT NULL,
     "appVersion" TEXT NOT NULL,
     "versionCode" INTEGER NOT NULL,
@@ -39,6 +40,7 @@ CREATE TABLE "mobile_health_reports" (
 );
 
 CREATE UNIQUE INDEX "mobile_health_devices_pseudonym_key" ON "mobile_health_devices"("pseudonym");
+CREATE UNIQUE INDEX "mobile_health_reports_reportId_key" ON "mobile_health_reports"("reportId");
 CREATE INDEX "mobile_health_devices_lastSeenAt_idx" ON "mobile_health_devices"("lastSeenAt");
 CREATE INDEX "mobile_health_devices_versionCode_idx" ON "mobile_health_devices"("versionCode");
 CREATE INDEX "mobile_health_reports_reportedAt_idx" ON "mobile_health_reports"("reportedAt");

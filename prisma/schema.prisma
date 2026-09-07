@@ -495,3 +495,55 @@ model ActivationSession {
   @@unique([clientId, deviceId])
   @@map("activation_sessions")
 }
+
+// Identité volontairement pseudonymisée : aucune FK client/appareil et aucun
+// hôte, IP, payload, credential ou log brut ne sont conservés.
+model MobileHealthDevice {
+  id                        String               @id @default(uuid())
+  pseudonym                 String               @unique
+  appVersion                String
+  versionCode               Int
+  androidApi                Int?
+  deviceModel               String?
+  lastSeenAt                DateTime             @default(now())
+  tunnelState               String
+  protocol                  String?
+  lastOutcome               String               @default("none")
+  lastErrorCode             String?
+  sessionDurationSeconds    Int                  @default(0)
+  reconnectCount            Int                  @default(0)
+  activeDurationSeconds     Int                  @default(0)
+  backgroundDurationSeconds Int                  @default(0)
+  wakeCount                 Int                  @default(0)
+  reportCount               Int                  @default(0)
+  batteryOptimization       String               @default("unknown")
+  createdAt                 DateTime             @default(now())
+  updatedAt                 DateTime             @updatedAt
+  reports                   MobileHealthReport[]
+
+  @@index([lastSeenAt])
+  @@index([versionCode])
+  @@map("mobile_health_devices")
+}
+
+model MobileHealthReport {
+  id                        String             @id @default(uuid())
+  reportId                  String             @unique
+  deviceId                  String
+  device                    MobileHealthDevice @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  reportedAt                DateTime           @default(now())
+  tunnelState               String
+  protocol                  String?
+  outcome                   String             @default("none")
+  errorCode                 String?
+  sessionDurationSeconds    Int                @default(0)
+  reconnectCount            Int                @default(0)
+  activeDurationSeconds     Int                @default(0)
+  backgroundDurationSeconds Int                @default(0)
+  wakeCount                 Int                @default(0)
+
+  @@index([reportedAt])
+  @@index([deviceId, reportedAt])
+  @@index([outcome, reportedAt])
+  @@map("mobile_health_reports")
+}

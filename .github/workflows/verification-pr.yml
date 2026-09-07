@@ -52,6 +52,9 @@ jobs:
         working-directory: app-mobile
         run: npx tsx --test tests/regression-critical-flows.test.ts
 
+      - name: Contrat de confidentialité santé mobile
+        run: node --test scripts/tests/mobile-health-static.test.mjs
+
       # Une erreur de syntaxe dans un workflow ne se voit qu'au moment où
       # GitHub tente de le lancer, donc trop tard pour celui qui déploie.
       # Python plutôt que js-yaml : pnpm n'aplatit pas les dépendances

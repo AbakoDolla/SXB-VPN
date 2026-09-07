@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
+import * as Crypto from 'expo-crypto';
 import { AppState, AppStateStatus, NativeModules, Platform } from 'react-native';
 import apiClient from './apiClient';
 
@@ -20,6 +21,7 @@ interface PendingBatterySignals {
   backgroundSeconds: number;
   wakeCount: number;
   reconnectCount: number;
+  outbox: MobileHealthPayload[];
 }
 
 export interface MobileHealthSnapshot {
@@ -28,6 +30,24 @@ export interface MobileHealthSnapshot {
   outcome?: SessionOutcome;
   errorCode?: MobileHealthErrorCode | null;
   sessionDurationSeconds?: number;
+}
+
+interface MobileHealthPayload {
+  reportId: string;
+  appVersion: string;
+  versionCode: number;
+  androidApi: number | null;
+  deviceModel: string | null;
+  tunnelState: TunnelState;
+  protocol: string | null;
+  outcome: SessionOutcome;
+  errorCode: MobileHealthErrorCode | null;
+  sessionDurationSeconds: number;
+  reconnectCount: number;
+  activeDurationSeconds: number;
+  backgroundDurationSeconds: number;
+  wakeCount: number;
+  batteryOptimization: 'optimized' | 'unrestricted' | 'unknown';
 }
 
 const STORAGE_KEY = '@sxb_mobile_health_pending_v1';
@@ -46,6 +66,7 @@ let pending: PendingBatterySignals = {
   backgroundSeconds: 0,
   wakeCount: 0,
   reconnectCount: 0,
+  outbox: [],
 };
 let hydrated: Promise<void> | null = null;
 let sendInFlight: Promise<boolean> | null = null;
@@ -65,6 +86,11 @@ function hydrate(): Promise<void> {
         pending.backgroundSeconds += clampInteger(Number(value.backgroundSeconds), 7 * 86_400);
         pending.wakeCount += clampInteger(Number(value.wakeCount), 100);
         pending.reconnectCount += clampInteger(Number(value.reconnectCount), 100);
+        pending.outbox = Array.isArray(value.outbox)
+          ? value.outbox.filter((item): item is MobileHealthPayload => {
+              return !!item && typeof item === 'object' && typeof item.reportId === 'string';
+            }).slice(0, 20)
+          : [];
       } catch {
         // Corrupt non-sensitive counters are discarded; no identity or config is stored here.
       }
@@ -143,38 +169,56 @@ export async function reportMobileHealth(snapshot: MobileHealthSnapshot): Promis
   sendInFlight = (async () => {
     await hydrate();
     accrue();
-    const sent = {
-      activeSeconds: pending.activeSeconds,
-      backgroundSeconds: pending.backgroundSeconds,
-      wakeCount: pending.wakeCount,
-      reconnectCount: pending.reconnectCount,
+    const reserved = pending.outbox.reduce((sum, item) => ({
+      activeSeconds: sum.activeSeconds + item.activeDurationSeconds,
+      backgroundSeconds: sum.backgroundSeconds + item.backgroundDurationSeconds,
+      wakeCount: sum.wakeCount + item.wakeCount,
+      reconnectCount: sum.reconnectCount + item.reconnectCount,
+    }), {
+      activeSeconds: 0,
+      backgroundSeconds: 0,
+      wakeCount: 0,
+      reconnectCount: 0,
+    });
+    const reportCounters = {
+      activeSeconds: Math.max(0, pending.activeSeconds - reserved.activeSeconds),
+      backgroundSeconds: Math.max(0, pending.backgroundSeconds - reserved.backgroundSeconds),
+      wakeCount: Math.max(0, pending.wakeCount - reserved.wakeCount),
+      reconnectCount: Math.max(0, pending.reconnectCount - reserved.reconnectCount),
     };
-    const payload = {
+    const payload: MobileHealthPayload = {
+      reportId: Crypto.randomUUID(),
       ...appMetadata(),
       tunnelState: snapshot.tunnelState,
       protocol: normalizeMobileHealthProtocol(snapshot.protocol),
       outcome: snapshot.outcome || 'none',
       errorCode: snapshot.outcome === 'failure' ? snapshot.errorCode || 'UNKNOWN' : null,
       sessionDurationSeconds: clampInteger(snapshot.sessionDurationSeconds || 0, 7 * 86_400),
-      reconnectCount: clampInteger(sent.reconnectCount, 100),
-      activeDurationSeconds: clampInteger(sent.activeSeconds, 7 * 86_400),
-      backgroundDurationSeconds: clampInteger(sent.backgroundSeconds, 7 * 86_400),
-      wakeCount: clampInteger(sent.wakeCount, 100),
+      reconnectCount: clampInteger(reportCounters.reconnectCount, 100),
+      activeDurationSeconds: clampInteger(reportCounters.activeSeconds, 7 * 86_400),
+      backgroundDurationSeconds: clampInteger(reportCounters.backgroundSeconds, 7 * 86_400),
+      wakeCount: clampInteger(reportCounters.wakeCount, 100),
       batteryOptimization: await batteryOptimizationState(),
     };
+    pending.outbox.push(payload);
+    await persist();
 
-    try {
-      await apiClient.post('/mobile-health/report', payload, { timeout: 8_000 });
-      pending.activeSeconds = Math.max(0, pending.activeSeconds - sent.activeSeconds);
-      pending.backgroundSeconds = Math.max(0, pending.backgroundSeconds - sent.backgroundSeconds);
-      pending.wakeCount = Math.max(0, pending.wakeCount - sent.wakeCount);
-      pending.reconnectCount = Math.max(0, pending.reconnectCount - sent.reconnectCount);
-      await persist();
-      return true;
-    } catch {
-      await persist();
-      return false;
+    while (pending.outbox.length > 0) {
+      const queued = pending.outbox[0];
+      try {
+        await apiClient.post('/mobile-health/report', queued, { timeout: 8_000 });
+        pending.activeSeconds = Math.max(0, pending.activeSeconds - queued.activeDurationSeconds);
+        pending.backgroundSeconds = Math.max(0, pending.backgroundSeconds - queued.backgroundDurationSeconds);
+        pending.wakeCount = Math.max(0, pending.wakeCount - queued.wakeCount);
+        pending.reconnectCount = Math.max(0, pending.reconnectCount - queued.reconnectCount);
+        pending.outbox.shift();
+        await persist();
+      } catch {
+        await persist();
+        return false;
+      }
     }
+    return true;
   })().finally(() => {
     sendInFlight = null;
   });

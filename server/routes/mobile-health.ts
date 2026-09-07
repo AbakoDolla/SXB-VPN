@@ -17,7 +17,7 @@ function readDeviceId(req: AuthenticatedRequest): string | null {
   const raw = req.headers["x-sxb-device-id"];
   if (typeof raw !== "string") return null;
   const normalized = raw.trim();
-  return /^SXB[A-Z0-9]{12,80}$/.test(normalized) ? normalized : null;
+  return /^SXB[A-Z0-9]{6,80}$/.test(normalized) ? normalized : null;
 }
 
 router.post("/report", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
@@ -37,10 +37,18 @@ router.post("/report", requireAuth, async (req: AuthenticatedRequest, res: Respo
   }
 
   try {
+    const pseudonymSecret = config.MOBILE_HEALTH_PSEUDONYM_SECRET
+      || (config.NODE_ENV !== "production" ? config.JWT_SECRET : null);
+    if (!pseudonymSecret) {
+      return res.status(503).json({
+        error: "MOBILE_HEALTH_NOT_CONFIGURED",
+        message: "Mobile health pseudonymization is not configured",
+      });
+    }
     const result = await storeMobileHealthReport(
       req.user.userId,
       deviceId,
-      config.ENCRYPTION_KEY,
+      pseudonymSecret,
       parsed.data,
     );
     if (result === "device_not_activated") {

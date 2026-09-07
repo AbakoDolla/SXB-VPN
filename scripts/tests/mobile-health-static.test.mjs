@@ -18,10 +18,14 @@ describe('mobile health wiring and privacy', () => {
   it('stores only pseudonymous allowlisted fields', () => {
     const service = source('server/services/mobile-health.ts');
     const schema = source('backend/prisma/schema.prisma');
+    const rootSchema = source('prisma/schema.prisma');
     const deviceModel = schema.slice(schema.indexOf('model MobileHealthDevice'));
 
     assert.match(service, /createHmac\("sha256", secret\)/);
     assert.match(service, /\.strict\(\)/);
+    assert.match(service, /reportId: z\.string\(\)\.uuid\(\)/);
+    assert.match(service, /error\?\.code !== "P2002" \|\| !target\.includes\("reportId"\)/);
+    assert.equal(schema.replace(/\r\n/g, '\n').trim(), rootSchema.replace(/\r\n/g, '\n').trim());
     for (const forbidden of ['host ', 'ipAddress', 'payload ', 'credentials', 'rawLog']) {
       assert.equal(deviceModel.includes(forbidden), false, `${forbidden} must not be persisted`);
     }
@@ -38,6 +42,8 @@ describe('mobile health wiring and privacy', () => {
     assert.match(context, /noteMobileHealthAppState\(next\)/);
     assert.match(context, /outcome: 'success'/);
     assert.match(context, /outcome: 'failure'/);
+    assert.match(telemetry, /pending\.outbox\.push\(payload\)/);
+    assert.match(telemetry, /pending\.outbox\.shift\(\)/);
     assert.match(nativeModule, /isIgnoringBatteryOptimizations/);
     assert.doesNotMatch(nativeModule, /REQUEST_IGNORE_BATTERY_OPTIMIZATIONS/);
   });
