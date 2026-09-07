@@ -12,6 +12,18 @@ export type ActivationErrorKey =
   | 'error_server'
   | 'error_generic';
 
+const UNICODE_DASHES = /[\u2010-\u2015\u2212]/g;
+const INVISIBLE_COPY_CHARS = /[\u200B-\u200D\u2060\uFEFF]/g;
+
+export function normalizeActivationToken(value: string): string {
+  return value
+    .normalize('NFKC')
+    .replace(UNICODE_DASHES, '-')
+    .replace(INVISIBLE_COPY_CHARS, '')
+    .replace(/\s+/g, '')
+    .toUpperCase();
+}
+
 type HttpErrorLike = {
   response?: {
     status?: number;

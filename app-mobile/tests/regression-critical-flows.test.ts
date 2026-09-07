@@ -19,7 +19,7 @@ import {
   isValidPin,
   shouldLockAfterBackground,
 } from '../services/appLockPolicy';
-import { activationErrorKey } from '../services/activationError';
+import { activationErrorKey, normalizeActivationToken } from '../services/activationError';
 
 const XRAY_VLESS_D2L = {
   remarks: 'BYPASS',
@@ -100,6 +100,13 @@ describe('verrouillage local biométrique et PIN', () => {
   });
 
   describe('erreurs d’activation mobile', () => {
+    it('nettoie les caractères de copie sans altérer le token SXB', () => {
+      assert.equal(
+        normalizeActivationToken('  sxb\u2011user\u200b\u00a01234\u20144567  '),
+        'SXB-USER1234-4567',
+      );
+    });
+
     it('ne présente jamais un refus 403 générique comme un token expiré', () => {
       assert.equal(activationErrorKey({ response: { status: 403, data: { code: 'FORBIDDEN' } } }), 'activation_forbidden');
       assert.equal(activationErrorKey({ response: { status: 403, data: { code: 'RESELLER_QUOTA_REACHED' } } }), 'activation_quota_reached');

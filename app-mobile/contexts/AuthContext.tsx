@@ -7,6 +7,7 @@ import { clearProvisionedConfig, provisionAndStore } from '@/services/provisionC
 import * as configStore from '@/services/configStore';
 import { clearAllOfflineData } from '@/services/offlineStorage';
 import { unregisterPushToken } from '@/services/pushNotifications';
+import { normalizeActivationToken } from '@/services/activationError';
 import type { AccountState, User } from '@/types/api';
 
 // Clés non-sensibles restent dans AsyncStorage (infos user, onboarding...)
@@ -206,7 +207,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const activateAccount = useCallback(async (token: string) => {
     const did = await getOrCreateDeviceId();
     setDeviceId(did);
-    const res = await apiClient.post('/mobile/auth/activate', { token, deviceId: did });
+    const res = await apiClient.post('/mobile/auth/activate', {
+      token: normalizeActivationToken(token),
+      deviceId: did,
+    });
     const { accessToken, refreshToken, user: u, accountState: as } = res.data;
     // Stocker JWT dans SecureStore (Keystore Android / Keychain iOS)
     await Promise.all([
@@ -220,7 +224,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const activatePlan = useCallback(async (code: string) => {
-    const normalized = code.trim().toUpperCase();
+    const normalized = normalizeActivationToken(code);
     let newState: AccountState;
 
     // Les tokens créés par le dashboard sont des dataToken de Subscription.

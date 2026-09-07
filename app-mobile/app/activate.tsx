@@ -11,7 +11,7 @@ import * as Haptics from "expo-haptics";
 import { useAuthContext } from "@/contexts/AuthContext";
 import { useColors } from "@/hooks/useColors";
 import { useTranslation } from "@/localization";
-import { activationErrorKey } from "@/services/activationError";
+import { activationErrorKey, normalizeActivationToken } from "@/services/activationError";
 
 const LOGO = require("../assets/images/icon.png");
 
@@ -37,7 +37,7 @@ export default function ActivateScreen() {
   ]).start();
 
   const handleActivate = async () => {
-    const normalized = token.trim();
+    const normalized = normalizeActivationToken(token);
     if (!normalized) {
       setError(t("error_invalid_token"));
       shake();
