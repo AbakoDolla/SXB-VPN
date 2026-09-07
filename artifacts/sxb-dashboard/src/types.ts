@@ -56,6 +56,25 @@ export interface Reseller {
   createdAt: string;
 }
 
+export interface ResellerQuotaMovement {
+  reseller: string;
+  author: string;
+  kind:
+    | "ADMIN_ALLOCATION"
+    | "ADMIN_WITHDRAWAL"
+    | "ADMIN_CORRECTION"
+    | "QUOTA_COMMITMENT"
+    | "QUOTA_RELEASE";
+  reason: string;
+  deltaBytes: string;
+  quotaBeforeBytes: string;
+  quotaAfterBytes: string;
+  allocatedBeforeBytes: string;
+  allocatedAfterBytes: string;
+  referenceType?: string | null;
+  createdAt: string;
+}
+
 export interface VPSServer {
   id: string;
   name: string;

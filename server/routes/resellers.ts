@@ -5,7 +5,17 @@ import crypto from "crypto";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { canSeeUser } from "../middleware/rbac/owner";
-import { calculerAllocation, verifierPlafond, estIllimite, porteUnQuotaInterdit } from "../services/reseller-quota";
+import {
+  AccesHistoriqueQuotaRefuse,
+  calculerAllocation,
+  estIllimite,
+  executerMutationQuota,
+  modifierPlafondQuota,
+  PlafondQuotaDepasse,
+  porteeHistoriqueQuota,
+  porteUnQuotaInterdit,
+  serialiserMouvementQuota,
+} from "../services/reseller-quota";
 
 const router = Router();
 
@@ -79,9 +89,6 @@ router.get("/", requireAuth, requirePermission("reseller.manage"), async (req: A
             // /:id/create-client, qui portent leur quota en propre, restaient
             // invisibles du décompte. calculerAllocation() couvre les deux.
             const { alloue, consomme } = await calculerAllocation(prisma, r.userId);
-            if ((r.quotaUsedBytes ?? BigInt(0)) !== alloue) {
-              await (prisma as any).reseller.update({ where: { id: r.id }, data: { quotaUsedBytes: alloue } }).catch(() => {});
-            }
             return flattenReseller({ ...r, quotaUsedBytes: alloue }, clientsCount, consomme);
           })
       );
@@ -96,6 +103,35 @@ router.get("/", requireAuth, requirePermission("reseller.manage"), async (req: A
   } catch (err) {
     console.error("Fetch resellers error:", err);
     return res.status(500).json({ error: "errors.server", message: "Failed to fetch resellers" });
+  }
+});
+
+const historyQuerySchema = z.object({
+  resellerId: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(100),
+});
+
+// GET /api/resellers/quota-history — admins: tout, revendeur: son historique.
+router.get("/quota-history", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const query = historyQuerySchema.parse(req.query);
+    const where = porteeHistoriqueQuota(req.user?.role, req.user?.userId, query.resellerId);
+    if (!prisma) return res.json({ movements: [] });
+    const movements = await (prisma as any).resellerQuotaMovement.findMany({
+      where,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: query.limit,
+    });
+    return res.json({ movements: movements.map(serialiserMouvementQuota) });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: "errors.validation", message: err.issues });
+    }
+    if (err instanceof AccesHistoriqueQuotaRefuse) {
+      return res.status(403).json({ error: "errors.auth.forbidden", message: err.message });
+    }
+    console.error("Fetch reseller quota history error:", err);
+    return res.status(500).json({ error: "errors.server", message: "Failed to fetch quota history" });
   }
 });
 
@@ -157,10 +193,33 @@ router.post("/", requireAuth, requirePermission("reseller.manage"), async (req: 
           message: "Un compte administrateur ou super-administrateur ne peut pas être revendeur : il ne porte aucun quota.",
         });
       }
-      const newReseller = await prisma.reseller.create({
-        data: { userId: resolvedUserId, commission, quotaBytes, quotaUsedBytes: BigInt(0), status: body.status },
-        include: { user: true },
-      });
+      const newReseller = await prisma.$transaction(async (tx: any) => {
+        const created = await tx.reseller.create({
+          data: { userId: resolvedUserId, commission, quotaBytes, quotaUsedBytes: BigInt(0), status: body.status },
+          include: { user: true },
+        });
+        if (quotaBytes !== BigInt(0)) {
+          await tx.resellerQuotaMovement.create({
+            data: {
+              resellerId: created.id,
+              resellerUserId: created.userId,
+              resellerName: created.user?.name || created.user?.email || "Revendeur",
+              actorUserId: req.user?.userId || null,
+              actorName: req.user?.email || "Systeme",
+              kind: "ADMIN_ALLOCATION",
+              reason: "Allocation initiale du plafond",
+              deltaBytes: quotaBytes,
+              quotaBeforeBytes: BigInt(0),
+              quotaAfterBytes: quotaBytes,
+              allocatedBeforeBytes: BigInt(0),
+              allocatedAfterBytes: BigInt(0),
+              referenceType: "reseller",
+              referenceId: created.id,
+            },
+          });
+        }
+        return created;
+      }, { isolationLevel: "Serializable" });
       await logDbActivity(req.user?.userId || null, `Reseller created: ${body.email || resolvedUserId}`, "success", req.ip);
       const resellerResponse: any = flattenReseller(newReseller, 0);
       if (generatedPassword) resellerResponse.generatedPassword = generatedPassword;
@@ -285,8 +344,6 @@ router.post("/:id/create-client", requireAuth, async (req: AuthenticatedRequest,
     // plafond du revendeur : c'est par là que 16 Go ont été distribués par un
     // revendeur crédité de 0 Go. Le contrôle porte sur le revendeur
     // destinataire, y compris lorsque c'est l'administrateur qui agit pour lui.
-    const refus = await verifierPlafond(prisma, resellerUserId, quotaBytes);
-    if (refus) return res.status(refus.status).json(refus.body);
     const expireAt = new Date();
     expireAt.setDate(expireAt.getDate() + body.durationDays);
     const tokenValue = `SXB-${crypto.randomBytes(3).toString("hex").toUpperCase()}-${crypto.randomBytes(3).toString("hex").toUpperCase()}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
@@ -296,7 +353,12 @@ router.post("/:id/create-client", requireAuth, async (req: AuthenticatedRequest,
       // `name` n'existe pas sur VpnClient : le passer faisait échouer Prisma, et
       // cette route répondait 500 depuis toujours. Le libellé du client vient de
       // l'utilisateur propriétaire, comme dans POST /api/clients.
-      newClient = await prisma.vpnClient.create({
+      newClient = await executerMutationQuota(prisma, {
+        resellerUserId,
+        auteur: { userId: req.user?.userId, email: req.user?.email },
+        reason: `Creation du client ${body.name}`,
+        referenceType: "vpn_client",
+      }, (tx) => tx.vpnClient.create({
         data: {
           token: tokenValue,
           userId: resellerUserId,
@@ -306,7 +368,7 @@ router.post("/:id/create-client", requireAuth, async (req: AuthenticatedRequest,
           deviceLimit: body.deviceLimit,
           status: "active",
         },
-      });
+      }));
     } else {
       newClient = {
         id: `client-${Date.now()}`,
@@ -337,6 +399,12 @@ router.post("/:id/create-client", requireAuth, async (req: AuthenticatedRequest,
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: "errors.validation", message: err.issues });
     }
+    if (err instanceof PlafondQuotaDepasse) {
+      return res.status(409).json({
+        error: "errors.resellers.quota_exceeded",
+        message: "Quota revendeur insuffisant pour creer ce client.",
+      });
+    }
     console.error("Create reseller client error:", err);
     return res.status(500).json({ error: "errors.server", message: "Failed to create reseller client" });
   }
@@ -350,6 +418,8 @@ const updateResellerSchema = z.object({
   // plafond, et il doit rester un choix explicite de l'administrateur.
   quotaGB: z.coerce.number().min(-1).optional(),
   status: z.enum(["active", "suspended"]).optional(),
+  reason: z.string().trim().min(3).max(500).optional(),
+  correction: z.boolean().optional(),
 });
 
 router.patch("/:id", requireAuth, requirePermission("reseller.manage"), async (req: AuthenticatedRequest, res: Response) => {
@@ -380,7 +450,24 @@ router.patch("/:id", requireAuth, requirePermission("reseller.manage"), async (r
           message: "Un compte administrateur ou super-administrateur ne porte aucun quota : son accès est illimité.",
         });
       }
-      const updated = await prisma.reseller.update({ where: { id }, data: updateData, include: { user: true } });
+      let updated: any;
+      if (updateData.quotaBytes !== undefined) {
+        updated = await modifierPlafondQuota(prisma, {
+          resellerId: id,
+          nouveauPlafond: updateData.quotaBytes,
+          auteur: { userId: req.user?.userId, email: req.user?.email },
+          reason: body.reason || "Ajustement manuel du plafond",
+          correction: body.correction,
+        });
+        if (!updated) return res.status(404).json({ error: "errors.resellers.not_found", message: "Reseller not found" });
+        const otherData = { ...updateData };
+        delete otherData.quotaBytes;
+        if (Object.keys(otherData).length > 0) {
+          updated = await prisma.reseller.update({ where: { id }, data: otherData, include: { user: true } });
+        }
+      } else {
+        updated = await prisma.reseller.update({ where: { id }, data: updateData, include: { user: true } });
+      }
       const clientsCount = await prisma.vpnClient.count({ where: { userId: updated.userId } });
       const { consomme } = await calculerAllocation(prisma, updated.userId);
       await logDbActivity(req.user?.userId || null, `Updated reseller ${id}`, "info", req.ip);
@@ -395,6 +482,13 @@ router.patch("/:id", requireAuth, requirePermission("reseller.manage"), async (r
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: "errors.validation", message: err.issues });
+    }
+    if (err instanceof PlafondQuotaDepasse) {
+      return res.status(409).json({
+        error: "errors.resellers.quota_below_allocated",
+        message: "Le plafond ne peut pas etre inferieur au quota deja engage.",
+        allocatedBytes: err.alloue.toString(),
+      });
     }
     console.error("Update reseller error:", err);
     return res.status(500).json({ error: "errors.server", message: "Failed to update reseller" });

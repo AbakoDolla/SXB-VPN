@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from "react";
 import { useTranslation } from "../contexts/I18nContext";
 import { toast } from "sonner";
-import { fetchResellers, updateReseller } from "../api/resellers";
+import { fetchResellerQuotaHistory, fetchResellers, updateReseller } from "../api/resellers";
 import { createClient } from "../api/clients";
-import { Reseller, UserRole } from "../types";
-import { ShieldCheck, Search, RefreshCw, Landmark, UserPlus, Coins, UserCheck } from "lucide-react";
+import { Reseller, ResellerQuotaMovement, UserRole } from "../types";
+import { ShieldCheck, Search, RefreshCw, Landmark, UserPlus, Coins, UserCheck, History } from "lucide-react";
 
 interface ResellersViewProps {
   currentUserRole: UserRole;
@@ -14,6 +14,7 @@ interface ResellersViewProps {
 export default function ResellersView({ currentUserRole, actorName }: ResellersViewProps) {
   const { t } = useTranslation();
   const [resellers, setResellers] = useState<Reseller[]>([]);
+  const [quotaHistory, setQuotaHistory] = useState<ResellerQuotaMovement[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   
@@ -31,8 +32,12 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
   const loadResellers = async () => {
     setLoading(true);
     try {
-      const data = await fetchResellers();
+      const [data, history] = await Promise.all([
+        isReseller ? Promise.resolve([]) : fetchResellers(),
+        isSupport ? Promise.resolve([]) : fetchResellerQuotaHistory(),
+      ]);
       setResellers(data);
+      setQuotaHistory(history);
     } catch (err) {
       console.error(err);
     } finally {
@@ -72,17 +77,22 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
     );
     if (promptAmount === null) return;
     const saisie = promptAmount.trim().toLowerCase();
+    const reason = window.prompt("Motif de cet ajustement de quota :")?.trim();
+    if (!reason) {
+      toast.error("Le motif est obligatoire");
+      return;
+    }
 
     try {
       if (saisie === "illimité" || saisie === "illimite" || saisie === "unlimited") {
         // Le plafond illimité est un choix explicite, transmis en négatif.
         // Le laisser à zéro signifiait autrefois « illimité » : c'est
         // précisément l'ambiguïté qui vidait les quotas de toute portée.
-        await updateReseller(id, { quotaGB: -1 });
+        await updateReseller(id, { quotaGB: -1, reason });
       } else {
         const amount = Number(saisie);
         if (isNaN(amount)) { toast.error("Veuillez saisir un nombre valide"); return; }
-        await updateReseller(id, { quotaGB: Math.max(0, currentBalance + amount) });
+        await updateReseller(id, { quotaGB: Math.max(0, currentBalance + amount), reason });
       }
       toast.success("Quota revendeur mis à jour");
       loadResellers();
@@ -104,14 +114,81 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
   const quotaBytesOf = (r: Reseller) => r.quotaBytes ?? Math.round((r.quotaGB ?? r.balance ?? 0) * 1024 ** 3);
   const quotaUsedBytesOf = (r: Reseller) => r.quotaUsedBytes ?? Math.round((r.quotaUsedGB ?? 0) * 1024 ** 3);
 
+  const formatLedgerBytes = (raw: string) => {
+    const value = BigInt(raw);
+    if (value < BigInt(0)) return "Illimite";
+    const unit = BigInt(1024 ** 3);
+    const tenths = (value * BigInt(10)) / unit;
+    return `${tenths / BigInt(10)}${tenths % BigInt(10) ? `,${tenths % BigInt(10)}` : ""} Go`;
+  };
+
+  const movementLabel: Record<ResellerQuotaMovement["kind"], string> = {
+    ADMIN_ALLOCATION: "Allocation admin",
+    ADMIN_WITHDRAWAL: "Retrait admin",
+    ADMIN_CORRECTION: "Correction",
+    QUOTA_COMMITMENT: "Engagement",
+    QUOTA_RELEASE: "Liberation",
+  };
+
+  const historyPanel = (
+    <section className="border border-gray-800/80 rounded-xl bg-gray-950/20 overflow-hidden">
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-gray-800">
+        <History className="h-4 w-4 text-cyan-400" />
+        <h2 className="text-sm font-semibold text-white">Historique auditable des quotas</h2>
+      </div>
+      {quotaHistory.length === 0 ? (
+        <p className="p-6 text-sm text-gray-500 text-center">Aucun mouvement enregistre.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-gray-900/40 text-gray-400 uppercase">
+              <tr>
+                {!isReseller && <th className="px-4 py-3">Revendeur</th>}
+                <th className="px-4 py-3">Mouvement</th>
+                <th className="px-4 py-3">Avant / apres</th>
+                <th className="px-4 py-3">Auteur</th>
+                <th className="px-4 py-3">Motif</th>
+                <th className="px-4 py-3">Date</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-900">
+              {quotaHistory.map((movement, index) => {
+                const isLimit = movement.kind.startsWith("ADMIN_");
+                const before = isLimit ? movement.quotaBeforeBytes : movement.allocatedBeforeBytes;
+                const after = isLimit ? movement.quotaAfterBytes : movement.allocatedAfterBytes;
+                return (
+                  <tr key={`${movement.createdAt}-${index}`} className="text-gray-300">
+                    {!isReseller && <td className="px-4 py-3 font-medium text-white">{movement.reseller}</td>}
+                    <td className="px-4 py-3">{movementLabel[movement.kind]}</td>
+                    <td className="px-4 py-3 font-mono whitespace-nowrap">
+                      {formatLedgerBytes(before)} → {formatLedgerBytes(after)}
+                    </td>
+                    <td className="px-4 py-3">{movement.author}</td>
+                    <td className="px-4 py-3 max-w-xs">{movement.reason}</td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      {new Date(movement.createdAt).toLocaleString("fr-FR")}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+
   if (isReseller) {
     return (
-      <div className="border border-gray-800 rounded-xl p-8 bg-gray-950/20 backdrop-blur-md text-center max-w-lg mx-auto">
-        <Landmark className="h-10 w-10 text-cyan-400 mx-auto mb-3" />
-        <h2 className="text-lg font-bold text-white">Espace Revendeur</h2>
-        <p className="text-sm text-gray-400 mt-2 leading-relaxed">
-          En tant que revendeur, vous n'avez pas accès à la liste globale des autres revendeurs du réseau. Vous pouvez toutefois directement créer des clients VPN depuis l'onglet <strong>Gestion Clients</strong> qui consommeront votre crédit de tokens.
-        </p>
+      <div className="space-y-6">
+        <div className="border border-gray-800 rounded-xl p-8 bg-gray-950/20 backdrop-blur-md text-center max-w-lg mx-auto">
+          <Landmark className="h-10 w-10 text-cyan-400 mx-auto mb-3" />
+          <h2 className="text-lg font-bold text-white">Espace Revendeur</h2>
+          <p className="text-sm text-gray-400 mt-2 leading-relaxed">
+            Votre historique ci-dessous est strictement limite aux mouvements de votre propre quota.
+          </p>
+        </div>
+        {!isSupport && historyPanel}
       </div>
     );
   }
@@ -263,6 +340,8 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
           )}
         </div>
       )}
+
+      {!isSupport && historyPanel}
 
       {/* Modal Créer Client Revendeur */}
       {showAddResellerClient && (

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { canSeeUser, isOwnerRequest } from "../middleware/rbac/owner";
+import { executerMutationQuota, PlafondQuotaDepasse } from "../services/reseller-quota";
 
 const router = Router();
 
@@ -192,7 +193,12 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
 
     let newClient: any = null;
     if (prisma) {
-      newClient = await prisma.vpnClient.create({
+      newClient = await executerMutationQuota(prisma, {
+        resellerUserId: targetUserId,
+        auteur: { userId: req.user?.userId, email: req.user?.email },
+        reason: `Creation du client ${body.name}`,
+        referenceType: "vpn_client",
+      }, (tx) => tx.vpnClient.create({
         data: {
           userId: targetUserId,
           token,
@@ -203,7 +209,7 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
           deviceId: body.deviceId || undefined,
         },
         include: { user: true },
-      });
+      }));
     } else {
       newClient = {
         id: `client-${Date.now()}`,
@@ -227,6 +233,9 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: "errors.validation", message: err.issues });
+    }
+    if (err instanceof PlafondQuotaDepasse) {
+      return res.status(409).json({ error: "errors.resellers.quota_exceeded", message: err.message });
     }
     console.error("Create VPN client error:", err);
     return res.status(500).json({ error: "errors.server", message: "Failed to create VPN client" });
@@ -264,11 +273,17 @@ router.patch("/:id", requireAuth, requirePermission("clients.create"), async (re
 
     let updated: any = null;
     if (prisma) {
-      updated = await prisma.vpnClient.update({
+      updated = await executerMutationQuota(prisma, {
+        resellerUserId: existingClient.userId,
+        auteur: { userId: req.user?.userId, email: req.user?.email },
+        reason: `Modification du quota du client ${existingClient.token}`,
+        referenceType: "vpn_client",
+        referenceId: id,
+      }, (tx) => tx.vpnClient.update({
         where: { id },
         data: updates,
         include: { user: true },
-      });
+      }));
     } else {
       const index = inMemoryDb.vpnClients.findIndex((c) => c.id === id);
       const merged = { ...inMemoryDb.vpnClients[index], ...updates, updatedAt: new Date() };
@@ -286,6 +301,9 @@ router.patch("/:id", requireAuth, requirePermission("clients.create"), async (re
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: "errors.validation", message: err.issues });
+    }
+    if (err instanceof PlafondQuotaDepasse) {
+      return res.status(409).json({ error: "errors.resellers.quota_exceeded", message: err.message });
     }
     console.error("Update VPN client error:", err);
     return res.status(500).json({ error: "errors.server", message: "Failed to update VPN client" });
@@ -486,7 +504,13 @@ router.delete("/:id", requireAuth, requirePermission("clients.delete"), async (r
 
     if (prisma) {
       await syncClientAccessState(id, 'deleted');
-      await prisma.vpnClient.delete({ where: { id } });
+      await executerMutationQuota(prisma, {
+        resellerUserId: client.userId,
+        auteur: { userId: req.user?.userId, email: req.user?.email },
+        reason: `Suppression du client ${client.token}`,
+        referenceType: "vpn_client",
+        referenceId: id,
+      }, (tx) => tx.vpnClient.delete({ where: { id } }));
     } else {
       const index = inMemoryDb.vpnClients.findIndex((c) => c.id === id);
       inMemoryDb.vpnClients.splice(index, 1);

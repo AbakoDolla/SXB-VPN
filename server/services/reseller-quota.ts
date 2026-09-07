@@ -18,6 +18,34 @@
 export const QUOTA_ILLIMITE = BigInt(-1);
 
 export type Allocation = { alloue: bigint; consomme: bigint };
+export type TypeMouvementQuota =
+  | "ADMIN_ALLOCATION"
+  | "ADMIN_WITHDRAWAL"
+  | "ADMIN_CORRECTION"
+  | "QUOTA_COMMITMENT"
+  | "QUOTA_RELEASE";
+
+export type AuteurQuota = {
+  userId?: string | null;
+  name?: string | null;
+  email?: string | null;
+};
+
+export class PlafondQuotaDepasse extends Error {
+  readonly code = "RESELLER_QUOTA_EXCEEDED";
+  readonly alloue: bigint;
+  readonly plafond: bigint;
+
+  constructor(alloue: bigint, plafond: bigint) {
+    super("Le plafond du revendeur serait depasse.");
+    this.alloue = alloue;
+    this.plafond = plafond;
+  }
+}
+
+export class AccesHistoriqueQuotaRefuse extends Error {
+  readonly code = "RESELLER_QUOTA_HISTORY_FORBIDDEN";
+}
 
 /** Un plafond négatif signifie « illimité » ; 0 signifie « rien à distribuer ». */
 export function estIllimite(quotaBytes: bigint | number | null | undefined): boolean {
@@ -66,6 +94,209 @@ export async function calculerAllocation(
     }
   }
   return { alloue, consomme };
+}
+
+function nomAuteur(auteur: AuteurQuota): string {
+  return auteur.name?.trim() || auteur.email?.trim() || "Systeme";
+}
+
+function nomRevendeur(fiche: any): string {
+  return fiche.user?.name?.trim() || fiche.user?.email?.trim() || "Revendeur";
+}
+
+async function verrouillerRevendeur(tx: any, userId: string): Promise<void> {
+  if (typeof tx.$queryRawUnsafe === "function") {
+    await tx.$queryRawUnsafe(
+      'SELECT "id" FROM "resellers" WHERE "userId" = $1 FOR UPDATE',
+      userId
+    );
+  }
+}
+
+async function ajouterMouvement(tx: any, data: {
+  fiche: any;
+  auteur: AuteurQuota;
+  kind: TypeMouvementQuota;
+  reason: string;
+  deltaBytes: bigint;
+  quotaBeforeBytes: bigint;
+  quotaAfterBytes: bigint;
+  allocatedBeforeBytes: bigint;
+  allocatedAfterBytes: bigint;
+  referenceType?: string;
+  referenceId?: string;
+}) {
+  return tx.resellerQuotaMovement.create({
+    data: {
+      resellerId: data.fiche.id,
+      resellerUserId: data.fiche.userId,
+      resellerName: nomRevendeur(data.fiche),
+      actorUserId: data.auteur.userId || null,
+      actorName: nomAuteur(data.auteur),
+      kind: data.kind,
+      reason: data.reason.trim(),
+      deltaBytes: data.deltaBytes,
+      quotaBeforeBytes: data.quotaBeforeBytes,
+      quotaAfterBytes: data.quotaAfterBytes,
+      allocatedBeforeBytes: data.allocatedBeforeBytes,
+      allocatedAfterBytes: data.allocatedAfterBytes,
+      referenceType: data.referenceType || null,
+      referenceId: data.referenceId || null,
+    },
+  });
+}
+
+/**
+ * Execute une mutation qui peut changer l'engagement d'un revendeur.
+ * Mutation, controle, compteur materialise et audit partagent une transaction.
+ */
+export async function executerMutationQuota<T>(
+  db: any,
+  params: {
+    resellerUserId: string;
+    auteur: AuteurQuota;
+    reason: string;
+    referenceType?: string;
+    referenceId?: string;
+  },
+  mutation: (tx: any) => Promise<T>
+): Promise<T> {
+  return db.$transaction(async (tx: any) => {
+    let fiche = await tx.reseller.findUnique({
+      where: { userId: params.resellerUserId },
+      include: { user: true },
+    });
+    if (!fiche) return mutation(tx);
+
+    await verrouillerRevendeur(tx, params.resellerUserId);
+    fiche = await tx.reseller.findUnique({
+      where: { userId: params.resellerUserId },
+      include: { user: true },
+    });
+
+    const avant = await calculerAllocation(tx, params.resellerUserId);
+    const resultat = await mutation(tx);
+    const apres = await calculerAllocation(tx, params.resellerUserId);
+    const plafond = BigInt(fiche.quotaBytes ?? 0);
+    if (!estIllimite(plafond) && apres.alloue > plafond) {
+      throw new PlafondQuotaDepasse(apres.alloue, plafond);
+    }
+
+    await tx.reseller.update({
+      where: { id: fiche.id },
+      data: { quotaUsedBytes: apres.alloue },
+    });
+
+    const delta = apres.alloue - avant.alloue;
+    if (delta !== BigInt(0)) {
+      await ajouterMouvement(tx, {
+        fiche,
+        auteur: params.auteur,
+        kind: delta > BigInt(0) ? "QUOTA_COMMITMENT" : "QUOTA_RELEASE",
+        reason: params.reason,
+        deltaBytes: delta,
+        quotaBeforeBytes: plafond,
+        quotaAfterBytes: plafond,
+        allocatedBeforeBytes: avant.alloue,
+        allocatedAfterBytes: apres.alloue,
+        referenceType: params.referenceType,
+        referenceId: params.referenceId,
+      });
+    }
+    return resultat;
+  }, { isolationLevel: "Serializable" });
+}
+
+/** Modifie un plafond et ecrit le mouvement correspondant atomiquement. */
+export async function modifierPlafondQuota(
+  db: any,
+  params: {
+    resellerId: string;
+    nouveauPlafond: bigint;
+    auteur: AuteurQuota;
+    reason: string;
+    correction?: boolean;
+  }
+) {
+  return db.$transaction(async (tx: any) => {
+    let fiche = await tx.reseller.findUnique({
+      where: { id: params.resellerId },
+      include: { user: { include: { role: true } } },
+    });
+    if (!fiche) return null;
+
+    await verrouillerRevendeur(tx, fiche.userId);
+    fiche = await tx.reseller.findUnique({
+      where: { id: params.resellerId },
+      include: { user: { include: { role: true } } },
+    });
+    const avant = BigInt(fiche.quotaBytes ?? 0);
+    const allocation = await calculerAllocation(tx, fiche.userId);
+    if (!estIllimite(params.nouveauPlafond) && allocation.alloue > params.nouveauPlafond) {
+      throw new PlafondQuotaDepasse(allocation.alloue, params.nouveauPlafond);
+    }
+
+    const updated = await tx.reseller.update({
+      where: { id: params.resellerId },
+      data: {
+        quotaBytes: params.nouveauPlafond,
+        quotaUsedBytes: allocation.alloue,
+      },
+      include: { user: true },
+    });
+    if (avant !== params.nouveauPlafond) {
+      const kind: TypeMouvementQuota = params.correction
+        ? "ADMIN_CORRECTION"
+        : estIllimite(params.nouveauPlafond) || (!estIllimite(avant) && params.nouveauPlafond > avant)
+          ? "ADMIN_ALLOCATION"
+          : "ADMIN_WITHDRAWAL";
+      await ajouterMouvement(tx, {
+        fiche,
+        auteur: params.auteur,
+        kind,
+        reason: params.reason,
+        deltaBytes: estIllimite(avant) || estIllimite(params.nouveauPlafond)
+          ? BigInt(0)
+          : params.nouveauPlafond - avant,
+        quotaBeforeBytes: avant,
+        quotaAfterBytes: params.nouveauPlafond,
+        allocatedBeforeBytes: allocation.alloue,
+        allocatedAfterBytes: allocation.alloue,
+        referenceType: "reseller",
+        referenceId: fiche.id,
+      });
+    }
+    return updated;
+  }, { isolationLevel: "Serializable" });
+}
+
+export function porteeHistoriqueQuota(
+  role: string | undefined,
+  userId: string | undefined,
+  resellerId?: string
+): Record<string, unknown> {
+  if (role === "RESELLER" && userId) return { resellerUserId: userId };
+  if (["OWNER", "SUPER_ADMIN", "ADMIN"].includes(role || "")) {
+    return resellerId ? { resellerId } : {};
+  }
+  throw new AccesHistoriqueQuotaRefuse("Acces a l'historique des quotas refuse.");
+}
+
+/** Tous les BigInt restent des chaines afin de preserver leur precision JSON. */
+export function serialiserMouvementQuota(mouvement: any) {
+  return {
+    reseller: mouvement.resellerName,
+    author: mouvement.actorName,
+    kind: mouvement.kind,
+    reason: mouvement.reason,
+    deltaBytes: BigInt(mouvement.deltaBytes).toString(),
+    quotaBeforeBytes: BigInt(mouvement.quotaBeforeBytes).toString(),
+    quotaAfterBytes: BigInt(mouvement.quotaAfterBytes).toString(),
+    allocatedBeforeBytes: BigInt(mouvement.allocatedBeforeBytes).toString(),
+    allocatedAfterBytes: BigInt(mouvement.allocatedAfterBytes).toString(),
+    referenceType: mouvement.referenceType,
+    createdAt: mouvement.createdAt,
+  };
 }
 
 export type RefusQuota = { status: number; body: { error: string; message: string } };

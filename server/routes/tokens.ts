@@ -3,7 +3,7 @@ import { z } from "zod";
 import crypto from "crypto";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
-import { verifierAllocation } from "../services/reseller-quota";
+import { executerMutationQuota, PlafondQuotaDepasse, verifierAllocation } from "../services/reseller-quota";
 
 const router = Router();
 
@@ -321,18 +321,26 @@ router.post("/validate", requireAuth, async (req: AuthenticatedRequest, res: Res
     // Set token as used and extend client bounds
     let updatedToken: any = null;
     if (prisma) {
-      updatedToken = await prisma.tokenSXB.update({
-        where: { id: tokenRecord.id },
-        data: { status: "used" },
-      });
-      // Extend client quota and expiration
-      await prisma.vpnClient.update({
-        where: { id: tokenRecord.clientId },
-        data: {
-          quotaTotal: { increment: tokenRecord.quota },
-          expireAt: tokenRecord.expiration,
-          status: "active",
-        },
+      updatedToken = await executerMutationQuota(prisma, {
+        resellerUserId: tokenRecord.client.userId,
+        auteur: { userId: req.user?.userId, email: req.user?.email },
+        reason: `Activation du token ${body.token}`,
+        referenceType: "token",
+        referenceId: tokenRecord.id,
+      }, async (tx) => {
+        const token = await tx.tokenSXB.update({
+          where: { id: tokenRecord.id },
+          data: { status: "used" },
+        });
+        await tx.vpnClient.update({
+          where: { id: tokenRecord.clientId },
+          data: {
+            quotaTotal: { increment: tokenRecord.quota },
+            expireAt: tokenRecord.expiration,
+            status: "active",
+          },
+        });
+        return token;
       });
     } else {
       tokenRecord.status = "used";
@@ -355,6 +363,9 @@ router.post("/validate", requireAuth, async (req: AuthenticatedRequest, res: Res
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: "errors.validation", message: err.issues });
+    }
+    if (err instanceof PlafondQuotaDepasse) {
+      return res.status(409).json({ error: "errors.resellers.quota_exceeded", message: err.message });
     }
     console.error("Token validation error:", err);
     return res.status(500).json({ error: "errors.server", message: "Failed to validate token" });

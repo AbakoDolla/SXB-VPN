@@ -10,7 +10,13 @@ import { Router, Response } from 'express';
 import { prisma, inMemoryDb } from '../database';
 import { requireAuth, requirePermission, AuthenticatedRequest } from '../middleware/auth';
 import { logDbActivity } from '../database';
-import { verifierAllocation, calculerAllocation, estIllimite } from '../services/reseller-quota';
+import {
+  calculerAllocation,
+  estIllimite,
+  executerMutationQuota,
+  PlafondQuotaDepasse,
+  verifierAllocation,
+} from '../services/reseller-quota';
 import crypto from 'crypto';
 
 const router = Router();
@@ -248,7 +254,12 @@ router.post('/', requireAuth, requirePermission('subscription.manage'), async (r
     const expireAt   = new Date(startAt.getTime() + Number(durationDays) * 24 * 3600 * 1000);
     const dataToken  = generateDataToken();
 
-    const sub = await (prisma as any).subscription.create({
+    const sub = await executerMutationQuota(prisma, {
+      resellerUserId: client.userId,
+      auteur: { userId: req.user?.userId, email: req.user?.email },
+      reason: `Creation du forfait ${name || profile.name}`,
+      referenceType: 'subscription',
+    }, (tx) => (tx as any).subscription.create({
       data: {
         name:        name || `${profile.name} — ${Number(durationDays)}j`,
         clientId,
@@ -265,11 +276,14 @@ router.post('/', requireAuth, requirePermission('subscription.manage'), async (r
         createdBy:    req.user!.userId,
       },
       include: { client: { include: { user: true } }, profile: true },
-    });
+    }));
 
     await logDbActivity(req.user!.userId, `Forfait créé : "${sub.name}" pour client ${clientId}`, 'info', req.ip || '');
     return res.status(201).json({ success: true, subscription: serializeSub(sub, canViewTechnicalProfile(req)) });
   } catch (err: any) {
+    if (err instanceof PlafondQuotaDepasse) {
+      return res.status(409).json({ error: 'errors.resellers.quota_exceeded', message: err.message });
+    }
     console.error('subscription create error:', err);
     return res.status(500).json({ error: err.message || 'Failed to create subscription' });
   }
@@ -373,7 +387,12 @@ router.post('/bulk', requireAuth, requirePermission('subscription.manage'), asyn
           }
           const startAt  = new Date();
           const expireAt = new Date(startAt.getTime() + Number(durationDays) * 24 * 3600 * 1000);
-          await (prisma as any).subscription.create({
+          await executerMutationQuota(prisma, {
+            resellerUserId: client.userId,
+            auteur: { userId: req.user?.userId, email: req.user?.email },
+            reason: `Deploiement groupe du forfait ${profile.name}`,
+            referenceType: 'subscription',
+          }, (tx) => (tx as any).subscription.create({
             data: {
               name: `${profile.name} — ${Number(durationDays)}j`,
               clientId, profileId,
@@ -385,7 +404,7 @@ router.post('/bulk', requireAuth, requirePermission('subscription.manage'), asyn
               status: 'active',
               createdBy: req.user!.userId,
             },
-          });
+          }));
           succeeded++; details.push({ id: clientId, status: 'ok' });
         } catch (e: any) {
           // Un échec isolé ne doit pas interrompre les autres : sur 150 clients,
@@ -436,7 +455,13 @@ router.post('/bulk', requireAuth, requirePermission('subscription.manage'), asyn
             skipped++; details.push({ id: subId, status: 'skipped', reason: 'Aucune modification demandée' });
             continue;
           }
-          await (prisma as any).subscription.update({ where: { id: subId }, data });
+          await executerMutationQuota(prisma, {
+            resellerUserId: sub.client.userId,
+            auteur: { userId: req.user?.userId, email: req.user?.email },
+            reason: `Operation groupee ${action} sur un forfait`,
+            referenceType: 'subscription',
+            referenceId: subId,
+          }, (tx) => (tx as any).subscription.update({ where: { id: subId }, data }));
           succeeded++; details.push({ id: subId, status: 'ok' });
         } catch (e: any) {
           failed++; details.push({ id: subId, status: 'failed', reason: e?.message || 'Erreur inconnue' });
@@ -460,7 +485,10 @@ router.post('/bulk', requireAuth, requirePermission('subscription.manage'), asyn
 // ─── PUT /api/subscriptions/:id ──────────────────────────────────────────────
 router.put('/:id', requireAuth, requirePermission('subscription.manage'), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const existing = await (prisma as any).subscription.findUnique({ where: { id: req.params.id } });
+    const existing = await (prisma as any).subscription.findUnique({
+      where: { id: req.params.id },
+      include: { client: { select: { userId: true } } },
+    });
     if (!existing) return res.status(404).json({ error: 'Subscription not found' });
     const { name, quotaGB, durationDays, deviceLimit, status, profileId } = req.body;
     if (req.user?.role === 'RESELLER') {
@@ -482,7 +510,13 @@ router.put('/:id', requireAuth, requirePermission('subscription.manage'), async 
       if (profileError) return res.status(profileError.status).json(profileError.body);
     }
 
-    const updated = await (prisma as any).subscription.update({
+    const updated = await executerMutationQuota(prisma, {
+      resellerUserId: existing.client.userId,
+      auteur: { userId: req.user?.userId, email: req.user?.email },
+      reason: `Modification du forfait ${existing.name}`,
+      referenceType: 'subscription',
+      referenceId: req.params.id,
+    }, (tx) => (tx as any).subscription.update({
       where: { id: req.params.id },
       data: {
         ...(name         !== undefined && { name }),
@@ -496,11 +530,14 @@ router.put('/:id', requireAuth, requirePermission('subscription.manage'), async 
         ...(status       !== undefined && { status }),
       },
       include: { client: { include: { user: true } }, profile: true },
-    });
+    }));
 
     await logDbActivity(req.user!.userId, `Forfait mis à jour : ${updated.name}`, 'info', req.ip || '');
     return res.json({ success: true, subscription: serializeSub(updated, canViewTechnicalProfile(req)) });
   } catch (err: any) {
+    if (err instanceof PlafondQuotaDepasse) {
+      return res.status(409).json({ error: 'errors.resellers.quota_exceeded', message: err.message });
+    }
     return res.status(500).json({ error: err.message || 'Failed to update subscription' });
   }
 });
@@ -510,13 +547,19 @@ router.delete('/:id', requireAuth, requirePermission('subscription.manage'), asy
   try {
     const existing = await (prisma as any).subscription.findUnique({
       where: { id: req.params.id },
-      include: req.user?.role === 'RESELLER' ? { client: true } : undefined,
+      include: { client: true },
     });
     if (!existing) return res.status(404).json({ error: 'Subscription not found' });
     if (req.user?.role === 'RESELLER' && existing.client?.userId !== req.user.userId) {
       return res.status(404).json({ error: 'Subscription not found' });
     }
-    await (prisma as any).subscription.delete({ where: { id: req.params.id } });
+    await executerMutationQuota(prisma, {
+      resellerUserId: existing.client.userId,
+      auteur: { userId: req.user?.userId, email: req.user?.email },
+      reason: `Suppression du forfait ${existing.name}`,
+      referenceType: 'subscription',
+      referenceId: req.params.id,
+    }, (tx) => (tx as any).subscription.delete({ where: { id: req.params.id } }));
     await logDbActivity(req.user!.userId, `Forfait supprimé : ${existing.name}`, 'warning', req.ip || '');
     return res.json({ success: true, message: 'Forfait supprimé' });
   } catch (err: any) {
@@ -527,16 +570,23 @@ router.delete('/:id', requireAuth, requirePermission('subscription.manage'), asy
 // ─── POST /api/subscriptions/:id/revoke ──────────────────────────────────────
 router.post('/:id/revoke', requireAuth, requirePermission('subscription.manage'), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    if (req.user?.role === 'RESELLER') {
-      const existing = await (prisma as any).subscription.findUnique({ where: { id: req.params.id }, include: { client: true } });
-      if (!existing || existing.client?.userId !== req.user.userId) {
-        return res.status(404).json({ error: 'Subscription not found' });
-      }
+    const existing = await (prisma as any).subscription.findUnique({
+      where: { id: req.params.id },
+      include: { client: true },
+    });
+    if (!existing || (req.user?.role === 'RESELLER' && existing.client?.userId !== req.user.userId)) {
+      return res.status(404).json({ error: 'Subscription not found' });
     }
-    const sub = await (prisma as any).subscription.update({
+    const sub = await executerMutationQuota(prisma, {
+      resellerUserId: existing.client.userId,
+      auteur: { userId: req.user?.userId, email: req.user?.email },
+      reason: req.body.reason || 'Revocation du forfait',
+      referenceType: 'subscription',
+      referenceId: req.params.id,
+    }, (tx) => (tx as any).subscription.update({
       where: { id: req.params.id },
       data: { status: 'revoked', revokedAt: new Date(), revokeReason: req.body.reason || 'Révoqué par admin' },
-    });
+    }));
     await logDbActivity(req.user!.userId, `Forfait révoqué : ${sub.name}`, 'danger', req.ip || '');
     return res.json({ success: true, message: 'Forfait révoqué' });
   } catch (err: any) {

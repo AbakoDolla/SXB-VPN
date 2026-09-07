@@ -1,4 +1,4 @@
-import { Reseller, Client } from "../types";
+import { Reseller, Client, ResellerQuotaMovement } from "../types";
 import { apiRequest } from "./client";
 
 export async function fetchResellers(): Promise<Reseller[]> {
@@ -34,11 +34,20 @@ export async function createReseller(data: {
   });
 }
 
-export async function updateReseller(id: string, updates: Partial<Reseller>): Promise<Reseller> {
+export async function updateReseller(
+  id: string,
+  updates: Partial<Reseller> & { reason?: string; correction?: boolean }
+): Promise<Reseller> {
   return await apiRequest<Reseller>(`/resellers/${id}`, {
     method: "PATCH",
     body: updates,
   });
+}
+
+export async function fetchResellerQuotaHistory(resellerId?: string): Promise<ResellerQuotaMovement[]> {
+  const suffix = resellerId ? `?resellerId=${encodeURIComponent(resellerId)}` : "";
+  const data = await apiRequest<{ movements: ResellerQuotaMovement[] }>(`/resellers/quota-history${suffix}`);
+  return data.movements || [];
 }
 
 export async function deleteReseller(id: string): Promise<void> {

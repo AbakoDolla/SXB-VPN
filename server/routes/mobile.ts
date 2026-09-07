@@ -6,6 +6,7 @@ import { generateTokens, requireAuth, AuthenticatedRequest } from "../middleware
 import { configHashForProfile, configVersionForProfile } from "../services/config-hash";
 import { getActiveAnnouncements } from "./announcements";
 import { getMobileAppUpdate, toMobileAppVersion } from "../services/app-update";
+import { executerMutationQuota, PlafondQuotaDepasse } from "../services/reseller-quota";
 
 // ── AES-256-CBC decrypt (same key as vpn-profiles.ts) ─────────────────────────
 const ENC_ALGO = "aes-256-cbc";
@@ -413,16 +414,23 @@ router.post("/packages/activate", async (req: AuthenticatedRequest, res: Respons
         : new Date();
       baseExpiry.setDate(baseExpiry.getDate() + voucher.durationDays);
 
-      const [updatedClient] = await prisma.$transaction([
-        prisma.vpnClient.update({
+      const updatedClient = await executerMutationQuota(prisma, {
+        resellerUserId: client.userId,
+        auteur: { userId: req.user?.userId, email: req.user?.email },
+        reason: `Activation mobile du forfait ${normalized}`,
+        referenceType: "voucher",
+        referenceId: voucher.id,
+      }, async (tx) => {
+        const updated = await tx.vpnClient.update({
           where: { id: client.id },
           data: { quotaTotal: newQuotaTotal, expireAt: baseExpiry, status: "active" },
-        }),
-        prisma.voucher.update({
+        });
+        await tx.voucher.update({
           where: { id: voucher.id },
           data: { isRedeemed: true, redeemedBy: client.id },
-        }),
-      ]);
+        });
+        return updated;
+      });
 
       await logDbActivity(req.user!.userId, `Package ${normalized} activated via mobile app`, "success", req.ip);
       return res.json({ message: "Forfait activé", accountState: computeAccountState(updatedClient) });
@@ -448,6 +456,9 @@ router.post("/packages/activate", async (req: AuthenticatedRequest, res: Respons
   } catch (err: any) {
     if (err?.issues) {
       return res.status(400).json({ error: "errors.validation", message: "Format de code invalide" });
+    }
+    if (err instanceof PlafondQuotaDepasse) {
+      return res.status(409).json({ error: "errors.resellers.quota_exceeded", message: err.message });
     }
     console.error("Mobile package activation error:", err);
     return res.status(500).json({ error: "errors.server", message: "Échec de l'activation du forfait" });

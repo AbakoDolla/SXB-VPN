@@ -8,6 +8,7 @@ import { z } from "zod";
 import crypto from "crypto";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
+import { executerMutationQuota, PlafondQuotaDepasse } from "../services/reseller-quota";
 
 const router = Router();
 
@@ -137,12 +138,18 @@ router.post("/redeem", requireAuth, async (req: AuthenticatedRequest, res: Respo
 
     // Appliquer le quota au compte VPN
     if (prisma) {
-      await prisma.$transaction([
-        prisma.voucher.update({
+      await executerMutationQuota(prisma, {
+        resellerUserId: vpnClient.userId,
+        auteur: { userId: req.user?.userId, email: req.user?.email },
+        reason: `Activation du voucher ${body.code}`,
+        referenceType: "voucher",
+        referenceId: voucher.id,
+      }, async (tx) => {
+        await tx.voucher.update({
           where: { id: voucher.id },
           data: { isRedeemed: true, redeemedBy: req.user?.userId },
-        }),
-        prisma.vpnClient.update({
+        });
+        await tx.vpnClient.update({
           where: { id: body.clientId },
           data: {
             quotaTotal: {
@@ -154,8 +161,8 @@ router.post("/redeem", requireAuth, async (req: AuthenticatedRequest, res: Respo
                 voucher.durationDays * 24 * 60 * 60 * 1000
             ),
           },
-        }),
-      ]);
+        });
+      });
     } else {
       voucher.isRedeemed = true;
       voucher.redeemedBy = req.user?.userId;
@@ -183,6 +190,9 @@ router.post("/redeem", requireAuth, async (req: AuthenticatedRequest, res: Respo
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: "errors.validation", message: err.issues });
+    }
+    if (err instanceof PlafondQuotaDepasse) {
+      return res.status(409).json({ error: "errors.resellers.quota_exceeded", message: err.message });
     }
     console.error("Redeem voucher error:", err);
     return res.status(500).json({ error: "errors.server", message: "Failed to redeem voucher" });
