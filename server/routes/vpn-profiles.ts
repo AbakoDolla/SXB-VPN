@@ -64,7 +64,7 @@ function buildImportDataFromParsed(parsed: ParseResult, opts: { bumpVersion?: nu
     // le dashboard. La configuration technique complète reste dans le blob
     // canonique chiffré.
     network: ['ssh', 'ssh+payload'].includes(proto)
-      ? (canon.sshTransport ?? (canon.slowDns ? 'slowdns' : canon.tls ? 'tls' : 'direct'))
+      ? `${canon.sshTransport ?? (canon.slowDns ? 'slowdns' : canon.tls ? 'tls' : 'direct')}${canon.udpMode === 'udpgw' ? '+udpgw' : ''}`
       : (canon.network ?? null),
     path: canon.path ?? null,
     dns: canon.dns ?? null,

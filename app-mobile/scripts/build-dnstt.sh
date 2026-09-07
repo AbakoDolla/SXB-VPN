@@ -46,18 +46,29 @@ build_abi() {
   local abi="$1" goarch="$2" compiler="$3"
   local destination="${OUTPUT_DIR}/${abi}/libdnstt.so"
   local goarm=()
+  local built=0
   [[ "${goarch}" == "arm" ]] && goarm=(GOARM=7)
   mkdir -p "$(dirname "${destination}")"
-  (
-    cd "${SOURCE_DIR}"
-    env CGO_ENABLED=1 GOOS=android GOARCH="${goarch}" "${goarm[@]}" \
-      CC="${TOOLCHAIN}/${compiler}${ANDROID_API}-clang" \
-      CXX="${TOOLCHAIN}/${compiler}${ANDROID_API}-clang++" \
-      go build -trimpath -buildvcs=false -buildmode=pie \
-        -ldflags="-s -w -linkmode external -extldflags '-pie -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384'" \
-        -o "${destination}" ./dnstt-client
-  )
+  for attempt in 1 2 3; do
+    echo "[dnstt] Compilation ${abi}, tentative ${attempt}/3"
+    rm -f "${destination}"
+    if (
+      cd "${SOURCE_DIR}"
+      env CGO_ENABLED=1 GOOS=android GOARCH="${goarch}" "${goarm[@]}" \
+        CC="${TOOLCHAIN}/${compiler}${ANDROID_API}-clang" \
+        CXX="${TOOLCHAIN}/${compiler}${ANDROID_API}-clang++" \
+        go build -v -trimpath -buildvcs=false -buildmode=pie \
+          -ldflags="-s -w -linkmode external -extldflags '-pie -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384'" \
+          -o "${destination}" ./dnstt-client
+    ); then
+      built=1
+      break
+    fi
+    sleep $((attempt * 10))
+  done
+  (( built == 1 )) || { echo "Échec compilation DNSTT ${abi} après 3 tentatives" >&2; exit 1; }
   [[ -s "${destination}" ]]
+  echo "[dnstt] ${abi} construit : $(stat -c %s "${destination}") octets"
   "${TOOLCHAIN}/llvm-readelf" -h "${destination}" | grep -q 'Type:.*DYN'
   local align found=0
   while read -r align; do
