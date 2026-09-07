@@ -72,6 +72,19 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
       });
       if (user && user.status === "active") {
         dbRoleName = user.role.name;
+        // Le rôle RESELLER ne vaut que s'il existe une fiche revendeur en face.
+        // Les comptes d'appareil (device.*@sxbvpn.local) ont longtemps été créés
+        // avec ce rôle : ils héritaient alors de clients.create, tokens.create et
+        // subscription.manage, donc du pouvoir de se provisionner du quota sans
+        // limite — et échappaient au contrôle de suspension réservé aux CLIENT.
+        // Sans fiche revendeur, le compte est traité comme un simple client.
+        if (dbRoleName === "RESELLER") {
+          const fiche = await (prisma as any).reseller.findUnique({
+            where: { userId: user.id },
+            select: { id: true },
+          });
+          if (!fiche) dbRoleName = "CLIENT";
+        }
         // Un JWT valide ne suffit pas pour un compte mobile : le compte VPN
         // peut avoir été suspendu ou supprimé depuis le dashboard.
         if (dbRoleName === "CLIENT") {
@@ -105,6 +118,10 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
       if (user && user.status === "active") {
         const roleRecord = inMemoryDb.roles.find((r) => r.id === user.roleId);
         dbRoleName = roleRecord?.name ?? null;
+        // Même règle qu'avec Prisma : pas de fiche revendeur, pas de rôle revendeur.
+        if (dbRoleName === "RESELLER" && !inMemoryDb.resellers.some((r) => r.userId === user.id)) {
+          dbRoleName = "CLIENT";
+        }
         if (dbRoleName === "CLIENT") {
           const client = inMemoryDb.vpnClients.find((c) => c.userId === user.id);
           mobileClientUsable = client?.status === "active";

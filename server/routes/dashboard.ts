@@ -7,6 +7,7 @@ import { Router, Response } from "express";
 import { prisma, inMemoryDb } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { isOwnerRequest } from "../middleware/rbac/owner";
+import { calculerAllocation, estIllimite } from "../services/reseller-quota";
 
 const router = Router();
 
@@ -71,6 +72,25 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
     const consumedTrafficGb = Number(consumedTrafficBytes) / GB;
     const provisionedTrafficGb = Number(provisionedTrafficBytes) / GB;
 
+    // Quota personnel du demandeur.
+    //
+    // Les cartes « Quota provisionné / consommé / restant » agrègent les
+    // forfaits des CLIENTS ; elles ne décrivent aucune limite pesant sur le
+    // compte connecté. Faute de le dire, un administrateur lisait ces 81 Go
+    // comme un quota qui lui aurait été attribué. Administrateurs et
+    // super-administrateurs n'en portent aucun : leur accès est illimité.
+    let quotaPersonnel: { attribue: string; alloue: string; illimite: boolean } | null = null;
+    if (isReseller && prisma) {
+      const fiche = await (prisma as any).reseller.findUnique({ where: { userId: req.user?.userId } });
+      const plafond = BigInt(fiche?.quotaBytes ?? 0);
+      const { alloue } = await calculerAllocation(prisma, req.user!.userId);
+      quotaPersonnel = {
+        attribue: plafond.toString(),
+        alloue: alloue.toString(),
+        illimite: estIllimite(plafond),
+      };
+    }
+
     return res.json({
       activeUsers,
       expiredAccounts,
@@ -79,6 +99,11 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
       remainingTraffic: Math.max(0, Math.round((provisionedTrafficGb - consumedTrafficGb) * 100) / 100),
       consumedTrafficBytes: consumedTrafficBytes.toString(),
       provisionedTrafficBytes: provisionedTrafficBytes.toString(),
+      // Portée des chiffres ci-dessus : « own » pour un revendeur (ses clients
+      // seulement), « platform » pour l'administration (toute la plateforme).
+      quotaScope: isReseller ? "own" : "platform",
+      hasPersonalQuota: isReseller,
+      personalQuota: quotaPersonnel,
       activeServers,
       activeResellers,
       totalVouchers,

@@ -107,9 +107,13 @@ router.post("/generate-token", requireAuth, requirePermission("clients.manage"),
       attempts++;
     }
 
-    // Find or create a role for device clients
-    const clientRole = await prisma.role.findFirst({ where: { name: "RESELLER" } });
-    if (!clientRole) return res.status(500).json({ error: "Role RESELLER introuvable" });
+    // Un appareil est un client, pas un revendeur. Le rôle RESELLER utilisé ici
+    // auparavant accordait à chaque téléphone enrôlé clients.create,
+    // tokens.create et subscription.manage : de quoi se fabriquer du quota.
+    const clientRole =
+      (await prisma.role.findFirst({ where: { name: "CLIENT" } })) ??
+      (await prisma.role.findFirst({ where: { name: "USER" } }));
+    if (!clientRole) return res.status(500).json({ error: "Role CLIENT introuvable" });
 
     const passwordHash = crypto.randomBytes(24).toString("hex");
     const labelName = body.label || `Appareil ${body.deviceId.slice(0, 12)}`;

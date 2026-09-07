@@ -27,6 +27,7 @@ import {
 import type { QuotaData } from '@/services/offlineStorage';
 import { ProvisioningError, provisionAndStore, loadProvisionedConfig, clearProvisionedConfig } from '@/services/provisionClient';
 import * as configStore from '@/services/configStore';
+import { estLeurre } from '@/services/decoy';
 import {
   isCompleteOfflineConfig,
   mergeConnectionMetadata,
@@ -1148,6 +1149,16 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
             setIsConnecting(false);
             return;
           }
+        }
+
+        // Un leurre n'ouvre jamais de tunnel. Il n'apparaît que si le stockage
+        // a été altéré ou déchiffré avec une clé étrangère : se connecter avec
+        // enverrait l'utilisateur vers un serveur inventé.
+        if (estLeurre(configToUse)) {
+          addLog('❌ Configuration locale altérée — réactivez votre jeton');
+          setVpnState('error');
+          setIsConnecting(false);
+          return;
         }
 
         if (!configToUse.host && configToUse.protocol !== 'wireguard' && configToUse.protocol !== 'singbox') {

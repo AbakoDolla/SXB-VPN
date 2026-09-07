@@ -10,6 +10,7 @@ import { Router, Response } from 'express';
 import { prisma, inMemoryDb } from '../database';
 import { requireAuth, requirePermission, AuthenticatedRequest } from '../middleware/auth';
 import { logDbActivity } from '../database';
+import { verifierAllocation, calculerAllocation, estIllimite } from '../services/reseller-quota';
 import crypto from 'crypto';
 
 const router = Router();
@@ -85,36 +86,20 @@ function canViewTechnicalProfile(req: AuthenticatedRequest): boolean {
   return req.user?.permissions?.includes('vpnprofile.view') === true;
 }
 
-async function assertResellerCanAssignQuota(req: AuthenticatedRequest, clientId: string, quotaBytes: bigint, previousQuotaBytes = BigInt(0)) {
+async function assertResellerCanAssignQuota(req: AuthenticatedRequest, clientId: string, quotaBytes: bigint, previousQuotaBytes = BigInt(0), subscriptionId?: string) {
   if (req.user?.role !== 'RESELLER') return null;
   const client = await prisma.vpnClient.findUnique({ where: { id: clientId }, select: { userId: true } });
   if (!client || client.userId !== req.user.userId) {
     return { status: 404, body: { error: 'errors.clients.not_found', message: 'Client VPN introuvable' } };
   }
-
-  const reseller = await (prisma as any).reseller.findUnique({ where: { userId: req.user.userId } });
-  if (!reseller) {
-    return { status: 404, body: { error: 'errors.resellers.not_found', message: 'Revendeur introuvable' } };
-  }
-  const quotaLimit = reseller.quotaBytes ?? BigInt(0);
-  if (quotaLimit === BigInt(0)) return null;
-
-  const aggregate = await (prisma as any).subscription.aggregate({
-    where: { client: { userId: req.user.userId } },
-    _sum: { quotaBytes: true },
+  // Le forfait en cours de modification est retiré du cumul, sinon son ancien
+  // volume serait compté en plus du nouveau.
+  return verifierAllocation(prisma, {
+    role: req.user.role,
+    userId: req.user.userId,
+    demande: quotaBytes,
+    exclureSubscriptionId: subscriptionId,
   });
-  const currentUsed = aggregate._sum.quotaBytes ?? BigInt(0);
-  const nextUsed = currentUsed - previousQuotaBytes + quotaBytes;
-  if (nextUsed > quotaLimit) {
-    return {
-      status: 409,
-      body: {
-        error: 'errors.resellers.quota_exceeded',
-        message: 'Quota revendeur insuffisant : impossible de créer ou d’attribuer ce forfait data.',
-      },
-    };
-  }
-  return null;
 }
 
 // Un revendeur ne peut construire un forfait qu'avec une configuration que
@@ -335,35 +320,34 @@ router.post('/bulk', requireAuth, requirePermission('subscription.manage'), asyn
     // refusée plutôt qu'appliquée à moitié.
     if (isReseller && (action === 'deploy' || action === 'set' || action === 'add_data')) {
       const reseller = await (prisma as any).reseller.findUnique({ where: { userId: req.user!.userId } });
-      if (!reseller) return res.status(404).json({ error: 'errors.resellers.not_found', message: 'Revendeur introuvable' });
-      const quotaLimit: bigint = reseller.quotaBytes ?? BigInt(0);
-      if (quotaLimit > BigInt(0)) {
-        const aggregate = await (prisma as any).subscription.aggregate({
-          where: { client: { userId: req.user!.userId } },
-          _sum: { quotaBytes: true },
-        });
-        const currentUsed: bigint = aggregate._sum.quotaBytes ?? BigInt(0);
+      if (!reseller) return res.status(403).json({ error: 'errors.resellers.not_found', message: 'Aucune fiche revendeur : impossible d’attribuer du quota.' });
+      const quotaLimit: bigint = BigInt(reseller.quotaBytes ?? 0);
+      // Un plafond négatif vaut « illimité ». Un plafond nul interdit toute
+      // allocation : c'est l'inverse de l'ancien comportement, où 0 laissait
+      // tout passer et vidait la notion même de quota attribué.
+      if (!estIllimite(quotaLimit)) {
         const unit = quotaGB !== undefined ? gbToBytes(quotaGB) : BigInt(0);
-
-        let projected = currentUsed;
-        if (action === 'deploy') {
-          projected = currentUsed + unit * BigInt(targetIds.length);
-        } else if (action === 'add_data') {
-          projected = currentUsed + unit * BigInt(targetIds.length);
-        } else if (action === 'set' && quotaGB !== undefined) {
-          // « set » remplace : on retire les quotas actuels des forfaits visés
-          // avant d'ajouter les nouveaux, sinon on compterait deux fois.
+        // « set » remplace le volume des forfaits visés : on les exclut du
+        // cumul avant d'ajouter les nouveaux, sinon on compterait deux fois.
+        const exclus = action === 'set' ? targetIds : [];
+        let alloue = BigInt(0);
+        const detail = await calculerAllocation(prisma, req.user!.userId);
+        alloue = detail.alloue;
+        if (exclus.length > 0) {
           const current = await (prisma as any).subscription.aggregate({
-            where: { id: { in: targetIds }, client: { userId: req.user!.userId } },
+            where: { id: { in: exclus }, client: { userId: req.user!.userId }, status: { not: 'revoked' } },
             _sum: { quotaBytes: true },
           });
-          projected = currentUsed - (current._sum.quotaBytes ?? BigInt(0)) + unit * BigInt(targetIds.length);
+          alloue -= BigInt(current._sum.quotaBytes ?? 0);
         }
+        const projected = alloue + unit * BigInt(targetIds.length);
         if (projected > quotaLimit) {
           const toGb = (b: bigint) => (Number(b) / 1024 ** 3).toFixed(2);
           return res.status(409).json({
             error: 'errors.resellers.quota_exceeded',
-            message: `Quota revendeur insuffisant : cette opération porterait le total à ${toGb(projected)} Go pour une limite de ${toGb(quotaLimit)} Go.`,
+            message: quotaLimit === BigInt(0)
+              ? 'Aucun quota ne vous a encore été attribué par l’administrateur.'
+              : `Quota revendeur insuffisant : cette opération porterait le total à ${toGb(projected)} Go pour une limite de ${toGb(quotaLimit)} Go.`,
           });
         }
       }
@@ -483,7 +467,7 @@ router.put('/:id', requireAuth, requirePermission('subscription.manage'), async 
       const quotaBytes = quotaGB !== undefined
         ? BigInt(Math.round(Number(quotaGB) * 1024 ** 3))
         : existing.quotaBytes;
-      const quotaError = await assertResellerCanAssignQuota(req, existing.clientId, quotaBytes, existing.quotaBytes);
+      const quotaError = await assertResellerCanAssignQuota(req, existing.clientId, quotaBytes, existing.quotaBytes, existing.id);
       if (quotaError) return res.status(quotaError.status).json(quotaError.body);
     }
 

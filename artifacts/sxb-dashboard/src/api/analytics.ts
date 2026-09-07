@@ -9,6 +9,11 @@ export interface DashboardStats {
   remainingTraffic: number;
   consumedTrafficBytes?: string;
   provisionedTrafficBytes?: string;
+  /** « own » : les chiffres ne portent que sur les clients du revendeur. */
+  quotaScope?: "own" | "platform";
+  /** Faux pour un administrateur : son compte ne porte aucun quota. */
+  hasPersonalQuota?: boolean;
+  personalQuota?: { attribue: string; alloue: string; illimite: boolean } | null;
   activeServers: number;
   activeResellers: number;
   totalRevenue: number;

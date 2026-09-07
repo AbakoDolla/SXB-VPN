@@ -3,6 +3,7 @@ import * as Crypto from 'expo-crypto';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import { encryptAes256Gcm, decryptAes256Gcm, hexToBytes, bytesToHex, utf8Decode, utf8Encode } from './aesGcm';
+import { genererLeurre, semerAppats } from './decoy';
 
 /** The only owner of locally provisioned VPN credentials. Registry is deliberately non-sensitive. */
 const REGISTRY_KEY = 'sxb_cfg_registry_v1';
@@ -48,10 +49,27 @@ function encrypt(value: Record<string, any>, key: Uint8Array) {
   const iv = randomBytes(12); const result = encryptAes256Gcm(key, iv, encode(JSON.stringify(value)));
   return `gcm:${bytesToHex(iv)}:${bytesToHex(result.ciphertext)}:${bytesToHex(result.authTag)}`;
 }
-function decrypt(value: string, key: Uint8Array): Record<string, any> {
-  const [prefix, iv, cipher, tag] = value.split(':');
-  if (prefix !== 'gcm' || !iv || !cipher || !tag) throw new Error('Payload chiffré invalide');
-  return JSON.parse(utf8Decode(decryptAes256Gcm(key, hexToBytes(iv), hexToBytes(cipher), hexToBytes(tag))));
+/**
+ * Déchiffre un payload, ou rend un leurre.
+ *
+ * Une clé fausse, un payload tronqué ou une étiquette d'authentification
+ * retouchée produisent une configuration crédible mais fausse, au lieu d'une
+ * exception. L'attaquant qui teste des clés au hasard ne dispose donc d'aucun
+ * signal lui indiquant quand il a trouvé la bonne : tout « fonctionne ».
+ *
+ * Le leurre est marqué en mémoire ; `estLeurre()` le reconnaît et le chemin de
+ * connexion le refuse, ce qui garantit qu'un utilisateur légitime dont le
+ * stockage serait corrompu ne se connecte jamais à un serveur inventé.
+ */
+function decrypt(value: string, key: Uint8Array, graine = ''): Record<string, any> {
+  try {
+    const [prefix, iv, cipher, tag] = value.split(':');
+    if (prefix !== 'gcm' || !iv || !cipher || !tag) return genererLeurre(graine || value.slice(0, 32));
+    const clair = utf8Decode(decryptAes256Gcm(key, hexToBytes(iv), hexToBytes(cipher), hexToBytes(tag)));
+    return JSON.parse(clair);
+  } catch {
+    return genererLeurre(graine || value.slice(0, 32));
+  }
 }
 async function registry(): Promise<ConfigMeta[]> { const raw = await AsyncStorage.getItem(REGISTRY_KEY); return raw ? JSON.parse(raw) : []; }
 async function putRegistry(entries: ConfigMeta[]) { await AsyncStorage.setItem(REGISTRY_KEY, JSON.stringify(entries)); }
@@ -110,9 +128,13 @@ export async function migrateLegacy(): Promise<StoreResult<void>> {
   } catch (error: any) { return { status: 'error', error }; }
 }
 export async function save(id: string, config: Record<string, any>, meta: Partial<ConfigMeta> = {}): Promise<StoreResult<StoredConfig>> {
-  try { const key = await masterKey(); const entries = await registry(); const old = entries.find(x => x.configId === id || (!!meta.configHash && x.configHash === meta.configHash)); const finalId = old?.configId || id; const finalMeta: ConfigMeta = { ...old, ...meta, configId: finalId, isActive: meta.isActive ?? old?.isActive ?? entries.length === 0, savedAt: new Date().toISOString() }; await AsyncStorage.setItem(payloadKey(finalId), encrypt(config, key)); await putRegistry([...entries.filter(x => x.configId !== finalId), finalMeta]); return { status: 'ok', value: { config, meta: finalMeta } }; } catch (error: any) { return { status: 'error', error }; }
+  try { const key = await masterKey(); const entries = await registry(); const old = entries.find(x => x.configId === id || (!!meta.configHash && x.configHash === meta.configHash)); const finalId = old?.configId || id; const finalMeta: ConfigMeta = { ...old, ...meta, configId: finalId, isActive: meta.isActive ?? old?.isActive ?? entries.length === 0, savedAt: new Date().toISOString() }; await AsyncStorage.setItem(payloadKey(finalId), encrypt(config, key)); await putRegistry([...entries.filter(x => x.configId !== finalId), finalMeta]);
+    // Les appâts sont semés en même temps que la première vraie configuration :
+    // un stockage qui ne contiendrait QUE des appâts se remarquerait.
+    await semerAppats();
+    return { status: 'ok', value: { config, meta: finalMeta } }; } catch (error: any) { return { status: 'error', error }; }
 }
-export async function get(id: string): Promise<StoreResult<StoredConfig>> { try { await migrateLegacy(); const meta = (await registry()).find(x => x.configId === id); if (!meta) return { status: 'missing' }; const raw = await AsyncStorage.getItem(payloadKey(id)); if (!raw) return { status: 'error', error: new Error('Payload absent') }; return { status: 'ok', value: { config: decrypt(raw, await masterKey()), meta } }; } catch (error:any) { return { status:'error', error }; } }
+export async function get(id: string): Promise<StoreResult<StoredConfig>> { try { await migrateLegacy(); const meta = (await registry()).find(x => x.configId === id); if (!meta) return { status: 'missing' }; const raw = await AsyncStorage.getItem(payloadKey(id)); if (!raw) return { status: 'error', error: new Error('Payload absent') }; return { status: 'ok', value: { config: decrypt(raw, await masterKey(), id), meta } }; } catch (error:any) { return { status:'error', error }; } }
 export async function getActive(): Promise<StoreResult<StoredConfig>> { const migration = await migrateLegacy(); if (migration.status === 'error') return migration as StoreResult<StoredConfig>; try { const entries = await registry(); const active = entries.find(x => x.isActive) || entries[0]; return active ? get(active.configId) : { status: 'missing' }; } catch (error: any) { return { status: 'error', error }; } }
 export async function list(): Promise<StoreResult<ConfigMeta[]>> { try { await migrateLegacy(); return { status:'ok', value: await registry() }; } catch(error:any) { return {status:'error', error}; } }
 export async function setActive(id: string): Promise<StoreResult<void>> { try { const entries=await registry(); if (!entries.some(x=>x.configId===id)) return {status:'missing'}; await putRegistry(entries.map(x=>({...x,isActive:x.configId===id}))); await AsyncStorage.setItem('@sxb_active_config_id', id); return {status:'ok'}; } catch(error:any) { return {status:'error',error}; } }

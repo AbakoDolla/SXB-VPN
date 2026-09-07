@@ -67,13 +67,23 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
   };
 
   const handleAdjustBalance = async (id: string, currentBalance: number) => {
-    const promptAmount = window.prompt("Saisir la quantité de quota en Go à attribuer (positif pour ajouter, négatif pour retirer) :");
+    const promptAmount = window.prompt(
+      "Quota en Go à ajouter (négatif pour retirer). Saisir « illimité » pour lever le plafond :"
+    );
     if (promptAmount === null) return;
-    const amount = Number(promptAmount);
-    if (isNaN(amount)) { toast.error("Veuillez saisir un nombre valide"); return; }
+    const saisie = promptAmount.trim().toLowerCase();
 
     try {
-      await updateReseller(id, { balance: Math.max(0, currentBalance + amount) });
+      if (saisie === "illimité" || saisie === "illimite" || saisie === "unlimited") {
+        // Le plafond illimité est un choix explicite, transmis en négatif.
+        // Le laisser à zéro signifiait autrefois « illimité » : c'est
+        // précisément l'ambiguïté qui vidait les quotas de toute portée.
+        await updateReseller(id, { quotaGB: -1 });
+      } else {
+        const amount = Number(saisie);
+        if (isNaN(amount)) { toast.error("Veuillez saisir un nombre valide"); return; }
+        await updateReseller(id, { quotaGB: Math.max(0, currentBalance + amount) });
+      }
       toast.success("Quota revendeur mis à jour");
       loadResellers();
     } catch (err) {
@@ -170,8 +180,13 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
                     </td>
                     <td className="py-4 px-4 text-gray-400">{r.email}</td>
                     <td className="py-4 px-4 min-w-56">
-                      {quotaBytesOf(r) === 0 ? (
+                      {r.quotaUnlimited || quotaBytesOf(r) < 0 ? (
                         <div className="text-cyan-400 font-semibold">Illimité</div>
+                      ) : quotaBytesOf(r) === 0 ? (
+                        // Un plafond à zéro n'a jamais voulu dire « illimité » :
+                        // il signifie que l'administrateur n'a encore rien
+                        // attribué, et le revendeur ne peut donc rien distribuer.
+                        <div className="text-amber-400 font-semibold text-xs">Aucun quota attribué</div>
                       ) : (
                         <div>
                           <div className="flex justify-between text-xs font-mono mb-1">
@@ -183,6 +198,12 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
                               className="h-full bg-gradient-to-r from-cyan-500 to-blue-500"
                               style={{ width: `${Math.min(100, (quotaUsedBytesOf(r) / quotaBytesOf(r)) * 100)}%` }}
                             />
+                          </div>
+                          {/* « engagé » = distribué aux clients, ce qui décompte le
+                              plafond ; « consommé » = trafic réellement écoulé. */}
+                          <div className="flex justify-between text-[10px] text-gray-500 mt-1">
+                            <span>engagé</span>
+                            <span>consommé {formatBytes(r.quotaConsumedBytes ?? 0)}</span>
                           </div>
                         </div>
                       )}

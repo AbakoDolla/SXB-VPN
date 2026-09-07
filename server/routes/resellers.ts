@@ -5,14 +5,16 @@ import crypto from "crypto";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { canSeeUser } from "../middleware/rbac/owner";
+import { calculerAllocation, verifierAllocation, estIllimite, porteUnQuotaInterdit } from "../services/reseller-quota";
 
 const router = Router();
 
 // Helper : aplatit les données reseller et convertit les BigInt avant JSON.
-function flattenReseller(r: any, clientsCount = 0): any {
+function flattenReseller(r: any, clientsCount = 0, consomme: bigint = BigInt(0)): any {
   const quotaBytes = r.quotaBytes ?? BigInt(0);
   const quotaUsedBytes = r.quotaUsedBytes ?? BigInt(0);
   const quotaGB = Number(quotaBytes) / (1024 ** 3);
+  const illimite = estIllimite(quotaBytes);
   return {
     id: r.id,
     name: r.user?.name || r.name || "",
@@ -24,6 +26,16 @@ function flattenReseller(r: any, clientsCount = 0): any {
     quotaUsedBytes: Number(quotaUsedBytes),
     quotaGB,
     quotaUsedGB: Number(quotaUsedBytes) / (1024 ** 3),
+    // « alloué » = ce que le revendeur a engagé auprès de ses clients, c'est ce
+    // qui décompte son plafond. « consommé » = le trafic réellement écoulé.
+    // Les deux étaient confondus sous un seul champ, si bien que la barre de
+    // progression n'a jamais reflété l'usage réel.
+    quotaAllocatedBytes: Number(quotaUsedBytes),
+    quotaAllocatedGB: Number(quotaUsedBytes) / (1024 ** 3),
+    quotaConsumedBytes: Number(consomme),
+    quotaConsumedGB: Number(consomme) / (1024 ** 3),
+    quotaUnlimited: illimite,
+    quotaRemainingBytes: illimite ? null : Math.max(Number(quotaBytes) - Number(quotaUsedBytes), 0),
     status: r.status,
     clientsCount,
     createdAt: r.createdAt,
@@ -63,15 +75,14 @@ router.get("/", requireAuth, requirePermission("reseller.manage"), async (req: A
           .filter((r) => canSeeUser(req, r.user))
           .map(async (r) => {
             const clientsCount = await prisma.vpnClient.count({ where: { userId: r.userId } });
-            const quotaUsed = await (prisma as any).subscription.aggregate({
-              where: { client: { userId: r.userId } },
-              _sum: { quotaBytes: true },
-            });
-            const quotaUsedBytes = quotaUsed._sum.quotaBytes ?? BigInt(0);
-            if ((r.quotaUsedBytes ?? BigInt(0)) !== quotaUsedBytes) {
-              await (prisma as any).reseller.update({ where: { id: r.id }, data: { quotaUsedBytes } }).catch(() => {});
+            // Le cumul ne portait que sur les forfaits : les clients créés via
+            // /:id/create-client, qui portent leur quota en propre, restaient
+            // invisibles du décompte. calculerAllocation() couvre les deux.
+            const { alloue, consomme } = await calculerAllocation(prisma, r.userId);
+            if ((r.quotaUsedBytes ?? BigInt(0)) !== alloue) {
+              await (prisma as any).reseller.update({ where: { id: r.id }, data: { quotaUsedBytes: alloue } }).catch(() => {});
             }
-            return flattenReseller({ ...r, quotaUsedBytes }, clientsCount);
+            return flattenReseller({ ...r, quotaUsedBytes: alloue }, clientsCount, consomme);
           })
       );
     } else {
@@ -136,6 +147,15 @@ router.post("/", requireAuth, requirePermission("reseller.manage"), async (req: 
       const existingReseller = await prisma.reseller.findUnique({ where: { userId: resolvedUserId } });
       if (existingReseller) {
         return res.status(400).json({ error: "errors.resellers.exists", message: "User is already a reseller" });
+      }
+      // Un compte qui pilote la plateforme ne peut pas devenir revendeur : cela
+      // lui attacherait un plafond de données alors que son accès est illimité.
+      const cible = await prisma.user.findUnique({ where: { id: resolvedUserId }, include: { role: true } });
+      if (porteUnQuotaInterdit(cible?.role?.name)) {
+        return res.status(409).json({
+          error: "errors.resellers.quota_forbidden",
+          message: "Un compte administrateur ou super-administrateur ne peut pas être revendeur : il ne porte aucun quota.",
+        });
       }
       const newReseller = await prisma.reseller.create({
         data: { userId: resolvedUserId, commission, quotaBytes, quotaUsedBytes: BigInt(0), status: body.status },
@@ -261,6 +281,15 @@ router.post("/:id/create-client", requireAuth, async (req: AuthenticatedRequest,
     }
 
     const quotaBytes = BigInt(body.quotaTotalGb) * BigInt(1024 * 1024 * 1024);
+    // Ce chemin créait un client — et donc du quota — sans jamais consulter le
+    // plafond du revendeur : c'est par là que 16 Go ont été distribués par un
+    // revendeur crédité de 0 Go.
+    const refus = await verifierAllocation(prisma, {
+      role: req.user?.role,
+      userId: resellerUserId,
+      demande: quotaBytes,
+    });
+    if (refus) return res.status(refus.status).json(refus.body);
     const expireAt = new Date();
     expireAt.setDate(expireAt.getDate() + body.durationDays);
     const tokenValue = `SXB-${crypto.randomBytes(3).toString("hex").toUpperCase()}-${crypto.randomBytes(3).toString("hex").toUpperCase()}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
@@ -318,7 +347,9 @@ router.post("/:id/create-client", requireAuth, async (req: AuthenticatedRequest,
 const updateResellerSchema = z.object({
   commission: z.coerce.number().min(0).max(100).optional(),
   balance: z.coerce.number().min(0).optional(),
-  quotaGB: z.coerce.number().min(0).optional(),
+  // Un quota négatif vaut « illimité » : c'est le seul moyen de lever le
+  // plafond, et il doit rester un choix explicite de l'administrateur.
+  quotaGB: z.coerce.number().min(-1).optional(),
   status: z.enum(["active", "suspended"]).optional(),
 });
 
@@ -328,17 +359,33 @@ router.patch("/:id", requireAuth, requirePermission("reseller.manage"), async (r
     const body = updateResellerSchema.parse(req.body);
     const updateData: any = {};
     if (body.commission !== undefined) updateData.commission = body.commission;
+    // `quotaGB` est la valeur qui fait foi ; `balance` reste accepté pour le
+    // bouton historique du dashboard, mais ne doit pas l'écraser.
     if (body.balance !== undefined) updateData.quotaBytes = BigInt(Math.round(Number(body.balance) * 1024 ** 3));
-    if (body.quotaGB !== undefined) updateData.quotaBytes = BigInt(Math.round(Number(body.quotaGB) * 1024 ** 3));
+    if (body.quotaGB !== undefined) {
+      updateData.quotaBytes = body.quotaGB < 0
+        ? BigInt(-1)
+        : BigInt(Math.round(Number(body.quotaGB) * 1024 ** 3));
+    }
     if (body.status !== undefined) updateData.status = body.status;
 
     if (prisma) {
-      const exists = await prisma.reseller.findUnique({ where: { id } });
+      const exists = await prisma.reseller.findUnique({ where: { id }, include: { user: { include: { role: true } } } });
       if (!exists) return res.status(404).json({ error: "errors.resellers.not_found", message: "Reseller not found" });
+      // Administrateurs et super-administrateurs pilotent la plateforme : leur
+      // attribuer un quota n'a pas de sens et ferait apparaître une limite là
+      // où il n'en existe aucune.
+      if (updateData.quotaBytes !== undefined && porteUnQuotaInterdit((exists as any).user?.role?.name)) {
+        return res.status(409).json({
+          error: "errors.resellers.quota_forbidden",
+          message: "Un compte administrateur ou super-administrateur ne porte aucun quota : son accès est illimité.",
+        });
+      }
       const updated = await prisma.reseller.update({ where: { id }, data: updateData, include: { user: true } });
       const clientsCount = await prisma.vpnClient.count({ where: { userId: updated.userId } });
+      const { consomme } = await calculerAllocation(prisma, updated.userId);
       await logDbActivity(req.user?.userId || null, `Updated reseller ${id}`, "info", req.ip);
-      return res.json(flattenReseller(updated, clientsCount));
+      return res.json(flattenReseller(updated, clientsCount, consomme));
     } else {
       const index = inMemoryDb.resellers.findIndex((r) => r.id === id);
       if (index === -1) return res.status(404).json({ error: "errors.resellers.not_found", message: "Reseller not found" });

@@ -1009,7 +1009,7 @@ describe('garde-fous contre les régressions Android', () => {
     const bulk = subscriptionRoutes.slice(subscriptionRoutes.indexOf("router.post('/bulk'"));
     assert.ok(bulk.indexOf('quota_exceeded') < bulk.indexOf('subscription.create'));
     // « set » remplace : ne pas compter deux fois les forfaits visés.
-    assert.ok(subscriptionRoutes.includes("currentUsed - (current._sum.quotaBytes ?? BigInt(0))"));
+    assert.ok(subscriptionRoutes.includes("alloue -= BigInt(current._sum.quotaBytes ?? 0)"));
     // Cloisonnement : 404 et non 403 sur la ressource d'autrui.
     assert.ok(subscriptionRoutes.includes("isReseller && client.userId !== req.user!.userId"));
   });
@@ -1599,5 +1599,111 @@ describe('garde-fous contre les régressions Android', () => {
         );
       }
     }
+  });
+
+  it('présente de faux serveurs à qui tente de déchiffrer l’application', () => {
+    const leurres = source('services/decoy.ts');
+    const store = source('services/configStore.ts');
+    const contexte = source('contexts/VpnContext.tsx');
+    const securite = source('modules/android-native/SecurityModule.kt');
+    const serviceNatif = source('modules/android-native/SxbVpnService.kt');
+
+    // Une clé fausse ou un payload retouché ne doivent plus lever d'exception :
+    // l'échec confirmait à l'attaquant qu'il tenait le bon fichier et qu'il ne
+    // lui manquait que la clé. Il obtient désormais une configuration crédible.
+    assert.doesNotMatch(store, /throw new Error\('Payload chiffré invalide'\)/);
+    assert.match(store, /function decrypt\(value: string, key: Uint8Array, graine = ''\)/);
+    assert.match(store, /return genererLeurre\(/);
+
+    // Le leurre porte les mêmes champs qu'une vraie configuration : une simple
+    // comparaison de structure ne doit pas le trahir.
+    for (const champ of ['host', 'port', 'protocol', 'uuid', 'username', 'password', 'sni', 'payload']) {
+      assert.match(leurres, new RegExp(`\\b${champ}[,:]`), `le leurre doit porter le champ ${champ}`);
+    }
+    assert.doesNotMatch(leurres, /isDecoy|is_decoy/);
+
+    // Le marquage vit en mémoire (WeakSet) : rien sur le disque ne distingue un
+    // leurre d'une vraie configuration.
+    assert.match(leurres, /const leurres = new WeakSet<object>\(\)/);
+    assert.match(leurres, /export function estLeurre/);
+
+    // Garde-fou : un leurre ne doit jamais ouvrir de tunnel.
+    assert.match(contexte, /if \(estLeurre\(configToUse\)\)/);
+    assert.match(contexte, /import \{ estLeurre \} from '@\/services\/decoy'/);
+
+    // Sous instrumentation active, les traces natives décrivent un faux serveur.
+    assert.match(securite, /fun leurreEndpoint/);
+    assert.match(securite, /fun leurreUuid/);
+    assert.match(serviceNatif, /val leurre = SecurityModule\.leurreEndpoint\(packageName\)/);
+    assert.match(serviceNatif, /stage=ENDPOINT_RESOLVED remote=\$leurre/);
+  });
+
+  it('n’attribue aucun quota aux comptes qui pilotent la plateforme', () => {
+    const quota = source('../server/services/reseller-quota.ts');
+    const revendeurs = source('../server/routes/resellers.ts');
+    const tableauBord = source('../server/routes/dashboard.ts');
+
+    assert.match(quota, /ROLES_SANS_QUOTA = \["OWNER", "SUPER_ADMIN", "ADMIN"\]/);
+    // Ni à la création d'une fiche revendeur…
+    assert.match(revendeurs, /porteUnQuotaInterdit\(cible\?\.role\?\.name\)/);
+    // …ni par une modification ultérieure.
+    assert.match(revendeurs, /updateData\.quotaBytes !== undefined && porteUnQuotaInterdit/);
+    assert.match(revendeurs, /errors\.resellers\.quota_forbidden/);
+
+    // Les cartes « Quota provisionné/consommé/restant » agrègent les forfaits
+    // des clients ; sans portée explicite, un administrateur les lisait comme
+    // un quota qui lui aurait été attribué.
+    assert.match(tableauBord, /quotaScope: isReseller \? "own" : "platform"/);
+    assert.match(tableauBord, /hasPersonalQuota: isReseller/);
+  });
+
+  it('applique réellement le quota attribué à un revendeur', () => {
+    const quota = source('../server/services/reseller-quota.ts');
+    const revendeurs = source('../server/routes/resellers.ts');
+    const forfaits = source('../server/routes/subscriptions.ts');
+    const jetons = source('../server/routes/tokens.ts');
+
+    // Le défaut d'origine : `if (quotaLimit === 0n) return null` traitait
+    // « aucun quota saisi » comme « aucune limite ». La colonne valant 0 par
+    // défaut, plus personne n'était limité — un revendeur à 0 Go avait
+    // distribué 16 Go. Seule une valeur négative vaut désormais « illimité ».
+    for (const [nom, src] of [['subscriptions', forfaits], ['tokens', jetons]] as const) {
+      assert.doesNotMatch(src, /quotaLimit === BigInt\(0\)\) return null/, `${nom} : 0 ne doit plus valoir « illimité »`);
+    }
+    assert.match(quota, /export function estIllimite/);
+    assert.match(quota, /return BigInt\(quotaBytes\) < BigInt\(0\)/);
+
+    // Une absence de fiche revendeur doit refuser, pas laisser passer.
+    assert.match(quota, /if \(!fiche\) \{[\s\S]{0,200}status: 403/);
+    assert.doesNotMatch(jetons, /reseller\?\.quotaBytes \?\? BigInt\(0\)/);
+
+    // La création directe de client comptait pour rien : ce chemin ne
+    // consultait aucun plafond alors qu'il alloue bel et bien du quota.
+    assert.match(revendeurs, /const refus = await verifierAllocation\(prisma, \{[\s\S]{0,160}demande: quotaBytes/);
+
+    // Le cumul doit couvrir les deux formes d'allocation, sans double compte.
+    assert.match(quota, /if \(forfaits\.length > 0\)/);
+    assert.match(quota, /alloue \+= BigInt\(client\.quotaTotal \?\? 0\)/);
+    assert.match(revendeurs, /calculerAllocation\(prisma, r\.userId\)/);
+
+    // Alloué et consommé sont deux grandeurs distinctes : les confondre rendait
+    // la barre de progression du dashboard incapable de montrer l'usage réel.
+    assert.match(revendeurs, /quotaAllocatedBytes/);
+    assert.match(revendeurs, /quotaConsumedBytes/);
+  });
+
+  it('ne fait pas d’un simple appareil un revendeur', () => {
+    const appareils = source('../server/routes/devices.ts');
+    const authentification = source('../server/middleware/auth.ts');
+
+    // Chaque téléphone enrôlé recevait le rôle RESELLER, donc clients.create,
+    // tokens.create et subscription.manage : de quoi se fabriquer du quota.
+    assert.doesNotMatch(appareils, /findFirst\(\{ where: \{ name: "RESELLER" \} \}\)/);
+    assert.match(appareils, /findFirst\(\{ where: \{ name: "CLIENT" \} \}\)/);
+
+    // Filet de sécurité pour les comptes déjà créés avec le mauvais rôle :
+    // sans fiche revendeur en face, le rôle ne vaut rien. Cela rétablit du même
+    // coup le contrôle de suspension, réservé jusque-là au rôle CLIENT.
+    assert.match(authentification, /if \(dbRoleName === "RESELLER"\) \{[\s\S]{0,320}if \(!fiche\) dbRoleName = "CLIENT";/);
   });
 });

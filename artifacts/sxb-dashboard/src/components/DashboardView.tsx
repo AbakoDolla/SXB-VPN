@@ -402,15 +402,42 @@ export default function DashboardView({
 
       {/* Row 2 — Trafic */}
       <div>
-        <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-widest mb-3">Trafic & Quota</p>
+        <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-widest mb-3">
+          Trafic & Quota
+          {/* Ces trois cartes additionnent les forfaits des CLIENTS. Faute de le
+              dire, un administrateur lisait ce total comme un quota qui lui
+              aurait été attribué, alors que son propre accès est illimité. */}
+          <span className="ml-2 normal-case tracking-normal text-gray-500 font-normal">
+            {isReseller
+              ? '— cumul de vos clients'
+              : '— cumul de tous les clients ; votre compte n’a aucun quota'}
+          </span>
+        </p>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           <StatCard label="Download (réel)" value={fmtBytes(totalDownload * 1024 ** 3)} icon={Download} color="text-sky-400" accent="bg-sky-500/10" />
           <StatCard label="Upload (réel)" value={fmtBytes(totalUpload * 1024 ** 3)} icon={Upload} color="text-indigo-400" accent="bg-indigo-500/10" />
           <StatCard label="Trafic semaine" value={fmtBytes(weeklyDownload * 1024 ** 3)} icon={TrendingUp} color="text-teal-400" accent="bg-teal-500/10" />
-          <StatCard label="Quota provisionné" value={provisionedTrafficGB} icon={HardDrive} color="text-blue-400" accent="bg-blue-500/10" />
-          <StatCard label="Quota consommé" value={consumedTrafficGB} icon={Database} color="text-orange-400" accent="bg-orange-500/10" />
-          <StatCard label="Quota restant" value={remainingTrafficGB} icon={TrendingUp} color="text-emerald-400" accent="bg-emerald-500/10" />
+          <StatCard label="Quota provisionné" value={provisionedTrafficGB} sub={isReseller ? 'à vos clients' : 'aux clients'} icon={HardDrive} color="text-blue-400" accent="bg-blue-500/10" />
+          <StatCard label="Quota consommé" value={consumedTrafficGB} sub={isReseller ? 'par vos clients' : 'par les clients'} icon={Database} color="text-orange-400" accent="bg-orange-500/10" />
+          <StatCard label="Quota restant" value={remainingTrafficGB} sub={isReseller ? 'sur vos clients' : 'sur les clients'} icon={TrendingUp} color="text-emerald-400" accent="bg-emerald-500/10" />
         </div>
+        {isReseller && stats?.personalQuota && (
+          <div className="mt-3 text-xs text-gray-400 border border-gray-800 rounded-lg px-3 py-2 bg-gray-950/40">
+            Votre quota :{' '}
+            {stats.personalQuota.illimite ? (
+              <span className="text-cyan-400 font-semibold">illimité</span>
+            ) : (
+              <>
+                <span className="text-white font-semibold">{fmtBytes(Number(stats.personalQuota.alloue))}</span>
+                {' engagés sur '}
+                <span className="text-white font-semibold">{fmtBytes(Number(stats.personalQuota.attribue))}</span>
+                {Number(stats.personalQuota.attribue) === 0 && (
+                  <span className="text-amber-400"> — aucun quota ne vous a encore été attribué</span>
+                )}
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Traffic Chart */}

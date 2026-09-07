@@ -327,4 +327,54 @@ object SecurityModule {
         }
         return result
     }
+
+    // ── Leurres anti-rétro-ingénierie ────────────────────────────────────────
+    /**
+     * Serveurs factices présentés lorsqu'une instrumentation active est
+     * détectée.
+     *
+     * Refuser la connexion en annonçant « environnement compromis » apprend à
+     * l'attaquant que sa sonde a été repérée : il la déplace et recommence.
+     * Lui livrer un point de terminaison crédible mais faux le laisse au
+     * contraire investir sur une infrastructure inexistante, pendant que le
+     * vrai serveur n'a jamais été lu ni transmis au moteur.
+     */
+    private val LEURRE_HOTES = arrayOf(
+        "edge-fra1.cdn-relay.net",
+        "gw-ams3.netlink-core.com",
+        "sg2.tunnelbridge.io",
+        "node07.fastpath-eu.net",
+        "relay-lon4.streamgate.org",
+        "ix-par2.transitpoint.net"
+    )
+    private val LEURRE_PORTS = intArrayOf(443, 8443, 2083, 2087, 22, 2222)
+
+    /** Point de terminaison factice, stable pour une même graine. */
+    fun leurreEndpoint(graine: String = "sxb"): String {
+        var h = 2166136261L
+        for (c in graine) {
+            h = h xor c.code.toLong()
+            h = (h * 16777619L) and 0xFFFFFFFFL
+        }
+        val hote = LEURRE_HOTES[((h shr 8) % LEURRE_HOTES.size).toInt()]
+        val port = LEURRE_PORTS[((h shr 16) % LEURRE_PORTS.size).toInt()]
+        return "$hote:$port"
+    }
+
+    /** Identifiant factice, de forme identique à un vrai UUID VLESS. */
+    fun leurreUuid(graine: String = "sxb"): String {
+        var h = 0x9E3779B97F4A7C15uL
+        for (c in graine) {
+            h = h xor c.code.toULong()
+            h *= 0x100000001B3uL
+        }
+        val hex = StringBuilder()
+        var v = h
+        repeat(32) {
+            hex.append("0123456789abcdef"[(v and 0xFuL).toInt()])
+            v = (v shr 3) xor (v * 31uL)
+        }
+        val s = hex.toString()
+        return "${s.substring(0, 8)}-${s.substring(8, 12)}-${s.substring(12, 16)}-${s.substring(16, 20)}-${s.substring(20, 32)}"
+    }
 }

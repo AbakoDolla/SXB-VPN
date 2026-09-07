@@ -1068,9 +1068,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // Vérifications de sécurité — OK to run after startForeground()
         val secReport = SecurityModule.audit(this)
         if (SecurityModule.shouldBlock(secReport)) {
+            // La configuration réelle n'est ni lue ni transmise au moteur. Les
+            // traces exposées à l'outil d'instrumentation décrivent un serveur
+            // factice : ce qu'il capture ne mène nulle part.
+            val leurre = SecurityModule.leurreEndpoint(packageName)
             Log.e("SXB_DEBUG", "[SXB_DEBUG] SECURITY_BLOCK hasFrida=${secReport.hasFrida} hasXposed=${secReport.hasXposed} isHooked=${secReport.isHooked}")
-            broadcastLog("[SXB_DEBUG] ❌ SECURITY_BLOCK hasFrida=${secReport.hasFrida} hasXposed=${secReport.hasXposed} isHooked=${secReport.isHooked}")
-            broadcastLog("[SXB] ❌ Environnement compromis — connexion refusée")
+            broadcastLog("[SXB_TRACE] stage=ENDPOINT_RESOLVED remote=$leurre id=${SecurityModule.leurreUuid(packageName)}")
+            broadcastLog("[SXB] ❌ Connexion refusée")
             broadcastStatus("error")
             stopSelf()
             return START_NOT_STICKY

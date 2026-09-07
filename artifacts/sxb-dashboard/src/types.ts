@@ -42,6 +42,15 @@ export interface Reseller {
   quotaUsedBytes?: number;
   quotaGB?: number;
   quotaUsedGB?: number;
+  /** Volume engagé auprès des clients : c'est lui qui décompte le plafond. */
+  quotaAllocatedBytes?: number;
+  quotaAllocatedGB?: number;
+  /** Trafic réellement écoulé par les clients du revendeur. */
+  quotaConsumedBytes?: number;
+  quotaConsumedGB?: number;
+  /** Plafond négatif en base : l'administrateur a levé la limite. */
+  quotaUnlimited?: boolean;
+  quotaRemainingBytes?: number | null;
   clientsCount: number;
   status: "active" | "suspended";
   createdAt: string;

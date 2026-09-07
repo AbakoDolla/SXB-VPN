@@ -3,6 +3,7 @@ import { z } from "zod";
 import crypto from "crypto";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
+import { verifierAllocation } from "../services/reseller-quota";
 
 const router = Router();
 
@@ -39,24 +40,11 @@ async function assertResellerTokenQuota(req: AuthenticatedRequest, clientId: str
   if (!client || client.userId !== req.user.userId) {
     return { status: 404, body: { error: "errors.clients.not_found", message: "Client VPN introuvable" } };
   }
-  const reseller = await (prisma as any).reseller.findUnique({ where: { userId: req.user.userId } });
-  const quotaLimit = reseller?.quotaBytes ?? BigInt(0);
-  if (quotaLimit === BigInt(0)) return null;
-  const aggregate = await (prisma as any).subscription.aggregate({
-    where: { client: { userId: req.user.userId } },
-    _sum: { quotaBytes: true },
+  return verifierAllocation(prisma, {
+    role: req.user.role,
+    userId: req.user.userId,
+    demande: quotaBytes,
   });
-  const currentUsed = aggregate._sum.quotaBytes ?? BigInt(0);
-  if (currentUsed + quotaBytes > quotaLimit) {
-    return {
-      status: 409,
-      body: {
-        error: "errors.resellers.quota_exceeded",
-        message: "Quota revendeur insuffisant : impossible de créer ou d’attribuer ce forfait data.",
-      },
-    };
-  }
-  return null;
 }
 
 // GET /api/tokens — liste tous les tokens SXB (ADMIN/RESELLER)
