@@ -5,7 +5,7 @@ import crypto from "crypto";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { canSeeUser } from "../middleware/rbac/owner";
-import { calculerAllocation, verifierAllocation, estIllimite, porteUnQuotaInterdit } from "../services/reseller-quota";
+import { calculerAllocation, verifierPlafond, estIllimite, porteUnQuotaInterdit } from "../services/reseller-quota";
 
 const router = Router();
 
@@ -283,12 +283,9 @@ router.post("/:id/create-client", requireAuth, async (req: AuthenticatedRequest,
     const quotaBytes = BigInt(body.quotaTotalGb) * BigInt(1024 * 1024 * 1024);
     // Ce chemin créait un client — et donc du quota — sans jamais consulter le
     // plafond du revendeur : c'est par là que 16 Go ont été distribués par un
-    // revendeur crédité de 0 Go.
-    const refus = await verifierAllocation(prisma, {
-      role: req.user?.role,
-      userId: resellerUserId,
-      demande: quotaBytes,
-    });
+    // revendeur crédité de 0 Go. Le contrôle porte sur le revendeur
+    // destinataire, y compris lorsque c'est l'administrateur qui agit pour lui.
+    const refus = await verifierPlafond(prisma, resellerUserId, quotaBytes);
     if (refus) return res.status(refus.status).json(refus.body);
     const expireAt = new Date();
     expireAt.setDate(expireAt.getDate() + body.durationDays);
@@ -296,9 +293,11 @@ router.post("/:id/create-client", requireAuth, async (req: AuthenticatedRequest,
 
     let newClient: any = null;
     if (prisma) {
+      // `name` n'existe pas sur VpnClient : le passer faisait échouer Prisma, et
+      // cette route répondait 500 depuis toujours. Le libellé du client vient de
+      // l'utilisateur propriétaire, comme dans POST /api/clients.
       newClient = await prisma.vpnClient.create({
         data: {
-          name: body.name,
           token: tokenValue,
           userId: resellerUserId,
           quotaTotal: quotaBytes,
@@ -399,6 +398,39 @@ router.patch("/:id", requireAuth, requirePermission("reseller.manage"), async (r
     }
     console.error("Update reseller error:", err);
     return res.status(500).json({ error: "errors.server", message: "Failed to update reseller" });
+  }
+});
+
+// DELETE /api/resellers/:id
+// Le bouton « Supprimer » du dashboard appelait cette route, qui n'existait
+// pas : la réponse était un 404 et le revendeur restait en place.
+//
+// Seule la fiche revendeur est retirée. Le compte utilisateur et ses clients
+// sont conservés : les supprimer révoquerait des accès VPN en service, ce qui
+// n'est pas ce que demande un retrait d'agrément.
+router.delete("/:id", requireAuth, requirePermission("reseller.manage"), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (prisma) {
+      const fiche = await prisma.reseller.findUnique({ where: { id }, include: { user: true } });
+      if (!fiche) return res.status(404).json({ error: "errors.resellers.not_found", message: "Reseller not found" });
+      const clientsCount = await prisma.vpnClient.count({ where: { userId: fiche.userId } });
+      await prisma.reseller.delete({ where: { id } });
+      await logDbActivity(
+        req.user?.userId || null,
+        `Reseller removed: ${(fiche as any).user?.email || id} (${clientsCount} client(s) conservé(s))`,
+        "warning",
+        req.ip
+      );
+      return res.json({ success: true, id, clientsKept: clientsCount });
+    }
+    const index = inMemoryDb.resellers.findIndex((r) => r.id === id);
+    if (index === -1) return res.status(404).json({ error: "errors.resellers.not_found", message: "Reseller not found" });
+    inMemoryDb.resellers.splice(index, 1);
+    return res.json({ success: true, id });
+  } catch (err) {
+    console.error("Delete reseller error:", err);
+    return res.status(500).json({ error: "errors.server", message: "Failed to delete reseller" });
   }
 });
 

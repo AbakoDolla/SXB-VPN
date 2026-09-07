@@ -71,26 +71,19 @@ export async function calculerAllocation(
 export type RefusQuota = { status: number; body: { error: string; message: string } };
 
 /**
- * Autorise ou refuse une nouvelle allocation pour le revendeur authentifié.
+ * Autorise ou refuse une allocation imputée au plafond d'un revendeur donné.
  *
- * Ne s'applique qu'au rôle RESELLER : administrateurs et super-administrateurs
- * ne portent aucun quota et ne sont donc jamais contraints ici.
- *
- * @param demande volume que le revendeur veut engager en plus
+ * Le contrôle porte sur le revendeur **destinataire**, quel que soit l'auteur
+ * de l'appel : un administrateur qui crée un client sous un revendeur puise
+ * dans le quota de ce revendeur, et doit donc être arrêté de la même façon.
  */
-export async function verifierAllocation(
+export async function verifierPlafond(
   prisma: any,
-  params: {
-    role?: string;
-    userId?: string;
-    demande: bigint;
-    exclureSubscriptionId?: string;
-    exclureClientId?: string;
-  }
+  userId: string,
+  demande: bigint,
+  options: { exclureSubscriptionId?: string; exclureClientId?: string } = {}
 ): Promise<RefusQuota | null> {
-  if (params.role !== "RESELLER" || !prisma || !params.userId) return null;
-
-  const fiche = await prisma.reseller.findUnique({ where: { userId: params.userId } });
+  const fiche = await prisma.reseller.findUnique({ where: { userId } });
   // Absence de fiche : le compte n'est pas un revendeur reconnu. Refuser plutôt
   // que de laisser passer, ce que faisait `reseller?.quotaBytes ?? 0n`.
   if (!fiche) {
@@ -106,11 +99,8 @@ export async function verifierAllocation(
   const plafond = BigInt(fiche.quotaBytes ?? 0);
   if (estIllimite(plafond)) return null;
 
-  const { alloue } = await calculerAllocation(prisma, params.userId, {
-    exclureSubscriptionId: params.exclureSubscriptionId,
-    exclureClientId: params.exclureClientId,
-  });
-  const projete = alloue + params.demande;
+  const { alloue } = await calculerAllocation(prisma, userId, options);
+  const projete = alloue + demande;
   if (projete > plafond) {
     const enGo = (v: bigint) => (Number(v) / 1024 ** 3).toFixed(2);
     return {
@@ -125,6 +115,27 @@ export async function verifierAllocation(
     };
   }
   return null;
+}
+
+/**
+ * Variante réservée aux actions qu'un revendeur mène sur ses propres clients :
+ * les autres rôles ne portent aucun quota et ne sont donc jamais contraints.
+ */
+export async function verifierAllocation(
+  prisma: any,
+  params: {
+    role?: string;
+    userId?: string;
+    demande: bigint;
+    exclureSubscriptionId?: string;
+    exclureClientId?: string;
+  }
+): Promise<RefusQuota | null> {
+  if (params.role !== "RESELLER" || !prisma || !params.userId) return null;
+  return verifierPlafond(prisma, params.userId, params.demande, {
+    exclureSubscriptionId: params.exclureSubscriptionId,
+    exclureClientId: params.exclureClientId,
+  });
 }
 
 /** Rôles qui pilotent la plateforme : ils ne peuvent pas porter de quota. */

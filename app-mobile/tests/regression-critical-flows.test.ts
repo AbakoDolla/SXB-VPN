@@ -1678,8 +1678,18 @@ describe('garde-fous contre les régressions Android', () => {
     assert.doesNotMatch(jetons, /reseller\?\.quotaBytes \?\? BigInt\(0\)/);
 
     // La création directe de client comptait pour rien : ce chemin ne
-    // consultait aucun plafond alors qu'il alloue bel et bien du quota.
-    assert.match(revendeurs, /const refus = await verifierAllocation\(prisma, \{[\s\S]{0,160}demande: quotaBytes/);
+    // consultait aucun plafond alors qu'il alloue bel et bien du quota. Le
+    // contrôle vise le revendeur destinataire, pas l'auteur de l'appel : un
+    // administrateur qui crée un client sous un revendeur puise dans son quota.
+    assert.match(revendeurs, /const refus = await verifierPlafond\(prisma, resellerUserId, quotaBytes\)/);
+    assert.match(quota, /export async function verifierPlafond/);
+
+    // VpnClient n'a pas de champ `name` : le transmettre faisait échouer Prisma,
+    // et cette route répondait 500 depuis toujours.
+    assert.doesNotMatch(revendeurs, /vpnClient\.create\(\{[\s\S]{0,80}name: body\.name/);
+
+    // Le bouton « Supprimer » du dashboard appelait une route inexistante.
+    assert.match(revendeurs, /router\.delete\("\/:id", requireAuth, requirePermission\("reseller\.manage"\)/);
 
     // Le cumul doit couvrir les deux formes d'allocation, sans double compte.
     assert.match(quota, /if \(forfaits\.length > 0\)/);
