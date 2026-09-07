@@ -11,6 +11,7 @@ import * as Haptics from "expo-haptics";
 import { useAuthContext } from "@/contexts/AuthContext";
 import { useColors } from "@/hooks/useColors";
 import { useTranslation } from "@/localization";
+import { activationErrorKey } from "@/services/activationError";
 
 const LOGO = require("../assets/images/icon.png");
 
@@ -59,10 +60,7 @@ export default function ActivateScreen() {
     } catch (err: any) {
       if (Platform.OS !== "web") await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       shake();
-      const status = err?.response?.status;
-      if (status === 404) setError(t("token_not_found"));
-      else if (status === 403) setError(t("error_expired_token"));
-      else setError(t("network_error"));
+      setError(t(activationErrorKey(err)));
     } finally {
       setIsLoading(false);
     }

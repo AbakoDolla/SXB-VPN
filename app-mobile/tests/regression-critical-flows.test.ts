@@ -19,6 +19,7 @@ import {
   isValidPin,
   shouldLockAfterBackground,
 } from '../services/appLockPolicy';
+import { activationErrorKey } from '../services/activationError';
 
 const XRAY_VLESS_D2L = {
   remarks: 'BYPASS',
@@ -96,6 +97,27 @@ describe('verrouillage local biométrique et PIN', () => {
     assert.equal(isValidPin('123'), false);
     assert.equal(isValidPin('123456789'), false);
     assert.equal(isValidPin('12a4'), false);
+  });
+
+  describe('erreurs d’activation mobile', () => {
+    it('ne présente jamais un refus 403 générique comme un token expiré', () => {
+      assert.equal(activationErrorKey({ response: { status: 403, data: { code: 'FORBIDDEN' } } }), 'activation_forbidden');
+      assert.equal(activationErrorKey({ response: { status: 403, data: { code: 'RESELLER_QUOTA_REACHED' } } }), 'activation_quota_reached');
+      assert.equal(activationErrorKey({ response: { status: 403, data: { code: 'ACCOUNT_SUSPENDED' } } }), 'error_suspended');
+    });
+
+    it('réserve le message expiré aux réponses qui expriment réellement une expiration', () => {
+      assert.equal(activationErrorKey({ response: { status: 410, data: {} } }), 'error_expired_token');
+      assert.equal(activationErrorKey({ response: { status: 403, data: { code: 'TOKEN_EXPIRED' } } }), 'error_expired_token');
+      assert.equal(activationErrorKey({ response: { status: 403, data: { code: 'RESELLER_EXPIRED' } } }), 'activation_account_expired');
+    });
+
+    it('distingue token utilisé, format invalide, serveur et réseau', () => {
+      assert.equal(activationErrorKey({ response: { status: 409, data: {} } }), 'token_used');
+      assert.equal(activationErrorKey({ response: { status: 422, data: {} } }), 'error_invalid_token');
+      assert.equal(activationErrorKey({ response: { status: 503, data: {} } }), 'error_server');
+      assert.equal(activationErrorKey(new Error('network')), 'error_no_network');
+    });
   });
 
   it('ne verrouille le retour au premier plan qu’après le délai prévu', () => {

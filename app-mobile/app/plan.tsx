@@ -8,6 +8,7 @@ import * as Haptics from "expo-haptics";
 import { useAuthContext } from "@/contexts/AuthContext";
 import Colors from "@/constants/colors";
 import { useTranslation } from "@/localization";
+import { activationErrorKey } from "@/services/activationError";
 
 export default function PlanScreen() {
   const { t } = useTranslation();
@@ -43,11 +44,7 @@ export default function PlanScreen() {
     } catch (err: any) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       shake();
-      const status = err?.response?.status;
-      if (status === 404) setError(t("token_not_found"));
-      else if (status === 409) setError(t("token_used"));
-      else if (status === 403) setError(t("token_expired_short"));
-      else setError(t("network_error"));
+      setError(t(activationErrorKey(err)));
     } finally {
       setIsLoading(false);
     }
