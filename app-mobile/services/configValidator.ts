@@ -101,6 +101,8 @@ function detectProtocol(obj: Record<string, any>): SupportedProtocol | null {
 
   if (raw === 'ssh')              return 'ssh';
   if (raw === 'ssh+payload' || raw === 'ssh_payload') return 'ssh+payload';
+  if (['ssh+tls', 'ssh+ssl', 'ssh+slowdns', 'slowdns', 'ssh+udp'].includes(raw)) return 'ssh';
+  if (['ssh+payload+tls', 'ssh+payload+ssl', 'ssh+http-connect', 'ssh+http', 'ssh+proxy'].includes(raw)) return 'ssh+payload';
   if (raw === 'vless')            return 'vless';
   if (raw === 'vmess')            return 'vmess';
   if (raw === 'trojan')           return 'trojan';
@@ -165,17 +167,71 @@ function extraValidation(
       if (!obj.password && !obj.privateKeyBase64) {
         errors.push('SSH : "password" ou "privateKeyBase64" requis');
       }
-      if (proto === 'ssh' && obj.tls === true) {
-        // Mission §6.2 — « SSH direct + TLS » est REJETÉ : le moteur natif
-        // ignore TLS en SSH direct (SxbLoggingSocketFactory = socket TCP brut,
-        // SxbVpnService.kt l.447-457) — c'est la cause du SSH_TIMEOUT de
-        // l'incident APK #165. Si le fournisseur expose SSH derrière TLS, le
-        // transport doit être « ssh+payload » (WebSocket/HTTP + TLS réel).
-        errors.push(
-          'SSH direct + TLS activé : combinaison REJETÉE — le tunnel SSH direct ' +
-          'n\'applique pas TLS (connexion impossible : timeout). Utilisez ' +
-          '« ssh+payload » (WebSocket/HTTP) si le serveur exige TLS, ou désactivez TLS.',
-        );
+      {
+        const transport = String(obj.sshTransport || 'direct').toLowerCase();
+        const transports = ['direct', 'tls', 'payload', 'payload-tls', 'http-connect', 'slowdns'];
+        if (!transports.includes(transport)) {
+          errors.push(`SSH : sshTransport "${obj.sshTransport}" invalide (${transports.join('|')})`);
+        }
+        if (obj.timeoutMs !== undefined) {
+          const timeout = Number(obj.timeoutMs);
+          if (!Number.isInteger(timeout) || timeout < 5000 || timeout > 120000) {
+            errors.push('SSH : "timeoutMs" doit être un entier entre 5000 et 120000');
+          }
+        }
+
+        if (obj.slowDns !== undefined && typeof obj.slowDns !== 'boolean') {
+          errors.push('SlowDNS : "slowDns" doit être un booléen');
+        }
+        const slowDns = obj.slowDns === true || transport === 'slowdns';
+        if (obj.slowDns === false && transport === 'slowdns') {
+          errors.push('SlowDNS contradictoire : sshTransport=slowdns mais slowDns=false');
+        }
+        if (slowDns) {
+          if (typeof obj.dns !== 'string' || !obj.dns.trim() || obj.dns.includes(';')) {
+            errors.push('SlowDNS : "dns" (résolveur UDP/DoH/DoT) requis et valide');
+          }
+          if (typeof obj.nameServer !== 'string' || !obj.nameServer.trim() || obj.nameServer.includes(';')) {
+            errors.push('SlowDNS : "nameServer" (domaine tunnel/NSSERVER) requis');
+          }
+          if (!/^[0-9a-f]{64}$/i.test(String(obj.slowDnsPublicKey || ''))) {
+            errors.push('SlowDNS : "slowDnsPublicKey" doit contenir exactement 64 caractères hexadécimaux');
+          }
+          if (!validatePort(obj.localPort, errors)) {
+            errors.push('SlowDNS : "localPort" requis');
+          } else if (Number(obj.localPort) === 1080) {
+            errors.push('SlowDNS : localPort 1080 est réservé au relais SOCKS5 de l’application');
+          }
+        }
+
+        const udpMode = String(obj.udpMode || 'none').toLowerCase();
+        if (!['none', 'udpgw'].includes(udpMode)) {
+          errors.push('SSH : "udpMode" doit être "none" ou "udpgw"');
+        } else if (udpMode === 'udpgw') {
+          const gatewayHost = String(obj.udpGatewayHost || '127.0.0.1').trim();
+          if (!gatewayHost) errors.push('UDPGW : "udpGatewayHost" ne peut pas être vide');
+          validatePort(obj.udpGatewayPort ?? 7300, errors);
+        }
+
+        if (obj.proxyEnabled !== undefined && typeof obj.proxyEnabled !== 'boolean') {
+          errors.push('Proxy SSH : "proxyEnabled" doit être un booléen');
+        }
+        if (obj.insecure !== undefined && typeof obj.insecure !== 'boolean') {
+          errors.push('SSH TLS : "insecure" doit être un booléen');
+        }
+        if (obj.proxyEnabled === true) {
+          // HTTP Custom emploie souvent PROXY ENABLED sans endpoint distinct :
+          // l'hôte/port SSH sont alors l'endpoint physique du payload.
+          if (obj.proxyPort !== undefined && obj.proxyPort !== null && obj.proxyPort !== '') {
+            validatePort(obj.proxyPort, errors);
+          }
+          if (!['payload', 'payload-tls', 'http-connect'].includes(transport) && proto !== 'ssh+payload') {
+            errors.push('Proxy SSH : endpoint explicite réservé aux transports payload/http-connect');
+          }
+          if (slowDns && typeof obj.proxyHost === 'string' && obj.proxyHost.trim()) {
+            errors.push('Proxy SSH : proxyHost explicite et SlowDNS ne peuvent pas être combinés');
+          }
+        }
       }
       if (proto === 'ssh+payload') {
         if (obj.payload !== undefined && typeof obj.payload !== 'string') {
@@ -285,6 +341,27 @@ export function validateVpnConfig(raw: string | Record<string, any>): Validation
     return { valid: false, protocol: null, errors: ['La configuration doit être un objet JSON'], warnings, config: null };
   }
 
+  const sshAlias = String(obj.protocol ?? obj.type ?? '').toLowerCase().trim();
+  const aliasTransport: Record<string, string> = {
+    'ssh+tls': 'tls',
+    'ssh+ssl': 'tls',
+    'ssh+payload+tls': 'payload-tls',
+    'ssh+payload+ssl': 'payload-tls',
+    'ssh+http-connect': 'http-connect',
+    'ssh+http': 'payload',
+    'ssh+proxy': 'http-connect',
+    'ssh+slowdns': 'slowdns',
+    'slowdns': 'slowdns',
+    'ssh+udp': 'direct',
+  };
+  if (aliasTransport[sshAlias] && obj.sshTransport === undefined) {
+    obj = { ...obj, sshTransport: aliasTransport[sshAlias] };
+  }
+  if (['ssh+slowdns', 'slowdns'].includes(sshAlias) && obj.slowDns === undefined) obj.slowDns = true;
+  if (['ssh+tls', 'ssh+ssl', 'ssh+payload+tls', 'ssh+payload+ssl'].includes(sshAlias) && obj.tls === undefined) obj.tls = true;
+  if (['ssh+http-connect', 'ssh+proxy'].includes(sshAlias) && obj.proxyEnabled === undefined) obj.proxyEnabled = true;
+  if (sshAlias === 'ssh+udp' && obj.udpMode === undefined) obj.udpMode = 'udpgw';
+
   // 3. Déballer l’export HTTP Tweak V2RAY si l’utilisateur colle le JSON
   // complet directement dans l’application (le dashboard effectue la même
   // conversion côté serveur). Le champ `password` de cet export contient
@@ -341,7 +418,8 @@ export function validateVpnConfig(raw: string | Record<string, any>): Validation
       valid: false, protocol: null,
       errors: [
         'Protocole non reconnu. Ajoutez le champ "protocol" avec une valeur parmi : ' +
-        'ssh, ssh+payload, vless, vmess, trojan, shadowsocks, wireguard, hysteria2, tuic, singbox',
+        'ssh, ssh+tls, ssh+payload, ssh+payload+tls, ssh+http-connect, ssh+slowdns, ssh+udp, ' +
+        'vless, vmess, trojan, shadowsocks, wireguard, hysteria2, tuic, singbox',
       ],
       warnings, config: null,
     };

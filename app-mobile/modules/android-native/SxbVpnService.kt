@@ -63,9 +63,13 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.VpnService
+import android.net.LocalServerSocket
+import android.net.LocalSocket
+import android.net.LocalSocketAddress
 import android.os.Build
 import android.os.SystemClock
 import android.os.ParcelFileDescriptor
+import android.system.Os
 import android.util.Log
 import com.jcraft.jsch.ChannelDirectTCPIP
 import com.jcraft.jsch.JSch
@@ -85,6 +89,7 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.File
+import java.io.FileDescriptor
 import java.io.InputStream
 import java.io.OutputStream
 import java.io.SequenceInputStream
@@ -102,6 +107,39 @@ import java.util.Locale
 import javax.net.ssl.SSLParameters
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
+
+private fun isIpLiteralHost(value: String): Boolean =
+    value.matches(Regex("^\\d{1,3}(\\.\\d{1,3}){3}$")) || value.contains(':')
+
+private fun expandSshPayloadTokens(
+    raw: String,
+    targetHost: String,
+    targetPort: Int,
+    userAgent: String,
+    sni: String = "",
+): String {
+    val randomToken = ByteArray(8).also { SecureRandom().nextBytes(it) }
+        .joinToString("") { "%02x".format(it) }
+    val replacements = linkedMapOf(
+        "[host_port]" to "$targetHost:$targetPort",
+        "[crlf]" to "\r\n",
+        "[lfcr]" to "\n\r",
+        "[lf]" to "\n",
+        "[cr]" to "\r",
+        "[host]" to targetHost,
+        "[port]" to targetPort.toString(),
+        "[ua]" to userAgent,
+        "[sni]" to sni.ifBlank { targetHost },
+        "%HOST%" to targetHost,
+        "%IP%" to targetHost,
+        "%PORT%" to targetPort.toString(),
+        "%SNI%" to sni.ifBlank { targetHost },
+        "%RAND%" to randomToken,
+    )
+    return replacements.entries.fold(raw) { value, (token, replacement) ->
+        Regex(Regex.escape(token), RegexOption.IGNORE_CASE).replace(value) { replacement }
+    }
+}
 
 // ── WsOutputStream — Encode chaque write() en frame WebSocket binaire (client→server, masqué) ──
 private class WsOutputStream(
@@ -252,6 +290,12 @@ private class SxbPayloadProxy(
     private val rawPayload: String,
     private val tlsEnabled: Boolean,
     private val sni: String,
+    private val connectHost: String,
+    private val connectPort: Int,
+    private val targetHost: String,
+    private val targetPort: Int,
+    private val userAgent: String,
+    private val tlsInsecure: Boolean,
     /**
      * FIX CRITIQUE — Protection du socket sortant.
      *
@@ -286,20 +330,22 @@ private class SxbPayloadProxy(
         // Résolution DNS visible (diagnostic données cellulaires / split-DNS)
         val dnsT0 = System.currentTimeMillis()
         val dnsResolved = runCatching {
-            java.net.InetAddress.getAllByName(host).isNotEmpty()
+            java.net.InetAddress.getAllByName(connectHost).isNotEmpty()
         }.getOrDefault(false)
         onEvent("[SXB_TRACE] stage=DNS_RESOLVE success=$dnsResolved elapsed_ms=${System.currentTimeMillis() - dnsT0}")
         val t0 = System.currentTimeMillis()
-        rawSocket.connect(InetSocketAddress(host, port), connectTimeout)
+        rawSocket.connect(InetSocketAddress(connectHost, connectPort), connectTimeout)
         onEvent("[SXB_TRACE] stage=TCP_CONNECTED elapsed_ms=${System.currentTimeMillis() - t0} local_bound=${rawSocket.localPort > 0}")
         val transportSocket: Socket = if (tlsEnabled) {
+            val serverName = sni.ifBlank { connectHost }
             val tlsSocket = (SSLSocketFactory.getDefault() as SSLSocketFactory)
-                .createSocket(rawSocket, sni.ifBlank { host }, port, false) as SSLSocket
+                .createSocket(rawSocket, serverName, connectPort, false) as SSLSocket
             tlsSocket.useClientMode = true
             tlsSocket.soTimeout = connectTimeout
             val sslParams = SSLParameters()
-            if (sni.isNotBlank()) {
-                sslParams.serverNames = listOf(javax.net.ssl.SNIHostName(sni))
+            if (!tlsInsecure) sslParams.endpointIdentificationAlgorithm = "HTTPS"
+            if (serverName.isNotBlank() && !isIpLiteralHost(serverName)) {
+                sslParams.serverNames = listOf(javax.net.ssl.SNIHostName(serverName))
             }
             tlsSocket.sslParameters = sslParams
             tlsSocket.startHandshake()
@@ -315,17 +361,11 @@ private class SxbPayloadProxy(
         val rawIn  = transportSocket.getInputStream()
 
         // ── 1. Substitutions dans le payload ─────────────────────────────────
-        var payload = rawPayload
-            .replace("[crlf]", "\r\n").replace("[CRLF]", "\r\n")
-            .replace("[lf]",   "\n").replace("[LF]",   "\n")
-            .replace("[cr]",   "\r").replace("[CR]",   "\r")
-            .replace("[port]", port.toString())
-            .replace("[host]", host).replace("[Host]", host)
-            .replace("[host_port]", "$host:$port")
+        var payload = expandSshPayloadTokens(rawPayload, targetHost, targetPort, userAgent, sni)
 
         onEvent("[SXB_TRACE] stage=PAYLOAD_NORMALIZED bytes=${payload.length} has_connect=${payload.trimStart().startsWith("CONNECT ", ignoreCase = true)} has_upgrade=${payload.contains("upgrade", ignoreCase = true)} crlf_count=${payload.windowed(2).count { it == "\r\n" }} placeholder_removed=${rawPayload.contains("…") || rawPayload.contains("...")}")
         if (SxbSecureLogger.isDiagnosticEnabled()) {
-            onEvent("[SXB_DIAGNOSTIC] CONNECT_TARGET host=$host port=$port tls=$tlsEnabled sni=${sni.ifBlank { "<none>" }}")
+            onEvent("[SXB_DIAGNOSTIC] CONNECT_TARGET host=$targetHost port=$targetPort tls=$tlsEnabled sni=${sni.ifBlank { "<none>" }}")
             onEvent("[SXB_DIAGNOSTIC] PAYLOAD_FULL_BEGIN\n$payload\n[SXB_DIAGNOSTIC] PAYLOAD_FULL_END")
         }
 
@@ -602,6 +642,8 @@ private class SxbBannerInputStream(
 
 private class SxbLoggingSocketFactory(
     private val timeoutMs: Int,
+    private val connectHost: String,
+    private val connectPort: Int,
     /** Voir SxbPayloadProxy : le socket SSH direct doit aussi être protégé. */
     private val protectSocket: (Socket) -> Boolean,
     private val onBanner: () -> Unit,
@@ -617,7 +659,7 @@ private class SxbLoggingSocketFactory(
             }.getOrDefault(false)
             val ok = protectSocket(this)
             Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_SOCKET_PROTECTED result=$ok fd_ready=$fdReady")
-            connect(InetSocketAddress(host, port), timeoutMs)
+            connect(InetSocketAddress(connectHost, connectPort), timeoutMs)
         }
 
     override fun getInputStream(socket: Socket): InputStream =
@@ -641,6 +683,9 @@ private class SxbLoggingSocketFactory(
 private class SxbTlsSocketFactory(
     private val timeoutMs: Int,
     private val sni: String,
+    private val connectHost: String,
+    private val connectPort: Int,
+    private val tlsInsecure: Boolean,
     private val protectSocket: (Socket) -> Boolean,
     private val onEvent: (String) -> Unit,
 ) : SocketFactory {
@@ -657,15 +702,16 @@ private class SxbTlsSocketFactory(
         onEvent("[SXB_TRACE] stage=SOCKET_PROTECT result=$ok fd_ready=$fdReady")
 
         val t0 = System.currentTimeMillis()
-        rawSocket.connect(InetSocketAddress(host, port), timeoutMs)
+        rawSocket.connect(InetSocketAddress(connectHost, connectPort), timeoutMs)
         onEvent("[SXB_TRACE] stage=TCP_CONNECTED elapsed_ms=${System.currentTimeMillis() - t0}")
 
         val serverName = sni.ifBlank { host }
         val tlsSocket = (SSLSocketFactory.getDefault() as SSLSocketFactory)
-            .createSocket(rawSocket, serverName, port, true) as SSLSocket
+            .createSocket(rawSocket, serverName, connectPort, true) as SSLSocket
         tlsSocket.useClientMode = true
         tlsSocket.soTimeout = timeoutMs
         val sslParams = SSLParameters()
+        if (!tlsInsecure) sslParams.endpointIdentificationAlgorithm = "HTTPS"
         if (serverName.isNotBlank() && !isIpLiteral(serverName)) {
             // Une IP littérale n'est pas un nom d'hôte valide : l'envoyer en SNI
             // fait rejeter le handshake par les serveurs stricts.
@@ -686,7 +732,7 @@ private class SxbTlsSocketFactory(
     }
 
     private fun isIpLiteral(value: String): Boolean =
-        value.matches(Regex("^\\d{1,3}(\\.\\d{1,3}){3}$")) || value.contains(':')
+        isIpLiteralHost(value)
 
     override fun getInputStream(socket: Socket): InputStream = socket.getInputStream()
 
@@ -823,6 +869,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private var tunPfd          : ParcelFileDescriptor? = null
     private var sshSession      : Session? = null
     private var socks5Server    : ServerSocket? = null
+    private var dnsttProcess    : Process? = null
+    private var dnsttProtectServer: LocalServerSocket? = null
+    private var dnsttProtectSocket: LocalSocket? = null
+    private var dnsttProtectFile: File? = null
+    private var dnsttProtectThread: Thread? = null
+    private var dnsttOutputThread: Thread? = null
     /** Instance sing-box in-process (remplace l'ancien `Process` externe). */
     private var boxService      : BoxService? = null
     private var vpnThread       : Thread? = null
@@ -895,14 +947,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
             .substringBefore(":")
     }
 
-    private fun normalizePayload(payload: String, host: String, port: Int): String {
-        val normalized = payload
-            .replace("[crlf]", "\r\n", ignoreCase = true)
-            .replace("[lf]", "\n", ignoreCase = true)
-            .replace("[cr]", "\r", ignoreCase = true)
-            .replace("[port]", port.toString())
-            .replace("[host_port]", "$host:$port", ignoreCase = true)
-            .replace("[host]", host, ignoreCase = true)
+    private fun normalizePayload(payload: String, host: String, port: Int, userAgent: String = "SXB-VPN/Android"): String {
+        val normalized = expandSshPayloadTokens(payload, host, port, userAgent)
         // Les caractères « … » ou « ... » sont fréquemment ajoutés par une
         // interface de partage pour signifier « en-têtes omis ». Ils ne sont
         // pas une ligne HTTP valide. Supprimer uniquement une ligne composée
@@ -949,7 +995,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
         tlsEnabled: Boolean,
         configuredSni: String,
     ): List<SshTransportStrategy> {
-        val normalized = normalizePayload(rawPayload, host, port)
+        val normalized = normalizePayload(
+            rawPayload,
+            host,
+            port,
+            cfg.optStringOrNull("userAgent", "SXB-VPN/Android"),
+        )
         val isConnect = normalized.trimStart().startsWith("CONNECT ", ignoreCase = true)
         val sni = configuredSni.ifBlank { extractPayloadHost(normalized).ifBlank { host } }
         val exactMode = if (tlsEnabled) "tls_raw" else "raw"
@@ -1250,7 +1301,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
         Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_2_CONFIG_RECEIVED proto=$proto")
         broadcastLog("[SXB_DEBUG] ▶ STEP_2_DISPATCH proto='$proto'")
         when (proto) {
-            "ssh", "ssh+payload"                                        -> startSshTunnel(json)
+            "ssh", "ssh+payload", "ssh+tls", "ssh+ssl",
+            "ssh+payload+tls", "ssh+payload+ssl", "ssh+http", "ssh+proxy",
+            "ssh+http-connect", "ssh+slowdns", "slowdns", "ssh+udp"    -> startSshTunnel(json)
             "vless", "vmess", "trojan", "shadowsocks",
             "wireguard", "hysteria2", "tuic"                            -> startSingBoxTunnel(json, proto)
             "singbox"                                                   -> startSingBoxTunnelRaw(json)
@@ -1268,6 +1321,183 @@ class SxbVpnService : VpnService(), PlatformInterface {
     // SSH TUNNEL (JSch + SOCKS5 local + sing-box TUN relay)
     // ═════════════════════════════════════════════════════════════════════════
 
+    private fun startDnsttProtectServer() {
+        stopDnstt()
+        // Le contrat plugin Android de DNSTT envoie les descripteurs vers
+        // `./protect_path`, donc un socket UNIX de namespace FILESYSTEM dans le
+        // répertoire courant du processus — pas un socket abstrait Android.
+        val socketFile = File(filesDir, "protect_path").apply { delete() }
+        val binder = LocalSocket().apply {
+            bind(LocalSocketAddress(socketFile.absolutePath, LocalSocketAddress.Namespace.FILESYSTEM))
+        }
+        val server = LocalServerSocket(binder.fileDescriptor)
+        dnsttProtectSocket = binder
+        dnsttProtectFile = socketFile
+        dnsttProtectServer = server
+        dnsttProtectThread = Thread({
+            while (running.get() && dnsttProtectServer === server) {
+                var client: LocalSocket? = null
+                try {
+                    client = server.accept()
+                    // dnstt envoie un octet avec le SCM_RIGHTS. Android ne peuple
+                    // ancillaryFileDescriptors qu'après cette lecture.
+                    val marker = client.inputStream.read()
+                    val descriptors =
+                        client.ancillaryFileDescriptors ?: emptyArray<FileDescriptor>()
+                    var protected = marker >= 0 && descriptors.isNotEmpty()
+                    descriptors.forEach { descriptor ->
+                        val protectedFd = runCatching { protect(descriptor) }.getOrDefault(false)
+                        protected = protectedFd && protected
+                        runCatching { Os.close(descriptor) }
+                    }
+                    if (protected) {
+                        client.outputStream.write(1)
+                        client.outputStream.flush()
+                    } else {
+                        // Le client Go ne vérifie pas la valeur de l'octet : il
+                        // considère toute lecture de longueur 1 comme réussie.
+                        // Fermer sans acquittement est la seule manière honnête
+                        // de lui signaler que le socket n'a pas été protégé.
+                        SxbSecureLogger.warn("DNSTT_SOCKET_PROTECT_REJECTED")
+                    }
+                } catch (_: Exception) {
+                    if (running.get() && dnsttProtectServer === server) {
+                        SxbSecureLogger.warn("DNSTT_PROTECT_REQUEST_FAILED")
+                    }
+                } finally {
+                    runCatching { client?.close() }
+                }
+            }
+        }, "DnsttProtect").apply { isDaemon = true; start() }
+    }
+
+    private fun protect(descriptor: FileDescriptor): Boolean {
+        val duplicate = ParcelFileDescriptor.dup(descriptor)
+        return try {
+            protect(duplicate.fd)
+        } finally {
+            runCatching { duplicate.close() }
+        }
+    }
+
+    private fun isProcessRunning(process: Process): Boolean =
+        try {
+            process.exitValue()
+            false
+        } catch (_: IllegalThreadStateException) {
+            true
+        }
+
+    private fun startDnstt(cfg: JSONObject, timeoutMs: Int): Int {
+        val resolver = cfg.optStringOrNull("dns", "").trim()
+        val tunnelDomain = cfg.optStringOrNull("nameServer", "").trim()
+        val publicKey = cfg.optStringOrNull("slowDnsPublicKey", "").trim()
+        val localPort = cfg.optInt("localPort", 0)
+        if (resolver.isBlank() || tunnelDomain.isBlank() ||
+            !publicKey.matches(Regex("^[0-9a-fA-F]{64}$")) ||
+            localPort !in 1..65535 || localPort == SOCKS5_PORT ||
+            listOf(resolver, tunnelDomain).any { it.contains(';') }
+        ) {
+            throw IllegalArgumentException("Configuration SlowDNS invalide")
+        }
+
+        val transport = when {
+            resolver.startsWith("https://", ignoreCase = true) ->
+                "doh=$resolver"
+            resolver.startsWith("dot://", ignoreCase = true) -> {
+                val endpoint = resolver.substringAfter("://")
+                "dot=${withDefaultPort(endpoint, 853)}"
+            }
+            resolver.startsWith("tls://", ignoreCase = true) -> {
+                val endpoint = resolver.substringAfter("://")
+                "dot=${withDefaultPort(endpoint, 853)}"
+            }
+            else -> {
+                val endpoint = resolver.replace(Regex("^udp://", RegexOption.IGNORE_CASE), "")
+                "udp=${withDefaultPort(endpoint, 53)}"
+            }
+        }
+
+        startDnsttProtectServer()
+        val executable = File(applicationInfo.nativeLibraryDir, "libdnstt.so")
+        if (!executable.isFile) throw java.io.FileNotFoundException("Moteur SlowDNS absent")
+        val process = ProcessBuilder(executable.absolutePath)
+            .redirectErrorStream(true)
+            .directory(filesDir)
+            .apply {
+                environment()["SS_PLUGIN_OPTIONS"] =
+                    "$transport;pubkey=$publicKey;domain=$tunnelDomain;__android_vpn=1"
+                environment()["SS_LOCAL_HOST"] = "127.0.0.1"
+                environment()["SS_LOCAL_PORT"] = localPort.toString()
+            }
+            .start()
+        dnsttProcess = process
+        dnsttOutputThread = Thread({
+            // Vider stdout/stderr empêche le processus de bloquer. Le contenu
+            // peut inclure le domaine du tunnel et n'est donc jamais journalisé.
+            runCatching {
+                process.inputStream.buffered().use { input ->
+                    val buffer = ByteArray(4096)
+                    while (input.read(buffer) != -1) Unit
+                }
+            }
+        }, "DnsttOutput").apply { isDaemon = true; start() }
+
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        while (running.get() && SystemClock.elapsedRealtime() < deadline) {
+            if (!isProcessRunning(process)) throw java.io.IOException("Le moteur SlowDNS s'est arrêté")
+            val ready = runCatching {
+                Socket().use { it.connect(InetSocketAddress("127.0.0.1", localPort), 250) }
+                true
+            }.getOrDefault(false)
+            if (ready) {
+                broadcastLog("[SXB] Transport SlowDNS prêt")
+                return localPort
+            }
+            Thread.sleep(100)
+        }
+        throw SocketTimeoutException("Timeout au démarrage du transport SlowDNS")
+    }
+
+    private fun withDefaultPort(value: String, port: Int): String {
+        val endpoint = value.trim()
+        if (endpoint.startsWith("[")) {
+            val close = endpoint.lastIndexOf(']')
+            if (close > 0) {
+                if (close == endpoint.lastIndex) return "$endpoint:$port"
+                if (endpoint.getOrNull(close + 1) == ':' &&
+                    endpoint.substring(close + 2).toIntOrNull() != null
+                ) return endpoint
+            }
+        }
+        if (endpoint.count { it == ':' } == 1 && endpoint.substringAfterLast(':').toIntOrNull() != null) return endpoint
+        if (endpoint.contains(':')) return "[$endpoint]:$port"
+        return "$endpoint:$port"
+    }
+
+    private fun stopDnstt() {
+        runCatching { dnsttProtectServer?.close() }
+        dnsttProtectServer = null
+        runCatching { dnsttProtectSocket?.close() }
+        dnsttProtectSocket = null
+        dnsttProtectThread?.interrupt()
+        dnsttProtectThread = null
+        val process = dnsttProcess
+        dnsttProcess = null
+        if (process != null) {
+            runCatching { process.destroy() }
+            val deadline = SystemClock.elapsedRealtime() + 1_000
+            while (isProcessRunning(process) && SystemClock.elapsedRealtime() < deadline) {
+                runCatching { Thread.sleep(25) }
+            }
+            if (isProcessRunning(process)) runCatching { process.destroy() }
+        }
+        dnsttOutputThread?.interrupt()
+        dnsttOutputThread = null
+        runCatching { dnsttProtectFile?.delete() }
+        dnsttProtectFile = null
+    }
+
     private fun startSshTunnel(configJsonStr: String) {
         try {
             isSshRelay = true
@@ -1280,10 +1510,15 @@ class SxbVpnService : VpnService(), PlatformInterface {
             val host       = cfg.optStringOrNull("host", "")
             val port       = cfg.optInt("port", 22)
             // optStringOrNull : jamais la chaîne "null" (AOSP) — correctif APK #165
+            val protocol   = cfg.optStringOrNull("protocol", "ssh").lowercase(Locale.ROOT)
+            val transport  = cfg.optStringOrNull("sshTransport", "").lowercase(Locale.ROOT)
             val username   = cfg.optStringOrNull("username", "")
             val password   = cfg.optStringOrNull("password", "")
             val uuid       = cfg.optStringOrNull("uuid", "")
-            val usePayload = cfg.optBoolean("usePayload", false) || cfg.optStringOrNull("protocol","").contains("payload")
+            val usePayload = cfg.optBoolean("usePayload", false) ||
+                protocol.contains("payload") || protocol.contains("http") ||
+                protocol == "ssh+proxy" ||
+                transport in setOf("payload", "payload-tls", "http-connect")
             val sni        = cfg.optStringOrNull("sni", "")
             val network    = cfg.optStringOrNull("network", "tcp")
             val path       = cfg.optStringOrNull("path", "/")
@@ -1292,9 +1527,25 @@ class SxbVpnService : VpnService(), PlatformInterface {
             val peerPublicKey = cfg.optStringOrNull("peerPublicKey", "")
             val localAddress = cfg.optStringOrNull("localAddress", "")
             val flow       = cfg.optStringOrNull("flow", "")
-            val tlsEnabled = cfg.optBoolean("tlsEnabled", cfg.optBoolean("tls", false))
+            val tlsEnabled = cfg.optBoolean("tlsEnabled", cfg.optBoolean("tls", false)) ||
+                protocol.contains("tls") || protocol.contains("ssl") ||
+                transport in setOf("tls", "payload-tls")
+            val tlsInsecure = cfg.optBoolean("insecure", cfg.optBoolean("allowInsecure", false))
             val websocketEnabled = cfg.optBoolean("websocketEnabled", false)
             val fingerprint = cfg.optStringOrNull("fingerprint", "")
+            val slowDnsEnabled = cfg.optBoolean("slowDns", false) ||
+                protocol == "ssh+slowdns" || protocol == "slowdns" || transport == "slowdns"
+            val timeoutMs = cfg.optInt("timeoutMs", 30_000).coerceIn(1_000, 120_000)
+            val proxyEnabled = cfg.optBoolean("proxyEnabled", false) ||
+                protocol == "ssh+proxy" || protocol == "ssh+http-connect"
+            val proxyHost = cfg.optStringOrNull("proxyHost", "")
+            val proxyPort = cfg.optInt("proxyPort", 0)
+            val effectiveProxyHost = proxyHost.ifBlank { host }
+            val effectiveProxyPort = if (proxyPort in 1..65535) proxyPort else port
+            val userAgent = cfg.optStringOrNull("userAgent", "SXB-VPN/Android")
+            val udpMode = cfg.optStringOrNull("udpMode", "none").lowercase(Locale.ROOT)
+            val udpGatewayHost = cfg.optStringOrNull("udpGatewayHost", "127.0.0.1")
+            val udpGatewayPort = cfg.optInt("udpGatewayPort", 7300)
 
             // Guard : host vide = config invalide, arrêter proprement
             if (host.isEmpty()) {
@@ -1302,6 +1553,15 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 broadcastStatus("error"); setCurrentState("error")
                 cleanup()
                 return
+            }
+            if (proxyEnabled && !usePayload) {
+                throw IllegalArgumentException("Configuration proxy SSH invalide")
+            }
+            if (udpMode !in setOf("none", "udpgw")) {
+                throw IllegalArgumentException("Mode UDP SSH invalide")
+            }
+            if (udpMode == "udpgw" && (udpGatewayHost.isBlank() || udpGatewayPort !in 1..65535)) {
+                throw IllegalArgumentException("Passerelle UDPGW invalide")
             }
 
             // ── Payload SSH ─────────────────────────────────────────────────
@@ -1313,6 +1573,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
             val rawPayload = cfg.optStringOrNull("payload", "")
             val payload = when {
                 rawPayload.isNotEmpty() -> rawPayload   // payload réel reçu du backend
+                transport == "http-connect" || protocol == "ssh+http-connect" ->
+                    "CONNECT [host_port] HTTP/1.1[crlf]Host: [host_port][crlf][crlf]"
                 usePayload -> {
                     // Payload WebSocket par défaut — garantit que le handshake HTTP
                     // est envoyé avant SSH, nécessaire pour les serveurs port 443/80
@@ -1321,6 +1583,20 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     "GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]"
                 }
                 else -> ""
+            }
+
+            val dnsttPort = if (slowDnsEnabled) startDnstt(cfg, timeoutMs) else null
+            val sshConnectHost = if (dnsttPort != null) "127.0.0.1" else host
+            val sshConnectPort = dnsttPort ?: port
+            val payloadConnectHost = when {
+                dnsttPort != null -> "127.0.0.1"
+                proxyEnabled && usePayload -> effectiveProxyHost
+                else -> host
+            }
+            val payloadConnectPort = when {
+                dnsttPort != null -> dnsttPort
+                proxyEnabled && usePayload -> effectiveProxyPort
+                else -> port
             }
 
             SxbSecureLogger.debug("SSH_SOCKET_CONNECT_START payload=$usePayload tls=$tlsEnabled ws=$websocketEnabled bytes=${payload.length}")
@@ -1370,25 +1646,50 @@ class SxbVpnService : VpnService(), PlatformInterface {
             }
 
             fun newSession(strategy: SshTransportStrategy? = null): Session =
-                jsch.getSession(username, host, port).also { s ->
+                jsch.getSession(username, sshConnectHost, sshConnectPort).also { s ->
                     s.setPassword(password)
                     s.setConfig(commonProps)
                     if (strategy != null) {
-                        s.setProxy(SxbPayloadProxy(strategy.payload, strategy.tls, strategy.sni, ::protectSocket) { event ->
-                            broadcastLog(event)
-                        })
+                        val strategyTlsServerName = sni.ifBlank {
+                            when {
+                                dnsttPort != null -> host
+                                proxyEnabled -> effectiveProxyHost
+                                else -> host
+                            }
+                        }
+                        s.setProxy(
+                            SxbPayloadProxy(
+                                strategy.payload,
+                                strategy.tls,
+                                strategyTlsServerName,
+                                payloadConnectHost,
+                                payloadConnectPort,
+                                host,
+                                port,
+                                userAgent,
+                                tlsInsecure,
+                                ::protectSocket,
+                            ) { event -> broadcastLog(event) }
+                        )
                     } else if (tlsEnabled) {
                         // SSH over TLS (« SSL Tunnel ») : pas de payload HTTP, mais
                         // le flux SSH voyage dans une session TLS.
                         s.setSocketFactory(
-                            SxbTlsSocketFactory(30_000, sni, ::protectSocket) { event -> broadcastLog(event) }
+                            SxbTlsSocketFactory(
+                                timeoutMs,
+                                sni.ifBlank { host },
+                                sshConnectHost,
+                                sshConnectPort,
+                                tlsInsecure,
+                                ::protectSocket,
+                            ) { event -> broadcastLog(event) }
                         )
                     } else {
-                        s.setSocketFactory(SxbLoggingSocketFactory(30_000, ::protectSocket) {
+                        s.setSocketFactory(SxbLoggingSocketFactory(timeoutMs, sshConnectHost, sshConnectPort, ::protectSocket) {
                             broadcastLog("[SXB_DEBUG] SSH_BANNER_RECEIVED")
                         })
                     }
-                    s.timeout = if (strategy == null) 30_000 else 12_000
+                    s.timeout = if (strategy == null) timeoutMs else minOf(timeoutMs, 12_000)
                 }
 
             lateinit var session: Session
@@ -1433,7 +1734,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                         sshSession = candidate
                         trace("SSH_HANDSHAKE_START", "n=$attemptNumber transport=${strategy.mode} timeout_ms=12000")
                         broadcastLog("[SXB_DEBUG] SSH_HANDSHAKE_START n=$attemptNumber transport=${strategy.mode}")
-                        candidate.connect(12_000)
+                        candidate.connect(minOf(timeoutMs, 12_000))
                         if (!candidate.isConnected) throw java.io.IOException("SSH session not connected")
                         results[strategy.mode] = "banner_ok"
                         selectedStrategy = strategy
@@ -1476,7 +1777,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 trace("SSH_HANDSHAKE_START", "payload=false tls=$tlsEnabled timeout_ms=30000")
                 broadcastLog("[SXB_DEBUG] SSH_HANDSHAKE_START payload=false tls=$tlsEnabled")
                 broadcastLog("[SXB] Handshake SSH en cours...")
-                session.connect(30_000)
+                session.connect(timeoutMs)
             }
 
             // Un stopVpn() peut avoir fermé la session pendant connect(). Ne jamais
@@ -1517,7 +1818,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             broadcastLog("[SXB] Tunnel SSH établi")
 
             // ── Serveur SOCKS5 local ──────────────────────────────────────────
-            socks5Server = startLocalSocks5Server(session)
+            socks5Server = startLocalSocks5Server(session, udpMode, udpGatewayHost, udpGatewayPort)
             Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_12_SOCKS_STARTED port=$SOCKS5_PORT")
             broadcastLog("[SXB_DEBUG] STEP_12_SOCKS_STARTED port=$SOCKS5_PORT")
             broadcastLog("[SXB] SOCKS5 local actif (port $SOCKS5_PORT)")
@@ -3816,7 +4117,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
     // SOCKS5 SERVER (pour relayer SSH → TUN)
     // ═════════════════════════════════════════════════════════════════════════
 
-    private fun startLocalSocks5Server(session: Session): ServerSocket {
+    private fun startLocalSocks5Server(
+        session: Session,
+        udpMode: String,
+        udpGatewayHost: String,
+        udpGatewayPort: Int,
+    ): ServerSocket {
         val server = ServerSocket(SOCKS5_PORT, 50, InetAddress.getByName("127.0.0.1"))
         Log.i(TAG, "[SXB_DEBUG] SOCKS5_SERVER_BOUND address=${server.inetAddress.hostAddress} port=$SOCKS5_PORT")
         Thread({
@@ -3824,7 +4130,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 try {
                     val client = server.accept()
                     broadcastLog("[SXB_TRACE] stage=SOCKS5_CLIENT_ACCEPT local_port=${client.localPort} remote_port=${client.port}")
-                    Thread({ handleSocks5Client(session, client) }, "Socks5Client")
+                    Thread({
+                        handleSocks5Client(session, client, udpMode, udpGatewayHost, udpGatewayPort)
+                    }, "Socks5Client")
                         .apply { isDaemon = true; start() }
                 } catch (e: Exception) {
                     if (running.get()) Log.w(TAG, "Socks5 accept: ${e.message}")
@@ -3836,7 +4144,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
         return server
     }
 
-    private fun handleSocks5Client(session: Session, client: Socket) {
+    private fun handleSocks5Client(
+        session: Session,
+        client: Socket,
+        udpMode: String,
+        udpGatewayHost: String,
+        udpGatewayPort: Int,
+    ) {
         try {
             client.soTimeout = 30_000
             val din  = DataInputStream(client.inputStream)
@@ -3852,8 +4166,28 @@ class SxbVpnService : VpnService(), PlatformInterface {
             val cmd = ByteArray(4); din.readFully(cmd)
             val command = cmd[1].toInt()
             broadcastLog("[SXB_TRACE] stage=SOCKS5_REQUEST command=$command address_type=${cmd[3].toInt()}")
+            if (command == 3) {
+                if (udpMode != "udpgw") {
+                    // REP=7 : Command not supported. Ne jamais annoncer un
+                    // faux succès UDP lorsque la passerelle n'est pas configurée.
+                    dout.write(byteArrayOf(5, 7, 0, 1, 0, 0, 0, 0, 0, 0))
+                    dout.flush()
+                    return
+                }
+                // La connexion de contrôle définit la durée de vie de
+                // l'association UDP ; elle reste normalement silencieuse.
+                client.soTimeout = 0
+                SxbUdpGateway(
+                    session,
+                    udpGatewayHost,
+                    udpGatewayPort,
+                    onUpload = { uploadBytes.addAndGet(it.toLong()) },
+                    onDownload = { downloadBytes.addAndGet(it.toLong()) },
+                ).associate(client, din, dout, cmd[3].toInt() and 0xff)
+                return
+            }
             if (command != 1) {
-                Log.w(TAG, "[SXB_DEBUG] SOCKS5_COMMAND_NOT_SUPPORTED cmd=$command (only CONNECT=1 supported over SSH)")
+                Log.w(TAG, "[SXB_DEBUG] SOCKS5_COMMAND_NOT_SUPPORTED cmd=$command")
                 dout.write(byteArrayOf(5, 7, 0, 1, 0, 0, 0, 0, 0, 0)); client.close(); return
             }
 
@@ -4314,6 +4648,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             networkCallback = null
         }
 
+        stopDnstt()
         runCatching { socks5Server?.close() };  socks5Server    = null
 
         // S1 — Ne jamais laisser une copie en clair des identifiants survivre à la session.

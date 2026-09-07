@@ -3,7 +3,7 @@ import React, { useEffect, useState } from "react";
 import { UserRole } from "../types";
 import {
   fetchVpnProfiles, createVpnProfile, updateVpnProfile, deleteVpnProfile,
-  fetchVpnProfileStats, testImportedConfig, testProfileConfig,
+  fetchVpnProfileStats, testImportedConfig, testProfileConfig, importVpnProfiles,
   setProfileResellers,
   VpnProfile, ConfigTestResult,
 } from "../api/vpn-profiles";
@@ -42,8 +42,62 @@ const DEFAULT_ADMIN_FORM = {
 const DEFAULT_LEGACY_FORM = {
   protocol: 'ssh', host: '', port: '', username: '', password: '',
   uuid: '', path: '/', network: 'ws', tls: false, sni: '', wsHost: '',
+  insecure: false,
   method: 'aes-256-gcm', payloadId: '' as string, payload: '',
+  sshTransport: 'direct', proxyEnabled: false, proxyHost: '', proxyPort: '',
+  slowDns: false, dns: '8.8.8.8', nameServer: '', slowDnsPublicKey: '', localPort: 2222,
+  udpMode: 'none', udpGatewayHost: '127.0.0.1', udpGatewayPort: 7300,
+  timeoutMs: 30000,
 };
+
+const SSH_IMPORT_TEMPLATES = [
+  {
+    id: 'direct',
+    label: 'SSH direct',
+    value: {
+      protocol: 'ssh', sshTransport: 'direct',
+      host: 'ssh.example.com', port: 22, username: 'user', password: 'REMPLACEZ-MOI',
+    },
+  },
+  {
+    id: 'tls',
+    label: 'SSH + TLS',
+    value: {
+      protocol: 'ssh', sshTransport: 'tls',
+      host: 'ssh.example.com', port: 443, username: 'user', password: 'REMPLACEZ-MOI',
+      tls: true, sni: 'cdn.example.com',
+    },
+  },
+  {
+    id: 'connect',
+    label: 'SSH + HTTP CONNECT',
+    value: {
+      protocol: 'ssh+payload', sshTransport: 'http-connect',
+      host: 'ssh.example.com', port: 443, username: 'user', password: 'REMPLACEZ-MOI',
+      tls: true, sni: 'www.example.com',
+      payload: 'CONNECT [host_port] HTTP/1.1[crlf]Host: www.example.com[crlf]Proxy-Connection: Keep-Alive[crlf]User-Agent: [ua][crlf][crlf]',
+    },
+  },
+  {
+    id: 'slowdns',
+    label: 'SSH + SlowDNS',
+    value: {
+      protocol: 'ssh', sshTransport: 'slowdns',
+      host: 'ssh.example.com', port: 22, username: 'user', password: 'REMPLACEZ-MOI',
+      slowDns: true, dns: '8.8.8.8', nameServer: 't.example.com',
+      slowDnsPublicKey: 'REMPLACEZ-PAR-64-CARACTERES-HEX', localPort: 2222,
+    },
+  },
+  {
+    id: 'udp',
+    label: 'SSH + UDPGW',
+    value: {
+      protocol: 'ssh', sshTransport: 'direct',
+      host: 'ssh.example.com', port: 22, username: 'user', password: 'REMPLACEZ-MOI',
+      udpMode: 'udpgw', udpGatewayHost: '127.0.0.1', udpGatewayPort: 7300,
+    },
+  },
+] as const;
 
 // ── Verdicts du préflight (taxonomie mission §7) ──────────────────────────────
 const VERDICT_STYLE: Record<string, { label: string; cls: string }> = {
@@ -71,6 +125,7 @@ type JsonEditorInfo = {
   lineCount: number;
   /** true pour une URI de partage : le formatage JSON ne s'y applique pas. */
   isUri?: boolean;
+  profileCount?: number;
 };
 
 /**
@@ -138,6 +193,42 @@ function inspectJsonEditor(raw: string): JsonEditorInfo {
   if (!raw.trim()) {
     return { valid: false, label: 'En attente de la configuration', detail: 'Collez une URI de partage (vless://, vmess://, trojan://, ss://, hy2://, tuic://) ou une configuration complète V2Ray/Xray ou sing-box.', lineCount };
   }
+  const uriLines = raw.split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(line => SHARE_URI_SCHEMES.some(scheme => scheme.re.test(line)));
+  if (uriLines.length > 1) {
+    return {
+      valid: true,
+      isUri: true,
+      lineCount,
+      profileCount: uriLines.length,
+      label: `Liste de ${uriLines.length} URI détectée`,
+      detail: 'Chaque URI sera validée puis créée dans une transaction unique.',
+    };
+  }
+  // Les abonnements V2Ray sont souvent un texte URI multi-ligne encodé en
+  // base64. Détecter leur cardinalité ici permet de choisir l'endpoint batch
+  // au lieu d'importer silencieusement la première ligne seulement.
+  if (!/^(?:\{|\[|[a-z0-9+]+:\/\/)/i.test(raw.trim())) {
+    try {
+      const normalized = raw.trim().replace(/-/g, '+').replace(/_/g, '/');
+      const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4);
+      const decoded = atob(padded);
+      const decodedUris = decoded.split(/\r?\n/)
+        .map(line => line.trim())
+        .filter(line => SHARE_URI_SCHEMES.some(scheme => scheme.re.test(line)));
+      if (decodedUris.length > 1) {
+        return {
+          valid: true,
+          isUri: true,
+          lineCount,
+          profileCount: decodedUris.length,
+          label: `Abonnement encodé — ${decodedUris.length} URI`,
+          detail: 'Le serveur décodera et importera toutes les entrées atomiquement.',
+        };
+      }
+    } catch { /* pas une souscription base64 : poursuivre la détection JSON */ }
+  }
   const scheme = SHARE_URI_SCHEMES.find(s => s.re.test(raw.trim()));
   if (scheme) return inspectShareUri(raw, scheme.label, lineCount);
   if (/^\s*\[Interface\]/im.test(raw)) {
@@ -145,8 +236,30 @@ function inspectJsonEditor(raw: string): JsonEditorInfo {
   }
   try {
     const obj = JSON.parse(raw);
+    const configArray = !Array.isArray(obj) && obj && typeof obj === 'object'
+      ? Object.entries(obj).find(([key, value]) =>
+          key.toUpperCase().replace(/[^A-Z0-9]/g, '') === 'CONFIGS' && Array.isArray(value),
+        )?.[1]
+      : obj;
+    const candidates = Array.isArray(configArray) ? configArray : [];
+    const isHttpCustom = (entry: any) => {
+      if (!entry || typeof entry !== 'object') return false;
+      const keys = new Set(Object.keys(entry).map(key => key.toUpperCase().replace(/[^A-Z0-9]/g, '')));
+      return keys.has('ADDRESS') && (keys.has('USERNAME') || keys.has('USER'))
+        && ['TYPE', 'PAYLOADENABLED', 'PROXYENABLED', 'NSSERVER', 'LOCALPORT'].some(key => keys.has(key));
+    };
+    const httpCustomConfigs = candidates.filter(isHttpCustom);
+    if (httpCustomConfigs.length > 0 && httpCustomConfigs.length === candidates.length) {
+      return {
+        valid: true,
+        lineCount,
+        profileCount: httpCustomConfigs.length,
+        label: `HTTP Custom — ${httpCustomConfigs.length} profil(s) détecté(s)`,
+        detail: 'ADDRESS, PORT, USERNAME, TYPE, PAYLOAD, DNS, NSSERVER, PUBKEY et LOCALPORT seront normalisés puis chiffrés séparément.',
+      };
+    }
     if (!obj || Array.isArray(obj) || typeof obj !== 'object') {
-      return { valid: false, label: 'Objet JSON attendu', detail: 'La racine doit être un objet JSON.', lineCount };
+      return { valid: false, label: 'Objet JSON attendu', detail: 'La racine doit être un objet JSON ou une liste de profils HTTP Custom.', lineCount };
     }
     const outbounds = Array.isArray(obj.outbounds) ? obj.outbounds : [];
     const isXray = outbounds.some((o: any) => o && (
@@ -227,9 +340,19 @@ function JsonConfigEditor({
       <div className="flex items-center gap-2">
         <button type="button" onClick={onTest} disabled={testing || !value.trim() || !info.valid}
           className="flex items-center gap-2 px-3 py-2 bg-sky-500/15 hover:bg-sky-500/25 text-sky-400 text-xs font-medium rounded-xl border border-sky-500/30 disabled:opacity-50">
-          <FlaskConical className="w-3.5 h-3.5" /> {testing ? 'Test en cours…' : 'Valider le transport'}
+          <FlaskConical className="w-3.5 h-3.5" /> {
+            testing
+              ? 'Test en cours…'
+              : (info.profileCount || 0) > 1
+                ? 'Valider le premier transport'
+                : 'Valider le transport'
+          }
         </button>
-        <span className="text-[11px] text-gray-600">Import chiffré AES-256-GCM · provisioning mobile complet</span>
+        <span className="text-[11px] text-gray-600">
+          {(info.profileCount || 0) > 1
+            ? 'Toutes les syntaxes seront validées avant l’import atomique'
+            : 'Import chiffré AES-256-GCM · provisioning mobile complet'}
+        </span>
       </div>
       {result && <ProbeResultPanel result={result} />}
     </div>
@@ -370,6 +493,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
       dns: p.dns || '',
     });
     setLegacyForm({
+      ...DEFAULT_LEGACY_FORM,
       protocol: p.protocol, host: p.host, port: String(p.port),
       username: p.username || '', password: '', uuid: p.uuid || '',
       path: p.path || '/', network: p.network, tls: p.tls, sni: p.sni || '', wsHost: '',
@@ -382,10 +506,19 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
   const extractErrors = (err: any): string => {
     if (err?.status === 422) {
       const details = err?.responseData?.details;
-      const list: string[] = [
-        ...(details?.errors || []),
-        ...(details?.warnings || []).map((w: string) => `⚠ ${w}`),
-      ];
+      const list: string[] = Array.isArray(details)
+        ? details.flatMap((entry: any) => [
+            ...(entry?.errors || []).map((message: string) =>
+              `#${Number(entry?.index ?? 0) + 1}${entry?.name ? ` « ${entry.name} »` : ''} : ${message}`,
+            ),
+            ...(entry?.warnings || []).map((message: string) =>
+              `⚠ #${Number(entry?.index ?? 0) + 1} : ${message}`,
+            ),
+          ])
+        : [
+            ...(details?.errors || []),
+            ...(details?.warnings || []).map((w: string) => `⚠ ${w}`),
+          ];
       setFieldErrors(list);
       return err?.responseData?.error || 'Configuration importée invalide';
     }
@@ -461,14 +594,32 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
       } else if (createTab === 'import') {
         if (!adminForm.name) { setError('Le nom du profil est requis'); setSaving(false); return; }
         if (!importConfig.trim()) { setError('Collez la configuration fournisseur (URI ou JSON)'); setSaving(false); return; }
-        savedProfile = await createVpnProfile({
-          name: adminForm.name, description: adminForm.description,
-          displayProtocol: adminForm.displayProtocol,
-          status: adminForm.status,
-          offlineValidDays: Number(adminForm.offlineValidDays),
-          dns: adminForm.dns || undefined,
-          importConfig,
-        } as any);
+        const editorInfo = inspectJsonEditor(importConfig);
+        if ((editorInfo.profileCount || 0) > 1) {
+          const batch = await importVpnProfiles({
+            importConfig,
+            namePrefix: adminForm.name,
+            description: adminForm.description,
+            displayProtocol: adminForm.displayProtocol,
+            status: adminForm.status,
+            offlineValidDays: Number(adminForm.offlineValidDays),
+          });
+          savedProfile = batch.profiles[0] || null;
+          if (batch.warnings.length) {
+            alert(`${batch.imported} profils importés, avec réserve :\n\n${batch.warnings.map(w => `⚠ ${w}`).join('\n')}`);
+          } else {
+            alert(`${batch.imported} profils importés et chiffrés avec succès.`);
+          }
+        } else {
+          savedProfile = await createVpnProfile({
+            name: adminForm.name, description: adminForm.description,
+            displayProtocol: adminForm.displayProtocol,
+            status: adminForm.status,
+            offlineValidDays: Number(adminForm.offlineValidDays),
+            dns: adminForm.dns || undefined,
+            importConfig,
+          } as any);
+        }
       } else {
         if (!adminForm.name || !legacyForm.host || !legacyForm.port) {
           setError('Nom, hôte et port sont requis'); setSaving(false); return;
@@ -477,6 +628,16 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
         const payload = legacyForm.payload.trim() || selectedPayload?.content?.trim() || '';
         if (legacyForm.protocol === 'ssh+payload' && !payload) {
           setError('Un payload complet est requis pour SSH+Payload'); setSaving(false); return;
+        }
+        if (legacyForm.slowDns && (!legacyForm.dns.trim() || !legacyForm.nameServer.trim() || !/^[0-9a-f]{64}$/i.test(legacyForm.slowDnsPublicKey.trim()))) {
+          setError('SlowDNS requiert un résolveur DNS, un NSSERVER et une clé publique DNSTT de 64 caractères hexadécimaux.');
+          setSaving(false);
+          return;
+        }
+        if (legacyForm.udpMode === 'udpgw' && (!legacyForm.udpGatewayHost.trim() || !Number(legacyForm.udpGatewayPort))) {
+          setError('UDP sur SSH requiert l’hôte et le port du service BadVPN UDPGW.');
+          setSaving(false);
+          return;
         }
         const manualConfig: Record<string, any> = {
           protocol: legacyForm.protocol,
@@ -488,6 +649,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
           path: legacyForm.path.trim() || undefined,
           network: legacyForm.network || undefined,
           tls: legacyForm.tls,
+          insecure: legacyForm.insecure,
           sni: legacyForm.sni.trim() || selectedPayload?.sni || undefined,
           // En-tête Host WebSocket — distinct de l'adresse TCP et du SNI. Sans
           // lui, un fournisseur qui route par le Host renvoie une 404 alors que
@@ -495,6 +657,21 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
           wsHost: legacyForm.wsHost.trim() || undefined,
           method: legacyForm.method || undefined,
           payload: payload || undefined,
+          sshTransport: legacyForm.sshTransport,
+          proxyEnabled: legacyForm.proxyEnabled,
+          proxyHost: legacyForm.proxyHost.trim() || undefined,
+          proxyPort: legacyForm.proxyPort ? Number(legacyForm.proxyPort) : undefined,
+          slowDns: legacyForm.slowDns,
+          dns: legacyForm.dns.trim() || undefined,
+          nameServer: legacyForm.nameServer.trim() || undefined,
+          slowDnsPublicKey: legacyForm.slowDnsPublicKey.trim() || undefined,
+          localPort: Number(legacyForm.localPort || 2222),
+          udpMode: legacyForm.udpMode,
+          udpGatewayHost: legacyForm.udpGatewayHost.trim() || undefined,
+          udpGatewayPort: legacyForm.udpMode === 'udpgw'
+            ? Number(legacyForm.udpGatewayPort || 7300)
+            : undefined,
+          timeoutMs: Number(legacyForm.timeoutMs || 30000),
         };
         savedProfile = await createVpnProfile({
           name: adminForm.name, description: adminForm.description,
@@ -840,6 +1017,33 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
 
                   {createTab === 'import' && (
                     <div className="space-y-3">
+                      <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3 space-y-2">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-xs font-semibold text-cyan-300">Modèles SSH prêts à remplir</p>
+                            <p className="text-[11px] text-gray-500 mt-0.5">
+                              Direct, TLS/SSL, Payload HTTP CONNECT, SlowDNS et UDPGW.
+                            </p>
+                          </div>
+                          <span className="text-[10px] text-gray-600">Les secrets restent chiffrés</span>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {SSH_IMPORT_TEMPLATES.map(template => (
+                            <button
+                              key={template.id}
+                              type="button"
+                              onClick={() => {
+                                setImportConfig(JSON.stringify(template.value, null, 2));
+                                setTestResult(null);
+                                if (!adminForm.name) fa('name', template.label);
+                              }}
+                              className="px-2.5 py-1.5 rounded-lg border border-cyan-500/25 bg-cyan-500/10 text-cyan-300 text-[11px] hover:bg-cyan-500/20"
+                            >
+                              {template.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                       <JsonConfigEditor
                         value={importConfig}
                         onChange={setImportConfig}
@@ -997,6 +1201,14 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
   const lockedCls = locked
     ? `${inputCls} opacity-60 cursor-not-allowed pointer-events-none select-none`
     : inputCls;
+  const sshFamily = ['ssh', 'ssh+payload'].includes(form.protocol);
+  const setSshTransport = (transport: string) => {
+    f('sshTransport', transport);
+    f('protocol', ['payload', 'payload-tls', 'http-connect'].includes(transport) ? 'ssh+payload' : 'ssh');
+    f('tls', ['tls', 'payload-tls'].includes(transport));
+    f('proxyEnabled', transport === 'http-connect');
+    f('slowDns', transport === 'slowdns');
+  };
   return (
     <div className="grid grid-cols-2 gap-4">
       {locked && (
@@ -1023,6 +1235,21 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
       </div>
 
       {['ssh', 'ssh+payload'].includes(form.protocol) && <>
+        <div className="col-span-2">
+          <label className="block text-sm text-gray-400 mb-1.5">Transport SSH</label>
+          <select value={form.sshTransport} onChange={e => setSshTransport(e.target.value)}
+            className={lockedCls} disabled={locked}>
+            <option value="direct">SSH direct (TCP)</option>
+            <option value="tls">SSH over TLS / SSL Tunnel</option>
+            <option value="payload">SSH + Payload HTTP/WebSocket</option>
+            <option value="payload-tls">SSH + Payload + TLS</option>
+            <option value="http-connect">SSH via proxy HTTP CONNECT</option>
+            <option value="slowdns">SSH via SlowDNS (DNSTT)</option>
+          </select>
+          <p className="text-[11px] text-gray-500 mt-1">
+            L’ordre des couches est conservé : réseau → SlowDNS/proxy/TLS → payload → SSH.
+          </p>
+        </div>
         <div>
           <label className="block text-sm text-gray-400 mb-1.5">Utilisateur SSH</label>
           <input value={form.username} onChange={e => f('username', e.target.value)}
@@ -1039,7 +1266,7 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
               Payload HTTP <span className="text-emerald-400">*</span>
               <span className="ml-2 text-xs text-gray-500">(injecté avant le handshake SSH)</span>
             </label>
-            <select value={form.payloadId} onChange={e => f('payloadId', e.target.value)} required={form.protocol === 'ssh+payload'}
+            <select value={form.payloadId} onChange={e => f('payloadId', e.target.value)}
               className={inputCls}>
               <option value="">— Sélectionner un payload —</option>
               {payloads.filter(p => p.status === 'active').map(p => (
@@ -1057,6 +1284,82 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
             <p className="text-[11px] text-gray-500 mt-1">Le texte est conservé intégralement; utilisez `[crlf]` et ne mettez jamais `…` ou `...` à la place de lignes réelles.</p>
           </div>
         )}
+        {form.proxyEnabled && (
+          <>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Hôte proxy HTTP</label>
+              <input value={form.proxyHost} onChange={e => f('proxyHost', e.target.value)}
+                placeholder="proxy.example.com (vide = hôte SSH)" className={lockedCls} disabled={locked} readOnly={locked} />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Port proxy</label>
+              <input type="number" value={form.proxyPort} onChange={e => f('proxyPort', e.target.value)}
+                placeholder="8080" className={lockedCls} disabled={locked} readOnly={locked} />
+            </div>
+          </>
+        )}
+        {form.slowDns && (
+          <div className="col-span-2 grid grid-cols-2 gap-4 p-4 rounded-xl bg-violet-500/5 border border-violet-500/20">
+            <div className="col-span-2 text-xs text-violet-300">
+              <strong>SlowDNS réel (DNSTT)</strong> — nécessite un serveur DNSTT déjà configuré avec le même domaine et la même clé publique.
+            </div>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Résolveur DNS</label>
+              <input value={form.dns} onChange={e => f('dns', e.target.value)}
+                placeholder="8.8.8.8 ou https://dns.google/dns-query" className={lockedCls} disabled={locked} readOnly={locked} />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">NSSERVER / domaine tunnel</label>
+              <input value={form.nameServer} onChange={e => f('nameServer', e.target.value)}
+                placeholder="t.example.com" className={lockedCls} disabled={locked} readOnly={locked} />
+            </div>
+            <div className="col-span-2">
+              <label className="block text-sm text-gray-400 mb-1.5">Clé publique DNSTT (64 hex)</label>
+              <input value={form.slowDnsPublicKey} onChange={e => f('slowDnsPublicKey', e.target.value)}
+                placeholder="9dbbfb7374360504…" className={`${lockedCls} font-mono`} disabled={locked} readOnly={locked} />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Port local</label>
+              <input type="number" value={form.localPort} onChange={e => f('localPort', e.target.value)}
+                min={1024} max={65535} className={lockedCls} disabled={locked} readOnly={locked} />
+              {Number(form.localPort) === 1080 && (
+                <p className="text-[11px] text-rose-400 mt-1">Le port 1080 est réservé au SOCKS5 interne.</p>
+              )}
+            </div>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Timeout (ms)</label>
+              <input type="number" value={form.timeoutMs} onChange={e => f('timeoutMs', e.target.value)}
+                min={5000} max={120000} className={lockedCls} disabled={locked} readOnly={locked} />
+            </div>
+          </div>
+        )}
+        <div className="col-span-2 grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm text-gray-400 mb-1.5">UDP sur SSH</label>
+            <select value={form.udpMode} onChange={e => f('udpMode', e.target.value)}
+              className={lockedCls} disabled={locked}>
+              <option value="none">Désactivé (TCP uniquement)</option>
+              <option value="udpgw">BadVPN UDPGW</option>
+            </select>
+          </div>
+          {form.udpMode === 'udpgw' && (
+            <div className="text-[11px] text-amber-300 self-end pb-2">
+              Le serveur SSH doit exécuter <code>badvpn-udpgw</code>.
+            </div>
+          )}
+          {form.udpMode === 'udpgw' && <>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Hôte UDPGW vu depuis SSH</label>
+              <input value={form.udpGatewayHost} onChange={e => f('udpGatewayHost', e.target.value)}
+                placeholder="127.0.0.1" className={lockedCls} disabled={locked} readOnly={locked} />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Port UDPGW</label>
+              <input type="number" value={form.udpGatewayPort} onChange={e => f('udpGatewayPort', e.target.value)}
+                min={1} max={65535} className={lockedCls} disabled={locked} readOnly={locked} />
+            </div>
+          </>}
+        </div>
         {form.protocol === 'ssh' && form.tls && (
           <div className="col-span-2 p-3 bg-cyan-500/10 border border-cyan-500/20 rounded-xl text-xs text-cyan-300">
             🔒 <strong>SSH over TLS (SSL Tunnel)</strong> : le flux SSH voyage dans une session TLS,
@@ -1085,7 +1388,7 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
         </div>
       )}
 
-      {form.protocol !== 'ssh' && (
+      {!sshFamily && (
         <div>
           <label className="block text-sm text-gray-400 mb-1.5">Network</label>
           <select value={form.network} onChange={e => f('network', e.target.value)} className={lockedCls} disabled={locked}>
@@ -1099,7 +1402,7 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
         <input value={form.sni} onChange={e => f('sni', e.target.value)}
           placeholder="example.com" className={lockedCls} disabled={locked} readOnly={locked} />
       </div>
-      {form.protocol !== 'ssh' && (
+      {!sshFamily && (
         <div>
           <label className="block text-sm text-gray-400 mb-1.5">
             Host (en-tête WebSocket)
@@ -1121,6 +1424,16 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
           {form.tls ? <Check className="w-3.5 h-3.5" /> : <X className="w-3.5 h-3.5" />} TLS/SSL
         </button>
       </div>
+      {sshFamily && form.tls && (
+        <div>
+          <button type="button" onClick={() => !locked && f('insecure', !form.insecure)}
+            disabled={locked}
+            className={`flex items-center gap-2 px-3 py-2 rounded-xl text-sm border transition-colors ${locked ? 'opacity-60 cursor-not-allowed' : ''} ${form.insecure ? 'bg-rose-500/15 border-rose-500/30 text-rose-300' : 'bg-transparent border-[#1a1f2e] text-gray-500'}`}>
+            {form.insecure ? <AlertTriangle className="w-3.5 h-3.5" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+            {form.insecure ? 'Certificat TLS non vérifié' : 'Vérifier le certificat TLS'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

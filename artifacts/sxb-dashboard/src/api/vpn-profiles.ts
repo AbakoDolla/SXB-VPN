@@ -123,6 +123,21 @@ export const createVpnProfile = (data: Partial<VpnProfile>): Promise<VpnProfile 
   apiRequest<any>('/vpn-profiles', { method: 'POST', body: data })
     .then(r => ({ ...r.profile, _warnings: r.warnings || [] }));
 
+export const importVpnProfiles = (data: {
+  importConfig: string;
+  namePrefix?: string;
+  description?: string;
+  displayProtocol?: string;
+  offlineValidDays?: number;
+  status?: string;
+}): Promise<{ profiles: VpnProfile[]; imported: number; warnings: string[] }> =>
+  apiRequest<any>('/vpn-profiles/import-batch', { method: 'POST', body: data })
+    .then(r => ({
+      profiles: r.profiles || [],
+      imported: Number(r.imported || 0),
+      warnings: r.warnings || [],
+    }));
+
 export const updateVpnProfile = (id: string, data: Partial<VpnProfile>): Promise<VpnProfile> =>
   apiRequest<any>(`/vpn-profiles/${id}`, { method: 'PUT', body: data }).then(r => r.profile);
 

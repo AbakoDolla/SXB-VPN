@@ -10,7 +10,8 @@ import { requireAuth, requirePermission, AuthenticatedRequest } from '../middlew
 import { logDbActivity } from '../database';
 import crypto from 'crypto';
 import {
-  parseImportedConfig, canonicalJson, computeCanonicalHash, encryptCanonical,
+  parseImportedConfig, parseImportedConfigList, canonicalJson, computeCanonicalHash, encryptCanonical,
+  type ParseResult,
 } from '../services/canonical-config';
 
 const router = Router();
@@ -24,8 +25,7 @@ const router = Router();
  *   colonnes en clair : canonicalConfig les détient déjà, chiffrés.
  * - jsonConfig legacy n'est plus jamais écrit (redirigé ici, chiffré, puis NULL).
  */
-function buildImportData(rawImport: string, opts: { bumpVersion?: number | null } = {}) {
-  const parsed = parseImportedConfig(rawImport);
+function buildImportDataFromParsed(parsed: ParseResult, opts: { bumpVersion?: number | null } = {}) {
   if (!parsed.ok || !parsed.canonical) {
     const err = new Error('IMPORT_INVALID');
     (err as any).details = { errors: parsed.errors, warnings: parsed.warnings };
@@ -60,8 +60,14 @@ function buildImportData(rawImport: string, opts: { bumpVersion?: number | null 
     port,
     tls: canon.tls === true,
     sni: canon.sni ?? null,
-    network: canon.network ?? null,
+    // Pour la famille SSH, `network` sert uniquement d'étiquette lisible dans
+    // le dashboard. La configuration technique complète reste dans le blob
+    // canonique chiffré.
+    network: ['ssh', 'ssh+payload'].includes(proto)
+      ? (canon.sshTransport ?? (canon.slowDns ? 'slowdns' : canon.tls ? 'tls' : 'direct'))
+      : (canon.network ?? null),
     path: canon.path ?? null,
+    dns: canon.dns ?? null,
     username: null as string | null,   // credentials : dans canonicalConfig uniquement
     password: null as string | null,
     uuid: null as string | null,
@@ -79,6 +85,10 @@ function buildImportData(rawImport: string, opts: { bumpVersion?: number | null 
     validationMessage: parsed.warnings.length ? parsed.warnings.join(' | ') : null,
     _parseWarnings: parsed.warnings,
   };
+}
+
+function buildImportData(rawImport: string, opts: { bumpVersion?: number | null } = {}) {
+  return buildImportDataFromParsed(parseImportedConfig(rawImport), opts);
 }
 
 // ── Chiffrement AES-256-GCM (Phase 2 — authentifié, résistant à la falsification) ──
@@ -399,6 +409,80 @@ router.put('/:id/resellers', requireAuth, requirePermission('vpnprofile.manage')
 });
 
 // ─── POST /api/vpn-profiles ───────────────────────────────────────────────────
+// ─── POST /api/vpn-profiles/import-batch ─────────────────────────────────────
+// Importe atomiquement les conteneurs multi-profils (HTTP Custom CONFIGS[],
+// abonnements URI, exports v2rayN). Aucune configuration n'est créée si une
+// seule entrée est invalide : le dashboard peut corriger le fichier sans avoir
+// à rechercher puis supprimer un import partiel.
+router.post('/import-batch', requireAuth, requirePermission('vpnprofile.manage'), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (!prisma) return res.status(503).json({ error: 'Base de données indisponible' });
+    const rawImport = String(req.body?.importConfig ?? '').trim();
+    const namePrefix = String(req.body?.namePrefix ?? req.body?.name ?? '').trim().slice(0, 100) || 'SSH importé';
+    const description = req.body?.description ? String(req.body.description).slice(0, 500) : null;
+    const displayProtocol = req.body?.displayProtocol ? String(req.body.displayProtocol).slice(0, 100) : null;
+    const requestedOfflineDays = Number(req.body?.offlineValidDays ?? 7);
+    const offlineValidDays = Number.isFinite(requestedOfflineDays)
+      ? Math.max(1, Math.min(30, Math.round(requestedOfflineDays)))
+      : 7;
+    const status = req.body?.status === 'inactive' ? 'inactive' : 'active';
+    if (!rawImport) return res.status(400).json({ error: 'importConfig est requis' });
+
+    const parsed = parseImportedConfigList(rawImport);
+    if (parsed.length > 50) {
+      return res.status(413).json({ error: 'Maximum 50 configurations par import' });
+    }
+    const invalid = parsed
+      .map((result, index) => ({ index, name: result.displayName, errors: result.errors, warnings: result.warnings }))
+      .filter((result) => result.errors.length > 0);
+    if (invalid.length > 0) {
+      return res.status(422).json({
+        success: false,
+        error: `${invalid.length} configuration(s) invalide(s) — aucune importation effectuée`,
+        details: invalid,
+      });
+    }
+
+    const prepared = parsed.map((result, index) => {
+      const data: any = buildImportDataFromParsed(result);
+      const parseWarnings = data._parseWarnings || [];
+      delete data._parseWarnings;
+      return {
+        data: {
+          name: String(result.displayName || `${namePrefix} ${index + 1}`).slice(0, 120),
+          description,
+          displayProtocol,
+          offlineValidDays,
+          status,
+          ...data,
+        },
+        warnings: parseWarnings as string[],
+      };
+    });
+
+    const profiles = await prisma.$transaction(
+      prepared.map((entry) => (prisma as any).vpnProfile.create({ data: entry.data })),
+    );
+    await logDbActivity(
+      req.user!.userId,
+      `Imported ${profiles.length} VPN profiles atomically`,
+      'info',
+      req.ip || '',
+    );
+    return res.status(201).json({
+      success: true,
+      imported: profiles.length,
+      profiles: profiles.map(maskProfile),
+      warnings: prepared.flatMap((entry, index) =>
+        entry.warnings.map((warning) => `#${index + 1} ${warning}`),
+      ),
+    });
+  } catch (err: any) {
+    console.error('VPN profile batch import error:', err?.code || err?.name || 'UNKNOWN');
+    return res.status(500).json({ error: 'Échec de l’import multiple' });
+  }
+});
+
 router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const {

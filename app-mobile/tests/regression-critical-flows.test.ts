@@ -798,7 +798,7 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(tlsRaw >= 0 && tlsWs >= 0 && ws >= 0, 'stratégies ladder absentes');
     assert.ok(raw < tlsRaw || raw < 0, 'raw doit rester le premier mode quand TLS est désactivé');
     assert.ok(tlsRaw < tlsWs && tlsWs < ws, 'ordre de la ladder incorrect');
-    assert.ok(nativeService.includes('candidate.connect(12_000)'));
+    assert.ok(nativeService.includes('candidate.connect(minOf(timeoutMs, 12_000))'));
   });
 
   it('T-E2 persiste et relit le mode de transport gagnant par configuration', () => {
@@ -1331,7 +1331,7 @@ describe('garde-fous contre les régressions Android', () => {
 
   it('rend le handshake JSch interrompable par stopVpn et bloque la publication tardive', () => {
     assert.ok(nativeService.includes('sshSession = session'));
-    assert.ok(nativeService.includes('session.connect(30_000)'));
+    assert.ok(nativeService.includes('session.connect(timeoutMs)'));
     assert.match(nativeService, /SSH_CONNECT_IGNORED/);
     assert.match(nativeService, /running\.set\(false\)[\s\S]{0,180}failVpn\("SSH_TIMEOUT"/);
     assert.match(nativeService, /LIBBOX_START_IGNORED/);
@@ -2026,5 +2026,31 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(contexte, /AUTO_RECONNECT_TRIGGERED/);
     assert.match(nativeModule, /isIgnoringBatteryOptimizations/);
     assert.doesNotMatch(nativeModule, /REQUEST_IGNORE_BATTERY_OPTIMIZATIONS/);
+  });
+
+  it('importe la gamme SSH HTTP Custom sans exposer les secrets', () => {
+    const canonical = source('../server/services/canonical-config.ts');
+    const routes = source('../server/routes/vpn-profiles.ts');
+    const api = source('../artifacts/sxb-dashboard/src/api/vpn-profiles.ts');
+    const vue = source('../artifacts/sxb-dashboard/src/components/VpnProfilesView.tsx');
+
+    assert.match(canonical, /'http-custom-json'/);
+    for (const field of ['ADDRESS', 'PAYLOAD ENABLED', 'PROXY ENABLED', 'NSSERVER', 'PUBKEY', 'LOCALPORT']) {
+      assert.match(canonical, new RegExp(field.replace(' ', '\\s')), `champ HTTP Custom absent : ${field}`);
+    }
+    assert.match(canonical, /export function parseImportedConfigList/);
+    assert.match(routes, /router\.post\('\/import-batch'/);
+    assert.match(routes, /await prisma\.\$transaction/);
+    assert.match(api, /export const importVpnProfiles/);
+    assert.match(vue, /HTTP Custom — \$\{httpCustomConfigs\.length\} profil/);
+    assert.match(vue, /SSH \+ SlowDNS/);
+    assert.match(vue, /SSH \+ UDPGW/);
+    assert.match(vue, /BadVPN UDPGW/);
+
+    // Les credentials restent exclusivement dans le canonique chiffré ; les
+    // colonnes d'identification du profil n'en reçoivent jamais de copie.
+    assert.match(routes, /username: null as string \| null/);
+    assert.match(routes, /password: null as string \| null/);
+    assert.match(routes, /canonicalConfig: encryptCanonical/);
   });
 });

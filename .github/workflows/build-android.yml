@@ -50,10 +50,10 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Setup Go 1.23
+      - name: Setup Go 1.24
         uses: actions/setup-go@v7
         with:
-          go-version: "1.23.x"
+          go-version: "1.24.x"
           cache: false
 
       - name: Setup Gradle
@@ -210,6 +210,16 @@ jobs:
           zip -q -d "$AAR" 'jni/*' >/dev/null 2>&1 || true
           echo "✅ $SO_COUNT bibliothèque(s) libbox extraites dans $JNI_ROOT"
           find "$JNI_ROOT" -type f -name '*.so' -printf '%p %s octets\\n' | sort
+
+      - name: Construire DNSTT Android (2 ABI)
+        run: |
+          set -euo pipefail
+          chmod +x scripts/build-dnstt.sh
+          export DNSTT_OUTPUT_DIR="$PWD/android/app/src/main/jniLibs"
+          scripts/build-dnstt.sh
+          test -s "$DNSTT_OUTPUT_DIR/arm64-v8a/libdnstt.so"
+          test -s "$DNSTT_OUTPUT_DIR/armeabi-v7a/libdnstt.so"
+          echo "✅ libdnstt.so construit pour arm64-v8a et armeabi-v7a"
 
       # ── P3 — ProGuard : règles R8 pour JSch + sing-box + modules SXB ──────────
       - name: Créer proguard-rules.pro (JSch + sing-box + natif SXB)
@@ -566,7 +576,13 @@ jobs:
             grep -E '(^|/)lib/|libbox' /tmp/apk-list.log | head -80 || true
             exit 1
           fi
-          echo "[APK] ABI natives présentes : $ABI_LIST ; libbox.so présent"
+          for ABI in arm64-v8a armeabi-v7a; do
+            if ! grep -q "lib/${ABI}/libdnstt\\.so" /tmp/apk-list.log; then
+              echo "::error::lib/${ABI}/libdnstt.so absent de l’APK final"
+              exit 1
+            fi
+          done
+          echo "[APK] ABI natives présentes : $ABI_LIST ; libbox.so et libdnstt.so présents"
           ZIPALIGN=$(find "${ANDROID_HOME}/build-tools" -type f -name zipalign 2>/dev/null | sort -V | tail -1 || true)
           if [ -z "$ZIPALIGN" ]; then
             echo "::error::zipalign introuvable — validation de l’alignement impossible"

@@ -11,7 +11,7 @@
  *   - normalizeCanonical(cfg)    → JSON déterministe (clés triées récursivement)
  *   - computeCanonicalHash(cfg)  → sha256 hex du JSON normalisé
  *   - encryptCanonical / decryptCanonical → AES-256-GCM (ENCRYPTION_KEY)
- *   - validateTransportCoherence → règles moteur (ssh+tls direct = REJET, …)
+ *   - validateTransportCoherence → règles moteur (SSH/TLS/Payload/SlowDNS/UDPGW)
  *
  * AUCUN appel réseau ici — le préflight vit dans transport-probe.ts.
  */
@@ -22,6 +22,7 @@ import { translateXrayToSingbox, isSingboxNativeJson, hasXrayMarkers } from './x
 
 export type SourceFormat =
   | 'ssh-json' | 'ssh+payload-json'
+  | 'http-custom-json'
   | 'vless-uri' | 'vmess-uri' | 'trojan-uri' | 'ss-uri'
   | 'wireguard-conf' | 'hysteria2-uri' | 'tuic-uri'
   | 'uri-list' | 'v2ray-subscription'
@@ -106,6 +107,29 @@ const VALID_SS_METHODS = [
   '2022-blake3-chacha20-poly1305',
 ];
 
+function normalizeSshAlias(obj: Record<string, any>): Record<string, any> {
+  const raw = String(obj.protocol ?? '').toLowerCase().replace(/\s+/g, '');
+  const aliases: Record<string, Partial<Record<string, any>>> = {
+    'ssh+tls': { protocol: 'ssh', sshTransport: 'tls', tls: true },
+    'ssh+ssl': { protocol: 'ssh', sshTransport: 'tls', tls: true },
+    'ssh+payload+tls': { protocol: 'ssh+payload', sshTransport: 'payload-tls', usePayload: true, tls: true },
+    'ssh+payload+ssl': { protocol: 'ssh+payload', sshTransport: 'payload-tls', usePayload: true, tls: true },
+    'ssh+http': { protocol: 'ssh+payload', sshTransport: 'payload', usePayload: true },
+    'ssh+http-connect': { protocol: 'ssh+payload', sshTransport: 'http-connect', usePayload: true, proxyEnabled: true },
+    'ssh+proxy': { protocol: 'ssh+payload', sshTransport: 'http-connect', usePayload: true, proxyEnabled: true },
+    'ssh+slowdns': { protocol: 'ssh', sshTransport: 'slowdns', slowDns: obj.slowDns ?? true },
+    'slowdns': { protocol: 'ssh', sshTransport: 'slowdns', slowDns: obj.slowDns ?? true },
+    'ssh+udp': {
+      protocol: 'ssh',
+      sshTransport: 'direct',
+      udpMode: 'udpgw',
+      udpGatewayHost: obj.udpGatewayHost || '127.0.0.1',
+      udpGatewayPort: obj.udpGatewayPort || 7300,
+    },
+  };
+  return aliases[raw] ? { ...obj, ...aliases[raw] } : obj;
+}
+
 function isPort(p: any): boolean {
   const n = Number(p);
   return Number.isInteger(n) && n >= 1 && n <= 65535;
@@ -143,6 +167,8 @@ export function validateTransportCoherence(cfg: Record<string, any>): { errors: 
   switch (proto) {
     case 'ssh':
     case 'ssh+payload':
+      const sshTransport = String(cfg.sshTransport ?? '').toLowerCase();
+      const effectiveSlowDns = cfg.slowDns === true || sshTransport === 'slowdns';
       req(['host', 'port', 'username']);
       if (cfg.host) req([]);
       if (cfg.port !== undefined && !isPort(cfg.port)) errors.push(`port invalide : ${cfg.port}`);
@@ -152,6 +178,53 @@ export function validateTransportCoherence(cfg: Record<string, any>): { errors: 
       }
       if (proto === 'ssh+payload' && cfg.payload !== undefined && typeof cfg.payload !== 'string') {
         errors.push('"payload" doit être une chaîne');
+      }
+      if (cfg.sshTransport !== undefined && ![
+        'direct', 'tls', 'payload', 'payload-tls', 'http-connect', 'slowdns',
+      ].includes(sshTransport)) {
+        errors.push(`transport SSH inconnu : "${cfg.sshTransport}"`);
+      }
+      if (cfg.localPort !== undefined && !isPort(cfg.localPort)) {
+        errors.push(`localPort invalide : ${cfg.localPort}`);
+      }
+      if (effectiveSlowDns && Number(cfg.localPort) === 1080) {
+        errors.push('SlowDNS : localPort 1080 est réservé au relais SOCKS5 de l’application');
+      }
+      if (cfg.timeoutMs !== undefined) {
+        const timeout = Number(cfg.timeoutMs);
+        if (!Number.isInteger(timeout) || timeout < 5_000 || timeout > 120_000) {
+          errors.push('"timeoutMs" doit être compris entre 5000 et 120000');
+        }
+      }
+      if (cfg.slowDns === false && sshTransport === 'slowdns') {
+        errors.push('SlowDNS contradictoire : sshTransport=slowdns mais slowDns=false');
+      }
+      if (effectiveSlowDns) {
+        req(['dns', 'nameServer', 'slowDnsPublicKey', 'localPort']);
+        if (cfg.slowDnsPublicKey && !/^[0-9a-f]{64}$/i.test(String(cfg.slowDnsPublicKey))) {
+          errors.push('SlowDNS : "slowDnsPublicKey" doit contenir exactement 64 caractères hexadécimaux');
+        }
+        if (cfg.dns && !/^(?:https:\/\/[^\s]+|tls:\/\/(?:\[[0-9a-f:]+\]|[a-z0-9.-]+)(?::\d{1,5})?|(?:\[[0-9a-f:]+\]|[a-z0-9.-]+)(?::\d{1,5})?)$/i.test(String(cfg.dns))) {
+          errors.push('SlowDNS : résolveur DNS invalide');
+        }
+        if (cfg.nameServer && !/^(?=.{1,253}\.?$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.?$/i.test(String(cfg.nameServer))) {
+          errors.push('SlowDNS : domaine NSSERVER invalide');
+        }
+      }
+      if (cfg.udpMode !== undefined && !['none', 'udpgw'].includes(String(cfg.udpMode).toLowerCase())) {
+        errors.push('SSH UDP : "udpMode" doit valoir "none" ou "udpgw"');
+      }
+      if (String(cfg.udpMode ?? '').toLowerCase() === 'udpgw') {
+        req(['udpGatewayHost', 'udpGatewayPort']);
+        if (cfg.udpGatewayPort !== undefined && !isPort(cfg.udpGatewayPort)) {
+          errors.push(`udpGatewayPort invalide : ${cfg.udpGatewayPort}`);
+        }
+      }
+      if (cfg.proxyPort !== undefined && !isPort(cfg.proxyPort)) {
+        errors.push(`proxyPort invalide : ${cfg.proxyPort}`);
+      }
+      if (effectiveSlowDns && cfg.proxyEnabled === true && String(cfg.proxyHost ?? '').trim()) {
+        errors.push('SlowDNS et proxyHost explicite ne peuvent pas être combinés : le tunnel DNS fournit déjà l’endpoint physique');
       }
       break;
     case 'vless':
@@ -194,6 +267,9 @@ export function validateTransportCoherence(cfg: Record<string, any>): { errors: 
   }
   if (cfg.tls !== undefined && typeof cfg.tls !== 'boolean') {
     errors.push('"tls" doit être un booléen (true/false)');
+  }
+  if (cfg.insecure !== undefined && typeof cfg.insecure !== 'boolean') {
+    errors.push('"insecure" doit être un booléen (true/false)');
   }
   return { errors, warnings };
 }
@@ -577,6 +653,192 @@ function parseV2rayNJson(obj: any, warnings: string[], errors: string[]): { cfg:
   return null;
 }
 
+// ── HTTP Custom / SSH Injector ───────────────────────────────────────────────
+
+/**
+ * Les exports HTTP Custom utilisent des clés en majuscules, parfois séparées
+ * par des espaces (`PAYLOAD ENABLED`) ou des tirets. Une table normalisée évite
+ * une cascade fragile de variantes orthographiques.
+ */
+function externalFields(obj: Record<string, any>): Map<string, any> {
+  const fields = new Map<string, any>();
+  for (const [key, value] of Object.entries(obj)) {
+    fields.set(key.toUpperCase().replace(/[^A-Z0-9]/g, ''), value);
+  }
+  return fields;
+}
+
+function externalValue(fields: Map<string, any>, ...names: string[]): any {
+  for (const name of names) {
+    const key = name.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (fields.has(key)) return fields.get(key);
+  }
+  return undefined;
+}
+
+function externalBoolean(value: any): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  return ['1', 'true', 'yes', 'on', 'enabled'].includes(String(value ?? '').trim().toLowerCase());
+}
+
+function isHttpCustomEntry(entry: any): entry is Record<string, any> {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+  const fields = externalFields(entry);
+  const address = externalValue(fields, 'ADDRESS', 'HOST', 'SERVER');
+  const username = externalValue(fields, 'USERNAME', 'USER');
+  const marker = externalValue(fields, 'PAYLOAD ENABLED', 'PROXY ENABLED', 'NSSERVER', 'LOCALPORT', 'TYPE');
+  return !!address && !!username && marker !== undefined;
+}
+
+function httpCustomEntries(obj: any): Record<string, any>[] {
+  if (!obj || typeof obj !== 'object') return [];
+  if (Array.isArray(obj)) return obj.length > 0 && obj.every(isHttpCustomEntry) ? obj : [];
+  const fields = externalFields(obj);
+  const configs = externalValue(fields, 'CONFIGS');
+  if (Array.isArray(configs)) {
+    const entries = configs.filter((entry) => entry && typeof entry === 'object');
+    return entries.length > 0 && entries.every(isHttpCustomEntry) ? entries : [];
+  }
+  // Une entrée unitaire porte au minimum ADDRESS + USERNAME et un marqueur
+  // propre aux injecteurs SSH. Cela évite de voler les JSON canoniques SXB.
+  const marker = externalValue(fields, 'PAYLOAD ENABLED', 'PROXY ENABLED', 'NSSERVER', 'LOCALPORT', 'TYPE');
+  const address = externalValue(fields, 'ADDRESS', 'HOST', 'SERVER');
+  const username = externalValue(fields, 'USERNAME', 'USER');
+  return address && username && marker !== undefined ? [obj] : [];
+}
+
+function parseHttpCustomProfile(
+  obj: Record<string, any>,
+  warnings: string[],
+  errors: string[],
+): { cfg: Record<string, any>; name?: string } | null {
+  // Un canonique SXB emploie `protocol` en minuscules : ne jamais le
+  // reclassifier comme export HTTP Custom au seul motif qu'il possède host et
+  // username.
+  if (typeof obj.protocol === 'string') return null;
+  const fields = externalFields(obj);
+  const host = String(externalValue(fields, 'ADDRESS', 'HOST', 'SERVER') ?? '').trim();
+  const username = String(externalValue(fields, 'USERNAME', 'USER') ?? '').trim();
+  const password = String(externalValue(fields, 'PASSWORD', 'PASS') ?? '');
+  const externalMarker = externalValue(
+    fields,
+    'PAYLOAD ENABLED',
+    'PROXY ENABLED',
+    'NSSERVER',
+    'LOCALPORT',
+    'TYPE',
+  );
+  if (!host || !username || externalMarker === undefined) return null;
+
+  const port = Number(externalValue(fields, 'PORT', 'SERVER PORT') ?? 22);
+  const type = String(externalValue(fields, 'TYPE', 'CONNECTION TYPE', 'MODE') ?? '').trim().toLowerCase();
+  const payloadEnabled = externalBoolean(externalValue(fields, 'PAYLOAD ENABLED', 'PAYLOADENABLED'));
+  const proxyEnabled = externalBoolean(externalValue(fields, 'PROXY ENABLED', 'PROXYENABLED'));
+  const dns = String(externalValue(fields, 'DNS', 'DNS SERVER', 'RESOLVER') ?? '').trim();
+  const nameServer = String(externalValue(fields, 'NSSERVER', 'NS SERVER', 'TUNNEL DOMAIN') ?? '').trim();
+  const slowDnsPublicKey = String(externalValue(fields, 'PUBKEY', 'PUBLIC KEY', 'DNSTT PUBLIC KEY') ?? '').trim();
+  const explicitSlowDns = externalValue(fields, 'SLOWDNS', 'SLOW DNS', 'SLOWDNS ENABLED');
+  const slowDns = explicitSlowDns !== undefined
+    ? externalBoolean(explicitSlowDns)
+    : /slow\s*dns|dns\s*tunnel/i.test(type)
+      || (!!dns && !!nameServer && /^[0-9a-f]{64}$/i.test(slowDnsPublicKey));
+  const udpEnabled = externalBoolean(externalValue(fields, 'UDP', 'UDP ENABLED', 'UDPENABLED'))
+    || /udp(?:\s*relay|\s*over\s*tcp)?/i.test(type);
+  const tls = externalBoolean(externalValue(fields, 'TLS', 'TLS ENABLED'))
+    || /(?:^|[+ _-])(tls|ssl)(?:$|[+ _-])/i.test(type);
+  const insecure = externalBoolean(externalValue(
+    fields,
+    'INSECURE',
+    'ALLOW INSECURE',
+    'SKIP CERT VERIFY',
+  ));
+  const rawPayload = String(externalValue(
+    fields,
+    'PAYLOAD',
+    'PAYLOAD CONTENT',
+    'HTTP PAYLOAD',
+    'CUSTOM PAYLOAD',
+  ) ?? '').trim();
+  const usePayload = payloadEnabled || proxyEnabled || rawPayload.length > 0
+    || /payload|http(?:\s*connect)?|proxy/i.test(type);
+  const defaultPayload =
+    'CONNECT [host_port] HTTP/1.1[crlf]' +
+    'Host: [host_port][crlf]' +
+    'Proxy-Connection: Keep-Alive[crlf]' +
+    'Connection: Keep-Alive[crlf][crlf]';
+
+  const localPort = Number(externalValue(fields, 'LOCALPORT', 'LOCAL PORT') ?? (slowDns ? 2222 : 1080));
+  const timeoutMs = Number(externalValue(fields, 'TIMEOUT', 'CONNECT TIMEOUT') ?? 30_000);
+  const proxyHost = String(externalValue(fields, 'PROXY HOST', 'PROXYHOST') ?? '').trim();
+  const proxyPortRaw = externalValue(fields, 'PROXY PORT', 'PROXYPORT');
+  const udpGatewayHost = String(externalValue(fields, 'UDP GATEWAY HOST', 'UDPGWHOST') ?? '127.0.0.1').trim();
+  const udpGatewayPort = Number(externalValue(fields, 'UDP GATEWAY PORT', 'UDPGWPORT') ?? 7300);
+
+  if (usePayload && !rawPayload) {
+    warnings.push('Payload activé sans contenu : modèle HTTP CONNECT sûr appliqué automatiquement');
+  }
+  if (proxyEnabled && !proxyHost) {
+    warnings.push('Proxy activé sans hôte proxy distinct : ADDRESS/PORT seront utilisés comme point de connexion');
+  }
+  if (slowDns && explicitSlowDns === undefined) {
+    warnings.push('SlowDNS activé automatiquement : DNS + NSSERVER + PUBKEY valide détectés');
+  }
+  if (udpEnabled) {
+    warnings.push(`UDP sur SSH nécessite BadVPN udpgw sur ${udpGatewayHost}:${udpGatewayPort}`);
+  }
+
+  const sshTransport = slowDns
+    ? 'slowdns'
+    : usePayload && tls
+      ? 'payload-tls'
+      : usePayload
+        ? (proxyEnabled ? 'http-connect' : 'payload')
+        : tls
+          ? 'tls'
+          : 'direct';
+
+  const cfg: Record<string, any> = {
+    protocol: usePayload ? 'ssh+payload' : 'ssh',
+    sshTransport,
+    host,
+    port,
+    username,
+    password,
+    tls,
+    usePayload,
+    proxyEnabled,
+    localPort,
+    timeoutMs,
+    compressionLevel: Number(externalValue(fields, 'COMPRESSIONLEVEL', 'COMPRESSION LEVEL') ?? 0),
+  };
+  if (insecure) {
+    cfg.insecure = true;
+    warnings.push('Vérification du nom TLS désactivée explicitement par le profil');
+  }
+  if (rawPayload || usePayload) cfg.payload = rawPayload || defaultPayload;
+  const sni = String(externalValue(fields, 'SNI', 'SERVER NAME') ?? '').trim();
+  if (sni) cfg.sni = sni;
+  if (dns) cfg.dns = dns;
+  if (nameServer) cfg.nameServer = nameServer;
+  if (slowDnsPublicKey) cfg.slowDnsPublicKey = slowDnsPublicKey;
+  if (slowDns) cfg.slowDns = true;
+  if (proxyHost) cfg.proxyHost = proxyHost;
+  if (proxyPortRaw !== undefined && proxyPortRaw !== '') cfg.proxyPort = Number(proxyPortRaw);
+  if (udpEnabled) {
+    cfg.udpMode = 'udpgw';
+    cfg.udpGatewayHost = udpGatewayHost;
+    cfg.udpGatewayPort = udpGatewayPort;
+  }
+  const fingerprint = String(externalValue(fields, 'FINGERPRINT', 'SSH FINGERPRINT') ?? '').trim();
+  if (fingerprint) cfg.fingerprint = fingerprint;
+
+  return {
+    cfg,
+    name: String(externalValue(fields, 'CONFIGNAME', 'CONFIG NAME', 'NAME') ?? '').trim() || undefined,
+  };
+}
+
 // ── Parseur principal ────────────────────────────────────────────────────────
 
 export function parseImportedConfig(raw: string): ParseResult {
@@ -588,12 +850,27 @@ export function parseImportedConfig(raw: string): ParseResult {
     if (others > 0) first.warnings.push(`${others} autres configurations détectées — importez-les séparément`);
     return first;
   }
+  try {
+    const obj = JSON.parse(stripBom(raw ?? '').trim());
+    const profiles = httpCustomEntries(obj);
+    if (profiles.length > 0) {
+      const first = parseImportedConfigSingle(JSON.stringify(profiles[0]));
+      const others = Math.max(0, profiles.length - 1);
+      if (others > 0) first.warnings.push(`${others} autres configurations HTTP Custom détectées — utilisez l'import multiple`);
+      return first;
+    }
+  } catch { /* le parseur unitaire produira l'erreur détaillée */ }
   return parseImportedConfigSingle(raw);
 }
 
 export function parseImportedConfigList(raw: string): ParseResult[] {
   const list = detectUriList(raw);
   if (list) return list.lines.map((line) => parseImportedConfigSingle(line));
+  try {
+    const obj = JSON.parse(stripBom(raw ?? '').trim());
+    const profiles = httpCustomEntries(obj);
+    if (profiles.length > 0) return profiles.map((profile) => parseImportedConfigSingle(JSON.stringify(profile)));
+  } catch { /* retour unitaire ci-dessous */ }
   const single = parseImportedConfigSingle(raw);
   if (single.ok && single.sourceFormat === 'v2rayn-json') {
     try {
@@ -658,6 +935,12 @@ function parseImportedConfigSingle(raw: string): ParseResult {
       errors.push('le JSON importé doit être un objet');
       return { ok: false, errors, warnings };
     } else {
+    const httpCustom = parseHttpCustomProfile(obj, warnings, errors);
+    if (httpCustom) {
+      parsed = httpCustom;
+      sourceFormat = 'http-custom-json';
+    }
+    else {
     const httpTweak = parseHttpTweakV2ray(obj, warnings, errors);
     if (httpTweak) {
       parsed = httpTweak;
@@ -688,14 +971,16 @@ function parseImportedConfigSingle(raw: string): ParseResult {
       }
     }
     if (!parsed && obj.protocol) {
-      const proto = String(obj.protocol).toLowerCase();
-      parsed = { cfg: { ...obj, protocol: proto } };
+      const normalized = normalizeSshAlias(obj);
+      const proto = String(normalized.protocol).toLowerCase();
+      parsed = { cfg: { ...normalized, protocol: proto } };
       sourceFormat = proto === 'ssh' ? 'ssh-json' : proto === 'ssh+payload' ? 'ssh+payload-json' : 'sxb-canonical';
     } else if (obj.protocol) {
       // déjà traité par un format plus spécifique.
     } else if (!parsed) {
-      errors.push('JSON non reconnu : ni sing-box ni Xray — champ "protocol" requis (ssh, ssh+payload, vless, vmess, trojan, shadowsocks, wireguard, hysteria2, tuic) pour le format canonique SXB');
+      errors.push('JSON non reconnu : ni HTTP Custom, sing-box ni Xray — champ "protocol" requis (ssh, ssh+payload, vless, vmess, trojan, shadowsocks, wireguard, hysteria2, tuic) pour le format canonique SXB');
       return { ok: false, errors, warnings };
+    }
     }
     }
   }

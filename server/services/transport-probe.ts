@@ -45,13 +45,25 @@ export interface ProbeReport {
 const DEF_TIMEOUT = 8000;
 
 // ── Substitution du payload (SSH+Payload) ────────────────────────────────────
-export function substitutePayload(template: string, host: string, sni?: string | null): string {
-  const effectiveHost = (sni && sni.trim()) || host;
+export function substitutePayload(template: string, host: string, sni?: string | null, port = 443): string {
+  const tlsServerName = (sni && sni.trim()) || host;
+  const random = crypto.randomBytes(6).toString('hex');
   return template
     .replace(/\[crlf\]/gi, '\r\n')
-    .replace(/\[host\]/gi, effectiveHost)
+    .replace(/\[lfcr\]/gi, '\n\r')
+    .replace(/\[lf\]/gi, '\n')
+    .replace(/\[cr\]/gi, '\r')
+    .replace(/\[host_port\]/gi, `${host}:${port}`)
+    .replace(/\[port\]/gi, String(port))
+    .replace(/\[host\]/gi, host)
     .replace(/\[ua\]/gi, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
-    .replace(/\[host_header\]/gi, effectiveHost);
+    .replace(/\[host_header\]/gi, host)
+    .replace(/\[sni\]/gi, tlsServerName)
+    .replace(/%HOST%/gi, host)
+    .replace(/%SNI%/gi, tlsServerName)
+    .replace(/%IP%/gi, host)
+    .replace(/%PORT%/gi, String(port))
+    .replace(/%RAND%/gi, random);
 }
 
 // ── Lecture bornée d'un préfixe de flux ──────────────────────────────────────
@@ -113,13 +125,15 @@ function tcpConnect(host: string, port: number, timeoutMs: number): Promise<{ so
 }
 
 function tlsUpgrade(
-  plain: net.Socket, host: string, sni: string | undefined, timeoutMs: number,
+  plain: net.Socket, host: string, sni: string | undefined, timeoutMs: number, insecure = false,
 ): Promise<{ sock: tls.TLSSocket; subject?: string; issuer?: string } | { error: string }> {
   return new Promise((resolve) => {
     const s = tls.connect({
       socket: plain,
       servername: sni || host,
-      rejectUnauthorized: false,   // sonde informatique — on rapporte le cert, on n'authentifie pas la chaîne
+      // Même contrat que le mobile : chaîne et identité TLS vérifiées par
+      // défaut ; désactivation uniquement si le profil le demande explicitement.
+      rejectUnauthorized: !insecure,
       ALPNProtocols: ['http/1.1'],
       timeout: timeoutMs,
       servernameCallback: undefined as any,
@@ -226,6 +240,8 @@ export async function probeConfig(
   const startedAt = new Date().toISOString();
   const steps: ProbeStep[] = [];
   const proto = String(canonical.protocol ?? '').toLowerCase();
+  const sshTransport = String(canonical.sshTransport ?? '').toLowerCase();
+  const effectiveSlowDns = canonical.slowDns === true || sshTransport === 'slowdns';
 
   const finish = (verdict: ProbeReport['verdict'], hint?: string): ProbeReport => ({
     verdict, steps, latencyMs: steps.find(s => s.event === 'LATENCY_MS') ? Number(steps.find(s => s.event === 'LATENCY_MS')!.detail) : undefined,
@@ -248,12 +264,35 @@ export async function probeConfig(
     return finish('invalid', `protocol inconnu : ${proto}`);
   }
 
+  // SlowDNS (DNSTT) ne peut pas être sondé comme une socket TCP depuis le VPS :
+  // le serveur SSH est atteint à travers des requêtes DNS émises depuis le
+  // réseau/opérateur du téléphone. Une sonde directe donnerait systématiquement
+  // un faux négatif. La syntaxe stricte a déjà été validée à l'import ; le test
+  // de transport réel est effectué par le moteur Android.
+  if (effectiveSlowDns) {
+    steps.push({
+      event: 'SLOWDNS_DEVICE_REQUIRED',
+      ok: true,
+      detail: 'DNSTT nécessite le résolveur et le réseau réels de l’appareil',
+    });
+    return finish(
+      'unsupported',
+      'SlowDNS validé syntaxiquement — lancez le test depuis l’application Android sur le réseau cible',
+    );
+  }
+
   const host = String(canonical.host ?? '');
   const port = Number(canonical.port ?? 0);
   if (!host || !port) return finish('invalid', 'host/port manquants');
+  const explicitProxy = canonical.proxyEnabled === true && String(canonical.proxyHost ?? '').trim();
+  const connectHost = explicitProxy ? String(canonical.proxyHost).trim() : host;
+  const connectPort = explicitProxy && Number(canonical.proxyPort) > 0
+    ? Number(canonical.proxyPort)
+    : port;
+  const tlsServerName = String(canonical.sni || connectHost);
 
   // 1. DNS
-  const resolved = await resolveAll(host);
+  const resolved = await resolveAll(connectHost);
   if (resolved.length === 0) {
     steps.push({ event: 'DNS_RESOLVED', ok: false, detail: 'aucune adresse' });
     return finish('unreachable_from_probe', 'DNS non résolu depuis la sonde — peut être géo/opérateur-restreint ; l\'import reste possible en statut unreachable_from_probe');
@@ -261,7 +300,7 @@ export async function probeConfig(
   steps.push({ event: 'DNS_RESOLVED', ok: true, detail: `${resolved.length} adresse(s)` });
 
   // 2. TCP (+ latence)
-  const conn = await tcpConnect(host, port, timeoutMs);
+  const conn = await tcpConnect(connectHost, connectPort, timeoutMs);
   if (!conn) {
     steps.push({ event: 'TCP_CONNECTED', ok: false, detail: `échec ${timeoutMs}ms` });
     return finish('unreachable_from_probe', 'TCP inaccessible depuis la sonde — serveur éteint, filtré, ou géo-restreint');
@@ -274,7 +313,13 @@ export async function probeConfig(
   // 3. TLS éventuel — `ssh+payload` avec TLS, et `ssh` direct encapsulé dans TLS
   // (« SSL Tunnel »), désormais pris en charge par le moteur mobile.
   if (canonical.tls === true) {
-    const up = await tlsUpgrade(conn.sock, host, canonical.sni || undefined, timeoutMs);
+    const up = await tlsUpgrade(
+      conn.sock,
+      connectHost,
+      tlsServerName,
+      timeoutMs,
+      canonical.insecure === true,
+    );
     if ('error' in up) {
       steps.push({ event: 'TLS_FAILED', ok: false, detail: up.error.slice(0, 120) });
       try { conn.sock.destroy(); } catch { /* ignore */ }
@@ -339,13 +384,19 @@ export async function probeConfig(
 
   // 4b. SSH+Payload : substitutions → envoi → 101/200 → flux SSH
   const payloadTpl = String(canonical.payload ?? 'GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]');
-  const payload = substitutePayload(payloadTpl, host, canonical.sni);
+  const payload = substitutePayload(payloadTpl, host, tlsServerName, port);
   try {
     await probeWsTunnel(sock, payload, host, timeoutMs, steps);
   } finally {
     try { sock.destroy(); } catch { /* ignore */ }
   }
   const okAll = steps.some(s => s.event === 'SSH_BANNER_RECEIVED' && s.ok);
+  if (!okAll && payload.trimStart().toUpperCase().startsWith('CONNECT ')) {
+    return finish(
+      'unsupported',
+      'Payload CONNECT non prouvé par la sonde : l’application essaiera aussi TLS brut, TLS WebSocket puis WebSocket. Vérifiez sur l’appareil cible.',
+    );
+  }
   return finish(okAll ? 'transport_ok' : 'unreachable_from_probe',
     okAll ? undefined : 'Le payload n\'a pas abouti à un flux SSH — vérifiez le payload exact du fournisseur (Host, path, en-têtes)');
 }
