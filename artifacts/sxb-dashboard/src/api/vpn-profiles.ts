@@ -4,16 +4,19 @@ export interface VpnProfile {
   id: string;
   name: string;
   description?: string;
-  protocol: string;         // Protocole technique : ssh | vless | vmess | trojan | shadowsocks | singbox
+  protocol?: string;        // Technical fields are absent while locked.
   displayProtocol?: string; // Nom commercial affiché sur mobile : "MTN Protocol", "Orange Protocol"
-  host: string;
-  port: number;
+  host?: string;
+  port?: number;
   username?: string;
   password?: string; // always masked
   uuid?: string;
   path?: string;
-  network: string;
-  tls: boolean;
+  network?: string;
+  tls?: boolean;
+  hasLock?: boolean;
+  isLocked?: boolean;
+  unlockExpiresAt?: string;
   sni?: string;
   dns?: string;
   payloadId?: string;
@@ -72,8 +75,11 @@ export const testImportedConfig = (importConfig: string): Promise<ConfigTestResu
   apiRequest<ConfigTestResult>('/config-test', { method: 'POST', body: { importConfig } });
 
 /** Teste la configuration importée d'un profil existant (stockée chiffrée). */
-export const testProfileConfig = (profileId: string): Promise<ConfigTestResult> =>
-  apiRequest<ConfigTestResult>('/config-test', { method: 'POST', body: { profileId } });
+const unlockHeaders = (token?: string): Record<string, string> =>
+  token ? { 'X-VPN-Profile-Unlock': token } : {};
+
+export const testProfileConfig = (profileId: string, token?: string): Promise<ConfigTestResult> =>
+  apiRequest<ConfigTestResult>('/config-test', { method: 'POST', body: { profileId }, headers: unlockHeaders(token) });
 
 export interface Subscription {
   id: string;
@@ -108,8 +114,22 @@ export const fetchVpnProfiles = (): Promise<VpnProfile[]> =>
 export const fetchAssignedVpnProfiles = (): Promise<VpnProfile[]> =>
   apiRequest<any>('/vpn-profiles/assigned').then(r => r.profiles || []);
 
-export const fetchVpnProfile = (id: string): Promise<VpnProfile> =>
-  apiRequest<any>(`/vpn-profiles/${id}`).then(r => r.profile);
+export const fetchVpnProfile = (id: string, token?: string): Promise<VpnProfile> =>
+  apiRequest<{ profile: VpnProfile }>(`/vpn-profiles/${id}`, { headers: unlockHeaders(token) }).then(r => r.profile);
+
+export interface ProfileUnlock {
+  unlockToken: string;
+  expiresAt: string;
+  profile: VpnProfile;
+}
+
+export const unlockVpnProfile = (id: string, password: string): Promise<ProfileUnlock> =>
+  apiRequest<ProfileUnlock>(`/vpn-profiles/${id}/unlock`, { method: 'POST', body: { password } });
+
+export const setVpnProfileLock = (id: string, password: string, token?: string): Promise<VpnProfile> =>
+  apiRequest<{ profile: VpnProfile }>(`/vpn-profiles/${id}/lock`, {
+    method: 'PUT', body: { password }, headers: unlockHeaders(token),
+  }).then(r => r.profile);
 
 /**
  * Crée un profil VPN.
@@ -119,12 +139,14 @@ export const fetchVpnProfile = (id: string): Promise<VpnProfile> =>
  * r.profile)` : un import strictement identique à un profil existant passait
  * donc totalement inaperçu.
  */
-export const createVpnProfile = (data: Partial<VpnProfile>): Promise<VpnProfile & { _warnings?: string[] }> =>
+export type ProfileWrite = Partial<VpnProfile> & { importConfig?: string };
+export const createVpnProfile = (data: ProfileWrite & { lockPassword: string }): Promise<VpnProfile & { _warnings?: string[] }> =>
   apiRequest<any>('/vpn-profiles', { method: 'POST', body: data })
     .then(r => ({ ...r.profile, _warnings: r.warnings || [] }));
 
 export const importVpnProfiles = (data: {
   importConfig: string;
+  lockPassword: string;
   namePrefix?: string;
   description?: string;
   displayProtocol?: string;
@@ -138,11 +160,11 @@ export const importVpnProfiles = (data: {
       warnings: r.warnings || [],
     }));
 
-export const updateVpnProfile = (id: string, data: Partial<VpnProfile>): Promise<VpnProfile> =>
-  apiRequest<any>(`/vpn-profiles/${id}`, { method: 'PUT', body: data }).then(r => r.profile);
+export const updateVpnProfile = (id: string, data: ProfileWrite, token?: string): Promise<VpnProfile> =>
+  apiRequest<any>(`/vpn-profiles/${id}`, { method: 'PUT', body: data, headers: unlockHeaders(token) }).then(r => r.profile);
 
-export const deleteVpnProfile = (id: string): Promise<void> =>
-  apiRequest<any>(`/vpn-profiles/${id}`, { method: 'DELETE' });
+export const deleteVpnProfile = (id: string, token?: string): Promise<void> =>
+  apiRequest<any>(`/vpn-profiles/${id}`, { method: 'DELETE', headers: unlockHeaders(token) });
 
 export const fetchVpnProfileStats = (): Promise<{ total: number; active: number; byProtocol: any[] }> =>
   apiRequest<any>('/vpn-profiles/stats/all').then(r => r);
@@ -195,10 +217,10 @@ export const revokeSubscription = (id: string, reason?: string): Promise<void> =
 export interface UnifiedConfig {
   id: string;
   name: string;
-  protocol: string;
-  host: string;
-  port: number;
-  sourceType: string;
+  protocol?: string;
+  host?: string;
+  port?: number;
+  sourceType?: string;
   status: string;
 }
 
