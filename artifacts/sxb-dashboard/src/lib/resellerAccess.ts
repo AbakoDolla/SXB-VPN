@@ -16,6 +16,7 @@
  * l'exploitant avec un parc qu'il ne pourrait plus contenir.
  */
 import { ResellerAccessSummary, ResellerAccessState, ResellerQuotaState, UserRole } from "../types";
+import { translate, getLanguage, formatBytes as localizedBytes, formatDate as localizedDate, type Language } from "./i18n";
 
 /** Codes de refus du serveur. On teste le code, jamais le message. */
 export const RESELLER_CODES = {
@@ -30,26 +31,24 @@ export const RESELLER_CODES = {
 
 export type ResellerCode = (typeof RESELLER_CODES)[keyof typeof RESELLER_CODES];
 
-export const MESSAGE_ACCES_EXPIRE = "Accès expiré — veuillez renouveler";
-export const MESSAGE_ACCES_SUSPENDU = "Accès suspendu — contactez l'administrateur";
+export const MESSAGE_ACCES_EXPIRE = "errors.resellers.access_expired";
+export const MESSAGE_ACCES_SUSPENDU = "errors.resellers.suspended";
 
 const MESSAGES: Record<string, string> = {
-  [RESELLER_CODES.ACCOUNT_REQUIRED]: "Aucune fiche revendeur n'est associée à ce compte.",
+  [RESELLER_CODES.ACCOUNT_REQUIRED]: "errors.resellers.not_found",
   [RESELLER_CODES.EXPIRED]: MESSAGE_ACCES_EXPIRE,
   [RESELLER_CODES.SUSPENDED]: MESSAGE_ACCES_SUSPENDU,
-  [RESELLER_CODES.QUOTA_REACHED]: "Plafond de quota atteint — libérez du volume ou demandez une extension.",
-  [RESELLER_CODES.OWNERSHIP_FORBIDDEN]: "Cette ressource appartient à un autre revendeur.",
-  [RESELLER_CODES.SUPPORT_READ_ONLY]: "Le rôle SUPPORT est en lecture seule sur ce domaine.",
-  [RESELLER_CODES.RESELLER_ACCESS_REQUIRED]: "Une date d'expiration future est requise pour un compte revendeur.",
+  [RESELLER_CODES.QUOTA_REACHED]: "errors.resellers.quota_reached",
+  [RESELLER_CODES.OWNERSHIP_FORBIDDEN]: "errors.resellers.ownership_forbidden",
+  [RESELLER_CODES.SUPPORT_READ_ONLY]: "errors.resellers.support_read_only",
+  [RESELLER_CODES.RESELLER_ACCESS_REQUIRED]: "errors.resellers.access_required",
 };
 
 /** Message lisible d'un refus, ou null si le code n'en est pas un. */
-export function messageForCode(code: string | null | undefined): string | null {
+export function messageForCode(code: string | null | undefined, language: Language = getLanguage()): string | null {
   if (!code) return null;
-  return MESSAGES[code] ?? null;
+  return MESSAGES[code] ? translate(language, MESSAGES[code]) : null;
 }
-
-const UNITS = ["o", "Ko", "Mo", "Go", "To", "Po"];
 
 /**
  * Conversion tolérante vers BigInt.
@@ -82,24 +81,10 @@ export function toBigInt(value: string | number | bigint | null | undefined): bi
  * Formate un volume d'octets sans jamais passer la valeur brute par Number.
  * Un plafond négatif signifie « illimité », jamais « zéro ».
  */
-export function formatBytes(value: string | number | bigint | null | undefined, fallback = "—"): string {
+export function formatBytes(value: string | number | bigint | null | undefined, fallback = "—", language: Language = getLanguage()): string {
   const bytes = toBigInt(value);
   if (bytes === null) return fallback;
-  if (bytes < BigInt(0)) return "Illimité";
-  if (bytes === BigInt(0)) return "0 o";
-
-  let unit = 0;
-  let scale = BigInt(1);
-  while (unit < UNITS.length - 1 && bytes / scale >= BigInt(1024)) {
-    scale *= BigInt(1024);
-    unit += 1;
-  }
-  // Un chiffre après la virgule, calculé en entiers pour rester exact.
-  const tenths = (bytes * BigInt(10)) / scale;
-  const whole = tenths / BigInt(10);
-  const decimal = tenths % BigInt(10);
-  const formatted = unit === 0 || decimal === BigInt(0) ? `${whole}` : `${whole},${decimal}`;
-  return `${formatted} ${UNITS[unit]}`;
+  return localizedBytes(bytes, language);
 }
 
 /** Pourcentage d'occupation d'un plafond, calculé en BigInt puis arrondi. */
@@ -151,18 +136,19 @@ export function canPerform(
 /** Motif de blocage à afficher sur un bouton désactivé. */
 export function blockReason(
   access: ResellerAccessSummary | null | undefined,
-  options: { reducesExposure?: boolean } = {}
+  options: { reducesExposure?: boolean } = {},
+  language: Language = getLanguage()
 ): string | null {
   if (canPerform(access, options)) return null;
-  if (access?.accessState === "expired") return MESSAGE_ACCES_EXPIRE;
-  if (access?.accessState === "suspended") return MESSAGE_ACCES_SUSPENDU;
-  return MESSAGES[RESELLER_CODES.QUOTA_REACHED];
+  if (access?.accessState === "expired") return translate(language, MESSAGE_ACCES_EXPIRE);
+  if (access?.accessState === "suspended") return translate(language, MESSAGE_ACCES_SUSPENDU);
+  return messageForCode(RESELLER_CODES.QUOTA_REACHED, language);
 }
 
 export const ACCESS_LABELS: Record<ResellerAccessState, string> = {
-  active: "Accès actif",
-  expired: "Accès expiré",
-  suspended: "Accès suspendu",
+  active: "core.resellerAccess.access.active",
+  expired: "core.resellerAccess.access.expired",
+  suspended: "core.resellerAccess.access.suspended",
 };
 
 export const ACCESS_BADGES: Record<ResellerAccessState, string> = {
@@ -172,9 +158,9 @@ export const ACCESS_BADGES: Record<ResellerAccessState, string> = {
 };
 
 export const QUOTA_LABELS: Record<ResellerQuotaState, string> = {
-  available: "Quota disponible",
-  reached: "Plafond atteint",
-  unlimited: "Quota illimité",
+  available: "core.resellerAccess.quota.available",
+  reached: "core.resellerAccess.quota.reached",
+  unlimited: "core.resellerAccess.quota.unlimited",
 };
 
 export const QUOTA_BADGES: Record<ResellerQuotaState, string> = {
@@ -191,11 +177,8 @@ export function daysUntil(iso: string | null | undefined): number | null {
   return Math.ceil((time - Date.now()) / 86_400_000);
 }
 
-export function formatDate(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "—";
-  return date.toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" });
+export function formatDate(iso: string | null | undefined, language: Language = getLanguage()): string {
+  return localizedDate(iso, language, { day: "2-digit", month: "short", year: "numeric" });
 }
 
 /** Valeur `datetime-local` par défaut : maintenant + n jours, sans décalage UTC. */
@@ -233,6 +216,6 @@ export function toIsoExpiry(value: string): string | null {
  * Un client sans revendeur est un client direct de la plateforme — le dire
  * explicitement évite de le prendre pour une donnée manquante.
  */
-export function ownerLabel(resellerName: string | null | undefined): string {
-  return resellerName ? `Client de ${resellerName}` : "Client direct (plateforme)";
+export function ownerLabel(resellerName: string | null | undefined, language: Language = getLanguage()): string {
+  return resellerName ? translate(language, "core.owner.reseller", { name: resellerName }) : translate(language, "core.owner.direct");
 }

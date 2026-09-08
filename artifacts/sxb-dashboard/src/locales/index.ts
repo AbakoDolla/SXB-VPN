@@ -1,0 +1,19 @@
+import frCommon from "./fr/common.json";
+import frDashboard from "./fr/dashboard.json";
+import frClients from "./fr/clients.json";
+import frResellers from "./fr/resellers.json";
+import frSettings from "./fr/settings.json";
+import frCore from "./fr/core.json";
+import enCommon from "./en/common.json";
+import enDashboard from "./en/dashboard.json";
+import enClients from "./en/clients.json";
+import enResellers from "./en/resellers.json";
+import enSettings from "./en/settings.json";
+import enCore from "./en/core.json";
+import frErrors from "./fr/errors.json";
+import enErrors from "./en/errors.json";
+
+export const dictionaries = {
+  fr: { common: frCommon, dashboard: frDashboard, clients: frClients, resellers: frResellers, settings: frSettings, core: frCore, errors: frErrors },
+  en: { common: enCommon, dashboard: enDashboard, clients: enClients, resellers: enResellers, settings: enSettings, core: enCore, errors: enErrors },
+};

@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { useTranslation } from '../../contexts/I18nContext';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import useEmblaCarousel, {
@@ -55,6 +56,7 @@ const Carousel = React.forwardRef<
     },
     ref,
   ) => {
+    const { t } = useTranslation();
     const [carouselRef, api] = useEmblaCarousel(
       {
         ...opts,
@@ -136,7 +138,7 @@ const Carousel = React.forwardRef<
           onKeyDownCapture={handleKeyDown}
           className={cn('relative', className)}
           role="region"
-          aria-roledescription="carousel"
+          aria-roledescription={t('core.ui.carousel')}
           {...props}
         >
           {children}
@@ -174,12 +176,13 @@ const CarouselItem = React.forwardRef<
   React.HTMLAttributes<HTMLDivElement>
 >(({ className, ...props }, ref) => {
   const { orientation } = useCarousel();
+  const { t } = useTranslation();
 
   return (
     <div
       ref={ref}
       role="group"
-      aria-roledescription="slide"
+      aria-roledescription={t('core.ui.slide')}
       className={cn(
         'min-w-0 shrink-0 grow-0 basis-full',
         orientation === 'horizontal' ? 'pl-4' : 'pt-4',
@@ -196,6 +199,7 @@ const CarouselPrevious = React.forwardRef<
   React.ComponentProps<typeof Button>
 >(({ className, variant = 'outline', size = 'icon', ...props }, ref) => {
   const { orientation, scrollPrev, canScrollPrev } = useCarousel();
+  const { t } = useTranslation();
 
   return (
     <Button
@@ -214,7 +218,7 @@ const CarouselPrevious = React.forwardRef<
       {...props}
     >
       <ArrowLeft className="h-4 w-4" />
-      <span className="sr-only">Previous slide</span>
+      <span className="sr-only">{t('core.ui.previousSlide')}</span>
     </Button>
   );
 });
@@ -225,6 +229,7 @@ const CarouselNext = React.forwardRef<
   React.ComponentProps<typeof Button>
 >(({ className, variant = 'outline', size = 'icon', ...props }, ref) => {
   const { orientation, scrollNext, canScrollNext } = useCarousel();
+  const { t } = useTranslation();
 
   return (
     <Button
@@ -243,7 +248,7 @@ const CarouselNext = React.forwardRef<
       {...props}
     >
       <ArrowRight className="h-4 w-4" />
-      <span className="sr-only">Next slide</span>
+      <span className="sr-only">{t('core.ui.nextSlide')}</span>
     </Button>
   );
 });

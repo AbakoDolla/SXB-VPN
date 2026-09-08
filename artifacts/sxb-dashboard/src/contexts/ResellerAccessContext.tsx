@@ -3,6 +3,7 @@ import { UserRole, ResellerAccessSummary } from "../types";
 import { subscribeResellerAccess } from "../api/client";
 import { fetchMyResellerAccess } from "../api/resellers";
 import { canPerform, isAccessBlocked, isQuotaReached } from "../lib/resellerAccess";
+import { useTranslation } from "./I18nContext";
 
 /**
  * État d'accès du revendeur connecté, partagé par toute l'interface.
@@ -52,10 +53,12 @@ export function ResellerAccessProvider({
   role: UserRole | string | null | undefined;
   children: React.ReactNode;
 }) {
+  const { errorMessage } = useTranslation();
   const isReseller = role === UserRole.RESELLER;
   const [access, setAccess] = useState<ResellerAccessSummary | null>(null);
   const [loading, setLoading] = useState(isReseller);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setError] = useState<unknown>(null);
+  const error = failure ? errorMessage(failure, "errors.resellers.unavailable") : null;
 
   const refresh = useCallback(async () => {
     if (!isReseller) { setAccess(null); setError(null); setLoading(false); return; }
@@ -64,7 +67,7 @@ export function ResellerAccessProvider({
       setAccess(await fetchMyResellerAccess());
       setError(null);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "État revendeur indisponible");
+      setError(reason ?? "errors.resellers.unavailable");
     } finally {
       setLoading(false);
     }

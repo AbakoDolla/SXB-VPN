@@ -6,6 +6,8 @@
 // Base URL — utilise /xapi (proxifié par Vite → vpnsxb.afrihall.com/api)
 // On évite /api/* car l'artifact api-server Replit l'intercepte en priorité.
 import { ResellerAccessSummary } from "../types";
+import { getLanguage } from "../lib/language";
+import { apiErrorMessage } from "../lib/errors";
 
 const API_BASE = "/xapi";
 
@@ -49,11 +51,15 @@ class ApiError extends Error {
   ) {
     super(message);
     this.status = status;
-    this.responseData = responseData;
+    this.responseData = responseData ?? (message ? { message } : undefined);
     this.code = code;
     this.errorKey = extra?.errorKey;
     this.resellerAccess = extra?.resellerAccess;
     this.retryAfterSeconds = extra?.retryAfterSeconds;
+    Object.defineProperty(this, "message", {
+      configurable: true,
+      get: () => apiErrorMessage(this.responseData, this.status, getLanguage(), this.code ?? this.errorKey, this.retryAfterSeconds),
+    });
   }
 }
 
@@ -118,14 +124,14 @@ async function tryRefreshToken(): Promise<boolean> {
   if (!refreshPromise) {
     refreshPromise = fetch(`${API_BASE}/auth/refresh`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "Accept-Language": getLanguage() },
       body: JSON.stringify({ refreshToken }),
     })
       .then(async (res) => {
         if (res.status === 401 || res.status === 403) return false;
         if (!res.ok) {
           if (res.status === 429) throw rateLimitError(res);
-          throw new ApiError("Renouvellement de session temporairement indisponible. Réessayez.", res.status);
+          throw new ApiError("", res.status, "SESSION_REFRESH_UNAVAILABLE");
         }
         const data = await res.json();
         setTokens(data.accessToken, data.refreshToken);
@@ -142,33 +148,7 @@ interface RequestOptions {
   method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
   body?: unknown;
   skipAuth?: boolean;
-}
-
-function validationMessages(issues: unknown): string[] {
-  if (!Array.isArray(issues)) return [];
-  return issues.flatMap((issue: unknown) => {
-    if (!issue || typeof issue !== "object" || !("message" in issue) ||
-        typeof issue.message !== "string" || !issue.message.trim()) return [];
-    const field = "path" in issue && Array.isArray(issue.path)
-      ? issue.path.filter(part => typeof part === "string" || typeof part === "number").join(".")
-      : "";
-    return [field ? `${field} : ${issue.message}` : issue.message];
-  });
-}
-
-function errorMessage(data: unknown, status: number): string {
-  const fallback = `Erreur ${status}`;
-  if (!data || typeof data !== "object") return fallback;
-  const message = "message" in data ? data.message : undefined;
-  if (typeof message === "string" && message.trim()) return message;
-  const messages = validationMessages(message);
-  if (messages.length) return messages.join("; ");
-  const details = validationMessages("details" in data ? data.details : undefined);
-  if (details.length) return details.join("; ");
-  const error = "error" in data ? data.error : undefined;
-  if (status < 500 && typeof error === "string" && error.trim() &&
-      !error.startsWith("errors.") && !/^[A-Z0-9_]+$/.test(error)) return error;
-  return fallback;
+  headers?: Record<string, string>;
 }
 
 function rateLimitError(response: Response, data?: unknown): ApiError {
@@ -184,9 +164,7 @@ function rateLimitError(response: Response, data?: unknown): ApiError {
     ? Math.ceil(delay)
     : undefined;
   return new ApiError(
-    retryAfterSeconds === undefined
-      ? "Trop de requêtes. Veuillez patienter avant de réessayer."
-      : `Trop de requêtes. Réessayez dans ${retryAfterSeconds} s.`,
+    "",
     429,
     "RATE_LIMITED",
     data,
@@ -200,7 +178,12 @@ function rateLimitError(response: Response, data?: unknown): ApiError {
 export async function apiRequest<T>(path: string, options: RequestOptions = {}, _isRetry = false): Promise<T> {
   const { method = "GET", body, skipAuth = false } = options;
 
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const headers: Record<string, string> = {};
+  for (const [name, value] of Object.entries(options.headers ?? {})) {
+    if (!["authorization", "content-type", "accept-language"].includes(name.toLowerCase())) headers[name] = value;
+  }
+  headers["Content-Type"] = "application/json";
+  headers["Accept-Language"] = getLanguage();
   if (!skipAuth) {
     const token = getAccessToken();
     if (token) headers["Authorization"] = `Bearer ${token}`;
@@ -218,7 +201,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}, 
       return apiRequest<T>(path, options, true);
     }
     forceLoginRedirect();
-    throw new ApiError("Session expirée, veuillez vous reconnecter", 401, "session_expired");
+    throw new ApiError("", 401, "session_expired");
   }
 
   let data: any = null;
@@ -241,7 +224,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}, 
       forceLoginRedirect();
     }
     publishResellerAccess(data, data?.code);
-    throw new ApiError(errorMessage(data, res.status), res.status, data?.code ?? data?.error, data, {
+    throw new ApiError("", res.status, data?.code ?? data?.error, data, {
       errorKey: data?.error,
       resellerAccess: looksLikeAccessSummary(data?.resellerAccess) ? data.resellerAccess : undefined,
     });

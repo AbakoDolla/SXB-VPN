@@ -3,6 +3,7 @@ import { User, UserRole } from '../types';
 import { useTranslation } from '../contexts/I18nContext';
 import { ResellerAccessBanner } from './ResellerAccessBanner';
 import { useResellerAccess } from '../contexts/ResellerAccessContext';
+import LanguageSelector from './LanguageSelector';
 import {
   LayoutDashboard, Users, Server, Shield, Key, Smartphone,
   Settings, LogOut, Terminal, Code2, Zap, Box,
@@ -133,7 +134,7 @@ export default function Layout({
     {
       kind: 'leaf',
       id: 'reseller-services',
-      label: 'Services VPN disponibles',
+      label: t('core.nav.services'),
       icon: GitBranch,
       roles: ['RESELLER'],
     },
@@ -164,7 +165,7 @@ export default function Layout({
         { kind: 'leaf', id: 'accounts', label: t('sidebar.accounts'), icon: UserPlus, roles: ADMINS, permission: 'users.view' },
         { kind: 'leaf', id: 'announcements', label: t('sidebar.annonces'), icon: BellRing, roles: STAFF },
         { kind: 'leaf', id: 'app-updates', label: t('sidebar.app_updates'), icon: Download, roles: STAFF },
-        { kind: 'leaf', id: 'mobile-health', label: 'Santé mobile', icon: HeartPulse, roles: ADMINS },
+        { kind: 'leaf', id: 'mobile-health', label: t('core.nav.mobileHealth'), icon: HeartPulse, roles: ADMINS },
       ],
     },
     {
@@ -188,7 +189,7 @@ export default function Layout({
     {
       kind: 'leaf',
       id: 'owner-log',
-      label: 'Journal propriétaire',
+      label: t('core.nav.ownerLog'),
       icon: ScrollText,
       roles: ['OWNER'],
     },
@@ -226,8 +227,8 @@ export default function Layout({
   };
 
   const roleLabels: Record<string, string> = {
-    OWNER: t('role_owner') || 'Propriétaire',
-    SUPER_ADMIN: t('role_super_admin') || 'Super Admin',
+    OWNER: t('role_owner'),
+    SUPER_ADMIN: t('role_super_admin'),
     ADMIN: t('admin'),
     SUPPORT: t('support'),
     RESELLER: t('reseller'),
@@ -250,7 +251,7 @@ export default function Layout({
           </div>
         </div>
         {onClose && (
-          <button onClick={onClose} className="text-gray-500 hover:text-white p-1 rounded cursor-pointer">
+          <button aria-label={t('core.nav.close')} onClick={onClose} className="text-gray-500 hover:text-white p-1 rounded cursor-pointer">
             <X className="w-4 h-4" />
           </button>
         )}
@@ -327,6 +328,7 @@ export default function Layout({
 
       {/* User footer */}
       <div className="p-3 border-t border-[#1a1f2e] shrink-0">
+        <div className="mb-3 px-2"><LanguageSelector /></div>
         <div className="flex items-center gap-2.5 px-2">
           <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-slate-600 to-slate-700 flex items-center justify-center text-xs font-bold text-white shrink-0">
             {currentUser.name?.charAt(0).toUpperCase() || 'U'}
@@ -370,7 +372,7 @@ export default function Layout({
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Mobile top bar */}
         <div className="lg:hidden dashboard-topbar flex items-center justify-between px-4 h-12 border-b border-[#1a1f2e] shrink-0">
-          <button onClick={() => setMobileNavOpen(true)} className="text-gray-400 hover:text-white p-1.5 rounded-lg hover:bg-white/10 cursor-pointer">
+          <button aria-label={t('core.nav.open')} onClick={() => setMobileNavOpen(true)} className="text-gray-400 hover:text-white p-1.5 rounded-lg hover:bg-white/10 cursor-pointer">
             <Menu className="w-5 h-5" />
           </button>
           <div className="flex items-center gap-2">

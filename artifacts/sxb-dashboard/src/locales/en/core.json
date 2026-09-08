@@ -1,0 +1,81 @@
+{
+  "language": "Language",
+  "languages": { "fr": "Français", "en": "English" },
+  "logo": "SXB VPN logo",
+  "login": {
+    "subtitle": "VPN management platform",
+    "passwordTab": "Email / Password",
+    "tokenTab": "Admin token",
+    "email": "Email",
+    "password": "Password",
+    "showPassword": "Show password",
+    "hidePassword": "Hide password",
+    "token": "Admin access token",
+    "failed": "Unable to sign in. Check your credentials.",
+    "invalidToken": "Invalid or expired token.",
+    "rateLimited": "Too many requests. Please wait before retrying.",
+    "connecting": "Signing in…",
+    "retryIn": "Retry in {{seconds}} s",
+    "signIn": "Sign in",
+    "verifying": "Verifying…",
+    "activate": "Activate with token",
+    "footer": "SXB VPN · Control panel · v2.1"
+  },
+  "session": {
+    "initializing": "Initializing…",
+    "unavailable": "Session temporarily unavailable",
+    "checkFailed": "Session verification is temporarily unavailable.",
+    "preserved": "Your session is preserved. You do not need a new password.",
+    "retry": "Retry"
+  },
+  "nav": {
+    "services": "Available VPN services",
+    "mobileHealth": "Mobile health",
+    "ownerLog": "Owner audit log",
+    "open": "Open menu",
+    "close": "Close menu"
+  },
+  "pagination": {
+    "empty": "No results",
+    "range": "{{from}}–{{to}} of {{total}}",
+    "pageSize": "Results per page",
+    "perPage": "{{count}} / page",
+    "first": "First page",
+    "previous": "Previous page",
+    "next": "Next page",
+    "last": "Last page",
+    "page": "Page {{page}}"
+  },
+  "ui": {
+    "carousel": "Carousel",
+    "slide": "Slide",
+    "close": "Close",
+    "more": "More",
+    "breadcrumb": "Breadcrumb",
+    "previousSlide": "Previous slide",
+    "nextSlide": "Next slide",
+    "sidebar": "Sidebar",
+    "sidebarDescription": "Displays the mobile sidebar.",
+    "toggleSidebar": "Toggle sidebar",
+    "loading": "Loading…",
+    "notifications": "Notifications"
+  },
+  "units": { "bytes": "B", "kilobytes": "KB", "megabytes": "MB", "gigabytes": "GB", "terabytes": "TB", "petabytes": "PB", "exabytes": "EB" },
+  "calendar": {
+    "navigation": "Calendar navigation",
+    "previousMonth": "Previous month",
+    "nextMonth": "Next month",
+    "chooseMonth": "Choose month",
+    "chooseYear": "Choose year",
+    "weekNumberHeader": "Week number",
+    "weekNumber": "Week {{week}}",
+    "today": "Today",
+    "selected": "Selected"
+  },
+  "unlimited": "Unlimited",
+  "resellerAccess": {
+    "access": { "active": "Active", "expired": "Expired", "suspended": "Suspended" },
+    "quota": { "available": "Available", "reached": "Ceiling reached", "unlimited": "Unlimited" }
+  },
+  "owner": { "reseller": "Client of {{name}}", "direct": "Direct client (platform)" }
+}

@@ -2,14 +2,17 @@
 
 import { useTheme } from 'next-themes';
 import { Toaster as Sonner } from 'sonner';
+import { useTranslation } from '../../contexts/I18nContext';
 
 type ToasterProps = React.ComponentProps<typeof Sonner>;
 
 const Toaster = ({ ...props }: ToasterProps) => {
   const { theme = 'system' } = useTheme();
+  const { t } = useTranslation();
 
   return (
     <Sonner
+      containerAriaLabel={t('core.ui.notifications')}
       theme={theme as ToasterProps['theme']}
       className="toaster group"
       toastOptions={{

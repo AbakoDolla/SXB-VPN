@@ -2,6 +2,8 @@
 
 import * as React from 'react';
 import { DayButton, DayPicker, getDefaultClassNames } from 'react-day-picker';
+import { enUS, fr } from 'react-day-picker/locale';
+import { useTranslation } from '../../contexts/I18nContext';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import {
@@ -17,15 +19,35 @@ function Calendar({
   captionLayout = 'label',
   buttonVariant = 'ghost',
   formatters,
+  labels,
   components,
   ...props
 }: React.ComponentProps<typeof DayPicker> & {
   buttonVariant?: React.ComponentProps<typeof Button>['variant'];
 }) {
+  const { language, t, formatDate, formatNumber } = useTranslation();
   const defaultClassNames = getDefaultClassNames();
 
   return (
     <DayPicker
+      locale={language === 'en' ? enUS : fr}
+      labels={{
+        labelNav: () => t('core.calendar.navigation'),
+        labelPrevious: () => t('core.calendar.previousMonth'),
+        labelNext: () => t('core.calendar.nextMonth'),
+        labelMonthDropdown: () => t('core.calendar.chooseMonth'),
+        labelYearDropdown: () => t('core.calendar.chooseYear'),
+        labelWeekNumberHeader: () => t('core.calendar.weekNumberHeader'),
+        labelWeekNumber: (week) => t('core.calendar.weekNumber', { week: formatNumber(week) }),
+        labelGrid: (date) => formatDate(date, { month: 'long', year: 'numeric' }),
+        labelWeekday: (date) => formatDate(date, { weekday: 'long' }),
+        labelDayButton: (date, modifiers) => [
+          formatDate(date, { dateStyle: 'full' }),
+          modifiers.today ? t('core.calendar.today') : '',
+          modifiers.selected ? t('core.calendar.selected') : '',
+        ].filter(Boolean).join(', '),
+        ...labels,
+      }}
       showOutsideDays={showOutsideDays}
       className={cn(
         'bg-background group/calendar p-3 [--cell-size:2rem] [[data-slot=card-content]_&]:bg-transparent [[data-slot=popover-content]_&]:bg-transparent',
@@ -36,7 +58,7 @@ function Calendar({
       captionLayout={captionLayout}
       formatters={{
         formatMonthDropdown: (date) =>
-          date.toLocaleString('default', { month: 'short' }),
+          formatDate(date, { month: 'short' }),
         ...formatters,
       }}
       classNames={{
@@ -189,7 +211,7 @@ function CalendarDayButton({
       ref={ref}
       variant="ghost"
       size="icon"
-      data-day={day.date.toLocaleDateString()}
+      data-day={`${day.date.getFullYear()}-${String(day.date.getMonth() + 1).padStart(2, '0')}-${String(day.date.getDate()).padStart(2, '0')}`}
       data-selected-single={
         modifiers.selected &&
         !modifiers.range_start &&

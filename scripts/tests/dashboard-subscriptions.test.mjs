@@ -4,10 +4,12 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
+import { readFileSync } from "node:fs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const require = createRequire(path.join(root, "backend", "package.json"));
 const { build } = require("esbuild");
+const errorsFr = JSON.parse(readFileSync(path.join(root, "artifacts", "sxb-dashboard", "src", "locales", "fr", "errors.json"), "utf8"));
 const bundled = await build({
   stdin: {
     contents: `
@@ -27,7 +29,7 @@ const state = { calls: [], status: 201, response: null };
 const compiled = { exports: {} };
 runInNewContext(bundled.outputFiles[0].text, {
   module: compiled,
-  localStorage: { getItem: () => "fixture-access-token" },
+  localStorage: { getItem: key => key === "sxb_access_token" ? "fixture-access-token" : null },
   fetch: async (url, options) => {
     state.calls.push({ url, ...options });
     return {
@@ -95,7 +97,8 @@ test("existing message arrays and reseller refusals retain their meaningful expl
   };
   await assert.rejects(apiRequest("/subscriptions"), error =>
     error.code === "RESELLER_QUOTA_REACHED" &&
-    error.message === "Le plafond du revendeur serait dépassé."
+    error.message === errorsFr.resellers.quota_exceeded &&
+    error.responseData.message === "Le plafond du revendeur serait dépassé."
   );
 });
 
@@ -105,8 +108,12 @@ test("safe HTTP errors display their text, while malformed details keep a readab
   await assert.rejects(apiRequest("/subscriptions"), /Client VPN introuvable/);
   state.status = 400;
   state.response = { error: "errors.validation", details: [null, {}, { message: 4 }] };
-  await assert.rejects(apiRequest("/subscriptions"), /Erreur 400/);
+  await assert.rejects(apiRequest("/subscriptions"), error => error.message === errorsFr.validation);
   state.status = 500;
   state.response = { error: "Internal database trace" };
-  await assert.rejects(apiRequest("/subscriptions"), /Erreur 500/);
+  await assert.rejects(apiRequest("/subscriptions"), error =>
+    error.message.includes(errorsFr.server) &&
+    error.message.includes("HTTP 500") &&
+    !error.message.includes("Internal database trace")
+  );
 });

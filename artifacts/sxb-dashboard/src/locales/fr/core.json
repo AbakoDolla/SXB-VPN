@@ -1,0 +1,81 @@
+{
+  "language": "Langue",
+  "languages": { "fr": "Français", "en": "English" },
+  "logo": "Logo SXB VPN",
+  "login": {
+    "subtitle": "Plateforme de gestion VPN",
+    "passwordTab": "E-mail / Mot de passe",
+    "tokenTab": "Jeton administrateur",
+    "email": "E-mail",
+    "password": "Mot de passe",
+    "showPassword": "Afficher le mot de passe",
+    "hidePassword": "Masquer le mot de passe",
+    "token": "Jeton d'accès administrateur",
+    "failed": "Connexion impossible. Vérifiez vos identifiants.",
+    "invalidToken": "Jeton invalide ou expiré.",
+    "rateLimited": "Trop de requêtes. Patientez avant de réessayer.",
+    "connecting": "Connexion…",
+    "retryIn": "Réessayer dans {{seconds}} s",
+    "signIn": "Se connecter",
+    "verifying": "Vérification…",
+    "activate": "Activer avec le jeton",
+    "footer": "SXB VPN · Panneau de gestion · v2.1"
+  },
+  "session": {
+    "initializing": "Initialisation…",
+    "unavailable": "Session temporairement indisponible",
+    "checkFailed": "Vérification de session temporairement indisponible.",
+    "preserved": "Votre session est conservée. Aucun nouveau mot de passe n'est nécessaire.",
+    "retry": "Réessayer"
+  },
+  "nav": {
+    "services": "Services VPN disponibles",
+    "mobileHealth": "Santé mobile",
+    "ownerLog": "Journal propriétaire",
+    "open": "Ouvrir le menu",
+    "close": "Fermer le menu"
+  },
+  "pagination": {
+    "empty": "Aucun résultat",
+    "range": "{{from}}–{{to}} sur {{total}}",
+    "pageSize": "Résultats par page",
+    "perPage": "{{count}} / page",
+    "first": "Première page",
+    "previous": "Page précédente",
+    "next": "Page suivante",
+    "last": "Dernière page",
+    "page": "Page {{page}}"
+  },
+  "ui": {
+    "carousel": "Carrousel",
+    "slide": "Diapositive",
+    "close": "Fermer",
+    "more": "Plus",
+    "breadcrumb": "Fil d'Ariane",
+    "previousSlide": "Diapositive précédente",
+    "nextSlide": "Diapositive suivante",
+    "sidebar": "Barre latérale",
+    "sidebarDescription": "Affiche la barre latérale mobile.",
+    "toggleSidebar": "Basculer la barre latérale",
+    "loading": "Chargement…",
+    "notifications": "Notifications"
+  },
+  "units": { "bytes": "o", "kilobytes": "Ko", "megabytes": "Mo", "gigabytes": "Go", "terabytes": "To", "petabytes": "Po", "exabytes": "Eo" },
+  "calendar": {
+    "navigation": "Navigation du calendrier",
+    "previousMonth": "Mois précédent",
+    "nextMonth": "Mois suivant",
+    "chooseMonth": "Choisir le mois",
+    "chooseYear": "Choisir l'année",
+    "weekNumberHeader": "Numéro de semaine",
+    "weekNumber": "Semaine {{week}}",
+    "today": "Aujourd'hui",
+    "selected": "Sélectionné"
+  },
+  "unlimited": "Illimité",
+  "resellerAccess": {
+    "access": { "active": "Actif", "expired": "Expiré", "suspended": "Suspendu" },
+    "quota": { "available": "Disponible", "reached": "Plafond atteint", "unlimited": "Illimité" }
+  },
+  "owner": { "reseller": "Client de {{name}}", "direct": "Client direct (plateforme)" }
+}
