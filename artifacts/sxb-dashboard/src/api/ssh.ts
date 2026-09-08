@@ -1,8 +1,9 @@
 import { apiRequest } from "./client";
+import type { LegacyEngineAccount, LockedEngineAccount } from "./engine-account";
+import type { SshPayload } from "./payload";
+export type { SshPayload } from "./payload";
 
-export interface SshAccount {
-  id: string;
-  name: string;
+export interface SshAccountDetails extends LegacyEngineAccount {
   host: string;
   port: number;
   username: string;
@@ -24,16 +25,15 @@ export interface SshAccount {
   updatedAt: string;
 }
 
-export interface SshPayload {
-  id: string;
+export type SshAccount = SshAccountDetails | LockedEngineAccount;
+export type SshAccountInput = Partial<SshAccountDetails> & { quotaGB?: number };
+export type CreateSshAccountInput = SshAccountInput & {
   name: string;
-  host: string | null;
-  sni: string | null;
-  port: number | null;
-  headers: Record<string, string> | null;
-  content: string | null;
-  status: string;
-}
+  host: string;
+  username: string;
+  password: string;
+  lockPassword: string;
+};
 
 export interface SshStats {
   total: number;
@@ -43,10 +43,8 @@ export interface SshStats {
 }
 
 export async function fetchSshAccounts(): Promise<SshAccount[]> {
-  try {
-    const res = await apiRequest<{ accounts: SshAccount[] }>('/ssh/accounts');
-    return res?.accounts ?? [];
-  } catch { return []; }
+  const res = await apiRequest<{ accounts: SshAccount[] }>('/ssh/accounts');
+  return res.accounts;
 }
 
 export async function fetchSshAccount(id: string): Promise<SshAccount> {
@@ -54,7 +52,7 @@ export async function fetchSshAccount(id: string): Promise<SshAccount> {
   return res.account;
 }
 
-export async function createSshAccount(data: Partial<SshAccount> & { password: string }): Promise<SshAccount> {
+export async function createSshAccount(data: CreateSshAccountInput): Promise<SshAccount> {
   const res = await apiRequest<{ account: SshAccount }>('/ssh/accounts', {
     method: 'POST',
     body: data,
@@ -62,7 +60,7 @@ export async function createSshAccount(data: Partial<SshAccount> & { password: s
   return res.account;
 }
 
-export async function updateSshAccount(id: string, data: Partial<SshAccount>): Promise<SshAccount> {
+export async function updateSshAccount(id: string, data: SshAccountInput): Promise<SshAccount> {
   const res = await apiRequest<{ account: SshAccount }>(`/ssh/accounts/${id}`, {
     method: 'PUT',
     body: data,
@@ -85,8 +83,6 @@ export async function testSshConnection(id: string): Promise<{ reachable: boolea
 }
 
 export async function fetchSshStats(): Promise<SshStats> {
-  try {
-    const res = await apiRequest<{ stats: SshStats }>('/ssh/stats');
-    return res?.stats ?? { total: 0, active: 0, suspended: 0, expired: 0 };
-  } catch { return { total: 0, active: 0, suspended: 0, expired: 0 }; }
+  const res = await apiRequest<{ stats: SshStats }>('/ssh/stats');
+  return res.stats;
 }

@@ -1,9 +1,8 @@
 import { apiRequest } from "./client";
+import type { LegacyEngineAccount, LockedEngineAccount } from "./engine-account";
 
-export interface SingboxAccount {
-  id: string;
-  name: string;
-  protocol: 'vless' | 'trojan' | 'shadowsocks' | 'hysteria2' | 'tuic';
+export interface SingboxAccountDetails extends LegacyEngineAccount {
+  protocol: 'vless' | 'vmess' | 'trojan' | 'shadowsocks' | 'hysteria2' | 'tuic';
   uuid: string;
   host: string;
   port: number;
@@ -19,19 +18,26 @@ export interface SingboxAccount {
   password: string | null;
   method: string | null;
   config?: object;
-  client?: { id: string; token: string; user: { name: string; email: string } } | null;
   createdAt: string;
   updatedAt: string;
 }
 
+export type SingboxAccount = SingboxAccountDetails | LockedEngineAccount;
+export type SingboxAccountInput = Omit<Partial<SingboxAccountDetails>, "protocol"> & { protocol?: string; quotaGB?: number };
+export type CreateSingboxAccountInput = SingboxAccountInput & {
+  name: string;
+  host: string;
+  port: number;
+  protocol: string;
+  lockPassword: string;
+};
+
 export async function fetchSingboxAccounts(): Promise<SingboxAccount[]> {
-  try {
-    const res = await apiRequest<{ accounts: SingboxAccount[] }>('/singbox/accounts');
-    return res?.accounts ?? [];
-  } catch { return []; }
+  const res = await apiRequest<{ accounts: SingboxAccount[] }>('/singbox/accounts');
+  return res.accounts;
 }
 
-export async function createSingboxAccount(data: Partial<SingboxAccount>): Promise<SingboxAccount> {
+export async function createSingboxAccount(data: CreateSingboxAccountInput): Promise<SingboxAccount> {
   const res = await apiRequest<{ account: SingboxAccount }>('/singbox/accounts', {
     method: 'POST',
     body: data,
@@ -39,7 +45,7 @@ export async function createSingboxAccount(data: Partial<SingboxAccount>): Promi
   return res.account;
 }
 
-export async function updateSingboxAccount(id: string, data: Partial<SingboxAccount>): Promise<SingboxAccount> {
+export async function updateSingboxAccount(id: string, data: SingboxAccountInput): Promise<SingboxAccount> {
   const res = await apiRequest<{ account: SingboxAccount }>(`/singbox/accounts/${id}`, {
     method: 'PUT',
     body: data,
@@ -60,15 +66,9 @@ export async function getSingboxConfig(id: string): Promise<{ config: object }> 
 }
 
 export async function fetchSingboxStats(): Promise<{ total: number; active: number }> {
-  try {
-    const res = await apiRequest<{ stats: { total: number; active: number } }>('/singbox/stats');
-    return res?.stats ?? { total: 0, active: 0 };
-  } catch { return { total: 0, active: 0 }; }
+  return apiRequest('/singbox/stats');
 }
 
-export async function fetchSingboxProtocols(): Promise<{ protocols: string[]; networks: string[] }> {
-  try {
-    const res = await apiRequest<{ protocols: string[]; networks: string[] }>('/singbox/protocols');
-    return res ?? { protocols: [], networks: [] };
-  } catch { return { protocols: [], networks: [] }; }
+export async function fetchSingboxProtocols(): Promise<{ protocols: string[]; networks?: string[] }> {
+  return apiRequest('/singbox/protocols');
 }

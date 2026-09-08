@@ -1,24 +1,35 @@
 import { apiRequest } from "./client";
 
-export interface SshPayload {
+export interface PayloadMetadata {
   id: string;
   name: string;
+  status: string;
+  createdAt?: string;
+  updatedAt?: string;
+  _count?: { sshAccounts: number };
+  hasLock?: boolean;
+  profileId?: string | null;
+}
+
+export interface SshPayloadDetails extends PayloadMetadata {
+  isLocked?: false;
   host: string | null;
   sni: string | null;
   port: number | null;
   headers: Record<string, string> | null;
   content: string | null;
-  status: string;
-  createdAt: string;
-  updatedAt: string;
-  _count?: { sshAccounts: number };
 }
 
+export interface LockedSshPayload extends PayloadMetadata {
+  isLocked: true;
+  hasLock: true;
+}
+
+export type SshPayload = SshPayloadDetails | LockedSshPayload;
+
 export async function fetchPayloads(): Promise<SshPayload[]> {
-  try {
-    const res = await apiRequest<{ payloads: SshPayload[] }>('/payload');
-    return res?.payloads ?? [];
-  } catch { return []; }
+  const res = await apiRequest<{ payloads: SshPayload[] }>('/payload');
+  return res.payloads;
 }
 
 export async function fetchPayload(id: string): Promise<SshPayload> {
@@ -26,7 +37,7 @@ export async function fetchPayload(id: string): Promise<SshPayload> {
   return res.payload;
 }
 
-export async function createPayload(data: Partial<SshPayload>): Promise<SshPayload> {
+export async function createPayload(data: Partial<SshPayloadDetails>): Promise<SshPayload> {
   const res = await apiRequest<{ payload: SshPayload }>('/payload', {
     method: 'POST',
     body: data,
@@ -34,7 +45,7 @@ export async function createPayload(data: Partial<SshPayload>): Promise<SshPaylo
   return res.payload;
 }
 
-export async function updatePayload(id: string, data: Partial<SshPayload>): Promise<SshPayload> {
+export async function updatePayload(id: string, data: Partial<SshPayloadDetails>): Promise<SshPayload> {
   const res = await apiRequest<{ payload: SshPayload }>(`/payload/${id}`, {
     method: 'PUT',
     body: data,

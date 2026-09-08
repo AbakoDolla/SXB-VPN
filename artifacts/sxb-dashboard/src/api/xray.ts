@@ -1,8 +1,7 @@
 import { apiRequest } from "./client";
+import type { LegacyEngineAccount, LockedEngineAccount } from "./engine-account";
 
-export interface XrayAccount {
-  id: string;
-  name: string;
+export interface XrayAccountDetails extends LegacyEngineAccount {
   protocol: 'vless' | 'vmess' | 'trojan' | 'shadowsocks';
   uuid: string;
   host: string;
@@ -21,10 +20,19 @@ export interface XrayAccount {
   password: string | null;
   method: string | null;
   link?: string;
-  client?: { id: string; token: string; user: { name: string; email: string } } | null;
   createdAt: string;
   updatedAt: string;
 }
+
+export type XrayAccount = XrayAccountDetails | LockedEngineAccount;
+export type XrayAccountInput = Omit<Partial<XrayAccountDetails>, "protocol"> & { protocol?: string; quotaGB?: number };
+export type CreateXrayAccountInput = XrayAccountInput & {
+  name: string;
+  host: string;
+  port: number;
+  protocol: string;
+  lockPassword: string;
+};
 
 export interface XrayStats {
   total: number;
@@ -33,13 +41,11 @@ export interface XrayStats {
 }
 
 export async function fetchXrayAccounts(): Promise<XrayAccount[]> {
-  try {
-    const res = await apiRequest<{ accounts: XrayAccount[] }>('/xray/accounts');
-    return res?.accounts ?? [];
-  } catch { return []; }
+  const res = await apiRequest<{ accounts: XrayAccount[] }>('/xray/accounts');
+  return res.accounts;
 }
 
-export async function createXrayAccount(data: Partial<XrayAccount>): Promise<XrayAccount> {
+export async function createXrayAccount(data: CreateXrayAccountInput): Promise<XrayAccount> {
   const res = await apiRequest<{ account: XrayAccount }>('/xray/accounts', {
     method: 'POST',
     body: data,
@@ -47,7 +53,7 @@ export async function createXrayAccount(data: Partial<XrayAccount>): Promise<Xra
   return res.account;
 }
 
-export async function updateXrayAccount(id: string, data: Partial<XrayAccount>): Promise<XrayAccount> {
+export async function updateXrayAccount(id: string, data: XrayAccountInput): Promise<XrayAccount> {
   const res = await apiRequest<{ account: XrayAccount }>(`/xray/accounts/${id}`, {
     method: 'PUT',
     body: data,
@@ -68,15 +74,9 @@ export async function getXrayLink(id: string): Promise<{ link: string; protocol:
 }
 
 export async function fetchXrayStats(): Promise<XrayStats> {
-  try {
-    const res = await apiRequest<{ stats: XrayStats }>('/xray/stats');
-    return res?.stats ?? { total: 0, active: 0, byProtocol: [] };
-  } catch { return { total: 0, active: 0, byProtocol: [] }; }
+  return apiRequest<XrayStats>('/xray/stats');
 }
 
-export async function fetchXrayProtocols(): Promise<{ protocols: string[]; methods: string[]; networks: string[] }> {
-  try {
-    const res = await apiRequest<{ protocols: string[]; methods: string[]; networks: string[] }>('/xray/protocols');
-    return res ?? { protocols: [], methods: [], networks: [] };
-  } catch { return { protocols: [], methods: [], networks: [] }; }
+export async function fetchXrayProtocols(): Promise<{ protocols: string[]; methods?: string[]; networks?: string[] }> {
+  return apiRequest('/xray/protocols');
 }

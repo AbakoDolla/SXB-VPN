@@ -10,11 +10,12 @@ interface ServersViewProps {
 }
 
 export default function ServersView({ currentUserRole }: ServersViewProps) {
-  const { t } = useTranslation();
+  const { t, locale, formatNumber, message, errorText } = useTranslation();
   const [servers, setServers] = useState<VPSServer[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [showAddServer, setShowAddServer] = useState(false);
+  const [error, setError] = useState<React.ReactNode>(null);
 
   // Form states
   const [name, setName] = useState("");
@@ -26,11 +27,12 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
 
   const loadServers = async () => {
     setLoading(true);
+    setError(null);
     try {
       const data = await fetchServers();
       setServers(data);
     } catch (err) {
-      console.error(err);
+      setError(errorText(err, "technical.errors.load"));
     } finally {
       setLoading(false);
     }
@@ -42,7 +44,7 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name || !ip) return;
+    if (!name || !ip) { setError(message("technical.servers.requiredFields")); return; }
 
     try {
       await createServer({
@@ -56,7 +58,7 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
       setShowAddServer(false);
       loadServers();
     } catch (err) {
-      alert("Erreur lors de l'ajout du serveur");
+      setError(errorText(err, "technical.servers.createError"));
     }
   };
 
@@ -72,18 +74,18 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
       });
       loadServers();
     } catch (err) {
-      alert("Erreur lors de la modification de l'état du serveur");
+      setError(errorText(err, "technical.servers.statusError"));
     }
   };
 
   const handleDelete = async (id: string) => {
     if (!isAdmin) return;
-    if (!confirm("Voulez-vous vraiment retirer ce serveur VPS du pool SXB VPN ?")) return;
+    if (!confirm(t("technical.servers.confirmDelete"))) return;
     try {
       await deleteServer(id);
       loadServers();
     } catch (err) {
-      alert("Erreur");
+      setError(errorText(err, "technical.errors.delete"));
     }
   };
 
@@ -94,12 +96,13 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
   });
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" lang={locale}>
+      {error && !showAddServer && <div role="alert" className="text-sm text-rose-400">{error}</div>}
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-white">Serveurs VPN VPS</h1>
-          <p className="text-sm text-gray-400 mt-1">Supervisez l'état, l'adresse IP, la charge CPU/RAM et les connexions actives de vos nœuds VPN.</p>
+          <h1 className="text-2xl font-bold tracking-tight text-white">{t("technical.servers.title")}</h1>
+          <p className="text-sm text-gray-400 mt-1">{t("technical.servers.subtitle")}</p>
         </div>
 
         {isAdmin && (
@@ -108,7 +111,7 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
             className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-medium text-sm rounded-lg shadow-lg shadow-cyan-950/20 transition-all cursor-pointer"
           >
             <Plus className="h-4 w-4" />
-            Ajouter un Nœud VPS
+            {t("technical.servers.addNode")}
           </button>
         )}
       </div>
@@ -118,7 +121,7 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
         <Search className="absolute left-3 top-2.5 h-4.5 w-4.5 text-gray-500" />
         <input
           type="text"
-          placeholder="Rechercher par nœud, IP ou ville..."
+          placeholder={t("technical.servers.search")} aria-label={t("technical.servers.search")}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="w-full pl-10 pr-4 py-2 text-sm bg-gray-900 border border-gray-800 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
@@ -129,7 +132,7 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
       {loading ? (
         <div className="flex flex-col items-center justify-center py-20 text-gray-400">
           <Globe className="h-7 w-7 animate-spin text-cyan-400 mb-4" />
-          <p className="text-sm font-mono">{t("common.loading")}</p>
+          <p className="text-sm font-mono">{t("technical.common.loading")}</p>
         </div>
       ) : filtered.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -164,7 +167,7 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
                       : "bg-gray-500/10 text-gray-400 border border-gray-500/20"
                   }`}>
                     <span className={`h-1 w-1 rounded-full ${isOnline ? "bg-emerald-400" : "bg-gray-500"}`} />
-                    {isOnline ? "ONLINE" : "OFFLINE"}
+                    {t(isOnline ? "technical.status.online" : "technical.status.offline")}
                   </span>
                 </div>
 
@@ -178,8 +181,8 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
                   <div className="mt-5 grid grid-cols-2 gap-4 pt-4 border-t border-gray-900 font-mono text-[11px]">
                     <div className="space-y-1.5">
                       <div className="flex justify-between text-gray-500">
-                        <span className="flex items-center gap-1"><Cpu className="h-3 w-3" /> CPU</span>
-                        <span className={cpuColor}>{s.cpuLoad}%</span>
+                        <span className="flex items-center gap-1"><Cpu className="h-3 w-3" /> {t("technical.servers.cpu")}</span>
+                        <span className={cpuColor}>{formatNumber(s.cpuLoad / 100, { style: "percent" })}</span>
                       </div>
                       <div className="h-1.5 w-full bg-gray-950 rounded-full overflow-hidden">
                         <div 
@@ -191,8 +194,8 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
 
                     <div className="space-y-1.5">
                       <div className="flex justify-between text-gray-500">
-                        <span className="flex items-center gap-1"><HardDrive className="h-3 w-3" /> RAM</span>
-                        <span className={ramColor}>{s.ramLoad}%</span>
+                        <span className="flex items-center gap-1"><HardDrive className="h-3 w-3" /> {t("technical.servers.ram")}</span>
+                        <span className={ramColor}>{formatNumber(s.ramLoad / 100, { style: "percent" })}</span>
                       </div>
                       <div className="h-1.5 w-full bg-gray-950 rounded-full overflow-hidden">
                         <div 
@@ -208,7 +211,7 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
                 <div className="mt-4 pt-3 border-t border-gray-900/60 flex items-center justify-between">
                   <div className="flex items-center gap-1.5 text-xs text-gray-500">
                     <Activity className="h-3.5 w-3.5 text-emerald-400" />
-                    <span>Connexions : <strong className="text-white">{s.activeUsers}</strong></span>
+                    <span>{t("technical.servers.connections")} <strong className="text-white">{formatNumber(s.activeUsers)}</strong></span>
                   </div>
 
                   {isAdmin && (
@@ -221,10 +224,11 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
                             : "bg-emerald-950/20 text-emerald-400 border-emerald-950 hover:bg-emerald-950/40"
                         }`}
                       >
-                        {isOnline ? "Couper" : "Lancer"}
+                        {t(isOnline ? "technical.servers.stop" : "technical.servers.start")}
                       </button>
                       <button
                         onClick={() => handleDelete(s.id)}
+                        aria-label={t("technical.common.delete")}
                         className="p-1 hover:bg-rose-950/30 text-gray-500 hover:text-rose-400 rounded cursor-pointer border border-transparent hover:border-rose-900/40"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
@@ -239,14 +243,14 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
       ) : (
         <div className="border border-dashed border-gray-800 rounded-xl p-12 text-center bg-gray-950/10">
           <Server className="h-12 w-12 text-gray-700 mx-auto mb-4" />
-          <h3 className="text-base font-semibold text-white">Aucun Serveur VPS Disponible</h3>
-          <p className="text-sm text-gray-400 max-w-sm mx-auto mt-1">Configurez vos nœuds techniques dans la liste pour les rendre accessibles via le serveur.</p>
+          <h3 className="text-base font-semibold text-white">{t("technical.servers.empty")}</h3>
+          <p className="text-sm text-gray-400 max-w-sm mx-auto mt-1">{t("technical.servers.emptyHelp")}</p>
           {isAdmin && (
             <button
               onClick={() => setShowAddServer(true)}
               className="mt-5 px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-950 text-cyan-400 border border-cyan-800/40 hover:bg-cyan-900/50 transition-all cursor-pointer"
             >
-              Ajouter votre premier nœud de tunnel VPN
+              {t("technical.servers.addFirst")}
             </button>
           )}
         </div>
@@ -258,16 +262,17 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
           <div className="w-full max-w-md p-6 bg-gray-950 border border-gray-800 rounded-xl shadow-2xl relative">
             <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
               <Server className="h-5 w-5 text-cyan-400" />
-              Ajouter un Nœud VPS
+              {t("technical.servers.addNode")}
             </h2>
             
             <form onSubmit={handleCreate} className="space-y-4">
+              {error && <div role="alert" className="text-sm text-rose-400">{error}</div>}
               <div>
-                <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">Nom du serveur</label>
+                <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">{t("technical.servers.name")}</label>
                 <input
                   type="text"
                   required
-                  placeholder="Paris VPS-1 (Sing-box)"
+                  placeholder={t("technical.servers.nameExample")}
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   className="w-full px-3 py-2 text-sm bg-gray-900 border border-gray-800 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
@@ -275,7 +280,7 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">Adresse IP Publique</label>
+                <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">{t("technical.servers.publicIp")}</label>
                 <input
                   type="text"
                   required
@@ -287,17 +292,17 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">Localisation du VPS</label>
+                <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">{t("technical.servers.location")}</label>
                 <select
                   value={location}
                   onChange={(e) => setLocation(e.target.value)}
                   className="w-full px-3 py-2 text-sm bg-gray-900 border border-gray-800 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
                 >
-                  <option value="Paris, France 🇫🇷">Paris, France 🇫🇷</option>
-                  <option value="Frankfurt, Allemagne 🇩🇪">Frankfurt, Allemagne 🇩🇪</option>
-                  <option value="Amsterdam, Pays-Bas 🇳🇱">Amsterdam, Pays-Bas 🇳🇱</option>
-                  <option value="Montreal, Canada 🇨🇦">Montreal, Canada 🇨🇦</option>
-                  <option value="New York, USA 🇺🇸">New York, USA 🇺🇸</option>
+                  <option value="Paris, France 🇫🇷">{t("technical.servers.locations.paris")}</option>
+                  <option value="Frankfurt, Allemagne 🇩🇪">{t("technical.servers.locations.frankfurt")}</option>
+                  <option value="Amsterdam, Pays-Bas 🇳🇱">{t("technical.servers.locations.amsterdam")}</option>
+                  <option value="Montreal, Canada 🇨🇦">{t("technical.servers.locations.montreal")}</option>
+                  <option value="New York, USA 🇺🇸">{t("technical.servers.locations.newYork")}</option>
                 </select>
               </div>
 
@@ -307,13 +312,13 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
                   onClick={() => setShowAddServer(false)}
                   className="px-4 py-2 text-xs font-semibold rounded-lg bg-gray-900 text-gray-400 hover:bg-gray-800 cursor-pointer"
                 >
-                  {t("common.cancel")}
+                  {t("technical.common.cancel")}
                 </button>
                 <button
                   type="submit"
                   className="px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black shadow-lg shadow-cyan-950/20 cursor-pointer"
                 >
-                  Ajouter le Nœud
+                  {t("technical.servers.submit")}
                 </button>
               </div>
             </form>
