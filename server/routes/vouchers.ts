@@ -1,249 +1,566 @@
-/**
- * Vouchers Route — /api/vouchers
- * Codes de recharge prépayés (VPN quota).
- * Génération de code côté serveur avec crypto.randomBytes (plus Math.random).
- */
-import { Router, Response } from "express";
+import { randomInt, randomUUID } from "crypto";
+import { Response, Router } from "express";
 import { z } from "zod";
-import crypto from "crypto";
-import { prisma, inMemoryDb, logDbActivity } from "../database";
-import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
+import { inMemoryDb, logDbActivity, prisma } from "../database";
+import { AuthenticatedRequest, requireAuth, requirePermission } from "../middleware/auth";
+import { canSeeUser } from "../middleware/rbac/owner";
+import {
+  chargerFicheProprietaireClient,
+  chargerFicheRevendeur,
+  exigerAccesRevendeur,
+  interdireMutationSupport,
+  possedeClient,
+  refusPourEtatAcces,
+  refusPropriete,
+  reponsePlafondDepasse,
+  resumerAccesRevendeur,
+} from "../services/reseller-access";
 import { executerMutationQuota, PlafondQuotaDepasse } from "../services/reseller-quota";
+import {
+  appliquerVoucherAuClient,
+  VoucherRedemptionError,
+} from "../services/voucher-redemption";
 
 const router = Router();
-
-// Génère un code de voucher sécurisé côté serveur
-function makeVoucherCode(): string {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  const segment = (len: number) =>
-    Array.from(crypto.randomBytes(len))
-      .map((b) => chars[b % chars.length])
-      .join("");
-  return `VCH-${segment(5)}-${segment(5)}`;
-}
+const GIB = BigInt(1024) ** BigInt(3);
+const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const MAX_GENERATION_ATTEMPTS = 10;
 
 const createVoucherSchema = z.object({
-  quotaGb: z.coerce.number().min(1).default(50),
-  durationDays: z.coerce.number().min(1).default(30),
-  count: z.coerce.number().min(1).max(50).default(1), // Créer 1 à 50 vouchers à la fois
-});
+  quotaGb: z.coerce.number().int().min(1).max(1_000_000).default(50),
+  durationDays: z.coerce.number().int().min(1).max(3_650).default(30),
+  activationDays: z.coerce.number().int().min(1).max(3_650).default(90),
+  count: z.coerce.number().int().min(1).max(50).default(1),
+  resellerId: z.string().trim().min(1).optional(),
+}).strict();
 
 const redeemVoucherSchema = z.object({
-  code: z.string().trim().toUpperCase(),
-  clientId: z.string(), // Client VPN qui reçoit le quota
-});
+  code: z.string()
+    .trim()
+    .transform((value) => value.toUpperCase())
+    .refine((value) => /^VCH-[A-Z0-9]{5}-[A-Z0-9]{5}$/.test(value), {
+      message: "Format de voucher invalide",
+    }),
+  clientId: z.string().trim().min(1),
+}).strict();
 
-// Helper to sanitize BigInt for JSON response
-function sanitizeVoucher(vouch: any) {
-  if (!vouch) return null;
+type RouteRefusal = { status: number; body: Record<string, unknown> };
+
+function makeVoucherCode(): string {
+  const segment = () =>
+    Array.from(
+      { length: 5 },
+      () => CODE_ALPHABET[randomInt(0, CODE_ALPHABET.length)]
+    ).join("");
+  return `VCH-${segment()}-${segment()}`;
+}
+
+function isVoucherCollision(error: any): boolean {
+  if (error?.code !== "P2002") return false;
+  const target = Array.isArray(error?.meta?.target)
+    ? error.meta.target.join(",")
+    : String(error?.meta?.target ?? "");
+  return !target || target.includes("code");
+}
+
+function effectiveStatus(voucher: any): "active" | "used" | "revoked" | "expired" {
+  if (voucher?.isRedeemed || voucher?.status === "used") return "used";
+  if (voucher?.status === "revoked") return "revoked";
+  const expiry = voucher?.expiresAt ? new Date(voucher.expiresAt).getTime() : null;
+  if (expiry !== null && !Number.isNaN(expiry) && expiry <= Date.now()) return "expired";
+  return "active";
+}
+
+function sanitizeVoucher(voucher: any) {
+  if (!voucher) return null;
+  const reseller = voucher.reseller
+    ? {
+        id: voucher.reseller.id,
+        name: voucher.reseller.user?.name ?? null,
+        email: voucher.reseller.user?.email ?? null,
+      }
+    : null;
+  const redeemedClient = voucher.redeemedClient
+    ? {
+        id: voucher.redeemedClient.id,
+        name: voucher.redeemedClient.user?.name ?? null,
+        email: voucher.redeemedClient.user?.email ?? null,
+      }
+    : null;
   return {
-    ...vouch,
-    quota: vouch.quota ? vouch.quota.toString() : "0",
+    id: voucher.id,
+    code: voucher.code,
+    quota: BigInt(voucher.quota ?? 0).toString(),
+    durationDays: voucher.durationDays,
+    isRedeemed: Boolean(voucher.isRedeemed),
+    status: effectiveStatus(voucher),
+    expiresAt: voucher.expiresAt ?? null,
+    redeemedBy: voucher.redeemedBy ?? null,
+    redeemedClientId: voucher.redeemedClientId ?? null,
+    redeemedClient,
+    resellerId: voucher.resellerId ?? null,
+    reseller,
+    createdAt: voucher.createdAt,
+    updatedAt: voucher.updatedAt,
   };
 }
 
-// GET /api/vouchers
-router.get("/", requireAuth, requirePermission("vouchers.manage"), async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    let vouchers: any[] = [];
-    if (prisma) {
-      vouchers = await prisma.voucher.findMany({
-        orderBy: { createdAt: "desc" },
-      });
-    } else {
-      vouchers = inMemoryDb.vouchers;
+async function chargerProprietaireCreation(
+  req: AuthenticatedRequest,
+  requestedResellerId?: string
+): Promise<any | RouteRefusal> {
+  if (req.user?.role === "RESELLER") {
+    const fiche =
+      (req as any).reseller ??
+      (await chargerFicheRevendeur(prisma, req.user.userId));
+    if (!fiche) {
+      return {
+        status: 403,
+        body: {
+          error: "errors.resellers.not_found",
+          message: "Aucune fiche revendeur : impossible d'émettre un voucher.",
+        },
+      };
     }
-    return res.json({ vouchers: vouchers.map(sanitizeVoucher) });
-  } catch (err) {
-    console.error("Fetch vouchers error:", err);
-    return res.status(500).json({ error: "errors.server", message: "Failed to fetch vouchers" });
+    if (requestedResellerId && requestedResellerId !== fiche.id) {
+      return refusPropriete();
+    }
+    return fiche;
   }
-});
 
-// POST /api/vouchers — crée 1 à 50 vouchers d'un coup
-router.post("/", requireAuth, requirePermission("vouchers.manage"), async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const body = createVoucherSchema.parse(req.body);
-    const quotaBytes = BigInt(body.quotaGb) * BigInt(1024 * 1024 * 1024);
-    const created: any[] = [];
+  if (!requestedResellerId) {
+    return {
+      status: 400,
+      body: {
+        error: "errors.vouchers.reseller_required",
+        message: "Sélectionnez le revendeur dont l'enveloppe financera ce voucher.",
+      },
+    };
+  }
+  const fiche = prisma
+    ? await prisma.reseller.findUnique({
+        where: { id: requestedResellerId },
+        include: { user: { include: { role: true } } },
+      })
+    : inMemoryDb.resellers.find((candidate: any) => candidate.id === requestedResellerId);
+  if (!fiche || !canSeeUser(req, fiche.user)) {
+    return {
+      status: 404,
+      body: { error: "errors.resellers.not_found", message: "Revendeur introuvable" },
+    };
+  }
+  const accessError = refusPourEtatAcces(resumerAccesRevendeur(fiche));
+  return accessError ?? fiche;
+}
 
-    for (let i = 0; i < body.count; i++) {
-      const code = makeVoucherCode();
+async function resellerScope(req: AuthenticatedRequest) {
+  if (req.user?.role !== "RESELLER") return undefined;
+  const fiche =
+    (req as any).reseller ??
+    (await chargerFicheRevendeur(prisma, req.user.userId));
+  return { resellerId: fiche?.id ?? "__missing_reseller__" };
+}
+
+router.get(
+  "/",
+  requireAuth,
+  requirePermission("vouchers.view"),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      let vouchers: any[];
       if (prisma) {
-        const newVoucher = await prisma.voucher.create({
-          data: {
+        vouchers = await prisma.voucher.findMany({
+          where: await resellerScope(req),
+          include: {
+            reseller: { include: { user: true } },
+            redeemedClient: { include: { user: true } },
+          },
+          orderBy: { createdAt: "desc" },
+        });
+      } else {
+        vouchers = [...inMemoryDb.vouchers];
+        if (req.user?.role === "RESELLER") {
+          const fiche = await chargerFicheRevendeur(null, req.user.userId);
+          vouchers = vouchers.filter((voucher: any) => voucher.resellerId === fiche?.id);
+        }
+      }
+      return res.json({ vouchers: vouchers.map(sanitizeVoucher) });
+    } catch (error) {
+      console.error("Fetch vouchers error:", error);
+      return res.status(500).json({
+        error: "errors.server",
+        message: "Failed to fetch vouchers",
+      });
+    }
+  }
+);
+
+router.post(
+  "/",
+  requireAuth,
+  interdireMutationSupport(),
+  requirePermission("vouchers.create"),
+  exigerAccesRevendeur(),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const body = createVoucherSchema.parse(req.body);
+      const fiche = await chargerProprietaireCreation(req, body.resellerId);
+      if ("status" in fiche && "body" in fiche) {
+        return res.status(fiche.status).json(fiche.body);
+      }
+
+      const quotaBytes = BigInt(body.quotaGb) * GIB;
+      const expiresAt = new Date();
+      expiresAt.setUTCDate(expiresAt.getUTCDate() + body.activationDays);
+      let created: any[] | null = null;
+
+      if (prisma) {
+        for (let attempt = 0; attempt < MAX_GENERATION_ATTEMPTS; attempt += 1) {
+          const candidates = Array.from({ length: body.count }, () => ({
+            id: randomUUID(),
+            code: makeVoucherCode(),
+          }));
+          if (new Set(candidates.map((candidate) => candidate.code)).size !== body.count) {
+            continue;
+          }
+          try {
+            created = await executerMutationQuota(
+              prisma,
+              {
+                resellerId: fiche.id,
+                resellerUserId: fiche.userId,
+                auteur: { userId: req.user?.userId, email: req.user?.email },
+                reason: `Émission de ${body.count} voucher(s)`,
+                referenceType: "voucher_batch",
+                referenceId: randomUUID(),
+              },
+              async (tx) => {
+                const rows = [];
+                for (const candidate of candidates) {
+                  rows.push(
+                    await tx.voucher.create({
+                      data: {
+                        ...candidate,
+                        quota: quotaBytes,
+                        durationDays: body.durationDays,
+                        expiresAt,
+                        resellerId: fiche.id,
+                        isRedeemed: false,
+                        status: "active",
+                      },
+                    })
+                  );
+                }
+                return rows;
+              }
+            );
+            break;
+          } catch (error) {
+            if (!isVoucherCollision(error)) throw error;
+          }
+        }
+      } else {
+        created = [];
+        for (let index = 0; index < body.count; index += 1) {
+          let code = makeVoucherCode();
+          let attempt = 1;
+          while (
+            inMemoryDb.vouchers.some((voucher) => voucher.code === code) &&
+            attempt < MAX_GENERATION_ATTEMPTS
+          ) {
+            code = makeVoucherCode();
+            attempt += 1;
+          }
+          if (inMemoryDb.vouchers.some((voucher) => voucher.code === code)) {
+            created = null;
+            break;
+          }
+          const voucher = {
+            id: randomUUID(),
             code,
             quota: quotaBytes,
             durationDays: body.durationDays,
+            expiresAt,
+            resellerId: fiche.id,
             isRedeemed: false,
-          },
+            status: "active" as const,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          };
+          inMemoryDb.vouchers.push(voucher);
+          created.push(voucher);
+        }
+      }
+
+      if (!created) {
+        return res.status(503).json({
+          error: "errors.vouchers.generation_failed",
+          message: "Impossible de générer des codes uniques. Veuillez réessayer.",
         });
-        created.push(newVoucher);
+      }
+      await logDbActivity(
+        req.user?.userId || null,
+        `Created ${created.length} voucher record(s) for reseller ID: ${fiche.id}`,
+        "success",
+        req.ip
+      );
+      return res.status(201).json({ vouchers: created.map(sanitizeVoucher) });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: "errors.validation", message: error.issues });
+      }
+      if (error instanceof PlafondQuotaDepasse) {
+        return res.status(409).json(reponsePlafondDepasse(error.alloue, error.plafond));
+      }
+      if (error?.code === "P2034") {
+        return res.status(409).json({
+          error: "errors.vouchers.concurrent_change",
+          message: "L'enveloppe du revendeur a changé. Veuillez réessayer.",
+        });
+      }
+      console.error("Create voucher error:", error);
+      return res.status(500).json({
+        error: "errors.server",
+        message: "Failed to create voucher(s)",
+      });
+    }
+  }
+);
+
+router.post(
+  "/redeem",
+  requireAuth,
+  interdireMutationSupport(),
+  requirePermission("vouchers.redeem"),
+  exigerAccesRevendeur(),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const body = redeemVoucherSchema.parse(req.body);
+      const [voucher, client] = prisma
+        ? await Promise.all([
+            prisma.voucher.findUnique({ where: { code: body.code } }),
+            prisma.vpnClient.findUnique({
+              where: { id: body.clientId },
+              include: {
+                user: { include: { role: true } },
+                reseller: { include: { user: true } },
+              },
+            }),
+          ])
+        : [
+            inMemoryDb.vouchers.find((candidate) => candidate.code === body.code),
+            inMemoryDb.vpnClients.find((candidate) => candidate.id === body.clientId),
+          ];
+      if (!voucher) {
+        return res.status(404).json({
+          error: "errors.vouchers.not_found",
+          message: "Code voucher introuvable",
+        });
+      }
+      if (!client || !canSeeUser(req, client.user)) {
+        return res.status(404).json({
+          error: "errors.clients.not_found",
+          message: "Compte VPN introuvable",
+        });
+      }
+
+      const fiche = await chargerFicheProprietaireClient(prisma, client);
+      if (req.user?.role === "RESELLER") {
+        const ownRecord =
+          (req as any).reseller ??
+          (await chargerFicheRevendeur(prisma, req.user.userId));
+        if (
+          !possedeClient(client, ownRecord) ||
+          (voucher.resellerId && voucher.resellerId !== ownRecord?.id)
+        ) {
+          return res.status(404).json({
+            error: "errors.vouchers.not_found",
+            message: "Code voucher introuvable",
+          });
+        }
+      }
+      if (voucher.resellerId && voucher.resellerId !== fiche?.id) {
+        return res.status(409).json({
+          error: "errors.vouchers.owner_mismatch",
+          message: "Ce voucher appartient à un autre revendeur.",
+        });
+      }
+      const accessError = fiche ? refusPourEtatAcces(resumerAccesRevendeur(fiche)) : null;
+      if (accessError) return res.status(accessError.status).json(accessError.body);
+
+      if (prisma) {
+        await appliquerVoucherAuClient(prisma, {
+          voucherId: voucher.id,
+          clientId: client.id,
+          resellerId: fiche?.id,
+          resellerUserId: fiche?.userId,
+          actorUserId: req.user?.userId,
+          actorEmail: req.user?.email,
+        });
       } else {
-        const newVoucher = {
-          id: `vouch-${Date.now()}-${i}`,
-          code,
-          quota: quotaBytes,
-          durationDays: body.durationDays,
-          isRedeemed: false,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        };
-        inMemoryDb.vouchers.push(newVoucher as any);
-        created.push(newVoucher);
+        const subscriptions = inMemoryDb.subscriptions.filter(
+          (subscription: any) => subscription.clientId === client.id
+        );
+        if (subscriptions.length > 0) {
+          throw new VoucherRedemptionError(
+            "errors.vouchers.subscription_required",
+            409,
+            "Ce client possède déjà un forfait. Utilisez un jeton data lié explicitement à ce forfait."
+          );
+        }
+        if (effectiveStatus(voucher) !== "active") {
+          throw new VoucherRedemptionError(
+            "errors.vouchers.state_changed",
+            409,
+            "Ce voucher n'est plus disponible."
+          );
+        }
+        voucher.isRedeemed = true;
+        voucher.status = "used";
+        voucher.redeemedBy = req.user?.userId;
+        voucher.redeemedClientId = client.id;
+        client.quotaTotal = BigInt(client.quotaTotal ?? 0) + BigInt(voucher.quota);
+        const current = client.expireAt ? new Date(client.expireAt).getTime() : Number.NaN;
+        const base = Number.isFinite(current) && current > Date.now() ? current : Date.now();
+        client.expireAt = new Date(base + voucher.durationDays * 86_400_000);
+        client.status = "active";
       }
-    }
 
-    await logDbActivity(
-      req.user?.userId || null,
-      `Created ${body.count} Voucher(s) (${body.quotaGb}GB × ${body.durationDays}d)`,
-      "success",
-      req.ip
-    );
-
-    return res.status(201).json({ vouchers: created.map(sanitizeVoucher) });
-  } catch (err) {
-    if (err instanceof z.ZodError) {
-      return res.status(400).json({ error: "errors.validation", message: err.issues });
-    }
-    console.error("Create voucher error:", err);
-    return res.status(500).json({ error: "errors.server", message: "Failed to create voucher(s)" });
-  }
-});
-
-// POST /api/vouchers/redeem — activation d'un voucher sur un compte VPN
-router.post("/redeem", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const body = redeemVoucherSchema.parse(req.body);
-    let voucher: any = null;
-    let vpnClient: any = null;
-
-    if (prisma) {
-      voucher = await prisma.voucher.findUnique({ where: { code: body.code } });
-      vpnClient = await prisma.vpnClient.findUnique({ where: { id: body.clientId } });
-    } else {
-      voucher = inMemoryDb.vouchers.find((v) => v.code === body.code);
-      vpnClient = inMemoryDb.vpnClients.find((c) => c.id === body.clientId);
-    }
-
-    if (!voucher) {
-      return res.status(404).json({ error: "errors.vouchers.not_found", message: "Code voucher introuvable" });
-    }
-    if (voucher.isRedeemed) {
-      return res.status(400).json({ error: "errors.vouchers.already_redeemed", message: "Ce voucher a déjà été utilisé" });
-    }
-    if (!vpnClient) {
-      return res.status(404).json({ error: "errors.clients.not_found", message: "Compte VPN introuvable" });
-    }
-
-    // Appliquer le quota au compte VPN
-    if (prisma) {
-      await executerMutationQuota(prisma, {
-        resellerUserId: vpnClient.userId,
-        auteur: { userId: req.user?.userId, email: req.user?.email },
-        reason: `Activation du voucher ${body.code}`,
-        referenceType: "voucher",
-        referenceId: voucher.id,
-      }, async (tx) => {
-        await tx.voucher.update({
-          where: { id: voucher.id },
-          data: { isRedeemed: true, redeemedBy: req.user?.userId },
+      await logDbActivity(
+        req.user?.userId || null,
+        `Redeemed voucher ID: ${voucher.id} on client ID: ${client.id}`,
+        "success",
+        req.ip
+      );
+      return res.json({
+        success: true,
+        message: "Voucher appliqué au client",
+        quotaAdded: Number(BigInt(voucher.quota)) / 1024 ** 3,
+        durationDays: voucher.durationDays,
+      });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: "errors.validation", message: error.issues });
+      }
+      if (error instanceof VoucherRedemptionError) {
+        return res.status(error.status).json({ error: error.code, message: error.message });
+      }
+      if (error instanceof PlafondQuotaDepasse) {
+        return res.status(409).json(reponsePlafondDepasse(error.alloue, error.plafond));
+      }
+      if (error?.code === "P2034") {
+        return res.status(409).json({
+          error: "errors.vouchers.state_changed",
+          message: "Le voucher a été modifié par une autre requête.",
         });
-        await tx.vpnClient.update({
-          where: { id: body.clientId },
-          data: {
-            quotaTotal: {
-              increment: voucher.quota,
+      }
+      console.error("Redeem voucher error:", error);
+      return res.status(500).json({
+        error: "errors.server",
+        message: "Failed to redeem voucher",
+      });
+    }
+  }
+);
+
+router.post(
+  "/:id/revoke",
+  requireAuth,
+  interdireMutationSupport(),
+  requirePermission("vouchers.revoke"),
+  exigerAccesRevendeur({ autoriserReduction: true }),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const voucher = prisma
+        ? await prisma.voucher.findUnique({
+            where: { id: req.params.id },
+            include: { reseller: { include: { user: { include: { role: true } } } } },
+          })
+        : inMemoryDb.vouchers.find((candidate) => candidate.id === req.params.id);
+      if (!voucher) {
+        return res.status(404).json({ error: "errors.vouchers.not_found" });
+      }
+      if (
+        req.user?.role === "RESELLER" &&
+        voucher.resellerId !==
+          ((req as any).reseller ??
+            (await chargerFicheRevendeur(prisma, req.user.userId)))?.id
+      ) {
+        return res.status(404).json({ error: "errors.vouchers.not_found" });
+      }
+      if (voucher.isRedeemed || voucher.status === "used") {
+        return res.status(409).json({
+          error: "errors.vouchers.already_redeemed",
+          message: "Un voucher déjà appliqué ne peut plus être révoqué.",
+        });
+      }
+      if (voucher.status === "revoked") return res.json(sanitizeVoucher(voucher));
+
+      let updated: any;
+      if (prisma) {
+        const revoke = async (tx: any) => {
+          const result = await tx.voucher.updateMany({
+            where: {
+              id: voucher.id,
+              isRedeemed: false,
+              status: "active",
             },
-            // Étendre la date d'expiration
-            expireAt: new Date(
-              Math.max(Date.now(), new Date(vpnClient.expireAt).getTime()) +
-                voucher.durationDays * 24 * 60 * 60 * 1000
-            ),
-          },
-        });
-      });
-    } else {
-      voucher.isRedeemed = true;
-      voucher.redeemedBy = req.user?.userId;
-      const client = inMemoryDb.vpnClients.find((c) => c.id === body.clientId);
-      if (client) {
-        client.quotaTotal = client.quotaTotal + voucher.quota;
-        const currentExpiry = Math.max(Date.now(), new Date(client.expireAt).getTime());
-        client.expireAt = new Date(currentExpiry + voucher.durationDays * 24 * 60 * 60 * 1000);
+            data: { status: "revoked" },
+          });
+          if (result.count !== 1) {
+            throw new VoucherRedemptionError(
+              "errors.vouchers.state_changed",
+              409,
+              "Le voucher vient d'être utilisé ou révoqué."
+            );
+          }
+          return tx.voucher.findUnique({ where: { id: voucher.id } });
+        };
+        updated = voucher.reseller
+          ? await executerMutationQuota(
+              prisma,
+              {
+                resellerId: voucher.reseller.id,
+                resellerUserId: voucher.reseller.userId,
+                auteur: { userId: req.user?.userId, email: req.user?.email },
+                reason: "Révocation d'un voucher non utilisé",
+                referenceType: "voucher",
+                referenceId: voucher.id,
+                autoriserReductionAuDessusDuPlafond: true,
+              },
+              revoke
+            )
+          : await prisma.$transaction(revoke, { isolationLevel: "Serializable" });
+      } else {
+        voucher.status = "revoked";
+        voucher.updatedAt = new Date();
+        updated = voucher;
       }
-    }
 
-    const quotaAddedGb = Number(voucher.quota) / (1024 * 1024 * 1024);
-    await logDbActivity(
-      req.user?.userId || null,
-      `Voucher ${body.code} activé sur le client ${body.clientId} (+${quotaAddedGb.toFixed(0)} GB)`,
-      "success",
-      req.ip
-    );
-
-    return res.json({
-      success: true,
-      message: `Voucher activé : +${quotaAddedGb.toFixed(0)} GB et +${voucher.durationDays} jours ajoutés`,
-      quotaAdded: quotaAddedGb,
-    });
-  } catch (err) {
-    if (err instanceof z.ZodError) {
-      return res.status(400).json({ error: "errors.validation", message: err.issues });
-    }
-    if (err instanceof PlafondQuotaDepasse) {
-      return res.status(409).json({ error: "errors.resellers.quota_exceeded", message: err.message });
-    }
-    console.error("Redeem voucher error:", err);
-    return res.status(500).json({ error: "errors.server", message: "Failed to redeem voucher" });
-  }
-});
-
-// POST /api/vouchers/use — activation simple (associe le voucher à l'utilisateur connecté, sans clientId)
-const useVoucherSchema = z.object({
-  code: z.string().trim().toUpperCase(),
-});
-
-router.post("/use", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const body = useVoucherSchema.parse(req.body);
-    let voucher: any = null;
-
-    if (prisma) {
-      voucher = await prisma.voucher.findUnique({ where: { code: body.code } });
-    } else {
-      voucher = inMemoryDb.vouchers.find((v) => v.code === body.code);
-    }
-
-    if (!voucher) {
-      return res.status(404).json({ error: "errors.vouchers.not_found", message: "Code voucher introuvable" });
-    }
-    if (voucher.isRedeemed) {
-      return res.status(400).json({ error: "errors.vouchers.already_redeemed", message: "Ce voucher a déjà été utilisé" });
-    }
-
-    let updated: any = null;
-    if (prisma) {
-      updated = await prisma.voucher.update({
-        where: { id: voucher.id },
-        data: { isRedeemed: true, redeemedBy: req.user?.userId },
+      await logDbActivity(
+        req.user?.userId || null,
+        `Revoked voucher ID: ${voucher.id}`,
+        "warning",
+        req.ip
+      );
+      return res.json(sanitizeVoucher(updated));
+    } catch (error: any) {
+      if (error instanceof VoucherRedemptionError) {
+        return res.status(error.status).json({ error: error.code, message: error.message });
+      }
+      if (error?.code === "P2034") {
+        return res.status(409).json({
+          error: "errors.vouchers.state_changed",
+          message: "Le voucher a été modifié par une autre requête.",
+        });
+      }
+      console.error("Revoke voucher error:", error);
+      return res.status(500).json({
+        error: "errors.server",
+        message: "Failed to revoke voucher",
       });
-    } else {
-      voucher.isRedeemed = true;
-      voucher.redeemedBy = req.user?.userId;
-      voucher.updatedAt = new Date();
-      updated = voucher;
     }
-
-    await logDbActivity(req.user?.userId || null, `Activated voucher code: ${body.code}`, "success", req.ip);
-    return res.json(sanitizeVoucher(updated));
-  } catch (err) {
-    if (err instanceof z.ZodError) {
-      return res.status(400).json({ error: "errors.validation", message: err.issues });
-    }
-    console.error("Use voucher error:", err);
-    return res.status(500).json({ error: "errors.server", message: "Failed to activate voucher" });
   }
-});
+);
 
 export default router;

@@ -88,6 +88,12 @@ model VpnClient {
   activatedAt     DateTime?
   lastSeenAt      DateTime?
   appRegisteredAt DateTime?
+  // Propriété commerciale du client, indépendante du compte utilisateur porteur.
+  // ADDITIF ET NULLABLE : les lignes historiques restent rattachées par
+  // `userId` (revendeur = utilisateur porteur), et cette colonne devient la
+  // source explicite dès qu'un revendeur crée ou active un appareil.
+  resellerId      String?
+  reseller        Reseller?  @relation(fields: [resellerId], references: [id], onDelete: SetNull)
   createdAt       DateTime   @default(now())
   updatedAt       DateTime   @updatedAt
 
@@ -98,7 +104,9 @@ model VpnClient {
   singboxAccounts    SingboxAccount[]
   activationSessions ActivationSession[]
   appRegistrations   AppRegistration[]
+  redeemedVouchers   Voucher[]           @relation("VoucherRedeemedClient")
 
+  @@index([resellerId])
   @@map("vpn_clients")
 }
 
@@ -110,10 +118,16 @@ model Reseller {
   quotaBytes     BigInt   @default(0)
   quotaUsedBytes BigInt   @default(0)
   status         String   @default("active")
+  // Validité de l'accès revendeur. ADDITIF ET NULLABLE : les fiches créées
+  // avant cette colonne valent « illimité hérité » (null) et continuent de
+  // fonctionner. Toute création par l'API exige désormais une date future.
+  accessExpiresAt DateTime?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
   assignedProfiles VpnProfileReseller[]
+  clients          VpnClient[]
+  vouchers         Voucher[]
 
   @@map("resellers")
 }
@@ -206,15 +220,24 @@ model ServerConfig {
 }
 
 model Voucher {
-  id           String   @id @default(uuid())
-  code         String   @unique // SXB-VOUCH-XXXX
-  quota        BigInt
-  durationDays Int
-  isRedeemed   Boolean  @default(false)
-  redeemedBy   String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id               String     @id @default(uuid())
+  code             String     @unique // VCH-XXXXX-XXXXX
+  quota            BigInt
+  durationDays     Int
+  isRedeemed       Boolean    @default(false)
+  status           String     @default("active") // active, used, revoked
+  expiresAt        DateTime?
+  redeemedBy       String?
+  redeemedClientId String?
+  redeemedClient   VpnClient? @relation("VoucherRedeemedClient", fields: [redeemedClientId], references: [id], onDelete: SetNull)
+  resellerId       String?
+  reseller         Reseller?  @relation(fields: [resellerId], references: [id], onDelete: SetNull)
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
 
+  @@index([resellerId])
+  @@index([redeemedClientId])
+  @@index([resellerId, status, isRedeemed])
   @@map("vouchers")
 }
 

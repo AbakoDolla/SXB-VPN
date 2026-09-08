@@ -57,6 +57,13 @@ async function main() {
     { name: 'clients.create',     description: 'Créer des clients VPN' },
     { name: 'clients.edit',       description: 'Modifier des clients VPN' },
     { name: 'clients.delete',     description: 'Supprimer des clients VPN' },
+    { name: 'clients.manage',     description: 'Suspendre et réactiver ses clients VPN' },
+    // Forfaits
+    { name: 'subscription.view',   description: 'Voir les forfaits data' },
+    { name: 'subscription.manage', description: 'Créer et gérer les forfaits data' },
+    // Profils VPN
+    { name: 'vpnprofile.view',     description: 'Voir les profils VPN' },
+    { name: 'vpnprofile.manage',   description: 'Gérer les profils VPN' },
     // Tokens
     { name: 'tokens.view',    description: 'Voir les tokens' },
     { name: 'tokens.create',  description: 'Créer des tokens SXB' },
@@ -66,6 +73,7 @@ async function main() {
     { name: 'vouchers.view',    description: 'Voir les vouchers' },
     { name: 'vouchers.create',  description: 'Créer des vouchers' },
     { name: 'vouchers.redeem',  description: 'Utiliser des vouchers' },
+    { name: 'vouchers.revoke',  description: 'Révoquer des vouchers non utilisés' },
     { name: 'vouchers.manage',  description: 'Gestion complète des vouchers' },
     // Resellers
     { name: 'resellers.view',    description: 'Voir les revendeurs' },
@@ -85,6 +93,7 @@ async function main() {
     { name: 'xpanel.access', description: 'Accès XPanel (legacy)' },
     // Analytics
     { name: 'analytics.view', description: 'Voir les analytiques et logs' },
+    { name: 'analytics.read', description: 'Lire les indicateurs du tableau de bord' },
     // RBAC
     { name: 'ssh.view',      description: 'Voir les comptes SSH' },
     { name: 'ssh.manage',    description: 'Gérer les comptes SSH' },
@@ -138,10 +147,10 @@ async function main() {
 
   // SUPPORT — consultation seulement
   const supportPerms = [
-    'clients.view', 'clients.view_own', 'clients.edit',
-    'tokens.view', 'vouchers.view',
+    'clients.view', 'clients.view_own',
+    'tokens.view', 'vouchers.view', 'subscription.view',
     'resellers.view', 'servers.view',
-    'analytics.view', 'users.view',
+    'analytics.view', 'analytics.read', 'users.view',
   ];
   for (const permName of supportPerms) {
     if (!permMap[permName]) continue;
@@ -154,10 +163,11 @@ async function main() {
 
   // RESELLER — gestion de ses propres clients + tokens
   const resellerPerms = [
-    'clients.view_own', 'clients.create', 'clients.edit',
-    'tokens.view', 'tokens.create', 'tokens.manage',
-    'vouchers.view', 'vouchers.redeem',
-    'resellers.view',
+    'clients.view', 'clients.view_own', 'clients.create', 'clients.edit', 'clients.delete', 'clients.manage',
+    'subscription.view', 'subscription.manage',
+    'tokens.view', 'tokens.create', 'tokens.revoke', 'tokens.manage',
+    'vouchers.view', 'vouchers.create', 'vouchers.redeem', 'vouchers.revoke',
+    'resellers.view', 'analytics.read',
   ];
   for (const permName of resellerPerms) {
     if (!permMap[permName]) continue;

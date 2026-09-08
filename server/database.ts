@@ -37,9 +37,14 @@ export interface DbVpnClient {
   id: string;
   userId: string;
   token: string;
-  quotaTotal: bigint; // BigInt for quota (represented as number/string)
+  quotaTotal: bigint | null;
   quotaUsed: bigint;
-  expireAt: Date;
+  expireAt: Date | null;
+  deviceId?: string | null;
+  deviceLimit?: number;
+  resellerId?: string | null;
+  user?: DbUser & { role?: DbRole };
+  activatedAt?: Date | null;
   status: string;
   createdAt: Date;
   updatedAt: Date;
@@ -50,6 +55,10 @@ export interface DbReseller {
   userId: string;
   commission: number;
   status: string;
+  quotaBytes?: bigint;
+  quotaUsedBytes?: bigint;
+  accessExpiresAt?: Date | null;
+  user?: DbUser & { role?: DbRole };
   createdAt: Date;
   updatedAt: Date;
 }
@@ -89,8 +98,12 @@ export interface DbVoucher {
   quota: bigint;
   durationDays: number;
   isRedeemed: boolean;
+  status?: "active" | "used" | "revoked";
+  expiresAt?: Date | null;
+  resellerId?: string | null;
+  reseller?: DbReseller | null;
   redeemedBy?: string | null;
-  status?: string | null;
+  redeemedClientId?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

@@ -322,6 +322,7 @@ export const en = {
   error_suspended: 'Your account is suspended. Contact support.',
   activation_account_expired: 'The reseller access has expired. Request a renewal.',
   activation_quota_reached: 'The reseller quota has been reached. No new activation is allowed.',
+  activation_device_claimed: 'This device is already linked to another account.',
   activation_forbidden: 'Activation denied. This token is not authorized for this device or client.',
   activation_rate_limited: 'Too many attempts. Wait before trying again.',
   error_no_network: 'Connection failed. Check your network.',

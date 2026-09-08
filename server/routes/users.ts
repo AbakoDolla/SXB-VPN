@@ -6,10 +6,11 @@ import { z } from "zod";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
-import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
+import { requireAuth, requirePermission, requireRole, AuthenticatedRequest } from "../middleware/auth";
 import { canSeeUser, isOwnerRequest, OWNER_ROLE } from "../middleware/rbac/owner";
 
 const router = Router();
+router.use(requireAuth, requireRole(["SUPER_ADMIN", "ADMIN", "SUPPORT", "RESELLER"]));
 
 // Génère un mot de passe aléatoire lisible (12 chars)
 function generatePassword(): string {
@@ -38,6 +39,9 @@ const createUserSchema = z.object({
   phone: z.string().optional(),
   roleId: z.string().uuid({ message: "Veuillez sélectionner un rôle valide" }),
   status: z.enum(["active", "suspended"]).default("active"),
+  // Obligatoire dès que le rôle visé est RESELLER : la fiche revendeur naît
+  // avec le compte, dans la même transaction, et porte une échéance décidée.
+  accessExpiresAt: z.string().optional(),
 });
 
 const updateUserSchema = z.object({
@@ -47,10 +51,82 @@ const updateUserSchema = z.object({
   phone: z.string().optional(),
   roleId: z.string().optional(),
   status: z.enum(["active", "suspended"]).optional(),
+  accessExpiresAt: z.string().optional(),
 });
 
+/**
+ * Échéance d'accès revendeur : présente, valide et future, ou rien.
+ *
+ * Promouvoir un compte en RESELLER crée une fiche revendeur ; la créer sans
+ * échéance revient à distribuer un agrément perpétuel par inadvertance. Le
+ * refus est explicite plutôt que silencieux.
+ */
+function validerEcheanceRevendeur(valeur: string | undefined): { ok: boolean; date: Date | null; message: string | null } {
+  if (!valeur) {
+    return { ok: false, date: null, message: "accessExpiresAt est requis pour un compte RESELLER (date ISO future)" };
+  }
+  const date = new Date(valeur);
+  if (Number.isNaN(date.getTime())) {
+    return { ok: false, date: null, message: "accessExpiresAt doit être une date ISO valide" };
+  }
+  if (date.getTime() <= Date.now()) {
+    return { ok: false, date: null, message: "accessExpiresAt doit être dans le futur" };
+  }
+  return { ok: true, date, message: null };
+}
+
+/**
+ * Plafonds de rôle, indépendants du RBAC configurable.
+ *
+ * Les permissions sont éditables en base : `users.create` peut se retrouver
+ * cochée pour SUPPORT, et rien n'empêcherait alors ce rôle de créer un
+ * administrateur. Ces trois règles ne dépendent d'aucune permission :
+ *   - SUPPORT n'écrit jamais sur les comptes ;
+ *   - seuls OWNER et SUPER_ADMIN attribuent ou changent un rôle ;
+ *   - un compte SUPER_ADMIN ou OWNER n'est jamais géré par un rôle inférieur.
+ */
+const ROLES_GESTION_ROLES = [OWNER_ROLE, "SUPER_ADMIN"];
+
+function refusPlafondRole(
+  req: AuthenticatedRequest,
+  options: { changeDeRole?: boolean; roleCible?: string | null }
+) {
+  if (req.user?.role === "SUPPORT") {
+    return {
+      status: 403,
+      body: {
+        error: "errors.auth.forbidden",
+        code: "SUPPORT_READ_ONLY",
+        message: "Le rôle SUPPORT est en lecture seule sur les comptes.",
+      },
+    };
+  }
+  const peutGererLesRoles = ROLES_GESTION_ROLES.includes(String(req.user?.role));
+  if (options.changeDeRole && !peutGererLesRoles) {
+    return {
+      status: 403,
+      body: {
+        error: "errors.auth.forbidden",
+        code: "ROLE_ASSIGNMENT_FORBIDDEN",
+        message: "Seuls OWNER et SUPER_ADMIN attribuent ou modifient un rôle.",
+      },
+    };
+  }
+  if (options.roleCible && ["SUPER_ADMIN", OWNER_ROLE].includes(options.roleCible) && !peutGererLesRoles) {
+    return {
+      status: 403,
+      body: {
+        error: "errors.auth.forbidden",
+        code: "ROLE_CEILING",
+        message: "Un compte administrateur supérieur ne peut pas être géré depuis ce rôle.",
+      },
+    };
+  }
+  return null;
+}
+
 // GET /api/users
-router.get("/", requireAuth, requirePermission("users.view"), async (req: AuthenticatedRequest, res: Response) => {
+router.get("/", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN", "SUPPORT"]), requirePermission("users.view"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     let users: any[] = [];
     if (prisma) {
@@ -159,7 +235,7 @@ router.post("/me/avatar", requireAuth, avatarUpload.single("avatar"), async (req
 });
 
 
-router.get("/:id", requireAuth, requirePermission("users.view"), async (req: AuthenticatedRequest, res: Response) => {
+router.get("/:id", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN", "SUPPORT"]), requirePermission("users.view"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     let userRecord: any = null;
@@ -189,7 +265,7 @@ router.get("/:id", requireAuth, requirePermission("users.view"), async (req: Aut
 
 // POST /api/users — crée un compte ADMIN/SUPPORT/etc.
 // Si `password` absent → auto-généré et retourné dans `generatedPassword`
-router.post("/", requireAuth, requirePermission("users.create"), async (req: AuthenticatedRequest, res: Response) => {
+router.post("/", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN"]), requirePermission("users.create"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const body = createUserSchema.parse(req.body);
 
@@ -201,6 +277,9 @@ router.post("/", requireAuth, requirePermission("users.create"), async (req: Aut
       if (targetRole?.name === OWNER_ROLE) {
         return res.status(403).json({ error: "errors.auth.forbidden", message: "Cannot create an OWNER account" });
       }
+      // Plafond de rôle : créer un compte, c'est lui attribuer un rôle.
+      const refus = refusPlafondRole(req, { changeDeRole: true, roleCible: targetRole?.name ?? null });
+      if (refus) return res.status(refus.status).json(refus.body);
     }
 
     const wasAutoGenerated = !body.password;
@@ -221,6 +300,21 @@ router.post("/", requireAuth, requirePermission("users.create"), async (req: Aut
     let newUser: any = null;
     if (prisma) {
       const targetRole = await prisma.role.findUnique({ where: { id: body.roleId } });
+      // FLUX CANONIQUE : User + Reseller dans une seule écriture Prisma, donc
+      // une seule transaction. Créer l'un sans l'autre est ce qui a produit 70
+      // comptes RESELLER pour 6 fiches en production.
+      let echeance: Date | null = null;
+      if (targetRole?.name === "RESELLER") {
+        const verdict = validerEcheanceRevendeur(body.accessExpiresAt);
+        if (!verdict.ok) {
+          return res.status(400).json({
+            error: "errors.validation",
+            code: "RESELLER_ACCESS_REQUIRED",
+            message: verdict.message,
+          });
+        }
+        echeance = verdict.date;
+      }
       newUser = await prisma.user.create({
         data: {
           name: body.name,
@@ -229,7 +323,9 @@ router.post("/", requireAuth, requirePermission("users.create"), async (req: Aut
           passwordHash,
           roleId: body.roleId,
           status: body.status,
-          ...(targetRole?.name === "RESELLER" && { resellerInfo: { create: { status: "active" } } }),
+          ...(targetRole?.name === "RESELLER" && {
+            resellerInfo: { create: { status: "active", accessExpiresAt: echeance } },
+          }),
         },
         include: { role: true, resellerInfo: true },
       });
@@ -254,7 +350,16 @@ router.post("/", requireAuth, requirePermission("users.create"), async (req: Aut
 
     const { passwordHash: _, ...sanitized } = newUser;
     // Retourne le mot de passe généré pour que l'admin puisse le transmettre
-    const response: any = { ...sanitized };
+    const response: any = {
+      ...sanitized,
+      ...(sanitized.resellerInfo ? {
+        resellerInfo: {
+          ...sanitized.resellerInfo,
+          quotaBytes: String(sanitized.resellerInfo.quotaBytes),
+          quotaUsedBytes: String(sanitized.resellerInfo.quotaUsedBytes),
+        },
+      } : {}),
+    };
     if (wasAutoGenerated) {
       response.generatedPassword = rawPassword;
     }
@@ -269,7 +374,7 @@ router.post("/", requireAuth, requirePermission("users.create"), async (req: Aut
 });
 
 // PATCH /api/users/:id
-router.patch("/:id", requireAuth, requirePermission("users.create"), async (req: AuthenticatedRequest, res: Response) => {
+router.patch("/:id", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN"]), requirePermission("users.create"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     const body = updateUserSchema.parse(req.body);
@@ -293,6 +398,16 @@ router.patch("/:id", requireAuth, requirePermission("users.create"), async (req:
       return res.status(403).json({ error: "errors.auth.forbidden", message: "Cannot modify an OWNER account" });
     }
 
+    // Plafond de rôle, hors permissions : SUPPORT ne modifie aucun compte, un
+    // ADMIN ne change aucun rôle et ne touche pas un SUPER_ADMIN.
+    if (!isOwnerRequest(req)) {
+      const refus = refusPlafondRole(req, {
+        changeDeRole: body.roleId !== undefined && body.roleId !== targetRecord.roleId,
+        roleCible: targetRecord.role?.name ?? null,
+      });
+      if (refus) return res.status(refus.status).json(refus.body);
+    }
+
     // Garde-fou anti auto-bloquage : IMPOSSIBLE de suspendre/révoquer le compte
     // OWNER lui-même via l'API (le propriétaire racine ne peut pas s'auto-suspendre).
     if (
@@ -304,18 +419,50 @@ router.patch("/:id", requireAuth, requirePermission("users.create"), async (req:
     }
 
     const updates: any = { ...body };
+    // `accessExpiresAt` ne vit pas sur User : il appartient à la fiche
+    // revendeur, traitée ci-dessous.
+    delete updates.accessExpiresAt;
     if (body.password) {
       updates.passwordHash = bcrypt.hashSync(body.password, 10);
       delete updates.password;
     }
 
+    // Promotion vers RESELLER : l'échéance d'accès est exigée AVANT toute
+    // écriture, sinon la fiche naîtrait sans validité — l'exact défaut que la
+    // colonne `accessExpiresAt` sert à empêcher.
+    let echeanceRevendeur: Date | null = null;
+    if (body.roleId && prisma) {
+      const roleCible = await prisma.role.findUnique({ where: { id: body.roleId } });
+      if (!roleCible) return res.status(400).json({ error: "errors.validation", message: "Rôle introuvable" });
+      if (roleCible.name === OWNER_ROLE && !isOwnerRequest(req)) {
+        return res.status(403).json({ error: "errors.auth.forbidden", message: "Cannot assign OWNER role" });
+      }
+      const dejaRevendeur = await (prisma as any).reseller.findUnique({ where: { userId: id } });
+      if (roleCible?.name === "RESELLER" && !dejaRevendeur) {
+        const verdict = validerEcheanceRevendeur(body.accessExpiresAt);
+        if (!verdict.ok) {
+          return res.status(400).json({
+            error: "errors.validation",
+            code: "RESELLER_ACCESS_REQUIRED",
+            message: verdict.message,
+          });
+        }
+        echeanceRevendeur = verdict.date;
+      }
+    }
+
     let updatedUser: any = null;
     if (prisma) {
-      updatedUser = await prisma.user.update({ where: { id }, data: updates, include: { role: true, resellerInfo: true } });
-      if (body.roleId && updatedUser.role?.name === "RESELLER" && !updatedUser.resellerInfo) {
-        await (prisma as any).reseller.create({ data: { userId: updatedUser.id, status: "active" } });
-        updatedUser = await prisma.user.findUnique({ where: { id }, include: { role: true, resellerInfo: true } });
-      }
+      updatedUser = await prisma.$transaction(async (tx: any) => {
+        const user = await tx.user.update({ where: { id }, data: updates, include: { role: true, resellerInfo: true } });
+        if (echeanceRevendeur && user.role?.name === "RESELLER" && !user.resellerInfo) {
+          await tx.reseller.create({
+            data: { userId: user.id, status: "active", accessExpiresAt: echeanceRevendeur },
+          });
+          return tx.user.findUnique({ where: { id }, include: { role: true, resellerInfo: true } });
+        }
+        return user;
+      });
     } else {
       const index = inMemoryDb.users.findIndex((u) => u.id === id);
       const old = inMemoryDb.users[index];
@@ -338,6 +485,13 @@ router.patch("/:id", requireAuth, requirePermission("users.create"), async (req:
       { visibleOwnerOnly: actorIsOwner || (isSensitiveStatusChange && targetRecord.role?.name === "SUPER_ADMIN") }
     );
     const { passwordHash: _, ...sanitized } = updatedUser;
+    if (sanitized.resellerInfo) {
+      sanitized.resellerInfo = {
+        ...sanitized.resellerInfo,
+        quotaBytes: String(sanitized.resellerInfo.quotaBytes),
+        quotaUsedBytes: String(sanitized.resellerInfo.quotaUsedBytes),
+      };
+    }
     return res.json(sanitized);
   } catch (err) {
     if (err instanceof z.ZodError) {
@@ -349,7 +503,7 @@ router.patch("/:id", requireAuth, requirePermission("users.create"), async (req:
 });
 
 // DELETE /api/users/:id
-router.delete("/:id", requireAuth, requirePermission("users.delete"), async (req: AuthenticatedRequest, res: Response) => {
+router.delete("/:id", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN"]), requirePermission("users.delete"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     const actorIsOwner = isOwnerRequest(req);
@@ -360,6 +514,13 @@ router.delete("/:id", requireAuth, requirePermission("users.delete"), async (req
       // Garde hiérarchique : un non-OWNER ne peut jamais supprimer un compte OWNER.
       if (u && !canSeeUser(req, u)) {
         return res.status(403).json({ error: "errors.auth.forbidden", message: "Cannot delete an OWNER account" });
+      }
+
+      // Plafond de rôle : SUPPORT ne supprime aucun compte, quelle que soit la
+      // permission cochée en base.
+      if (!actorIsOwner) {
+        const refus = refusPlafondRole(req, { roleCible: u?.role?.name ?? null });
+        if (refus) return res.status(refus.status).json(refus.body);
       }
 
       // Garde-fou anti auto-bloquage : le compte OWNER ne peut pas se supprimer lui-même.

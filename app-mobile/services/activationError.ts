@@ -6,6 +6,7 @@ export type ActivationErrorKey =
   | 'error_suspended'
   | 'activation_account_expired'
   | 'activation_quota_reached'
+  | 'activation_device_claimed'
   | 'activation_forbidden'
   | 'activation_rate_limited'
   | 'error_no_network'
@@ -77,6 +78,9 @@ export function activationErrorKey(error: unknown): ActivationErrorKey {
     containsAny(marker, ['reseller_expired', 'account_expired', 'access_expired', 'acces expire'])
   ) {
     return 'activation_account_expired';
+  }
+  if (containsAny(marker, ['device_claimed', 'device claimed', 'device_bound', 'appareil deja lie', 'lie a un autre appareil'])) {
+    return 'activation_device_claimed';
   }
   if (containsAny(marker, ['token_expired', 'token expired', 'token expire'])) {
     return 'error_expired_token';

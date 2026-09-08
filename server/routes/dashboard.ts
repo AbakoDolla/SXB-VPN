@@ -8,8 +8,61 @@ import { prisma, inMemoryDb } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { isOwnerRequest } from "../middleware/rbac/owner";
 import { calculerAllocation, estIllimite } from "../services/reseller-quota";
+import {
+  chargerFicheRevendeur,
+  porteeClientsRevendeur,
+  resumerAccesRevendeur,
+} from "../services/reseller-access";
 
 const router = Router();
+const ROLES_QUOTA_REVENDEURS = new Set(["OWNER", "SUPER_ADMIN", "ADMIN"]);
+
+type StatistiquesQuotaRevendeurs = {
+  scope: "self" | "platform";
+  assignedBytes: string;
+  committedBytes: string;
+  consumedBytes: string;
+  remainingBytes: string | null;
+  unlimited: boolean;
+  resellerCount: number;
+  limitedResellers: number;
+  unlimitedResellers: number;
+};
+
+function creerStatistiquesQuotaRevendeurs(
+  scope: StatistiquesQuotaRevendeurs["scope"],
+  lignes: Array<{ quotaBytes: bigint; alloue: bigint; consomme: bigint }>
+): StatistiquesQuotaRevendeurs {
+  let attribue = BigInt(0);
+  let engage = BigInt(0);
+  let consomme = BigInt(0);
+  let restant = BigInt(0);
+  let illimites = 0;
+
+  for (const ligne of lignes) {
+    engage += ligne.alloue;
+    consomme += ligne.consomme;
+    if (estIllimite(ligne.quotaBytes)) {
+      illimites += 1;
+      continue;
+    }
+    attribue += ligne.quotaBytes;
+    restant += ligne.quotaBytes > ligne.alloue ? ligne.quotaBytes - ligne.alloue : BigInt(0);
+  }
+
+  const personnelIllimite = scope === "self" && illimites === 1;
+  return {
+    scope,
+    assignedBytes: personnelIllimite ? BigInt(-1).toString() : attribue.toString(),
+    committedBytes: engage.toString(),
+    consumedBytes: consomme.toString(),
+    remainingBytes: personnelIllimite ? null : restant.toString(),
+    unlimited: personnelIllimite,
+    resellerCount: lignes.length,
+    limitedResellers: lignes.length - illimites,
+    unlimitedResellers: illimites,
+  };
+}
 
 // Stealth : pour les non-OWNER, les KPIs excluent les comptes OWNER et leurs
 // clients/revendeurs. Filtrage à la lecture uniquement — aucune suppression.
@@ -36,10 +89,14 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
     // de l'administrateur, clients des autres revendeurs, et le nombre de
     // serveurs, qui relève de l'infrastructure et ne le concerne pas.
     const isReseller = req.user?.role === "RESELLER";
-    const ownScope = isReseller ? { userId: req.user?.userId } : {};
+    // La portée d'un revendeur suit la PROPRIÉTÉ des clients (`resellerId` ou,
+    // pour le parc historique, le compte porteur) et non le seul `userId` : un
+    // client attribué explicitement échappait sinon à ses propres indicateurs.
+    const ficheRevendeur = isReseller ? await chargerFicheRevendeur(prisma, req.user?.userId) : null;
+    const ownScope = isReseller ? (porteeClientsRevendeur(ficheRevendeur) as any) : {};
+    const resellerStealthWhere = stealthWhere(requesterIsOwner);
     if (prisma) {
       const clientStealthWhere = { ...stealthWhere(requesterIsOwner), ...ownScope };
-      const resellerStealthWhere = stealthWhere(requesterIsOwner);
       [activeUsers, expiredAccounts, activeServers, activeResellers, totalVouchers, redeemedVouchers] = await Promise.all([
         prisma.vpnClient.count({ where: { status: "active", ...clientStealthWhere } }),
         prisma.vpnClient.count({ where: { status: "expired", ...clientStealthWhere } }),
@@ -80,15 +137,53 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
     // comme un quota qui lui aurait été attribué. Administrateurs et
     // super-administrateurs n'en portent aucun : leur accès est illimité.
     let quotaPersonnel: { attribue: string; alloue: string; illimite: boolean } | null = null;
+    let accesRevendeur: ReturnType<typeof resumerAccesRevendeur> | null = null;
+    let statistiquesQuotaRevendeurs: StatistiquesQuotaRevendeurs | null = null;
     if (isReseller && prisma) {
-      const fiche = await (prisma as any).reseller.findUnique({ where: { userId: req.user?.userId } });
-      const plafond = BigInt(fiche?.quotaBytes ?? 0);
-      const { alloue } = await calculerAllocation(prisma, req.user!.userId);
-      quotaPersonnel = {
-        attribue: plafond.toString(),
-        alloue: alloue.toString(),
-        illimite: estIllimite(plafond),
-      };
+      const fiche = ficheRevendeur ?? (await (prisma as any).reseller.findUnique({ where: { userId: req.user?.userId } }));
+      if (fiche) {
+        const plafond = BigInt(fiche.quotaBytes ?? 0);
+        const { alloue, consomme } = await calculerAllocation(prisma, fiche);
+        quotaPersonnel = {
+          attribue: plafond.toString(),
+          alloue: alloue.toString(),
+          illimite: estIllimite(plafond),
+        };
+        statistiquesQuotaRevendeurs = creerStatistiquesQuotaRevendeurs("self", [
+          { quotaBytes: plafond, alloue, consomme },
+        ]);
+        // Validité + plafond dans le même contrat que les refus : l'interface
+        // affiche l'état sans avoir à provoquer une erreur pour le découvrir.
+        accesRevendeur = resumerAccesRevendeur(fiche, alloue);
+      }
+    } else if (prisma && ROLES_QUOTA_REVENDEURS.has(req.user?.role || "")) {
+      // L'administration voit les enveloppes attribuées aux REVENDEURS. Les
+      // quotas des clients ne sont jamais additionnés ni présentés comme une
+      // capacité de la plateforme ou du compte administrateur.
+      const fiches = await (prisma as any).reseller.findMany({
+        ...(resellerStealthWhere ? { where: resellerStealthWhere } : {}),
+        include: { user: true },
+      });
+      const lignes = await Promise.all(
+        fiches.map(async (fiche: any) => {
+          const { alloue, consomme } = await calculerAllocation(prisma, fiche);
+          return {
+            quotaBytes: BigInt(fiche.quotaBytes ?? 0),
+            alloue,
+            consomme,
+          };
+        })
+      );
+      statistiquesQuotaRevendeurs = creerStatistiquesQuotaRevendeurs("platform", lignes);
+    } else if (!prisma && ROLES_QUOTA_REVENDEURS.has(req.user?.role || "")) {
+      statistiquesQuotaRevendeurs = creerStatistiquesQuotaRevendeurs(
+        "platform",
+        inMemoryDb.resellers.map((fiche: any) => ({
+          quotaBytes: BigInt(fiche.quotaBytes ?? 0),
+          alloue: BigInt(fiche.quotaUsedBytes ?? 0),
+          consomme: BigInt(0),
+        }))
+      );
     }
 
     return res.json({
@@ -104,6 +199,10 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
       quotaScope: isReseller ? "own" : "platform",
       hasPersonalQuota: isReseller,
       personalQuota: quotaPersonnel,
+      resellerAccess: accesRevendeur,
+      // Contrat non ambigu utilisé par les trois cartes de quota : enveloppes
+      // revendeurs uniquement, jamais une somme « provisionnée aux clients ».
+      resellerQuota: statistiquesQuotaRevendeurs,
       activeServers,
       activeResellers,
       totalVouchers,
@@ -135,7 +234,7 @@ router.get("/traffic", requireAuth, requirePermission("analytics.read"), async (
     const isReseller = req.user?.role === "RESELLER";
     const clientStealthWhere = {
       ...stealthWhere(requesterIsOwner),
-      ...(isReseller ? { userId: req.user?.userId } : {}),
+      ...(isReseller ? (porteeClientsRevendeur(await chargerFicheRevendeur(prisma, req.user?.userId)) as any) : {}),
     };
     if (prisma) {
       const clientIds = (await prisma.vpnClient.findMany({
@@ -204,7 +303,7 @@ router.get("/users", requireAuth, requirePermission("analytics.read"), async (re
     const isReseller = req.user?.role === "RESELLER";
     const clientStealthWhere = {
       ...stealthWhere(requesterIsOwner),
-      ...(isReseller ? { userId: req.user?.userId } : {}),
+      ...(isReseller ? (porteeClientsRevendeur(await chargerFicheRevendeur(prisma, req.user?.userId)) as any) : {}),
     };
     if (prisma) {
       // Compter les clients VPN créés jusqu'à chaque jour (cumulatif)

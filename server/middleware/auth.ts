@@ -2,31 +2,15 @@ import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { config } from "../config";
 import { prisma, inMemoryDb } from "../database";
-
-const RESELLER_REQUIRED_PERMISSIONS = [
-  "clients.view",
-  "clients.view_own",
-  "clients.create",
-  "clients.edit",
-  "tokens.view",
-  "tokens.create",
-  "subscription.view",
-  "subscription.manage",
-  "resellers.view",
-];
-
-const CORE_DATA_PERMISSIONS = [
-  "tokens.view",
-  "tokens.create",
-  "subscription.view",
-  "subscription.manage",
-];
+import { refusPourEtatAcces, resumerAccesRevendeur } from "../services/reseller-state";
 
 export interface TokenPayload {
   userId: string;
   email: string;
   role: string;
   permissions: string[];
+  /** Session mobile liée à une ligne VpnClient précise. */
+  clientId?: string;
 }
 
 export interface AuthenticatedRequest extends Request {
@@ -56,6 +40,7 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
     let permissions: string[] = [];
 
     let dbRoleName: string | null = null;
+    let resellerRecord: any = null;
     let mobileClientUsable: boolean | null = null;
     if (prisma) {
       const user = await prisma.user.findUnique({
@@ -71,7 +56,20 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
         }
       });
       if (user && user.status === "active") {
-        dbRoleName = user.role.name;
+        const jetonMobile = decoded.role === "CLIENT";
+        const mobileClientId = typeof decoded.clientId === "string" ? decoded.clientId : null;
+        if (jetonMobile) {
+          const mobileClient = await (prisma as any).vpnClient.findFirst({
+            where: mobileClientId
+              ? { id: mobileClientId, userId: user.id }
+              : { userId: user.id },
+            select: { status: true },
+          });
+          dbRoleName = "CLIENT";
+          mobileClientUsable = mobileClient?.status === "active";
+        } else {
+          dbRoleName = user.role.name;
+        }
         // Le rôle RESELLER ne vaut que s'il existe une fiche revendeur en face.
         // Les comptes d'appareil (device.*@sxbvpn.local) ont longtemps été créés
         // avec ce rôle : ils héritaient alors de clients.create, tokens.create et
@@ -81,13 +79,14 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
         if (dbRoleName === "RESELLER") {
           const fiche = await (prisma as any).reseller.findUnique({
             where: { userId: user.id },
-            select: { id: true },
+            select: { id: true, status: true, accessExpiresAt: true, quotaBytes: true, quotaUsedBytes: true },
           });
+          resellerRecord = fiche;
           if (!fiche) dbRoleName = "CLIENT";
         }
         // Un JWT valide ne suffit pas pour un compte mobile : le compte VPN
         // peut avoir été suspendu ou supprimé depuis le dashboard.
-        if (dbRoleName === "CLIENT") {
+        if (dbRoleName === "CLIENT" && mobileClientUsable === null) {
           const client = await (prisma as any).vpnClient.findFirst({
             where: { userId: user.id },
             select: { status: true },
@@ -95,21 +94,16 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
           mobileClientUsable = client?.status === "active";
         }
         isActive = dbRoleName !== "CLIENT" || mobileClientUsable === true;
-        if (dbRoleName === "OWNER") {
+        if (dbRoleName === "CLIENT") {
+          // Une session mobile n'hérite jamais des permissions du compte
+          // porteur historique, même si celui-ci est encore marqué RESELLER.
+          permissions = [];
+        } else if (dbRoleName === "OWNER") {
           // Le rôle racine OWNER dispose de toutes les permissions (bypass centralisé).
           const allPerms = await prisma.permission.findMany();
           permissions = allPerms.map((p) => p.name);
         } else {
           permissions = user.role.permissions.map((rp) => rp.permission.name);
-          if (dbRoleName === "SUPER_ADMIN" || dbRoleName === "ADMIN") {
-            permissions = Array.from(new Set([...permissions, ...CORE_DATA_PERMISSIONS]));
-          }
-          if (dbRoleName === "SUPPORT") {
-            permissions = Array.from(new Set([...permissions, "tokens.view", "subscription.view"]));
-          }
-          if (dbRoleName === "RESELLER") {
-            permissions = Array.from(new Set([...permissions, ...RESELLER_REQUIRED_PERMISSIONS]));
-          }
         }
       }
     } else {
@@ -117,36 +111,49 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
       const user = inMemoryDb.users.find((u) => u.id === decoded.userId);
       if (user && user.status === "active") {
         const roleRecord = inMemoryDb.roles.find((r) => r.id === user.roleId);
-        dbRoleName = roleRecord?.name ?? null;
-        // Même règle qu'avec Prisma : pas de fiche revendeur, pas de rôle revendeur.
-        if (dbRoleName === "RESELLER" && !inMemoryDb.resellers.some((r) => r.userId === user.id)) {
+        const jetonMobile = decoded.role === "CLIENT";
+        const mobileClientId = typeof decoded.clientId === "string" ? decoded.clientId : null;
+        if (jetonMobile) {
+          const mobileClient = inMemoryDb.vpnClients.find(
+            (client) =>
+              client.userId === user.id &&
+              (!mobileClientId || client.id === mobileClientId)
+          );
           dbRoleName = "CLIENT";
+          mobileClientUsable = mobileClient?.status === "active";
+        } else {
+          dbRoleName = roleRecord?.name ?? null;
         }
-        if (dbRoleName === "CLIENT") {
+        // Même règle qu'avec Prisma : pas de fiche revendeur, pas de rôle revendeur.
+        if (dbRoleName === "RESELLER") {
+          resellerRecord = inMemoryDb.resellers.find((r) => r.userId === user.id);
+          if (!resellerRecord) dbRoleName = "CLIENT";
+        }
+        if (dbRoleName === "CLIENT" && mobileClientUsable === null) {
           const client = inMemoryDb.vpnClients.find((c) => c.userId === user.id);
           mobileClientUsable = client?.status === "active";
         }
         isActive = dbRoleName !== "CLIENT" || mobileClientUsable === true;
-        const rolePermIds = inMemoryDb.rolePermissions
-          .filter((rp) => rp.roleId === user.roleId)
-          .map((rp) => rp.permissionId);
-        permissions = inMemoryDb.permissions
-          .filter((p) => rolePermIds.includes(p.id))
-          .map((p) => p.name);
-        if (dbRoleName === "SUPER_ADMIN" || dbRoleName === "ADMIN") {
-          permissions = Array.from(new Set([...permissions, ...CORE_DATA_PERMISSIONS]));
-        }
-        if (dbRoleName === "SUPPORT") {
-          permissions = Array.from(new Set([...permissions, "tokens.view", "subscription.view"]));
-        }
-        if (dbRoleName === "RESELLER") {
-          permissions = Array.from(new Set([...permissions, ...RESELLER_REQUIRED_PERMISSIONS]));
+        if (dbRoleName === "CLIENT") {
+          permissions = [];
+        } else {
+          const rolePermIds = inMemoryDb.rolePermissions
+            .filter((rp) => rp.roleId === user.roleId)
+            .map((rp) => rp.permissionId);
+          permissions = inMemoryDb.permissions
+            .filter((p) => rolePermIds.includes(p.id))
+            .map((p) => p.name);
         }
       }
     }
 
     if (!isActive) {
       return res.status(403).json({ error: "errors.auth.suspended", message: "User account is suspended" });
+    }
+
+    if (dbRoleName === "RESELLER" && !["GET", "HEAD", "OPTIONS"].includes(req.method)) {
+      const accessError = refusPourEtatAcces(resumerAccesRevendeur(resellerRecord));
+      if (accessError) return res.status(accessError.status).json(accessError.body);
     }
 
     req.user = {
@@ -158,7 +165,11 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
     };
     next();
   } catch (err) {
-    return res.status(401).json({ error: "errors.auth.invalid_token", message: "Invalid or expired session token" });
+    if (err instanceof jwt.JsonWebTokenError) {
+      return res.status(401).json({ error: "errors.auth.invalid_token", message: "Invalid or expired session token" });
+    }
+    console.error("Session verification error:", err);
+    return res.status(503).json({ error: "errors.auth.unavailable", message: "Vérification de la session temporairement indisponible" });
   }
 }
 

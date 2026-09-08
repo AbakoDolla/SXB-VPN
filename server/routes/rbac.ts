@@ -1,7 +1,7 @@
 import { Router, Response } from "express";
 import { z } from "zod";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
-import { requireAuth, requireRole, AuthenticatedRequest } from "../middleware/auth";
+import { requireAuth, requirePermission, requireRole, AuthenticatedRequest } from "../middleware/auth";
 import { isOwnerRequest, OWNER_ROLE } from "../middleware/rbac/owner";
 
 const router = Router();
@@ -9,19 +9,9 @@ const router = Router();
 const updateRolePermissionsSchema = z.object({
   permissionIds: z.array(z.string()).optional(),
   permissions: z.array(z.string()).optional(), // accepte aussi les codes/noms
+}).refine(body => (body.permissionIds !== undefined) !== (body.permissions !== undefined), {
+  message: "Fournissez soit permissionIds soit permissions, y compris une liste vide pour retirer les droits.",
 });
-
-const resellerBaselinePermissions = [
-  "clients.view",
-  "clients.view_own",
-  "clients.create",
-  "clients.edit",
-  "tokens.view",
-  "tokens.create",
-  "subscription.view",
-  "subscription.manage",
-  "resellers.view",
-];
 
 const baselinePermissionDescriptions: Record<string, string> = {
   "subscription.view": "Voir les forfaits data",
@@ -40,8 +30,11 @@ async function ensureBaselinePermissions() {
 }
 
 // GET /api/rbac/roles — liste des rôles avec leurs permissions actuelles
-router.get("/roles", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+router.get("/roles", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN"]), async (req: AuthenticatedRequest, res: Response) => {
   try {
+    if (!isOwnerRequest(req) && !req.user?.permissions.some(permission => ["rbac.manage", "users.create"].includes(permission))) {
+      return res.status(403).json({ error: "errors.auth.forbidden_permission", message: "Permission rbac.manage ou users.create requise" });
+    }
     let roles: any[] = [];
     if (prisma) {
       await ensureBaselinePermissions();
@@ -52,9 +45,7 @@ router.get("/roles", requireAuth, async (req: AuthenticatedRequest, res: Respons
         id: r.id,
         name: r.name,
         description: r.description,
-        permissions: r.name === "RESELLER"
-          ? Array.from(new Set([...r.permissions.map((rp: any) => rp.permission.name), ...resellerBaselinePermissions]))
-          : r.permissions.map((rp: any) => rp.permission.name),
+        permissions: r.permissions.map((rp: any) => rp.permission.name),
       }));
     } else {
       roles = inMemoryDb.roles.map((r) => {
@@ -75,7 +66,7 @@ router.get("/roles", requireAuth, async (req: AuthenticatedRequest, res: Respons
 });
 
 // GET /api/rbac/permissions — catalogue complet des permissions système
-router.get("/permissions", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+router.get("/permissions", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN"]), requirePermission("rbac.manage"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     let permissions: any[] = [];
     if (prisma) {
@@ -105,29 +96,58 @@ router.get("/permissions", requireAuth, async (req: AuthenticatedRequest, res: R
 });
 
 // PATCH /api/rbac/roles/:id — seul le SUPER_ADMIN modifie la matrice d’habilitations.
-router.patch("/roles/:id", requireAuth, requireRole(["SUPER_ADMIN"]), async (req: AuthenticatedRequest, res: Response) => {
+router.patch("/roles/:id", requireAuth, requireRole(["SUPER_ADMIN"]), requirePermission("rbac.manage"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     const body = updateRolePermissionsSchema.parse(req.body);
 
     let updated: any = null;
     if (prisma) {
-      // Résoudre codes → IDs si permissions (codes) passés
-      let permIds: string[] = body.permissionIds || [];
-      if ((!permIds.length) && body.permissions && body.permissions.length > 0) {
-        const found = await prisma.permission.findMany({ where: { name: { in: body.permissions } } });
-        permIds = found.map((p: any) => p.id);
-      } else if (permIds.length > 0 && !permIds[0].includes("-")) {
-        // IDs passés mais ressemblent à des codes (pas des UUIDs) → résoudre
-        const found = await prisma.permission.findMany({ where: { name: { in: permIds } } });
-        if (found.length > 0) permIds = found.map((p: any) => p.id);
-      }
-      await prisma.rolePermission.deleteMany({ where: { roleId: id } });
-      if (permIds.length > 0) {
-        await prisma.rolePermission.createMany({
-          data: permIds.map((permissionId) => ({ roleId: id, permissionId })),
+      const roleCible = await prisma.role.findUnique({ where: { id } });
+      if (!roleCible) return res.status(404).json({ error: "errors.rbac.role_not_found" });
+      if (roleCible.name === OWNER_ROLE) {
+        return res.status(403).json({
+          error: "errors.rbac.owner_locked",
+          code: "RBAC_OWNER_LOCKED",
+          message: "Le rôle OWNER est immuable et contourne la matrice de permissions.",
         });
       }
+
+      const codesDemandes = body.permissions
+        ? Array.from(new Set(body.permissions))
+        : null;
+      const idsDemandes = codesDemandes === null
+        ? Array.from(new Set(body.permissionIds || []))
+        : [];
+      const permissionsTrouvees = codesDemandes !== null
+        ? await prisma.permission.findMany({ where: { name: { in: codesDemandes } } })
+        : await prisma.permission.findMany({ where: { id: { in: idsDemandes } } });
+      const nombreAttendu = codesDemandes?.length ?? idsDemandes.length;
+      if (permissionsTrouvees.length !== nombreAttendu) {
+        return res.status(400).json({
+          error: "errors.rbac.unknown_permission",
+          code: "RBAC_UNKNOWN_PERMISSION",
+          message: "Une ou plusieurs permissions sont inconnues.",
+        });
+      }
+      const noms = permissionsTrouvees.map((permission) => permission.name);
+      if (roleCible.name === "SUPER_ADMIN" && !noms.includes("rbac.manage")) {
+        return res.status(409).json({
+          error: "errors.rbac.lockout",
+          code: "RBAC_LOCKOUT_PREVENTED",
+          message: "SUPER_ADMIN doit conserver la permission rbac.manage.",
+        });
+      }
+
+      const permIds = permissionsTrouvees.map((permission) => permission.id);
+      await prisma.$transaction(async (tx: any) => {
+        await tx.rolePermission.deleteMany({ where: { roleId: id } });
+        if (permIds.length > 0) {
+          await tx.rolePermission.createMany({
+            data: permIds.map((permissionId) => ({ roleId: id, permissionId })),
+          });
+        }
+      });
       const role = await prisma.role.findUnique({
         where: { id },
         include: { permissions: { include: { permission: true } } },
@@ -138,13 +158,27 @@ router.patch("/roles/:id", requireAuth, requireRole(["SUPER_ADMIN"]), async (req
         permissions: role?.permissions.map((rp) => rp.permission.name) ?? [],
       };
     } else {
+      const role = inMemoryDb.roles.find((item) => item.id === id);
+      if (!role) return res.status(404).json({ error: "errors.rbac.role_not_found" });
+      if (role.name === OWNER_ROLE) {
+        return res.status(403).json({ error: "errors.rbac.owner_locked", code: "RBAC_OWNER_LOCKED" });
+      }
+      const requested = body.permissions ?? body.permissionIds ?? [];
+      const resolvedIds = body.permissions
+        ? inMemoryDb.permissions.filter((permission) => requested.includes(permission.name)).map((permission) => permission.id)
+        : requested;
+      const resolvedNames = inMemoryDb.permissions
+        .filter((permission) => resolvedIds.includes(permission.id))
+        .map((permission) => permission.name);
+      if (role.name === "SUPER_ADMIN" && !resolvedNames.includes("rbac.manage")) {
+        return res.status(409).json({ error: "errors.rbac.lockout", code: "RBAC_LOCKOUT_PREVENTED" });
+      }
       inMemoryDb.rolePermissions = inMemoryDb.rolePermissions.filter((rp) => rp.roleId !== id);
-      body.permissionIds.forEach((permissionId) => {
+      resolvedIds.forEach((permissionId) => {
         inMemoryDb.rolePermissions.push({ roleId: id, permissionId });
       });
-      const role = inMemoryDb.roles.find((r) => r.id === id);
       const perms = inMemoryDb.permissions
-        .filter((p) => body.permissionIds.includes(p.id))
+        .filter((p) => resolvedIds.includes(p.id))
         .map((p) => p.name);
       updated = { id: role?.id, name: role?.name, permissions: perms };
     }

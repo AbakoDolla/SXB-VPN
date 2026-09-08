@@ -1,128 +1,247 @@
-import { Router, Response } from "express";
+import { randomInt, randomUUID } from "crypto";
+import { Response, Router } from "express";
 import { z } from "zod";
-import crypto from "crypto";
-import { prisma, inMemoryDb, logDbActivity } from "../database";
-import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
-import { executerMutationQuota, PlafondQuotaDepasse, verifierAllocation } from "../services/reseller-quota";
+import { inMemoryDb, logDbActivity, prisma } from "../database";
+import { AuthenticatedRequest, requireAuth, requirePermission } from "../middleware/auth";
+import { synchroniserEtatAccesClient } from "../services/client-access-state";
+import {
+  chargerFicheProprietaireClient,
+  chargerFicheRevendeur,
+  exigerAccesRevendeur,
+  interdireMutationSupport,
+  porteeClientsRevendeur,
+  possedeClient,
+  refusPourEtatAcces,
+  refusPropriete,
+  reponsePlafondDepasse,
+  resumerAccesRevendeur,
+} from "../services/reseller-access";
+import {
+  executerMutationQuota,
+  PlafondQuotaDepasse,
+  verifierPlafond,
+} from "../services/reseller-quota";
 
 const router = Router();
+const GIB = BigInt(1024) ** BigInt(3);
+const TOKEN_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const MAX_TOKEN_CREATION_ATTEMPTS = 10;
 
 const generateTokenSchema = z.object({
-  clientId: z.string(),
-  quotaGb: z.coerce.number().min(1).default(50),
-  durationDays: z.coerce.number().min(1).default(30),
-  deviceLimit: z.coerce.number().min(1).max(10).default(1),
-});
+  clientId: z.string().trim().min(1),
+  quotaGb: z.coerce.number().int().min(1).max(1_000_000).default(50),
+  durationDays: z.coerce.number().int().min(1).max(3_650).default(30),
+  deviceLimit: z.coerce.number().int().min(1).max(10).default(1),
+}).strict();
 
 const validateTokenSchema = z.object({
-  token: z.string().regex(/^SXB-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/, "Invalid SXB token format"),
-});
+  token: z.string()
+    .trim()
+    .transform((value) => value.toUpperCase())
+    .refine(
+      (value) => /^SXB-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(value),
+      "Invalid SXB token format"
+    ),
+}).strict();
 
-// Helper to convert BigInt to string
-function sanitizeToken(tok: any) {
-  if (!tok) return null;
-  return {
-    ...tok,
-    quota: tok.quota ? tok.quota.toString() : "0",
-  };
+type RouteRefusal = { status: number; body: Record<string, unknown> };
+type TokenTarget = { client: any; fiche: any };
+
+class TokenStateConflict extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
+    this.name = "TokenStateConflict";
+  }
 }
 
-// Helper to generate SXB-XXXX-XXXX-XXXX format
+function sanitizeValue(value: any, depth = 0): any {
+  if (typeof value === "bigint") return value.toString();
+  if (value instanceof Date || value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map((item) => sanitizeValue(item, depth + 1));
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => key !== "passwordHash" && !(depth > 0 && key === "token"))
+      .map(([key, item]) => [key, sanitizeValue(item, depth + 1)])
+  );
+}
+
+function sanitizeToken(token: any) {
+  if (!token) return null;
+  const expiration = token.expiration ? new Date(token.expiration).getTime() : null;
+  const status =
+    token.status === "active" &&
+    expiration !== null &&
+    !Number.isNaN(expiration) &&
+    expiration <= Date.now()
+      ? "expired"
+      : token.status;
+  return sanitizeValue({ ...token, status, quota: BigInt(token.quota ?? 0) });
+}
+
 function makeSxbToken(): string {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  const part = () => Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+  const part = () =>
+    Array.from(
+      { length: 4 },
+      () => TOKEN_ALPHABET[randomInt(0, TOKEN_ALPHABET.length)]
+    ).join("");
   return `SXB-${part()}-${part()}-${part()}`;
 }
 
-async function assertResellerTokenQuota(req: AuthenticatedRequest, clientId: string, quotaBytes: bigint) {
-  if (req.user?.role !== "RESELLER" || !prisma) return null;
-  const client = await prisma.vpnClient.findUnique({ where: { id: clientId }, select: { userId: true } });
-  if (!client || client.userId !== req.user.userId) {
-    return { status: 404, body: { error: "errors.clients.not_found", message: "Client VPN introuvable" } };
-  }
-  return verifierAllocation(prisma, {
-    role: req.user.role,
-    userId: req.user.userId,
-    demande: quotaBytes,
-  });
+function isTokenCollision(error: any): boolean {
+  if (error?.code !== "P2002") return false;
+  const target = Array.isArray(error?.meta?.target)
+    ? error.meta.target.join(",")
+    : String(error?.meta?.target ?? "");
+  return !target || target.includes("token");
 }
 
-// GET /api/tokens — liste tous les tokens SXB (ADMIN/RESELLER)
-router.get("/", requireAuth, requirePermission("tokens.view"), async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    let tokens: any[] = [];
-    if (prisma) {
-      tokens = await prisma.tokenSXB.findMany({
-        where: req.user?.role === "RESELLER" ? { client: { userId: req.user.userId } } : undefined,
-        include: { client: { include: { user: true } } },
-        orderBy: { createdAt: "desc" },
-      });
-    } else {
-      tokens = inMemoryDb.tokens.map((t) => {
-        const client = inMemoryDb.vpnClients.find((c) => c.id === t.clientId);
-        const user = client ? inMemoryDb.users.find((u) => u.id === client.userId) : null;
-        return { ...t, client: client ? { ...client, user } : null };
-      });
-      if (req.user?.role === "RESELLER") {
-        tokens = tokens.filter((t) => t.client?.userId === req.user?.userId);
-      }
-    }
-    return res.json({ tokens: tokens.map(sanitizeToken) });
-  } catch (err) {
-    console.error("Fetch tokens list error:", err);
-    return res.status(500).json({ error: "errors.server", message: "Failed to fetch tokens" });
+function ownerContext(fiche: any) {
+  return {
+    resellerId: fiche?.id ?? null,
+    resellerUserId: fiche?.userId ?? null,
+  };
+}
+
+async function chargerCibleToken(
+  req: AuthenticatedRequest,
+  clientId: string,
+  demandeQuota?: bigint,
+  options: { verifierAcces?: boolean } = { verifierAcces: true }
+): Promise<TokenTarget | RouteRefusal> {
+  const client = prisma
+    ? await prisma.vpnClient.findUnique({
+        where: { id: clientId },
+        select: {
+          id: true,
+          userId: true,
+          resellerId: true,
+          status: true,
+          expireAt: true,
+          quotaTotal: true,
+          deviceLimit: true,
+        },
+      })
+    : inMemoryDb.vpnClients.find((candidate: any) => candidate.id === clientId);
+
+  if (!client) {
+    return {
+      status: 404,
+      body: { error: "errors.clients.not_found", message: "Client VPN introuvable" },
+    };
   }
-});
 
-// POST /api/tokens — crée un nouveau token (alias pour /generate)
-router.post("/", requireAuth, requirePermission("tokens.create"), async (req: AuthenticatedRequest, res: Response) => {
+  const fiche = await chargerFicheProprietaireClient(prisma, client);
+  if (req.user?.role === "RESELLER") {
+    const ownRecord =
+      (req as any).reseller ??
+      (await chargerFicheRevendeur(prisma, req.user.userId));
+    if (!possedeClient(client, ownRecord)) return refusPropriete();
+  }
+  if (!fiche && client.resellerId) {
+    return {
+      status: 403,
+      body: {
+        error: "errors.resellers.not_found",
+        message: "Aucun revendeur propriétaire : impossible d'attribuer du quota.",
+      },
+    };
+  }
+
+  if (fiche && options.verifierAcces !== false) {
+    const accessError = refusPourEtatAcces(resumerAccesRevendeur(fiche));
+    if (accessError) return accessError;
+  }
+
+  if (prisma && fiche && demandeQuota !== undefined) {
+    const quotaError = await verifierPlafond(prisma, fiche, demandeQuota);
+    if (quotaError) return quotaError;
+  }
+
+  return { client, fiche };
+}
+
+function isRouteRefusal(result: TokenTarget | RouteRefusal): result is RouteRefusal {
+  return "status" in result && "body" in result;
+}
+
+/** Portée de lecture des jetons pour un revendeur (propriété du client). */
+async function porteeTokens(req: AuthenticatedRequest) {
+  if (req.user?.role !== "RESELLER") return undefined;
+  const fiche =
+    (req as any).reseller ??
+    (await chargerFicheRevendeur(prisma, req.user.userId));
+  return { client: porteeClientsRevendeur(fiche) } as any;
+}
+
+async function creerToken(req: AuthenticatedRequest, res: Response) {
   try {
-    console.log("[TOKEN_DEBUG] REQUEST_RECEIVED", JSON.stringify({ clientId: req.body?.clientId, quotaGb: req.body?.quotaGb, durationDays: req.body?.durationDays }));
     const body = generateTokenSchema.parse(req.body);
-    const quotaBytes = BigInt(body.quotaGb) * BigInt(1024 * 1024 * 1024);
-    const quotaError = await assertResellerTokenQuota(req, body.clientId, quotaBytes);
-    if (quotaError) return res.status(quotaError.status).json(quotaError.body);
+    const quotaBytes = BigInt(body.quotaGb) * GIB;
+    const target = await chargerCibleToken(req, body.clientId, quotaBytes);
+    if (isRouteRefusal(target)) return res.status(target.status).json(target.body);
 
-    // [TOKEN_DEBUG] CLIENT_VALIDATED — verify client exists to avoid FK 500
-    if (prisma) {
-      console.log("[TOKEN_DEBUG] CLIENT_VALIDATED: checking clientId", body.clientId);
-      const clientExists = await prisma.vpnClient.findUnique({ where: { id: body.clientId }, select: { id: true } });
-      if (!clientExists) {
-        console.error("[TOKEN_DEBUG] DATABASE_ERROR: client not found →", body.clientId);
-        return res.status(404).json({ error: "errors.tokens.client_not_found", message: `VPN client introuvable: ${body.clientId}` });
-      }
-      console.log("[TOKEN_DEBUG] CLIENT_VALIDATED: OK →", body.clientId);
-    }
-    const tokenStr = makeSxbToken();
     const expiration = new Date();
-    expiration.setDate(expiration.getDate() + body.durationDays);
+    expiration.setUTCDate(expiration.getUTCDate() + body.durationDays);
 
     let newToken: any = null;
     if (prisma) {
-      try {
-        console.log("[TOKEN_DEBUG] TOKEN_CREATED: inserting", tokenStr);
-        newToken = await prisma.tokenSXB.create({
-          data: {
-            token: tokenStr,
-            clientId: body.clientId,
-            quota: quotaBytes,
-            expiration,
-            deviceLimit: body.deviceLimit,
-            status: "active",
-          },
-        });
-        console.log("[TOKEN_DEBUG] TOKEN_CREATED: success →", newToken.id);
-      } catch (dbErr: any) {
-        console.error("[TOKEN_DEBUG] DATABASE_ERROR:", dbErr?.code, dbErr?.message?.slice(0, 200));
-        if (dbErr?.code === "P2003") {
-          return res.status(404).json({ error: "errors.tokens.client_not_found", message: "Client ID invalide ou inexistant (FK constraint)" });
+      for (let attempt = 0; attempt < MAX_TOKEN_CREATION_ATTEMPTS; attempt += 1) {
+        const id = randomUUID();
+        const token = makeSxbToken();
+        try {
+          newToken = await executerMutationQuota(
+            prisma,
+            {
+              ...ownerContext(target.fiche),
+              auteur: { userId: req.user?.userId, email: req.user?.email },
+              reason: "Création d'un jeton d'attribution",
+              referenceType: "token",
+              referenceId: id,
+            },
+            (tx) =>
+              tx.tokenSXB.create({
+                data: {
+                  id,
+                  token,
+                  clientId: body.clientId,
+                  quota: quotaBytes,
+                  expiration,
+                  deviceLimit: body.deviceLimit,
+                  status: "active",
+                },
+              })
+          );
+          break;
+        } catch (error) {
+          if (!isTokenCollision(error)) throw error;
         }
-        throw dbErr;
+      }
+      if (!newToken) {
+        return res.status(503).json({
+          error: "errors.tokens.generation_failed",
+          message: "Impossible de générer un jeton unique. Veuillez réessayer.",
+        });
       }
     } else {
+      let token = makeSxbToken();
+      for (
+        let attempt = 1;
+        inMemoryDb.tokens.some((candidate: any) => candidate.token === token) &&
+        attempt < MAX_TOKEN_CREATION_ATTEMPTS;
+        attempt += 1
+      ) {
+        token = makeSxbToken();
+      }
+      if (inMemoryDb.tokens.some((candidate: any) => candidate.token === token)) {
+        return res.status(503).json({
+          error: "errors.tokens.generation_failed",
+          message: "Impossible de générer un jeton unique. Veuillez réessayer.",
+        });
+      }
       newToken = {
-        id: `token-${Date.now()}`,
-        token: tokenStr,
+        id: randomUUID(),
+        token,
         clientId: body.clientId,
         quota: quotaBytes,
         expiration,
@@ -133,152 +252,144 @@ router.post("/", requireAuth, requirePermission("tokens.create"), async (req: Au
       inMemoryDb.tokens.push(newToken);
     }
 
-    await logDbActivity(req.user?.userId || null, `Created SXB Token: ${tokenStr}`, "success", req.ip);
+    await logDbActivity(
+      req.user?.userId || null,
+      `Created SXB Token ID: ${newToken.id} for Client ID: ${body.clientId}`,
+      "success",
+      req.ip
+    );
     return res.status(201).json(sanitizeToken(newToken));
-  } catch (err) {
-    if (err instanceof z.ZodError) {
-      return res.status(400).json({ error: "errors.validation", message: err.issues });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: "errors.validation", message: error.issues });
     }
-    console.error("[TOKEN_DEBUG] DATABASE_ERROR: unexpected →", err);
+    if (error instanceof PlafondQuotaDepasse) {
+      return res.status(409).json(reponsePlafondDepasse(error.alloue, error.plafond));
+    }
+    console.error("Token creation error:", error);
     return res.status(500).json({ error: "errors.server", message: "Failed to create token" });
   }
-});
+}
 
-// POST /api/tokens/:id/revoke — révoque un token
-router.post("/:id/revoke", requireAuth, requirePermission("tokens.view"), async (req: AuthenticatedRequest, res: Response) => {
+async function revoquerToken(req: AuthenticatedRequest, res: Response) {
   try {
     const { id } = req.params;
     let updated: any = null;
-    if (prisma) {
-      const existing = await prisma.tokenSXB.findUnique({ where: { id }, include: { client: true } });
-      if (!existing) return res.status(404).json({ error: "errors.tokens.not_found" });
-      if (req.user?.role === "RESELLER" && existing.client?.userId !== req.user.userId) {
-        return res.status(404).json({ error: "errors.tokens.not_found" });
-      }
-      updated = await prisma.tokenSXB.update({ where: { id }, data: { status: "revoked" } });
-    } else {
-      const index = inMemoryDb.tokens.findIndex((t) => t.id === id);
-      if (index === -1) return res.status(404).json({ error: "errors.tokens.not_found" });
-      inMemoryDb.tokens[index].status = "revoked";
-      updated = inMemoryDb.tokens[index];
-    }
-    await logDbActivity(req.user?.userId || null, `Revoked SXB Token ID: ${id}`, "warning", req.ip);
-    return res.json(sanitizeToken(updated));
-  } catch (err) {
-    console.error("Revoke token error:", err);
-    return res.status(500).json({ error: "errors.server", message: "Failed to revoke token" });
-  }
-});
-
-// DELETE /api/tokens/:id — révoque un token (alias)
-router.delete("/:id", requireAuth, requirePermission("tokens.view"), async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const { id } = req.params;
-    let updated: any = null;
-    if (prisma) {
-      const existing = await prisma.tokenSXB.findUnique({ where: { id }, include: { client: true } });
-      if (!existing) return res.status(404).json({ error: "errors.tokens.not_found" });
-      if (req.user?.role === "RESELLER" && existing.client?.userId !== req.user.userId) {
-        return res.status(404).json({ error: "errors.tokens.not_found" });
-      }
-      updated = await prisma.tokenSXB.update({ where: { id }, data: { status: "revoked" } });
-    } else {
-      const index = inMemoryDb.tokens.findIndex((t) => t.id === id);
-      if (index === -1) return res.status(404).json({ error: "errors.tokens.not_found" });
-      inMemoryDb.tokens[index].status = "revoked";
-      updated = inMemoryDb.tokens[index];
-    }
-    await logDbActivity(req.user?.userId || null, `Revoked SXB Token ID: ${id}`, "warning", req.ip);
-    return res.json(sanitizeToken(updated));
-  } catch (err) {
-    console.error("Revoke token error:", err);
-    return res.status(500).json({ error: "errors.server", message: "Failed to revoke token" });
-  }
-});
-
-// POST /api/tokens/generate
-router.post("/generate", requireAuth, requirePermission("tokens.create"), async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const body = generateTokenSchema.parse(req.body);
-    const tokenStr = makeSxbToken();
-    const quotaBytes = BigInt(body.quotaGb) * BigInt(1024 * 1024 * 1024);
-    const quotaError = await assertResellerTokenQuota(req, body.clientId, quotaBytes);
-    if (quotaError) return res.status(quotaError.status).json(quotaError.body);
-    const expiration = new Date();
-    expiration.setDate(expiration.getDate() + body.durationDays);
-
-    let newToken: any = null;
-    if (prisma) {
-      newToken = await prisma.tokenSXB.create({
-        data: {
-          token: tokenStr,
-          clientId: body.clientId,
-          quota: quotaBytes,
-          expiration,
-          deviceLimit: body.deviceLimit,
-          status: "active",
-        },
-      });
-    } else {
-      newToken = {
-        id: `token-${Date.now()}`,
-        token: tokenStr,
-        clientId: body.clientId,
-        quota: quotaBytes,
-        expiration,
-        deviceLimit: body.deviceLimit,
-        status: "active",
-        createdAt: new Date(),
-      };
-      inMemoryDb.tokens.push(newToken);
-    }
-
-    await logDbActivity(req.user?.userId || null, `Generated SXB Activation Token: ${tokenStr}`, "success", req.ip);
-    return res.status(201).json(sanitizeToken(newToken));
-  } catch (err) {
-    if (err instanceof z.ZodError) {
-      return res.status(400).json({ error: "errors.validation", message: err.issues });
-    }
-    console.error("Token generation error:", err);
-    return res.status(500).json({ error: "errors.server", message: "Failed to generate token" });
-  }
-});
-
-// GET /api/tokens/:token
-router.get("/:token", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const { token } = req.params;
-    let tokenRecord: any = null;
 
     if (prisma) {
-      tokenRecord = await prisma.tokenSXB.findUnique({
-        where: { token },
+      const existing = await prisma.tokenSXB.findUnique({
+        where: { id },
         include: { client: true },
       });
-    } else {
-      const t = inMemoryDb.tokens.find((item) => item.token === token);
-      if (t) {
-        const client = inMemoryDb.vpnClients.find((c) => c.id === t.clientId);
-        tokenRecord = { ...t, client };
+      if (!existing) return res.status(404).json({ error: "errors.tokens.not_found" });
+
+      if (
+        req.user?.role === "RESELLER" &&
+        !possedeClient(
+          existing.client,
+          (req as any).reseller ??
+            (await chargerFicheRevendeur(prisma, req.user.userId))
+        )
+      ) {
+        return res.status(404).json({ error: "errors.tokens.not_found" });
       }
+      if (existing.status === "used") {
+        return res.status(409).json({
+          error: "errors.tokens.already_applied",
+          message: "Ce jeton a déjà été appliqué au client et ne peut plus être révoqué.",
+        });
+      }
+      if (existing.status === "revoked") return res.json(sanitizeToken(existing));
+
+      const expiration = new Date(existing.expiration).getTime();
+      if (
+        existing.status === "expired" ||
+        (!Number.isNaN(expiration) && expiration <= Date.now())
+      ) {
+        await prisma.tokenSXB.updateMany({
+          where: { id, status: "active" },
+          data: { status: "expired" },
+        });
+        return res.status(409).json({
+          error: "errors.tokens.expired",
+          message: "Ce jeton est déjà expiré.",
+        });
+      }
+
+      const target = await chargerCibleToken(
+        req,
+        existing.clientId,
+        undefined,
+        { verifierAcces: false }
+      );
+      if (isRouteRefusal(target)) return res.status(target.status).json(target.body);
+
+      updated = await executerMutationQuota(
+        prisma,
+        {
+          ...ownerContext(target.fiche),
+          auteur: { userId: req.user?.userId, email: req.user?.email },
+          reason: "Révocation d'un jeton non utilisé",
+          referenceType: "token",
+          referenceId: existing.id,
+          autoriserReductionAuDessusDuPlafond: true,
+        },
+        async (tx) => {
+          const result = await tx.tokenSXB.updateMany({
+            where: { id, status: "active", expiration: { gt: new Date() } },
+            data: { status: "revoked" },
+          });
+          if (result.count !== 1) {
+            throw new TokenStateConflict(
+              "errors.tokens.state_changed",
+              "Le jeton a déjà été utilisé, révoqué ou expiré."
+            );
+          }
+          return tx.tokenSXB.findUnique({ where: { id } });
+        }
+      );
+    } else {
+      const tokenIndex = inMemoryDb.tokens.findIndex((token: any) => token.id === id);
+      if (tokenIndex === -1) {
+        return res.status(404).json({ error: "errors.tokens.not_found" });
+      }
+      const existing: any = inMemoryDb.tokens[tokenIndex];
+      const client = inMemoryDb.vpnClients.find(
+        (candidate: any) => candidate.id === existing.clientId
+      );
+      if (
+        req.user?.role === "RESELLER" &&
+        !possedeClient(client, await chargerFicheRevendeur(null, req.user.userId))
+      ) {
+        return res.status(404).json({ error: "errors.tokens.not_found" });
+      }
+      if (existing.status === "used") {
+        return res.status(409).json({
+          error: "errors.tokens.already_applied",
+          message: "Ce jeton a déjà été appliqué au client et ne peut plus être révoqué.",
+        });
+      }
+      existing.status = "revoked";
+      updated = existing;
     }
 
-    if (!tokenRecord) {
-      return res.status(404).json({ error: "errors.tokens.not_found", message: "Token not found" });
+    await logDbActivity(
+      req.user?.userId || null,
+      `Revoked SXB Token ID: ${id}`,
+      "warning",
+      req.ip
+    );
+    return res.json(sanitizeToken(updated));
+  } catch (error) {
+    if (error instanceof TokenStateConflict) {
+      return res.status(409).json({ error: error.code, message: error.message });
     }
-    if (req.user?.role === "RESELLER" && tokenRecord.client?.userId !== req.user.userId) {
-      return res.status(404).json({ error: "errors.tokens.not_found", message: "Token not found" });
-    }
-
-    return res.json(sanitizeToken(tokenRecord));
-  } catch (err) {
-    console.error("Retrieve token error:", err);
-    return res.status(500).json({ error: "errors.server", message: "Failed to fetch token" });
+    console.error("Revoke token error:", error);
+    return res.status(500).json({ error: "errors.server", message: "Failed to revoke token" });
   }
-});
+}
 
-// POST /api/tokens/validate
-router.post("/validate", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+async function validerToken(req: AuthenticatedRequest, res: Response) {
   try {
     const body = validateTokenSchema.parse(req.body);
     let tokenRecord: any = null;
@@ -289,87 +400,336 @@ router.post("/validate", requireAuth, async (req: AuthenticatedRequest, res: Res
         include: { client: true },
       });
     } else {
-      const t = inMemoryDb.tokens.find((item) => item.token === body.token);
-      if (t) {
-        const client = inMemoryDb.vpnClients.find((c) => c.id === t.clientId);
-        tokenRecord = { ...t, client };
+      const token = inMemoryDb.tokens.find(
+        (candidate: any) => candidate.token === body.token
+      );
+      if (token) {
+        const client = inMemoryDb.vpnClients.find(
+          (candidate: any) => candidate.id === token.clientId
+        );
+        tokenRecord = { ...token, client };
       }
     }
 
     if (!tokenRecord) {
-      return res.status(404).json({ error: "errors.tokens.invalid", message: "Invalid activation token" });
+      return res.status(404).json({
+        error: "errors.tokens.invalid",
+        message: "Invalid activation token",
+      });
     }
-    if (req.user?.role === "RESELLER" && tokenRecord.client?.userId !== req.user.userId) {
-      return res.status(404).json({ error: "errors.tokens.invalid", message: "Invalid activation token" });
+    if (
+      req.user?.role === "RESELLER" &&
+      !possedeClient(
+        tokenRecord.client,
+        await chargerFicheRevendeur(prisma, req.user.userId)
+      )
+    ) {
+      return res.status(404).json({
+        error: "errors.tokens.invalid",
+        message: "Invalid activation token",
+      });
     }
-
     if (tokenRecord.status !== "active") {
-      return res.status(400).json({ error: "errors.tokens.already_used", message: `Token has already been ${tokenRecord.status}` });
+      return res.status(409).json({
+        error: "errors.tokens.already_used",
+        message: `Token has already been ${tokenRecord.status}`,
+      });
     }
 
     const now = new Date();
-    if (new Date(tokenRecord.expiration) < now) {
-      // Mark as expired
+    if (new Date(tokenRecord.expiration).getTime() <= now.getTime()) {
       if (prisma) {
-        await prisma.tokenSXB.update({ where: { id: tokenRecord.id }, data: { status: "expired" } });
+        await prisma.tokenSXB.updateMany({
+          where: { id: tokenRecord.id, status: "active" },
+          data: { status: "expired" },
+        });
       } else {
         tokenRecord.status = "expired";
       }
-      return res.status(400).json({ error: "errors.tokens.expired", message: "Token has expired" });
+      return res.status(410).json({
+        error: "errors.tokens.expired",
+        message: "Token has expired",
+      });
     }
 
-    // Set token as used and extend client bounds
+    const target = await chargerCibleToken(req, tokenRecord.clientId);
+    if (isRouteRefusal(target)) return res.status(target.status).json(target.body);
+
     let updatedToken: any = null;
     if (prisma) {
-      updatedToken = await executerMutationQuota(prisma, {
-        resellerUserId: tokenRecord.client.userId,
-        auteur: { userId: req.user?.userId, email: req.user?.email },
-        reason: `Activation du token ${body.token}`,
-        referenceType: "token",
-        referenceId: tokenRecord.id,
-      }, async (tx) => {
-        const token = await tx.tokenSXB.update({
-          where: { id: tokenRecord.id },
-          data: { status: "used" },
-        });
-        await tx.vpnClient.update({
-          where: { id: tokenRecord.clientId },
-          data: {
-            quotaTotal: { increment: tokenRecord.quota },
-            expireAt: tokenRecord.expiration,
-            status: "active",
-          },
-        });
-        return token;
-      });
+      updatedToken = await executerMutationQuota(
+        prisma,
+        {
+          ...ownerContext(target.fiche),
+          auteur: { userId: req.user?.userId, email: req.user?.email },
+          reason: "Application d'un jeton au client",
+          referenceType: "token",
+          referenceId: tokenRecord.id,
+        },
+        async (tx) => {
+          const consumed = await tx.tokenSXB.updateMany({
+            where: {
+              id: tokenRecord.id,
+              status: "active",
+              expiration: { gt: new Date() },
+            },
+            data: { status: "used" },
+          });
+          if (consumed.count !== 1) {
+            throw new TokenStateConflict(
+              "errors.tokens.already_used",
+              "Ce jeton a déjà été utilisé ou a expiré."
+            );
+          }
+
+          const currentClient = await tx.vpnClient.findUnique({
+            where: { id: tokenRecord.clientId },
+            select: { quotaTotal: true, expireAt: true, status: true, subscriptions: { select: { id: true } } },
+          });
+          if (!currentClient) {
+            throw new TokenStateConflict(
+              "errors.clients.not_found",
+              "Le client associé au jeton n'existe plus."
+            );
+          }
+          if (currentClient.subscriptions.length) {
+            throw new TokenStateConflict(
+              "errors.tokens.subscription_required",
+              "Ce client possède un forfait : modifiez ce forfait plutôt que son ancien quota client."
+            );
+          }
+          if (currentClient.status === "suspended" || currentClient.status === "revoked") {
+            throw new TokenStateConflict("errors.tokens.client_suspended", "Réactivez le client avant d'appliquer un jeton.");
+          }
+          const currentExpiration = currentClient.expireAt
+            ? new Date(currentClient.expireAt)
+            : null;
+          const tokenExpiration = new Date(tokenRecord.expiration);
+          const expireAt =
+            currentExpiration && currentExpiration > tokenExpiration
+              ? currentExpiration
+              : tokenExpiration;
+
+          await tx.vpnClient.update({
+            where: { id: tokenRecord.clientId },
+            data: {
+              quotaTotal:
+                BigInt(currentClient.quotaTotal ?? 0) +
+                BigInt(tokenRecord.quota ?? 0),
+              expireAt,
+              deviceLimit: tokenRecord.deviceLimit,
+              status: "active",
+            },
+          });
+          await synchroniserEtatAccesClient(
+            tx,
+            tokenRecord.clientId,
+            "active"
+          );
+          return tx.tokenSXB.findUnique({
+            where: { id: tokenRecord.id },
+            include: { client: { include: { user: true } } },
+          });
+        }
+      );
     } else {
-      tokenRecord.status = "used";
-      const index = inMemoryDb.vpnClients.findIndex((c) => c.id === tokenRecord.clientId);
-      if (index !== -1) {
-        inMemoryDb.vpnClients[index].quotaTotal += tokenRecord.quota;
-        inMemoryDb.vpnClients[index].expireAt = tokenRecord.expiration;
-        inMemoryDb.vpnClients[index].status = "active";
+      const storedToken = inMemoryDb.tokens.find(candidate => candidate.id === tokenRecord.id);
+      const client = inMemoryDb.vpnClients.find(
+        (candidate: any) => candidate.id === tokenRecord.clientId
+      );
+      if (!client) {
+        return res.status(404).json({ error: "errors.clients.not_found" });
       }
+      if (!storedToken || storedToken.status !== "active") {
+        return res.status(409).json({ error: "errors.tokens.already_used", message: "Jeton déjà utilisé" });
+      }
+      storedToken.status = "used";
+      tokenRecord.status = "used";
+      client.quotaTotal =
+        BigInt(client.quotaTotal ?? 0) + BigInt(tokenRecord.quota ?? 0);
+      const currentExpiration = client.expireAt ? new Date(client.expireAt) : null;
+      const tokenExpiration = new Date(tokenRecord.expiration);
+      client.expireAt =
+        currentExpiration && currentExpiration > tokenExpiration
+          ? currentExpiration
+          : tokenExpiration;
+      client.deviceLimit = tokenRecord.deviceLimit;
+      client.status = "active";
       updatedToken = tokenRecord;
     }
 
-    await logDbActivity(req.user?.userId || null, `Validated & applied SXB Token: ${body.token} to Client ID: ${tokenRecord.clientId}`, "success", req.ip);
-
+    await logDbActivity(
+      req.user?.userId || null,
+      `Validated SXB Token ID: ${tokenRecord.id} for Client ID: ${tokenRecord.clientId}`,
+      "success",
+      req.ip
+    );
     return res.json({
       success: true,
       message: "Token validated and applied successfully",
       token: sanitizeToken(updatedToken),
     });
-  } catch (err) {
-    if (err instanceof z.ZodError) {
-      return res.status(400).json({ error: "errors.validation", message: err.issues });
+  } catch (error: any) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: "errors.validation", message: error.issues });
     }
-    if (err instanceof PlafondQuotaDepasse) {
-      return res.status(409).json({ error: "errors.resellers.quota_exceeded", message: err.message });
+    if (error instanceof TokenStateConflict || error?.code === "P2034") {
+      return res.status(409).json({
+        error:
+          error instanceof TokenStateConflict
+            ? error.code
+            : "errors.tokens.already_used",
+        message:
+          error instanceof TokenStateConflict
+            ? error.message
+            : "Le jeton a été modifié par une autre requête.",
+      });
     }
-    console.error("Token validation error:", err);
+    if (error instanceof PlafondQuotaDepasse) {
+      return res.status(409).json(reponsePlafondDepasse(error.alloue, error.plafond));
+    }
+    console.error("Token validation error:", error);
     return res.status(500).json({ error: "errors.server", message: "Failed to validate token" });
   }
-});
+}
+
+router.get(
+  "/",
+  requireAuth,
+  requirePermission("tokens.view"),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      let tokens: any[] = [];
+      if (prisma) {
+        tokens = await prisma.tokenSXB.findMany({
+          where: await porteeTokens(req),
+          include: { client: { include: { user: true } } },
+          orderBy: { createdAt: "desc" },
+        });
+      } else {
+        tokens = inMemoryDb.tokens.map((token: any) => {
+          const client = inMemoryDb.vpnClients.find(
+            (candidate: any) => candidate.id === token.clientId
+          );
+          const user = client
+            ? inMemoryDb.users.find((candidate: any) => candidate.id === client.userId)
+            : null;
+          return { ...token, client: client ? { ...client, user } : null };
+        });
+        if (req.user?.role === "RESELLER") {
+          const fiche = await chargerFicheRevendeur(null, req.user.userId);
+          tokens = tokens.filter((token: any) => possedeClient(token.client, fiche));
+        }
+      }
+      return res.json({ tokens: tokens.map(sanitizeToken) });
+    } catch (error) {
+      console.error("Fetch tokens list error:", error);
+      return res.status(500).json({
+        error: "errors.server",
+        message: "Failed to fetch tokens",
+      });
+    }
+  }
+);
+
+router.post(
+  "/",
+  requireAuth,
+  interdireMutationSupport(),
+  requirePermission("tokens.create"),
+  exigerAccesRevendeur(),
+  creerToken
+);
+
+router.post(
+  "/generate",
+  requireAuth,
+  interdireMutationSupport(),
+  requirePermission("tokens.create"),
+  exigerAccesRevendeur(),
+  creerToken
+);
+
+router.post(
+  "/validate",
+  requireAuth,
+  interdireMutationSupport(),
+  requirePermission("tokens.create"),
+  exigerAccesRevendeur(),
+  validerToken
+);
+
+router.post(
+  "/:id/revoke",
+  requireAuth,
+  interdireMutationSupport(),
+  requirePermission("tokens.revoke"),
+  exigerAccesRevendeur({ autoriserReduction: true }),
+  revoquerToken
+);
+
+router.delete(
+  "/:id",
+  requireAuth,
+  interdireMutationSupport(),
+  requirePermission("tokens.revoke"),
+  exigerAccesRevendeur({ autoriserReduction: true }),
+  revoquerToken
+);
+
+router.get(
+  "/:token",
+  requireAuth,
+  requirePermission("tokens.view"),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const normalized = req.params.token.trim().toUpperCase();
+      let tokenRecord: any = null;
+
+      if (prisma) {
+        tokenRecord = await prisma.tokenSXB.findUnique({
+          where: { token: normalized },
+          include: { client: { include: { user: true } } },
+        });
+      } else {
+        const token = inMemoryDb.tokens.find(
+          (candidate: any) => candidate.token === normalized
+        );
+        if (token) {
+          const client = inMemoryDb.vpnClients.find(
+            (candidate: any) => candidate.id === token.clientId
+          );
+          tokenRecord = { ...token, client };
+        }
+      }
+
+      if (!tokenRecord) {
+        return res.status(404).json({
+          error: "errors.tokens.not_found",
+          message: "Token not found",
+        });
+      }
+      if (
+        req.user?.role === "RESELLER" &&
+        !possedeClient(
+          tokenRecord.client,
+          await chargerFicheRevendeur(prisma, req.user.userId)
+        )
+      ) {
+        return res.status(404).json({
+          error: "errors.tokens.not_found",
+          message: "Token not found",
+        });
+      }
+      return res.json(sanitizeToken(tokenRecord));
+    } catch (error) {
+      console.error("Retrieve token error:", error);
+      return res.status(500).json({
+        error: "errors.server",
+        message: "Failed to fetch token",
+      });
+    }
+  }
+);
 
 export default router;

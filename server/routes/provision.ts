@@ -13,9 +13,12 @@
  *   - Révocation distante via status=revoked
  */
 import { Router, Response } from 'express';
+import { z } from 'zod';
 import { prisma }           from '../database';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth';
 import { logDbActivity }    from '../database';
+import { refusAccesProprietaireClient } from '../services/reseller-access';
+import { applyUsageDelta } from './mobile';
 import crypto               from 'crypto';
 import {
   decryptCanonical, computeCanonicalHash, engineConfigFromCanonical,
@@ -25,6 +28,31 @@ import {
 } from '../services/config-hash';
 
 const router = Router();
+
+async function refusProvision(req: AuthenticatedRequest, sub: any) {
+  if (!sub || req.user?.role !== 'CLIENT' || sub.client?.userId !== req.user.userId ||
+      (req.user.clientId && sub.clientId !== req.user.clientId)) {
+    return { status: 404, body: { error: 'Abonnement introuvable' } };
+  }
+  if (sub.client.status !== 'active') {
+    return { status: 403, body: { error: 'Compte client suspendu ou révoqué' } };
+  }
+  return refusAccesProprietaireClient(prisma, sub.client);
+}
+
+const maximumReportBytes = 5 * 1024 ** 3;
+const reportBytesSchema = z.union([
+  z.number().int().min(0).max(maximumReportBytes),
+  z.string().regex(/^\d+$/).max(16),
+]).transform(value => BigInt(value)).refine(value => value <= BigInt(maximumReportBytes));
+const syncSchema = z.object({
+  subscriptionId: z.string().min(1),
+  deviceId: z.string().min(1).optional(),
+  downloadBytes: reportBytesSchema.default(0n),
+  uploadBytes: reportBytesSchema.default(0n),
+  sessionId: z.string().max(128).optional(),
+  seq: z.number().int().nonnegative().optional(),
+});
 
 // ── Helpers sécurité ──────────────────────────────────────────────────────────
 
@@ -142,6 +170,11 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
     if (!sub) {
       return res.status(404).json({ error: 'Token invalide ou introuvable' });
     }
+    const accessError = await refusProvision(req, sub);
+    if (accessError) return res.status(accessError.status).json(accessError.body);
+    if (sub.client.activatedAt && sub.client.deviceId !== deviceId) {
+      return res.status(403).json({ error: 'Appareil différent du compte activé' });
+    }
 
     // 2. Charger le payload SSH séparément (relation non mappée dans le client Prisma généré)
     let profilePayload: any = null;
@@ -169,6 +202,9 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
     if (sub.status === 'suspended') {
       return res.status(403).json({ error: 'Abonnement suspendu' });
     }
+    if (BigInt(sub.quotaUsed ?? 0) >= BigInt(sub.quotaBytes ?? 0)) {
+      return res.status(403).json({ error: 'Quota de cet abonnement épuisé', status: 'exhausted' });
+    }
     if (sub.client?.status === 'suspended' || sub.client?.status === 'revoked' || sub.client?.status === 'disabled') {
       return res.status(403).json({ error: 'Compte client suspendu ou révoqué' });
     }
@@ -188,10 +224,16 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
 
     // 5. Enregistrer l'appareil si nouveau
     if (!isExistingDevice) {
-      await (prisma as any).subscription.update({
-        where: { id: sub.id },
+      const claimed = await (prisma as any).subscription.updateMany({
+        where: { id: sub.id, deviceId: null },
         data:  { deviceId },
       });
+      if (claimed.count !== 1) {
+        const current = await (prisma as any).subscription.findUnique({ where: { id: sub.id } });
+        if (current?.deviceId !== deviceId) {
+          return res.status(409).json({ error: 'Cet abonnement vient d’être lié à un autre appareil' });
+        }
+      }
     }
 
     // 6. Construire la config brute moteur.
@@ -366,59 +408,44 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
 // Synchronisation quota + réception des mises à jour backend (expiration, révocation)
 router.post('/sync', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { subscriptionId, downloadBytes, uploadBytes, deviceId } = req.body;
-    if (!subscriptionId) return res.status(400).json({ error: 'subscriptionId requis' });
+    const { subscriptionId, downloadBytes, uploadBytes, deviceId, sessionId, seq } = syncSchema.parse(req.body);
 
     const sub = await (prisma as any).subscription.findUnique({
       where: { id: subscriptionId },
+      include: { client: true },
     });
-    if (!sub) return res.status(404).json({ error: 'Abonnement introuvable' });
-
-    const addedBytes   = BigInt(downloadBytes || 0) + BigInt(uploadBytes || 0);
-    const newQuotaUsed = sub.quotaUsed + addedBytes;
-
-    const isExpired   = sub.expireAt && new Date(sub.expireAt) < new Date();
-    const isOverQuota = newQuotaUsed >= sub.quotaBytes;
-
-    let newStatus = sub.status;
-    if (sub.status === 'active' && (isExpired || isOverQuota)) {
-      newStatus = 'expired';
+    const accessError = await refusProvision(req, sub);
+    if (accessError) return res.status(accessError.status).json(accessError.body);
+    if (deviceId && sub.deviceId && deviceId !== sub.deviceId) {
+      return res.status(403).json({ error: 'Appareil non lié à ce forfait' });
     }
-
+    const addedBytes = downloadBytes + uploadBytes;
+    if (addedBytes > BigInt(maximumReportBytes)) return res.status(400).json({ error: 'Rapport de trafic trop volumineux' });
+    if (addedBytes > 0n) {
+      const report = await applyUsageDelta(sub.clientId, sub.id, addedBytes, sessionId, seq, uploadBytes, deviceId || null);
+      if (!report.applied && report.reason !== 'duplicate_report') return res.status(409).json({ error: report.reason });
+    }
     const updated = await (prisma as any).subscription.update({
-      where: { id: subscriptionId },
-      data:  { quotaUsed: newQuotaUsed, status: newStatus, lastSyncAt: new Date() },
+      where: { id: subscriptionId }, data: { lastSyncAt: new Date() },
     });
-
-    // subscriptionDevice est optionnel (table non créée dans ce schéma)
-    if (deviceId && (prisma as any).subscriptionDevice) {
-      await (prisma as any).subscriptionDevice.updateMany({
-        where: { subscriptionId, deviceId },
-        data:  { lastSeenAt: new Date() },
-      }).catch(() => null);
-    }
-
-    await (prisma as any).trafficUsage.create({
-      data: {
-        accountId:   subscriptionId,
-        accountType: 'subscription',
-        download:    BigInt(downloadBytes || 0),
-        upload:      BigInt(uploadBytes   || 0),
-      },
-    });
+    const effectiveStatus = updated.status === 'active'
+      ? updated.expireAt && new Date(updated.expireAt) <= new Date() ? 'expired'
+        : updated.quotaUsed >= updated.quotaBytes ? 'exhausted' : 'active'
+      : updated.status;
 
     const quotaGB     = Number(updated.quotaBytes) / (1024 ** 3);
     const quotaUsedGB = Number(updated.quotaUsed)  / (1024 ** 3);
 
     return res.json({
       success:      true,
-      status:       updated.status,
+      status:       effectiveStatus,
       expireAt:     updated.expireAt,
       quotaGB:      parseFloat(quotaGB.toFixed(4)),
       quotaUsedGB:  parseFloat(quotaUsedGB.toFixed(4)),
       revoked:      updated.status === 'revoked',
     });
   } catch (err: any) {
+    if (err instanceof z.ZodError) return res.status(400).json({ error: 'Rapport de trafic invalide', details: err.issues });
     console.error('[provision/sync]', err.message || err);
     return res.status(500).json({ error: 'Échec de la synchronisation' });
   }
@@ -430,8 +457,10 @@ router.get('/status/:subscriptionId', requireAuth, async (req: AuthenticatedRequ
   try {
     const sub = await (prisma as any).subscription.findUnique({
       where: { id: req.params.subscriptionId },
+      include: { client: true },
     });
-    if (!sub) return res.status(404).json({ error: 'Abonnement introuvable' });
+    const accessError = await refusProvision(req, sub);
+    if (accessError) return res.status(accessError.status).json(accessError.body);
 
     const quotaGB     = Number(sub.quotaBytes) / (1024 ** 3);
     const quotaUsedGB = Number(sub.quotaUsed)  / (1024 ** 3);

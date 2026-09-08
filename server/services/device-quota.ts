@@ -36,6 +36,10 @@ export function sanitizeDevice(c: any, usage?: DeviceUsage, subscription?: any |
   const quotaUsed = Number(selected?.quotaUsed ?? c.quotaUsed ?? 0);
   const trafficDownload = Number(usage?.download ?? 0);
   const trafficUpload = Number(usage?.upload ?? 0);
+  // Identité du revendeur propriétaire. Elle accompagne systématiquement
+  // l'appareil : sans elle, un administrateur voyait 84 appareils sans pouvoir
+  // dire lequel relevait de quel revendeur.
+  const reseller = c?.reseller ?? null;
   return {
     id: c.id,
     deviceId: c.deviceId,
@@ -45,8 +49,13 @@ export function sanitizeDevice(c: any, usage?: DeviceUsage, subscription?: any |
     activatedAt: c.activatedAt,
     createdAt: c.createdAt,
     label: c.user?.name || null,
+    resellerId: reseller?.id ?? c.resellerId ?? null,
+    resellerName: reseller?.user?.name || reseller?.user?.email || null,
     subscriptionId: selected?.id ?? null,
     subscriptionName: selected?.name ?? null,
+    // Un appareil SANS forfait est un état normal, pas une anomalie : le plan
+    // est une décision commerciale distincte de l'activation.
+    hasSubscription: !!selected,
     quotaSource: selected ? "subscription" : "client",
     quotaTotal: quotaTotal.toString(),
     quotaUsed: quotaUsed.toString(),

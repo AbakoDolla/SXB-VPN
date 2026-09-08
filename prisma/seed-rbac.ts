@@ -16,6 +16,11 @@ async function main() {
       update: {},
       create: { name: 'OWNER', description: 'Propriétaire racine — au-dessus de SUPER_ADMIN (stealth)' },
     }),
+    SUPER_ADMIN: await prisma.role.upsert({
+      where: { name: 'SUPER_ADMIN' },
+      update: {},
+      create: { name: 'SUPER_ADMIN', description: 'Super-administrateur' },
+    }),
     ADMIN: await prisma.role.upsert({
       where: { name: 'ADMIN' },
       update: {},
@@ -49,6 +54,11 @@ async function main() {
     { name: 'clients.create', description: 'Creer clients' },
     { name: 'clients.edit', description: 'Modifier clients' },
     { name: 'clients.delete', description: 'Supprimer clients' },
+    { name: 'clients.manage', description: 'Suspendre et réactiver clients' },
+    { name: 'subscription.view', description: 'Voir les forfaits data' },
+    { name: 'subscription.manage', description: 'Créer et gérer les forfaits data' },
+    { name: 'vpnprofile.view', description: 'Voir les profils VPN' },
+    { name: 'vpnprofile.manage', description: 'Gérer les profils VPN' },
     
     // VPN
     { name: 'vpn.view', description: 'Voir VPN' },
@@ -69,6 +79,7 @@ async function main() {
     { name: 'vouchers.view', description: 'Voir vouchers' },
     { name: 'vouchers.create', description: 'Creer vouchers' },
     { name: 'vouchers.redeem', description: 'Utiliser vouchers' },
+    { name: 'vouchers.revoke', description: 'Revoquer vouchers non utilises' },
     
     // Resellers
     { name: 'resellers.view', description: 'Voir revendeurs' },
@@ -77,6 +88,7 @@ async function main() {
     
     // Analytics
     { name: 'analytics.view', description: 'Voir analytiques' },
+    { name: 'analytics.read', description: 'Lire les indicateurs du tableau de bord' },
     
     // RBAC
     { name: 'rbac.manage', description: 'Gerer RBAC' },
@@ -101,6 +113,13 @@ async function main() {
   await prisma.rolePermission.deleteMany({});
   console.log('Existing role permissions cleared');
 
+  // SUPER_ADMIN - Full access
+  for (const permission of Object.values(createdPermissions)) {
+    await prisma.rolePermission.create({
+      data: { roleId: roles.SUPER_ADMIN.id, permissionId: permission.id },
+    });
+  }
+
   // ADMIN - Full access
   const adminPerms = [
     'users.view', 'users.create', 'users.edit', 'users.delete',
@@ -108,7 +127,7 @@ async function main() {
     'vpn.view', 'vpn.manage',
     'servers.view', 'servers.create', 'servers.edit', 'servers.delete',
     'tokens.view', 'tokens.create', 'tokens.revoke',
-    'vouchers.view', 'vouchers.create', 'vouchers.redeem',
+    'vouchers.view', 'vouchers.create', 'vouchers.redeem', 'vouchers.revoke',
     'resellers.view', 'resellers.create', 'resellers.manage',
     'analytics.view', 'rbac.manage', 'settings.manage',
   ];
@@ -123,10 +142,10 @@ async function main() {
 
   // SUPPORT - Limited access
   const supportPerms = [
-    'clients.view', 'clients.edit',
+    'clients.view',
     'vpn.view',
-    'tokens.view',
-    'analytics.view',
+    'tokens.view', 'vouchers.view', 'subscription.view',
+    'analytics.view', 'analytics.read',
   ];
   for (const permName of supportPerms) {
     if (createdPermissions[permName]) {
@@ -139,10 +158,11 @@ async function main() {
 
   // RESELLER - Client management only
   const resellerPerms = [
-    'clients.view_own', 'clients.create',
-    'tokens.create',
-    'vouchers.view', 'vouchers.redeem',
-    'analytics.view',
+    'clients.view', 'clients.view_own', 'clients.create', 'clients.edit', 'clients.delete', 'clients.manage',
+    'subscription.view', 'subscription.manage',
+    'tokens.view', 'tokens.create', 'tokens.revoke',
+    'vouchers.view', 'vouchers.create', 'vouchers.redeem', 'vouchers.revoke',
+    'analytics.view', 'analytics.read',
   ];
   for (const permName of resellerPerms) {
     if (createdPermissions[permName]) {

@@ -18,6 +18,7 @@
 export const QUOTA_ILLIMITE = BigInt(-1);
 
 export type Allocation = { alloue: bigint; consomme: bigint };
+export type PorteeQuotaRevendeur = string | { id: string; userId: string };
 export type TypeMouvementQuota =
   | "ADMIN_ALLOCATION"
   | "ADMIN_WITHDRAWAL"
@@ -60,37 +61,94 @@ export function estIllimite(quotaBytes: bigint | number | null | undefined): boo
  * exactement comme le fait `selectDeviceSubscription()` côté appareil : sans
  * cette règle, un client doté des deux serait compté deux fois. Les forfaits
  * révoqués sont relâchés — le revendeur récupère le volume correspondant.
+ * Les vouchers émis mais non utilisés sont eux aussi des promesses déjà
+ * vendues : ils réservent l'enveloppe de leur revendeur jusqu'à utilisation,
+ * révocation ou expiration.
  */
 export async function calculerAllocation(
   prisma: any,
-  userId: string,
+  proprietaire: PorteeQuotaRevendeur,
   options: { exclureSubscriptionId?: string; exclureClientId?: string } = {}
 ): Promise<Allocation> {
+  const where = typeof proprietaire === "string"
+    ? { userId: proprietaire }
+    : {
+        OR: [
+          { resellerId: proprietaire.id },
+          { resellerId: null, userId: proprietaire.userId },
+        ],
+      };
   const clients = await prisma.vpnClient.findMany({
-    where: { userId },
+    where,
     select: {
       id: true,
+      status: true,
+      expireAt: true,
       quotaTotal: true,
       quotaUsed: true,
-      subscriptions: { select: { id: true, quotaBytes: true, quotaUsed: true, status: true } },
+      subscriptions: {
+        select: { id: true, quotaBytes: true, quotaUsed: true, status: true, expireAt: true },
+      },
+      tokens: {
+        select: { quota: true, status: true, expiration: true },
+      },
     },
   });
+  const vouchers = await prisma.voucher.findMany({
+          where: {
+            ...(typeof proprietaire === "string"
+              ? { reseller: { userId: proprietaire } }
+              : { resellerId: proprietaire.id }),
+            isRedeemed: false,
+            status: "active",
+            OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+          },
+          select: { quota: true },
+        });
 
   let alloue = BigInt(0);
   let consomme = BigInt(0);
+  for (const voucher of vouchers) alloue += BigInt(voucher.quota ?? 0);
   for (const client of clients) {
     if (options.exclureClientId && client.id === options.exclureClientId) continue;
-    const forfaits = (client.subscriptions || []).filter(
-      (s: any) => s.status !== "revoked" && s.id !== options.exclureSubscriptionId
-    );
-    if (forfaits.length > 0) {
-      for (const forfait of forfaits) {
-        alloue += BigInt(forfait.quotaBytes ?? 0);
+    const tousLesForfaits = client.subscriptions || [];
+    const maintenant = Date.now();
+    const echeanceClient = client.expireAt ? new Date(client.expireAt).getTime() : null;
+    const clientActif =
+      !["suspended", "revoked", "expired", "disabled"].includes(String(client.status));
+
+    // Un jeton actif est une attribution déjà promise au client. Il réserve
+    // l'enveloppe jusqu'à son utilisation, sa révocation ou son expiration.
+    // Une fois utilisé, l'allocation portée par le client prend le relais.
+    if (clientActif) {
+      for (const token of client.tokens || []) {
+        const echeanceToken = token.expiration ? new Date(token.expiration).getTime() : null;
+        const tokenActif =
+          String(token.status) === "active" &&
+          (echeanceToken === null || Number.isNaN(echeanceToken) || echeanceToken >= maintenant);
+        if (tokenActif) alloue += BigInt(token.quota ?? 0);
+      }
+    }
+
+    const forfaits = tousLesForfaits.filter((s: any) => {
+      if (s.id === options.exclureSubscriptionId) return false;
+      if (["revoked", "suspended", "expired"].includes(String(s.status))) return false;
+      const echeance = s.expireAt ? new Date(s.expireAt).getTime() : null;
+      return echeance === null || Number.isNaN(echeance) || echeance >= maintenant;
+    });
+    if (tousLesForfaits.length > 0) {
+      for (const forfait of tousLesForfaits) {
         consomme += BigInt(forfait.quotaUsed ?? 0);
       }
+      if (!clientActif) continue;
+      for (const forfait of forfaits) {
+        alloue += BigInt(forfait.quotaBytes ?? 0);
+      }
     } else {
-      alloue += BigInt(client.quotaTotal ?? 0);
       consomme += BigInt(client.quotaUsed ?? 0);
+      if (clientActif && (echeanceClient === null || Number.isNaN(echeanceClient) || echeanceClient > maintenant)) {
+        alloue += BigInt(client.quotaTotal ?? 0);
+      }
     }
   }
   return { alloue, consomme };
@@ -153,32 +211,44 @@ async function ajouterMouvement(tx: any, data: {
 export async function executerMutationQuota<T>(
   db: any,
   params: {
-    resellerUserId: string;
+    resellerUserId?: string | null;
+    resellerId?: string | null;
     auteur: AuteurQuota;
     reason: string;
     referenceType?: string;
     referenceId?: string;
+    autoriserReductionAuDessusDuPlafond?: boolean;
   },
   mutation: (tx: any) => Promise<T>
 ): Promise<T> {
   return db.$transaction(async (tx: any) => {
+    const identite = params.resellerId
+      ? { id: params.resellerId }
+      : params.resellerUserId
+        ? { userId: params.resellerUserId }
+        : null;
+    if (!identite) return mutation(tx);
+
     let fiche = await tx.reseller.findUnique({
-      where: { userId: params.resellerUserId },
+      where: identite,
       include: { user: true },
     });
     if (!fiche) return mutation(tx);
 
-    await verrouillerRevendeur(tx, params.resellerUserId);
+    await verrouillerRevendeur(tx, fiche.userId);
     fiche = await tx.reseller.findUnique({
-      where: { userId: params.resellerUserId },
+      where: { id: fiche.id },
       include: { user: true },
     });
 
-    const avant = await calculerAllocation(tx, params.resellerUserId);
+    const avant = await calculerAllocation(tx, fiche);
     const resultat = await mutation(tx);
-    const apres = await calculerAllocation(tx, params.resellerUserId);
+    const apres = await calculerAllocation(tx, fiche);
     const plafond = BigInt(fiche.quotaBytes ?? 0);
-    if (!estIllimite(plafond) && apres.alloue > plafond) {
+    const reductionAutorisee =
+      params.autoriserReductionAuDessusDuPlafond === true &&
+      apres.alloue <= avant.alloue;
+    if (!estIllimite(plafond) && apres.alloue > plafond && !reductionAutorisee) {
       throw new PlafondQuotaDepasse(apres.alloue, plafond);
     }
 
@@ -231,7 +301,7 @@ export async function modifierPlafondQuota(
       include: { user: { include: { role: true } } },
     });
     const avant = BigInt(fiche.quotaBytes ?? 0);
-    const allocation = await calculerAllocation(tx, fiche.userId);
+    const allocation = await calculerAllocation(tx, fiche);
     if (!estIllimite(params.nouveauPlafond) && allocation.alloue > params.nouveauPlafond) {
       throw new PlafondQuotaDepasse(allocation.alloue, params.nouveauPlafond);
     }
@@ -310,11 +380,13 @@ export type RefusQuota = { status: number; body: { error: string; message: strin
  */
 export async function verifierPlafond(
   prisma: any,
-  userId: string,
+  proprietaire: PorteeQuotaRevendeur,
   demande: bigint,
   options: { exclureSubscriptionId?: string; exclureClientId?: string } = {}
 ): Promise<RefusQuota | null> {
-  const fiche = await prisma.reseller.findUnique({ where: { userId } });
+  const fiche = typeof proprietaire === "string"
+    ? await prisma.reseller.findUnique({ where: { userId: proprietaire } })
+    : proprietaire;
   // Absence de fiche : le compte n'est pas un revendeur reconnu. Refuser plutôt
   // que de laisser passer, ce que faisait `reseller?.quotaBytes ?? 0n`.
   if (!fiche) {
@@ -330,7 +402,7 @@ export async function verifierPlafond(
   const plafond = BigInt(fiche.quotaBytes ?? 0);
   if (estIllimite(plafond)) return null;
 
-  const { alloue } = await calculerAllocation(prisma, userId, options);
+  const { alloue } = await calculerAllocation(prisma, fiche, options);
   const projete = alloue + demande;
   if (projete > plafond) {
     const enGo = (v: bigint) => (Number(v) / 1024 ** 3).toFixed(2);
@@ -363,7 +435,17 @@ export async function verifierAllocation(
   }
 ): Promise<RefusQuota | null> {
   if (params.role !== "RESELLER" || !prisma || !params.userId) return null;
-  return verifierPlafond(prisma, params.userId, params.demande, {
+  const fiche = await prisma.reseller.findUnique({ where: { userId: params.userId } });
+  if (!fiche) {
+    return {
+      status: 403,
+      body: {
+        error: "errors.resellers.not_found",
+        message: "Aucune fiche revendeur : impossible d'attribuer du quota.",
+      },
+    };
+  }
+  return verifierPlafond(prisma, fiche, params.demande, {
     exclureSubscriptionId: params.exclureSubscriptionId,
     exclureClientId: params.exclureClientId,
   });

@@ -40,16 +40,17 @@ router.post("/register", async (req: AuthenticatedRequest, res: Response) => {
       return res.status(400).json({ error: "errors.auth.email_exists", message: "Email is already registered" });
     }
 
-    // Role handling: default to RESELLER or a base role
-    let finalRoleId = body.roleId;
-    if (!finalRoleId) {
-      if (prisma) {
-        const role = await prisma.role.findFirst({ where: { name: "RESELLER" } });
-        finalRoleId = role?.id || "role-reseller";
-      } else {
-        finalRoleId = "role-reseller";
-      }
+    // L'inscription publique ne peut attribuer aucun rôle de gestion.
+    const clientRole = prisma
+      ? await prisma.role.findUnique({ where: { name: "CLIENT" } })
+      : inMemoryDb.roles.find((role) => role.name === "CLIENT");
+    if (!clientRole) {
+      return res.status(503).json({ error: "errors.auth.registration_unavailable", message: "Inscription indisponible" });
     }
+    if (body.roleId && body.roleId !== clientRole.id) {
+      return res.status(403).json({ error: "errors.auth.forbidden", message: "Les comptes de gestion sont créés par un administrateur" });
+    }
+    const finalRoleId = clientRole.id;
 
     let newUser;
     if (prisma) {
@@ -79,11 +80,11 @@ router.post("/register", async (req: AuthenticatedRequest, res: Response) => {
       inMemoryDb.users.push(newUser);
     }
 
-    const roleName = prisma ? (newUser as any).role?.name : "RESELLER";
+    const roleName = "CLIENT";
     const tokens = generateTokens({
       userId: newUser.id,
       email: newUser.email,
-      role: roleName || "RESELLER",
+      role: roleName,
     });
 
     await logDbActivity(newUser.id, `User registration: ${newUser.email}`, "success", req.ip);
@@ -94,7 +95,7 @@ router.post("/register", async (req: AuthenticatedRequest, res: Response) => {
         id: newUser.id,
         name: newUser.name,
         email: newUser.email,
-        role: roleName || "RESELLER",
+        role: roleName,
       },
       ...tokens,
     });
@@ -139,9 +140,17 @@ router.post("/login", async (req: AuthenticatedRequest, res: Response) => {
       return res.status(403).json({ error: "errors.auth.suspended", message: "User account has been suspended" });
     }
 
+    let effectiveRole = userRecord.role?.name || "SUPPORT";
+    if (effectiveRole === "RESELLER") {
+      const hasResellerRecord = prisma
+        ? !!(await (prisma as any).reseller.findUnique({ where: { userId: userRecord.id }, select: { id: true } }))
+        : inMemoryDb.resellers.some((reseller) => reseller.userId === userRecord.id);
+      if (!hasResellerRecord) effectiveRole = "CLIENT";
+    }
+
     // Load active permissions
     let permissions: string[] = [];
-    const isOwnerLogin = userRecord.role?.name === "OWNER";
+    const isOwnerLogin = effectiveRole === "OWNER";
     if (prisma) {
       if (isOwnerLogin) {
         // Le rôle racine OWNER dispose de toutes les permissions (bypass centralisé).
@@ -160,11 +169,12 @@ router.post("/login", async (req: AuthenticatedRequest, res: Response) => {
         .filter((p) => rp.some((item) => item.permissionId === p.id))
         .map((p) => p.name);
     }
+    if (effectiveRole === "CLIENT") permissions = [];
 
     const tokens = generateTokens({
       userId: userRecord.id,
       email: userRecord.email,
-      role: userRecord.role?.name || "SUPPORT",
+      role: effectiveRole,
     });
 
     // Traçabilité de sécurité : les authentifications OWNER réussies écrivent
@@ -184,7 +194,7 @@ router.post("/login", async (req: AuthenticatedRequest, res: Response) => {
         id: userRecord.id,
         name: userRecord.name,
         email: userRecord.email,
-        role: userRecord.role?.name || "SUPPORT",
+        role: effectiveRole,
         permissions,
       },
       ...tokens,
@@ -226,10 +236,21 @@ router.post("/refresh", async (req: AuthenticatedRequest, res: Response) => {
       return res.status(403).json({ error: "errors.auth.suspended", message: "User is suspended or deleted" });
     }
 
+    let effectiveRole = decoded.role === "CLIENT"
+      ? "CLIENT"
+      : userRecord.role?.name || "SUPPORT";
+    if (effectiveRole === "RESELLER") {
+      const hasResellerRecord = prisma
+        ? !!(await (prisma as any).reseller.findUnique({ where: { userId: userRecord.id }, select: { id: true } }))
+        : inMemoryDb.resellers.some((reseller) => reseller.userId === userRecord.id);
+      if (!hasResellerRecord) effectiveRole = "CLIENT";
+    }
+
     const tokens = generateTokens({
       userId: userRecord.id,
       email: userRecord.email,
-      role: userRecord.role?.name || "SUPPORT",
+      role: effectiveRole,
+      ...(decoded.clientId ? { clientId: decoded.clientId } : {}),
     });
 
     return res.json({
@@ -237,7 +258,11 @@ router.post("/refresh", async (req: AuthenticatedRequest, res: Response) => {
       ...tokens,
     });
   } catch (err) {
-    return res.status(401).json({ error: "errors.auth.invalid_refresh", message: "Invalid or expired refresh token" });
+    if (err instanceof jwt.JsonWebTokenError) {
+      return res.status(401).json({ error: "errors.auth.invalid_refresh", message: "Invalid or expired refresh token" });
+    }
+    console.error("Refresh session error:", err);
+    return res.status(503).json({ error: "errors.auth.unavailable", message: "Renouvellement de session temporairement indisponible" });
   }
 });
 
@@ -318,14 +343,13 @@ router.get('/me', requireAuth, async (req: AuthenticatedRequest, res: Response) 
         include: { role: { include: { permissions: { include: { permission: true } } } } },
       });
       if (!user) return res.status(404).json({ error: 'errors.auth.user_not_found', message: 'Utilisateur introuvable' });
-      const permissions = user.role.permissions.map((rp) => rp.permission.name);
       return res.json({
         id: user.id,
         name: user.name,
         email: user.email,
-        role: user.role.name,
+        role: req.user.role,
         status: user.status,
-        permissions,
+        permissions: req.user.permissions,
         avatarUrl: user.avatarUrl ?? null,
       });
     }

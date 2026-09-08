@@ -339,6 +339,7 @@ export const fr = {
   error_suspended: 'Votre compte est suspendu. Contactez le support.',
   activation_account_expired: 'L’accès du revendeur a expiré. Demandez son renouvellement.',
   activation_quota_reached: 'Le quota du revendeur est atteint. Aucune nouvelle activation n’est autorisée.',
+  activation_device_claimed: 'Cet appareil est déjà lié à un autre compte.',
   activation_forbidden: 'Activation refusée. Ce token n’est pas autorisé pour cet appareil ou ce client.',
   activation_rate_limited: 'Trop de tentatives. Patientez avant de réessayer.',
   error_no_network: 'Connexion impossible. Vérifiez votre réseau.',

@@ -1,29 +1,40 @@
 import { Router, Response } from "express";
 import { z } from "zod";
+import bcrypt from "bcryptjs";
+import crypto from "crypto";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { canSeeUser, isOwnerRequest } from "../middleware/rbac/owner";
 import { executerMutationQuota, PlafondQuotaDepasse } from "../services/reseller-quota";
+import {
+  dissocierAccesClient,
+  synchroniserEtatAccesClient,
+} from "../services/client-access-state";
+import {
+  chargerFicheRevendeur,
+  estRoleSuperieur,
+  exigerAccesRevendeur,
+  interdireMutationSupport,
+  porteeClientsRevendeur,
+  possedeClient,
+  refusPourEtatAcces,
+  refusPropriete,
+  refusSiPlafondAtteint,
+  reponsePlafondDepasse,
+  resumerAccesRevendeur,
+} from "../services/reseller-access";
 
 const router = Router();
 
-async function syncClientAccessState(clientId: string, state: 'active' | 'suspended' | 'revoked' | 'deleted') {
-  if (!prisma) return;
-  await (prisma as any).activationSession.updateMany({
-    where: { clientId },
-    data: { status: state === 'active' ? 'active' : state },
-  }).catch(() => {});
-  if (state === 'active') {
-    await (prisma as any).appRegistration.updateMany({
-      where: { clientId },
-      data: { status: 'matched' },
-    }).catch(() => {});
-  } else {
-    await (prisma as any).appRegistration.updateMany({
-      where: { clientId },
-      data: { status: state === 'deleted' ? 'pending' : state },
-    }).catch(() => {});
-  }
+/**
+ * Contrôle de propriété commun à toutes les mutations sur un client.
+ * Renvoie le refus à émettre, ou null si le demandeur est légitime.
+ */
+async function refusSiClientNonPossede(req: AuthenticatedRequest, client: any) {
+  if (req.user?.role !== "RESELLER") return null;
+  const fiche = (req as any).reseller ?? (await chargerFicheRevendeur(prisma, req.user.userId));
+  if (possedeClient(client, fiche)) return null;
+  return refusPropriete();
 }
 
 // Zod Schema validations
@@ -32,16 +43,18 @@ const createClientSchema = z.object({
   name: z.string().min(2),
   email: z.string().email().optional(),
   phone: z.string().optional(),
-  quotaTotalGb: z.coerce.number().min(1).optional(), // Optional - can be set via token later
-  durationDays: z.coerce.number().min(1).optional(), // Optional - can be set via token later
-  deviceLimit: z.coerce.number().min(1).default(1),
+  quotaTotalGb: z.coerce.number().int().min(1).max(1_000_000).optional(),
+  durationDays: z.coerce.number().int().min(1).max(3650).optional(),
+  deviceLimit: z.coerce.number().int().min(1).max(100).default(1),
   deviceId: z.string().optional(),
+  // Rattachement commercial explicite, réservé aux rôles supérieurs.
+  resellerId: z.string().optional(),
 });
 
 const updateClientSchema = z.object({
   name: z.string().min(2).optional(),
-  quotaTotalGb: z.coerce.number().min(1).optional(),
-  deviceLimit: z.coerce.number().min(1).optional(),
+  quotaTotalGb: z.coerce.number().int().min(1).max(1_000_000).optional(),
+  deviceLimit: z.coerce.number().int().min(1).max(100).optional(),
   status: z.enum(["active", "suspended", "expired"]).optional(),
 });
 
@@ -56,10 +69,26 @@ function sanitizeVpnClient(client: any) {
     user = { ...user };
     delete user.passwordHash;
   }
-  
+
+  // Identité du revendeur propriétaire, exposée à tous les rôles qui lisent la
+  // fiche : sans elle, impossible de dire de qui relève un client.
+  let reseller = client.reseller ?? null;
+  if (reseller) {
+    reseller = {
+      id: reseller.id,
+      name: reseller.user?.name ?? null,
+      email: reseller.user?.email ?? null,
+      status: reseller.status ?? null,
+      accessExpiresAt: reseller.accessExpiresAt ?? null,
+    };
+  }
+
   return {
     ...client,
     user,
+    reseller,
+    resellerId: client.resellerId ?? reseller?.id ?? null,
+    resellerName: reseller?.name ?? null,
     quotaTotal: client.quotaTotal ? client.quotaTotal.toString() : "0",
     quotaUsed: client.quotaUsed ? client.quotaUsed.toString() : "0",
   };
@@ -72,9 +101,14 @@ router.get("/", requireAuth, requirePermission("clients.view"), async (req: Auth
     const isReseller = req.user?.role === "RESELLER";
 
     if (prisma) {
+      const fiche = isReseller ? await chargerFicheRevendeur(prisma, req.user?.userId) : null;
       clients = await prisma.vpnClient.findMany({
-        where: isReseller ? { userId: req.user?.userId } : undefined,
-        include: { user: { include: { role: true } } },
+        where: isReseller ? (porteeClientsRevendeur(fiche) as any) : undefined,
+        include: {
+          user: { include: { role: true } },
+          // Jointure unique : l'étiquette revendeur sans requête par ligne.
+          reseller: { include: { user: { select: { id: true, name: true, email: true } } } },
+        },
         orderBy: { createdAt: "desc" },
       });
     } else {
@@ -83,7 +117,8 @@ router.get("/", requireAuth, requirePermission("clients.view"), async (req: Auth
         return { ...client, user: u };
       });
       if (isReseller) {
-        clients = clients.filter((c) => c.userId === req.user?.userId);
+        const fiche = await chargerFicheRevendeur(null, req.user?.userId);
+        clients = clients.filter((c) => possedeClient(c, fiche));
       }
     }
 
@@ -107,7 +142,10 @@ router.get("/:id", requireAuth, requirePermission("clients.view"), async (req: A
     if (prisma) {
       client = await prisma.vpnClient.findUnique({
         where: { id },
-        include: { user: { include: { role: true } } },
+        include: {
+          user: { include: { role: true } },
+          reseller: { include: { user: { select: { id: true, name: true, email: true } } } },
+        },
       });
     } else {
       const c = inMemoryDb.vpnClients.find((cli) => cli.id === id);
@@ -121,9 +159,10 @@ router.get("/:id", requireAuth, requirePermission("clients.view"), async (req: A
       return res.status(404).json({ error: "errors.clients.not_found", message: "VPN client not found" });
     }
 
-    // Secure reseller boundary
-    if (req.user?.role === "RESELLER" && client.userId !== req.user?.userId) {
-      return res.status(403).json({ error: "errors.auth.forbidden", message: "Unauthorized access to reseller client data" });
+    // Cloisonnement revendeur : la propriété fait foi, pas le compte porteur.
+    const refusLecture = await refusSiClientNonPossede(req, client);
+    if (refusLecture) {
+      return res.status(refusLecture.status).json(refusLecture.body);
     }
 
     // Garde hiérarchique : client d'un compte OWNER invisible pour les non-OWNER.
@@ -139,50 +178,134 @@ router.get("/:id", requireAuth, requirePermission("clients.view"), async (req: A
 });
 
 // POST /api/clients
-router.post("/", requireAuth, requirePermission("clients.create"), async (req: AuthenticatedRequest, res: Response) => {
+//
+// Crée UNIQUEMENT un compte client. Aucun forfait, aucun profil VPN, aucun
+// plan n'est attribué au passage : un client sans plan est un état légitime,
+// et l'attribution reste une action explicite (POST /api/subscriptions).
+router.post(
+  "/",
+  requireAuth,
+  interdireMutationSupport(),
+  requirePermission("clients.create"),
+  exigerAccesRevendeur(),
+  async (req: AuthenticatedRequest, res: Response) => {
   try {
     const body = createClientSchema.parse(req.body);
 
-    // Limit resellers to creating clients for themselves
+    // La propriété commerciale est portée par `resellerId`. Le compte
+    // utilisateur du client reste un CLIENT distinct : partager le User du
+    // revendeur ferait hériter au JWT mobile ses permissions dashboard et
+    // rendrait plusieurs appareils indiscernables par `userId`.
     let targetUserId = body.userId;
+    let creationUtilisateur: {
+      name: string;
+      email: string;
+      phone: string | null;
+      passwordHash: string;
+      roleId: string;
+    } | null = null;
+    let fiche: any = null;
     if (req.user?.role === "RESELLER") {
-      targetUserId = req.user.userId;
+      targetUserId = undefined;
+      fiche = (req as any).reseller ?? (await chargerFicheRevendeur(prisma, req.user.userId));
+      if (body.resellerId && fiche?.id && body.resellerId !== fiche.id) {
+        const refus = refusPropriete();
+        return res.status(refus.status).json(refus.body);
+      }
+    } else if (body.resellerId) {
+      if (!estRoleSuperieur(req.user?.role)) {
+        const refus = refusPropriete();
+        return res.status(refus.status).json(refus.body);
+      }
+      if (prisma) {
+        fiche = await (prisma as any).reseller.findUnique({
+          where: { id: body.resellerId },
+          include: { user: true },
+        });
+        if (!fiche) {
+          return res.status(404).json({ error: "errors.resellers.not_found", message: "Revendeur introuvable" });
+        }
+      }
     }
 
-    // For ADMIN/SUPER_ADMIN: auto-create user if userId not provided
-    if (!targetUserId && (req.user?.role === "ADMIN" || req.user?.role === "SUPER_ADMIN") && prisma) {
-      // Generate user credentials
-      const username = body.name.toLowerCase().replace(/\s+/g, "_");
-      const tempEmail = `${username}_${Date.now()}@vpn.local`;
-      const tempPassword = `client_${Date.now()}`;
-      const passwordHash = require("bcryptjs").hashSync(tempPassword, 10);
+    if (fiche) {
+      const refusAcces = refusPourEtatAcces(resumerAccesRevendeur(fiche));
+      if (refusAcces) return res.status(refusAcces.status).json(refusAcces.body);
+      const plafond = await refusSiPlafondAtteint(prisma, {
+        role: "RESELLER",
+        userId: fiche.userId,
+        fiche,
+      });
+      if (plafond) return res.status(plafond.status).json(plafond.body);
+    }
 
-      // Find or create CLIENT role
+    if (targetUserId && prisma) {
+      const cible = await prisma.user.findUnique({
+        where: { id: targetUserId },
+        include: { role: true, vpnClients: { select: { id: true }, take: 1 } },
+      });
+      if (!cible) {
+        return res.status(404).json({ error: "errors.users.not_found", message: "Utilisateur introuvable" });
+      }
+      if (cible.role?.name !== "CLIENT" || cible.vpnClients.length > 0) {
+        return res.status(409).json({
+          error: "errors.clients.user_unavailable",
+          code: "CLIENT_USER_UNAVAILABLE",
+          message: "Ce compte utilisateur ne peut pas porter un nouveau client VPN.",
+        });
+      }
+    }
+
+    if (!targetUserId && prisma) {
       let clientRole = await prisma.role.findUnique({ where: { name: "CLIENT" } });
       if (!clientRole) {
         clientRole = await prisma.role.create({
           data: { name: "CLIENT", description: "VPN Client" }
         });
       }
-
-      const newUser = await prisma.user.create({
-        data: {
-          name: body.name,
-          email: tempEmail,
-          phone: body.phone || "+00000000000",
-          passwordHash,
-          roleId: clientRole.id,
-          status: "active",
-        },
-      });
-      targetUserId = newUser.id;
-
-      // Log the temp credentials for admin reference
-      console.log(`🔐 Created client user: ${tempEmail} / ${tempPassword}`);
+      const email =
+        body.email?.trim().toLowerCase() ||
+        `client.${Date.now()}.${crypto.randomBytes(6).toString("hex")}@vpn.local`;
+      const emailTaken = await prisma.user.findUnique({ where: { email } });
+      if (emailTaken) {
+        return res.status(409).json({
+          error: "errors.users.email_exists",
+          code: "CLIENT_EMAIL_EXISTS",
+          message: "Un compte utilise déjà cette adresse e-mail.",
+        });
+      }
+      creationUtilisateur = {
+        name: body.name,
+        email,
+        phone: body.phone || null,
+        passwordHash: await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 12),
+        roleId: clientRole.id,
+      };
     }
 
-    if (!targetUserId) {
-      return res.status(400).json({ error: "errors.validation", message: "userId required for RESELLER role" });
+    if (!targetUserId && !prisma) {
+      const clientRole = inMemoryDb.roles.find((role) => role.name === "CLIENT");
+      if (!clientRole) {
+        return res.status(500).json({ error: "errors.server", message: "Role CLIENT introuvable" });
+      }
+      const memoryUser = {
+        id: `user-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`,
+        name: body.name,
+        email: body.email?.trim().toLowerCase()
+          || `client.${Date.now()}.${crypto.randomBytes(4).toString("hex")}@vpn.local`,
+        phone: body.phone || null,
+        passwordHash: await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10),
+        roleId: clientRole.id,
+        status: "active",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      inMemoryDb.users.push(memoryUser as any);
+      targetUserId = memoryUser.id;
+    }
+
+    if (!targetUserId && !creationUtilisateur) {
+      return res.status(400).json({ error: "errors.validation", message: "Compte client requis" });
     }
 
     // Generate SXB Secure Client Token (Sing-box/V2Ray standard)
@@ -194,22 +317,30 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
     let newClient: any = null;
     if (prisma) {
       newClient = await executerMutationQuota(prisma, {
-        resellerUserId: targetUserId,
+        resellerUserId: fiche?.userId ?? targetUserId,
+        resellerId: fiche?.id ?? null,
         auteur: { userId: req.user?.userId, email: req.user?.email },
         reason: `Creation du client ${body.name}`,
         referenceType: "vpn_client",
-      }, (tx) => tx.vpnClient.create({
-        data: {
-          userId: targetUserId,
-          token,
-          quotaTotal: body.quotaTotalGb ? BigInt(body.quotaTotalGb) * BigInt(1024 * 1024 * 1024) : null,
-          quotaUsed: BigInt(0),
-          expireAt: body.durationDays ? new Date(Date.now() + body.durationDays * 24 * 60 * 60 * 1000) : null,
-          status: "active",
-          deviceId: body.deviceId || undefined,
-        },
-        include: { user: true },
-      }));
+      }, async (tx) => {
+        const clientUserId = creationUtilisateur
+          ? (await tx.user.create({ data: { ...creationUtilisateur, status: "active" } })).id
+          : targetUserId;
+        return tx.vpnClient.create({
+          data: {
+            userId: clientUserId,
+            token,
+            quotaTotal: body.quotaTotalGb ? BigInt(body.quotaTotalGb) * BigInt(1024 * 1024 * 1024) : null,
+            quotaUsed: BigInt(0),
+            expireAt: body.durationDays ? new Date(Date.now() + body.durationDays * 24 * 60 * 60 * 1000) : null,
+            status: "active",
+            deviceLimit: body.deviceLimit,
+            deviceId: body.deviceId || undefined,
+            resellerId: fiche?.id ?? null,
+          },
+          include: { user: true, reseller: { include: { user: true } } },
+        });
+      });
     } else {
       newClient = {
         id: `client-${Date.now()}`,
@@ -219,6 +350,9 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
         quotaUsed: BigInt(0),
         expireAt: body.durationDays ? new Date(Date.now() + body.durationDays * 24 * 60 * 60 * 1000) : null,
         status: "active",
+        deviceLimit: body.deviceLimit,
+        resellerId: fiche?.id ?? null,
+        deviceId: body.deviceId || null,
         createdAt: new Date(),
         updatedAt: new Date(),
       };
@@ -235,7 +369,7 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
       return res.status(400).json({ error: "errors.validation", message: err.issues });
     }
     if (err instanceof PlafondQuotaDepasse) {
-      return res.status(409).json({ error: "errors.resellers.quota_exceeded", message: err.message });
+      return res.status(409).json(reponsePlafondDepasse(err.alloue, err.plafond));
     }
     console.error("Create VPN client error:", err);
     return res.status(500).json({ error: "errors.server", message: "Failed to create VPN client" });
@@ -243,7 +377,13 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
 });
 
 // PATCH /api/clients/:id
-router.patch("/:id", requireAuth, requirePermission("clients.create"), async (req: AuthenticatedRequest, res: Response) => {
+router.patch(
+  "/:id",
+  requireAuth,
+  interdireMutationSupport(),
+  requirePermission("clients.create"),
+  exigerAccesRevendeur(),
+  async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     const body = updateClientSchema.parse(req.body);
@@ -259,42 +399,78 @@ router.patch("/:id", requireAuth, requirePermission("clients.create"), async (re
       return res.status(404).json({ error: "errors.clients.not_found", message: "VPN Client not found" });
     }
 
-    // Secure reseller boundary
-    if (req.user?.role === "RESELLER" && existingClient.userId !== req.user?.userId) {
-      return res.status(403).json({ error: "errors.auth.forbidden", message: "Unauthorized edit access" });
+    const refusEdition = await refusSiClientNonPossede(req, existingClient);
+    if (refusEdition) return res.status(refusEdition.status).json(refusEdition.body);
+
+    // Augmenter le quota d'un client engage le plafond du revendeur : refus si
+    // celui-ci est déjà atteint. Baisser le quota ou suspendre reste possible.
+    const augmenteLeQuota =
+      body.quotaTotalGb !== undefined &&
+      BigInt(body.quotaTotalGb) * BigInt(1024 * 1024 * 1024) > BigInt(existingClient.quotaTotal ?? 0);
+    if (augmenteLeQuota && prisma) {
+      const plafond = await refusSiPlafondAtteint(prisma, {
+        role: req.user?.role,
+        userId: req.user?.userId,
+        fiche: (req as any).reseller,
+      });
+      if (plafond) return res.status(plafond.status).json(plafond.body);
     }
 
     const updates: any = {};
-    if (body.name !== undefined) updates.name = body.name; // if mapped in user, otherwise on DB side
     if (body.status !== undefined) updates.status = body.status;
+    if (body.deviceLimit !== undefined) updates.deviceLimit = body.deviceLimit;
     if (body.quotaTotalGb !== undefined) {
       updates.quotaTotal = BigInt(body.quotaTotalGb) * BigInt(1024 * 1024 * 1024);
     }
 
     let updated: any = null;
     if (prisma) {
+      if (body.name !== undefined) {
+        const user = await prisma.user.findUnique({
+          where: { id: existingClient.userId }, include: { role: true },
+        });
+        if (user?.role?.name !== "CLIENT" && user?.name !== body.name) {
+          return res.status(409).json({
+            error: "errors.clients.shared_user",
+            message: "Ce client historique utilise un compte de gestion partagé. Son nom se modifie depuis Comptes.",
+          });
+        }
+      }
       updated = await executerMutationQuota(prisma, {
         resellerUserId: existingClient.userId,
+        resellerId: existingClient.resellerId ?? null,
         auteur: { userId: req.user?.userId, email: req.user?.email },
         reason: `Modification du quota du client ${existingClient.token}`,
         referenceType: "vpn_client",
         referenceId: id,
-      }, (tx) => tx.vpnClient.update({
-        where: { id },
-        data: updates,
-        include: { user: true },
-      }));
+        autoriserReductionAuDessusDuPlafond:
+          body.status === "suspended" ||
+          body.status === "expired" ||
+          (body.quotaTotalGb !== undefined &&
+            BigInt(body.quotaTotalGb) * BigInt(1024 * 1024 * 1024) < BigInt(existingClient.quotaTotal ?? 0)),
+      }, async (tx) => {
+        const result = await tx.vpnClient.update({
+          where: { id },
+          data: {
+            ...updates,
+            ...(body.name !== undefined
+              ? { user: { update: { name: body.name } } }
+              : {}),
+          },
+          include: { user: true, reseller: { include: { user: true } } },
+        });
+        if (body.status) await synchroniserEtatAccesClient(tx, id, body.status);
+        return result;
+      });
     } else {
       const index = inMemoryDb.vpnClients.findIndex((c) => c.id === id);
       const merged = { ...inMemoryDb.vpnClients[index], ...updates, updatedAt: new Date() };
       inMemoryDb.vpnClients[index] = merged;
       const u = inMemoryDb.users.find((user) => user.id === merged.userId);
+      if (u && body.name !== undefined) u.name = body.name;
       updated = { ...merged, user: u };
     }
 
-    if (body.status === 'active' || body.status === 'suspended' || body.status === 'revoked' || body.status === 'disabled') {
-      await syncClientAccessState(id, body.status === 'active' ? 'active' : body.status);
-    }
     await logDbActivity(req.user?.userId || null, `Modified VPN client details (ID: ${id})`, "info", req.ip);
 
     return res.json(sanitizeVpnClient(updated));
@@ -303,7 +479,7 @@ router.patch("/:id", requireAuth, requirePermission("clients.create"), async (re
       return res.status(400).json({ error: "errors.validation", message: err.issues });
     }
     if (err instanceof PlafondQuotaDepasse) {
-      return res.status(409).json({ error: "errors.resellers.quota_exceeded", message: err.message });
+      return res.status(409).json(reponsePlafondDepasse(err.alloue, err.plafond));
     }
     console.error("Update VPN client error:", err);
     return res.status(500).json({ error: "errors.server", message: "Failed to update VPN client" });
@@ -311,7 +487,14 @@ router.patch("/:id", requireAuth, requirePermission("clients.create"), async (re
 });
 
 // POST /api/clients/:id/suspend
-router.post("/:id/suspend", requireAuth, requirePermission("clients.manage"), async (req: AuthenticatedRequest, res: Response) => {
+// Action RÉDUCTRICE : ouverte même quand le plafond est atteint.
+router.post(
+  "/:id/suspend",
+  requireAuth,
+  interdireMutationSupport(),
+  requirePermission("clients.manage"),
+  exigerAccesRevendeur({ autoriserReduction: true }),
+  async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     let client: any = null;
@@ -324,17 +507,27 @@ router.post("/:id/suspend", requireAuth, requirePermission("clients.manage"), as
 
     if (!client) return res.status(404).json({ error: "errors.clients.not_found" });
 
-    // Secure reseller boundary
-    if (req.user?.role === "RESELLER" && client.userId !== req.user?.userId) {
-      return res.status(403).json({ error: "errors.auth.forbidden" });
-    }
+    const refus = await refusSiClientNonPossede(req, client);
+    if (refus) return res.status(refus.status).json(refus.body);
 
     let updated: any = null;
     if (prisma) {
-      updated = await prisma.vpnClient.update({
-        where: { id },
-        data: { status: "suspended" },
-        include: { user: true },
+      updated = await executerMutationQuota(prisma, {
+        resellerUserId: client.userId,
+        resellerId: client.resellerId ?? null,
+        auteur: { userId: req.user?.userId, email: req.user?.email },
+        reason: `Suspension du client ${client.token}`,
+        referenceType: "vpn_client",
+        referenceId: id,
+        autoriserReductionAuDessusDuPlafond: true,
+      }, async (tx) => {
+        const result = await tx.vpnClient.update({
+          where: { id },
+          data: { status: "suspended" },
+          include: { user: true, reseller: { include: { user: true } } },
+        });
+        await synchroniserEtatAccesClient(tx, id, "suspended");
+        return result;
       });
     } else {
       const index = inMemoryDb.vpnClients.findIndex((c) => c.id === id);
@@ -343,16 +536,24 @@ router.post("/:id/suspend", requireAuth, requirePermission("clients.manage"), as
       updated = { ...inMemoryDb.vpnClients[index], user: u };
     }
 
-    await syncClientAccessState(id, 'suspended');
     await logDbActivity(req.user?.userId || null, `Suspended VPN Client: ${client.token}`, "warning", req.ip);
     return res.json(sanitizeVpnClient(updated));
   } catch (err) {
+    if (err instanceof PlafondQuotaDepasse) {
+      return res.status(409).json(reponsePlafondDepasse(err.alloue, err.plafond));
+    }
     return res.status(500).json({ error: "errors.server" });
   }
 });
 
 // POST /api/clients/:id/activate
-router.post("/:id/activate", requireAuth, requirePermission("clients.create"), async (req: AuthenticatedRequest, res: Response) => {
+router.post(
+  "/:id/activate",
+  requireAuth,
+  interdireMutationSupport(),
+  requirePermission("clients.create"),
+  exigerAccesRevendeur(),
+  async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     let client: any = null;
@@ -365,17 +566,26 @@ router.post("/:id/activate", requireAuth, requirePermission("clients.create"), a
 
     if (!client) return res.status(404).json({ error: "errors.clients.not_found" });
 
-    // Secure reseller boundary
-    if (req.user?.role === "RESELLER" && client.userId !== req.user?.userId) {
-      return res.status(403).json({ error: "errors.auth.forbidden" });
-    }
+    const refus = await refusSiClientNonPossede(req, client);
+    if (refus) return res.status(refus.status).json(refus.body);
 
     let updated: any = null;
     if (prisma) {
-      updated = await prisma.vpnClient.update({
-        where: { id },
-        data: { status: "active" },
-        include: { user: true },
+      updated = await executerMutationQuota(prisma, {
+        resellerUserId: client.userId,
+        resellerId: client.resellerId ?? null,
+        auteur: { userId: req.user?.userId, email: req.user?.email },
+        reason: `Reactivation du client ${client.token}`,
+        referenceType: "vpn_client",
+        referenceId: id,
+      }, async (tx) => {
+        const result = await tx.vpnClient.update({
+          where: { id },
+          data: { status: "active" },
+          include: { user: true, reseller: { include: { user: true } } },
+        });
+        await synchroniserEtatAccesClient(tx, id, "active");
+        return result;
       });
     } else {
       const index = inMemoryDb.vpnClients.findIndex((c) => c.id === id);
@@ -384,16 +594,24 @@ router.post("/:id/activate", requireAuth, requirePermission("clients.create"), a
       updated = { ...inMemoryDb.vpnClients[index], user: u };
     }
 
-    await syncClientAccessState(id, 'active');
     await logDbActivity(req.user?.userId || null, `Activated VPN Client: ${client.token}`, "success", req.ip);
     return res.json(sanitizeVpnClient(updated));
   } catch (err) {
+    if (err instanceof PlafondQuotaDepasse) {
+      return res.status(409).json(reponsePlafondDepasse(err.alloue, err.plafond));
+    }
     return res.status(500).json({ error: "errors.server" });
   }
 });
 
 // POST /api/clients/:id/renew
-router.post("/:id/renew", requireAuth, requirePermission("clients.create"), async (req: AuthenticatedRequest, res: Response) => {
+router.post(
+  "/:id/renew",
+  requireAuth,
+  interdireMutationSupport(),
+  requirePermission("clients.create"),
+  exigerAccesRevendeur(),
+  async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     let client: any = null;
@@ -406,21 +624,32 @@ router.post("/:id/renew", requireAuth, requirePermission("clients.create"), asyn
 
     if (!client) return res.status(404).json({ error: "errors.clients.not_found" });
 
-    // Secure reseller boundary
-    if (req.user?.role === "RESELLER" && client.userId !== req.user?.userId) {
-      return res.status(403).json({ error: "errors.auth.forbidden" });
-    }
+    const refus = await refusSiClientNonPossede(req, client);
+    if (refus) return res.status(refus.status).json(refus.body);
 
-    // Extend subscription expiration by 30 days
-    const currentExpiry = new Date(client.expireAt);
-    const newExpiry = new Date(currentExpiry.getTime() + 30 * 24 * 60 * 60 * 1000);
+    // Prolonger une échéance DÉJÀ dépassée doit repartir de maintenant, sinon
+    // la nouvelle date reste dans le passé (67 comptes en production sont dans
+    // ce cas). Comparaison de `Date`, jamais de chaînes.
+    const base = client.expireAt && new Date(client.expireAt) > new Date() ? new Date(client.expireAt) : new Date();
+    const newExpiry = new Date(base.getTime() + 30 * 24 * 60 * 60 * 1000);
 
     let updated: any = null;
     if (prisma) {
-      updated = await prisma.vpnClient.update({
-        where: { id },
-        data: { expireAt: newExpiry, status: "active" },
-        include: { user: true },
+      updated = await executerMutationQuota(prisma, {
+        resellerUserId: client.userId,
+        resellerId: client.resellerId ?? null,
+        auteur: { userId: req.user?.userId, email: req.user?.email },
+        reason: `Renouvellement du client ${client.token}`,
+        referenceType: "vpn_client",
+        referenceId: id,
+      }, async (tx) => {
+        const result = await tx.vpnClient.update({
+          where: { id },
+          data: { expireAt: newExpiry, status: "active" },
+          include: { user: true, reseller: { include: { user: true } } },
+        });
+        await synchroniserEtatAccesClient(tx, id, "active");
+        return result;
       });
     } else {
       const index = inMemoryDb.vpnClients.findIndex((c) => c.id === id);
@@ -433,12 +662,22 @@ router.post("/:id/renew", requireAuth, requirePermission("clients.create"), asyn
     await logDbActivity(req.user?.userId || null, `Renewed subscription for Client Token: ${client.token} by +30 Days`, "success", req.ip);
     return res.json(sanitizeVpnClient(updated));
   } catch (err) {
+    if (err instanceof PlafondQuotaDepasse) {
+      return res.status(409).json(reponsePlafondDepasse(err.alloue, err.plafond));
+    }
+    console.error("Renew VPN client error:", err);
     return res.status(500).json({ error: "errors.server" });
   }
 });
 
 // POST /api/clients/:id/reset-access
-router.post("/:id/reset-access", requireAuth, requirePermission("clients.create"), async (req: AuthenticatedRequest, res: Response) => {
+router.post(
+  "/:id/reset-access",
+  requireAuth,
+  interdireMutationSupport(),
+  requirePermission("clients.create"),
+  exigerAccesRevendeur(),
+  async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     let client: any = null;
@@ -451,10 +690,8 @@ router.post("/:id/reset-access", requireAuth, requirePermission("clients.create"
 
     if (!client) return res.status(404).json({ error: "errors.clients.not_found" });
 
-    // Secure reseller boundary
-    if (req.user?.role === "RESELLER" && client.userId !== req.user?.userId) {
-      return res.status(403).json({ error: "errors.auth.forbidden" });
-    }
+    const refus = await refusSiClientNonPossede(req, client);
+    if (refus) return res.status(refus.status).json(refus.body);
 
     // Generate a brand new, random, completely secure access UUID token for the VPN clients config
     // FIX-001: Format SXB-USER-XXXX-XXXX-XXXX standard
@@ -467,7 +704,7 @@ router.post("/:id/reset-access", requireAuth, requirePermission("clients.create"
       updated = await prisma.vpnClient.update({
         where: { id },
         data: { token: newToken },
-        include: { user: true },
+        include: { user: true, reseller: { include: { user: true } } },
       });
     } else {
       const index = inMemoryDb.vpnClients.findIndex((c) => c.id === id);
@@ -484,7 +721,15 @@ router.post("/:id/reset-access", requireAuth, requirePermission("clients.create"
 });
 
 // DELETE /api/clients/:id
-router.delete("/:id", requireAuth, requirePermission("clients.delete"), async (req: AuthenticatedRequest, res: Response) => {
+// Action RÉDUCTRICE : ouverte même quand le plafond est atteint — supprimer un
+// client est précisément ce qui libère du volume.
+router.delete(
+  "/:id",
+  requireAuth,
+  interdireMutationSupport(),
+  requirePermission("clients.delete"),
+  exigerAccesRevendeur({ autoriserReduction: true }),
+  async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     let client: any = null;
@@ -497,20 +742,22 @@ router.delete("/:id", requireAuth, requirePermission("clients.delete"), async (r
 
     if (!client) return res.status(404).json({ error: "errors.clients.not_found", message: "Client not found" });
 
-    // Secure reseller boundary
-    if (req.user?.role === "RESELLER" && client.userId !== req.user?.userId) {
-      return res.status(403).json({ error: "errors.auth.forbidden", message: "Access forbidden" });
-    }
+    const refus = await refusSiClientNonPossede(req, client);
+    if (refus) return res.status(refus.status).json(refus.body);
 
     if (prisma) {
-      await syncClientAccessState(id, 'deleted');
       await executerMutationQuota(prisma, {
         resellerUserId: client.userId,
+        resellerId: client.resellerId ?? null,
         auteur: { userId: req.user?.userId, email: req.user?.email },
         reason: `Suppression du client ${client.token}`,
         referenceType: "vpn_client",
         referenceId: id,
-      }, (tx) => tx.vpnClient.delete({ where: { id } }));
+        autoriserReductionAuDessusDuPlafond: true,
+      }, async (tx) => {
+        await dissocierAccesClient(tx, id);
+        return tx.vpnClient.delete({ where: { id } });
+      });
     } else {
       const index = inMemoryDb.vpnClients.findIndex((c) => c.id === id);
       inMemoryDb.vpnClients.splice(index, 1);
