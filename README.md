@@ -15,8 +15,9 @@ distribue ensuite à des revendeurs, qui la vendent à leurs propres clients sou
 forme de forfaits data. Chaque client active l'application mobile avec un jeton,
 consomme son quota, et voit son forfait expirer automatiquement à l'échéance.
 
-Aucun paramètre technique — adresse, port, identifiant, transport — ne quitte
-jamais le tableau de bord : ni le revendeur ni le client final n'y ont accès.
+Les paramètres techniques ne sont pas affichés aux revendeurs ni aux clients.
+L'application reçoit les paramètres nécessaires par le provisionnement chiffré,
+uniquement pour l'appareil et le forfait autorisés.
 
 ```mermaid
 flowchart LR
@@ -82,7 +83,7 @@ Points notables du moteur :
 
 | Rôle | Portée |
 | --- | --- |
-| `OWNER` | Tout. Contourne les permissions, met le service en pause, reste invisible des journaux et statistiques des autres rôles. |
+| `OWNER` | Administration racine. Contourne les permissions RBAC, mais pas le verrou par mot de passe des configurations ; peut mettre le service en pause. |
 | `SUPER_ADMIN` | Administration complète de la plateforme. |
 | `ADMIN` | Gestion courante : clients, forfaits, configurations, serveurs. |
 | `SUPPORT` | Consultation et assistance. |
@@ -92,6 +93,48 @@ Le revendeur ne voit que les configurations que l'administrateur lui a
 explicitement attribuées, et sous leur seul nom commercial. La restriction est
 appliquée par l'API, pas seulement par l'affichage : un appel direct avec une
 configuration non attribuée reçoit un `403`.
+
+### Verrouillage des configurations
+
+À la création ou à l'import, un mot de passe de protection **distinct des
+identifiants du tunnel VPN** est demandé. La configuration est verrouillée dès
+son enregistrement, y compris pour son créateur. Son nom commercial reste
+disponible afin de pouvoir l'attribuer, mais ses paramètres techniques et ses
+modifications exigent un déverrouillage.
+
+Le verrou s'ajoute aux permissions existantes : connaître le mot de passe ne
+donne ni un nouveau rôle ni l'accès aux clients d'un autre revendeur. Aucun
+rôle, même `OWNER` ou `SUPER_ADMIN`, ne dispense du déverrouillage. Celui-ci
+est temporaire et lié au compte connecté et à la configuration concernée.
+Changer le mot de passe invalide les autorisations de déverrouillage précédentes.
+
+Le mot de passe est conservé sous forme de **hash**, jamais en clair. La preuve
+temporaire de déverrouillage ne doit être placée ni dans une URL, ni dans les
+journaux, ni dans le stockage persistant du navigateur.
+
+L'attribution d'un profil à un client ou à un appareil, puis son provisionnement
+dans le mobile, **ne nécessitent pas de déverrouillage**. Les permissions,
+la propriété du client, la validité du forfait et les contrôles de quota
+continuent de s'appliquer.
+
+Les configurations historiques restent compatibles : la migration ne leur
+invente aucun mot de passe et ne coupe pas les appareils déjà provisionnés.
+Leur protection peut être activée explicitement depuis le tableau de bord.
+Les comptes SSH, Xray et Sing-box liés à un profil doivent respecter le même
+verrou ; ils ne constituent pas un accès de remplacement à ses secrets.
+
+### Langues du tableau de bord
+
+Le sélecteur **Français / English** change la langue des écrans, formulaires,
+confirmations, états et messages applicatifs. La préférence est conservée dans
+le navigateur sous `sxb_vpn_lang`. La langue choisie s'applique aussi aux dates,
+nombres et volumes affichés.
+
+Les données saisies par les utilisateurs — noms de clients, noms de profils,
+annonces, descriptions, paramètres VPN — ne sont pas traduites ou réécrites.
+Les événements historiques des journaux conservent leur contenu d'origine.
+Les nouvelles chaînes applicatives doivent avoir une clé dans les deux
+dictionnaires, avec les mêmes paramètres d'interpolation `{{parametre}}`.
 
 ---
 
@@ -120,11 +163,13 @@ npx tsc --noEmit                                   # typecheck
 npx tsx --test tests/regression-critical-flows.test.ts   # garde-fous
 ```
 
-Les tests de régression sont des assertions **sur le code source** : ils
-verrouillent des décisions dont l'oubli a déjà provoqué des pannes (parité des
-schémas Prisma, cloisonnement des rôles, complétude du catalogue pnpm,
-découpage du paquet front). Reformuler une ligne assertée casse le test — c'est
-voulu.
+Les tests de régression combinent des assertions sur le code source, des tests
+de services et des appels aux véritables routes Express avec une base isolée.
+Ils couvrent notamment la parité des schémas Prisma, le cloisonnement des rôles,
+les mutations concurrentes et les parcours du dashboard. Les tests de langue
+contrôlent les clés et interpolations FR/EN ainsi que les formats affichés.
+Ne pas remplacer un test de comportement par la seule présence d'une chaîne
+dans le code, ni exécuter les scénarios de mutation sur la base de production.
 
 ---
 
