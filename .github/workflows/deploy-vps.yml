@@ -144,7 +144,7 @@ jobs:
           node backend/node_modules/prisma/build/index.js generate --schema backend/prisma/schema.prisma
           node backend/node_modules/prisma/build/index.js generate --schema prisma/schema.prisma
           node scripts/verify-prisma-runtime.cjs
-          node --test scripts/tests/reseller-http.test.mjs scripts/tests/dashboard-session.test.mjs scripts/tests/dashboard-subscriptions.test.mjs
+          node --test scripts/tests/reseller-http.test.mjs scripts/tests/dashboard-session.test.mjs scripts/tests/dashboard-subscriptions.test.mjs scripts/tests/rate-limit.test.mjs scripts/tests/dashboard-rate-limit.test.mjs
 
       - name: Deploy to VPS
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5

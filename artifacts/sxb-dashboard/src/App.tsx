@@ -32,7 +32,7 @@ import { I18nProvider, useTranslation } from './contexts/I18nContext';
 import { ResellerAccessProvider } from './contexts/ResellerAccessContext';
 import { getSessionUser, login, logout } from './api/auth';
 import { activateWithAdminToken } from './api/accounts';
-import { setTokens } from './api/client';
+import { ApiError, setTokens } from './api/client';
 import { fetchMaintenanceState, setMaintenanceMode } from './api/owner';
 import { User, UserRole } from './types';
 import { ShieldAlert, RefreshCw, LogIn, Eye, EyeOff, KeyRound, Mail } from 'lucide-react';
@@ -46,16 +46,40 @@ function LoginForm({ onLogin }: { onLogin: () => void }) {
   const [accessToken, setAccessToken] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [retryAt, setRetryAt] = useState(0);
+  const [retrySeconds, setRetrySeconds] = useState(0);
+
+  useEffect(() => {
+    if (!retryAt) return;
+    const timer = setInterval(() => {
+      const remaining = Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
+      setRetrySeconds(remaining);
+      if (!remaining) {
+        setRetryAt(0);
+        setError('');
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [retryAt]);
+
+  const showLoginError = (reason: unknown, fallback: string) => {
+    setError(reason instanceof Error ? reason.message : fallback);
+    if (reason instanceof ApiError && reason.retryAfterSeconds) {
+      setRetrySeconds(reason.retryAfterSeconds);
+      setRetryAt(Date.now() + reason.retryAfterSeconds * 1000);
+    }
+  };
 
   const handlePasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading || Date.now() < retryAt) return;
     setError('');
     setLoading(true);
     try {
       await login(email, password);
       onLogin();
-    } catch (err: any) {
-      setError(err.message || 'Erreur de connexion');
+    } catch (err) {
+      showLoginError(err, 'Erreur de connexion');
     } finally {
       setLoading(false);
     }
@@ -63,6 +87,7 @@ function LoginForm({ onLogin }: { onLogin: () => void }) {
 
   const handleTokenSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading || Date.now() < retryAt) return;
     setError('');
     setLoading(true);
     try {
@@ -70,8 +95,8 @@ function LoginForm({ onLogin }: { onLogin: () => void }) {
       const result = await activateWithAdminToken(normalized);
       setTokens(result.accessToken, result.refreshToken);
       onLogin();
-    } catch (err: any) {
-      setError(err.message || 'Token invalide ou expiré');
+    } catch (err) {
+      showLoginError(err, 'Token invalide ou expiré');
     } finally {
       setLoading(false);
     }
@@ -144,14 +169,14 @@ function LoginForm({ onLogin }: { onLogin: () => void }) {
                   </button>
                 </div>
               </div>
-              {error && <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-xs text-red-400">{error}</div>}
+              {error && <div role="alert" className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-xs text-red-400">{retrySeconds > 0 ? 'Trop de requêtes. Patientez avant de réessayer.' : error}</div>}
               <button
                 type="submit"
-                disabled={loading}
+                disabled={loading || retrySeconds > 0}
                 className="w-full py-2.5 text-sm font-semibold rounded-xl bg-cyan-500 hover:bg-cyan-400 text-black transition-all disabled:opacity-60 cursor-pointer flex items-center justify-center gap-2"
               >
                 {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <LogIn className="w-4 h-4" />}
-                {loading ? 'Connexion…' : 'Se connecter'}
+                {loading ? 'Connexion…' : retrySeconds > 0 ? `Réessayer dans ${retrySeconds} s` : 'Se connecter'}
               </button>
             </form>
           ) : (
@@ -167,14 +192,14 @@ function LoginForm({ onLogin }: { onLogin: () => void }) {
                   className="w-full px-3 py-2.5 text-sm bg-[#07090e] border border-[#1a1f2e] rounded-lg text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/40 font-mono tracking-wider"
                 />
               </div>
-              {error && <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-xs text-red-400">{error}</div>}
+              {error && <div role="alert" className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-xs text-red-400">{retrySeconds > 0 ? 'Trop de requêtes. Patientez avant de réessayer.' : error}</div>}
               <button
                 type="submit"
-                disabled={loading}
+                disabled={loading || retrySeconds > 0}
                 className="w-full py-2.5 text-sm font-semibold rounded-xl bg-cyan-500 hover:bg-cyan-400 text-black transition-all disabled:opacity-60 cursor-pointer flex items-center justify-center gap-2"
               >
                 {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <KeyRound className="w-4 h-4" />}
-                {loading ? 'Vérification…' : 'Activer avec le token'}
+                {loading ? 'Vérification…' : retrySeconds > 0 ? `Réessayer dans ${retrySeconds} s` : 'Activer avec le token'}
               </button>
             </form>
           )}
@@ -189,6 +214,7 @@ function LoginForm({ onLogin }: { onLogin: () => void }) {
 function MainApp() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [checking, setChecking] = useState(true);
+  const [sessionError, setSessionError] = useState<string | null>(null);
   const [activeRoute, setActiveRoute] = useState('dashboard');
   const [showOwnerLogin, setShowOwnerLogin] = useState(false);
   // Mode maintenance : l'état réel vient du serveur (/ops/maintenance).
@@ -211,8 +237,14 @@ function MainApp() {
     try {
       const user = await getSessionUser();
       setCurrentUser(user);
-    } catch {
-      setCurrentUser(null);
+      setSessionError(null);
+    } catch (error) {
+      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+        setCurrentUser(null);
+        setSessionError(null);
+      } else {
+        setSessionError(error instanceof Error ? error.message : 'Vérification de session temporairement indisponible.');
+      }
     } finally {
       // Toujours interroger l'état maintenance (même sans session) :
       // le frontend public affiche la page « Maintenance en cours ».
@@ -242,6 +274,7 @@ function MainApp() {
   const handleLogout = async () => {
     try { await logout(); } catch { /* ignore */ }
     setCurrentUser(null);
+    setSessionError(null);
     setActiveRoute('dashboard');
     setMaintenanceEnabled(false);
     setShowOwnerLogin(false);
@@ -272,6 +305,22 @@ function MainApp() {
   // discret « Espace propriétaire » de la page.
   if (maintenanceEnabled && currentUser?.role !== UserRole.OWNER && !showOwnerLogin) {
     return <MaintenancePage onOwnerLogin={() => setShowOwnerLogin(true)} />;
+  }
+
+  if (sessionError) {
+    return (
+      <div className="min-h-screen bg-[#07090e] flex items-center justify-center p-4">
+        <div className="max-w-md space-y-4 rounded-2xl border border-[#1a1f2e] bg-[#0a0d14] p-6 text-center">
+          <h1 className="text-lg font-semibold text-white">Session temporairement indisponible</h1>
+          <p role="alert" className="text-sm text-amber-300">{sessionError}</p>
+          <p className="text-xs text-gray-400">Votre session est conservée. Aucun nouveau mot de passe n'est nécessaire.</p>
+          <button onClick={() => { setChecking(true); void checkSession(); }}
+            className="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-black hover:bg-cyan-400">
+            Réessayer
+          </button>
+        </div>
+      </div>
+    );
   }
 
   if (!currentUser) return <LoginForm onLogin={handleLogin} />;

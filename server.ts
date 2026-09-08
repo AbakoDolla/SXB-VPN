@@ -4,7 +4,7 @@ import fs from "fs";
 import { randomUUID } from "crypto";
 import cors from "cors";
 import helmet from "helmet";
-import rateLimit, { ipKeyGenerator } from "express-rate-limit";
+import { createApiRateLimiter } from "./server/middleware/rate-limit";
 import { createServer as createViteServer } from "vite";
 import { config } from "./server/config";
 
@@ -96,25 +96,7 @@ async function startServer() {
     next();
   });
 
-  // Global Rate Limiting - protect against brute force and DDoS
-  const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 200, // limit each IP to 200 requests per window
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: { error: "errors.rate_limit", message: "Too many requests. Please wait before retrying." },
-    keyGenerator: (req: Request) => {
-      // Clean up the IP address - remove any backslash escape sequences
-      const ip = req.ip?.replace(/\\/g, '') || 'unknown';
-      // Use ipKeyGenerator for proper IPv6 handling
-      return ipKeyGenerator(ip);
-    },
-    skip: (req: Request) => {
-      // Skip rate limiting for health checks
-      return req.url === '/metrics' || req.url === '/health';
-    },
-  });
-  app.use("/api/", limiter);
+  app.use("/api/", createApiRateLimiter({ access: config.JWT_SECRET, refresh: config.REFRESH_SECRET }));
   // Health check endpoint
   app.get("/api/health", (req: Request, res: Response) => {
     res.json({ status: "ok", timestamp: new Date().toISOString(), service: "sxb-vpn-backend" });

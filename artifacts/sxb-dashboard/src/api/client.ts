@@ -39,12 +39,13 @@ class ApiError extends Error {
   errorKey?: string;
   /** Contrat d'accès revendeur porté par les refus (validité + plafond). */
   resellerAccess?: ResellerAccessSummary;
+  retryAfterSeconds?: number;
   constructor(
     message: string,
     status: number,
     code?: string,
     responseData?: any,
-    extra?: { errorKey?: string; resellerAccess?: ResellerAccessSummary }
+    extra?: { errorKey?: string; resellerAccess?: ResellerAccessSummary; retryAfterSeconds?: number }
   ) {
     super(message);
     this.status = status;
@@ -52,6 +53,7 @@ class ApiError extends Error {
     this.code = code;
     this.errorKey = extra?.errorKey;
     this.resellerAccess = extra?.resellerAccess;
+    this.retryAfterSeconds = extra?.retryAfterSeconds;
   }
 }
 
@@ -120,12 +122,15 @@ async function tryRefreshToken(): Promise<boolean> {
       body: JSON.stringify({ refreshToken }),
     })
       .then(async (res) => {
-        if (!res.ok) return false;
+        if (res.status === 401 || res.status === 403) return false;
+        if (!res.ok) {
+          if (res.status === 429) throw rateLimitError(res);
+          throw new ApiError("Renouvellement de session temporairement indisponible. Réessayez.", res.status);
+        }
         const data = await res.json();
         setTokens(data.accessToken, data.refreshToken);
         return true;
       })
-      .catch(() => false)
       .finally(() => {
         refreshPromise = null;
       });
@@ -166,6 +171,29 @@ function errorMessage(data: unknown, status: number): string {
   return fallback;
 }
 
+function rateLimitError(response: Response, data?: unknown): ApiError {
+  const header = response.headers.get("Retry-After");
+  const seconds = header !== null && /^\d+$/.test(header.trim())
+    ? Number(header)
+    : header ? Math.ceil((Date.parse(header) - Date.now()) / 1000) : Number.NaN;
+  const bodyDelay = data && typeof data === "object" && "retryAfterSeconds" in data
+    ? data.retryAfterSeconds
+    : undefined;
+  const delay = Number.isFinite(seconds) ? Math.max(0, seconds) : bodyDelay;
+  const retryAfterSeconds = typeof delay === "number" && Number.isFinite(delay) && delay >= 0
+    ? Math.ceil(delay)
+    : undefined;
+  return new ApiError(
+    retryAfterSeconds === undefined
+      ? "Trop de requêtes. Veuillez patienter avant de réessayer."
+      : `Trop de requêtes. Réessayez dans ${retryAfterSeconds} s.`,
+    429,
+    "RATE_LIMITED",
+    data,
+    { errorKey: "errors.rate_limit", retryAfterSeconds }
+  );
+}
+
 /// Effectue une vraie requête HTTP vers le backend. Rafraîchit
 /// automatiquement le token une fois si la première tentative échoue
 /// avec 401 (token expiré), puis réessaie une seule fois.
@@ -204,6 +232,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}, 
   }
 
   if (!res.ok) {
+    if (res.status === 429) throw rateLimitError(res, data);
     // Un refus d'agrément (expiré, suspendu, plafond atteint) n'est PAS une
     // perte de session : la déconnexion forcée reste réservée au 401 et à la
     // suspension du compte lui-même. Confondre les deux renvoyait le revendeur
