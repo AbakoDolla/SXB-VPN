@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { User, UserRole } from '../types';
 import { useTranslation } from '../contexts/I18nContext';
+import { ResellerAccessBanner } from './ResellerAccessBanner';
+import { useResellerAccess } from '../contexts/ResellerAccessContext';
 import {
   LayoutDashboard, Users, Server, Shield, Key, Smartphone,
-  Settings, LogOut, UserCog, Terminal, Code2, Zap, Box,
+  Settings, LogOut, Terminal, Code2, Zap, Box,
   Menu, X, UserPlus, HeadphonesIcon, BadgePercent, Activity,
   ChevronDown, Network, Radio, Cpu, BarChart3, Ticket,
   PackageOpen, GitBranch, ScrollText, BellRing, Download,
@@ -26,6 +28,7 @@ interface NavLeaf {
   label: string;
   icon: any;
   roles: string[];
+  permission?: string;
 }
 
 interface NavGroup {
@@ -48,6 +51,7 @@ export default function Layout({
   onLogout,
   maintenanceEnabled = false,
 }: LayoutProps) {
+  const { blocked } = useResellerAccess();
   const { t } = useTranslation();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
@@ -106,13 +110,13 @@ export default function Layout({
       color: 'text-cyan-400',
       roles: ALL_ROLES,
       items: [
-        { kind: 'leaf', id: 'clients', label: t('sidebar.vpn_accounts'), icon: Users, roles: ALL_ROLES },
-        { kind: 'leaf', id: 'subscriptions', label: t('sidebar.subscriptions'), icon: PackageOpen, roles: ALL_ROLES },
+        { kind: 'leaf', id: 'clients', label: t('sidebar.vpn_accounts'), icon: Users, roles: ALL_ROLES, permission: 'clients.view' },
+        { kind: 'leaf', id: 'subscriptions', label: t('sidebar.subscriptions'), icon: PackageOpen, roles: ALL_ROLES, permission: 'subscription.view' },
         // Le revendeur doit suivre les appareils de SES clients : c'est là
         // qu'il constate une activation ou une consommation anormale.
-        { kind: 'leaf', id: 'devices', label: t('sidebar.devices'), icon: Smartphone, roles: ALL_ROLES },
-        { kind: 'leaf', id: 'tokens', label: t('sidebar.tokens'), icon: Key, roles: ALL_ROLES },
-        { kind: 'leaf', id: 'vouchers', label: t('sidebar.vouchers'), icon: BadgePercent, roles: ALL_ROLES },
+        { kind: 'leaf', id: 'devices', label: t('sidebar.devices'), icon: Smartphone, roles: ALL_ROLES, permission: 'clients.view' },
+        { kind: 'leaf', id: 'tokens', label: t('sidebar.tokens'), icon: Key, roles: ALL_ROLES, permission: 'tokens.view' },
+        { kind: 'leaf', id: 'vouchers', label: t('sidebar.vouchers'), icon: BadgePercent, roles: ALL_ROLES, permission: 'vouchers.view' },
       ],
     },
     // Configurations techniques : jamais pour un revendeur. Il dispose à la
@@ -124,6 +128,7 @@ export default function Layout({
       label: t('sidebar.configurations'),
       icon: GitBranch,
       roles: STAFF,
+      permission: 'vpnprofile.view',
     },
     {
       kind: 'leaf',
@@ -140,9 +145,9 @@ export default function Layout({
       color: 'text-emerald-400',
       roles: STAFF,
       items: [
-        { kind: 'leaf', id: 'sessions', label: t('sidebar.sessions'), icon: Radio, roles: ADMINS },
-        { kind: 'leaf', id: 'analytics', label: t('sidebar.analytics'), icon: BarChart3, roles: STAFF },
-        { kind: 'leaf', id: 'servers', label: t('sidebar.servers'), icon: Server, roles: STAFF },
+        { kind: 'leaf', id: 'sessions', label: t('sidebar.sessions'), icon: Radio, roles: ADMINS, permission: 'clients.view' },
+        { kind: 'leaf', id: 'analytics', label: t('sidebar.analytics'), icon: BarChart3, roles: STAFF, permission: 'analytics.read' },
+        { kind: 'leaf', id: 'servers', label: t('sidebar.servers'), icon: Server, roles: STAFF, permission: 'server.manage' },
       ],
     },
     {
@@ -156,9 +161,7 @@ export default function Layout({
       // voir aucun panneau d'administration.
       roles: STAFF,
       items: [
-        { kind: 'leaf', id: 'accounts', label: t('sidebar.accounts'), icon: UserPlus, roles: ADMINS },
-        { kind: 'leaf', id: 'resellers', label: t('sidebar.resellers'), icon: UserCog, roles: ADMINS },
-        { kind: 'leaf', id: 'rbac', label: t('sidebar.rbac'), icon: Shield, roles: ADMINS },
+        { kind: 'leaf', id: 'accounts', label: t('sidebar.accounts'), icon: UserPlus, roles: ADMINS, permission: 'users.view' },
         { kind: 'leaf', id: 'announcements', label: t('sidebar.annonces'), icon: BellRing, roles: STAFF },
         { kind: 'leaf', id: 'app-updates', label: t('sidebar.app_updates'), icon: Download, roles: STAFF },
         { kind: 'leaf', id: 'mobile-health', label: 'Santé mobile', icon: HeartPulse, roles: ADMINS },
@@ -191,12 +194,19 @@ export default function Layout({
     },
   ];
 
+  const canSeeLeaf = (item: NavLeaf) =>
+    item.roles.includes(role) &&
+    (role === UserRole.OWNER || !item.permission || currentUser.permissions.includes(item.permission));
+
   const filteredNav = navStructure.filter(entry => entry.roles.includes(role)).map(entry => {
     if (entry.kind === 'group') {
-      return { ...entry, items: entry.items.filter(item => item.roles.includes(role)) };
+      return { ...entry, items: entry.items.filter(canSeeLeaf) };
     }
-    return entry;
-  }).filter(entry => entry.kind === 'leaf' || (entry.kind === 'group' && (entry as NavGroup).items.length > 0));
+    return canSeeLeaf(entry) ? entry : null;
+  }).filter((entry): entry is NavEntry =>
+    entry !== null &&
+    (entry.kind === 'leaf' || (entry.kind === 'group' && entry.items.length > 0))
+  );
 
   function handleNavigate(route: string) {
     onNavigate(route);
@@ -383,7 +393,16 @@ export default function Layout({
               {t('maintenance_active')}
             </div>
           )}
-          {children}
+          {/*
+            État de l'agrément revendeur, au-dessus de TOUT contenu : espace
+            entièrement bloqué s'il est expiré ou suspendu, bandeau rouge si le
+            plafond est atteint. Placé dans la coquille, il suit l'exploitant
+            d'un écran à l'autre au lieu d'être répété — ou oublié — page à page.
+          */}
+          <ResellerAccessBanner />
+          <fieldset disabled={blocked} className="min-w-0">
+            {children}
+          </fieldset>
         </main>
       </div>
     </div>

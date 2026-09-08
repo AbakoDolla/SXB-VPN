@@ -7,6 +7,7 @@ import { fetchSessions } from "../api/sessions";
 import { fetchServers } from "../api/servers";
 import { apiRequest } from "../api/client";
 import { TrafficDataPoint, ActivityLog, VPSServer, UserRole } from "../types";
+import { formatBytes as formatQuotaBytes } from "../lib/resellerAccess";
 import type { Device } from "../api/devices";
 import {
   Users, Server, RefreshCw, Activity, AlertTriangle, Wifi,
@@ -269,10 +270,20 @@ export default function DashboardView({
   const todayTraffic = trafficData.length > 0 ? trafficData[trafficData.length - 1] : null;
   const weeklyDownload = trafficData.slice(-7).reduce((acc, d) => acc + (d.download || 0), 0);
 
-  // Les endpoints renvoient désormais des gigaoctets issus des compteurs réels.
-  const consumedTrafficGB = stats ? `${Number(stats.consumedTraffic || 0).toFixed(2)} GB` : '—';
-  const provisionedTrafficGB = stats ? `${Number(stats.provisionedTraffic || 0).toFixed(2)} GB` : '—';
-  const remainingTrafficGB = stats ? `${Number(stats.remainingTraffic || 0).toFixed(2)} GB` : '—';
+  const resellerQuota = stats?.resellerQuota;
+  const assignedResellerQuota = resellerQuota?.unlimited
+    ? 'Illimité'
+    : formatQuotaBytes(resellerQuota?.assignedBytes);
+  const committedResellerQuota = formatQuotaBytes(resellerQuota?.committedBytes);
+  const remainingResellerQuota = resellerQuota?.unlimited
+    ? 'Illimité'
+    : formatQuotaBytes(resellerQuota?.remainingBytes);
+  const resellerQuotaScope = isReseller
+    ? 'votre compte revendeur'
+    : `${resellerQuota?.resellerCount ?? 0} revendeur(s)`;
+  const unlimitedResellerHint = !isReseller && (resellerQuota?.unlimitedResellers ?? 0) > 0
+    ? ` · ${resellerQuota?.unlimitedResellers} illimité(s)`
+    : '';
 
   // Alertes : le seuil est calculé par appareil à partir des octets réels
   // renvoyés par /api/devices. Un quota total nul n’est jamais considéré comme
@@ -400,41 +411,31 @@ export default function DashboardView({
         </div>
       </div>
 
-      {/* Row 2 — Trafic */}
+      {/* Row 2 — Trafic réel et enveloppes REVENDEURS. Les forfaits clients
+          ne sont jamais présentés comme le quota du compte connecté. */}
       <div>
         <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-widest mb-3">
-          Trafic & Quota
-          {/* Ces trois cartes additionnent les forfaits des CLIENTS. Faute de le
-              dire, un administrateur lisait ce total comme un quota qui lui
-              aurait été attribué, alors que son propre accès est illimité. */}
+          Trafic & Quotas revendeurs
           <span className="ml-2 normal-case tracking-normal text-gray-500 font-normal">
             {isReseller
-              ? '— cumul de vos clients'
-              : '— cumul de tous les clients ; votre compte n’a aucun quota'}
+              ? '— votre enveloppe attribuée par l’administration'
+              : '— enveloppes attribuées aux revendeurs'}
           </span>
         </p>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           <StatCard label="Download (réel)" value={fmtBytes(totalDownload * 1024 ** 3)} icon={Download} color="text-sky-400" accent="bg-sky-500/10" />
           <StatCard label="Upload (réel)" value={fmtBytes(totalUpload * 1024 ** 3)} icon={Upload} color="text-indigo-400" accent="bg-indigo-500/10" />
           <StatCard label="Trafic semaine" value={fmtBytes(weeklyDownload * 1024 ** 3)} icon={TrendingUp} color="text-teal-400" accent="bg-teal-500/10" />
-          <StatCard label="Quota provisionné" value={provisionedTrafficGB} sub={isReseller ? 'à vos clients' : 'aux clients'} icon={HardDrive} color="text-blue-400" accent="bg-blue-500/10" />
-          <StatCard label="Quota consommé" value={consumedTrafficGB} sub={isReseller ? 'par vos clients' : 'par les clients'} icon={Database} color="text-orange-400" accent="bg-orange-500/10" />
-          <StatCard label="Quota restant" value={remainingTrafficGB} sub={isReseller ? 'sur vos clients' : 'sur les clients'} icon={TrendingUp} color="text-emerald-400" accent="bg-emerald-500/10" />
+          <StatCard label={isReseller ? 'Quota attribué' : 'Quotas attribués'} value={assignedResellerQuota} sub={`${resellerQuotaScope}${unlimitedResellerHint}`} icon={HardDrive} color="text-blue-400" accent="bg-blue-500/10" />
+          <StatCard label={isReseller ? 'Quota engagé' : 'Quotas engagés'} value={committedResellerQuota} sub={isReseller ? 'sur vos forfaits actifs' : 'par les revendeurs'} icon={Database} color="text-orange-400" accent="bg-orange-500/10" />
+          <StatCard label={isReseller ? 'Quota disponible' : 'Solde revendeurs'} value={remainingResellerQuota} sub={isReseller ? 'dans votre enveloppe' : 'hors comptes illimités'} icon={TrendingUp} color="text-emerald-400" accent="bg-emerald-500/10" />
         </div>
-        {isReseller && stats?.personalQuota && (
+        {isReseller && resellerQuota && (
           <div className="mt-3 text-xs text-gray-400 border border-gray-800 rounded-lg px-3 py-2 bg-gray-950/40">
-            Votre quota :{' '}
-            {stats.personalQuota.illimite ? (
-              <span className="text-cyan-400 font-semibold">illimité</span>
-            ) : (
-              <>
-                <span className="text-white font-semibold">{fmtBytes(Number(stats.personalQuota.alloue))}</span>
-                {' engagés sur '}
-                <span className="text-white font-semibold">{fmtBytes(Number(stats.personalQuota.attribue))}</span>
-                {Number(stats.personalQuota.attribue) === 0 && (
-                  <span className="text-amber-400"> — aucun quota ne vous a encore été attribué</span>
-                )}
-              </>
+            Consommation réelle de vos clients :{' '}
+            <span className="text-white font-semibold">{formatQuotaBytes(resellerQuota.consumedBytes)}</span>
+            {!resellerQuota.unlimited && resellerQuota.assignedBytes === '0' && (
+              <span className="text-amber-400"> — aucun quota ne vous a encore été attribué</span>
             )}
           </div>
         )}

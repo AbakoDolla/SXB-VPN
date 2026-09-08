@@ -1,4 +1,6 @@
 import { apiRequest } from "./client";
+import type { Voucher } from "../types";
+export type { Voucher } from "../types";
 
 // Génère un code voucher unique en utilisant crypto (pas Math.random)
 export function generateVoucherCode(): string {
@@ -12,32 +14,16 @@ export function generateVoucherCode(): string {
   return `VCH-${part(0, 5)}-${part(5, 5)}`;
 }
 
-export interface Voucher {
-  id: string;
-  code: string;
-  quota: string | number;
-  durationDays?: number;
-  isRedeemed?: boolean;
-  redeemedBy?: string | null;
-  createdAt?: string;
-  updatedAt?: string;
-  status?: "active" | "used" | "expired";
-  expiration?: string;
-}
-
 export async function fetchVouchers(): Promise<Voucher[]> {
-  try {
-    const data = await apiRequest<{ vouchers: Voucher[] }>("/vouchers");
-    return data.vouchers || [];
-  } catch (error) {
-    console.error("Error fetching vouchers:", error);
-    return [];
-  }
+  const data = await apiRequest<{ vouchers: Voucher[] }>("/vouchers");
+  return data.vouchers;
 }
 
 export async function createVoucher(data: {
   quotaGb: number;
   durationDays: number;
+  activationDays: number;
+  resellerId?: string;
   count?: number; // Nombre de vouchers à créer (défaut 1)
 }): Promise<{ vouchers: Voucher[] }> {
   return await apiRequest<{ vouchers: Voucher[] }>("/vouchers", {
@@ -56,12 +42,6 @@ export async function redeemVoucher(
   });
 }
 
-// Activation simple d un voucher par l utilisateur connecte (sans clientId requis)
-export async function useVoucher(
-  code: string
-): Promise<{ success: boolean; message?: string }> {
-  return await apiRequest<{ success: boolean; message?: string }>("/vouchers/use", {
-    method: "POST",
-    body: { code },
-  });
+export async function revokeVoucher(id: string): Promise<Voucher> {
+  return apiRequest<Voucher>(`/vouchers/${id}/revoke`, { method: "POST" });
 }

@@ -1,5 +1,5 @@
 /**
- * Tokens API — SXB-DATA-XXXX-XXXX-XXXX
+ * Tokens API — SXB-XXXX-XXXX-XXXX (recharge de compte, distincte des forfaits)
  * Les tokens sont TOUJOURS générés côté serveur. Ne jamais générer côté client.
  */
 import { TokenSXB } from "../types";

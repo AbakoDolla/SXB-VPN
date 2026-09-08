@@ -3,12 +3,11 @@ import { Toaster } from "sonner";
 import ErrorBoundary from "./components/ErrorBoundary";
 import DashboardView from "./components/DashboardView";
 import ClientsView from "./components/ClientsView";
-import ResellersView from "./components/ResellersView";
 import ServersView from "./components/ServersView";
 import TokensView from "./components/TokensView";
 import VouchersView from "./components/VouchersView";
+import { PermissionsProvider } from "./contexts/PermissionsContext";
 import SupportView from "./components/SupportView";
-import RBACView from "./components/RBACView";
 import SettingsView from "./components/SettingsView";
 import ResellerServicesView from "./components/ResellerServicesView";
 import AccountsView from "./components/AccountsView";
@@ -30,6 +29,7 @@ import MaintenancePage from "./components/MaintenancePage";
 import Layout from "./components/Layout";
 import { useEffect, useState, useCallback } from 'react';
 import { I18nProvider, useTranslation } from './contexts/I18nContext';
+import { ResellerAccessProvider } from './contexts/ResellerAccessContext';
 import { getSessionUser, login, logout } from './api/auth';
 import { activateWithAdminToken } from './api/accounts';
 import { setTokens } from './api/client';
@@ -295,14 +295,37 @@ function MainApp() {
         return <SubscriptionsView currentUserRole={role} />;
       case 'vpn-profiles':
         return <VpnProfilesView currentUserRole={role} />;
+      // ── Gestion des comptes : UNE seule surface ────────────────────────────
+      // Comptes de connexion, revendeurs et habilitations vivaient sur trois
+      // écrans distincts, chacun renvoyant vers les autres — et deux d'entre
+      // eux proposaient leur propre création de revendeur. Les trois entrées de
+      // menu subsistent, mais ouvrent le même écran sur l'onglet voulu.
       case 'resellers':
-        return <ResellersView currentUserRole={role} actorName={currentUser.name} />;
+        return (
+          <AccountsView
+            currentUserRole={role}
+            currentUserId={currentUser.id}
+            actorName={currentUser.name}
+            initialTab="resellers"
+            onRolePermissionsUpdated={handleRolePermissionsUpdated}
+          />
+        );
+      case 'rbac':
+        return (
+          <AccountsView
+            currentUserRole={role}
+            currentUserId={currentUser.id}
+            actorName={currentUser.name}
+            initialTab="rbac"
+            onRolePermissionsUpdated={handleRolePermissionsUpdated}
+          />
+        );
       case 'servers':
         return <ServersView currentUserRole={role} />;
       case 'tokens':
         return <TokensView currentUserRole={role} />;
       case 'vouchers':
-        return <VouchersView currentUserRole={role} />;
+        return <VouchersView currentUserRole={role} permissions={currentUser.permissions} />;
       case 'support':
         return <SupportView />;
       case 'announcements':
@@ -314,16 +337,22 @@ function MainApp() {
           return <DashboardView onNavigate={(route) => setActiveRoute(route)} currentUserRole={role} />;
         }
         return <MobileHealthView />;
-      case 'rbac':
-        return <RBACView currentUserRole={role} onRolePermissionsUpdated={handleRolePermissionsUpdated} />;
       case 'accounts':
-        return <AccountsView currentUserRole={role} currentUserId={currentUser.id} />;
+        return (
+          <AccountsView
+            currentUserRole={role}
+            currentUserId={currentUser.id}
+            actorName={currentUser.name}
+            initialTab="accounts"
+            onRolePermissionsUpdated={handleRolePermissionsUpdated}
+          />
+        );
       case 'reseller-services':
         return <ResellerServicesView />;
       case 'settings':
         return <SettingsView currentUser={currentUser} onUserUpdated={handleUserChanged} onNavigate={(route) => setActiveRoute(route)} />;
       case 'devices':
-        return <DevicesView />;
+        return <DevicesView currentUserRole={role} />;
       case 'sessions':
         return <SessionsView />;
       case 'ssh':
@@ -360,18 +389,22 @@ function MainApp() {
   };
 
   return (
-    <Layout
-      activeRoute={activeRoute}
-      onNavigate={(route) => setActiveRoute(route)}
-      currentUser={currentUser}
-      onUserChanged={handleUserChanged}
-      onLogout={handleLogout}
-      maintenanceEnabled={maintenanceEnabled}
-    >
-      <ErrorBoundary resetKey={activeRoute}>
-        {renderView()}
-      </ErrorBoundary>
-    </Layout>
+    <PermissionsProvider role={role} permissions={currentUser.permissions}>
+    <ResellerAccessProvider role={role}>
+      <Layout
+        activeRoute={activeRoute}
+        onNavigate={(route) => setActiveRoute(route)}
+        currentUser={currentUser}
+        onUserChanged={handleUserChanged}
+        onLogout={handleLogout}
+        maintenanceEnabled={maintenanceEnabled}
+      >
+        <ErrorBoundary resetKey={activeRoute}>
+          {renderView()}
+        </ErrorBoundary>
+      </Layout>
+    </ResellerAccessProvider>
+    </PermissionsProvider>
   );
 }
 

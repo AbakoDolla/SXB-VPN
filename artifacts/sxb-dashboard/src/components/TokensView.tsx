@@ -3,6 +3,9 @@ import { useTranslation } from '../contexts/I18nContext';
 import { fetchTokens, createToken, revokeToken } from '../api/tokens';
 import { fetchClients } from '../api/clients';
 import { TokenSXB, Client, UserRole } from '../types';
+import { useResellerAccess } from '../contexts/ResellerAccessContext';
+import { usePermissions } from '../contexts/PermissionsContext';
+import { ResellerActionNotice } from './ResellerAccessBanner';
 import { Key, Plus, RefreshCw, Copy, Check, Ban, Search, X, ChevronDown } from 'lucide-react';
 
 interface TokensViewProps {
@@ -41,6 +44,12 @@ export default function TokensView({ currentUserRole }: TokensViewProps) {
   const [submitting, setSubmitting]     = useState(false);
 
   const isSupport = currentUserRole === UserRole.SUPPORT;
+  const { allows, refresh: refreshAccess } = useResellerAccess();
+  // Émettre un jeton engage du volume : fermé si l'agrément est expiré ou le
+  // plafond atteint. La révocation, elle, libère : elle reste ouverte.
+  const can = usePermissions();
+  const canCreate = !isSupport && allows() && can("tokens.create");
+  const canRevoke = !isSupport && allows({ reducesExposure: true }) && can("tokens.revoke");
 
   // ── Load ──────────────────────────────────────────────────────
   const load = async () => {
@@ -68,7 +77,7 @@ export default function TokensView({ currentUserRole }: TokensViewProps) {
       await createToken({ clientId, quotaGb, durationDays, deviceLimit });
       setClientId(''); setQuotaGb(50); setDurationDays(30); setDeviceLimit(1);
       setShowModal(false);
-      await load();
+      await Promise.all([load(), refreshAccess()]);
     } catch (err: any) {
       setFormError(err?.message || 'Erreur lors de la création');
     } finally {
@@ -82,7 +91,7 @@ export default function TokensView({ currentUserRole }: TokensViewProps) {
     if (!confirm('Révoquer ce token ? L\'appareil associé perdra son accès VPN.')) return;
     try {
       await revokeToken(id);
-      await load();
+      await Promise.all([load(), refreshAccess()]);
     } catch (err: any) {
       alert(err?.message || 'Erreur lors de la révocation');
     }
@@ -115,19 +124,23 @@ export default function TokensView({ currentUserRole }: TokensViewProps) {
             {t('sidebar.tokens') || 'Tokens SXB'}
           </h1>
           <p className="text-sm text-gray-400 mt-1">
-            Tokens d'activation VPN (<code className="text-cyan-400 text-xs">SXB-DATA-XXXX-XXXX-XXXX</code>)
+            Jetons de recharge compte (<code className="text-cyan-400 text-xs">SXB-XXXX-XXXX-XXXX</code>). Les configurations sont attribuées depuis Forfaits.
           </p>
         </div>
         {!isSupport && (
           <button
             onClick={() => { setShowModal(true); setFormError(''); }}
-            className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-medium text-sm rounded-lg shadow-lg transition-all"
+            disabled={!canCreate}
+            title={canCreate ? undefined : "Indisponible : agrément expiré ou plafond atteint"}
+            className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-medium text-sm rounded-lg shadow-lg transition-all disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Plus className="h-4 w-4" />
             Générer un Token SXB
           </button>
         )}
       </div>
+
+      {!isSupport && <ResellerActionNotice />}
 
       {/* Search */}
       <div className="relative w-full md:w-80">
@@ -169,7 +182,7 @@ export default function TokensView({ currentUserRole }: TokensViewProps) {
                     <td colSpan={6} className="text-center py-16">
                       <Key className="w-8 h-8 text-gray-700 mx-auto mb-3" />
                       <p className="text-gray-500">Aucun token trouvé</p>
-                      {!isSupport && (
+                      {canCreate && (
                         <button
                           onClick={() => setShowModal(true)}
                           className="mt-3 text-cyan-400 hover:text-cyan-300 text-sm"
@@ -227,8 +240,9 @@ export default function TokensView({ currentUserRole }: TokensViewProps) {
                           {tok.status === 'active' && (
                             <button
                               onClick={() => handleRevoke(tok.id)}
+                              disabled={!canRevoke}
                               title="Révoquer"
-                              className="p-1.5 text-gray-600 hover:text-rose-400 rounded-lg hover:bg-rose-500/10 transition-colors"
+                              className="p-1.5 text-gray-600 hover:text-rose-400 rounded-lg hover:bg-rose-500/10 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               <Ban className="w-4 h-4" />
                             </button>
@@ -336,8 +350,8 @@ export default function TokensView({ currentUserRole }: TokensViewProps) {
                 </button>
                 <button
                   type="submit"
-                  disabled={submitting || clients.length === 0}
-                  className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black shadow-lg disabled:opacity-50"
+                  disabled={submitting || clients.length === 0 || !canCreate}
+                  className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {submitting && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
                   Générer le Token

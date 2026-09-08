@@ -1,8 +1,13 @@
 import React, { useEffect, useState, useMemo } from "react";
 import { useTranslation } from "../contexts/I18nContext";
 import { fetchClients, createClient, updateClient, deleteClient, suspendClient, activateClient, renewClient, resetClientAccess } from "../api/clients";
-import { Client, UserRole } from "../types";
-import { Search, UserPlus, Trash2, ShieldAlert, KeyRound, CalendarDays, Ban, CheckCircle, RefreshCcw, MoreHorizontal, HelpCircle } from "lucide-react";
+import { fetchResellers } from "../api/resellers";
+import { Client, Reseller, UserRole } from "../types";
+import { useResellerAccess } from "../contexts/ResellerAccessContext";
+import { usePermissions } from "../contexts/PermissionsContext";
+import { ResellerAccessSummaryCard, ResellerActionNotice } from "./ResellerAccessBanner";
+import { isUpperRole, ownerLabel } from "../lib/resellerAccess";
+import { Search, UserPlus, Trash2, ShieldAlert, KeyRound, CalendarDays, Ban, CheckCircle, RefreshCcw, MoreHorizontal, HelpCircle, Store } from "lucide-react";
 import Pagination from "./ui/Pagination";
 import { toast } from "sonner";
 
@@ -14,6 +19,7 @@ interface ClientsViewProps {
 export default function ClientsView({ currentUserRole, actorName }: ClientsViewProps) {
   const { t } = useTranslation();
   const [clients, setClients] = useState<Client[]>([]);
+  const [resellers, setResellers] = useState<Reseller[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
@@ -23,14 +29,28 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
+  const [resellerId, setResellerId] = useState("");
 
   const isSupport = currentUserRole === UserRole.SUPPORT;
+  const isReseller = currentUserRole === UserRole.RESELLER;
+  // Étiquette « Client de … » : réservée aux rôles qui voient tout le parc.
+  // Un revendeur ne voit que ses propres clients, l'étiquette n'y apprendrait rien.
+  const showsOwnerColumn = isUpperRole(currentUserRole);
+  const { allows, refresh: refreshAccess } = useResellerAccess();
+  // Créer un client engage le parc du revendeur : fermé si l'agrément est
+  // expiré ou le plafond atteint. Suspendre, renouveler et supprimer restent
+  // ouverts au plafond — ce sont les gestes qui libèrent.
+  const can = usePermissions();
+  const canCreate = !isSupport && allows() && can("clients.create");
+  const canReduce = !isSupport && allows({ reducesExposure: true }) && can("clients.manage");
 
   const loadClients = async () => {
     setLoading(true);
     try {
       const data = await fetchClients();
       setClients(data);
+      // Rattachement commercial explicite, réservé aux rôles supérieurs.
+      if (showsOwnerColumn) setResellers(await fetchResellers().catch(() => [] as Reseller[]));
     } catch (err) {
       console.error("Error fetching clients:", err);
     } finally {
@@ -39,7 +59,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
   };
 
   useEffect(() => {
-    loadClients();
+    void loadClients();
   }, []);
 
   const handleCreate = async (e: React.FormEvent) => {
@@ -51,15 +71,18 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
         name,
         email: email || undefined,
         phone: phone || undefined,
+        // Un revendeur crée toujours pour lui-même : le serveur l'impose.
+        resellerId: showsOwnerColumn && resellerId ? resellerId : undefined,
       });
-      
+
       // Reset form
       setName("");
       setEmail("");
       setPhone("");
+      setResellerId("");
       setShowAddModal(false);
-      toast.success("Client créé avec succès");
-      loadClients();
+      toast.success("Client créé — aucun plan ne lui est attribué automatiquement");
+      await Promise.all([loadClients(), refreshAccess()]);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : t("common.error_generic"));
     }
@@ -75,7 +98,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
         await activateClient(id);
         toast.success("Client activé");
       }
-      loadClients();
+      await Promise.all([loadClients(), refreshAccess()]);
     } catch (err) {
       toast.error(t("common.error_generic"));
     }
@@ -86,7 +109,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
     try {
       await renewClient(id);
       toast.success("Accès renouvelé");
-      loadClients();
+      await Promise.all([loadClients(), refreshAccess()]);
     } catch (err) {
       toast.error(t("common.error_generic"));
     }
@@ -98,7 +121,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
     try {
       await resetClientAccess(id);
       toast.success("Clé d'accès réinitialisée");
-      loadClients();
+      await Promise.all([loadClients(), refreshAccess()]);
     } catch (err) {
       toast.error(t("common.error_generic"));
     }
@@ -110,7 +133,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
     try {
       await deleteClient(id);
       toast.success("Client supprimé");
-      loadClients();
+      await Promise.all([loadClients(), refreshAccess()]);
     } catch (err) {
       toast.error(t("common.error_generic"));
     }
@@ -159,13 +182,18 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
         {!isSupport && (
           <button
             onClick={() => setShowAddModal(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-medium text-sm rounded-lg shadow-lg shadow-cyan-950/20 transition-all cursor-pointer"
+            disabled={!canCreate}
+            title={canCreate ? undefined : "Indisponible : agrément expiré ou plafond atteint"}
+            className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-medium text-sm rounded-lg shadow-lg shadow-cyan-950/20 transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
           >
             <UserPlus className="h-4 w-4" />
             {t("clients.add_client")}
           </button>
         )}
       </div>
+
+      {isReseller && <ResellerAccessSummaryCard />}
+      {!isSupport && <ResellerActionNotice />}
 
       {/* Filters & search */}
       <div className="flex flex-col md:flex-row gap-3 items-center justify-between">
@@ -211,6 +239,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                 <tr className="border-b border-gray-800/80 bg-gray-900/40 text-xs font-semibold text-gray-400 uppercase tracking-wider">
                   <th className="py-3 px-4">{t("clients.fields.name")}</th>
                   <th className="py-3 px-4">{t("clients.fields.email")}</th>
+                  {showsOwnerColumn && <th className="py-3 px-4">Revendeur</th>}
                   <th className="py-3 px-4">{t("clients.fields.token")}</th>
                   <th className="py-3 px-4 text-center">Quota (Go)</th>
                   <th className="py-3 px-4">{t("clients.fields.expiration")}</th>
@@ -233,6 +262,14 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                       <td className="py-4 px-4 text-gray-400">
                         {(client as any).user?.email || client.email || "-"}
                       </td>
+                      {showsOwnerColumn && (
+                        <td className="py-4 px-4">
+                          <span className="inline-flex items-center gap-1 rounded-md border border-violet-500/20 bg-violet-500/10 px-2 py-0.5 text-[11px] text-violet-300">
+                            <Store className="h-3 w-3 shrink-0" />
+                            {ownerLabel(client.resellerName ?? client.reseller?.name ?? null)}
+                          </span>
+                        </td>
+                      )}
                       <td className="py-4 px-4 font-mono text-xs">
                         {isSupport ? (
                           <span className="text-gray-600 flex items-center gap-1">
@@ -279,29 +316,33 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                           <div className="flex justify-end gap-1.5">
                             <button
                               onClick={() => handleSuspend(client.id, client.status === "active")}
-                              title={client.status === "active" ? "Suspendre" : "Activer"}
-                              className="p-1 text-gray-500 hover:text-amber-400 hover:bg-gray-900/60 rounded cursor-pointer"
+                              disabled={!canReduce}
+                              title={client.status === "active" ? "Suspendre" : "Réactiver"}
+                              className="p-1 text-gray-500 hover:text-amber-400 hover:bg-gray-900/60 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               <Ban className="h-4 w-4" />
                             </button>
                             <button
                               onClick={() => handleRenew(client.id)}
-                              title="Renouveler"
-                              className="p-1 text-gray-500 hover:text-emerald-400 hover:bg-gray-900/60 rounded cursor-pointer"
+                              disabled={!canCreate}
+                              title="Renouveler l'accès"
+                              className="p-1 text-gray-500 hover:text-emerald-400 hover:bg-gray-900/60 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               <CalendarDays className="h-4 w-4" />
                             </button>
                             <button
                               onClick={() => handleResetAccess(client.id)}
-                              title="Reset Token"
-                              className="p-1 text-gray-500 hover:text-cyan-400 hover:bg-gray-900/60 rounded cursor-pointer"
+                              disabled={!canReduce}
+                              title="Réinitialiser la clé d'accès"
+                              className="p-1 text-gray-500 hover:text-cyan-400 hover:bg-gray-900/60 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               <KeyRound className="h-4 w-4" />
                             </button>
                             <button
                               onClick={() => handleDelete(client.id)}
+                              disabled={!canReduce}
                               title="Supprimer"
-                              className="p-1 text-gray-500 hover:text-rose-400 hover:bg-gray-900/60 rounded cursor-pointer"
+                              className="p-1 text-gray-500 hover:text-rose-400 hover:bg-gray-900/60 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               <Trash2 className="h-4 w-4" />
                             </button>
@@ -325,7 +366,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
           <ShieldAlert className="h-12 w-12 text-gray-700 mx-auto mb-4" />
           <h3 className="text-base font-semibold text-white">{t("clients.empty_state")}</h3>
           <p className="text-sm text-gray-400 max-w-sm mx-auto mt-1">{t("clients.empty_state_desc")}</p>
-          {!isSupport && (
+          {canCreate && (
             <button
               onClick={() => setShowAddModal(true)}
               className="mt-5 px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-950 text-cyan-400 border border-cyan-800/40 hover:bg-cyan-900/50 transition-all cursor-pointer"
@@ -381,8 +422,30 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
               </div>
 
               <p className="text-xs text-gray-500 mt-2">
-                Le quota sera défini lors de la création du token/forfait pour ce client.
+                Aucun plan n'est attribué à la création : le forfait (configuration, volume, durée) se choisit
+                ensuite depuis « Forfaits Data ».
               </p>
+
+              {showsOwnerColumn && (
+                <div>
+                  <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">
+                    Rattacher à un revendeur
+                  </label>
+                  <select
+                    value={resellerId}
+                    onChange={(e) => setResellerId(e.target.value)}
+                    className="w-full px-3 py-2 text-sm bg-gray-900 border border-gray-800 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
+                  >
+                    <option value="">Client direct (plateforme)</option>
+                    {resellers.map((r) => (
+                      <option key={r.id} value={r.id}>{r.name} — {r.email}</option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-[11px] text-gray-500">
+                    Détermine qui possède ce client, et donc qui peut le gérer.
+                  </p>
+                </div>
+              )}
 
               <div className="flex gap-2 justify-end mt-6 pt-4 border-t border-gray-900">
                 <button

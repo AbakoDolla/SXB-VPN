@@ -5,6 +5,8 @@
 
 // Base URL — utilise /xapi (proxifié par Vite → vpnsxb.afrihall.com/api)
 // On évite /api/* car l'artifact api-server Replit l'intercepte en priorité.
+import { ResellerAccessSummary } from "../types";
+
 const API_BASE = "/xapi";
 
 const ACCESS_TOKEN_KEY = "sxb_access_token";
@@ -31,13 +33,56 @@ export function clearTokens() {
 class ApiError extends Error {
   status: number;
   responseData?: any;
+  /** Code stable du serveur (`data.code`) ou, à défaut, sa clé i18n. */
   code?: string;
-  constructor(message: string, status: number, code?: string, responseData?: any) {
+  /** Clé i18n brute (`data.error`), conservée séparément du code stable. */
+  errorKey?: string;
+  /** Contrat d'accès revendeur porté par les refus (validité + plafond). */
+  resellerAccess?: ResellerAccessSummary;
+  constructor(
+    message: string,
+    status: number,
+    code?: string,
+    responseData?: any,
+    extra?: { errorKey?: string; resellerAccess?: ResellerAccessSummary }
+  ) {
     super(message);
     this.status = status;
     this.responseData = responseData;
     this.code = code;
+    this.errorKey = extra?.errorKey;
+    this.resellerAccess = extra?.resellerAccess;
   }
+}
+
+/**
+ * Diffusion centrale de l'état d'accès revendeur.
+ *
+ * Le serveur joint `resellerAccess` à ses refus ET à ses indicateurs. Chaque
+ * écran traitait ces refus comme un échec générique : l'exploitant voyait
+ * « Erreur 403 » sans jamais apprendre que son agrément avait expiré. L'état
+ * est désormais republié ici, à chaque réponse qui le porte, pour que
+ * l'interface se mette à jour SANS rechargement ni redirection — la session
+ * reste valide, c'est l'agrément qui ne l'est plus.
+ */
+type ResellerAccessListener = (access: ResellerAccessSummary, code?: string) => void;
+const resellerAccessListeners = new Set<ResellerAccessListener>();
+
+export function subscribeResellerAccess(listener: ResellerAccessListener): () => void {
+  resellerAccessListeners.add(listener);
+  return () => { resellerAccessListeners.delete(listener); };
+}
+
+function looksLikeAccessSummary(value: any): value is ResellerAccessSummary {
+  return !!value && typeof value === "object" && typeof value.accessState === "string" && typeof value.quotaState === "string";
+}
+
+function publishResellerAccess(data: any, code?: string) {
+  const access = data?.resellerAccess;
+  if (!looksLikeAccessSummary(access)) return;
+  resellerAccessListeners.forEach((listener) => {
+    try { listener(access, code); } catch { /* un abonné défaillant n'interrompt pas les autres */ }
+  });
 }
 
 let refreshPromise: Promise<boolean> | null = null;
@@ -132,15 +177,24 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}, 
   }
 
   if (!res.ok) {
+    // Un refus d'agrément (expiré, suspendu, plafond atteint) n'est PAS une
+    // perte de session : la déconnexion forcée reste réservée au 401 et à la
+    // suspension du compte lui-même. Confondre les deux renvoyait le revendeur
+    // sur l'écran de connexion, où plus rien n'expliquait le refus.
     if (!skipAuth && (res.status === 401 || (res.status === 403 && data?.error === "errors.auth.suspended"))) {
       forceLoginRedirect();
     }
+    publishResellerAccess(data, data?.code);
     const message = data?.message
       ? (Array.isArray(data.message) ? data.message.map((m: any) => m.message).join(", ") : data.message)
       : `Erreur ${res.status}`;
-    throw new ApiError(message, res.status, data?.error, data);
+    throw new ApiError(message, res.status, data?.code ?? data?.error, data, {
+      errorKey: data?.error,
+      resellerAccess: looksLikeAccessSummary(data?.resellerAccess) ? data.resellerAccess : undefined,
+    });
   }
 
+  publishResellerAccess(data);
   return data as T;
 }
 

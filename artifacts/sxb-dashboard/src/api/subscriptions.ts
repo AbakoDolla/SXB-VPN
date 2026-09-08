@@ -6,8 +6,8 @@ export interface Subscription {
   clientId: string;
   profileId: string;
   dataToken: string;
-  quotaBytes: number;
-  quotaUsed: number;
+  quotaBytes: string | number;
+  quotaUsed: string | number;
   durationDays: number;
   deviceLimit: number;
   deviceId: string | null;
@@ -17,8 +17,17 @@ export interface Subscription {
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
-  client?: { id: string; token: string; user?: { name: string; email: string } };
-  profile?: { id: string; name: string; protocol: string };
+  client?: {
+    id: string;
+    token: string;
+    user?: { name: string; email: string };
+    resellerId?: string | null;
+    reseller?: { id: string; name: string | null; email: string | null } | null;
+  };
+  profile?: { id: string; name: string; protocol?: string; displayProtocol?: string | null };
+  /** Propriété commerciale, remontée au niveau du forfait pour les rôles supérieurs. */
+  resellerId?: string | null;
+  resellerName?: string | null;
 }
 
 export interface SubStats { total: number; active: number; expired: number }
@@ -33,6 +42,13 @@ export async function fetchSubStats(): Promise<SubStats> {
   return data;
 }
 
+/**
+ * SEUL point d'attribution d'un plan.
+ *
+ * Ni l'activation d'un appareil ni la création d'un client n'attribuent de
+ * forfait : c'est un choix commercial explicite, qui exige un client possédé,
+ * une configuration attribuée, un volume et une durée.
+ */
 export async function createSubscription(payload: {
   clientId: string;
   profileId: string;
@@ -40,6 +56,7 @@ export async function createSubscription(payload: {
   quotaGB: number;
   durationDays: number;
   deviceLimit?: number;
+  deviceId?: string;
 }): Promise<Subscription> {
   const data = await apiRequest<{ subscription: Subscription }>('/subscriptions', {
     method: 'POST',
@@ -48,14 +65,28 @@ export async function createSubscription(payload: {
   return data.subscription;
 }
 
+/**
+ * Modification d'un forfait : quota, durée, appareils, configuration, et
+ * suspension/réactivation via `status`. Suspendre et réduire restent possibles
+ * quand le plafond est atteint — ce sont les gestes qui en font sortir.
+ */
 export async function updateSubscription(id: string, payload: Partial<{
-  name: string; quotaGB: number; durationDays: number; deviceLimit: number; status: string;
+  name: string; quotaGB: number; durationDays: number; deviceLimit: number;
+  status: 'active' | 'suspended' | 'expired' | 'revoked'; profileId: string;
 }>): Promise<Subscription> {
   const data = await apiRequest<{ subscription: Subscription }>(`/subscriptions/${id}`, {
     method: 'PUT',
     body: payload,
   });
   return data.subscription;
+}
+
+export async function suspendSubscription(id: string): Promise<Subscription> {
+  return updateSubscription(id, { status: 'suspended' });
+}
+
+export async function reactivateSubscription(id: string): Promise<Subscription> {
+  return updateSubscription(id, { status: 'active' });
 }
 
 export async function deleteSubscription(id: string): Promise<void> {

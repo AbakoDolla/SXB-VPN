@@ -1,7 +1,13 @@
 
 import React, { useEffect, useState, useMemo } from "react";
 import { fetchDevices, generateDeviceToken, revokeDevice, renewDevice, Device } from "../api/devices";
-import { Smartphone, Plus, Copy, Check, Ban, RefreshCw, Search, X, Clock, Shield, Key } from "lucide-react";
+import { fetchResellers } from "../api/resellers";
+import { Reseller, UserRole } from "../types";
+import { useResellerAccess } from "../contexts/ResellerAccessContext";
+import { usePermissions } from "../contexts/PermissionsContext";
+import { ResellerAccessSummaryCard, ResellerActionNotice } from "./ResellerAccessBanner";
+import { isUpperRole, ownerLabel } from "../lib/resellerAccess";
+import { Smartphone, Plus, Copy, Check, Ban, RefreshCw, Search, X, Clock, Shield, Key, Store, PackageOpen } from "lucide-react";
 import Pagination from "./ui/Pagination";
 import { toast } from "sonner";
 
@@ -33,8 +39,9 @@ function formatBytes(value: string | number | null | undefined): string {
   return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 2)} ${units[index]}`;
 }
 
-export default function DevicesView() {
+export default function DevicesView({ currentUserRole }: { currentUserRole?: UserRole }) {
   const [devices, setDevices] = useState<Device[]>([]);
+  const [resellers, setResellers] = useState<Reseller[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -43,15 +50,28 @@ export default function DevicesView() {
   const [deviceId, setDeviceId] = useState("");
   const [label, setLabel] = useState("");
   const [durationDays, setDurationDays] = useState(365);
+  const [resellerId, setResellerId] = useState("");
   const [formError, setFormError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [generatedToken, setGeneratedToken] = useState<string | null>(null);
+
+  const isSupport = currentUserRole === UserRole.SUPPORT;
+  const isReseller = currentUserRole === UserRole.RESELLER;
+  const showsOwnerColumn = isUpperRole(currentUserRole);
+  const { allows, refresh: refreshAccess } = useResellerAccess();
+  // Enrôler un appareil engage le parc : fermé si l'agrément est expiré ou le
+  // plafond atteint. Révoquer reste ouvert au plafond, c'est un geste libérateur.
+  const can = usePermissions();
+  const canWrite = can("clients.manage") || can("clients.create");
+  const canEnroll = !isSupport && allows() && canWrite;
+  const canRevoke = !isSupport && allows({ reducesExposure: true }) && canWrite;
 
   const load = async () => {
     setLoading(true);
     try {
       const data = await fetchDevices();
       setDevices(data);
+      if (showsOwnerColumn) setResellers(await fetchResellers().catch(() => [] as Reseller[]));
     } catch (err) {
       console.error(err);
     } finally {
@@ -63,20 +83,25 @@ export default function DevicesView() {
 
   const handleGenerate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!deviceId.trim()) { setFormError("L'ID de l'appareil est requis"); return; }
+    if (!deviceId.trim()) { setFormError("L'identifiant de l'appareil est requis"); return; }
     setFormError("");
     setSubmitting(true);
     setGeneratedToken(null);
     try {
-      const result = await generateDeviceToken({ deviceId: deviceId.trim(), label: label.trim() || undefined, durationDays });
+      const result = await generateDeviceToken({
+        deviceId: deviceId.trim(),
+        label: label.trim() || undefined,
+        durationDays,
+        resellerId: showsOwnerColumn && resellerId ? resellerId : undefined,
+      });
       setGeneratedToken(result.token);
-      await load();
+      await Promise.all([load(), refreshAccess()]);
     } catch (err: any) {
       const respData = err?.responseData;
       if (respData?.device) {
         setGeneratedToken(respData.device.token);
-        setFormError("Cet appareil a déjà un token actif — voici le token existant.");
-        await load();
+        setFormError("Cet appareil a déjà un jeton actif — voici le jeton existant.");
+        await Promise.all([load(), refreshAccess()]);
       } else {
         setFormError(respData?.message || err?.message || "Erreur lors de la génération");
       }
@@ -90,13 +115,13 @@ export default function DevicesView() {
 
   const handleRevoke = async (id: string) => {
     if (!window.confirm("Révoquer le token de cet appareil ? L'accès VPN sera immédiatement coupé.")) return;
-    try { await revokeDevice(id); await load(); toast.success("Token révoqué"); }
+    try { await revokeDevice(id); await Promise.all([load(), refreshAccess()]); toast.success("Token révoqué"); }
     catch (err: any) { toast.error(err?.message || "Erreur"); }
   };
 
   const handleRenew = async (id: string) => {
     if (!window.confirm("Renouveler pour 365 jours ?")) return;
-    try { await renewDevice(id, 365); await load(); toast.success("Renouvelé pour 365 jours"); }
+    try { await renewDevice(id, 365); await Promise.all([load(), refreshAccess()]); toast.success("Renouvelé pour 365 jours"); }
     catch (err: any) { toast.error(err?.message || "Erreur"); }
   };
 
@@ -129,18 +154,25 @@ export default function DevicesView() {
             <Smartphone className="w-5 h-5 text-cyan-400" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold text-white">Appareils & Tokens</h2>
-            <p className="text-sm text-gray-500">Gérez les tokens d'activation par appareil</p>
+            <h2 className="text-lg font-semibold text-white">Appareils et jetons</h2>
+            <p className="text-sm text-gray-500">
+              Jetons d'activation par appareil. L'activation crée le compte appareil ; elle n'attribue aucun plan.
+            </p>
           </div>
         </div>
         <button
-          onClick={() => { setShowModal(true); setGeneratedToken(null); setFormError(""); setDeviceId(""); setLabel(""); }}
-          className="flex items-center gap-2 px-4 py-2 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 text-cyan-400 rounded-xl text-sm font-medium transition-colors"
+          onClick={() => { setShowModal(true); setGeneratedToken(null); setFormError(""); setDeviceId(""); setLabel(""); setResellerId(""); }}
+          disabled={!canEnroll}
+          title={canEnroll ? undefined : "Indisponible : agrément expiré ou plafond atteint"}
+          className="flex items-center gap-2 px-4 py-2 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 text-cyan-400 rounded-xl text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Plus className="w-4 h-4" />
-          Générer un token
+          Générer un jeton
         </button>
       </div>
+
+      {isReseller && <ResellerAccessSummaryCard />}
+      {!isSupport && <ResellerActionNotice />}
 
       {/* Stats */}
       <div className="grid grid-cols-3 gap-4">
@@ -190,7 +222,7 @@ export default function DevicesView() {
               <Smartphone className="w-8 h-8 text-cyan-400/40" />
             </div>
             <p className="text-gray-400 font-medium">Aucun appareil enregistré</p>
-            <p className="text-gray-600 text-sm">Cliquez sur « Générer un token » pour commencer</p>
+            <p className="text-gray-600 text-sm">Cliquez sur « Générer un jeton » pour commencer</p>
           </div>
         ) : (
           <>
@@ -199,8 +231,12 @@ export default function DevicesView() {
               <thead>
                 <tr className="border-b border-[#1a1f2e]">
                   <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Appareil</th>
-                  <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Token d'activation</th>
+                  {showsOwnerColumn && (
+                    <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Revendeur</th>
+                  )}
+                  <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Jeton d'activation</th>
                   <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Statut</th>
+                  <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Forfait</th>
                   <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Quota</th>
                   <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Trafic réel</th>
                   <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Expiration</th>
@@ -227,6 +263,14 @@ export default function DevicesView() {
                           </div>
                         </div>
                       </td>
+                      {showsOwnerColumn && (
+                        <td className="px-5 py-4">
+                          <span className="inline-flex items-center gap-1 rounded-md border border-violet-500/20 bg-violet-500/10 px-2 py-0.5 text-[11px] text-violet-300">
+                            <Store className="w-3 h-3 shrink-0" />
+                            {ownerLabel(device.resellerName)}
+                          </span>
+                        </td>
+                      )}
                       <td className="px-5 py-4">
                         <div className="flex items-center gap-2">
                           <code className="text-xs text-cyan-400 font-mono bg-cyan-500/5 border border-cyan-500/10 px-2 py-1 rounded">{device.token}</code>
@@ -237,6 +281,18 @@ export default function DevicesView() {
                       </td>
                       <td className="px-5 py-4">
                         <span className={`inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium ${cls}`}>{sLabel}</span>
+                      </td>
+                      {/* Un appareil SANS forfait est un état normal : le plan est
+                          une décision commerciale distincte de l'activation. */}
+                      <td className="px-5 py-4">
+                        {device.hasSubscription ? (
+                          <span className="inline-flex items-center gap-1 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-300">
+                            <PackageOpen className="w-3 h-3 shrink-0" />
+                            {device.subscriptionName || "Forfait actif"}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-gray-500">Aucun plan attribué</span>
+                        )}
                       </td>
                       <td className="px-5 py-4">
                         <div className="flex flex-col gap-1 text-xs">
@@ -271,16 +327,18 @@ export default function DevicesView() {
                           </button>
                           <button
                             onClick={() => handleRenew(device.id)}
-                            title="Renouveler 1 an"
-                            className="p-1.5 rounded-lg hover:bg-emerald-500/10 text-gray-500 hover:text-emerald-400 transition-colors"
+                            disabled={!canEnroll}
+                            title="Renouveler pour 1 an"
+                            className="p-1.5 rounded-lg hover:bg-emerald-500/10 text-gray-500 hover:text-emerald-400 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
                           >
                             <RefreshCw className="w-4 h-4" />
                           </button>
                           {device.status !== "suspended" && (
                             <button
                               onClick={() => handleRevoke(device.id)}
+                              disabled={!canRevoke}
                               title="Révoquer"
-                              className="p-1.5 rounded-lg hover:bg-rose-500/10 text-gray-500 hover:text-rose-400 transition-colors"
+                              className="p-1.5 rounded-lg hover:bg-rose-500/10 text-gray-500 hover:text-rose-400 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               <Ban className="w-4 h-4" />
                             </button>
@@ -310,7 +368,7 @@ export default function DevicesView() {
                 <div className="p-2 rounded-xl bg-cyan-500/10 border border-cyan-500/20">
                   <Key className="w-4 h-4 text-cyan-400" />
                 </div>
-                <h3 className="text-lg font-semibold text-white">Générer un token d'activation</h3>
+                <h3 className="text-lg font-semibold text-white">Générer un jeton d'activation</h3>
               </div>
               <button onClick={() => setShowModal(false)} className="text-gray-500 hover:text-white transition-colors">
                 <X className="w-5 h-5" />
@@ -320,7 +378,7 @@ export default function DevicesView() {
             {generatedToken ? (
               <div className="space-y-4">
                 <div className="p-4 bg-emerald-500/5 border border-emerald-500/20 rounded-xl text-center">
-                  <p className="text-emerald-400 text-sm font-medium mb-3">✓ Token généré avec succès !</p>
+                  <p className="text-emerald-400 text-sm font-medium mb-3">✓ Jeton généré</p>
                   {formError && <p className="text-amber-400 text-xs mb-3">{formError}</p>}
                   <div className="flex items-center gap-2 bg-black/40 border border-emerald-500/20 rounded-xl px-4 py-3">
                     <code className="flex-1 text-emerald-300 font-mono text-base font-bold tracking-widest text-center">{generatedToken}</code>
@@ -328,7 +386,10 @@ export default function DevicesView() {
                       {copiedId === "modal-tok" ? <Check className="w-5 h-5 text-emerald-400" /> : <Copy className="w-5 h-5 text-gray-400 hover:text-white" />}
                     </button>
                   </div>
-                  <p className="text-gray-500 text-xs mt-3">Donnez ce token à l'utilisateur pour qu'il l'active dans l'app mobile.</p>
+                  <p className="text-gray-500 text-xs mt-3">
+                    Transmettez ce jeton à l'utilisateur pour qu'il active son appareil. Aucun plan n'est attribué :
+                    créez ensuite un forfait depuis « Forfaits Data ».
+                  </p>
                 </div>
                 <button
                   onClick={() => { setShowModal(false); setGeneratedToken(null); setDeviceId(""); setLabel(""); setFormError(""); }}
@@ -346,18 +407,35 @@ export default function DevicesView() {
                 )}
                 <div>
                   <label className="block text-sm font-medium text-gray-300 mb-1.5">
-                    ID de l'appareil <span className="text-rose-400">*</span>
+                    Identifiant de l'appareil <span className="text-rose-400">*</span>
                   </label>
                   <input
                     type="text"
                     value={deviceId}
                     onChange={e => setDeviceId(e.target.value)}
-                    placeholder="ex: SXB3F2A9B8C1D4E5F6"
+                    placeholder="ex. SXB3F2A9B8C1D4E5F6"
                     className="w-full px-4 py-3 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white placeholder-gray-600 font-mono text-sm focus:outline-none focus:border-cyan-500 transition-colors"
                     required
                   />
-                  <p className="text-xs text-gray-600 mt-1">Copiez l'ID depuis l'écran d'activation de l'app mobile.</p>
+                  <p className="text-xs text-gray-600 mt-1">Copiez l'identifiant depuis l'écran d'activation de l'application mobile.</p>
                 </div>
+                {showsOwnerColumn && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-1.5">
+                      Rattacher à un revendeur <span className="text-gray-500">(optionnel)</span>
+                    </label>
+                    <select
+                      value={resellerId}
+                      onChange={e => setResellerId(e.target.value)}
+                      className="w-full px-4 py-3 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-cyan-500 transition-colors"
+                    >
+                      <option value="">Appareil direct (plateforme)</option>
+                      {resellers.map(r => (
+                        <option key={r.id} value={r.id}>{r.name} — {r.email}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 <div>
                   <label className="block text-sm font-medium text-gray-300 mb-1.5">
                     Nom / Libellé <span className="text-gray-500">(optionnel)</span>
@@ -394,11 +472,11 @@ export default function DevicesView() {
                   </button>
                   <button
                     type="submit"
-                    disabled={submitting || !deviceId.trim()}
+                    disabled={submitting || !deviceId.trim() || !canEnroll}
                     className="flex-1 py-3 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/40 text-cyan-400 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl text-sm font-semibold transition-colors flex items-center justify-center gap-2"
                   >
                     {submitting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Key className="w-4 h-4" />}
-                    {submitting ? "Génération..." : "Générer le token"}
+                    {submitting ? "Génération…" : "Générer le jeton"}
                   </button>
                 </div>
               </form>

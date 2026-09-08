@@ -1,21 +1,72 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "../contexts/I18nContext";
 import { fetchRoles, fetchPermissions, updateRolePermissions } from "../api/permissions";
 import { RBACRole, AppPermission, UserRole } from "../types";
-import { Shield, RefreshCw, KeyRound, Check, ShieldAlert } from "lucide-react";
+import { isOwner as isOwnerRole } from "../lib/roles";
+import { Shield, RefreshCw, Check, ShieldAlert, AlertTriangle, X, Lock } from "lucide-react";
 
 interface RBACViewProps {
   currentUserRole: UserRole;
   onRolePermissionsUpdated: () => void;
 }
 
+/**
+ * Permissions accordées à chaque rôle.
+ *
+ * Deux principes tiennent cet écran :
+ *
+ *   1. L'AUTORISATION EST SERVEUR. `PATCH /api/rbac/roles/:id` n'accepte que
+ *      SUPER_ADMIN (et OWNER, par le point unique de contournement). Ce que
+ *      l'interface désactive n'est qu'un confort : elle ne protège rien seule,
+ *      et elle ne doit surtout pas être PLUS permissive que le serveur.
+ *
+ *   2. AUCUNE ÉLÉVATION DE PRIVILÈGE. Trois garde-fous sont posés ici :
+ *      — le rôle OWNER n'est pas modifiable : il contourne les permissions,
+ *        les cocher ou les décocher ne changerait rien et laisserait croire
+ *        le contraire ;
+ *      — SUPER_ADMIN ne peut pas se retirer l'administration RBAC, sans quoi
+ *        plus personne ne pourrait la rétablir ;
+ *      — accorder une permission sensible à un rôle subalterne exige une
+ *        confirmation nommée, et non un clic sur une case au milieu de
+ *        soixante autres.
+ */
+
+/** Permissions qui donnent barre sur la plateforme, les comptes ou l'argent. */
+const DANGEROUS_PERMISSIONS = [
+  "rbac", "users.create", "users.delete", "reseller.manage", "vpnprofile.manage",
+  "clients.manage", "subscription.manage", "tokens.create", "server.manage",
+  "maintenance", "owner",
+];
+
+/** Rôles subalternes : leur accorder une permission sensible est une décision. */
+const SUBORDINATE_ROLES = [UserRole.SUPPORT, UserRole.RESELLER, "CLIENT", "USER"];
+
+function isDangerous(code: string): boolean {
+  const normalized = code.toLowerCase();
+  return DANGEROUS_PERMISSIONS.some((needle) => normalized.startsWith(needle) || normalized.includes(`:${needle}`));
+}
+
+const ROLE_BADGES: Record<string, string> = {
+  OWNER: "bg-rose-950 text-rose-300 border-rose-800/50",
+  SUPER_ADMIN: "bg-rose-950 text-rose-400 border-rose-800/40",
+  ADMIN: "bg-cyan-950 text-cyan-400 border-cyan-800/40",
+  SUPPORT: "bg-blue-950 text-blue-400 border-blue-800/40",
+  RESELLER: "bg-purple-950 text-purple-400 border-purple-800/40",
+};
+
 export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: RBACViewProps) {
   const { t } = useTranslation();
   const [roles, setRoles] = useState<RBACRole[]>([]);
   const [permissions, setPermissions] = useState<AppPermission[]>([]);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState<string | null>(null);
+  const [confirmation, setConfirmation] = useState<
+    { roleId: string; roleName: string; permCode: string; permLabel: string; granting: boolean } | null
+  >(null);
 
-  const canEdit = currentUserRole === UserRole.SUPER_ADMIN;
+  // Le serveur n'accepte que SUPER_ADMIN, et OWNER par contournement unique.
+  // ADMIN garde une vue complète, en lecture seule.
+  const canEdit = isOwnerRole(currentUserRole) || currentUserRole === UserRole.SUPER_ADMIN;
 
   const loadRBAC = async () => {
     setLoading(true);
@@ -30,149 +81,288 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
     }
   };
 
-  useEffect(() => {
-    loadRBAC();
-  }, []);
+  useEffect(() => { loadRBAC(); }, []);
 
-  const handleTogglePermission = async (roleId: string, permCode: string, isCurrentlyChecked: boolean) => {
+  /** Le rôle OWNER contourne les permissions : sa ligne reste en lecture seule. */
+  const isRoleLocked = (roleName: string) => roleName === UserRole.OWNER;
+
+  /**
+   * Un basculement retirerait-il à SUPER_ADMIN sa capacité à administrer le
+   * RBAC ? Si oui, plus personne ne pourrait la lui rendre.
+   */
+  const wouldLockOutRbac = (roleName: string, permCode: string, granting: boolean) =>
+    !granting && roleName === UserRole.SUPER_ADMIN && permCode.toLowerCase().startsWith("rbac");
+
+  const applyToggle = async (roleId: string, permCode: string, granting: boolean) => {
+    const role = roles.find((r) => r.id === roleId);
+    if (!role) return;
+    const next = granting
+      ? Array.from(new Set([...role.permissions, permCode]))
+      : role.permissions.filter((p) => p !== permCode);
+
+    setSaving(`${roleId}:${permCode}`);
+    try {
+      await updateRolePermissions(roleId, next);
+      // On relit le serveur plutôt que de croire l'état local : lui seul dit
+      // ce qui a réellement été enregistré.
+      setRoles(await fetchRoles());
+      onRolePermissionsUpdated();
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : t("common.error_generic"));
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const handleTogglePermission = (roleId: string, permCode: string, isChecked: boolean) => {
     if (!canEdit) return;
-    
-    // Le SUPER_ADMIN ne peut pas supprimer ses propres garde-fous RBAC.
-    const editedRole = roles.find((r) => r.id === roleId);
-    if (editedRole?.name === UserRole.SUPER_ADMIN && (permCode === "rbac:write" || permCode === "rbac:read" || permCode === "rbac.manage")) {
-      alert("Interdiction de sécurité : L'administrateur système ne peut pas révoquer ses propres permissions d'administration RBAC !");
+    const role = roles.find((r) => r.id === roleId);
+    if (!role) return;
+    const granting = !isChecked;
+
+    if (isRoleLocked(String(role.name))) {
+      window.alert(
+        "Le rôle OWNER contourne le contrôle des permissions : les modifier ici n'aurait aucun effet réel."
+      );
       return;
     }
 
-    const role = roles.find((r) => r.id === roleId);
-    if (!role) return;
-
-    let newPermissions: string[];
-    if (isCurrentlyChecked) {
-      newPermissions = role.permissions.filter((p) => p !== permCode);
-    } else {
-      newPermissions = [...role.permissions, permCode];
+    if (wouldLockOutRbac(String(role.name), permCode, granting)) {
+      window.alert(
+        "Interdit : le super-administrateur ne peut pas se retirer l'administration des habilitations. Plus personne ne pourrait la rétablir."
+      );
+      return;
     }
 
-    try {
-      await updateRolePermissions(roleId, newPermissions);
-      // Reload lists
-      const updatedRoles = await fetchRoles();
-      setRoles(updatedRoles);
-      onRolePermissionsUpdated(); // Notify parent layout to refresh auth rules
-    } catch (err) {
-      alert(err instanceof Error ? err.message : t("common.error_generic"));
+    // Une permission sensible accordée à un rôle subalterne se confirme.
+    const sensitive = isDangerous(permCode) && (granting || SUBORDINATE_ROLES.includes(role.name as UserRole));
+    if (sensitive) {
+      const perm = permissions.find((p) => p.code === permCode);
+      setConfirmation({
+        roleId,
+        roleName: String(role.name),
+        permCode,
+        permLabel: perm?.description || permCode,
+        granting,
+      });
+      return;
     }
+
+    applyToggle(roleId, permCode, granting);
   };
+
+  const categories = useMemo(
+    () => Array.from(new Set(permissions.map((p) => p.category))).sort(),
+    [permissions]
+  );
 
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-gray-400">
-        <RefreshCw className="h-7 w-7 animate-spin text-cyan-400 mb-4" />
-        <p className="text-sm font-mono">{t("common.loading")}</p>
+        <RefreshCw className="mb-4 h-7 w-7 animate-spin text-cyan-400" />
+        <p className="font-mono text-sm">{t("common.loading")}</p>
       </div>
     );
   }
 
-  // Group permissions by category
-  const categories = Array.from(new Set(permissions.map((p) => p.category)));
+  const PermissionCheckbox = ({
+    role, perm, checked,
+  }: { role: RBACRole; perm: AppPermission; checked: boolean }) => {
+    const locked = isRoleLocked(String(role.name));
+    const disabled = !canEdit || locked || saving === `${role.id}:${perm.code}`;
+    return (
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        aria-label={`${perm.code} pour ${role.name}`}
+        onChange={() => handleTogglePermission(role.id, perm.code, checked)}
+        className={`h-4 w-4 rounded border-gray-800 bg-gray-900 text-cyan-500 transition-all focus:ring-cyan-500/30 ${
+          disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer"
+        }`}
+      />
+    );
+  };
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
-          <Shield className="h-6 w-6 text-cyan-400" />
-          {t("sidebar.rbac")} (Contrôle d'Habilitations)
-        </h1>
-        <p className="text-sm text-gray-400 mt-1">Configurez les droits d'accès granulaires de chaque niveau d'habilitation (Admin, Support, Revendeur) de la plateforme.</p>
+        <h2 className="flex items-center gap-2 text-lg font-bold tracking-tight text-white">
+          <Shield className="h-5 w-5 text-cyan-400" />
+          Habilitations (RBAC)
+        </h2>
+        <p className="mt-1 text-sm text-gray-400">
+          Choisissez les permissions de chaque rôle. Les permissions sensibles sont signalées : elles donnent barre
+          sur les comptes, les quotas ou l'infrastructure.
+        </p>
       </div>
 
       {!canEdit && (
-        <div className="p-4 border border-cyan-800 bg-cyan-950/20 text-cyan-300 rounded-lg text-xs leading-relaxed flex gap-3 items-start">
-          <ShieldAlert className="h-5 w-5 text-cyan-400 shrink-0" />
+        <div className="flex items-start gap-3 rounded-lg border border-cyan-800 bg-cyan-950/20 p-4 text-xs leading-relaxed text-cyan-300">
+          <ShieldAlert className="h-5 w-5 shrink-0 text-cyan-400" />
           <div>
-            <p className="font-bold">Mode Lecture Seule Actif</p>
-            <p className="mt-0.5">Seul le SUPER_ADMIN peut modifier la table de vérité RBAC. Les autres rôles disposent d’un accès en lecture seule.</p>
+            <p className="font-bold">Lecture seule</p>
+            <p className="mt-0.5">
+              Seuls le propriétaire et le super-administrateur modifient la matrice d'habilitations ; le serveur
+              refuse toute autre écriture. Votre rôle en conserve la vue complète.
+            </p>
           </div>
         </div>
       )}
 
-      {/* RBAC Grid Matrix */}
-      <div className="dashboard-card border border-gray-800/80 rounded-2xl bg-gray-950/20 overflow-hidden backdrop-blur-md">
+      <div className="flex flex-wrap items-center gap-3 text-[11px] text-gray-500">
+        <span className="inline-flex items-center gap-1 rounded-md border border-rose-500/30 bg-rose-500/10 px-2 py-0.5 text-rose-300">
+          <AlertTriangle className="h-3 w-3" /> Permission sensible
+        </span>
+        <span className="inline-flex items-center gap-1 rounded-md border border-gray-700 bg-gray-900/60 px-2 py-0.5">
+          <Lock className="h-3 w-3" /> Rôle non modifiable
+        </span>
+      </div>
+
+      {/* ── Grand écran : matrice complète ─────────────────────────────────── */}
+      <div className="hidden overflow-hidden rounded-2xl border border-gray-800/80 bg-gray-950/20 backdrop-blur-md lg:block dashboard-card">
         <div className="overflow-x-auto overscroll-x-contain">
           <div className="min-w-[780px]">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="border-b border-gray-800/80 bg-gray-900/40 text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                <th className="py-4 px-6 w-1/3">Permission & Catégorie</th>
-                <th className="py-4 px-6 w-1/3">Code Technique</th>
-                {roles.map((r) => (
-                  <th key={r.id} className="py-4 px-6 text-center">
-                    <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs font-bold font-mono border ${
-                      r.name === UserRole.SUPER_ADMIN
-                        ? "bg-rose-950 text-rose-400 border-rose-800/40"
-                        : r.name === UserRole.ADMIN 
-                        ? "bg-cyan-950 text-cyan-400 border-cyan-800/40" 
-                        : r.name === UserRole.SUPPORT
-                        ? "bg-blue-950 text-blue-400 border-blue-800/40"
-                        : "bg-purple-950 text-purple-400 border-purple-800/40"
-                    }`}>
-                      {r.name}
-                    </span>
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-900 text-sm">
-              {categories.map((category) => {
-                const catPermissions = permissions.filter((p) => p.category === category);
-                
-                return (
-                  <tr key={category} className="bg-gray-900/10">
-                    <td colSpan={2 + roles.length} className="py-3 px-6 text-xs font-bold uppercase tracking-wider text-gray-500 bg-gray-900/20">
-                      {category}
-                    </td>
-                  </tr>
-                );
-              })}
-
-              {categories.map((category) => {
-                const catPermissions = permissions.filter((p) => p.category === category);
-                
-                return catPermissions.map((perm) => (
-                  <tr key={perm.id} className="hover:bg-gray-900/10 transition-colors">
-                    <td className="py-3.5 px-6 font-medium text-white">
-                      <div>{perm.description}</div>
-                    </td>
-                    <td className="py-3.5 px-6 font-mono text-xs text-gray-500">
-                      {perm.code}
-                    </td>
-                    
-                    {roles.map((role) => {
-                      const isChecked = role.permissions.includes(perm.code);
-                      return (
-                        <td key={role.id} className="py-3.5 px-6 text-center">
-                          <input
-                            type="checkbox"
-                            checked={isChecked}
-                            disabled={!canEdit}
-                            onChange={() => handleTogglePermission(role.id, perm.code, isChecked)}
-                            className={`h-4.5 w-4.5 rounded text-cyan-500 focus:ring-cyan-500/30 bg-gray-900 border-gray-800 transition-all ${
-                              canEdit ? "cursor-pointer" : "cursor-not-allowed opacity-50"
-                            }`}
-                          />
+            <table className="w-full border-collapse text-left">
+              <thead>
+                <tr className="border-b border-gray-800/80 bg-gray-900/40 text-xs font-semibold uppercase tracking-wider text-gray-400">
+                  <th className="w-1/3 px-6 py-4">Permission et catégorie</th>
+                  <th className="w-1/4 px-6 py-4">Code technique</th>
+                  {roles.map((r) => (
+                    <th key={r.id} className="px-6 py-4 text-center">
+                      <span className={`inline-flex items-center gap-1.5 rounded border px-2 py-1 font-mono text-xs font-bold ${
+                        ROLE_BADGES[String(r.name)] || "border-gray-700 bg-gray-900 text-gray-300"
+                      }`}>
+                        {isRoleLocked(String(r.name)) && <Lock className="h-3 w-3" />}
+                        {r.name}
+                      </span>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-900 text-sm">
+                {categories.map((category) => (
+                  <Fragment key={category}>
+                    <tr className="bg-gray-900/20">
+                      <td
+                        colSpan={2 + roles.length}
+                        className="px-6 py-3 text-xs font-bold uppercase tracking-wider text-gray-500"
+                      >
+                        {category}
+                      </td>
+                    </tr>
+                    {permissions.filter((p) => p.category === category).map((perm) => (
+                      <tr key={perm.id} className="transition-colors hover:bg-gray-900/10">
+                        <td className="px-6 py-3.5 font-medium text-white">
+                          <div className="flex items-center gap-2">
+                            {isDangerous(perm.code) && (
+                              <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-rose-400" aria-label="Permission sensible" />
+                            )}
+                            <span>{perm.description}</span>
+                          </div>
                         </td>
-                      );
-                    })}
-                  </tr>
-                ));
-              })}
-            </tbody>
-          </table>
+                        <td className="px-6 py-3.5 font-mono text-xs text-gray-500">{perm.code}</td>
+                        {roles.map((role) => (
+                          <td key={role.id} className="px-6 py-3.5 text-center">
+                            <PermissionCheckbox
+                              role={role}
+                              perm={perm}
+                              checked={role.permissions.includes(perm.code)}
+                            />
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
+
+      {/* ── Petit écran : une carte par rôle ───────────────────────────────── */}
+      <div className="space-y-4 lg:hidden">
+        {roles.map((role) => (
+          <details key={role.id} className="overflow-hidden rounded-2xl border border-gray-800/80 bg-gray-950/30">
+            <summary className="flex cursor-pointer items-center justify-between gap-2 px-4 py-3">
+              <span className={`inline-flex items-center gap-1.5 rounded border px-2 py-1 font-mono text-xs font-bold ${
+                ROLE_BADGES[String(role.name)] || "border-gray-700 bg-gray-900 text-gray-300"
+              }`}>
+                {isRoleLocked(String(role.name)) && <Lock className="h-3 w-3" />}
+                {role.name}
+              </span>
+              <span className="text-xs text-gray-500">{role.permissions.length} permission(s)</span>
+            </summary>
+            <div className="divide-y divide-gray-900 border-t border-gray-800/80">
+              {permissions.map((perm) => (
+                <label key={`${role.id}-${perm.id}`} className="flex items-start justify-between gap-3 px-4 py-3">
+                  <span className="min-w-0">
+                    <span className="flex items-center gap-1.5 text-sm text-white">
+                      {isDangerous(perm.code) && <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-rose-400" />}
+                      {perm.description}
+                    </span>
+                    <span className="mt-0.5 block font-mono text-[11px] text-gray-500">{perm.code}</span>
+                  </span>
+                  <PermissionCheckbox role={role} perm={perm} checked={role.permissions.includes(perm.code)} />
+                </label>
+              ))}
+            </div>
+          </details>
+        ))}
+      </div>
+
+      {/* Confirmation nommée pour un changement sensible */}
+      {confirmation && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-[#252b3b] bg-[#0f1218] p-5">
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <h3 className="flex items-center gap-2 text-base font-semibold text-white">
+                <AlertTriangle className="h-4 w-4 text-amber-400" />
+                Confirmer un changement sensible
+              </h3>
+              <button onClick={() => setConfirmation(null)} className="text-gray-500 hover:text-white">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="space-y-2 text-sm text-gray-300">
+              <p>
+                <span className="text-gray-500">Rôle :</span> {confirmation.roleName}
+              </p>
+              <p>
+                <span className="text-gray-500">Permission :</span> {confirmation.permLabel}{" "}
+                <span className="font-mono text-xs text-gray-500">({confirmation.permCode})</span>
+              </p>
+              <p className={confirmation.granting ? "text-rose-300" : "text-amber-300"}>
+                {confirmation.granting
+                  ? "Cette permission ouvre des actions à portée durable. Accordez-la seulement si ce rôle doit réellement les exercer."
+                  : "Retirer cette permission fermera immédiatement les écrans qui en dépendent pour ce rôle."}
+              </p>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmation(null)}
+                className="rounded-lg border border-[#1a1f2e] px-3 py-2 text-xs text-gray-300 hover:bg-white/5"
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const pending = confirmation;
+                  setConfirmation(null);
+                  applyToggle(pending.roleId, pending.permCode, pending.granting);
+                }}
+                className="flex items-center gap-1.5 rounded-lg bg-cyan-500 px-3 py-2 text-xs font-semibold text-black hover:bg-cyan-400"
+              >
+                <Check className="h-3.5 w-3.5" />
+                {confirmation.granting ? "Accorder" : "Retirer"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

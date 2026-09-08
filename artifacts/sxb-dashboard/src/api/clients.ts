@@ -2,15 +2,10 @@ import { Client } from "../types";
 import { apiRequest } from "./client";
 
 export async function fetchClients(): Promise<Client[]> {
-  try {
     // Backend returns a direct array (not { clients: [] })
     const data = await apiRequest<Client[] | { clients: Client[] }>("/clients");
     if (Array.isArray(data)) return data;
-    return (data as any).clients || [];
-  } catch (error) {
-    console.error("Error fetching clients:", error);
-    return [];
-  }
+    return data.clients;
 }
 
 export async function fetchClientById(id: string): Promise<Client | null> {
@@ -22,7 +17,14 @@ export async function fetchClientById(id: string): Promise<Client | null> {
   }
 }
 
-export async function createClient(clientData: { name: string; email?: string; phone?: string; userId?: string }): Promise<Client> {
+export async function createClient(clientData: {
+  name: string;
+  email?: string;
+  phone?: string;
+  userId?: string;
+  /** Rattachement commercial explicite, réservé aux rôles supérieurs. */
+  resellerId?: string;
+}): Promise<Client> {
   return await apiRequest<Client>("/clients", {
     method: "POST",
     body: clientData,

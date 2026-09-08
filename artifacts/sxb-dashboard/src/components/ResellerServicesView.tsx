@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { GitBranch, RefreshCw, Info, ShieldCheck } from 'lucide-react';
 import { apiRequest } from '../api/client';
+import { ResellerAccessSummaryCard, ResellerActionNotice } from './ResellerAccessBanner';
+import { useResellerAccess } from '../contexts/ResellerAccessContext';
 
 /**
  * Services VPN disponibles — vue du REVENDEUR.
@@ -21,6 +23,7 @@ interface AssignedService {
 }
 
 export default function ResellerServicesView() {
+  const { quotaReached, blocked } = useResellerAccess();
   const [services, setServices] = useState<AssignedService[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -61,6 +64,9 @@ export default function ResellerServicesView() {
         </button>
       </div>
 
+      <ResellerAccessSummaryCard />
+      <ResellerActionNotice />
+
       <div className="flex items-start gap-2 p-3 bg-violet-500/5 border border-violet-500/20 rounded-xl text-xs text-violet-200">
         <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5" />
         <p>
@@ -89,13 +95,14 @@ export default function ResellerServicesView() {
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {services.map(s => (
-            <div key={s.id} className="bg-[#0f1218] border border-[#1a1f2e] rounded-xl p-4 hover:border-violet-500/30 transition-colors">
+            <div key={s.id} className={`bg-[#0f1218] border rounded-xl p-4 transition-colors ${quotaReached || blocked ? 'border-rose-500/50' : 'border-[#1a1f2e] hover:border-violet-500/30'}`}>
               <div className="flex items-start gap-2">
                 <div className="p-2 rounded-lg bg-violet-500/10 shrink-0">
                   <GitBranch className="w-4 h-4 text-violet-400" />
                 </div>
                 <div className="min-w-0">
                   <p className="text-white font-medium truncate" title={s.name}>{s.name}</p>
+                  {(quotaReached || blocked) && <p className="text-xs text-rose-400 mt-1">Attribution indisponible</p>}
                   {s.displayProtocol && (
                     <span className="inline-block mt-1 text-[10px] px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-300 border border-violet-500/20">
                       {s.displayProtocol}

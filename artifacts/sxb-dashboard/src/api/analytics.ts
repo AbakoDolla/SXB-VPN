@@ -1,5 +1,19 @@
-import { TrafficDataPoint, UserDataPoint, ActivityLog } from "../types";
+import { TrafficDataPoint, UserDataPoint, ActivityLog, ResellerAccessSummary } from "../types";
 import { apiRequest } from "./client";
+
+export interface DashboardResellerQuota {
+  /** Quota du revendeur connecté ou agrégat des revendeurs administrés. */
+  scope: "self" | "platform";
+  assignedBytes: string;
+  committedBytes: string;
+  consumedBytes: string;
+  remainingBytes: string | null;
+  /** Vrai uniquement pour le revendeur connecté explicitement illimité. */
+  unlimited: boolean;
+  resellerCount: number;
+  limitedResellers: number;
+  unlimitedResellers: number;
+}
 
 export interface DashboardStats {
   activeUsers: number;
@@ -14,6 +28,10 @@ export interface DashboardStats {
   /** Faux pour un administrateur : son compte ne porte aucun quota. */
   hasPersonalQuota?: boolean;
   personalQuota?: { attribue: string; alloue: string; illimite: boolean } | null;
+  /** Validité + plafond du revendeur connecté, même contrat que les refus. */
+  resellerAccess?: ResellerAccessSummary | null;
+  /** Enveloppes attribuées aux revendeurs, jamais un agrégat des clients. */
+  resellerQuota?: DashboardResellerQuota | null;
   activeServers: number;
   activeResellers: number;
   totalRevenue: number;

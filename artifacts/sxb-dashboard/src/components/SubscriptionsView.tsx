@@ -10,10 +10,14 @@ import {
 import { fetchVpnProfiles, fetchAssignedVpnProfiles, VpnProfile } from '../api/vpn-profiles';
 import { fetchClients } from '../api/clients';
 import { Client } from '../types';
+import { useResellerAccess } from '../contexts/ResellerAccessContext';
+import { usePermissions } from '../contexts/PermissionsContext';
+import { ResellerAccessSummaryCard, ResellerActionNotice } from './ResellerAccessBanner';
+import { formatBytes, isUpperRole, ownerLabel, percentOf, toBigInt } from '../lib/resellerAccess';
 import {
   PackageOpen, Plus, Trash2, RefreshCw, ShieldOff, Search,
   Calendar, HardDrive, Cpu, X, AlertTriangle, CheckCircle,
-  Clock, Edit3, ChevronDown,
+  Clock, Edit3, ChevronDown, PauseCircle, PlayCircle, Store,
 } from 'lucide-react';
 import Pagination from './ui/Pagination';
 import { toast } from 'sonner';
@@ -27,10 +31,10 @@ const STATUS_CFG: Record<string, { label: string; cls: string }> = {
   suspended: { label: 'Suspendu', cls: 'text-gray-400 bg-gray-500/10 border-gray-500/20' },
 };
 
-function fmtBytes(n: number) {
-  if (!n) return '0 Go';
-  const gb = n / (1024 ** 3);
-  return gb >= 1 ? `${gb.toFixed(1)} Go` : `${(n / (1024 ** 2)).toFixed(0)} Mo`;
+function bytesToGigabytes(value: string | number): number {
+  const bytes = toBigInt(value) ?? BigInt(0);
+  const tenths = (bytes * BigInt(10)) / (BigInt(1024) ** BigInt(3));
+  return Number(tenths) / 10;
 }
 
 function fmtDate(d: string | null) {
@@ -41,7 +45,6 @@ function fmtDate(d: string | null) {
 const DEFAULT_FORM = {
   clientId: '', profileId: '', name: '', quotaGB: 5, durationDays: 30, deviceLimit: 1,
 };
-
 // ── Opérations groupées ──────────────────────────────────────────────────────
 // « Définir » et « Ajouter » sont volontairement deux entrées distinctes : les
 // confondre ferait perdre le solde d'un client. Le libellé dit ce que l'action
@@ -56,6 +59,16 @@ const BULK_ACTIONS: Array<{ id: BulkAction; label: string; hint: string; needsPr
 export default function SubscriptionsView({ currentUserRole }: Props) {
   const isAdmin = isAdminRole(currentUserRole);
   const isReseller = isResellerRole(currentUserRole);
+  const showsOwnerColumn = isUpperRole(currentUserRole);
+  // Le revendeur attribue lui-même les plans de SES clients : lui réserver
+  // l'écran en lecture seule le rendait dépendant d'un administrateur pour
+  // chaque vente. Ce qui l'arrête n'est pas son rôle, mais l'état de son
+  // agrément et de son plafond — c'est le serveur qui tranche.
+  const can = usePermissions();
+  const canAssign = (isAdmin || isReseller) && can('subscription.manage');
+  const { allows, blocked, quotaReached, refresh: refreshAccess } = useResellerAccess();
+  const canCreate = canAssign && allows();
+  const canReduce = canAssign && allows({ reducesExposure: true });
 
   const [subs, setSubs] = useState<Subscription[]>([]);
   const [stats, setStats] = useState({ total: 0, active: 0, expired: 0 });
@@ -94,12 +107,12 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
       const [s, st, cl, pr] = await Promise.all([
         fetchSubscriptions(),
         fetchSubStats(),
-        fetchClients(),
+        can('clients.view') ? fetchClients() : Promise.resolve([]),
         // Le revendeur n'a pas accès à `/vpn-profiles` (403) : sa liste de
         // configurations restait vide et le formulaire refusait toute création,
         // faute de profil sélectionnable. Il lit donc celles qui lui sont
         // attribuées, sans aucun paramètre technique.
-        isReseller ? fetchAssignedVpnProfiles() : fetchVpnProfiles(),
+        canAssign ? (isReseller ? fetchAssignedVpnProfiles() : fetchVpnProfiles()) : Promise.resolve([]),
       ]);
       setSubs(s);
       setStats(st);
@@ -144,7 +157,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
       clientId: sub.clientId,
       profileId: sub.profileId,
       name: sub.name,
-      quotaGB: sub.quotaBytes ? Math.round(sub.quotaBytes / (1024 ** 3)) : 5,
+      quotaGB: bytesToGigabytes(sub.quotaBytes) || 5,
       durationDays: sub.durationDays,
       deviceLimit: sub.deviceLimit,
     });
@@ -154,12 +167,16 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.clientId || !form.profileId) { setFormError('Client et profil VPN sont requis'); return; }
+    if (!form.clientId || !form.profileId) { setFormError('Le client et la configuration VPN sont requis'); return; }
     setSaving(true); setFormError('');
     try {
       if (editSub) {
         await updateSubscription(editSub.id, {
           name: form.name || undefined,
+          // La configuration peut changer sans recréer le jeton data : une
+          // suppression suivie d'une recréation obligerait le client à
+          // réactiver son appareil.
+          profileId: form.profileId,
           quotaGB: form.quotaGB,
           durationDays: form.durationDays,
           deviceLimit: form.deviceLimit,
@@ -167,13 +184,27 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
         toast.success('Forfait mis à jour');
       } else {
         await createSubscription(form);
-        toast.success('Forfait créé avec succès');
+        toast.success('Forfait attribué au client');
       }
       setShowModal(false);
-      await load();
+      await Promise.all([load(), refreshAccess()]);
     } catch (err: any) {
+      // Un refus d'agrément ou de plafond porte un code stable : il ne doit
+      // jamais être présenté comme un échec générique, ni — pire — ignoré.
       setFormError(err?.message || 'Erreur lors de la sauvegarde');
     } finally { setSaving(false); }
+  };
+
+  /** Suspendre / réactiver : action RÉDUCTRICE, ouverte même au plafond. */
+  const handleToggleStatus = async (sub: Subscription) => {
+    const suspending = sub.status === 'active';
+    const label = suspending ? 'Suspendre' : 'Réactiver';
+    if (!window.confirm(`${label} le forfait « ${sub.name} » ?`)) return;
+    try {
+      await updateSubscription(sub.id, { status: suspending ? 'suspended' : 'active' });
+      toast.success(suspending ? 'Forfait suspendu' : 'Forfait réactivé');
+      await Promise.all([load(), refreshAccess()]);
+    } catch (err: any) { toast.error(err?.message || 'Erreur lors du changement de statut'); }
   };
 
   const handleDelete = async (id: string, name: string) => {
@@ -181,7 +212,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
     try {
       await deleteSubscription(id);
       toast.success('Forfait supprimé');
-      await load();
+      await Promise.all([load(), refreshAccess()]);
     } catch (err: any) { toast.error(err?.message || 'Erreur lors de la suppression'); }
   };
 
@@ -190,7 +221,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
     try {
       await revokeSubscription(id, 'Révoqué par admin');
       toast.success('Forfait révoqué');
-      await load();
+      await Promise.all([load(), refreshAccess()]);
     } catch (err: any) { toast.error(err?.message || 'Erreur lors de la révocation'); }
   };
 
@@ -202,8 +233,8 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
         s.name,
         s.client?.user?.name || s.clientId,
         s.profile?.name || s.profileId,
-        fmtBytes(s.quotaBytes),
-        fmtBytes(s.quotaUsed),
+        formatBytes(s.quotaBytes),
+        formatBytes(s.quotaUsed),
         `${s.durationDays}j`,
         fmtDate(s.expireAt),
         s.status,
@@ -222,6 +253,10 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
 
   // ── Opérations groupées ────────────────────────────────────────────────────
   const bulkCfg = BULK_ACTIONS.find(a => a.id === bulkAction)!;
+  // Seule `extend_duration` n'augmente pas le volume engagé, mais elle prolonge
+  // l'engagement : toutes ces actions sont traitées comme augmentatrices, donc
+  // fermées quand l'agrément ou le plafond l'exigent.
+  const bulkAllowed = canAssign && allows();
 
   const toggleOne = (id: string) => setSelected(prev => {
     const next = new Set(prev);
@@ -256,7 +291,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
       if (result.failed > 0) toast.warning(`${result.succeeded} réussis, ${result.failed} échoués`);
       else toast.success(`${result.succeeded} forfait(s) mis à jour`);
       clearSelection();
-      await load();
+      await Promise.all([load(), refreshAccess()]);
     } catch (err: any) {
       toast.error(err?.message || 'Échec de l’opération groupée');
       setBulkConfirm(false);
@@ -272,20 +307,30 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
             <PackageOpen className="w-6 h-6 text-cyan-400" />
             Forfaits Data
           </h1>
-          <p className="text-sm text-gray-400 mt-1">Gestion des abonnements VPN par client</p>
+          <p className="text-sm text-gray-400 mt-1">
+            {isReseller
+              ? 'Attribuez manuellement un plan à un de vos clients : choisissez le client, la configuration, le volume et la durée.'
+              : 'Attribution manuelle des plans, client par client. Aucune activation n’attribue de plan automatiquement.'}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={exportCSV} className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-gray-400 bg-[#0f1218] border border-[#1a1f2e] rounded-lg hover:text-white hover:border-[#252b3b] transition-all cursor-pointer">
             Export CSV
           </button>
-          {isAdmin && (
-            <button onClick={openCreate}
-              className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-medium text-sm rounded-lg shadow-lg transition-all cursor-pointer">
-              <Plus className="w-4 h-4" /> Nouveau forfait
+          {canAssign && (
+            <button
+              onClick={openCreate}
+              disabled={!canCreate}
+              title={canCreate ? 'Attribuer un plan à un client' : 'Indisponible : agrément ou plafond'}
+              className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-medium text-sm rounded-lg shadow-lg transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-40">
+              <Plus className="w-4 h-4" /> Attribuer un plan
             </button>
           )}
         </div>
       </div>
+
+      {isReseller && <ResellerAccessSummaryCard />}
+      {canAssign && <ResellerActionNotice />}
 
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
@@ -389,8 +434,9 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
           </div>
 
           <button type="button" onClick={() => setBulkConfirm(true)}
-            disabled={bulkRunning || (bulkCfg.needsProfile && !bulkProfile)}
-            className="flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black transition-all disabled:opacity-50 cursor-pointer">
+            disabled={bulkRunning || (bulkCfg.needsProfile && !bulkProfile) || !bulkAllowed}
+            title={bulkAllowed ? undefined : 'Indisponible : agrément ou plafond'}
+            className="flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black transition-all disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed">
             {bulkRunning ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
             Appliquer à {selected.size} forfait{selected.size > 1 ? 's' : ''}
           </button>
@@ -467,9 +513,9 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
           <div className="text-center py-16">
             <PackageOpen className="w-10 h-10 text-gray-700 mx-auto mb-3" />
             <p className="text-gray-500 text-sm">Aucun forfait trouvé</p>
-            {isAdmin && (
+            {canCreate && (
               <button onClick={openCreate} className="mt-3 text-cyan-400 hover:text-cyan-300 text-sm cursor-pointer">
-                + Créer le premier forfait
+                + Attribuer un premier plan
               </button>
             )}
           </div>
@@ -492,14 +538,20 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                         className="rounded border-[#1a1f2e] bg-[#07090e] accent-cyan-500 cursor-pointer"
                       />
                     </th>
-                    {['Nom', 'Client', 'Profil VPN', 'Quota', 'Durée', 'Expiration', 'Statut', ''].map(h => (
+                    {['Nom', 'Client'].map(h => (
+                      <th key={h} className="text-left text-xs text-gray-500 font-semibold uppercase tracking-wider px-4 py-3">{h}</th>
+                    ))}
+                    {showsOwnerColumn && (
+                      <th className="text-left text-xs text-gray-500 font-semibold uppercase tracking-wider px-4 py-3">Revendeur</th>
+                    )}
+                    {['Profil VPN', 'Quota', 'Consommation', 'Durée', 'Expiration', 'Statut', ''].map(h => (
                       <th key={h} className="text-left text-xs text-gray-500 font-semibold uppercase tracking-wider px-4 py-3">{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#1a1f2e]">
                   {paginated.map(sub => {
-                    const pct = sub.quotaBytes > 0 ? Math.min(100, (sub.quotaUsed / sub.quotaBytes) * 100) : 0;
+                    const pct = percentOf(sub.quotaUsed, sub.quotaBytes);
                     const cfg = STATUS_CFG[sub.status] || STATUS_CFG.active;
                     const client = clientMap[sub.clientId];
                     return (
@@ -521,6 +573,14 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                           <p className="text-sm text-gray-300">{sub.client?.user?.name || client?.user?.name || '—'}</p>
                           <p className="text-xs text-gray-600">{sub.client?.user?.email || '—'}</p>
                         </td>
+                        {showsOwnerColumn && (
+                          <td className="px-4 py-3">
+                            <span className="inline-flex items-center gap-1 rounded-md border border-violet-500/20 bg-violet-500/10 px-2 py-0.5 text-[11px] text-violet-300">
+                              <Store className="w-3 h-3 shrink-0" />
+                              {ownerLabel(sub.resellerName ?? sub.client?.reseller?.name ?? (client as any)?.resellerName ?? null)}
+                            </span>
+                          </td>
+                        )}
                         <td className="px-4 py-3">
                           <span className="text-xs text-gray-400">{sub.profile?.name || '—'}</span>
                           {sub.profile?.protocol && (
@@ -530,14 +590,22 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                         <td className="px-4 py-3">
                           <div className="space-y-1 min-w-[100px]">
                             <div className="flex justify-between text-[11px] text-gray-500">
-                              <span>{fmtBytes(sub.quotaUsed)}</span>
-                              <span>{fmtBytes(sub.quotaBytes)}</span>
+                              <span>{formatBytes(sub.quotaUsed)}</span>
+                              <span>{formatBytes(sub.quotaBytes)}</span>
                             </div>
                             <div className="w-full h-1 bg-[#1a1f2e] rounded-full overflow-hidden">
                               <div className={`h-full rounded-full ${pct > 90 ? 'bg-rose-500' : pct > 70 ? 'bg-amber-500' : 'bg-cyan-500'}`}
                                 style={{ width: `${pct}%` }} />
                             </div>
                           </div>
+                        </td>
+                        {/* Consommation : ce qui a réellement été écoulé, distinct
+                            du volume engagé qui décompte le plafond du revendeur. */}
+                        <td className="px-4 py-3">
+                          <p className="text-xs text-white">{formatBytes(String(sub.quotaUsed ?? 0))} consommés</p>
+                          <p className="text-[11px] text-gray-500">
+                            {pct.toFixed(0)} % du volume attribué
+                          </p>
                         </td>
                         <td className="px-4 py-3 text-xs text-gray-400">{sub.durationDays}j</td>
                         <td className="px-4 py-3 text-xs text-gray-400 font-mono">{fmtDate(sub.expireAt)}</td>
@@ -547,20 +615,33 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                           </span>
                         </td>
                         <td className="px-4 py-3">
-                          {isAdmin && (
+                          {canAssign && (
                             <div className="flex items-center gap-1">
                               <button onClick={() => openEdit(sub)} title="Modifier"
-                                className="p-1.5 text-gray-500 hover:text-white hover:bg-white/5 rounded-lg transition-colors cursor-pointer">
+                                disabled={!canCreate}
+                                className="p-1.5 text-gray-500 hover:text-white hover:bg-white/5 rounded-lg transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-40">
                                 <Edit3 className="w-3.5 h-3.5" />
+                              </button>
+                              {/* Suspendre / réactiver : gestes RÉDUCTEURS, ouverts
+                                  même quand le plafond est atteint. */}
+                              <button onClick={() => handleToggleStatus(sub)}
+                                disabled={!canReduce || sub.status === 'revoked'}
+                                title={sub.status === 'active' ? 'Suspendre' : 'Réactiver'}
+                                className="p-1.5 text-gray-500 hover:text-cyan-400 hover:bg-cyan-500/10 rounded-lg transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-40">
+                                {sub.status === 'active'
+                                  ? <PauseCircle className="w-3.5 h-3.5" />
+                                  : <PlayCircle className="w-3.5 h-3.5" />}
                               </button>
                               {sub.status === 'active' && (
                                 <button onClick={() => handleRevoke(sub.id, sub.name)} title="Révoquer"
-                                  className="p-1.5 text-gray-500 hover:text-amber-400 hover:bg-amber-500/10 rounded-lg transition-colors cursor-pointer">
+                                  disabled={!canReduce}
+                                  className="p-1.5 text-gray-500 hover:text-amber-400 hover:bg-amber-500/10 rounded-lg transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-40">
                                   <ShieldOff className="w-3.5 h-3.5" />
                                 </button>
                               )}
                               <button onClick={() => handleDelete(sub.id, sub.name)} title="Supprimer"
-                                className="p-1.5 text-gray-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors cursor-pointer">
+                                disabled={!canReduce}
+                                className="p-1.5 text-gray-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-40">
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
                             </div>
@@ -587,7 +668,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
             <div className="flex items-center justify-between px-6 py-4 border-b border-[#1a1f2e]">
               <h2 className="text-white font-semibold flex items-center gap-2">
                 <PackageOpen className="w-4 h-4 text-cyan-400" />
-                {editSub ? 'Modifier le forfait' : 'Nouveau forfait'}
+                {editSub ? 'Modifier le forfait' : 'Attribuer un plan à un client'}
               </h2>
               <button onClick={() => setShowModal(false)} className="p-1.5 text-gray-500 hover:text-white rounded-lg cursor-pointer">
                 <X className="w-4 h-4" />
@@ -601,36 +682,56 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
               )}
 
               {!editSub && (
-                <>
-                  <div>
-                    <label className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">Client VPN *</label>
-                    <div className="relative">
-                      <select value={form.clientId} onChange={e => setForm(f => ({ ...f, clientId: e.target.value }))} required
-                        className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-cyan-500 appearance-none cursor-pointer">
-                        <option value="">Sélectionner un client…</option>
-                        {clients.map(c => (
-                          <option key={c.id} value={c.id}>{(c as any).user?.name || c.id}</option>
-                        ))}
-                      </select>
-                      <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">Profil VPN *</label>
-                    <div className="relative">
-                      <select value={form.profileId} onChange={e => setForm(f => ({ ...f, profileId: e.target.value }))} required
-                        className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-cyan-500 appearance-none cursor-pointer">
-                        <option value="">Sélectionner un profil…</option>
-                        {profiles.filter(p => p.status === 'active').map(p => (
-                          <option key={p.id} value={p.id}>{p.name} ({p.protocol})</option>
-                        ))}
-                      </select>
-                      <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" />
-                    </div>
-                  </div>
-                </>
+                <p className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3 text-xs leading-relaxed text-cyan-200">
+                  L'attribution d'un plan est une décision explicite : choisissez le client, la configuration qui
+                  lui sera provisionnée, le volume et la durée. Ni l'activation d'un appareil ni la création d'un
+                  client n'attribuent de plan.
+                </p>
               )}
+
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">Client VPN *</label>
+                <div className="relative">
+                  <select value={form.clientId} onChange={e => setForm(f => ({ ...f, clientId: e.target.value }))} required
+                    disabled={!!editSub}
+                    className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-cyan-500 appearance-none cursor-pointer disabled:opacity-60">
+                    <option value="">Sélectionner un client…</option>
+                    {clients.map(c => (
+                      <option key={c.id} value={c.id}>
+                        {(c as any).user?.name || c.name || c.token || c.id}
+                        {showsOwnerColumn && c.resellerName ? ` — ${ownerLabel(c.resellerName)}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" />
+                </div>
+                {clients.length === 0 && (
+                  <p className="mt-1 text-[11px] text-amber-400">
+                    Aucun client disponible. Créez d'abord un client, puis attribuez-lui un plan.
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">Configuration VPN attribuée *</label>
+                <div className="relative">
+                  <select value={form.profileId} onChange={e => setForm(f => ({ ...f, profileId: e.target.value }))} required
+                    className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-cyan-500 appearance-none cursor-pointer">
+                    <option value="">Sélectionner une configuration…</option>
+                    {profiles.filter(p => !p.status || p.status === 'active').map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}{p.displayProtocol ? ` (${p.displayProtocol})` : p.protocol ? ` (${p.protocol})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" />
+                </div>
+                {isReseller && profiles.length === 0 && (
+                  <p className="mt-1 text-[11px] text-amber-400">
+                    Aucune configuration ne vous est attribuée : demandez-en à un administrateur.
+                  </p>
+                )}
+              </div>
 
               <div>
                 <label className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">Nom (optionnel)</label>
@@ -665,10 +766,11 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                   className="px-4 py-2 text-sm text-gray-400 bg-[#0a0d14] border border-[#1a1f2e] rounded-xl hover:text-white transition-all cursor-pointer">
                   Annuler
                 </button>
-                <button type="submit" disabled={saving}
-                  className="px-5 py-2 text-sm font-semibold bg-cyan-500 hover:bg-cyan-400 text-black rounded-xl transition-all disabled:opacity-60 cursor-pointer flex items-center gap-2">
+                <button type="submit" disabled={saving || !canCreate}
+                  title={canCreate ? undefined : 'Indisponible : agrément ou plafond'}
+                  className="px-5 py-2 text-sm font-semibold bg-cyan-500 hover:bg-cyan-400 text-black rounded-xl transition-all disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed flex items-center gap-2">
                   {saving && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
-                  {editSub ? 'Mettre à jour' : 'Créer le forfait'}
+                  {editSub ? 'Mettre à jour' : 'Attribuer le plan'}
                 </button>
               </div>
             </form>
