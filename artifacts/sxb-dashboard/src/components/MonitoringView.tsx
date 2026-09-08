@@ -4,6 +4,7 @@ import SessionsView from "./SessionsView";
 import ServersView from "./ServersView";
 import { Activity, Server, Radio, RefreshCw, Clock, Search } from "lucide-react";
 import { fetchActivityLogs } from "../api/analytics";
+import { useTranslation } from "../contexts/I18nContext";
 
 interface Props {
   currentUserRole: UserRole;
@@ -11,12 +12,13 @@ interface Props {
 }
 
 const TABS = [
-  { id: "sessions", label: "Sessions", icon: Radio, roles: ["SUPER_ADMIN", "ADMIN"] },
-  { id: "logs", label: "Logs & Activité", icon: Activity, roles: ["SUPER_ADMIN", "ADMIN", "SUPPORT"] },
-  { id: "servers", label: "Serveurs", icon: Server, roles: ["SUPER_ADMIN", "ADMIN", "SUPPORT"] },
+  { id: "sessions", label: "operations.common.sessions", icon: Radio, roles: ["SUPER_ADMIN", "ADMIN"] },
+  { id: "logs", label: "operations.monitoring.logs", icon: Activity, roles: ["SUPER_ADMIN", "ADMIN", "SUPPORT"] },
+  { id: "servers", label: "operations.common.servers", icon: Server, roles: ["SUPER_ADMIN", "ADMIN", "SUPPORT"] },
 ];
 
 function LogsView() {
+  const { t, locale, formatNumber } = useTranslation();
   const [logs, setLogs] = useState<ActivityLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -54,13 +56,12 @@ function LogsView() {
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-bold text-white">Logs & Activité</h2>
-          <p className="text-xs text-gray-500 mt-0.5">{logs.length} entrées au total</p>
+          <h2 className="text-lg font-bold text-white">{t("operations.monitoring.logs")}</h2>
+          <p className="text-xs text-gray-500 mt-0.5">{t('operations.monitoring.entryCount', { count: formatNumber(logs.length) })}</p>
         </div>
         <button onClick={load} disabled={loading} className="flex items-center gap-2 px-3 py-1.5 text-xs font-semibold rounded-lg bg-[#0f1218] text-gray-400 border border-[#1a1f2e] hover:text-white transition-all disabled:opacity-50 cursor-pointer">
           <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-          Actualiser
-        </button>
+          {t("operations.common.refresh")}</button>
       </div>
 
       {/* Type stats */}
@@ -71,8 +72,8 @@ function LogsView() {
             onClick={() => setTypeFilter(prev => prev === type ? 'all' : type)}
             className={`text-left p-3 rounded-xl border transition-all cursor-pointer ${typeFilter === type ? badgeColors[type] + ' border-opacity-50' : 'bg-[#0a0d14] border-[#1a1f2e] hover:border-[#252b3b]'}`}
           >
-            <p className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">{type}</p>
-            <p className="text-xl font-bold text-white">{count}</p>
+            <p className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">{t(`operations.common.level.${type}`)}</p>
+            <p className="text-xl font-bold text-white">{formatNumber(count)}</p>
           </button>
         ))}
       </div>
@@ -82,7 +83,7 @@ function LogsView() {
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
         <input
           type="text"
-          placeholder="Rechercher par action ou utilisateur…"
+          placeholder={t("operations.monitoring.search")}
           value={search}
           onChange={e => setSearch(e.target.value)}
           className="w-full pl-10 pr-4 py-2.5 text-sm bg-[#0a0d14] border border-[#1a1f2e] rounded-xl text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
@@ -97,7 +98,7 @@ function LogsView() {
       ) : filtered.length === 0 ? (
         <div className="py-16 text-center text-gray-600">
           <Clock className="w-8 h-8 mx-auto mb-2 opacity-30" />
-          <p className="text-sm">Aucun log trouvé</p>
+          <p className="text-sm">{t("operations.monitoring.empty")}</p>
         </div>
       ) : (
         <div className="bg-[#0a0d14] border border-[#1a1f2e] rounded-xl overflow-hidden">
@@ -105,10 +106,10 @@ function LogsView() {
             <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-[#1a1f2e]">
-                  <th className="text-left px-4 py-3 text-gray-500 font-semibold uppercase tracking-wider w-24">Type</th>
-                  <th className="text-left px-4 py-3 text-gray-500 font-semibold uppercase tracking-wider">Action</th>
-                  <th className="text-left px-4 py-3 text-gray-500 font-semibold uppercase tracking-wider w-32">Utilisateur</th>
-                  <th className="text-left px-4 py-3 text-gray-500 font-semibold uppercase tracking-wider w-36">Horodatage</th>
+                  <th className="text-left px-4 py-3 text-gray-500 font-semibold uppercase tracking-wider w-24">{t("operations.common.type")}</th>
+                  <th className="text-left px-4 py-3 text-gray-500 font-semibold uppercase tracking-wider">{t("operations.common.action")}</th>
+                  <th className="text-left px-4 py-3 text-gray-500 font-semibold uppercase tracking-wider w-32">{t("operations.common.user")}</th>
+                  <th className="text-left px-4 py-3 text-gray-500 font-semibold uppercase tracking-wider w-36">{t("operations.common.timestamp")}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#1a1f2e]">
@@ -116,13 +117,13 @@ function LogsView() {
                   <tr key={log.id} className="hover:bg-white/[0.02] transition-colors">
                     <td className="px-4 py-3">
                       <span className={`inline-flex items-center px-2 py-0.5 rounded-md border text-[10px] font-bold uppercase ${badgeColors[log.type] || badgeColors.info}`}>
-                        {log.type}
+                        {t(`operations.common.level.${log.type}`)}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-gray-300">{log.action}</td>
                     <td className="px-4 py-3 text-gray-400 font-medium">{log.user}</td>
                     <td className="px-4 py-3 text-gray-500 font-mono">
-                      {new Date(log.timestamp).toLocaleString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                      {new Date(log.timestamp).toLocaleString(locale, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
                     </td>
                   </tr>
                 ))}
@@ -136,6 +137,7 @@ function LogsView() {
 }
 
 export default function MonitoringView({ currentUserRole, defaultTab = "sessions" }: Props) {
+  const { t } = useTranslation();
   const visibleTabs = TABS.filter(t => t.roles.includes(currentUserRole));
   const [activeTab, setActiveTab] = useState(
     visibleTabs.find(t => t.id === defaultTab)?.id ?? visibleTabs[0]?.id ?? "logs"
@@ -146,9 +148,9 @@ export default function MonitoringView({ currentUserRole, defaultTab = "sessions
       <div>
         <div className="flex items-center gap-2 mb-1">
           <Activity className="w-5 h-5 text-emerald-400" />
-          <h1 className="text-xl font-bold text-white tracking-tight">Monitoring</h1>
+          <h1 className="text-xl font-bold text-white tracking-tight">{t("operations.monitoring.title")}</h1>
         </div>
-        <p className="text-xs text-gray-500">Surveillance temps réel du réseau, des sessions et des serveurs</p>
+        <p className="text-xs text-gray-500">{t("operations.monitoring.description")}</p>
       </div>
 
       {/* Tab bar */}
@@ -167,7 +169,7 @@ export default function MonitoringView({ currentUserRole, defaultTab = "sessions
               }`}
             >
               <Icon className="w-4 h-4" />
-              <span>{tab.label}</span>
+              <span>{t(tab.label)}</span>
             </button>
           );
         })}

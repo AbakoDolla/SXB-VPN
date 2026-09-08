@@ -7,7 +7,6 @@ import { fetchSessions } from "../api/sessions";
 import { fetchServers } from "../api/servers";
 import { apiRequest } from "../api/client";
 import { TrafficDataPoint, ActivityLog, VPSServer, UserRole } from "../types";
-import { formatBytes as formatQuotaBytes } from "../lib/resellerAccess";
 import type { Device } from "../api/devices";
 import {
   Users, Server, RefreshCw, Activity, AlertTriangle, Wifi,
@@ -25,6 +24,17 @@ interface DashboardViewProps {
   maintenanceEnabled?: boolean;
   onMaintenanceToggle?: (enabled: boolean) => Promise<void>;
 }
+
+// /dashboard/traffic uses these weekday tokens instead of timestamps.
+const TRAFFIC_DAY_LABELS: Record<string, string> = {
+  'lun.': 'operations.dashboard.weekday.monday',
+  'mar.': 'operations.dashboard.weekday.tuesday',
+  'mer.': 'operations.dashboard.weekday.wednesday',
+  'jeu.': 'operations.dashboard.weekday.thursday',
+  'ven.': 'operations.dashboard.weekday.friday',
+  'sam.': 'operations.dashboard.weekday.saturday',
+  'dim.': 'operations.dashboard.weekday.sunday',
+};
 
 function StatCard({
   label, value, sub, icon: Icon, color, accent, onClick,
@@ -53,6 +63,7 @@ function StatCard({
 }
 
 function ServerHealthCard({ server }: { server: VPSServer }) {
+  const { t, formatNumber } = useTranslation();
   const cpuColor = server.cpuLoad > 80 ? 'text-red-400' : server.cpuLoad > 60 ? 'text-amber-400' : 'text-emerald-400';
   const ramColor = server.ramLoad > 80 ? 'text-red-400' : server.ramLoad > 60 ? 'text-amber-400' : 'text-emerald-400';
   return (
@@ -66,50 +77,44 @@ function ServerHealthCard({ server }: { server: VPSServer }) {
       </div>
       <div className="space-y-2">
         <div className="flex items-center justify-between text-xs">
-          <span className="text-gray-500 flex items-center gap-1"><Cpu className="w-3 h-3" />CPU</span>
-          <span className={`font-bold ${cpuColor}`}>{server.cpuLoad}%</span>
+          <span className="text-gray-500 flex items-center gap-1"><Cpu className="w-3 h-3" />{t("operations.dashboard.cpu")}</span>
+          <span className={`font-bold ${cpuColor}`}>{formatNumber(server.cpuLoad / 100, { style: 'percent', maximumFractionDigits: 1 })}</span>
         </div>
         <div className="w-full bg-[#0f1218] rounded-full h-1.5">
           <div className={`h-1.5 rounded-full transition-all ${server.cpuLoad > 80 ? 'bg-red-400' : server.cpuLoad > 60 ? 'bg-amber-400' : 'bg-emerald-400'}`} style={{ width: `${Math.min(server.cpuLoad, 100)}%` }} />
         </div>
         <div className="flex items-center justify-between text-xs">
-          <span className="text-gray-500 flex items-center gap-1"><HardDrive className="w-3 h-3" />RAM</span>
-          <span className={`font-bold ${ramColor}`}>{server.ramLoad}%</span>
+          <span className="text-gray-500 flex items-center gap-1"><HardDrive className="w-3 h-3" />{t("operations.dashboard.ram")}</span>
+          <span className={`font-bold ${ramColor}`}>{formatNumber(server.ramLoad / 100, { style: 'percent', maximumFractionDigits: 1 })}</span>
         </div>
         <div className="w-full bg-[#0f1218] rounded-full h-1.5">
           <div className={`h-1.5 rounded-full transition-all ${server.ramLoad > 80 ? 'bg-red-400' : server.ramLoad > 60 ? 'bg-amber-400' : 'bg-blue-400'}`} style={{ width: `${Math.min(server.ramLoad, 100)}%` }} />
         </div>
       </div>
       <div className="flex items-center justify-between text-xs pt-1 border-t border-[#1a1f2e]">
-        <span className="text-gray-500 flex items-center gap-1"><Radio className="w-3 h-3" />Actifs</span>
-        <span className="text-cyan-400 font-bold">{server.activeUsers}</span>
+        <span className="text-gray-500 flex items-center gap-1"><Radio className="w-3 h-3" />{t("operations.common.activePlural")}</span>
+        <span className="text-cyan-400 font-bold">{formatNumber(server.activeUsers)}</span>
       </div>
     </div>
   );
 }
 
 const CustomTooltip = ({ active, payload, label }: any) => {
+  const { t, formatNumber } = useTranslation();
   if (!active || !payload?.length) return null;
   return (
     <div className="bg-[#0f1218] border border-[#1a1f2e] rounded-lg p-2.5 text-xs shadow-xl">
-      <p className="text-gray-400 mb-1.5 font-mono">{label}</p>
+      <p className="text-gray-400 mb-1.5 font-mono">{TRAFFIC_DAY_LABELS[label] ? t(TRAFFIC_DAY_LABELS[label]) : label}</p>
       {payload.map((p: any, i: number) => (
         <div key={i} className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full" style={{ backgroundColor: p.color }} />
           <span className="text-gray-300">{p.name}:</span>
-          <span className="text-white font-bold">{typeof p.value === 'number' ? p.value.toFixed(3) : p.value} GB</span>
+          <span className="text-white font-bold">{t('operations.dashboard.gigabytes', { value: typeof p.value === 'number' ? formatNumber(p.value, { minimumFractionDigits: 3, maximumFractionDigits: 3 }) : p.value })}</span>
         </div>
       ))}
     </div>
   );
 };
-
-function fmtBytes(bytes: number): string {
-  if (bytes >= 1e12) return (bytes / 1e12).toFixed(2) + ' TB';
-  if (bytes >= 1e9) return (bytes / 1e9).toFixed(2) + ' GB';
-  if (bytes >= 1e6) return (bytes / 1e6).toFixed(2) + ' MB';
-  return bytes + ' B';
-}
 
 export default function DashboardView({
   onNavigate,
@@ -117,7 +122,7 @@ export default function DashboardView({
   maintenanceEnabled = false,
   onMaintenanceToggle,
 }: DashboardViewProps) {
-  const { t } = useTranslation();
+  const { t, locale, formatNumber, formatBytes } = useTranslation();
   const [maintenanceBusy, setMaintenanceBusy] = useState(false);
   const isOwner = currentUserRole === UserRole.OWNER;
   // Le revendeur vend un service : l'infrastructure, les autres revendeurs et
@@ -272,17 +277,17 @@ export default function DashboardView({
 
   const resellerQuota = stats?.resellerQuota;
   const assignedResellerQuota = resellerQuota?.unlimited
-    ? 'Illimité'
-    : formatQuotaBytes(resellerQuota?.assignedBytes);
-  const committedResellerQuota = formatQuotaBytes(resellerQuota?.committedBytes);
+    ? t("operations.common.unlimited")
+    : formatBytes(resellerQuota?.assignedBytes);
+  const committedResellerQuota = formatBytes(resellerQuota?.committedBytes);
   const remainingResellerQuota = resellerQuota?.unlimited
-    ? 'Illimité'
-    : formatQuotaBytes(resellerQuota?.remainingBytes);
+    ? t("operations.common.unlimited")
+    : formatBytes(resellerQuota?.remainingBytes);
   const resellerQuotaScope = isReseller
-    ? 'votre compte revendeur'
-    : `${resellerQuota?.resellerCount ?? 0} revendeur(s)`;
+    ? t("operations.dashboard.yourResellerAccount")
+    : t('operations.dashboard.resellerCount', { count: formatNumber(resellerQuota?.resellerCount ?? 0) });
   const unlimitedResellerHint = !isReseller && (resellerQuota?.unlimitedResellers ?? 0) > 0
-    ? ` · ${resellerQuota?.unlimitedResellers} illimité(s)`
+    ? t('operations.dashboard.unlimitedCount', { count: formatNumber(resellerQuota?.unlimitedResellers ?? 0) })
     : '';
 
   // Alertes : le seuil est calculé par appareil à partir des octets réels
@@ -294,13 +299,16 @@ export default function DashboardView({
     return device.status === 'active' && total > 0 && remaining / total < 0.10;
   });
   const lowQuotaMessage = lowQuotaDevices.length > 0
-    ? `Quota critique : ${lowQuotaDevices.length} appareil(s) ont moins de 10 % restant${lowQuotaDevices.length > 1 ? '' : ''} — ${lowQuotaDevices.slice(0, 3).map(device => `${device.label || device.deviceId} (${((Number(device.quotaRemaining || 0) / Math.max(Number(device.quotaTotal || 1), 1)) * 100).toFixed(1)} %)`).join(', ')}${lowQuotaDevices.length > 3 ? '…' : ''}`
+    ? t('operations.dashboard.lowQuota', {
+      count: formatNumber(lowQuotaDevices.length),
+      devices: lowQuotaDevices.slice(0, 3).map(device => `${device.label || device.deviceId} (${formatNumber(Number(device.quotaRemaining || 0) / Math.max(Number(device.quotaTotal || 1), 1), { style: 'percent', minimumFractionDigits: 1, maximumFractionDigits: 1 })})`).join(', ') + (lowQuotaDevices.length > 3 ? '…' : ''),
+    })
     : null;
   const alerts = [
     lowQuotaMessage ? { type: 'quota', msg: lowQuotaMessage } : null,
-    stats?.expiredAccounts && stats.expiredAccounts > 0 ? { type: 'warning', msg: `${stats.expiredAccounts} compte(s) expiré(s)` } : null,
-    servers.some(s => s.status === 'offline') ? { type: 'danger', msg: 'Serveur(s) hors ligne détecté(s)' } : null,
-    servers.some(s => s.cpuLoad > 80) ? { type: 'warning', msg: 'CPU critique sur un ou plusieurs serveurs' } : null,
+    stats?.expiredAccounts && stats.expiredAccounts > 0 ? { type: 'warning', msg: t('operations.dashboard.expiredAccounts', { count: formatNumber(stats.expiredAccounts) }) } : null,
+    servers.some(s => s.status === 'offline') ? { type: 'danger', msg: t("operations.dashboard.offlineServers") } : null,
+    servers.some(s => s.cpuLoad > 80) ? { type: 'warning', msg: t("operations.dashboard.highCpu") } : null,
   ].filter(Boolean) as { type: string; msg: string }[];
 
   if (loading) {
@@ -317,10 +325,9 @@ export default function DashboardView({
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold tracking-tight text-white">Dashboard</h1>
+          <h1 className="text-xl font-bold tracking-tight text-white">{t("operations.dashboard.title")}</h1>
           <p className="text-xs text-gray-500 mt-0.5">
-            Vue d'ensemble du réseau SXB VPN
-            {lastUpdatedAt ? ` · Mise à jour ${lastUpdatedAt.toLocaleTimeString()}` : ''}
+            {t("operations.dashboard.overview")}{lastUpdatedAt ? t('operations.dashboard.updated', { time: lastUpdatedAt.toLocaleTimeString(locale) }) : ''}
           </p>
         </div>
         <button
@@ -329,8 +336,7 @@ export default function DashboardView({
           className="flex items-center gap-2 px-3 py-1.5 text-xs font-semibold rounded-lg bg-[#0f1218] text-gray-400 border border-[#1a1f2e] hover:text-white hover:border-cyan-500/40 transition-all disabled:opacity-50 cursor-pointer"
         >
           <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
-          Actualiser
-        </button>
+          {t("operations.common.refresh")}</button>
       </div>
 
       {/* Alerts */}
@@ -359,11 +365,11 @@ export default function DashboardView({
                 <Settings2 className={`w-4 h-4 ${maintenanceEnabled ? 'text-rose-400' : 'text-emerald-400'}`} />
               </div>
               <div>
-                <p className="text-sm font-semibold text-white">Exploitation</p>
+                <p className="text-sm font-semibold text-white">{t("operations.dashboard.operations")}</p>
                 <p className="text-xs text-gray-500 mt-0.5">
                   {maintenanceEnabled
-                    ? 'MODE MAINTENANCE ACTIF — le dashboard est en pause pour tous les autres rôles'
-                    : 'Service en ligne — le dashboard est accessible à tous les rôles'}
+                    ? t("operations.dashboard.maintenanceActive")
+                    : t("operations.dashboard.serviceOnline")}
                 </p>
               </div>
             </div>
@@ -374,16 +380,14 @@ export default function DashboardView({
                 className="flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-rose-500/10 text-rose-400 border border-rose-500/25 hover:bg-rose-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
               >
                 <PauseCircle className="w-4 h-4" />
-                Mettre le dashboard en pause
-              </button>
+                {t("operations.dashboard.pause")}</button>
               <button
                 onClick={async () => { setMaintenanceBusy(true); try { await onMaintenanceToggle?.(false); } finally { setMaintenanceBusy(false); } }}
                 disabled={maintenanceBusy || !maintenanceEnabled}
                 className="flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 hover:bg-emerald-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
               >
                 <PlayCircle className="w-4 h-4" />
-                Remettre en service
-              </button>
+                {t("operations.dashboard.resume")}</button>
             </div>
           </div>
         </div>
@@ -392,22 +396,22 @@ export default function DashboardView({
       {/* Row 1 — Clients & Réseau */}
       <div>
         <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-widest mb-3">
-          {isReseller ? 'Mes clients' : 'Clients & Réseau'}
+          {isReseller ? t("operations.common.myClients") : t("operations.dashboard.network")}
         </p>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-          <StatCard label={isReseller ? 'Mes clients' : 'Total Clients'} value={totalClients} sub="enregistrés" icon={Users} color="text-cyan-400" accent="bg-cyan-500/10" onClick={() => onNavigate('clients')} />
-          <StatCard label="Connectés" value={stats?.activeUsers || 0} sub="sessions actives" icon={Wifi} color="text-emerald-400" accent="bg-emerald-500/10" onClick={() => onNavigate(isReseller ? 'clients' : 'sessions')} />
-          <StatCard label="Appareils" value={totalDevices} sub="enregistrés" icon={HardDrive} color="text-blue-400" accent="bg-blue-500/10" onClick={() => onNavigate('devices')} />
-          <StatCard label={isReseller ? 'Forfaits' : 'Sessions'} value={activeSessions} sub="actives" icon={Radio} color="text-violet-400" accent="bg-violet-500/10" onClick={() => onNavigate(isReseller ? 'subscriptions' : 'sessions')} />
+          <StatCard label={isReseller ? t("operations.common.myClients") : t("operations.dashboard.totalClients")} value={formatNumber(totalClients)} sub={t("operations.dashboard.registered")} icon={Users} color="text-cyan-400" accent="bg-cyan-500/10" onClick={() => onNavigate('clients')} />
+          <StatCard label={t("operations.dashboard.connected")} value={formatNumber(stats?.activeUsers || 0)} sub={t("operations.dashboard.activeSessionsSub")} icon={Wifi} color="text-emerald-400" accent="bg-emerald-500/10" onClick={() => onNavigate(isReseller ? 'clients' : 'sessions')} />
+          <StatCard label={t("operations.dashboard.devices")} value={formatNumber(totalDevices)} sub={t("operations.dashboard.registered")} icon={HardDrive} color="text-blue-400" accent="bg-blue-500/10" onClick={() => onNavigate('devices')} />
+          <StatCard label={isReseller ? t("operations.dashboard.plans") : t("operations.common.sessions")} value={formatNumber(activeSessions)} sub={t("operations.dashboard.activeSub")} icon={Radio} color="text-violet-400" accent="bg-violet-500/10" onClick={() => onNavigate(isReseller ? 'subscriptions' : 'sessions')} />
           {/* L'infrastructure ne concerne pas le revendeur : il vend un service,
               il n'exploite pas les serveurs. On montre à la place les services
               qui lui sont attribués. */}
           {isReseller ? (
-            <StatCard label="Mes services" value={assignedServices} sub="attribués" icon={GitBranch} color="text-amber-400" accent="bg-amber-500/10" onClick={() => onNavigate('reseller-services')} />
+            <StatCard label={t("operations.common.myServices")} value={formatNumber(assignedServices)} sub={t("operations.dashboard.assignedSub")} icon={GitBranch} color="text-amber-400" accent="bg-amber-500/10" onClick={() => onNavigate('reseller-services')} />
           ) : (
-            <StatCard label="Serveurs" value={servers.filter(s => s.status === 'online').length} sub={`/ ${servers.length} total`} icon={Server} color="text-amber-400" accent="bg-amber-500/10" onClick={() => onNavigate('servers')} />
+            <StatCard label={t("operations.common.servers")} value={formatNumber(servers.filter(s => s.status === 'online').length)} sub={t('operations.dashboard.serverTotal', { count: formatNumber(servers.length) })} icon={Server} color="text-amber-400" accent="bg-amber-500/10" onClick={() => onNavigate('servers')} />
           )}
-          <StatCard label="Expirés" value={stats?.expiredAccounts || 0} sub="à renouveler" icon={AlertTriangle} color="text-rose-400" accent="bg-rose-500/10" onClick={() => onNavigate('clients')} />
+          <StatCard label={t("operations.dashboard.expired")} value={formatNumber(stats?.expiredAccounts || 0)} sub={t("operations.dashboard.renewal")} icon={AlertTriangle} color="text-rose-400" accent="bg-rose-500/10" onClick={() => onNavigate('clients')} />
         </div>
       </div>
 
@@ -415,27 +419,26 @@ export default function DashboardView({
           ne sont jamais présentés comme le quota du compte connecté. */}
       <div>
         <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-widest mb-3">
-          Trafic & Quotas revendeurs
-          <span className="ml-2 normal-case tracking-normal text-gray-500 font-normal">
+          {t("operations.dashboard.trafficQuotas")}<span className="ml-2 normal-case tracking-normal text-gray-500 font-normal">
             {isReseller
-              ? '— votre enveloppe attribuée par l’administration'
-              : '— enveloppes attribuées aux revendeurs'}
+              ? t("operations.dashboard.yourEnvelope")
+              : t("operations.dashboard.resellerEnvelopes")}
           </span>
         </p>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-          <StatCard label="Download (réel)" value={fmtBytes(totalDownload * 1024 ** 3)} icon={Download} color="text-sky-400" accent="bg-sky-500/10" />
-          <StatCard label="Upload (réel)" value={fmtBytes(totalUpload * 1024 ** 3)} icon={Upload} color="text-indigo-400" accent="bg-indigo-500/10" />
-          <StatCard label="Trafic semaine" value={fmtBytes(weeklyDownload * 1024 ** 3)} icon={TrendingUp} color="text-teal-400" accent="bg-teal-500/10" />
-          <StatCard label={isReseller ? 'Quota attribué' : 'Quotas attribués'} value={assignedResellerQuota} sub={`${resellerQuotaScope}${unlimitedResellerHint}`} icon={HardDrive} color="text-blue-400" accent="bg-blue-500/10" />
-          <StatCard label={isReseller ? 'Quota engagé' : 'Quotas engagés'} value={committedResellerQuota} sub={isReseller ? 'sur vos forfaits actifs' : 'par les revendeurs'} icon={Database} color="text-orange-400" accent="bg-orange-500/10" />
-          <StatCard label={isReseller ? 'Quota disponible' : 'Solde revendeurs'} value={remainingResellerQuota} sub={isReseller ? 'dans votre enveloppe' : 'hors comptes illimités'} icon={TrendingUp} color="text-emerald-400" accent="bg-emerald-500/10" />
+          <StatCard label={t("operations.dashboard.actualDownload")} value={formatBytes(totalDownload * 1024 ** 3)} icon={Download} color="text-sky-400" accent="bg-sky-500/10" />
+          <StatCard label={t("operations.dashboard.actualUpload")} value={formatBytes(totalUpload * 1024 ** 3)} icon={Upload} color="text-indigo-400" accent="bg-indigo-500/10" />
+          <StatCard label={t("operations.dashboard.weeklyTraffic")} value={formatBytes(weeklyDownload * 1024 ** 3)} icon={TrendingUp} color="text-teal-400" accent="bg-teal-500/10" />
+          <StatCard label={isReseller ? t("operations.dashboard.assignedQuota") : t("operations.dashboard.assignedQuotas")} value={assignedResellerQuota} sub={`${resellerQuotaScope}${unlimitedResellerHint}`} icon={HardDrive} color="text-blue-400" accent="bg-blue-500/10" />
+          <StatCard label={isReseller ? t("operations.dashboard.committedQuota") : t("operations.dashboard.committedQuotas")} value={committedResellerQuota} sub={isReseller ? t("operations.dashboard.activePlans") : t("operations.dashboard.byResellers")} icon={Database} color="text-orange-400" accent="bg-orange-500/10" />
+          <StatCard label={isReseller ? t("operations.dashboard.availableQuota") : t("operations.dashboard.resellerBalance")} value={remainingResellerQuota} sub={isReseller ? t("operations.dashboard.inEnvelope") : t("operations.dashboard.excludingUnlimited")} icon={TrendingUp} color="text-emerald-400" accent="bg-emerald-500/10" />
         </div>
         {isReseller && resellerQuota && (
           <div className="mt-3 text-xs text-gray-400 border border-gray-800 rounded-lg px-3 py-2 bg-gray-950/40">
-            Consommation réelle de vos clients :{' '}
-            <span className="text-white font-semibold">{formatQuotaBytes(resellerQuota.consumedBytes)}</span>
+            {t("operations.dashboard.actualConsumption")}{' '}
+            <span className="text-white font-semibold">{formatBytes(resellerQuota.consumedBytes)}</span>
             {!resellerQuota.unlimited && resellerQuota.assignedBytes === '0' && (
-              <span className="text-amber-400"> — aucun quota ne vous a encore été attribué</span>
+              <span className="text-amber-400"> {t("operations.dashboard.noQuota")}</span>
             )}
           </div>
         )}
@@ -447,11 +450,11 @@ export default function DashboardView({
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <Activity className="w-4 h-4 text-cyan-400" />
-              <h3 className="text-sm font-semibold text-white">Trafic Temps Réel</h3>
+              <h3 className="text-sm font-semibold text-white">{t("operations.dashboard.traffic")}</h3>
             </div>
             <div className="flex items-center gap-4 text-[10px] text-gray-500">
-              <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-cyan-400 inline-block" />Download</span>
-              <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-violet-400 inline-block" />Upload</span>
+              <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-cyan-400 inline-block" />{t("operations.dashboard.download")}</span>
+              <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-violet-400 inline-block" />{t("operations.dashboard.upload")}</span>
             </div>
           </div>
           <ResponsiveContainer width="100%" height={200}>
@@ -467,11 +470,11 @@ export default function DashboardView({
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#1a1f2e" />
-              <XAxis dataKey="time" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} />
+              <XAxis dataKey="time" tickFormatter={value => TRAFFIC_DAY_LABELS[value] ? t(TRAFFIC_DAY_LABELS[value]) : value} tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} />
+              <YAxis tickFormatter={value => formatNumber(value)} tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} />
               <Tooltip content={<CustomTooltip />} />
-              <Area type="monotone" dataKey="download" name="Download" stroke="#22d3ee" strokeWidth={1.5} fill="url(#gDown)" dot={false} />
-              <Area type="monotone" dataKey="upload" name="Upload" stroke="#a78bfa" strokeWidth={1.5} fill="url(#gUp)" dot={false} />
+              <Area type="monotone" dataKey="download" name={t("operations.dashboard.download")} stroke="#22d3ee" strokeWidth={1.5} fill="url(#gDown)" dot={false} />
+              <Area type="monotone" dataKey="upload" name={t("operations.dashboard.upload")} stroke="#a78bfa" strokeWidth={1.5} fill="url(#gUp)" dot={false} />
             </AreaChart>
           </ResponsiveContainer>
         </div>
@@ -486,7 +489,7 @@ export default function DashboardView({
         <div className="lg:col-span-2 space-y-3">
           <div className="flex items-center gap-2">
             <ShieldCheck className="w-4 h-4 text-emerald-400" />
-            <h3 className="text-sm font-semibold text-white">Santé des Serveurs</h3>
+            <h3 className="text-sm font-semibold text-white">{t("operations.dashboard.serverHealth")}</h3>
           </div>
           {servers.length > 0 ? (
             <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
@@ -495,8 +498,8 @@ export default function DashboardView({
           ) : (
             <div className="bg-[#0a0d14] border border-[#1a1f2e] rounded-xl p-6 text-center">
               <Server className="w-8 h-8 text-gray-700 mx-auto mb-2" />
-              <p className="text-xs text-gray-500">Aucun serveur configuré</p>
-              <button onClick={() => onNavigate('servers')} className="mt-2 text-xs text-cyan-400 hover:underline cursor-pointer">Ajouter un serveur</button>
+              <p className="text-xs text-gray-500">{t("operations.dashboard.noServers")}</p>
+              <button onClick={() => onNavigate('servers')} className="mt-2 text-xs text-cyan-400 hover:underline cursor-pointer">{t("operations.dashboard.addServer")}</button>
             </div>
           )}
         </div>
@@ -504,7 +507,7 @@ export default function DashboardView({
         <div className="lg:col-span-3 bg-[#0a0d14] dashboard-card sxb-animated-card border border-[#1a1f2e] rounded-xl p-4">
           <div className="flex items-center gap-2 mb-4">
             <Clock className="w-4 h-4 text-cyan-400" />
-            <h3 className="text-sm font-semibold text-white">Activité Récente</h3>
+            <h3 className="text-sm font-semibold text-white">{t("operations.dashboard.recentActivity")}</h3>
           </div>
           {logs.length > 0 ? (
             <div className="space-y-0 max-h-72 overflow-y-auto divide-y divide-[#1a1f2e]">
@@ -518,12 +521,12 @@ export default function DashboardView({
                 return (
                   <div key={log.id} className="py-2.5 flex items-center gap-3 text-xs">
                     <span className={`px-1.5 py-0.5 rounded font-bold text-[10px] uppercase ${colors[log.type] || colors.info}`}>
-                      {log.type}
+                      {t(`operations.common.level.${log.type}`)}
                     </span>
                     <span className="text-gray-300 flex-1 truncate">{log.action}</span>
                     <div className="flex items-center gap-2 text-gray-600 shrink-0">
                       <span className="hidden sm:block">{log.user}</span>
-                      <span className="font-mono">{new Date(log.timestamp).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>
+                      <span className="font-mono">{new Date(log.timestamp).toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' })}</span>
                     </div>
                   </div>
                 );
@@ -532,7 +535,7 @@ export default function DashboardView({
           ) : (
             <div className="py-10 text-center text-gray-600">
               <Clock className="w-6 h-6 mx-auto mb-2 opacity-40" />
-              <p className="text-xs">Aucune activité récente</p>
+              <p className="text-xs">{t("operations.dashboard.noActivity")}</p>
             </div>
           )}
         </div>
@@ -541,22 +544,22 @@ export default function DashboardView({
 
       {/* Quick-access row */}
       <div>
-        <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-widest mb-3">Accès Rapide</p>
+        <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-widest mb-3">{t("operations.dashboard.quickAccess")}</p>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           {(isReseller
             ? [
                 // Les raccourcis du revendeur pointent vers ses propres outils :
                 // aucun accès moteur ni serveur.
-                { label: 'Mes clients', route: 'clients', icon: Users, color: 'text-cyan-400' },
-                { label: 'Forfaits data', route: 'subscriptions', icon: Activity, color: 'text-emerald-400' },
-                { label: 'Tokens SXB', route: 'tokens', icon: Zap, color: 'text-violet-400' },
-                { label: 'Mes services', route: 'reseller-services', icon: GitBranch, color: 'text-amber-400' },
+                { label: t("operations.common.myClients"), route: 'clients', icon: Users, color: 'text-cyan-400' },
+                { label: t("operations.dashboard.dataPlans"), route: 'subscriptions', icon: Activity, color: 'text-emerald-400' },
+                { label: t("operations.dashboard.sxbTokens"), route: 'tokens', icon: Zap, color: 'text-violet-400' },
+                { label: t("operations.common.myServices"), route: 'reseller-services', icon: GitBranch, color: 'text-amber-400' },
               ]
             : [
-                { label: 'Nouveau client', route: 'clients', icon: Users, color: 'text-cyan-400' },
-                { label: 'Sessions actives', route: 'sessions', icon: Activity, color: 'text-emerald-400' },
-                { label: 'VPN Engine', route: 'vpn-engine', icon: Zap, color: 'text-violet-400' },
-                { label: 'Serveurs', route: 'servers', icon: Server, color: 'text-amber-400' },
+                { label: t("operations.dashboard.newClient"), route: 'clients', icon: Users, color: 'text-cyan-400' },
+                { label: t("operations.common.activeSessions"), route: 'sessions', icon: Activity, color: 'text-emerald-400' },
+                { label: t("operations.dashboard.vpnEngine"), route: 'vpn-engine', icon: Zap, color: 'text-violet-400' },
+                { label: t("operations.common.servers"), route: 'servers', icon: Server, color: 'text-amber-400' },
               ]
           ).map(item => (
             <button

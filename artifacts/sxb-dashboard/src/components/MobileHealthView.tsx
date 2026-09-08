@@ -16,34 +16,24 @@ import {
   type MobileHealthDevice,
   type MobileHealthSummary,
 } from '../api/mobile-health';
+import { useTranslation } from '../contexts/I18nContext';
 
-const numberFormatter = new Intl.NumberFormat('fr-FR');
-
-function formatNumber(value: number): string {
-  return numberFormatter.format(Number.isFinite(value) ? value : 0);
-}
-
-function formatDate(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? 'Indisponible'
-    : date.toLocaleString('fr-FR', {
-        day: '2-digit',
-        month: 'short',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      });
-}
-
-function formatDuration(seconds: number): string {
-  const safeSeconds = Math.max(0, Number.isFinite(seconds) ? seconds : 0);
-  const hours = Math.floor(safeSeconds / 3600);
-  const minutes = Math.floor((safeSeconds % 3600) / 60);
-  if (hours > 0) return `${hours} h ${minutes.toString().padStart(2, '0')} min`;
-  if (minutes > 0) return `${minutes} min`;
-  return `${Math.floor(safeSeconds)} s`;
-}
+const TUNNEL_LABELS: Record<string, string> = {
+  disconnected: 'operations.mobileHealth.state.disconnected',
+  connecting: 'operations.mobileHealth.state.connecting',
+  connected: 'operations.mobileHealth.state.connected',
+  error: 'operations.mobileHealth.state.error',
+};
+const OUTCOME_LABELS: Record<string, string> = {
+  none: 'operations.mobileHealth.outcome.none',
+  success: 'operations.mobileHealth.outcome.success',
+  failure: 'operations.mobileHealth.outcome.failure',
+};
+const BATTERY_LABELS: Record<string, string> = {
+  optimized: 'operations.mobileHealth.battery.optimized',
+  unrestricted: 'operations.mobileHealth.battery.unrestricted',
+  unknown: 'operations.common.unknown',
+};
 
 function outcomeClasses(outcome: string): string {
   const normalized = outcome.toLowerCase();
@@ -57,73 +47,84 @@ function outcomeClasses(outcome: string): string {
 }
 
 function DeviceRow({ device }: { device: MobileHealthDevice }) {
+  const { t, formatNumber, formatDate } = useTranslation();
+  const formatDuration = (seconds: number): string => {
+    const safeSeconds = Math.max(0, Number.isFinite(seconds) ? seconds : 0);
+    const hours = Math.floor(safeSeconds / 3600);
+    const minutes = Math.floor((safeSeconds % 3600) / 60);
+    if (hours > 0) return t('operations.mobileHealth.durationHours', {
+      hours: formatNumber(hours), minutes: formatNumber(minutes, { minimumIntegerDigits: 2 }),
+    });
+    if (minutes > 0) return t('operations.mobileHealth.durationMinutes', { count: formatNumber(minutes) });
+    return t('operations.mobileHealth.durationSeconds', { count: formatNumber(Math.floor(safeSeconds)) });
+  };
   return (
     <tr className="align-top transition-colors hover:bg-white/[0.02]">
       <td className="px-4 py-3">
         <div className="font-mono text-xs font-semibold text-cyan-300">{device.pseudonym}</div>
-        <div className="mt-1 text-[11px] text-gray-600">Identifiant pseudonymisé</div>
+        <div className="mt-1 text-[11px] text-gray-600">{t("operations.mobileHealth.pseudonym")}</div>
       </td>
       <td className="px-4 py-3">
         <div className="font-medium text-gray-200">{device.appVersion}</div>
-        <div className="mt-1 font-mono text-[11px] text-gray-500">code {device.versionCode}</div>
+        <div className="mt-1 font-mono text-[11px] text-gray-500">{t('operations.mobileHealth.versionCode', { code: device.versionCode })}</div>
         {device.needsUpdate && (
           <span className="mt-1.5 inline-flex rounded-md border border-amber-500/25 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300">
-            Mise à jour requise
-          </span>
+            {t("operations.mobileHealth.updateRequired")}</span>
         )}
       </td>
       <td className="px-4 py-3 text-gray-300">
-        <div>{device.deviceModel || 'Modèle non communiqué'}</div>
+        <div>{device.deviceModel || t("operations.mobileHealth.noModel")}</div>
         <div className="mt-1 text-[11px] text-gray-500">
-          {device.androidApi === null ? 'API Android inconnue' : `API Android ${device.androidApi}`}
+          {device.androidApi === null ? t("operations.mobileHealth.unknownApi") : t('operations.mobileHealth.androidApi', { api: device.androidApi })}
         </div>
       </td>
       <td className="px-4 py-3">
-        <div className="text-gray-300">{device.tunnelState || 'Inconnu'}</div>
-        <div className="mt-1 text-[11px] text-gray-500">{device.protocol || 'Protocole non communiqué'}</div>
+        <div className="text-gray-300">{t(TUNNEL_LABELS[device.tunnelState] || 'operations.common.unknown')}</div>
+        <div className="mt-1 text-[11px] text-gray-500">{device.protocol || t("operations.mobileHealth.noProtocol")}</div>
       </td>
       <td className="px-4 py-3">
         <span className={`inline-flex rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${outcomeClasses(device.lastOutcome)}`}>
-          {device.lastOutcome || 'Inconnu'}
+          {t(OUTCOME_LABELS[device.lastOutcome] || 'operations.common.unknown')}
         </span>
         <div className="mt-1.5 font-mono text-[11px] text-rose-300/80">
-          {device.lastErrorCode || 'Aucun code erreur'}
+          {device.lastErrorCode || t("operations.mobileHealth.noError")}
         </div>
       </td>
       <td className="px-4 py-3 text-gray-300">
-        <div>Session : {formatDuration(device.sessionDurationSeconds)}</div>
-        <div className="mt-1 text-[11px] text-gray-500">Reconnexions : {formatNumber(device.reconnectCount)}</div>
+        <div>{t('operations.mobileHealth.sessionDuration', { duration: formatDuration(device.sessionDurationSeconds) })}</div>
+        <div className="mt-1 text-[11px] text-gray-500">{t('operations.mobileHealth.reconnections', { count: formatNumber(device.reconnectCount) })}</div>
       </td>
       <td className="px-4 py-3 text-gray-300">
-        <div>Active : {formatDuration(device.activeDurationSeconds)}</div>
+        <div>{t('operations.mobileHealth.activeDuration', { duration: formatDuration(device.activeDurationSeconds) })}</div>
         <div className="mt-1 text-[11px] text-gray-500">
-          Arrière-plan : {formatDuration(device.backgroundDurationSeconds)}
+          {t('operations.mobileHealth.backgroundDuration', { duration: formatDuration(device.backgroundDurationSeconds) })}
         </div>
       </td>
       <td className="px-4 py-3 text-gray-300">
-        <div>Réveils : {formatNumber(device.wakeCount)}</div>
-        <div className="mt-1 text-[11px] text-gray-500">Rapports : {formatNumber(device.reportCount)}</div>
+        <div>{t('operations.mobileHealth.wakes', { count: formatNumber(device.wakeCount) })}</div>
+        <div className="mt-1 text-[11px] text-gray-500">{t('operations.mobileHealth.reports', { count: formatNumber(device.reportCount) })}</div>
       </td>
       <td className="px-4 py-3">
-        <div className="text-gray-300">{device.batteryOptimization || 'Inconnue'}</div>
-        <div className="mt-1 whitespace-nowrap text-[11px] text-gray-500">{formatDate(device.lastSeenAt)}</div>
+        <div className="text-gray-300">{t(BATTERY_LABELS[device.batteryOptimization] || 'operations.common.unknown')}</div>
+        <div className="mt-1 whitespace-nowrap text-[11px] text-gray-500">{formatDate(device.lastSeenAt, { dateStyle: 'short', timeStyle: 'short' })}</div>
       </td>
     </tr>
   );
 }
 
 export default function MobileHealthView() {
+  const { t, formatDate, formatNumber, errorMessage } = useTranslation();
   const [summary, setSummary] = useState<MobileHealthSummary | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<{ cause: unknown } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
-    setError('');
+    setError(null);
     try {
       setSummary(await fetchMobileHealthSummary());
-    } catch (caughtError: any) {
-      setError(caughtError?.message || 'Impossible de charger la santé du parc mobile.');
+    } catch (caughtError) {
+      setError({ cause: caughtError });
     } finally {
       setLoading(false);
     }
@@ -138,8 +139,7 @@ export default function MobileHealthView() {
       <div className="flex min-h-[50vh] items-center justify-center">
         <div className="flex flex-col items-center gap-3 text-sm text-gray-500">
           <RefreshCw className="h-6 w-6 animate-spin text-cyan-400" />
-          Chargement de la santé mobile…
-        </div>
+          {t("operations.mobileHealth.loading")}</div>
       </div>
     );
   }
@@ -148,16 +148,15 @@ export default function MobileHealthView() {
     return (
       <div className="mx-auto max-w-xl rounded-2xl border border-rose-500/25 bg-rose-500/10 p-6 text-center">
         <AlertTriangle className="mx-auto h-7 w-7 text-rose-300" />
-        <h1 className="mt-3 text-lg font-semibold text-white">Santé mobile indisponible</h1>
-        <p className="mt-2 text-sm text-rose-200/80">{error}</p>
+        <h1 className="mt-3 text-lg font-semibold text-white">{t("operations.mobileHealth.unavailable")}</h1>
+        <p className="mt-2 text-sm text-rose-200/80">{errorMessage(error.cause, 'operations.mobileHealth.loadError')}</p>
         <button
           type="button"
           onClick={() => void load()}
           className="mt-5 inline-flex items-center gap-2 rounded-xl border border-rose-400/30 px-4 py-2 text-sm font-semibold text-rose-100 transition-colors hover:bg-rose-500/10"
         >
           <RefreshCw className="h-4 w-4" />
-          Réessayer
-        </button>
+          {t("operations.common.retry")}</button>
       </div>
     );
   }
@@ -173,17 +172,15 @@ export default function MobileHealthView() {
         <div>
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-cyan-400">
             <HeartPulse className="h-4 w-4" />
-            Observabilité applicative
-          </div>
-          <h1 className="mt-2 text-2xl font-bold tracking-tight text-white sm:text-3xl">Santé mobile</h1>
+            {t("operations.mobileHealth.observability")}</div>
+          <h1 className="mt-2 text-2xl font-bold tracking-tight text-white sm:text-3xl">{t("operations.mobileHealth.title")}</h1>
           <p className="mt-1 text-sm text-gray-400">
-            Vue agrégée et pseudonymisée du parc Android SXB VPN.
-          </p>
+            {t("operations.mobileHealth.description")}</p>
           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-gray-500">
-            <span>Générée le {formatDate(summary.generatedAt)}</span>
-            <span>Fenêtre active : {formatNumber(summary.activeWindowHours)} h</span>
-            <span>Signaux : {formatNumber(summary.retentionDays)} jours</span>
-            <span>Appareils inactifs : {formatNumber(summary.deviceRetentionDays)} jours</span>
+            <span>{t('operations.mobileHealth.generatedAt', { date: formatDate(summary.generatedAt, { dateStyle: 'short', timeStyle: 'short' }) })}</span>
+            <span>{t('operations.mobileHealth.activeWindow', { count: formatNumber(summary.activeWindowHours) })}</span>
+            <span>{t('operations.mobileHealth.signals', { count: formatNumber(summary.retentionDays) })}</span>
+            <span>{t('operations.mobileHealth.inactiveDevices', { count: formatNumber(summary.deviceRetentionDays) })}</span>
           </div>
         </div>
         <button
@@ -193,33 +190,31 @@ export default function MobileHealthView() {
           className="inline-flex items-center justify-center gap-2 rounded-xl border border-[#263149] bg-[#0d1422] px-3 py-2 text-sm font-semibold text-gray-300 transition-colors hover:border-cyan-500/50 hover:text-white disabled:opacity-50"
         >
           <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-          Actualiser
-        </button>
+          {t("operations.common.refresh")}</button>
       </header>
 
       {error && (
         <div className="flex items-center gap-2 rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-xs text-amber-200">
           <AlertTriangle className="h-4 w-4 shrink-0" />
-          Les dernières données restent affichées. Actualisation impossible : {error}
+          {t('operations.mobileHealth.staleData', { error: errorMessage(error.cause, 'operations.mobileHealth.loadError') })}
         </div>
       )}
 
       <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-2xl border border-[#263149] bg-[#0d1422] p-4">
           <div className="flex items-center justify-between">
-            <span className="text-xs uppercase tracking-wider text-gray-500">Versions installées</span>
+            <span className="text-xs uppercase tracking-wider text-gray-500">{t("operations.mobileHealth.installedVersions")}</span>
             <Smartphone className="h-4 w-4 text-cyan-400" />
           </div>
           <div className="mt-3 text-2xl font-bold text-white">{formatNumber(distinctVersions)}</div>
           <div className="mt-1 text-xs text-gray-500">
-            {formatNumber(summary.totals.devices)} appareils
-            {summary.latestVersionCode === null ? '' : ` · dernière version ${summary.latestVersionCode}`}
+            {t('operations.mobileHealth.deviceCount', { count: formatNumber(summary.totals.devices) })}{summary.latestVersionCode === null ? '' : t('operations.mobileHealth.latestVersion', { code: summary.latestVersionCode })}
           </div>
         </div>
 
         <div className="rounded-2xl border border-[#263149] bg-[#0d1422] p-4">
           <div className="flex items-center justify-between">
-            <span className="text-xs uppercase tracking-wider text-gray-500">Actifs / inactifs</span>
+            <span className="text-xs uppercase tracking-wider text-gray-500">{t("operations.mobileHealth.activity")}</span>
             <Users className="h-4 w-4 text-emerald-400" />
           </div>
           <div className="mt-3 flex items-baseline gap-2 text-2xl font-bold">
@@ -227,39 +222,38 @@ export default function MobileHealthView() {
             <span className="text-sm font-normal text-gray-600">/</span>
             <span className="text-gray-300">{formatNumber(summary.totals.inactive)}</span>
           </div>
-          <div className="mt-1 text-xs text-gray-500">Selon la fenêtre active configurée</div>
+          <div className="mt-1 text-xs text-gray-500">{t("operations.mobileHealth.activityHint")}</div>
         </div>
 
         <div className="rounded-2xl border border-[#263149] bg-[#0d1422] p-4">
           <div className="flex items-center justify-between">
-            <span className="text-xs uppercase tracking-wider text-gray-500">Succès / échec</span>
+            <span className="text-xs uppercase tracking-wider text-gray-500">{t("operations.mobileHealth.results")}</span>
             <CheckCircle2 className="h-4 w-4 text-emerald-400" />
           </div>
-          <div className="mt-3 text-2xl font-bold text-white">{successRate.toLocaleString('fr-FR', { maximumFractionDigits: 1 })} %</div>
+          <div className="mt-3 text-2xl font-bold text-white">{formatNumber(successRate / 100, { style: 'percent', maximumFractionDigits: 1 })}</div>
           <div className="mt-1 text-xs text-gray-500">
-            {formatNumber(summary.totals.successes)} succès · {formatNumber(summary.totals.failures)} échecs
+            {t('operations.mobileHealth.resultCount', { successes: formatNumber(summary.totals.successes), failures: formatNumber(summary.totals.failures) })}
           </div>
         </div>
 
         <div className="rounded-2xl border border-[#263149] bg-[#0d1422] p-4">
           <div className="flex items-center justify-between">
-            <span className="text-xs uppercase tracking-wider text-gray-500">Mises à jour nécessaires</span>
+            <span className="text-xs uppercase tracking-wider text-gray-500">{t("operations.mobileHealth.updatesNeeded")}</span>
             <AlertTriangle className="h-4 w-4 text-amber-400" />
           </div>
           <div className="mt-3 text-2xl font-bold text-amber-300">{formatNumber(summary.totals.updatesNeeded)}</div>
-          <div className="mt-1 text-xs text-gray-500">Appareils sous la version attendue</div>
+          <div className="mt-1 text-xs text-gray-500">{t("operations.mobileHealth.outdated")}</div>
         </div>
       </section>
 
       <section>
         <div className="mb-3 flex items-center gap-2">
           <Activity className="h-4 w-4 text-cyan-400" />
-          <h2 className="text-sm font-semibold text-white">Répartition des versions</h2>
+          <h2 className="text-sm font-semibold text-white">{t("operations.mobileHealth.versionDistribution")}</h2>
         </div>
         {summary.versions.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-[#263149] bg-[#0a0d14] p-6 text-center text-sm text-gray-500">
-            Aucune version remontée sur la période.
-          </div>
+            {t("operations.mobileHealth.noVersions")}</div>
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {summary.versions.map((version) => (
@@ -270,21 +264,20 @@ export default function MobileHealthView() {
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <div className="font-semibold text-white">{version.appVersion}</div>
-                    <div className="mt-0.5 font-mono text-[11px] text-gray-500">code {version.versionCode}</div>
+                    <div className="mt-0.5 font-mono text-[11px] text-gray-500">{t('operations.mobileHealth.versionCode', { code: version.versionCode })}</div>
                   </div>
                   {summary.latestVersionCode === version.versionCode && (
                     <span className="rounded-md border border-cyan-500/25 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-cyan-300">
-                      Dernière
-                    </span>
+                      {t("operations.mobileHealth.latest")}</span>
                   )}
                 </div>
                 <div className="mt-4 flex items-end justify-between">
                   <div>
                     <div className="text-xl font-bold text-white">{formatNumber(version.devices)}</div>
-                    <div className="text-[11px] text-gray-500">appareils</div>
+                    <div className="text-[11px] text-gray-500">{t("operations.mobileHealth.devices")}</div>
                   </div>
                   <div className={`text-right text-xs ${version.updatesNeeded > 0 ? 'text-amber-300' : 'text-emerald-300'}`}>
-                    {formatNumber(version.updatesNeeded)} à mettre à jour
+                    {t('operations.mobileHealth.updateCount', { count: formatNumber(version.updatesNeeded) })}
                   </div>
                 </div>
               </div>
@@ -296,12 +289,9 @@ export default function MobileHealthView() {
       <section className="flex items-start gap-3 rounded-2xl border border-blue-500/25 bg-blue-500/10 p-4 text-sm text-blue-100">
         <Info className="mt-0.5 h-5 w-5 shrink-0 text-blue-300" />
         <div>
-          <div className="font-semibold">Indicateurs techniques, pas mesure de consommation</div>
+          <div className="font-semibold">{t("operations.mobileHealth.proxyTitle")}</div>
           <p className="mt-1 text-xs leading-relaxed text-blue-200/75">
-            Les durées d’activité et d’arrière-plan, ainsi que les nombres de réveils et de rapports, sont des proxys
-            d’activité applicative. Ils ne représentent pas une consommation énergétique et ne doivent jamais être
-            interprétés comme des mAh.
-          </p>
+            {t("operations.mobileHealth.proxyExplanation")}</p>
         </div>
       </section>
 
@@ -310,35 +300,33 @@ export default function MobileHealthView() {
           <div>
             <h2 className="flex items-center gap-2 text-sm font-semibold text-white">
               <Battery className="h-4 w-4 text-cyan-400" />
-              Détails anonymisés
-            </h2>
+              {t("operations.mobileHealth.details")}</h2>
             <p className="mt-1 text-[11px] text-gray-500">
-              Uniquement les pseudonymes et métriques anonymisées prévus par le résumé de santé mobile.
-              {summary.detailsTruncated ? ` Affichage limité aux ${summary.detailsLimit} derniers appareils.` : ''}
+              {t("operations.mobileHealth.detailsHint")}{summary.detailsTruncated ? t('operations.mobileHealth.detailsLimit', { count: formatNumber(summary.detailsLimit) }) : ''}
             </p>
           </div>
           <div className="flex items-center gap-1.5 text-xs text-gray-500">
             <Clock3 className="h-3.5 w-3.5" />
-            {formatNumber(summary.totals.reports)} rapports retenus
+            {t('operations.mobileHealth.retainedReports', { count: formatNumber(summary.totals.reports) })}
           </div>
         </div>
 
         {summary.devices.length === 0 ? (
-          <div className="p-10 text-center text-sm text-gray-500">Aucun appareil pseudonymisé sur la période.</div>
+          <div className="p-10 text-center text-sm text-gray-500">{t("operations.mobileHealth.noDevices")}</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="min-w-[1420px] w-full text-left text-xs">
               <thead className="bg-[#0d1422] text-[10px] uppercase tracking-wider text-gray-500">
                 <tr>
-                  <th scope="col" className="px-4 py-3 font-semibold">Appareil</th>
-                  <th scope="col" className="px-4 py-3 font-semibold">Version</th>
-                  <th scope="col" className="px-4 py-3 font-semibold">Android</th>
-                  <th scope="col" className="px-4 py-3 font-semibold">Tunnel</th>
-                  <th scope="col" className="px-4 py-3 font-semibold">Dernier résultat</th>
-                  <th scope="col" className="px-4 py-3 font-semibold">Session</th>
-                  <th scope="col" className="px-4 py-3 font-semibold">Activité (proxy)</th>
-                  <th scope="col" className="px-4 py-3 font-semibold">Événements (proxy)</th>
-                  <th scope="col" className="px-4 py-3 font-semibold">Optimisation / vu</th>
+                  <th scope="col" className="px-4 py-3 font-semibold">{t("operations.common.device")}</th>
+                  <th scope="col" className="px-4 py-3 font-semibold">{t("operations.common.version")}</th>
+                  <th scope="col" className="px-4 py-3 font-semibold">{t("operations.mobileHealth.android")}</th>
+                  <th scope="col" className="px-4 py-3 font-semibold">{t("operations.mobileHealth.tunnel")}</th>
+                  <th scope="col" className="px-4 py-3 font-semibold">{t("operations.mobileHealth.lastOutcome")}</th>
+                  <th scope="col" className="px-4 py-3 font-semibold">{t("operations.mobileHealth.session")}</th>
+                  <th scope="col" className="px-4 py-3 font-semibold">{t("operations.mobileHealth.activityProxy")}</th>
+                  <th scope="col" className="px-4 py-3 font-semibold">{t("operations.mobileHealth.eventsProxy")}</th>
+                  <th scope="col" className="px-4 py-3 font-semibold">{t("operations.mobileHealth.optimizationSeen")}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#1a1f2e]">

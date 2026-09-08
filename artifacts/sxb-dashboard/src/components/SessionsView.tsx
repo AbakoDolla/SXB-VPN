@@ -3,8 +3,10 @@ import { fetchSessions, revokeSession, resetSession, deleteSession, ActivationSe
 import { Smartphone, RefreshCcw, XCircle, Trash2, Search, Clock, CheckCircle, AlertCircle, ShieldOff } from "lucide-react";
 import Pagination from "./ui/Pagination";
 import { toast } from "sonner";
+import { useTranslation } from "../contexts/I18nContext";
 
 export default function SessionsView() {
+  const { t, locale, formatNumber, message, errorText } = useTranslation();
   const [sessions, setSessions] = useState<ActivationSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -28,18 +30,18 @@ export default function SessionsView() {
   const [pageSize, setPageSize] = useState(20);
 
   const handleRevoke = async (id: string) => {
-    if (!window.confirm("Révoquer cette session ? L'appareil sera déconnecté.")) return;
-    try { await revokeSession(id); load(); toast.success("Session révoquée"); } catch { toast.error("Erreur lors de la révocation"); }
+    if (!window.confirm(t("operations.sessions.revokeConfirm"))) return;
+    try { await revokeSession(id); load(); toast.success(message("operations.sessions.revokeSuccess")); } catch (error) { toast.error(errorText(error, "operations.sessions.revokeError")); }
   };
 
   const handleReset = async (id: string) => {
-    if (!window.confirm("Réinitialiser cette activation ? L'utilisateur pourra s'activer sur un autre appareil.")) return;
-    try { await resetSession(id); load(); toast.success("Activation réinitialisée"); } catch { toast.error("Erreur lors de la réinitialisation"); }
+    if (!window.confirm(t("operations.sessions.resetConfirm"))) return;
+    try { await resetSession(id); load(); toast.success(message("operations.sessions.resetSuccess")); } catch (error) { toast.error(errorText(error, "operations.sessions.resetError")); }
   };
 
   const handleDelete = async (id: string) => {
-    if (!window.confirm("Supprimer définitivement cette session ?")) return;
-    try { await deleteSession(id); load(); toast.success("Session supprimée"); } catch { toast.error("Erreur lors de la suppression"); }
+    if (!window.confirm(t("operations.sessions.deleteConfirm"))) return;
+    try { await deleteSession(id); load(); toast.success(message("operations.sessions.deleteSuccess")); } catch (error) { toast.error(errorText(error, "operations.sessions.deleteError")); }
   };
 
   const filtered = sessions.filter((s) => {
@@ -57,13 +59,13 @@ export default function SessionsView() {
 
   const formatDate = (d: string | null) => {
     if (!d) return "—";
-    return new Date(d).toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+    return new Date(d).toLocaleDateString(locale, { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
   };
 
   const statusBadge = (status: string) => {
-    if (status === "active") return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-400"><CheckCircle className="w-3 h-3" />Actif</span>;
-    if (status === "revoked") return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-red-500/15 text-red-400"><ShieldOff className="w-3 h-3" />Révoqué</span>;
-    return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-500/15 text-gray-400"><AlertCircle className="w-3 h-3" />Expiré</span>;
+    if (status === "active") return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-400"><CheckCircle className="w-3 h-3" />{t("operations.common.active")}</span>;
+    if (status === "revoked") return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-red-500/15 text-red-400"><ShieldOff className="w-3 h-3" />{t("operations.common.revoked")}</span>;
+    return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-500/15 text-gray-400"><AlertCircle className="w-3 h-3" />{t("operations.common.expired")}</span>;
   };
 
   const activeCount = sessions.filter((s) => s.status === "active").length;
@@ -74,24 +76,23 @@ export default function SessionsView() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-white">Sessions utilisateurs</h1>
-          <p className="text-sm text-gray-400 mt-1">Appareils activés, sessions persistantes et historique d'accès</p>
+          <h1 className="text-2xl font-bold tracking-tight text-white">{t("operations.sessions.title")}</h1>
+          <p className="text-sm text-gray-400 mt-1">{t("operations.sessions.description")}</p>
         </div>
         <button onClick={load} className="flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 hover:bg-cyan-500/20 transition-all">
-          <RefreshCcw className="w-4 h-4" /> Actualiser
-        </button>
+          <RefreshCcw className="w-4 h-4" /> {t("operations.common.refresh")}</button>
       </div>
 
       {/* Stats */}
       <div className="grid grid-cols-3 gap-4">
         {[
-          { label: "Total sessions", value: sessions.length, color: "text-white" },
-          { label: "Sessions actives", value: activeCount, color: "text-emerald-400" },
-          { label: "Révoquées", value: revokedCount, color: "text-red-400" },
+          { label: t("operations.sessions.total"), value: sessions.length, color: "text-white" },
+          { label: t("operations.common.activeSessions"), value: activeCount, color: "text-emerald-400" },
+          { label: t("operations.sessions.revoked"), value: revokedCount, color: "text-red-400" },
         ].map((stat) => (
           <div key={stat.label} className="bg-[#0f1218] border border-[#1a1f2e] rounded-xl p-4">
             <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">{stat.label}</p>
-            <p className={`text-2xl font-bold ${stat.color}`}>{stat.value}</p>
+            <p className={`text-2xl font-bold ${stat.color}`}>{formatNumber(stat.value)}</p>
           </div>
         ))}
       </div>
@@ -102,7 +103,7 @@ export default function SessionsView() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
           <input
             type="text"
-            placeholder="Rechercher par client, token ou device ID..."
+            placeholder={t("operations.sessions.search")}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full pl-10 pr-4 py-2.5 text-sm bg-[#0f1218] border border-[#1a1f2e] rounded-xl text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/40"
@@ -113,21 +114,21 @@ export default function SessionsView() {
           onChange={(e) => setStatusFilter(e.target.value)}
           className="px-4 py-2.5 text-sm bg-[#0f1218] border border-[#1a1f2e] rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/40"
         >
-          <option value="all">Tous les statuts</option>
-          <option value="active">Actif</option>
-          <option value="revoked">Révoqué</option>
-          <option value="expired">Expiré</option>
+          <option value="all">{t("operations.sessions.allStatuses")}</option>
+          <option value="active">{t("operations.common.active")}</option>
+          <option value="revoked">{t("operations.common.revoked")}</option>
+          <option value="expired">{t("operations.common.expired")}</option>
         </select>
       </div>
 
       {/* Table */}
       <div className="bg-[#0f1218] border border-[#1a1f2e] rounded-xl overflow-hidden">
         {loading ? (
-          <div className="flex items-center justify-center py-16 text-gray-500 text-sm">Chargement des sessions...</div>
+          <div className="flex items-center justify-center py-16 text-gray-500 text-sm">{t("operations.sessions.loading")}</div>
         ) : filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 gap-3">
             <Smartphone className="w-10 h-10 text-gray-700" />
-            <p className="text-gray-500 text-sm">Aucune session trouvée</p>
+            <p className="text-gray-500 text-sm">{t("operations.sessions.empty")}</p>
           </div>
         ) : (
           <>
@@ -135,7 +136,7 @@ export default function SessionsView() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-[#1a1f2e]">
-                  {["Client", "Token", "Appareil", "Activation", "Expiration", "Dernière sync", "Statut", "Actions"].map((h) => (
+                  {[t("operations.common.client"), t("operations.common.token"), t("operations.common.device"), t("operations.sessions.activation"), t("operations.sessions.expiration"), t("operations.sessions.lastSync"), t("operations.common.status"), t("operations.common.actions")].map((h) => (
                     <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">{h}</th>
                   ))}
                 </tr>
@@ -167,7 +168,7 @@ export default function SessionsView() {
                         {s.status === "active" && (
                           <button
                             onClick={() => handleRevoke(s.id)}
-                            title="Révoquer"
+                            title={t("operations.sessions.revoke")}
                             className="p-1.5 rounded-lg text-amber-400 hover:bg-amber-400/10 transition-colors"
                           >
                             <XCircle className="w-4 h-4" />
@@ -175,14 +176,14 @@ export default function SessionsView() {
                         )}
                         <button
                           onClick={() => handleReset(s.id)}
-                          title="Réinitialiser activation"
+                          title={t("operations.sessions.reset")}
                           className="p-1.5 rounded-lg text-blue-400 hover:bg-blue-400/10 transition-colors"
                         >
                           <RefreshCcw className="w-4 h-4" />
                         </button>
                         <button
                           onClick={() => handleDelete(s.id)}
-                          title="Supprimer"
+                          title={t("operations.common.delete")}
                           className="p-1.5 rounded-lg text-red-400 hover:bg-red-400/10 transition-colors"
                         >
                           <Trash2 className="w-4 h-4" />

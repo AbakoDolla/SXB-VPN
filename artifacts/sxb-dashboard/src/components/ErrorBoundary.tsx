@@ -1,9 +1,14 @@
 import React from "react";
 import { AlertTriangle, RefreshCw, Home } from "lucide-react";
+import { useTranslation } from "../contexts/I18nContext";
 
 interface Props {
   children: React.ReactNode;
   resetKey?: string | number;
+}
+
+interface TranslatedProps extends Props {
+  t: ReturnType<typeof useTranslation>["t"];
 }
 
 interface State {
@@ -11,8 +16,8 @@ interface State {
   error: Error | null;
 }
 
-class ErrorBoundary extends React.Component<Props, State> {
-  constructor(props: Props) {
+class ErrorBoundary extends React.Component<TranslatedProps, State> {
+  constructor(props: TranslatedProps) {
     super(props);
     this.state = { hasError: false, error: null };
   }
@@ -37,7 +42,7 @@ class ErrorBoundary extends React.Component<Props, State> {
     } catch { /* ignore */ }
   }
 
-  componentDidUpdate(prevProps: Props) {
+  componentDidUpdate(prevProps: TranslatedProps) {
     if (prevProps.resetKey !== this.props.resetKey && this.state.hasError) {
       this.setState({ hasError: false, error: null });
     }
@@ -53,17 +58,16 @@ class ErrorBoundary extends React.Component<Props, State> {
     }
 
     const isDev = import.meta.env.DEV;
+    const { t } = this.props;
 
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] px-6 text-center">
         <div className="bg-red-500/10 border border-red-500/30 rounded-2xl p-8 max-w-md w-full">
           <AlertTriangle className="w-12 h-12 text-red-400 mx-auto mb-4" />
           <h2 className="text-xl font-bold text-white mb-2">
-            Une erreur est survenue
-          </h2>
+            {t("operations.errorBoundary.title")}</h2>
           <p className="text-gray-400 text-sm mb-6">
-            Cette section a rencontré un problème inattendu. Vous pouvez réessayer ou retourner au tableau de bord.
-          </p>
+            {t("operations.errorBoundary.description")}</p>
           {isDev && this.state.error && (
             <pre className="text-left bg-black/40 text-red-300 text-xs rounded-lg p-3 mb-6 overflow-auto max-h-40 whitespace-pre-wrap">
               {this.state.error.message}
@@ -77,8 +81,7 @@ class ErrorBoundary extends React.Component<Props, State> {
               className="flex items-center gap-2 px-4 py-2 bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 rounded-lg text-sm hover:bg-cyan-500/30 transition-colors cursor-pointer"
             >
               <RefreshCw className="w-4 h-4" />
-              Réessayer
-            </button>
+              {t("operations.common.retry")}</button>
             <button
               onClick={() => {
                 this.setState({ hasError: false, error: null });
@@ -87,8 +90,7 @@ class ErrorBoundary extends React.Component<Props, State> {
               className="flex items-center gap-2 px-4 py-2 bg-white/5 text-gray-300 border border-white/10 rounded-lg text-sm hover:bg-white/10 transition-colors cursor-pointer"
             >
               <Home className="w-4 h-4" />
-              Tableau de bord
-            </button>
+              {t("operations.errorBoundary.dashboard")}</button>
           </div>
         </div>
       </div>
@@ -96,4 +98,7 @@ class ErrorBoundary extends React.Component<Props, State> {
   }
 }
 
-export default ErrorBoundary;
+export default function TranslatedErrorBoundary(props: Props) {
+  const { t } = useTranslation();
+  return <ErrorBoundary {...props} t={t} />;
+}
