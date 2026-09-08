@@ -129,6 +129,7 @@ function serializeSub(sub: any, canSeeTechnical: boolean): any {
   // Champs imbriqués (profile, client)
   if (s.client) s.client = serializeClient(s.client);
   if (s.profile) s.profile = serializeProfile(s.profile, canSeeTechnical);
+  if (!canSeeTechnical || s.profile?.isLocked) delete s.technicalProtocol;
   // Identité du revendeur remontée au niveau du forfait : le client imbriqué
   // ne la portait nulle part, si bien qu'un administrateur lisant la liste des
   // forfaits ne pouvait pas dire de quel revendeur relevait chaque ligne.
@@ -182,26 +183,10 @@ const INCLUDE_FORFAIT = {
  * commercial et l'identifiant sont exposés — de quoi attribuer un profil à un
  * appareil client, jamais de quoi le reconstituer.
  */
+import { serializeLockedProfile } from '../services/profile-lock';
+
 function serializeProfile(p: any, canSeeTechnical: boolean): any {
-  if (!p) return p;
-  if (!canSeeTechnical) {
-    return {
-      id: p.id,
-      name: p.name,
-      displayProtocol: p.displayProtocol ?? null,
-      status: p.status ?? null,
-    };
-  }
-  // Un rôle habilité voit les champs techniques, jamais les secrets.
-  // `delete` est indispensable : affecter `undefined` ne supprime pas la clé
-  // pour Prisma, et JSON.stringify la conserve dès qu'elle a été copiée par le
-  // spread — le blob chiffré continuait donc de sortir.
-  const out: any = { ...p };
-  delete out.canonicalConfig;
-  out.password = p.password ? '••••••••' : null;
-  out.jsonConfig = p.jsonConfig ? '(chiffré — non exposé)' : null;
-  out.hasCanonicalConfig = !!p.canonicalConfig;
-  return out;
+  return p ? serializeLockedProfile(p, undefined, canSeeTechnical) : p;
 }
 
 /** true si le demandeur est habilité à voir les champs techniques d'un profil. */

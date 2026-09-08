@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHmac } from "node:crypto";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const require = createRequire(path.join(root, "backend", "package.json"));
@@ -22,7 +22,8 @@ const permissionNames = [
   "subscription.view", "subscription.manage", "tokens.view", "tokens.create", "tokens.revoke",
   "vouchers.view", "vouchers.create", "vouchers.redeem", "vouchers.revoke",
   "users.view", "users.create", "users.delete", "reseller.manage", "rbac.manage",
-  "analytics.read", "vpnprofile.view",
+  "analytics.read", "vpnprofile.view", "vpnprofile.manage",
+  "ssh.view", "ssh.manage", "xray.view", "xray.manage", "singbox.view", "singbox.manage", "payload.view", "payload.manage",
 ];
 
 // Prisma-shaped isolated store: real routers, validators, auth and transactions
@@ -102,6 +103,14 @@ class Database {
     const result = args.select ? {} : structuredClone(row);
     for (const [key, value] of Object.entries(args.select ?? args.include ?? {})) {
       if (!value) continue;
+      if (key === "_count") {
+        result._count = Object.fromEntries(Object.keys(value.select).map(relationName => {
+          const selected = models.get(name).fields.find(f => f.name === relationName);
+          assert.ok(selected, `Unknown ${name} count: ${relationName}`);
+          return [relationName, this.related(name, row, selected, state).length];
+        }));
+        continue;
+      }
       const field = models.get(name).fields.find(f => f.name === key);
       assert.ok(field, `Unknown ${name} selection: ${key}`);
       if (field.kind !== "object") result[key] = row[key] ?? null;
@@ -148,7 +157,7 @@ class Database {
         } else throw new Error(`Unsupported nested write ${key}`);
       } else {
         const resolved = value && typeof value === "object" && !(value instanceof Date) && field.type !== "Json"
-          ? value.increment !== undefined ? (row[key] ?? 0n) + value.increment : value.set
+          ? value.increment !== undefined ? (row[key] ?? (field.type === "BigInt" ? 0n : 0)) + value.increment : value.set
           : value;
         if (resolved != null) {
           if (field.type === "Int") assert.ok(Number.isInteger(resolved), `${name}.${key} must be an integer`);
@@ -232,6 +241,16 @@ class Database {
         return { _sum: Object.fromEntries(Object.keys(args._sum).map(key =>
           [key, rows.reduce((sum, row) => sum + BigInt(row[key] ?? 0), 0n)])) };
       }),
+      groupBy: run((args, state) => {
+        const groups = new Map();
+        for (const row of state[name].filter(r => this.matches(name, r, args.where, state))) {
+          const key = JSON.stringify(args.by.map(k => row[k]));
+          const group = groups.get(key) ?? { ...Object.fromEntries(args.by.map(k => [k, row[k]])), _count: { id: 0 } };
+          group._count.id++;
+          groups.set(key, group);
+        }
+        return [...groups.values()];
+      }),
     };
   }
 
@@ -263,11 +282,13 @@ process.env.PROVISION_SECRET = "sxb-http-regression-provision-only";
 process.env.DATABASE_URL = "";
 const temporary = await mkdtemp(path.join(root, "backend", "node_modules", ".sxb-http-"));
 const bundlePath = path.join(temporary, "routes.cjs");
-const routeNames = ["devices", "clients", "subscriptions", "tokens", "vouchers", "mobile", "resellers", "users", "rbac", "auth", "sessions", "dashboard", "provision"];
+const routeNames = ["devices", "clients", "subscriptions", "tokens", "vouchers", "mobile", "resellers", "users", "rbac", "auth", "sessions", "dashboard", "provision",
+  "vpn-profiles", "config-test", "ssh", "xray", "singbox", "payload"];
+const routeKey = name => name.replaceAll("-", "_");
 await build({
   stdin: {
-    contents: routeNames.map(name => `export { default as ${name} } from "./server/routes/${name}";`).join("\n") +
-      '\nexport { applyUsageDelta } from "./server/routes/mobile";',
+    contents: routeNames.map(name => `export { default as ${routeKey(name)} } from "./server/routes/${name}";`).join("\n") +
+      '\nexport { applyUsageDelta } from "./server/routes/mobile";\nexport * from "./server/services/profile-lock";',
     resolveDir: root,
     loader: "ts",
   },
@@ -289,7 +310,7 @@ await build({
 const routes = require(bundlePath);
 const app = express();
 app.use(express.json());
-for (const name of routeNames) app.use(`/api/${name}`, routes[name]);
+for (const name of routeNames) app.use(`/api/${name}`, routes[routeKey(name)]);
 app.use((err, _req, res, _next) => res.status(500).json({ error: err.message }));
 const server = app.listen(0, "127.0.0.1");
 await new Promise(resolve => server.once("listening", resolve));
@@ -322,11 +343,11 @@ beforeEach(() => {
     id, userId, resellerId, status: "active", token: `SXB-USER-${id.toUpperCase().padEnd(4,"A")}-BBBB-CCCC`,
     quotaTotal: null, quotaUsed: 0n, expireAt: tomorrow(), deviceId: null, activatedAt: null, deviceLimit: 1,
   }));
-  db.state.VpnProfile = [{ id: "p1", name: "Service privé", status: "active", protocol: "ssh", host: "secret.invalid", password: "encrypted", port: 22 }];
+  db.state.VpnProfile = [{ id: "p1", name: "Service privé", status: "active", protocol: "ssh", host: "secret.invalid", password: "encrypted", port: 22, lockVersion: 0, lockPasswordHash: null }];
   db.state.VpnProfileReseller = [{ profileId: "p1", resellerId: "res-r1" }];
 });
 
-async function api(actor, method, route, body) {
+async function api(actor, method, route, body, headers = {}) {
   const user = db.state.User.find(row => row.id === actor);
   const token = user ? jwt.sign({
     userId: user.id, email: user.email, role: user.roleId,
@@ -334,7 +355,7 @@ async function api(actor, method, route, body) {
   }, process.env.JWT_SECRET, { expiresIn: "15m" }) : null;
   const response = await fetch(`${base}${route}`, {
     method,
-    headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}), ...headers },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   const text = await response.text();
@@ -344,6 +365,199 @@ const ok = (response, status = 200) => assert.equal(response.status, status, JSO
 const row = (model, id) => db.state[model].find(value => value.id === id);
 const createSub = (actor = "r1", quotaGB = 5, clientId = "c1") =>
   api(actor, "POST", "/subscriptions", { clientId, profileId: "p1", quotaGB, durationDays: 30 });
+
+const lockPassword = "configuration-only-password";
+const proofHeader = token => ({ "X-VPN-Profile-Unlock": token });
+async function lockedProfile(extra = {}) {
+  const response = await api("admin", "POST", "/vpn-profiles", {
+    name: "Protected offer", protocol: "ssh", host: "private.example.test", port: 22,
+    username: "vpn-user", password: "technical-password", lockPassword, ...extra,
+  });
+  ok(response, 201);
+  return response.body.profile;
+}
+async function unlockProfile(id, actor = "admin", password = lockPassword) {
+  const response = await api(actor, "POST", `/vpn-profiles/${id}/unlock`, { password });
+  ok(response);
+  return response.body;
+}
+function metadataOnly(profile) {
+  assert.equal(profile.isLocked, true);
+  assert.equal(profile.hasLock, true);
+  for (const field of ["host", "port", "protocol", "password", "uuid", "username", "payload",
+    "canonicalConfig", "canonicalConfigHash", "jsonConfig", "lockPasswordHash", "lockVersion", "link"]) {
+    assert.equal(profile[field], undefined, `Leaked ${field}`);
+  }
+}
+
+test("profile lock: creation, duplicate import and batch import are immediately locked", async () => {
+  const created = await lockedProfile();
+  metadataOnly(created);
+  const stored = row("VpnProfile", created.id);
+  assert.ok(stored.lockPasswordHash.startsWith("$2"));
+  assert.notEqual(stored.lockPasswordHash, lockPassword);
+  const imported = { name: "Imported offer", importConfig: "vless://aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa@vpn.example.test:443?security=tls&type=ws", lockPassword };
+  for (let i = 0; i < 2; i++) {
+    const result = await api("super", "POST", "/vpn-profiles", imported);
+    ok(result, 201);
+    metadataOnly(result.body.profile);
+  }
+  const batch = await api("admin", "POST", "/vpn-profiles/import-batch", {
+    importConfig: imported.importConfig, lockPassword,
+  });
+  ok(batch, 201);
+  batch.body.profiles.forEach(metadataOnly);
+  for (const password of [undefined, "short", "é".repeat(37), " ".repeat(8), "abcdefgh\0"]) {
+    ok(await api("admin", "POST", "/vpn-profiles", { ...imported, lockPassword: password }), 400);
+  }
+  const detail = await api("root", "GET", `/vpn-profiles/${created.id}`);
+  ok(detail); metadataOnly(detail.body.profile);
+  for (const endpoint of ["/vpn-profiles", "/vpn-profiles/unified"]) {
+    const list = await api("root", "GET", endpoint);
+    ok(list);
+    (list.body.profiles ?? list.body.configs).filter(p => p.id !== "p1").forEach(metadataOnly);
+  }
+});
+
+test("profile lock: no OWNER bypass, proof identity, expiry, mutations and rotation", async () => {
+  const profile = await lockedProfile();
+  const path = `/vpn-profiles/${profile.id}`;
+  ok(await api("root", "PUT", path, { name: "No bypass" }), 423);
+  ok(await api("root", "DELETE", path), 423);
+  ok(await api("root", "GET", `${path}/stats`), 423);
+  ok(await api("root", "POST", "/config-test", { profileId: profile.id, importConfig: "{}" }), 423);
+  ok(await api("admin", "POST", `${path}/unlock`, { password: "wrong-password" }), 403);
+  const proof = await unlockProfile(profile.id);
+  assert.equal(proof.profile.isLocked, false);
+  assert.equal(proof.profile.host, "private.example.test");
+  assert.equal(proof.profile.password, "********");
+  assert.equal(proof.profile.lockPasswordHash, undefined);
+  const headers = proofHeader(proof.unlockToken);
+  ok(await api("admin", "GET", path, undefined, proofHeader("bad-token")), 423);
+  ok(await api("root", "GET", path, undefined, headers), 423);
+  const other = await lockedProfile({ name: "Other" });
+  ok(await api("admin", "GET", `/vpn-profiles/${other.id}`, undefined, headers), 423);
+  const expired = jwt.sign({
+    sub: "admin", profileId: profile.id, version: 1,
+    iat: Math.floor(Date.now() / 1000) - 700, exp: Math.floor(Date.now() / 1000) - 100,
+  }, createHmac("sha256", process.env.JWT_SECRET).update("sxb:profile-unlock").digest(),
+  { audience: "sxb:profile-unlock", algorithm: "HS256" });
+  ok(await api("admin", "GET", path, undefined, proofHeader(expired)), 423);
+  ok(await api("admin", "PUT", path, { name: "Unlocked edit" }, headers));
+  const list = await api("admin", "GET", "/vpn-profiles", undefined, headers);
+  metadataOnly(list.body.profiles.find(p => p.id === profile.id));
+  const rotate = await api("admin", "PUT", `${path}/lock`, { password: "replacement-password" }, headers);
+  ok(rotate); metadataOnly(rotate.body.profile);
+  assert.equal(row("VpnProfile", profile.id).lockVersion, 2);
+  ok(await api("admin", "PUT", path, { name: "Stale edit" }, headers), 423);
+  ok(await api("admin", "PUT", `${path}/lock`, { password: "second-password" }, headers), 423);
+  const next = await unlockProfile(profile.id, "admin", "replacement-password");
+  ok(await api("admin", "DELETE", path, undefined, proofHeader(next.unlockToken)));
+});
+
+test("profile lock: rate limiting is dedicated and legacy profiles can explicitly acquire a lock", async () => {
+  ok(await api("admin", "GET", "/vpn-profiles/p1"));
+  ok(await api("admin", "PUT", "/vpn-profiles/p1", { name: "Legacy edit" }));
+  const locked = await api("root", "PUT", "/vpn-profiles/p1/lock", { password: lockPassword });
+  ok(locked); metadataOnly(locked.body.profile);
+  const profile = await lockedProfile();
+  for (let i = 0; i < 5; i++) {
+    ok(await api("admin", "POST", `/vpn-profiles/${profile.id}/unlock`, { password: "wrong-password" }), 403);
+  }
+  const limited = await api("admin", "POST", `/vpn-profiles/${profile.id}/unlock`, { password: lockPassword });
+  ok(limited, 429);
+  assert.equal(limited.body.code, "PROFILE_UNLOCK_RATE_LIMITED");
+  ok(await api("admin", "GET", "/vpn-profiles"));
+});
+
+test("profile lock: assignment, subscriptions and authorized encrypted provisioning need no proof", async () => {
+  const profile = await lockedProfile();
+  ok(await api("admin", "PUT", `/vpn-profiles/${profile.id}/resellers`, { resellerIds: ["res-r1"] }));
+  const assigned = await api("r1", "GET", "/vpn-profiles/assigned");
+  ok(assigned);
+  assert.ok(assigned.body.profiles.some(p => p.id === profile.id));
+  const created = await api("r1", "POST", "/subscriptions", {
+    clientId: "c1", profileId: profile.id, quotaGB: 1, durationDays: 30,
+  });
+  ok(created, 201);
+  metadataOnly(created.body.subscription.profile);
+  const sub = created.body.subscription;
+  const detail = await api("root", "GET", `/subscriptions/${sub.id}`);
+  ok(detail); metadataOnly(detail.body.subscription.profile);
+  ok(await api("r2", "POST", "/subscriptions", { clientId: "c1", profileId: profile.id, quotaGB: 1, durationDays: 30 }), 403);
+  ok(await api("u2", "POST", "/provision/activate", { dataToken: sub.dataToken, deviceId: "LOCK-DEVICE" }), 404);
+  const provisioned = await api("u1", "POST", "/provision/activate", { dataToken: sub.dataToken, deviceId: "LOCK-DEVICE" });
+  ok(provisioned);
+  assert.ok(!JSON.stringify(provisioned.body).includes("technical-password"));
+  assert.ok(!JSON.stringify(provisioned.body).includes(lockPassword));
+  assert.ok(JSON.stringify(provisioned.body).includes("gcm:"));
+});
+
+for (const engine of ["ssh", "xray", "singbox"]) {
+  test(`profile lock: ${engine} aliases remain locked after profile rename and reject destructive bypasses`, async () => {
+    const response = await api("admin", "POST", `/${engine}/accounts`, {
+      name: "Engine offer", protocol: "vless", host: "engine.example.test", port: 443,
+      username: "engine-user", password: "engine-password", lockPassword,
+    });
+    ok(response, 201);
+    const account = response.body.account;
+    metadataOnly(account);
+    assert.ok(account.profileId);
+    const proof = await unlockProfile(account.profileId);
+    const headers = proofHeader(proof.unlockToken);
+    ok(await api("admin", "PUT", `/vpn-profiles/${account.profileId}`, { name: "Renamed protected offer" }, headers));
+    const list = await api("root", "GET", `/${engine}/accounts`);
+    ok(list); metadataOnly(list.body.accounts[0]);
+    ok(await api("root", "PUT", `/${engine}/accounts/${account.id}`, { host: "evil.test" }), 423);
+    ok(await api("root", "DELETE", `/${engine}/accounts/${account.id}`), 423);
+    ok(await api("root", engine === "ssh" ? "PATCH" : "POST", `/${engine}/accounts/${account.id}/suspend`, {}), 423);
+    if (engine === "singbox") ok(await api("root", "GET", `/singbox/config/${account.id}`), 423);
+    if (engine === "ssh") ok(await api("root", "POST", `/ssh/accounts/${account.id}/test`, {}), 423);
+    ok(await api("admin", "DELETE", `/vpn-profiles/${account.profileId}`, undefined, headers), 409);
+    ok(await api("admin", "PUT", `/${engine}/accounts/${account.id}`, { host: "updated.test" }, headers));
+    ok(await api("admin", "DELETE", `/${engine}/accounts/${account.id}`, undefined, headers));
+    assert.ok(row("VpnProfile", account.profileId).lockPasswordHash);
+  });
+}
+
+test("profile lock: shared payload content, edits, deletion and probes cannot bypass the lock", async () => {
+  const payload = await api("admin", "POST", "/payload", { name: "Shared payload", content: "private-payload-content" });
+  ok(payload, 201);
+  await lockedProfile({ payloadId: payload.body.payload.id });
+  const listed = await api("root", "GET", "/payload");
+  ok(listed); metadataOnly(listed.body.payloads[0]);
+  assert.ok(!JSON.stringify(listed.body).includes("private-payload-content"));
+  for (const method of ["PUT", "DELETE"]) {
+    ok(await api("root", method, `/payload/${payload.body.payload.id}`, { content: "changed" }), 423);
+  }
+  ok(await api("root", "POST", `/payload/${payload.body.payload.id}/test`, {}), 423);
+});
+
+test("profile lock: concurrent rotations have one winner and do not grant RBAC permissions", async () => {
+  const profile = await lockedProfile();
+  const proof = await unlockProfile(profile.id);
+  const headers = proofHeader(proof.unlockToken);
+  const rotated = await Promise.all(["rotation-password-one", "rotation-password-two"].map(password =>
+    api("admin", "PUT", `/vpn-profiles/${profile.id}/lock`, { password }, headers)));
+  assert.deepEqual(rotated.map(r => r.status).sort(), [200, 423]);
+  assert.equal(row("VpnProfile", profile.id).lockVersion, 2);
+  db.state.RolePermission = db.state.RolePermission.filter(p => p.roleId !== "ADMIN" || p.permissionId !== "vpnprofile.manage");
+  ok(await api("admin", "PUT", `/vpn-profiles/${profile.id}`, { name: "RBAC bypass" }, headers), 403);
+  db.state.RolePermission = db.state.RolePermission.filter(p => p.roleId !== "ADMIN" || p.permissionId !== "vpnprofile.view");
+  ok(await api("admin", "POST", `/vpn-profiles/${profile.id}/unlock`, { password: "rotation-password-one" }), 403);
+});
+
+test("profile lock: failed engine profile creation rolls back its account and leaks no password", async () => {
+  db.failModel = "VpnProfile";
+  const failed = await api("admin", "POST", "/xray/accounts", {
+    name: "Failed offer", protocol: "vless", host: "private.example.test", port: 443,
+    password: "never-return-this", lockPassword,
+  });
+  ok(failed, 500);
+  assert.equal(db.state.XrayAccount.length, 0);
+  assert.ok(!JSON.stringify(failed.body).includes(lockPassword));
+  assert.ok(!JSON.stringify(failed.body).includes("never-return-this"));
+});
 
 test("activation: a fresh dashboard token binds once and stays in its reseller roster", async () => {
   const generated = await api("r1", "POST", "/devices/generate-token", { deviceId: "DASHBOARD-TEMP-123", label: "Mon client" });

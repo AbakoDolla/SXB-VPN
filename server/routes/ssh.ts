@@ -7,6 +7,8 @@ import { prisma } from '../database';
 import { requireAuth, requirePermission, AuthenticatedRequest } from '../middleware/auth';
 import { logDbActivity } from '../database';
 import crypto from 'crypto';
+import { createLockedEngineAccount, serializeEngineAccount, serializePayload, withUnlockedEngine } from '../services/profile-engines';
+import { handleProfileLockError } from '../services/profile-lock';
 
 const router = Router();
 
@@ -65,10 +67,12 @@ router.get('/accounts', requireAuth, requirePermission('ssh.view'), async (req: 
       : [];
     const payloadMap = Object.fromEntries(payloads.map((p: any) => [p.id, p]));
     // Mask passwords in response
-    const safe = accounts.map((a: any) => ({ ...a, password: '••••••••', payload: a.payloadId ? payloadMap[a.payloadId] ?? null : null }));
+    const safe = await Promise.all(accounts.map(async (a: any) => serializeEngineAccount('ssh', {
+      ...a, password: '••••••••', payload: payloadMap[a.payloadId] ? await serializePayload(payloadMap[a.payloadId]) : null,
+    })));
+    res.set('Cache-Control', 'no-store');
     return res.json({ success: true, accounts: safe });
   } catch (err) {
-    console.error('SSH list error:', err);
     return res.status(500).json({ error: 'Failed to list SSH accounts' });
   }
 });
@@ -85,8 +89,13 @@ router.get('/accounts/:id', requireAuth, requirePermission('ssh.view'), async (r
       accPayload = await (prisma as any).sshPayload.findUnique({ where: { id: (acc as any).payloadId } }).catch(() => null);
     }
     if (!acc) return res.status(404).json({ error: 'SSH account not found' });
-    return res.json({ success: true, account: { ...acc, password: '••••••••', payload: accPayload } });
+    if (req.get('X-VPN-Profile-Unlock')) {
+      await withUnlockedEngine('ssh', req.params.id, req, async () => undefined);
+    }
+    res.set('Cache-Control', 'no-store');
+    return res.json({ success: true, account: await serializeEngineAccount('ssh', { ...acc, password: '••••••••', payload: accPayload ? await serializePayload(accPayload, req) : null }, req) });
   } catch (err) {
+    if (handleProfileLockError(err, res)) return;
     return res.status(500).json({ error: 'Failed to get SSH account' });
   }
 });
@@ -111,7 +120,7 @@ router.post('/accounts', requireAuth, requirePermission('ssh.manage'), async (re
     const encPwd = encrypt(password, ENC_KEY);
     const quotaTotal = quotaGB ? BigInt(Math.round(quotaGB * 1024 * 1024 * 1024)) : null;
 
-    const account = await prisma.sshAccount.create({
+    const account = await createLockedEngineAccount('ssh', req.body.lockPassword, db => db.sshAccount.create({
       data: {
         name,
         host,
@@ -131,12 +140,12 @@ router.post('/accounts', requireAuth, requirePermission('ssh.manage'), async (re
         status: 'active',
         createdBy: req.user?.userId,
       },
-    });
+    }));
 
     await logDbActivity(req.user?.userId || null, `SSH account "${name}" created (mode: ${mode})`, 'success', req.ip);
-    return res.status(201).json({ success: true, account: { ...account, password: '••••••••' } });
+    return res.status(201).json({ success: true, account: await serializeEngineAccount('ssh', { ...account, password: '••••••••' }) });
   } catch (err) {
-    console.error('SSH create error:', err);
+    if (handleProfileLockError(err, res)) return;
     return res.status(500).json({ error: 'Failed to create SSH account' });
   }
 });
@@ -168,15 +177,15 @@ router.put('/accounts/:id', requireAuth, requirePermission('ssh.manage'), async 
     if (sni !== undefined) updateData.sni = sni;
     if (status !== undefined) updateData.status = status;
 
-    const updated = await prisma.sshAccount.update({
+    const updated = await withUnlockedEngine('ssh', req.params.id, req, db => db.sshAccount.update({
       where: { id: req.params.id },
       data: updateData,
-    });
+    }));
 
     await logDbActivity(req.user?.userId || null, `SSH account "${updated.name}" updated`, 'success', req.ip);
-    return res.json({ success: true, account: { ...updated, password: '••••••••' } });
+    return res.json({ success: true, account: await serializeEngineAccount('ssh', { ...updated, password: '••••••••' }) });
   } catch (err) {
-    console.error('SSH update error:', err);
+    if (handleProfileLockError(err, res)) return;
     return res.status(500).json({ error: 'Failed to update SSH account' });
   }
 });
@@ -186,10 +195,11 @@ router.delete('/accounts/:id', requireAuth, requirePermission('ssh.manage'), asy
   try {
     const acc = await prisma.sshAccount.findUnique({ where: { id: req.params.id } });
     if (!acc) return res.status(404).json({ error: 'SSH account not found' });
-    await prisma.sshAccount.delete({ where: { id: req.params.id } });
+    await withUnlockedEngine('ssh', req.params.id, req, db => db.sshAccount.delete({ where: { id: req.params.id } }));
     await logDbActivity(req.user?.userId || null, `SSH account "${acc.name}" deleted`, 'danger', req.ip);
     return res.json({ success: true, message: 'SSH account deleted' });
   } catch (err) {
+    if (handleProfileLockError(err, res)) return;
     return res.status(500).json({ error: 'Failed to delete SSH account' });
   }
 });
@@ -200,10 +210,11 @@ router.patch('/accounts/:id/suspend', requireAuth, requirePermission('ssh.manage
     const acc = await prisma.sshAccount.findUnique({ where: { id: req.params.id } });
     if (!acc) return res.status(404).json({ error: 'SSH account not found' });
     const newStatus = acc.status === 'suspended' ? 'active' : 'suspended';
-    await prisma.sshAccount.update({ where: { id: req.params.id }, data: { status: newStatus } });
+    await withUnlockedEngine('ssh', req.params.id, req, db => db.sshAccount.update({ where: { id: req.params.id }, data: { status: newStatus } }));
     await logDbActivity(req.user?.userId || null, `SSH account "${acc.name}" ${newStatus}`, 'warning', req.ip);
     return res.json({ success: true, status: newStatus });
   } catch (err) {
+    if (handleProfileLockError(err, res)) return;
     return res.status(500).json({ error: 'Failed to toggle SSH account status' });
   }
 });
@@ -211,23 +222,18 @@ router.patch('/accounts/:id/suspend', requireAuth, requirePermission('ssh.manage
 // ─── POST /api/ssh/accounts/:id/test ─────────────────────────────────────────
 router.post('/accounts/:id/test', requireAuth, requirePermission('ssh.view'), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const acc = await prisma.sshAccount.findUnique({ where: { id: req.params.id } });
-    if (!acc) return res.status(404).json({ error: 'SSH account not found' });
-
-    const password = decrypt(acc.password, ENC_KEY);
-    const { execSync } = await import('child_process');
-
-    try {
-      // Test SSH connectivity with a 10-second timeout
-      execSync(
-        `sshpass -p ${JSON.stringify(password)} ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=no -p ${acc.port} ${acc.username}@${acc.host} "echo SXB_OK" 2>&1`,
-        { timeout: 15000 }
-      );
-      return res.json({ success: true, reachable: true, message: 'SSH connection successful' });
-    } catch {
-      return res.json({ success: true, reachable: false, message: 'SSH connection failed — check credentials or host' });
-    }
+    const reachable = await withUnlockedEngine('ssh', req.params.id, req, async (_db, acc) => {
+      const password = decrypt(acc.password || '', ENC_KEY);
+      const { execFile } = await import('node:child_process');
+      return new Promise<boolean>(resolve => {
+        execFile('sshpass', ['-e', 'ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=10',
+          '-o', 'BatchMode=no', '-p', String(acc.port), `${acc.username}@${acc.host}`, 'echo SXB_OK'],
+        { timeout: 15000, env: { ...process.env, SSHPASS: password } }, error => resolve(!error));
+      });
+    });
+    return res.json({ success: true, reachable, message: reachable ? 'SSH connection successful' : 'SSH connection failed' });
   } catch (err) {
+    if (handleProfileLockError(err, res)) return;
     return res.status(500).json({ error: 'Failed to test SSH connection' });
   }
 });

@@ -13,6 +13,12 @@ import {
   parseImportedConfig, parseImportedConfigList, canonicalJson, computeCanonicalHash, encryptCanonical,
   type ParseResult,
 } from '../services/canonical-config';
+import {
+  assertProfileUnlocked, createProfileLock, handleProfileLockError, issueProfileUnlock,
+  profileLockWhere, profileUnlockLimiters, serializeLockedProfile, verifyProfilePassword,
+  ProfileLockError,
+} from '../services/profile-lock';
+import { prepareProfileEngineLock } from '../services/profile-engines';
 
 const router = Router();
 
@@ -134,23 +140,7 @@ function decrypt(enc: string): string {
   return Buffer.concat([d.update(Buffer.from(encHex, 'hex')), d.final()]).toString();
 }
 
-function maskProfile(p: any) {
-  // `delete` est indispensable : affecter `undefined` ne retire pas la clé
-  // copiée par le spread, et le blob chiffré ressortait donc dans la réponse.
-  const out: any = { ...p };
-  delete out.canonicalConfig;
-  out.password = p.password ? '••••••••' : null;
-  out.jsonConfig = p.jsonConfig ? '(chiffré — non exposé)' : null;
-  out.hasCanonicalConfig = !!p.canonicalConfig;
-  out.canonicalConfigHash = p.canonicalConfigHash ?? null;
-  out.configVersion = p.configVersion ?? 1;
-  out.sourceFormat = p.sourceFormat ?? null;
-  out.validationStatus = p.validationStatus ?? null;
-  out.validationMessage = p.validationMessage ?? null;
-  out.validatedAt = p.validatedAt ?? null;
-  out.importedAt = p.importedAt ?? null;
-  return out;
-}
+const maskProfile = (p: any, req?: AuthenticatedRequest) => serializeLockedProfile(p, req);
 
 /**
  * Profil masqué + liste des revendeurs attribués, aplatie pour l'interface.
@@ -159,8 +149,8 @@ function maskProfile(p: any) {
  * disponible pour TOUS les revendeurs (voir le modèle VpnProfileReseller). Le
  * drapeau `unrestricted` évite à l'interface de réinterpréter ce cas.
  */
-function withResellers(p: any) {
-  const out = maskProfile(p);
+function withResellers(p: any, req?: AuthenticatedRequest) {
+  const out = maskProfile(p, req);
   const links = Array.isArray(p.assignedResellers) ? p.assignedResellers : [];
   out.resellers = links.map((l: any) => ({
     resellerId: l.resellerId,
@@ -177,7 +167,7 @@ function withResellers(p: any) {
 router.get('/', requireAuth, requirePermission('vpnprofile.view'), async (req: AuthenticatedRequest, res: Response) => {
   try {
     if (!prisma) {
-      return res.json({ success: true, profiles: (inMemoryDb.vpnProfiles || []).map(maskProfile) });
+      return res.json({ success: true, profiles: (inMemoryDb.vpnProfiles || []).map(p => maskProfile(p)) });
     }
     // Les attributions sont chargées si la table existe. Elles ont été ajoutées
     // après coup : tant que le schéma n'est pas poussé en base, l'`include`
@@ -193,16 +183,16 @@ router.get('/', requireAuth, requirePermission('vpnprofile.view'), async (req: A
           },
         },
       });
-      return res.json({ success: true, profiles: profiles.map(withResellers) });
+      return res.json({ success: true, profiles: profiles.map((p: any) => withResellers(p)) });
     } catch {
       const profiles = await (prisma as any).vpnProfile.findMany({
         orderBy: { createdAt: 'desc' },
         include: { _count: { select: { subscriptions: true } } },
       });
-      return res.json({ success: true, profiles: profiles.map(maskProfile) });
+      return res.json({ success: true, profiles: profiles.map((p: any) => maskProfile(p)) });
     }
   } catch (err) {
-    console.error('vpn-profiles list error:', err);
+    console.error('vpn-profiles list failed');
     return res.status(500).json({ error: 'Failed to list VPN profiles' });
   }
 });
@@ -224,7 +214,7 @@ router.get('/assigned', requireAuth, async (req: AuthenticatedRequest, res: Resp
     if (req.user?.role !== 'RESELLER') {
       const all = await (prisma as any).vpnProfile.findMany({
         where: { status: 'active' },
-        select: { id: true, name: true, displayProtocol: true, protocol: true },
+        select: { id: true, name: true, displayProtocol: true },
         orderBy: { name: 'asc' },
       });
       return res.json({ success: true, profiles: all });
@@ -264,33 +254,22 @@ router.get('/assigned', requireAuth, async (req: AuthenticatedRequest, res: Resp
 });
 
 
-// GET /api/vpn-profiles/unified — agrège les profils SSH SXB VPN
+// Stored profiles only: a GET must never silently create an unprotected copy.
 router.get("/unified", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     if (!prisma) return res.status(503).json({ error: "DB unavailable" });
-    const [sshAccs, xrayAccs, singboxAccs] = await Promise.all([
-      (prisma as any).sshAccount.findMany({ where: { status: "active" }, orderBy: { createdAt: "desc" } }),
-      (prisma as any).xrayAccount.findMany({ where: { status: "active" }, orderBy: { createdAt: "desc" } }),
-      (prisma as any).singboxAccount.findMany({ where: { status: "active" }, orderBy: { createdAt: "desc" } }),
-    ]);
-    const configs: any[] = [];
-    async function syncProfile(data: any, namePrefix: string, proto: string) {
-      const profileName = namePrefix + data.name;
-      let p = await (prisma as any).vpnProfile.findFirst({ where: { name: profileName } });
-      if (!p) p = await (prisma as any).vpnProfile.create({ data: {
-          name: profileName, description: namePrefix.replace(/[\[\]]/g, "").trim() + " — " + data.name,
-          protocol: proto, host: data.host, port: data.port,
-          username: data.username || null, password: data.password || null, uuid: data.uuid || null,
-          path: data.path || null, network: data.network || (proto === "ssh" ? "tcp" : "ws"),
-          tls: data.tls || false, sni: data.sni || null, method: data.method || null, offlineValidDays: 7, status: "active",
-      }});
-      return p;
+    const canView = req.user?.role === 'OWNER' || req.user?.permissions.includes('vpnprofile.view');
+    let where: Record<string, any> = { status: 'active' };
+    if (!canView) {
+      if (req.user?.role !== 'RESELLER') return res.status(403).json({ error: 'errors.auth.forbidden' });
+      const reseller = await prisma.reseller.findUnique({ where: { userId: req.user.userId } });
+      if (!reseller) return res.status(403).json({ error: 'errors.auth.forbidden' });
+      where = { ...where, assignedResellers: { some: { resellerId: reseller.id } } };
     }
-    for (const a of sshAccs) { const p = await syncProfile(a, "[SSH] ", "ssh"); configs.push({ id: p.id, name: p.name, protocol: "ssh", host: a.host, port: a.port, sourceType: "ssh", status: a.status }); }
-    for (const a of xrayAccs) { const pfx = "[" + a.protocol.toUpperCase() + "] "; const p = await syncProfile(a, pfx, a.protocol); configs.push({ id: p.id, name: p.name, protocol: a.protocol, host: a.host, port: a.port, sourceType: "xray", status: a.status }); }
-    for (const a of singboxAccs) { const pfx = "[" + a.protocol.toUpperCase() + "-SB] "; const p = await syncProfile(a, pfx, a.protocol); configs.push({ id: p.id, name: p.name, protocol: a.protocol, host: a.host, port: a.port, sourceType: "singbox", status: a.status }); }
+    const profiles = await prisma.vpnProfile.findMany({ where, orderBy: { createdAt: 'desc' } });
+    const configs = profiles.map(p => serializeLockedProfile(p, undefined, !!canView));
     return res.json({ configs });
-  } catch (err) { console.error("Unified configs error:", err); return res.status(500).json({ error: "Server error" }); }
+  } catch { return res.status(500).json({ error: "Server error" }); }
 });
 
 // ─── GET /api/vpn-profiles/stats/all ─────────────────────────────────────────
@@ -304,7 +283,7 @@ router.get('/stats/all', requireAuth, requirePermission('vpnprofile.view'), asyn
     }
     const total      = await (prisma as any).vpnProfile.count();
     const active     = await (prisma as any).vpnProfile.count({ where: { status: 'active' } });
-    const byProtocol = await (prisma as any).vpnProfile.groupBy({ by: ['protocol'], _count: { id: true } });
+    const byProtocol = await (prisma as any).vpnProfile.groupBy({ where: { lockPasswordHash: null }, by: ['protocol'], _count: { id: true } });
     return res.json({ success: true, total, active, byProtocol });
   } catch (err) {
     return res.status(500).json({ error: 'Failed to get stats' });
@@ -317,16 +296,77 @@ router.get('/:id', requireAuth, requirePermission('vpnprofile.view'), async (req
     if (!prisma) {
       const p = (inMemoryDb.vpnProfiles || []).find((prof) => prof.id === req.params.id);
       if (!p) return res.status(404).json({ error: 'Profile not found' });
-      return res.json({ success: true, profile: maskProfile(p) });
+      if (req.get('X-VPN-Profile-Unlock')) assertProfileUnlocked(p, req);
+      res.set('Cache-Control', 'no-store');
+      return res.json({ success: true, profile: maskProfile(p, req) });
     }
     const p = await (prisma as any).vpnProfile.findUnique({
       where: { id: req.params.id },
       include: { _count: { select: { subscriptions: true } } },
     });
     if (!p) return res.status(404).json({ error: 'Profile not found' });
-    return res.json({ success: true, profile: maskProfile(p) });
+    if (req.get('X-VPN-Profile-Unlock')) assertProfileUnlocked(p, req);
+    res.set('Cache-Control', 'no-store');
+    return res.json({ success: true, profile: maskProfile(p, req) });
   } catch (err) {
+    if (handleProfileLockError(err, res)) return;
     return res.status(500).json({ error: 'Failed to get VPN profile' });
+  }
+});
+
+router.post('/:id/unlock', requireAuth, requirePermission('vpnprofile.view'), ...profileUnlockLimiters, async (req: AuthenticatedRequest, res: Response) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    if (!prisma) return res.status(503).json({ error: 'errors.db.unavailable' });
+    if (!req.body || Object.keys(req.body).some(key => key !== 'password')) {
+      throw new ProfileLockError(400, 'PROFILE_LOCK_PASSWORD_INVALID');
+    }
+    const profile = await prisma.vpnProfile.findUnique({ where: { id: req.params.id } });
+    if (!profile) return res.status(404).json({ error: 'Profile not found' });
+    if (!profile.lockPasswordHash) throw new ProfileLockError(409, 'PROFILE_NOT_LOCKED');
+    await verifyProfilePassword(profile, req.body.password);
+    const current = await prisma.vpnProfile.findUnique({ where: { id: profile.id } });
+    if (!current || current.lockPasswordHash !== profile.lockPasswordHash || current.lockVersion !== profile.lockVersion) {
+      throw new ProfileLockError(423, 'PROFILE_LOCKED');
+    }
+    const proof = issueProfileUnlock(current, req.user!.userId);
+    req.headers['x-vpn-profile-unlock'] = proof.unlockToken;
+    return res.json({ success: true, ...proof, profile: maskProfile(current, req) });
+  } catch (error) {
+    if (handleProfileLockError(error, res)) return;
+    console.error('VPN profile unlock failed');
+    return res.status(500).json({ error: 'PROFILE_UNLOCK_UNAVAILABLE' });
+  }
+});
+
+router.put('/:id/lock', requireAuth, requirePermission('vpnprofile.manage'), ...profileUnlockLimiters, async (req: AuthenticatedRequest, res: Response) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    if (!prisma) return res.status(503).json({ error: 'errors.db.unavailable' });
+    if (!req.body || Object.keys(req.body).some(key => key !== 'password')) {
+      throw new ProfileLockError(400, 'PROFILE_LOCK_PASSWORD_INVALID');
+    }
+    const existing = await prisma.vpnProfile.findUnique({ where: { id: req.params.id } });
+    if (!existing) return res.status(404).json({ error: 'Profile not found' });
+    assertProfileUnlocked(existing, req);
+    const lock = await createProfileLock(req.body.password);
+    assertProfileUnlocked(existing, req);
+    const changed = await prisma.$transaction(async tx => {
+      await prepareProfileEngineLock(tx, existing);
+      return tx.vpnProfile.updateMany({
+        where: profileLockWhere(existing),
+        data: { lockPasswordHash: lock.lockPasswordHash, lockVersion: { increment: 1 } },
+      });
+    });
+    if (changed.count !== 1) throw new ProfileLockError(423, 'PROFILE_LOCKED');
+    const profile = await prisma.vpnProfile.findUnique({ where: { id: existing.id } });
+    if (!profile) return res.status(404).json({ error: 'Profile not found' });
+    await logDbActivity(req.user!.userId, `VPN profile lock changed: ${existing.id}`, 'warning', req.ip || '');
+    return res.json({ success: true, profile: maskProfile(profile) });
+  } catch (error) {
+    if (handleProfileLockError(error, res)) return;
+    console.error('VPN profile lock change failed');
+    return res.status(500).json({ error: 'PROFILE_LOCK_UNAVAILABLE' });
   }
 });
 
@@ -379,19 +419,17 @@ router.put('/:id/resellers', requireAuth, requirePermission('vpnprofile.manage')
     });
     const validIds: string[] = known.map((r: any) => r.id);
 
-    await (prisma as any).$transaction([
-      (prisma as any).vpnProfileReseller.deleteMany({ where: { profileId: profile.id } }),
-      ...(validIds.length
-        ? [(prisma as any).vpnProfileReseller.createMany({
+    await prisma.$transaction(async tx => {
+      await tx.vpnProfileReseller.deleteMany({ where: { profileId: profile.id } });
+      if (validIds.length) await tx.vpnProfileReseller.createMany({
             data: validIds.map((resellerId) => ({
               profileId: profile.id,
               resellerId,
               assignedBy: req.user!.userId,
             })),
             skipDuplicates: true,
-          })]
-        : []),
-    ]);
+          });
+    });
 
     await logDbActivity(
       req.user!.userId,
@@ -417,6 +455,7 @@ router.put('/:id/resellers', requireAuth, requirePermission('vpnprofile.manage')
 router.post('/import-batch', requireAuth, requirePermission('vpnprofile.manage'), async (req: AuthenticatedRequest, res: Response) => {
   try {
     if (!prisma) return res.status(503).json({ error: 'Base de données indisponible' });
+    const lock = await createProfileLock(req.body?.lockPassword);
     const rawImport = String(req.body?.importConfig ?? '').trim();
     const namePrefix = String(req.body?.namePrefix ?? req.body?.name ?? '').trim().slice(0, 100) || 'SSH importé';
     const description = req.body?.description ? String(req.body.description).slice(0, 500) : null;
@@ -455,14 +494,17 @@ router.post('/import-batch', requireAuth, requirePermission('vpnprofile.manage')
           offlineValidDays,
           status,
           ...data,
+          ...lock,
         },
         warnings: parseWarnings as string[],
       };
     });
 
-    const profiles = await prisma.$transaction(
-      prepared.map((entry) => (prisma as any).vpnProfile.create({ data: entry.data })),
-    );
+    const profiles = await prisma.$transaction(async tx => {
+      const result = [];
+      for (const entry of prepared) result.push(await tx.vpnProfile.create({ data: entry.data }));
+      return result;
+    });
     await logDbActivity(
       req.user!.userId,
       `Imported ${profiles.length} VPN profiles atomically`,
@@ -472,12 +514,11 @@ router.post('/import-batch', requireAuth, requirePermission('vpnprofile.manage')
     return res.status(201).json({
       success: true,
       imported: profiles.length,
-      profiles: profiles.map(maskProfile),
-      warnings: prepared.flatMap((entry, index) =>
-        entry.warnings.map((warning) => `#${index + 1} ${warning}`),
-      ),
+      profiles: profiles.map(p => maskProfile(p)),
+      warnings: [],
     });
   } catch (err: any) {
+    if (handleProfileLockError(err, res)) return;
     console.error('VPN profile batch import error:', err?.code || err?.name || 'UNKNOWN');
     return res.status(500).json({ error: 'Échec de l’import multiple' });
   }
@@ -485,6 +526,8 @@ router.post('/import-batch', requireAuth, requirePermission('vpnprofile.manage')
 
 router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req: AuthenticatedRequest, res: Response) => {
   try {
+    if (!prisma) return res.status(503).json({ error: 'errors.db.unavailable' });
+    const lock = await createProfileLock(req.body?.lockPassword);
     const {
       name, description, protocol, displayProtocol,
       host, port, username, password,
@@ -542,13 +585,14 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
           offlineValidDays: offlineValidDays ? Number(offlineValidDays) : 7,
           status: status || 'active',
           ...data,
+          ...lock,
         },
       });
       await logDbActivity(req.user!.userId, `Imported VPN profile: ${name} (${data.sourceFormat})`, 'info', req.ip || '');
       return res.status(201).json({
         success: true,
         profile: maskProfile(profile),
-        warnings: [...(parseWarnings || []), ...duplicateWarnings],
+        warnings: duplicateWarnings,
         imported: true,
       });
     }
@@ -578,27 +622,35 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
         method: method || null,
         jsonConfig: null, // plus jamais de clair — legacy jsonConfig a été redirigé vers l'import chiffré
         status: status || 'active',
+        ...lock,
       },
     });
 
     await logDbActivity(req.user!.userId, `Created VPN profile (legacy): ${name}`, 'info', req.ip || '');
     return res.status(201).json({ success: true, profile: maskProfile(profile) });
   } catch (err: any) {
-    console.error('vpn-profile create error:', err);
-    return res.status(500).json({ error: err.message || 'Failed to create VPN profile' });
+    if (handleProfileLockError(err, res)) return;
+    console.error('vpn-profile create failed');
+    return res.status(500).json({ error: 'Failed to create VPN profile' });
   }
 });
 
 // ─── PUT /api/vpn-profiles/:id ───────────────────────────────────────────────
 // Champs ADMINISTRATIFS (name, description, displayProtocol, status, dns,
-// offlineValidDays) : toujours éditables.
+// offlineValidDays) : exigent aussi le deverrouillage du profil.
 // Champs TECHNIQUES (protocol, host, port, credentials, tls, sni, network,
 // path, payload, jsonConfig…) : IMMUABLES hors « importConfig » (réimport
 // explicite → nouveau canonique chiffré + configVersion incrémentée).
 router.put('/:id', requireAuth, requirePermission('vpnprofile.manage'), async (req: AuthenticatedRequest, res: Response) => {
   try {
+    res.set('Cache-Control', 'no-store');
     const existing = await (prisma as any).vpnProfile.findUnique({ where: { id: req.params.id } });
     if (!existing) return res.status(404).json({ error: 'Profile not found' });
+    assertProfileUnlocked(existing, req);
+    await prisma.$transaction(tx => prepareProfileEngineLock(tx, existing));
+    if (['lockPassword', 'lockPasswordHash', 'lockVersion', 'engineType', 'engineAccountId'].some(key => key in req.body)) {
+      return res.status(400).json({ error: 'PROFILE_LOCK_FIELDS_FORBIDDEN' });
+    }
 
     const {
       name, description, protocol, displayProtocol,
@@ -620,8 +672,9 @@ router.put('/:id', requireAuth, requirePermission('vpnprofile.manage'), async (r
         throw e;
       }
       const parseWarnings = data._parseWarnings; delete data._parseWarnings;
+      assertProfileUnlocked(existing, req);
       const updated = await (prisma as any).vpnProfile.update({
-        where: { id: req.params.id },
+        where: profileLockWhere(existing),
         data: {
           ...data,
           ...(name !== undefined && { name }),
@@ -634,7 +687,7 @@ router.put('/:id', requireAuth, requirePermission('vpnprofile.manage'), async (r
       });
       await logDbActivity(req.user!.userId,
         `Re-imported VPN profile: ${updated.name} (v${updated.configVersion}, ${data.sourceFormat})`, 'warning', req.ip || '');
-      return res.json({ success: true, profile: maskProfile(updated), warnings: parseWarnings, reimported: true });
+      return res.json({ success: true, profile: maskProfile(updated, req), warnings: parseWarnings, reimported: true });
     }
 
     // ── Édition administrative : aucun champ technique accepté ────────────────
@@ -652,7 +705,7 @@ router.put('/:id', requireAuth, requirePermission('vpnprofile.manage'), async (r
     }
 
     const updated = await (prisma as any).vpnProfile.update({
-      where: { id: req.params.id },
+      where: profileLockWhere(existing),
       data: {
         ...(name !== undefined && { name }),
         ...(description !== undefined && { description }),
@@ -664,9 +717,11 @@ router.put('/:id', requireAuth, requirePermission('vpnprofile.manage'), async (r
     });
 
     await logDbActivity(req.user!.userId, `Updated VPN profile (admin): ${updated.name}`, 'info', req.ip || '');
-    return res.json({ success: true, profile: maskProfile(updated) });
+    return res.json({ success: true, profile: maskProfile(updated, req) });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message || 'Failed to update VPN profile' });
+    if (handleProfileLockError(err, res)) return;
+    if (err?.code === 'P2025') return res.status(423).json({ error: 'PROFILE_LOCKED', code: 'PROFILE_LOCKED' });
+    return res.status(500).json({ error: 'Failed to update VPN profile' });
   }
 });
 
@@ -678,26 +733,35 @@ router.delete('/:id', requireAuth, requirePermission('vpnprofile.manage'), async
       include: { _count: { select: { subscriptions: true } } },
     });
     if (!existing) return res.status(404).json({ error: 'Profile not found' });
+    assertProfileUnlocked(existing, req);
+    const linked = await prisma.$transaction(tx => prepareProfileEngineLock(tx, existing));
+    if (linked.engineAccountId) return res.status(409).json({ error: 'PROFILE_ENGINE_LINKED' });
     if (existing._count.subscriptions > 0) {
       return res.status(409).json({ error: `Cannot delete: profile has ${existing._count.subscriptions} active subscription(s)` });
     }
 
-    await (prisma as any).vpnProfile.delete({ where: { id: req.params.id } });
+    await (prisma as any).vpnProfile.delete({ where: profileLockWhere(existing) });
     await logDbActivity(req.user!.userId, `Deleted VPN profile: ${existing.name}`, 'warning', req.ip || '');
     return res.json({ success: true, message: 'Profile deleted' });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message || 'Failed to delete VPN profile' });
+    if (handleProfileLockError(err, res)) return;
+    if (err?.code === 'P2025') return res.status(423).json({ error: 'PROFILE_LOCKED', code: 'PROFILE_LOCKED' });
+    return res.status(500).json({ error: 'Failed to delete VPN profile' });
   }
 });
 
 // ─── GET /api/vpn-profiles/:id/stats ─────────────────────────────────────────
-router.get('/:id/stats', requireAuth, requirePermission('vpnprofile.view'), async (_req: AuthenticatedRequest, res: Response) => {
+router.get('/:id/stats', requireAuth, requirePermission('vpnprofile.view'), async (req: AuthenticatedRequest, res: Response) => {
   try {
+    const profile = await prisma.vpnProfile.findUnique({ where: { id: req.params.id } });
+    if (!profile) return res.status(404).json({ error: 'Profile not found' });
+    assertProfileUnlocked(profile, req);
     const total     = await (prisma as any).vpnProfile.count();
     const active    = await (prisma as any).vpnProfile.count({ where: { status: 'active' } });
-    const byProtocol = await (prisma as any).vpnProfile.groupBy({ by: ['protocol'], _count: { id: true } });
+    const byProtocol = await (prisma as any).vpnProfile.groupBy({ where: { id: req.params.id }, by: ['protocol'], _count: { id: true } });
     return res.json({ success: true, total, active, byProtocol });
   } catch (err) {
+    if (handleProfileLockError(err, res)) return;
     return res.status(500).json({ error: 'Failed to get stats' });
   }
 });

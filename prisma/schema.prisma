@@ -410,6 +410,10 @@ model VpnLog {
 
 model VpnProfile {
   id               String         @id @default(uuid())
+  lockPasswordHash String?
+  lockVersion      Int            @default(0)
+  engineType       String?
+  engineAccountId  String?
   name             String
   description      String?
   protocol         String         // ssh | vless | vmess | trojan | shadowsocks | singbox  ← technicalProtocol
@@ -449,6 +453,7 @@ model VpnProfile {
   subscriptions    Subscription[]
   assignedResellers VpnProfileReseller[]
 
+  @@index([engineType, engineAccountId])
   @@map("vpn_profiles")
 }
 

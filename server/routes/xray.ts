@@ -7,6 +7,8 @@ import { Router, Response } from "express";
 import { prisma } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { logDbActivity } from "../database";
+import { createLockedEngineAccount, serializeEngineAccount, withUnlockedEngine } from '../services/profile-engines';
+import { handleProfileLockError } from '../services/profile-lock';
 
 const router = Router();
 
@@ -46,11 +48,14 @@ router.get("/accounts", requireAuth, requirePermission("xray.view"), async (req:
       orderBy: { createdAt: "desc" },
       include: { client: { include: { user: { select: { name: true, email: true } } } } },
     });
-    const result = accounts.map((a: any) => ({ ...a, link: buildLink(a) }));
+    const result = await Promise.all(accounts.map(async (a: any) => {
+      const safe = await serializeEngineAccount('xray', a);
+      return safe.isLocked ? safe : { ...safe, link: buildLink(a) };
+    }));
+    res.set('Cache-Control', 'no-store');
     return res.json({ success: true, accounts: result });
   } catch (err: any) {
-    console.error("xray list error:", err);
-    return res.status(500).json({ error: err.message || "Failed to list xray accounts" });
+    return res.status(500).json({ error: "Failed to list xray accounts" });
   }
 });
 
@@ -59,9 +64,7 @@ router.get("/stats", requireAuth, requirePermission("xray.view"), async (_req: A
   try {
     const total  = await (prisma as any).xrayAccount.count();
     const active = await (prisma as any).xrayAccount.count({ where: { status: "active" } });
-    const byProtocol = await (prisma as any).xrayAccount.groupBy({
-      by: ["protocol"], _count: { id: true },
-    });
+    const byProtocol: unknown[] = [];
     return res.json({ success: true, total, active, byProtocol });
   } catch (err: any) {
     return res.status(500).json({ error: "Failed to get stats" });
@@ -80,7 +83,7 @@ router.post("/accounts", requireAuth, requirePermission("xray.manage"), async (r
             quotaGB, expireAt, maxDevices, password, method, clientId } = req.body;
     if (!name || !protocol || !host || !port)
       return res.status(400).json({ error: "name, protocol, host, port required" });
-    const acc = await (prisma as any).xrayAccount.create({
+    const acc = await createLockedEngineAccount('xray', req.body.lockPassword, db => db.xrayAccount.create({
       data: {
         name, protocol, host, port: Number(port),
         path: path || null, tls: Boolean(tls), sni: sni || null,
@@ -94,12 +97,12 @@ router.post("/accounts", requireAuth, requirePermission("xray.manage"), async (r
         clientId: clientId || null,
         status: "active",
       },
-    });
+    }));
     await logDbActivity(req.user!.userId, `Created Xray account: ${name}`, "success", req.ip || "");
-    return res.status(201).json({ success: true, account: { ...acc, link: buildLink(acc) } });
+    return res.status(201).json({ success: true, account: await serializeEngineAccount('xray', acc) });
   } catch (err: any) {
-    console.error("xray create error:", err);
-    return res.status(500).json({ error: err.message || "Failed to create xray account" });
+    if (handleProfileLockError(err, res)) return;
+    return res.status(500).json({ error: "Failed to create xray account" });
   }
 });
 
@@ -121,33 +124,38 @@ router.put("/accounts/:id", requireAuth, requirePermission("xray.manage"), async
     if (maxDevices !== undefined) data.maxDevices = Number(maxDevices);
     if (quotaGB   !== undefined) data.quotaTotal = BigInt(Math.round(Number(quotaGB) * 1024 ** 3));
     if (expireAt  !== undefined) data.expireAt  = expireAt ? new Date(expireAt) : null;
-    const acc = await (prisma as any).xrayAccount.update({ where: { id: req.params.id }, data });
-    return res.json({ success: true, account: { ...acc, link: buildLink(acc) } });
+    const acc = await withUnlockedEngine('xray', req.params.id, req, db =>
+      db.xrayAccount.update({ where: { id: req.params.id }, data }));
+    res.set('Cache-Control', 'no-store');
+    return res.json({ success: true, account: await serializeEngineAccount('xray', acc) });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message || "Failed to update" });
+    if (handleProfileLockError(err, res)) return;
+    return res.status(500).json({ error: "Failed to update" });
   }
 });
 
 // DELETE /api/xray/accounts/:id
 router.delete("/accounts/:id", requireAuth, requirePermission("xray.manage"), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    await (prisma as any).xrayAccount.delete({ where: { id: req.params.id } });
+    await withUnlockedEngine('xray', req.params.id, req, db => db.xrayAccount.delete({ where: { id: req.params.id } }));
     return res.json({ success: true });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message || "Failed to delete" });
+    if (handleProfileLockError(err, res)) return;
+    return res.status(500).json({ error: "Failed to delete" });
   }
 });
 
 // POST /api/xray/accounts/:id/suspend
 router.post("/accounts/:id/suspend", requireAuth, requirePermission("xray.manage"), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const acc = await (prisma as any).xrayAccount.update({
+    const acc = await withUnlockedEngine('xray', req.params.id, req, db => db.xrayAccount.update({
       where: { id: req.params.id },
       data: { status: req.body.status || "suspended" },
-    });
-    return res.json({ success: true, account: acc });
+    }));
+    return res.json({ success: true, account: await serializeEngineAccount('xray', acc) });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message || "Failed to update status" });
+    if (handleProfileLockError(err, res)) return;
+    return res.status(500).json({ error: "Failed to update status" });
   }
 });
 

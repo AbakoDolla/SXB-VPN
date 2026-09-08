@@ -5,6 +5,8 @@ import { Router, Response } from 'express';
 import { prisma } from '../database';
 import { requireAuth, requirePermission, AuthenticatedRequest } from '../middleware/auth';
 import { logDbActivity } from '../database';
+import { serializePayload, withUnlockedPayload, withUnlockedEngine } from '../services/profile-engines';
+import { handleProfileLockError } from '../services/profile-lock';
 
 const router = Router();
 
@@ -15,7 +17,7 @@ router.get('/', requireAuth, requirePermission('payload.view'), async (_req: Aut
       orderBy: { createdAt: 'desc' },
       include: { _count: { select: { sshAccounts: true } } },
     });
-    return res.json({ success: true, payloads });
+    return res.json({ success: true, payloads: await Promise.all(payloads.map(p => serializePayload(p))) });
   } catch (err) {
     console.error('Payload list error:', err);
     return res.status(500).json({ error: 'Failed to list payloads' });
@@ -30,8 +32,11 @@ router.get('/:id', requireAuth, requirePermission('payload.view'), async (req: A
       include: { sshAccounts: { select: { id: true, name: true, host: true, status: true } } },
     });
     if (!payload) return res.status(404).json({ error: 'Payload not found' });
-    return res.json({ success: true, payload });
+    if (req.get('X-VPN-Profile-Unlock')) await withUnlockedPayload(payload.id, req, async () => undefined);
+    res.set('Cache-Control', 'no-store');
+    return res.json({ success: true, payload: await serializePayload(payload, req) });
   } catch (err) {
+    if (handleProfileLockError(err, res)) return;
     return res.status(500).json({ error: 'Failed to get payload' });
   }
 });
@@ -75,10 +80,12 @@ router.put('/:id', requireAuth, requirePermission('payload.manage'), async (req:
     if (content !== undefined) updateData.content = content;
     if (status !== undefined) updateData.status = status;
 
-    const updated = await prisma.sshPayload.update({ where: { id: req.params.id }, data: updateData });
+    const updated = await withUnlockedPayload(req.params.id, req, db =>
+      db.sshPayload.update({ where: { id: req.params.id }, data: updateData }));
     await logDbActivity(req.user?.userId || null, `Payload "${updated.name}" updated`, 'success', req.ip);
-    return res.json({ success: true, payload: updated });
+    return res.json({ success: true, payload: await serializePayload(updated) });
   } catch (err) {
+    if (handleProfileLockError(err, res)) return;
     return res.status(500).json({ error: 'Failed to update payload' });
   }
 });
@@ -89,11 +96,14 @@ router.delete('/:id', requireAuth, requirePermission('payload.manage'), async (r
     const p = await prisma.sshPayload.findUnique({ where: { id: req.params.id } });
     if (!p) return res.status(404).json({ error: 'Payload not found' });
     // Unlink from SSH accounts before deleting
-    await prisma.sshAccount.updateMany({ where: { payloadId: req.params.id }, data: { payloadId: null } });
-    await prisma.sshPayload.delete({ where: { id: req.params.id } });
+    await withUnlockedPayload(req.params.id, req, async db => {
+      await db.sshAccount.updateMany({ where: { payloadId: req.params.id }, data: { payloadId: null } });
+      await db.sshPayload.delete({ where: { id: req.params.id } });
+    });
     await logDbActivity(req.user?.userId || null, `Payload "${p.name}" deleted`, 'danger', req.ip);
     return res.json({ success: true, message: 'Payload deleted' });
   } catch (err) {
+    if (handleProfileLockError(err, res)) return;
     return res.status(500).json({ error: 'Failed to delete payload' });
   }
 });
@@ -105,12 +115,13 @@ router.post('/:id/attach', requireAuth, requirePermission('payload.manage'), asy
     const { sshAccountId } = req.body;
     if (!sshAccountId) return res.status(400).json({ error: 'sshAccountId is required' });
 
-    const updated = await prisma.sshAccount.update({
+    const updated = await withUnlockedEngine('ssh', sshAccountId, req, db => db.sshAccount.update({
       where: { id: sshAccountId },
       data: { payloadId: req.params.id },
-    });
+    }));
     return res.json({ success: true, message: `Payload attached to SSH account ${updated.name}` });
   } catch (err) {
+    if (handleProfileLockError(err, res)) return;
     return res.status(500).json({ error: 'Failed to attach payload' });
   }
 });
@@ -118,7 +129,8 @@ router.post('/:id/attach', requireAuth, requirePermission('payload.manage'), asy
 // ─── POST /api/payload/:id/test ───────────────────────────────────────────────
 router.post('/:id/test', requireAuth, requirePermission('payload.view'), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const payload = await prisma.sshPayload.findUnique({ where: { id: req.params.id } });
+    const payload = await withUnlockedPayload(req.params.id, req, db =>
+      db.sshPayload.findUnique({ where: { id: req.params.id } }));
     if (!payload) return res.status(404).json({ error: 'Payload not found' });
 
     const host = payload.host || req.body.testHost;
@@ -136,7 +148,8 @@ router.post('/:id/test', requireAuth, requirePermission('payload.view'), async (
     });
 
     return res.json({ success: true, reachable: true, host, port, message: 'Host is reachable' });
-  } catch {
+  } catch (err) {
+    if (handleProfileLockError(err, res)) return;
     return res.json({ success: true, reachable: false, message: 'Host not reachable' });
   }
 });

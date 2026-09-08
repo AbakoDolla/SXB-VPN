@@ -6,6 +6,8 @@ import { Router, Response } from "express";
 import { prisma } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { logDbActivity } from "../database";
+import { createLockedEngineAccount, serializeEngineAccount, withUnlockedEngine } from '../services/profile-engines';
+import { handleProfileLockError } from '../services/profile-lock';
 
 const router = Router();
 
@@ -42,11 +44,14 @@ router.get("/accounts", requireAuth, requirePermission("singbox.view"), async (r
       orderBy: { createdAt: "desc" },
       include: { client: { include: { user: { select: { name: true, email: true } } } } },
     });
-    const result = accounts.map((a: any) => ({ ...a, link: buildSingboxLink(a) }));
+    const result = await Promise.all(accounts.map(async (a: any) => {
+      const safe = await serializeEngineAccount('singbox', a);
+      return safe.isLocked ? safe : { ...safe, link: buildSingboxLink(a) };
+    }));
+    res.set('Cache-Control', 'no-store');
     return res.json({ success: true, accounts: result });
   } catch (err: any) {
-    console.error("singbox list error:", err);
-    return res.status(500).json({ error: err.message || "Failed to list singbox accounts" });
+    return res.status(500).json({ error: "Failed to list singbox accounts" });
   }
 });
 
@@ -73,7 +78,7 @@ router.post("/accounts", requireAuth, requirePermission("singbox.manage"), async
             quotaGB, expireAt, maxDevices, password, method, clientId } = req.body;
     if (!name || !protocol || !host || !port)
       return res.status(400).json({ error: "name, protocol, host, port required" });
-    const acc = await (prisma as any).singboxAccount.create({
+    const acc = await createLockedEngineAccount('singbox', req.body.lockPassword, db => db.singboxAccount.create({
       data: {
         name, protocol, host, port: Number(port),
         path: path || null, tls: Boolean(tls), sni: sni || null,
@@ -87,12 +92,12 @@ router.post("/accounts", requireAuth, requirePermission("singbox.manage"), async
         clientId: clientId || null,
         status: "active",
       },
-    });
+    }));
     await logDbActivity(req.user!.userId, `Created Singbox account: ${name}`, "success", req.ip || "");
-    return res.status(201).json({ success: true, account: { ...acc, link: buildSingboxLink(acc) } });
+    return res.status(201).json({ success: true, account: await serializeEngineAccount('singbox', acc) });
   } catch (err: any) {
-    console.error("singbox create error:", err);
-    return res.status(500).json({ error: err.message || "Failed to create singbox account" });
+    if (handleProfileLockError(err, res)) return;
+    return res.status(500).json({ error: "Failed to create singbox account" });
   }
 });
 
@@ -114,41 +119,46 @@ router.put("/accounts/:id", requireAuth, requirePermission("singbox.manage"), as
     if (maxDevices !== undefined) data.maxDevices = Number(maxDevices);
     if (quotaGB   !== undefined) data.quotaTotal = BigInt(Math.round(Number(quotaGB) * 1024 ** 3));
     if (expireAt  !== undefined) data.expireAt  = expireAt ? new Date(expireAt) : null;
-    const acc = await (prisma as any).singboxAccount.update({ where: { id: req.params.id }, data });
-    return res.json({ success: true, account: { ...acc, link: buildSingboxLink(acc) } });
+    const acc = await withUnlockedEngine('singbox', req.params.id, req, db =>
+      db.singboxAccount.update({ where: { id: req.params.id }, data }));
+    res.set('Cache-Control', 'no-store');
+    return res.json({ success: true, account: await serializeEngineAccount('singbox', acc) });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message || "Failed to update" });
+    if (handleProfileLockError(err, res)) return;
+    return res.status(500).json({ error: "Failed to update" });
   }
 });
 
 // DELETE /api/singbox/accounts/:id
 router.delete("/accounts/:id", requireAuth, requirePermission("singbox.manage"), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    await (prisma as any).singboxAccount.delete({ where: { id: req.params.id } });
+    await withUnlockedEngine('singbox', req.params.id, req, db => db.singboxAccount.delete({ where: { id: req.params.id } }));
     return res.json({ success: true });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message || "Failed to delete" });
+    if (handleProfileLockError(err, res)) return;
+    return res.status(500).json({ error: "Failed to delete" });
   }
 });
 
 // POST /api/singbox/accounts/:id/suspend
 router.post("/accounts/:id/suspend", requireAuth, requirePermission("singbox.manage"), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const acc = await (prisma as any).singboxAccount.update({
+    const acc = await withUnlockedEngine('singbox', req.params.id, req, db => db.singboxAccount.update({
       where: { id: req.params.id },
       data: { status: req.body.status || "suspended" },
-    });
-    return res.json({ success: true, account: acc });
+    }));
+    return res.json({ success: true, account: await serializeEngineAccount('singbox', acc) });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message || "Failed to update status" });
+    if (handleProfileLockError(err, res)) return;
+    return res.status(500).json({ error: "Failed to update status" });
   }
 });
 
 // GET /api/singbox/config/:id — generate sing-box JSON config for account
-router.get("/config/:id", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+router.get("/config/:id", requireAuth, requirePermission('singbox.view'), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const acc = await (prisma as any).singboxAccount.findUnique({ where: { id: req.params.id } });
-    if (!acc) return res.status(404).json({ error: "Account not found" });
+    const acc = await withUnlockedEngine('singbox', req.params.id, req, async (_db, account) => account);
+    res.set('Cache-Control', 'no-store');
     const config = {
       log: { level: "info" },
       dns: { servers: [{ address: "8.8.8.8" }, { address: "1.1.1.1" }] },
@@ -164,7 +174,8 @@ router.get("/config/:id", requireAuth, async (req: AuthenticatedRequest, res: Re
     };
     return res.json({ success: true, config });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message || "Failed to get config" });
+    if (handleProfileLockError(err, res)) return;
+    return res.status(500).json({ error: "Failed to get config" });
   }
 });
 

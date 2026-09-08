@@ -19,15 +19,22 @@ import {
   parseImportedConfig, decryptCanonical, validateTransportCoherence,
 } from '../services/canonical-config';
 import { probeConfig, statusFromProbe, ProbeReport } from '../services/transport-probe';
+import { assertProfileUnlocked, handleProfileLockError, profileLockWhere, ProfileLockError } from '../services/profile-lock';
 
 const router = Router();
 
 router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req: AuthenticatedRequest, res: Response) => {
   try {
+    res.set('Cache-Control', 'no-store');
     const { importConfig, profileId } = req.body ?? {};
     if (!importConfig && !profileId) {
       return res.status(400).json({ error: 'importConfig (URI/JSON) ou profileId requis' });
     }
+    const profile = profileId
+      ? await prisma.vpnProfile.findUnique({ where: { id: profileId } })
+      : null;
+    if (profileId && !profile) return res.status(404).json({ error: 'Profile not found' });
+    if (profile) assertProfileUnlocked(profile, req);
 
     let canonical: Record<string, any> | null = null;
     let parseErrors: string[] = [];
@@ -48,7 +55,6 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
       }
     } else {
       // Mode 2 : test d'un profil existant (stocké chiffré)
-      const profile = await (prisma as any).vpnProfile.findUnique({ where: { id: profileId } });
       if (!profile) return res.status(404).json({ error: 'Profil introuvable' });
       if (profile.canonicalConfig) {
         const plain = decryptCanonical(profile.canonicalConfig);
@@ -77,17 +83,19 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
     const validationStatus = statusFromProbe(report);
 
     // Traçabilité : si le test vise un profil stocké, consigner le verdict
-    if (profileId) {
-      await (prisma as any).vpnProfile.update({
-        where: { id: profileId },
+    if (profile) {
+      assertProfileUnlocked(profile, req);
+      const changed = await prisma.vpnProfile.updateMany({
+        where: profileLockWhere(profile),
         data: {
           validatedAt: new Date(),
           validationStatus,
           validationMessage: report.hint
             ?? (report.steps.find(s => !s.ok)?.detail ?? report.steps.at(-1)?.detail ?? null),
         },
-      }).catch(() => null);
-      await logDbActivity(req.user!.userId, `Préflight profil ${profileId} → ${validationStatus}`, 'info', req.ip || '').catch(() => null);
+      });
+      if (changed.count !== 1) throw new ProfileLockError(423, 'PROFILE_LOCKED');
+      await logDbActivity(req.user!.userId, `Preflight profile ${profileId}: ${validationStatus}`, 'info', req.ip || '');
     }
 
     return res.json({
@@ -104,7 +112,8 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
       },
     });
   } catch (err: any) {
-    console.error('[config-test]', err.message || err);
+    if (handleProfileLockError(err, res)) return;
+    console.error('[config-test] failed');
     return res.status(500).json({ error: 'Échec du préflight' });
   }
 });
