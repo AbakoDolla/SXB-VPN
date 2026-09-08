@@ -116,4 +116,4 @@ jobs:
           node backend/node_modules/prisma/build/index.js generate --schema backend/prisma/schema.prisma
           node backend/node_modules/prisma/build/index.js generate --schema prisma/schema.prisma
           node scripts/verify-prisma-runtime.cjs
-          node --test scripts/tests/reseller-http.test.mjs scripts/tests/dashboard-session.test.mjs scripts/tests/dashboard-subscriptions.test.mjs scripts/tests/rate-limit.test.mjs scripts/tests/dashboard-rate-limit.test.mjs
+          node --test scripts/tests/reseller-http.test.mjs scripts/tests/dashboard-session.test.mjs scripts/tests/dashboard-subscriptions.test.mjs scripts/tests/rate-limit.test.mjs scripts/tests/dashboard-rate-limit.test.mjs scripts/tests/configuration-delivery.test.mjs

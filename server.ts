@@ -70,7 +70,7 @@ async function startServer() {
   app.use(cors({
     origin: allowedOrigins,
     methods: ["GET", "POST", "PATCH", "DELETE", "PUT", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Authorization", "Accept-Language", "X-VPN-Profile-Unlock"],
     credentials: true,
   }));
 
