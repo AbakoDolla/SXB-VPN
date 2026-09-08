@@ -381,6 +381,52 @@ test("subscriptions: explicit assignment, exact quota, rollback and cross-owner 
   assert.equal(row("Subscription", id).status, "revoked");
 });
 
+for (const actor of ["super", "admin", "r1"]) {
+  for (const name of [undefined, "", "   ", "  Forfait choisi  "]) {
+    test(`plan assignment accepts an optional name for ${actor}: ${JSON.stringify(name)}`, async () => {
+      const created = await api(actor, "POST", "/subscriptions", {
+        clientId: "c1",
+        profileId: "p1",
+        name,
+        quotaGB: "01",
+        durationDays: 3,
+        deviceLimit: 1,
+      });
+      ok(created, 201);
+      const subscription = created.body.subscription;
+      assert.equal(subscription.name, name?.trim() || "Service privé — 3j");
+      assert.equal(subscription.quotaBytes, String(GO));
+      assert.equal(subscription.durationDays, 3);
+      assert.equal(subscription.deviceLimit, 1);
+      assert.equal(db.state.Subscription.length, 1);
+      assert.equal(row("Reseller", "res-r1").quotaUsedBytes, GO);
+    });
+  }
+}
+
+test("optional plan names do not weaken required selections, limits or strict validation", async () => {
+  const payload = { clientId: "c1", profileId: "p1", name: "", quotaGB: 1, durationDays: 3, deviceLimit: 1 };
+  for (const invalid of [
+    { clientId: "" },
+    { profileId: "" },
+    { name: "n".repeat(161) },
+    { quotaGB: 0 },
+    { quotaGB: -1 },
+    { durationDays: 1.5 },
+    { durationDays: 3651 },
+    { deviceLimit: 0 },
+    { deviceLimit: 101 },
+    { unexpected: true },
+  ]) {
+    const refused = await api("r1", "POST", "/subscriptions", { ...payload, ...invalid });
+    ok(refused, 400);
+    assert.equal(refused.body.error, "errors.validation");
+    assert.ok(refused.body.details.some(issue => typeof issue.message === "string"));
+    assert.equal(db.state.Subscription.length, 0);
+    assert.equal(row("Reseller", "res-r1").quotaUsedBytes, 0n);
+  }
+});
+
 test("client naming, suspended renewals and device limits are transactional", async () => {
   const created = await createSub("r1", 8);
   ok(created, 201);

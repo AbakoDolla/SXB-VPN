@@ -35,15 +35,24 @@ const router = Router();
 const GIB = 1024 ** 3;
 
 const identifiantSchema = z.string().trim().min(1).max(100);
-const quotaGbSchema = z.coerce.number().finite().positive().max(1_000_000);
-const durationDaysSchema = z.coerce.number().int().min(1).max(3650);
-const deviceLimitSchema = z.coerce.number().int().min(1).max(100);
+const quotaGbSchema = z.coerce.number().finite()
+  .positive('Le quota doit être supérieur à 0 Go.')
+  .max(1_000_000, 'Le quota ne peut pas dépasser 1 000 000 Go.');
+const durationDaysSchema = z.coerce.number()
+  .int('La durée doit être un nombre entier de jours.')
+  .min(1, 'La durée doit être d’au moins 1 jour.')
+  .max(3650, 'La durée ne peut pas dépasser 3650 jours.');
+const deviceLimitSchema = z.coerce.number()
+  .int('Le nombre d’appareils doit être entier.')
+  .min(1, 'Au moins 1 appareil est requis.')
+  .max(100, 'Le nombre d’appareils ne peut pas dépasser 100.');
 const subscriptionStatusSchema = z.enum(['active', 'suspended', 'expired', 'revoked']);
 
 const createSubscriptionSchema = z.object({
   clientId: identifiantSchema,
   profileId: identifiantSchema,
-  name: z.string().trim().min(1).max(160).optional(),
+  // Un nom vide demande le nom automatique, y compris depuis un ancien dashboard.
+  name: z.string().trim().max(160, 'Le nom ne peut pas dépasser 160 caractères.').optional(),
   quotaGB: quotaGbSchema,
   durationDays: durationDaysSchema,
   deviceLimit: deviceLimitSchema.default(1),

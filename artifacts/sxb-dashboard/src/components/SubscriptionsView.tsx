@@ -172,7 +172,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
     try {
       if (editSub) {
         await updateSubscription(editSub.id, {
-          name: form.name || undefined,
+          name: form.name.trim() || undefined,
           // La configuration peut changer sans recréer le jeton data : une
           // suppression suivie d'une recréation obligerait le client à
           // réactiver son appareil.
@@ -676,7 +676,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
             </div>
             <form onSubmit={handleSubmit} className="p-6 space-y-4">
               {formError && (
-                <div className="flex items-center gap-2 p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-rose-400 text-sm">
+                <div role="alert" className="flex items-center gap-2 p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-rose-400 text-sm">
                   <AlertTriangle className="w-4 h-4 shrink-0" /> {formError}
                 </div>
               )}
@@ -735,7 +735,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
 
               <div>
                 <label className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">Nom (optionnel)</label>
-                <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                <input value={form.name} maxLength={160} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                   placeholder="Auto-généré si vide"
                   className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-cyan-500" />
               </div>
@@ -743,13 +743,13 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">Quota (Go) *</label>
-                  <input type="number" min={0.5} step={0.5} value={form.quotaGB}
+                  <input type="number" min={0.5} max={1_000_000} step={0.5} value={form.quotaGB}
                     onChange={e => setForm(f => ({ ...f, quotaGB: Number(e.target.value) }))} required
                     className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-cyan-500" />
                 </div>
                 <div>
                   <label className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">Durée (jours)</label>
-                  <input type="number" min={1} value={form.durationDays}
+                  <input type="number" min={1} max={3650} step={1} value={form.durationDays}
                     onChange={e => setForm(f => ({ ...f, durationDays: Number(e.target.value) }))} required
                     className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-cyan-500" />
                 </div>

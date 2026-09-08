@@ -139,6 +139,33 @@ interface RequestOptions {
   skipAuth?: boolean;
 }
 
+function validationMessages(issues: unknown): string[] {
+  if (!Array.isArray(issues)) return [];
+  return issues.flatMap((issue: unknown) => {
+    if (!issue || typeof issue !== "object" || !("message" in issue) ||
+        typeof issue.message !== "string" || !issue.message.trim()) return [];
+    const field = "path" in issue && Array.isArray(issue.path)
+      ? issue.path.filter(part => typeof part === "string" || typeof part === "number").join(".")
+      : "";
+    return [field ? `${field} : ${issue.message}` : issue.message];
+  });
+}
+
+function errorMessage(data: unknown, status: number): string {
+  const fallback = `Erreur ${status}`;
+  if (!data || typeof data !== "object") return fallback;
+  const message = "message" in data ? data.message : undefined;
+  if (typeof message === "string" && message.trim()) return message;
+  const messages = validationMessages(message);
+  if (messages.length) return messages.join("; ");
+  const details = validationMessages("details" in data ? data.details : undefined);
+  if (details.length) return details.join("; ");
+  const error = "error" in data ? data.error : undefined;
+  if (status < 500 && typeof error === "string" && error.trim() &&
+      !error.startsWith("errors.") && !/^[A-Z0-9_]+$/.test(error)) return error;
+  return fallback;
+}
+
 /// Effectue une vraie requête HTTP vers le backend. Rafraîchit
 /// automatiquement le token une fois si la première tentative échoue
 /// avec 401 (token expiré), puis réessaie une seule fois.
@@ -185,10 +212,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}, 
       forceLoginRedirect();
     }
     publishResellerAccess(data, data?.code);
-    const message = data?.message
-      ? (Array.isArray(data.message) ? data.message.map((m: any) => m.message).join(", ") : data.message)
-      : `Erreur ${res.status}`;
-    throw new ApiError(message, res.status, data?.code ?? data?.error, data, {
+    throw new ApiError(errorMessage(data, res.status), res.status, data?.code ?? data?.error, data, {
       errorKey: data?.error,
       resellerAccess: looksLikeAccessSummary(data?.resellerAccess) ? data.resellerAccess : undefined,
     });

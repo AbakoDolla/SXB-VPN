@@ -60,7 +60,7 @@ export async function createSubscription(payload: {
 }): Promise<Subscription> {
   const data = await apiRequest<{ subscription: Subscription }>('/subscriptions', {
     method: 'POST',
-    body: payload,
+    body: { ...payload, name: payload.name?.trim() || undefined },
   });
   return data.subscription;
 }
