@@ -6,7 +6,7 @@ import { Client, Reseller, UserRole } from "../types";
 import { useResellerAccess } from "../contexts/ResellerAccessContext";
 import { usePermissions } from "../contexts/PermissionsContext";
 import { ResellerAccessSummaryCard, ResellerActionNotice } from "./ResellerAccessBanner";
-import { isUpperRole, ownerLabel } from "../lib/resellerAccess";
+import { isUpperRole, ownerLabel, percentOf } from "../lib/resellerAccess";
 import { Search, UserPlus, Trash2, ShieldAlert, KeyRound, CalendarDays, Ban, CheckCircle, RefreshCcw, MoreHorizontal, HelpCircle, Store } from "lucide-react";
 import Pagination from "./ui/Pagination";
 import { toast } from "sonner";
@@ -17,7 +17,7 @@ interface ClientsViewProps {
 }
 
 export default function ClientsView({ currentUserRole, actorName }: ClientsViewProps) {
-  const { t } = useTranslation();
+  const { t, locale, formatBytes, message, errorText } = useTranslation();
   const [clients, setClients] = useState<Client[]>([]);
   const [resellers, setResellers] = useState<Reseller[]>([]);
   const [loading, setLoading] = useState(true);
@@ -81,10 +81,10 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
       setPhone("");
       setResellerId("");
       setShowAddModal(false);
-      toast.success("Client créé — aucun plan ne lui est attribué automatiquement");
+      toast.success(message('commerce.clients.created'));
       await Promise.all([loadClients(), refreshAccess()]);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : t("common.error_generic"));
+      toast.error(errorText(err, 'commerce.common.errorGeneric'));
     }
   };
 
@@ -93,14 +93,14 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
     try {
       if (isCurrentlyActive) {
         await suspendClient(id);
-        toast.success("Client suspendu");
+        toast.success(message('commerce.clients.suspended'));
       } else {
         await activateClient(id);
-        toast.success("Client activé");
+        toast.success(message('commerce.clients.activated'));
       }
       await Promise.all([loadClients(), refreshAccess()]);
     } catch (err) {
-      toast.error(t("common.error_generic"));
+      toast.error(errorText(err, 'commerce.common.errorGeneric'));
     }
   };
 
@@ -108,34 +108,34 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
     if (isSupport) return;
     try {
       await renewClient(id);
-      toast.success("Accès renouvelé");
+      toast.success(message('commerce.clients.renewed'));
       await Promise.all([loadClients(), refreshAccess()]);
     } catch (err) {
-      toast.error(t("common.error_generic"));
+      toast.error(errorText(err, 'commerce.common.errorGeneric'));
     }
   };
 
   const handleResetAccess = async (id: string) => {
     if (isSupport) return;
-    if (!window.confirm("Voulez-vous vraiment générer une nouvelle clé d'accès Sing-box pour ce client ? Ses anciens profils VPN seront déconnectés.")) return;
+    if (!window.confirm(t('commerce.clients.confirmReset'))) return;
     try {
       await resetClientAccess(id);
-      toast.success("Clé d'accès réinitialisée");
+      toast.success(message('commerce.clients.reset'));
       await Promise.all([loadClients(), refreshAccess()]);
     } catch (err) {
-      toast.error(t("common.error_generic"));
+      toast.error(errorText(err, 'commerce.common.errorGeneric'));
     }
   };
 
   const handleDelete = async (id: string) => {
     if (isSupport) return;
-    if (!window.confirm("Voulez-vous définitivement supprimer ce client VPN ? Cette action est irréversible.")) return;
+    if (!window.confirm(t('commerce.clients.confirmDelete'))) return;
     try {
       await deleteClient(id);
-      toast.success("Client supprimé");
+      toast.success(message('commerce.clients.deleted'));
       await Promise.all([loadClients(), refreshAccess()]);
     } catch (err) {
-      toast.error(t("common.error_generic"));
+      toast.error(errorText(err, 'commerce.common.errorGeneric'));
     }
   };
 
@@ -175,19 +175,19 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-white">{t("clients.title")}</h1>
-          <p className="text-sm text-gray-400 mt-1">{t("clients.subtitle")}</p>
+          <h1 className="text-2xl font-bold tracking-tight text-white">{t('commerce.clients.title')}</h1>
+          <p className="text-sm text-gray-400 mt-1">{t('commerce.clients.subtitle')}</p>
         </div>
         
         {!isSupport && (
           <button
             onClick={() => setShowAddModal(true)}
             disabled={!canCreate}
-            title={canCreate ? undefined : "Indisponible : agrément expiré ou plafond atteint"}
+            title={canCreate ? undefined : t('commerce.common.unavailableQuota')}
             className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-medium text-sm rounded-lg shadow-lg shadow-cyan-950/20 transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
           >
             <UserPlus className="h-4 w-4" />
-            {t("clients.add_client")}
+            {t('commerce.clients.add')}
           </button>
         )}
       </div>
@@ -201,7 +201,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
           <Search className="absolute left-3 top-2.5 h-4.5 w-4.5 text-gray-500" />
           <input
             type="text"
-            placeholder={t("common.search")}
+            placeholder={t('commerce.common.search')}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full pl-10 pr-4 py-2 text-sm bg-gray-900 border border-gray-800 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
@@ -219,7 +219,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                   : "bg-gray-900/60 border-gray-800 text-gray-400 hover:bg-gray-900"
               }`}
             >
-              {filter === "all" ? "Tous" : filter === "active" ? t("common.active") : filter === "suspended" ? t("common.suspended") : t("common.expired")}
+              {filter === "all" ? t('commerce.common.all') : filter === "active" ? t('commerce.common.active') : filter === "suspended" ? t('commerce.common.suspended') : t('commerce.common.expired')}
             </button>
           ))}
         </div>
@@ -229,7 +229,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
       {loading ? (
         <div className="flex flex-col items-center justify-center py-20 text-gray-400">
           <RefreshCcw className="h-7 w-7 animate-spin text-cyan-400 mb-4" />
-          <p className="text-sm font-mono">{t("common.loading")}</p>
+          <p className="text-sm font-mono">{t('commerce.common.loading')}</p>
         </div>
       ) : filteredClients.length > 0 || paginatedClients.length > 0 ? (
         <div className="border border-gray-800/80 rounded-xl bg-gray-950/20 overflow-hidden backdrop-blur-md">
@@ -237,21 +237,19 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="border-b border-gray-800/80 bg-gray-900/40 text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                  <th className="py-3 px-4">{t("clients.fields.name")}</th>
-                  <th className="py-3 px-4">{t("clients.fields.email")}</th>
-                  {showsOwnerColumn && <th className="py-3 px-4">Revendeur</th>}
-                  <th className="py-3 px-4">{t("clients.fields.token")}</th>
-                  <th className="py-3 px-4 text-center">Quota (Go)</th>
-                  <th className="py-3 px-4">{t("clients.fields.expiration")}</th>
-                  <th className="py-3 px-4 text-center">{t("clients.fields.status")}</th>
-                  {!isSupport && <th className="py-3 px-4 text-right">{t("common.actions")}</th>}
+                  <th className="py-3 px-4">{t('commerce.common.fullName')}</th>
+                  <th className="py-3 px-4">{t('commerce.clients.emailPhone')}</th>
+                  {showsOwnerColumn && <th className="py-3 px-4">{t('commerce.common.reseller')}</th>}
+                  <th className="py-3 px-4">{t('commerce.clients.sxbToken')}</th>
+                  <th className="py-3 px-4 text-center">{t('commerce.common.quota')}</th>
+                  <th className="py-3 px-4">{t('commerce.common.expirationDate')}</th>
+                  <th className="py-3 px-4 text-center">{t('commerce.common.status')}</th>
+                  {!isSupport && <th className="py-3 px-4 text-right">{t('commerce.common.actions')}</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-900 text-sm">
                 {paginatedClients.map((client) => {
-                  const quotaTotal = Number(client.quotaTotal) / (1024 * 1024 * 1024);
-                  const quotaUsed = Number(client.quotaUsed) / (1024 * 1024 * 1024);
-                  const percent = quotaTotal > 0 ? Math.min(100, (quotaUsed / quotaTotal) * 100) : 0;
+                  const percent = percentOf(client.quotaUsed, client.quotaTotal);
                   const isSuspended = client.status === "suspended";
                   
                   return (
@@ -273,7 +271,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                       <td className="py-4 px-4 font-mono text-xs">
                         {isSupport ? (
                           <span className="text-gray-600 flex items-center gap-1">
-                            <ShieldAlert className="h-3 w-3" /> Hidden (Support)
+                            <ShieldAlert className="h-3 w-3" /> {t('commerce.clients.hidden')}
                           </span>
                         ) : (
                           <span className="text-cyan-400">{client.token}</span>
@@ -282,8 +280,8 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                       <td className="py-4 px-4">
                         <div className="space-y-1.5 max-w-[120px] mx-auto">
                           <div className="flex justify-between text-[11px] font-mono text-gray-500">
-                            <span>{quotaUsed.toFixed(1)} Go</span>
-                            <span>{quotaTotal.toFixed(1)} Go</span>
+                            <span>{formatBytes(client.quotaUsed)}</span>
+                            <span>{formatBytes(client.quotaTotal)}</span>
                           </div>
                           <div className="w-full h-1 bg-gray-900 rounded-full overflow-hidden">
                             <div 
@@ -294,7 +292,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                         </div>
                       </td>
                       <td className="py-4 px-4 text-xs text-gray-400 font-mono">
-                        {client.expireAt ? new Date(client.expireAt).toLocaleDateString() : "-"}
+                        {client.expireAt ? new Date(client.expireAt).toLocaleDateString(locale) : "-"}
                       </td>
                       <td className="py-4 px-4 text-center">
                         <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold ${
@@ -307,7 +305,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                           <span className={`h-1.5 w-1.5 rounded-full ${
                             client.status === "active" ? "bg-emerald-400" : isSuspended ? "bg-amber-400" : "bg-rose-400"
                           }`} />
-                          {client.status === "active" ? t("common.active") : isSuspended ? t("common.suspended") : t("common.expired")}
+                          {client.status === "active" ? t('commerce.common.active') : isSuspended ? t('commerce.common.suspended') : t('commerce.common.expired')}
                         </span>
                       </td>
                       
@@ -317,7 +315,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                             <button
                               onClick={() => handleSuspend(client.id, client.status === "active")}
                               disabled={!canReduce}
-                              title={client.status === "active" ? "Suspendre" : "Réactiver"}
+                              title={client.status === "active" ? t('commerce.common.suspend') : t('commerce.common.reactivate')}
                               className="p-1 text-gray-500 hover:text-amber-400 hover:bg-gray-900/60 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               <Ban className="h-4 w-4" />
@@ -325,7 +323,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                             <button
                               onClick={() => handleRenew(client.id)}
                               disabled={!canCreate}
-                              title="Renouveler l'accès"
+                              title={t('commerce.common.renewAccess')}
                               className="p-1 text-gray-500 hover:text-emerald-400 hover:bg-gray-900/60 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               <CalendarDays className="h-4 w-4" />
@@ -333,7 +331,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                             <button
                               onClick={() => handleResetAccess(client.id)}
                               disabled={!canReduce}
-                              title="Réinitialiser la clé d'accès"
+                              title={t('commerce.clients.resetAccess')}
                               className="p-1 text-gray-500 hover:text-cyan-400 hover:bg-gray-900/60 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               <KeyRound className="h-4 w-4" />
@@ -341,7 +339,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                             <button
                               onClick={() => handleDelete(client.id)}
                               disabled={!canReduce}
-                              title="Supprimer"
+                              title={t('commerce.common.delete')}
                               className="p-1 text-gray-500 hover:text-rose-400 hover:bg-gray-900/60 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               <Trash2 className="h-4 w-4" />
@@ -364,14 +362,14 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
         /* Premium Empty State */
         <div className="border border-dashed border-gray-800 rounded-xl p-12 text-center bg-gray-950/10">
           <ShieldAlert className="h-12 w-12 text-gray-700 mx-auto mb-4" />
-          <h3 className="text-base font-semibold text-white">{t("clients.empty_state")}</h3>
-          <p className="text-sm text-gray-400 max-w-sm mx-auto mt-1">{t("clients.empty_state_desc")}</p>
+          <h3 className="text-base font-semibold text-white">{t('commerce.clients.empty')}</h3>
+          <p className="text-sm text-gray-400 max-w-sm mx-auto mt-1">{t('commerce.clients.emptyHint')}</p>
           {canCreate && (
             <button
               onClick={() => setShowAddModal(true)}
               className="mt-5 px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-950 text-cyan-400 border border-cyan-800/40 hover:bg-cyan-900/50 transition-all cursor-pointer"
             >
-              Créer votre premier compte client VPN
+              {t('commerce.clients.createFirst')}
             </button>
           )}
         </div>
@@ -383,16 +381,16 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
           <div className="w-full max-w-md p-6 bg-gray-950 border border-gray-800 rounded-xl shadow-2xl relative">
             <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
               <UserPlus className="h-5 w-5 text-cyan-400" />
-              {t("clients.add_client")}
+              {t('commerce.clients.add')}
             </h2>
             
             <form onSubmit={handleCreate} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">{t("clients.fields.name")}</label>
+                <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">{t('commerce.common.fullName')}</label>
                 <input
                   type="text"
                   required
-                  placeholder="Jean Dupont"
+                  placeholder={t('commerce.common.exampleName')}
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   className="w-full px-3 py-2 text-sm bg-gray-900 border border-gray-800 rounded-lg text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
@@ -400,10 +398,10 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">{t("clients.fields.email")}</label>
+                <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">{t('commerce.clients.emailPhone')}</label>
                 <input
                   type="email"
-                  placeholder="jean.dupont@gmail.com"
+                  placeholder={t('commerce.common.exampleClientEmail')}
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full px-3 py-2 text-sm bg-gray-900 border border-gray-800 rounded-lg text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
@@ -411,7 +409,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">Téléphone</label>
+                <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">{t('commerce.common.phone')}</label>
                 <input
                   type="tel"
                   placeholder="+225 07 XX XX XX XX"
@@ -422,27 +420,26 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
               </div>
 
               <p className="text-xs text-gray-500 mt-2">
-                Aucun plan n'est attribué à la création : le forfait (configuration, volume, durée) se choisit
-                ensuite depuis « Forfaits Data ».
+                {t('commerce.clients.noAutomaticPlan')}
               </p>
 
               {showsOwnerColumn && (
                 <div>
                   <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">
-                    Rattacher à un revendeur
+                    {t('commerce.common.assignReseller')}
                   </label>
                   <select
                     value={resellerId}
                     onChange={(e) => setResellerId(e.target.value)}
                     className="w-full px-3 py-2 text-sm bg-gray-900 border border-gray-800 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
                   >
-                    <option value="">Client direct (plateforme)</option>
+                    <option value="">{t('commerce.common.directClient')}</option>
                     {resellers.map((r) => (
                       <option key={r.id} value={r.id}>{r.name} — {r.email}</option>
                     ))}
                   </select>
                   <p className="mt-1 text-[11px] text-gray-500">
-                    Détermine qui possède ce client, et donc qui peut le gérer.
+                    {t('commerce.clients.ownerHint')}
                   </p>
                 </div>
               )}
@@ -453,13 +450,13 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                   onClick={() => setShowAddModal(false)}
                   className="px-4 py-2 text-xs font-semibold rounded-lg bg-gray-900 text-gray-400 hover:bg-gray-800 transition-all cursor-pointer"
                 >
-                  {t("common.cancel")}
+                  {t('commerce.common.cancel')}
                 </button>
                 <button
                   type="submit"
                   className="px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black shadow-lg shadow-cyan-950/20 transition-all cursor-pointer"
                 >
-                  {t("common.create")}
+                  {t('commerce.common.create')}
                 </button>
               </div>
             </form>

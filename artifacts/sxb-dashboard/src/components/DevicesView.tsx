@@ -1,3 +1,4 @@
+import { useTranslation } from '../contexts/I18nContext';
 
 import React, { useEffect, useState, useMemo } from "react";
 import { fetchDevices, generateDeviceToken, revokeDevice, renewDevice, Device } from "../api/devices";
@@ -11,35 +12,27 @@ import { Smartphone, Plus, Copy, Check, Ban, RefreshCw, Search, X, Clock, Shield
 import Pagination from "./ui/Pagination";
 import { toast } from "sonner";
 
-const STATUS_CONFIG = {
-  active:    { label: "Actif",    cls: "text-emerald-400 bg-emerald-500/10 border border-emerald-500/20" },
-  suspended: { label: "Révoqué", cls: "text-rose-400 bg-rose-500/10 border border-rose-500/20" },
-  expired:   { label: "Expiré",  cls: "text-amber-400 bg-amber-500/10 border border-amber-500/20" },
-};
+const createStatusConfig = (t: ReturnType<typeof useTranslation>['t']) => ({
+  active:    { label: t('commerce.common.active'),    cls: "text-emerald-400 bg-emerald-500/10 border border-emerald-500/20" },
+  suspended: { label: t('commerce.common.revoked'), cls: "text-rose-400 bg-rose-500/10 border border-rose-500/20" },
+  expired:   { label: t('commerce.common.expired'),  cls: "text-amber-400 bg-amber-500/10 border border-amber-500/20" },
+});
 
-function daysUntil(dateStr: string | null): string {
+function daysUntil(dateStr: string | null, t: ReturnType<typeof useTranslation>['t'], locale: string): string {
   if (!dateStr) return "—";
   const diff = new Date(dateStr).getTime() - Date.now();
-  if (diff < 0) return "Expiré";
+  if (diff < 0) return t('commerce.common.expired');
   const days = Math.ceil(diff / (1000 * 60 * 60 * 24));
-  if (days > 365) return `${Math.floor(days / 365)} an${Math.floor(days / 365) > 1 ? "s" : ""}`;
-  return `${days} jour${days > 1 ? "s" : ""}`;
-}
-
-function formatDate(dateStr: string | null): string {
-  if (!dateStr) return "—";
-  return new Date(dateStr).toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" });
-}
-
-function formatBytes(value: string | number | null | undefined): string {
-  const bytes = Number(value || 0);
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 2)} ${units[index]}`;
+  const count = days > 365 ? Math.floor(days / 365) : days;
+  return t(days > 365
+    ? count === 1 ? 'commerce.common.yearsOne' : 'commerce.common.years'
+    : count === 1 ? 'commerce.common.daysOne' : 'commerce.common.days',
+  { count: new Intl.NumberFormat(locale).format(count) });
 }
 
 export default function DevicesView({ currentUserRole }: { currentUserRole?: UserRole }) {
+  const { t, locale, formatNumber, formatBytes, formatDate, message, errorMessage, errorText } = useTranslation();
+  const STATUS_CONFIG = createStatusConfig(t);
   const [devices, setDevices] = useState<Device[]>([]);
   const [resellers, setResellers] = useState<Reseller[]>([]);
   const [loading, setLoading] = useState(true);
@@ -51,7 +44,7 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
   const [label, setLabel] = useState("");
   const [durationDays, setDurationDays] = useState(365);
   const [resellerId, setResellerId] = useState("");
-  const [formError, setFormError] = useState("");
+  const [formError, setFormError] = useState<unknown>(null);
   const [submitting, setSubmitting] = useState(false);
   const [generatedToken, setGeneratedToken] = useState<string | null>(null);
 
@@ -83,7 +76,7 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
 
   const handleGenerate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!deviceId.trim()) { setFormError("L'identifiant de l'appareil est requis"); return; }
+    if (!deviceId.trim()) { setFormError('commerce.devices.idRequired'); return; }
     setFormError("");
     setSubmitting(true);
     setGeneratedToken(null);
@@ -100,10 +93,10 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
       const respData = err?.responseData;
       if (respData?.device) {
         setGeneratedToken(respData.device.token);
-        setFormError("Cet appareil a déjà un jeton actif — voici le jeton existant.");
+        setFormError('commerce.devices.existingToken');
         await Promise.all([load(), refreshAccess()]);
       } else {
-        setFormError(respData?.message || err?.message || "Erreur lors de la génération");
+        setFormError(err);
       }
     } finally {
       setSubmitting(false);
@@ -114,15 +107,15 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
   const [pageSize, setPageSize] = useState(20);
 
   const handleRevoke = async (id: string) => {
-    if (!window.confirm("Révoquer le token de cet appareil ? L'accès VPN sera immédiatement coupé.")) return;
-    try { await revokeDevice(id); await Promise.all([load(), refreshAccess()]); toast.success("Token révoqué"); }
-    catch (err: any) { toast.error(err?.message || "Erreur"); }
+    if (!window.confirm(t('commerce.devices.confirmRevoke'))) return;
+    try { await revokeDevice(id); await Promise.all([load(), refreshAccess()]); toast.success(message('commerce.devices.tokenRevoked')); }
+    catch (err: any) { toast.error(errorText(err, 'commerce.common.error')); }
   };
 
   const handleRenew = async (id: string) => {
-    if (!window.confirm("Renouveler pour 365 jours ?")) return;
-    try { await renewDevice(id, 365); await Promise.all([load(), refreshAccess()]); toast.success("Renouvelé pour 365 jours"); }
-    catch (err: any) { toast.error(err?.message || "Erreur"); }
+    if (!window.confirm(t('commerce.devices.confirmRenew'))) return;
+    try { await renewDevice(id, 365); await Promise.all([load(), refreshAccess()]); toast.success(message('commerce.devices.renewed')); }
+    catch (err: any) { toast.error(errorText(err, 'commerce.common.error')); }
   };
 
   const copy = (key: string, value: string) => {
@@ -154,20 +147,20 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
             <Smartphone className="w-5 h-5 text-cyan-400" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold text-white">Appareils et jetons</h2>
+            <h2 className="text-lg font-semibold text-white">{t('commerce.devices.title')}</h2>
             <p className="text-sm text-gray-500">
-              Jetons d'activation par appareil. L'activation crée le compte appareil ; elle n'attribue aucun plan.
+              {t('commerce.devices.subtitle')}
             </p>
           </div>
         </div>
         <button
           onClick={() => { setShowModal(true); setGeneratedToken(null); setFormError(""); setDeviceId(""); setLabel(""); setResellerId(""); }}
           disabled={!canEnroll}
-          title={canEnroll ? undefined : "Indisponible : agrément expiré ou plafond atteint"}
+          title={canEnroll ? undefined : t('commerce.common.unavailableQuota')}
           className="flex items-center gap-2 px-4 py-2 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 text-cyan-400 rounded-xl text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Plus className="w-4 h-4" />
-          Générer un jeton
+          {t('commerce.devices.generate')}
         </button>
       </div>
 
@@ -177,16 +170,16 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
       {/* Stats */}
       <div className="grid grid-cols-3 gap-4">
         {[
-          { icon: Smartphone, label: "Total appareils", value: devices.length, color: "cyan" },
-          { icon: Shield, label: "Actifs", value: active, color: "emerald" },
-          { icon: Ban, label: "Expirés / Révoqués", value: inactive, color: "rose" },
+          { icon: Smartphone, label: t('commerce.devices.total'), value: devices.length, color: "cyan" },
+          { icon: Shield, label: t('commerce.common.activePlural'), value: active, color: "emerald" },
+          { icon: Ban, label: t('commerce.devices.inactive'), value: inactive, color: "rose" },
         ].map(({ icon: Icon, label, value, color }) => (
           <div key={label} className="bg-[#0f1218] border border-[#1a1f2e] rounded-2xl p-4 flex items-center gap-4">
             <div className={`p-2.5 rounded-xl bg-${color}-500/10`}>
               <Icon className={`w-5 h-5 text-${color}-400`} />
             </div>
             <div>
-              <p className="text-2xl font-bold text-white">{value}</p>
+              <p className="text-2xl font-bold text-white">{formatNumber(value)}</p>
               <p className="text-xs text-gray-500">{label}</p>
             </div>
           </div>
@@ -198,7 +191,7 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
         <input
           type="text"
-          placeholder="Rechercher un appareil, token, libellé..."
+          placeholder={t('commerce.devices.search')}
           value={search}
           onChange={e => setSearch(e.target.value)}
           className="w-full pl-10 pr-4 py-2.5 bg-[#0f1218] border border-[#1a1f2e] rounded-xl text-white placeholder-gray-500 text-sm focus:outline-none focus:border-cyan-500 transition-colors"
@@ -221,8 +214,8 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
             <div className="p-4 rounded-2xl bg-cyan-500/5 border border-cyan-500/10">
               <Smartphone className="w-8 h-8 text-cyan-400/40" />
             </div>
-            <p className="text-gray-400 font-medium">Aucun appareil enregistré</p>
-            <p className="text-gray-600 text-sm">Cliquez sur « Générer un jeton » pour commencer</p>
+            <p className="text-gray-400 font-medium">{t('commerce.devices.empty')}</p>
+            <p className="text-gray-600 text-sm">{t('commerce.devices.emptyHint')}</p>
           </div>
         ) : (
           <>
@@ -230,17 +223,17 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
             <table className="w-full">
               <thead>
                 <tr className="border-b border-[#1a1f2e]">
-                  <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Appareil</th>
+                  <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">{t('commerce.devices.device')}</th>
                   {showsOwnerColumn && (
-                    <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Revendeur</th>
+                    <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">{t('commerce.common.reseller')}</th>
                   )}
-                  <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Jeton d'activation</th>
-                  <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Statut</th>
-                  <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Forfait</th>
-                  <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Quota</th>
-                  <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Trafic réel</th>
-                  <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Expiration</th>
-                  <th className="text-right px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">Actions</th>
+                  <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">{t('commerce.devices.activationToken')}</th>
+                  <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">{t('commerce.common.status')}</th>
+                  <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">{t('commerce.common.plan')}</th>
+                  <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">{t('commerce.common.quota')}</th>
+                  <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">{t('commerce.devices.actualTraffic')}</th>
+                  <th className="text-left px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">{t('commerce.common.expiration')}</th>
+                  <th className="text-right px-5 py-3 text-xs text-gray-500 font-medium uppercase tracking-wider">{t('commerce.common.actions')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#1a1f2e]">
@@ -288,31 +281,31 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
                         {device.hasSubscription ? (
                           <span className="inline-flex items-center gap-1 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-300">
                             <PackageOpen className="w-3 h-3 shrink-0" />
-                            {device.subscriptionName || "Forfait actif"}
+                            {device.subscriptionName || t('commerce.devices.activePlan')}
                           </span>
                         ) : (
-                          <span className="text-xs text-gray-500">Aucun plan attribué</span>
+                          <span className="text-xs text-gray-500">{t('commerce.devices.noPlan')}</span>
                         )}
                       </td>
                       <td className="px-5 py-4">
                         <div className="flex flex-col gap-1 text-xs">
-                          <span className="text-white">{formatBytes(device.quotaUsed)} utilisés</span>
-                          <span className="text-emerald-400">{formatBytes(device.quotaRemaining)} restants</span>
-                          <span className="text-gray-600">sur {formatBytes(device.quotaTotal)}</span>
+                          <span className="text-white">{t('commerce.devices.usedBytes', { value: formatBytes(device.quotaUsed) })}</span>
+                          <span className="text-emerald-400">{t('commerce.devices.remainingBytes', { value: formatBytes(device.quotaRemaining) })}</span>
+                          <span className="text-gray-600">{t('commerce.devices.ofBytes', { value: formatBytes(device.quotaTotal) })}</span>
                         </div>
                       </td>
                       <td className="px-5 py-4">
                         <div className="flex flex-col gap-1 text-xs">
                           <span className="text-sky-400">↓ {formatBytes(device.trafficDownload)}</span>
                           <span className="text-violet-400">↑ {formatBytes(device.trafficUpload)}</span>
-                          <span className="text-gray-600">total {formatBytes(device.trafficTotal)}</span>
+                          <span className="text-gray-600">{t('commerce.devices.totalBytes', { value: formatBytes(device.trafficTotal) })}</span>
                         </div>
                       </td>
                       <td className="px-5 py-4">
                         <div className="flex flex-col gap-0.5">
-                          <span className="text-sm text-white">{formatDate(device.expireAt)}</span>
+                          <span className="text-sm text-white">{formatDate(device.expireAt, { day: '2-digit', month: 'short', year: 'numeric' })}</span>
                           <span className={`text-xs flex items-center gap-1 ${isExpired ? "text-rose-400" : "text-gray-500"}`}>
-                            <Clock className="w-3 h-3" />{daysUntil(device.expireAt)}
+                            <Clock className="w-3 h-3" />{daysUntil(device.expireAt, t, locale)}
                           </span>
                         </div>
                       </td>
@@ -320,7 +313,7 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
                         <div className="flex items-center justify-end gap-2">
                           <button
                             onClick={() => copy(`tok2-${device.id}`, device.token)}
-                            title="Copier le token"
+                            title={t('commerce.devices.copyToken')}
                             className="p-1.5 rounded-lg hover:bg-cyan-500/10 text-gray-500 hover:text-cyan-400 transition-colors"
                           >
                             {copiedId === `tok2-${device.id}` ? <Check className="w-4 h-4 text-emerald-400" /> : <Key className="w-4 h-4" />}
@@ -328,7 +321,7 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
                           <button
                             onClick={() => handleRenew(device.id)}
                             disabled={!canEnroll}
-                            title="Renouveler pour 1 an"
+                            title={t('commerce.devices.renewYear')}
                             className="p-1.5 rounded-lg hover:bg-emerald-500/10 text-gray-500 hover:text-emerald-400 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
                           >
                             <RefreshCw className="w-4 h-4" />
@@ -337,7 +330,7 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
                             <button
                               onClick={() => handleRevoke(device.id)}
                               disabled={!canRevoke}
-                              title="Révoquer"
+                              title={t('commerce.common.revoke')}
                               className="p-1.5 rounded-lg hover:bg-rose-500/10 text-gray-500 hover:text-rose-400 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               <Ban className="w-4 h-4" />
@@ -368,7 +361,7 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
                 <div className="p-2 rounded-xl bg-cyan-500/10 border border-cyan-500/20">
                   <Key className="w-4 h-4 text-cyan-400" />
                 </div>
-                <h3 className="text-lg font-semibold text-white">Générer un jeton d'activation</h3>
+                <h3 className="text-lg font-semibold text-white">{t('commerce.devices.generateActivation')}</h3>
               </div>
               <button onClick={() => setShowModal(false)} className="text-gray-500 hover:text-white transition-colors">
                 <X className="w-5 h-5" />
@@ -378,8 +371,8 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
             {generatedToken ? (
               <div className="space-y-4">
                 <div className="p-4 bg-emerald-500/5 border border-emerald-500/20 rounded-xl text-center">
-                  <p className="text-emerald-400 text-sm font-medium mb-3">✓ Jeton généré</p>
-                  {formError && <p className="text-amber-400 text-xs mb-3">{formError}</p>}
+                  <p className="text-emerald-400 text-sm font-medium mb-3">{t('commerce.devices.generated')}</p>
+                  {!!formError && <p className="text-amber-400 text-xs mb-3">{errorMessage(formError, 'commerce.common.errorGenerate')}</p>}
                   <div className="flex items-center gap-2 bg-black/40 border border-emerald-500/20 rounded-xl px-4 py-3">
                     <code className="flex-1 text-emerald-300 font-mono text-base font-bold tracking-widest text-center">{generatedToken}</code>
                     <button onClick={() => copy("modal-tok", generatedToken)}>
@@ -387,49 +380,48 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
                     </button>
                   </div>
                   <p className="text-gray-500 text-xs mt-3">
-                    Transmettez ce jeton à l'utilisateur pour qu'il active son appareil. Aucun plan n'est attribué :
-                    créez ensuite un forfait depuis « Forfaits Data ».
+                    {t('commerce.devices.shareToken')}
                   </p>
                 </div>
                 <button
                   onClick={() => { setShowModal(false); setGeneratedToken(null); setDeviceId(""); setLabel(""); setFormError(""); }}
                   className="w-full py-3 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 text-cyan-400 rounded-xl text-sm font-medium transition-colors"
                 >
-                  Fermer
+                  {t('commerce.common.close')}
                 </button>
               </div>
             ) : (
               <form onSubmit={handleGenerate} className="space-y-4">
-                {formError && (
+                {!!formError && (
                   <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl">
-                    <p className="text-rose-400 text-sm">{formError}</p>
+                    <p className="text-rose-400 text-sm">{errorMessage(formError, 'commerce.common.errorGenerate')}</p>
                   </div>
                 )}
                 <div>
                   <label className="block text-sm font-medium text-gray-300 mb-1.5">
-                    Identifiant de l'appareil <span className="text-rose-400">*</span>
+                    {t('commerce.devices.deviceId')} <span className="text-rose-400">*</span>
                   </label>
                   <input
                     type="text"
                     value={deviceId}
                     onChange={e => setDeviceId(e.target.value)}
-                    placeholder="ex. SXB3F2A9B8C1D4E5F6"
+                    placeholder={t('commerce.devices.exampleId')}
                     className="w-full px-4 py-3 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white placeholder-gray-600 font-mono text-sm focus:outline-none focus:border-cyan-500 transition-colors"
                     required
                   />
-                  <p className="text-xs text-gray-600 mt-1">Copiez l'identifiant depuis l'écran d'activation de l'application mobile.</p>
+                  <p className="text-xs text-gray-600 mt-1">{t('commerce.devices.idHint')}</p>
                 </div>
                 {showsOwnerColumn && (
                   <div>
                     <label className="block text-sm font-medium text-gray-300 mb-1.5">
-                      Rattacher à un revendeur <span className="text-gray-500">(optionnel)</span>
+                      {t('commerce.common.assignReseller')} <span className="text-gray-500">{t('commerce.common.optional')}</span>
                     </label>
                     <select
                       value={resellerId}
                       onChange={e => setResellerId(e.target.value)}
                       className="w-full px-4 py-3 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-cyan-500 transition-colors"
                     >
-                      <option value="">Appareil direct (plateforme)</option>
+                      <option value="">{t('commerce.devices.directDevice')}</option>
                       {resellers.map(r => (
                         <option key={r.id} value={r.id}>{r.name} — {r.email}</option>
                       ))}
@@ -438,28 +430,28 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
                 )}
                 <div>
                   <label className="block text-sm font-medium text-gray-300 mb-1.5">
-                    Nom / Libellé <span className="text-gray-500">(optionnel)</span>
+                    {t('commerce.devices.label')} <span className="text-gray-500">{t('commerce.common.optional')}</span>
                   </label>
                   <input
                     type="text"
                     value={label}
                     onChange={e => setLabel(e.target.value)}
-                    placeholder="ex: iPhone de Jean, Samsung Galaxy S24"
+                    placeholder={t('commerce.devices.exampleLabel')}
                     className="w-full px-4 py-3 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white placeholder-gray-600 text-sm focus:outline-none focus:border-cyan-500 transition-colors"
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1.5">Durée de validité</label>
+                  <label className="block text-sm font-medium text-gray-300 mb-1.5">{t('commerce.devices.validity')}</label>
                   <select
                     value={durationDays}
                     onChange={e => setDurationDays(Number(e.target.value))}
                     className="w-full px-4 py-3 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-cyan-500 transition-colors"
                   >
-                    <option value={30}>30 jours</option>
-                    <option value={90}>3 mois</option>
-                    <option value={180}>6 mois</option>
-                    <option value={365}>1 an (recommandé)</option>
-                    <option value={730}>2 ans</option>
+                    <option value={30}>{t('commerce.devices.thirtyDays')}</option>
+                    <option value={90}>{t('commerce.devices.threeMonths')}</option>
+                    <option value={180}>{t('commerce.devices.sixMonths')}</option>
+                    <option value={365}>{t('commerce.devices.oneYear')}</option>
+                    <option value={730}>{t('commerce.devices.twoYears')}</option>
                   </select>
                 </div>
                 <div className="flex gap-3 pt-2">
@@ -468,7 +460,7 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
                     onClick={() => setShowModal(false)}
                     className="flex-1 py-3 bg-white/5 hover:bg-white/10 text-gray-400 rounded-xl text-sm font-medium transition-colors"
                   >
-                    Annuler
+                    {t('commerce.common.cancel')}
                   </button>
                   <button
                     type="submit"
@@ -476,7 +468,7 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
                     className="flex-1 py-3 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/40 text-cyan-400 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl text-sm font-semibold transition-colors flex items-center justify-center gap-2"
                   >
                     {submitting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Key className="w-4 h-4" />}
-                    {submitting ? "Génération…" : "Générer le jeton"}
+                    {submitting ? t('commerce.devices.generating') : t('commerce.devices.submit')}
                   </button>
                 </div>
               </form>

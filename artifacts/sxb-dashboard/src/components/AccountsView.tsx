@@ -1,3 +1,4 @@
+import { useTranslation } from '../contexts/I18nContext';
 import React, { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import Pagination from './ui/Pagination';
@@ -57,6 +58,7 @@ export default function AccountsView({
   initialTab = 'accounts',
   onRolePermissionsUpdated,
 }: AccountsViewProps) {
+  const { t, locale, formatNumber, message, errorMessage, errorText } = useTranslation();
   const [tab, setTab] = useState<TabId>(initialTab);
   useEffect(() => { setTab(initialTab); }, [initialTab]);
 
@@ -77,7 +79,7 @@ export default function AccountsView({
   const [showPassword, setShowPassword] = useState(false);
   const [autoGenPassword, setAutoGenPassword] = useState(true);
   const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState('');
+  const [createError, setCreateError] = useState<unknown>(null);
 
   // Résultat de création
   const [createdResult, setCreatedResult] = useState<{
@@ -127,7 +129,7 @@ export default function AccountsView({
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (selectedRoleIsReseller) {
-      setCreateError("Un revendeur se crée depuis l'onglet « Revendeurs » : son agrément exige une date d'expiration et un quota.");
+      setCreateError('commerce.accounts.resellerCreationError');
       return;
     }
     setCreateError('');
@@ -160,7 +162,7 @@ export default function AccountsView({
       setFormPassword('');
       await loadAll();
     } catch (err: any) {
-      setCreateError(err?.message || 'Erreur lors de la création');
+      setCreateError(err);
     } finally {
       setCreating(false);
     }
@@ -171,35 +173,35 @@ export default function AccountsView({
     try {
       const data = await generateAdminToken(userId, 24);
       setTokenResult({ userId, token: data.token, expiresAt: data.expiresAt });
-      toast.success('Jeton généré avec succès');
+      toast.success(message('commerce.accounts.tokenGenerated'));
       await loadAll();
     } catch (err: any) {
-      toast.error(err?.message || 'Erreur lors de la génération du jeton');
+      toast.error(errorText(err, 'commerce.accounts.tokenError'));
     } finally {
       setGeneratingTokenFor(null);
     }
   };
 
   const handleDelete = async (id: string, name: string) => {
-    if (id === currentUserId) { toast.error('Vous ne pouvez pas supprimer votre propre compte'); return; }
-    if (!window.confirm(`Supprimer le compte de « ${name} » ? Cette action est irréversible.`)) return;
+    if (id === currentUserId) { toast.error(message('commerce.accounts.cannotDeleteSelf')); return; }
+    if (!window.confirm(t('commerce.accounts.confirmDelete', { name }))) return;
     try {
       await deleteAccount(id);
-      toast.success('Compte supprimé');
+      toast.success(message('commerce.accounts.deleted'));
       await loadAll();
     } catch (err: any) {
-      toast.error(err?.message || 'Erreur lors de la suppression');
+      toast.error(errorText(err, 'commerce.common.errorDelete'));
     }
   };
 
   const handleRevokeToken = async (id: string) => {
-    if (!window.confirm("Révoquer ce jeton d'accès ?")) return;
+    if (!window.confirm(t('commerce.accounts.confirmRevoke'))) return;
     try {
       await revokeAdminToken(id);
-      toast.success('Jeton révoqué');
+      toast.success(message('commerce.accounts.tokenRevoked'));
       await loadAll();
     } catch (err: any) {
-      toast.error(err?.message || 'Erreur');
+      toast.error(errorText(err, 'commerce.common.error'));
     }
   };
 
@@ -235,9 +237,9 @@ export default function AccountsView({
   );
 
   const TABS: Array<{ id: TabId; label: string; icon: any; hint: string }> = [
-    { id: 'accounts',  label: 'Comptes de connexion', icon: Users,    hint: 'Identifiants d’accès au tableau de bord' },
-    { id: 'resellers', label: 'Revendeurs',           icon: Store,    hint: 'Agréments, échéances et quotas' },
-    { id: 'rbac',      label: 'Habilitations',        icon: KeyRound, hint: 'Permissions accordées à chaque rôle' },
+    { id: 'accounts',  label: t('commerce.accounts.tabs.accounts'), icon: Users,    hint: t('commerce.accounts.tabs.accountsHint') },
+    { id: 'resellers', label: t('commerce.accounts.tabs.resellers'),           icon: Store,    hint: t('commerce.accounts.tabs.resellersHint') },
+    { id: 'rbac',      label: t('commerce.accounts.tabs.rbac'),        icon: KeyRound, hint: t('commerce.accounts.tabs.rbacHint') },
   ];
 
   return (
@@ -245,9 +247,9 @@ export default function AccountsView({
       {/* En-tête */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-white">Gestion des comptes</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-white">{t('commerce.accounts.title')}</h1>
           <p className="mt-1 text-sm text-gray-400">
-            Un seul endroit pour les comptes de connexion, les agréments revendeurs et les habilitations.
+            {t('commerce.accounts.subtitle')}
           </p>
         </div>
         {isSuperAdmin && tab === 'accounts' && (
@@ -256,7 +258,7 @@ export default function AccountsView({
             className="flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 px-4 py-2 text-sm font-medium text-white shadow-lg transition-all hover:from-cyan-400 hover:to-blue-500"
           >
             <UserPlus className="h-4 w-4" />
-            Créer un compte
+            {t('commerce.accounts.create')}
           </button>
         )}
       </div>
@@ -294,18 +296,17 @@ export default function AccountsView({
             <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-400" />
             <div className="min-w-0">
               <p className="text-sm font-semibold text-amber-200">
-                {reconciliation.totals.orphanRoleUsers} compte(s) portent le rôle RESELLER sans fiche revendeur,
-                pour {reconciliation.totals.resellerRecords} revendeur(s) réel(s).
+                {t('commerce.accounts.orphanCount', {
+                  orphans: formatNumber(reconciliation.totals.orphanRoleUsers),
+                  resellers: formatNumber(reconciliation.totals.resellerRecords),
+                })}
               </p>
               <p className="mt-1 text-xs leading-relaxed text-amber-200/80">
-                Ces comptes n'ont aucun pouvoir de revendeur : sans fiche, l'authentification les traite comme des
-                clients. Ils ne sont donc pas listés dans l'onglet « Revendeurs ». Rapport en lecture seule —
-                la régularisation se décide compte par compte.
+                {t('commerce.accounts.orphanHint')}
               </p>
               {reconciliation.totals.resellersWithoutRole > 0 && (
                 <p className="mt-1 text-xs text-amber-200/80">
-                  À l'inverse, {reconciliation.totals.resellersWithoutRole} fiche(s) existent sur un compte
-                  portant un autre rôle.
+                  {t('commerce.accounts.missingRoleCount', { count: formatNumber(reconciliation.totals.resellersWithoutRole) })}
                 </p>
               )}
             </div>
@@ -333,7 +334,7 @@ export default function AccountsView({
                 <div className="flex items-center gap-2">
                   <BadgeCheck className="h-5 w-5 shrink-0 text-emerald-400" />
                   <span className="font-semibold text-emerald-400">
-                    Compte créé — {createdResult.name} ({createdResult.role})
+                    {t('commerce.accounts.created', { name: createdResult.name, role: createdResult.role })}
                   </span>
                 </div>
                 <button onClick={() => setCreatedResult(null)} className="text-gray-500 hover:text-white">
@@ -341,10 +342,10 @@ export default function AccountsView({
                 </button>
               </div>
               <div className="space-y-2">
-                <p className="text-sm text-gray-300">Transmettez ces informations de façon sécurisée :</p>
+                <p className="text-sm text-gray-300">{t('commerce.accounts.shareSecurely')}</p>
 
                 <div className="flex items-center gap-2 rounded-lg bg-gray-900/60 px-3 py-2">
-                  <span className="w-24 shrink-0 text-xs text-gray-400">Email</span>
+                  <span className="w-24 shrink-0 text-xs text-gray-400">{t('commerce.common.email')}</span>
                   <code className="flex-1 truncate font-mono text-sm text-white">{createdResult.email}</code>
                   <button onClick={() => copy('email', createdResult.email)} className="text-gray-400 hover:text-white">
                     {copiedField === 'email' ? <Check className="h-4 w-4 text-emerald-400" /> : <Copy className="h-4 w-4" />}
@@ -353,7 +354,7 @@ export default function AccountsView({
 
                 {createdResult.generatedPassword && (
                   <div className="flex items-center gap-2 rounded-lg bg-gray-900/60 px-3 py-2">
-                    <span className="w-24 shrink-0 text-xs text-gray-400">Mot de passe</span>
+                    <span className="w-24 shrink-0 text-xs text-gray-400">{t('commerce.common.password')}</span>
                     <code className="flex-1 truncate font-mono text-sm text-amber-300">{createdResult.generatedPassword}</code>
                     <button onClick={() => copy('pass', createdResult.generatedPassword!)} className="text-gray-400 hover:text-white">
                       {copiedField === 'pass' ? <Check className="h-4 w-4 text-emerald-400" /> : <Copy className="h-4 w-4" />}
@@ -363,7 +364,7 @@ export default function AccountsView({
 
                 {createdResult.adminToken && (
                   <div className="flex items-center gap-2 rounded-lg bg-gray-900/60 px-3 py-2">
-                    <span className="w-24 shrink-0 text-xs text-gray-400">Jeton admin</span>
+                    <span className="w-24 shrink-0 text-xs text-gray-400">{t('commerce.accounts.adminToken')}</span>
                     <code className="flex-1 truncate font-mono text-sm text-cyan-300">{createdResult.adminToken}</code>
                     <button onClick={() => copy('adminToken', createdResult.adminToken!)} className="text-gray-400 hover:text-white">
                       {copiedField === 'adminToken' ? <Check className="h-4 w-4 text-emerald-400" /> : <Copy className="h-4 w-4" />}
@@ -373,7 +374,7 @@ export default function AccountsView({
                 {createdResult.expiresAt && (
                   <p className="flex items-center gap-1 text-xs text-gray-500">
                     <Clock className="h-3 w-3" />
-                    Jeton valide jusqu'au {new Date(createdResult.expiresAt).toLocaleString('fr-FR')}
+                    {t('commerce.accounts.tokenUntil', { date: new Date(createdResult.expiresAt).toLocaleString(locale) })}
                   </p>
                 )}
               </div>
@@ -386,7 +387,7 @@ export default function AccountsView({
               <div className="mb-3 flex items-start justify-between">
                 <div className="flex items-center gap-2">
                   <Key className="h-4 w-4 text-cyan-400" />
-                  <span className="text-sm font-semibold text-cyan-400">Jeton admin généré</span>
+                  <span className="text-sm font-semibold text-cyan-400">{t('commerce.accounts.adminTokenGenerated')}</span>
                 </div>
                 <button onClick={() => setTokenResult(null)} className="text-gray-500 hover:text-white">
                   <X className="h-4 w-4" />
@@ -399,7 +400,7 @@ export default function AccountsView({
                 </button>
               </div>
               <p className="mt-1 text-xs text-gray-500">
-                Expire le {new Date(tokenResult.expiresAt).toLocaleString('fr-FR')}
+                {t('commerce.accounts.expiresAt', { date: new Date(tokenResult.expiresAt).toLocaleString(locale) })}
               </p>
             </div>
           )}
@@ -409,7 +410,7 @@ export default function AccountsView({
             <Search className="absolute left-3 top-2.5 h-4 w-4 text-gray-500" />
             <input
               type="text"
-              placeholder="Rechercher par nom, email, rôle…"
+              placeholder={t('commerce.accounts.search')}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="w-full rounded-lg border border-gray-800 bg-gray-900/60 py-2 pl-9 pr-4 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
@@ -420,7 +421,7 @@ export default function AccountsView({
           {loading ? (
             <div className="flex items-center justify-center py-16 text-gray-400">
               <RefreshCw className="mr-3 h-6 w-6 animate-spin text-cyan-400" />
-              Chargement…
+              {t('commerce.common.loading')}
             </div>
           ) : (
             <div className="overflow-hidden rounded-xl border border-[#1a1f2e] bg-[#0f1218]">
@@ -428,17 +429,17 @@ export default function AccountsView({
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-[#1a1f2e]">
-                      <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400">Compte</th>
-                      <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400">Rôle</th>
-                      <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400">Statut</th>
-                      <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400">Créé le</th>
-                      <th className="px-5 py-3 text-right text-xs font-semibold uppercase tracking-wider text-gray-400">Actions</th>
+                      <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400">{t('commerce.common.account')}</th>
+                      <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400">{t('commerce.common.role')}</th>
+                      <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400">{t('commerce.common.status')}</th>
+                      <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400">{t('commerce.common.createdAt')}</th>
+                      <th className="px-5 py-3 text-right text-xs font-semibold uppercase tracking-wider text-gray-400">{t('commerce.common.actions')}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#1a1f2e]">
                     {paginated.length === 0 && (
                       <tr>
-                        <td colSpan={5} className="py-12 text-center text-gray-500">Aucun compte trouvé</td>
+                        <td colSpan={5} className="py-12 text-center text-gray-500">{t('commerce.accounts.empty')}</td>
                       </tr>
                     )}
                     {paginated.map((account) => {
@@ -464,7 +465,7 @@ export default function AccountsView({
                                   // évite de prendre les 70 comptes historiques pour
                                   // autant de revendeurs actifs.
                                   <p className="mt-0.5 text-[11px] text-violet-300/80">
-                                    Compte de connexion — l'agrément se gère dans l'onglet « Revendeurs »
+                                    {t('commerce.accounts.resellerAccountHint')}
                                   </p>
                                 )}
                               </div>
@@ -479,12 +480,12 @@ export default function AccountsView({
                                 ? 'bg-emerald-500/10 text-emerald-400'
                                 : 'bg-rose-500/10 text-rose-400'
                             }`}>
-                              {(account as any).status === 'active' ? '● Actif' : '● Suspendu'}
+                              {(account as any).status === 'active' ? t('commerce.common.activeDot') : t('commerce.common.suspendedDot')}
                             </span>
                           </td>
                           <td className="px-5 py-3.5 text-xs text-gray-500">
                             {(account as any).createdAt
-                              ? new Date((account as any).createdAt).toLocaleDateString('fr-FR')
+                              ? new Date((account as any).createdAt).toLocaleDateString(locale)
                               : '—'}
                           </td>
                           <td className="px-5 py-3.5">
@@ -494,18 +495,18 @@ export default function AccountsView({
                                   <button
                                     onClick={() => handleGenerateToken(account.id)}
                                     disabled={generatingTokenFor === account.id}
-                                    title="Générer un jeton d'accès"
+                                    title={t('commerce.accounts.generateAccessToken')}
                                     className="flex items-center gap-1.5 rounded-lg bg-cyan-500/10 px-2.5 py-1.5 text-xs text-cyan-400 transition-colors hover:bg-cyan-500/20 disabled:opacity-50"
                                   >
                                     {generatingTokenFor === account.id
                                       ? <RefreshCw className="h-3.5 w-3.5 animate-spin" />
                                       : <Key className="h-3.5 w-3.5" />}
-                                    Jeton
+                                    {t('commerce.common.token')}
                                   </button>
                                   {roleName !== 'SUPER_ADMIN' && roleName !== 'OWNER' && (
                                     <button
                                       onClick={() => handleDelete(account.id, account.name)}
-                                      title="Supprimer ce compte"
+                                      title={t('commerce.accounts.deleteAccount')}
                                       className="rounded-lg p-1.5 text-gray-600 transition-colors hover:bg-rose-500/10 hover:text-rose-400"
                                     >
                                       <Trash2 className="h-4 w-4" />
@@ -513,7 +514,7 @@ export default function AccountsView({
                                   )}
                                 </>
                               )}
-                              {isOwn && <span className="text-xs italic text-gray-600">Vous</span>}
+                              {isOwn && <span className="text-xs italic text-gray-600">{t('commerce.accounts.you')}</span>}
                             </div>
                           </td>
                         </tr>
@@ -538,18 +539,18 @@ export default function AccountsView({
           {isAdmin && adminTokens.length > 0 && (
             <div className="space-y-3">
               <h2 className="text-sm font-semibold uppercase tracking-wider text-gray-400">
-                Jetons admin actifs récents
+                {t('commerce.accounts.recentTokens')}
               </h2>
               <div className="overflow-hidden rounded-xl border border-[#1a1f2e] bg-[#0f1218]">
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-[#1a1f2e]">
-                        <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase text-gray-500">Jeton</th>
-                        <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase text-gray-500">Utilisateur</th>
-                        <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase text-gray-500">Statut</th>
-                        <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase text-gray-500">Expire</th>
-                        <th className="px-4 py-2.5 text-right text-xs font-semibold uppercase text-gray-500">Actions</th>
+                        <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase text-gray-500">{t('commerce.common.token')}</th>
+                        <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase text-gray-500">{t('commerce.accounts.user')}</th>
+                        <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase text-gray-500">{t('commerce.common.status')}</th>
+                        <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase text-gray-500">{t('commerce.common.expires')}</th>
+                        <th className="px-4 py-2.5 text-right text-xs font-semibold uppercase text-gray-500">{t('commerce.common.actions')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#1a1f2e]">
@@ -570,11 +571,11 @@ export default function AccountsView({
                               tok.status === 'used'   ? 'text-blue-400' :
                               'text-gray-500'
                             }`}>
-                              {tok.status === 'active' ? '● Actif' : tok.status === 'used' ? '✓ Utilisé' : '✗ Révoqué'}
+                              {tok.status === 'active' ? t('commerce.common.activeDot') : tok.status === 'used' ? t('commerce.common.usedCheck') : t('commerce.common.revokedCross')}
                             </span>
                           </td>
                           <td className="px-4 py-2.5 text-xs text-gray-500">
-                            {new Date(tok.expiresAt).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}
+                            {new Date(tok.expiresAt).toLocaleString(locale, { dateStyle: 'short', timeStyle: 'short' })}
                           </td>
                           <td className="px-4 py-2.5 text-right">
                             {tok.status === 'active' && (
@@ -582,7 +583,7 @@ export default function AccountsView({
                                 onClick={() => handleRevokeToken(tok.id)}
                                 className="rounded px-2 py-1 text-xs text-rose-400 hover:bg-rose-500/10 hover:text-rose-300"
                               >
-                                Révoquer
+                                {t('commerce.common.revoke')}
                               </button>
                             )}
                           </td>
@@ -604,50 +605,50 @@ export default function AccountsView({
             <div className="flex items-center justify-between border-b border-[#1a1f2e] px-6 py-4">
               <div className="flex items-center gap-2">
                 <UserPlus className="h-5 w-5 text-cyan-400" />
-                <h2 className="text-base font-semibold text-white">Créer un compte</h2>
+                <h2 className="text-base font-semibold text-white">{t('commerce.accounts.create')}</h2>
               </div>
               <button onClick={() => setShowCreateModal(false)} className="text-gray-500 hover:text-white">
                 <X className="h-5 w-5" />
               </button>
             </div>
             <form onSubmit={handleCreate} className="space-y-4 px-6 py-5">
-              {createError && (
+              {!!createError && (
                 <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-400">
-                  {createError}
+                  {errorMessage(createError, 'commerce.common.errorCreate')}
                 </div>
               )}
 
               <div>
                 <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-400">
-                  Nom complet *
+                  {t('commerce.common.fullNameRequired')}
                 </label>
                 <input
                   required
                   type="text"
                   value={form.name}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  placeholder="Jean Dupont"
+                  placeholder={t('commerce.common.exampleName')}
                   className="w-full rounded-lg border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
                 />
               </div>
 
               <div>
                 <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-400">
-                  Email *
+                  {t('commerce.common.emailRequired')}
                 </label>
                 <input
                   required
                   type="email"
                   value={form.email}
                   onChange={(e) => setForm({ ...form, email: e.target.value })}
-                  placeholder="jean@example.com"
+                  placeholder={t('commerce.common.exampleEmail')}
                   className="w-full rounded-lg border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
                 />
               </div>
 
               <div>
                 <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-400">
-                  Téléphone
+                  {t('commerce.common.phone')}
                 </label>
                 <input
                   type="text"
@@ -660,7 +661,7 @@ export default function AccountsView({
 
               <div>
                 <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-400">
-                  Rôle *
+                  {t('commerce.common.roleRequired')}
                 </label>
                 <div className="relative">
                   <select
@@ -669,27 +670,27 @@ export default function AccountsView({
                     onChange={(e) => { setForm({ ...form, roleId: e.target.value }); setCreateError(''); }}
                     className="w-full appearance-none rounded-lg border border-gray-800 bg-gray-900 px-3 py-2 pr-8 text-sm text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
                   >
-                    <option value="">Sélectionner un rôle…</option>
+                    <option value="">{t('commerce.accounts.selectRole')}</option>
                     {roles.filter(r => r.name !== 'RESELLER').map(r => (
-                      <option key={r.id} value={r.id}>{r.name} — {r.description}</option>
+                      <option key={r.id} value={r.id}>
+                        {r.name} — {Object.hasOwn(ROLE_COLORS, r.name) ? t(`commerce.accounts.roleDescriptions.${r.name}`) : r.description}
+                      </option>
                     ))}
                   </select>
                   <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
                 </div>
                 {selectedRoleIsReseller && (
                   <div className="mt-2 rounded-lg border border-violet-500/30 bg-violet-500/10 p-3 text-xs text-violet-200">
-                    <p className="font-semibold">Un revendeur ne se crée pas ici.</p>
+                    <p className="font-semibold">{t('commerce.accounts.resellerNotHere')}</p>
                     <p className="mt-1 leading-relaxed">
-                      Son agrément exige une date d'expiration et un quota, attribués dans la même opération que
-                      le compte. Utilisez l'onglet « Revendeurs » : c'est le seul chemin qui crée le compte,
-                      le rôle et la fiche ensemble.
+                      {t('commerce.accounts.resellerCreationHint')}
                     </p>
                     <button
                       type="button"
                       onClick={() => { setShowCreateModal(false); setTab('resellers'); }}
                       className="mt-2 rounded-lg border border-violet-500/40 px-3 py-1.5 font-semibold text-violet-200 hover:bg-violet-500/15"
                     >
-                      Ouvrir l'onglet « Revendeurs »
+                      {t('commerce.accounts.openResellers')}
                     </button>
                   </div>
                 )}
@@ -698,7 +699,7 @@ export default function AccountsView({
               <div>
                 <div className="mb-1.5 flex items-center justify-between">
                   <label className="text-xs font-semibold uppercase tracking-wider text-gray-400">
-                    Mot de passe
+                    {t('commerce.common.password')}
                   </label>
                   <label className="flex cursor-pointer items-center gap-1.5">
                     <input
@@ -707,7 +708,7 @@ export default function AccountsView({
                       onChange={(e) => setAutoGenPassword(e.target.checked)}
                       className="rounded border-gray-700 bg-gray-900 text-cyan-500"
                     />
-                    <span className="text-xs text-gray-500">Générer automatiquement</span>
+                    <span className="text-xs text-gray-500">{t('commerce.accounts.autoPassword')}</span>
                   </label>
                 </div>
                 {!autoGenPassword && (
@@ -718,7 +719,7 @@ export default function AccountsView({
                       value={formPassword}
                       onChange={(e) => setFormPassword(e.target.value)}
                       minLength={6}
-                      placeholder="6 caractères minimum"
+                      placeholder={t('commerce.accounts.passwordMinimum')}
                       className="w-full rounded-lg border border-gray-800 bg-gray-900 px-3 py-2 pr-10 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
                     />
                     <button
@@ -732,20 +733,20 @@ export default function AccountsView({
                 )}
                 {autoGenPassword && (
                   <p className="mt-1 text-xs text-gray-600">
-                    Un mot de passe sécurisé sera généré et affiché une seule fois après la création.
+                    {t('commerce.accounts.passwordHint')}
                   </p>
                 )}
               </div>
 
               <div className="flex items-center gap-2">
-                <label className="text-xs font-semibold uppercase tracking-wider text-gray-400">Statut</label>
+                <label className="text-xs font-semibold uppercase tracking-wider text-gray-400">{t('commerce.common.status')}</label>
                 <select
                   value={form.status}
                   onChange={(e) => setForm({ ...form, status: e.target.value as any })}
                   className="rounded-lg border border-gray-800 bg-gray-900 px-2 py-1.5 text-xs text-white focus:outline-none"
                 >
-                  <option value="active">Actif</option>
-                  <option value="suspended">Suspendu</option>
+                  <option value="active">{t('commerce.common.active')}</option>
+                  <option value="suspended">{t('commerce.common.suspended')}</option>
                 </select>
               </div>
 
@@ -755,7 +756,7 @@ export default function AccountsView({
                   onClick={() => setShowCreateModal(false)}
                   className="rounded-lg bg-gray-900 px-4 py-2 text-xs font-semibold text-gray-400 hover:bg-gray-800"
                 >
-                  Annuler
+                  {t('commerce.common.cancel')}
                 </button>
                 <button
                   type="submit"
@@ -763,7 +764,7 @@ export default function AccountsView({
                   className="flex items-center gap-1.5 rounded-lg bg-cyan-500 px-4 py-2 text-xs font-semibold text-black shadow-lg hover:bg-cyan-400 disabled:opacity-50"
                 >
                   {creating && <RefreshCw className="h-3.5 w-3.5 animate-spin" />}
-                  Créer le compte
+                  {t('commerce.accounts.submit')}
                 </button>
               </div>
             </form>
@@ -774,7 +775,7 @@ export default function AccountsView({
       {!isAdmin && (
         <div className="flex items-start gap-3 rounded-xl border border-cyan-800 bg-cyan-950/20 p-4 text-xs leading-relaxed text-cyan-300">
           <ShieldAlert className="h-5 w-5 shrink-0 text-cyan-400" />
-          <p>Votre rôle donne un accès en lecture seule à cet écran.</p>
+          <p>{t('commerce.accounts.readOnly')}</p>
         </div>
       )}
     </div>

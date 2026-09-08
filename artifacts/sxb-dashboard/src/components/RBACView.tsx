@@ -55,18 +55,28 @@ const ROLE_BADGES: Record<string, string> = {
 };
 
 export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: RBACViewProps) {
-  const { t } = useTranslation();
+  const { t, formatNumber, errorMessage } = useTranslation();
   const [roles, setRoles] = useState<RBACRole[]>([]);
   const [permissions, setPermissions] = useState<AppPermission[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<
-    { roleId: string; roleName: string; permCode: string; permLabel: string; granting: boolean } | null
+    { roleId: string; roleName: string; permCode: string; granting: boolean } | null
   >(null);
 
   // Le serveur n'accepte que SUPER_ADMIN, et OWNER par contournement unique.
   // ADMIN garde une vue complète, en lecture seule.
   const canEdit = isOwnerRole(currentUserRole) || currentUserRole === UserRole.SUPER_ADMIN;
+  const permissionLabel = (code: string) => {
+    const key = `commerce.rbac.permissions.${code}`;
+    const label = t(key);
+    return label === key ? permissions.find(permission => permission.code === code)?.description || code : label;
+  };
+  const categoryLabel = (category: string) => {
+    const key = `commerce.rbac.categories.${category}`;
+    const label = t(key);
+    return label === key ? category : label;
+  };
 
   const loadRBAC = async () => {
     setLoading(true);
@@ -108,7 +118,7 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
       setRoles(await fetchRoles());
       onRolePermissionsUpdated();
     } catch (err) {
-      window.alert(err instanceof Error ? err.message : t("common.error_generic"));
+      window.alert(errorMessage(err, 'commerce.common.errorGeneric'));
     } finally {
       setSaving(null);
     }
@@ -122,14 +132,14 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
 
     if (isRoleLocked(String(role.name))) {
       window.alert(
-        "Le rôle OWNER contourne le contrôle des permissions : les modifier ici n'aurait aucun effet réel."
+        t('commerce.rbac.ownerLocked')
       );
       return;
     }
 
     if (wouldLockOutRbac(String(role.name), permCode, granting)) {
       window.alert(
-        "Interdit : le super-administrateur ne peut pas se retirer l'administration des habilitations. Plus personne ne pourrait la rétablir."
+        t('commerce.rbac.preventLockout')
       );
       return;
     }
@@ -137,12 +147,10 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
     // Une permission sensible accordée à un rôle subalterne se confirme.
     const sensitive = isDangerous(permCode) && (granting || SUBORDINATE_ROLES.includes(role.name as UserRole));
     if (sensitive) {
-      const perm = permissions.find((p) => p.code === permCode);
       setConfirmation({
         roleId,
         roleName: String(role.name),
         permCode,
-        permLabel: perm?.description || permCode,
         granting,
       });
       return;
@@ -160,7 +168,7 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
     return (
       <div className="flex flex-col items-center justify-center py-20 text-gray-400">
         <RefreshCw className="mb-4 h-7 w-7 animate-spin text-cyan-400" />
-        <p className="font-mono text-sm">{t("common.loading")}</p>
+        <p className="font-mono text-sm">{t('commerce.common.loading')}</p>
       </div>
     );
   }
@@ -175,7 +183,7 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
         type="checkbox"
         checked={checked}
         disabled={disabled}
-        aria-label={`${perm.code} pour ${role.name}`}
+        aria-label={t('commerce.rbac.checkbox', { permission: perm.code, role: String(role.name) })}
         onChange={() => handleTogglePermission(role.id, perm.code, checked)}
         className={`h-4 w-4 rounded border-gray-800 bg-gray-900 text-cyan-500 transition-all focus:ring-cyan-500/30 ${
           disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer"
@@ -189,11 +197,10 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
       <div>
         <h2 className="flex items-center gap-2 text-lg font-bold tracking-tight text-white">
           <Shield className="h-5 w-5 text-cyan-400" />
-          Habilitations (RBAC)
+          {t('commerce.rbac.title')}
         </h2>
         <p className="mt-1 text-sm text-gray-400">
-          Choisissez les permissions de chaque rôle. Les permissions sensibles sont signalées : elles donnent barre
-          sur les comptes, les quotas ou l'infrastructure.
+          {t('commerce.rbac.subtitle')}
         </p>
       </div>
 
@@ -201,10 +208,9 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
         <div className="flex items-start gap-3 rounded-lg border border-cyan-800 bg-cyan-950/20 p-4 text-xs leading-relaxed text-cyan-300">
           <ShieldAlert className="h-5 w-5 shrink-0 text-cyan-400" />
           <div>
-            <p className="font-bold">Lecture seule</p>
+            <p className="font-bold">{t('commerce.rbac.readOnly')}</p>
             <p className="mt-0.5">
-              Seuls le propriétaire et le super-administrateur modifient la matrice d'habilitations ; le serveur
-              refuse toute autre écriture. Votre rôle en conserve la vue complète.
+              {t('commerce.rbac.readOnlyHint')}
             </p>
           </div>
         </div>
@@ -212,10 +218,10 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
 
       <div className="flex flex-wrap items-center gap-3 text-[11px] text-gray-500">
         <span className="inline-flex items-center gap-1 rounded-md border border-rose-500/30 bg-rose-500/10 px-2 py-0.5 text-rose-300">
-          <AlertTriangle className="h-3 w-3" /> Permission sensible
+          <AlertTriangle className="h-3 w-3" /> {t('commerce.rbac.sensitive')}
         </span>
         <span className="inline-flex items-center gap-1 rounded-md border border-gray-700 bg-gray-900/60 px-2 py-0.5">
-          <Lock className="h-3 w-3" /> Rôle non modifiable
+          <Lock className="h-3 w-3" /> {t('commerce.rbac.lockedRole')}
         </span>
       </div>
 
@@ -226,8 +232,8 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
             <table className="w-full border-collapse text-left">
               <thead>
                 <tr className="border-b border-gray-800/80 bg-gray-900/40 text-xs font-semibold uppercase tracking-wider text-gray-400">
-                  <th className="w-1/3 px-6 py-4">Permission et catégorie</th>
-                  <th className="w-1/4 px-6 py-4">Code technique</th>
+                  <th className="w-1/3 px-6 py-4">{t('commerce.rbac.permissionCategory')}</th>
+                  <th className="w-1/4 px-6 py-4">{t('commerce.rbac.code')}</th>
                   {roles.map((r) => (
                     <th key={r.id} className="px-6 py-4 text-center">
                       <span className={`inline-flex items-center gap-1.5 rounded border px-2 py-1 font-mono text-xs font-bold ${
@@ -248,7 +254,7 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
                         colSpan={2 + roles.length}
                         className="px-6 py-3 text-xs font-bold uppercase tracking-wider text-gray-500"
                       >
-                        {category}
+                        {categoryLabel(category)}
                       </td>
                     </tr>
                     {permissions.filter((p) => p.category === category).map((perm) => (
@@ -256,9 +262,9 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
                         <td className="px-6 py-3.5 font-medium text-white">
                           <div className="flex items-center gap-2">
                             {isDangerous(perm.code) && (
-                              <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-rose-400" aria-label="Permission sensible" />
+                              <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-rose-400" aria-label={t('commerce.rbac.sensitive')} />
                             )}
-                            <span>{perm.description}</span>
+                            <span>{permissionLabel(perm.code)}</span>
                           </div>
                         </td>
                         <td className="px-6 py-3.5 font-mono text-xs text-gray-500">{perm.code}</td>
@@ -292,7 +298,7 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
                 {isRoleLocked(String(role.name)) && <Lock className="h-3 w-3" />}
                 {role.name}
               </span>
-              <span className="text-xs text-gray-500">{role.permissions.length} permission(s)</span>
+              <span className="text-xs text-gray-500">{t('commerce.rbac.permissionCount', { count: formatNumber(role.permissions.length) })}</span>
             </summary>
             <div className="divide-y divide-gray-900 border-t border-gray-800/80">
               {permissions.map((perm) => (
@@ -300,7 +306,7 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
                   <span className="min-w-0">
                     <span className="flex items-center gap-1.5 text-sm text-white">
                       {isDangerous(perm.code) && <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-rose-400" />}
-                      {perm.description}
+                      {permissionLabel(perm.code)}
                     </span>
                     <span className="mt-0.5 block font-mono text-[11px] text-gray-500">{perm.code}</span>
                   </span>
@@ -319,7 +325,7 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
             <div className="mb-3 flex items-start justify-between gap-3">
               <h3 className="flex items-center gap-2 text-base font-semibold text-white">
                 <AlertTriangle className="h-4 w-4 text-amber-400" />
-                Confirmer un changement sensible
+                {t('commerce.rbac.confirmSensitive')}
               </h3>
               <button onClick={() => setConfirmation(null)} className="text-gray-500 hover:text-white">
                 <X className="h-4 w-4" />
@@ -327,16 +333,16 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
             </div>
             <div className="space-y-2 text-sm text-gray-300">
               <p>
-                <span className="text-gray-500">Rôle :</span> {confirmation.roleName}
+                <span className="text-gray-500">{t('commerce.rbac.roleLabel')}</span> {confirmation.roleName}
               </p>
               <p>
-                <span className="text-gray-500">Permission :</span> {confirmation.permLabel}{" "}
+                <span className="text-gray-500">{t('commerce.rbac.permissionLabel')}</span> {permissionLabel(confirmation.permCode)}{" "}
                 <span className="font-mono text-xs text-gray-500">({confirmation.permCode})</span>
               </p>
               <p className={confirmation.granting ? "text-rose-300" : "text-amber-300"}>
                 {confirmation.granting
-                  ? "Cette permission ouvre des actions à portée durable. Accordez-la seulement si ce rôle doit réellement les exercer."
-                  : "Retirer cette permission fermera immédiatement les écrans qui en dépendent pour ce rôle."}
+                  ? t('commerce.rbac.grantHint')
+                  : t('commerce.rbac.removeHint')}
               </p>
             </div>
             <div className="mt-4 flex justify-end gap-2">
@@ -345,7 +351,7 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
                 onClick={() => setConfirmation(null)}
                 className="rounded-lg border border-[#1a1f2e] px-3 py-2 text-xs text-gray-300 hover:bg-white/5"
               >
-                Annuler
+                {t('commerce.common.cancel')}
               </button>
               <button
                 type="button"
@@ -357,7 +363,7 @@ export default function RBACView({ currentUserRole, onRolePermissionsUpdated }: 
                 className="flex items-center gap-1.5 rounded-lg bg-cyan-500 px-3 py-2 text-xs font-semibold text-black hover:bg-cyan-400"
               >
                 <Check className="h-3.5 w-3.5" />
-                {confirmation.granting ? "Accorder" : "Retirer"}
+                {confirmation.granting ? t('commerce.rbac.grant') : t('commerce.rbac.remove')}
               </button>
             </div>
           </div>

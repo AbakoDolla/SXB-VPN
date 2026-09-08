@@ -14,9 +14,7 @@ import { isAdmin as isAdminRole } from "../lib/roles";
 import { Reseller, ResellerQuotaMovement, UserRole } from "../types";
 import {
   ACCESS_BADGES,
-  ACCESS_LABELS,
   QUOTA_BADGES,
-  QUOTA_LABELS,
   daysUntil,
   defaultExpiryInput,
   formatBytes,
@@ -51,7 +49,7 @@ interface ResellersViewProps {
  * reçu. Seul un plafond négatif, choisi explicitement, lève la limite.
  */
 export default function ResellersView({ currentUserRole, actorName }: ResellersViewProps) {
-  const { t } = useTranslation();
+  const { t, locale, formatNumber, message, errorMessage, errorText } = useTranslation();
   const [resellers, setResellers] = useState<Reseller[]>([]);
   const [quotaHistory, setQuotaHistory] = useState<ResellerQuotaMovement[]>([]);
   const [assignedCounts, setAssignedCounts] = useState<Record<string, number>>({});
@@ -71,7 +69,7 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
     accessExpiresAt: defaultExpiryInput(365),
   });
   const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState("");
+  const [createError, setCreateError] = useState<unknown>(null);
   const [createdCredentials, setCreatedCredentials] = useState<{ email: string; password?: string } | null>(null);
 
   // Renouvellement de l'échéance.
@@ -120,12 +118,12 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
     e.preventDefault();
     setCreateError("");
     if (!isFutureExpiry(createForm.accessExpiresAt)) {
-      setCreateError("La date d'expiration de l'accès doit être renseignée et future.");
+      setCreateError('commerce.resellers.futureExpiry');
       return;
     }
     const iso = toIsoExpiry(createForm.accessExpiresAt);
     if (!iso) {
-      setCreateError("La date d'expiration de l'accès est invalide.");
+      setCreateError('commerce.resellers.invalidExpiry');
       return;
     }
     setCreating(true);
@@ -146,10 +144,10 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
         name: "", email: "", phone: "", quotaGB: 100, unlimited: false,
         status: "active", commission: 20, accessExpiresAt: defaultExpiryInput(365),
       });
-      toast.success("Revendeur créé — compte, rôle et agrément en une seule opération");
+      toast.success(message('commerce.resellers.created'));
       await loadResellers();
     } catch (err: any) {
-      setCreateError(err?.message || "Erreur lors de la création du revendeur");
+      setCreateError(err);
     } finally {
       setCreating(false);
     }
@@ -159,19 +157,19 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
     e.preventDefault();
     if (!renewTarget) return;
     if (!isFutureExpiry(renewValue)) {
-      toast.error("La nouvelle échéance doit être future.");
+      toast.error(message('commerce.resellers.futureRenewal'));
       return;
     }
     const iso = toIsoExpiry(renewValue);
-    if (!iso) { toast.error("Date invalide."); return; }
+    if (!iso) { toast.error(message('commerce.resellers.invalidDate')); return; }
     setRenewing(true);
     try {
       await renewResellerAccess(renewTarget.id, iso);
-      toast.success(`Accès renouvelé jusqu'au ${formatDate(iso)}`);
+      toast.success(<RenewedAccessMessage expiresAt={iso} />);
       setRenewTarget(null);
       await loadResellers();
     } catch (err: any) {
-      toast.error(err?.message || "Erreur lors du renouvellement");
+      toast.error(errorText(err, 'commerce.resellers.renewError'));
     } finally {
       setRenewing(false);
     }
@@ -179,14 +177,12 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
 
   const handleAdjustQuota = async (r: Reseller) => {
     const saisie = window.prompt(
-      "Nouveau plafond en Go pour ce revendeur.\n" +
-      "• un nombre : plafond exact (0 = aucun volume attribué)\n" +
-      "• « illimité » : lever le plafond",
-      r.quotaUnlimited ? "illimité" : String(Math.round((r.quotaGB ?? r.balance ?? 0) * 10) / 10)
+      t('commerce.resellers.quotaPrompt'),
+      r.quotaUnlimited ? t('commerce.resellers.unlimitedInput') : formatNumber(Math.round((r.quotaGB ?? r.balance ?? 0) * 10) / 10, { useGrouping: false })
     );
     if (saisie === null) return;
-    const reason = window.prompt("Motif de cet ajustement de quota :")?.trim();
-    if (!reason) { toast.error("Le motif est obligatoire"); return; }
+    const reason = window.prompt(t('commerce.resellers.reasonPrompt'))?.trim();
+    if (!reason) { toast.error(message('commerce.resellers.reasonRequired')); return; }
 
     const normalized = saisie.trim().toLowerCase();
     try {
@@ -194,40 +190,36 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
         await updateReseller(r.id, { quotaGB: -1, reason });
       } else {
         const amount = Number(normalized.replace(",", "."));
-        if (Number.isNaN(amount) || amount < 0) { toast.error("Veuillez saisir un nombre positif ou « illimité »"); return; }
+        if (Number.isNaN(amount) || amount < 0) { toast.error(message('commerce.resellers.quotaInvalid')); return; }
         await updateReseller(r.id, { quotaGB: amount, reason });
       }
-      toast.success("Plafond du revendeur mis à jour");
+      toast.success(message('commerce.resellers.quotaUpdated'));
       await loadResellers();
     } catch (err: any) {
-      toast.error(err?.message || "Erreur lors de la mise à jour du plafond");
+      toast.error(errorText(err, 'commerce.resellers.quotaError'));
     }
   };
 
   const handleToggleStatus = async (r: Reseller) => {
     const next = r.status === "active" ? "suspended" : "active";
-    const label = next === "suspended" ? "Suspendre" : "Réactiver";
-    if (!window.confirm(`${label} l'agrément de « ${r.name} » ?`)) return;
+    if (!window.confirm(t(next === 'suspended' ? 'commerce.resellers.confirmSuspend' : 'commerce.resellers.confirmReactivate', { name: r.name }))) return;
     try {
       await updateReseller(r.id, { status: next });
-      toast.success(next === "suspended" ? "Agrément suspendu" : "Agrément réactivé");
+      toast.success(message(next === 'suspended' ? 'commerce.resellers.suspended' : 'commerce.resellers.reactivated'));
       await loadResellers();
     } catch (err: any) {
-      toast.error(err?.message || "Erreur lors du changement de statut");
+      toast.error(errorText(err, 'commerce.common.errorStatus'));
     }
   };
 
   const handleDelete = async (r: Reseller) => {
-    if (!window.confirm(
-      `Retirer l'agrément de « ${r.name} » ?\n\n` +
-      "Seule la fiche revendeur est supprimée : son compte de connexion et les accès VPN de ses clients sont conservés."
-    )) return;
+    if (!window.confirm(t('commerce.resellers.confirmDelete', { name: r.name }))) return;
     try {
       await deleteReseller(r.id);
-      toast.success("Agrément retiré — clients conservés");
+      toast.success(message('commerce.resellers.deleted'));
       await loadResellers();
     } catch (err: any) {
-      toast.error(err?.message || "Erreur lors du retrait de l'agrément");
+      toast.error(errorText(err, 'commerce.resellers.deleteError'));
     }
   };
 
@@ -241,32 +233,32 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
   const formatLedgerBytes = (raw: string) => formatBytes(raw);
 
   const movementLabel: Record<ResellerQuotaMovement["kind"], string> = {
-    ADMIN_ALLOCATION: "Allocation administrateur",
-    ADMIN_WITHDRAWAL: "Retrait administrateur",
-    ADMIN_CORRECTION: "Correction",
-    QUOTA_COMMITMENT: "Engagement",
-    QUOTA_RELEASE: "Libération",
+    ADMIN_ALLOCATION: t('commerce.resellers.movements.allocation'),
+    ADMIN_WITHDRAWAL: t('commerce.resellers.movements.withdrawal'),
+    ADMIN_CORRECTION: t('commerce.resellers.movements.correction'),
+    QUOTA_COMMITMENT: t('commerce.resellers.movements.commitment'),
+    QUOTA_RELEASE: t('commerce.resellers.movements.release'),
   };
 
   const historyPanel = (
     <section className="overflow-hidden rounded-xl border border-gray-800/80 bg-gray-950/20">
       <div className="flex items-center gap-2 border-b border-gray-800 px-4 py-3">
         <History className="h-4 w-4 text-cyan-400" />
-        <h2 className="text-sm font-semibold text-white">Historique auditable des quotas</h2>
+        <h2 className="text-sm font-semibold text-white">{t('commerce.resellers.history')}</h2>
       </div>
       {quotaHistory.length === 0 ? (
-        <p className="p-6 text-center text-sm text-gray-500">Aucun mouvement enregistré.</p>
+        <p className="p-6 text-center text-sm text-gray-500">{t('commerce.resellers.historyEmpty')}</p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead className="bg-gray-900/40 uppercase text-gray-400">
               <tr>
-                {!isReseller && <th className="px-4 py-3">Revendeur</th>}
-                <th className="px-4 py-3">Mouvement</th>
-                <th className="px-4 py-3">Avant / après</th>
-                <th className="px-4 py-3">Auteur</th>
-                <th className="px-4 py-3">Motif</th>
-                <th className="px-4 py-3">Date</th>
+                {!isReseller && <th className="px-4 py-3">{t('commerce.common.reseller')}</th>}
+                <th className="px-4 py-3">{t('commerce.resellers.movement')}</th>
+                <th className="px-4 py-3">{t('commerce.resellers.beforeAfter')}</th>
+                <th className="px-4 py-3">{t('commerce.resellers.author')}</th>
+                <th className="px-4 py-3">{t('commerce.resellers.reason')}</th>
+                <th className="px-4 py-3">{t('commerce.resellers.date')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-900">
@@ -284,7 +276,7 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
                     <td className="px-4 py-3">{movement.author}</td>
                     <td className="max-w-xs px-4 py-3">{movement.reason}</td>
                     <td className="whitespace-nowrap px-4 py-3">
-                      {new Date(movement.createdAt).toLocaleString("fr-FR")}
+                      {new Date(movement.createdAt).toLocaleString(locale)}
                     </td>
                   </tr>
                 );
@@ -301,9 +293,9 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
       <div className="space-y-6">
         <div className="mx-auto max-w-lg rounded-xl border border-gray-800 bg-gray-950/20 p-8 text-center backdrop-blur-md">
           <Landmark className="mx-auto mb-3 h-10 w-10 text-cyan-400" />
-          <h2 className="text-lg font-bold text-white">Espace revendeur</h2>
+          <h2 className="text-lg font-bold text-white">{t('commerce.resellers.area')}</h2>
           <p className="mt-2 text-sm leading-relaxed text-gray-400">
-            L'historique ci-dessous est strictement limité aux mouvements de votre propre quota.
+            {t('commerce.resellers.historyScope')}
           </p>
         </div>
         {historyPanel}
@@ -315,10 +307,9 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-lg font-bold tracking-tight text-white">{t("resellers.title")}</h2>
+          <h2 className="text-lg font-bold tracking-tight text-white">{t('commerce.resellers.title')}</h2>
           <p className="mt-1 text-sm text-gray-400">
-            Agrément, échéance et plafond de chaque revendeur. Un compte de connexion seul ne fait pas un revendeur :
-            seul l'agrément ci-dessous lui donne des pouvoirs.
+            {t('commerce.resellers.subtitle')}
           </p>
         </div>
 
@@ -328,7 +319,7 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
             className="flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 px-4 py-2 text-sm font-medium text-white shadow-lg transition-all hover:from-cyan-400 hover:to-blue-500"
           >
             <UserPlus className="h-4 w-4" />
-            Créer un revendeur
+            {t('commerce.resellers.create')}
           </button>
         )}
       </div>
@@ -337,15 +328,15 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
         <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className="text-sm font-semibold text-emerald-300">Revendeur créé — identifiants à transmettre</p>
+              <p className="text-sm font-semibold text-emerald-300">{t('commerce.resellers.credentials')}</p>
               <p className="mt-1 font-mono text-xs text-emerald-100">{createdCredentials.email}</p>
               {createdCredentials.password ? (
                 <p className="mt-1 font-mono text-xs text-amber-200">
-                  Mot de passe provisoire : {createdCredentials.password}
+                  {t('commerce.resellers.temporaryPassword', { password: createdCredentials.password })}
                 </p>
               ) : (
                 <p className="mt-1 text-xs text-emerald-200/80">
-                  Le compte existait déjà : ses identifiants actuels restent inchangés.
+                  {t('commerce.resellers.existingAccount')}
                 </p>
               )}
             </div>
@@ -360,7 +351,7 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
         <Search className="absolute left-3 top-2.5 h-4 w-4 text-gray-500" />
         <input
           type="text"
-          placeholder="Rechercher un revendeur…"
+          placeholder={t('commerce.resellers.search')}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="w-full rounded-lg border border-gray-800 bg-gray-900 py-2 pl-10 pr-4 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
@@ -370,7 +361,7 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
       {loading ? (
         <div className="flex flex-col items-center justify-center py-20 text-gray-400">
           <RefreshCw className="mb-4 h-7 w-7 animate-spin text-cyan-400" />
-          <p className="font-mono text-sm">{t("common.loading")}</p>
+          <p className="font-mono text-sm">{t('commerce.common.loading')}</p>
         </div>
       ) : filtered.length > 0 ? (
         <div className="overflow-hidden rounded-xl border border-gray-800/80 bg-gray-950/20 backdrop-blur-md">
@@ -378,13 +369,13 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
             <table className="w-full border-collapse text-left">
               <thead>
                 <tr className="border-b border-gray-800/80 bg-gray-900/40 text-xs font-semibold uppercase tracking-wider text-gray-400">
-                  <th className="px-4 py-3">{t("resellers.fields.name")}</th>
-                  <th className="px-4 py-3">Validité de l'accès</th>
-                  <th className="px-4 py-3">Quota data</th>
-                  <th className="px-4 py-3 text-center">{t("resellers.fields.clients_count")}</th>
-                  <th className="px-4 py-3 text-center">Configurations</th>
-                  <th className="px-4 py-3 text-center">{t("resellers.fields.status")}</th>
-                  {canManage && <th className="px-4 py-3 text-right">{t("common.actions")}</th>}
+                  <th className="px-4 py-3">{t('commerce.resellers.name')}</th>
+                  <th className="px-4 py-3">{t('commerce.resellers.accessValidity')}</th>
+                  <th className="px-4 py-3">{t('commerce.resellers.dataQuota')}</th>
+                  <th className="px-4 py-3 text-center">{t('commerce.resellers.clients')}</th>
+                  <th className="px-4 py-3 text-center">{t('commerce.resellers.configurations')}</th>
+                  <th className="px-4 py-3 text-center">{t('commerce.resellers.status')}</th>
+                  {canManage && <th className="px-4 py-3 text-right">{t('commerce.common.actions')}</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-900 text-sm">
@@ -414,27 +405,27 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
                       <td className="min-w-52 px-4 py-4">
                         <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${ACCESS_BADGES[accessState]}`}>
                           <CalendarClock className="h-3 w-3" />
-                          {ACCESS_LABELS[accessState]}
+                          {t(`commerce.access.states.${accessState}`)}
                         </span>
                         <p className="mt-1 text-xs text-gray-400">
                           {r.accessExpiresAt || access?.accessExpiresAt
-                            ? <>Jusqu'au {formatDate(r.accessExpiresAt ?? access?.accessExpiresAt)}</>
-                            : "Aucune échéance enregistrée (fiche antérieure)"}
+                            ? t('commerce.resellers.until', { date: formatDate(r.accessExpiresAt ?? access?.accessExpiresAt) })
+                            : t('commerce.resellers.legacyNoExpiry')}
                         </p>
                         {remaining !== null && remaining >= 0 && remaining <= 30 && (
-                          <p className="text-[11px] text-amber-400">Expire dans {remaining} jour{remaining > 1 ? "s" : ""}</p>
+                          <p className="text-[11px] text-amber-400">{t('commerce.resellers.expiresIn', { count: formatNumber(remaining) })}</p>
                         )}
                         {remaining !== null && remaining < 0 && (
-                          <p className="text-[11px] text-rose-400">Échéance dépassée — renouvellement requis</p>
+                          <p className="text-[11px] text-rose-400">{t('commerce.resellers.overdue')}</p>
                         )}
                       </td>
 
                       <td className="min-w-56 px-4 py-4">
                         <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${QUOTA_BADGES[quotaState]}`}>
-                          {QUOTA_LABELS[quotaState]}
+                          {t(`commerce.access.quotaStates.${quotaState}`)}
                         </span>
                         {unlimited ? (
-                          <p className="mt-1 text-xs text-gray-500">Aucun plafond — choix explicite de l'administrateur</p>
+                          <p className="mt-1 text-xs text-gray-500">{t('commerce.resellers.noLimit')}</p>
                         ) : (
                           <div className="mt-1.5">
                             <div className="mb-1 flex justify-between font-mono text-xs">
@@ -450,27 +441,27 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
                             {/* « engagé » = distribué aux clients, ce qui décompte le
                                 plafond ; « consommé » = trafic réellement écoulé. */}
                             <div className="mt-1 flex justify-between text-[10px] text-gray-500">
-                              <span>engagé</span>
-                              <span>consommé {formatBytes(r.quotaConsumedBytes ?? 0)}</span>
+                              <span>{t('commerce.resellers.committed')}</span>
+                              <span>{t('commerce.resellers.consumed', { value: formatBytes(r.quotaConsumedBytes ?? 0) })}</span>
                             </div>
                             <p className="text-[10px] text-gray-500">
-                              Reste {formatBytes(access?.quotaRemainingBytes ?? r.quotaRemainingBytes ?? 0)}
+                              {t('commerce.resellers.remaining', { value: formatBytes(access?.quotaRemainingBytes ?? r.quotaRemainingBytes ?? 0) })}
                             </p>
                           </div>
                         )}
                       </td>
 
-                      <td className="px-4 py-4 text-center text-white">{r.clientsCount}</td>
+                      <td className="px-4 py-4 text-center text-white">{formatNumber(r.clientsCount)}</td>
 
                       <td className="px-4 py-4 text-center">
                         {assigned > 0 ? (
                           <span className="inline-flex items-center gap-1 rounded-full border border-violet-500/25 bg-violet-500/10 px-2 py-0.5 text-xs text-violet-300">
                             <GitBranch className="h-3 w-3" />
-                            {assigned}
+                            {formatNumber(assigned)}
                           </span>
                         ) : (
-                          <span className="text-xs text-amber-400" title="Sans configuration attribuée, ce revendeur ne peut créer aucun forfait.">
-                            Aucune
+                          <span className="text-xs text-amber-400" title={t('commerce.resellers.noConfigurationsHint')}>
+                            {t('commerce.common.none')}
                           </span>
                         )}
                       </td>
@@ -481,7 +472,7 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
                             ? "border border-emerald-500/20 bg-emerald-500/10 text-emerald-400"
                             : "border border-amber-500/20 bg-amber-500/10 text-amber-400"
                         }`}>
-                          {r.status === "active" ? "Actif" : "Suspendu"}
+                          {r.status === "active" ? t('commerce.common.active') : t('commerce.common.suspended')}
                         </span>
                       </td>
 
@@ -495,23 +486,23 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
                               }}
                               className="flex items-center gap-1 rounded border border-emerald-800/30 bg-emerald-950 px-2.5 py-1 text-xs font-semibold text-emerald-400 hover:bg-emerald-900/50"
                             >
-                              <CalendarClock className="h-3.5 w-3.5" /> Renouveler
+                              <CalendarClock className="h-3.5 w-3.5" /> {t('commerce.common.renew')}
                             </button>
                             <button
                               onClick={() => handleAdjustQuota(r)}
                               className="flex items-center gap-1 rounded border border-cyan-800/20 bg-cyan-950 px-2.5 py-1 text-xs font-semibold text-cyan-400 hover:bg-cyan-900/50"
                             >
-                              <Coins className="h-3.5 w-3.5" /> Quota
+                              <Coins className="h-3.5 w-3.5" /> {t('commerce.common.quota')}
                             </button>
                             <button
                               onClick={() => handleToggleStatus(r)}
                               className="flex items-center gap-1 rounded border border-amber-800/20 bg-amber-950 px-2.5 py-1 text-xs font-semibold text-amber-400 hover:bg-amber-900/50"
                             >
-                              {r.status === "active" ? "Suspendre" : "Réactiver"}
+                              {r.status === "active" ? t('commerce.common.suspend') : t('commerce.common.reactivate')}
                             </button>
                             <button
                               onClick={() => handleDelete(r)}
-                              title="Retirer l'agrément (clients conservés)"
+                              title={t('commerce.resellers.remove')}
                               className="rounded border border-rose-800/20 bg-rose-950 p-1.5 text-rose-400 hover:bg-rose-900/40"
                             >
                               <Trash2 className="h-3.5 w-3.5" />
@@ -529,14 +520,14 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
       ) : (
         <div className="rounded-xl border border-dashed border-gray-800 bg-gray-950/10 p-12 text-center">
           <ShieldCheck className="mx-auto mb-4 h-12 w-12 text-gray-700" />
-          <h3 className="text-base font-semibold text-white">{t("resellers.empty_state")}</h3>
-          <p className="mx-auto mt-1 max-w-sm text-sm text-gray-400">{t("resellers.empty_state_desc")}</p>
+          <h3 className="text-base font-semibold text-white">{t('commerce.resellers.empty')}</h3>
+          <p className="mx-auto mt-1 max-w-sm text-sm text-gray-400">{t('commerce.resellers.emptyHint')}</p>
           {canManage && (
             <button
               onClick={() => { setShowCreate(true); setCreateError(""); }}
               className="mt-5 rounded-lg border border-cyan-800/40 bg-cyan-950 px-4 py-2 text-xs font-semibold text-cyan-400 transition-all hover:bg-cyan-900/50"
             >
-              Créer le premier revendeur
+              {t('commerce.resellers.createFirst')}
             </button>
           )}
         </div>
@@ -551,7 +542,7 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
             <div className="mb-4 flex items-center justify-between">
               <h2 className="flex items-center gap-2 text-lg font-bold text-white">
                 <UserPlus className="h-5 w-5 text-cyan-400" />
-                Créer un revendeur
+                {t('commerce.resellers.create')}
               </h2>
               <button onClick={() => setShowCreate(false)} className="text-gray-500 hover:text-white">
                 <X className="h-5 w-5" />
@@ -559,29 +550,28 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
             </div>
 
             <p className="mb-4 rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-3 text-xs leading-relaxed text-cyan-200">
-              Le compte de connexion, le rôle et l'agrément commercial sont créés ensemble. C'est le seul chemin :
-              créer un compte au rôle RESELLER depuis l'onglet « Comptes » ne produirait pas d'agrément.
+              {t('commerce.resellers.createHint')}
             </p>
 
             <form onSubmit={handleCreate} className="space-y-4">
-              {createError && (
+              {!!createError && (
                 <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-400">
-                  {createError}
+                  {errorMessage(createError, 'commerce.resellers.createError')}
                 </div>
               )}
 
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
-                  <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-400">Nom complet *</label>
+                  <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-400">{t('commerce.common.fullNameRequired')}</label>
                   <input
                     required minLength={2} type="text" value={createForm.name}
                     onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })}
-                    placeholder="Awa Traoré"
+                    placeholder={t('commerce.resellers.exampleName')}
                     className="w-full rounded-lg border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
                   />
                 </div>
                 <div>
-                  <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-400">Email *</label>
+                  <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-400">{t('commerce.common.emailRequired')}</label>
                   <input
                     required type="email" value={createForm.email}
                     onChange={(e) => setCreateForm({ ...createForm, email: e.target.value })}
@@ -593,7 +583,7 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
 
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
-                  <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-400">Téléphone</label>
+                  <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-400">{t('commerce.common.phone')}</label>
                   <input
                     type="text" value={createForm.phone}
                     onChange={(e) => setCreateForm({ ...createForm, phone: e.target.value })}
@@ -603,7 +593,7 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
                 </div>
                 <div>
                   <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-400">
-                    Expiration de l'accès *
+                    {t('commerce.resellers.accessExpiryRequired')}
                   </label>
                   <input
                     required type="datetime-local" min={minExpiryInput()}
@@ -612,7 +602,7 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
                     className="w-full rounded-lg border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
                   />
                   <p className="mt-1 text-[11px] text-gray-500">
-                    Obligatoire et future : un agrément sans échéance est perpétuel.
+                    {t('commerce.resellers.expiryHint')}
                   </p>
                 </div>
               </div>
@@ -620,7 +610,7 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
                   <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-400">
-                    Quota attribué (Go)
+                    {t('commerce.resellers.allocatedGb')}
                   </label>
                   <input
                     type="number" min={0} step={1} disabled={createForm.unlimited}
@@ -634,33 +624,33 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
                       onChange={(e) => setCreateForm({ ...createForm, unlimited: e.target.checked })}
                       className="rounded border-gray-700 bg-gray-900 text-cyan-500"
                     />
-                    Quota illimité (choix explicite)
+                    {t('commerce.resellers.unlimitedChoice')}
                   </label>
                   <p className="mt-1 text-[11px] text-gray-500">
-                    0 Go signifie « aucun volume attribué », jamais « illimité ».
+                    {t('commerce.resellers.zeroHint')}
                   </p>
                 </div>
                 <div>
-                  <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-400">Commission (%)</label>
+                  <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-400">{t('commerce.resellers.commission')}</label>
                   <input
                     type="number" min={0} max={100} value={createForm.commission}
                     onChange={(e) => setCreateForm({ ...createForm, commission: Number(e.target.value) })}
                     className="w-full rounded-lg border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
                   />
-                  <label className="mb-1.5 mt-3 block text-xs font-semibold uppercase tracking-wider text-gray-400">Statut</label>
+                  <label className="mb-1.5 mt-3 block text-xs font-semibold uppercase tracking-wider text-gray-400">{t('commerce.common.status')}</label>
                   <select
                     value={createForm.status}
                     onChange={(e) => setCreateForm({ ...createForm, status: e.target.value as "active" | "suspended" })}
                     className="w-full rounded-lg border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-white focus:outline-none"
                   >
-                    <option value="active">Actif</option>
-                    <option value="suspended">Suspendu</option>
+                    <option value="active">{t('commerce.common.active')}</option>
+                    <option value="suspended">{t('commerce.common.suspended')}</option>
                   </select>
                 </div>
               </div>
 
               <p className="text-xs text-gray-500">
-                Un mot de passe provisoire est généré et affiché une seule fois après la création.
+                {t('commerce.resellers.passwordHint')}
               </p>
 
               <div className="mt-6 flex justify-end gap-2 border-t border-gray-900 pt-4">
@@ -668,14 +658,14 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
                   type="button" onClick={() => setShowCreate(false)}
                   className="rounded-lg bg-gray-900 px-4 py-2 text-xs font-semibold text-gray-400 hover:bg-gray-800"
                 >
-                  {t("common.cancel")}
+                  {t('commerce.common.cancel')}
                 </button>
                 <button
                   type="submit" disabled={creating}
                   className="flex items-center gap-2 rounded-lg bg-cyan-500 px-4 py-2 text-xs font-semibold text-black shadow-lg hover:bg-cyan-400 disabled:opacity-50"
                 >
                   {creating && <RefreshCw className="h-3.5 w-3.5 animate-spin" />}
-                  Créer le revendeur
+                  {t('commerce.resellers.submit')}
                 </button>
               </div>
             </form>
@@ -689,15 +679,15 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
           <div className="w-full max-w-md rounded-xl border border-gray-800 bg-gray-950 p-6 shadow-2xl">
             <h2 className="mb-1 flex items-center gap-2 text-lg font-bold text-white">
               <CalendarClock className="h-5 w-5 text-emerald-400" />
-              Renouveler l'accès
+              {t('commerce.common.renewAccess')}
             </h2>
             <p className="mb-4 text-sm text-gray-400">
-              {renewTarget.name} — échéance actuelle : {formatDate(renewTarget.accessExpiresAt)}
+              {t('commerce.resellers.currentExpiry', { name: renewTarget.name, date: formatDate(renewTarget.accessExpiresAt) })}
             </p>
             <form onSubmit={handleRenew} className="space-y-4">
               <div>
                 <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-400">
-                  Nouvelle échéance *
+                  {t('commerce.resellers.newExpiry')}
                 </label>
                 <input
                   required type="datetime-local" min={minExpiryInput()} value={renewValue}
@@ -705,7 +695,7 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
                   className="w-full rounded-lg border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
                 />
                 <p className="mt-1 text-[11px] text-gray-500">
-                  Pour couper l'accès immédiatement, utilisez « Suspendre » : c'est réversible et lisible.
+                  {t('commerce.resellers.suspendHint')}
                 </p>
               </div>
               <div className="flex justify-end gap-2 border-t border-gray-900 pt-4">
@@ -713,14 +703,14 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
                   type="button" onClick={() => setRenewTarget(null)}
                   className="rounded-lg bg-gray-900 px-4 py-2 text-xs font-semibold text-gray-400 hover:bg-gray-800"
                 >
-                  {t("common.cancel")}
+                  {t('commerce.common.cancel')}
                 </button>
                 <button
                   type="submit" disabled={renewing}
                   className="flex items-center gap-2 rounded-lg bg-emerald-500 px-4 py-2 text-xs font-semibold text-black hover:bg-emerald-400 disabled:opacity-50"
                 >
                   {renewing && <RefreshCw className="h-3.5 w-3.5 animate-spin" />}
-                  Renouveler
+                  {t('commerce.common.renew')}
                 </button>
               </div>
             </form>
@@ -729,4 +719,9 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
       )}
     </div>
   );
+}
+
+function RenewedAccessMessage({ expiresAt }: { expiresAt: string }) {
+  const { t } = useTranslation();
+  return <>{t('commerce.resellers.renewed', { date: formatDate(expiresAt) })}</>;
 }
