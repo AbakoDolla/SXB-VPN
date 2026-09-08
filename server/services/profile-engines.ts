@@ -50,7 +50,7 @@ async function lockAccount(db: Db, engine: ProfileEngine, id: string) {
 
 export async function prepareProfileEngineLock(db: Db, profile: VpnProfile): Promise<VpnProfile> {
   if (profile.engineAccountId && profile.engineType) {
-    if (!(profile.engineType in tables)) throw new ProfileLockError(409, 'PROFILE_ENGINE_LINK_INVALID');
+    if (!Object.hasOwn(tables, profile.engineType)) throw new ProfileLockError(409, 'PROFILE_ENGINE_LINK_INVALID');
     await lockAccount(db, profile.engineType as ProfileEngine, profile.engineAccountId);
     return profile;
   }

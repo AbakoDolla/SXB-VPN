@@ -353,10 +353,13 @@ router.put('/:id/lock', requireAuth, requirePermission('vpnprofile.manage'), ...
     assertProfileUnlocked(existing, req);
     const changed = await prisma.$transaction(async tx => {
       await prepareProfileEngineLock(tx, existing);
-      return tx.vpnProfile.updateMany({
+      assertProfileUnlocked(existing, req);
+      const result = await tx.vpnProfile.updateMany({
         where: profileLockWhere(existing),
         data: { lockPasswordHash: lock.lockPasswordHash, lockVersion: { increment: 1 } },
       });
+      if (result.count !== 1) throw new ProfileLockError(423, 'PROFILE_LOCKED');
+      return result;
     });
     if (changed.count !== 1) throw new ProfileLockError(423, 'PROFILE_LOCKED');
     const profile = await prisma.vpnProfile.findUnique({ where: { id: existing.id } });
@@ -648,6 +651,7 @@ router.put('/:id', requireAuth, requirePermission('vpnprofile.manage'), async (r
     if (!existing) return res.status(404).json({ error: 'Profile not found' });
     assertProfileUnlocked(existing, req);
     await prisma.$transaction(tx => prepareProfileEngineLock(tx, existing));
+    assertProfileUnlocked(existing, req);
     if (['lockPassword', 'lockPasswordHash', 'lockVersion', 'engineType', 'engineAccountId'].some(key => key in req.body)) {
       return res.status(400).json({ error: 'PROFILE_LOCK_FIELDS_FORBIDDEN' });
     }
@@ -735,6 +739,7 @@ router.delete('/:id', requireAuth, requirePermission('vpnprofile.manage'), async
     if (!existing) return res.status(404).json({ error: 'Profile not found' });
     assertProfileUnlocked(existing, req);
     const linked = await prisma.$transaction(tx => prepareProfileEngineLock(tx, existing));
+    assertProfileUnlocked(existing, req);
     if (linked.engineAccountId) return res.status(409).json({ error: 'PROFILE_ENGINE_LINKED' });
     if (existing._count.subscriptions > 0) {
       return res.status(409).json({ error: `Cannot delete: profile has ${existing._count.subscriptions} active subscription(s)` });

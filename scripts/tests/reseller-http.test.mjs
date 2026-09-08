@@ -559,6 +559,52 @@ test("profile lock: failed engine profile creation rolls back its account and le
   assert.ok(!JSON.stringify(failed.body).includes("never-return-this"));
 });
 
+test("profile lock: a proof expiring while waiting for a transaction cannot authorize a write", async () => {
+  const profile = await lockedProfile();
+  const proof = await unlockProfile(profile.id);
+  const initial = structuredClone(row("VpnProfile", profile.id));
+  const realNow = Date.now;
+  const transaction = db.$transaction;
+  db.$transaction = async function (callback, ...args) {
+    Date.now = () => realNow() + 601_000;
+    return transaction.call(this, callback, ...args);
+  };
+  try {
+    const base = `/vpn-profiles/${profile.id}`;
+    for (const [method, path, body] of [
+      ["PUT", `${base}/lock`, { password: "new-lock-password" }],
+      ["PUT", base, { name: "Expired proof edit" }],
+      ["DELETE", base, undefined],
+    ]) {
+      Date.now = realNow;
+      ok(await api("admin", method, path, body, proofHeader(proof.unlockToken)), 423);
+      assert.deepEqual(row("VpnProfile", profile.id), initial);
+    }
+  } finally {
+    db.$transaction = transaction;
+    Date.now = realNow;
+  }
+});
+
+test("profile lock: nested SSH payloads stay hidden even through an unprotected legacy account", async () => {
+  const created = await api("admin", "POST", "/payload", { name: "Protected payload", content: "private-nested-content" });
+  ok(created, 201);
+  const payloadId = created.body.payload.id;
+  await lockedProfile({ payloadId });
+  db.state.SshAccount.push({
+    id: "unprotected-legacy-ssh", name: "Legacy source", host: "legacy.example.test",
+    port: 22, username: "legacy", password: "unused", payloadId, status: "active",
+  });
+  for (const path of ["/ssh/accounts", "/ssh/accounts/unprotected-legacy-ssh"]) {
+    const response = await api("root", "GET", path);
+    ok(response);
+    const account = response.body.account ?? response.body.accounts[0];
+    assert.equal(account.hasLock, false);
+    metadataOnly(account.payload);
+    assert.ok(!JSON.stringify(response.body).includes("private-nested-content"));
+  }
+});
+
 test("activation: a fresh dashboard token binds once and stays in its reseller roster", async () => {
   const generated = await api("r1", "POST", "/devices/generate-token", { deviceId: "DASHBOARD-TEMP-123", label: "Mon client" });
   ok(generated, 201);

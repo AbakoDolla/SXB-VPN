@@ -75,3 +75,20 @@ test("the unlock header does not authorize an unrelated browser origin", async (
   });
   assert.equal(response.headers.get("access-control-allow-origin"), null);
 });
+
+test("the additive lock migration is mirrored and runs before publishing a release", () => {
+  const migrationPath = "backend/prisma/migrations/20260908220000_profile_password_lock/migration.sql";
+  const migration = readFileSync(path.join(root, ...migrationPath.split("/")), "utf8").replace(/\r\n/g, "\n").trim();
+  for (const manualPath of [["prisma", "migrations_manual.sql"], ["backend", "prisma", "migrations_manual.sql"]]) {
+    const manual = readFileSync(path.join(root, ...manualPath), "utf8").replace(/\r\n/g, "\n");
+    assert.ok(manual.includes(migration), "Standalone lock migration differs from its manual counterpart");
+  }
+  assert.doesNotMatch(migration, /\b(?:DELETE|DROP|TRUNCATE)\b/i);
+  assert.match(migration, /profile_matches = 1 AND m\.account_matches = 1/);
+  assert.doesNotMatch(migration, /SET\s+"lockPasswordHash"/);
+  const workflow = readFileSync(path.join(root, ".github", "workflows", "deploy-vps.yml"), "utf8");
+  const migrationIndex = workflow.indexOf(migrationPath);
+  assert.ok(migrationIndex > workflow.indexOf('pg_dump "$PG_URL"'));
+  assert.ok(migrationIndex < workflow.indexOf("mv .sxb-release/server.cjs dist/server.cjs"));
+  assert.match(workflow, /psql "\$\{DB_URL%%\\\?\*\}" -1 -v ON_ERROR_STOP=1 -f "\$SQL"/);
+});

@@ -347,7 +347,8 @@ jobs:
 
             for SQL in \
               backend/prisma/migrations/20260907130000_token_revoke_permission/migration.sql \
-              backend/prisma/migrations/20260907140000_voucher_ownership_and_lifecycle/migration.sql; do
+              backend/prisma/migrations/20260907140000_voucher_ownership_and_lifecycle/migration.sql \
+              backend/prisma/migrations/20260908220000_profile_password_lock/migration.sql; do
               test -f "$SQL"
               psql "${DB_URL%%\?*}" -1 -v ON_ERROR_STOP=1 -f "$SQL" >/tmp/sxb-commercial-migration.log
             done
