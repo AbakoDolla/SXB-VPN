@@ -46,6 +46,19 @@ export const prisma = {
       }
       return __fixtures.subscription;
     },
+    async updateMany({ where, data }) {
+      const sub = __fixtures.subscription;
+      if (!sub) return { count: 0 };
+      if (where?.id && sub.id !== where.id) return { count: 0 };
+      if (where?.clientId && sub.clientId !== where.clientId) return { count: 0 };
+      __fixtures.subscriptionUpdateCalls.push({ where, data });
+      if (data?.quotaUsed?.increment !== undefined) {
+        sub.quotaUsed = BigInt(sub.quotaUsed ?? 0) + BigInt(data.quotaUsed.increment);
+      } else {
+        Object.assign(sub, data);
+      }
+      return { count: 1 };
+    },
   },
   sshPayload: {
     async findUnique() { return __fixtures.sshPayload; },
@@ -72,13 +85,21 @@ export const prisma = {
     },
     async update({ where, data }) {
       if (__fixtures.vpnClient && __fixtures.vpnClient.id === where.id) {
-        Object.assign(__fixtures.vpnClient, data);
+        if (data?.quotaUsed?.increment !== undefined) {
+          __fixtures.vpnClient.quotaUsed =
+            BigInt(__fixtures.vpnClient.quotaUsed ?? 0) + BigInt(data.quotaUsed.increment);
+        } else {
+          Object.assign(__fixtures.vpnClient, data);
+        }
       }
       return __fixtures.vpnClient;
     },
   },
   activationSession: {
     async upsert() { return { id: 'sess-001' }; },
+  },
+  subscriptionDevice: {
+    async updateMany() { return { count: 0 }; },
   },
   auditLog: {
     async findMany() { return __fixtures.auditLogs; },

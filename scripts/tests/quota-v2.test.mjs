@@ -11,7 +11,7 @@
 import { strict as assert } from 'node:assert';
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -26,7 +26,7 @@ const ok = (msg) => { passed++; console.log(`  ✅ ${msg}`); };
 
 console.log('\n══ TEST QUOTA V2 — AUTORITÉ UNIQUE & DÉDUPLICATION ══\n');
 
-const esbuild = await import(path.join(BACKEND, 'node_modules/esbuild/lib/main.js'));
+const esbuild = await import(pathToFileURL(path.join(BACKEND, 'node_modules/esbuild/lib/main.js')).href);
 const DB_STUB    = path.join(__dirname, 'stubs/database-stub.mjs');
 const ENVSTUBS   = path.join(__dirname, 'stubs/mobile-env-stubs.mjs');
 const ENTRY_PATH = path.join(__dirname, '.entry-quota-v2.ts');
@@ -35,9 +35,15 @@ const BUNDLE_PATH = path.join(BUNDLE_DIR, 'quota-v2-bundle.mjs');
 
 await fs.mkdir(BUNDLE_DIR, { recursive: true });
 
+const importFromEntry = (absolutePath) => {
+  const relativePath = path.relative(__dirname, absolutePath).split(path.sep).join('/');
+  return relativePath.startsWith('.') ? relativePath : `./${relativePath}`;
+};
+
 await fs.writeFile(ENTRY_PATH, `
-export { applyUsageDelta, default as mobileRouter } from ${JSON.stringify(path.join(BACKEND, 'server/routes/mobile.ts'))};
-export { deriveQuota, formatBytes } from ${JSON.stringify(path.join(MOBILE, 'services/quotaState.ts'))};
+export { applyUsageDelta, default as mobileRouter } from ${JSON.stringify(importFromEntry(path.join(ROOT, 'server/routes/mobile.ts'))) };
+export { deriveQuota, formatBytes } from ${JSON.stringify(importFromEntry(path.join(MOBILE, 'services/quotaState.ts'))) };
+export { __fixtures } from ${JSON.stringify(importFromEntry(DB_STUB))};
 `);
 
 await esbuild.build({
@@ -67,8 +73,11 @@ await esbuild.build({
   ],
 });
 
-const bundle = await import(BUNDLE_PATH + `?t=${Date.now()}`);
-const { applyUsageDelta, deriveQuota, formatBytes } = bundle;
+const bundle = await import(pathToFileURL(BUNDLE_PATH).href + `?t=${Date.now()}`);
+const { applyUsageDelta, deriveQuota, formatBytes, __fixtures } = bundle;
+
+__fixtures.subscription = { id: 'sub1', clientId: 'client1', quotaUsed: 0n, status: 'active' };
+__fixtures.vpnClient = { id: 'client1', quotaUsed: 0n };
 
 // 1. Rejet garde anti-abus applyUsageDelta
 {

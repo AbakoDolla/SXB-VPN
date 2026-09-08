@@ -11,11 +11,11 @@ import net from 'node:net';
 import tls from 'node:tls';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const BACKEND = path.resolve(__dirname, '../../backend');
-const probe = await import(path.join(BACKEND, 'server/services/transport-probe.ts'));
+const ROOT = path.resolve(__dirname, '../..');
+const probe = await import(pathToFileURL(path.join(ROOT, 'server/services/transport-probe.ts')).href);
 const { probeConfig, substitutePayload } = probe;
 
 let passed = 0;
@@ -33,12 +33,13 @@ console.log('\n══ transport-probe — préflight contre passerelles simulée
 
 // 0. Substitutions payload
 {
-  const out = substitutePayload('GET / HTTP/1.1[crlf]Host: [host][crlf]X: [ua][crlf][crlf]',
+  const out = substitutePayload('GET / HTTP/1.1[crlf]Host: [host][crlf]SNI: [sni][crlf]X: [ua][crlf][crlf]',
     'h.example.com', 'sni.example.net');
-  assert.ok(out.includes('Host: sni.example.net'), 'SNI prioritaire sur host');
+  assert.ok(out.includes('Host: h.example.com'), 'le Host conserve la cible du payload');
+  assert.ok(out.includes('SNI: sni.example.net'), 'le SNI reste distinct du Host');
   assert.ok(out.includes('\r\n') && !out.includes('[crlf]'), 'CRLF substitué');
   assert.ok(!out.includes('[ua]'), 'ua substitué');
-  ok('substitutions [crlf]/[host] (SNI prioritaire)/[ua]');
+  ok('substitutions [crlf]/[host]/[sni]/[ua] sans confondre Host et SNI');
 }
 
 // 1. Faux serveur SSH (bannière immédiate)
@@ -120,11 +121,11 @@ console.log('\n══ transport-probe — préflight contre passerelles simulée
   );
   const port = await listen(srv);
   const payload = 'GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]';
-  // ssh+payload + tls:true → TLS handshake puis payload (ici le serveur répond SSH brut après TLS)
-  const r = await probeConfig({ protocol: 'ssh+payload', host: '127.0.0.1', port, tls: true, sni: 'test.sxb.local', username: 'u', password: 'p', payload }, { timeoutMs: 4000 });
+  // La tolérance du certificat auto-signé doit être un choix explicite du profil.
+  const r = await probeConfig({ protocol: 'ssh+payload', host: '127.0.0.1', port, tls: true, insecure: true, sni: 'test.sxb.local', username: 'u', password: 'p', payload }, { timeoutMs: 4000 });
   assert.ok(r.steps.some(s => s.event === 'TLS_HANDSHAKE_OK' && s.ok), JSON.stringify(r.steps));
   assert.ok(/test\.sxb\.local/.test(r.steps.find(s => s.event === 'TLS_HANDSHAKE_OK').detail));
-  ok('ssh+payload + tls → TLS_HANDSHAKE_OK (CN rapporté, chaîne auto-signée tolérée en sonde)');
+  ok('ssh+payload + tls + insecure explicite → TLS_HANDSHAKE_OK (CN rapporté)');
 }
 
 // 6. TCP refusé → unreachable_from_probe (≠ invalid)
@@ -145,13 +146,13 @@ console.log('\n══ transport-probe — préflight contre passerelles simulée
   ok('DNS échec → unreachable_from_probe');
 }
 
-// 8. Rejets métier sans aucun paquet : ssh+tls direct ; protocol unsupported ≠ erreur
+// 8. SSH+TLS est sondé ; un protocole hors sonde reste unsupported
 {
   const r1 = await probeConfig({ protocol: 'ssh', host: '127.0.0.1', port: 1, tls: true, username: 'u', password: 'p' });
-  assert.equal(r1.verdict, 'invalid');
+  assert.equal(r1.verdict, 'unreachable_from_probe');
   const r2 = await probeConfig({ protocol: 'vless', host: 'h', port: 443, uuid: 'x' });
   assert.equal(r2.verdict, 'unsupported');
-  ok('ssh+tls direct = invalid immédiat ; vless = unsupported (validation syntaxique seule, honnête)');
+  ok('ssh+tls direct réellement sondé ; vless hors WebSocket = unsupported honnête');
 }
 
 console.log(`\n🏁 RÉSULTAT : ${passed} groupes de tests réussis — préflight transport validé\n`);

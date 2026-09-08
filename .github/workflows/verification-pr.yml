@@ -50,7 +50,7 @@ jobs:
       # transports, épinglage des actions.
       - name: Garde-fous contre les régressions
         working-directory: app-mobile
-        run: npx tsx --test tests/regression-critical-flows.test.ts
+        run: npx tsx --test tests/regression-critical-flows.test.ts ../server/tests/reseller-lifecycle.test.ts
 
       - name: Contrat de confidentialité santé mobile
         run: node --test scripts/tests/mobile-health-static.test.mjs
@@ -108,3 +108,10 @@ jobs:
             --outfile=dist/server.cjs
           test -s dist/server.cjs
           echo "Serveur construit : $(du -sh dist/server.cjs | cut -f1)"
+
+      - name: Parcours HTTP revendeur et cloisonnement
+        env:
+          DATABASE_URL: postgresql://unused:unused@127.0.0.1:5432/unused
+        run: |
+          node backend/node_modules/prisma/build/index.js generate --schema backend/prisma/schema.prisma
+          node --test scripts/tests/reseller-http.test.mjs

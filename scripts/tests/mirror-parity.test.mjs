@@ -1,9 +1,9 @@
 /**
  * mirror-parity.test.mjs — Anti-divergence + fidélité §8.1
  * ═══════════════════════════════════════════════════════════════════════════
- * A. ANTI-DIVERGENCE MIROIRS : tout fichier de server/, server.ts et
- *    prisma/schema.prisma doit être STRICTEMENT IDENTIQUE à son miroir
- *    backend/ (le VPS exécute backend/). Une divergence = bug de déploiement.
+ * A. SOURCE DE PRODUCTION : le build doit partir de server.ts + server/.
+ *    Seuls le schéma Prisma et le fichier SQL manuel ont un miroir backend/,
+ *    car le client Prisma déployé est généré depuis backend/prisma.
  *
  * B. FIDÉLITÉ §8.1 MULTI-PROTOCOLES : pour chaque format d'import, la config
  *    moteur restituée (canonical → chiffré → déchiffré → engine) doit être
@@ -12,11 +12,12 @@
  *
  * Exécution : node --experimental-strip-types scripts/tests/mirror-parity.test.mjs
  */
+import './register-hooks.mjs';
 import { strict as assert } from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -28,45 +29,25 @@ let passed = 0;
 const ok = (msg) => { passed++; console.log(`  ✅ ${msg}`); };
 
 // ═══════════════════════════════════════════════════════════════════════════
-console.log('\n══ A. ANTI-DIVERGENCE MIROIRS server/ ↔ backend/server/ ══\n');
+console.log('\n══ A. SOURCE DE PRODUCTION + MIROIRS PRISMA ══\n');
 {
-  const walk = (dir) => {
-    const out = [];
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      const p = path.join(dir, e.name);
-      if (e.isDirectory()) out.push(...walk(p)); else out.push(p);
-    }
-    return out;
-  };
+  const entry = fs.readFileSync(path.join(ROOT, 'server.ts'), 'utf8');
+  const deployWorkflow = fs.readFileSync(path.join(ROOT, '.github/workflows/deploy-vps.yml'), 'utf8');
+  assert.match(entry, /from ["']\.\/server\//, 'server.ts doit charger le serveur racine');
+  assert.match(deployWorkflow, /\$ESBUILD server\.ts/, 'le déploiement doit compiler server.ts');
+  ok('server.ts + server/ sont l’unique source du backend de production');
 
-  const srcFiles = walk(path.join(ROOT, 'server'))
-    .map(p => path.relative(path.join(ROOT, 'server'), p));
-  assert.ok(srcFiles.length >= 30, `inventaire server/ suspect (${srcFiles.length})`);
-
-  const divergents = [];
-  for (const rel of srcFiles) {
-    const a = path.join(ROOT, 'server', rel);
-    const b = path.join(ROOT, 'backend', 'server', rel);
-    if (!fs.existsSync(b)) { divergents.push(`${rel} — ABSENT du miroir`); continue; }
-    const ha = crypto.createHash('sha256').update(fs.readFileSync(a)).digest('hex');
-    const hb = crypto.createHash('sha256').update(fs.readFileSync(b)).digest('hex');
-    if (ha !== hb) divergents.push(rel);
-  }
-  assert.deepEqual(divergents, [],
-    `miroirs divergents (à re-synchroniser) : ${divergents.join(', ')}`);
-  ok(`${srcFiles.length} fichiers server/ ≡ backend/server/ (sha256 identique)`);
-
-  for (const top of ['server.ts', 'prisma/schema.prisma', 'prisma/migrations_manual.sql']) {
+  for (const top of ['prisma/schema.prisma', 'prisma/migrations_manual.sql']) {
     const a = path.join(ROOT, top);
     const b = path.join(ROOT, 'backend', top);
-    if (!fs.existsSync(a) || !fs.existsSync(b)) { ok(`${top} — miroir N/A (absent d'un côté, toléré)`); continue; }
+    assert.ok(fs.existsSync(a) && fs.existsSync(b), `${top} et son miroir backend/ sont requis`);
     assert.equal(
       crypto.createHash('sha256').update(fs.readFileSync(a)).digest('hex'),
       crypto.createHash('sha256').update(fs.readFileSync(b)).digest('hex'),
       `${top} diverge de son miroir backend/`,
     );
   }
-  ok('server.ts + prisma/schema.prisma + migrations_manual.sql ≡ miroirs');
+  ok('schéma Prisma + migrations_manual.sql ≡ miroirs backend/');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -76,7 +57,7 @@ const {
   parseImportedConfig, canonicalJson, computeCanonicalHash,
   encryptCanonical, decryptCanonical, engineConfigFromCanonical,
   validateTransportCoherence,
-} = await import(path.join(ROOT, 'server/services/canonical-config.ts'));
+} = await import(pathToFileURL(path.join(ROOT, 'server/services/canonical-config.ts')).href);
 
 const ALLOWLIST_META = new Set(['displayProtocol', 'profileId', 'profileName', 'configId',
   'subscriptionId', 'dataToken', 'configVersion', 'configHash', 'signature']);
@@ -171,18 +152,18 @@ function fidelityRoundtrip(label, raw) {
   ok('sing-box JSON — restitué à l\'identique (outbounds complets)');
 }
 
-// REJET « SSH direct + TLS » (décision mission) — vérouillé ici aussi
+// SSH direct encapsulé dans TLS (« SSL Tunnel ») — pris en charge par le moteur
 {
   const parsed = parseImportedConfig(JSON.stringify({
     protocol: 'ssh', host: 'node05.mikosi.fr.eu.org', port: 443,
     username: 'evans', password: 'x', tls: true, sni: 'yamo.mtn.cm',
   }));
   const coh = validateTransportCoherence(parsed.canonical || {});
-  assert.ok(
-    !parsed.ok || coh.errors.length > 0,
-    '« SSH direct + TLS » (cas EXACT de l\'incident APK #165) devrait être REJETÉ',
-  );
-  ok('Rejet « SSH direct + TLS » verrouillé (cas exact du profil « Evans new » de l\'incident)');
+  assert.ok(parsed.ok, (parsed.errors || []).join('|'));
+  assert.equal(coh.errors.length, 0, coh.errors.join('|'));
+  assert.equal(parsed.canonical.tls, true);
+  assert.equal(parsed.canonical.sni, 'yamo.mtn.cm');
+  ok('SSH direct + TLS conservé comme SSL Tunnel (cas exact du profil « Evans new »)');
 }
 
 // ssh + tls:false (SSH direct légitime) reste PARFAITEMENT valide
@@ -197,4 +178,4 @@ function fidelityRoundtrip(label, raw) {
   ok('CONTRÔLE — ssh direct tls:false reste valide');
 }
 
-console.log(`\n🏁 RÉSULTAT : ${passed} groupes de tests réussis — miroirs synchronisés + fidélité §8.1 verrouillée`);
+console.log(`\n🏁 RÉSULTAT : ${passed} groupes de tests réussis — source de production et fidélité §8.1 verrouillées`);

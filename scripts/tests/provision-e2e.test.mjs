@@ -18,17 +18,18 @@
  *      perd jamais host/payload/credentials.
  *   6. UTF-8 : payloads SSH avec accents + emoji → roundtrip exact.
  */
+import './register-hooks.mjs';
 import { strict as assert } from 'node:assert';
 import { webcrypto, randomBytes, createHmac, createCipheriv, createDecipheriv, createHash } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const { decryptSxbBlob, encryptAes256Gcm, decryptAes256Gcm, utf8Encode, utf8Decode, hexToBytes, bytesToHex } =
-  await import(path.join(__dirname, '../../app-mobile/services/aesGcm.ts'));
+  await import(pathToFileURL(path.join(__dirname, '../../app-mobile/services/aesGcm.ts')).href);
 const { isCompleteOfflineConfig, mergeConfigs, validateVpnConfig } =
-  await import(path.join(__dirname, '../../app-mobile/services/configValidator.ts'));
+  await import(pathToFileURL(path.join(__dirname, '../../app-mobile/services/configValidator.ts')).href);
 
 let passed = 0;
 const ok = (name) => { passed++; console.log(`  ✅ ${name}`); };

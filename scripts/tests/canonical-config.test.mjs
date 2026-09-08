@@ -2,16 +2,17 @@
  * canonical-config.test.mjs — Tests unitaires du service canonique SXB
  * Exécution : node --experimental-strip-types scripts/tests/canonical-config.test.mjs
  */
+import './register-hooks.mjs';
 import { strict as assert } from 'node:assert';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const BACKEND = path.resolve(__dirname, '../../backend');
+const ROOT = path.resolve(__dirname, '../..');
 
 process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'e2e-encryption-key-32-bytes-pad!';
 
-const svc = await import(path.join(BACKEND, 'server/services/canonical-config.ts'));
+const svc = await import(pathToFileURL(path.join(ROOT, 'server/services/canonical-config.ts')).href);
 const {
   parseImportedConfig, normalizeCanonical, computeCanonicalHash,
   encryptCanonical, decryptCanonical, validateTransportCoherence, canonicalJson,
@@ -50,16 +51,17 @@ console.log('\n══ canonical-config — parse, normalisation, hash, chiffreme
   ok('ssh+payload-json (ws clair :443, tls=false) accepté — le bon profil mikosi');
 }
 
-// 3. REJET ssh direct + tls:true (règle de l'incident)
+// 3. SSH direct encapsulé dans TLS (SSL Tunnel)
 {
   const r = parseImportedConfig(JSON.stringify({
     protocol: 'ssh', host: 'node05.mikosi.fr.eu.org', port: 443,
     username: 'user1', password: 'pass1', tls: true, sni: 'yamo.mtn.cm',
   }));
-  assert.equal(r.ok, false);
-  assert.ok(r.errors.some(e => /tls=true.*SSH direct|SSH direct.*tls=true/is.test(e) || /Combinaison impossible/.test(e)),
-    `message de rejet clair attendu, reçu: ${r.errors.join('|')}`);
-  ok('ssh + tls:true REJETÉ à l\'import avec message explicite (mission: rejet, pas d\'implémentation)');
+  assert.equal(r.ok, true, r.errors.join('|'));
+  assert.equal(r.canonical.protocol, 'ssh');
+  assert.equal(r.canonical.tls, true);
+  assert.equal(r.canonical.sni, 'yamo.mtn.cm');
+  ok('ssh + tls:true accepté comme SSL Tunnel et conservé sans perte');
 }
 
 // 4. Hash déterministe — ordre des clés sans effet

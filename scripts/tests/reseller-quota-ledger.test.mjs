@@ -19,6 +19,7 @@ function fakeDatabase(initial) {
     const draft = structuredClone(state);
     const tx = {
       $queryRawUnsafe: async () => [],
+      voucher: { findMany: async () => [] },
       reseller: {
         findUnique: async ({ where }) =>
           where.id === draft.reseller.id || where.userId === draft.reseller.userId
@@ -30,16 +31,54 @@ function fakeDatabase(initial) {
         },
       },
       vpnClient: {
-        findMany: async ({ where }) =>
-          structuredClone(draft.clients.filter((client) => client.userId === where.userId)),
+        findMany: async ({ where }) => {
+          const conditions = Array.isArray(where.OR) ? where.OR : [where];
+          return structuredClone(draft.clients.filter((client) =>
+            conditions.some((condition) =>
+              (condition.userId === undefined || client.userId === condition.userId) &&
+              (condition.resellerId === undefined ||
+                (condition.resellerId === null
+                  ? client.resellerId == null
+                  : client.resellerId === condition.resellerId))
+            )
+          ));
+        },
         create: async ({ data }) => {
-          const client = { id: `client-${draft.clients.length + 1}`, subscriptions: [], ...data };
+          const client = {
+            id: `client-${draft.clients.length + 1}`,
+            subscriptions: [],
+            tokens: [],
+            ...data,
+          };
           draft.clients.push(client);
           return structuredClone(client);
         },
         delete: async ({ where }) => {
           const index = draft.clients.findIndex((client) => client.id === where.id);
           return draft.clients.splice(index, 1)[0];
+        },
+        update: async ({ where, data }) => {
+          const client = draft.clients.find((candidate) => candidate.id === where.id);
+          Object.assign(client, data);
+          return structuredClone(client);
+        },
+      },
+      tokenSXB: {
+        create: async ({ data }) => {
+          const client = draft.clients.find((candidate) => candidate.id === data.clientId);
+          const token = { id: `token-${client.tokens.length + 1}`, ...data };
+          client.tokens.push(token);
+          return structuredClone(token);
+        },
+        update: async ({ where, data }) => {
+          for (const client of draft.clients) {
+            const token = (client.tokens || []).find((candidate) => candidate.id === where.id);
+            if (token) {
+              Object.assign(token, data);
+              return structuredClone(token);
+            }
+          }
+          throw new Error("token not found");
         },
       },
       resellerQuotaMovement: {
@@ -133,12 +172,110 @@ assert.equal(accepted.state.movements.length, 2);
 assert.equal(accepted.state.movements[1].kind, "QUOTA_RELEASE");
 assert.equal(accepted.state.movements[1].deltaBytes, BigInt(-4));
 
+// Un jeton non utilisé réserve l'enveloppe. Sa révocation la libère dans la
+// même transaction et le compteur matérialisé reste cohérent.
+const tokenReservation = fakeDatabase({
+  ...baseState,
+  clients: [{
+    id: "client-token",
+    userId: "user-1",
+    status: "active",
+    expireAt: new Date(Date.now() + 86_400_000),
+    quotaTotal: 0n,
+    quotaUsed: 0n,
+    subscriptions: [],
+    tokens: [],
+  }],
+});
+const reservedToken = await executerMutationQuota(
+  tokenReservation,
+  {
+    resellerUserId: "user-1",
+    auteur: { name: "Alice" },
+    reason: "Jeton réservé",
+  },
+  (tx) => tx.tokenSXB.create({
+    data: {
+      clientId: "client-token",
+      quota: 6n,
+      status: "active",
+      expiration: new Date(Date.now() + 86_400_000),
+    },
+  })
+);
+assert.equal(tokenReservation.state.reseller.quotaUsedBytes, 6n);
+assert.equal(tokenReservation.state.movements[0].kind, "QUOTA_COMMITMENT");
+
+await executerMutationQuota(
+  tokenReservation,
+  {
+    resellerUserId: "user-1",
+    auteur: { name: "Alice" },
+    reason: "Jeton révoqué",
+    autoriserReductionAuDessusDuPlafond: true,
+  },
+  (tx) => tx.tokenSXB.update({
+    where: { id: reservedToken.id },
+    data: { status: "revoked" },
+  })
+);
+assert.equal(tokenReservation.state.reseller.quotaUsedBytes, 0n);
+assert.equal(tokenReservation.state.movements[1].kind, "QUOTA_RELEASE");
+
 await executerMutationQuota(
   accepted,
   { resellerUserId: "user-1", auteur: { name: "Admin" }, reason: "Sans changement" },
   async () => null
 );
 assert.equal(accepted.state.movements.length, 2, "aucune ligne ne doit doubler un decompte inchange");
+
+// Un revendeur déjà au-dessus de son plafond doit pouvoir réduire son
+// engagement ; sinon la transaction l'empêcherait précisément de se remettre
+// en conformité.
+const overLimit = fakeDatabase({
+  ...baseState,
+  reseller: { ...baseState.reseller, quotaBytes: 10n, quotaUsedBytes: 12n },
+  clients: [{ id: "client-over", userId: "user-1", quotaTotal: 12n, quotaUsed: 1n, subscriptions: [] }],
+});
+await executerMutationQuota(
+  overLimit,
+  {
+    resellerUserId: "user-1",
+    auteur: { name: "Alice" },
+    reason: "Réduction sous dépassement",
+    autoriserReductionAuDessusDuPlafond: true,
+  },
+  (tx) => tx.vpnClient.delete({ where: { id: "client-over" } })
+);
+assert.equal(overLimit.state.clients.length, 0);
+assert.equal(overLimit.state.reseller.quotaUsedBytes, 0n);
+
+// Réactiver ou renouveler un client suspendu réengage son volume. La même
+// transaction doit donc refuser l'opération si d'autres clients occupent déjà
+// l'enveloppe, sans laisser le client partiellement réactivé.
+const renewalOverLimit = fakeDatabase({
+  ...baseState,
+  clients: [
+    { id: "active-client", userId: "user-1", status: "active", quotaTotal: 8n, quotaUsed: 0n, subscriptions: [] },
+    { id: "suspended-client", userId: "user-1", status: "suspended", quotaTotal: 4n, quotaUsed: 0n, subscriptions: [] },
+  ],
+});
+await assert.rejects(
+  executerMutationQuota(
+    renewalOverLimit,
+    { resellerUserId: "user-1", auteur: { name: "Alice" }, reason: "Renouvellement" },
+    (tx) => tx.vpnClient.update({
+      where: { id: "suspended-client" },
+      data: { status: "active" },
+    })
+  ),
+  PlafondQuotaDepasse
+);
+assert.equal(
+  renewalOverLimit.state.clients.find((candidate) => candidate.id === "suspended-client").status,
+  "suspended"
+);
+assert.equal(renewalOverLimit.state.movements.length, 0);
 
 // Un retrait sous l'engagement courant est refuse sans changer le plafond.
 const capped = fakeDatabase({

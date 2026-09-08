@@ -111,6 +111,8 @@ describe('verrouillage local biométrique et PIN', () => {
       assert.equal(activationErrorKey({ response: { status: 403, data: { code: 'FORBIDDEN' } } }), 'activation_forbidden');
       assert.equal(activationErrorKey({ response: { status: 403, data: { code: 'RESELLER_QUOTA_REACHED' } } }), 'activation_quota_reached');
       assert.equal(activationErrorKey({ response: { status: 403, data: { code: 'ACCOUNT_SUSPENDED' } } }), 'error_suspended');
+      assert.equal(activationErrorKey({ response: { status: 409, data: { code: 'DEVICE_CLAIMED_BY_ANOTHER_ACCOUNT' } } }), 'activation_device_claimed');
+      assert.equal(activationErrorKey({ response: { status: 409, data: { code: 'DEVICE_BOUND' } } }), 'activation_device_claimed');
     });
 
     it('réserve le message expiré aux réponses qui expriment réellement une expiration', () => {
@@ -400,8 +402,8 @@ describe('garde-fous contre les régressions Android', () => {
   });
 
   it('autorise l’écriture RBAC au SUPER_ADMIN et applique réellement les permissions', () => {
-    assert.match(rbacRoutes, /requireRole\(\["SUPER_ADMIN"\]\)/);
-    assert.doesNotMatch(rbacRoutes, /requireRole\(\["SUPER_ADMIN", "ADMIN"\]\)/);
+    assert.match(rbacRoutes, /router\.patch\("\/roles\/:id"[\s\S]{0,160}requireRole\(\["SUPER_ADMIN"\]\)[\s\S]{0,100}requirePermission\("rbac\.manage"\)/);
+    assert.doesNotMatch(rbacRoutes, /router\.patch\("\/roles\/:id"[\s\S]{0,160}requireRole\(\["SUPER_ADMIN", "ADMIN"\]\)/);
     assert.match(authMiddleware, /const hasPermission = req\.user\.permissions\.includes\(permissionName\)/);
     assert.doesNotMatch(authMiddleware, /role === "ADMIN" \|\| req\.user\.role === "SUPER_ADMIN"/);
     assert.match(rbacView, /currentUserRole === UserRole\.SUPER_ADMIN/);
@@ -558,8 +560,8 @@ describe('garde-fous contre les régressions Android', () => {
   it('invalide immédiatement les comptes suspendus ou supprimés', () => {
     assert.match(authMiddleware, /vpnClient\.findFirst/);
     assert.match(authMiddleware, /mobileClientUsable/);
-    assert.match(clientRoutes, /syncClientAccessState\(id, 'suspended'\)/);
-    assert.match(clientRoutes, /syncClientAccessState\(id, 'deleted'\)/);
+    assert.match(clientRoutes, /synchroniserEtatAccesClient\(tx, id, "suspended"\)/);
+    assert.match(clientRoutes, /dissocierAccesClient\(tx, id\)/);
     assert.match(mobileRoutes, /errors\.mobile\.account_blocked/);
     assert.match(vpnContext, /invalidateRemoteAccess/);
     // La sonde de révocation conserve sa cadence de 10 s au premier plan. Son
@@ -1194,12 +1196,12 @@ describe('garde-fous contre les régressions Android', () => {
     // L'exploitant gère des centaines de clients : les éditer un par un n'est
     // pas tenable. Confondre « définir » et « ajouter » ferait perdre le solde
     // d'un client, d'où quatre actions explicitement nommées.
-    assert.ok(subscriptionRoutes.includes("router.post('/bulk'"));
+    assert.match(subscriptionRoutes, /router\.post\(\s*['"]\/bulk['"]/);
     for (const action of ['deploy', 'set', 'add_data', 'extend_duration']) {
       assert.ok(subscriptionRoutes.includes(`'${action}'`), `action absente : ${action}`);
     }
     // « ajouter » part du solde existant, « définir » l'écrase.
-    assert.ok(subscriptionRoutes.includes('data.quotaBytes = (sub.quotaBytes ?? BigInt(0)) + gbToBytes(quotaGB)'));
+    assert.ok(subscriptionRoutes.includes('data.quotaBytes = { increment: gigabytesToBytes(quotaGB!) }'));
     // Prolonger un forfait déjà expiré doit le réactiver, sinon la nouvelle
     // échéance resterait dans le passé.
     assert.ok(subscriptionRoutes.includes('new Date(sub.expireAt) > new Date() ? new Date(sub.expireAt) : new Date()'));
@@ -1213,15 +1215,17 @@ describe('garde-fous contre les régressions Android', () => {
   it('contrôle le quota revendeur sur le cumul d’une opération groupée', () => {
     // Vérifier client par client laisserait passer 100 × 5 Go pour un revendeur
     // limité à 100 Go : chaque appel isolé serait valide.
-    assert.ok(subscriptionRoutes.includes('unit * BigInt(targetIds.length)'));
+    assert.ok(subscriptionRoutes.includes('unit * BigInt(ownedTargets)'));
     // Le total est évalué AVANT toute écriture : on refuse l'opération entière
     // plutôt que de l'appliquer à moitié.
-    const bulk = subscriptionRoutes.slice(subscriptionRoutes.indexOf("router.post('/bulk'"));
-    assert.ok(bulk.indexOf('quota_exceeded') < bulk.indexOf('subscription.create'));
+    const bulkStart = subscriptionRoutes.search(/router\.post\(\s*['"]\/bulk['"]/);
+    assert.ok(bulkStart >= 0, 'route groupée introuvable');
+    const bulk = subscriptionRoutes.slice(bulkStart);
+    assert.ok(bulk.indexOf('reponsePlafondDepasse') < bulk.indexOf('subscription.create'));
     // « set » remplace : ne pas compter deux fois les forfaits visés.
-    assert.ok(subscriptionRoutes.includes("alloue -= BigInt(current._sum.quotaBytes ?? 0)"));
+    assert.ok(subscriptionRoutes.includes("projected += unit - BigInt(target.quotaBytes ?? 0)"));
     // Cloisonnement : 404 et non 403 sur la ressource d'autrui.
-    assert.ok(subscriptionRoutes.includes("isReseller && client.userId !== req.user!.userId"));
+    assert.ok(subscriptionRoutes.includes("isReseller && !possedeClient(client, ficheBulk)"));
   });
 
   it('attribue les configurations VPN aux revendeurs sans exposer la technique', () => {
@@ -1323,8 +1327,9 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(layout, /id: 'reseller-services'[\s\S]{0,120}roles: \['RESELLER'\]/);
 
     // Les routes correspondantes doivent filtrer sur SES clients.
-    assert.ok(devicesRoutes.includes('where: isReseller ? { userId: req.user?.userId } : undefined'));
-    assert.ok(dashboardRoutes.includes('const ownScope = isReseller ? { userId: req.user?.userId } : {}'));
+    assert.ok(devicesRoutes.includes('where: isReseller ? (porteeClientsRevendeur(fiche) as any) : undefined'));
+    const portees = dashboardRoutes.match(/porteeClientsRevendeur\(/g) || [];
+    assert.ok(portees.length >= 3, `portée revendeur absente des indicateurs (${portees.length})`);
     // Le compte de serveurs ne doit jamais lui être communiqué.
     assert.ok(dashboardRoutes.includes('isReseller ? Promise.resolve(0) : prisma.vPSServer.count'));
   });
@@ -1523,7 +1528,7 @@ describe('garde-fous contre les régressions Android', () => {
     const dash = source('../server/routes/dashboard.ts');
     // /traffic et /users portaient sur TOUS les clients de la plateforme : un
     // revendeur sans aucun client y voyait malgré tout une courbe à 82.
-    const portees = dash.match(/isReseller \? \{ userId: req\.user\?\.userId \} : \{\}/g) || [];
+    const portees = dash.match(/porteeClientsRevendeur\(/g) || [];
     assert.ok(portees.length >= 2, `cloisonnement absent de /traffic ou /users (${portees.length})`);
     // Les bons de recharge étaient comptés à l'échelle de la plateforme.
     assert.match(dash, /isReseller \? Promise\.resolve\(0\) : prisma\.voucher\.count\(\)/);
@@ -1633,9 +1638,10 @@ describe('garde-fous contre les régressions Android', () => {
     // commande réelle : le drapeau apparaît aussi dans le commentaire qui
     // l'explique, plus haut dans le fichier.
     assert.ok(
-      deploy.indexOf('pg_dump') < deploy.indexOf('--accept-data-loss 2>&1'),
-      'la sauvegarde doit précéder la migration destructive',
+      deploy.indexOf('pg_dump') < deploy.indexOf('--skip-generate 2>&1'),
+      'la sauvegarde doit précéder la migration',
     );
+    assert.doesNotMatch(deploy, /--accept-data-loss 2>&1/);
     // Un dump vide passerait inaperçu : gzip renvoie 0 même sans données.
     assert.match(deploy, /Sauvegarde suspecte/);
     // …et sans pipefail, l'échec de pg_dump lui-même serait masqué par le
@@ -1899,12 +1905,12 @@ describe('garde-fous contre les régressions Android', () => {
     assert.doesNotMatch(revendeurs, /vpnClient\.create\(\{[\s\S]{0,80}name: body\.name/);
 
     // Le bouton « Supprimer » du dashboard appelait une route inexistante.
-    assert.match(revendeurs, /router\.delete\("\/:id", requireAuth, requirePermission\("reseller\.manage"\)/);
+    assert.match(revendeurs, /router\.delete\(\s*["']\/:id["'][\s\S]{0,180}requirePermission\(["']reseller\.manage["']\)/);
 
     // Le cumul doit couvrir les deux formes d'allocation, sans double compte.
-    assert.match(quota, /if \(forfaits\.length > 0\)/);
+    assert.match(quota, /if \(tousLesForfaits\.length > 0\)/);
     assert.match(quota, /alloue \+= BigInt\(client\.quotaTotal \?\? 0\)/);
-    assert.match(revendeurs, /calculerAllocation\(prisma, r\.userId\)/);
+    assert.match(revendeurs, /calculerAllocation\(prisma, r\)/);
 
     // Alloué et consommé sont deux grandeurs distinctes : les confondre rendait
     // la barre de progression du dashboard incapable de montrer l'usage réel.
@@ -2081,5 +2087,203 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(routes, /username: null as string \| null/);
     assert.match(routes, /password: null as string \| null/);
     assert.match(routes, /canonicalConfig: encryptCanonical/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tableau de bord — gestion des comptes, agréments revendeurs et habilitations
+//
+// Ces assertions portent sur des règles métier qu'une refonte visuelle peut
+// défaire sans que rien ne casse à la compilation : un bouton qui redevient
+// actif alors que l'agrément a expiré, une seconde porte de création de
+// revendeur, ou un volume BigInt reconverti en Number et arrondi.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('tableau de bord — comptes, revendeurs et habilitations', () => {
+  const dash = (chemin: string) => source(`../artifacts/sxb-dashboard/src/${chemin}`);
+
+  const appTsx = dash('App.tsx');
+  const layoutTsx = dash('components/Layout.tsx');
+  const comptes = dash('components/AccountsView.tsx');
+  const revendeurs = dash('components/ResellersView.tsx');
+  const rbac = dash('components/RBACView.tsx');
+  const forfaits = dash('components/SubscriptionsView.tsx');
+  const clientsVue = dash('components/ClientsView.tsx');
+  const appareils = dash('components/DevicesView.tsx');
+  const banniere = dash('components/ResellerAccessBanner.tsx');
+  const contexte = dash('contexts/ResellerAccessContext.tsx');
+  const acces = dash('lib/resellerAccess.ts');
+  const clientHttp = dash('api/client.ts');
+  const apiRevendeurs = dash('api/resellers.ts');
+  const apiForfaits = dash('api/subscriptions.ts');
+  const apiAppareils = dash('api/devices.ts');
+
+  it('réunit comptes, revendeurs et habilitations en une seule surface', () => {
+    // Trois écrans qui se renvoyaient l'un à l'autre : l'exploitant ne savait
+    // pas où créer quoi. Les anciennes routes restent compatibles, mais le
+    // menu ne présente plus qu'une seule entrée vers la surface à onglets.
+    assert.match(appTsx, /case 'resellers':[\s\S]{0,400}initialTab="resellers"/);
+    assert.match(appTsx, /case 'rbac':[\s\S]{0,400}initialTab="rbac"/);
+    assert.match(appTsx, /case 'accounts':[\s\S]{0,400}initialTab="accounts"/);
+    assert.match(comptes, /import ResellersView from '\.\/ResellersView'/);
+    assert.match(comptes, /import RBACView from '\.\/RBACView'/);
+    const layout = source('../artifacts/sxb-dashboard/src/components/Layout.tsx');
+    assert.match(layout, /id: 'accounts'/);
+    assert.doesNotMatch(layout, /kind: 'leaf', id: '(resellers|rbac)'/);
+  });
+
+  it('ne laisse qu’une seule porte de création de revendeur', () => {
+    // Deux portes coexistaient, et l'une ne créait que le compte : c'est ainsi
+    // que la production compte 70 comptes RESELLER pour 6 fiches réelles.
+    assert.match(revendeurs, /createReseller\(/);
+    assert.doesNotMatch(comptes, /createReseller\(/);
+    // Le formulaire générique refuse explicitement le rôle RESELLER.
+    assert.match(comptes, /selectedRoleIsReseller/);
+    assert.match(comptes, /disabled=\{creating \|\| selectedRoleIsReseller\}/);
+    // Un compte de connexion n'est pas un agrément : l'écran le dit.
+    assert.match(comptes, /Compte de connexion — l'agrément se gère dans l'onglet/);
+  });
+
+  it('exige une échéance future et un quota explicite à la création', () => {
+    assert.match(apiRevendeurs, /accessExpiresAt: string;/);
+    assert.match(apiRevendeurs, /export async function renewResellerAccess/);
+    // La date est obligatoire côté formulaire, et vérifiée avant l'envoi.
+    assert.match(revendeurs, /required type="datetime-local" min=\{minExpiryInput\(\)\}/);
+    assert.match(revendeurs, /isFutureExpiry\(createForm\.accessExpiresAt\)/);
+    // Zéro n'est pas « illimité » : seul un plafond négatif lève la limite.
+    assert.match(revendeurs, /createForm\.unlimited \? -1 :/);
+    assert.match(revendeurs, /0 Go signifie « aucun volume attribué », jamais « illimité »/);
+  });
+
+  it('n’affiche jamais les comptes de rôle orphelins comme des revendeurs actifs', () => {
+    // 70 comptes portent le rôle sans fiche : sans fiche, le serveur les traite
+    // comme de simples clients. Le rapport est en lecture seule, et réservé aux
+    // rôles qui peuvent trancher.
+    assert.match(comptes, /fetchResellerReconciliation/);
+    assert.match(comptes, /isSuperAdmin && reconciliation/);
+    assert.match(apiRevendeurs, /"\/resellers\/reconciliation"/);
+    assert.match(comptes, /Rapport en lecture seule/);
+  });
+
+  it('formate les volumes en BigInt sans jamais les convertir en Number', () => {
+    // `Number("9007199254740993")` perd le dernier chiffre : les octets
+    // arrivent en chaînes précisément pour éviter cette perte.
+    assert.match(acces, /export function toBigInt/);
+    assert.match(acces, /export function formatBytes/);
+    assert.match(acces, /if \(bytes < BigInt\(0\)\) return "Illimité"/);
+    assert.doesNotMatch(acces, /Number\(value\) \/ 1024/);
+    // Le pourcentage lui-même est calculé en entiers avant l'arrondi.
+    assert.match(acces, /Number\(\(usedBytes \* BigInt\(1000\)\) \/ totalBytes\) \/ 10/);
+  });
+
+  it('traite les refus revendeur de manière centrale, sans rechargement', () => {
+    // Un agrément expiré n'est PAS une perte de session : rediriger vers la
+    // connexion effaçait le seul écran capable d'expliquer le refus.
+    assert.match(clientHttp, /export function subscribeResellerAccess/);
+    assert.match(clientHttp, /publishResellerAccess\(data, data\?\.code\)/);
+    assert.match(clientHttp, /data\?\.code \?\? data\?\.error/);
+    assert.match(clientHttp, /resellerAccess: looksLikeAccessSummary/);
+    // La redirection reste réservée au 401 et à la suspension du compte.
+    assert.match(clientHttp, /res\.status === 401 \|\| \(res\.status === 403 && data\?\.error === "errors\.auth\.suspended"\)/);
+    // Les codes stables du serveur sont connus du client.
+    for (const code of ['RESELLER_EXPIRED', 'RESELLER_SUSPENDED', 'RESELLER_QUOTA_REACHED', 'OWNERSHIP_FORBIDDEN', 'SUPPORT_READ_ONLY']) {
+      assert.ok(acces.includes(code), `code de refus absent : ${code}`);
+    }
+    // L'état personnel ne dépend pas d'une permission analytics facultative.
+    assert.match(contexte, /fetchMyResellerAccess/);
+    assert.match(apiRevendeurs, /"\/resellers\/me\/access"/);
+  });
+
+  it('bloque l’espace revendeur à l’expiration sans masquer ses données', () => {
+    assert.match(banniere, /Accès expiré — veuillez renouveler|MESSAGE_ACCES_EXPIRE/);
+    assert.match(acces, /export const MESSAGE_ACCES_EXPIRE = "Accès expiré — veuillez renouveler"/);
+    // La bannière vit dans la coquille : elle suit l'exploitant d'un écran à
+    // l'autre au lieu d'être répétée — ou oubliée — page à page.
+    assert.match(layoutTsx, /<ResellerAccessBanner \/>/);
+    // Les données restent affichées ; seules les écritures sont fermées.
+    assert.match(banniere, /Vos données restent consultables/);
+    assert.match(contexte, /blocked: isReseller && isAccessBlocked\(access\)/);
+  });
+
+  it('au plafond, ferme les créations mais garde les gestes qui libèrent', () => {
+    // Bloquer suspension, révocation ou suppression enfermerait l'exploitant
+    // avec un parc qu'il ne pourrait plus contenir.
+    assert.match(acces, /export function canPerform/);
+    assert.match(acces, /if \(isQuotaReached\(access\) && !options\.reducesExposure\) return false/);
+    assert.match(acces, /if \(isAccessBlocked\(access\)\) return false/);
+    assert.match(forfaits, /const canReduce = canAssign && allows\(\{ reducesExposure: true \}\)/);
+    assert.match(clientsVue, /const canReduce = !isSupport && allows\(\{ reducesExposure: true \}\)/);
+    assert.match(appareils, /const canRevoke = !isSupport && allows\(\{ reducesExposure: true \}\)/);
+    // Les autres écrans où un revendeur engage du volume sont fermés de la
+    // même façon : jetons SXB-DATA et bons de recharge.
+    assert.match(dash('components/TokensView.tsx'), /const canCreate = !isSupport && allows\(\)/);
+    assert.match(dash('components/VouchersView.tsx'), /const canCreate = !isSupport && hasPermission\("vouchers.create"\) && allows\(\)/);
+    // Bandeau rouge et non blocage total.
+    assert.match(banniere, /Plafond de quota atteint/);
+    assert.match(banniere, /border-rose-500\/50/);
+  });
+
+  it('laisse le revendeur attribuer lui-même un plan à ses clients', () => {
+    // L'écran était réservé aux administrateurs : chaque vente exigeait leur
+    // intervention. Ce qui arrête le revendeur est l'état de son agrément et de
+    // son plafond, pas son rôle.
+    assert.match(forfaits, /const canAssign = \(isAdmin \|\| isReseller\) && can\('subscription.manage'\)/);
+    assert.match(forfaits, /const canCreate = canAssign && allows\(\)/);
+    // Sélection explicite : client possédé + configuration attribuée.
+    assert.match(forfaits, /Client VPN \*/);
+    assert.match(forfaits, /Configuration VPN attribuée \*/);
+    assert.match(forfaits, /isReseller \? fetchAssignedVpnProfiles\(\) : fetchVpnProfiles\(\)/);
+    // Aucune promesse d'attribution automatique.
+    assert.match(forfaits, /n'attribuent de plan/);
+    assert.match(apiForfaits, /SEUL point d'attribution d'un plan/);
+  });
+
+  it('étiquette chaque entité au nom de son revendeur pour les rôles supérieurs', () => {
+    assert.match(acces, /export function ownerLabel/);
+    assert.match(acces, /`Client de \$\{resellerName\}`/);
+    for (const vue of [clientsVue, appareils, forfaits]) {
+      assert.match(vue, /ownerLabel\(/);
+      assert.match(vue, /showsOwnerColumn/);
+    }
+    // L'identité revendeur doit exister dans les contrats d'API lus par ces vues.
+    assert.match(apiAppareils, /resellerName: string \| null/);
+    assert.match(apiForfaits, /resellerName\?: string \| null/);
+  });
+
+  it('dit qu’un appareil sans forfait est un état normal', () => {
+    // L'activation crée le compte appareil ; elle n'attribue aucun plan.
+    assert.match(appareils, /Aucun plan attribué/);
+    assert.match(apiAppareils, /hasSubscription: boolean/);
+    assert.match(appareils, /elle n'attribue aucun plan/);
+  });
+
+  it('ouvre réellement les habilitations au propriétaire et au super-administrateur', () => {
+    // Le serveur autorise OWNER par le point unique de contournement :
+    // l'interface ne doit pas être plus restrictive que l'API.
+    assert.match(rbac, /const canEdit = isOwnerRole\(currentUserRole\) \|\| currentUserRole === UserRole\.SUPER_ADMIN/);
+    // Aucune élévation de privilège possible depuis cet écran.
+    assert.match(rbac, /const isRoleLocked = \(roleName: string\) => roleName === UserRole\.OWNER/);
+    assert.match(rbac, /wouldLockOutRbac/);
+    assert.match(rbac, /DANGEROUS_PERMISSIONS/);
+    assert.match(rbac, /Confirmer un changement sensible/);
+    // Responsive : matrice sur grand écran, cartes par rôle sur mobile.
+    assert.match(rbac, /min-w-\[780px\]/);
+    assert.match(rbac, /lg:hidden/);
+    // L'état affiché est relu du serveur, jamais deviné localement.
+    assert.match(rbac, /setRoles\(await fetchRoles\(\)\)/);
+    // Retirer une permission dans la matrice doit être effectif jusque dans le
+    // middleware et dans le menu, sans réinjection silencieuse par rôle.
+    const auth = source('../server/middleware/auth.ts');
+    assert.doesNotMatch(auth, /RESELLER_REQUIRED_PERMISSIONS|CORE_DATA_PERMISSIONS/);
+    assert.match(layoutTsx, /currentUser\.permissions\.includes\(item\.permission\)/);
+  });
+
+  it('écrit un français correct dans les écrans de gestion des comptes', () => {
+    // Le fichier était doublement encodé : « CrÃ©ez », « RÃ´le », « TÃ©lÃ©phone ».
+    for (const [nom, contenu] of [['AccountsView', comptes], ['ResellersView', revendeurs], ['RBACView', rbac]] as const) {
+      assert.doesNotMatch(contenu, /Ã.|â€|Â«|Â»/, `${nom} contient du texte mal encodé`);
+    }
+    assert.match(comptes, /Gestion des comptes/);
+    assert.match(comptes, /Rôle \*/);
+    assert.match(comptes, /Téléphone/);
   });
 });

@@ -103,7 +103,7 @@ jobs:
       # dont l'oubli a déjà provoqué des pannes ici.
       - name: Garde-fous contre les régressions
         working-directory: app-mobile
-        run: npx tsx --test tests/regression-critical-flows.test.ts
+        run: npx tsx --test tests/regression-critical-flows.test.ts ../server/tests/reseller-lifecycle.test.ts
 
       - name: Build Dashboard (React + Vite)
         working-directory: artifacts/sxb-dashboard
@@ -136,6 +136,13 @@ jobs:
             --sourcemap \
             --outfile=dist/server.cjs
           echo "✅ Backend built: $(du -sh dist/server.cjs | cut -f1)"
+
+      - name: Verify reseller HTTP lifecycle before deployment
+        env:
+          DATABASE_URL: postgresql://unused:unused@127.0.0.1:5432/unused
+        run: |
+          node backend/node_modules/prisma/build/index.js generate --schema backend/prisma/schema.prisma
+          node --test scripts/tests/reseller-http.test.mjs
 
       - name: Deploy to VPS
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
@@ -237,17 +244,9 @@ jobs:
             # artifacts/sxb-dashboard/dist/public. Copier explicitement le
             # bundle frontend sans supprimer server.cjs ni download/*.apk.
             test -f artifacts/sxb-dashboard/dist/public/index.html
-            rm -rf dist/assets
-            cp -a artifacts/sxb-dashboard/dist/public/assets dist/assets
-            cp -f artifacts/sxb-dashboard/dist/public/index.html dist/index.html
-            for asset in favicon.svg favicon.png robots.txt; do
-              if [ -f "artifacts/sxb-dashboard/dist/public/$asset" ]; then
-                cp -f "artifacts/sxb-dashboard/dist/public/$asset" "dist/$asset"
-              fi
-            done
-            echo "✅ Dashboard bundle synchronized to dist/"
 
             echo "⚙️ Build Backend..."
+            mkdir -p .sxb-release
             ESBUILD=$(find backend/node_modules/.bin -name "esbuild" -executable | head -1)
             if [ -z "$ESBUILD" ]; then ESBUILD="npx --yes esbuild@0.27.3"; fi
             $ESBUILD server.ts \
@@ -256,7 +255,7 @@ jobs:
               --format=cjs \
               --packages=external \
               --sourcemap \
-              --outfile=dist/server.cjs
+              --outfile=.sxb-release/server.cjs
 
             # ── Sauvegarde AVANT toute migration ──────────────────────────────
             #
@@ -314,10 +313,34 @@ jobs:
             fi
 
             echo "🗄️ Push Prisma schema..."
+            set -o pipefail
             NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
               node /var/www/sxb-vpn/backend/node_modules/prisma/build/index.js db push \
               --schema=backend/prisma/schema.prisma \
-              --accept-data-loss 2>&1 | tail -5
+              --skip-generate 2>&1 | tail -5
+
+            # `db push` crée les colonnes mais n'exécute pas la reprise de
+            # propriété des clients historiques. Cette migration additive et
+            # idempotente rend leur revendeur explicite sans déplacer ni
+            # supprimer aucune donnée.
+            RESELLER_LIFECYCLE_SQL="backend/prisma/migrations/20260907120000_reseller_access_and_client_ownership/migration.sql"
+            if [ -f "$RESELLER_LIFECYCLE_SQL" ]; then
+              if ! command -v psql >/dev/null 2>&1; then
+                echo "::error::psql introuvable — rattachement revendeur non installable"
+                exit 1
+              fi
+              PSQL_URL="${DB_URL%%\?*}"
+              psql "$PSQL_URL" -v ON_ERROR_STOP=1 -f "$RESELLER_LIFECYCLE_SQL" >/tmp/sxb-reseller-lifecycle-migration.log
+              echo "✅ Validité et propriété revendeur migrées"
+            fi
+
+            for SQL in \
+              backend/prisma/migrations/20260907130000_token_revoke_permission/migration.sql \
+              backend/prisma/migrations/20260907140000_voucher_ownership_and_lifecycle/migration.sql; do
+              test -f "$SQL"
+              psql "${DB_URL%%\?*}" -1 -v ON_ERROR_STOP=1 -f "$SQL" >/tmp/sxb-commercial-migration.log
+            done
+            echo "✅ Jetons et vouchers migrés sans suppression de données"
 
             # Prisma ne sait pas représenter un trigger append-only ni le CHECK
             # des types de mouvement. `db push` crée les colonnes, puis ce SQL
@@ -360,7 +383,21 @@ jobs:
             fi
 
             echo "🔄 Reload PM2..."
+            # Publier seulement après sauvegarde et migrations réussies.
+            # Garder les anciens chunks pour les navigateurs déjà connectés.
+            mkdir -p dist/assets
+            cp -a artifacts/sxb-dashboard/dist/public/assets/. dist/assets/
+            mv .sxb-release/server.cjs dist/server.cjs
+            mv .sxb-release/server.cjs.map dist/server.cjs.map
+            for asset in favicon.svg favicon.png robots.txt; do
+              if [ -f "artifacts/sxb-dashboard/dist/public/$asset" ]; then
+                cp -f "artifacts/sxb-dashboard/dist/public/$asset" "dist/$asset"
+              fi
+            done
             pm2 restart ecosystem.config.cjs --update-env || pm2 start ecosystem.config.cjs
+            curl -fsS --retry 5 --retry-connrefused --retry-delay 2 http://127.0.0.1:4000/api/health >/dev/null
+            cp -f artifacts/sxb-dashboard/dist/public/index.html dist/index.next.html
+            mv dist/index.next.html dist/index.html
             # Conserve les variables FCM/santé après un redémarrage du VPS.
             pm2 save
 
