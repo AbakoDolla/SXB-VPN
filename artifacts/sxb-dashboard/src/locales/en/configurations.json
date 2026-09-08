@@ -19,6 +19,12 @@
     "add": "Add a lock",
     "expires": "Expires: {{time}}",
     "errors": {
+      "PROFILE_NOT_LOCKED": "This configuration does not have a protection password yet.",
+      "PROFILE_LOCK_FIELDS_FORBIDDEN": "Use the change password action to update the configuration lock.",
+      "PROFILE_UNLOCK_UNAVAILABLE": "Unlocking is temporarily unavailable. Please try again.",
+      "PROFILE_LOCK_UNAVAILABLE": "The protection password could not be updated. Please try again.",
+      "PROFILE_ENGINE_NOT_FOUND": "The engine account linked to this configuration was not found.",
+      "PROFILE_ENGINE_LINK_INVALID": "The link between the configuration and its engine is invalid.",
       "PROFILE_LOCKED": "The configuration is locked or your proof expired. Unlock it again.",
       "PROFILE_UNLOCK_FAILED": "Incorrect password.",
       "PROFILE_LOCK_PASSWORD_INVALID": "The password does not meet the required limits.",

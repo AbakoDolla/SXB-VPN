@@ -69,10 +69,14 @@ describe('mobile health wiring and privacy', () => {
     assert.match(app, /case 'mobile-health'/);
     assert.match(app, /UserRole\.OWNER[\s\S]{0,100}UserRole\.SUPER_ADMIN[\s\S]{0,100}UserRole\.ADMIN/);
     assert.match(layout, /id: 'mobile-health'[\s\S]{0,120}roles: ADMINS/);
-    assert.match(view, /Versions installées/);
-    assert.match(view, /Actifs \/ inactifs/);
-    assert.match(view, /Mises à jour nécessaires/);
-    assert.match(view, /ne doivent jamais être[\s\S]{0,80}interprétés comme des mAh/);
+    const labels = JSON.parse(source('artifacts/sxb-dashboard/src/locales/fr/operations.json')).mobileHealth;
+    for (const [key, text] of [
+      ['installedVersions', /Versions installées/], ['activity', /Actifs \/ inactifs/],
+      ['updatesNeeded', /Mises à jour nécessaires/], ['proxyExplanation', /ne doivent jamais être[\s\S]{0,80}interprétés comme des mAh/],
+    ]) {
+      assert.ok(view.includes(`operations.mobileHealth.${key}`));
+      assert.match(labels[key], text);
+    }
     assert.doesNotMatch(view, /\bhost\b|ipAddress|payload|credentials|rawLog/);
   });
 });

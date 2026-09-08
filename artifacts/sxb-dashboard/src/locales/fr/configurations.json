@@ -19,6 +19,12 @@
     "add": "Ajouter un verrou",
     "expires": "Expiration : {{time}}",
     "errors": {
+      "PROFILE_NOT_LOCKED": "Cette configuration n'a pas encore de mot de passe de protection.",
+      "PROFILE_LOCK_FIELDS_FORBIDDEN": "Utilisez l'action de changement de mot de passe pour modifier le verrou.",
+      "PROFILE_UNLOCK_UNAVAILABLE": "Déverrouillage temporairement indisponible. Veuillez réessayer.",
+      "PROFILE_LOCK_UNAVAILABLE": "Le mot de passe de protection n'a pas pu être modifié. Veuillez réessayer.",
+      "PROFILE_ENGINE_NOT_FOUND": "Le compte moteur lié à cette configuration est introuvable.",
+      "PROFILE_ENGINE_LINK_INVALID": "Le lien entre la configuration et son moteur est invalide.",
       "PROFILE_LOCKED": "Configuration verrouillée ou preuve expirée. Déverrouillez-la de nouveau.",
       "PROFILE_UNLOCK_FAILED": "Mot de passe incorrect.",
       "PROFILE_LOCK_PASSWORD_INVALID": "Le mot de passe ne respecte pas les limites requises.",

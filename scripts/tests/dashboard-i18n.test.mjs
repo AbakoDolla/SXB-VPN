@@ -144,8 +144,20 @@ test("validation retains translated field paths, constraints and unknown diagnos
   assert.match(result, /Duration in days \(durationDays\): A whole number is required/);
   assert.match(result, /Name \(name\): At least 3 characters/);
   assert.match(result, /Resellers.0 \(resellerIds.0\): Invalid value. Diagnostic: Revendeur retiré/);
-  assert.match(f.apiErrorMessage({ message: "Fournisseur indisponible" }, 503, "en"), /temporarily unavailable.*Diagnostic: Fournisseur indisponible/);
-  assert.doesNotMatch(f.apiErrorMessage({ error: "Internal database trace" }, 500, "en"), /Internal database trace/);
+  assert.match(f.apiErrorMessage({ message: "Fournisseur indisponible" }, 503, "en"), /temporarily unavailable/);
+});
+
+test("unexpected server traces remain hidden in every language and response shape", () => {
+  const f = fixture();
+  for (const language of ["fr", "en"]) {
+    for (const body of [
+      { error: "Internal database trace" },
+      { message: "Internal database trace" },
+      { details: [{ path: ["profile"], message: "Internal database trace", code: "custom" }] },
+    ]) {
+      assert.doesNotMatch(f.apiErrorMessage(body, 500, language, "Internal database trace"), /Internal database trace/);
+    }
+  }
 });
 
 test("reseller access guards and labels preserve their business distinctions", () => {

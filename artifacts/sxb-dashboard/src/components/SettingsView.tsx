@@ -401,7 +401,7 @@ export default function SettingsView({ currentUser, onUserUpdated, onNavigate }:
         <div className={sectionClass}>
           <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2"><Globe className="w-4 h-4 text-cyan-400" />{t("operations.common.language")}</h3>
           <div className="grid grid-cols-2 gap-3">
-            {[{ code: 'fr', label: 'Français', flag: '🇫🇷' }, { code: 'en', label: 'English', flag: '🇬🇧' }].map(lang => (
+            {[{ code: 'fr', label: t('core.languages.fr'), flag: '🇫🇷' }, { code: 'en', label: t('core.languages.en'), flag: '🇬🇧' }].map(lang => (
               <button
                 key={lang.code}
                 onClick={() => setLanguage(lang.code as 'fr' | 'en')}

@@ -112,3 +112,29 @@ test("Retry-After dates and absent or malformed delays remain readable", async (
     error.retryAfterSeconds === undefined && /Trop de requêtes/.test(error.message)
   );
 });
+
+test("unlock headers are scoped to one request and cannot replace authentication or language", async () => {
+  const { apiRequest, state } = fixture([
+    { status: 200, body: { profile: { id: "profile" } } },
+    { status: 200, body: { clients: [] } },
+  ]);
+  state.tokens.set("sxb_vpn_lang", "en");
+  await apiRequest("/vpn-profiles/profile", {
+    headers: {
+      "X-VPN-Profile-Unlock": "request-scoped-proof",
+      authorization: "Bearer different-user",
+      "CONTENT-TYPE": "text/plain",
+      "accept-language": "fr",
+    },
+  });
+  const headers = state.calls[0].headers;
+  assert.equal(headers["X-VPN-Profile-Unlock"], "request-scoped-proof");
+  assert.equal(headers.Authorization, "Bearer access-before");
+  assert.equal(headers["Content-Type"], "application/json");
+  assert.equal(headers["Accept-Language"], "en");
+  assert.equal(headers.authorization, undefined);
+  state.tokens.set("sxb_vpn_lang", "fr");
+  await apiRequest("/clients");
+  assert.equal(state.calls[1].headers["X-VPN-Profile-Unlock"], undefined);
+  assert.equal(state.calls[1].headers["Accept-Language"], "fr");
+});

@@ -21,6 +21,10 @@
     "activate": "Activate with token",
     "footer": "SXB VPN · Control panel · v2.1"
   },
+  "notFound": {
+    "title": "404 — Page not found",
+    "description": "This page does not exist or is no longer available."
+  },
   "session": {
     "initializing": "Initializing…",
     "unavailable": "Session temporarily unavailable",

@@ -20,6 +20,25 @@ const exceptions = [
   { file: "components/Layout.tsx", sink: "attribute:alt", text: "SXB", reason: "Product logotype" },
   { file: "components/Layout.tsx", sink: "attribute:alt", text: "SXB VPN", reason: "Product logotype" },
   { file: "components/Layout.tsx", sink: "expression", text: "U", reason: "Fallback avatar initial, not a role label" },
+  { file: "components/AccountsView.tsx", sink: "attribute:placeholder", text: "+225 07 XX XX XX", reason: "Example phone syntax" },
+  { file: "components/ClientsView.tsx", sink: "attribute:placeholder", text: "+225 07 XX XX XX XX", reason: "Example phone syntax" },
+  { file: "components/ResellersView.tsx", sink: "attribute:placeholder", text: "+225 07 XX XX XX", reason: "Example phone syntax" },
+  { file: "components/ResellersView.tsx", sink: "attribute:placeholder", text: "awa@example.com", reason: "Example email address" },
+  { file: "components/SettingsView.tsx", sink: "attribute:placeholder", text: "+225 07 XX XX XX", reason: "Example phone syntax" },
+  { file: "components/SettingsView.tsx", sink: "jsx", text: "https://vpnsxb.afrihall.com", reason: "Literal product URL" },
+  { file: "components/AppUpdatesView.tsx", sink: "attribute:placeholder", text: "https://vpnsxb.afrihall.com/download/sxbvpn-latest.apk", reason: "Literal release URL syntax" },
+  { file: "components/TokensView.tsx", sink: "jsx", text: "SXB-XXXX-XXXX-XXXX", reason: "Opaque account token syntax" },
+  { file: "components/VouchersView.tsx", sink: "attribute:placeholder", text: "VCH-XXXXX-XXXXX", reason: "Opaque voucher syntax" },
+  ...["VLESS", "VMess", "Trojan", "Shadowsocks", "Hysteria2", "TUIC"].map(text => ({
+    file: "components/VpnProfilesView.tsx", sink: "property:label", text, reason: "Standard VPN protocol name",
+  })),
+  ...["sha256:", "badvpn-udpgw", "SNI", "UUID", "TLS/SSL"].map(text => ({
+    file: "components/VpnProfilesView.tsx", sink: "jsx", text, reason: "Technical identifier",
+  })),
+  ...["ubuntu", "t.example.com", "example.com", "9dbbfb7374360504…",
+    "CONNECT exemple.com HTTP/1.1[crlf]Host: exemple.com[crlf]User-Agent: Mozilla/5.0[crlf][crlf]"].map(text => ({
+      file: "components/VpnProfilesView.tsx", sink: "attribute:placeholder", text, reason: "Exact example of technical input syntax",
+    })),
 ];
 
 function sourceFiles(directory) {
@@ -130,7 +149,11 @@ export function auditSource(text, file = "fixture.tsx", allowed = exceptions) {
       return;
     }
     if (ts.isTemplateExpression(node)) {
-      report(node, sink, node.head.text + node.templateSpans.map(span => `{{value}}${span.literal.text}`).join(""));
+      const literalText = node.head.text + node.templateSpans.map(span => span.literal.text).join("");
+      if (hasWords(literalText)) {
+        report(node, sink, node.head.text + node.templateSpans.map(span => `{{value}}${span.literal.text}`).join(""));
+      }
+      node.templateSpans.forEach(span => inspectValue(span.expression, sink, next));
       return;
     }
     if (ts.isConditionalExpression(node)) {
@@ -268,6 +291,13 @@ if (process.argv.includes("--report")) {
     `);
     assert.ok(findings.some(item => item.sink === "missing-key" && item.text === "core.login.doesNotExist"));
     assert.ok(!findings.some(item => item.sink === "missing-key" && item.text === "core.login.signIn"));
+  });
+
+  test("templates containing only punctuation and user data need no translation", () => {
+    assert.deepEqual(auditSource('export function View() { return <span>{` — ${client.name}`}{`(${profile.protocol})`}</span>; }'), []);
+    assert.ok(auditSource('export function View() { return <span>{`${count} jours`}</span>; }').some(item => item.text.includes("jours")));
+    assert.ok(auditSource('export function View() { return <span>{`${active ? "Actif" : "Inactif"}`}</span>; }').some(item => item.text === "Actif"));
+    assert.ok(auditSource('export function View() { return <span>{`(${"Supprimer"})`}</span>; }').some(item => item.text === "Supprimer"));
   });
 
   test("AST audit catches browser-default and fixed locales but accepts selected locales", () => {

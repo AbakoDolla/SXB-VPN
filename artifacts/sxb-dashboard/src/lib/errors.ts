@@ -16,6 +16,18 @@ const CODE_KEYS: Record<string, string> = {
   session_expired: "errors.sessionExpired",
   SESSION_REFRESH_UNAVAILABLE: "errors.refreshUnavailable",
   maintenance: "errors.maintenance",
+  PROFILE_LOCKED: "configurations.lock.errors.PROFILE_LOCKED",
+  PROFILE_UNLOCK_FAILED: "configurations.lock.errors.PROFILE_UNLOCK_FAILED",
+  PROFILE_LOCK_PASSWORD_INVALID: "configurations.lock.errors.PROFILE_LOCK_PASSWORD_INVALID",
+  PROFILE_UNLOCK_RATE_LIMITED: "configurations.lock.errors.PROFILE_UNLOCK_RATE_LIMITED",
+  PROFILE_ENGINE_LINK_AMBIGUOUS: "configurations.lock.errors.PROFILE_ENGINE_LINK_AMBIGUOUS",
+  PROFILE_ENGINE_LINKED: "configurations.lock.errors.PROFILE_ENGINE_LINKED",
+  PROFILE_NOT_LOCKED: "configurations.lock.errors.PROFILE_NOT_LOCKED",
+  PROFILE_LOCK_FIELDS_FORBIDDEN: "configurations.lock.errors.PROFILE_LOCK_FIELDS_FORBIDDEN",
+  PROFILE_UNLOCK_UNAVAILABLE: "configurations.lock.errors.PROFILE_UNLOCK_UNAVAILABLE",
+  PROFILE_LOCK_UNAVAILABLE: "configurations.lock.errors.PROFILE_LOCK_UNAVAILABLE",
+  PROFILE_ENGINE_NOT_FOUND: "configurations.lock.errors.PROFILE_ENGINE_NOT_FOUND",
+  PROFILE_ENGINE_LINK_INVALID: "configurations.lock.errors.PROFILE_ENGINE_LINK_INVALID",
 };
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -101,11 +113,11 @@ export function apiErrorMessage(
       ? translate(language, "errors.rate_limit")
       : translate(language, "errors.rateLimitDelay", { seconds: formatNumber(retryAfterSeconds, language) });
   }
-  const issues = [
+  const issues = status < 500 ? [
     ...validationMessages(body?.details, language),
     ...validationMessages(body?.message, language),
     ...validationMessages(body?.issues, language),
-  ];
+  ] : [];
   if (issues.length) return `${translate(language, "errors.validation")} ${issues.join("; ")}`;
   const known = knownMessage(body?.error, language) ?? knownMessage(code ?? body?.code, language);
   if (known) {
@@ -122,7 +134,9 @@ export function apiErrorMessage(
   const explanation = `${translate(language, fallback)} ${translate(language, "errors.http", { status })}`;
   // Unrecognized machine codes and explicit diagnostics stay available, but
   // never replace the localized explanation or expose a raw 5xx error trace.
-  const raw = text(body?.message) ?? (status < 500 ? text(body?.error) : undefined) ?? text(code);
+  const raw = status < 500
+    ? text(body?.message) ?? text(body?.error) ?? text(code)
+    : undefined;
   return raw ? `${explanation} ${diagnostic(raw, language)}` : explanation;
 }
 

@@ -58,6 +58,23 @@ const XRAY_VLESS_WITH_HTTP_UPSTREAM = {
 // La commande npm est exécutée depuis app-mobile, localement comme dans CI.
 const source = (relativePath: string) => readFileSync(relativePath, 'utf8');
 
+function dashboardText(key: string, language: 'fr' | 'en' = 'fr'): string {
+  const [namespace, ...parts] = key.split('.');
+  let value: unknown = JSON.parse(source(`../artifacts/sxb-dashboard/src/locales/${language}/${namespace}.json`));
+  for (const part of parts) {
+    assert.ok(value && typeof value === 'object' && part in value, `Missing ${language} translation: ${key}`);
+    value = (value as Record<string, unknown>)[part];
+  }
+  assert.equal(typeof value, 'string', `Translation is not text: ${key}`);
+  return value as string;
+}
+
+function assertDashboardLabel(component: string, key: string, expected: RegExp) {
+  assert.ok(component.includes(key), `The UI must render ${key}`);
+  assert.match(dashboardText(key), expected);
+  assert.ok(dashboardText(key, 'en').trim(), `Missing English label: ${key}`);
+}
+
 describe('chiffrement de la configuration VPN', () => {
   it('chiffre puis déchiffre exactement un profil provisionné', () => {
     const key = new Uint8Array(Array.from({ length: 32 }, (_, index) => index + 1));
@@ -412,7 +429,7 @@ describe('garde-fous contre les régressions Android', () => {
 
   it('sélectionne un appareil réel pour les annonces et utilise un canal sonore versionné', () => {
     assert.match(announcementsView, /fetchDevices\(\)/);
-    assert.match(announcementsView, /Tous les appareils actifs/);
+    assertDashboardLabel(announcementsView, 'operations.announcements.allDevices', /Tous les appareils actifs/);
     assert.match(announcementsView, /device\.deviceId/);
     assert.match(nativePushSource, /SXB_ANNOUNCEMENTS_V2/);
     assert.match(nativePushSource, /setSound\(soundUri, audioAttributes\)/);
@@ -422,7 +439,7 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(appUpdateRoutes, /SUPER_ADMIN_ONLY/);
     assert.match(appUpdateRoutes, /isActivatedDevice\(deviceId\)/);
     assert.match(appUpdateRoutes, /targetDeviceIds/);
-    assert.match(appUpdateView, /Publier et distribuer/);
+    assertDashboardLabel(appUpdateView, 'operations.updates.publish', /Publier et distribuer/);
     assert.match(appUpdateView, /SUPER_ADMIN/);
     assert.match(appUpdateView, /activeDevices/);
   });
@@ -888,25 +905,26 @@ describe('garde-fous contre les régressions Android', () => {
 
   it('utilise un seul flux canonique chiffré pour la saisie manuelle et le JSON', () => {
     assert.ok(dashboardProfiles.includes('importConfig: JSON.stringify(manualConfig)'));
-    assert.ok(dashboardProfiles.includes('Un payload complet est requis pour SSH+Payload'));
+    assertDashboardLabel(dashboardProfiles, 'configurations.ui.payloadRequired', /Un payload complet est requis pour SSH\+Payload/);
     assert.ok(dashboardProfiles.includes('value={form.payload || \'\'}'));
-    assert.ok(dashboardProfiles.includes('Enregistrer et chiffrer'));
+    assertDashboardLabel(dashboardProfiles, 'configurations.ui.saveEncrypt', /Enregistrer et chiffrer/);
   });
 
   it('affiche les protocoles V2Ray/Xray et conserve le verdict transport_ok', () => {
     assert.ok(dashboardProfiles.includes("'hysteria2', 'tuic'"));
-    assert.ok(dashboardProfiles.includes('Validation syntaxique seulement'));
+    assertDashboardLabel(dashboardProfiles, 'configurations.ui.syntaxOnly', /Validation syntaxique seulement/);
     assert.ok(transportProbe.includes("case 'transport_ok': return 'transport_ok'"));
     assert.ok(transportProbe.includes("case 'unsupported': return 'unsupported'"));
   });
 
   it('expose un éditeur JSON complet avec formatage, diagnostic et préflight', () => {
     assert.ok(dashboardProfiles.includes('JsonConfigEditor'));
-    assert.ok(dashboardProfiles.includes('V2Ray / Xray détecté'));
-    assert.ok(dashboardProfiles.includes('Formater'));
-    assert.ok(dashboardProfiles.includes('Valider le transport'));
-    assert.ok(dashboardProfiles.includes('Configuration JSON V2Ray Xray complète'));
-    assert.ok(dashboardProfiles.includes('Saisie manuelle'));
+    assertDashboardLabel(dashboardProfiles, 'configurations.ui.xrayDetected', /V2Ray \/ Xray détecté/);
+    assertDashboardLabel(dashboardProfiles, 'configurations.editor.protocolDetected', /détecté/);
+    assertDashboardLabel(dashboardProfiles, 'configurations.ui.format', /Formater/);
+    assertDashboardLabel(dashboardProfiles, 'configurations.ui.testTransport', /Valider le transport/);
+    assertDashboardLabel(dashboardProfiles, 'configurations.ui.editorLabel', /Configuration JSON V2Ray Xray complète/);
+    assertDashboardLabel(dashboardProfiles, 'configurations.ui.manual', /Saisie manuelle/);
   });
 
   it('accepte les URI de partage dans l’éditeur d’import du dashboard', () => {
@@ -929,7 +947,7 @@ describe('garde-fous contre les régressions Android', () => {
   it('expose l’en-tête Host WebSocket dans la saisie manuelle du dashboard', () => {
     // Sans ce champ, un profil ws saisi à la main partait avec le SNI en guise
     // d'en-tête Host — silencieux, et faux dès que le fournisseur les dissocie.
-    assert.ok(dashboardProfiles.includes('Host (en-tête WebSocket)'));
+    assertDashboardLabel(dashboardProfiles, 'configurations.ui.wsHost', /Host \(en-tête WebSocket\)/);
     assert.ok(dashboardProfiles.includes("f('wsHost', e.target.value)"));
     assert.ok(dashboardProfiles.includes('wsHost: legacyForm.wsHost.trim() || undefined'));
   });
@@ -1245,7 +1263,10 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(!vpnProfileRoutes.includes('assignedResellers: { none: {} }'));
     assert.ok(vpnProfileRoutes.includes('assignedResellers: { some: { resellerId: reseller.id } }'));
     // Le masquage du blob canonique reste intact.
-    assert.ok(vpnProfileRoutes.includes('delete out.canonicalConfig'));
+    assert.ok(vpnProfileRoutes.includes('serializeLockedProfile(p, req)'));
+    const lockService = source('../server/services/profile-lock.ts');
+    const allowedFields = lockService.slice(lockService.indexOf('const metadataFields'), lockService.indexOf('export function serializeLockedProfile'));
+    assert.doesNotMatch(allowedFields, /['"]canonicalConfig['"]|['"]lockPasswordHash['"]/);
   });
 
   it('garde le schéma Prisma déployé identique à celui de la racine', () => {
@@ -1271,7 +1292,7 @@ describe('garde-fous contre les régressions Android', () => {
       vpnProfileRoutes.indexOf("router.get('/', requireAuth, requirePermission('vpnprofile.view')"),
       vpnProfileRoutes.indexOf("router.get('/assigned'"),
     );
-    assert.ok(listRoute.includes('profiles.map(maskProfile)'), 'le repli doit renvoyer les profils masqués');
+    assert.match(listRoute, /profiles\.map\(\(p: any\) => maskProfile\(p\)\)/, 'le repli doit renvoyer les profils masqués');
   });
 
   it('expose les opérations groupées avec confirmation et récapitulatif', () => {
@@ -1279,14 +1300,14 @@ describe('garde-fous contre les régressions Android', () => {
     // exige une confirmation, et l'opérateur doit ensuite savoir qui a échoué.
     assert.ok(subscriptionsView.includes('BULK_ACTIONS'));
     assert.ok(subscriptionsView.includes('bulkConfirm'));
-    assert.ok(subscriptionsView.includes('Confirmer l’opération'));
+    assertDashboardLabel(subscriptionsView, 'commerce.subscriptions.bulk.confirm', /Confirmer l’opération/);
     assert.ok(subscriptionsView.includes('bulkResult'));
     assert.ok(subscriptionsView.includes("d.status === 'failed'"), 'le récapitulatif doit lister les échecs');
     // Les libellés disent ce que l'action FAIT : confondre « définir » et
     // « ajouter » ferait perdre le solde d'un client.
-    assert.ok(subscriptionsView.includes('Définir (remplace)'));
-    assert.ok(subscriptionsView.includes('Ajouter des données (+Go)'));
-    assert.ok(subscriptionsView.includes('Prolonger la durée (+jours)'));
+    assertDashboardLabel(subscriptionsView, 'commerce.subscriptions.bulk.set', /Définir \(remplace\)/);
+    assertDashboardLabel(subscriptionsView, 'commerce.subscriptions.bulk.addData', /Ajouter des données \(\+Go\)/);
+    assertDashboardLabel(subscriptionsView, 'commerce.subscriptions.bulk.extend', /Prolonger la durée \(\+jours\)/);
     // « Tout sélectionner » doit porter sur le filtre, pas sur la page affichée.
     assert.ok(subscriptionsView.includes('const selectAllFiltered = () => setSelected(new Set(filtered.map(s => s.id)))'));
   });
@@ -1294,10 +1315,9 @@ describe('garde-fous contre les régressions Android', () => {
   it('permet d’attribuer une configuration à des revendeurs depuis le dashboard', () => {
     assert.ok(vpnProfilesView.includes('setProfileResellers'));
     assert.ok(vpnProfilesView.includes('openAssign'));
-    // Le cas « aucune attribution » doit être explicite, sinon l'opérateur
-    // croirait la configuration inaccessible alors qu'elle est ouverte à tous.
-    assert.ok(vpnProfilesView.includes('Tous les revendeurs'));
-    assert.ok(vpnProfilesView.includes('Tout retirer'));
+    // Aucune attribution n'autorise aucun revendeur, jamais tout le parc.
+    assertDashboardLabel(vpnProfilesView, 'configurations.notices.noResellers', /Aucun revendeur attribué/);
+    assertDashboardLabel(vpnProfilesView, 'configurations.ui.removeAll', /Tout retirer/);
     // L'échec du chargement des revendeurs ne doit pas masquer les profils.
     assert.ok(vpnProfilesView.includes('fetchResellers().catch(() => [] as any[])'));
   });
@@ -2077,10 +2097,10 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(routes, /router\.post\('\/import-batch'/);
     assert.match(routes, /await prisma\.\$transaction/);
     assert.match(api, /export const importVpnProfiles/);
-    assert.match(vue, /HTTP Custom — \$\{httpCustomConfigs\.length\} profil/);
-    assert.match(vue, /SSH \+ SlowDNS/);
-    assert.match(vue, /SSH \+ UDPGW/);
-    assert.match(vue, /BadVPN UDPGW/);
+    assertDashboardLabel(vue, 'configurations.editor.httpCustom', /HTTP Custom.*\{\{count\}\} profil/);
+    assertDashboardLabel(vue, 'configurations.ui.sshSlowDns', /SSH \+ SlowDNS/);
+    assertDashboardLabel(vue, 'configurations.ui.sshUdp', /SSH \+ UDPGW/);
+    assertDashboardLabel(vue, 'configurations.ui.udpGw', /BadVPN UDPGW/);
 
     // Les credentials restent exclusivement dans le canonique chiffré ; les
     // colonnes d'identification du profil n'en reçoivent jamais de copie.
@@ -2140,7 +2160,7 @@ describe('tableau de bord — comptes, revendeurs et habilitations', () => {
     assert.match(comptes, /selectedRoleIsReseller/);
     assert.match(comptes, /disabled=\{creating \|\| selectedRoleIsReseller\}/);
     // Un compte de connexion n'est pas un agrément : l'écran le dit.
-    assert.match(comptes, /Compte de connexion — l'agrément se gère dans l'onglet/);
+    assertDashboardLabel(comptes, 'commerce.accounts.resellerAccountHint', /Compte de connexion — l'agrément se gère dans l'onglet/);
   });
 
   it('exige une échéance future et un quota explicite à la création', () => {
@@ -2151,7 +2171,7 @@ describe('tableau de bord — comptes, revendeurs et habilitations', () => {
     assert.match(revendeurs, /isFutureExpiry\(createForm\.accessExpiresAt\)/);
     // Zéro n'est pas « illimité » : seul un plafond négatif lève la limite.
     assert.match(revendeurs, /createForm\.unlimited \? -1 :/);
-    assert.match(revendeurs, /0 Go signifie « aucun volume attribué », jamais « illimité »/);
+    assertDashboardLabel(revendeurs, 'commerce.resellers.zeroHint', /0 Go signifie « aucun volume attribué », jamais « illimité »/);
   });
 
   it('n’affiche jamais les comptes de rôle orphelins comme des revendeurs actifs', () => {
@@ -2161,7 +2181,7 @@ describe('tableau de bord — comptes, revendeurs et habilitations', () => {
     assert.match(comptes, /fetchResellerReconciliation/);
     assert.match(comptes, /isSuperAdmin && reconciliation/);
     assert.match(apiRevendeurs, /"\/resellers\/reconciliation"/);
-    assert.match(comptes, /Rapport en lecture seule/);
+    assertDashboardLabel(comptes, 'commerce.accounts.orphanHint', /Rapport en lecture seule/);
   });
 
   it('formate les volumes en BigInt sans jamais les convertir en Number', () => {
@@ -2169,7 +2189,9 @@ describe('tableau de bord — comptes, revendeurs et habilitations', () => {
     // arrivent en chaînes précisément pour éviter cette perte.
     assert.match(acces, /export function toBigInt/);
     assert.match(acces, /export function formatBytes/);
-    assert.match(acces, /if \(bytes < BigInt\(0\)\) return "Illimité"/);
+    const formats = dash('lib/i18n.ts');
+    assert.match(acces, /return localizedBytes\(bytes, language\)/);
+    assert.match(formats, /if \(bytes < BigInt\(0\)\) return translate\(language, "core\.unlimited"\)/);
     assert.doesNotMatch(acces, /Number\(value\) \/ 1024/);
     // Le pourcentage lui-même est calculé en entiers avant l'arrondi.
     assert.match(acces, /Number\(\(usedBytes \* BigInt\(1000\)\) \/ totalBytes\) \/ 10/);
@@ -2194,13 +2216,14 @@ describe('tableau de bord — comptes, revendeurs et habilitations', () => {
   });
 
   it('bloque l’espace revendeur à l’expiration sans masquer ses données', () => {
-    assert.match(banniere, /Accès expiré — veuillez renouveler|MESSAGE_ACCES_EXPIRE/);
-    assert.match(acces, /export const MESSAGE_ACCES_EXPIRE = "Accès expiré — veuillez renouveler"/);
+    assertDashboardLabel(banniere, 'commerce.access.expired', /Accès expiré/);
+    assert.match(acces, /export const MESSAGE_ACCES_EXPIRE = "errors\.resellers\.access_expired"/);
+    assert.match(dashboardText('errors.resellers.access_expired'), /Accès expiré/);
     // La bannière vit dans la coquille : elle suit l'exploitant d'un écran à
     // l'autre au lieu d'être répétée — ou oubliée — page à page.
     assert.match(layoutTsx, /<ResellerAccessBanner \/>/);
     // Les données restent affichées ; seules les écritures sont fermées.
-    assert.match(banniere, /Vos données restent consultables/);
+    assertDashboardLabel(banniere, 'commerce.access.expiredHint', /Vos données restent consultables/);
     assert.match(contexte, /blocked: isReseller && isAccessBlocked\(access\)/);
   });
 
@@ -2218,7 +2241,7 @@ describe('tableau de bord — comptes, revendeurs et habilitations', () => {
     assert.match(dash('components/TokensView.tsx'), /const canCreate = !isSupport && allows\(\)/);
     assert.match(dash('components/VouchersView.tsx'), /const canCreate = !isSupport && hasPermission\("vouchers.create"\) && allows\(\)/);
     // Bandeau rouge et non blocage total.
-    assert.match(banniere, /Plafond de quota atteint/);
+    assertDashboardLabel(banniere, 'commerce.access.quotaReached', /Plafond de quota atteint/);
     assert.match(banniere, /border-rose-500\/50/);
   });
 
@@ -2229,17 +2252,18 @@ describe('tableau de bord — comptes, revendeurs et habilitations', () => {
     assert.match(forfaits, /const canAssign = \(isAdmin \|\| isReseller\) && can\('subscription.manage'\)/);
     assert.match(forfaits, /const canCreate = canAssign && allows\(\)/);
     // Sélection explicite : client possédé + configuration attribuée.
-    assert.match(forfaits, /Client VPN \*/);
-    assert.match(forfaits, /Configuration VPN attribuée \*/);
+    assertDashboardLabel(forfaits, 'commerce.common.vpnClientRequired', /Client VPN \*/);
+    assertDashboardLabel(forfaits, 'commerce.subscriptions.configurationRequired', /Configuration VPN attribuée \*/);
     assert.match(forfaits, /isReseller \? fetchAssignedVpnProfiles\(\) : fetchVpnProfiles\(\)/);
     // Aucune promesse d'attribution automatique.
-    assert.match(forfaits, /n'attribuent de plan/);
+    assertDashboardLabel(forfaits, 'commerce.subscriptions.assignHint', /n'attribuent de plan/);
     assert.match(apiForfaits, /SEUL point d'attribution d'un plan/);
   });
 
   it('étiquette chaque entité au nom de son revendeur pour les rôles supérieurs', () => {
     assert.match(acces, /export function ownerLabel/);
-    assert.match(acces, /`Client de \$\{resellerName\}`/);
+    assert.match(acces, /translate\(language, "core\.owner\.reseller"/);
+    assert.match(dashboardText('core.owner.reseller'), /Client de \{\{name\}\}/);
     for (const vue of [clientsVue, appareils, forfaits]) {
       assert.match(vue, /ownerLabel\(/);
       assert.match(vue, /showsOwnerColumn/);
@@ -2251,9 +2275,9 @@ describe('tableau de bord — comptes, revendeurs et habilitations', () => {
 
   it('dit qu’un appareil sans forfait est un état normal', () => {
     // L'activation crée le compte appareil ; elle n'attribue aucun plan.
-    assert.match(appareils, /Aucun plan attribué/);
+    assertDashboardLabel(appareils, 'commerce.devices.noPlan', /Aucun plan attribué/);
     assert.match(apiAppareils, /hasSubscription: boolean/);
-    assert.match(appareils, /elle n'attribue aucun plan/);
+    assertDashboardLabel(appareils, 'commerce.devices.subtitle', /elle n'attribue aucun plan/);
   });
 
   it('ouvre réellement les habilitations au propriétaire et au super-administrateur', () => {
@@ -2264,7 +2288,7 @@ describe('tableau de bord — comptes, revendeurs et habilitations', () => {
     assert.match(rbac, /const isRoleLocked = \(roleName: string\) => roleName === UserRole\.OWNER/);
     assert.match(rbac, /wouldLockOutRbac/);
     assert.match(rbac, /DANGEROUS_PERMISSIONS/);
-    assert.match(rbac, /Confirmer un changement sensible/);
+    assertDashboardLabel(rbac, 'commerce.rbac.confirmSensitive', /Confirmer un changement sensible/);
     // Responsive : matrice sur grand écran, cartes par rôle sur mobile.
     assert.match(rbac, /min-w-\[780px\]/);
     assert.match(rbac, /lg:hidden/);
@@ -2282,8 +2306,9 @@ describe('tableau de bord — comptes, revendeurs et habilitations', () => {
     for (const [nom, contenu] of [['AccountsView', comptes], ['ResellersView', revendeurs], ['RBACView', rbac]] as const) {
       assert.doesNotMatch(contenu, /Ã.|â€|Â«|Â»/, `${nom} contient du texte mal encodé`);
     }
-    assert.match(comptes, /Gestion des comptes/);
-    assert.match(comptes, /Rôle \*/);
-    assert.match(comptes, /Téléphone/);
+    assertDashboardLabel(comptes, 'commerce.accounts.title', /Gestion des comptes/);
+    assertDashboardLabel(comptes, 'commerce.common.roleRequired', /Rôle \*/);
+    assertDashboardLabel(comptes, 'commerce.common.phone', /Téléphone/);
+    assert.doesNotMatch(source('../artifacts/sxb-dashboard/src/locales/fr/commerce.json'), /Ã.|â€|Â«|Â»/);
   });
 });

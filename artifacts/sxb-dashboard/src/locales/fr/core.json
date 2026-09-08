@@ -21,6 +21,10 @@
     "activate": "Activer avec le jeton",
     "footer": "SXB VPN · Panneau de gestion · v2.1"
   },
+  "notFound": {
+    "title": "404 — Page introuvable",
+    "description": "Cette page n'existe pas ou n'est plus disponible."
+  },
   "session": {
     "initializing": "Initialisation…",
     "unavailable": "Session temporairement indisponible",

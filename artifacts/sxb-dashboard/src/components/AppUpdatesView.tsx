@@ -8,11 +8,14 @@ import { useTranslation } from '../contexts/I18nContext';
 
 interface AppUpdatesViewProps { currentUserRole: string; }
 
-const roleLabels: Record<AppRole, string> = { OWNER: 'OWNER', SUPER_ADMIN: 'SUPER_ADMIN', ADMIN: 'ADMIN', SUPPORT: 'SUPPORT', RESELLER: 'RESELLER' };
 const initialForm = { versionCode: '', versionName: '', apkUrl: '', apkSha256: '', notes: '', minSupportedCode: '0', forceUpdate: false };
 
 export default function AppUpdatesView({ currentUserRole }: AppUpdatesViewProps) {
   const { t, formatDate, formatNumber, message, errorText } = useTranslation();
+  const roleLabels: Record<AppRole, string> = {
+    OWNER: t('role_owner'), SUPER_ADMIN: t('role_super_admin'), ADMIN: t('admin'),
+    SUPPORT: t('support'), RESELLER: t('reseller'),
+  };
   const isSuperAdmin = isSuperAdminRole(currentUserRole);
   const [update, setUpdate] = useState<AppUpdate | null>(null);
   const [eligibleDeviceCount, setEligibleDeviceCount] = useState(0);
@@ -101,7 +104,7 @@ export default function AppUpdatesView({ currentUserRole }: AppUpdatesViewProps)
       <div className="rounded-2xl border border-[#263149] bg-[#0d1422] p-4"><div className="text-xs text-gray-500 uppercase tracking-wider">{t("operations.updates.visibility")}</div><div className="text-xl text-white font-semibold mt-3">{t("operations.updates.allRoles")}</div><div className="text-xs text-gray-500 mt-2">{t("operations.updates.publishRole")}</div></div>
     </section>
 
-    {!isSuperAdmin && <div className="flex items-start gap-3 rounded-2xl border border-amber-500/25 bg-amber-500/10 p-4 text-sm text-amber-200"><ShieldCheck className="w-5 h-5 shrink-0 mt-0.5" /><span>{t("operations.updates.readOnlyIntro")}{" "}<strong>SUPER_ADMIN</strong> {t("operations.updates.readOnlyDetails")}</span></div>}
+    {!isSuperAdmin && <div className="flex items-start gap-3 rounded-2xl border border-amber-500/25 bg-amber-500/10 p-4 text-sm text-amber-200"><ShieldCheck className="w-5 h-5 shrink-0 mt-0.5" /><span>{t("operations.updates.readOnlyIntro")}{" "}<strong>{t('role_super_admin')}</strong> {t("operations.updates.readOnlyDetails")}</span></div>}
 
     <form onSubmit={submit} className="rounded-2xl border border-[#263149] bg-[#0b1220] overflow-hidden">
       <div className="px-5 py-4 border-b border-[#1b2840] flex items-center justify-between"><div><h2 className="text-base font-semibold text-white">{t("operations.updates.release")}</h2><p className="text-xs text-gray-500 mt-1">{t("operations.updates.urlHint")}</p></div>{update && isSuperAdmin && <button type="button" onClick={() => void disable()} disabled={saving} className="inline-flex items-center gap-1.5 text-xs text-rose-300 hover:text-rose-200 disabled:opacity-50"><XCircle className="w-4 h-4" />{t("operations.common.disable")}</button>}</div>

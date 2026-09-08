@@ -527,12 +527,18 @@ describe("gardes posées sur les routes", () => {
     assert.ok(dashboardApi.includes("resellerQuota: statistiquesQuotaRevendeurs"));
     assert.ok(dashboardApi.includes("calculerAllocation(prisma, fiche)"));
     assert.ok(dashboardUi.includes("stats?.resellerQuota"));
-    assert.ok(dashboardUi.includes("Quota attribué"));
-    assert.ok(dashboardUi.includes("Quota engagé"));
-    assert.ok(dashboardUi.includes("Quota disponible"));
+    const dashboardLabels = JSON.parse(readFileSync(
+      new URL("../../artifacts/sxb-dashboard/src/locales/fr/operations.json", import.meta.url), "utf8"
+    )).dashboard;
+    for (const [key, label] of [
+      ["assignedQuota", "Quota attribué"], ["committedQuota", "Quota engagé"], ["availableQuota", "Quota disponible"],
+    ]) {
+      assert.ok(dashboardUi.includes(`operations.dashboard.${key}`));
+      assert.equal(dashboardLabels[key], label);
+    }
     for (const libelleInterdit of ["Quota provisionné", "aux clients", "sur les clients"]) {
       assert.equal(
-        dashboardUi.includes(libelleInterdit),
+        dashboardUi.includes(libelleInterdit) || [dashboardLabels.assignedQuota, dashboardLabels.committedQuota, dashboardLabels.availableQuota].some(label => label.includes(libelleInterdit)),
         false,
         `le libellé ambigu « ${libelleInterdit} » ne doit plus apparaître`
       );
