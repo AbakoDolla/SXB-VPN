@@ -142,7 +142,9 @@ jobs:
           DATABASE_URL: postgresql://unused:unused@127.0.0.1:5432/unused
         run: |
           node backend/node_modules/prisma/build/index.js generate --schema backend/prisma/schema.prisma
-          node --test scripts/tests/reseller-http.test.mjs
+          node backend/node_modules/prisma/build/index.js generate --schema prisma/schema.prisma
+          node scripts/verify-prisma-runtime.cjs
+          node --test scripts/tests/reseller-http.test.mjs scripts/tests/dashboard-session.test.mjs
 
       - name: Deploy to VPS
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
@@ -236,6 +238,15 @@ jobs:
             echo "📦 Sync deps (lockfile may differ from VPS)..."
             pnpm config set ignore-build-scripts true 2>/dev/null || true
             pnpm install --no-frozen-lockfile --ignore-scripts 2>&1 | tail -5
+
+            # Node cherche d'abord dans node_modules/ avant NODE_PATH. Le bundle
+            # dist/server.cjs peut donc charger le client racine, même si celui
+            # de backend/ vient d'être généré. Générer les deux après installation.
+            NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
+              node backend/node_modules/prisma/build/index.js generate \
+              --schema=prisma/schema.prisma
+            NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
+              node scripts/verify-prisma-runtime.cjs
 
             echo "🎨 Build Dashboard..."
             sudo chown -R ubuntu:ubuntu /var/www/sxb-vpn/artifacts/ 2>/dev/null || true

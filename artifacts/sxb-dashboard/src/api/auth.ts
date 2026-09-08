@@ -23,29 +23,14 @@ export async function login(email: string, password: string): Promise<User> {
   };
 }
 
-/// Reconstruit la session depuis le token stocké localement, en
-/// revalidant côté serveur via /auth/refresh (qui échoue proprement
-/// si le token est invalide/expiré).
+// Le JWT identifie la session, mais ne contient pas les permissions effectives.
+// Relire le profil serveur conserve les menus autorisés après connexion,
+// rechargement, renouvellement du token ou modification de la matrice RBAC.
 export async function getSessionUser(): Promise<User | null> {
   const token = getAccessToken();
   if (!token) return null;
 
-  try {
-    // /auth/refresh ne renvoie pas le profil utilisateur complet,
-    // donc on décode le payload du JWT actuel pour l'affichage immédiat,
-    // le serveur reste la source de vérité pour chaque requête protégée.
-    const payload = JSON.parse(atob(token.split(".")[1]));
-    return {
-      id: payload.userId,
-      name: payload.name || payload.email,
-      email: payload.email,
-      role: payload.role as UserRole,
-      permissions: payload.permissions || [],
-    };
-  } catch {
-    clearTokens();
-    return null;
-  }
+  return apiRequest<User>("/auth/me");
 }
 
 export async function logout(): Promise<void> {

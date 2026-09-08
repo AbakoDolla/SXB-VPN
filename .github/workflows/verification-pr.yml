@@ -114,4 +114,6 @@ jobs:
           DATABASE_URL: postgresql://unused:unused@127.0.0.1:5432/unused
         run: |
           node backend/node_modules/prisma/build/index.js generate --schema backend/prisma/schema.prisma
-          node --test scripts/tests/reseller-http.test.mjs
+          node backend/node_modules/prisma/build/index.js generate --schema prisma/schema.prisma
+          node scripts/verify-prisma-runtime.cjs
+          node --test scripts/tests/reseller-http.test.mjs scripts/tests/dashboard-session.test.mjs
