@@ -415,10 +415,13 @@ describe('garde-fous contre les régressions Android', () => {
   });
 
   it('refuse le provisionnement d’une souscription révoquée ou suspendue', () => {
-    assert.match(provisionRoutes, /sub\.status === 'revoked'/);
-    assert.match(provisionRoutes, /sub\.status === 'suspended'/);
-    assert.match(provisionRoutes, /sub\.status === 'exhausted'/);
-    assert.match(provisionRoutes, /status: 'expired'/);
+    const accessPolicy = source('../server/services/access-lifecycle.ts');
+    assert.match(provisionRoutes, /const status = subscriptionAccessStatus\(sub\)/);
+    assert.match(provisionRoutes, /return status === 'active' \? null/);
+    assert.match(provisionRoutes, /subscriptionAccessFailure\(status, sub\.id\)/);
+    for (const status of ['revoked', 'suspended', 'exhausted', 'expired']) {
+      assert.ok(accessPolicy.includes(`subscription.status === "${status}"`));
+    }
     assert.match(mobileRoutes, /subscriptionState === 'active'/);
   });
 
@@ -1301,9 +1304,9 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(subscriptionsView.includes("d.status === 'failed'"), 'le récapitulatif doit lister les échecs');
     // Les libellés disent ce que l'action FAIT : confondre « définir » et
     // « ajouter » ferait perdre le solde d'un client.
-    assertDashboardLabel(subscriptionsView, 'commerce.subscriptions.bulk.set', /Définir \(remplace\)/);
+    assertDashboardLabel(subscriptionsView, 'commerce.subscriptions.bulk.set', /Remplacer le quota et la durée du forfait/);
     assertDashboardLabel(subscriptionsView, 'commerce.subscriptions.bulk.addData', /Ajouter des données \(\+Go\)/);
-    assertDashboardLabel(subscriptionsView, 'commerce.subscriptions.bulk.extend', /Prolonger la durée \(\+jours\)/);
+    assertDashboardLabel(subscriptionsView, 'commerce.subscriptions.bulk.extend', /Prolonger le forfait \(\+jours\)/);
     // « Tout sélectionner » doit porter sur le filtre, pas sur la page affichée.
     assert.ok(subscriptionsView.includes('const selectAllFiltered = () => setSelected(new Set(filtered.map(s => s.id)))'));
   });
@@ -2243,7 +2246,7 @@ describe('tableau de bord — comptes, revendeurs et habilitations', () => {
     assert.match(acces, /if \(isAccessBlocked\(access\)\) return false/);
     assert.match(forfaits, /const canReduce = canAssign && allows\(\{ reducesExposure: true \}\)/);
     assert.match(clientsVue, /const canReduce = !isSupport && allows\(\{ reducesExposure: true \}\)/);
-    assert.match(appareils, /const canRevoke = !isSupport && allows\(\{ reducesExposure: true \}\)/);
+    assert.match(appareils, /const canReduce = !isSupport && allows\(\{ reducesExposure: true \}\)/);
     // Les autres écrans où un revendeur engage du volume sont fermés de la
     // même façon : jetons SXB-DATA et bons de recharge.
     assert.match(dash('components/TokensView.tsx'), /const canCreate = !isSupport && allows\(\)/);
@@ -2285,7 +2288,7 @@ describe('tableau de bord — comptes, revendeurs et habilitations', () => {
     // L'activation crée le compte appareil ; elle n'attribue aucun plan.
     assertDashboardLabel(appareils, 'commerce.devices.noPlan', /Aucun plan attribué/);
     assert.match(apiAppareils, /hasSubscription: boolean/);
-    assertDashboardLabel(appareils, 'commerce.devices.subtitle', /elle n'attribue aucun plan/);
+    assertDashboardLabel(appareils, 'commerce.devices.subtitle', /La création n'attribue aucun forfait/);
   });
 
   it('ouvre réellement les habilitations au propriétaire et au super-administrateur', () => {
