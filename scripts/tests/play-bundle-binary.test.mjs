@@ -164,12 +164,23 @@ describe('Real archive and ELF validation', () => {
 describe('Final merged Play manifest validation', () => {
   it('parses actual XML with the same Expo parser used by the AAB validator', () => temp(async directory => {
     const file = path.join(directory, 'AndroidManifest.xml');
-    await AndroidConfig.Manifest.writeAndroidManifestAsync(file, { manifest: manifest() });
-    const parsed = await AndroidConfig.Manifest.readAndroidManifestAsync(file);
-    const report = validateManifest(parsed.manifest, 211000001, '1.2.1');
-    assert.equal(report.permissions.length, 4);
-    assert.equal(report.targetSdk, 36);
+    for (const type of ['specialUse', '0x40000000', '1073741824']) {
+      const m = manifest();
+      m.application[0].service[0].$['android:foregroundServiceType'] = type;
+      await AndroidConfig.Manifest.writeAndroidManifestAsync(file, { manifest: m });
+      const parsed = await AndroidConfig.Manifest.readAndroidManifestAsync(file);
+      const report = validateManifest(parsed.manifest, 211000001, '1.2.1');
+      assert.equal(report.permissions.length, 4);
+      assert.equal(report.targetSdk, 36);
+    }
   }));
+  it('rejects missing, unknown and combined foreground service types', () => {
+    for (const type of [undefined, '', 'dataSync', 'specialUse|dataSync', '0x40000001', '1073741825']) {
+      const m = manifest();
+      m.application[0].service[0].$['android:foregroundServiceType'] = type;
+      assert.throws(() => validateManifest(m, 211000001, '1.2.1'), /must be exactly specialUse/);
+    }
+  });
   it('fails closed for all unreviewed transitive permissions, including sdk-23 entries', () => {
     for (const name of ['android.permission.REQUEST_INSTALL_PACKAGES', 'android.permission.CAMERA',
       'android.permission.RECORD_AUDIO', 'com.example.UNKNOWN_PERMISSION']) {

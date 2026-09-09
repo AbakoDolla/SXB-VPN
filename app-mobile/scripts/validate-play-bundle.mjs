@@ -95,7 +95,9 @@ export function validateManifest(manifest, versionCode, versionName) {
   const vpn = services.filter(s => s.$['android:name'] === 'com.sxbvpn.vpnmodule.SxbVpnService');
   assert.equal(vpn.length, 1, 'Missing/duplicate VPN service');
   assert.equal(vpn[0].$['android:permission'], 'android.permission.BIND_VPN_SERVICE');
-  assert.equal(vpn[0].$['android:foregroundServiceType'], 'specialUse');
+  // Bundletool dumps compiled enum values numerically instead of their XML names.
+  assert.ok(['specialUse', '0x40000000', '1073741824'].includes(vpn[0].$['android:foregroundServiceType']),
+    'VPN foregroundServiceType must be exactly specialUse');
   assert.equal(vpn[0].$['android:exported'], 'false');
   assert.ok(vpn[0]['intent-filter']?.some(filter =>
     filter.action?.some(action => action.$['android:name'] === 'android.net.VpnService')),
