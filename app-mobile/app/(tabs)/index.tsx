@@ -2,7 +2,6 @@
 import {
   AppState, Image, Modal, Pressable,
   ScrollView, Share, StyleSheet, Text, View, ActivityIndicator,
-  PermissionsAndroid, Platform,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -33,40 +32,30 @@ import {
   Surface,
 } from "@/components/ui/Primitives";
 import { useConnectionDuration } from "@/hooks/useConnectionDuration";
+import AccessNotices from "@/components/AccessNotices";
+import { blocksDevice } from "@/services/accessPolicy";
 
 const LOGO = require("../../assets/images/icon.png");
 
 // ── VPN Button States ─────────────────────────────────────────────────────────
-type BtnState = "no_account" | "no_package" | "connect" | "connecting" | "connected" | "exhausted" | "expired";
+type BtnState = "no_account" | "no_package" | "connect" | "connecting" | "connected" | "exhausted" | "expired" | "blocked";
 
 function getButtonState(
-  accountState: any,
+  authenticated: boolean,
   isConnected: boolean,
   isConnecting: boolean,
   hasValidConfig: boolean,
   activeConnection: import("@/types/api").VpnConnection | null,
   quotaExhausted: boolean = false,
 ): BtnState {
-  if (!accountState) return "no_account";
+  if (!authenticated) return "no_account";
   if (isConnecting) return "connecting";
   if (isConnected) return "connected";
 
-  // B4 — L'ordre des tests précédait toute prise en compte de l'état du compte :
-  // `hasValidConfig` renvoyait « connect » avant même d'avoir regardé
-  // exhausted/expired, rendant ces deux branches inatteignables (elles étaient
-  // en plus dupliquées juste en dessous). Le quota et l'expiration sont
-  // désormais évalués d'abord ; un profil hors-ligne ne peut pas servir à
-  // contourner un forfait épuisé côté serveur.
-  const state = accountState.state;
-  if (quotaExhausted || state === "exhausted") return "exhausted";
-  if (state === "expired") return "expired";
-  if (state === "no_package") return "no_package";
-
-  // Un profil local chiffré reste connectable hors-ligne tant que le compte
-  // n'est ni épuisé ni expiré.
-  if (activeConnection?.status === "active") return "connect";
+  // Quota/expiry are displayed separately; a valid offline profile remains usable.
   if (hasValidConfig) return "connect";
-  return "connect";
+  if (activeConnection?.status === "suspended" || activeConnection?.status === 'revoked') return 'blocked';
+  return "no_package";
 }
 
 // ── VPN Connection Card ───────────────────────────────────────────────────────
@@ -133,7 +122,7 @@ function VpnConnectionCard({ conn, isActive }: { conn: VpnConnection; isActive: 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const colors = useColors();
-  const { user, accountState, refreshAccountState, deviceId } = useAuthContext();
+  const { user, accountState, refreshAccountState, deviceId, isAuthenticated, deviceAccess } = useAuthContext();
   const {
     isConnected, isConnecting, selectedProtocol, connectedProtocol,
     hasValidConfig, activeConnection,
@@ -148,12 +137,6 @@ export default function HomeScreen() {
     : (activeConnection as any)?.quota || null;
   const derivedQuota = deriveQuota(activeQuotaSnapshot || (accountState as any), traffic as any, isConnected);
   const connectedSeconds = useConnectionDuration(isConnected, traffic.connectedSeconds);
-
-  useEffect(() => {
-    if (Platform.OS === 'android' && Platform.Version >= 33) {
-      PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS).catch(() => {});
-    }
-  }, []);
 
   const [configPickerVisible, setConfigPickerVisible] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -226,9 +209,7 @@ export default function HomeScreen() {
 
       // Le statut `active` est celui du serveur et peut concerner plusieurs
       // abonnements. La sélection locale (`activeConfigId`) est l’autorité UI.
-      const activeConn = (activeConfigId && conns.find(c => c.id === activeConfigId))
-        || conns.find(c => c.status === "active")
-        || null;
+      const activeConn = conns.find(c => c.id === activeConfigId) || null;
       if (activeConn) syncFromConnection(activeConn);
     } catch {
       // ignore
@@ -246,7 +227,8 @@ export default function HomeScreen() {
     if (isRefreshing) return;
     setIsRefreshing(true);
     try {
-      await Promise.all([refreshVpnConfig(), refreshAccountState(), fetchConnections()]);
+      await refreshVpnConfig();
+      await Promise.all([refreshAccountState(activeConfigId), fetchConnections()]);
     } catch (_) {
     } finally {
       setIsRefreshing(false);
@@ -255,7 +237,8 @@ export default function HomeScreen() {
 
   // Les animations du bouton (anneaux, respiration, appui) sont désormais
   // encapsulées dans `PowerButton`. L'écran ne conserve que l'état métier.
-  const btnState = getButtonState(accountState, isConnected, isConnecting, hasValidConfig, activeConnection, derivedQuota.isExhausted);
+  const btnState = blocksDevice(deviceAccess) || revokedStatus !== 'none' ? 'blocked' :
+    getButtonState(isAuthenticated, isConnected, isConnecting, hasValidConfig, activeConnection, derivedQuota.isExhausted);
 
   const formatTimer = (s: number) => {
     const h = Math.floor(s / 3600).toString().padStart(2, "0");
@@ -265,6 +248,8 @@ export default function HomeScreen() {
   };
 
   const handleVpnButton = async () => {
+    if (blocksDevice(deviceAccess)) { router.push('/access-blocked'); return; }
+    if (btnState === 'blocked') { setConfigPickerVisible(true); return; }
     if (btnState === "no_account") { router.push("/activate"); return; }
     if (btnState === "no_package" || btnState === "expired" || btnState === "exhausted") { router.push("/plan"); return; }
     if (btnState === "connect") {
@@ -285,6 +270,7 @@ export default function HomeScreen() {
     connected:   colors.connected,
     exhausted:   colors.disconnected,
     expired:     colors.disconnected,
+    blocked:     colors.warning,
   }[btnState];
 
   const btnLabel = {
@@ -295,6 +281,7 @@ export default function HomeScreen() {
     connected:   t('disconnect'),
     exhausted:   t('quota_exhausted'),
     expired:     t('expired_plan'),
+    blocked:     t('access_choose_config'),
   }[btnState];
 
   const btnIcon = {
@@ -305,6 +292,7 @@ export default function HomeScreen() {
     connected:   "power",
     exhausted:   "warning",
     expired:     "warning",
+    blocked:     "pause",
   }[btnState] as keyof typeof Ionicons.glyphMap;
 
   // Message sous le bouton : il doit répondre à « que se passe-t-il ? » sans
@@ -375,7 +363,8 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        {/* Bandeau de révocation — le plus haut placé : il conditionne tout le reste. */}
+        <AccessNotices />
+        {/* Only the selected configuration is blocked here, never the identity. */}
         {revokedStatus !== 'none' && (
           <Surface tone={colors.disconnected}>
             <View style={styles.bannerRow}>

@@ -180,6 +180,7 @@ export default function ActivateScreen() {
           ) : null}
 
           <Text style={styles.footer}>{t("activate_footer")}</Text>
+          <Text style={styles.footer}>{t("created_by")}</Text>
         </ScrollView>
       </KeyboardAvoidingView>
     </LinearGradient>

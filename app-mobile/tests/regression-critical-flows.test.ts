@@ -343,6 +343,9 @@ describe('compatibilité URI VLESS / JSON complète', () => {
 describe('garde-fous contre les régressions Android', () => {
   const configStore = source('services/configStore.ts');
   const authContext = source('contexts/AuthContext.tsx');
+  const identitySession = source('services/identitySession.ts');
+  const accessPolicy = source('services/accessPolicy.ts');
+  const accessSync = source('services/accessSync.ts');
   const supportScreen = source('app/support.tsx');
   const provisionClient = source('services/provisionClient.ts');
   const mobileRoutes = source('../server/routes/mobile.ts');
@@ -406,8 +409,9 @@ describe('garde-fous contre les régressions Android', () => {
 
   it('active un token SXB-DATA via le provisionnement lié à l’appareil', () => {
     assert.match(authContext, /normalized\.startsWith\('SXB-DATA-'\)/);
-    assert.match(authContext, /provisionAndStore\(normalized, did\)/);
-    assert.match(authContext, /\/mobile\/me\?subscriptionId=/);
+    assert.match(authContext, /provisionAndStore\(normalized, id\)/);
+    assert.match(authContext, /validateIdentitySession\(id, provisioned\.meta\.subscriptionId\)/);
+    assert.match(identitySession, /subscriptionId=\$\{encodeURIComponent\(subscriptionId\)\}/);
   });
 
   it('refuse le provisionnement d’une souscription révoquée ou suspendue', () => {
@@ -574,21 +578,15 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(mobileRoutes, /actionType: 'download_app_update'/);
   });
 
-  it('invalide immédiatement les comptes suspendus ou supprimés', () => {
-    assert.match(authMiddleware, /vpnClient\.findFirst/);
-    assert.match(authMiddleware, /mobileClientUsable/);
-    assert.match(clientRoutes, /synchroniserEtatAccesClient\(tx, id, "suspended"\)/);
-    assert.match(clientRoutes, /dissocierAccesClient\(tx, id\)/);
-    assert.match(mobileRoutes, /errors\.mobile\.account_blocked/);
-    assert.match(vpnContext, /invalidateRemoteAccess/);
-    // La sonde de révocation conserve sa cadence de 10 s au premier plan. Son
-    // intervalle est détruit en arrière-plan — pas seulement court-circuité —
-    // puis le contrôle est relancé immédiatement au retour.
-    assert.match(vpnContext, /setInterval\(\(\) => \{ void verifyRemoteAccess\(\); \}, 10_000\)/);
-    assert.match(vpnContext, /if \(next === 'active'\) \{[\s\S]{0,100}void verifyRemoteAccess\(\);[\s\S]{0,80}start\(\);[\s\S]{0,80}else \{[\s\S]{0,80}stop\(\);/);
-    assert.match(vpnContext, /clearAllOfflineData/);
-    assert.match(rootLayout, /router\.replace\('\/activate'\)/);
-    assert.match(offlineStorage, /configStore\.clearAll\(\)/);
+  it('bloque les appareils suspendus ou supprimés sans invalider leur identité', () => {
+    assert.match(authContext, /deviceAccess: selectDeviceAccess\(access\.authority\)/);
+    assert.match(vpnContext, /stop: stopForAccess/);
+    assert.match(accessSync, /blocksDevice\(deviceAccess\(authority\)\)/);
+    assert.match(accessSync, /currentRuntime\.stop\(\)/);
+    assert.match(rootLayout, /accessRedirect\(isAuthenticated, accessReady, deviceAccess/);
+    assert.match(nativeService, /restartAccessObserver/);
+    assert.doesNotMatch(vpnContext, /invalidateRemoteAccess|clearAllOfflineData|verifyRemoteAccess/);
+    assert.match(identitySession, /isInvalidSession\(error\)/);
   });
 
   it('protège le cycle Foreground Android contre la désynchronisation', () => {
@@ -632,7 +630,7 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(mobileRoutes, /requestedSubscriptionId/);
     assert.match(mobileRoutes, /selectMobileSubscription\(client, requestedSubscriptionId\)/);
     assert.match(mobileRoutes, /subscriptionId/);
-    assert.match(vpnContext, /subscriptionId=\$\{encodeURIComponent\(selectedId\)\}/);
+    assert.match(vpnContext, /configStore\.get\(selectedId\)/);
     assert.match(vpnContext, /setRemoteConnections\(remote\)/);
   });
 
@@ -643,7 +641,9 @@ describe('garde-fous contre les régressions Android', () => {
   });
 
   it('retire les profils révoqués et provisionne indépendamment le second profil', () => {
-    assert.match(vpnContext, /invalidIds\.map\(id => configStore\.remove\(id\)/);
+    assert.match(accessSync, /configStore\.remove\(entry\.configId\)/);
+    assert.match(accessSync, /await reconcileAccess\(\)/);
+    assert.match(accessSync, /provisionAndStore\(entry\.dataToken, current\.deviceId\)/);
     assert.match(vpnContext, /provisionAndStore\(remoteTarget\.dataToken, deviceId\)/);
     assert.match(vpnContext, /pendingAutoConnectRef/);
   });
@@ -733,14 +733,15 @@ describe('garde-fous contre les régressions Android', () => {
   });
 
   it('supprime automatiquement les configurations orphelines supprimées du dashboard', () => {
-    assert.match(vpnContext, /remoteIds/);
-    assert.match(vpnContext, /orphanIds/);
-    assert.match(vpnContext, /configStore\.remove\(id\)/);
+    assert.match(accessPolicy, /if \(managedProfile\(profile\)\)/);
+    assert.match(accessPolicy, /!minimalDeviceSnapshot && !snapshot\.subscriptions\.some/);
+    assert.match(accessSync, /configStore\.remove\(entry\.configId\)/);
   });
 
   it('préserve un profil local lors d’un quota estimé épuisé et ne purge que les révocations explicites', () => {
-    assert.match(vpnContext, /c\.status === 'revoked' \|\| c\.status === 'deleted'/);
-    assert.match(vpnContext, /profil sécurisé conservé/);
+    assert.match(accessSync, /restriction\?\.status === 'revoked' \|\| restriction\?\.status === 'deleted'/);
+    assert.match(accessPolicy, /CONFIG_EXPIRED/);
+    assert.doesNotMatch(vpnContext, /purgeExpired/);
     assert.match(vpnContext, /tentative de connexion quand même \(zéro-rated \/ hors-ligne\)/);
   });
 
@@ -1006,9 +1007,9 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(configStore, /removeItem\(DISMISSED_KEY\)/);
 
     // Le filtre s'applique AVANT la boucle de provisionnement proactif.
-    assert.ok(vpnContext.includes('configStore.listDismissed()'));
-    assert.ok(vpnContext.includes('remoteAll.filter((c: any) => !dismissedSet.has(c.id))'));
-    assert.ok(vpnContext.indexOf('const dismissedSet') < vpnContext.indexOf('provisionAndStore(conn.dataToken, deviceId)'));
+    assert.ok(accessSync.includes('configStore.listDismissed()'));
+    assert.ok(accessSync.includes('dismissed.has(entry.id)'));
+    assert.ok(accessSync.indexOf('const dismissed') < accessSync.indexOf('provisionAndStore(entry.dataToken, current.deviceId)'));
 
     // La suppression pose la pierre tombale et purge la liste distante en mémoire.
     assert.ok(vpnContext.includes('configStore.dismiss(configId)'));
@@ -1196,18 +1197,13 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(nativeService.includes('.setUsesChronometer(connected)'));
   });
 
-  it('retire les configurations arrivées à leur date limite', () => {
-    // Le forfait doit fonctionner jusqu'à son échéance puis disparaître de
-    // l'appareil, sans jamais désactiver l'application elle-même.
-    assert.ok(configStore.includes('export async function purgeExpired('));
-    // Une date illisible ne doit jamais provoquer de suppression.
-    assert.ok(configStore.includes('!Number.isNaN(deadline.getTime())'));
-    // Si la configuration active expire, une autre prend le relais.
-    assert.ok(configStore.includes("remaining[0] = { ...remaining[0], isActive: true }"));
-    // La purge précède tout appel réseau : elle vaut aussi hors ligne.
-    assert.ok(vpnContext.includes('configStore.purgeExpired()'));
-    assert.ok(vpnContext.indexOf('configStore.purgeExpired()') < vpnContext.indexOf("apiClient.get(`/mobile/vpn/config"));
-    assert.ok(vpnContext.includes('Configuration expirée'));
+  it('conserve les fichiers expirés pour le mode zero-rated et les prolongations', () => {
+    assert.doesNotMatch(configStore, /export async function purgeExpired/);
+    assert.doesNotMatch(vpnContext, /configStore\.purgeExpired/);
+    assert.match(vpnContext, /await isConfigExpired\(\)/);
+    assert.match(vpnContext, /Date d’expiration locale atteinte — tentative de connexion/);
+    assert.match(accessSync, /expiryDate: remote\.expireAt/);
+    assert.match(accessPolicy, /config_restored/);
   });
 
   it('distingue remplacer, ajouter et prolonger dans les opérations groupées', () => {

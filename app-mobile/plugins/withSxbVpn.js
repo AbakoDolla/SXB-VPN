@@ -112,6 +112,12 @@ function withVpnManifest(config) {
       } });
     };
     setMetadata('com.sxbvpn.distribution', isPlay ? 'play' : 'direct');
+    const apiBase = (process.env.EXPO_PUBLIC_API_URL || 'https://vpnsxb.afrihall.com/api').trim().replace(/\/+$/, '');
+    const api = new URL(apiBase);
+    if (api.protocol !== 'https:' || api.username || api.password || api.search || api.hash) {
+      throw new Error('SXB access control requires a fixed HTTPS API origin');
+    }
+    setMetadata('com.sxbvpn.api_base_url', apiBase);
     const firebaseMetadata = [
       'firebase_messaging_auto_init_enabled',
       'firebase_analytics_collection_enabled',

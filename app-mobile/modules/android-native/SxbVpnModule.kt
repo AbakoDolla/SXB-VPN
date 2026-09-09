@@ -22,6 +22,7 @@ import com.facebook.react.modules.core.DeviceEventManagerModule
 import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.FirebaseApp
 import com.google.firebase.installations.FirebaseInstallations
+import java.util.concurrent.Executors
 
 /**
  * SxbVpnModule — Bridge React Native ↔ SxbVpnService v4
@@ -52,6 +53,54 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
     private var vpnPermissionPromise: Promise? = null
     private var statusReceiver: BroadcastReceiver? = null
     private var logReceiver: BroadcastReceiver? = null
+    private var accessReceiver: BroadcastReceiver? = null
+    private val accessExecutor = Executors.newSingleThreadExecutor { action ->
+        Thread(action, "SXB-AccessBridge").apply { isDaemon = true }
+    }
+
+    private fun accessOperation(promise: Promise, action: () -> Any?) {
+        accessExecutor.execute {
+            try { promise.resolve(action()) }
+            catch (error: Exception) { promise.reject("ACCESS_CONTROL_ERROR", "Access control could not be confirmed", error) }
+        }
+    }
+
+    @ReactMethod
+    fun bindAccessSession(userId: String, deviceId: String, promise: Promise) = accessOperation(promise) {
+        SxbAccessControl.bind(reactApplicationContext, userId, deviceId)
+    }
+
+    @ReactMethod
+    fun getAccessControlState(promise: Promise) = accessOperation(promise) {
+        SxbAccessControl.runtime(reactApplicationContext)
+    }
+
+    @ReactMethod
+    fun applyAccessSnapshot(snapshot: String, profiles: String, session: String, sequence: Double, promise: Promise) = accessOperation(promise) {
+        check(SxbPrivacyPolicy.vpnAllowed(reactApplicationContext)) { "PRIVACY_CONSENT_REQUIRED" }
+        SxbAccessControl.applySnapshot(reactApplicationContext, org.json.JSONObject(snapshot),
+            org.json.JSONArray(profiles), session, sequence.toLong())
+    }
+
+    @ReactMethod
+    fun applyAccessIssue(issue: String, profiles: String, session: String, sequence: Double, promise: Promise) = accessOperation(promise) {
+        check(SxbPrivacyPolicy.vpnAllowed(reactApplicationContext)) { "PRIVACY_CONSENT_REQUIRED" }
+        SxbAccessControl.applyIssue(reactApplicationContext, org.json.JSONObject(issue),
+            org.json.JSONArray(profiles), session, sequence.toLong())
+    }
+
+    @ReactMethod
+    fun setAccessTicket(base: String, ticket: String, expiresAt: String, session: String, promise: Promise) = accessOperation(promise) {
+        SxbAccessControl.setTicket(reactApplicationContext, base, ticket, expiresAt, session)
+        SxbVpnService.instance?.restartAccessObserver()
+        null
+    }
+
+    @ReactMethod
+    fun clearAccessSession(promise: Promise) = accessOperation(promise) {
+        SxbAccessControl.clear(reactApplicationContext)
+        null
+    }
 
     init {
         reactContext.addActivityEventListener(this)
@@ -102,7 +151,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
     fun getDiagnosticLogging(promise: Promise) {
         promise.resolve(SxbSecureLogger.isDiagnosticEnabled())
     }
-    override fun invalidate()  { super.invalidate();  unregisterReceivers() }
+    override fun invalidate()  { super.invalidate(); unregisterReceivers(); accessExecutor.shutdown() }
 
     // ── JS EventEmitter boilerplate ───────────────────────────────────────────
     @ReactMethod fun addListener(eventName: String) {}
@@ -152,11 +201,17 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
      */
     @ReactMethod
     fun startVpn(optionsJson: String, promise: Promise) {
+        accessExecutor.execute { startGuardedVpn(optionsJson, promise) }
+    }
+
+    private fun startGuardedVpn(optionsJson: String, promise: Promise) {
         try {
             val ctx  = reactApplicationContext
             check(SxbPrivacyPolicy.vpnAllowed(ctx)) { "PRIVACY_CONSENT_REQUIRED" }
             val opts = org.json.JSONObject(optionsJson)
             val proto = opts.optString("protocol", "").lowercase()
+            if (SxbVpnService.getCurrentState() != "disconnected") SxbVpnService.instance?.stopForAccess()
+            val guardedOptions = SxbAccessControl.prepareStart(ctx, opts)
 
             SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.MODULE_CALLED)
 
@@ -173,7 +228,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             // et on passe uniquement le chemin via l'extra, jamais le JSON complet.
             val configFile = java.io.File(ctx.filesDir, "sxb_pending_config.json")
             try {
-                configFile.writeText(optionsJson, Charsets.UTF_8)
+                configFile.writeText(guardedOptions, Charsets.UTF_8)
                 SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.CONFIG_LOADED)
             } catch (e: Exception) {
                 SxbSecureLogger.error(SxbSecureLogger.VpnEvent.CONFIG_WRITE_FAILED)
@@ -184,7 +239,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                 action = SxbVpnService.ACTION_START
                 // Passer le chemin du fichier config ET l'extra (fallback pour compatibilité)
                 putExtra("configFilePath", configFile.absolutePath)
-                putExtra("configJson",     optionsJson)
+                putExtra("configJson",     guardedOptions)
                 putExtra("protocol",       proto)
                 putExtra("killSwitch",     opts.optBoolean("killSwitch", false))
                 putExtra("autoReconnect",  opts.optBoolean("autoReconnect", false))
@@ -206,7 +261,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             if (opts.optBoolean("autoReconnect", false)) {
                 SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.RECONNECT_ENABLED)
                 // Tentative optionnelle si instance existe (redémarrage du service)
-                SxbVpnService.instance?.enableAutoReconnect()
+                // onStartCommand applies this option to the new guarded attempt.
             }
 
             // Retourner un état clair : service lancé, tunnel pas encore confirmé
@@ -227,19 +282,12 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
     // ── stopVpn ───────────────────────────────────────────────────────────────
     @ReactMethod
     fun stopVpn(promise: Promise) {
-        try {
+        accessOperation(promise) {
             val ctx = reactApplicationContext
-
-            // Désactiver auto-reconnect d'abord
-            SxbVpnService.instance?.disableAutoReconnect()
-
-            val intent = Intent(ctx, SxbVpnService::class.java).apply {
-                action = SxbVpnService.ACTION_STOP
-            }
-            ctx.startService(intent)
-            promise.resolve(null)
-        } catch (e: Exception) {
-            promise.reject("STOP_ERROR", e.message ?: "Erreur arrêt VPN", e)
+            val service = SxbVpnService.instance
+            if (service != null) service.stopForAccess()
+            else SxbAccessControl.cancelStarts(ctx)
+            null
         }
     }
 
@@ -536,6 +584,8 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                     putString("status", status)
                     putString("state", status) 
                     i.getStringExtra("errorCode")?.let { putString("errorCode", it) }
+                    i.getStringExtra("configId")?.let { putString("configId", it) }
+                    i.getStringExtra("accessSession")?.let { putString("accessSession", it) }
                 }
                 sendEvent("onVpnStateChange", p)
             }
@@ -547,6 +597,15 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                 val p = Arguments.createMap().apply { putString("message", log) }
                 sendEvent("onVpnLog", p)
             }
+            accessReceiver = object : BroadcastReceiver() {
+                override fun onReceive(c: Context?, i: Intent?) {
+                    val p = Arguments.createMap().apply {
+                        putString("session", i?.getStringExtra("session") ?: "")
+                        putDouble("sequence", (i?.getLongExtra("sequence", 0) ?: 0).toDouble())
+                    }
+                    sendEvent("onAccessStateChange", p)
+                }
+            }
         }
 
         val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -556,11 +615,14 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             ctx.registerReceiver(statusReceiver, IntentFilter(SxbVpnService.BROADCAST_STATUS), flags)
             ctx.registerReceiver(logReceiver,    IntentFilter(SxbVpnService.BROADCAST_LOG),    flags)
+            ctx.registerReceiver(accessReceiver, IntentFilter(SxbAccessControl.BROADCAST), flags)
         } else {
             @Suppress("UnspecifiedRegisterReceiverFlag")
             ctx.registerReceiver(statusReceiver, IntentFilter(SxbVpnService.BROADCAST_STATUS))
             @Suppress("UnspecifiedRegisterReceiverFlag")
             ctx.registerReceiver(logReceiver,    IntentFilter(SxbVpnService.BROADCAST_LOG))
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            ctx.registerReceiver(accessReceiver, IntentFilter(SxbAccessControl.BROADCAST))
         }
 
         SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
@@ -569,7 +631,9 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
     private fun unregisterReceivers() {
         try { reactApplicationContext.unregisterReceiver(statusReceiver) } catch (_: Exception) {}
         try { reactApplicationContext.unregisterReceiver(logReceiver)    } catch (_: Exception) {}
+        try { reactApplicationContext.unregisterReceiver(accessReceiver) } catch (_: Exception) {}
         statusReceiver = null
         logReceiver    = null
+        accessReceiver = null
     }
 }

@@ -13,19 +13,19 @@ import { alpha, layout, radius, spacing, type } from "@/constants/theme";
 import { IconButton, Pill, ProgressBar, SectionHeader, StatRow, StatTile, Surface } from "@/components/ui/Primitives";
 
 export default function ProfileScreen() {
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
   const colors = useColors();
   const insets = useSafeAreaInsets();
-  const { user, accountState, logout } = useAuthContext();
+  const { user, accountState, logout, deviceAccess } = useAuthContext();
   const { activeConnection, derivedQuota } = useVpnContext();
-  const effectiveExpiry = derivedQuota.expiryDate || activeConnection?.expiresAt || accountState?.expireAt || null;
+  const effectiveExpiry = derivedQuota.expiryDate || activeConnection?.expiresAt || null;
 
   const initials = (user?.name || "?").split(" ").map((word: string) => word[0]).join("").toUpperCase().slice(0, 2);
-  const state = accountState?.state;
-  const accountActive = state === "ready" || activeConnection?.status === "active";
-  const stateKey = state === "suspended" ? "suspended" : state === "expired" ? "expired" : state === "exhausted" ? "exhausted" : accountActive ? "ready" : "no_package";
-  const stateColor = stateKey === "ready" ? colors.connected : stateKey === "no_package" ? colors.warning : colors.disconnected;
-  const stateLabel = stateKey === "ready" ? t("active") : stateKey === "no_package" ? t("status_no_package") : stateKey === "exhausted" ? t("friendly_quota_exhausted") : stateKey === "expired" ? t("expired") : t("suspended_status");
+  const state = deviceAccess ? deviceAccess.status === 'active' ? 'ready' : deviceAccess.status : 'ready';
+  const accountActive = state === "ready";
+  const stateKey = state === "expired" ? "expired" : accountActive ? "ready" : "suspended";
+  const stateColor = stateKey === "ready" ? colors.connected : colors.disconnected;
+  const stateLabel = stateKey === "ready" ? t("active") : stateKey === "expired" ? t("expired") : t("suspended_status");
 
   const handleLogout = () => Alert.alert(t("logout"), t("logout_confirm_local"), [
     { text: t("cancel"), style: "cancel" },
@@ -81,6 +81,13 @@ export default function ProfileScreen() {
           </Pressable>
         </Surface>
 
+        <Surface>
+          <Text style={[type.caption, { color: colors.textMuted }]}>{t('access_device_expiry')}</Text>
+          <Text style={[type.bodyMedium, { color: colors.textPrimary }]}>
+            {deviceAccess?.expireAt ? new Date(deviceAccess.expireAt).toLocaleDateString(language) : t('access_expiry_unknown')}
+          </Text>
+        </Surface>
+
         {/* Forfait : une barre de progression rend la part consommée lisible
             instantanément, là où trois nombres imposaient un calcul mental. */}
         <Surface>
@@ -97,7 +104,7 @@ export default function ProfileScreen() {
             <View style={styles.expiryRow}>
               <Ionicons name="calendar-outline" size={14} color={colors.textMuted} />
               <Text style={[type.caption, { color: colors.textMuted }]}>
-                {t("expires_on")} {new Date(effectiveExpiry).toLocaleDateString("fr-FR", { dateStyle: "medium" })}
+                {t("access_config_expiry")}: {new Date(effectiveExpiry).toLocaleDateString(language, { dateStyle: "medium" })}
               </Text>
             </View>
           )}

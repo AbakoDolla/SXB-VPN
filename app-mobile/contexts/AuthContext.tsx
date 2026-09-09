@@ -1,73 +1,38 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useState, useSyncExternalStore } from 'react';
 import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Crypto from 'expo-crypto';
-import apiClient, { getSecureToken, setSecureToken, removeSecureToken, SEC_KEYS } from '@/services/apiClient';
-import { clearProvisionedConfig, provisionAndStore } from '@/services/provisionClient';
+import apiClient from '@/services/apiClient';
+import { provisionAndStore } from '@/services/provisionClient';
 import * as configStore from '@/services/configStore';
-import { clearAllOfflineData } from '@/services/offlineStorage';
 import { unregisterPushToken } from '@/services/pushNotifications';
 import { normalizeActivationToken } from '@/services/activationError';
 import type { AccountState, User } from '@/types/api';
 import { usePrivacy } from './PrivacyContext';
 import { requireVpnConsent } from '@/services/privacyConsent';
-
-// Clés non-sensibles restent dans AsyncStorage (infos user, onboarding...)
-// Clés sensibles (JWT) migrent vers SecureStore (Android Keystore / iOS Keychain)
-const KEYS = {
-  USER:       '@sxb_user',
-  ONBOARDING: '@sxb_onboarding_done',
-  DEVICE_ID:  '@sxb_device_id',
-};
+import { deviceAccess as selectDeviceAccess, type AccessNotice, type DeviceAccess } from '@/services/accessPolicy';
+import { getAccessState, requireDeviceAccess, subscribeAccessState } from '@/services/accessState';
+import { subscribeAccessFailures } from '@/services/accessEvents';
+import { refreshAccessState, reportAccessSyncError, startAccessObservation, storeValue, wakeAccessObservation } from '@/services/accessSync';
+import {
+  acceptActivatedIdentity, clearIdentitySession, getIdentitySession, restoreIdentitySession,
+  subscribeIdentitySession, updateIdentityAccountState, validateIdentitySession,
+} from '@/services/identitySession';
 
 const DEVICE_ID_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 const DEVICE_ID_LENGTH = 15;
 
-/**
- * C4 — Identifiant d'appareil tiré d'un générateur cryptographique.
- *
- * `Math.random()` n'est pas un CSPRNG : sous Hermes il s'agit d'un xorshift128+
- * initialisé sur l'horloge, ce qui rend l'identifiant prédictible alors qu'il
- * sert de facteur de liaison entre un abonnement et un appareil (et entre dans
- * la dérivation de la clé de configuration côté serveur).
- *
- * `expo-crypto` s'appuie sur `SecureRandom` (Android) / `SecRandomCopyBytes` (iOS).
- */
-function randomDeviceId(): string {
-  const bytes = new Uint8Array(DEVICE_ID_LENGTH);
-  Crypto.getRandomValues(bytes);
-  let out = '';
-  for (let i = 0; i < DEVICE_ID_LENGTH; i += 1) {
-    // Le rejet du biais modulo est inutile ici : 256 % 36 introduit un écart
-    // négligeable devant les 36^15 (~2^77) combinaisons possibles.
-    out += DEVICE_ID_ALPHABET[bytes[i] % DEVICE_ID_ALPHABET.length];
-  }
-  return 'SXB' + out;
-}
-
-// Generate a unique device ID stored permanently (survives app restarts)
+/** The existing hardware binding survives renewal, logout and app updates. */
 async function getOrCreateDeviceId(): Promise<string> {
   requireVpnConsent();
-  try {
-    const stored = await AsyncStorage.getItem(KEYS.DEVICE_ID);
-    requireVpnConsent();
-    // MIGRATION — un identifiant déjà émis n'est jamais régénéré : il est lié
-    // côté serveur à l'abonnement (`Subscription.deviceId`). Le remplacer
-    // ferait perdre son activation à tout le parc déjà installé.
-    if (stored) return stored;
-    const id = randomDeviceId();
-    await AsyncStorage.setItem(KEYS.DEVICE_ID, id);
-    return id;
-  } catch {
-    // AsyncStorage indisponible : identifiant éphémère, mais toujours issu du
-    // CSPRNG. Le fallback historique retombait sur Math.random().
-    requireVpnConsent();
-    try {
-      return randomDeviceId();
-    } catch {
-      return '';
-    }
-  }
+  const stored = await AsyncStorage.getItem('@sxb_device_id');
+  if (stored) return stored;
+  const bytes = new Uint8Array(DEVICE_ID_LENGTH);
+  Crypto.getRandomValues(bytes);
+  const id = 'SXB' + Array.from(bytes, value => DEVICE_ID_ALPHABET[value % DEVICE_ID_ALPHABET.length]).join('');
+  requireVpnConsent();
+  await AsyncStorage.setItem('@sxb_device_id', id);
+  return id;
 }
 
 interface AuthContextType {
@@ -75,6 +40,9 @@ interface AuthContextType {
   isAuthenticated: boolean;
   user: User | null;
   accountState: AccountState | null;
+  deviceAccess: DeviceAccess | null;
+  accessReady: boolean;
+  accessNotices: AccessNotice[];
   hasSeenOnboarding: boolean;
   deviceId: string;
   activateAccount: (token: string) => Promise<void>;
@@ -85,244 +53,111 @@ interface AuthContextType {
 }
 
 export const AuthContext = createContext<AuthContextType>({
-  isLoading: true,
-  isAuthenticated: false,
-  user: null,
-  accountState: null,
-  hasSeenOnboarding: false,
-  deviceId: '',
-  activateAccount: async () => {},
-  activatePlan: async () => {},
-  refreshAccountState: async () => {},
-  logout: async () => {},
-  markOnboardingDone: async () => {},
+  isLoading: true, isAuthenticated: false, user: null, accountState: null,
+  deviceAccess: null, accessReady: false, accessNotices: [],
+  hasSeenOnboarding: false, deviceId: '',
+  activateAccount: async () => {}, activatePlan: async () => {}, refreshAccountState: async () => {},
+  logout: async () => {}, markOnboardingDone: async () => {},
 });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const { consent, loading: privacyLoading } = usePrivacy();
-  const [isLoading,        setIsLoading]        = useState(true);
-  const [isAuthenticated,  setIsAuthenticated]  = useState(false);
-  const [user,             setUser]             = useState<User | null>(null);
-  const [accountState,     setAccountState]     = useState<AccountState | null>(null);
-  const [hasSeenOnboarding,setHasSeenOnboarding]= useState(false);
-  const [deviceId,         setDeviceId]         = useState<string>('');
-
-  const clearLocalSession = useCallback(async () => {
-    await Promise.all([
-      removeSecureToken(SEC_KEYS.ACCESS),
-      removeSecureToken(SEC_KEYS.REFRESH),
-      AsyncStorage.multiRemove([KEYS.USER, '@sxb_access_token', '@sxb_refresh_token', '@sxb_vpn_connected']),
-      clearProvisionedConfig().catch(() => {}),
-      clearAllOfflineData().catch(() => {}),
-    ]);
-    setIsAuthenticated(false);
-    setUser(null);
-    setAccountState(null);
-  }, []);
+  const identity = useSyncExternalStore(subscribeIdentitySession, getIdentitySession);
+  const access = useSyncExternalStore(subscribeAccessState, getAccessState);
+  const [isLoading, setIsLoading] = useState(true);
+  const [deviceId, setDeviceId] = useState('');
+  const [hasSeenOnboarding, setHasSeenOnboarding] = useState(false);
+  const isAuthenticated = consent.vpn && identity !== null;
 
   useEffect(() => {
     if (privacyLoading) return;
-    if (!consent.vpn) {
-      setIsAuthenticated(false);
-      setIsLoading(false);
-      return;
-    }
-    initSession();
-    getOrCreateDeviceId().then((id) => {
-      requireVpnConsent();
+    if (!consent.vpn) { setIsLoading(false); return; }
+    let active = true;
+    setIsLoading(true);
+    void (async () => {
+      const id = await getOrCreateDeviceId();
+      if (!active) return;
       setDeviceId(id);
-    }).catch(() => { console.warn('[Auth] Device initialization cancelled or unavailable'); });
+      setHasSeenOnboarding(!!await AsyncStorage.getItem('@sxb_onboarding_done'));
+      await restoreIdentitySession(id);
+      if (active) void validateIdentitySession(id).catch(reportAccessSyncError);
+    })().catch(reportAccessSyncError).finally(() => { if (active) setIsLoading(false); });
+    return () => { active = false; };
   }, [consent.vpn, privacyLoading]);
 
-  /**
-   * CORRECTIF OFFLINE — Restauration de session locale
-   *
-   * AVANT : on appelait validateSession() (GET /mobile/me) et
-   *         isAuthenticated restait false si l'appel échouait (hors ligne).
-   *
-   * APRÈS : si un token + un utilisateur sont en cache local, on marque
-   *         immédiatement isAuthenticated = true et on lance la validation
-   *         réseau en arrière-plan. Seule une réponse 401 du serveur révoque
-   *         la session (pas une erreur réseau / timeout).
-   */
-  const initSession = async () => {
-    try {
-      // JWT depuis SecureStore (Keystore Android), fallback AsyncStorage legacy
-      let accessToken = await getSecureToken(SEC_KEYS.ACCESS);
-      if (!accessToken) {
-        // Migration v1→v2 : lire l'ancien AsyncStorage et migrer vers SecureStore
-        accessToken = await AsyncStorage.getItem('@sxb_access_token');
-        const legacyRefresh = await AsyncStorage.getItem('@sxb_refresh_token');
-        if (accessToken) await setSecureToken(SEC_KEYS.ACCESS, accessToken);
-        if (legacyRefresh) await setSecureToken(SEC_KEYS.REFRESH, legacyRefresh);
-        // Nettoyer les anciens tokens en clair
-        await AsyncStorage.multiRemove(['@sxb_access_token', '@sxb_refresh_token']).catch(() => {});
-      }
-
-      const [storedUser, onboardingDone] = await Promise.all([
-        AsyncStorage.getItem(KEYS.USER),
-        AsyncStorage.getItem(KEYS.ONBOARDING),
-      ]);
-      requireVpnConsent();
-
-      setHasSeenOnboarding(!!onboardingDone);
-
-      if (accessToken) {
-        if (storedUser) {
-          try {
-            const parsed = JSON.parse(storedUser);
-            // ✅ Restaurer immédiatement depuis le cache local (Offline First)
-            setUser(parsed.user ?? null);
-            setAccountState(parsed.accountState ?? null);
-            setIsAuthenticated(true);
-          } catch (_) {}
-        }
-        // Valider en arrière-plan (non-bloquant — erreur réseau ne déconnecte PAS)
-        validateSession().catch(() => {});
-      }
-    } catch (_) {
-      // Ignorer — isAuthenticated reste false
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  /**
-   * Valide la session en ligne.
-   * - Succès → met à jour user/accountState depuis le serveur
-   * - 401    → session révoquée côté serveur → déconnecter
-   * - Erreur réseau → session locale conservée (offline mode)
-   */
-  const validateSession = useCallback(async () => {
-    try {
-      requireVpnConsent();
-      const res = await apiClient.get('/mobile/me');
-      requireVpnConsent();
-      const { user: u, accountState: as } = res.data;
-      setUser(u);
-      setAccountState(as);
-      setIsAuthenticated(true);
-      await AsyncStorage.setItem(KEYS.USER, JSON.stringify({ user: u, accountState: as }));
-    } catch (err: any) {
-      const status = err?.response?.status;
-      if (status === 401 || status === 403 || status === 404) {
-        // 403/404 ici signifient que le compte VPN lié n’est plus utilisable.
-        await clearLocalSession();
-      }
-      // Erreur réseau → session locale conservée
-    }
-  }, [clearLocalSession]);
-
-  // Revalidation immédiate au retour au premier plan : le cache hors ligne ne
-  // doit jamais prolonger un compte suspendu ou supprimé après reconnexion.
   useEffect(() => {
-    const subscription = AppState.addEventListener('change', (state) => {
-      if (state === 'active' && isAuthenticated) validateSession().catch(() => {});
+    if (!isAuthenticated || !deviceId || !access.ready) return;
+    return startAccessObservation();
+  }, [isAuthenticated, deviceId, access.ready]);
+
+  useEffect(() => subscribeAccessFailures(({ issue }) => {
+    if (issue.scope === 'session') void clearIdentitySession().catch(reportAccessSyncError);
+  }), []);
+
+  const refreshAccountState = useCallback(async (subscriptionId?: string | null) => {
+    if (!deviceId) return;
+    await validateIdentitySession(deviceId, subscriptionId);
+  }, [deviceId]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', state => {
+      if (state === 'active' && isAuthenticated) {
+        void refreshAccountState().catch(reportAccessSyncError);
+        wakeAccessObservation();
+      }
     });
     return () => subscription.remove();
-  }, [isAuthenticated, validateSession]);
+  }, [isAuthenticated, refreshAccountState]);
 
   const activateAccount = useCallback(async (token: string) => {
     requireVpnConsent();
-    const did = await getOrCreateDeviceId();
-    setDeviceId(did);
-    const res = await apiClient.post('/mobile/auth/activate', {
-      token: normalizeActivationToken(token),
-      deviceId: did,
-    });
-    const { accessToken, refreshToken, user: u, accountState: as } = res.data;
-    requireVpnConsent();
-    // Stocker JWT dans SecureStore (Keystore Android / Keychain iOS)
-    await Promise.all([
-      setSecureToken(SEC_KEYS.ACCESS, accessToken),
-      setSecureToken(SEC_KEYS.REFRESH, refreshToken),
-      AsyncStorage.setItem(KEYS.USER, JSON.stringify({ user: u, accountState: as })),
-    ]);
-    setUser(u);
-    setAccountState(as);
-    setIsAuthenticated(true);
+    const id = await getOrCreateDeviceId();
+    setDeviceId(id);
+    const response = await apiClient.post('/mobile/auth/activate', { token: normalizeActivationToken(token), deviceId: id });
+    await acceptActivatedIdentity(response.data, id);
+    // Only a server snapshot lifts a known device block, never a UI route change.
+    try { await refreshAccessState(); } catch (error) { reportAccessSyncError(error); }
+    wakeAccessObservation();
   }, []);
 
   const activatePlan = useCallback(async (code: string) => {
     requireVpnConsent();
+    requireDeviceAccess();
     const normalized = normalizeActivationToken(code);
-    let newState: AccountState;
-
-    // Les tokens créés par le dashboard sont des dataToken de Subscription.
-    // Ils doivent passer par le provisionnement chiffré lié à l’appareil, et non
-    // par l’ancien endpoint Voucher /packages/activate.
     if (normalized.startsWith('SXB-DATA-')) {
-      const did = await getOrCreateDeviceId();
-      const provisioned = await provisionAndStore(normalized, did);
-      // Réactiver un jeton est une intention explicite : elle lève la
-      // suppression locale éventuelle, sinon le profil resterait masqué par sa
-      // pierre tombale et l'activation semblerait sans effet.
-      await configStore.restore(provisioned.meta.subscriptionId).catch(() => {});
-      const stateResponse = await apiClient.get(`/mobile/me?subscriptionId=${encodeURIComponent(provisioned.meta.subscriptionId)}`);
-      newState = stateResponse.data.accountState ?? stateResponse.data;
+      const id = await getOrCreateDeviceId();
+      const provisioned = await provisionAndStore(normalized, id);
+      storeValue(await configStore.restore(provisioned.meta.subscriptionId));
+      await validateIdentitySession(id, provisioned.meta.subscriptionId);
     } else {
-      // Compatibilité avec les anciens codes de recharge Voucher (VCH-...).
-      const res = await apiClient.post('/mobile/packages/activate', { code: normalized });
-      newState = res.data.accountState ?? res.data;
+      const response = await apiClient.post('/mobile/packages/activate', { code: normalized });
+      await updateIdentityAccountState(response.data.accountState ?? response.data);
     }
-
-    setAccountState(newState);
-    if (user) {
-      await AsyncStorage.setItem(KEYS.USER, JSON.stringify({ user, accountState: newState }));
-    }
-  }, [user]);
-
-  const refreshAccountState = useCallback(async (subscriptionId?: string | null) => {
-    try {
-      const query = subscriptionId ? `?subscriptionId=${encodeURIComponent(subscriptionId)}` : '';
-      const res = await apiClient.get(`/mobile/me${query}`);
-      const { user: u, accountState: as } = res.data;
-      setUser(u);
-      setAccountState(as);
-      await AsyncStorage.setItem(KEYS.USER, JSON.stringify({ user: u, accountState: as }));
-    } catch (err: any) {
-      const status = err?.response?.status;
-      if (status === 401 || status === 403 || status === 404) await clearLocalSession();
-      // Hors ligne → ne rien faire (état local conservé)
-    }
-  }, [clearLocalSession]);
+    try { await refreshAccessState(); } catch (error) { reportAccessSyncError(error); }
+    wakeAccessObservation();
+  }, []);
 
   const logout = useCallback(async () => {
-    try {
-      await unregisterPushToken(deviceId);
-    } catch (error: any) {
-      console.warn('[Push] Désenregistrement distant impossible:', error?.response?.status || error?.code || 'NETWORK');
-    } finally {
-      await clearLocalSession();
-    }
-  }, [clearLocalSession, deviceId]);
+    // Stop immediately; optional push-token deletion cannot delay VPN shutdown.
+    const stopping = clearIdentitySession();
+    try { await unregisterPushToken(deviceId); } catch (error) { reportAccessSyncError(error); }
+    await stopping;
+  }, [deviceId]);
 
   const markOnboardingDone = useCallback(async () => {
-    await AsyncStorage.setItem(KEYS.ONBOARDING, 'true');
+    await AsyncStorage.setItem('@sxb_onboarding_done', 'true');
     setHasSeenOnboarding(true);
   }, []);
 
   return (
-    <AuthContext.Provider
-      value={{
-        isLoading,
-        isAuthenticated: consent.vpn && isAuthenticated,
-        user,
-        accountState,
-        hasSeenOnboarding,
-        deviceId,
-        activateAccount,
-        activatePlan,
-        refreshAccountState,
-        logout,
-        markOnboardingDone,
-      }}
-    >
+    <AuthContext.Provider value={{
+      isLoading, isAuthenticated, user: identity?.user ?? null, accountState: identity?.accountState ?? null,
+      deviceAccess: selectDeviceAccess(access.authority), accessReady: access.ready, accessNotices: access.notices,
+      deviceId, hasSeenOnboarding, activateAccount, activatePlan, refreshAccountState, logout, markOnboardingDone,
+    }}>
       {children}
     </AuthContext.Provider>
   );
 }
 
-export function useAuthContext() {
-  return useContext(AuthContext);
-}
+export function useAuthContext() { return useContext(AuthContext); }

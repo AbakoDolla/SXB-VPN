@@ -888,13 +888,19 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private var isSshRelay: Boolean = false
     private val protocolIdle = Object()
     private var activeDispatches = 0
+    private var accessObserver: SxbAccessObserver? = null
 
     // Managers
     private val trafficManager  = TrafficStatsManager()
     private lateinit var autoReconnect: AutoReconnectManager
 
     // ── Public API pour SxbVpnModule ──────────────────────────────────────────
-    fun enableAutoReconnect()  { if (::autoReconnect.isInitialized && SxbPrivacyPolicy.vpnAllowed(this)) autoReconnect.enable() }
+    fun enableAutoReconnect()  {
+        if (::autoReconnect.isInitialized && SxbPrivacyPolicy.vpnAllowed(this) && configJson.isNotEmpty()) {
+            SxbAccessControl.checkStart(this, JSONObject(configJson))
+            autoReconnect.enable()
+        }
+    }
     fun disableAutoReconnect() { if (::autoReconnect.isInitialized) autoReconnect.disable() }
 
     // Compteurs trafic SSH (relay bidirectionnel)
@@ -1092,6 +1098,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     broadcastLog("[SXB_DEBUG] AUTO_RECONNECT_TRIGGERED")
                     broadcastLog("[SXB] Auto-reconnexion en cours...")
                     val json = JSONObject(configJson)
+                    SxbAccessControl.checkStart(this, json)
                     dispatchProtocol(configJson, json.optString("protocol", "").lowercase())
                 }
             },
@@ -1117,7 +1124,11 @@ class SxbVpnService : VpnService(), PlatformInterface {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) { cleanup(); return START_NOT_STICKY }
+        if (intent?.action == ACTION_STOP) {
+            SxbAccessControl.cancelStarts(this)
+            cleanup()
+            return START_NOT_STICKY
+        }
         if (!SxbPrivacyPolicy.vpnAllowed(this)) {
             broadcastLog("PRIVACY_CONSENT_REQUIRED")
             cleanup()
@@ -1236,6 +1247,14 @@ class SxbVpnService : VpnService(), PlatformInterface {
             stopSelf()
             return START_NOT_STICKY
         }
+        try {
+            SxbAccessControl.setActive(this, JSONObject(json))
+        } catch (error: Exception) {
+            broadcastLog("ACCESS_START_BLOCKED")
+            broadcastStatus("error", "ACCESS_START_BLOCKED")
+            cleanup()
+            return START_NOT_STICKY
+        }
 
         Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_5_CONFIG_LOADED proto=$proto json_len=${json.length}")
         broadcastLog("[SXB_DEBUG] ✅ STEP_5_CONFIG_LOADED proto='$proto' len=${json.length}")
@@ -1258,6 +1277,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         cleanupStarted.set(false)  // FIX — Réinitialiser le guard cleanup pour cette nouvelle connexion
         running.set(true)
+        restartAccessObserver()
         trafficManager.start(this)
         startConnectionWatchdog()
 
@@ -1301,6 +1321,14 @@ class SxbVpnService : VpnService(), PlatformInterface {
         synchronized(protocolIdle) {
             if (!SxbPrivacyPolicy.vpnAllowed(this)) {
                 broadcastLog("PRIVACY_CONSENT_REQUIRED")
+                cleanup()
+                return
+            }
+            try {
+                SxbAccessControl.checkStart(this, JSONObject(json))
+                check(running.get()) { "ACCESS_ATTEMPT_CANCELLED" }
+            } catch (error: Exception) {
+                broadcastLog("ACCESS_START_BLOCKED")
                 cleanup()
                 return
             }
@@ -2068,6 +2096,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
      */
     private fun startLibboxService(configJson: String, label: String) {
         check(SxbPrivacyPolicy.vpnAllowed(this)) { "PRIVACY_CONSENT_REQUIRED" }
+        SxbAccessControl.checkStart(this, JSONObject(this.configJson))
         if (SxbPrivacyPolicy.isPlay(this)) {
             SxbPlayEncryption.validate(
                 JSONObject(configJson),
@@ -2089,6 +2118,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         boxService = service
         check(SxbPrivacyPolicy.vpnAllowed(this) && running.get()) { "PRIVACY_CONSENT_REQUIRED" }
+        SxbAccessControl.checkStart(this, JSONObject(this.configJson))
         service.start()
 
         // Le démarrage libbox peut être concurrent avec stopVpn(). Le TUN et le
@@ -2281,6 +2311,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
      */
     override fun openTun(options: TunOptions): Int {
         check(SxbPrivacyPolicy.vpnAllowed(this) && running.get()) { "PRIVACY_CONSENT_REQUIRED" }
+        SxbAccessControl.checkStart(this, JSONObject(configJson))
         if (VpnService.prepare(this) != null) {
             throw IllegalStateException("Permission VPN non accordée")
         }
@@ -2372,10 +2403,11 @@ class SxbVpnService : VpnService(), PlatformInterface {
             }
         }
 
-        val pfd = builder.establish()
-            ?: throw IllegalStateException("establish() a retourné null — permission révoquée ou VPN déjà actif")
-
-        tunPfd = pfd
+        val pfd = SxbAccessControl.guardedStart(this, JSONObject(configJson)) {
+            check(running.get()) { "ACCESS_ATTEMPT_CANCELLED" }
+            (builder.establish() ?: throw IllegalStateException("establish() a retourné null — permission révoquée ou VPN déjà actif"))
+                .also { tunPfd = it }
+        }
         tunInterfaceName = runCatching {
             repeat(20) {
                 val found = java.net.NetworkInterface.getNetworkInterfaces().toList()
@@ -2386,6 +2418,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
             null
         }.getOrNull()
         trafficManager.attachTunInterface(tunInterfaceName)
+        SxbAccessControl.checkStart(this, JSONObject(configJson))
+        check(running.get()) { "ACCESS_ATTEMPT_CANCELLED" }
 
         trace("TUN_CREATED", "fd_ready=${pfd.fd >= 0} interface_name=$tunInterfaceName tun_counters=${trafficManager.hasTunCounters()}")
         Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_7_TUN_CREATED fd=${pfd.fd} name=$tunInterfaceName")
@@ -4516,6 +4550,11 @@ class SxbVpnService : VpnService(), PlatformInterface {
         val intent = Intent(BROADCAST_STATUS).apply {
             putExtra("status", status)
             if (errorCode != null) putExtra("errorCode", errorCode)
+            if (configJson.isNotEmpty()) {
+                val config = JSONObject(configJson)
+                putExtra("configId", config.optString("configId", ""))
+                putExtra("accessSession", config.optString("accessSession", ""))
+            }
             setPackage(packageName)
         }
         sendBroadcast(intent)
@@ -4664,6 +4703,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
     // ═════════════════════════════════════════════════════════════════════════
 
     private fun cleanup(stopService: Boolean = true, keepRunning: Boolean = false) {
+        if (stopService) stopAccessObserver()
         // FIX — Guard contre le double-cleanup : failVpn() ne doit plus appeler cleanup()
         // directement, mais cette garde sécurise le cas où cleanup() serait appelé depuis
         // deux chemins concurrents (ex: onDestroy + finally d'un tunnel).
@@ -4680,6 +4720,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         connectionWatchdog = null
 
         if (stopService) {
+            SxbAccessControl.stopped(this)
             val manager = getSystemService(ConnectivityManager::class.java)
             networkCallback?.let { callback ->
                 runCatching { manager?.unregisterNetworkCallback(callback) }
@@ -4740,10 +4781,44 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
     fun stopVpn() = cleanup()
 
-    fun stopForPrivacy() {
+    fun stopAccessObserver() {
+        accessObserver?.stop()
+        accessObserver = null
+    }
+
+    @Synchronized
+    fun restartAccessObserver() {
+        stopAccessObserver()
+        if (running.get() && SxbPrivacyPolicy.vpnAllowed(this)) {
+            accessObserver = SxbAccessObserver(this).also { it.start() }
+        }
+    }
+
+    fun interruptForAccess() {
         disableAutoReconnect()
         running.set(false)
         vpnThread?.interrupt()
+        stopAccessObserver()
+        tunPfd?.close()
+        tunPfd = null
+    }
+
+    fun stopForAccess() {
+        interruptForAccess()
+        try { SxbAccessControl.cancelStarts(this) }
+        finally { stopAndDrain("ACCESS_STOP_PENDING") }
+    }
+
+    fun stopForPrivacy() {
+        interruptForAccess()
+        try { SxbAccessControl.cancelStarts(this) }
+        finally { stopAndDrain("PRIVACY_STOP_PENDING") }
+    }
+
+    private fun stopAndDrain(pendingCode: String) {
+        // Closing TUN first stops traffic even if an engine close/join fails.
+        tunPfd?.close()
+        tunPfd = null
         // Unlike the best-effort normal shutdown, withdrawal surfaces failures.
         boxService?.close()
         boxService = null
@@ -4756,7 +4831,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         synchronized(protocolIdle) {
             while (activeDispatches > 0) {
                 val remaining = deadline - SystemClock.elapsedRealtime()
-                check(remaining > 0) { "PRIVACY_STOP_PENDING" }
+                check(remaining > 0) { pendingCode }
                 protocolIdle.wait(remaining)
             }
         }

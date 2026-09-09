@@ -231,7 +231,7 @@ function PinModal({ visible, mode, onSubmit, onClose }: {
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
-  const { user, accountState, logout } = useAuthContext();
+  const { user, accountState, logout, deviceAccess, deviceId: boundDeviceId } = useAuthContext();
   const {
     logs, isConnected, selectedProtocol, availableProtocols, refreshVpnConfig,
     killSwitch: ksCtx, autoReconnect: arCtx,
@@ -271,11 +271,7 @@ export default function SettingsScreen() {
   useEffect(() => {
     (async () => {
       // Load device ID
-      let did = await AsyncStorage.getItem("@sxb_device_id");
-      if (!did) {
-        did = "SXB" + Math.random().toString(36).slice(2,14).toUpperCase();
-        await AsyncStorage.setItem("@sxb_device_id", did);
-      }
+      const did = boundDeviceId || await AsyncStorage.getItem("@sxb_device_id");
       setDeviceId(did);
 
       // auto reconnect + kill switch viennent du VpnContext (synchronisés avec le service natif)
@@ -443,7 +439,7 @@ export default function SettingsScreen() {
   const currentLang = LANGS.find(l => l.code === language) || LANGS[0];
 
   // Account state display
-  const acctStatus = (accountState as any)?.state;
+  const acctStatus = deviceAccess ? deviceAccess.status === 'active' ? 'ready' : deviceAccess.status : 'ready';
   const acctBadge: { text: string; color: string } = (({
     ready: { text: t('active'), color: colors.connected },
     no_package: { text: t('status_no_package'), color: colors.warning },
@@ -451,11 +447,11 @@ export default function SettingsScreen() {
     suspended: { text: t('suspended_status'), color: colors.disconnected },
   } as Record<string, { text: string; color: string }>)[acctStatus || "no_package"]) || { text: t('status_unknown'), color: colors.textMuted };
 
-  const effectiveExpiry = derivedQuota.expiryDate || activeConnection?.expiresAt || accountState?.expireAt || null;
+  const effectiveExpiry = derivedQuota.expiryDate || activeConnection?.expiresAt || null;
   const formatExpiry = () => {
     if (!effectiveExpiry) return "—";
     const d = new Date(effectiveExpiry);
-    return d.toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" });
+    return d.toLocaleDateString(language, { day: "2-digit", month: "short", year: "numeric" });
   };
 
   const quotaUsed = (derivedQuota.totalBytes > 0 || derivedQuota.usedBytes > 0)
@@ -496,14 +492,18 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        {/* Subscription info */}
-        <Section title="FORFAIT" subtitle={effectiveExpiry ? `Expire le ${formatExpiry()}` : undefined}>
-          <Row icon="data-usage-outline" label="Quota utilisé" value={quotaUsed} color={colors.primary} />
+        <Section title={t('access_device_title')}>
+          <Row icon="phone-portrait-outline" label={t('access_device_expiry')}
+            value={deviceAccess?.expireAt ? new Date(deviceAccess.expireAt).toLocaleDateString(language) : t('access_expiry_unknown')} />
+          <Row icon="key-outline" label={t('access_enter_code')} onPress={() => router.push('/activate')} />
+        </Section>
+        <Section title={t('current_plan')}>
+          <Row icon="data-usage-outline" label={t('quota_used')} value={quotaUsed} color={colors.primary} />
           <View style={styles.divider} />
-          <Row icon="calendar-outline" label="Expiration" value={formatExpiry()} color={colors.warning} />
+          <Row icon="calendar-outline" label={t('access_config_expiry')} value={formatExpiry()} color={colors.warning} />
           <View style={styles.divider} />
           <Row
-            icon="gift-outline" label="Activer un forfait"
+            icon="gift-outline" label={t('activate_plan')} disabled={!!deviceAccess && deviceAccess.status !== 'active'}
             onPress={() => router.push("/plan")} color={colors.purple}
           />
         </Section>
@@ -718,6 +718,7 @@ export default function SettingsScreen() {
         )}
 
         <Text style={styles.footer}>{t("app_name")} — STUFF X BILAL</Text>
+        <Text style={[styles.footer, { letterSpacing: 0 }]}>{t('created_by')}</Text>
       </ScrollView>
 
       {/* Modals */}

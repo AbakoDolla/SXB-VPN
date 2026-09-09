@@ -3,6 +3,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import { getPrivacyConsent, getPrivacySignal, requireVpnConsent } from './privacyConsent';
+import { accessIssueFromError, isInvalidSession } from './accessPolicy';
+import { accessRequestStamp, currentIdentityRequest, publishAccessFailure } from './accessEvents';
+import { requireDeviceAccess } from './accessState';
 
 /**
  * B7 — URL de l'API.
@@ -74,12 +77,24 @@ export const apiClient = axios.create({
   },
 });
 
+type AccessRequestConfig = InternalAxiosRequestConfig & {
+  _retry?: boolean;
+  _sxbStamp?: ReturnType<typeof accessRequestStamp>;
+  _sxbCleanupSignal?: () => void;
+};
+
 // --- Request interceptor: attach JWT ---
 apiClient.interceptors.request.use(
-  async (config: InternalAxiosRequestConfig) => {
+  async (config: AccessRequestConfig) => {
+    config._sxbStamp = accessRequestStamp();
+    config._sxbCleanupSignal?.();
     const removingPushToken = config.method === 'delete' && config.url === '/mobile/push-tokens';
     if (!removingPushToken) {
       requireVpnConsent();
+      const path = config.url?.split('?')[0];
+      const identityOrControl = path === '/mobile/me' || path === '/mobile/access-state' ||
+        path === '/mobile/auth/activate' || path === '/mobile/auth/refresh';
+      if (!identityOrControl) requireDeviceAccess();
       if (config.url === '/mobile-health/report' && !getPrivacyConsent().diagnostics) {
         throw new Error('privacy_diagnostics_disabled');
       }
@@ -90,10 +105,15 @@ apiClient.interceptors.request.use(
       if (!config.signal) config.signal = signal;
       else {
         const controller = new AbortController();
+        const requestSignal = config.signal;
         const abort = () => controller.abort();
-        if (signal.aborted || config.signal.aborted) abort();
+        if (signal.aborted || requestSignal.aborted) abort();
         signal.addEventListener('abort', abort, { once: true });
-        config.signal.addEventListener?.('abort', abort, { once: true });
+        requestSignal.addEventListener?.('abort', abort, { once: true });
+        config._sxbCleanupSignal = () => {
+          signal.removeEventListener('abort', abort);
+          requestSignal.removeEventListener?.('abort', abort);
+        };
         config.signal = controller.signal;
       }
     }
@@ -109,6 +129,7 @@ apiClient.interceptors.request.use(
         config.headers['X-SXB-Device-ID'] = deviceId;
       }
     } catch {}
+    if (!removingPushToken) requireVpnConsent();
     return config;
   },
   (error) => Promise.reject(error),
@@ -129,13 +150,25 @@ function rejectQueue(error: unknown) {
 }
 
 apiClient.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    (response.config as AccessRequestConfig)._sxbCleanupSignal?.();
+    return response;
+  },
   async (error: AxiosError) => {
-    const original = error.config as InternalAxiosRequestConfig & {
-      _retry?: boolean;
+    const original = error.config as AccessRequestConfig | undefined;
+    original?._sxbCleanupSignal?.();
+    const issue = accessIssueFromError(error);
+    const stamp = original?._sxbStamp ?? accessRequestStamp();
+    const publishFailure = (failure: unknown) => {
+      const domain = accessIssueFromError(failure);
+      if (domain) publishAccessFailure(domain, stamp);
+      else if (isInvalidSession(failure)) {
+        publishAccessFailure({ code: 'SESSION_INVALID', scope: 'session', temporary: false }, stamp);
+      }
     };
 
-    if (original && error.response?.status === 401 && !original._retry) {
+    if (original && error.response?.status === 401 && !original._retry &&
+        (!issue || issue.scope === 'session') && !original.url?.startsWith('/mobile/auth/')) {
       original._retry = true;
       if (isRefreshing) {
         return new Promise<string>((resolve, reject) => {
@@ -154,13 +187,20 @@ apiClient.interceptors.response.use(
         // Lire depuis SecureStore avec fallback legacy AsyncStorage
         let refreshToken = await getSecureToken(SEC_KEYS.REFRESH);
         if (!refreshToken) refreshToken = await AsyncStorage.getItem('@sxb_refresh_token');
-        if (!refreshToken) throw new Error('No refresh token');
+        if (!refreshToken) throw error;
 
         requireVpnConsent();
+        const deviceId = await AsyncStorage.getItem('@sxb_device_id');
+        if (!deviceId) throw new Error('AUTH_DEVICE_BINDING_REQUIRED');
         const res = await axios.post(`${API_BASE_URL}/mobile/auth/refresh`, {
           refreshToken,
-        }, { signal: getPrivacySignal() });
+        }, { signal: getPrivacySignal(), timeout: TIMEOUT, headers: { 'X-SXB-Device-ID': deviceId } });
         const { accessToken, refreshToken: newRefresh } = res.data;
+        requireVpnConsent();
+        if (!currentIdentityRequest(stamp)) throw new Error('AUTH_SESSION_CHANGED');
+        if (typeof accessToken !== 'string' || !accessToken || typeof newRefresh !== 'string' || !newRefresh) {
+          throw new Error('AUTH_REFRESH_RESPONSE_INVALID');
+        }
 
         // Stocker dans SecureStore ET migrer depuis AsyncStorage legacy
         await Promise.all([
@@ -180,7 +220,7 @@ apiClient.interceptors.response.use(
         // les identifiants invalides. Toutes les requêtes en attente reçoivent
         // cependant un rejet pour que le retrait puisse finir hors ligne.
         rejectQueue(_err);
-        const invalidSession = _err?.response?.status === 401 || _err?.response?.status === 403;
+        const invalidSession = isInvalidSession(_err) && currentIdentityRequest(stamp);
         if (invalidSession) {
           await Promise.all([
             removeSecureToken(SEC_KEYS.ACCESS),
@@ -188,12 +228,15 @@ apiClient.interceptors.response.use(
             AsyncStorage.multiRemove(['@sxb_access_token', '@sxb_refresh_token', '@sxb_user']),
           ]);
         }
+        publishFailure(_err);
         return Promise.reject(_err);
       } finally {
         isRefreshing = false;
       }
     }
 
+    // Session refresh failure is handled above; domain refusals never rotate tokens.
+    if (!original?.url?.startsWith('/mobile/auth/')) publishFailure(error);
     return Promise.reject(error);
   },
 );

@@ -19,6 +19,7 @@ import { AppLockProvider } from "@/contexts/AppLockContext";
 import { AppLockGate } from "@/components/AppLockGate";
 import { PrivacyProvider, usePrivacy } from "@/contexts/PrivacyContext";
 import PrivacyDisclosure from "@/components/PrivacyDisclosure";
+import { accessRedirect } from "@/services/accessPolicy";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -81,7 +82,7 @@ function AnnouncementNotificationSync() {
 
 function RootLayoutNav() {
   const { colorScheme } = useThemeContext();
-  const { isAuthenticated, isLoading } = useAuthContext();
+  const { isAuthenticated, isLoading, deviceAccess, accessReady } = useAuthContext();
   const segments = useSegments();
   const { consent } = usePrivacy();
 
@@ -93,6 +94,12 @@ function RootLayoutNav() {
       router.replace('/activate');
     }
   }, [isAuthenticated, isLoading, segments]);
+
+  useEffect(() => {
+    if (isLoading || !isAuthenticated || !accessReady) return;
+    const destination = accessRedirect(isAuthenticated, accessReady, deviceAccess, segments[0]);
+    if (destination) router.replace(destination);
+  }, [isLoading, isAuthenticated, accessReady, deviceAccess, segments]);
 
   useEffect(() => {
     if (consent.vpn && consent.notifications && Platform.OS === "android" && Platform.Version >= 33) {
@@ -108,6 +115,7 @@ function RootLayoutNav() {
         <Stack.Screen name="index" options={{ animation: "fade" }} />
         <Stack.Screen name="onboarding" options={{ animation: "fade", gestureEnabled: false }} />
         <Stack.Screen name="activate" options={{ animation: "slide_from_right" }} />
+        <Stack.Screen name="access-blocked" options={{ gestureEnabled: false }} />
         <Stack.Screen name="privacy" options={{ animation: "slide_from_right" }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="plan" options={{ presentation: "modal", animation: "slide_from_bottom" }} />

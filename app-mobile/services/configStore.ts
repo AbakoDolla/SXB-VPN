@@ -4,6 +4,8 @@ import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import { encryptAes256Gcm, decryptAes256Gcm, hexToBytes, bytesToHex, utf8Decode, utf8Encode } from './aesGcm';
 import { genererLeurre, semerAppats } from './decoy';
+import { requireProfileAccess } from './accessState';
+import type { ProfileStatus } from './accessPolicy';
 
 /** The only owner of locally provisioned VPN credentials. Registry is deliberately non-sensitive. */
 const REGISTRY_KEY = 'sxb_cfg_registry_v1';
@@ -18,6 +20,7 @@ export interface ConfigMeta {
   configId: string; name?: string; protocol?: string; displayProtocol?: string; subscriptionId?: string;
   quotaTotal?: number; quotaUsed?: number; expiryDate?: string | null; configVersion?: number;
   configHash?: string | null; isActive?: boolean; savedAt?: string; dataToken?: string;
+  source?: 'backend' | 'manual'; accessStatus?: ProfileStatus;
 }
 export interface StoredConfig { config: Record<string, any>; meta: ConfigMeta; }
 
@@ -73,6 +76,12 @@ function decrypt(value: string, key: Uint8Array, graine = ''): Record<string, an
 }
 async function registry(): Promise<ConfigMeta[]> { const raw = await AsyncStorage.getItem(REGISTRY_KEY); return raw ? JSON.parse(raw) : []; }
 async function putRegistry(entries: ConfigMeta[]) { await AsyncStorage.setItem(REGISTRY_KEY, JSON.stringify(entries)); }
+let mutations: Promise<unknown> = Promise.resolve();
+function mutate<T>(action: () => Promise<T>): Promise<T> {
+  const next = mutations.then(action);
+  mutations = next.catch(() => { /* Each public operation returns its own StoreResult error. */ });
+  return next;
+}
 
 // ── Suppressions locales (« pierres tombales ») ──────────────────────────────
 // Une configuration supprimée depuis l'application doit le RESTER. Sans trace
@@ -99,8 +108,10 @@ export async function listDismissed(): Promise<StoreResult<string[]>> {
 /** Marque une configuration comme supprimée sur cet appareil. */
 export async function dismiss(id: string): Promise<StoreResult<void>> {
   try {
-    const ids = await dismissedIds();
-    if (!ids.includes(id)) await AsyncStorage.setItem(DISMISSED_KEY, JSON.stringify([...ids, id]));
+    await mutate(async () => {
+      const ids = await dismissedIds();
+      if (!ids.includes(id)) await AsyncStorage.setItem(DISMISSED_KEY, JSON.stringify([...ids, id]));
+    });
     return { status: 'ok' };
   } catch (error: any) { return { status: 'error', error }; }
 }
@@ -108,8 +119,11 @@ export async function dismiss(id: string): Promise<StoreResult<void>> {
 /** Lève la suppression — réactivation explicite du jeton par l'utilisateur. */
 export async function restore(id: string): Promise<StoreResult<void>> {
   try {
-    const ids = await dismissedIds();
-    if (ids.includes(id)) await AsyncStorage.setItem(DISMISSED_KEY, JSON.stringify(ids.filter(x => x !== id)));
+    await mutate(async () => {
+      requireProfileAccess({ configId: id });
+      const ids = await dismissedIds();
+      if (ids.includes(id)) await AsyncStorage.setItem(DISMISSED_KEY, JSON.stringify(ids.filter(x => x !== id)));
+    });
     return { status: 'ok' };
   } catch (error: any) { return { status: 'error', error }; }
 }
@@ -128,20 +142,54 @@ export async function migrateLegacy(): Promise<StoreResult<void>> {
   } catch (error: any) { return { status: 'error', error }; }
 }
 export async function save(id: string, config: Record<string, any>, meta: Partial<ConfigMeta> = {}): Promise<StoreResult<StoredConfig>> {
-  try { const key = await masterKey(); const entries = await registry(); const old = entries.find(x => x.configId === id || (!!meta.configHash && x.configHash === meta.configHash)); const finalId = old?.configId || id; const finalMeta: ConfigMeta = { ...old, ...meta, configId: finalId, isActive: meta.isActive ?? old?.isActive ?? entries.length === 0, savedAt: new Date().toISOString() }; await AsyncStorage.setItem(payloadKey(finalId), encrypt(config, key)); await putRegistry([...entries.filter(x => x.configId !== finalId), finalMeta]);
+  try { return await mutate(async () => {
+    const key = await masterKey();
+    const entries = await registry();
+    // Equal payload hashes are not equal entitlements: A and B can share a server.
+    const old = entries.find(x => x.configId === id);
+    const finalMeta: ConfigMeta = { ...old, ...meta, configId: id,
+      source: meta.source ?? old?.source ?? (meta.subscriptionId ? 'backend' : 'manual'),
+      isActive: meta.isActive ?? old?.isActive ?? entries.length === 0, savedAt: new Date().toISOString() };
+    requireProfileAccess({ ...finalMeta,
+      subscriptionId: finalMeta.subscriptionId || (typeof config.subscriptionId === 'string' ? config.subscriptionId : undefined),
+      configHash: finalMeta.configHash || (typeof config.configHash === 'string' ? config.configHash : undefined),
+    });
+    await AsyncStorage.setItem(payloadKey(id), encrypt(config, key));
+    await putRegistry([...entries.filter(x => x.configId !== id), finalMeta]);
     // Les appâts sont semés en même temps que la première vraie configuration :
     // un stockage qui ne contiendrait QUE des appâts se remarquerait.
     await semerAppats();
-    return { status: 'ok', value: { config, meta: finalMeta } }; } catch (error: any) { return { status: 'error', error }; }
+    return { status: 'ok' as const, value: { config, meta: finalMeta } };
+  }); } catch (error: any) { return { status: 'error', error }; }
 }
 export async function get(id: string): Promise<StoreResult<StoredConfig>> { try { await migrateLegacy(); const meta = (await registry()).find(x => x.configId === id); if (!meta) return { status: 'missing' }; const raw = await AsyncStorage.getItem(payloadKey(id)); if (!raw) return { status: 'error', error: new Error('Payload absent') }; return { status: 'ok', value: { config: decrypt(raw, await masterKey(), id), meta } }; } catch (error:any) { return { status:'error', error }; } }
 export async function getActive(): Promise<StoreResult<StoredConfig>> { const migration = await migrateLegacy(); if (migration.status === 'error') return migration as StoreResult<StoredConfig>; try { const entries = await registry(); const active = entries.find(x => x.isActive) || entries[0]; return active ? get(active.configId) : { status: 'missing' }; } catch (error: any) { return { status: 'error', error }; } }
 export async function list(): Promise<StoreResult<ConfigMeta[]>> { try { await migrateLegacy(); return { status:'ok', value: await registry() }; } catch(error:any) { return {status:'error', error}; } }
-export async function setActive(id: string): Promise<StoreResult<void>> { try { const entries=await registry(); if (!entries.some(x=>x.configId===id)) return {status:'missing'}; await putRegistry(entries.map(x=>({...x,isActive:x.configId===id}))); await AsyncStorage.setItem('@sxb_active_config_id', id); return {status:'ok'}; } catch(error:any) { return {status:'error',error}; } }
-export async function remove(id: string): Promise<StoreResult<void>> { try { const entries=await registry(); await AsyncStorage.removeItem(payloadKey(id)); await putRegistry(entries.filter(x=>x.configId!==id)); return {status:'ok'}; } catch(error:any) {return {status:'error',error};} }
+export async function setActive(id: string): Promise<StoreResult<void>> {
+  try { return await mutate(async () => {
+    const entries = await registry();
+    if (!entries.some(x => x.configId === id)) return { status: 'missing' as const };
+    await putRegistry(entries.map(x => ({ ...x, isActive: x.configId === id })));
+    await AsyncStorage.setItem('@sxb_active_config_id', id);
+    return { status: 'ok' as const };
+  }); } catch (error: any) { return { status: 'error', error }; }
+}
+export async function remove(id: string): Promise<StoreResult<void>> {
+  try { return await mutate(async () => {
+    const entries = await registry();
+    const remaining = entries.filter(x => x.configId !== id);
+    if (remaining.length && !remaining.some(x => x.isActive)) remaining[0] = { ...remaining[0], isActive: true };
+    await AsyncStorage.multiRemove([payloadKey(id), `sxb_quota_${id}`]);
+    await putRegistry(remaining);
+    const active = remaining.find(x => x.isActive);
+    if (active) await AsyncStorage.setItem('@sxb_active_config_id', active.configId);
+    else await AsyncStorage.removeItem('@sxb_active_config_id');
+    return { status: 'ok' as const };
+  }); } catch (error: any) { return { status: 'error', error }; }
+}
 /** Purge tous les payloads chiffrés et le registre après suppression/révocation. */
 export async function clearAll(): Promise<StoreResult<void>> {
-  try {
+  try { return await mutate(async () => {
     const entries = await registry();
     await Promise.all(entries.map(entry => AsyncStorage.removeItem(payloadKey(entry.configId))));
     await putRegistry([]);
@@ -157,45 +205,21 @@ export async function clearAll(): Promise<StoreResult<void>> {
       Platform.OS === 'web' ? AsyncStorage.removeItem(`@secure_${LEGACY_CONFIG}`) : SecureStore.deleteItemAsync(LEGACY_CONFIG),
       Platform.OS === 'web' ? AsyncStorage.removeItem(`@secure_${LEGACY_PROV}`) : SecureStore.deleteItemAsync(LEGACY_PROV),
     ]);
-    return { status: 'ok' };
+    return { status: 'ok' as const };
+  });
   } catch (error: any) { return { status: 'error', error }; }
 }
 
-export async function updateQuota(id:string, usedBytes:number):Promise<StoreResult<ConfigMeta>> { try { const entries=await registry(); const old=entries.find(x=>x.configId===id); if(!old)return {status:'missing'}; const meta={...old,quotaUsed:Math.max(0,usedBytes)}; await putRegistry(entries.map(x=>x.configId===id?meta:x)); return {status:'ok',value:meta}; }catch(error:any){return {status:'error',error};} }
-
-/**
- * Retire les configurations dont la date limite est dépassée.
- *
- * Le forfait défini au dashboard doit fonctionner jusqu'à son échéance, puis la
- * configuration doit disparaître de l'appareil — sans jamais désactiver
- * l'application, qui reste enrôlée et prête à recevoir un nouveau forfait.
- *
- * La purge est locale et n'appelle aucun service : elle fonctionne donc aussi
- * hors ligne, y compris si l'appareil n'a plus de données pour joindre le
- * dashboard. Retourne les configurations retirées afin que l'appelant puisse
- * l'annoncer à l'utilisateur.
- */
-export async function purgeExpired(now: Date = new Date()): Promise<StoreResult<ConfigMeta[]>> {
-  try {
+export async function updateMetadata(id: string, update: Partial<Pick<ConfigMeta,
+  'name' | 'quotaTotal' | 'quotaUsed' | 'expiryDate' | 'accessStatus'>>): Promise<StoreResult<ConfigMeta>> {
+  try { return await mutate(async () => {
     const entries = await registry();
-    const expired = entries.filter(entry => {
-      if (!entry.expiryDate) return false;
-      const deadline = new Date(entry.expiryDate);
-      // Une date illisible ne doit jamais provoquer une suppression.
-      return !Number.isNaN(deadline.getTime()) && now > deadline;
-    });
-    if (expired.length === 0) return { status: 'ok', value: [] };
-
-    await Promise.all(expired.map(entry => AsyncStorage.removeItem(payloadKey(entry.configId))));
-    const remaining = entries.filter(entry => !expired.some(e => e.configId === entry.configId));
-    // Si la configuration active vient d'expirer, une autre prend le relais :
-    // sans cela le sélecteur resterait sur une entrée devenue introuvable.
-    if (remaining.length > 0 && !remaining.some(entry => entry.isActive)) {
-      remaining[0] = { ...remaining[0], isActive: true };
-      await AsyncStorage.setItem('@sxb_active_config_id', remaining[0].configId);
-    }
-    if (remaining.length === 0) await AsyncStorage.removeItem('@sxb_active_config_id');
-    await putRegistry(remaining);
-    return { status: 'ok', value: expired };
-  } catch (error: any) { return { status: 'error', error }; }
+    const old = entries.find(x => x.configId === id);
+    if (!old) return { status: 'missing' as const };
+    const meta = { ...old, ...update };
+    await putRegistry(entries.map(x => x.configId === id ? meta : x));
+    return { status: 'ok' as const, value: meta };
+  }); } catch (error: any) { return { status: 'error', error }; }
 }
+
+export const updateQuota = (id: string, usedBytes: number) => updateMetadata(id, { quotaUsed: Math.max(0, usedBytes) });

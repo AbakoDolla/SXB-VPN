@@ -104,7 +104,10 @@ export async function saveQuotaData(data: Omit<QuotaData, 'lastSync' | 'remainin
     lastSync: new Date().toISOString(),
   };
   await AsyncStorage.setItem(`sxb_quota_${data.configId}`, JSON.stringify(quota));
-  await configStore.updateQuota(data.configId, quota.usedQuota);
+  const updated = await configStore.updateMetadata(data.configId, {
+    quotaUsed: quota.usedQuota, quotaTotal: quota.totalQuota, expiryDate: quota.expiryDate,
+  });
+  if (updated.status === 'error') throw updated.error;
   return quota;
 }
 
@@ -135,7 +138,7 @@ export async function loadQuotaData(configId?: string): Promise<QuotaData | null
  * identifiant d'abonnement.
  */
 export async function clearQuotaData(configId: string): Promise<void> {
-  await AsyncStorage.removeItem(`sxb_quota_${configId}`).catch(() => {});
+  await AsyncStorage.removeItem(`sxb_quota_${configId}`);
 }
 
 /**
@@ -213,10 +216,10 @@ export async function getOfflineStatus(): Promise<{
  * Supprime toutes les données offline (désinscription complète).
  */
 export async function clearAllOfflineData(): Promise<void> {
-  const keys = await AsyncStorage.getAllKeys().catch(() => [] as string[]);
+  const keys = await AsyncStorage.getAllKeys();
   const quotaKeys = keys.filter(key => key.startsWith('sxb_quota_'));
   await Promise.all([
-    configStore.clearAll(),
+    configStore.clearAll().then(result => { if (result.status === 'error') throw result.error; }),
     ...quotaKeys.map(key => AsyncStorage.removeItem(key)),
     AsyncStorage.removeItem(KEYS.VPN_CONFIG),
     AsyncStorage.removeItem(KEYS.QUOTA),

@@ -70,6 +70,7 @@ object SxbPrivacyPolicy {
         if (!vpn || storage.getBoolean("revoking", false) || stoppingService != null) {
             check(storage.edit().putBoolean("revoking", true).commit()) { "PRIVACY_STORAGE_ERROR" }
             stopVpnForPrivacy()
+            SxbAccessControl.withdraw(context)
         }
         check(storage.edit()
             .putInt("version", VERSION).putBoolean("vpn", vpn)

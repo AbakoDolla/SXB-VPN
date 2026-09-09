@@ -235,6 +235,7 @@ describe('Play distribution and privacy runtime', () => {
     await h.consent.savePrivacyConsent(accepted);
     h.state.storage.set('@sxb_access_token', 'old-access');
     h.state.storage.set('@sxb_refresh_token', 'old-refresh');
+    h.state.storage.set('@sxb_device_id', 'device');
     const previousAdapter = axios.defaults.adapter;
     let releaseRefresh: (() => void) | undefined;
     let refreshCount = 0;
@@ -248,6 +249,7 @@ describe('Play distribution and privacy runtime', () => {
     };
     axios.defaults.adapter = async config => {
       refreshCount++;
+      assert.equal(config.headers['X-SXB-Device-ID'], 'device');
       await refreshReady;
       throw new AxiosError('Temporarily limited', 'ERR_BAD_REQUEST', config, undefined, {
         data: {}, status: 429, statusText: 'Too Many Requests', headers: {}, config,

@@ -19,6 +19,10 @@ import * as configStore from './configStore';
 import { isCompleteOfflineConfig } from './configValidator';
 import apiClient from './apiClient';
 import { decryptSxbBlob, utf8Decode } from './aesGcm';
+import { accessIssueFromError, type AccessIssue } from './accessPolicy';
+import { requireDeviceAccess, requireProfileAccess } from './accessState';
+import { accessRequestStamp, currentIdentityRequest } from './accessEvents';
+import { requireVpnConsent } from './privacyConsent';
 
 const PROV_KEY = 'sxb_prov_config_v2';
 const PROV_META_KEY = 'sxb_prov_meta_v2';
@@ -39,7 +43,7 @@ export interface ProvisionDiagnostic {
 export class ProvisioningError extends Error {
   readonly diagnostic: ProvisionDiagnostic;
 
-  constructor(message: string, diagnostic: ProvisionDiagnostic) {
+  constructor(message: string, diagnostic: ProvisionDiagnostic, readonly accessIssue: AccessIssue | null = null) {
     super(message);
     this.name = 'ProvisioningError';
     this.diagnostic = diagnostic;
@@ -73,7 +77,7 @@ function toProvisioningError(error: unknown, attempts: number): ProvisioningErro
         : 'La demande de provisionnement n’a pas atteint le serveur';
     return new ProvisioningError(message, {
       code, stage: 'request', attempts, retryable, httpStatus, requestId,
-    });
+    }, accessIssueFromError(error));
   }
 
   return new ProvisioningError('Échec inattendu du provisionnement', {
@@ -203,7 +207,13 @@ export async function provisionAndStore(
   dataToken: string,
   deviceId:  string,
 ): Promise<ProvisionResult> {
+  const identity = accessRequestStamp();
+  requireVpnConsent();
+  requireDeviceAccess();
   const res = await requestProvision(dataToken, deviceId);
+  requireVpnConsent();
+  if (!currentIdentityRequest(identity)) throw new Error('AUTH_SESSION_CHANGED');
+  requireDeviceAccess();
 
   // Support both nested (dev server) and flat (production VPS) response formats.
   const prov = res.data?.config ? res.data.config : res.data;
@@ -298,6 +308,7 @@ export async function provisionAndStore(
     configHash:      prov.configHash || null,
   };
   const id = meta.subscriptionId || String(vpnConfig.configId || `provision_${Date.now()}`);
+  requireProfileAccess({ configId: id, subscriptionId: meta.subscriptionId, configHash: meta.configHash });
 
   // §28 — Une configuration invalide ne doit JAMAIS écraser la dernière
   // configuration valide connue. Le déchiffrement peut réussir alors que le
@@ -315,12 +326,14 @@ export async function provisionAndStore(
   }
 
   const stored = await configStore.save(id, vpnConfig, {
+    source: 'backend',
     configId: id, name: meta.profileName, protocol: meta.protocol, displayProtocol: meta.displayProtocol,
     subscriptionId: meta.subscriptionId, quotaTotal: Math.round(meta.quotaGB * 1024 ** 3),
     quotaUsed: Math.round(meta.quotaUsedGB * 1024 ** 3), expiryDate: meta.expireAt,
     configVersion: meta.configVersion, configHash: meta.configHash,
   });
   if (stored.status !== 'ok') {
+    if (stored.error && accessIssueFromError(stored.error)) throw stored.error;
     throw new ProvisioningError('Stockage chiffré indisponible', {
       code: 'PVN_STORE_FAILED', stage: 'store', attempts: 1, retryable: false, requestId,
     });
@@ -347,9 +360,15 @@ export async function loadProvisionedConfig(): Promise<{ config: Record<string, 
 /**
  * Supprime la config provisionnée (révocation, déconnexion, reset).
  */
-export async function clearProvisionedConfig(): Promise<void> {
+export async function clearProvisionedConfig(configId?: string): Promise<void> {
+  if (configId) {
+    const result = await configStore.remove(configId);
+    if (result.status === 'error') throw result.error;
+    return;
+  }
   const active = await configStore.getActive();
-  if (active.status === 'ok' && active.value) await configStore.remove(active.value.meta.configId);
+  if (active.status === 'error') throw active.error;
+  if (active.status === 'ok' && active.value) await clearProvisionedConfig(active.value.meta.configId);
 }
 
 /**

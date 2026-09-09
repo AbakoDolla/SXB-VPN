@@ -27,12 +27,14 @@ import { useTranslation } from '@/localization';
 import { alpha, layout, radius, spacing, type } from '@/constants/theme';
 import { EmptyState, Pill } from '@/components/ui/Primitives';
 import type { VpnConnection } from '@/types/api';
+import type { ProfileStatus } from '@/services/accessPolicy';
 
 export interface ConfigEntry {
   id: string;
   name: string;
   protocol: string;
   isActive: boolean;
+  status?: ProfileStatus;
 }
 
 interface ConfigPickerProps {
@@ -108,9 +110,9 @@ export default function ConfigPicker({
             ) : (
               configs.map((entry) => {
                 const remote = connections.find(c => c.id === entry.id);
-                const status = remote?.status;
-                const isUnusable = status === 'revoked' || status === 'expired'
-                  || status === 'exhausted' || status === 'suspended';
+                const status = entry.status ?? remote?.status;
+                const isUnusable = status === 'revoked' || status === 'deleted' || status === 'suspended';
+                const hasNotice = isUnusable || status === 'expired' || status === 'exhausted';
                 const isActive = entry.id === activeConfigId;
                 const isDeleting = deletingId === entry.id;
                 const tone = isUnusable ? colors.disconnected : isActive ? colors.primary : colors.textMuted;
@@ -152,7 +154,8 @@ export default function ConfigPicker({
                         <View style={styles.rowMeta}>
                           <Text style={[type.micro, { color: colors.textMuted }]}>{entry.protocol || '—'}</Text>
                           {isActive && <Pill label={t('config_active')} tone={colors.connected} />}
-                          {isUnusable && <Pill label={t(status === 'expired' ? 'expired' : 'config_expired')} tone={colors.disconnected} />}
+                          {hasNotice && <Pill label={t(status === 'suspended' ? 'connection_suspended' :
+                            status === 'expired' ? 'expired' : status === 'exhausted' ? 'quota_exhausted' : 'connection_revoked')} tone={colors.disconnected} />}
                         </View>
                       </View>
                     </Pressable>
