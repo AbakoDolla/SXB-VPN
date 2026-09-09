@@ -597,14 +597,15 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                 val p = Arguments.createMap().apply { putString("message", log) }
                 sendEvent("onVpnLog", p)
             }
-            accessReceiver = object : BroadcastReceiver() {
-                override fun onReceive(c: Context?, i: Intent?) {
-                    val p = Arguments.createMap().apply {
-                        putString("session", i?.getStringExtra("session") ?: "")
-                        putDouble("sequence", (i?.getLongExtra("sequence", 0) ?: 0).toDouble())
-                    }
-                    sendEvent("onAccessStateChange", p)
+        }
+
+        accessReceiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context?, i: Intent?) {
+                val p = Arguments.createMap().apply {
+                    putString("session", i?.getStringExtra("session") ?: "")
+                    putDouble("sequence", (i?.getLongExtra("sequence", 0) ?: 0).toDouble())
                 }
+                sendEvent("onAccessStateChange", p)
             }
         }
 
