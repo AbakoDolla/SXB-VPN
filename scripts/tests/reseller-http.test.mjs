@@ -283,7 +283,7 @@ process.env.DATABASE_URL = "";
 const temporary = await mkdtemp(path.join(root, "backend", "node_modules", ".sxb-http-"));
 const bundlePath = path.join(temporary, "routes.cjs");
 const routeNames = ["devices", "clients", "subscriptions", "tokens", "vouchers", "mobile", "resellers", "users", "rbac", "auth", "sessions", "dashboard", "provision",
-  "vpn-profiles", "config-test", "ssh", "xray", "singbox", "payload"];
+  "vpn-profiles", "config-test", "ssh", "xray", "singbox", "payload", "app-register"];
 const routeKey = name => name.replaceAll("-", "_");
 await build({
   stdin: {
@@ -310,7 +310,7 @@ await build({
 const routes = require(bundlePath);
 const app = express();
 app.use(express.json());
-for (const name of routeNames) app.use(`/api/${name}`, routes[routeKey(name)]);
+for (const name of routeNames) app.use(`/api/${name === "app-register" ? "app" : name}`, routes[routeKey(name)]);
 app.use((err, _req, res, _next) => res.status(500).json({ error: err.message }));
 const server = app.listen(0, "127.0.0.1");
 await new Promise(resolve => server.once("listening", resolve));
@@ -365,6 +365,67 @@ const ok = (response, status = 200) => assert.equal(response.status, status, JSO
 const row = (model, id) => db.state[model].find(value => value.id === id);
 const createSub = (actor = "r1", quotaGB = 5, clientId = "c1") =>
   api(actor, "POST", "/subscriptions", { clientId, profileId: "p1", quotaGB, durationDays: 30 });
+
+test("public device registration never reveals account identity or activation credentials", async () => {
+  row("VpnClient", "c1").deviceId = "REGISTERED-DEVICE";
+  row("User", "u1").phone = "+237600000001";
+  ok(await createSub(), 201);
+  const clientsBefore = structuredClone(db.state.VpnClient);
+  const known = await api(null, "POST", "/app", {
+    deviceId: "REGISTERED-DEVICE",
+    phone: "+237600000001",
+    token: row("VpnClient", "c1").token,
+    platform: "android",
+    appVersion: "1.2.1",
+  });
+  const unknown = await api(null, "POST", "/app", { deviceId: "UNKNOWN-DEVICE" });
+  ok(known); ok(unknown);
+  assert.deepEqual(known.body, unknown.body);
+  assert.equal(known.body.matched, false);
+  for (const field of ["token", "clientId", "name", "subscription", "deviceId"]) {
+    assert.equal(known.body[field], undefined);
+  }
+  assert.deepEqual(db.state.VpnClient, clientsBefore);
+  assert.equal(db.state.AppRegistration.find(value => value.deviceId === "REGISTERED-DEVICE").clientId, null);
+  ok(await api(null, "GET", "/app/status/REGISTERED-DEVICE"), 401);
+  ok(await api(null, "GET", "/app/pending"), 401);
+});
+
+test("authenticated registration only updates the already bound mobile client", async () => {
+  row("VpnClient", "c1").deviceId = "MOBILE-DEVICE-ONE";
+  row("VpnClient", "c1").activatedAt = new Date();
+  row("VpnClient", "c2").deviceId = "MOBILE-DEVICE-TWO";
+  const beforeActivation = +row("VpnClient", "c1").activatedAt;
+  const created = await createSub();
+  ok(created, 201);
+  const own = await api("u1", "POST", "/app", { deviceId: "MOBILE-DEVICE-ONE", platform: "android" });
+  ok(own);
+  assert.equal(own.body.matched, true);
+  assert.equal(own.body.clientId, "c1");
+  assert.equal(own.body.token, row("VpnClient", "c1").token);
+  assert.equal(own.body.subscription.dataToken, created.body.subscription.dataToken);
+  assert.equal(+row("VpnClient", "c1").activatedAt, beforeActivation);
+  const matched = structuredClone(db.state.AppRegistration.find(value => value.deviceId === "MOBILE-DEVICE-ONE"));
+  ok(await api(null, "POST", "/app", { deviceId: "MOBILE-DEVICE-ONE", phone: "unverified" }));
+  assert.deepEqual(db.state.AppRegistration.find(value => value.deviceId === "MOBILE-DEVICE-ONE"), matched);
+  ok(await api("u1", "POST", "/app", { deviceId: "MOBILE-DEVICE-TWO" }), 404);
+  ok(await api("u1", "GET", "/app/status/MOBILE-DEVICE-TWO"), 404);
+  const status = await api("u1", "GET", "/app/status/MOBILE-DEVICE-ONE");
+  ok(status);
+  assert.equal(status.body.subscription.dataToken, created.body.subscription.dataToken);
+  ok(await api("r1", "GET", "/app/pending"), 403);
+  ok(await api("admin", "GET", "/app/pending"));
+  ok(await api("admin", "POST", "/app", { deviceId: "MOBILE-DEVICE-ONE" }), 403);
+});
+
+test("unbound mobile tokens cannot use device identifiers as a substitute for activation", async () => {
+  row("VpnClient", "c2").deviceId = "MOBILE-DEVICE-TWO";
+  ok(await api("u2", "GET", "/app/status/MOBILE-DEVICE-TWO"), 401);
+  for (const body of [{ deviceId: "" }, { deviceId: 42 }, { deviceId: "valid", unexpected: true }]) {
+    ok(await api(null, "POST", "/app", body), 400);
+  }
+  assert.equal(db.state.AppRegistration.length, 0);
+});
 
 const lockPassword = "configuration-only-password";
 const proofHeader = token => ({ "X-VPN-Profile-Unlock": token });
