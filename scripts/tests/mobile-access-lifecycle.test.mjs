@@ -558,53 +558,6 @@ test("lifecycle: limiter verifies dedicated tickets only on the exact read route
   const send = (path, token = issued.ticket, custom = {}) => fetch(`${origin}${path}`, {
     headers: { Authorization: `Bearer ${token}`, ...headers, ...custom },
   });
-
-  test("lifecycle: failed commit emits no invalidation and rolls back renewal code, date and sessions", async () => {
-    bind();
-    ok(await createSub(), 201);
-    const initial = await state();
-    const before = structuredClone(db.state);
-    let notifications = 0;
-    const listener = routes.accessStateHub.subscribe({ userId: "u1", clientId: "c1", deviceId }, () => { notifications++; });
-    listener.update(initial.body);
-    db.beforeCommit = () => { throw new Error("Simulated commit failure"); };
-    try {
-      ok(await api("r1", "POST", "/clients/c1/renew", { durationDays: 2 }), 500);
-      assert.equal(notifications, 0);
-      assert.deepEqual(db.state, before);
-    } finally {
-      db.beforeCommit = null;
-      listener.close();
-    }
-    empty();
-  });
-
-  test("lifecycle: coalesced client invalidations do not create concurrent reads or leave futures on abort", async () => {
-    bind();
-    const snapshot = (await state()).body;
-    const hub = new routes.AccessStateHub(1);
-    const abort = new AbortController();
-    const identity = { userId: "u1", clientId: "c1", deviceId, exp: Math.floor(Date.now() / 1000) + 60, kind: "access", boundInToken: true };
-    let reads = 0, concurrent = 0, maxConcurrent = 0;
-    const pending = routes.waitForMobileAccess(identity, snapshot.revision, 25, abort.signal, hub, async () => {
-      reads++; concurrent++; maxConcurrent = Math.max(maxConcurrent, concurrent);
-      await delay(10); concurrent--;
-      return snapshot;
-    });
-    await delay(20);
-    hub.invalidate({ clientId: "unrelated" });
-    await delay(20);
-    assert.equal(reads, 1);
-    for (let count = 0; count < 100; count++) hub.invalidate({ clientId: "c1" });
-    await delay(70);
-    assert.equal(reads, 2);
-    assert.equal(maxConcurrent, 1);
-    abort.abort();
-    assert.equal(await pending, null);
-    assert.equal(hub.size, 0);
-    await delay(60);
-    assert.equal(reads, 2);
-  });
   try {
     const first = await send("/mobile/access-state");
     assert.equal(first.headers.get("ratelimit-limit"), "600");
@@ -623,4 +576,51 @@ test("lifecycle: limiter verifies dedicated tickets only on the exact read route
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
   }
+});
+
+test("lifecycle: failed commit emits no invalidation and rolls back renewal code, date and sessions", async () => {
+  bind();
+  ok(await createSub(), 201);
+  const initial = await state();
+  const before = structuredClone(db.state);
+  let notifications = 0;
+  const listener = routes.accessStateHub.subscribe({ userId: "u1", clientId: "c1", deviceId }, () => { notifications++; });
+  listener.update(initial.body);
+  db.beforeCommit = () => { throw new Error("Simulated commit failure"); };
+  try {
+    ok(await api("r1", "POST", "/clients/c1/renew", { durationDays: 2 }), 500);
+    assert.equal(notifications, 0);
+    assert.deepEqual(db.state, before);
+  } finally {
+    db.beforeCommit = null;
+    listener.close();
+  }
+  empty();
+});
+
+test("lifecycle: coalesced client invalidations do not create concurrent reads or leave futures on abort", async () => {
+  bind();
+  const snapshot = (await state()).body;
+  const hub = new routes.AccessStateHub(1);
+  const abort = new AbortController();
+  const identity = { userId: "u1", clientId: "c1", deviceId, exp: Math.floor(Date.now() / 1000) + 60, kind: "access", boundInToken: true };
+  let reads = 0, concurrent = 0, maxConcurrent = 0;
+  const pending = routes.waitForMobileAccess(identity, snapshot.revision, 25, abort.signal, hub, async () => {
+    reads++; concurrent++; maxConcurrent = Math.max(maxConcurrent, concurrent);
+    await delay(10); concurrent--;
+    return snapshot;
+  });
+  await delay(20);
+  hub.invalidate({ clientId: "unrelated" });
+  await delay(20);
+  assert.equal(reads, 1);
+  for (let count = 0; count < 100; count++) hub.invalidate({ clientId: "c1" });
+  await delay(70);
+  assert.equal(reads, 2);
+  assert.equal(maxConcurrent, 1);
+  abort.abort();
+  assert.equal(await pending, null);
+  assert.equal(hub.size, 0);
+  await delay(60);
+  assert.equal(reads, 2);
 });
