@@ -10,6 +10,9 @@ import {
   dissocierAccesClient,
   synchroniserEtatAccesClient,
 } from "../services/client-access-state";
+import { makeUserToken, renewedDeviceExpiry } from "../services/device-token";
+import { assertResumeAllowed, deviceAccessFailure, MobileAccessError } from "../services/access-lifecycle";
+import { accessStateHub } from "../services/access-state-events";
 import {
   chargerFicheRevendeur,
   estRoleSuperieur,
@@ -55,8 +58,11 @@ const updateClientSchema = z.object({
   name: z.string().min(2).optional(),
   quotaTotalGb: z.coerce.number().int().min(1).max(1_000_000).optional(),
   deviceLimit: z.coerce.number().int().min(1).max(100).optional(),
-  status: z.enum(["active", "suspended", "expired"]).optional(),
+  status: z.enum(["active", "suspended", "disabled", "expired", "revoked"]).optional(),
 });
+const renewClientSchema = z.object({
+  durationDays: z.coerce.number().int().min(1).max(3650).default(30),
+}).strict();
 
 // Helper to convert BigInt to string for client-safe JSON parsing
 // Also removes sensitive data like passwordHash
@@ -308,11 +314,7 @@ router.post(
       return res.status(400).json({ error: "errors.validation", message: "Compte client requis" });
     }
 
-    // Generate SXB Secure Client Token (Sing-box/V2Ray standard)
-    // FIX-001: Format SXB-USER-XXXX-XXXX-XXXX standard
-    const _chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    const _seg = () => Array.from({ length: 4 }, () => _chars[Math.floor(Math.random() * _chars.length)]).join('');
-    const token = `SXB-USER-${_seg()}-${_seg()}-${_seg()}`;
+    const token = makeUserToken();
 
     let newClient: any = null;
     if (prisma) {
@@ -361,6 +363,7 @@ router.post(
       newClient = { ...newClient, user: u };
     }
 
+    accessStateHub.invalidate({ clientId: newClient.id });
     await logDbActivity(req.user?.userId || null, `Created VPN account: ${body.name}`, "success", req.ip);
 
     return res.status(201).json(sanitizeVpnClient(newClient));
@@ -401,6 +404,7 @@ router.patch(
 
     const refusEdition = await refusSiClientNonPossede(req, existingClient);
     if (refusEdition) return res.status(refusEdition.status).json(refusEdition.body);
+    if (body.status === "active") assertResumeAllowed(existingClient);
 
     // Augmenter le quota d'un client engage le plafond du revendeur : refus si
     // celui-ci est déjà atteint. Baisser le quota ou suspendre reste possible.
@@ -445,10 +449,17 @@ router.patch(
         referenceId: id,
         autoriserReductionAuDessusDuPlafond:
           body.status === "suspended" ||
+          body.status === "disabled" ||
+          body.status === "revoked" ||
           body.status === "expired" ||
           (body.quotaTotalGb !== undefined &&
             BigInt(body.quotaTotalGb) * BigInt(1024 * 1024 * 1024) < BigInt(existingClient.quotaTotal ?? 0)),
       }, async (tx) => {
+        if (body.status === "active") {
+          const current = await tx.vpnClient.findUnique({ where: { id } });
+          if (!current) throw new MobileAccessError(404, deviceAccessFailure("deleted"));
+          assertResumeAllowed(current);
+        }
         const result = await tx.vpnClient.update({
           where: { id },
           data: {
@@ -471,10 +482,12 @@ router.patch(
       updated = { ...merged, user: u };
     }
 
+    accessStateHub.invalidate({ clientId: id });
     await logDbActivity(req.user?.userId || null, `Modified VPN client details (ID: ${id})`, "info", req.ip);
 
     return res.json(sanitizeVpnClient(updated));
   } catch (err) {
+    if (err instanceof MobileAccessError) return res.status(err.status).json(err.body);
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: "errors.validation", message: err.issues });
     }
@@ -536,7 +549,8 @@ router.post(
       updated = { ...inMemoryDb.vpnClients[index], user: u };
     }
 
-    await logDbActivity(req.user?.userId || null, `Suspended VPN Client: ${client.token}`, "warning", req.ip);
+    accessStateHub.invalidate({ clientId: id });
+    await logDbActivity(req.user?.userId || null, `Suspended VPN Client: ${id}`, "warning", req.ip);
     return res.json(sanitizeVpnClient(updated));
   } catch (err) {
     if (err instanceof PlafondQuotaDepasse) {
@@ -568,6 +582,7 @@ router.post(
 
     const refus = await refusSiClientNonPossede(req, client);
     if (refus) return res.status(refus.status).json(refus.body);
+    assertResumeAllowed(client);
 
     let updated: any = null;
     if (prisma) {
@@ -575,10 +590,13 @@ router.post(
         resellerUserId: client.userId,
         resellerId: client.resellerId ?? null,
         auteur: { userId: req.user?.userId, email: req.user?.email },
-        reason: `Reactivation du client ${client.token}`,
+        reason: `Reactivation du client ${id}`,
         referenceType: "vpn_client",
         referenceId: id,
       }, async (tx) => {
+        const current = await tx.vpnClient.findUnique({ where: { id } });
+        if (!current) throw new MobileAccessError(404, deviceAccessFailure("deleted"));
+        assertResumeAllowed(current);
         const result = await tx.vpnClient.update({
           where: { id },
           data: { status: "active" },
@@ -594,9 +612,11 @@ router.post(
       updated = { ...inMemoryDb.vpnClients[index], user: u };
     }
 
-    await logDbActivity(req.user?.userId || null, `Activated VPN Client: ${client.token}`, "success", req.ip);
+    accessStateHub.invalidate({ clientId: id });
+    await logDbActivity(req.user?.userId || null, `Activated VPN Client: ${id}`, "success", req.ip);
     return res.json(sanitizeVpnClient(updated));
   } catch (err) {
+    if (err instanceof MobileAccessError) return res.status(err.status).json(err.body);
     if (err instanceof PlafondQuotaDepasse) {
       return res.status(409).json(reponsePlafondDepasse(err.alloue, err.plafond));
     }
@@ -614,6 +634,7 @@ router.post(
   async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
+    const { durationDays } = renewClientSchema.parse(req.body ?? {});
     let client: any = null;
 
     if (prisma) {
@@ -627,41 +648,42 @@ router.post(
     const refus = await refusSiClientNonPossede(req, client);
     if (refus) return res.status(refus.status).json(refus.body);
 
-    // Prolonger une échéance DÉJÀ dépassée doit repartir de maintenant, sinon
-    // la nouvelle date reste dans le passé (67 comptes en production sont dans
-    // ce cas). Comparaison de `Date`, jamais de chaînes.
-    const base = client.expireAt && new Date(client.expireAt) > new Date() ? new Date(client.expireAt) : new Date();
-    const newExpiry = new Date(base.getTime() + 30 * 24 * 60 * 60 * 1000);
-
     let updated: any = null;
     if (prisma) {
       updated = await executerMutationQuota(prisma, {
         resellerUserId: client.userId,
         resellerId: client.resellerId ?? null,
         auteur: { userId: req.user?.userId, email: req.user?.email },
-        reason: `Renouvellement du client ${client.token}`,
+        reason: `Renouvellement du client ${id}`,
         referenceType: "vpn_client",
         referenceId: id,
       }, async (tx) => {
+        const current = await tx.vpnClient.findUnique({ where: { id } });
+        if (!current) throw new MobileAccessError(404, deviceAccessFailure("deleted"));
+        const newExpiry = renewedDeviceExpiry(current.expireAt, durationDays);
         const result = await tx.vpnClient.update({
           where: { id },
-          data: { expireAt: newExpiry, status: "active" },
+          data: { expireAt: newExpiry, status: "active", token: makeUserToken() },
           include: { user: true, reseller: { include: { user: true } } },
         });
-        await synchroniserEtatAccesClient(tx, id, "active");
+        await synchroniserEtatAccesClient(tx, id, "active", { deviceId: current.deviceId, expireAt: newExpiry });
         return result;
       });
     } else {
       const index = inMemoryDb.vpnClients.findIndex((c) => c.id === id);
-      inMemoryDb.vpnClients[index].expireAt = newExpiry;
+      inMemoryDb.vpnClients[index].expireAt = renewedDeviceExpiry(inMemoryDb.vpnClients[index].expireAt, durationDays);
+      inMemoryDb.vpnClients[index].token = makeUserToken();
       inMemoryDb.vpnClients[index].status = "active";
       const u = inMemoryDb.users.find((user) => user.id === client.userId);
       updated = { ...inMemoryDb.vpnClients[index], user: u };
     }
 
-    await logDbActivity(req.user?.userId || null, `Renewed subscription for Client Token: ${client.token} by +30 Days`, "success", req.ip);
+    accessStateHub.invalidate({ clientId: id });
+    await logDbActivity(req.user?.userId || null, `Renewed device ${id} by ${durationDays} days`, "success", req.ip);
     return res.json(sanitizeVpnClient(updated));
   } catch (err) {
+    if (err instanceof z.ZodError) return res.status(400).json({ error: "errors.validation", details: err.issues });
+    if (err instanceof MobileAccessError) return res.status(err.status).json(err.body);
     if (err instanceof PlafondQuotaDepasse) {
       return res.status(409).json(reponsePlafondDepasse(err.alloue, err.plafond));
     }
@@ -693,11 +715,7 @@ router.post(
     const refus = await refusSiClientNonPossede(req, client);
     if (refus) return res.status(refus.status).json(refus.body);
 
-    // Generate a brand new, random, completely secure access UUID token for the VPN clients config
-    // FIX-001: Format SXB-USER-XXXX-XXXX-XXXX standard
-      const _rc = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-      const _rs = () => Array.from({ length: 4 }, () => _rc[Math.floor(Math.random() * _rc.length)]).join('');
-      const newToken = `SXB-USER-${_rs()}-${_rs()}-${_rs()}`;
+    const newToken = makeUserToken();
 
     let updated: any = null;
     if (prisma) {
@@ -713,6 +731,7 @@ router.post(
       updated = { ...inMemoryDb.vpnClients[index], user: u };
     }
 
+    accessStateHub.invalidate({ clientId: id });
     await logDbActivity(req.user?.userId || null, `Replaced secure key token for Client ID: ${id}`, "info", req.ip);
     return res.json(sanitizeVpnClient(updated));
   } catch (err) {
@@ -768,7 +787,8 @@ router.delete(
       (inMemoryDb as any).activationSessions = activationSessions.filter((s: any) => s.clientId !== id);
     }
 
-    await logDbActivity(req.user?.userId || null, `Deleted VPN Client account: ${client.token}`, "danger", req.ip);
+    accessStateHub.invalidate({ clientId: id });
+    await logDbActivity(req.user?.userId || null, `Deleted VPN Client account: ${id}`, "danger", req.ip);
     return res.json({ message: "VPN client account and credentials deleted successfully" });
   } catch (err) {
     console.error("Delete client error:", err);

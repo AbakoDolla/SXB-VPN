@@ -45,6 +45,7 @@ import mobileHealthRouter from "./server/routes/mobile-health";
 import { maintenanceGuard, MAINTENANCE_PAGE_HTML } from "./server/middleware/maintenance";
 import { getMaintenanceMode } from "./server/services/maintenance";
 import publicPrivacyRouter from "./server/routes/public-privacy";
+import { invalidateAccessAfterMutation } from "./server/services/mobile-access-state";
 
 async function startServer() {
   const app = express();
@@ -71,7 +72,7 @@ async function startServer() {
   app.use(cors({
     origin: allowedOrigins,
     methods: ["GET", "POST", "PATCH", "DELETE", "PUT", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "Accept-Language", "X-VPN-Profile-Unlock"],
+    allowedHeaders: ["Content-Type", "Authorization", "Accept-Language", "X-VPN-Profile-Unlock", "X-SXB-Device-ID"],
     credentials: true,
   }));
 
@@ -102,6 +103,7 @@ async function startServer() {
   });
 
   app.use("/api/", createApiRateLimiter({ access: config.JWT_SECRET, refresh: config.REFRESH_SECRET }));
+  app.use("/api", invalidateAccessAfterMutation);
   // Health check endpoint
   app.get("/api/health", (req: Request, res: Response) => {
     res.json({ status: "ok", timestamp: new Date().toISOString(), service: "sxb-vpn-backend" });

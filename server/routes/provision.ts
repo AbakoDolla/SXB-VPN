@@ -19,6 +19,10 @@ import { requireAuth, AuthenticatedRequest } from '../middleware/auth';
 import { logDbActivity }    from '../database';
 import { refusAccesProprietaireClient } from '../services/reseller-access';
 import { applyUsageDelta } from './mobile';
+import { deviceIdFromRequest } from '../services/mobile-principal';
+import {
+  deviceAccessStatus, deviceAccessFailure, subscriptionAccessStatus, subscriptionAccessFailure, sessionInvalidFailure,
+} from '../services/access-lifecycle';
 import crypto               from 'crypto';
 import {
   decryptCanonical, computeCanonicalHash, engineConfigFromCanonical,
@@ -30,14 +34,27 @@ import {
 const router = Router();
 
 async function refusProvision(req: AuthenticatedRequest, sub: any) {
+  const requestedId = typeof req.params.subscriptionId === 'string' ? req.params.subscriptionId
+    : typeof req.body?.subscriptionId === 'string' ? req.body.subscriptionId : undefined;
   if (!sub || req.user?.role !== 'CLIENT' || sub.client?.userId !== req.user.userId ||
       (req.user.clientId && sub.clientId !== req.user.clientId)) {
-    return { status: 404, body: { error: 'Abonnement introuvable' } };
+    return { status: 404, body: { ...subscriptionAccessFailure('deleted', requestedId), error: 'Abonnement introuvable' } };
   }
-  if (sub.client.status !== 'active') {
-    return { status: 403, body: { error: 'Compte client suspendu ou révoqué' } };
+  const deviceStatus = deviceAccessStatus(sub.client);
+  if (deviceStatus !== 'active') {
+    return { status: 403, body: { ...deviceAccessFailure(deviceStatus), error: 'Compte client suspendu ou révoqué' } };
   }
-  return refusAccesProprietaireClient(prisma, sub.client);
+  const ownerError = await refusAccesProprietaireClient(prisma, sub.client);
+  if (ownerError) {
+    return { status: ownerError.status, body: {
+      ...ownerError.body, ...deviceAccessFailure(ownerError.body.code === 'RESELLER_EXPIRED' ? 'expired' : 'suspended'),
+      legacyCode: ownerError.body.code,
+    } };
+  }
+  const status = subscriptionAccessStatus(sub);
+  return status === 'active' ? null : {
+    status: status === 'deleted' ? 404 : 403, body: { ...subscriptionAccessFailure(status, sub.id), status },
+  };
 }
 
 const maximumReportBytes = 5 * 1024 ** 3;
@@ -152,9 +169,11 @@ function decryptDbField(enc: string | null | undefined): string | null {
 router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { dataToken, deviceId } = req.body;
-    if (!dataToken || !deviceId) {
+    if (typeof dataToken !== 'string' || !dataToken || typeof deviceId !== 'string' || !deviceId.trim()) {
       return res.status(400).json({ error: 'dataToken et deviceId sont requis' });
     }
+    const headerDevice = deviceIdFromRequest(req);
+    if (headerDevice && headerDevice !== deviceId) return res.status(401).json(sessionInvalidFailure());
 
     const normalToken = normalizeToken(dataToken);
 
@@ -168,12 +187,12 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
     });
 
     if (!sub) {
-      return res.status(404).json({ error: 'Token invalide ou introuvable' });
+      return res.status(404).json({ ...subscriptionAccessFailure('deleted'), error: 'Token invalide ou introuvable' });
     }
     const accessError = await refusProvision(req, sub);
     if (accessError) return res.status(accessError.status).json(accessError.body);
     if (sub.client.activatedAt && sub.client.deviceId !== deviceId) {
-      return res.status(403).json({ error: 'Appareil différent du compte activé' });
+      return res.status(403).json({ ...sessionInvalidFailure(), error: 'Appareil différent du compte activé' });
     }
 
     // 2. Charger le payload SSH séparément (relation non mappée dans le client Prisma généré)
@@ -185,30 +204,6 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
     }
     if (sub?.profile) sub.profile.payload = profilePayload;
 
-    // 3. Validation de l'abonnement
-    if (sub.status === 'revoked') {
-      return res.status(403).json({ error: 'Cet abonnement a été révoqué' });
-    }
-    if (sub.status === 'exhausted') {
-      return res.status(403).json({ error: 'Quota de cet abonnement épuisé', status: 'exhausted' });
-    }
-    if (sub.status === 'expired' || (sub.expireAt && new Date(sub.expireAt) < new Date())) {
-      await (prisma as any).subscription.update({
-        where: { id: sub.id },
-        data:  { status: 'expired' },
-      });
-      return res.status(403).json({ error: 'Abonnement expiré', status: 'expired' });
-    }
-    if (sub.status === 'suspended') {
-      return res.status(403).json({ error: 'Abonnement suspendu' });
-    }
-    if (BigInt(sub.quotaUsed ?? 0) >= BigInt(sub.quotaBytes ?? 0)) {
-      return res.status(403).json({ error: 'Quota de cet abonnement épuisé', status: 'exhausted' });
-    }
-    if (sub.client?.status === 'suspended' || sub.client?.status === 'revoked' || sub.client?.status === 'disabled') {
-      return res.status(403).json({ error: 'Compte client suspendu ou révoqué' });
-    }
-
     // 4. Vérification de la limite d'appareils (schéma : deviceId unique sur Subscription)
     const registeredDeviceId = sub.deviceId as string | null;
     const isExistingDevice   = registeredDeviceId === deviceId;
@@ -216,6 +211,7 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
     // deviceLimit > 1 non supporté par ce schéma (un seul deviceId par abonnement)
     if (!isExistingDevice && registeredDeviceId) {
       return res.status(403).json({
+        ...sessionInvalidFailure(),
         error: 'Cet abonnement est déjà lié à un autre appareil',
         deviceLimit: 1,
         registeredDevices: 1,
@@ -231,7 +227,7 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
       if (claimed.count !== 1) {
         const current = await (prisma as any).subscription.findUnique({ where: { id: sub.id } });
         if (current?.deviceId !== deviceId) {
-          return res.status(409).json({ error: 'Cet abonnement vient d’être lié à un autre appareil' });
+          return res.status(409).json({ ...sessionInvalidFailure(), error: 'Cet abonnement vient d’être lié à un autre appareil' });
         }
       }
     }
@@ -412,13 +408,14 @@ router.post('/sync', requireAuth, async (req: AuthenticatedRequest, res: Respons
 
     const sub = await (prisma as any).subscription.findUnique({
       where: { id: subscriptionId },
-      include: { client: true },
+      include: { client: true, profile: { select: { status: true } } },
     });
     const accessError = await refusProvision(req, sub);
     if (accessError) return res.status(accessError.status).json(accessError.body);
     if (deviceId && sub.deviceId && deviceId !== sub.deviceId) {
-      return res.status(403).json({ error: 'Appareil non lié à ce forfait' });
+      return res.status(403).json({ ...sessionInvalidFailure(), error: 'Appareil non lié à ce forfait' });
     }
+    if (deviceId && sub.client.activatedAt && sub.client.deviceId !== deviceId) return res.status(401).json(sessionInvalidFailure());
     const addedBytes = downloadBytes + uploadBytes;
     if (addedBytes > BigInt(maximumReportBytes)) return res.status(400).json({ error: 'Rapport de trafic trop volumineux' });
     if (addedBytes > 0n) {
@@ -428,10 +425,7 @@ router.post('/sync', requireAuth, async (req: AuthenticatedRequest, res: Respons
     const updated = await (prisma as any).subscription.update({
       where: { id: subscriptionId }, data: { lastSyncAt: new Date() },
     });
-    const effectiveStatus = updated.status === 'active'
-      ? updated.expireAt && new Date(updated.expireAt) <= new Date() ? 'expired'
-        : updated.quotaUsed >= updated.quotaBytes ? 'exhausted' : 'active'
-      : updated.status;
+    const effectiveStatus = subscriptionAccessStatus({ ...updated, profile: sub.profile });
 
     const quotaGB     = Number(updated.quotaBytes) / (1024 ** 3);
     const quotaUsedGB = Number(updated.quotaUsed)  / (1024 ** 3);
@@ -443,6 +437,7 @@ router.post('/sync', requireAuth, async (req: AuthenticatedRequest, res: Respons
       quotaGB:      parseFloat(quotaGB.toFixed(4)),
       quotaUsedGB:  parseFloat(quotaUsedGB.toFixed(4)),
       revoked:      updated.status === 'revoked',
+      ...(effectiveStatus !== 'active' ? subscriptionAccessFailure(effectiveStatus, sub.id) : {}),
     });
   } catch (err: any) {
     if (err instanceof z.ZodError) return res.status(400).json({ error: 'Rapport de trafic invalide', details: err.issues });
@@ -457,7 +452,7 @@ router.get('/status/:subscriptionId', requireAuth, async (req: AuthenticatedRequ
   try {
     const sub = await (prisma as any).subscription.findUnique({
       where: { id: req.params.subscriptionId },
-      include: { client: true },
+      include: { client: true, profile: { select: { status: true } } },
     });
     const accessError = await refusProvision(req, sub);
     if (accessError) return res.status(accessError.status).json(accessError.body);
@@ -467,7 +462,7 @@ router.get('/status/:subscriptionId', requireAuth, async (req: AuthenticatedRequ
 
     return res.json({
       success:      true,
-      status:       sub.status,
+      status:       subscriptionAccessStatus(sub),
       expireAt:     sub.expireAt,
       quotaGB:      parseFloat(quotaGB.toFixed(4)),
       quotaUsedGB:  parseFloat(quotaUsedGB.toFixed(4)),

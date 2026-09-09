@@ -7,6 +7,7 @@
  *  - Évite les crash 500 "Cannot serialize a BigInt value"
  */
 import { Router, Response } from 'express';
+import { accessStateHub } from '../services/access-state-events';
 import { z } from 'zod';
 import { prisma, inMemoryDb } from '../database';
 import { requireAuth, requirePermission, AuthenticatedRequest } from '../middleware/auth';
@@ -569,6 +570,7 @@ router.post(
               createdBy: req.user!.userId,
             },
           }));
+          accessStateHub.invalidate({ clientId });
           succeeded++; details.push({ id: clientId, status: 'ok' });
         } catch (e: any) {
           // Un échec isolé ne doit pas interrompre les autres : sur 150 clients,
@@ -630,10 +632,15 @@ router.post(
             referenceId: subId,
             autoriserReductionAuDessusDuPlafond: action === 'set',
           }, async (tx) => {
+            const current = await tx.subscription.findUnique({ where: { id: subId } });
             if (action === 'add_data') {
               data.quotaBytes = { increment: gigabytesToBytes(quotaGB!) };
+              if (current.status === 'exhausted' &&
+                  BigInt(current.quotaUsed ?? 0) < BigInt(current.quotaBytes ?? 0) + gigabytesToBytes(quotaGB!) &&
+                  (!current.expireAt || new Date(current.expireAt).getTime() > Date.now())) {
+                data.status = 'active';
+              }
             } else if (action === 'extend_duration') {
-              const current = await tx.subscription.findUnique({ where: { id: subId } });
               const base = current.expireAt && new Date(current.expireAt) > new Date() ? new Date(current.expireAt) : new Date();
               data.expireAt = new Date(base.getTime() + durationDays! * 86_400_000);
               data.durationDays = Number(current.durationDays ?? 0) + durationDays!;
@@ -641,6 +648,7 @@ router.post(
             }
             return tx.subscription.update({ where: { id: subId }, data });
           });
+          accessStateHub.invalidate({ clientId: sub.clientId });
           succeeded++; details.push({ id: subId, status: 'ok' });
         } catch (e: any) {
           failed++; details.push({ id: subId, status: 'failed', reason: e?.message || 'Erreur inconnue' });
@@ -759,6 +767,7 @@ router.put(
       include: INCLUDE_FORFAIT,
     }));
 
+    accessStateHub.invalidate({ clientId: existing.clientId });
     await logDbActivity(req.user!.userId, `Forfait mis à jour : ${updated.name}`, 'info', req.ip || '');
     return res.json({ success: true, subscription: serializeSub(updated, canViewTechnicalProfile(req)) });
   } catch (err: any) {
@@ -801,6 +810,7 @@ router.delete(
       referenceId: req.params.id,
       autoriserReductionAuDessusDuPlafond: true,
     }, (tx) => (tx as any).subscription.delete({ where: { id: req.params.id } }));
+    accessStateHub.invalidate({ clientId: existing.clientId });
     await logDbActivity(req.user!.userId, `Forfait supprimé : ${existing.name}`, 'warning', req.ip || '');
     return res.json({ success: true, message: 'Forfait supprimé' });
   } catch (err: any) {
@@ -840,6 +850,7 @@ router.post(
       where: { id: req.params.id },
       data: { status: 'revoked', revokedAt: new Date(), revokeReason: reason || 'Révoqué par admin' },
     }));
+    accessStateHub.invalidate({ clientId: existing.clientId });
     await logDbActivity(req.user!.userId, `Forfait révoqué : ${sub.name}`, 'danger', req.ip || '');
     return res.json({ success: true, message: 'Forfait révoqué' });
   } catch (err: any) {

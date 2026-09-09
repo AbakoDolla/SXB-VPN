@@ -7,6 +7,9 @@ import { requireAuth, requirePermission, AuthenticatedRequest } from "../middlew
 import { sanitizeDevice, selectDeviceSubscription } from "../services/device-quota";
 import { executerMutationQuota, PlafondQuotaDepasse } from "../services/reseller-quota";
 import { synchroniserEtatAccesClient } from "../services/client-access-state";
+import { makeUserToken, renewedDeviceExpiry } from "../services/device-token";
+import { assertResumeAllowed, deviceAccessFailure, MobileAccessError } from "../services/access-lifecycle";
+import { accessStateHub } from "../services/access-state-events";
 import {
   chargerFicheRevendeur,
   estRoleSuperieur,
@@ -22,12 +25,6 @@ import {
 } from "../services/reseller-access";
 
 const router = Router();
-
-function makeUserToken(): string {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  const part = () => Array.from({ length: 4 }, () => chars[crypto.randomInt(chars.length)]).join("");
-  return `SXB-USER-${part()}-${part()}-${part()}`;
-}
 
 /**
  * Créer ou modifier un appareil relève de `clients.manage` (administration)
@@ -297,7 +294,7 @@ router.post(
 // Action RÉDUCTRICE : elle reste ouverte quand le plafond est atteint, puisque
 // c'est l'un des moyens d'en sortir.
 router.post(
-  "/:id/revoke",
+  ["/:id/revoke", "/:id/suspend"],
   requireAuth,
   interdireMutationSupport(),
   requireDeviceWrite(),
@@ -308,30 +305,71 @@ router.post(
       const { client: existing, refus } = await chargerAppareilPossede(req, req.params.id);
       if (!existing) return res.status(404).json({ error: "Appareil introuvable" });
       if (refus) return res.status(refus.status).json(refus.body);
+      const status = req.path.endsWith("/suspend") ? "suspended" : "disabled";
       const client = await executerMutationQuota(prisma, {
         resellerUserId: existing.userId,
         resellerId: existing.resellerId ?? null,
         auteur: { userId: req.user?.userId, email: req.user?.email },
-        reason: `Suspension de l'appareil ${existing.id}`,
+        reason: `Etat ${status} de l'appareil ${existing.id}`,
         referenceType: "vpn_client",
         referenceId: existing.id,
         autoriserReductionAuDessusDuPlafond: true,
       }, async (tx) => {
         const result = await (tx as any).vpnClient.update({
           where: { id: req.params.id },
-          data: { status: "suspended" },
+          data: { status },
           include: { user: true, reseller: { include: { user: true } } },
         });
-        await synchroniserEtatAccesClient(tx, existing.id, "suspended");
+        await synchroniserEtatAccesClient(tx, existing.id, status);
         return result;
       });
-      await logDbActivity(req.user?.userId || null, `Appareil suspendu: ${client.id}`, "warning", req.ip);
+      accessStateHub.invalidate({ clientId: client.id });
+      await logDbActivity(req.user?.userId || null, `Appareil ${status}: ${client.id}`, "warning", req.ip);
       return res.json(sanitizeDevice(client));
     } catch (err) {
       if (err instanceof PlafondQuotaDepasse) {
         return res.status(409).json(reponsePlafondDepasse(err.alloue, err.plafond));
       }
       console.error("Revoke device error:", err);
+      return res.status(500).json({ error: "Server error" });
+    }
+  }
+);
+
+router.post(
+  "/:id/resume",
+  requireAuth,
+  interdireMutationSupport(),
+  requireDeviceWrite(),
+  exigerAccesRevendeur(),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!prisma) return res.status(503).json({ error: "Database unavailable" });
+      const { client: existing, refus } = await chargerAppareilPossede(req, req.params.id);
+      if (!existing) return res.status(404).json({ error: "Appareil introuvable" });
+      if (refus) return res.status(refus.status).json(refus.body);
+      const client = await executerMutationQuota(prisma, {
+        resellerUserId: existing.userId, resellerId: existing.resellerId ?? null,
+        auteur: { userId: req.user?.userId, email: req.user?.email },
+        reason: `Reactivation de l'appareil ${existing.id}`, referenceType: "vpn_client", referenceId: existing.id,
+      }, async tx => {
+        const current = await tx.vpnClient.findUnique({ where: { id: existing.id } });
+        if (!current) throw new MobileAccessError(404, deviceAccessFailure("deleted"));
+        assertResumeAllowed(current);
+        const result = await tx.vpnClient.update({
+          where: { id: current.id }, data: { status: "active" },
+          include: { user: true, reseller: { include: { user: true } } },
+        });
+        await synchroniserEtatAccesClient(tx, current.id, "active", { deviceId: current.deviceId });
+        return result;
+      });
+      accessStateHub.invalidate({ clientId: existing.id });
+      await logDbActivity(req.user?.userId || null, `Appareil reactive: ${existing.id}`, "success", req.ip);
+      return res.json(sanitizeDevice(client));
+    } catch (error) {
+      if (error instanceof MobileAccessError) return res.status(error.status).json(error.body);
+      if (error instanceof PlafondQuotaDepasse) return res.status(409).json(reponsePlafondDepasse(error.alloue, error.plafond));
+      console.error("Resume device error:", error);
       return res.status(500).json({ error: "Server error" });
     }
   }
@@ -347,7 +385,7 @@ router.post(
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       if (!prisma) return res.status(503).json({ error: "Database unavailable" });
-      const { durationDays } = renewSchema.parse(req.body);
+      const { durationDays } = renewSchema.parse(req.body ?? {});
       const { client: existing, refus } = await chargerAppareilPossede(req, req.params.id);
       if (!existing) return res.status(404).json({ error: "Appareil introuvable" });
       if (refus) return res.status(refus.status).json(refus.body);
@@ -361,10 +399,6 @@ router.post(
         if (plafond) return res.status(plafond.status).json(plafond.body);
       }
 
-      const base = existing.expireAt && new Date(existing.expireAt) > new Date() ? new Date(existing.expireAt) : new Date();
-      const newExpiry = new Date(base);
-      newExpiry.setDate(newExpiry.getDate() + durationDays);
-
       const client = await executerMutationQuota(prisma, {
         resellerUserId: existing.userId,
         resellerId: existing.resellerId ?? null,
@@ -373,22 +407,27 @@ router.post(
         referenceType: "vpn_client",
         referenceId: existing.id,
       }, async (tx) => {
+        const current = await tx.vpnClient.findUnique({ where: { id: existing.id } });
+        if (!current) throw new MobileAccessError(404, deviceAccessFailure("deleted"));
+        const newExpiry = renewedDeviceExpiry(current.expireAt, durationDays);
         const result = await (tx as any).vpnClient.update({
           where: { id: req.params.id },
-          data: { status: "active", expireAt: newExpiry },
+          data: { status: "active", expireAt: newExpiry, token: makeUserToken() },
           include: { user: true, reseller: { include: { user: true } } },
         });
-        await synchroniserEtatAccesClient(tx, existing.id, "active");
+        await synchroniserEtatAccesClient(tx, existing.id, "active", { deviceId: current.deviceId, expireAt: newExpiry });
         return result;
       });
+      accessStateHub.invalidate({ clientId: client.id });
       await logDbActivity(
         req.user?.userId || null,
-        `Appareil renouvelé: ${client.id} → expire ${newExpiry.toLocaleDateString()}`,
+        `Appareil renouvelé: ${client.id} → expire ${client.expireAt.toLocaleDateString()}`,
         "success",
         req.ip
       );
       return res.json(sanitizeDevice(client));
     } catch (err) {
+      if (err instanceof MobileAccessError) return res.status(err.status).json(err.body);
       if (err instanceof z.ZodError) return res.status(400).json({ error: "Validation", details: err.issues });
       if (err instanceof PlafondQuotaDepasse) {
         return res.status(409).json(reponsePlafondDepasse(err.alloue, err.plafond));

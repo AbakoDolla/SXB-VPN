@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { Request } from "express";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import jwt from "jsonwebtoken";
+import { verifyAccessTicket } from "../services/access-ticket";
 
 export const API_RATE_LIMITS = {
   windowMs: 15 * 60 * 1000,
@@ -56,10 +57,19 @@ export function createApiRateLimiter(secrets: { access: string; refresh: string 
       quota = { key: `refresh:${principal ? `session:${principal}` : `ip:${ip}`}`, limit: API_RATE_LIMITS.refresh };
     } else {
       const authorization = req.headers.authorization;
-      const principal = verifiedPrincipal(
+      let principal = verifiedPrincipal(
         authorization?.startsWith("Bearer ") ? authorization.slice(7) : null,
         secrets.access
       );
+      if (!principal && req.method === "GET" && pathname === "/mobile/access-state" &&
+          authorization?.startsWith("Bearer ") && typeof req.headers["x-sxb-device-id"] === "string") {
+        try {
+          const identity = verifyAccessTicket(authorization.slice(7), secrets.access, req.headers["x-sxb-device-id"].trim());
+          principal = createHash("sha256").update(JSON.stringify([identity.userId, identity.clientId])).digest("hex");
+        } catch (error) {
+          if (!(error instanceof jwt.JsonWebTokenError)) throw error;
+        }
+      }
       quota = principal
         ? { key: `session:${principal}`, limit: API_RATE_LIMITS.authenticated }
         : { key: `anonymous:${ip}`, limit: API_RATE_LIMITS.anonymous };

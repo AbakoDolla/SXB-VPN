@@ -498,7 +498,7 @@ async function validerToken(req: AuthenticatedRequest, res: Response) {
               "Ce client possède un forfait : modifiez ce forfait plutôt que son ancien quota client."
             );
           }
-          if (currentClient.status === "suspended" || currentClient.status === "revoked") {
+          if (!["active", "expired"].includes(currentClient.status)) {
             throw new TokenStateConflict("errors.tokens.client_suspended", "Réactivez le client avant d'appliquer un jeton.");
           }
           const currentExpiration = currentClient.expireAt
@@ -542,6 +542,9 @@ async function validerToken(req: AuthenticatedRequest, res: Response) {
       }
       if (!storedToken || storedToken.status !== "active") {
         return res.status(409).json({ error: "errors.tokens.already_used", message: "Jeton déjà utilisé" });
+      }
+      if (!["active", "expired"].includes(client.status)) {
+        return res.status(409).json({ error: "errors.tokens.client_suspended", message: "Reactivez le client avant d'appliquer un jeton." });
       }
       storedToken.status = "used";
       tokenRecord.status = "used";

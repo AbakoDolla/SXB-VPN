@@ -264,6 +264,7 @@ class Database {
     for (const model of models.values()) tx[modelKey(model.name)] = this.delegate(model.name, () => draft);
     try {
       const result = await callback(tx);
+      if (this.beforeCommit) await this.beforeCommit();
       this.state = draft;
       return result;
     } finally {
@@ -280,7 +281,7 @@ process.env.REFRESH_SECRET = "sxb-http-regression-refresh-only";
 process.env.ENCRYPTION_KEY = "1".repeat(32);
 process.env.PROVISION_SECRET = "sxb-http-regression-provision-only";
 process.env.DATABASE_URL = "";
-const temporary = await mkdtemp(path.join(root, "backend", "node_modules", ".sxb-http-"));
+const temporary = await mkdtemp(path.join(root, "backend", ".sxb-http-"));
 const bundlePath = path.join(temporary, "routes.cjs");
 const routeNames = ["devices", "clients", "subscriptions", "tokens", "vouchers", "mobile", "resellers", "users", "rbac", "auth", "sessions", "dashboard", "provision",
   "vpn-profiles", "config-test", "ssh", "xray", "singbox", "payload", "app-register"];
@@ -288,7 +289,9 @@ const routeKey = name => name.replaceAll("-", "_");
 await build({
   stdin: {
     contents: routeNames.map(name => `export { default as ${routeKey(name)} } from "./server/routes/${name}";`).join("\n") +
-      '\nexport { applyUsageDelta } from "./server/routes/mobile";\nexport * from "./server/services/profile-lock";',
+      '\nexport { applyUsageDelta } from "./server/routes/mobile";\nexport * from "./server/services/profile-lock";' +
+      '\nexport * from "./server/services/mobile-access-state";\nexport * from "./server/services/access-ticket";' +
+      '\nexport { createApiRateLimiter } from "./server/middleware/rate-limit";',
     resolveDir: root,
     loader: "ts",
   },
@@ -310,6 +313,7 @@ await build({
 const routes = require(bundlePath);
 const app = express();
 app.use(express.json());
+app.use("/api", routes.invalidateAccessAfterMutation);
 for (const name of routeNames) app.use(`/api/${name === "app-register" ? "app" : name}`, routes[routeKey(name)]);
 app.use((err, _req, res, _next) => res.status(500).json({ error: err.message }));
 const server = app.listen(0, "127.0.0.1");
@@ -324,6 +328,7 @@ after(async () => {
 
 beforeEach(() => {
   db.failModel = null;
+  db.beforeCommit = null;
   for (const model of models.values()) db.state[model.name] = [];
   for (const role of ["OWNER", "SUPER_ADMIN", "ADMIN", "RESELLER", "SUPPORT", "CLIENT"]) {
     db.state.Role.push({ id: role, name: role });
@@ -365,6 +370,8 @@ const ok = (response, status = 200) => assert.equal(response.status, status, JSO
 const row = (model, id) => db.state[model].find(value => value.id === id);
 const createSub = (actor = "r1", quotaGB = 5, clientId = "c1") =>
   api(actor, "POST", "/subscriptions", { clientId, profileId: "p1", quotaGB, durationDays: 30 });
+
+export { db, api, base, routes, createSub, row, ok, GO, tomorrow, yesterday, require };
 
 test("public device registration never reveals account identity or activation credentials", async () => {
   row("VpnClient", "c1").deviceId = "REGISTERED-DEVICE";
@@ -935,5 +942,6 @@ test("provisioning and its traffic alias enforce the same client and reseller bo
   row("Reseller","res-r1").accessExpiresAt = yesterday();
   const denied = await api("u1","POST","/provision/activate",{dataToken:subscription.dataToken,deviceId:"D1"});
   ok(denied,403);
-  assert.equal(denied.body.code,"RESELLER_EXPIRED");
+  assert.equal(denied.body.code,"DEVICE_EXPIRED");
+  assert.equal(denied.body.scope,"device");
 });

@@ -57,7 +57,7 @@ export type DecisionActivation = {
   deviceId: string | null;
 };
 
-const STATUTS_BLOQUANTS = new Set(["suspended", "revoked", "disabled", "blocked"]);
+const STATUTS_BLOQUANTS = new Set(["suspended", "revoked", "disabled", "blocked", "deleted"]);
 
 function refus(status: number, code: string, error: string, message: string): DecisionActivation {
   return { ok: false, status, code, error, message, action: "refused", idempotent: false, deviceId: null };

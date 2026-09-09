@@ -1,6 +1,16 @@
 import { Router, Request, Response } from "express";
 import { z } from "zod";
 import crypto from "crypto";
+import jwt from "jsonwebtoken";
+import { config } from "../config";
+import { accessStateHub } from "../services/access-state-events";
+import mobileAccessRouter from "./mobile-access";
+import { refreshMobileSession } from "../services/mobile-session-refresh";
+import { deviceIdFromRequest } from "../services/mobile-principal";
+import {
+  deviceAccessStatus, deviceAccessFailure, subscriptionAccessStatus, subscriptionAccessFailure,
+  MobileAccessError, sessionInvalidFailure,
+} from "../services/access-lifecycle";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { generateTokens, requireAuth, AuthenticatedRequest } from "../middleware/auth";
 import { configHashForProfile, configVersionForProfile } from "../services/config-hash";
@@ -36,6 +46,10 @@ function decryptField(enc: string | null | undefined): string | null {
 }
 
 const router = Router();
+router.use(mobileAccessRouter);
+const mobileAccountInclude = {
+  user: true, subscriptions: { include: { profile: { select: { status: true } } } },
+} as const;
 
 // -------------------------------------------------------------------------
 // SXB VPN Mobile API
@@ -62,11 +76,11 @@ async function findClientByAccountToken(rawToken: string) {
     // 84 comptes du parc à chaque activation, jointures comprises.
     const direct = await (prisma as any).vpnClient.findUnique({
       where: { token: normalized },
-      include: { user: true, subscriptions: true },
+      include: mobileAccountInclude,
     });
     if (direct) return direct;
     // Repli : jetons historiques stockés avec une casse ou des espaces autres.
-    const clients = await (prisma as any).vpnClient.findMany({ include: { user: true, subscriptions: true } });
+    const clients = await (prisma as any).vpnClient.findMany({ include: mobileAccountInclude });
     return clients.find((c: any) => normalizeToken(c.token) === normalized) || null;
   }
   const client: any = inMemoryDb.vpnClients.find((c) => normalizeToken(c.token) === normalized);
@@ -78,14 +92,16 @@ async function findClientByAccountToken(rawToken: string) {
 
 async function findClientByUserId(userId: string, clientId?: string | null, deviceId?: string | null) {
   if (prisma) {
-    return (prisma as any).vpnClient.findFirst({
+    const clients = await (prisma as any).vpnClient.findMany({
       where: clientId
-        ? { id: clientId, userId }
+        ? { id: clientId, userId, ...(deviceId ? { deviceId } : {}) }
         : deviceId
           ? { userId, deviceId }
           : { userId },
-      include: { user: true, subscriptions: true },
+      include: mobileAccountInclude,
+      take: 2,
     });
+    return clients.length === 1 ? clients[0] : null;
   }
   const client: any = inMemoryDb.vpnClients.find(
     (c) =>
@@ -96,12 +112,6 @@ async function findClientByUserId(userId: string, clientId?: string | null, devi
   if (!client) return null;
   const subscriptions = inMemoryDb.subscriptions?.filter((s: any) => s.clientId === client.id) || [];
   return { ...client, subscriptions };
-}
-
-function deviceIdFromRequest(req: AuthenticatedRequest): string | null {
-  const value = req.headers["x-sxb-device-id"];
-  if (Array.isArray(value)) return value[0]?.trim() || null;
-  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 // Deduplication memory store for (sessionId, seq)
@@ -221,6 +231,7 @@ export async function applyUsageDelta(
   if (subscriptionId && !resolvedSubscriptionId) {
     return { applied: false, reason: "subscription_not_owned" };
   }
+  accessStateHub.invalidate({ clientId });
   return { applied: true, subscriptionId: resolvedSubscriptionId };
   } catch (error) {
     if (reportKey) processedReports.delete(reportKey);
@@ -240,7 +251,7 @@ function selectMobileSubscription(client: any, requestedId?: string | null): any
     .sort((a: any, b: any) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())[0] || null;
 }
 
-function computeAccountState(client: any, selectedSubscription?: any | null): {
+export function computeAccountState(client: any, selectedSubscription?: any | null): {
   state: "no_package" | "ready" | "connected" | "exhausted" | "expired" | "suspended" | "revoked";
   quotaTotalGb: number;
   quotaUsedGb: number;
@@ -250,7 +261,11 @@ function computeAccountState(client: any, selectedSubscription?: any | null): {
   quotaRemainingBytes: number;
   expireAt: string | null;
   deviceLimit: number;
+  device: { id: string; status: string; code: string; expireAt: string | null; activationRequired: boolean };
+  subscription: { id: string; status: string } | null;
+  subscriptionState: string | null;
 } {
+  selectedSubscription = selectedSubscription ?? selectMobileSubscription(client);
   const source = selectedSubscription || client;
   const quotaTotalBytes = Number(source.quotaBytes ?? source.quotaTotal ?? 0);
   const quotaUsedBytes = Number(source.quotaUsed ?? 0);
@@ -260,7 +275,7 @@ function computeAccountState(client: any, selectedSubscription?: any | null): {
   const quotaUsedGb = quotaUsedBytes / (1024 ** 3);
   const quotaRemainingGb = Math.max(quotaTotalGb - quotaUsedGb, 0);
 
-  const sourceExpireAt = source.expireAt ?? client.expireAt ?? null;
+  const sourceExpireAt = source.expireAt ?? null;
   const expireAt: string | null = sourceExpireAt ? new Date(sourceExpireAt).toISOString() : null;
   const now = Date.now();
   const isExpired = !!sourceExpireAt && new Date(sourceExpireAt).getTime() < now;
@@ -271,12 +286,18 @@ function computeAccountState(client: any, selectedSubscription?: any | null): {
   );
 
   let state: "no_package" | "ready" | "connected" | "exhausted" | "expired" | "suspended" | "revoked" = "no_package";
-  if (client.status === "revoked" || selectedSubscription?.status === "revoked") {
+  const deviceStatus = deviceAccessStatus(client);
+  const selectedStatus = selectedSubscription ? subscriptionAccessStatus(selectedSubscription) : null;
+  if (deviceStatus === "revoked" || deviceStatus === "deleted") {
     state = "revoked";
-  } else if (client.status === "suspended" || selectedSubscription?.status === "suspended") {
+  } else if (deviceStatus === "suspended" || deviceStatus === "disabled") {
     state = "suspended";
-  } else if (selectedSubscription?.status === "expired") {
+  } else if (deviceStatus === "expired" || selectedStatus === "expired") {
     state = "expired";
+  } else if (selectedStatus === "revoked" || selectedStatus === "deleted" || selectedStatus === "suspended") {
+    state = "no_package";
+  } else if (selectedStatus === "exhausted") {
+    state = "exhausted";
   } else if (!selectedSubscription && (!client.quotaTotal || Number(client.quotaTotal) === 0) && !hasActiveSubscription && !client.plan) {
     state = "no_package";
   } else if (isExpired) {
@@ -297,12 +318,22 @@ function computeAccountState(client: any, selectedSubscription?: any | null): {
     quotaRemainingBytes,
     expireAt,
     deviceLimit: client.deviceLimit || 1,
+    device: {
+      id: client.id, status: deviceStatus,
+      code: deviceStatus === "active" ? "DEVICE_ACTIVE" : `DEVICE_${deviceStatus.toUpperCase()}`,
+      expireAt: client.expireAt ? new Date(client.expireAt).toISOString() : null,
+      activationRequired: !client.activatedAt || !client.deviceId,
+    },
+    subscription: selectedSubscription ? { id: selectedSubscription.id, status: selectedStatus! } : null,
+    subscriptionState: selectedStatus,
   };
 }
 
 // POST /api/mobile/auth/activate — first launch: pair the device with an account token
 //
-// Contrat de codes STABLE (le mobile s'appuie dessus, jamais sur le message) :
+// Les blocages connus portent DEVICE_* + scope/temporary ; legacyCode conserve
+// les anciens codes ci-dessous. Les erreurs de saisie/liaison restent distinctes.
+// Ancien contrat (le mobile s'appuie sur le code, jamais sur le message) :
 //   404 TOKEN_NOT_FOUND      — jeton inconnu
 //   403 ACCOUNT_SUSPENDED    — compte VPN suspendu / révoqué / désactivé
 //   403 RESELLER_EXPIRED     — accès du revendeur propriétaire expiré
@@ -334,9 +365,12 @@ router.post("/auth/activate", async (req, res: Response) => {
     });
 
     if (!decision.ok) {
+      const status = client ? deviceAccessStatus(client, ficheRevendeur) : "active";
       return res.status(decision.status).json({
+        ...(status !== "active" ? deviceAccessFailure(status) : {}),
         error: decision.error,
-        code: decision.code,
+        code: status !== "active" ? deviceAccessFailure(status).code : decision.code,
+        ...(status !== "active" ? { legacyCode: decision.code } : {}),
         message: decision.message,
       });
     }
@@ -382,7 +416,7 @@ router.post("/auth/activate", async (req, res: Response) => {
         if (claimed.count !== 1) {
           const current = await (prisma as any).vpnClient.findUnique({
             where: { id: client.id },
-            include: { user: true, subscriptions: true },
+            include: mobileAccountInclude,
           });
           const concurrent = evaluerActivation({
             client: current,
@@ -425,6 +459,7 @@ router.post("/auth/activate", async (req, res: Response) => {
       email: client.user.email,
       role: "CLIENT",
       clientId: client.id,
+      ...(client.activatedAt && client.deviceId ? { deviceId: client.deviceId } : {}),
     });
 
     await logDbActivity(client.user.id, `Mobile device activated for account ${client.token}`, "success", req.ip);
@@ -444,7 +479,6 @@ router.post("/auth/activate", async (req, res: Response) => {
             ipAddress: req.ip || null,
           },
           update: {
-            activationDate: new Date(),
             expirationDate: client.expireAt || null,
             lastSync: new Date(),
             status: 'active',
@@ -480,22 +514,22 @@ const refreshSchema = z.object({ refreshToken: z.string() });
 router.post("/auth/refresh", async (req, res: Response) => {
   try {
     const { refreshToken } = refreshSchema.parse(req.body);
-    const jwt = require("jsonwebtoken");
-    const { config } = require("../config");
-    const decoded = jwt.verify(refreshToken, config.REFRESH_SECRET);
-    const client = await findClientByUserId(decoded.userId, decoded.clientId);
-    if (!client || client.status !== 'active') {
-      return res.status(403).json({ error: 'errors.mobile.account_blocked', message: 'Compte VPN suspendu ou supprimé — réactivation requise' });
+    const decoded = jwt.verify(refreshToken, config.REFRESH_SECRET, { algorithms: ["HS256"] });
+    if (typeof decoded === "string" || decoded.role !== "CLIENT" || typeof decoded.userId !== "string") {
+      return res.status(401).json(sessionInvalidFailure());
     }
-    const tokens = generateTokens({
-      userId: decoded.userId,
-      email: decoded.email,
-      role: "CLIENT",
-      clientId: client.id,
+    const tokens = await refreshMobileSession(req, {
+      userId: decoded.userId, role: decoded.role, clientId: decoded.clientId,
+      deviceId: decoded.deviceId, exp: decoded.exp,
     });
     return res.json(tokens);
   } catch (err) {
-    return res.status(401).json({ error: "errors.auth.invalid_token", message: "Session expirée, réactivez votre compte" });
+    if (err instanceof MobileAccessError) return res.status(err.status).json(err.body);
+    if (err instanceof jwt.JsonWebTokenError || err instanceof z.ZodError) {
+      return res.status(401).json(sessionInvalidFailure());
+    }
+    console.error("Mobile refresh unavailable:", err);
+    return res.status(503).json({ error: "errors.auth.unavailable", message: "Renouvellement de session temporairement indisponible" });
   }
 });
 
@@ -788,14 +822,14 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
       });
     }
     if (requestedSubscriptionId && !sub) {
-      return res.status(404).json({ error: 'errors.mobile.connection_not_found', message: 'Connexion VPN introuvable' });
+      return res.status(404).json({ ...subscriptionAccessFailure("deleted", requestedSubscriptionId), error: 'errors.mobile.connection_not_found', message: 'Connexion VPN introuvable' });
     }
 
     const state = computeAccountState(client, sub);
-    let subscriptionState = sub?.status || state.state;
-    if (sub?.status === 'active') {
-      if (sub.expireAt && new Date(sub.expireAt).getTime() < Date.now()) subscriptionState = 'expired';
-      else if (Number(sub.quotaBytes ?? 0) > 0 && Number(sub.quotaUsed ?? 0) >= Number(sub.quotaBytes)) subscriptionState = 'exhausted';
+    const selectedStatus = sub ? subscriptionAccessStatus(sub) : null;
+    const subscriptionState = selectedStatus ?? state.state;
+    if (selectedStatus && selectedStatus !== "active") {
+      return res.status(selectedStatus === "deleted" ? 404 : 403).json(subscriptionAccessFailure(selectedStatus, sub.id));
     }
     const profile = subscriptionState === 'active' ? (sub?.profile || null) : null;
     const proto = (profile?.protocol || "ssh").toLowerCase(); // "ssh" | "ssh+payload" | "vless" …
@@ -1242,14 +1276,7 @@ router.get("/connections", async (req: AuthenticatedRequest, res: Response) => {
       const GB             = 1024 ** 3;
 
       // Calculer le statut réel (expired si dépassé la date, exhausted si quota dépassé)
-      let status = sub.status;
-      if (status === "active") {
-        if (sub.expireAt && new Date(sub.expireAt).getTime() < now) {
-          status = "expired";
-        } else if (totalBytes > 0 && remainingBytes <= 0) {
-          status = "exhausted";
-        }
-      }
+      const status = subscriptionAccessStatus(sub, now);
 
       return {
         id:                sub.id,
@@ -1296,23 +1323,39 @@ router.post("/connections/:id/status", async (req: AuthenticatedRequest, res: Re
     );
     if (!client) return res.status(404).json({ error: "errors.mobile.no_account" });
 
-    if (prisma) {
+    const sub = prisma
+      ? await prisma.subscription.findFirst({ where: { id, clientId: client.id } })
+      : inMemoryDb.subscriptions?.find((value: any) => value.id === id && value.clientId === client.id);
+    if (!sub) return res.status(404).json(subscriptionAccessFailure("deleted", id));
+    const effective = subscriptionAccessStatus(sub);
+    if (effective === "revoked" || effective === "suspended" || effective === "deleted") {
+      return res.status(403).json(subscriptionAccessFailure(effective, id));
+    }
+    if (effective !== disabledReason) {
+      return res.status(409).json({ error: "errors.mobile.config_state_changed", message: "Le serveur ne confirme pas cet etat." });
+    }
+    if (prisma && sub.status === "active") {
       const updated = await (prisma as any).subscription.updateMany({
-        where: { id, clientId: client.id },
+        where: {
+          id, clientId: client.id, status: "active",
+          ...(disabledReason === "expired"
+            ? { expireAt: { lte: new Date() } }
+            : { quotaBytes: sub.quotaBytes, quotaUsed: { gte: sub.quotaBytes } }),
+        },
         data: { status: disabledReason },
       });
       if (updated.count !== 1) {
-        return res.status(404).json({ error: "errors.mobile.subscription_not_found" });
+        return res.status(409).json({ error: "errors.mobile.config_state_changed", message: "Ce forfait vient de changer." });
       }
-    } else {
-      const sub = inMemoryDb.subscriptions?.find((s: any) => s.id === id && s.clientId === client.id);
-      if (!sub) return res.status(404).json({ error: "errors.mobile.subscription_not_found" });
+    } else if (!prisma) {
       sub.status = disabledReason;
     }
 
     return res.json({ success: true, id, status: disabledReason });
   } catch (err) {
-    return res.status(400).json({ error: "errors.validation" });
+    if (err instanceof z.ZodError) return res.status(400).json({ error: "errors.validation" });
+    console.error("Mobile configuration state update failed:", err);
+    return res.status(503).json({ error: "errors.server", message: "Etat de configuration temporairement indisponible." });
   }
 });
 

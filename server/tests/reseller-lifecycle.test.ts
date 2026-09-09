@@ -429,7 +429,7 @@ describe("gardes posées sur les routes", () => {
     assert.ok(clients.includes("updates.deviceLimit = body.deviceLimit"));
     assert.match(clients, /deviceLimit: body\.deviceLimit/g);
     assert.ok(renouvellement.includes("executerMutationQuota(prisma"));
-    assert.ok(renouvellement.includes('synchroniserEtatAccesClient(tx, id, "active")'));
+    assert.ok(renouvellement.includes('synchroniserEtatAccesClient(tx, id, "active", { deviceId: current.deviceId, expireAt: newExpiry })'));
     assert.ok(renouvellement.includes("err instanceof PlafondQuotaDepasse"));
     assert.ok(clients.includes('synchroniserEtatAccesClient(tx, id, "expired")') || clients.includes("if (body.status) await synchroniserEtatAccesClient(tx, id, body.status)"));
     assert.ok(clientAccessState.includes("activationSession.updateMany"));
@@ -456,7 +456,8 @@ describe("gardes posées sur les routes", () => {
     const clients = lire("../routes/clients.ts");
     assert.ok(mobile.includes("clientId: client.id"));
     assert.ok(mobile.includes("req.user!.clientId, deviceIdFromRequest(req)"));
-    assert.ok(auth.includes('const jetonMobile = decoded.role === "CLIENT"'));
+    assert.ok(auth.includes('if (decoded.role === "CLIENT")'));
+    assert.ok(auth.includes('loadMobileClient(decoded, deviceIdFromRequest(req))'));
     assert.ok(auth.includes('dbRoleName = "CLIENT"'));
     assert.match(auth, /if \(dbRoleName === "CLIENT"\) \{[\s\S]{0,180}permissions = \[\]/);
     assert.doesNotMatch(clients, /targetUserId = req\.user\.userId/);

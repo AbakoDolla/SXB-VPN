@@ -1,3 +1,5 @@
+import { deviceAccessStatus, subscriptionAccessStatus } from "./access-lifecycle";
+
 export type DeviceUsage = {
   download?: bigint | number;
   upload?: bigint | number;
@@ -44,8 +46,8 @@ export function sanitizeDevice(c: any, usage?: DeviceUsage, subscription?: any |
     id: c.id,
     deviceId: c.deviceId,
     token: c.token,
-    status: c.status,
-    expireAt: selected?.expireAt ?? c.expireAt,
+    status: deviceAccessStatus(c, c.reseller),
+    expireAt: c.expireAt ?? null,
     activatedAt: c.activatedAt,
     createdAt: c.createdAt,
     label: c.user?.name || null,
@@ -53,6 +55,8 @@ export function sanitizeDevice(c: any, usage?: DeviceUsage, subscription?: any |
     resellerName: reseller?.user?.name || reseller?.user?.email || null,
     subscriptionId: selected?.id ?? null,
     subscriptionName: selected?.name ?? null,
+    subscriptionStatus: selected ? subscriptionAccessStatus(selected) : null,
+    subscriptionExpireAt: selected?.expireAt ?? null,
     // Un appareil SANS forfait est un état normal, pas une anomalie : le plan
     // est une décision commerciale distincte de l'activation.
     hasSubscription: !!selected,

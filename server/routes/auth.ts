@@ -5,6 +5,8 @@ import jwt from "jsonwebtoken";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { generateTokens, requireAuth, TokenPayload, AuthenticatedRequest } from "../middleware/auth";
 import { config } from "../config";
+import { refreshMobileSession } from "../services/mobile-session-refresh";
+import { MobileAccessError, sessionInvalidFailure } from "../services/access-lifecycle";
 
 const router = Router();
 
@@ -212,11 +214,17 @@ router.post("/login", async (req: AuthenticatedRequest, res: Response) => {
 router.post("/refresh", async (req: AuthenticatedRequest, res: Response) => {
   const { refreshToken } = req.body;
   if (!refreshToken) {
-    return res.status(401).json({ error: "errors.auth.refresh_required", message: "Refresh token is required" });
+    return res.status(401).json({ ...sessionInvalidFailure(), error: "errors.auth.refresh_required", message: "Refresh token is required" });
   }
 
   try {
-    const decoded = jwt.verify(refreshToken, config.REFRESH_SECRET) as TokenPayload;
+    const decoded = jwt.verify(refreshToken, config.REFRESH_SECRET, { algorithms: ["HS256"] }) as TokenPayload;
+    if (!decoded || typeof decoded !== "object" || typeof decoded.userId !== "string" || !decoded.userId) {
+      return res.status(401).json(sessionInvalidFailure());
+    }
+    if (decoded.role === "CLIENT") {
+      return res.json({ message: "Token refreshed successfully", ...await refreshMobileSession(req, decoded) });
+    }
     
     let userRecord: any = null;
     if (prisma) {
@@ -258,8 +266,9 @@ router.post("/refresh", async (req: AuthenticatedRequest, res: Response) => {
       ...tokens,
     });
   } catch (err) {
+    if (err instanceof MobileAccessError) return res.status(err.status).json(err.body);
     if (err instanceof jwt.JsonWebTokenError) {
-      return res.status(401).json({ error: "errors.auth.invalid_refresh", message: "Invalid or expired refresh token" });
+      return res.status(401).json({ ...sessionInvalidFailure(), error: "errors.auth.invalid_refresh", message: "Invalid or expired refresh token" });
     }
     console.error("Refresh session error:", err);
     return res.status(503).json({ error: "errors.auth.unavailable", message: "Renouvellement de session temporairement indisponible" });

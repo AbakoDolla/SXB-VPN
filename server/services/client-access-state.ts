@@ -1,14 +1,19 @@
 export async function synchroniserEtatAccesClient(
   tx: any,
   clientId: string,
-  status: string
+  status: string,
+  options: { deviceId?: string | null; expireAt?: Date | null } = {},
 ): Promise<void> {
+  const activeBinding = status === "active"
+    ? options.deviceId ?? (await tx.vpnClient.findUnique({ where: { id: clientId }, select: { deviceId: true } }))?.deviceId
+    : null;
+  const binding = status === "active" ? { deviceId: activeBinding ?? "" } : {};
   await tx.activationSession.updateMany({
-    where: { clientId },
-    data: { status },
+    where: { clientId, ...binding },
+    data: { status, ...(options.expireAt !== undefined ? { expirationDate: options.expireAt } : {}) },
   });
   await tx.appRegistration.updateMany({
-    where: { clientId },
+    where: { clientId, ...binding },
     data: { status: status === "active" ? "matched" : status },
   });
 }

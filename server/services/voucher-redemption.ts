@@ -68,7 +68,7 @@ export async function appliquerVoucherAuClient(
       const actualOwner = client.resellerId
         ? client.resellerId === params.resellerId
         : !params.resellerId || client.userId === params.resellerUserId;
-      if (!actualOwner || client.status === "suspended" || client.status === "revoked") {
+      if (!actualOwner || !["active", "expired"].includes(client.status)) {
         throw new VoucherRedemptionError("errors.vouchers.client_unavailable", 409, "Le client a été réattribué ou suspendu.");
       }
       if (voucher.resellerId && voucher.resellerId !== params.resellerId) {
