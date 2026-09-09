@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       distribution:
-        description: "direct publishes the existing APK; play builds an AAB candidate only"
+        description: "direct builds an APK (publishes only on main); play builds an AAB candidate only"
         type: choice
         options:
           - direct
@@ -102,9 +102,27 @@ jobs:
       - name: Install dependencies
         run: npm ci --legacy-peer-deps
 
+      - name: Read the published APK identity before allocating a candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)
+          test -x "$APKSIGNER"
+          test -x "$AAPT"
+          export SXB_BASELINE_DIR="$RUNNER_TEMP/sxb-direct-baseline"
+          mkdir -p "$SXB_BASELINE_DIR"
+          gh release download --pattern sxb-vpn.apk --dir "$SXB_BASELINE_DIR"
+          "$APKSIGNER" verify --verbose --print-certs "$SXB_BASELINE_DIR/sxb-vpn.apk" > "$SXB_BASELINE_DIR/signature.txt"
+          "$AAPT" dump badging "$SXB_BASELINE_DIR/sxb-vpn.apk" > "$SXB_BASELINE_DIR/badging.txt"
+          node scripts/read-direct-baseline.cjs
+
       - name: Allocate shared Android version before Expo prebuild
         env:
-          SXB_PUBLISHED_VERSION_CODE: ${{ github.run_number }}
+          SXB_REQUESTED_VERSION_CODE: ${{ inputs.version_code }}
         run: |
           set -euo pipefail
           VERSION_CODE=$(node scripts/android-version.cjs)
@@ -638,7 +656,7 @@ jobs:
           # par défaut, même si les entrées JAR sont présentes. Vérifier v1
           # comme le ferait une plateforme API 23 et v2 comme la plateforme API 24+.
           VERIFY_V1=$("$APKSIGNER" verify --verbose --min-sdk-version 23 "$APK" 2>&1)
-          VERIFY_PLATFORM=$("$APKSIGNER" verify --verbose "$APK" 2>&1)
+          VERIFY_PLATFORM=$("$APKSIGNER" verify --verbose --print-certs "$APK" 2>&1)
           printf '%s\n' "$VERIFY_V1"
           printf '%s\n' "$VERIFY_PLATFORM"
           printf '%s\n' "$VERIFY_V1" | grep -qE 'Verified using v1 scheme \(JAR signing\): true'
@@ -652,6 +670,38 @@ jobs:
           printf '%s\n' "$BADGING" | grep -q "package: name='com.sxbvpn.mobile'"
           printf '%s\n' "$BADGING" | grep -q "sdkVersion:'24'"
           printf '%s\n' "$BADGING" | grep -q "targetSdkVersion:'36'"
+          mkdir -p build/report
+          printf '%s\n' "$VERIFY_PLATFORM" > build/report/apk-signature.txt
+          printf '%s\n' "$BADGING" > build/report/apk-badging.txt
+          cp "$RUNNER_TEMP/sxb-direct-baseline/baseline.json" build/report/direct-apk-baseline.json
+          node --input-type=module - << 'NODEJS_EOF'
+          import assert from 'node:assert/strict';
+          import { createHash } from 'node:crypto';
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { createRequire } from 'node:module';
+          import { inspectNativeArchive } from './scripts/android-artifact.mjs';
+          const require = createRequire(import.meta.url);
+          const { parseBaseline } = require('./scripts/read-direct-baseline.cjs');
+          const identity = parseBaseline(
+            readFileSync('build/report/apk-badging.txt', 'utf8'),
+            readFileSync('build/report/apk-signature.txt', 'utf8'),
+          );
+          const baseline = JSON.parse(readFileSync('build/report/direct-apk-baseline.json', 'utf8'));
+          assert.equal(identity.certificateSha256, baseline.certificateSha256, 'Existing Android signing key must not change');
+          assert.equal(identity.versionCode, Number(process.env.SXB_ANDROID_VERSION_CODE));
+          assert.ok(identity.versionCode > baseline.versionCode, 'APK versionCode must exceed the published version');
+          const report = {
+            status: 'validated-artifact',
+            distribution: 'direct',
+            commit: process.env.GITHUB_SHA,
+            ...identity,
+            previousVersionCode: baseline.versionCode,
+            apkSha256: createHash('sha256').update(readFileSync('build/sxb-vpn.apk')).digest('hex'),
+            nativeLibraries: inspectNativeArchive('build/sxb-vpn.apk', 'lib', ['libbox.so', 'libdnstt.so']),
+            publicationRequested: process.env.GITHUB_REF === 'refs/heads/main',
+          };
+          writeFileSync('build/report/validation.json', JSON.stringify(report, null, 2) + '\n');
+          NODEJS_EOF
           echo "✅ APK alignée, signée v1/v2, manifeste et ABI validés : $(stat -c%s "$APK") octets"
           sha256sum "$APK"
 
@@ -660,7 +710,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: sxb-vpn-android-apk-${{ github.run_number }}
-          path: app-mobile/build/sxb-vpn.apk
+          path: |
+            app-mobile/build/sxb-vpn.apk
+            app-mobile/build/report/
           if-no-files-found: error
           retention-days: 30
 
