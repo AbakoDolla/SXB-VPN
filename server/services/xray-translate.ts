@@ -16,13 +16,17 @@
  *   - security tls/reality → tls {enabled, server_name, insecure | reality}.
  *   - network ws/grpc/tcp → transport ws/grpc ou pas de transport.
  *   - autres réseaux (kcp, quic, h2…) → REFUS avec nom de la feature.
- *   - proxySettings {tag, transportLayer} → outbound http amont + detour.
+ *   - proxySettings {tag, transportLayer:true} → référence HTTP + detour.
  *   - freedom → direct (+domain_strategy) ; blackhole → block ; dns → dns.
- *   - routing.rules ip[] CIDR → ip_cidr ; dernière règle attrape-tout → final.
+ *   - routing : CIDR, geoip:private, domaines typés, ports/plages et final.
+ *   - geosite/geoip externes → base équivalente requise, jamais une liste inventée.
+ *   - tags dupliqués, cibles inconnues ou contraintes non traduisibles → refus.
  *   - inboundTag / port 53 / sniffing → ignorés + warning.
  *   - inbounds[] → ignorés + warning (« inbounds fournis par l'app : TUN »).
  *   - dns tcp+local:// ou https+local:// + payload [crlf] → warning explicite.
  */
+
+import { isIP } from 'node:net';
 
 export interface TranslationResult {
   ok: boolean;
@@ -63,11 +67,30 @@ export function isSingboxNativeJson(obj: any): boolean {
 
 // ── Traduction ───────────────────────────────────────────────────────────────
 
-/** Outbounds « spéciaux » (non transport) — utilisés pour la route.final. */
-const SPECIAL_TYPES = new Set(['direct', 'block', 'dns']);
-
 /** Protocoles d'outbound Xray traduits directement. */
 const PROXY_PROTOCOLS = new Set(['vless', 'vmess', 'trojan']);
+
+function outboundTag(ob: Record<string, any>): string {
+  return ob.tag || String(ob.protocol ?? '').toLowerCase() || 'proxy';
+}
+
+function validServer(server: unknown, port: unknown): server is string {
+  return typeof server === 'string' && server.trim().length > 0
+    && !/\s/.test(server) && (typeof port === 'number' || (typeof port === 'string' && /^\d+$/.test(port)))
+    && Number.isInteger(Number(port)) && Number(port) >= 1 && Number(port) <= 65535;
+}
+
+function translateDomainStrategy(value: any, out: Record<string, any>, errors: string[]): void {
+  if (value === undefined || value === '' || value === 'AsIs') return;
+  const strategies: Record<string, string> = {
+    UseIP: 'prefer_ipv4', UseIPv4: 'ipv4_only', UseIPv6: 'ipv6_only',
+  };
+  if (typeof value !== 'string' || !Object.hasOwn(strategies, value)) {
+    errors.push('Xray : domainStrategy non traduisible - import refuse');
+    return;
+  }
+  out.domain_strategy = strategies[value];
+}
 
 function translateStreamSettings(
   ob: any,
@@ -100,7 +123,11 @@ function translateStreamSettings(
       if (tlsSettings.spiderX) warnings.push('spiderX reality ignoré (non traduit par sing-box)');
     } else {
       // tlsSettings.allowInsecure toléré mais noté
+      if (tlsSettings.allowInsecure !== undefined && typeof tlsSettings.allowInsecure !== 'boolean') {
+        errors.push('Xray : tlsSettings.allowInsecure doit etre un booleen - import refuse');
+      }
       tls.insecure = tlsSettings.allowInsecure === true;
+      if (tls.insecure) warnings.push('TLS allowInsecure=true conserve explicitement : certificat du fournisseur non verifie');
       if (typeof tlsSettings.fingerprint === 'string' && tlsSettings.fingerprint.trim()) {
         tls.utls = { enabled: true, fingerprint: tlsSettings.fingerprint.trim().toLowerCase() };
       }
@@ -110,7 +137,7 @@ function translateStreamSettings(
     }
     out.tls = tls;
   } else if (security !== 'none' && security !== '') {
-    warnings.push(`security "${security}" non traduit — ignoré (tunnel sans TLS)`);
+    errors.push(`Xray : security "${security}" non traduisible - import refuse, TLS ne sera pas desactive`);
   }
 
   // ── Transport (network) ───────────────────────────────────────────────────
@@ -177,61 +204,41 @@ function translateStreamSettings(
   }
 }
 
-/**
- * proxySettings {tag, transportLayer:true} → amont HTTP : génère un outbound
- * {type:'http', tag, server, server_port, headers} (en réutilisant l'outbound
- * http existant de la config Xray si présent) + detour sur l'outbound principal.
- */
+/** Resolve references here; each HTTP definition is translated once in source order. */
 function applyProxySettings(
   ob: any,
   out: Record<string, any>,
-  rawOutbounds: any[],
-  outbounds: any[],
-  generatedTags: Set<string>,
+  rawByTag: Map<string, Record<string, any>>,
   warnings: string[],
   errors: string[],
 ): void {
   const ps = ob.proxySettings;
-  if (!ps || typeof ps !== 'object') return;
-  const tag = ps.tag ? String(ps.tag) : '';
-  if (!tag) { warnings.push('proxySettings sans tag — ignoré'); return; }
-  if (ps.transportLayer !== true) {
-    warnings.push(`proxySettings "${tag}" sans transportLayer=true — ignoré (non traduit)`);
+  if (ps === undefined) return;
+  if (!ps || typeof ps !== 'object' || Array.isArray(ps)
+    || typeof ps.tag !== 'string' || !ps.tag.trim() || ps.transportLayer !== true) {
+    errors.push('Xray : proxySettings exige un tag et transportLayer=true - import refuse');
     return;
   }
-
-  const ref = rawOutbounds.find((o: any) => o && String(o.tag ?? '') === tag);
-  let server = ref?.settings?.servers?.[0]?.address ?? null;
-  let port = ref?.settings?.servers?.[0]?.port ?? null;
-  let headers = ref?.settings?.headers
-    ?? ref?.settings?.servers?.[0]?.headers
-    ?? ref?.headers
-    ?? undefined;
-
-  if (!server || !port) {
-    errors.push(`Xray : proxySettings "${tag}" — outbound amont introuvable ou mal défini (settings.servers[0].address/port requis) — import refusé`);
+  const tag = ps.tag;
+  const ref = rawByTag.get(tag);
+  if (!ref || String(ref.protocol).toLowerCase() !== 'http') {
+    errors.push(`Xray : proxySettings "${tag}" - outbound amont HTTP introuvable ou non supporte - import refuse`);
     return;
-  }
-
-  if (!generatedTags.has(tag)) {
-    const httpOut: Record<string, any> = {
-      type: 'http',
-      tag,
-      server: String(server),
-      server_port: Number(port),
-    };
-    if (headers && typeof headers === 'object' && Object.keys(headers).length > 0) {
-      httpOut.headers = headers;
-    }
-    outbounds.push(httpOut);
-    generatedTags.add(tag);
   }
   out.detour = tag;
   warnings.push(`chaînage proxySettings : trafic via l'amont HTTP "${tag}" (headers personnalisés conservés)`);
 }
 
-function translateDns(xrayDns: any, warnings: string[], mainOutboundTag: string): Record<string, any> | null {
-  if (!xrayDns || !Array.isArray(xrayDns.servers) || xrayDns.servers.length === 0) return null;
+function translateDns(xrayDns: any, warnings: string[], errors: string[], mainOutboundTag: string): Record<string, any> | null {
+  if (xrayDns === undefined) return null;
+  if (!xrayDns || typeof xrayDns !== 'object' || Array.isArray(xrayDns) || !Array.isArray(xrayDns.servers)) {
+    errors.push('Xray : dns.servers doit etre un tableau - import refuse');
+    return null;
+  }
+  if (xrayDns.servers.length === 0) {
+    warnings.push('Xray : dns.servers vide - DNS fourni par le moteur mobile');
+    return null;
+  }
   const servers: Array<{ tag: string; address: string; detour: string }> = [];
   let operatorTrick = false;
 
@@ -242,7 +249,14 @@ function translateDns(xrayDns: any, warnings: string[], mainOutboundTag: string)
       operatorTrick = true;
       continue;
     }
-    if (!address || typeof address !== 'string') continue;
+    if (!address || typeof address !== 'string') {
+      errors.push('Xray : serveur DNS invalide - import refuse');
+      continue;
+    }
+    if (typeof s === 'object' && Object.keys(s).some(key => !['address'].includes(key))) {
+      errors.push('Xray : options de serveur DNS non traduisibles - import refuse');
+      continue;
+    }
     // Xray peut router le DNS distant par le proxy principal. Cela évite
     // qu’un DNS direct bloqué par l’opérateur rende le tunnel connecté mais
     // inutilisable. La résolution bootstrap du serveur VLESS est protégée
@@ -263,90 +277,171 @@ function translateDns(xrayDns: any, warnings: string[], mainOutboundTag: string)
 
   servers.forEach((s, i) => { s.tag = i === 0 ? 'dns-remote' : `dns-remote-${i + 1}`; });
   const dns: Record<string, any> = { servers, final: 'dns-remote' };
-  if (xrayDns.queryStrategy) dns.strategy = 'prefer_ipv4';
+  if (xrayDns.queryStrategy === 'UseIPv4') dns.strategy = 'ipv4_only';
+  else if (xrayDns.queryStrategy === 'UseIPv6') dns.strategy = 'ipv6_only';
+  else if (xrayDns.queryStrategy !== undefined && xrayDns.queryStrategy !== 'UseIP') {
+    errors.push('Xray : dns.queryStrategy non traduisible - import refuse');
+  }
   return dns;
 }
 
-/** Clés de contrainte d'une règle Xray — une règle sans aucune = attrape-tout. */
-const RULE_CONSTRAINT_KEYS = [
-  'ip', 'domain', 'port', 'sourcePort', 'inboundTag', 'protocol', 'source',
-  'user', 'balancerTag', 'network',
-];
+function appendMatcher(rule: Record<string, any>, key: string, value: string): void {
+  (rule[key] ??= []).push(value);
+}
+
+function translateIpMatchers(values: any, rule: Record<string, any>, warnings: string[], errors: string[]): void {
+  if (!Array.isArray(values) || values.length === 0) {
+    errors.push('Xray : routing.ip doit etre un tableau non vide - import refuse');
+    return;
+  }
+  for (const value of values) {
+    if (value === 'geoip:private') {
+      rule.ip_is_private = true;
+    } else if (typeof value === 'string' && /^geoip:[a-z0-9_-]+$/i.test(value)) {
+      appendMatcher(rule, 'geoip', value.slice(6));
+      warnings.push('routing geoip : une base geoip.db equivalente a celle du fournisseur est requise par sing-box 1.11');
+    } else if (typeof value === 'string') {
+      const [address, prefix, extra] = value.split('/');
+      const family = isIP(address);
+      const bits = family === 4 ? 32 : 128;
+      if (!family || extra !== undefined || (prefix !== undefined && (!/^\d+$/.test(prefix) || Number(prefix) > bits))) {
+        errors.push('Xray : routing.ip contient un matcher non traduisible - import refuse');
+        continue;
+      }
+      appendMatcher(rule, 'ip_cidr', prefix === undefined ? `${address}/${bits}` : value);
+    } else {
+      errors.push('Xray : routing.ip contient une valeur invalide - import refuse');
+    }
+  }
+}
+
+function translateDomainMatchers(values: any, rule: Record<string, any>, warnings: string[], errors: string[]): void {
+  if (!Array.isArray(values) || values.length === 0) {
+    errors.push('Xray : routing.domain doit etre un tableau non vide - import refuse');
+    return;
+  }
+  const fields: Record<string, string> = {
+    full: 'domain', domain: 'domain_suffix', keyword: 'domain_keyword', regexp: 'domain_regex', geosite: 'geosite',
+  };
+  for (const value of values) {
+    if (typeof value !== 'string' || !value) {
+      errors.push('Xray : routing.domain contient une valeur invalide - import refuse');
+      continue;
+    }
+    const separator = value.indexOf(':');
+    const prefix = separator < 0 ? 'keyword' : value.slice(0, separator);
+    const content = separator < 0 ? value : value.slice(separator + 1);
+    if (!Object.hasOwn(fields, prefix) || !content || (prefix === 'geosite' && !/^[a-z0-9_-]+$/i.test(content))) {
+      errors.push('Xray : routing.domain contient un matcher non traduisible - import refuse');
+      continue;
+    }
+    appendMatcher(rule, fields[prefix], content);
+    if (prefix === 'geosite') {
+      warnings.push('routing geosite : une base geosite.db equivalente a celle du fournisseur est requise par sing-box 1.11 ; aucune liste de domaines privee inventee');
+    }
+  }
+}
+
+function translatePorts(value: any, key: 'port' | 'source_port', rule: Record<string, any>, errors: string[]): void {
+  const values = Array.isArray(value) ? value : [value];
+  if (values.length === 0) errors.push(`Xray : routing.${key} vide - import refuse`);
+  for (const item of values) {
+    if (typeof item !== 'string' && typeof item !== 'number') {
+      errors.push(`Xray : routing.${key} invalide - import refuse`);
+      continue;
+    }
+    for (const part of String(item).split(',')) {
+      const match = /^(\d+)(?:-(\d+))?$/.exec(part.trim());
+      if (!match || Number(match[1]) > 65535
+        || (match[2] !== undefined && (Number(match[2]) > 65535 || Number(match[2]) < Number(match[1])))) {
+        errors.push(`Xray : routing.${key} ou plage invalide - import refuse`);
+        continue;
+      }
+      if (match[2] === undefined) (rule[key] ??= []).push(Number(match[1]));
+      else appendMatcher(rule, `${key}_range`, `${Number(match[1])}:${Number(match[2])}`);
+    }
+  }
+}
 
 function translateRouting(
   xrayRoute: any,
   mainTag: string,
   knownTags: Set<string>,
   warnings: string[],
+  errors: string[],
 ): Record<string, any> | null {
   const rules: any[] = [];
   let final = mainTag;
 
-  if (!xrayRoute || !Array.isArray(xrayRoute.rules) || xrayRoute.rules.length === 0) {
-    return { final };
+  if (xrayRoute === undefined) return { final };
+  if (!xrayRoute || typeof xrayRoute !== 'object' || Array.isArray(xrayRoute)
+    || (xrayRoute.rules !== undefined && !Array.isArray(xrayRoute.rules))) {
+    errors.push('Xray : routing invalide - import refuse');
+    return null;
   }
+  if (xrayRoute.balancers !== undefined) errors.push('Xray : routing.balancers non traduisible - import refuse');
+  if (!xrayRoute.rules?.length) return { final };
 
   const list: any[] = xrayRoute.rules;
+  let caughtAll = false;
   for (let i = 0; i < list.length; i++) {
     const r = list[i];
-    if (!r || typeof r !== 'object') continue;
-    const isLast = i === list.length - 1;
-    const hasConstraint = RULE_CONSTRAINT_KEYS.some((k) => r[k] !== undefined);
-
-    // ── Règle attrape-tout (aucune contrainte) ──────────────────────────────
-    if (!hasConstraint) {
-      if (isLast) {
-        const target = r.outboundTag ? String(r.outboundTag) : mainTag;
-        final = knownTags.has(target) ? target : mainTag;
-        continue; // consommée → route.final
-      }
-      warnings.push('règle attrape-tout non finale ignorée (inopérante en routing)');
+    if (!r || typeof r !== 'object' || Array.isArray(r)) {
+      errors.push(`Xray : routing.rules[${i}] invalide - import refuse`);
       continue;
     }
-
-    // ── Règles gérées par le moteur mobile → ignorées + warning ─────────────
-    if (r.inboundTag) {
-      warnings.push(`règle routing basée sur inboundTag ignorée — gérée par le moteur mobile (TUN)`);
+    const outbound = r.outboundTag;
+    if (typeof outbound !== 'string' || !knownTags.has(outbound)) {
+      errors.push(`Xray : routing.rules[${i}] vers outbound inconnu ou absent - import refuse`);
       continue;
     }
-    // Xray accepte port sous forme de nombre, chaîne (`"53"`) ou tableau.
-    // Normaliser avant le test : sinon `1.1.1.1:53` pouvait être routé via
-    // l’outbound VLESS qui dépend lui-même de la résolution DNS, provoquant
-    // `DNS query loopback in transport[dns-remote]`.
-    const routingPorts = Array.isArray(r.port)
-      ? r.port.map((value: any) => Number(value)).filter((value: number) => Number.isFinite(value))
-      : (r.port !== undefined && r.port !== null && Number.isFinite(Number(r.port)) ? [Number(r.port)] : []);
-    if (routingPorts.includes(53)) {
-      warnings.push('règle routing port 53 ignorée — gérée par le moteur mobile (DNS hijack)');
+    const supported = new Set(['type', 'outboundTag', 'ip', 'domain', 'port', 'sourcePort', 'inboundTag', 'protocol', 'network']);
+    if ((r.type !== undefined && r.type !== 'field') || Object.keys(r).some(key => !supported.has(key))) {
+      errors.push(`Xray : routing.rules[${i}] contient une contrainte non traduisible - import refuse`);
       continue;
     }
-    if (r.protocol && String(r.protocol).toLowerCase() === 'dns') {
-      warnings.push('règle routing protocol=dns ignorée — gérée par le moteur mobile (DNS hijack)');
-      continue;
-    }
-
-    const outbound = r.outboundTag ? String(r.outboundTag) : null;
-    if (!outbound || !knownTags.has(outbound)) {
-      warnings.push(`règle routing vers outbound inconnu "${outbound}" ignorée`);
+    if (r.inboundTag !== undefined) {
+      warnings.push('règle routing basée sur inboundTag ignorée — gérée par le moteur mobile (TUN)');
       continue;
     }
     const rule: Record<string, any> = { outbound };
-    // ip[] CIDR → ip_cidr (plages privées → direct, 224.0.0.0/4 → block, …)
-    if (Array.isArray(r.ip) && r.ip.length > 0) {
-      rule.ip_cidr = r.ip.map((x: any) => String(x));
+    if (r.ip !== undefined) translateIpMatchers(r.ip, rule, warnings, errors);
+    if (r.domain !== undefined) translateDomainMatchers(r.domain, rule, warnings, errors);
+    if (r.port !== undefined) translatePorts(r.port, 'port', rule, errors);
+    if (r.sourcePort !== undefined) translatePorts(r.sourcePort, 'source_port', rule, errors);
+    if (r.network !== undefined) {
+      const network: unknown = r.network;
+      const networks = typeof network === 'string' ? network.toLowerCase().split(',').map(value => value.trim()) : [];
+      if (networks.length === 0 || networks.some(value => !['tcp', 'udp'].includes(value))) {
+        errors.push(`Xray : routing.rules[${i}].network invalide - import refuse`);
+      } else rule.network = networks.length === 1 ? networks[0] : networks;
     }
-    if (Array.isArray(r.domain) && r.domain.length > 0) {
-      // sémantique Xray ≈ sing-box (domain: / full: / keyword: / regexp:)
-      rule.domain = r.domain.map((x: any) => String(x));
+    if (r.protocol !== undefined) {
+      const protocols = Array.isArray(r.protocol) ? r.protocol : [r.protocol];
+      if (protocols.length === 0 || protocols.some((value: any) => typeof value !== 'string' || !value)) {
+        errors.push(`Xray : routing.rules[${i}].protocol invalide - import refuse`);
+      } else rule.protocol = protocols;
     }
-    if (routingPorts.length > 0) {
-      rule.port = routingPorts;
+    if (rule.port?.includes(53)) {
+      warnings.push('règle routing port 53 ignorée — gérée par le moteur mobile (DNS hijack)');
+      rule.port = rule.port.filter((port: number) => port !== 53);
+      if (!rule.port.length) {
+        delete rule.port;
+        if (!rule.port_range) continue;
+      }
     }
-    if (r.network) {
-      rule.network = String(r.network).toLowerCase();
+    if (rule.protocol?.length === 1 && rule.protocol[0] === 'dns') {
+      warnings.push('règle routing protocol=dns ignorée — gérée par le moteur mobile (DNS hijack)');
+      continue;
     }
-    if (Object.keys(rule).length > 1) rules.push(rule);
-    else warnings.push(`règle routing sans cible utile ignorée`);
+    if (caughtAll) continue;
+    if (Object.keys(r).every(key => key === 'type' || key === 'outboundTag')) {
+      final = outbound;
+      caughtAll = true;
+      if (i < list.length - 1) warnings.push('routing : les regles apres la premiere regle attrape-tout sont inaccessibles');
+    } else if (Object.keys(rule).length > 1) {
+      rules.push(rule);
+    }
   }
 
   return { rules, final };
@@ -366,13 +461,34 @@ export function translateXrayToSingbox(xray: Record<string, any>): TranslationRe
     return { ok: false, warnings, errors: ['Xray : aucun outbound (outbounds[] vide)'] };
   }
 
+  const rawByTag = new Map<string, Record<string, any>>();
+  for (const ob of rawOutbounds) {
+    if (!ob || typeof ob !== 'object' || Array.isArray(ob)) {
+      errors.push('Xray : outbound invalide (non-objet)');
+      continue;
+    }
+    if (ob.tag !== undefined && (typeof ob.tag !== 'string' || !ob.tag.trim())) {
+      errors.push('Xray : tag outbound invalide - import refuse');
+      continue;
+    }
+    const tag = outboundTag(ob);
+    if (rawByTag.has(tag)) errors.push(`Xray : tag outbound duplique "${tag}" - import refuse`);
+    rawByTag.set(tag, ob);
+  }
+  if (errors.length) return { ok: false, warnings, errors };
+
+  const addOutbound = (outbound: Record<string, any>) => {
+    outbounds.push(outbound);
+    generatedTags.add(outbound.tag);
+  };
+
   for (const ob of rawOutbounds) {
     if (!ob || typeof ob !== 'object') {
       errors.push('Xray : outbound invalide (non-objet)');
       continue;
     }
     const proto = String(ob.protocol ?? '').toLowerCase();
-    const tag = ob.tag ? String(ob.tag) : proto || 'proxy';
+    const tag = outboundTag(ob);
     const settings = ob.settings ?? {};
 
     if (PROXY_PROTOCOLS.has(proto)) {
@@ -413,7 +529,7 @@ export function translateXrayToSingbox(xray: Record<string, any>): TranslationRe
         warnings.push(`flow "${flow}" ignoré (non traduit par sing-box)`);
       }
 
-      if (!server || !port) {
+      if (!validServer(server, port)) {
         errors.push(`Xray : outbound ${proto} — address/port manquants (settings.vnext[0] / settings.servers[0])`);
         continue;
       }
@@ -440,44 +556,48 @@ export function translateXrayToSingbox(xray: Record<string, any>): TranslationRe
       }
 
       translateStreamSettings(ob, out, server, warnings, errors);
-      applyProxySettings(ob, out, rawOutbounds, outbounds, generatedTags, warnings, errors);
-      outbounds.push(out);
+      applyProxySettings(ob, out, rawByTag, warnings, errors);
+      addOutbound(out);
       if (!mainOutboundTag) mainOutboundTag = tag;
     } else if (proto === 'http') {
-      // Outbound HTTP amont (peut être référencé par proxySettings).
-      // Si applyProxySettings l’a déjà matérialisé, ne pas l’ajouter une seconde
-      // fois : sing-box refuse les tags d’outbound dupliqués.
-      if (generatedTags.has(tag)) continue;
       const s = settings.servers?.[0];
-      if (s?.address && s?.port) {
+      if (!Array.isArray(settings.servers) || settings.servers.length !== 1 || !validServer(s?.address, s?.port)) {
+        errors.push(`Xray : outbound HTTP "${tag}" - un seul serveur avec address/port valides est requis`);
+      } else {
         const out: Record<string, any> = {
           type: 'http', tag, server: String(s.address), server_port: Number(s.port),
         };
-        const headers = settings.headers ?? s.headers;
-        if (headers && typeof headers === 'object' && Object.keys(headers).length > 0) {
-          out.headers = headers;
+        const headers = settings.headers ?? s.headers ?? ob.headers;
+        if (headers !== undefined) {
+          if (!headers || typeof headers !== 'object' || Array.isArray(headers)
+            || Object.values(headers).some(value => typeof value !== 'string'
+              && (!Array.isArray(value) || value.some(item => typeof item !== 'string')))) {
+            errors.push(`Xray : outbound HTTP "${tag}" - headers invalides`);
+          } else if (Object.keys(headers).length > 0) out.headers = headers;
         }
-        outbounds.push(out);
-        generatedTags.add(tag);
+        if (s.users !== undefined) {
+          if (!Array.isArray(s.users) || s.users.length !== 1 || typeof s.users[0]?.user !== 'string' || typeof s.users[0]?.pass !== 'string') {
+            errors.push(`Xray : outbound HTTP "${tag}" - authentification ambigue ou invalide`);
+          } else {
+            out.username = s.users[0].user;
+            out.password = s.users[0].pass;
+          }
+        }
+        if (ob.streamSettings?.network && ob.streamSettings.network !== 'tcp') {
+          errors.push(`Xray : outbound HTTP "${tag}" - transport amont non traduisible`);
+        } else translateStreamSettings(ob, out, s.address, warnings, errors);
+        translateDomainStrategy(ob.domainStrategy, out, errors);
+        applyProxySettings(ob, out, rawByTag, warnings, errors);
+        addOutbound(out);
       }
-      // sans address : ignoré ici — le cas proxySettings est géré par applyProxySettings
     } else if (proto === 'freedom') {
       const out: Record<string, any> = { type: 'direct', tag };
-      const ds = settings.domainStrategy;
-      if (ds) {
-        const map: Record<string, string> = {
-          UseIP: 'prefer_ipv4', UseIPv4: 'ipv4_only', UseIPv6: 'ipv6_only',
-        };
-        out.domain_strategy = map[String(ds)] ?? String(ds);
-      }
-      outbounds.push(out);
-      generatedTags.add(tag);
+      translateDomainStrategy(settings.domainStrategy, out, errors);
+      addOutbound(out);
     } else if (proto === 'blackhole') {
-      outbounds.push({ type: 'block', tag });
-      generatedTags.add(tag);
+      addOutbound({ type: 'block', tag });
     } else if (proto === 'dns') {
-      outbounds.push({ type: 'dns', tag });
-      generatedTags.add(tag);
+      addOutbound({ type: 'dns', tag });
     } else {
       errors.push(`Xray : protocole d'outbound non traduisible : "${proto}"`);
     }
@@ -488,6 +608,25 @@ export function translateXrayToSingbox(xray: Record<string, any>): TranslationRe
   }
   if (!mainOutboundTag) {
     return { ok: false, warnings, errors: ['Xray : aucun outbound de transport (vless/vmess/trojan) trouvé'] };
+  }
+
+  const byTag = new Map(outbounds.map(outbound => [outbound.tag, outbound]));
+  for (const outbound of outbounds) {
+    const seen = new Set<string>();
+    let current: Record<string, any> | undefined = outbound;
+    while (current) {
+      if (seen.has(current.tag)) {
+        errors.push('Xray : cycle de proxySettings - import refuse');
+        break;
+      }
+      seen.add(current.tag);
+      if (!current.detour) break;
+      if (!generatedTags.has(current.detour)) {
+        errors.push('Xray : detour vers un outbound absent - import refuse');
+        break;
+      }
+      current = byTag.get(current.detour);
+    }
   }
 
   if (xray.policy && typeof xray.policy === 'object') {
@@ -502,10 +641,11 @@ export function translateXrayToSingbox(xray: Record<string, any>): TranslationRe
   }
 
   // ── DNS ───────────────────────────────────────────────────────────────────
-  const dns = translateDns(xray.dns, warnings, mainOutboundTag);
+  const dns = translateDns(xray.dns, warnings, errors, mainOutboundTag);
 
   // ── Routing ───────────────────────────────────────────────────────────────
-  const route = translateRouting(xray.routing, mainOutboundTag, generatedTags, warnings);
+  const route = translateRouting(xray.routing, mainOutboundTag, generatedTags, warnings, errors);
+  if (errors.length) return { ok: false, warnings, errors };
 
   const singboxJson: Record<string, any> = {
     protocol: 'singbox',

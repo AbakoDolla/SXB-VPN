@@ -256,7 +256,7 @@ export function validateTransportCoherence(cfg: Record<string, any>): { errors: 
       if (!Array.isArray(cfg.outbounds) || cfg.outbounds.length === 0) {
         errors.push('singbox : "outbounds" doit être un tableau non vide');
       }
-      if (!cfg.inbounds) warnings.push('singbox : "inbounds" absent — le mode TUN peut échouer');
+      if (!cfg.inbounds) warnings.push('singbox : inbounds fournis par l\'application mobile (TUN)');
       return { errors, warnings }; // pas de contrôle host/port (outbounds internes)
   }
 
