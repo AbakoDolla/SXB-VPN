@@ -110,6 +110,11 @@ notifications FCM ; le consentement VPN Play reste requis.
 à un appareil entièrement hors ligne. Un blocage déjà reçu est conservé et
 la reconnexion au serveur réconcilie les droits. La déconnexion est déclenchée
 à réception du changement, pas à partir d'une promesse de délai hors ligne.
+Le ticket de contrôle expire au plus tard après sept jours : son expiration
+ne supprime ni l'identité ni les fichiers, et l'ouverture de l'application
+renouvelle le suivi authentifié. Si l'application reste exclusivement en
+arrière-plan au-delà de cette échéance, le tunnel conserve ses derniers droits
+connus sans surveillance distante jusqu'au retour au premier plan.
 
 ---
 
