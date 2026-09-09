@@ -1,0 +1,45 @@
+import assert from "node:assert/strict";
+import http from "node:http";
+import { once } from "node:events";
+import { test } from "node:test";
+import { createFixtureHandler } from "./dashboard-lifecycle-preview.mjs";
+
+test("local preview serves only synthetic API routes and preserves activation through plan changes", async t => {
+  const server = http.createServer(createFixtureHandler());
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const request = async (route, body, method = body ? "POST" : "GET") => {
+    const result = await fetch(origin + route, { method, body: body && JSON.stringify(body), headers: { "Content-Type": "application/json" } });
+    return { status: result.status, body: await result.json() };
+  };
+  await request("/__fixture/control", { delayMs: 0 });
+  const before = (await request("/xapi/devices")).body.devices[0];
+  assert.match(before.token, /DEMO/);
+  assert.equal(before.status, "active");
+  assert.equal(before.subscriptionStatus, "expired");
+  await request("/xapi/subscriptions/bulk", { action: "extend_duration", subscriptionIds: ["plan-1"], durationDays: 30 });
+  await request("/xapi/subscriptions/bulk", { action: "add_data", subscriptionIds: ["plan-1"], quotaGB: 2 });
+  await request("/xapi/subscriptions/plan-1/revoke", {});
+  const after = (await request("/xapi/devices")).body.devices[0];
+  assert.equal(after.token, before.token);
+  assert.equal(after.expireAt, before.expireAt);
+  assert.equal(after.status, "active");
+  assert.equal(after.subscriptionStatus, "revoked");
+  await request("/xapi/devices/device-1/revoke", {});
+  const disabled = (await request("/xapi/devices")).body.devices[0];
+  assert.equal(disabled.status, "disabled");
+  assert.equal(disabled.token, before.token);
+  const renewed = await request("/xapi/devices/device-1/renew", { durationDays: 90 });
+  assert.notEqual(renewed.body.token, before.token);
+  assert.equal(renewed.body.activatedAt, before.activatedAt);
+  assert.equal(Date.parse(renewed.body.expireAt) - Date.parse(before.expireAt), 90 * 86400000);
+  assert.equal((await request("/xapi/subscriptions")).body.subscriptions[0].status, "revoked");
+  await request("/__fixture/control", { failNext: true });
+  assert.equal((await request("/xapi/devices/device-1/suspend", {})).status, 409);
+  assert.equal((await request("/xapi/devices")).body.devices[0].status, "active");
+  assert.equal((await request("/api/devices")).status, 404);
+  assert.equal((await request("/xapi/unimplemented")).status, 404);
+  assert.equal((await fetch(origin + "/xapi/devices", { headers: { Origin: "https://example.test" } })).status, 403);
+});
