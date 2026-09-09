@@ -34,11 +34,18 @@ async function fixture(t, settings = {}, { rootAlias = false } = {}) {
     id: role.toLowerCase(), name: role, email: `${role.toLowerCase()}@example.test`,
     status: "active", role: { name: role, permissions: [] },
   }));
+  const mobileClients = users.filter(user => user.role.name === "CLIENT").map(user => ({
+    id: `vpn-${user.id}`, userId: user.id, user, status: "active",
+    deviceId: null, activatedAt: null, expireAt: null, reseller: null,
+  }));
   const db = {
     fail: false,
     user: { findUnique: async ({ where }) => users.find(user => user.id === where.id) },
     permission: { findMany: async () => [] },
-    vpnClient: { findFirst: async () => ({ status: "active" }) },
+    vpnClient: {
+      findMany: async ({ where }) => mobileClients.filter(client =>
+        client.userId === where.userId && (!where.id || client.id === where.id)),
+    },
     reseller: { findUnique: async () => ({ status: "active", quotaBytes: 10n, quotaUsedBytes: 0n, accessExpiresAt: null }) },
     supportTicket: {
       async create({ data }) {

@@ -39,7 +39,7 @@ function manifestPlugin(distribution, manifest) {
   };
   const module = { exports: {} };
   vm.runInNewContext(read('plugins/withSxbVpn.js'), {
-    module, require: name => name === '@expo/config-plugins' ? stub : require(name), console, process,
+    module, require: name => name === '@expo/config-plugins' ? stub : require(name), console, process, URL,
   });
   module.exports({ extra: { distribution }, android: base.android });
   let mod = { modResults: { manifest } };
