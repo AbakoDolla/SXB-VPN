@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export const PUBLIC_PRIVACY_ORIGIN = "https://vpnsxb.afrihall.com";
+export const PUBLIC_PRIVACY_BASE_PATH = "/api/public";
 export const PRIVACY_CONTENT_VERSION = "2026-09-09";
 export type PrivacyLanguage = "fr" | "en";
 

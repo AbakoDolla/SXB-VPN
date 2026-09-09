@@ -9,6 +9,7 @@ const json = name => JSON.parse(readFileSync(path.join(directory, name), "utf8")
 const declarations = json("declarations.json");
 const readiness = json("readiness.json");
 const manifests = [json("listing.fr.json"), json("listing.en.json")];
+const canonicalBase = "https://vpnsxb.afrihall.com/api/public";
 for (const listing of manifests) {
   for (const [field, max] of [["title", 30], ["shortDescription", 80], ["fullDescription", 4000]]) {
     assert.equal(typeof listing[field], "string", `${listing.locale}.${field}`);
@@ -18,8 +19,14 @@ for (const listing of manifests) {
   }
   assert.doesNotMatch(listing.shortDescription, /[\r\n]/);
   assert.match(listing.fullDescription, /VpnService/);
+  for (const resource of ["privacy", "data-deletion"]) {
+    assert.ok(listing.fullDescription.includes(`${canonicalBase}/${resource}?lang=${listing.locale.slice(0, 2)}`),
+      `${listing.locale}: canonical ${resource} URL required`);
+  }
+  assert.doesNotMatch(listing.fullDescription, /https:\/\/vpnsxb\.afrihall\.com\/(?:privacy|data-deletion)\b/);
   assert.equal(typeof listing.reviewed, "boolean");
 }
+assert.equal(declarations.dataSafety.deletionMechanism.url, `${canonicalBase}/data-deletion`);
 
 function walk(value, callback, location = "") {
   if (!value || typeof value !== "object") return;

@@ -5,7 +5,7 @@ import { config } from "../config";
 import { prisma } from "../database";
 import copy from "../resources/privacy-content.json";
 import {
-  escapeHtml, PRIVACY_CONTENT_VERSION, PUBLIC_PRIVACY_ORIGIN, publicRequestSchema,
+  escapeHtml, PRIVACY_CONTENT_VERSION, PUBLIC_PRIVACY_ORIGIN, PUBLIC_PRIVACY_BASE_PATH, publicRequestSchema,
   readPrivacySettings, type PrivacyLanguage, type PrivacySettings,
 } from "../services/public-privacy";
 
@@ -22,12 +22,14 @@ function section(title: string, text: string): string {
   return `<section><h2>${escapeHtml(title)}</h2><p>${escapeHtml(text)}</p></section>`;
 }
 
-function page(lang: PrivacyLanguage, title: string, body: string, settings: PrivacySettings): string {
+type PublicResource = "privacy" | "data-deletion";
+
+function page(lang: PrivacyLanguage, title: string, body: string, settings: PrivacySettings, resource: PublicResource): string {
   const text = copy[lang];
   return `<!doctype html><html lang="${lang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title>
 <style>body{font-family:system-ui,sans-serif;max-width:52rem;margin:2rem auto;padding:0 1rem;line-height:1.6;color:#17233b;background:#f5f7fb}a{color:#1647a1}section,form,aside{background:#fff;border:1px solid #bbc7dc;border-radius:.5rem;padding:1rem;margin:1rem 0}aside{border:2px solid #936300}label{display:block;margin-top:1rem}input:not([type=checkbox]),select,textarea{display:block;box-sizing:border-box;width:100%;padding:.7rem;font:inherit}textarea{min-height:9rem}button{margin-top:1rem;background:#1647a1;color:white;border:0;border-radius:.3rem;padding:.8rem;font:inherit}h1{line-height:1.2}p{white-space:pre-line}.trap{display:none}</style></head>
-<body><nav aria-label="Language"><a href="?lang=fr" lang="fr">Français</a> | <a href="?lang=en" lang="en">English</a></nav>
+<body><nav aria-label="Language"><a href="${PUBLIC_PRIVACY_BASE_PATH}/${resource}?lang=fr" lang="fr">Français</a> | <a href="${PUBLIC_PRIVACY_BASE_PATH}/${resource}?lang=en" lang="en">English</a></nav>
 <main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(text.version)}: ${PRIVACY_CONTENT_VERSION}</p>
 ${settings.SXB_PRIVACY_REVIEWED !== "true" ? `<aside role="note">${escapeHtml(text.draft)}</aside>` : ""}
 ${section(text.operator, settings.SXB_PRIVACY_OPERATOR_NAME || text.operatorUnknown)}
@@ -35,8 +37,8 @@ ${section(text.contact, settings.SXB_PRIVACY_CONTACT_EMAIL || text.contactUnknow
 ${body}</main></body></html>`;
 }
 
-function sendPage(res: Response, status: number, lang: PrivacyLanguage, title: string, body: string, settings: PrivacySettings) {
-  return res.status(status).type("html").send(page(lang, title, body, settings));
+function sendPage(res: Response, status: number, lang: PrivacyLanguage, title: string, body: string, settings: PrivacySettings, resource: PublicResource = "data-deletion") {
+  return res.status(status).type("html").send(page(lang, title, body, settings, resource));
 }
 
 function secureHeaders(res: Response) {
@@ -79,7 +81,7 @@ export function createPublicPrivacyRouter(options: { now?: () => number; setting
   const failure = (req: Request, res: Response, status: number, key: "invalid" | "csrfError" | "rateError" | "unavailable") => {
     const lang = language(req);
     return sendPage(res, status, lang, copy[lang].deletionTitle,
-      `<p role="alert">${escapeHtml(copy[lang][key])}</p><a href="/data-deletion?lang=${lang}">${escapeHtml(copy[lang].back)}</a>`, settings);
+      `<p role="alert">${escapeHtml(copy[lang][key])}</p><a href="${PUBLIC_PRIVACY_BASE_PATH}/data-deletion?lang=${lang}">${escapeHtml(copy[lang].back)}</a>`, settings);
   };
 
   router.use(["/privacy", "/data-deletion"], (_req, res, next) => {
@@ -96,7 +98,7 @@ export function createPublicPrivacyRouter(options: { now?: () => number; setting
       text.sections.map(item => section(item.title, item.text)).join("") +
       (retention ? section(text.retentionNote, retention) : "") +
       (processors ? section(text.processorsNote, processors) : "") +
-      `<a href="/data-deletion?lang=${lang}">${escapeHtml(text.contactForm)}</a>`, settings);
+      `<a href="${PUBLIC_PRIVACY_BASE_PATH}/data-deletion?lang=${lang}">${escapeHtml(text.contactForm)}</a>`, settings, "privacy");
   });
 
   router.get("/data-deletion", (req, res) => {
@@ -108,7 +110,7 @@ export function createPublicPrivacyRouter(options: { now?: () => number; setting
     });
     return sendPage(res, 200, lang, text.deletionTitle, `
 <p>${escapeHtml(text.deletionIntro)}</p><p>${escapeHtml(text.deletionScope)}</p><p>${escapeHtml(text.manual)}</p>
-<form method="post" action="/data-deletion?lang=${lang}" accept-charset="utf-8">
+<form method="post" action="${PUBLIC_PRIVACY_BASE_PATH}/data-deletion?lang=${lang}" accept-charset="utf-8">
 <input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="lang" value="${lang}">
 <div class="trap" aria-hidden="true"><label>Website<input name="website" value="" tabindex="-1" autocomplete="off"></label></div>
 <label for="kind">${escapeHtml(text.kind)}</label><select id="kind" name="kind"><option value="deletion">${escapeHtml(text.deleteOption)}</option><option value="privacy">${escapeHtml(text.privacyOption)}</option></select>
@@ -117,7 +119,7 @@ export function createPublicPrivacyRouter(options: { now?: () => number; setting
 <label for="message">${escapeHtml(text.message)}</label><textarea id="message" name="message" minlength="10" maxlength="2000" required></textarea>
 <label><input type="checkbox" name="acknowledge" value="yes" required> ${escapeHtml(text.acknowledge)}</label>
 <button type="submit">${escapeHtml(text.submit)}</button></form>
-<a href="/privacy?lang=${lang}">${escapeHtml(text.privacyLink)}</a>`, settings);
+<a href="${PUBLIC_PRIVACY_BASE_PATH}/privacy?lang=${lang}">${escapeHtml(text.privacyLink)}</a>`, settings);
   });
 
   const limiter = rateLimit({
@@ -169,7 +171,7 @@ export function createPublicPrivacyRouter(options: { now?: () => number; setting
     res.clearCookie(cookieName, { httpOnly: true, sameSite: "strict", secure: production, path: "/" });
     return sendPage(res, 202, input.lang, copy[input.lang].deletionTitle,
       `<p role="status">${escapeHtml(copy[input.lang].sent)}</p>
-<a href="/privacy?lang=${input.lang}">${escapeHtml(copy[input.lang].privacyLink)}</a>`, settings);
+<a href="${PUBLIC_PRIVACY_BASE_PATH}/privacy?lang=${input.lang}">${escapeHtml(copy[input.lang].privacyLink)}</a>`, settings);
   });
 
   const bodyErrorHandler: ErrorRequestHandler = (error: unknown, req, res, next) => {

@@ -24,6 +24,8 @@ Avant soumission, l'exploitant doit approuver les bases et finalités de traitem
 
 La page publique affiche un avertissement de prépublication tant que sa configuration n'est pas revue. Son HTTP 200 rend l'information lisible, **pas juridiquement complète**. Ne fournir cette URL comme politique finalisée dans Console qu'après relecture du texte, mise à jour des mentions encore incertaines, configuration des coordonnées et constats d'accès public FR/EN. Un HTTP 503 sur le POST signale un échec de réception, jamais une demande acceptée.
 
+URL canoniques : `https://vpnsxb.afrihall.com/api/public/privacy` et `https://vpnsxb.afrihall.com/api/public/data-deletion`. Elles utilisent le namespace API déjà proxifié ; les éventuels alias racine ne sont pas requis et ne doivent pas figurer dans Console à leur place. Le contrôle local du dossier refuse les anciens liens racine dans les fiches.
+
 ## Réponses à rapprocher de la version finale
 
 Le fonctionnement proposé est **consumption-only** : accès à des forfaits existants par codes, sans flux d'achat mobile identifié. Cela ne signifie pas que le service est gratuit. L'exploitant choisit prix de téléchargement, pays, audience, classification de contenu, catégories et modèle commercial. Aucun lien de paiement ne doit être ajouté aux ressources de confidentialité pour contourner les règles de facturation.

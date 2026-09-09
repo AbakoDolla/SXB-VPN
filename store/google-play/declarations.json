@@ -9,7 +9,7 @@
     "collectsUserData": { "proposed": true, "reviewed": false, "evidence": ["server.ts:89-102", "server/routes/mobile.ts:430-451", "server/routes/mobile.ts:1156-1197"] },
     "allDataEncryptedInTransit": { "proposed": null, "reviewed": false, "action": "HTTPS API and encrypted local storage do not establish all-transports compliance. Verify device-to-endpoint encryption for all allowed imported/provisioned profiles, DNS, native components and SDKs in the final release; refuse plaintext VPN transports." },
     "independentSecurityReview": { "proposed": null, "reviewed": false, "action": "No recognized independent review supplied. Do not claim one from source tests or this dossier." },
-    "deletionMechanism": { "proposed": "Public manual request form", "reviewed": false, "url": "https://vpnsxb.afrihall.com/data-deletion", "action": "Confirm live integration, staff intake, verified identity procedure, actual associated-data deletion, processors and retention. A 202 receipt alone is not deletion." },
+    "deletionMechanism": { "proposed": "Public manual request form", "reviewed": false, "url": "https://vpnsxb.afrihall.com/api/public/data-deletion", "action": "Confirm live integration, staff intake, verified identity procedure, actual associated-data deletion, processors and retention. A 202 receipt alone is not deletion." },
     "accountCreation": { "proposed": null, "reviewed": false, "action": "Code activation and staff-created technical users do not alone determine Google's user-facing account definition. Inspect the final app and any directed external enrolment; do not claim an exemption from account deletion without review.", "evidence": ["app-mobile/contexts/AuthContext.tsx", "server/routes/devices.ts:241-271", "server/routes/auth.ts:57-73"] },
     "dataTypes": [
       {
@@ -86,7 +86,7 @@
       }
     ],
     "webRequestInventory": {
-      "surface": "Public /data-deletion form, usable independently of the mobile app",
+      "surface": "Public /api/public/data-deletion form, usable independently of the mobile app",
       "fields": ["Reply email", "Request type and message", "Optional non-secret device identifier", "Security cookie and HTTP metadata"],
       "includedInPlayForm": null,
       "action": "This is explicit user-initiated website collection, not automatic mobile/SDK collection. Review how the final app opens the resource and Google's applicable linked-web-flow scope before adding the corresponding Play categories. The public privacy policy covers it regardless.",
