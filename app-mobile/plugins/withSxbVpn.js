@@ -583,7 +583,7 @@ function withEngineData(config) {
     await prepareGeosite();
     const destination = path.join(cfg.modRequest.platformProjectRoot, 'app', 'src', 'main', 'assets', 'sxb-engine');
     fs.mkdirSync(destination, { recursive: true });
-    for (const name of ['geosite.db', 'geosite.sha256']) {
+    for (const name of ['geosite.db', 'geosite.sha256', 'NOTICE.txt']) {
       fs.copyFileSync(path.join(DEFAULT_DIRECTORY, name), path.join(destination, name));
     }
     return cfg;

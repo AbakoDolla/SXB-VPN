@@ -1,0 +1,37 @@
+SXB VPN - bundled offline domain data
+
+Database: SagerNet/sing-geosite, release 20260908094002, geosite.db
+Source: https://github.com/SagerNet/sing-geosite/releases/tag/20260908094002
+SHA-256: 03cbdc0ceab1aa8f0620af77d32e990a3850acb653ffdced8efac137277930b2
+
+Domain data originates from v2fly/domain-list-community:
+https://github.com/v2fly/domain-list-community/tree/5d939545c84e2a534f8e85ba6ffb2b51fa18fb76
+The domain data is distributed under the MIT license reproduced below.
+
+The conversion software is a separate work:
+https://github.com/SagerNet/sing-geosite/tree/dd64ae0ebf2ee69166c0510042b3e96c085f27df
+Its source is licensed GPL-3.0-or-later. The converter program is not bundled here.
+This database snapshot is the upstream SagerNet/v2fly dataset; an unspecified
+provider's private dataset is not claimed to be identical.
+
+MIT License
+
+Copyright (c) 2018-2019 V2Ray
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"runtime/debug"
 	"strings"
 
+	"github.com/sagernet/sing-box/common/geosite"
 	"github.com/sagernet/sing-box/experimental/libbox"
 )
 
@@ -67,10 +69,35 @@ func check() error {
 			return fmt.Errorf("only synthetic example.test endpoints are allowed; never supply a private provider export")
 		}
 	}
+	var domainReader *geosite.Reader
+	var domainFile *os.File
 	for _, rule := range config.Route.Rules {
 		if len(rule.Geosite) != 0 {
-			if _, err := os.Stat(filepath.Join(os.Args[2], "geosite.db")); err != nil {
-				return fmt.Errorf("equivalent provider geosite.db is required offline; refusing to download or drop the rule")
+			if domainReader == nil {
+				databasePath := filepath.Join(os.Args[2], "geosite.db")
+				data, err := os.ReadFile(databasePath)
+				if err != nil {
+					return fmt.Errorf("pinned offline geosite.db required: %w", err)
+				}
+				if fmt.Sprintf("%x", sha256.Sum256(data)) != "03cbdc0ceab1aa8f0620af77d32e990a3850acb653ffdced8efac137277930b2" {
+					return fmt.Errorf("offline geosite checksum mismatch")
+				}
+				domainFile, err = os.Open(databasePath)
+				if err != nil {
+					return err
+				}
+				defer domainFile.Close()
+				domainReader, _, err = geosite.NewReader(domainFile)
+				if err != nil {
+					return fmt.Errorf("native geosite reader rejected the database: %w", err)
+				}
+			}
+			for _, category := range rule.Geosite {
+				items, err := domainReader.Read(category)
+				if err != nil || len(items) == 0 {
+					return fmt.Errorf("offline geosite category %s is missing or invalid", category)
+				}
+				fmt.Printf("Native geosite reader loaded %s (%d rules)\n", category, len(items))
 			}
 		}
 	}

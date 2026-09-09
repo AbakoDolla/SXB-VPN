@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 
 const require = createRequire(import.meta.url);
 const { VERSION, SHA256, URL } = require('../../app-mobile/scripts/prepare-geosite.cjs');
@@ -11,6 +12,9 @@ test('the native domain database is pinned rather than downloaded during VPN sta
   assert.equal(VERSION, '20260908094002');
   assert.equal(SHA256, '03cbdc0ceab1aa8f0620af77d32e990a3850acb653ffdced8efac137277930b2');
   assert.equal(URL, `https://github.com/SagerNet/sing-geosite/releases/download/${VERSION}/geosite.db`);
+  const database = readFileSync(new globalThis.URL('../../app-mobile/assets/engine/geosite.db', import.meta.url));
+  assert.equal(createHash('sha256').update(database).digest('hex'), SHA256);
+  assert.match(read('app-mobile/assets/engine/NOTICE.txt'), /Copyright \(c\) 2018-2019 V2Ray/);
   const plugin = read('app-mobile/plugins/withSxbVpn.js');
   assert.match(plugin, /config = withEngineData\(config\)/);
   assert.match(plugin, /await prepareGeosite\(\)/);
