@@ -387,14 +387,50 @@ test("lifecycle: tickets retain minimal observation on user/owner blocks, deleti
   assert.deepEqual(deleted.body.subscriptions, []);
 });
 
-test("lifecycle: mobile refresh is bound, least-privileged, non-extending and distinguishes outage from invalid session", async () => {
+test("lifecycle: active mobile refresh renews the sliding fifteen-minute and seven-day lifetimes", async () => {
   bind();
-  const refresh = accessToken({}, process.env.REFRESH_SECRET);
+  const claims = { userId: "u1", clientId: "c1", deviceId, role: "CLIENT", permissions: ["clients.create"] };
+  const refresh = jwt.sign({
+    ...claims, iat: Math.floor(Date.now() / 1000) - 7 * 24 * 60 * 60 + 60,
+  }, process.env.REFRESH_SECRET, { expiresIn: "7d" });
+  const originalExpiry = jwt.decode(refresh).exp;
+  for (const path of ["/auth/refresh", "/mobile/auth/refresh"]) {
+    const updated = await request(path, accessToken(), { method: "POST", body: { refreshToken: refresh } });
+    ok(updated);
+    const access = jwt.verify(updated.body.accessToken, process.env.JWT_SECRET, { algorithms: ["HS256"] });
+    const renewed = jwt.verify(updated.body.refreshToken, process.env.REFRESH_SECRET, { algorithms: ["HS256"] });
+    assert.equal(access.exp - access.iat, 15 * 60);
+    assert.equal(renewed.exp - renewed.iat, 7 * 24 * 60 * 60);
+    assert.ok(access.exp > originalExpiry);
+    assert.ok(renewed.exp > originalExpiry);
+    for (const token of [access, renewed]) {
+      assert.equal(token.userId, "u1");
+      assert.equal(token.clientId, "c1");
+      assert.equal(token.deviceId, deviceId);
+      assert.equal(token.role, "CLIENT");
+      assert.deepEqual(token.permissions, []);
+    }
+    ok(await request("/mobile/connections", updated.body.accessToken));
+    const expired = jwt.sign({ ...claims, exp: 1 }, process.env.REFRESH_SECRET);
+    for (const invalid of [expired, `${refresh}invalid`]) {
+      const denied = await request(path, accessToken(), { method: "POST", body: { refreshToken: invalid } });
+      ok(denied, 401);
+      assert.equal(denied.body.code, "SESSION_INVALID");
+      assert.equal(denied.body.accessToken, undefined);
+      assert.equal(denied.body.refreshToken, undefined);
+    }
+  }
+});
+
+test("lifecycle: blocked mobile refresh preserves its expiry, binding and least privilege without hiding outages", async () => {
+  bind();
+  const refresh = accessToken({ iat: Math.floor(Date.now() / 1000) - 14 * 60 }, process.env.REFRESH_SECRET);
   row("VpnClient", "c1").status = "disabled";
   for (const path of ["/auth/refresh", "/mobile/auth/refresh"]) {
     const updated = await request(path, accessToken(), { method: "POST", body: { refreshToken: refresh } });
     ok(updated);
     assert.equal(jwt.decode(updated.body.refreshToken).exp, jwt.decode(refresh).exp);
+    assert.equal(jwt.decode(updated.body.accessToken).exp, jwt.decode(refresh).exp);
     assert.deepEqual(jwt.decode(updated.body.accessToken).permissions, []);
     ok(await state(updated.body.accessToken));
     ok(await request("/mobile/connections", updated.body.accessToken), 403);
