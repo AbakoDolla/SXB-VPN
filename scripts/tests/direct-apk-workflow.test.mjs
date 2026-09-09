@@ -28,17 +28,22 @@ test('direct branch builds produce an artifact without touching public distribut
 test('APK candidates compare the existing identity and inspect native binaries before publishing', () => {
   const allocation = job.steps.findIndex(step => /Allocate shared Android version/.test(step.name));
   const baseline = job.steps.findIndex(step => /Read the published APK identity/.test(step.name));
+  const toolchain = job.steps.findIndex(step => /Prepare pinned Android release tools/.test(step.name));
   const validation = job.steps.findIndex(step => /Valider APK/.test(step.name));
   const artifact = job.steps.findIndex(step => step.uses?.startsWith('actions/upload-artifact@'));
   assert.ok(baseline >= 0 && baseline < allocation);
+  assert.ok(toolchain >= 0 && toolchain < baseline);
+  assert.match(job.steps[toolchain].run, /"build-tools;36\.0\.0"/);
   assert.ok(validation > allocation && validation < artifact);
   assert.match(job.steps[baseline].run, /verify --verbose --print-certs/);
   assert.match(job.steps[baseline].run, /node scripts\/read-direct-baseline\.cjs/);
+  assert.match(job.steps[baseline].run, /build-tools\/36\.0\.0\/apksigner/);
   assert.equal(job.steps[allocation].env.SXB_PUBLISHED_VERSION_CODE, undefined);
   const script = job.steps[validation].run;
   assert.match(script, /identity\.certificateSha256, baseline\.certificateSha256/);
   assert.match(script, /identity\.versionCode > baseline\.versionCode/);
   assert.match(script, /inspectNativeArchive\('build\/sxb-vpn\.apk', 'lib', \['libbox\.so', 'libdnstt\.so'\]\)/);
   assert.match(script, /status: 'validated-artifact'/);
+  assert.match(script, /build-tools\/36\.0\.0\/apksigner/);
   assert.doesNotMatch(script, /status: 'published'/);
 });

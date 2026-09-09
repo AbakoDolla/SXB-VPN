@@ -98,6 +98,16 @@ jobs:
           gradle-version: wrapper
           cache-read-only: false
 
+      - name: Prepare pinned Android release tools
+        run: |
+          set -euo pipefail
+          export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKMANAGER"
+          "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.1.12297006" >> "$GITHUB_ENV"
+
       # ── Install dependencies (CI mode) ────────────────────────────────────────
       - name: Install dependencies
         run: npm ci --legacy-peer-deps
@@ -109,8 +119,8 @@ jobs:
         run: |
           set -euo pipefail
           export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
-          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          AAPT="$ANDROID_HOME/build-tools/36.0.0/aapt"
           test -x "$APKSIGNER"
           test -x "$AAPT"
           export SXB_BASELINE_DIR="$RUNNER_TEMP/sxb-direct-baseline"
@@ -118,6 +128,7 @@ jobs:
           gh release download --pattern sxb-vpn.apk --dir "$SXB_BASELINE_DIR"
           "$APKSIGNER" verify --verbose --print-certs "$SXB_BASELINE_DIR/sxb-vpn.apk" > "$SXB_BASELINE_DIR/signature.txt"
           "$AAPT" dump badging "$SXB_BASELINE_DIR/sxb-vpn.apk" > "$SXB_BASELINE_DIR/badging.txt"
+          cat "$SXB_BASELINE_DIR/signature.txt"
           node scripts/read-direct-baseline.cjs
 
       - name: Allocate shared Android version before Expo prebuild
@@ -576,8 +587,8 @@ jobs:
           # toute signature, page-aligner les .so pour les appareils dont le
           # chargeur exige un alignement natif 16 KiB. Toute modification après
           # signature invaliderait l’APK, donc cette étape précède apksigner.
-          ZIPALIGN=$(find "${ANDROID_HOME}/build-tools" -type f -name zipalign 2>/dev/null | sort -V | tail -1 || true)
-          if [ -z "$ZIPALIGN" ]; then
+          ZIPALIGN="${ANDROID_HOME}/build-tools/36.0.0/zipalign"
+          if [ ! -x "$ZIPALIGN" ]; then
             echo "::error::zipalign introuvable avant alignement natif"
             exit 1
           fi
@@ -588,8 +599,8 @@ jobs:
           # Re-signer explicitement avec le keystore persistant garantit la
           # compatibilité des installateurs OEM et permet à la validation
           # suivante de vérifier réellement v1 + v2.
-          APKSIGNER=$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner 2>/dev/null | sort -V | tail -1 || true)
-          if [ -z "$APKSIGNER" ]; then
+          APKSIGNER="${ANDROID_HOME}/build-tools/36.0.0/apksigner"
+          if [ ! -x "$APKSIGNER" ]; then
             echo "::error::apksigner introuvable avant re-signature post-build"
             exit 1
           fi
@@ -640,15 +651,15 @@ jobs:
             fi
           done
           echo "[APK] ABI natives présentes : $ABI_LIST ; libbox.so et libdnstt.so présents"
-          ZIPALIGN=$(find "${ANDROID_HOME}/build-tools" -type f -name zipalign 2>/dev/null | sort -V | tail -1 || true)
-          if [ -z "$ZIPALIGN" ]; then
+          ZIPALIGN="${ANDROID_HOME}/build-tools/36.0.0/zipalign"
+          if [ ! -x "$ZIPALIGN" ]; then
             echo "::error::zipalign introuvable — validation de l’alignement impossible"
             exit 1
           fi
           "$ZIPALIGN" -c -v 4 "$APK" >/tmp/apk-zipalign.log
           "$ZIPALIGN" -c -P 16 -v 4 "$APK" >/tmp/apk-zipalign-page.log
-          APKSIGNER=$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner 2>/dev/null | sort -V | tail -1 || true)
-          if [ -z "$APKSIGNER" ]; then
+          APKSIGNER="${ANDROID_HOME}/build-tools/36.0.0/apksigner"
+          if [ ! -x "$APKSIGNER" ]; then
             echo "::error::apksigner introuvable — validation cryptographique obligatoire"
             exit 1
           fi
@@ -661,8 +672,8 @@ jobs:
           printf '%s\n' "$VERIFY_PLATFORM"
           printf '%s\n' "$VERIFY_V1" | grep -qE 'Verified using v1 scheme \(JAR signing\): true'
           printf '%s\n' "$VERIFY_PLATFORM" | grep -qE 'Verified using v2 scheme \(APK Signature Scheme v2\): true'
-          AAPT=$(find "${ANDROID_HOME}/build-tools" -type f -name aapt 2>/dev/null | sort -V | tail -1 || true)
-          if [ -z "$AAPT" ]; then
+          AAPT="${ANDROID_HOME}/build-tools/36.0.0/aapt"
+          if [ ! -x "$AAPT" ]; then
             echo "::error::aapt introuvable — validation du manifeste impossible"
             exit 1
           fi
