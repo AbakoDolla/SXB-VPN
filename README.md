@@ -133,6 +133,60 @@ explicitement attribuées, et sous leur seul nom commercial. La restriction est
 appliquée par l'API, pas seulement par l'affichage : un appel direct avec une
 configuration non attribuée reçoit un `403`.
 
+### Remise à zéro des données applicatives
+
+La zone de réinitialisation des paramètres est réservée au **propriétaire
+`OWNER`**, y compris côté API. Un administrateur ou super-administrateur ne
+peut pas lancer cette opération. Un aperçu des données concernées précède
+la confirmation exacte **`RESET SXB VPN`** et la saisie du mot de passe courant
+du propriétaire.
+
+La remise à zéro supprime les comptes non administratifs, les revendeurs,
+les licences/appareils et activations, les forfaits, jetons et vouchers,
+les configurations VPN et comptes techniques du dashboard, les tickets de
+support, les enregistrements push, les diagnostics et données de trafic.
+Les licences VPN rattachées à un administrateur sont également retirées,
+mais son compte de connexion est conservé.
+
+**Restent conservés :** les utilisateurs `OWNER`, `ADMIN` et `SUPER_ADMIN`
+(identifiants, mots de passe et accès), les rôles et permissions, les serveurs
+et paramètres d'infrastructure, la publication APK, les journaux d'audit et
+le grand livre immuable des quotas. Les références d'audit vers un utilisateur
+supprimé deviennent nulles selon la clé étrangère existante ; les événements
+eux-mêmes restent conservés. Aucun fichier du projet, clé de signature,
+certificat TLS ou compte SSH du système n'est supprimé.
+
+Une sauvegarde PostgreSQL privée est obligatoire **avant** les suppressions.
+Un échec de sauvegarde interdit l'effacement. Les suppressions sont
+transactionnelles, avec verrouillage des écritures concurrentes, et le mode
+maintenance précédent est restauré après l'opération. Un rejeu du même
+challenge récupère le reçu existant au lieu d'effacer de nouvelles données.
+La restauration d'une sauvegarde reste une opération d'exploitation manuelle,
+à essayer d'abord sur une base isolée ; elle n'est jamais déclenchée
+automatiquement par le dashboard.
+
+Cette remise à zéro complète est une exception destructive explicite :
+elle retire aussi les configurations protégées, sans en révéler les secrets.
+Elle ne donne **aucun** déverrouillage réutilisable. Les suppressions
+sélectives, individuelles ou multiples, continuent à respecter les permissions,
+les liens aux forfaits et les mots de passe de configuration, même pour `OWNER`.
+La sélection de suppression porte sur les éléments filtrés ; ses limites et
+les éventuels échecs sont affichés, sans annoncer la suppression d'un élément
+que l'API a refusé.
+
+Le workflow manuel `production-reset.yml` utilise le même endpoint protégé,
+avec les identifiants `OWNER` du coffre existant. Son mode par défaut,
+`inventory`, ne supprime rien. Il refuse une version déployée différente de
+celle attendue et ne téléverse aucune sauvegarde de production vers GitHub.
+La vérification `verify-production-reset.yml` utilise exclusivement une base
+PostgreSQL jetable et des données fictives.
+
+**Espace disque :** supprimer des lignes peut rendre les pages PostgreSQL
+réutilisables sans réduire immédiatement la taille des fichiers sur le VPS.
+Les sauvegardes conservées occupent aussi de l'espace. Cette opération ne
+promet donc pas de libérer plusieurs gigaoctets et ne nettoie pas le code,
+les dépendances ou les fichiers du projet.
+
 ### Verrouillage des configurations
 
 À la création ou à l'import, un mot de passe de protection **distinct des

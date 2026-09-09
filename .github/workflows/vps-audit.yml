@@ -25,12 +25,26 @@ name: 🔎 Audit VPS — lecture seule
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "Audit the VPS read-only, or verify reset on a disposable CI database without VPS access."
+        type: choice
+        options:
+          - audit
+          - verify-reset
+        default: audit
+        required: true
 
 permissions:
   contents: read
 
 jobs:
+  verify-reset:
+    if: inputs.mode == 'verify-reset'
+    uses: ./.github/workflows/verify-production-reset.yml
+
   audit:
+    if: inputs.mode != 'verify-reset'
     name: Diagnostic lecture seule
     runs-on: ubuntu-latest
     # Les secrets SSH sont attachés à l'environnement « production » : sans cette

@@ -1,0 +1,65 @@
+name: Verify application reset on isolated PostgreSQL
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Real PostgreSQL reset, preservation and backup restoration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: reset_fixture
+          POSTGRES_PASSWORD: reset-fixture-only-not-production
+          POSTGRES_DB: sxb_reset_fixture
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -U reset_fixture -d sxb_reset_fixture"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SXB_RESET_PG_TEST: "1"
+      DATABASE_URL: postgresql://reset_fixture:reset-fixture-only-not-production@127.0.0.1:${{ job.services.postgres.ports[5432] }}/sxb_reset_fixture?schema=public&connection_limit=6
+      PGHOST: 127.0.0.1
+      PGPORT: ${{ job.services.postgres.ports[5432] }}
+      PGUSER: reset_fixture
+      PGPASSWORD: reset-fixture-only-not-production
+      PGDATABASE: sxb_reset_fixture
+      PG_DUMP_BIN: /usr/lib/postgresql/16/bin/pg_dump
+      PG_RESTORE_BIN: /usr/lib/postgresql/16/bin/pg_restore
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Check the isolated database and PostgreSQL tools
+        run: |
+          set -euo pipefail
+          test -x "$PG_DUMP_BIN"
+          test -x "$PG_RESTORE_BIN"
+          "$PG_DUMP_BIN" --version
+          psql --no-password -v ON_ERROR_STOP=1 -c "SELECT current_database();"
+          psql --no-password -v ON_ERROR_STOP=1 -c "CREATE DATABASE sxb_reset_restore;"
+      - name: Install declared backend dependencies
+        working-directory: backend
+        run: npm ci --include=dev --legacy-peer-deps --no-audit --no-fund
+      - name: Create only the disposable fixture schema
+        run: |
+          set -euo pipefail
+          node backend/node_modules/prisma/build/index.js generate --schema backend/prisma/schema.prisma
+          node backend/node_modules/prisma/build/index.js db push --schema backend/prisma/schema.prisma --skip-generate
+          psql --no-password -v ON_ERROR_STOP=1 \
+            -f backend/prisma/migrations/20260907050730_reseller_quota_ledger/migration.sql
+      - name: Exercise reset and restore the actual backup
+        run: node --test --test-concurrency=1 scripts/tests/production-reset-postgres.mjs
