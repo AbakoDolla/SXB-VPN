@@ -61,15 +61,15 @@
         "reviewed": false
       },
       {
-        "id": "support-and-personal-info",
-        "playTypes": ["Messages / Other in-app messages", "Personal info / Name", "Personal info / Email address", "Personal info / Phone number"],
+        "id": "in-app-support-messages",
+        "playTypes": ["Messages / Other in-app messages"],
         "collected": true,
-        "requiredOrOptional": "Support messages are user initiated. Email is required only for the public request form. Names, email and phone exist in legacy/staff account records; app-register accepts phone but no current mobile caller was established. Confirm data actually sent by the final app and any linked web flow.",
+        "requiredOrOptional": "Optional user-initiated in-app support messages. The backend associates the ticket with the authenticated account and derives its display name from existing records; this is not proof that the mobile app newly collects a name, email or phone.",
         "purposes": ["App functionality", "Account management", "Developer communications"],
         "sharing": null,
         "ephemeral": false,
-        "retention": "No ticket or legacy registration TTL established. New public requests have no user owner; only authorized support staff can read them.",
-        "evidence": ["server/routes/mobile.ts:1372-1434", "server/routes/app-register.ts:15-101", "prisma/schema.prisma:264-278", "server/routes/public-privacy.ts"],
+        "retention": "No fixed support ticket TTL established.",
+        "evidence": ["server/routes/mobile.ts:1372-1434", "prisma/schema.prisma:264-278", "app-mobile/app/support.tsx"],
         "reviewed": false
       },
       {
@@ -85,6 +85,22 @@
         "reviewed": false
       }
     ],
+    "webRequestInventory": {
+      "surface": "Public /data-deletion form, usable independently of the mobile app",
+      "fields": ["Reply email", "Request type and message", "Optional non-secret device identifier", "Security cookie and HTTP metadata"],
+      "includedInPlayForm": null,
+      "action": "This is explicit user-initiated website collection, not automatic mobile/SDK collection. Review how the final app opens the resource and Google's applicable linked-web-flow scope before adding the corresponding Play categories. The public privacy policy covers it regardless.",
+      "evidence": ["server/routes/public-privacy.ts", "server/services/public-privacy.ts"],
+      "reviewed": false
+    },
+    "legacyServiceContext": {
+      "surface": "Historical/staff service records and legacy API, not current mobile collection",
+      "actualLegacyRoutes": ["POST /api/app", "GET /api/app/status/:deviceId", "GET /api/app/pending"],
+      "currentMobileCallsLegacyRoutes": false,
+      "action": "Current JS does not call /app/register or /app/status. The old registration comment is not the mounted route. Do not declare automatic phone/name/email collection from the mere existence of these endpoints. Preserve this context for historical data retention/deletion, and verify any other active Play artifacts separately. Parent secures these endpoints.",
+      "evidence": ["server.ts:140", "server/routes/app-register.ts:15-101", "app-mobile/contexts/AuthContext.tsx"],
+      "reviewed": false
+    },
     "thirdParties": [
       {
         "name": "Google Firebase Cloud Messaging and Firebase Installations",

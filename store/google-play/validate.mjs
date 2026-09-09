@@ -76,6 +76,7 @@ if (process.argv.includes("--submission")) {
     if (!listing.reviewed) blockers.push(`${listing.locale}.reviewed`);
   }
   const safety = declarations.dataSafety;
+  if (typeof safety.webRequestInventory?.includedInPlayForm !== "boolean") blockers.push("webRequestInventory.includedInPlayForm");
   for (const key of ["collectsUserData", "allDataEncryptedInTransit", "independentSecurityReview", "accountCreation"]) {
     if (typeof safety[key]?.proposed !== "boolean") blockers.push(`dataSafety.${key}.proposed`);
   }

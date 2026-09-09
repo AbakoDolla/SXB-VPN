@@ -42,3 +42,12 @@ test("public FR and EN content have the same fields, all populated, and real req
   assert.match(copy.en.sent, /confirms neither the existence of an account nor deletion/);
   assert.match(copy.fr.sent, /ni l'existence d'un compte ni une suppression/);
 });
+
+test("unused legacy routes and public web intake are not classified as automatic mobile collection", () => {
+  const { dataSafety } = JSON.parse(readFileSync(path.join(root, "store", "google-play", "declarations.json"), "utf8"));
+  assert.equal(dataSafety.legacyServiceContext.currentMobileCallsLegacyRoutes, false);
+  assert.ok(dataSafety.legacyServiceContext.actualLegacyRoutes.includes("POST /api/app"));
+  assert.equal(dataSafety.webRequestInventory.includedInPlayForm, null);
+  assert.deepEqual(dataSafety.dataTypes.find(item => item.id === "in-app-support-messages").playTypes, ["Messages / Other in-app messages"]);
+  assert.ok(!dataSafety.dataTypes.some(item => item.collected === true && item.playTypes.includes("Personal info / Phone number")));
+});

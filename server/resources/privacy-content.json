@@ -14,7 +14,7 @@
     "sections": [
       {
         "title": "Service et données nécessaires",
-        "text": "SXB VPN est un client VPN à codes d'accès et profils. L'activation et le service transmettent au backend des identifiants de compte/client et d'appareil, les codes nécessaires à l'activation, les associations aux forfaits, les volumes montants/descendants, le quota, les dates et les actions de session. Ces données servent à fournir la configuration, contrôler l'accès, comptabiliser les forfaits et dépanner le service. Certains dossiers historiques contiennent un nom, un e-mail ou un téléphone fourni lors de l'inscription auprès du service ou d'un revendeur ; l'ancienne route d'enregistrement accepte aussi un téléphone. Ce n'est pas la preuve que chaque version mobile le demande."
+        "text": "SXB VPN est un client VPN à codes d'accès et profils. L'activation et le service transmettent au backend des identifiants de compte/client et d'appareil, les codes nécessaires à l'activation, les associations aux forfaits, les volumes montants/descendants, le quota, les dates et les actions de session. Ces données servent à fournir la configuration, contrôler l'accès, comptabiliser les forfaits et dépanner le service. Certains dossiers historiques contiennent un nom, un e-mail ou un téléphone fourni séparément auprès du service ou d'un revendeur. L'application mobile actuelle n'appelle pas les anciennes routes d'enregistrement ou de statut : leur présence dans le backend ne constitue pas une collecte automatique de téléphone par l'application."
       },
       {
         "title": "Journaux et diagnostic",
@@ -75,7 +75,7 @@
     "sections": [
       {
         "title": "Service and necessary data",
-        "text": "SXB VPN is a VPN client using access codes and profiles. Activation and service use send account/client and device identifiers, activation codes, plan associations, upload/download volumes, quotas, dates and session actions to the backend. These support configuration delivery, access control, plan accounting and troubleshooting. Some historical records contain a name, email or phone supplied when registering with the service or a reseller; the legacy registration route also accepts a phone number. This does not establish that every mobile version asks for it."
+        "text": "SXB VPN is a VPN client using access codes and profiles. Activation and service use send account/client and device identifiers, activation codes, plan associations, upload/download volumes, quotas, dates and session actions to the backend. These support configuration delivery, access control, plan accounting and troubleshooting. Some historical records contain a name, email or phone supplied separately to the service or a reseller. The current mobile app does not call the legacy registration or status routes: their presence in the backend does not constitute automatic phone-number collection by the app."
       },
       {
         "title": "Logs and diagnostics",
