@@ -5,11 +5,15 @@ import Pagination from './ui/Pagination';
 import {
   fetchAccounts, createAccount, deleteAccount, generateAdminToken,
   listAdminTokens, revokeAdminToken, fetchRolesForCreation,
-  AdminTokenInfo, CreateAccountPayload,
+  AdminTokenInfo, CreateAccountPayload, DashboardAccount,
 } from '../api/accounts';
 import { fetchResellerReconciliation } from '../api/resellers';
-import { isSuperAdmin as isSuperAdminRole } from '../lib/roles';
-import { User, UserRole, ResellerReconciliation } from '../types';
+import { isSuperAdmin as isSuperAdminRole, isAdmin as isAdminRole } from '../lib/roles';
+import { UserRole, ResellerReconciliation } from '../types';
+import { usePermissions } from '../contexts/PermissionsContext';
+import { useActionLock } from '../hooks/useActionLock';
+import { useBulkDelete } from '../hooks/useBulkDelete';
+import BulkDeleteControls from './BulkDeleteControls';
 import ResellersView from './ResellersView';
 import RBACView from './RBACView';
 import {
@@ -63,12 +67,15 @@ export default function AccountsView({
   useEffect(() => { setTab(initialTab); }, [initialTab]);
 
   // Data
-  const [accounts, setAccounts] = useState<User[]>([]);
+  const [accounts, setAccounts] = useState<DashboardAccount[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
   const [adminTokens, setAdminTokens] = useState<AdminTokenInfo[]>([]);
   const [reconciliation, setReconciliation] = useState<ResellerReconciliation | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const { pending, run } = useActionLock();
+  const can = usePermissions();
 
   // Formulaire de création de compte
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -94,6 +101,8 @@ export default function AccountsView({
 
   const isSuperAdmin = isSuperAdminRole(currentUserRole);
   const isAdmin = currentUserRole === UserRole.ADMIN || isSuperAdmin;
+  const canDelete = isAdmin && can('users.delete');
+  const selectableAccount = (account: DashboardAccount) => account.id !== currentUserId && !isAdminRole(account.role);
 
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
@@ -113,7 +122,7 @@ export default function AccountsView({
       // ADMIN n'y peut rien et le lirait comme une alarme sans recours.
       if (isSuperAdmin) setReconciliation(await fetchResellerReconciliation());
     } catch (err) {
-      console.error(err);
+      toast.error(errorText(err, 'commerce.common.errorLoad'));
     } finally {
       setLoading(false);
     }
@@ -128,6 +137,7 @@ export default function AccountsView({
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (bulkDelete.isDeleting()) { toast.error(message('commerce.common.actionPending')); return; }
     if (selectedRoleIsReseller) {
       setCreateError('commerce.accounts.resellerCreationError');
       return;
@@ -135,33 +145,35 @@ export default function AccountsView({
     setCreateError('');
     setCreating(true);
     try {
-      const payload: CreateAccountPayload = {
-        ...form,
-        password: autoGenPassword ? undefined : formPassword || undefined,
-      };
-      const result = await createAccount(payload);
+      await run('create-account', async () => {
+        const payload: CreateAccountPayload = {
+          ...form,
+          password: autoGenPassword ? undefined : formPassword || undefined,
+        };
+        const result = await createAccount(payload);
 
-      let adminToken: string | undefined;
-      let expiresAt: string | undefined;
-      try {
-        const tokenData = await generateAdminToken(result.id, 48);
-        adminToken = tokenData.token;
-        expiresAt = tokenData.expiresAt;
-      } catch { /* le compte est créé ; le jeton reste optionnel */ }
+        let adminToken: string | undefined;
+        let expiresAt: string | undefined;
+        try {
+          const tokenData = await generateAdminToken(result.id, 48);
+          adminToken = tokenData.token;
+          expiresAt = tokenData.expiresAt;
+        } catch { /* le compte est créé ; le jeton reste optionnel */ }
 
-      setCreatedResult({
-        name: result.name,
-        email: result.email,
-        role: result.role?.name || '',
-        generatedPassword: result.generatedPassword,
-        adminToken,
-        expiresAt,
+        setCreatedResult({
+          name: result.name,
+          email: result.email,
+          role: result.role?.name || '',
+          generatedPassword: result.generatedPassword,
+          adminToken,
+          expiresAt,
+        });
+        setShowCreateModal(false);
+        setForm({ name: '', email: '', phone: '', roleId: '', status: 'active' });
+        setFormPassword('');
+        await loadAll();
       });
-      setShowCreateModal(false);
-      setForm({ name: '', email: '', phone: '', roleId: '', status: 'active' });
-      setFormPassword('');
-      await loadAll();
-    } catch (err: any) {
+    } catch (err) {
       setCreateError(err);
     } finally {
       setCreating(false);
@@ -169,13 +181,16 @@ export default function AccountsView({
   };
 
   const handleGenerateToken = async (userId: string) => {
+    if (bulkDelete.isDeleting()) { toast.error(message('commerce.common.actionPending')); return; }
     setGeneratingTokenFor(userId);
     try {
-      const data = await generateAdminToken(userId, 24);
-      setTokenResult({ userId, token: data.token, expiresAt: data.expiresAt });
-      toast.success(message('commerce.accounts.tokenGenerated'));
-      await loadAll();
-    } catch (err: any) {
+      await run(`generate-token:${userId}`, async () => {
+        const data = await generateAdminToken(userId, 24);
+        setTokenResult({ userId, token: data.token, expiresAt: data.expiresAt });
+        toast.success(message('commerce.accounts.tokenGenerated'));
+        await loadAll();
+      });
+    } catch (err) {
       toast.error(errorText(err, 'commerce.accounts.tokenError'));
     } finally {
       setGeneratingTokenFor(null);
@@ -183,24 +198,35 @@ export default function AccountsView({
   };
 
   const handleDelete = async (id: string, name: string) => {
+    if (bulkDelete.isDeleting()) { toast.error(message('commerce.common.actionPending')); return; }
+    if (!canDelete) { toast.error(message('errors.auth.forbidden_permission')); return; }
     if (id === currentUserId) { toast.error(message('commerce.accounts.cannotDeleteSelf')); return; }
+    const target = accounts.find(account => account.id === id);
+    if (!target || isSuperAdminRole(target.role)) { toast.error(message('errors.bulkDelete.unavailable')); return; }
     if (!window.confirm(t('commerce.accounts.confirmDelete', { name }))) return;
     try {
-      await deleteAccount(id);
-      toast.success(message('commerce.accounts.deleted'));
-      await loadAll();
-    } catch (err: any) {
+      await run(`delete-account:${id}`, async () => {
+        await deleteAccount(id);
+        setAccounts(current => current.filter(account => account.id !== id));
+        setSelected(current => new Set([...current].filter(selectedId => selectedId !== id)));
+        toast.success(message('commerce.accounts.deleted'));
+        await loadAll();
+      });
+    } catch (err) {
       toast.error(errorText(err, 'commerce.common.errorDelete'));
     }
   };
 
   const handleRevokeToken = async (id: string) => {
+    if (bulkDelete.isDeleting()) { toast.error(message('commerce.common.actionPending')); return; }
     if (!window.confirm(t('commerce.accounts.confirmRevoke'))) return;
     try {
-      await revokeAdminToken(id);
-      toast.success(message('commerce.accounts.tokenRevoked'));
-      await loadAll();
-    } catch (err: any) {
+      await run(`revoke-token:${id}`, async () => {
+        await revokeAdminToken(id);
+        toast.success(message('commerce.accounts.tokenRevoked'));
+        await loadAll();
+      });
+    } catch (err) {
       toast.error(errorText(err, 'commerce.common.error'));
     }
   };
@@ -218,9 +244,20 @@ export default function AccountsView({
       (a) =>
         (a.name || '').toLowerCase().includes(needle) ||
         (a.email || '').toLowerCase().includes(needle) ||
-        String((a as any).role?.name || (a as any).role || '').toLowerCase().includes(needle)
+        a.role.toLowerCase().includes(needle)
     );
   }, [accounts, search]);
+
+  const bulkDelete = useBulkDelete({
+    items: accounts, filtered, selected, setSelected,
+    label: account => account.name || account.email || account.id,
+    eligible: selectableAccount, canDelete, remove: account => deleteAccount(account.id),
+    onDeleted: ids => setAccounts(current => current.filter(account => !ids.has(account.id))),
+    afterDelete: isSuperAdmin ? async () => setReconciliation(await fetchResellerReconciliation()) : undefined,
+    pending, run, busy: loading || showCreateModal || creating || !!generatingTokenFor,
+    scopeKey: `${currentUserRole}:${currentUserId ?? ""}`, filterKey: `${search}\0${tab}`,
+  });
+  const controlsBusy = !!pending || !!bulkDelete.confirmation;
 
   const paginated = useMemo(() => {
     const start = (page - 1) * pageSize;
@@ -228,6 +265,7 @@ export default function AccountsView({
   }, [filtered, page, pageSize]);
 
   useEffect(() => { setPage(1); }, [search]);
+  useEffect(() => setPage(current => Math.max(1, Math.min(current, Math.ceil(filtered.length / pageSize)))), [filtered.length, pageSize]);
 
   const RoleBadge = ({ role }: { role: string }) => (
     <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-xs font-semibold ${ROLE_COLORS[role] || 'text-gray-400 bg-gray-500/10 border-gray-500/30'}`}>
@@ -255,6 +293,7 @@ export default function AccountsView({
         {isSuperAdmin && tab === 'accounts' && (
           <button
             onClick={() => { setShowCreateModal(true); setCreateError(''); }}
+            disabled={controlsBusy}
             className="flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 px-4 py-2 text-sm font-medium text-white shadow-lg transition-all hover:from-cyan-400 hover:to-blue-500"
           >
             <UserPlus className="h-4 w-4" />
@@ -269,6 +308,7 @@ export default function AccountsView({
           <button
             key={id}
             type="button"
+            disabled={controlsBusy}
             onClick={() => setTab(id)}
             title={hint}
             className={`flex flex-1 min-w-[10rem] items-center justify-center gap-2 rounded-xl px-3 py-2 text-xs font-semibold transition-all sm:text-sm ${
@@ -412,10 +452,13 @@ export default function AccountsView({
               type="text"
               placeholder={t('commerce.accounts.search')}
               value={search}
+              disabled={controlsBusy}
               onChange={(e) => setSearch(e.target.value)}
               className="w-full rounded-lg border border-gray-800 bg-gray-900/60 py-2 pl-9 pr-4 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
             />
           </div>
+
+          {isAdmin && <BulkDeleteControls controller={bulkDelete} hintKey="operations.bulkDelete.accountHint" />}
 
           {/* Tableau des comptes */}
           {loading ? (
@@ -429,6 +472,7 @@ export default function AccountsView({
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-[#1a1f2e]">
+                      {isAdmin && <th className="px-5 py-3 text-left text-xs text-gray-400">{t('operations.bulkDelete.selectColumn')}</th>}
                       <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400">{t('commerce.common.account')}</th>
                       <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400">{t('commerce.common.role')}</th>
                       <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400">{t('commerce.common.status')}</th>
@@ -439,14 +483,20 @@ export default function AccountsView({
                   <tbody className="divide-y divide-[#1a1f2e]">
                     {paginated.length === 0 && (
                       <tr>
-                        <td colSpan={5} className="py-12 text-center text-gray-500">{t('commerce.accounts.empty')}</td>
+                        <td colSpan={isAdmin ? 6 : 5} className="py-12 text-center text-gray-500">{t('commerce.accounts.empty')}</td>
                       </tr>
                     )}
                     {paginated.map((account) => {
-                      const roleName = (account as any).role?.name || (account as any).role || '';
+                      const roleName = account.role;
                       const isOwn = account.id === currentUserId;
                       return (
                         <tr key={account.id} className="transition-colors hover:bg-white/[0.02]">
+                          {isAdmin && <td className="px-5 py-3.5">
+                            <input type="checkbox" checked={bulkDelete.selected.has(account.id)}
+                              disabled={controlsBusy || !canDelete || !selectableAccount(account)}
+                              aria-label={t('operations.bulkDelete.selectOne', { name: account.name || account.email || account.id })}
+                              onChange={() => bulkDelete.toggle(account.id)} />
+                          </td>}
                           <td className="px-5 py-3.5">
                             <div className="flex items-center gap-3">
                               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-cyan-500 to-blue-600">
@@ -457,8 +507,8 @@ export default function AccountsView({
                               <div className="min-w-0">
                                 <p className="font-medium text-white">{account.name}</p>
                                 <p className="truncate text-xs text-gray-500">{account.email}</p>
-                                {(account as any).phone && (
-                                  <p className="text-xs text-gray-600">{(account as any).phone}</p>
+                                {account.phone && (
+                                  <p className="text-xs text-gray-600">{account.phone}</p>
                                 )}
                                 {roleName === 'RESELLER' && (
                                   // Compte de connexion ≠ fiche revendeur : le dire
@@ -476,16 +526,16 @@ export default function AccountsView({
                           </td>
                           <td className="px-5 py-3.5">
                             <span className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ${
-                              (account as any).status === 'active'
+                              account.status === 'active'
                                 ? 'bg-emerald-500/10 text-emerald-400'
                                 : 'bg-rose-500/10 text-rose-400'
                             }`}>
-                              {(account as any).status === 'active' ? t('commerce.common.activeDot') : t('commerce.common.suspendedDot')}
+                              {account.status === 'active' ? t('commerce.common.activeDot') : t('commerce.common.suspendedDot')}
                             </span>
                           </td>
                           <td className="px-5 py-3.5 text-xs text-gray-500">
-                            {(account as any).createdAt
-                              ? new Date((account as any).createdAt).toLocaleDateString(locale)
+                            {account.createdAt
+                              ? new Date(account.createdAt).toLocaleDateString(locale)
                               : '—'}
                           </td>
                           <td className="px-5 py-3.5">
@@ -494,7 +544,7 @@ export default function AccountsView({
                                 <>
                                   <button
                                     onClick={() => handleGenerateToken(account.id)}
-                                    disabled={generatingTokenFor === account.id}
+                                    disabled={controlsBusy || generatingTokenFor === account.id}
                                     title={t('commerce.accounts.generateAccessToken')}
                                     className="flex items-center gap-1.5 rounded-lg bg-cyan-500/10 px-2.5 py-1.5 text-xs text-cyan-400 transition-colors hover:bg-cyan-500/20 disabled:opacity-50"
                                   >
@@ -506,6 +556,7 @@ export default function AccountsView({
                                   {roleName !== 'SUPER_ADMIN' && roleName !== 'OWNER' && (
                                     <button
                                       onClick={() => handleDelete(account.id, account.name)}
+                                      disabled={controlsBusy || !canDelete}
                                       title={t('commerce.accounts.deleteAccount')}
                                       className="rounded-lg p-1.5 text-gray-600 transition-colors hover:bg-rose-500/10 hover:text-rose-400"
                                     >
@@ -528,6 +579,7 @@ export default function AccountsView({
                   page={page}
                   pageSize={pageSize}
                   total={filtered.length}
+                  disabled={controlsBusy}
                   onPageChange={setPage}
                   onPageSizeChange={(size) => { setPageSize(size); setPage(1); }}
                 />
@@ -581,6 +633,7 @@ export default function AccountsView({
                             {tok.status === 'active' && (
                               <button
                                 onClick={() => handleRevokeToken(tok.id)}
+                                disabled={controlsBusy}
                                 className="rounded px-2 py-1 text-xs text-rose-400 hover:bg-rose-500/10 hover:text-rose-300"
                               >
                                 {t('commerce.common.revoke')}

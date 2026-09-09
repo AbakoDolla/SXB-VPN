@@ -8,6 +8,8 @@ import {
 import { fetchRoles } from "../api/permissions";
 import { apiRequest } from "../api/client";
 import { listAdminTokens, generateAdminToken, revokeAdminToken } from "../api/accounts";
+import { isOwner } from "../lib/roles";
+import OwnerResetSection from "./OwnerResetSection";
 
 interface GeneratedCreds { name: string; email: string; password: string; role: string; }
 
@@ -83,6 +85,9 @@ const TABS = [
 export default function SettingsView({ currentUser, onUserUpdated, onNavigate }: SettingsViewProps) {
   const { t, language, setLanguage, formatDate, errorMessage } = useTranslation();
   const [activeTab, setActiveTab] = useState("profile");
+  const [resetBusy, setResetBusy] = useState(false);
+  const owner = isOwner(currentUser?.role);
+  const tabs = owner ? [...TABS, { id: "reset", label: "operations.reset.tab", icon: Database }] : TABS;
 
   // Profile state
   const [profileName, setProfileName] = useState(currentUser?.name || "");
@@ -222,11 +227,12 @@ export default function SettingsView({ currentUser, onUserUpdated, onNavigate }:
 
       {/* Tab bar */}
       <div className="flex gap-1 bg-[#0a0d14] border border-[#1a1f2e] rounded-xl p-1 overflow-x-auto">
-        {TABS.map(tab => {
+        {tabs.map(tab => {
           const Icon = tab.icon;
           return (
             <button
               key={tab.id}
+              disabled={resetBusy}
               onClick={() => setActiveTab(tab.id)}
               className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium whitespace-nowrap transition-all cursor-pointer ${
                 activeTab === tab.id ? 'bg-[#0f1218] text-white border border-[#252b3b]' : 'text-gray-500 hover:text-gray-300'
@@ -421,6 +427,12 @@ export default function SettingsView({ currentUser, onUserUpdated, onNavigate }:
           </div>
         </div>
       )}
+      {owner && <OwnerResetSection
+        currentUserRole={currentUser.role}
+        ownerId={currentUser.id}
+        visible={activeTab === "reset"}
+        onBusyChange={setResetBusy}
+      />}
     </div>
   );
 }

@@ -39,25 +39,36 @@ export interface CreateAccountResult {
   createdAt: string;
 }
 
+export interface DashboardAccount {
+  id: string;
+  name: string;
+  email: string;
+  phone?: string;
+  role: string;
+  status?: string;
+  permissions: string[];
+  createdAt?: string;
+}
+type AccountResponse = Omit<DashboardAccount, "role" | "permissions"> & {
+  role: string | { name: string } | null;
+  permissions?: string[];
+};
+
 // Fetch all dashboard users
-export async function fetchAccounts(): Promise<User[]> {
-  try {
-    const data = await apiRequest<{ users: any[] }>('/users');
-    const users = data.users || (Array.isArray(data) ? (data as any[]) : []);
-    return users.map((u: any) => ({
-      id: u.id,
-      name: u.name,
-      email: u.email,
-      phone: u.phone,
-      role: u.role?.name || u.role,
-      status: u.status,
-      permissions: u.permissions || [],
-      createdAt: u.createdAt,
-    }));
-  } catch (err) {
-    console.error('Error fetching accounts:', err);
-    return [];
-  }
+export async function fetchAccounts(): Promise<DashboardAccount[]> {
+  const data = await apiRequest<{ users: AccountResponse[] } | AccountResponse[]>('/users');
+  const users = Array.isArray(data) ? data : data.users;
+  if (!Array.isArray(users)) throw new Error('errors.requestFailed');
+  return users.map(user => ({
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    phone: user.phone,
+    role: typeof user.role === 'string' ? user.role : user.role?.name ?? '',
+    status: user.status,
+    permissions: user.permissions ?? [],
+    createdAt: user.createdAt,
+  }));
 }
 
 // Create a new dashboard account

@@ -1,4 +1,27 @@
 {
+  "reset": {
+    "ownerOnly": "Seul le compte OWNER peut demander une réinitialisation globale des données.",
+    "recoveredNotExecuted": "La maintenance a été restaurée, mais aucune purge des données n'a été effectuée. Ce nonce a été abandonné. Chargez et confirmez explicitement un nouvel aperçu avant toute nouvelle suppression.",
+    "confirmationRequired": "Chargez l'aperçu, saisissez la phrase exacte et le mot de passe actuel du propriétaire, puis acceptez la suppression.",
+    "invalidRequest": "La requête de réinitialisation est invalide. Aucun succès n'est confirmé.",
+    "challengeInvalid": "Ce nonce de confirmation est invalide. Un nouvel aperçu et une confirmation explicite sont nécessaires.",
+    "challengeExpired": "Cet aperçu a expiré. Une réinitialisation non exécutée exige un nouvel aperçu et une nouvelle confirmation.",
+    "previewChanged": "L'inventaire a changé depuis l'aperçu. Aucune suppression n'a démarré avec cet aperçu ; relisez-en un nouveau avant de confirmer.",
+    "inProgress": "Une réinitialisation est déjà en cours. Patientez puis réessayez cette même opération sans demander un nouveau nonce.",
+    "reauthFailed": "Le mot de passe actuel du propriétaire est incorrect. Saisissez-le à nouveau pour reprendre la même opération.",
+    "backupFailed": "La sauvegarde privée obligatoire a échoué. La réinitialisation n'est pas confirmée. Corrigez la sauvegarde avant de réessayer la même opération.",
+    "failed": "Le serveur n'a pas pu confirmer la fin de l'opération. Ne démarrez pas une autre réinitialisation ; réessayez avec le même nonce de confirmation.",
+    "maintenanceRestoreFailed": "Le serveur signale que les données ont été supprimées, mais que la restauration de la maintenance a échoué. L'opération n'est pas entièrement terminée. Réessayez le même nonce pour restaurer la maintenance sans supprimer à nouveau.",
+    "invalidResponse": "La réponse du serveur est incomplète ou invalide. Le succès ne peut pas être confirmé. Réessayez uniquement la même opération si une réinitialisation a été envoyée.",
+    "requestFailed": "La requête a échoué ; aucune réinitialisation réussie n'est confirmée. Si l'exécution a été envoyée, réessayez uniquement la même opération."
+  },
+  "bulkDelete": {
+    "unavailable": "Cette sélection est indisponible, déjà en cours, protégée, hors de votre périmètre ou n'est plus autorisée. Aucune suppression supplémentaire n'a été envoyée pour cet élément.",
+    "tooMany": "La sélection dépasse la limite d'un lot de suppression. Réduisez la sélection.",
+    "empty": "Sélectionnez au moins un élément autorisé dans le filtre chargé.",
+    "failed": "La suppression n'a pas pu être confirmée. L'élément reste affiché.",
+    "profileInUse": "Cette configuration est liée à des forfaits. Retirez d'abord les liens explicitement ; aucune suppression en cascade automatique n'est autorisée."
+  },
   "requestFailed": "La demande n'a pas pu aboutir. Réessayez.",
   "network": "Connexion au service impossible. Vérifiez votre réseau et réessayez.",
   "diagnostic": "Diagnostic : {{message}}",

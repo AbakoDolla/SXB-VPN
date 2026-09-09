@@ -173,7 +173,10 @@ function renderer(initial = {}) {
       if (id === "../contexts/I18nContext") return { useTranslation: context };
       if (id === "sonner") return { toast: { success: value => messages.push(value), error: value => messages.push(value) } };
       if (id === "../types") return { UserRole: { OWNER: "OWNER", SUPER_ADMIN: "SUPER_ADMIN", ADMIN: "ADMIN", SUPPORT: "SUPPORT", RESELLER: "RESELLER" } };
-      if (id === "../lib/roles") return { isSuperAdmin: role => role === "SUPER_ADMIN" || role === "OWNER" };
+      if (id === "../lib/roles") return {
+        isSuperAdmin: role => role === "SUPER_ADMIN" || role === "OWNER",
+        isOwner: role => role === "OWNER",
+      };
       if (id.startsWith("../api/")) return api;
       if (id.startsWith("./") && names.includes(id.slice(2))) return getComponent(id.slice(2));
       return new Proxy({ default: noopComponent }, { get: (_target, key) => key === "__esModule" ? true : noopComponent });

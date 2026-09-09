@@ -3,6 +3,7 @@ import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
+import { resetPreview, resetResult } from "./reset-dashboard-data.mjs";
 
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 export const src = path.join(root, "artifacts", "sxb-dashboard", "src");
@@ -48,10 +49,11 @@ export const text = tree => (Array.isArray(tree) ? tree : [tree]).map(node =>
 
 export function fixture(view = "DevicesView", options = {}) {
   const states = new Map(), modules = new Map(), effects = [], timers = new Map();
-  const calls = [], toasts = [], copies = [], confirmations = [], logs = [], overrides = {};
+  const calls = [], toasts = [], copies = [], confirmations = [], logs = [], storage = [], overrides = {};
+  const documentEvents = new Map(), windowEvents = new Map();
   let role = options.role ?? "SUPER_ADMIN";
-  let permissions = new Set(options.permissions ?? ["clients.view", "clients.create", "clients.manage", "clients.delete", "subscription.manage", "reseller.manage"]);
-  let access = options.access ?? { accessState: "active", quotaState: "available", quotaBytes: "100000000000", quotaAllocatedBytes: "0" };
+  let permissions = new Set(options.permissions ?? ["clients.view", "clients.create", "clients.manage", "clients.delete", "subscription.manage", "reseller.manage", "users.delete", "vpnprofile.manage"]);
+  let access = options.access ?? { resellerId: "reseller-1", accessState: "active", quotaState: "available", quotaBytes: "100000000000", quotaAllocatedBytes: "0" };
   let now = Date.parse("2026-09-09T06:00:00Z");
   let slots, cursor = 0, visited;
   let clipboard = async value => { copies.push(value); };
@@ -60,6 +62,9 @@ export function fixture(view = "DevicesView", options = {}) {
     devices: [plain(device)], clients: [plain(client)], subscriptions: [plain(subscription)],
     resellers: [{ id: "reseller-1", name: "Fixture reseller", email: "reseller@example.test" }],
     profiles: [{ id: "profile-1", name: "Fixture profile", status: "active", protocol: "vless" }],
+    accounts: [{ id: "account-1", name: "Fixture support", email: "support@example.test", role: "SUPPORT", status: "active", permissions: [] }],
+    resetPreview: plain(resetPreview), resetResult: plain(resetResult),
+    resetStatus: { mode: "production", status: "idle", recoveryAvailable: false },
     ...options.data,
   };
   const jsx = (type, props, key) => ({ type, props: props ?? {}, key });
@@ -96,8 +101,21 @@ export function fixture(view = "DevicesView", options = {}) {
     if (method === "fetchClients") return plain(data.clients);
     if (method === "fetchSubscriptions") return plain(data.subscriptions);
     if (method === "fetchResellers") return plain(data.resellers);
+    if (method === "fetchAccounts") return plain(data.accounts);
+    if (method === "fetchRoles" || method === "fetchRolesForCreation") return ["OWNER", "ADMIN", "SUPER_ADMIN", "RESELLER", "SUPPORT"].map(name => ({ id: name, name }));
+    if (method === "listAdminTokens" || method === "fetchPayloads") return [];
+    if (method === "fetchResellerReconciliation") return { totals: { orphanRoleUsers: 0, resellerRecords: 1, resellersWithoutRole: 0 } };
     if (method === "fetchVpnProfiles" || method === "fetchAssignedVpnProfiles") return plain(data.profiles);
     if (method === "fetchSubStats") return { total: data.subscriptions.length, active: 1, expired: 0 };
+    if (method === "fetchVpnProfileStats") return { total: data.profiles.length, active: data.profiles.length, byProtocol: [] };
+    if (method === "unlockVpnProfile") {
+      const row = data.profiles.find(item => item.id === args[0]);
+      return {
+        unlockToken: `fixture-unlock-${args[0]}`,
+        expiresAt: new Date(now + 600_000).toISOString(),
+        profile: { ...plain(row), isLocked: false, unlockExpiresAt: new Date(now + 600_000).toISOString() },
+      };
+    }
     if (method === "suspendDevice" || method === "resumeDevice" || method === "revokeDevice") {
       return replace("devices", args[0], { status: method === "suspendDevice" ? "suspended" : method === "resumeDevice" ? "active" : "disabled" });
     }
@@ -114,6 +132,25 @@ export function fixture(view = "DevicesView", options = {}) {
       const kind = method === "deleteClient" ? "clients" : "subscriptions";
       data[kind] = data[kind].filter(row => row.id !== args[0]);
       return;
+    }
+    if (method === "deleteAccount" || method === "deleteVpnProfile") {
+      const kind = method === "deleteAccount" ? "accounts" : "profiles";
+      data[kind] = data[kind].filter(row => row.id !== args[0]);
+      return;
+    }
+    if (method === "apiRequest") {
+      const [route, request = {}] = args;
+      if (route === "/ops/reset/status" && (!request.method || request.method === "GET")) return plain(data.resetStatus);
+      if (route === "/ops/reset/preview" && (!request.method || request.method === "GET")) return plain(data.resetPreview);
+      if (route === "/ops/reset/execute" && request.method === "POST") {
+        data.resetStatus = {
+          mode: "production", status: "completed", recoveryAvailable: false,
+          resetId: data.resetResult.resetId, challenge: request.body.challenge,
+          expiresAt: data.resetPreview.expiresAt, receipt: plain(data.resetResult),
+        };
+        data.resetPreview = { ...data.resetPreview, counts: data.resetResult.countsAfter };
+        return plain(data.resetResult);
+      }
     }
     if (method === "createClient") return { ...plain(client), id: "new-client" };
     if (method === "generateDeviceToken") return { ...plain(device), id: "new-device", token: NEW_CODE };
@@ -144,7 +181,7 @@ export function fixture(view = "DevicesView", options = {}) {
       refresh: async () => {}, blocked: false, quotaReached: access?.quotaState === "reached",
     }) };
     if (file.endsWith("ResellerAccessBanner.tsx")) return { ResellerAccessSummaryCard: () => null, ResellerActionNotice: () => null };
-    if (file.includes(`${path.sep}api${path.sep}`) && !file.endsWith(`${path.sep}client.ts`)) return api;
+    if (file.includes(`${path.sep}api${path.sep}`) && !file.endsWith(`${path.sep}reset.ts`)) return api;
     if (file.endsWith(".json")) return JSON.parse(readFileSync(file, "utf8"));
     const module = { exports: {} };
     modules.set(file, module);
@@ -152,12 +189,25 @@ export function fixture(view = "DevicesView", options = {}) {
       fileName: file, compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
     }).outputText);
     runInNewContext(compiled.get(file), {
-      module, exports: module.exports, Intl,
+      module, exports: module.exports, Intl, TextEncoder, URLSearchParams, atob,
       Date: class extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } },
       console: { log: (...args) => logs.push(args), error: (...args) => logs.push(args), warn: (...args) => logs.push(args) },
-      window: { confirm: value => { confirmations.push(value); return confirm(value); } },
+      window: {
+        confirm: value => { confirmations.push(value); return confirm(value); },
+        addEventListener: (name, fn) => windowEvents.set(name, fn),
+        removeEventListener: name => windowEvents.delete(name),
+      },
+      confirm: value => { confirmations.push(value); return confirm(value); },
+      alert: value => toasts.push({ kind: "alert", value }),
+      document: {
+        hidden: false, addEventListener: (name, fn) => documentEvents.set(name, fn),
+        removeEventListener: name => documentEvents.delete(name),
+      },
+      localStorage: {
+        getItem: () => null, setItem: (...args) => storage.push(args), removeItem: key => storage.push([key]),
+      },
       navigator: { language: "fr-FR", clipboard: { writeText: value => clipboard(value) } },
-      setTimeout: callback => { const id = Symbol(); timers.set(id, callback); return id; },
+      setTimeout: (callback, delay = 0) => { const id = Symbol(); timers.set(id, { callback, at: now + delay }); return id; },
       clearTimeout: id => timers.delete(id),
       require(specifier) {
         if (specifier === "react") return hooks;
@@ -191,11 +241,17 @@ export function fixture(view = "DevicesView", options = {}) {
     if (node == null || typeof node === "boolean") return [];
     if (typeof node !== "object") return [String(node)];
     if (typeof node.type === "function") return expand(invoke(node.type, node.props, `${id}:${node.type.name}:${node.key ?? ""}`), `${id}.child`);
+    if (node.props.hidden) return [];
     return [{ ...node, children: expand(node.props.children, `${id}.children`) }];
   }
   function render() {
     visited = new Set();
-    const tree = expand(invoke(component, { currentUserRole: role, actorName: "Fixture operator" }, view));
+    const tree = expand(invoke(component, {
+      currentUserRole: role, actorName: "Fixture operator",
+      currentUserId: options.currentUserId ?? "operator-1",
+      currentUser: { id: "operator-1", name: "Fixture operator", email: "owner@example.test", role, permissions: [...permissions] },
+      ownerId: "operator-1", visible: true, ...options.props,
+    }, view));
     for (const [id, owned] of states) if (!visited.has(id)) {
       for (const state of owned) state?.cleanup?.();
       states.delete(id);
@@ -205,14 +261,17 @@ export function fixture(view = "DevicesView", options = {}) {
   }
   const t = (key, params) => i18n.translate(i18n.getLanguage(), key, params);
   return {
-    calls, toasts, copies, confirmations, logs, overrides, data, render, expand, load, t, states,
+    calls, toasts, copies, confirmations, logs, storage, overrides, data, render, expand, load, t, states,
     setLanguage: i18n.setLanguage,
     setRole: value => { role = value; },
     setPermissions: value => { permissions = new Set(value); },
     setAccess: value => { access = value; },
     setClipboard: value => { clipboard = value; },
     setConfirm: value => { confirm = value; },
-    advance: ms => { now += ms; for (const fn of timers.values()) fn(); timers.clear(); },
+    advance: ms => {
+      now += ms;
+      for (const [id, timer] of timers) if (timer.at <= now) { timers.delete(id); timer.callback(); }
+    },
     button: (key, tree = render(), params) => nodes(tree).find(node => node.type === "button" &&
       (node.props.title === t(key, params) || node.props["aria-label"] === t(key, params) || text(node.children) === t(key, params))),
     async flush() {

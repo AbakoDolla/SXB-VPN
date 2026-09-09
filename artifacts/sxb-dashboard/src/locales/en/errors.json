@@ -1,4 +1,27 @@
 {
+  "reset": {
+    "ownerOnly": "Only the OWNER account can request a global data reset.",
+    "recoveredNotExecuted": "Maintenance was restored, but no data purge was performed. This nonce has been discarded. Load and explicitly confirm a fresh preview before any new deletion.",
+    "confirmationRequired": "Load the preview, type the exact confirmation phrase, enter the owner's current password and acknowledge the deletion.",
+    "invalidRequest": "The reset request is invalid. No success has been confirmed.",
+    "challengeInvalid": "This confirmation nonce is invalid. A new preview and explicit confirmation are required.",
+    "challengeExpired": "This preview has expired. An unexecuted reset requires a new preview and confirmation.",
+    "previewChanged": "The inventory changed since the preview. No deletion was started with this preview; review a new one before confirming.",
+    "inProgress": "A reset is already in progress. Wait, then retry this same operation without requesting a new nonce.",
+    "reauthFailed": "The owner's current password is incorrect. Reenter it to retry the same operation.",
+    "backupFailed": "The mandatory private backup failed. The reset is not confirmed. Correct the backup problem before retrying the same operation.",
+    "failed": "The server could not confirm completion. Do not start a different reset; retry the same confirmation nonce.",
+    "maintenanceRestoreFailed": "The server reports that data deletion completed, but maintenance restoration failed. This operation is not fully finished. Retry the same nonce to restore maintenance without deleting again.",
+    "invalidResponse": "The server response is incomplete or invalid. Success cannot be confirmed. Retry only the same operation if a reset was submitted.",
+    "requestFailed": "The request failed; no successful reset is confirmed. If execution was submitted, retry only the same operation."
+  },
+  "bulkDelete": {
+    "unavailable": "This selection is unavailable, already being processed, protected, outside your ownership scope, or no longer permitted. No further deletion was sent for this record.",
+    "tooMany": "The selection exceeds the deletion batch limit. Reduce the selection.",
+    "empty": "Select at least one eligible record from the loaded filter.",
+    "failed": "Deletion could not be confirmed. The record remains listed.",
+    "profileInUse": "This configuration is linked to data plans. Remove the links explicitly first; automatic cascade deletion is not allowed."
+  },
   "requestFailed": "The request could not be completed. Please retry.",
   "network": "Unable to connect to the service. Check your network and retry.",
   "diagnostic": "Diagnostic: {{message}}",

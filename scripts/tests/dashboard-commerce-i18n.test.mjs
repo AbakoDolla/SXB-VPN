@@ -96,7 +96,7 @@ function fixture() {
   const subscription = { id: "sub-1", name: "Forfait utilisateur", clientId: client.id, client, profileId: "profile-1", profile: { name: "Profil utilisateur", protocol: "vless" }, status: "active", quotaBytes: "-1", quotaUsed: "9007199254740993", dataToken: "DATA-OPAQUE", durationDays: 30, deviceLimit: 1, expireAt: "2027-01-02T00:00:00Z" };
   const roles = ["OWNER", "SUPER_ADMIN", "ADMIN", "SUPPORT", "RESELLER"].map(name => ({ id: name, name, description: "Description serveur", permissions: [] }));
   const responses = {
-    fetchAccounts: [{ id: "account-1", name: "Compte utilisateur", email: "account@example.com", role: { name: "ADMIN" }, status: "active" }],
+    fetchAccounts: [{ id: "account-1", name: "Compte utilisateur", email: "account@example.com", role: "ADMIN", status: "active" }],
     fetchRolesForCreation: roles, listAdminTokens: [], fetchResellerReconciliation: { totals: { orphanRoleUsers: 0 } },
     fetchClients: [client], fetchResellers: [reseller], fetchResellerQuotaHistory: [],
     fetchDevices: [{ id: "device-1", deviceId: "SXBDEVICE", label: "Appareil utilisateur", token: "DEVICE-OPAQUE", status: "active", quotaUsed: "1536", quotaTotal: "-1", quotaRemaining: "-1", trafficDownload: "1536", trafficUpload: "0", trafficTotal: "1536", expireAt: "2027-01-02T00:00:00Z" }],

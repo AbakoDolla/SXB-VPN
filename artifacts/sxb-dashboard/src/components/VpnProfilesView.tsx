@@ -1,6 +1,11 @@
 import { isAdmin as isAdminRole } from '../lib/roles';
 import React, { useEffect, useRef, useState } from "react";
 import { useTranslation } from '../contexts/I18nContext';
+import { usePermissions } from '../contexts/PermissionsContext';
+import { useActionLock } from '../hooks/useActionLock';
+import { useBulkDelete } from '../hooks/useBulkDelete';
+import BulkDeleteControls from './BulkDeleteControls';
+import Pagination from './ui/Pagination';
 import type { Translate } from '../lib/i18n';
 import ProfileLockDialog, { validProfilePassword } from './ProfileLockDialog';
 import { UserRole } from "../types";
@@ -409,9 +414,15 @@ function ProbeResultPanel({ result }: { result: ConfigTestResult }) {
 }
 
 export default function VpnProfilesView({ currentUserRole }: Props) {
-  const { t, locale, errorMessage, message, errorText } = useTranslation();
+  const { t, locale, formatNumber, errorMessage, message, errorText } = useTranslation();
   const SSH_IMPORT_TEMPLATES = sshImportTemplates(t);
   const isAdmin = isAdminRole(currentUserRole);
+  const can = usePermissions();
+  const canDelete = isAdmin && can('vpnprofile.manage');
+  const { pending, run } = useActionLock();
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
   const [profiles, setProfiles] = useState<VpnProfile[]>([]);
   const [stats, setStats]       = useState({ total: 0, active: 0, byProtocol: [] as any[] });
   const [loading, setLoading]   = useState(true);
@@ -462,6 +473,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
     const grant = grants.current.get(id);
     return grant && grant.expiresAt > Date.now() ? grant.token : undefined;
   };
+  const profileIsLocked = (profile: VpnProfile) => !!profile.isLocked || !!profile.hasLock && !tokenFor(profile.id);
   useEffect(() => {
     const expiry = Math.min(...[...grants.current.values()].map(grant => grant.expiresAt));
     if (!Number.isFinite(expiry)) return;
@@ -474,6 +486,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
     return () => { document.removeEventListener('visibilitychange', hide); grants.current.clear(); generation.current++; };
   }, []);
   const submitLock = async (password: string) => {
+    if (bulkDelete.isDeleting()) throw new Error('commerce.common.actionPending');
     if (!lockDialog) return;
     const epoch = generation.current;
     const { profile, mode } = lockDialog;
@@ -503,6 +516,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
   const [assignSaving, setAssignSaving] = useState(false);
 
   const load = async () => {
+    if (bulkDelete.isDeleting()) { setError(message('commerce.common.actionPending')); return; }
     relock();
     const epoch = generation.current;
     setLoading(true);
@@ -524,11 +538,13 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
   };
 
   const openAssign = (p: VpnProfile) => {
+    if (bulkDelete.isDeleting()) { setError(message('commerce.common.actionPending')); return; }
     setAssignProfile(lockProfile(p));
     setAssignSelected(new Set((p.resellers || []).map(r => r.resellerId)));
   };
 
   const saveAssign = async () => {
+    if (bulkDelete.isDeleting()) { setError(message('commerce.common.actionPending')); return; }
     if (!assignProfile) return;
     setAssignSaving(true);
     try {
@@ -550,6 +566,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
   };
 
   const openCreate = () => {
+    if (bulkDelete.isDeleting()) { setError(message('commerce.common.actionPending')); return; }
     setEditId(null); setEditingProfile(null);
     setAdminForm({ ...DEFAULT_ADMIN_FORM });
     setLegacyForm({ ...DEFAULT_LEGACY_FORM });
@@ -558,6 +575,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
   };
 
   const openEdit = (p: VpnProfile) => {
+    if (bulkDelete.isDeleting()) { setError(message('commerce.common.actionPending')); return; }
     if (p.hasLock && !tokenFor(p.id)) { relock(p.id); return; }
     setEditId(p.id); setEditingProfile(p);
     setAdminForm({
@@ -607,6 +625,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
 
   // ── Préflight : tester le texte d'import AVANT persistance ─────────────────
   const handleTestImport = async (raw: string) => {
+    if (bulkDelete.isDeleting()) { setError(message('commerce.common.actionPending')); return; }
     const epoch = generation.current;
     if (!raw.trim()) { setError(message('configurations.ui.pasteFirst')); return; }
     setTesting(true); setError(''); setFieldErrors([]); setTestResult(null);
@@ -622,6 +641,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
 
   // ── Préflight : tester la config stockée d'un profil ───────────────────────
   const handleTestProfile = async (id: string) => {
+    if (bulkDelete.isDeleting()) { setError(message('commerce.common.actionPending')); return; }
     const epoch = generation.current;
     const token = tokenFor(id);
     setTesting(true); setError(''); setTestResult(null);
@@ -639,6 +659,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
   // ── Soumission ──────────────────────────────────────────────────────────────
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (bulkDelete.isDeleting()) { setError(message('commerce.common.actionPending')); return; }
     const epoch = generation.current;
     setSaving(true); setError(''); setFieldErrors([]);
     try {
@@ -796,17 +817,56 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
     finally { setSaving(false); }
   };
 
+  const deleteProfile = async (profile: VpnProfile) => {
+    if (!canDelete) throw new Error('errors.auth.forbidden_permission');
+    if (profileIsLocked(profile)) throw new Error('PROFILE_LOCKED');
+    if ((profile._count?.subscriptions ?? 0) > 0) throw new Error('errors.bulkDelete.profileInUse');
+    try {
+      await deleteVpnProfile(profile.id, tokenFor(profile.id));
+    } catch (failure) {
+      if (failure && typeof failure === 'object' &&
+        (('status' in failure && failure.status === 423) || ('code' in failure && failure.code === 'PROFILE_LOCKED'))) relock(profile.id);
+      throw failure;
+    }
+  };
   const handleDelete = async (id: string, name: string, count: number) => {
+    if (bulkDelete.isDeleting()) { setError(message('commerce.common.actionPending')); return; }
+    const profile = profiles.find(item => item.id === id);
+    if (!canDelete || !profile) { setError(message('errors.bulkDelete.unavailable')); return; }
+    if (profileIsLocked(profile)) { setError(message('configurations.lock.errors.PROFILE_LOCKED')); return; }
     if (count > 0) { alert(t('configurations.notices.inUse', { count })); return; }
     if (!confirm(t('configurations.notices.confirmDelete', { name }))) return;
-    try { await deleteVpnProfile(id, tokenFor(id)); await load(); }
+    try {
+      await run(`delete:${id}`, async () => {
+        await deleteProfile(profile);
+        setProfiles(current => current.filter(item => item.id !== id));
+        setSelected(current => new Set([...current].filter(item => item !== id)));
+        await load();
+      });
+    }
     catch (failure) { relock(id); setError(extractErrors(failure)); }
   };
 
-  const filtered = profiles.map(p => p.isLocked ? lockProfile(p) : p).filter(p =>
+  const filtered = profiles.map(p => profileIsLocked(p) ? lockProfile(p) : p).filter(p =>
     (filterProto === 'all' || p.protocol === filterProto) &&
     (p.name.toLowerCase().includes(search.toLowerCase()) || (p.host || '').includes(search))
   );
+
+  const bulkDelete = useBulkDelete({
+    items: profiles, filtered, selected, setSelected, label: profile => profile.name || profile.id,
+    eligible: () => true, canDelete, remove: deleteProfile,
+    onDeleted: ids => {
+      ids.forEach(id => grants.current.delete(id));
+      setProfiles(current => current.filter(profile => !ids.has(profile.id)));
+    },
+    afterDelete: async () => setStats(await fetchVpnProfileStats()),
+    pending, run, busy: loading || showForm || !!assignProfile || !!lockDialog || saving || testing || assignSaving,
+    scopeKey: currentUserRole, filterKey: `${search}\0${filterProto}`,
+  });
+  const controlsBusy = !!pending || !!bulkDelete.confirmation || showForm || !!assignProfile || !!lockDialog || saving || testing || assignSaving;
+  const paginated = filtered.slice((page - 1) * pageSize, page * pageSize);
+  useEffect(() => setPage(1), [search, filterProto]);
+  useEffect(() => setPage(current => Math.max(1, Math.min(current, Math.ceil(filtered.length / pageSize)))), [filtered.length, pageSize]);
 
   const fa = (k: keyof typeof adminForm, v: any) => setAdminForm(prev => ({ ...prev, [k]: v }));
   const fl = (k: keyof typeof legacyForm, v: any) => setLegacyForm(prev => ({ ...prev, [k]: v }));
@@ -830,11 +890,11 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
           </div>
         </div>
         <div className="flex gap-2">
-          <button aria-label={t('configurations.ui.refresh')} onClick={load} className="p-2 text-gray-400 hover:text-white hover:bg-white/5 rounded-lg transition-colors">
+          <button aria-label={t('configurations.ui.refresh')} onClick={load} disabled={controlsBusy || loading} className="p-2 text-gray-400 hover:text-white hover:bg-white/5 rounded-lg transition-colors disabled:opacity-40">
             <RefreshCw className="w-4 h-4" />
           </button>
           {isAdmin && (
-            <button onClick={openCreate}
+            <button onClick={openCreate} disabled={controlsBusy}
               className="flex items-center gap-2 px-4 py-2 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 rounded-xl text-sm font-medium border border-emerald-500/20 transition-colors">
               <Plus className="w-4 h-4" /> {t('configurations.ui.import')} </button>
           )}
@@ -863,7 +923,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
       <div className="flex flex-col sm:flex-row gap-3">
         <div className="flex gap-1 flex-wrap">
           {['all', ...PROTOCOLS].map(p => (
-            <button key={p} onClick={() => setFilterProto(p)}
+            <button key={p} onClick={() => setFilterProto(p)} disabled={controlsBusy}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-colors ${
                 filterProto === p
                   ? (p === 'all' ? 'bg-white/10 text-white' : `${PROTO_COLORS[p]} border border-current/20`)
@@ -871,9 +931,12 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
               }`}>{p === 'all' ? t('configurations.ui.all') : p}</button>
           ))}
         </div>
-        <input value={search} onChange={e => setSearch(e.target.value)} placeholder={t('configurations.ui.search')}
+        <input value={search} disabled={controlsBusy} onChange={e => setSearch(e.target.value)} placeholder={t('configurations.ui.search')}
           className="px-3 py-1.5 bg-[#0f1218] border border-[#1a1f2e] rounded-lg text-sm text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 sm:ml-auto" />
       </div>
+
+      <p className="text-xs text-gray-400">{t('operations.bulkDelete.profilePage', { count: formatNumber(filtered.length), limit: formatNumber(50) })}</p>
+      {isAdmin && <BulkDeleteControls controller={bulkDelete} hintKey="operations.bulkDelete.profileHint" />}
 
       {/* Profile Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -883,11 +946,15 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
           <div className="col-span-3 text-center py-12 text-gray-500">
             <ShieldCheck className="w-10 h-10 mx-auto mb-3 opacity-30" />
             <p> {t('configurations.ui.empty')} </p>
-            {isAdmin && <button onClick={openCreate} className="mt-3 text-emerald-400 hover:text-emerald-300 text-sm"> {t('configurations.ui.firstImport')} </button>}
+            {isAdmin && <button onClick={openCreate} disabled={controlsBusy} className="mt-3 text-emerald-400 hover:text-emerald-300 text-sm"> {t('configurations.ui.firstImport')} </button>}
           </div>
-        ) : filtered.map(p => (
+        ) : paginated.map(p => (
           <div key={p.id} className="bg-[#0f1218] border border-[#1a1f2e] rounded-xl p-5 space-y-4">
             <div className="flex items-start justify-between">
+              {isAdmin && <input type="checkbox" checked={bulkDelete.selected.has(p.id)}
+                disabled={controlsBusy || !canDelete}
+                aria-label={t('operations.bulkDelete.selectOne', { name: p.name || p.id })}
+                onChange={() => bulkDelete.toggle(p.id)} className="mr-3 mt-1" />}
               <div className="min-w-0 flex-1">
                 <h3 className="text-white font-semibold truncate">{p.name}</h3>
                 {p.description && <p className="text-xs text-gray-500 mt-0.5 truncate">{p.description}</p>}
@@ -916,10 +983,10 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
               </div>
               {isAdmin && (
                 <div className="flex gap-1 ml-2 shrink-0">
-                  <button aria-label={t('configurations.ui.edit')} disabled={p.isLocked} onClick={() => openEdit(p)} className="p-1.5 text-gray-400 hover:text-white hover:bg-white/5 rounded-lg transition-colors disabled:opacity-30">
+                  <button aria-label={t('configurations.ui.edit')} disabled={p.isLocked || controlsBusy} onClick={() => openEdit(p)} className="p-1.5 text-gray-400 hover:text-white hover:bg-white/5 rounded-lg transition-colors disabled:opacity-30">
                     <Edit3 className="w-3.5 h-3.5" />
                   </button>
-                  <button aria-label={t('configurations.ui.delete')} disabled={p.isLocked} onClick={() => handleDelete(p.id, p.name, p._count?.subscriptions || 0)}
+                  <button aria-label={t('configurations.ui.delete')} disabled={p.isLocked || controlsBusy || !canDelete} onClick={() => handleDelete(p.id, p.name, p._count?.subscriptions || 0)}
                     className="p-1.5 text-gray-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors">
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
@@ -929,11 +996,13 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
 
             <div className="flex flex-wrap gap-2 text-xs">
               <span className="text-gray-400">{t(p.isLocked ? 'configurations.lock.locked' : p.hasLock ? 'configurations.lock.unlocked' : 'configurations.lock.legacy')}</span>
-              {p.hasLock && <button className="text-emerald-400" onClick={() => {
+              {p.hasLock && <button className="text-emerald-400" disabled={controlsBusy} onClick={() => {
+                if (bulkDelete.isDeleting()) { setError(message('commerce.common.actionPending')); return; }
                 if (p.isLocked) { generation.current++; setLockDialog({ profile: p, mode: 'unlock' }); }
                 else relock(p.id);
               }}>{t(p.isLocked ? 'configurations.lock.open' : 'configurations.lock.close')}</button>}
-              {isAdmin && !p.isLocked && <button className="text-amber-400" onClick={() => {
+              {isAdmin && !p.isLocked && <button className="text-amber-400" disabled={controlsBusy} onClick={() => {
+                if (bulkDelete.isDeleting()) { setError(message('commerce.common.actionPending')); return; }
                 generation.current++; setLockDialog({ profile: p, mode: 'set' });
               }}>{t(p.hasLock ? 'configurations.lock.rotate' : 'configurations.lock.add')}</button>}
               {p.unlockExpiresAt && !p.isLocked && <span className="text-gray-500">
@@ -986,6 +1055,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
                 <button
                   type="button"
                   onClick={() => openAssign(p)}
+                  disabled={controlsBusy}
                   className="shrink-0 text-[11px] px-2 py-1 rounded-lg border border-violet-500/30 text-violet-300 hover:bg-violet-500/10 cursor-pointer"
                 > {t('configurations.ui.assign')} </button>
               )}
@@ -993,6 +1063,9 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
           </div>
         ))}
       </div>
+      <Pagination page={page} pageSize={pageSize} total={filtered.length}
+        disabled={controlsBusy || loading} pageSizeOptions={[10, 20, 50]}
+        onPageChange={setPage} onPageSizeChange={setPageSize} />
 
       {/* Modale d'attribution aux revendeurs */}
       {assignProfile && (

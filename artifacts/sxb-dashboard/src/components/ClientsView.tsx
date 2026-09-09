@@ -9,6 +9,8 @@ import { ResellerAccessSummaryCard, ResellerActionNotice } from "./ResellerAcces
 import { isUpperRole, ownerLabel, percentOf } from "../lib/resellerAccess";
 import { canResumeDevice, deviceStatus, lifecycleBadges } from "../lib/lifecycle";
 import { useActionLock } from "../hooks/useActionLock";
+import { useBulkDelete } from "../hooks/useBulkDelete";
+import BulkDeleteControls from "./BulkDeleteControls";
 import ActivationRenewalDialog from "./ActivationRenewalDialog";
 import ActivationCodeResult from "./ActivationCodeResult";
 import { Search, UserPlus, Trash2, ShieldAlert, KeyRound, CalendarDays, PauseCircle, PlayCircle, RefreshCcw, Store } from "lucide-react";
@@ -35,6 +37,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const { pending, run } = useActionLock();
   const [renewTarget, setRenewTarget] = useState<Client | null>(null);
   const [resetResult, setResetResult] = useState<Client | null>(null);
@@ -51,7 +54,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
   // Étiquette « Client de … » : réservée aux rôles qui voient tout le parc.
   // Un revendeur ne voit que ses propres clients, l'étiquette n'y apprendrait rien.
   const showsOwnerColumn = isUpperRole(currentUserRole);
-  const { allows, refresh: refreshAccess } = useResellerAccess();
+  const { access, allows, refresh: refreshAccess } = useResellerAccess();
   const can = usePermissions();
   const canCreate = !isSupport && allows() && can("clients.create");
   const canReduce = !isSupport && allows({ reducesExposure: true }) && can("clients.manage");
@@ -59,6 +62,8 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
   const canResume = canCreate;
   const canReset = !isSupport && allows({ reducesExposure: true }) && can("clients.create");
   const canDelete = !isSupport && allows({ reducesExposure: true }) && can("clients.delete");
+  const ownsClient = (client: Client) => !isReseller || !!access?.resellerId
+    && (client.resellerId ?? client.reseller?.id) === access.resellerId;
 
   const loadClients = async () => {
     setLoading(true);
@@ -80,6 +85,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (bulkDelete.isDeleting()) { toast.error(message('commerce.common.actionPending')); return; }
     if (!canCreate) { toast.error(message('commerce.common.unavailableAccess')); return; }
     if (!name.trim()) { toast.error(message('commerce.clients.nameRequired')); return; }
 
@@ -105,6 +111,8 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
   };
 
   const handleAction = async (client: Client, action: keyof typeof CLIENT_ACTIONS) => {
+    if (bulkDelete.isDeleting()) { toast.error(message('commerce.common.actionPending')); return; }
+    if (!ownsClient(client)) { toast.error(message('errors.resellers.ownership_forbidden')); return; }
     if (!(action === "delete" ? canDelete : action === "suspend" ? canReduce : action === "reset" ? canReset : canResume)) {
       toast.error(message('commerce.common.unavailableAccess'));
       return;
@@ -126,6 +134,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
         }
         setClients(current => action === "delete" ? current.filter(item => item.id !== client.id)
           : current.map(item => item.id === client.id && updated ? { ...item, ...updated } : item));
+        if (action === "delete") setSelected(current => new Set([...current].filter(id => id !== client.id)));
         toast.success(message(config.success));
         await Promise.all([loadClients(), refreshAccess()]);
       });
@@ -155,12 +164,25 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
     });
   }, [clients, search, statusFilter]);
 
+  const bulkDelete = useBulkDelete({
+    items: clients, filtered: filteredClients, selected, setSelected,
+    label: client => client.user?.name || client.name || client.id,
+    eligible: ownsClient, canDelete, remove: client => deleteClient(client.id),
+    onDeleted: ids => setClients(current => current.filter(client => !ids.has(client.id))),
+    afterDelete: refreshAccess, pending, run,
+    busy: loading || showAddModal || !!renewTarget || !!resetResult,
+    scopeKey: `${currentUserRole}:${isReseller ? access?.resellerId ?? "" : ""}`,
+    filterKey: `${search}\0${statusFilter}`,
+  });
+  const controlsBusy = !!pending || !!renewTarget || !!resetResult || showAddModal || !!bulkDelete.confirmation;
+
   const paginatedClients = useMemo(() => {
     const start = (page - 1) * pageSize;
     return filteredClients.slice(start, start + pageSize);
   }, [filteredClients, page, pageSize]);
 
   useEffect(() => setPage(1), [search, statusFilter]);
+  useEffect(() => setPage(current => Math.max(1, Math.min(current, Math.ceil(filteredClients.length / pageSize)))), [filteredClients.length, pageSize]);
 
   return (
     <div className="space-y-6">
@@ -174,7 +196,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
         {!isSupport && (
           <button
             onClick={() => setShowAddModal(true)}
-            disabled={!canCreate || !!pending || !!renewTarget || !!resetResult}
+            disabled={!canCreate || controlsBusy}
             title={canCreate ? undefined : t('commerce.common.unavailableQuota')}
             className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-medium text-sm rounded-lg shadow-lg shadow-cyan-950/20 transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
           >
@@ -197,6 +219,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
             type="text"
             placeholder={t('commerce.common.search')}
             value={search}
+            disabled={controlsBusy}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full pl-10 pr-4 py-2 text-sm bg-gray-900 border border-gray-800 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
           />
@@ -206,6 +229,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
           {["all", "active", "suspended", "disabled", "expired", "revoked"].map((filter) => (
             <button
               key={filter}
+              disabled={controlsBusy}
               onClick={() => setStatusFilter(filter)}
               className={`px-3 py-1.5 text-xs font-semibold rounded-lg border capitalize transition-all cursor-pointer ${
                 statusFilter === filter
@@ -219,6 +243,8 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
         </div>
       </div>
 
+      {!isSupport && <BulkDeleteControls controller={bulkDelete} hintKey="operations.bulkDelete.clientHint" />}
+
       {/* Main client table */}
       {loading && clients.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 text-gray-400">
@@ -231,6 +257,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="border-b border-gray-800/80 bg-gray-900/40 text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                  {!isSupport && <th className="py-3 px-4">{t('operations.bulkDelete.selectColumn')}</th>}
                   <th className="py-3 px-4">{t('commerce.common.fullName')}</th>
                   <th className="py-3 px-4">{t('commerce.clients.emailPhone')}</th>
                   {showsOwnerColumn && <th className="py-3 px-4">{t('commerce.common.reseller')}</th>}
@@ -249,6 +276,12 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                   
                   return (
                     <tr key={client.id} className="hover:bg-gray-900/20 transition-colors">
+                      {!isSupport && <td className="py-4 px-4">
+                        <input type="checkbox" checked={bulkDelete.selected.has(client.id)}
+                          disabled={controlsBusy || !canDelete || !ownsClient(client)}
+                          aria-label={t('operations.bulkDelete.selectOne', { name: client.user?.name || client.name || client.id })}
+                          onChange={() => bulkDelete.toggle(client.id)} />
+                      </td>}
                       <td className="py-4 px-4 font-medium text-white">
                         {client.user?.name || client.name || "-"}
                       </td>
@@ -301,7 +334,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                           <div className="flex justify-end gap-1.5">
                             <button
                               onClick={() => handleAction(client, effectiveStatus === "active" ? "suspend" : "resume")}
-                              disabled={!(effectiveStatus === "active" ? canReduce : canResume) || !!pending || !!renewTarget || !!resetResult || showAddModal || (effectiveStatus !== "active" && !canResumeDevice(client))}
+                              disabled={!(effectiveStatus === "active" ? canReduce : canResume) || controlsBusy || (effectiveStatus !== "active" && !canResumeDevice(client))}
                               title={t(effectiveStatus === "active" ? 'commerce.devices.suspendDevice' : canResumeDevice(client) ? 'commerce.devices.resumeDevice' : 'commerce.devices.resumeUnavailable')}
                               className="p-1 text-gray-500 hover:text-amber-400 hover:bg-gray-900/60 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                             >
@@ -309,7 +342,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                             </button>
                             <button
                               onClick={() => setRenewTarget(client)}
-                              disabled={!canRenew || !!pending || !!renewTarget || !!resetResult || showAddModal}
+                              disabled={!canRenew || controlsBusy}
                               title={t('commerce.clients.renewDevice')}
                               className="p-1 text-gray-500 hover:text-emerald-400 hover:bg-gray-900/60 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                             >
@@ -317,7 +350,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                             </button>
                             <button
                               onClick={() => handleAction(client, "reset")}
-                              disabled={!canReset || !!pending || !!renewTarget || !!resetResult || showAddModal}
+                              disabled={!canReset || controlsBusy}
                               title={t('commerce.clients.resetAccess')}
                               className="p-1 text-gray-500 hover:text-cyan-400 hover:bg-gray-900/60 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                             >
@@ -325,7 +358,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                             </button>
                             <button
                               onClick={() => handleAction(client, "delete")}
-                              disabled={!canDelete || !!pending || !!renewTarget || !!resetResult || showAddModal}
+                              disabled={!canDelete || controlsBusy || !ownsClient(client)}
                               title={t('commerce.clients.deleteClient')}
                               className="p-1 text-gray-500 hover:text-rose-400 hover:bg-gray-900/60 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                             >
@@ -342,6 +375,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
           </div>
           <div className="border-t border-gray-800/80 px-4">
             <Pagination page={page} pageSize={pageSize} total={filteredClients.length}
+              disabled={controlsBusy}
               onPageChange={setPage} onPageSizeChange={s => { setPageSize(s); setPage(1); }} />
           </div>
         </div>
@@ -353,7 +387,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
           <p className="text-sm text-gray-400 max-w-sm mx-auto mt-1">{t('commerce.clients.emptyHint')}</p>
           {canCreate && (
             <button
-              onClick={() => setShowAddModal(true)} disabled={!!pending || !!renewTarget || !!resetResult}
+              onClick={() => setShowAddModal(true)} disabled={controlsBusy}
               className="mt-5 px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-950 text-cyan-400 border border-cyan-800/40 hover:bg-cyan-900/50 transition-all cursor-pointer"
             >
               {t('commerce.clients.createFirst')}

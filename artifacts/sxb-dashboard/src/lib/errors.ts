@@ -1,6 +1,18 @@
 import { formatNumber, getLanguage, resolveTranslation, translate, type Language } from "./i18n";
 
 const CODE_KEYS: Record<string, string> = {
+  RESET_CONFIRMATION_REQUIRED: "errors.reset.confirmationRequired",
+  RESET_INVALID_REQUEST: "errors.reset.invalidRequest",
+  RESET_CHALLENGE_INVALID: "errors.reset.challengeInvalid",
+  RESET_CHALLENGE_EXPIRED: "errors.reset.challengeExpired",
+  RESET_PREVIEW_CHANGED: "errors.reset.previewChanged",
+  RESET_IN_PROGRESS: "errors.reset.inProgress",
+  RESET_REAUTH_FAILED: "errors.reset.reauthFailed",
+  RESET_RATE_LIMITED: "errors.rate_limit",
+  RESET_BACKUP_FAILED: "errors.reset.backupFailed",
+  RESET_FAILED: "errors.reset.failed",
+  RESET_MAINTENANCE_RESTORE_FAILED: "errors.reset.maintenanceRestoreFailed",
+  RESET_RECOVERED_NOT_EXECUTED: "errors.reset.recoveredNotExecuted",
   RESELLER_ACCOUNT_REQUIRED: "errors.resellers.not_found",
   RESELLER_EXPIRED: "errors.resellers.access_expired",
   RESELLER_SUSPENDED: "errors.resellers.suspended",
@@ -131,7 +143,7 @@ export function apiErrorMessage(
   ] : [];
   if (issues.length) return `${translate(language, "errors.validation")} ${issues.join("; ")}`;
   const lifecycleCode = text(code ?? body?.code);
-  const lifecycleMessage = lifecycleCode && /^(DEVICE_|CONFIG_|SESSION_INVALID$)/.test(lifecycleCode)
+  const lifecycleMessage = lifecycleCode && /^(DEVICE_|CONFIG_|RESET_|SESSION_INVALID$)/.test(lifecycleCode)
     ? knownMessage(lifecycleCode, language) : undefined;
   const known = lifecycleMessage ?? knownMessage(body?.error, language) ?? knownMessage(code ?? body?.code, language);
   if (known) {

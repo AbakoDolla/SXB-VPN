@@ -17,6 +17,8 @@ import { ResellerAccessSummaryCard, ResellerActionNotice } from './ResellerAcces
 import { formatBytes, isUpperRole, ownerLabel, percentOf, toBigInt } from '../lib/resellerAccess';
 import { canResumeSubscription, hasExpired, isPlanExhausted, lifecycleBadges, subscriptionStatus } from '../lib/lifecycle';
 import { useActionLock } from '../hooks/useActionLock';
+import { useBulkDelete } from '../hooks/useBulkDelete';
+import BulkDeleteControls from './BulkDeleteControls';
 import SubscriptionAdjustmentDialog, { SubscriptionAdjustment } from './SubscriptionAdjustmentDialog';
 import {
   PackageOpen, Plus, Trash2, RefreshCw, ShieldOff, Search,
@@ -66,7 +68,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
   // agrément et de son plafond — c'est le serveur qui tranche.
   const can = usePermissions();
   const canAssign = (isAdmin || isReseller) && can('subscription.manage');
-  const { allows, refresh: refreshAccess } = useResellerAccess();
+  const { access, allows, refresh: refreshAccess } = useResellerAccess();
   const canCreate = canAssign && allows();
   const canReduce = canAssign && allows({ reducesExposure: true });
 
@@ -138,6 +140,20 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
     return matchSearch && matchStatus;
   }), [subs, search, statusFilter]);
 
+  const ownsSubscription = (sub: Subscription) => !isReseller || !!access?.resellerId
+    && (sub.resellerId ?? sub.client?.resellerId ?? clients.find(client => client.id === sub.clientId)?.resellerId) === access.resellerId;
+  const bulkDelete = useBulkDelete({
+    items: subs, filtered, selected, setSelected, label: sub => sub.name || sub.id,
+    eligible: ownsSubscription, canDelete: canReduce, canSelect: canAssign,
+    remove: sub => deleteSubscription(sub.id),
+    onDeleted: ids => setSubs(current => current.filter(sub => !ids.has(sub.id))),
+    afterDelete: async () => { await refreshAccess(); setStats(await fetchSubStats()); },
+    pending, run, busy: loading || showModal || bulkConfirm || !!adjustment,
+    scopeKey: `${currentUserRole}:${isReseller ? access?.resellerId ?? "" : ""}`,
+    filterKey: `${search}\0${statusFilter}`,
+  });
+  const selection = bulkDelete.selected;
+
   const paginated = useMemo(() => {
     const start = (page - 1) * pageSize;
     return filtered.slice(start, start + pageSize);
@@ -145,6 +161,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
 
   // Reset page when filter changes
   useEffect(() => setPage(1), [search, statusFilter]);
+  useEffect(() => setPage(current => Math.max(1, Math.min(current, Math.ceil(filtered.length / pageSize)))), [filtered.length, pageSize]);
 
   const openCreate = () => {
     setEditSub(null);
@@ -169,6 +186,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (bulkDelete.isDeleting()) { setFormError('commerce.common.actionPending'); return; }
     if (!canCreate) { setFormError('commerce.common.unavailableAccess'); return; }
     if (!form.clientId || !form.profileId) { setFormError('commerce.subscriptions.required'); return; }
     setFormError('');
@@ -197,6 +215,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
   };
 
   const handleToggleStatus = async (sub: Subscription) => {
+    if (bulkDelete.isDeleting()) { toast.error(message('commerce.common.actionPending')); return; }
     const suspending = sub.status === 'active';
     if (!(suspending ? canReduce : canCreate)) { toast.error(message('commerce.common.unavailableAccess')); return; }
     if (!suspending && !canResumeSubscription(sub)) {
@@ -215,6 +234,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
   };
 
   const handleDelete = async (id: string, name: string) => {
+    if (bulkDelete.isDeleting()) { toast.error(message('commerce.common.actionPending')); return; }
     if (!canReduce) { toast.error(message('commerce.common.unavailableAccess')); return; }
     if (!window.confirm(t('commerce.subscriptions.confirmDelete', { name }))) return;
     try {
@@ -229,6 +249,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
   };
 
   const handleRevoke = async (id: string, name: string) => {
+    if (bulkDelete.isDeleting()) { toast.error(message('commerce.common.actionPending')); return; }
     if (!canReduce) { toast.error(message('commerce.common.unavailableAccess')); return; }
     if (!window.confirm(t('commerce.subscriptions.confirmRevoke', { name }))) return;
     try {
@@ -273,32 +294,29 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
   // l'engagement : toutes ces actions sont traitées comme augmentatrices, donc
   // fermées quand l'agrément ou le plafond l'exigent.
   const bulkAllowed = canAssign && allows();
-  const controlsBusy = !!pending || showModal || bulkConfirm || !!adjustment;
+  const controlsBusy = !!pending || showModal || bulkConfirm || !!adjustment || !!bulkDelete.confirmation;
   const bulkValuesValid = (!bulkCfg.needsProfile || !!bulkProfile) &&
     (!bulkCfg.needsQuota || (Number.isFinite(bulkQuota) && bulkQuota >= 0.5 && bulkQuota <= 1_000_000)) &&
     (!bulkCfg.needsDuration || (Number.isInteger(bulkDays) && bulkDays >= 1 && bulkDays <= 3650));
 
-  const toggleOne = (id: string) => setSelected(prev => {
-    const next = new Set(prev);
-    next.has(id) ? next.delete(id) : next.add(id);
-    return next;
-  });
+  const toggleOne = bulkDelete.toggle;
   // « Tout sélectionner » porte sur la sélection FILTRÉE, pas sur la page
   // courante : sinon l'opérateur croirait viser 150 forfaits et n'en toucherait
   // que les 20 affichés.
-  const selectAllFiltered = () => setSelected(new Set(filtered.map(s => s.id)));
-  const clearSelection = () => setSelected(new Set());
+  const selectAllFiltered = bulkDelete.selectAll;
+  const clearSelection = bulkDelete.clearSelection;
 
   const runBulk = async () => {
+    if (bulkDelete.isDeleting()) { toast.error(message('commerce.common.actionPending')); return; }
     if (!bulkAllowed) { toast.error(message('commerce.common.unavailableAccess')); return; }
-    if (!selected.size || !bulkValuesValid) { toast.error(message('commerce.subscriptions.invalidAdjustment')); return; }
+    if (!selection.size || !bulkValuesValid) { toast.error(message('commerce.subscriptions.invalidAdjustment')); return; }
     try {
       await run('bulk', async () => {
-      const ids = Array.from(selected);
+      const ids = Array.from(selection);
       // `deploy` crée des forfaits : il vise des CLIENTS. Les autres modifient
       // l'existant : elles visent des ABONNEMENTS.
       const clientIds = bulkAction === 'deploy'
-        ? Array.from(new Set(subs.filter(s => selected.has(s.id)).map(s => s.clientId)))
+        ? Array.from(new Set(subs.filter(s => selection.has(s.id)).map(s => s.clientId)))
         : undefined;
 
       const result = await bulkSubscriptions({
@@ -313,7 +331,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
       if (result.failed > 0) toast.warning(message('commerce.subscriptions.bulk.partial', { succeeded: result.succeeded, failed: result.failed }));
       else if (result.succeeded > 0) toast.success(message('commerce.subscriptions.bulk.updated', { count: result.succeeded }));
       else toast.warning(message('commerce.subscriptions.bulk.noChange'));
-      clearSelection();
+      setSelected(new Set());
       await Promise.all([load(), refreshAccess()]);
       });
     } catch (err) {
@@ -380,6 +398,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
         <div className="relative w-full sm:w-80">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
           <input
+            disabled={controlsBusy}
             value={search} onChange={e => setSearch(e.target.value)}
             placeholder={t('commerce.subscriptions.search')}
             className="w-full pl-9 pr-4 py-2 text-sm bg-[#0a0d14] border border-[#1a1f2e] rounded-xl text-white placeholder-gray-600 focus:outline-none focus:border-cyan-500"
@@ -387,7 +406,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
         </div>
         <div className="flex gap-1.5 flex-wrap">
           {['all', 'active', 'expired', 'exhausted', 'revoked', 'suspended'].map(s => (
-            <button key={s} onClick={() => setStatusFilter(s)}
+            <button key={s} onClick={() => setStatusFilter(s)} disabled={controlsBusy}
               className={`px-3 py-1.5 text-xs font-medium rounded-lg border capitalize transition-all cursor-pointer ${
                 statusFilter === s
                   ? 'bg-cyan-500/15 border-cyan-500/30 text-cyan-400'
@@ -400,17 +419,18 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
       </div>
 
       {/* Opérations groupées — visibles dès qu'un forfait est sélectionné */}
-      {selected.size > 0 && (
+      {canAssign && <BulkDeleteControls controller={bulkDelete} hintKey="operations.bulkDelete.subscriptionHint" />}
+      {selection.size > 0 && (
         <div className="bg-[#0f1218] border border-cyan-500/30 rounded-xl p-4 space-y-3">
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <p className="text-sm font-semibold text-white">
-              {t('commerce.subscriptions.bulk.selection', { count: formatNumber(selected.size) })}
+              {t('commerce.subscriptions.bulk.selection', { count: formatNumber(selection.size) })}
             </p>
             <div className="flex items-center gap-2">
               <button type="button" onClick={selectAllFiltered}
                 disabled={controlsBusy || !canAssign}
                 className="px-2.5 py-1.5 text-xs rounded-lg border border-[#1a1f2e] text-gray-300 hover:bg-white/5 cursor-pointer">
-                {t('commerce.subscriptions.bulk.selectAll', { count: formatNumber(filtered.length) })}
+                {t('commerce.subscriptions.bulk.selectAll', { count: formatNumber(bulkDelete.selectableCount) })}
               </button>
               <button type="button" onClick={clearSelection}
                 disabled={controlsBusy}
@@ -466,7 +486,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
             title={bulkAllowed ? undefined : t('commerce.common.unavailableAccess')}
             className="flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black transition-all disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed">
             {bulkRunning ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
-            {t('commerce.subscriptions.bulk.apply', { count: formatNumber(selected.size) })}
+            {t('commerce.subscriptions.bulk.apply', { count: formatNumber(selection.size) })}
           </button>
         </div>
       )}
@@ -504,7 +524,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
             </h3>
             <div className="text-sm text-gray-300 space-y-1">
               <p><span className="text-gray-500">{t('commerce.subscriptions.bulk.actionLabel')}</span> {bulkCfg.label}</p>
-              <p><span className="text-gray-500">{t('commerce.subscriptions.bulk.plansLabel')}</span> {formatNumber(selected.size)}</p>
+              <p><span className="text-gray-500">{t('commerce.subscriptions.bulk.plansLabel')}</span> {formatNumber(selection.size)}</p>
               {bulkCfg.needsProfile && (
                 <p><span className="text-gray-500">{t('commerce.subscriptions.bulk.configurationLabel')}</span> {profiles.find(p => p.id === bulkProfile)?.name || '—'}</p>
               )}
@@ -557,13 +577,9 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                       <input
                         type="checkbox"
                         aria-label={t('commerce.subscriptions.selectPage')}
-                        checked={paginated.length > 0 && paginated.every(s => selected.has(s.id))}
+                        checked={paginated.some(ownsSubscription) && paginated.filter(ownsSubscription).every(s => selection.has(s.id))}
                         disabled={controlsBusy || !canAssign}
-                        onChange={e => setSelected(prev => {
-                          const next = new Set(prev);
-                          paginated.forEach(s => e.target.checked ? next.add(s.id) : next.delete(s.id));
-                          return next;
-                        })}
+                        onChange={e => bulkDelete.changeSelection(paginated.map(s => s.id), e.target.checked)}
                         className="rounded border-[#1a1f2e] bg-[#07090e] accent-cyan-500 cursor-pointer"
                       />
                     </th>
@@ -585,13 +601,13 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                     const cfg = STATUS_CFG[effectiveStatus] || STATUS_CFG.unknown;
                     const client = clientMap[sub.clientId];
                     return (
-                      <tr key={sub.id} className={`hover:bg-white/[0.02] transition-colors ${selected.has(sub.id) ? 'bg-cyan-500/5' : ''}`}>
+                      <tr key={sub.id} className={`hover:bg-white/[0.02] transition-colors ${selection.has(sub.id) ? 'bg-cyan-500/5' : ''}`}>
                         <td className="px-4 py-3">
                           <input
                             type="checkbox"
                             aria-label={t('commerce.subscriptions.selectPlan', { name: sub.name })}
-                            checked={selected.has(sub.id)}
-                            disabled={controlsBusy || !canAssign}
+                            checked={selection.has(sub.id)}
+                            disabled={controlsBusy || !canAssign || !ownsSubscription(sub)}
                             onChange={() => toggleOne(sub.id)}
                             className="rounded border-[#1a1f2e] bg-[#07090e] accent-cyan-500 cursor-pointer"
                           />
@@ -696,6 +712,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
             </div>
             <div className="border-t border-[#1a1f2e] px-4">
               <Pagination page={page} pageSize={pageSize} total={filtered.length}
+                disabled={controlsBusy}
                 onPageChange={setPage} onPageSizeChange={p => { setPageSize(p); setPage(1); }} />
             </div>
           </>

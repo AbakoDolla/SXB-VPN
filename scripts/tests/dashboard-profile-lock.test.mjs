@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createRequire } from 'node:module';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
@@ -15,6 +15,9 @@ const flatten = (value, prefix = '') => Object.fromEntries(Object.entries(value)
   typeof child === 'string' ? [[`${prefix}${key}`, child]] : Object.entries(flatten(child, `${prefix}${key}.`))));
 const dictionaries = Object.fromEntries(['fr', 'en'].map(language => [language,
   flatten(JSON.parse(readFileSync(path.join(src, 'locales', language, 'configurations.json'), 'utf8')))]));
+const extraDictionaries = Object.fromEntries(['fr', 'en'].map(language => [language,
+  flatten(Object.fromEntries(['operations', 'commerce', 'core', 'errors'].map(namespace =>
+    [namespace, JSON.parse(readFileSync(path.join(src, 'locales', language, `${namespace}.json`), 'utf8'))])))]));
 const locked = {
   id: 'profile', name: 'User supplied name', status: 'active', hasLock: true, isLocked: true,
   offlineValidDays: 7, createdAt: '2026-09-08T12:00:00Z', _count: { subscriptions: 0 },
@@ -31,7 +34,7 @@ async function fixture(role = 'ADMIN') {
   const documentEvents = new Map();
   let nextTimer = 0;
   const jsx = (type, props, key) => ({ type, props: props ?? {}, key });
-  const t = (key, params = {}) => (dictionaries[language][key.replace(/^configurations\./, '')] ?? key)
+  const t = (key, params = {}) => (dictionaries[language][key.replace(/^configurations\./, '')] ?? extraDictionaries[language][key] ?? key)
     .replace(/\{\{(\w+)\}\}/g, (_, name) => String(params[name]));
   const react = {
     useState(initial) {
@@ -97,14 +100,21 @@ async function fixture(role = 'ADMIN') {
         if (id === 'lucide-react') return new Proxy({}, { get: (_, name) => String(name) });
         if (id.endsWith('I18nContext')) return { useTranslation: () => ({
           t, locale: language === 'fr' ? 'fr-FR' : 'en-US',
+          formatNumber: value => new Intl.NumberFormat(language).format(value),
           message: (key, params) => jsx(() => t(key, params)),
           errorMessage: () => t('configurations.ui.error'),
           errorText: () => jsx(() => t('configurations.ui.error')),
         }) };
+        if (id.endsWith('PermissionsContext')) return { usePermissions: () => () => true };
         if (id.includes('/api/')) return api;
         if (id.endsWith('/roles')) return { isAdmin: value => ['ADMIN', 'SUPER_ADMIN', 'OWNER'].includes(value) };
         if (id.endsWith('/types')) return {};
-        if (id.startsWith('.')) return load(`${path.resolve(path.dirname(file), id)}.tsx`);
+        if (id.startsWith('.')) {
+          const target = path.resolve(path.dirname(file), id);
+          const resolved = [`${target}.ts`, `${target}.tsx`].find(candidate => existsSync(candidate));
+          if (!resolved) throw new Error(`Cannot resolve ${id}`);
+          return load(resolved);
+        }
         throw new Error(`Unexpected import ${id}`);
       },
     });
