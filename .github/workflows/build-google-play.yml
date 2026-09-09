@@ -1,0 +1,210 @@
+name: Build Google Play AAB - artifact only
+
+on:
+  workflow_dispatch:
+    inputs:
+      previous_play_version_code:
+        description: "Highest versionCode ever uploaded to Play (0 only if none; operator declaration)"
+        required: true
+        type: string
+      version_code:
+        description: "Optional explicit versionCode; default shared UTC clock. Must exceed prior versions, not future."
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+# Share the direct APK lock; never allow competing version allocations.
+concurrency:
+  group: publication-apk
+  cancel-in-progress: false
+
+jobs:
+  bundle:
+    name: Signed Google Play candidate (no upload)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: production
+    defaults:
+      run:
+        shell: bash
+        working-directory: app-mobile
+    env:
+      EXPO_PUBLIC_DISTRIBUTION: play
+      EXPO_PUBLIC_API_URL: https://vpnsxb.afrihall.com/api
+      EXPO_NO_TELEMETRY: "1"
+      NODE_ENV: production
+      SXB_PREVIOUS_PLAY_VERSION_CODE: ${{ inputs.previous_play_version_code }}
+      SXB_REQUESTED_VERSION_CODE: ${{ inputs.version_code }}
+      SXB_LIBBOX_TARGETS: android/arm,android/arm64
+      # Public Firebase identifiers only, identical to the direct build.
+      EXPO_PUBLIC_FIREBASE_API_KEY: ${{ vars.EXPO_PUBLIC_FIREBASE_API_KEY || secrets.EXPO_PUBLIC_FIREBASE_API_KEY }}
+      EXPO_PUBLIC_FIREBASE_PROJECT_ID: ${{ vars.EXPO_PUBLIC_FIREBASE_PROJECT_ID || secrets.EXPO_PUBLIC_FIREBASE_PROJECT_ID }}
+      EXPO_PUBLIC_FIREBASE_APP_ID: ${{ vars.EXPO_PUBLIC_FIREBASE_APP_ID || secrets.EXPO_PUBLIC_FIREBASE_APP_ID }}
+      EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || secrets.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: app-mobile/package-lock.json
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.24.x"
+          cache: false
+
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          gradle-version: wrapper
+          cache-read-only: true
+
+      - name: Prepare pinned Android toolchain and bundletool
+        run: |
+          set -euo pipefail
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.1.12297006" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/build-tools/36.0.0" >> "$GITHUB_PATH"
+          TOOL="$RUNNER_TEMP/bundletool-all-1.18.3.jar"
+          curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+            https://github.com/google/bundletool/releases/download/1.18.3/bundletool-all-1.18.3.jar \
+            --output "$TOOL"
+          # Official release asset digest, pinned with the version (never "latest").
+          echo "a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29  $TOOL" | sha256sum --check --strict
+          echo "SXB_BUNDLETOOL=$TOOL" >> "$GITHUB_ENV"
+
+      - name: Verify current direct APK identity and allocate shared version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # No fallback to guessed metadata or an unsigned baseline.
+          BASELINE="$RUNNER_TEMP/sxb-direct-baseline"
+          mkdir -p "$BASELINE"
+          gh release download --pattern sxb-vpn.apk --dir "$BASELINE"
+          apksigner verify --verbose --print-certs "$BASELINE/sxb-vpn.apk" > "$BASELINE/signature.txt"
+          aapt dump badging "$BASELINE/sxb-vpn.apk" > "$BASELINE/badging.txt"
+          export SXB_BASELINE_DIR="$BASELINE"
+          node scripts/read-direct-baseline.cjs
+          export SXB_PUBLISHED_VERSION_CODE="$(cat "$BASELINE/version-code.txt")"
+          VERSION_CODE="$(node scripts/android-version.cjs)"
+          echo "SXB_ANDROID_VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
+          echo "[version] Play candidate versionCode=$VERSION_CODE"
+
+      - name: Install dependencies and run regression gates
+        run: |
+          set -euo pipefail
+          npm ci --include=dev --legacy-peer-deps
+          node --test ../scripts/tests/play-bundle*.test.mjs
+          npm run typecheck
+          npm run test:regression
+
+      - name: Patch Expo Kotlin metadata compatibility
+        run: |
+          set -euo pipefail
+          PLUGIN="node_modules/expo-modules-core/expo-module-gradle-plugin/build.gradle.kts"
+          test -f "$PLUGIN"
+          if ! grep -q "Xskip-metadata-version-check" "$PLUGIN"; then
+            printf '\ntasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {\n    kotlinOptions { freeCompilerArgs = freeCompilerArgs + listOf("-Xskip-metadata-version-check") }\n}\n' >> "$PLUGIN"
+          fi
+
+      - name: Execute production encryption validator on the JVM (no Android stubs)
+        run: |
+          set -euo pipefail
+          HARNESS="$(mktemp -d "$RUNNER_TEMP/sxb-kotlin.XXXXXX")"
+          trap 'rm -rf "$HARNESS"' EXIT
+          curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+            https://github.com/JetBrains/kotlin/releases/download/v2.1.20/kotlin-compiler-2.1.20.zip \
+            --output "$HARNESS/kotlin.zip"
+          echo "a118197b0de55ffab2bc8d5cd03a5e39033cfb53383d6931bc761dec0784891a  $HARNESS/kotlin.zip" | sha256sum --check --strict
+          curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+            https://repo.maven.apache.org/maven2/org/json/json/20240303/json-20240303.jar \
+            --output "$HARNESS/json.jar"
+          echo "3cf6cd6892e32e2b4c1c39e0f52f5248a2f5b37646fdfbb79a66b46b618414ed  $HARNESS/json.jar" | sha256sum --check --strict
+          unzip -q "$HARNESS/kotlin.zip" -d "$HARNESS"
+          export KOTLINC="$HARNESS/kotlinc/bin/kotlinc"
+          export SXB_JSON_JAR="$HARNESS/json.jar"
+          chmod +x "$KOTLINC"
+          node tests/run-play-encryption.cjs
+
+      - name: Generate native Play project
+        run: |
+          set -euo pipefail
+          npx --no-install expo config --type public --json > "$RUNNER_TEMP/play-expo-config.json"
+          node scripts/verify-play-config.cjs "$RUNNER_TEMP/play-expo-config.json"
+          npx --no-install expo prebuild --platform android --clean --no-install
+          node scripts/prepare-play-android.cjs
+
+      - name: Package verified native VPN engines
+        run: |
+          set -euo pipefail
+          AAR="$PWD/android/app/libs/libbox.aar"
+          node scripts/android-artifact.mjs "$AAR" jni > "$RUNNER_TEMP/libbox-elf.json"
+          EXTRACT="$(mktemp -d "$RUNNER_TEMP/sxb-libbox.XXXXXX")"
+          trap 'rm -rf "$EXTRACT"' EXIT
+          unzip -q "$AAR" 'jni/*' -d "$EXTRACT"
+          mkdir -p android/app/src/main/jniLibs
+          cp -R "$EXTRACT/jni/." android/app/src/main/jniLibs/
+          zip -q -d "$AAR" 'jni/*'
+          DNSTT_OUTPUT_DIR="$PWD/android/app/src/main/jniLibs" bash scripts/build-dnstt.sh
+
+      - name: Build signed release bundle using the persistent key
+        env:
+          KEYSTORE_FILE: ${{ secrets.KEYSTORE_FILE }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${KEYSTORE_FILE:?Missing KEYSTORE_FILE}"
+          : "${KEYSTORE_PASSWORD:?Missing KEYSTORE_PASSWORD}"
+          : "${KEY_ALIAS:?Missing KEY_ALIAS}"
+          : "${KEY_PASSWORD:?Missing KEY_PASSWORD}"
+          umask 077
+          export SXB_KEYSTORE_PATH="$RUNNER_TEMP/sxb-play-release.keystore"
+          trap 'rm -f "$SXB_KEYSTORE_PATH"' EXIT
+          printf '%s' "$KEYSTORE_FILE" | base64 --decode > "$SXB_KEYSTORE_PATH"
+          unset KEYSTORE_FILE
+          mkdir -p build/google-play/report
+          cd android
+          chmod +x gradlew
+          ./gradlew :app:sxbVerifyPlayToolchain :app:bundleRelease \
+            --no-daemon --console=plain \
+            | tee ../build/google-play/report/gradle-build.txt
+          cd ..
+          cp android/app/build/outputs/bundle/release/app-release.aab build/google-play/sxb-vpn-play.aab
+          node scripts/validate-play-bundle.mjs \
+            build/google-play/sxb-vpn-play.aab "$SXB_BUNDLETOOL" build/google-play/report
+
+      - name: Write candidate handoff
+        run: |
+          set -euo pipefail
+          cp "$RUNNER_TEMP/play-expo-config.json" build/google-play/report/expo-config.json
+          cp "$RUNNER_TEMP/sxb-direct-baseline/badging.txt" build/google-play/report/direct-apk-badging.txt
+          cp "$RUNNER_TEMP/sxb-direct-baseline/signature.txt" build/google-play/report/direct-apk-signature.txt
+          cp "$RUNNER_TEMP/sxb-direct-baseline/baseline.json" build/google-play/report/direct-apk-baseline.json
+          node scripts/play-handoff.cjs >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload signed candidate and public validation report
+        uses: actions/upload-artifact@v7
+        with:
+          name: sxb-vpn-google-play-${{ env.SXB_ANDROID_VERSION_CODE }}
+          path: |
+            app-mobile/build/google-play/sxb-vpn-play.aab
+            app-mobile/build/google-play/report/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove transient signing material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/sxb-play-release.keystore"

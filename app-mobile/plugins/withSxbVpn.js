@@ -10,28 +10,37 @@
  * 6. Copie libs/libbox.aar dans android/app/libs/
  * 7. Injecte les règles ProGuard R8
  */
-const { withAndroidManifest, withDangerousMod, withAppBuildGradle } = require('@expo/config-plugins');
+const { withAndroidManifest, withDangerousMod, withAppBuildGradle, withGradleProperties } = require('@expo/config-plugins');
 const path = require('path');
 const fs   = require('fs');
 const { execFileSync } = require('child_process');
 
 // ── 1. Permissions + déclaration service dans AndroidManifest.xml ─────────────
 function withVpnManifest(config) {
+  const isPlay = config.extra?.distribution === 'play';
   return withAndroidManifest(config, (mod) => {
     const manifest = mod.modResults.manifest;
+    const wasPlay = manifest.application?.[0]?.['meta-data']?.some(entry =>
+      entry.$?.['android:name'] === 'com.sxbvpn.distribution' && entry.$?.['android:value'] === 'play');
     manifest.$ = manifest.$ || {};
     manifest.$['xmlns:tools'] = manifest.$['xmlns:tools'] || 'http://schemas.android.com/tools';
 
     // Permissions
     if (!manifest['uses-permission']) manifest['uses-permission'] = [];
     const perms = manifest['uses-permission'];
+    if (wasPlay && !isPlay) {
+      for (const permission of perms) {
+        if (['android.permission.REQUEST_INSTALL_PACKAGES', 'android.permission.BIND_VPN_SERVICE']
+          .includes(permission.$?.['android:name'])) delete permission.$['tools:node'];
+      }
+    }
     const vpnPerms = [
       'android.permission.INTERNET',
       // E3 — Mise à jour in-app : Android >= 8 exige REQUEST_INSTALL_PACKAGES
       // pour lancer un installer d'APK via IntentLauncher. La demande
       // « Installer » reste affichée à l'utilisateur (nous ne l'installons pas
       // silencieusement, la signature stable évite juste la désinstallation).
-      'android.permission.REQUEST_INSTALL_PACKAGES',
+      ...(!isPlay ? ['android.permission.REQUEST_INSTALL_PACKAGES'] : []),
       'android.permission.FOREGROUND_SERVICE',
       // FIX — WAKE_LOCK : empêche Android de tuer le service VPN quand l'écran est éteint.
       // Sans ce verrou, le foreground service peut être suspendu par Doze mode, causant
@@ -62,6 +71,25 @@ function withVpnManifest(config) {
       'android.permission.CAMERA',
       'android.permission.RECEIVE_BOOT_COMPLETED',
       'android.permission.SYSTEM_ALERT_WINDOW',
+      ...(isPlay ? [
+        'android.permission.REQUEST_INSTALL_PACKAGES',
+        'android.permission.BIND_VPN_SERVICE',
+        'android.permission.READ_EXTERNAL_STORAGE',
+        'android.permission.WRITE_EXTERNAL_STORAGE',
+        'android.permission.READ_MEDIA_IMAGES',
+        'android.permission.READ_MEDIA_VIDEO',
+        'android.permission.READ_MEDIA_AUDIO',
+        'android.permission.RECORD_AUDIO',
+        'android.permission.ACCESS_COARSE_LOCATION',
+        'android.permission.ACCESS_FINE_LOCATION',
+        'android.permission.ACCESS_BACKGROUND_LOCATION',
+        'android.permission.READ_PHONE_STATE',
+        'android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS',
+        'com.google.android.gms.permission.AD_ID',
+        'android.permission.ACCESS_ADSERVICES_AD_ID',
+        'android.permission.ACCESS_ADSERVICES_ATTRIBUTION',
+        'android.permission.ACCESS_ADSERVICES_TOPICS',
+      ] : []),
     ]) {
       const existing = perms.find(p => p.$?.['android:name'] === name);
       if (existing) existing.$['tools:node'] = 'remove';
@@ -76,6 +104,24 @@ function withVpnManifest(config) {
 
     const app = manifest.application?.[0];
     if (!app) return mod;
+    app['meta-data'] = app['meta-data'] || [];
+    const setMetadata = (name, value) => {
+      app['meta-data'] = app['meta-data'].filter(entry => entry.$?.['android:name'] !== name);
+      app['meta-data'].push({ $: {
+        'android:name': name, 'android:value': value, 'tools:replace': 'android:value',
+      } });
+    };
+    setMetadata('com.sxbvpn.distribution', isPlay ? 'play' : 'direct');
+    const firebaseMetadata = [
+      'firebase_messaging_auto_init_enabled',
+      'firebase_analytics_collection_enabled',
+      'firebase_data_collection_default_enabled',
+    ];
+    if (isPlay) {
+      for (const name of firebaseMetadata) setMetadata(name, 'false');
+    } else if (wasPlay) {
+      app['meta-data'] = app['meta-data'].filter(entry => !firebaseMetadata.includes(entry.$?.['android:name']));
+    }
 
     // Déclarer le VpnService
     if (!app.service) app.service = [];
@@ -119,9 +165,46 @@ function withVpnManifest(config) {
       });
     }
 
+    // An existing direct-install FCM token may still receive messages after an
+    // upgrade. Native consent code explicitly enables these components only
+    // after notifications consent; auto-init metadata alone cannot block them.
+    for (const [type, name] of [
+      ['service', messagingServiceName],
+      ['service', 'com.google.firebase.messaging.FirebaseMessagingService'],
+      ['receiver', 'com.google.firebase.iid.FirebaseInstanceIdReceiver'],
+    ]) {
+      app[type] = app[type] || [];
+      if (isPlay) {
+        let component = app[type].find(entry => entry.$?.['android:name'] === name);
+        if (!component) {
+          component = { $: { 'android:name': name } };
+          app[type].push(component);
+        }
+        component.$['android:enabled'] = 'false';
+        component.$['tools:replace'] = 'android:enabled';
+      } else if (wasPlay) {
+        if (name === messagingServiceName) {
+          const component = app[type].find(entry => entry.$?.['android:name'] === name);
+          delete component.$['android:enabled'];
+          delete component.$['tools:replace'];
+        } else {
+          app[type] = app[type].filter(entry => entry.$?.['android:name'] !== name);
+        }
+      }
+    }
+
     if (!app.provider) app.provider = [];
     const firebaseProviderName = 'com.sxbvpn.vpnmodule.SxbFirebaseInitProvider';
-    if (!app.provider.find(p => p.$?.['android:name'] === firebaseProviderName)) {
+    if (wasPlay && !isPlay) {
+      app.provider = app.provider.filter(p => !(p.$?.['tools:node'] === 'remove' &&
+        [firebaseProviderName, 'com.google.firebase.provider.FirebaseInitProvider'].includes(p.$?.['android:name'])));
+    }
+    if (isPlay) {
+      for (const name of [firebaseProviderName, 'com.google.firebase.provider.FirebaseInitProvider']) {
+        app.provider = app.provider.filter(p => p.$?.['android:name'] !== name);
+        app.provider.push({ $: { 'android:name': name, 'tools:node': 'remove' } });
+      }
+    } else if (!app.provider.find(p => p.$?.['android:name'] === firebaseProviderName)) {
       app.provider.push({
         $: {
           'android:name': firebaseProviderName,
@@ -498,5 +581,22 @@ module.exports = function withSxbVpn(config) {
   config = withLibboxAar(config);
   config = withFileProvider(config);
   config = withFileProviderXml(config);
+  if (config.extra?.distribution === 'play') {
+    config = withGradleProperties(config, mod => {
+      const properties = {
+        'android.compileSdkVersion': '36',
+        'android.targetSdkVersion': '36',
+        'android.minSdkVersion': '24',
+        // DNSTT is executed from nativeLibraryDir, so libraries must be extracted.
+        'expo.useLegacyPackaging': 'true',
+        'reactNativeArchitectures': 'arm64-v8a,armeabi-v7a',
+      };
+      mod.modResults = mod.modResults.filter(item => !(item.key in properties));
+      for (const [key, value] of Object.entries(properties)) {
+        mod.modResults.push({ type: 'property', key, value });
+      }
+      return mod;
+    });
+  }
   return config;
 };

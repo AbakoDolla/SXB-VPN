@@ -136,18 +136,19 @@ TAGS="with_gvisor,with_quic,with_wireguard,with_ech,with_utls,with_clash_api"
 
 echo "→ gomobile bind (tags: $TAGS)..."
 gomobile bind -v \
-  -target android \
+  -target "${SXB_LIBBOX_TARGETS:-android}" \
   -androidapi 21 \
   -javapkg=io.nekohasekai \
   -libname=box \
   -trimpath \
   -buildvcs=false \
-  -ldflags "-X github.com/sagernet/sing-box/constant.Version=${SING_BOX_VERSION#v} -s -w -buildid=" \
+  -ldflags "-X github.com/sagernet/sing-box/constant.Version=${SING_BOX_VERSION#v} -s -w -buildid= -linkmode external -extldflags '-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384'" \
   -tags "$TAGS" \
   ./experimental/libbox
 
 mkdir -p "$OUT_DIR"
 cp libbox.aar "$OUT_AAR"
+node "$SCRIPT_DIR/android-artifact.mjs" "$OUT_AAR" jni
 
 echo ""
 echo "✅ libbox.aar généré : $OUT_AAR"

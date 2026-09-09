@@ -60,9 +60,7 @@
       "typedRoutes": true
     },
     "extra": {
-      "eas": {
-        "projectId": "sxb-vpn-mobile"
-      }
+      "distribution": "direct"
     }
   }
 }

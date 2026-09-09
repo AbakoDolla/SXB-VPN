@@ -1,7 +1,7 @@
 {
   "cli": {
     "version": ">= 16.0.0",
-    "appVersionSource": "remote"
+    "appVersionSource": "local"
   },
   "build": {
     "preview": {
@@ -11,15 +11,17 @@
         "gradleCommand": ":app:assembleRelease"
       },
       "env": {
+        "EXPO_PUBLIC_DISTRIBUTION": "direct",
         "EXPO_PUBLIC_API_URL": "https://vpnsxb.afrihall.com/api"
       }
     },
     "production": {
       "distribution": "store",
       "android": {
-        "buildType": "aab"
+        "buildType": "app-bundle"
       },
       "env": {
+        "EXPO_PUBLIC_DISTRIBUTION": "play",
         "EXPO_PUBLIC_API_URL": "https://vpnsxb.afrihall.com/api"
       }
     }

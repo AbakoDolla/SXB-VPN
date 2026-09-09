@@ -23,6 +23,8 @@ jobs:
   build-android:
     name: Build Android APK
     runs-on: ubuntu-latest
+    env:
+      EXPO_PUBLIC_DISTRIBUTION: direct
     environment:
       name: production
       url: https://vpnsxb.afrihall.com
@@ -65,6 +67,15 @@ jobs:
       # ── Install dependencies (CI mode) ────────────────────────────────────────
       - name: Install dependencies
         run: npm ci --legacy-peer-deps
+
+      - name: Allocate shared Android version before Expo prebuild
+        env:
+          SXB_PUBLISHED_VERSION_CODE: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          VERSION_CODE=$(node scripts/android-version.cjs)
+          echo "SXB_ANDROID_VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
+          echo "[version] Shared UTC versionCode: $VERSION_CODE"
 
       # ── Barrière qualité — bloque la release avant toute génération native ────
       - name: Tests de non-régression mobile
@@ -343,25 +354,19 @@ jobs:
           NODEJS_EOF
 
       # ── Versionnage Android monotone ───────────────────────────────────────────
-      # GitHub run_number est strictement croissant pour ce workflow et doit dépasser
-      # le versionCode existant afin de permettre une installation par-dessus l’APK.
-      - name: Imposer un versionCode de release croissant
-        env:
-          SXB_VERSION_CODE: ${{ github.run_number }}
+      # Expo et le manifeste natif doivent porter le même code, alloué avant
+      # prebuild depuis l'horloge commune aux workflows APK et Google Play.
+      - name: Vérifier le versionCode commun Expo et Android
         run: |
           node - << 'NODEJS_EOF'
           const fs = require('fs');
           const p = 'android/app/build.gradle';
-          const requested = Number(process.env.SXB_VERSION_CODE || 0);
-          if (!Number.isInteger(requested) || requested < 1) throw new Error('versionCode CI invalide');
-          let content = fs.readFileSync(p, 'utf8');
+          const requested = require('./scripts/android-version.cjs').parseVersionCode(process.env.SXB_ANDROID_VERSION_CODE);
+          const content = fs.readFileSync(p, 'utf8');
           const match = content.match(/versionCode\s+(\d+)/);
           if (!match) throw new Error('versionCode introuvable dans build.gradle');
-          const current = Number(match[1]);
-          const next = Math.max(current + 1, requested);
-          content = content.replace(/versionCode\s+\d+/, `versionCode ${next}`);
-          fs.writeFileSync(p, content);
-          console.log(`[version] versionCode ${current} → ${next}`);
+          if (Number(match[1]) !== requested) throw new Error('Version native différente de la config Expo');
+          console.log(`[version] versionCode Expo/Android = ${requested}`);
           NODEJS_EOF
 
       # FIX SIGNING — Supprimer signingConfig signingConfigs.debug du bloc release
@@ -627,8 +632,8 @@ jobs:
 
       # ── GitHub Release ────────────────────────────────────────────────────────
       #
-      # Le numéro de publication repart de 1, mais le versionCode Android reste
-      # `github.run_number`, strictement croissant. Les deux ne peuvent pas être
+      # Le numéro de publication repart de 1, mais le versionCode Android utilise
+      # l'horloge UTC commune aux canaux APK/Play. Les deux ne peuvent pas être
       # confondus : Android refuse d'installer un APK dont le versionCode est
       # inférieur ou égal à celui déjà présent, si bien que renuméroter le
       # versionCode empêcherait toute mise à jour sur les appareils installés.
@@ -646,6 +651,7 @@ jobs:
             ## SXB VPN — APK Android #${{ steps.relno.outputs.n }}
 
             Build depuis commit `${{ github.sha }}`
+            Android versionCode : `${{ env.SXB_ANDROID_VERSION_CODE }}` (code exact à utiliser dans la publication dashboard ; distinct du numéro APK).
 
             ### Moteur VPN v5
             - ✅ **VLESS / VMess / Trojan** — sing-box
