@@ -40,7 +40,7 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: backend/package-lock.json
+          cache-dependency-path: backend/package.json
       - name: Check the isolated database and PostgreSQL tools
         env:
           PGPORT: ${{ job.services.postgres.ports[5432] }}
@@ -55,7 +55,7 @@ jobs:
           psql --no-password -v ON_ERROR_STOP=1 -c "CREATE DATABASE sxb_reset_restore;"
       - name: Install declared backend dependencies
         working-directory: backend
-        run: npm ci --include=dev --legacy-peer-deps --no-audit --no-fund
+        run: npm install --include=dev --legacy-peer-deps --no-audit --no-fund
       - name: Create only the disposable fixture schema
         run: |
           set -euo pipefail

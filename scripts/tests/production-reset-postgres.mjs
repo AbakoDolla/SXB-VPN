@@ -216,20 +216,27 @@ test('real PostgreSQL reset preserves administrators, rolls back failures and pr
   ]);
   const competing = create(async () => { throw new Error('Concurrent reset must not back up'); }, peer);
   let writerFinished = false;
+  let rowLockAcquired = false;
   let writer;
+  let rowLocker;
   try {
     await assert.rejects(competing.execute('owner', requestBody(secondPreview)), error => code(error) === 'RESET_IN_PROGRESS');
     writer = peer.user.create({ data: {
       id: 'after-lock', name: 'Concurrent fixture', email: 'after-lock@example.test',
       roleId: 'CLIENT', passwordHash: 'fixture-only',
     } }).then(row => { writerFinished = true; return row; });
+    rowLocker = peer.$transaction(async transaction => {
+      await transaction.$queryRaw`SELECT id FROM ssh_accounts WHERE id = 'ssh' FOR UPDATE`;
+      rowLockAcquired = true;
+    });
     await delay(80);
     assert.equal(writerFinished, false, 'Concurrent writes must wait until the reset transaction releases its locks');
+    assert.equal(rowLockAcquired, false, 'SELECT FOR UPDATE must not take row locks during the reset backup');
   } finally {
     releaseBackup();
   }
   assert.equal(code(await pendingOutcome), 'RESET_BACKUP_FAILED');
-  await writer;
+  await Promise.all([writer, rowLocker]);
   await db.user.delete({ where: { id: 'after-lock' } });
   assert.deepEqual(await businessCounts(db), countsBefore);
   assert.deepEqual(await retained(db), preservedBefore);

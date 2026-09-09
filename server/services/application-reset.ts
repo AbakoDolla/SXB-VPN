@@ -26,8 +26,8 @@ export const RESET_WARNINGS = [
   "RESET_STORAGE_REUSED_NOT_FREED",
 ] as const;
 
-// Static allowlist, including preserved tables: drain existing writers and stop
-// role promotions/OWNER writes while pg_dump reads with compatible ACCESS SHARE.
+// Drain both writers and SELECT FOR UPDATE row lockers, including OWNER calls.
+// EXCLUSIVE still permits pg_dump's ACCESS SHARE reads.
 export const RESET_TABLE_LOCK_SQL = `LOCK TABLE
   "activation_sessions", "admin_tokens", "app_registrations", "audit_logs",
   "mobile_health_devices", "mobile_health_reports", "permissions", "push_tokens",
@@ -35,7 +35,7 @@ export const RESET_TABLE_LOCK_SQL = `LOCK TABLE
   "settings", "singbox_accounts", "ssh_accounts", "ssh_payloads", "subscription_devices",
   "subscriptions", "support_tickets", "tokens", "traffic_usage", "users", "vouchers",
   "vpn_clients", "vpn_logs", "vpn_profile_resellers", "vpn_profiles", "xpanel_configs",
-  "xray_accounts" IN SHARE ROW EXCLUSIVE MODE`;
+  "xray_accounts" IN EXCLUSIVE MODE`;
 
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const countsSchema = z.object({

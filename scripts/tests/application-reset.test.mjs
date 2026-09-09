@@ -716,6 +716,6 @@ test("reset: old real mobile JWT and access ticket observe deletion and the outs
 test("reset: the static write-lock allowlist covers every Prisma table without DROP, TRUNCATE or trigger bypass", () => {
   const names = [...reset.RESET_TABLE_LOCK_SQL.matchAll(/"([^"]+)"/g)].map(match => match[1]).sort();
   assert.deepEqual(names, [...models.values()].map(model => model.dbName).sort());
-  assert.match(reset.RESET_TABLE_LOCK_SQL, /IN SHARE ROW EXCLUSIVE MODE$/);
+  assert.match(reset.RESET_TABLE_LOCK_SQL, /IN EXCLUSIVE MODE$/);
   assert.doesNotMatch(reset.RESET_TABLE_LOCK_SQL, /ACCESS EXCLUSIVE|TRUNCATE|DROP|DISABLE TRIGGER/i);
 });
