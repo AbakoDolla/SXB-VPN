@@ -185,6 +185,8 @@ describe('Play channel and shared version configuration', () => {
       assert.ok(workflow.indexOf('node scripts/android-version.cjs') < workflow.indexOf('npx'));
     }
     assert.match(play, /sha256sum --check --strict/);
+    assert.match(play, /SDKMANAGER="\$ANDROID_HOME\/cmdline-tools\/latest\/bin\/sdkmanager"/);
+    assert.match(play, /"\$SDKMANAGER" "platforms;android-36"/);
     assert.match(play, /a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29/);
     assert.match(play, /trap 'rm -f "\$SXB_KEYSTORE_PATH"' EXIT/);
     assert.match(play, /node tests\/run-play-encryption\.cjs/);

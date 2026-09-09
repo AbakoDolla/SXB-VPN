@@ -90,7 +90,11 @@ jobs:
       - name: Prepare pinned Android toolchain and bundletool
         run: |
           set -euo pipefail
-          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
+          export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKMANAGER"
+          "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.1.12297006" >> "$GITHUB_ENV"
           echo "$ANDROID_HOME/build-tools/36.0.0" >> "$GITHUB_PATH"
           TOOL="$RUNNER_TEMP/bundletool-all-1.18.3.jar"
