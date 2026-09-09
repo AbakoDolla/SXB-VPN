@@ -203,6 +203,42 @@ function remoteConnections(value: AccessSnapshot) {
 const equal = (actual: unknown, expected: unknown) => assert.deepEqual(JSON.parse(JSON.stringify(actual)), expected);
 
 describe('mobile access runtime with real encrypted store, auth and HTTP interceptors', () => {
+  it('accepts the real token-only activation and account response without an e-mail', async () => {
+    const h = await harness();
+    h.state.storage.set('@sxb_device_id', 'hardware');
+    const mobileUser = { id: user.id, name: user.name };
+    await h.auth.acceptActivatedIdentity({
+      accessToken: 'activated-access', refreshToken: 'activated-refresh', user: mobileUser, accountState,
+    }, 'hardware');
+    equal(h.auth.getIdentitySession()?.user, { ...mobileUser, email: '' });
+    assert.equal(h.state.secure.get('sxb_access_token_v2'), 'activated-access');
+    h.api.default.defaults.adapter = async request => ({
+      status: 200, statusText: 'OK', config: request, headers: {}, data: { user: mobileUser, accountState },
+    });
+    await h.auth.validateIdentitySession('hardware');
+    equal(h.auth.getIdentitySession()?.user, { ...mobileUser, email: '' });
+    const restored = await harness();
+    restored.state.storage.set('@sxb_device_id', 'hardware');
+    restored.state.storage.set('@sxb_user', JSON.stringify({ user: mobileUser, accountState }));
+    restored.state.secure.set('sxb_access_token_v2', 'activated-access');
+    await restored.auth.restoreIdentitySession('hardware');
+    equal(restored.auth.getIdentitySession()?.user, { ...mobileUser, email: '' });
+  });
+
+  it('allows absent contact data but rejects a malformed identity before changing credentials', async () => {
+    const h = await harness();
+    await h.auth.acceptActivatedIdentity({
+      accessToken: 'kept-access', refreshToken: 'kept-refresh', user: { ...user, email: null }, accountState,
+    }, 'hardware');
+    assert.equal(h.auth.getIdentitySession()?.user.email, '');
+    for (const malformed of [{ ...user, email: 42 }, { ...user, id: '' }, { ...user, name: null }]) {
+      await assert.rejects(h.auth.acceptActivatedIdentity({
+        accessToken: 'wrong-access', refreshToken: 'wrong-refresh', user: malformed, accountState,
+      }, 'hardware'), /AUTH_RESPONSE_INVALID/);
+      assert.equal(h.state.secure.get('sxb_access_token_v2'), 'kept-access');
+      assert.equal(h.auth.getIdentitySession()?.user.id, user.id);
+    }
+  });
   it('revokes active A only, stops before purge, preserves B/manual/auth and selects B without connecting', async () => {
     const h = await harness();
     await setup(h);

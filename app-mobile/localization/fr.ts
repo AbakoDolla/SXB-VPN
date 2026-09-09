@@ -391,6 +391,8 @@ export const fr = {
   activation_device_claimed: 'Cet appareil est déjà lié à un autre compte.',
   activation_forbidden: 'Activation refusée. Ce token n’est pas autorisé pour cet appareil ou ce client.',
   activation_rate_limited: 'Trop de tentatives. Patientez avant de réessayer.',
+  activation_response_invalid: 'Le serveur a répondu, mais les informations d’activation sont incomplètes. Mettez l’application à jour puis réessayez.',
+  activation_local_failed: 'L’activation n’a pas pu être finalisée sur cet appareil. Rouvrez l’application et réessayez sans effacer ses données.',
   error_no_network: 'Connexion impossible. Vérifiez votre réseau.',
   error_server: 'Erreur serveur. Veuillez réessayer plus tard.',
   error_generic: "Une erreur s'est produite. Veuillez réessayer.",

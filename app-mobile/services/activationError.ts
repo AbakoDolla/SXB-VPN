@@ -9,6 +9,8 @@ export type ActivationErrorKey =
   | 'activation_device_claimed'
   | 'activation_forbidden'
   | 'activation_rate_limited'
+  | 'activation_response_invalid'
+  | 'activation_local_failed'
   | 'error_no_network'
   | 'error_server'
   | 'error_generic';
@@ -26,6 +28,10 @@ export function normalizeActivationToken(value: string): string {
 }
 
 type HttpErrorLike = {
+  code?: unknown;
+  message?: unknown;
+  request?: unknown;
+  isAxiosError?: boolean;
   response?: {
     status?: number;
     data?: unknown;
@@ -69,7 +75,17 @@ export function activationErrorKey(error: unknown): ActivationErrorKey {
   const status = httpError.response?.status;
   const marker = responseMarker(httpError);
 
-  if (!httpError.response) return 'error_no_network';
+  if (!httpError.response) {
+    const localCode = typeof httpError.code === 'string' ? httpError.code : '';
+    const localMessage = typeof httpError.message === 'string' ? httpError.message : '';
+    if (/^AUTH_(?:RESPONSE_INVALID|REFRESH_RESPONSE_INVALID)$/.test(localMessage)) return 'activation_response_invalid';
+    if (localCode.startsWith('ACCESS_') || localCode.startsWith('ERR_SECURESTORE') ||
+        /^(?:AUTH_|ACCESS_|PRIVACY_|privacy_)/.test(localMessage)) return 'activation_local_failed';
+    if (['ERR_NETWORK', 'ECONNABORTED', 'ETIMEDOUT', 'ENOTFOUND', 'ECONNREFUSED'].includes(localCode) ||
+        /^(?:Network Error|Network request failed|Failed to fetch|network|offline)$/i.test(localMessage) ||
+        (httpError.isAxiosError && httpError.request && localCode !== 'ERR_CANCELED')) return 'error_no_network';
+    return 'activation_local_failed';
+  }
 
   if (containsAny(marker, ['quota', 'capacity', 'capacite', 'limit_reached', 'limit reached'])) {
     return 'activation_quota_reached';

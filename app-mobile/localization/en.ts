@@ -374,6 +374,8 @@ export const en = {
   activation_device_claimed: 'This device is already linked to another account.',
   activation_forbidden: 'Activation denied. This token is not authorized for this device or client.',
   activation_rate_limited: 'Too many attempts. Wait before trying again.',
+  activation_response_invalid: 'The server responded, but the activation information is incomplete. Update the app, then try again.',
+  activation_local_failed: 'Activation could not be completed on this device. Reopen the app and try again without clearing its data.',
   error_no_network: 'Connection failed. Check your network.',
   error_server: 'Server error. Please try again later.',
   error_generic: 'An error occurred. Please try again.',

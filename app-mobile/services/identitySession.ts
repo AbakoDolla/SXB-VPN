@@ -22,12 +22,14 @@ function publish(next: IdentitySession | null) { identity = next; listeners.forE
 
 function parseIdentity(value: unknown): IdentitySession {
   if (!isRecord(value) || !isRecord(value.user) || typeof value.user.id !== 'string' || !value.user.id ||
-      typeof value.user.name !== 'string' || typeof value.user.email !== 'string') throw new Error('AUTH_RESPONSE_INVALID');
+      typeof value.user.name !== 'string' ||
+      (value.user.email != null && typeof value.user.email !== 'string')) throw new Error('AUTH_RESPONSE_INVALID');
   const state = value.accountState;
   if (state !== null && state !== undefined && (!isRecord(state) || typeof state.state !== 'string' ||
       !['no_package', 'ready', 'exhausted', 'expired', 'suspended', 'revoked'].includes(state.state))) throw new Error('AUTH_RESPONSE_INVALID');
   return {
-    user: { id: value.user.id, name: value.user.name, email: value.user.email },
+    // Token-only mobile endpoints intentionally omit the account's e-mail.
+    user: { id: value.user.id, name: value.user.name, email: value.user.email ?? '' },
     accountState: state ? state as unknown as AccountState : null,
   };
 }

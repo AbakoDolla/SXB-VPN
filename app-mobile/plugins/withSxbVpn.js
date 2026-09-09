@@ -577,6 +577,19 @@ function withFileProviderXml(config) {
   }]);
 }
 
+function withEngineData(config) {
+  return withDangerousMod(config, ['android', async cfg => {
+    const { prepareGeosite, DEFAULT_DIRECTORY } = require('../scripts/prepare-geosite.cjs');
+    await prepareGeosite();
+    const destination = path.join(cfg.modRequest.platformProjectRoot, 'app', 'src', 'main', 'assets', 'sxb-engine');
+    fs.mkdirSync(destination, { recursive: true });
+    for (const name of ['geosite.db', 'geosite.sha256']) {
+      fs.copyFileSync(path.join(DEFAULT_DIRECTORY, name), path.join(destination, name));
+    }
+    return cfg;
+  }]);
+}
+
 // ── Export composite ──────────────────────────────────────────────────────────
 module.exports = function withSxbVpn(config) {
   config = withVpnManifest(config);
@@ -587,6 +600,7 @@ module.exports = function withSxbVpn(config) {
   config = withLibboxAar(config);
   config = withFileProvider(config);
   config = withFileProviderXml(config);
+  config = withEngineData(config);
   if (config.extra?.distribution === 'play') {
     config = withGradleProperties(config, mod => {
       const properties = {

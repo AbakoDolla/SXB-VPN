@@ -143,6 +143,12 @@ describe('verrouillage local biométrique et PIN', () => {
       assert.equal(activationErrorKey({ response: { status: 422, data: {} } }), 'error_invalid_token');
       assert.equal(activationErrorKey({ response: { status: 503, data: {} } }), 'error_server');
       assert.equal(activationErrorKey(new Error('network')), 'error_no_network');
+      assert.equal(activationErrorKey(new Error('AUTH_RESPONSE_INVALID')), 'activation_response_invalid');
+      assert.equal(activationErrorKey({ code: 'ACCESS_CONTROL_ERROR', message: 'Access control could not be confirmed' }), 'activation_local_failed');
+      assert.equal(activationErrorKey(new Error('privacy_consent_required')), 'activation_local_failed');
+      assert.equal(activationErrorKey({ code: 'ERR_NETWORK', request: {} }), 'error_no_network');
+      assert.equal(activationErrorKey({ code: 'ECONNABORTED', request: {} }), 'error_no_network');
+      assert.equal(activationErrorKey({ code: 'ERR_CANCELED', request: {}, isAxiosError: true }), 'activation_local_failed');
     });
   });
 
@@ -569,7 +575,7 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(nativeService, /if \(chainEndServer\.isNotBlank\(\)\) mainServer = chainEndServer/);
     // Le traducteur backend conserve les en-têtes personnalisés de l'amont.
     assert.match(canonicalConfig, /translateXrayToSingbox|hasXrayMarkers/);
-    assert.match(xrayTranslate, /httpOut\.headers = headers/);
+    assert.match(xrayTranslate, /out\.headers = headers/);
     assert.match(xrayTranslate, /out\.detour = tag/);
   });
 

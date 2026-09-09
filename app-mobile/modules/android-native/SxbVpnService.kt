@@ -2077,6 +2077,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             val baseDir = filesDir.also { it.mkdirs() }
             val workDir = File(getExternalFilesDir(null) ?: filesDir, "sing-box").also { it.mkdirs() }
             val tempDir = cacheDir.also { it.mkdirs() }
+            SxbEngineData.prepare(this, workDir)
             val options = SetupOptions().apply {
                 basePath    = baseDir.absolutePath
                 workingPath = workDir.absolutePath

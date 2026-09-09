@@ -21,3 +21,12 @@ chmod +x "$KOTLINC"
 cd "$ROOT/app-mobile"
 node tests/run-play-encryption.cjs
 node tests/run-access-policy.cjs
+node scripts/prepare-geosite.cjs
+node --experimental-strip-types ../scripts/tests/xray-runtime-fixture.mjs "$HARNESS/xray"
+"$KOTLINC" "$HARNESS/xray/XrayRuntimeHarness.kt" -classpath "$SXB_JSON_JAR" \
+  -include-runtime -d "$HARNESS/xray/harness.jar"
+java -cp "$HARNESS/xray/harness.jar:$SXB_JSON_JAR" XrayRuntimeHarnessKt \
+  "$HARNESS/xray/canonical.json" "$HARNESS/xray/runtime.json"
+go -C ../scripts/tests/singbox-engine-check run -mod=mod \
+  -tags with_gvisor,with_quic,with_wireguard,with_ech,with_utls,with_clash_api \
+  . "$HARNESS/xray/runtime.json" "$ROOT/app-mobile/build/engine-data"
