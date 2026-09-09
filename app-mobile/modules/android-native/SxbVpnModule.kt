@@ -67,6 +67,14 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
 
     @ReactMethod
     fun bindAccessSession(userId: String, deviceId: String, promise: Promise) = accessOperation(promise) {
+        check(SxbPrivacyPolicy.vpnAllowed(reactApplicationContext)) { "PRIVACY_CONSENT_REQUIRED" }
+        val previous = org.json.JSONObject(SxbAccessControl.runtime(reactApplicationContext)).optJSONObject("authority")
+        if (SxbAccessPolicy.bindingRequired(previous, userId, deviceId) &&
+            SxbVpnService.getCurrentState() != "disconnected") {
+            // Drain a pre-upgrade restart before binding, outside the authority monitor.
+            val service = SxbVpnService.instance ?: throw IllegalStateException("ACCESS_STOP_REQUIRED")
+            service.stopForAccess()
+        }
         SxbAccessControl.bind(reactApplicationContext, userId, deviceId)
     }
 

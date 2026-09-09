@@ -31,6 +31,13 @@ private val b = JSONObject("""{"configId":"b","subscriptionId":"b","source":"bac
 private val local = JSONObject("""{"configId":"manual","source":"manual","configHash":"manual-hash"}""")
 
 fun main() {
+    checkCase("first-bind migration and changed identities require a drained service, not stable sessions") {
+        check(SxbAccessPolicy.bindingRequired(null, "u1", "hardware"))
+        check(!SxbAccessPolicy.bindingRequired(authority(), "u1", "hardware"))
+        check(SxbAccessPolicy.bindingRequired(authority(), "u2", "hardware"))
+        check(SxbAccessPolicy.bindingRequired(authority(), "u1", "new-hardware"))
+        rejected { SxbAccessPolicy.bindingRequired(null, "", "hardware") }
+    }
     checkCase("active A revoked leaves active B and independent manual configuration") {
         val next = SxbAccessPolicy.applySnapshot(authority(), snapshot("r1", a = "revoked"), JSONArray().put(a).put(b).put(local))
         check(SxbAccessPolicy.block(next, a) == "CONFIG_REVOKED")

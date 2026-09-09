@@ -1094,12 +1094,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         autoReconnect = AutoReconnectManager(
             onReconnect = {
-                if (running.get() && configJson.isNotEmpty() && SxbPrivacyPolicy.vpnAllowed(this)) {
+                val currentConfig = configJson
+                if (running.get() && currentConfig.isNotEmpty() && SxbPrivacyPolicy.vpnAllowed(this)) {
                     broadcastLog("[SXB_DEBUG] AUTO_RECONNECT_TRIGGERED")
                     broadcastLog("[SXB] Auto-reconnexion en cours...")
-                    val json = JSONObject(configJson)
-                    SxbAccessControl.checkStart(this, json)
-                    dispatchProtocol(configJson, json.optString("protocol", "").lowercase())
+                    val json = JSONObject(currentConfig)
+                    // Dispatch handles a concurrently persisted denial as a cancelled attempt.
+                    dispatchProtocol(currentConfig, json.optString("protocol", "").lowercase())
                 }
             },
             onGiveUp = {

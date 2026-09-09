@@ -202,7 +202,9 @@ export function refreshMobileConfigs(): Promise<VpnConnection[]> {
       if (epoch !== lifecycle || !currentIdentityRequest(identity)) return [];
       const current = getAccessState().authority;
       if (!current || blocksDevice(deviceAccess(current))) break;
-      const restriction = profileRestriction(current, { configId: entry.id, configHash: entry.configHash });
+      const restriction = profileRestriction(current, {
+        configId: entry.id, subscriptionId: entry.id, source: 'backend', configHash: entry.configHash,
+      });
       if (restriction || entry.status !== 'active' || !entry.dataToken) continue;
       const stored = storeValue(await configStore.get(entry.id));
       const changed = stored && (entry.configHash ? stored.meta.configHash !== entry.configHash : stored.meta.configVersion !== entry.configVersion);

@@ -524,6 +524,59 @@ describe('mobile access runtime with real encrypted store, auth and HTTP interce
     assert.equal(requests.includes('/mobile/vpn/config'), false);
   });
 
+  it('provisions independent backend B after A is revoked even when both share a payload hash', async () => {
+    const h = await harness();
+    await setup(h, null);
+    const existingA = (await h.store.get('a')).value;
+    assert.ok(existingA);
+    assert.equal((await h.store.save('a', existingA.config, { ...existingA.meta, configHash: 'shared-hash' })).status, 'ok');
+    assert.equal((await h.store.remove('b')).status, 'ok');
+    const s = snapshot('revoke-shared-a', 'active', 'revoked');
+    for (const entry of s.subscriptions) entry.configHash = 'shared-hash';
+    const remote = remoteConnections(s);
+    remote.connections[1].dataToken = 'SXB-DATA-BBBB-CCCC-DDDD';
+    const plaintext = { ...config, uuid: '00000000-0000-4000-8000-000000000001',
+      configId: 'b', subscriptionId: 'b', deviceId: 'hardware' };
+    const key = new Uint8Array(32).fill(7), iv = new Uint8Array(12).fill(3);
+    const sealed = h.aes.encryptAes256Gcm(key, iv, Buffer.from(JSON.stringify(plaintext)));
+    const hex = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex');
+    const provisioned: string[] = [];
+    h.api.default.defaults.adapter = async request => {
+      let data: unknown;
+      if (request.url === '/mobile/access-state') data = s;
+      else if (request.url === '/mobile/connections') data = remote;
+      else if (request.url === '/provision/activate') {
+        const body = JSON.parse(request.data);
+        provisioned.push(body.dataToken);
+        assert.equal(body.deviceId, 'hardware');
+        data = { deviceId: 'hardware', subscriptionId: 'b', profileName: 'Profile B', protocol: 'vless',
+          configHash: 'shared-hash', configVersion: 1, configKey: hex(key),
+          encryptedBlob: `gcm:${hex(iv)}:${hex(sealed.ciphertext)}:${hex(sealed.authTag)}` };
+      } else throw new Error('Unexpected request');
+      return { status: 200, statusText: 'OK', config: request, headers: {}, data };
+    };
+    await h.sync.refreshMobileConfigs();
+    equal(provisioned, ['SXB-DATA-BBBB-CCCC-DDDD']);
+    assert.equal((await h.store.get('a')).status, 'missing');
+    assert.equal((await h.store.get('b')).status, 'ok');
+    assert.equal((await h.store.get('b')).value?.meta.subscriptionId, 'b');
+    assert.equal(h.state.stopCount, 0);
+    assert.equal(h.auth.getIdentitySession()?.user.id, user.id);
+  });
+
+  it('drains a legacy native service before first binding and keeps reconnect denial inside dispatch', () => {
+    const nativeModule = readFileSync(path.join(mobile, 'modules/android-native/SxbVpnModule.kt'), 'utf8');
+    const bind = nativeModule.slice(nativeModule.indexOf('fun bindAccessSession('), nativeModule.indexOf('fun getAccessControlState('));
+    assert.match(bind, /SxbAccessPolicy\.bindingRequired\(previous, userId, deviceId\)/);
+    assert.ok(bind.indexOf('service.stopForAccess()') < bind.indexOf('SxbAccessControl.bind('));
+    const service = readFileSync(path.join(mobile, 'modules/android-native/SxbVpnService.kt'), 'utf8');
+    const reconnect = service.slice(service.indexOf('onReconnect = {'), service.indexOf('onGiveUp = {'));
+    assert.match(reconnect, /dispatchProtocol\(currentConfig,/);
+    assert.doesNotMatch(reconnect, /SxbAccessControl\.checkStart/);
+    const dispatch = service.slice(service.indexOf('private fun dispatchProtocol('), service.indexOf('activeDispatches++'));
+    assert.match(dispatch, /try \{[\s\S]*SxbAccessControl\.checkStart[\s\S]*catch \(error: Exception\)[\s\S]*cleanup\(\)/);
+  });
+
   it('coalesces concurrent refreshes and refuses an old /me response after logout', async () => {
     const h = await harness();
     await setup(h);

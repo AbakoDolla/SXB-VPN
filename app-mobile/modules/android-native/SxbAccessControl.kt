@@ -63,8 +63,7 @@ object SxbAccessControl {
         check(SxbPrivacyPolicy.vpnAllowed(context)) { "PRIVACY_CONSENT_REQUIRED" }
         load(context)
         val old = authority
-        if (old == null || old.optString("userId") != userId || old.optString("deviceId") != deviceId) {
-            require(userId.isNotBlank() && deviceId.isNotBlank()) { "ACCESS_BINDING_INVALID" }
+        if (SxbAccessPolicy.bindingRequired(old, userId, deviceId)) {
             check(SxbVpnService.getCurrentState() == "disconnected") { "ACCESS_STOP_REQUIRED" }
             val next = JSONObject().put("userId", userId).put("deviceId", deviceId)
                 .put("session", UUID.randomUUID().toString()).put("sequence", 0)

@@ -129,6 +129,12 @@ object SxbAccessPolicy {
     fun accepts(authority: JSONObject, session: String, sequence: Long) =
         authority.getString("session") == session && authority.getLong("sequence") == sequence
 
+    fun bindingRequired(current: JSONObject?, userId: String, deviceId: String): Boolean {
+        identifier(userId)
+        identifier(deviceId)
+        return current == null || current.optString("userId") != userId || current.optString("deviceId") != deviceId
+    }
+
     private fun restrictions(authority: JSONObject): LinkedHashMap<String, JSONObject> {
         val result = linkedMapOf<String, JSONObject>()
         val array = authority.getJSONArray("restrictions")
