@@ -43,6 +43,10 @@ beforeEach(() => {
     calls.push({ command, args, options });
     const child = new EventEmitter();
     child.stderr = new PassThrough();
+    // A real ChildProcess keeps Node alive until exit; an EventEmitter does not.
+    const processHandle = setInterval(() => {}, 60_000);
+    child.once("close", () => clearInterval(processHandle));
+    child.once("error", () => clearInterval(processHandle));
     child.kill = signal => {
       kills.push(signal);
       queueMicrotask(() => child.emit("close", 143));
