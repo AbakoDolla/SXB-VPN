@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { execFileSync } from 'node:child_process';
 import { test } from 'node:test';
 
 const require = createRequire(new URL('../../app-mobile/package.json', import.meta.url));
@@ -46,4 +47,14 @@ test('APK candidates compare the existing identity and inspect native binaries b
   assert.match(script, /status: 'validated-artifact'/);
   assert.match(script, /build-tools\/36\.0\.0\/apksigner/);
   assert.doesNotMatch(script, /status: 'published'/);
+});
+
+test('both Android channels run the same production Kotlin policy harnesses before signing', () => {
+  const nativeGate = job.steps.find(step => step.run?.includes('run-android-policy-gates.sh'));
+  assert.ok(nativeGate);
+  const script = readFileSync(new URL('../run-android-policy-gates.sh', import.meta.url), 'utf8');
+  execFileSync('bash', ['-n'], { input: script, encoding: 'utf8' });
+  assert.match(script, /node tests\/run-play-encryption\.cjs/);
+  assert.match(script, /node tests\/run-access-policy\.cjs/);
+  assert.doesNotMatch(script, /KEYSTORE|KEY_PASSWORD|android\.jar/);
 });

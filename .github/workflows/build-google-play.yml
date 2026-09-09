@@ -141,24 +141,8 @@ jobs:
             printf '\ntasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {\n    kotlinOptions { freeCompilerArgs = freeCompilerArgs + listOf("-Xskip-metadata-version-check") }\n}\n' >> "$PLUGIN"
           fi
 
-      - name: Execute production encryption validator on the JVM (no Android stubs)
-        run: |
-          set -euo pipefail
-          HARNESS="$(mktemp -d "$RUNNER_TEMP/sxb-kotlin.XXXXXX")"
-          trap 'rm -rf "$HARNESS"' EXIT
-          curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
-            https://github.com/JetBrains/kotlin/releases/download/v2.1.20/kotlin-compiler-2.1.20.zip \
-            --output "$HARNESS/kotlin.zip"
-          echo "a118197b0de55ffab2bc8d5cd03a5e39033cfb53383d6931bc761dec0784891a  $HARNESS/kotlin.zip" | sha256sum --check --strict
-          curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
-            https://repo.maven.apache.org/maven2/org/json/json/20240303/json-20240303.jar \
-            --output "$HARNESS/json.jar"
-          echo "3cf6cd6892e32e2b4c1c39e0f52f5248a2f5b37646fdfbb79a66b46b618414ed  $HARNESS/json.jar" | sha256sum --check --strict
-          unzip -q "$HARNESS/kotlin.zip" -d "$HARNESS"
-          export KOTLINC="$HARNESS/kotlinc/bin/kotlinc"
-          export SXB_JSON_JAR="$HARNESS/json.jar"
-          chmod +x "$KOTLINC"
-          node tests/run-play-encryption.cjs
+      - name: Execute native access and encryption policies on the JVM (no Android stubs)
+        run: bash ../scripts/run-android-policy-gates.sh
 
       - name: Generate native Play project
         run: |

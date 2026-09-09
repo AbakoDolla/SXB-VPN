@@ -6,6 +6,7 @@ on:
     paths:
       - "app-mobile/**"
       - ".github/workflows/build-android.yml"
+      - "scripts/run-android-policy-gates.sh"
   workflow_dispatch:
     inputs:
       distribution:
@@ -145,6 +146,9 @@ jobs:
         run: |
           npm run typecheck
           npm run test:regression
+
+      - name: Execute native access and encryption policies on the JVM
+        run: bash ../scripts/run-android-policy-gates.sh
 
       # FIX #1 : patch Kotlin metadata compat — après npm install (node_modules/ doit exister)
       - name: Patch expo-module-gradle-plugin (Kotlin metadata compat)

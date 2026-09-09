@@ -175,6 +175,7 @@ describe('Play channel and shared version configuration', () => {
   it('keeps workflow publication and signing boundaries explicit', () => {
     const play = readFileSync(new URL('../../.github/workflows/build-google-play.yml', import.meta.url), 'utf8');
     const direct = readFileSync(new URL('../../.github/workflows/build-android.yml', import.meta.url), 'utf8');
+    const policies = readFileSync(new URL('../run-android-policy-gates.sh', import.meta.url), 'utf8');
     assert.match(play, /^  workflow_dispatch:/m);
     assert.match(play, /^  workflow_call:/m);
     assert.doesNotMatch(play, /^\s+(push|pull_request|schedule):/m);
@@ -189,10 +190,15 @@ describe('Play channel and shared version configuration', () => {
     assert.match(play, /"\$SDKMANAGER" "platforms;android-36"/);
     assert.match(play, /a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29/);
     assert.match(play, /trap 'rm -f "\$SXB_KEYSTORE_PATH"' EXIT/);
-    assert.match(play, /node tests\/run-play-encryption\.cjs/);
-    assert.ok(play.indexOf('node tests/run-play-encryption.cjs') < play.indexOf('KEYSTORE_FILE:'));
-    assert.match(play, /a118197b0de55ffab2bc8d5cd03a5e39033cfb53383d6931bc761dec0784891a/);
-    assert.match(play, /3cf6cd6892e32e2b4c1c39e0f52f5248a2f5b37646fdfbb79a66b46b618414ed/);
+    for (const workflow of [play, direct]) {
+      const gate = workflow.indexOf('bash ../scripts/run-android-policy-gates.sh');
+      assert.ok(gate >= 0 && gate < workflow.indexOf('KEYSTORE_FILE:'));
+    }
+    assert.match(policies, /node tests\/run-play-encryption\.cjs/);
+    assert.match(policies, /node tests\/run-access-policy\.cjs/);
+    assert.match(policies, /a118197b0de55ffab2bc8d5cd03a5e39033cfb53383d6931bc761dec0784891a/);
+    assert.match(policies, /3cf6cd6892e32e2b4c1c39e0f52f5248a2f5b37646fdfbb79a66b46b618414ed/);
+    assert.match(policies, /sha256sum --check --strict/);
     assert.doesNotMatch(play, /KEYSTORE_PASSWORD=.*GITHUB_ENV|KEY_PASSWORD=.*GITHUB_ENV/);
     assert.match(direct, /EXPO_PUBLIC_DISTRIBUTION: direct/);
     assert.match(direct, /Vérifier le versionCode commun Expo et Android/);
