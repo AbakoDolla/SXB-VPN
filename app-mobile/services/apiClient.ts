@@ -116,10 +116,15 @@ apiClient.interceptors.request.use(
 
 // --- Response interceptor: refresh on 401 ---
 let isRefreshing = false;
-let refreshQueue: Array<(token: string) => void> = [];
+let refreshQueue: Array<{ resolve: (token: string) => void; reject: (error: unknown) => void }> = [];
 
 function processQueue(token: string) {
-  refreshQueue.forEach((resolve) => resolve(token));
+  refreshQueue.forEach(({ resolve }) => resolve(token));
+  refreshQueue = [];
+}
+
+function rejectQueue(error: unknown) {
+  refreshQueue.forEach(({ reject }) => reject(error));
   refreshQueue = [];
 }
 
@@ -130,10 +135,11 @@ apiClient.interceptors.response.use(
       _retry?: boolean;
     };
 
-    if (error.response?.status === 401 && !original._retry) {
+    if (original && error.response?.status === 401 && !original._retry) {
+      original._retry = true;
       if (isRefreshing) {
-        return new Promise<string>((resolve) => {
-          refreshQueue.push(resolve);
+        return new Promise<string>((resolve, reject) => {
+          refreshQueue.push({ resolve, reject });
         }).then((newToken) => {
           if (original.headers) {
             original.headers['Authorization'] = `Bearer ${newToken}`;
@@ -142,7 +148,6 @@ apiClient.interceptors.response.use(
         });
       }
 
-      original._retry = true;
       isRefreshing = true;
 
       try {
@@ -171,19 +176,19 @@ apiClient.interceptors.response.use(
         }
         return apiClient(original);
       } catch (_err: any) {
-        // Ne supprimer les tokens QUE si le serveur répond explicitement (erreur HTTP).
-        // Une erreur réseau (pas d'internet, timeout) NE DOIT PAS effacer la session —
-        // sinon chaque coupure de réseau déconnecte l'utilisateur et invalide le token.
-        const isHttpError = !!_err?.response;
-        if (isHttpError) {
+        // Retrait du consentement, limitation ou panne réseau ne rendent pas
+        // les identifiants invalides. Toutes les requêtes en attente reçoivent
+        // cependant un rejet pour que le retrait puisse finir hors ligne.
+        rejectQueue(_err);
+        const invalidSession = _err?.response?.status === 401 || _err?.response?.status === 403;
+        if (invalidSession) {
           await Promise.all([
             removeSecureToken(SEC_KEYS.ACCESS),
             removeSecureToken(SEC_KEYS.REFRESH),
             AsyncStorage.multiRemove(['@sxb_access_token', '@sxb_refresh_token', '@sxb_user']),
           ]);
         }
-        refreshQueue = [];
-        return Promise.reject(error);
+        return Promise.reject(_err);
       } finally {
         isRefreshing = false;
       }

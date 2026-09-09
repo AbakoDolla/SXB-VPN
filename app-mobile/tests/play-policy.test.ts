@@ -4,6 +4,7 @@ import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { describe, it } from 'node:test';
+import axios, { AxiosError } from 'axios';
 import { resolveDistribution, PLAY_STORE_URL, PRIVACY_URL, DATA_DELETION_URL } from '../services/distributionPolicy';
 import { NO_CONSENT, parsePrivacyConsent } from '../services/privacyPolicy';
 
@@ -227,6 +228,52 @@ describe('Play distribution and privacy runtime', () => {
     await assert.rejects(h.push.unregisterPushToken(''), /offline/);
     assert.equal(h.state.storage.get('@sxb_fcm_registered_token_v1'), 'cached');
     assert.equal(h.state.events.includes('FCM:create'), false);
+  });
+
+  it('rejects all queued calls on transient refresh failure while retaining credentials', async () => {
+    const h = await harness();
+    await h.consent.savePrivacyConsent(accepted);
+    h.state.storage.set('@sxb_access_token', 'old-access');
+    h.state.storage.set('@sxb_refresh_token', 'old-refresh');
+    const previousAdapter = axios.defaults.adapter;
+    let releaseRefresh: (() => void) | undefined;
+    let refreshCount = 0;
+    let apiCount = 0;
+    const refreshReady = new Promise<void>(resolve => { releaseRefresh = resolve; });
+    h.api.defaults.adapter = async config => {
+      apiCount++;
+      throw new AxiosError('Expired access', 'ERR_BAD_REQUEST', config, undefined, {
+        data: {}, status: 401, statusText: 'Unauthorized', headers: {}, config,
+      });
+    };
+    axios.defaults.adapter = async config => {
+      refreshCount++;
+      await refreshReady;
+      throw new AxiosError('Temporarily limited', 'ERR_BAD_REQUEST', config, undefined, {
+        data: {}, status: 429, statusText: 'Too Many Requests', headers: {}, config,
+      });
+    };
+    const calls = [h.api.get('/mobile/me'), h.api.get('/mobile/vpn/config')];
+    const outcomes = Promise.allSettled(calls);
+    try {
+      for (let i = 0; i < 100 && (apiCount < 2 || refreshCount < 1); i++) {
+        await new Promise(resolve => setTimeout(resolve, 1));
+      }
+      assert.equal(apiCount, 2);
+      assert.equal(refreshCount, 1);
+      releaseRefresh!();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const results = await Promise.race([
+        outcomes,
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Refresh queue remained pending')), 1000); }),
+      ]).finally(() => clearTimeout(timer));
+      assert.ok(results.every(result => result.status === 'rejected'));
+      assert.equal(h.state.storage.get('@sxb_refresh_token'), 'old-refresh');
+      assert.equal(h.state.storage.get('@sxb_access_token'), 'old-access');
+    } finally {
+      releaseRefresh!();
+      axios.defaults.adapter = previousAdapter;
+    }
   });
 
   it('never downloads or installs an APK on Play, including indirect/malicious API actions', async () => {
