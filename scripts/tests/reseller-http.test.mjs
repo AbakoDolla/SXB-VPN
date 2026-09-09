@@ -156,6 +156,9 @@ class Database {
           }, state);
         } else throw new Error(`Unsupported nested write ${key}`);
       } else {
+        if (field.type === "String" && value && typeof value === "object") {
+          assert.deepEqual(Object.keys(value), ["set"], `${name}.${key} only accepts a String or a scalar set operation`);
+        }
         const resolved = value && typeof value === "object" && !(value instanceof Date) && field.type !== "Json"
           ? value.increment !== undefined ? (row[key] ?? (field.type === "BigInt" ? 0n : 0)) + value.increment : value.set
           : value;

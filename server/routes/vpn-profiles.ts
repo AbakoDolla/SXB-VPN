@@ -73,7 +73,8 @@ function buildImportDataFromParsed(parsed: ParseResult, opts: { bumpVersion?: nu
       ? `${canon.sshTransport ?? (canon.slowDns ? 'slowdns' : canon.tls ? 'tls' : 'direct')}${canon.udpMode === 'udpgw' ? '+udpgw' : ''}`
       : (canon.network ?? null),
     path: canon.path ?? null,
-    dns: canon.dns ?? null,
+    // Full sing-box/Xray DNS objects remain in the encrypted canonical, not this legacy String column.
+    dns: typeof canon.dns === 'string' ? canon.dns : null,
     username: null as string | null,   // credentials : dans canonicalConfig uniquement
     password: null as string | null,
     uuid: null as string | null,
