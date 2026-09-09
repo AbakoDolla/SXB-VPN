@@ -28,9 +28,7 @@ jobs:
           --health-retries 10
     env:
       SXB_RESET_PG_TEST: "1"
-      DATABASE_URL: postgresql://reset_fixture:reset-fixture-only-not-production@127.0.0.1:${{ job.services.postgres.ports[5432] }}/sxb_reset_fixture?schema=public&connection_limit=6
       PGHOST: 127.0.0.1
-      PGPORT: ${{ job.services.postgres.ports[5432] }}
       PGUSER: reset_fixture
       PGPASSWORD: reset-fixture-only-not-production
       PGDATABASE: sxb_reset_fixture
@@ -44,8 +42,12 @@ jobs:
           cache: npm
           cache-dependency-path: backend/package-lock.json
       - name: Check the isolated database and PostgreSQL tools
+        env:
+          PGPORT: ${{ job.services.postgres.ports[5432] }}
         run: |
           set -euo pipefail
+          echo "PGPORT=$PGPORT" >> "$GITHUB_ENV"
+          echo "DATABASE_URL=postgresql://reset_fixture:reset-fixture-only-not-production@127.0.0.1:$PGPORT/sxb_reset_fixture?schema=public&connection_limit=6" >> "$GITHUB_ENV"
           test -x "$PG_DUMP_BIN"
           test -x "$PG_RESTORE_BIN"
           "$PG_DUMP_BIN" --version
