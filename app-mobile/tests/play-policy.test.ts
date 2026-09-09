@@ -1,0 +1,270 @@
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+import { describe, it } from 'node:test';
+import { resolveDistribution, PLAY_STORE_URL, PRIVACY_URL, DATA_DELETION_URL } from '../services/distributionPolicy';
+import { NO_CONSENT, parsePrivacyConsent } from '../services/privacyPolicy';
+
+const mobile = path.resolve(__dirname, '..');
+const requireMobile = createRequire(path.join(mobile, 'package.json'));
+// esbuild already ships with the repository's tsx test runner.
+const { build } = createRequire(requireMobile.resolve('tsx'))('esbuild');
+type PluginSetup = {
+  onResolve(options: { filter: RegExp }, callback: (args: { path: string }) => unknown): void;
+  onLoad(options: { filter: RegExp; namespace: string }, callback: (args: { path: string }) => unknown): void;
+};
+type Harness = {
+  consent: typeof import('../services/privacyConsent');
+  updates: typeof import('../services/appUpdate');
+  push: typeof import('../services/pushNotifications');
+  health: typeof import('../services/mobileHealth');
+  api: typeof import('../services/apiClient').default;
+  state: {
+    events: string[];
+    persisted: unknown;
+    failStop: boolean;
+    missing: boolean;
+    storage: Map<string, string>;
+  };
+};
+
+async function harness(distribution: string = 'play'): Promise<Harness> {
+  const stubs: Record<string, string> = {
+    'test:state': `export const state = {
+      events: [], persisted: null, failStop: false, missing: false, storage: new Map(),
+    };`,
+    'react-native': `
+      import { state } from 'test:state';
+      export const Platform = { OS: 'android', Version: 35, constants: {Model:'test'} };
+      export const AppState = { currentState: 'active' };
+      export const Linking = { openURL: async url => {state.events.push('open:'+url)} };
+      export const NativeModules = { SxbVpnNative: {
+        distribution: ${JSON.stringify(distribution)},
+        getPrivacyConsent: async () => {
+          if (state.missing) throw Error('missing native bridge');
+          return typeof state.persisted === 'string' ? state.persisted : JSON.stringify(state.persisted);
+        },
+        setPrivacyConsent: async (vpn,diagnostics,notifications) => {
+          if (state.missing) throw Error('missing native bridge');
+          if (!vpn) {
+            state.events.push('stop');
+            if (state.failStop) throw Error('stop pending');
+          }
+          state.events.push('persist');
+          state.persisted={version:1,vpn,diagnostics:vpn&&diagnostics,notifications:vpn&&notifications};
+          return JSON.stringify(state.persisted);
+        },
+        getPushToken: async () => {state.events.push('FCM:create'); return 'test-fcm-token'},
+        deletePushToken: async () => {state.events.push('FCM:delete'); return true},
+        getBatteryOptimizationState: async () => 'optimized',
+      }};`,
+    'expo-constants': `export default {expoConfig:{extra:{distribution:${JSON.stringify(distribution)}},version:'1',android:{versionCode:1}}};`,
+    '@react-native-async-storage/async-storage': `import {state} from 'test:state'; export default {
+      getItem: async key => state.storage.get(key) ?? null,
+      setItem: async (key,value) => {state.storage.set(key,value)},
+      removeItem: async key => {state.storage.delete(key)},
+      multiRemove: async keys => {for(const key of keys) state.storage.delete(key)}
+    };`,
+    'expo-secure-store': `export const getItemAsync=async()=>null; export const setItemAsync=async()=>{}; export const deleteItemAsync=async()=>{};`,
+    'expo-crypto': `import {state} from 'test:state'; export const randomUUID=()=>{state.events.push('health:create');return '00000000-0000-4000-8000-000000000001'};`,
+    'expo-file-system/legacy': `
+      import {state} from 'test:state';
+      export const cacheDirectory='file:///test/';
+      export const getInfoAsync=async()=>({exists:false});
+      export const deleteAsync=async()=>{};
+      export const getContentUriAsync=async()=>{state.events.push('APK:uri');return 'content://test'};
+      export const createDownloadResumable=()=>({downloadAsync:async()=>{state.events.push('APK:download');return {uri:'file:///test/app.apk'}}});
+    `,
+    'expo-intent-launcher': `import {state} from 'test:state'; export const startActivityAsync=async()=>{state.events.push('APK:install')};`,
+    '@/modules/expo-sxb-vpn/src': `export const sha256File=async()=> 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';`,
+  };
+  const output = await build({
+    stdin: {
+      contents: `
+        export {state} from 'test:state';
+        export * as consent from './services/privacyConsent';
+        export * as updates from './services/appUpdate';
+        export * as push from './services/pushNotifications';
+        export * as health from './services/mobileHealth';
+        export {default as api} from './services/apiClient';
+      `,
+      resolveDir: mobile,
+    },
+    bundle: true, write: false, platform: 'node', format: 'cjs', logLevel: 'silent',
+    external: ['axios'],
+    define: { 'process.env.EXPO_PUBLIC_DISTRIBUTION': JSON.stringify(distribution), __DEV__: 'false' },
+    plugins: [{
+      name: 'native-fixtures',
+      setup(plugin: PluginSetup) {
+        plugin.onResolve({ filter: /.*/ }, args => args.path in stubs ? { path: args.path, namespace: 'stub' } : undefined);
+        plugin.onLoad({ filter: /.*/, namespace: 'stub' }, args => ({ contents: stubs[args.path], loader: 'js' }));
+      },
+    }],
+  });
+  const module = { exports: {} };
+  runInNewContext(output.outputFiles[0].text, {
+    module, exports: module.exports, require: requireMobile, console,
+    AbortController, setTimeout, clearTimeout, process,
+  });
+  return module.exports as Harness;
+}
+
+const accepted = { version: 1, vpn: true, diagnostics: false, notifications: false };
+
+describe('Play distribution and privacy runtime', () => {
+  it('defaults to direct but fails closed for conflict and unknown build markers', () => {
+    assert.equal(resolveDistribution(), 'direct');
+    assert.equal(resolveDistribution(undefined, 'direct'), 'direct');
+    for (const marker of ['play', 'unknown', true, {}, 7]) {
+      assert.equal(resolveDistribution('direct', marker), 'play');
+    }
+    assert.equal(resolveDistribution('play', 'direct'), 'play');
+  });
+
+  it('requires the current version and explicit booleans, not legacy or prechecked values', () => {
+    for (const value of [null, {}, { ...accepted, version: 0 }, { ...accepted, vpn: 'true' }]) {
+      assert.deepEqual(parsePrivacyConsent(value), NO_CONSENT);
+    }
+    assert.deepEqual(parsePrivacyConsent({ ...accepted, diagnostics: 'true', notifications: 1 }), accepted);
+  });
+
+  it('blocks APIs, FCM creation and diagnostics before loading or granting consent', async () => {
+    const h = await harness();
+    const requests: string[] = [];
+    h.api.defaults.adapter = async config => {
+      requests.push(config.url || '');
+      return { data: [], status: 200, statusText: 'OK', headers: {}, config };
+    };
+    await assert.rejects(h.api.post('/mobile/auth/activate', { token: 'test' }), /privacy_consent_required/);
+    await assert.rejects(h.api.get('/mobile/me'), /privacy_consent_required/);
+    await h.push.syncPushTokenRegistration('device');
+    await h.health.noteMobileHealthAppState('background');
+    h.health.noteMobileHealthReconnect();
+    await h.health.reportMobileHealth({ tunnelState: 'connected' });
+    assert.equal(requests.length, 0);
+    assert.equal(h.state.events.length, 0);
+    assert.equal(h.state.storage.size, 0);
+  });
+
+  it('fails closed on corrupt storage or a missing native bridge', async () => {
+    const h = await harness();
+    h.state.persisted = '{invalid';
+    await assert.rejects(h.consent.loadPrivacyConsent());
+    assert.equal(h.consent.getPrivacyConsent().vpn, false);
+    h.state.missing = true;
+    await assert.rejects(h.consent.savePrivacyConsent(accepted));
+    assert.equal(h.consent.getPrivacyConsent().vpn, false);
+  });
+
+  it('does not reuse stale consent when a later native read fails', async () => {
+    const h = await harness();
+    await h.consent.savePrivacyConsent(accepted);
+    h.state.missing = true;
+    await assert.rejects(h.consent.loadPrivacyConsent());
+    assert.equal(h.consent.getPrivacyConsent().vpn, false);
+  });
+
+  it('allows required access without either optional data stream', async () => {
+    const h = await harness();
+    const requests: string[] = [];
+    h.api.defaults.adapter = async config => {
+      requests.push(config.url || '');
+      return { data: [], status: 200, statusText: 'OK', headers: {}, config };
+    };
+    await h.consent.savePrivacyConsent(accepted);
+    await h.api.get('/mobile/me');
+    await h.push.syncPushTokenRegistration('device');
+    await h.health.reportMobileHealth({ tunnelState: 'connected' });
+    await assert.rejects(h.api.post('/mobile-health/report', {}), /privacy_diagnostics_disabled/);
+    await assert.rejects(h.api.post('/mobile/push-tokens', {}), /privacy_notifications_disabled/);
+    assert.deepEqual(requests, ['/mobile/me']);
+    assert.equal(h.state.events.includes('FCM:create'), false);
+    assert.equal(h.state.events.includes('health:create'), false);
+  });
+
+  it('collects optional data only after its own opt-in and removes it after withdrawal', async () => {
+    const h = await harness();
+    const requests: string[] = [];
+    h.api.defaults.adapter = async config => {
+      requests.push(`${config.method}:${config.url}`);
+      return { data: [], status: 200, statusText: 'OK', headers: {}, config };
+    };
+    await h.consent.savePrivacyConsent({ ...accepted, diagnostics: true, notifications: true });
+    await h.push.syncPushTokenRegistration('device');
+    await h.health.reportMobileHealth({ tunnelState: 'connected', protocol: 'ssh' });
+    assert.ok(requests.includes('post:/mobile/push-tokens'));
+    assert.ok(requests.includes('post:/mobile-health/report'));
+    const signal = h.consent.getPrivacySignal();
+    await h.consent.savePrivacyConsent(NO_CONSENT);
+    assert.equal(signal.aborted, true);
+    assert.ok(h.state.events.indexOf('stop') < h.state.events.lastIndexOf('persist'));
+    await h.health.clearMobileHealth();
+    await h.push.unregisterPushToken('device');
+    assert.ok(requests.includes('delete:/mobile/push-tokens'));
+    assert.equal(h.state.storage.has('@sxb_mobile_health_pending_v1'), false);
+    assert.equal(h.state.storage.has('@sxb_fcm_registered_token_v1'), false);
+    const count = requests.length;
+    await h.health.reportMobileHealth({ tunnelState: 'connected' });
+    await h.push.syncPushTokenRegistration('device');
+    assert.equal(requests.length, count);
+  });
+
+  it('does not claim withdrawal when the native tunnel cannot stop', async () => {
+    const h = await harness();
+    await h.consent.savePrivacyConsent(accepted);
+    h.state.failStop = true;
+    await assert.rejects(h.consent.savePrivacyConsent(NO_CONSENT), /stop pending/);
+    assert.equal(h.consent.getPrivacyConsent().vpn, true);
+  });
+
+  it('retains a failed remote deletion for retry without recreating a Firebase token', async () => {
+    const h = await harness();
+    h.state.storage.set('@sxb_fcm_registered_token_v1', 'cached');
+    h.state.storage.set('@sxb_device_id', 'device');
+    h.api.defaults.adapter = async () => { throw new Error('offline'); };
+    await assert.rejects(h.push.unregisterPushToken(''), /offline/);
+    assert.equal(h.state.storage.get('@sxb_fcm_registered_token_v1'), 'cached');
+    assert.equal(h.state.events.includes('FCM:create'), false);
+  });
+
+  it('never downloads or installs an APK on Play, including indirect/malicious API actions', async () => {
+    for (const distribution of ['play', 'misconfigured']) {
+      const h = await harness(distribution);
+      assert.equal(await h.updates.fetchLatestAppUpdate(), null);
+      for (const apkUrl of ['https://attacker.test/app.apk', 'file:///local.apk', 'javascript:bad']) {
+        await h.updates.downloadAndInstallAppUpdate({ apkUrl, versionCode: 999, versionName: '999', forceUpdate: true });
+      }
+      assert.equal(h.state.events.filter(event => event === `open:${PLAY_STORE_URL}`).length, 3);
+      assert.equal(h.state.events.some(event => event.startsWith('APK:')), false);
+    }
+  });
+
+  it('preserves the direct APK installation path', async () => {
+    const h = await harness('direct');
+    await h.updates.downloadAndInstallAppUpdate({
+      apkUrl: 'https://updates.test/app.apk', versionCode: 1, versionName: '1',
+      apkSha256: 'a'.repeat(64),
+    });
+    assert.equal(h.state.events.join(','), 'APK:download,APK:uri,APK:install');
+    assert.equal(h.consent.getPrivacyConsent().vpn, true);
+  });
+
+  it('keeps public privacy/deletion entry points and guards the final native engine', () => {
+    assert.equal(PRIVACY_URL, 'https://vpnsxb.afrihall.com/api/public/privacy');
+    assert.equal(DATA_DELETION_URL, 'https://vpnsxb.afrihall.com/api/public/data-deletion');
+    const read = (file: string) => readFileSync(path.join(mobile, file), 'utf8');
+    assert.match(read('app/_layout.tsx'), /publicSegments = new Set\(\[[^\]]*'privacy'/);
+    assert.match(read('app/activate.tsx'), /router\.push\('\/privacy'\)/);
+    assert.doesNotMatch(read('app/settings.tsx'), /sxbvpn\.com\/legal|ne transmet rien à des tiers/);
+    const service = read('modules/android-native/SxbVpnService.kt');
+    const finalEngine = service.slice(service.indexOf('private fun startLibboxService'));
+    assert.ok(finalEngine.indexOf('SxbPlayEncryption.validate') < finalEngine.indexOf('Libbox.newService'));
+    assert.match(service, /onStartCommand[\s\S]*?SxbPrivacyPolicy\.vpnAllowed/);
+    assert.match(service, /private fun dispatchProtocol[\s\S]*?SxbPrivacyPolicy\.vpnAllowed/);
+    assert.match(read('modules/android-native/SxbPushNotifications.kt'), /if \(!SxbPrivacyPolicy\.notificationsAllowed\(context\)\) return null/);
+    assert.match(read('modules/android-native/SxbPrivacyPolicy.kt'), /if \(!play\) PackageManager\.COMPONENT_ENABLED_STATE_DEFAULT/);
+    assert.match(read('modules/android-native/SxbVpnModule.kt'), /if \(!SxbPrivacyPolicy\.isPlay\(reactContext\)\) SxbPrivacyPolicy\.syncPushComponents\(reactContext\)/);
+  });
+});

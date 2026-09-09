@@ -115,6 +115,9 @@ export default function ActivateScreen() {
             <Text style={styles.eyebrow}>{t("activate_secure_badge")}</Text>
             <Text style={styles.title}>{t("activate_account_title")}</Text>
             <Text style={styles.subtitle}>{t("activate_account_desc")}</Text>
+            <Pressable accessibilityRole="link" onPress={() => router.push('/privacy')}>
+              <Text style={{ color: colors.primary }}>{t('privacy_title')}</Text>
+            </Pressable>
           </View>
 
           <View style={styles.formCard}>

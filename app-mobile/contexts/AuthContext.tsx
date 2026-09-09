@@ -9,6 +9,8 @@ import { clearAllOfflineData } from '@/services/offlineStorage';
 import { unregisterPushToken } from '@/services/pushNotifications';
 import { normalizeActivationToken } from '@/services/activationError';
 import type { AccountState, User } from '@/types/api';
+import { usePrivacy } from './PrivacyContext';
+import { requireVpnConsent } from '@/services/privacyConsent';
 
 // Clés non-sensibles restent dans AsyncStorage (infos user, onboarding...)
 // Clés sensibles (JWT) migrent vers SecureStore (Android Keystore / iOS Keychain)
@@ -45,8 +47,10 @@ function randomDeviceId(): string {
 
 // Generate a unique device ID stored permanently (survives app restarts)
 async function getOrCreateDeviceId(): Promise<string> {
+  requireVpnConsent();
   try {
     const stored = await AsyncStorage.getItem(KEYS.DEVICE_ID);
+    requireVpnConsent();
     // MIGRATION — un identifiant déjà émis n'est jamais régénéré : il est lié
     // côté serveur à l'abonnement (`Subscription.deviceId`). Le remplacer
     // ferait perdre son activation à tout le parc déjà installé.
@@ -57,6 +61,7 @@ async function getOrCreateDeviceId(): Promise<string> {
   } catch {
     // AsyncStorage indisponible : identifiant éphémère, mais toujours issu du
     // CSPRNG. Le fallback historique retombait sur Math.random().
+    requireVpnConsent();
     try {
       return randomDeviceId();
     } catch {
@@ -94,6 +99,7 @@ export const AuthContext = createContext<AuthContextType>({
 });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const { consent, loading: privacyLoading } = usePrivacy();
   const [isLoading,        setIsLoading]        = useState(true);
   const [isAuthenticated,  setIsAuthenticated]  = useState(false);
   const [user,             setUser]             = useState<User | null>(null);
@@ -115,9 +121,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (privacyLoading) return;
+    if (!consent.vpn) {
+      setIsAuthenticated(false);
+      setIsLoading(false);
+      return;
+    }
     initSession();
-    getOrCreateDeviceId().then(setDeviceId);
-  }, []);
+    getOrCreateDeviceId().then((id) => {
+      requireVpnConsent();
+      setDeviceId(id);
+    }).catch(() => { console.warn('[Auth] Device initialization cancelled or unavailable'); });
+  }, [consent.vpn, privacyLoading]);
 
   /**
    * CORRECTIF OFFLINE — Restauration de session locale
@@ -148,6 +163,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         AsyncStorage.getItem(KEYS.USER),
         AsyncStorage.getItem(KEYS.ONBOARDING),
       ]);
+      requireVpnConsent();
 
       setHasSeenOnboarding(!!onboardingDone);
 
@@ -179,7 +195,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    */
   const validateSession = useCallback(async () => {
     try {
+      requireVpnConsent();
       const res = await apiClient.get('/mobile/me');
+      requireVpnConsent();
       const { user: u, accountState: as } = res.data;
       setUser(u);
       setAccountState(as);
@@ -205,6 +223,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [isAuthenticated, validateSession]);
 
   const activateAccount = useCallback(async (token: string) => {
+    requireVpnConsent();
     const did = await getOrCreateDeviceId();
     setDeviceId(did);
     const res = await apiClient.post('/mobile/auth/activate', {
@@ -212,6 +231,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       deviceId: did,
     });
     const { accessToken, refreshToken, user: u, accountState: as } = res.data;
+    requireVpnConsent();
     // Stocker JWT dans SecureStore (Keystore Android / Keychain iOS)
     await Promise.all([
       setSecureToken(SEC_KEYS.ACCESS, accessToken),
@@ -224,6 +244,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const activatePlan = useCallback(async (code: string) => {
+    requireVpnConsent();
     const normalized = normalizeActivationToken(code);
     let newState: AccountState;
 
@@ -285,7 +306,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     <AuthContext.Provider
       value={{
         isLoading,
-        isAuthenticated,
+        isAuthenticated: consent.vpn && isAuthenticated,
         user,
         accountState,
         hasSeenOnboarding,

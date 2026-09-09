@@ -3,6 +3,7 @@ import Constants from 'expo-constants';
 import * as Crypto from 'expo-crypto';
 import { AppState, AppStateStatus, NativeModules, Platform } from 'react-native';
 import apiClient from './apiClient';
+import { getPrivacyConsent, getPrivacySignal, subscribePrivacyConsent } from './privacyConsent';
 
 export type MobileHealthErrorCode =
   | 'NETWORK_UNAVAILABLE'
@@ -61,6 +62,7 @@ const SxbVpnNative = Platform.OS === 'android' ? NativeModules.SxbVpnNative as {
 
 let appState: AppStateStatus = AppState.currentState;
 let lastTransitionAt = Date.now();
+subscribePrivacyConsent(() => { lastTransitionAt = Date.now(); });
 let pending: PendingBatterySignals = {
   activeSeconds: 0,
   backgroundSeconds: 0,
@@ -116,7 +118,14 @@ export function normalizeMobileHealthProtocol(protocol?: string | null): string 
 }
 
 export async function noteMobileHealthAppState(next: AppStateStatus): Promise<boolean> {
+  if (!getPrivacyConsent().diagnostics || !getPrivacyConsent().vpn) {
+    appState = next;
+    lastTransitionAt = Date.now();
+    return false;
+  }
+  const signal = getPrivacySignal();
   await hydrate();
+  if (signal.aborted) return false;
   accrue();
   const becameActive = next === 'active' && appState !== 'active';
   if (becameActive) pending.wakeCount = Math.min(100, pending.wakeCount + 1);
@@ -126,6 +135,7 @@ export async function noteMobileHealthAppState(next: AppStateStatus): Promise<bo
 }
 
 export function noteMobileHealthReconnect(): void {
+  if (!getPrivacyConsent().diagnostics || !getPrivacyConsent().vpn) return;
   pending.reconnectCount = Math.min(100, pending.reconnectCount + 1);
   void persist();
 }
@@ -162,12 +172,15 @@ async function batteryOptimizationState(): Promise<'optimized' | 'unrestricted' 
 }
 
 export async function reportMobileHealth(snapshot: MobileHealthSnapshot): Promise<boolean> {
+  if (!getPrivacyConsent().diagnostics || !getPrivacyConsent().vpn) return false;
   if (sendInFlight) {
     await sendInFlight;
     return reportMobileHealth(snapshot);
   }
   sendInFlight = (async () => {
+    const signal = getPrivacySignal();
     await hydrate();
+    if (signal.aborted) return false;
     accrue();
     const reserved = pending.outbox.reduce((sum, item) => ({
       activeSeconds: sum.activeSeconds + item.activeDurationSeconds,
@@ -200,10 +213,12 @@ export async function reportMobileHealth(snapshot: MobileHealthSnapshot): Promis
       wakeCount: clampInteger(reportCounters.wakeCount, 100),
       batteryOptimization: await batteryOptimizationState(),
     };
+    if (signal.aborted) return false;
     pending.outbox.push(payload);
     await persist();
 
     while (pending.outbox.length > 0) {
+      if (signal.aborted) return false;
       const queued = pending.outbox[0];
       try {
         await apiClient.post('/mobile-health/report', queued, { timeout: 8_000 });
@@ -223,4 +238,13 @@ export async function reportMobileHealth(snapshot: MobileHealthSnapshot): Promis
     sendInFlight = null;
   });
   return sendInFlight;
+}
+
+export async function clearMobileHealth(): Promise<void> {
+  // savePrivacyConsent aborts in-flight requests before draining old writes.
+  if (hydrated) await hydrated;
+  if (sendInFlight) await sendInFlight;
+  pending = { activeSeconds: 0, backgroundSeconds: 0, wakeCount: 0, reconnectCount: 0, outbox: [] };
+  lastTransitionAt = Date.now();
+  await AsyncStorage.removeItem(STORAGE_KEY);
 }

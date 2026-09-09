@@ -2,6 +2,7 @@ import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
+import { getPrivacyConsent, getPrivacySignal, requireVpnConsent } from './privacyConsent';
 
 /**
  * B7 — URL de l'API.
@@ -76,6 +77,26 @@ export const apiClient = axios.create({
 // --- Request interceptor: attach JWT ---
 apiClient.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
+    const removingPushToken = config.method === 'delete' && config.url === '/mobile/push-tokens';
+    if (!removingPushToken) {
+      requireVpnConsent();
+      if (config.url === '/mobile-health/report' && !getPrivacyConsent().diagnostics) {
+        throw new Error('privacy_diagnostics_disabled');
+      }
+      if (config.url === '/mobile/push-tokens' && !getPrivacyConsent().notifications) {
+        throw new Error('privacy_notifications_disabled');
+      }
+      const signal = getPrivacySignal();
+      if (!config.signal) config.signal = signal;
+      else {
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        if (signal.aborted || config.signal.aborted) abort();
+        signal.addEventListener('abort', abort, { once: true });
+        config.signal.addEventListener?.('abort', abort, { once: true });
+        config.signal = controller.signal;
+      }
+    }
     // Lecture depuis SecureStore (Keystore Android) avec fallback AsyncStorage legacy
     let token = await getSecureToken(SEC_KEYS.ACCESS);
     if (!token) token = await AsyncStorage.getItem('@sxb_access_token'); // legacy migration
@@ -130,9 +151,10 @@ apiClient.interceptors.response.use(
         if (!refreshToken) refreshToken = await AsyncStorage.getItem('@sxb_refresh_token');
         if (!refreshToken) throw new Error('No refresh token');
 
+        requireVpnConsent();
         const res = await axios.post(`${API_BASE_URL}/mobile/auth/refresh`, {
           refreshToken,
-        });
+        }, { signal: getPrivacySignal() });
         const { accessToken, refreshToken: newRefresh } = res.data;
 
         // Stocker dans SecureStore ET migrer depuis AsyncStorage legacy
@@ -174,4 +196,3 @@ apiClient.interceptors.response.use(
 // Exporter les helpers SecureStore pour que AuthContext les utilise
 export { getSecureToken, setSecureToken, removeSecureToken, SEC_KEYS };
 export default apiClient;
-

@@ -4,7 +4,7 @@
  */
 import React, { useEffect, useState, useCallback, useMemo } from "react";
 import {
-  Alert, Pressable, ScrollView, StyleSheet,
+  Alert, Linking, Pressable, ScrollView, StyleSheet,
   Switch, Text, View, ActivityIndicator, TextInput, Modal,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
@@ -25,6 +25,8 @@ import {
   setAnnouncementNotificationsEnabled,
 } from "@/services/announcementNotifications";
 import { useAppLock } from "@/contexts/AppLockContext";
+import { DATA_DELETION_URL, isPlayDistribution } from "@/services/distribution";
+import { usePrivacy } from "@/contexts/PrivacyContext";
 
 // ── Row component ─────────────────────────────────────────────────────────────
 
@@ -237,6 +239,7 @@ export default function SettingsScreen() {
     traffic, derivedQuota, activeConnection,
   } = useVpnContext();
   const { language, setLanguage } = useLanguageContext();
+  const { consent } = usePrivacy();
   const { themePreference, setThemePreference } = useThemeContext();
   const {
     preferences: appLockPreferences,
@@ -292,6 +295,10 @@ export default function SettingsScreen() {
   }, []);
 
   const handleNotifications = async (enabled: boolean) => {
+    if (isPlayDistribution) {
+      router.push('/privacy');
+      return;
+    }
     setNotifPush(enabled);
     try {
       await setAnnouncementNotificationsEnabled(enabled);
@@ -383,6 +390,10 @@ export default function SettingsScreen() {
   };
 
   const handleDiagnosticLogging = async (v: boolean) => {
+    if (isPlayDistribution && v && !consent.diagnostics) {
+      router.push('/privacy');
+      return;
+    }
     const applied = await setDiagnosticLogging(v).catch(() => false);
     setDiagnosticLoggingState(v && applied);
     if (v && applied) {
@@ -644,7 +655,7 @@ export default function SettingsScreen() {
         <Section title="NOTIFICATIONS">
           <Row
             icon="notifications-outline" label={t("notification_alerts")}
-            toggle toggleValue={notifPush} onToggle={handleNotifications}
+            toggle toggleValue={isPlayDistribution ? consent.notifications : notifPush} onToggle={handleNotifications}
           />
         </Section>
 
@@ -672,16 +683,14 @@ export default function SettingsScreen() {
             onPress={() => router.push("/support")} color={colors.connected}
           />
           <View style={styles.divider} />
-          <Row icon="document-text-outline" label="CGU / Politique de confidentialité"
-            onPress={() => Alert.alert(
-              "CGU & Politique de confidentialité",
-              "Disponible sur https://sxbvpn.com/legal\n\n" +
-              "SXB VPN ne collecte aucune donnée de navigation ni journal de connexion, " +
-              "et ne transmet rien à des tiers.\n\n" +
-              "Seuls le volume de données consommé et l'identifiant de votre appareil " +
-              "sont envoyés à nos serveurs, afin de gérer votre forfait.",
-              [{ text: "Fermer" }]
-            )} />
+          <Row icon="document-text-outline" label={t("privacy_title")}
+            onPress={() => router.push('/privacy')} />
+          <View style={styles.divider} />
+          <Row icon="trash-outline" label={t("privacy_delete_request")}
+            onPress={() => {
+              void Linking.openURL(`${DATA_DELETION_URL}?lang=${language}`)
+                .catch(() => Alert.alert(t('privacy_title'), t('privacy_link_error')));
+            }} />
         </Section>
 
         {/* Diagnostic VPN — accessible uniquement en mode développement */}

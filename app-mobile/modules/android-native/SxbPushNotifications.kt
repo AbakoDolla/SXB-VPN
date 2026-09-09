@@ -17,6 +17,7 @@ object SxbPushNotifications {
     const val CHANNEL_ID = "SXB_ANNOUNCEMENTS_V2"
 
     fun ensureFirebaseInitialized(context: Context): FirebaseApp? {
+        if (!SxbPrivacyPolicy.notificationsAllowed(context)) return null
         try {
             return FirebaseApp.getInstance()
         } catch (_: IllegalStateException) {
@@ -53,6 +54,8 @@ object SxbPushNotifications {
         message: String,
         level: String = "info",
     ): Boolean {
+        if (!SxbPrivacyPolicy.notificationsAllowed(context)) return false
+        if (SxbPrivacyPolicy.isPlay(context) && id.startsWith("app-update-")) return false
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

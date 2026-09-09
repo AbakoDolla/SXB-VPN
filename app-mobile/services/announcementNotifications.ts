@@ -2,6 +2,8 @@ import { NativeModules, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient from '@/services/apiClient';
 import type { Notification as MobileNotification } from '@/types/api';
+import { getPrivacyConsent } from './privacyConsent';
+import { isPlayDistribution } from './distribution';
 
 const DELIVERED_ANNOUNCEMENTS_KEY = '@sxb_delivered_announcement_ids_v1';
 export const ANNOUNCEMENT_NOTIFICATIONS_ENABLED_KEY = '@sxb_announcement_notifications_enabled_v1';
@@ -12,6 +14,7 @@ interface SxbAnnouncementNativeModule {
 }
 
 function isDeliverableNotification(notification: MobileNotification): boolean {
+  if (isPlayDistribution && (notification.appUpdate || notification.id.startsWith('app-update-'))) return false;
   return notification.id.startsWith('announcement-') || notification.id.startsWith('app-update-');
 }
 
@@ -26,6 +29,8 @@ async function readDeliveredIds(): Promise<string[]> {
 }
 
 export async function areAnnouncementNotificationsEnabled(): Promise<boolean> {
+  if (!getPrivacyConsent().vpn || !getPrivacyConsent().notifications) return false;
+  if (isPlayDistribution) return true;
   const stored = await AsyncStorage.getItem(ANNOUNCEMENT_NOTIFICATIONS_ENABLED_KEY).catch(() => null);
   return stored !== 'false';
 }
@@ -64,6 +69,7 @@ export async function syncAnnouncementNotifications(): Promise<void> {
   const newlyDelivered: string[] = [];
 
   for (const announcement of announcements) {
+    if (!(await areAnnouncementNotificationsEnabled())) return;
     if (deliveredSet.has(announcement.id)) continue;
     try {
       const posted = await nativeModule.postAnnouncementNotification(

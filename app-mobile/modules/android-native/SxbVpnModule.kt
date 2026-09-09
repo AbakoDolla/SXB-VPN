@@ -20,6 +20,8 @@ import com.sxbvpn.vpnmodule.SxbSecureLogger.VpnEvent
 import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import com.google.firebase.messaging.FirebaseMessaging
+import com.google.firebase.FirebaseApp
+import com.google.firebase.installations.FirebaseInstallations
 
 /**
  * SxbVpnModule — Bridge React Native ↔ SxbVpnService v4
@@ -54,15 +56,41 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
     init {
         reactContext.addActivityEventListener(this)
         SxbSecureLogger.initialize(reactContext)
+        if (!SxbPrivacyPolicy.isPlay(reactContext)) SxbPrivacyPolicy.syncPushComponents(reactContext)
     }
 
     override fun getName() = "SxbVpnNative"
+    override fun getConstants(): Map<String, Any> = mapOf(
+        "distribution" to SxbPrivacyPolicy.distribution(reactApplicationContext),
+    )
+
+    @ReactMethod
+    fun getPrivacyConsent(promise: Promise) {
+        try {
+            SxbPrivacyPolicy.syncPushComponents(reactApplicationContext)
+            if (SxbPrivacyPolicy.isPlay(reactApplicationContext) && !SxbPrivacyPolicy.vpnAllowed(reactApplicationContext)) {
+                SxbPrivacyPolicy.stopVpnForPrivacy()
+                SxbSecureLogger.setDiagnosticEnabled(reactApplicationContext, false)
+            }
+            promise.resolve(SxbPrivacyPolicy.read(reactApplicationContext))
+        } catch (e: Exception) { promise.reject("PRIVACY_READ_ERROR", "Privacy state unavailable", e) }
+    }
+
+    @ReactMethod
+    fun setPrivacyConsent(vpn: Boolean, diagnostics: Boolean, notifications: Boolean, promise: Promise) {
+        // Joining a tunnel thread must not block the React Native module queue.
+        Thread({
+            try { promise.resolve(SxbPrivacyPolicy.save(reactApplicationContext, vpn, diagnostics, notifications)) }
+            catch (e: Exception) { promise.reject("PRIVACY_WRITE_ERROR", "Privacy change not confirmed", e) }
+        }, "SXB-Privacy").start()
+    }
 
     override fun initialize() { super.initialize(); SxbSecureLogger.initialize(reactApplicationContext); registerReceivers() }
 
     @ReactMethod
     fun setDiagnosticLogging(enabled: Boolean, promise: Promise) {
         try {
+            check(!enabled || SxbPrivacyPolicy.diagnosticsAllowed(reactApplicationContext)) { "PRIVACY_DIAGNOSTICS_REQUIRED" }
             SxbSecureLogger.setDiagnosticEnabled(reactApplicationContext, enabled)
             promise.resolve(SxbSecureLogger.isDiagnosticEnabled())
         } catch (e: Exception) {
@@ -85,6 +113,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
     fun requestVpnPermission(promise: Promise) {
         try {
             val ctx = reactApplicationContext
+            check(SxbPrivacyPolicy.vpnAllowed(ctx)) { "PRIVACY_CONSENT_REQUIRED" }
             val vpnIntent = VpnService.prepare(ctx)
             if (vpnIntent == null) { promise.resolve(true); return }
 
@@ -125,6 +154,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
     fun startVpn(optionsJson: String, promise: Promise) {
         try {
             val ctx  = reactApplicationContext
+            check(SxbPrivacyPolicy.vpnAllowed(ctx)) { "PRIVACY_CONSENT_REQUIRED" }
             val opts = org.json.JSONObject(optionsJson)
             val proto = opts.optString("protocol", "").lowercase()
 
@@ -376,7 +406,16 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             promise.resolve(null)
             return
         }
-        FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+        val messaging = FirebaseMessaging.getInstance()
+        if (!SxbPrivacyPolicy.isPlay(reactApplicationContext)) messaging.isAutoInitEnabled = true
+        messaging.token.addOnCompleteListener { task ->
+            if (!SxbPrivacyPolicy.notificationsAllowed(reactApplicationContext)) {
+                FirebaseMessaging.getInstance().deleteToken().addOnCompleteListener { deletion ->
+                    if (deletion.isSuccessful) promise.resolve(null)
+                    else promise.reject("FCM_DELETE_FAILED", "Unable to remove cancelled token", deletion.exception)
+                }
+                return@addOnCompleteListener
+            }
             if (task.isSuccessful && !task.result.isNullOrBlank()) {
                 promise.resolve(task.result)
             } else {
@@ -387,13 +426,20 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
 
     @ReactMethod
     fun deletePushToken(promise: Promise) {
-        if (SxbPushNotifications.ensureFirebaseInitialized(reactApplicationContext) == null) {
+        // Removal must never initialize Firebase on a device that declined.
+        if (FirebaseApp.getApps(reactApplicationContext).isEmpty()) {
             promise.resolve(false)
             return
         }
+        if (SxbPrivacyPolicy.isPlay(reactApplicationContext)) FirebaseMessaging.getInstance().isAutoInitEnabled = false
         FirebaseMessaging.getInstance().deleteToken().addOnCompleteListener { task ->
             if (task.isSuccessful) {
-                promise.resolve(true)
+                if (SxbPrivacyPolicy.isPlay(reactApplicationContext)) {
+                    FirebaseInstallations.getInstance().delete().addOnCompleteListener { deletion ->
+                        if (deletion.isSuccessful) promise.resolve(true)
+                        else promise.reject("FCM_DELETE_FAILED", "Unable to remove Firebase installation", deletion.exception)
+                    }
+                } else promise.resolve(true)
             } else {
                 promise.reject("FCM_DELETE_FAILED", "Impossible de supprimer le jeton FCM", task.exception)
             }
@@ -489,6 +535,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                 val p = Arguments.createMap().apply { 
                     putString("status", status)
                     putString("state", status) 
+                    i.getStringExtra("errorCode")?.let { putString("errorCode", it) }
                 }
                 sendEvent("onVpnStateChange", p)
             }

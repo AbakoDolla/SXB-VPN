@@ -886,13 +886,15 @@ class SxbVpnService : VpnService(), PlatformInterface {
     /** Nom de notre interface TUN — exclue de l'énumération pour éviter les boucles. */
     @Volatile private var tunInterfaceName: String? = null
     private var isSshRelay: Boolean = false
+    private val protocolIdle = Object()
+    private var activeDispatches = 0
 
     // Managers
     private val trafficManager  = TrafficStatsManager()
     private lateinit var autoReconnect: AutoReconnectManager
 
     // ── Public API pour SxbVpnModule ──────────────────────────────────────────
-    fun enableAutoReconnect()  { if (::autoReconnect.isInitialized) autoReconnect.enable() }
+    fun enableAutoReconnect()  { if (::autoReconnect.isInitialized && SxbPrivacyPolicy.vpnAllowed(this)) autoReconnect.enable() }
     fun disableAutoReconnect() { if (::autoReconnect.isInitialized) autoReconnect.disable() }
 
     // Compteurs trafic SSH (relay bidirectionnel)
@@ -1086,7 +1088,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         autoReconnect = AutoReconnectManager(
             onReconnect = {
-                if (running.get() && configJson.isNotEmpty()) {
+                if (running.get() && configJson.isNotEmpty() && SxbPrivacyPolicy.vpnAllowed(this)) {
                     broadcastLog("[SXB_DEBUG] AUTO_RECONNECT_TRIGGERED")
                     broadcastLog("[SXB] Auto-reconnexion en cours...")
                     val json = JSONObject(configJson)
@@ -1116,6 +1118,11 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) { cleanup(); return START_NOT_STICKY }
+        if (!SxbPrivacyPolicy.vpnAllowed(this)) {
+            broadcastLog("PRIVACY_CONSENT_REQUIRED")
+            cleanup()
+            return START_NOT_STICKY
+        }
 
         // startForeground() doit avoir réussi avant de traiter une commande VPN.
         // Continuer malgré une SecurityException laisserait un service « fantôme »
@@ -1291,6 +1298,15 @@ class SxbVpnService : VpnService(), PlatformInterface {
     // ── Dispatch protocole ────────────────────────────────────────────────────
 
     private fun dispatchProtocol(json: String, proto: String) {
+        synchronized(protocolIdle) {
+            if (!SxbPrivacyPolicy.vpnAllowed(this)) {
+                broadcastLog("PRIVACY_CONSENT_REQUIRED")
+                cleanup()
+                return
+            }
+            activeDispatches++
+        }
+        try {
         // Compteurs de diagnostic remis à zéro : un échec de la session
         // précédente ne doit pas déclencher un verdict sur celle qui démarre.
         outboundFailureCount = 0
@@ -1313,6 +1329,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 // « profil non supporté par le moteur » d'une panne réseau.
                 failVpn("CONFIG_UNSUPPORTED", "Protocole non supporté par le moteur")
                 stopSelf()
+            }
+        }
+        } finally {
+            synchronized(protocolIdle) {
+                activeDispatches--
+                protocolIdle.notifyAll()
             }
         }
     }
@@ -2045,6 +2067,14 @@ class SxbVpnService : VpnService(), PlatformInterface {
      * Le TUN est ouvert par sing-box lui-même via le rappel `openTun()`.
      */
     private fun startLibboxService(configJson: String, label: String) {
+        check(SxbPrivacyPolicy.vpnAllowed(this)) { "PRIVACY_CONSENT_REQUIRED" }
+        if (SxbPrivacyPolicy.isPlay(this)) {
+            SxbPlayEncryption.validate(
+                JSONObject(configJson),
+                trustedSshRelay = isSshRelay && sshSession?.isConnected == true,
+                sshPort = SOCKS5_PORT,
+            )
+        }
         ensureLibboxSetup()
         SxbDefaultNetworkMonitor.start(this)
 
@@ -2058,6 +2088,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         }
 
         boxService = service
+        check(SxbPrivacyPolicy.vpnAllowed(this) && running.get()) { "PRIVACY_CONSENT_REQUIRED" }
         service.start()
 
         // Le démarrage libbox peut être concurrent avec stopVpn(). Le TUN et le
@@ -2110,6 +2141,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private fun classifyVpnError(message: String): String {
         val lower = message.lowercase(Locale.ROOT)
         return when {
+            lower.contains("play_encryption_required") -> SxbPlayEncryption.ERROR
+            lower.contains("privacy_consent_required") -> "PRIVACY_CONSENT_REQUIRED"
             lower.contains("ssh_mode_unknown") -> "SSH_MODE_UNKNOWN"
             // §30 — Le profil est valide mais demande une capacité que le moteur
             // embarqué ne sait pas exécuter. À distinguer d'une config malformée :
@@ -2157,11 +2190,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
     }
 
     private fun failVpn(code: String, displayMessage: String) {
+        if (code == SxbPlayEncryption.ERROR || code == "PRIVACY_CONSENT_REQUIRED") disableAutoReconnect()
         Log.e("SXB_DEBUG", "[SXB_DEBUG] VPN_FAILED code=$code")
         trace("VPN_FAILED", "code=$code state=$currentState")
         broadcastLog("[SXB_DEBUG] VPN_FAILED code=$code")
         broadcastLog("[SXB] $code — ${displayMessage.removePrefix("❌ ").take(160)}")
-        broadcastStatus("error")
+        broadcastStatus("error", code)
         setCurrentState("error")
         // FIX — Ne pas appeler cleanup() ici : le bloc finally de startSshTunnel /
         // startSingBoxTunnel appelle déjà cleanup(). Un double appel provoquait un
@@ -2246,6 +2280,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
      * il n'a jamais besoin de transiter par un fichier de configuration.
      */
     override fun openTun(options: TunOptions): Int {
+        check(SxbPrivacyPolicy.vpnAllowed(this) && running.get()) { "PRIVACY_CONSENT_REQUIRED" }
         if (VpnService.prepare(this) != null) {
             throw IllegalStateException("Permission VPN non accordée")
         }
@@ -4041,6 +4076,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
      * Résout une fois (IPv4) et retourne la règle ip_cidr ou null.
      */
     private fun carrierExclusionRule(host: String): JSONObject? {
+        // Play uses protected native sockets for bootstrap, not a public-IP
+        // TUN bypass that would also let application data avoid encryption.
+        if (SxbPrivacyPolicy.isPlay(this)) return null
         val ips = runCatching {
             InetAddress.getAllByName(host)
                 .filterIsInstance<java.net.Inet4Address>()
@@ -4472,11 +4510,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
         return copy
     }
 
-    private fun broadcastStatus(status: String) {
+    private fun broadcastStatus(status: String, errorCode: String? = null) {
         // setPackage() obligatoire sur Android 14+ avec RECEIVER_NOT_EXPORTED
         // Sans ça, les broadcasts intra-app sont silencieusement ignorés.
         val intent = Intent(BROADCAST_STATUS).apply {
             putExtra("status", status)
+            if (errorCode != null) putExtra("errorCode", errorCode)
             setPackage(packageName)
         }
         sendBroadcast(intent)
@@ -4700,4 +4739,38 @@ class SxbVpnService : VpnService(), PlatformInterface {
     }
 
     fun stopVpn() = cleanup()
+
+    fun stopForPrivacy() {
+        disableAutoReconnect()
+        running.set(false)
+        vpnThread?.interrupt()
+        // Unlike the best-effort normal shutdown, withdrawal surfaces failures.
+        boxService?.close()
+        boxService = null
+        sshSession?.disconnect()
+        socks5Server?.close()
+        tunPfd?.close()
+        // Reconnects run in a coroutine, not necessarily vpnThread. Wait for
+        // every dispatch's finally block rather than joining a pooled thread.
+        val deadline = SystemClock.elapsedRealtime() + 10_000
+        synchronized(protocolIdle) {
+            while (activeDispatches > 0) {
+                val remaining = deadline - SystemClock.elapsedRealtime()
+                check(remaining > 0) { "PRIVACY_STOP_PENDING" }
+                protocolIdle.wait(remaining)
+            }
+        }
+        // A cancelled dispatch may have assigned a resource after the first
+        // close. Drain it again once no dispatch can create another resource.
+        boxService?.close()
+        boxService = null
+        sshSession?.disconnect()
+        sshSession = null
+        socks5Server?.close()
+        socks5Server = null
+        tunPfd?.close()
+        tunPfd = null
+        cleanup()
+        check(boxService == null && tunPfd == null && sshSession?.isConnected != true) { "PRIVACY_STOP_FAILED" }
+    }
 }

@@ -11,6 +11,7 @@ class SxbFirebaseMessagingService : FirebaseMessagingService() {
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
+        if (!SxbPrivacyPolicy.notificationsAllowed(applicationContext)) return
         val data = message.data
         if (data["screen"] != "notifications") return
         val id = data["notificationId"]?.takeIf { it.isNotBlank() } ?: message.messageId ?: return

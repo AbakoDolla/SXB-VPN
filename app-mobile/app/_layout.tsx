@@ -17,6 +17,8 @@ import { syncPushTokenRegistration } from "@/services/pushNotifications";
 import { useColors } from "@/hooks/useColors";
 import { AppLockProvider } from "@/contexts/AppLockContext";
 import { AppLockGate } from "@/components/AppLockGate";
+import { PrivacyProvider, usePrivacy } from "@/contexts/PrivacyContext";
+import PrivacyDisclosure from "@/components/PrivacyDisclosure";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -28,9 +30,10 @@ const queryClient = new QueryClient({
 
 function AnnouncementNotificationSync() {
   const { isAuthenticated, deviceId } = useAuthContext();
+  const { consent } = usePrivacy();
 
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated || !consent.vpn || !consent.notifications) return;
     let timer: ReturnType<typeof setInterval> | null = null;
     const start = () => {
       if (!timer) {
@@ -71,7 +74,7 @@ function AnnouncementNotificationSync() {
       stop();
       foregroundSub.remove();
     };
-  }, [deviceId, isAuthenticated]);
+  }, [deviceId, isAuthenticated, consent.vpn, consent.notifications]);
 
   return null;
 }
@@ -80,21 +83,22 @@ function RootLayoutNav() {
   const { colorScheme } = useThemeContext();
   const { isAuthenticated, isLoading } = useAuthContext();
   const segments = useSegments();
+  const { consent } = usePrivacy();
 
   useEffect(() => {
     if (isLoading || isAuthenticated) return;
     const firstSegment = segments[0] as string | undefined;
-    const publicSegments = new Set(['index', 'onboarding', 'activate', '+not-found']);
+    const publicSegments = new Set(['index', 'onboarding', 'activate', 'privacy', '+not-found']);
     if (firstSegment && !publicSegments.has(firstSegment)) {
       router.replace('/activate');
     }
   }, [isAuthenticated, isLoading, segments]);
 
   useEffect(() => {
-    if (Platform.OS === "android" && Platform.Version >= 33) {
+    if (consent.vpn && consent.notifications && Platform.OS === "android" && Platform.Version >= 33) {
       PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS).catch(() => {});
     }
-  }, []);
+  }, [consent.vpn, consent.notifications]);
 
   return (
     <>
@@ -104,6 +108,7 @@ function RootLayoutNav() {
         <Stack.Screen name="index" options={{ animation: "fade" }} />
         <Stack.Screen name="onboarding" options={{ animation: "fade", gestureEnabled: false }} />
         <Stack.Screen name="activate" options={{ animation: "slide_from_right" }} />
+        <Stack.Screen name="privacy" options={{ animation: "slide_from_right" }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="plan" options={{ presentation: "modal", animation: "slide_from_bottom" }} />
                 <Stack.Screen name="support" options={{
@@ -128,6 +133,8 @@ function RootLayoutNav() {
 
 function ThemedAppShell() {
   const colors = useColors();
+  const { consent, loading } = usePrivacy();
+  if (loading || !consent.vpn) return <PrivacyDisclosure />;
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.bg }}>
       <VpnProvider>
@@ -163,9 +170,11 @@ export default function RootLayout() {
         <QueryClientProvider client={queryClient}>
           <LanguageProvider>
             <ThemeProvider>
-              <AuthProvider>
-                <ThemedAppShell />
-              </AuthProvider>
+              <PrivacyProvider>
+                <AuthProvider>
+                  <ThemedAppShell />
+                </AuthProvider>
+              </PrivacyProvider>
             </ThemeProvider>
           </LanguageProvider>
         </QueryClientProvider>

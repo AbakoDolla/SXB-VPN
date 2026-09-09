@@ -41,9 +41,11 @@ object SxbSecureLogger {
 
     @Volatile private var diagnosticEnabled: Boolean = BuildConfig.DEBUG
     @Volatile private var diagnosticUntilMs: Long = if (BuildConfig.DEBUG) Long.MAX_VALUE else 0L
+    @Volatile private var policyAllowsDiagnostics = true
 
     /** Recharge le mode local au démarrage du bridge et du service. */
     fun initialize(context: Context) {
+        policyAllowsDiagnostics = SxbPrivacyPolicy.diagnosticsAllowed(context)
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val until = prefs.getLong(KEY_VERBOSE_UNTIL, 0L)
         diagnosticUntilMs = until
@@ -52,6 +54,7 @@ object SxbSecureLogger {
 
     /** Active les traces détaillées pendant 30 minutes pour ce seul appareil. */
     fun setDiagnosticEnabled(context: Context, enabled: Boolean) {
+        policyAllowsDiagnostics = SxbPrivacyPolicy.diagnosticsAllowed(context)
         val until = if (enabled) System.currentTimeMillis() + DIAGNOSTIC_TTL_MS else 0L
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
@@ -63,6 +66,7 @@ object SxbSecureLogger {
     }
 
     fun isDiagnosticEnabled(): Boolean {
+        if (!policyAllowsDiagnostics) return false
         if (BuildConfig.DEBUG) return true
         if (diagnosticEnabled && System.currentTimeMillis() >= diagnosticUntilMs) {
             diagnosticEnabled = false

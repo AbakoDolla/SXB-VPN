@@ -15,6 +15,9 @@ import React, {
   createContext, useCallback, useContext, useEffect, useMemo, useRef, useState,
 } from 'react';
 import { legacyDebugLog } from '@/services/secureLogger';
+import { getPrivacyConsent, requireVpnConsent } from '@/services/privacyConsent';
+import { isPlayDistribution } from '@/services/distribution';
+import { useTranslation } from '@/localization';
 import {
   AppState, NativeModules, NativeEventEmitter, Platform, PermissionsAndroid,
 } from 'react-native';
@@ -183,6 +186,8 @@ const VpnContext = createContext<VpnContextType>({
 // ── Provider ─────────────────────────────────────────────────────────────────
 
 export function VpnProvider({ children }: { children: React.ReactNode }) {
+  const { t } = useTranslation();
+  const privacyEncryptionMessage = t('privacy_encryption_error');
   const { isAuthenticated, accountState, refreshAccountState, deviceId, logout } = useAuthContext();
 
   const [isConnected,        setIsConnected]        = useState(false);
@@ -468,6 +473,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const requestPermission = useCallback(async (): Promise<boolean> => {
+    requireVpnConsent();
     if (!IS_ANDROID || !SxbVpnNative) return true;
     try {
       const granted = await SxbVpnNative.requestVpnPermission();
@@ -555,20 +561,20 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         stopWatchdog();
         setVpnState('error');
         acceptNativeConnectedRef.current = false;
-        addStepLog('error', 'step_error', 'error');
+        addStepLog('error', e.errorCode === 'PLAY_ENCRYPTION_REQUIRED' ? 'privacy_encryption_error' : 'step_error', 'error');
         legacyDebugLog('VPN_FAILED status=error');
-        addLog('❌ Erreur VPN — connexion perdue');
+        addLog(e.errorCode === 'PLAY_ENCRYPTION_REQUIRED' ? privacyEncryptionMessage : '❌ Erreur VPN — connexion perdue');
         setIsConnecting(false);
       }
     });
 
     const logSub = vpnEmitter.addListener('onVpnLog', (e: { message: string }) => {
       if (e.message?.includes('AUTO_RECONNECT_TRIGGERED')) noteMobileHealthReconnect();
-      addLog(e.message);
+      addLog(e.message?.includes('PLAY_ENCRYPTION_REQUIRED') ? privacyEncryptionMessage : e.message);
     });
 
     return () => { stateSub.remove(); logSub.remove(); };
-  }, [addLog, refreshAccountState, stopWatchdog]);
+  }, [addLog, refreshAccountState, stopWatchdog, privacyEncryptionMessage]);
 
   const startTrafficPolling = useCallback(() => {
     if (!IS_ANDROID || !SxbVpnNative) return;
@@ -1162,6 +1168,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
   // ── CONNECT ──────────────────────────────────────────────────────────────────
   const connect = useCallback(async () => {
+    if (!getPrivacyConsent().vpn) {
+      addLog(t('privacy_refused'));
+      return;
+    }
     // ⚡ Réactivité immédiate.
     //
     // Le garde refusait tout appel dès que `isConnecting` était vrai, si bien
@@ -1245,6 +1255,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
         const hasPerm = SxbVpnNative.isVpnPermissionGranted();
         if (!hasPerm) {
+          requireVpnConsent();
           addStepLog('permission', 'step_permission_check', 'active');
           addLog('🔐 Demande de permission VPN...');
           const granted = await SxbVpnNative.requestVpnPermission();
@@ -1446,6 +1457,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           autoReconnect,
           includeOwnApp: true,
         }));
+        requireVpnConsent();
 
         addStepLog('connecting', 'step_connecting', 'active');
         addLog(`🚀 Démarrage tunnel ${engineProtocol.toUpperCase()}...`);
@@ -1457,6 +1469,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         addStepLog('handshake', 'step_handshake', 'active');
         addLog('⏳ Connexion en cours...');
       } else {
+        if (isPlayDistribution) throw new Error('VPN_ANDROID_NATIVE_REQUIRED');
         connectedProtocolRef.current = (selectedProtocol || 'vless').toLowerCase();
         setConnectedProtocol(connectedProtocolRef.current);
         await apiClient.post('/mobile/vpn/session', { action: 'connect', protocol: selectedProtocol || 'VLESS' });
