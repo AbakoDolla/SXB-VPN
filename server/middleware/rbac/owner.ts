@@ -44,7 +44,7 @@ export function requireOwner(req: AuthenticatedRequest, res: Response, next: Nex
     return;
   }
   if (!isOwnerRequest(req)) {
-    res.status(403).json({ error: "errors.auth.forbidden", message: "OWNER access required" });
+    res.status(403).json({ error: "errors.auth.forbidden", code: "OWNER_ONLY", message: "OWNER access required" });
     return;
   }
   next();

@@ -10,9 +10,11 @@
  * et ops/* (l'OWNER doit pouvoir se connecter et basculer le mode).
  */
 import { prisma, inMemoryDb } from "../database";
+import {
+  acquireResetLock, ResetError, RESET_EXECUTION_KEY, MAINTENANCE_KEY, MAINTENANCE_ENABLED_VALUE,
+} from "./reset-state";
 
-export const MAINTENANCE_KEY = "maintenance_mode";
-export const MAINTENANCE_ENABLED_VALUE = "true";
+export { MAINTENANCE_KEY, MAINTENANCE_ENABLED_VALUE } from "./reset-state";
 
 export async function getMaintenanceMode(): Promise<boolean> {
   if (prisma) {
@@ -32,11 +34,15 @@ export async function getMaintenanceMode(): Promise<boolean> {
 export async function setMaintenanceMode(enabled: boolean): Promise<boolean> {
   const value = enabled ? MAINTENANCE_ENABLED_VALUE : "false";
   if (prisma) {
-    await prisma.setting.upsert({
-      where: { key: MAINTENANCE_KEY },
-      update: { value },
-      create: { key: MAINTENANCE_KEY, value },
-    });
+    await prisma.$transaction(async tx => {
+      await acquireResetLock(tx);
+      if (await tx.setting.findUnique({ where: { key: RESET_EXECUTION_KEY } })) throw new ResetError("RESET_IN_PROGRESS");
+      await tx.setting.upsert({
+        where: { key: MAINTENANCE_KEY },
+        update: { value },
+        create: { key: MAINTENANCE_KEY, value },
+      });
+    }, { maxWait: 5_000, timeout: 10_000 });
   }
   inMemoryDb.settings = { ...(inMemoryDb.settings || {}), [MAINTENANCE_KEY]: value };
   return enabled;

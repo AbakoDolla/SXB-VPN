@@ -37,7 +37,7 @@ import configTestRouter from "./server/routes/config-test";
 import xrayRouter from "./server/routes/xray";
 import singboxRouter from "./server/routes/singbox";
 import xpanelRouter from "./server/routes/xpanel";
-import opsRouter from "./server/routes/ops";
+import opsRouter, { resetRequestErrorHandler } from "./server/routes/ops";
 import xapiRouter from "./server/routes/xapi";
 import announcementsRouter from "./server/routes/announcements";
 import appUpdatesRouter from "./server/routes/app-updates";
@@ -155,6 +155,8 @@ async function startServer() {
   //     partielle (endpoint sans base, sans auth, cache-friendly).
   // GET /xapi/mobile/app-version → { versionCode, versionName, apkUrl, notes? }
   app.use("/xapi", xapiRouter);
+
+  app.use(resetRequestErrorHandler);
 
   // Global Error Handler with support for Multilingual Error i18n
   app.use((err: any, req: Request, res: Response, next: NextFunction) => {
