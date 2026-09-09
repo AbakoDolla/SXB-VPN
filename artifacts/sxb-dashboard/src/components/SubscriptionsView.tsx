@@ -15,6 +15,9 @@ import { useResellerAccess } from '../contexts/ResellerAccessContext';
 import { usePermissions } from '../contexts/PermissionsContext';
 import { ResellerAccessSummaryCard, ResellerActionNotice } from './ResellerAccessBanner';
 import { formatBytes, isUpperRole, ownerLabel, percentOf, toBigInt } from '../lib/resellerAccess';
+import { canResumeSubscription, hasExpired, isPlanExhausted, lifecycleBadges, subscriptionStatus } from '../lib/lifecycle';
+import { useActionLock } from '../hooks/useActionLock';
+import SubscriptionAdjustmentDialog, { SubscriptionAdjustment } from './SubscriptionAdjustmentDialog';
 import {
   PackageOpen, Plus, Trash2, RefreshCw, ShieldOff, Search,
   Calendar, HardDrive, Cpu, X, AlertTriangle, CheckCircle,
@@ -24,13 +27,6 @@ import Pagination from './ui/Pagination';
 import { toast } from 'sonner';
 
 interface Props { currentUserRole: UserRole }
-
-const createStatusConfig = (t: ReturnType<typeof useTranslation>['t']): Record<string, { label: string; cls: string }> => ({
-  active:    { label: t('commerce.common.active'),    cls: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' },
-  expired:   { label: t('commerce.common.expired'),  cls: 'text-amber-400 bg-amber-500/10 border-amber-500/20' },
-  revoked:   { label: t('commerce.common.revoked'), cls: 'text-rose-400 bg-rose-500/10 border-rose-500/20' },
-  suspended: { label: t('commerce.common.suspended'), cls: 'text-gray-400 bg-gray-500/10 border-gray-500/20' },
-});
 
 function bytesToGigabytes(value: string | number): number {
   const bytes = toBigInt(value) ?? BigInt(0);
@@ -59,7 +55,7 @@ const createBulkActions = (t: ReturnType<typeof useTranslation>['t']): Array<{ i
 
 export default function SubscriptionsView({ currentUserRole }: Props) {
   const { t, locale, formatNumber, message, errorMessage, errorText } = useTranslation();
-  const STATUS_CFG = createStatusConfig(t);
+  const STATUS_CFG = lifecycleBadges(t);
   const BULK_ACTIONS = createBulkActions(t);
   const isAdmin = isAdminRole(currentUserRole);
   const isReseller = isResellerRole(currentUserRole);
@@ -70,7 +66,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
   // agrément et de son plafond — c'est le serveur qui tranche.
   const can = usePermissions();
   const canAssign = (isAdmin || isReseller) && can('subscription.manage');
-  const { allows, blocked, quotaReached, refresh: refreshAccess } = useResellerAccess();
+  const { allows, refresh: refreshAccess } = useResellerAccess();
   const canCreate = canAssign && allows();
   const canReduce = canAssign && allows({ reducesExposure: true });
 
@@ -79,6 +75,8 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
   const [clients, setClients] = useState<Client[]>([]);
   const [profiles, setProfiles] = useState<VpnProfile[]>([]);
   const [loading, setLoading] = useState(true);
+  const { pending, run } = useActionLock();
+  const [adjustment, setAdjustment] = useState<{ subscription: Subscription; action: SubscriptionAdjustment } | null>(null);
 
   // Filters
   const [search, setSearch] = useState('');
@@ -92,7 +90,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
   const [showModal, setShowModal] = useState(false);
   const [editSub, setEditSub] = useState<Subscription | null>(null);
   const [form, setForm] = useState({ ...DEFAULT_FORM });
-  const [saving, setSaving] = useState(false);
+  const saving = pending === 'save';
   const [formError, setFormError] = useState<unknown>(null);
 
   // Sélection et opérations groupées
@@ -102,7 +100,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
   const [bulkDays, setBulkDays] = useState(30);
   const [bulkProfile, setBulkProfile] = useState('');
   const [bulkConfirm, setBulkConfirm] = useState(false);
-  const [bulkRunning, setBulkRunning] = useState(false);
+  const bulkRunning = pending === 'bulk';
   const [bulkResult, setBulkResult] = useState<BulkResult | null>(null);
 
   const load = async () => {
@@ -136,7 +134,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
       s.name.toLowerCase().includes(search.toLowerCase()) ||
       s.dataToken.toLowerCase().includes(search.toLowerCase()) ||
       clientName.toLowerCase().includes(search.toLowerCase());
-    const matchStatus = statusFilter === 'all' || s.status === statusFilter;
+    const matchStatus = statusFilter === 'all' || subscriptionStatus(s) === statusFilter;
     return matchSearch && matchStatus;
   }), [subs, search, statusFilter]);
 
@@ -171,61 +169,76 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canCreate) { setFormError('commerce.common.unavailableAccess'); return; }
     if (!form.clientId || !form.profileId) { setFormError('commerce.subscriptions.required'); return; }
-    setSaving(true); setFormError('');
+    setFormError('');
     try {
-      if (editSub) {
-        await updateSubscription(editSub.id, {
-          name: form.name.trim() || undefined,
-          // La configuration peut changer sans recréer le jeton data : une
-          // suppression suivie d'une recréation obligerait le client à
-          // réactiver son appareil.
-          profileId: form.profileId,
-          quotaGB: form.quotaGB,
-          durationDays: form.durationDays,
-          deviceLimit: form.deviceLimit,
-        });
-        toast.success(message('commerce.subscriptions.updated'));
-      } else {
-        await createSubscription(form);
-        toast.success(message('commerce.subscriptions.created'));
-      }
-      setShowModal(false);
-      await Promise.all([load(), refreshAccess()]);
-    } catch (err: any) {
-      // Un refus d'agrément ou de plafond porte un code stable : il ne doit
-      // jamais être présenté comme un échec générique, ni — pire — ignoré.
+      await run('save', async () => {
+        if (editSub) {
+          // PUT resets the deadline when durationDays is present, even unchanged.
+          await updateSubscription(editSub.id, {
+            ...(form.name.trim() !== editSub.name ? { name: form.name.trim() || undefined } : {}),
+            ...(form.profileId !== editSub.profileId ? { profileId: form.profileId } : {}),
+            ...(form.quotaGB !== (bytesToGigabytes(editSub.quotaBytes) || 5) ? { quotaGB: form.quotaGB } : {}),
+            ...(form.durationDays !== editSub.durationDays ? { durationDays: form.durationDays } : {}),
+            ...(form.deviceLimit !== editSub.deviceLimit ? { deviceLimit: form.deviceLimit } : {}),
+          });
+          toast.success(message('commerce.subscriptions.updated'));
+        } else {
+          await createSubscription(form);
+          toast.success(message('commerce.subscriptions.created'));
+        }
+        setShowModal(false);
+        await Promise.all([load(), refreshAccess()]);
+      });
+    } catch (err) {
       setFormError(err);
-    } finally { setSaving(false); }
+    }
   };
 
-  /** Suspendre / réactiver : action RÉDUCTRICE, ouverte même au plafond. */
   const handleToggleStatus = async (sub: Subscription) => {
     const suspending = sub.status === 'active';
+    if (!(suspending ? canReduce : canCreate)) { toast.error(message('commerce.common.unavailableAccess')); return; }
+    if (!suspending && !canResumeSubscription(sub)) {
+      toast.error(message('commerce.subscriptions.resumeUnavailable'));
+      return;
+    }
     if (!window.confirm(t(suspending ? 'commerce.subscriptions.confirmSuspend' : 'commerce.subscriptions.confirmReactivate', { name: sub.name }))) return;
     try {
-      await updateSubscription(sub.id, { status: suspending ? 'suspended' : 'active' });
-      toast.success(message(suspending ? 'commerce.subscriptions.suspended' : 'commerce.subscriptions.reactivated'));
-      await Promise.all([load(), refreshAccess()]);
-    } catch (err: any) { toast.error(errorText(err, 'commerce.common.errorStatus')); }
+      await run(`status:${sub.id}`, async () => {
+        const updated = await updateSubscription(sub.id, { status: suspending ? 'suspended' : 'active' });
+        setSubs(current => current.map(item => item.id === sub.id ? { ...item, ...updated } : item));
+        toast.success(message(suspending ? 'commerce.subscriptions.suspended' : 'commerce.subscriptions.reactivated'));
+        await Promise.all([load(), refreshAccess()]);
+      });
+    } catch (err) { toast.error(errorText(err, 'commerce.common.errorStatus')); }
   };
 
   const handleDelete = async (id: string, name: string) => {
+    if (!canReduce) { toast.error(message('commerce.common.unavailableAccess')); return; }
     if (!window.confirm(t('commerce.subscriptions.confirmDelete', { name }))) return;
     try {
-      await deleteSubscription(id);
-      toast.success(message('commerce.subscriptions.deleted'));
-      await Promise.all([load(), refreshAccess()]);
-    } catch (err: any) { toast.error(errorText(err, 'commerce.common.errorDelete')); }
+      await run(`delete:${id}`, async () => {
+        await deleteSubscription(id);
+        setSubs(current => current.filter(item => item.id !== id));
+        setSelected(current => new Set([...current].filter(item => item !== id)));
+        toast.success(message('commerce.subscriptions.deleted'));
+        await Promise.all([load(), refreshAccess()]);
+      });
+    } catch (err) { toast.error(errorText(err, 'commerce.common.errorDelete')); }
   };
 
   const handleRevoke = async (id: string, name: string) => {
+    if (!canReduce) { toast.error(message('commerce.common.unavailableAccess')); return; }
     if (!window.confirm(t('commerce.subscriptions.confirmRevoke', { name }))) return;
     try {
-      await revokeSubscription(id, 'Révoqué par admin');
-      toast.success(message('commerce.subscriptions.revoked'));
-      await Promise.all([load(), refreshAccess()]);
-    } catch (err: any) { toast.error(errorText(err, 'commerce.common.errorRevoke')); }
+      await run(`revoke:${id}`, async () => {
+        await revokeSubscription(id);
+        setSubs(current => current.map(item => item.id === id ? { ...item, status: 'revoked' } : item));
+        toast.success(message('commerce.subscriptions.revoked'));
+        await Promise.all([load(), refreshAccess()]);
+      });
+    } catch (err) { toast.error(errorText(err, 'commerce.common.errorRevoke')); }
   };
 
   // Export CSV
@@ -240,7 +253,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
         formatBytes(s.quotaUsed),
         t('commerce.common.daysShort', { count: formatNumber(s.durationDays) }),
         fmtDate(s.expireAt, locale),
-        STATUS_CFG[s.status]?.label || s.status,
+        (STATUS_CFG[subscriptionStatus(s)] ?? STATUS_CFG.unknown).label,
         s.dataToken,
       ]),
     ];
@@ -260,6 +273,10 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
   // l'engagement : toutes ces actions sont traitées comme augmentatrices, donc
   // fermées quand l'agrément ou le plafond l'exigent.
   const bulkAllowed = canAssign && allows();
+  const controlsBusy = !!pending || showModal || bulkConfirm || !!adjustment;
+  const bulkValuesValid = (!bulkCfg.needsProfile || !!bulkProfile) &&
+    (!bulkCfg.needsQuota || (Number.isFinite(bulkQuota) && bulkQuota >= 0.5 && bulkQuota <= 1_000_000)) &&
+    (!bulkCfg.needsDuration || (Number.isInteger(bulkDays) && bulkDays >= 1 && bulkDays <= 3650));
 
   const toggleOne = (id: string) => setSelected(prev => {
     const next = new Set(prev);
@@ -273,8 +290,10 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
   const clearSelection = () => setSelected(new Set());
 
   const runBulk = async () => {
-    setBulkRunning(true);
+    if (!bulkAllowed) { toast.error(message('commerce.common.unavailableAccess')); return; }
+    if (!selected.size || !bulkValuesValid) { toast.error(message('commerce.subscriptions.invalidAdjustment')); return; }
     try {
+      await run('bulk', async () => {
       const ids = Array.from(selected);
       // `deploy` crée des forfaits : il vise des CLIENTS. Les autres modifient
       // l'existant : elles visent des ABONNEMENTS.
@@ -292,13 +311,15 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
       setBulkResult(result);
       setBulkConfirm(false);
       if (result.failed > 0) toast.warning(message('commerce.subscriptions.bulk.partial', { succeeded: result.succeeded, failed: result.failed }));
-      else toast.success(message('commerce.subscriptions.bulk.updated', { count: result.succeeded }));
+      else if (result.succeeded > 0) toast.success(message('commerce.subscriptions.bulk.updated', { count: result.succeeded }));
+      else toast.warning(message('commerce.subscriptions.bulk.noChange'));
       clearSelection();
       await Promise.all([load(), refreshAccess()]);
-    } catch (err: any) {
+      });
+    } catch (err) {
       toast.error(errorText(err, 'commerce.subscriptions.bulk.error'));
       setBulkConfirm(false);
-    } finally { setBulkRunning(false); }
+    }
   };
 
   return (
@@ -323,7 +344,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
           {canAssign && (
             <button
               onClick={openCreate}
-              disabled={!canCreate}
+              disabled={!canCreate || controlsBusy}
               title={canCreate ? t('commerce.subscriptions.assignClient') : t('commerce.common.unavailableAccess')}
               className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-medium text-sm rounded-lg shadow-lg transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-40">
               <Plus className="w-4 h-4" /> {t('commerce.subscriptions.assign')}
@@ -334,6 +355,8 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
 
       {isReseller && <ResellerAccessSummaryCard />}
       {canAssign && <ResellerActionNotice />}
+      <p className="text-xs leading-relaxed text-gray-400">{t('commerce.subscriptions.keepActivation')}</p>
+      {pending && <p role="status" className="text-sm text-cyan-400">{t('commerce.common.actionPending')}</p>}
 
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
@@ -363,7 +386,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
           />
         </div>
         <div className="flex gap-1.5 flex-wrap">
-          {['all', 'active', 'expired', 'revoked', 'suspended'].map(s => (
+          {['all', 'active', 'expired', 'exhausted', 'revoked', 'suspended'].map(s => (
             <button key={s} onClick={() => setStatusFilter(s)}
               className={`px-3 py-1.5 text-xs font-medium rounded-lg border capitalize transition-all cursor-pointer ${
                 statusFilter === s
@@ -385,17 +408,19 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
             </p>
             <div className="flex items-center gap-2">
               <button type="button" onClick={selectAllFiltered}
+                disabled={controlsBusy || !canAssign}
                 className="px-2.5 py-1.5 text-xs rounded-lg border border-[#1a1f2e] text-gray-300 hover:bg-white/5 cursor-pointer">
                 {t('commerce.subscriptions.bulk.selectAll', { count: formatNumber(filtered.length) })}
               </button>
               <button type="button" onClick={clearSelection}
+                disabled={controlsBusy}
                 className="px-2.5 py-1.5 text-xs rounded-lg border border-[#1a1f2e] text-gray-400 hover:bg-white/5 cursor-pointer">
                 {t('commerce.subscriptions.bulk.clearSelection')}
               </button>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+          <fieldset disabled={controlsBusy || !canAssign} className="grid grid-cols-1 sm:grid-cols-4 gap-3">
             <div className="sm:col-span-2">
               <label className="block text-xs text-gray-400 mb-1.5">{t('commerce.common.action')}</label>
               <select value={bulkAction} onChange={e => { setBulkAction(e.target.value as BulkAction); setBulkResult(null); }}
@@ -419,7 +444,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                 <label className="block text-xs text-gray-400 mb-1.5">
                   {bulkAction === 'add_data' ? t('commerce.subscriptions.bulk.addGb') : t('commerce.subscriptions.bulk.dataGb')}
                 </label>
-                <input type="number" min={0} step={0.5} value={bulkQuota}
+                <input type="number" min={0.5} max={1_000_000} step={0.5} value={bulkQuota}
                   onChange={e => setBulkQuota(Number(e.target.value))}
                   className="w-full px-3 py-2 text-sm bg-[#0a0d14] border border-[#1a1f2e] rounded-lg text-white focus:outline-none focus:border-cyan-500" />
               </div>
@@ -429,15 +454,15 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                 <label className="block text-xs text-gray-400 mb-1.5">
                   {bulkAction === 'extend_duration' ? t('commerce.subscriptions.bulk.addDays') : t('commerce.common.durationDays')}
                 </label>
-                <input type="number" min={0} value={bulkDays}
+                <input type="number" min={1} max={3650} step={1} value={bulkDays}
                   onChange={e => setBulkDays(Number(e.target.value))}
                   className="w-full px-3 py-2 text-sm bg-[#0a0d14] border border-[#1a1f2e] rounded-lg text-white focus:outline-none focus:border-cyan-500" />
               </div>
             )}
-          </div>
+          </fieldset>
 
           <button type="button" onClick={() => setBulkConfirm(true)}
-            disabled={bulkRunning || (bulkCfg.needsProfile && !bulkProfile) || !bulkAllowed}
+            disabled={controlsBusy || !bulkValuesValid || !bulkAllowed}
             title={bulkAllowed ? undefined : t('commerce.common.unavailableAccess')}
             className="flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black transition-all disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed">
             {bulkRunning ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
@@ -492,11 +517,11 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
             </div>
             <p className="text-[11px] text-amber-300/80">{bulkCfg.hint}</p>
             <div className="flex gap-2 justify-end pt-1">
-              <button type="button" onClick={() => setBulkConfirm(false)}
+              <button type="button" onClick={() => setBulkConfirm(false)} disabled={bulkRunning}
                 className="px-3 py-2 text-xs rounded-lg border border-[#1a1f2e] text-gray-300 hover:bg-white/5 cursor-pointer">
                 {t('commerce.common.cancel')}
               </button>
-              <button type="button" onClick={runBulk} disabled={bulkRunning}
+              <button type="button" onClick={runBulk} disabled={!!pending || !bulkAllowed || !bulkValuesValid}
                 className="px-3 py-2 text-xs font-semibold rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black disabled:opacity-50 cursor-pointer">
                 {bulkRunning ? t('commerce.subscriptions.bulk.applying') : t('commerce.common.confirm')}
               </button>
@@ -507,7 +532,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
 
       {/* Table */}
       <div className="bg-[#0f1218] border border-[#1a1f2e] rounded-xl overflow-hidden">
-        {loading ? (
+        {loading && subs.length === 0 ? (
           <div className="flex items-center justify-center py-16 gap-3 text-gray-400">
             <RefreshCw className="w-5 h-5 animate-spin text-cyan-400" />
             {t('commerce.common.loading')}
@@ -517,7 +542,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
             <PackageOpen className="w-10 h-10 text-gray-700 mx-auto mb-3" />
             <p className="text-gray-500 text-sm">{t('commerce.subscriptions.empty')}</p>
             {canCreate && (
-              <button onClick={openCreate} className="mt-3 text-cyan-400 hover:text-cyan-300 text-sm cursor-pointer">
+              <button onClick={openCreate} disabled={controlsBusy} className="mt-3 text-cyan-400 hover:text-cyan-300 text-sm cursor-pointer">
                 {t('commerce.subscriptions.createFirst')}
               </button>
             )}
@@ -533,6 +558,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                         type="checkbox"
                         aria-label={t('commerce.subscriptions.selectPage')}
                         checked={paginated.length > 0 && paginated.every(s => selected.has(s.id))}
+                        disabled={controlsBusy || !canAssign}
                         onChange={e => setSelected(prev => {
                           const next = new Set(prev);
                           paginated.forEach(s => e.target.checked ? next.add(s.id) : next.delete(s.id));
@@ -547,7 +573,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                     {showsOwnerColumn && (
                       <th className="text-left text-xs text-gray-500 font-semibold uppercase tracking-wider px-4 py-3">{t('commerce.common.reseller')}</th>
                     )}
-                    {[t('commerce.common.vpnProfile'), t('commerce.common.quota'), t('commerce.common.consumption'), t('commerce.common.duration'), t('commerce.common.expiration'), t('commerce.common.status'), ''].map(h => (
+                    {[t('commerce.common.vpnProfile'), t('commerce.subscriptions.planQuota'), t('commerce.common.consumption'), t('commerce.common.duration'), t('commerce.subscriptions.planExpiry'), t('commerce.subscriptions.planStatus'), ''].map(h => (
                       <th key={h} className="text-left text-xs text-gray-500 font-semibold uppercase tracking-wider px-4 py-3">{h}</th>
                     ))}
                   </tr>
@@ -555,7 +581,8 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                 <tbody className="divide-y divide-[#1a1f2e]">
                   {paginated.map(sub => {
                     const pct = percentOf(sub.quotaUsed, sub.quotaBytes);
-                    const cfg = STATUS_CFG[sub.status] || STATUS_CFG.active;
+                    const effectiveStatus = subscriptionStatus(sub);
+                    const cfg = STATUS_CFG[effectiveStatus] || STATUS_CFG.unknown;
                     const client = clientMap[sub.clientId];
                     return (
                       <tr key={sub.id} className={`hover:bg-white/[0.02] transition-colors ${selected.has(sub.id) ? 'bg-cyan-500/5' : ''}`}>
@@ -564,6 +591,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                             type="checkbox"
                             aria-label={t('commerce.subscriptions.selectPlan', { name: sub.name })}
                             checked={selected.has(sub.id)}
+                            disabled={controlsBusy || !canAssign}
                             onChange={() => toggleOne(sub.id)}
                             className="rounded border-[#1a1f2e] bg-[#07090e] accent-cyan-500 cursor-pointer"
                           />
@@ -580,7 +608,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                           <td className="px-4 py-3">
                             <span className="inline-flex items-center gap-1 rounded-md border border-violet-500/20 bg-violet-500/10 px-2 py-0.5 text-[11px] text-violet-300">
                               <Store className="w-3 h-3 shrink-0" />
-                              {ownerLabel(sub.resellerName ?? sub.client?.reseller?.name ?? (client as any)?.resellerName ?? null)}
+                              {ownerLabel(sub.resellerName ?? sub.client?.reseller?.name ?? client?.resellerName ?? null)}
                             </span>
                           </td>
                         )}
@@ -616,34 +644,44 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                           <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${cfg.cls}`}>
                             {cfg.label}
                           </span>
+                          {effectiveStatus !== 'expired' && hasExpired(sub.expireAt) && <p className="mt-1 text-[11px] text-amber-400">{t('commerce.subscriptions.needsExtension')}</p>}
+                          {effectiveStatus !== 'exhausted' && isPlanExhausted(sub) && <p className="mt-1 text-[11px] text-orange-400">{t('commerce.subscriptions.needsData')}</p>}
                         </td>
                         <td className="px-4 py-3">
                           {canAssign && (
-                            <div className="flex items-center gap-1">
-                              <button onClick={() => openEdit(sub)} title={t('commerce.common.edit')}
-                                disabled={!canCreate}
+                            <div className="flex min-w-[260px] flex-wrap items-center gap-1">
+                              <button onClick={() => setAdjustment({ subscription: sub, action: 'add_data' })} title={t('commerce.subscriptions.addData')}
+                                disabled={!canCreate || controlsBusy || sub.status === 'revoked'}
+                                className="flex items-center gap-1 rounded-lg p-1.5 text-xs text-cyan-400 hover:bg-cyan-500/10 disabled:opacity-40">
+                                <HardDrive className="w-3.5 h-3.5" />{t('commerce.subscriptions.addData')}
+                              </button>
+                              <button onClick={() => setAdjustment({ subscription: sub, action: 'extend_duration' })} title={t('commerce.subscriptions.extendPlan')}
+                                disabled={!canCreate || controlsBusy || sub.status === 'revoked'}
+                                className="flex items-center gap-1 rounded-lg p-1.5 text-xs text-emerald-400 hover:bg-emerald-500/10 disabled:opacity-40">
+                                <Calendar className="w-3.5 h-3.5" />{t('commerce.subscriptions.extendPlan')}
+                              </button>
+                              <button onClick={() => openEdit(sub)} title={t('commerce.subscriptions.edit')}
+                                disabled={!canCreate || controlsBusy}
                                 className="p-1.5 text-gray-500 hover:text-white hover:bg-white/5 rounded-lg transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-40">
                                 <Edit3 className="w-3.5 h-3.5" />
                               </button>
-                              {/* Suspendre / réactiver : gestes RÉDUCTEURS, ouverts
-                                  même quand le plafond est atteint. */}
                               <button onClick={() => handleToggleStatus(sub)}
-                                disabled={!canReduce || sub.status === 'revoked'}
-                                title={sub.status === 'active' ? t('commerce.common.suspend') : t('commerce.common.reactivate')}
+                                disabled={!(sub.status === 'active' ? canReduce : canCreate) || controlsBusy || (sub.status !== 'active' && !canResumeSubscription(sub))}
+                                title={t(sub.status === 'active' ? 'commerce.subscriptions.suspendPlan' : canResumeSubscription(sub) ? 'commerce.subscriptions.resumePlan' : 'commerce.subscriptions.resumeUnavailable')}
                                 className="p-1.5 text-gray-500 hover:text-cyan-400 hover:bg-cyan-500/10 rounded-lg transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-40">
                                 {sub.status === 'active'
                                   ? <PauseCircle className="w-3.5 h-3.5" />
                                   : <PlayCircle className="w-3.5 h-3.5" />}
                               </button>
-                              {sub.status === 'active' && (
-                                <button onClick={() => handleRevoke(sub.id, sub.name)} title={t('commerce.common.revoke')}
-                                  disabled={!canReduce}
+                              {sub.status !== 'revoked' && (
+                                <button onClick={() => handleRevoke(sub.id, sub.name)} title={t('commerce.subscriptions.revokePlan')}
+                                  disabled={!canReduce || controlsBusy}
                                   className="p-1.5 text-gray-500 hover:text-amber-400 hover:bg-amber-500/10 rounded-lg transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-40">
                                   <ShieldOff className="w-3.5 h-3.5" />
                                 </button>
                               )}
-                              <button onClick={() => handleDelete(sub.id, sub.name)} title={t('commerce.common.delete')}
-                                disabled={!canReduce}
+                              <button onClick={() => handleDelete(sub.id, sub.name)} title={t('commerce.subscriptions.deletePlan')}
+                                disabled={!canReduce || controlsBusy}
                                 className="p-1.5 text-gray-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-40">
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
@@ -664,6 +702,31 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
         )}
       </div>
 
+      {adjustment && <SubscriptionAdjustmentDialog
+        key={`${adjustment.action}:${adjustment.subscription.id}`}
+        subscription={adjustment.subscription}
+        action={adjustment.action}
+        busy={!!pending}
+        allowed={canCreate}
+        onClose={() => setAdjustment(null)}
+        onSubmit={async value => {
+          if (!canCreate) throw new Error('commerce.common.unavailableAccess');
+          await run(`${adjustment.action}:${adjustment.subscription.id}`, async () => {
+            const result = await bulkSubscriptions({
+              action: adjustment.action,
+              subscriptionIds: [adjustment.subscription.id],
+              ...(adjustment.action === 'add_data' ? { quotaGB: value } : { durationDays: value }),
+            });
+            if (result.succeeded !== 1 || result.failed !== 0) {
+              throw new Error(result.details.find(detail => detail.status === 'failed')?.reason || 'commerce.subscriptions.bulk.noChange');
+            }
+            setAdjustment(null);
+            toast.success(message(adjustment.action === 'add_data' ? 'commerce.subscriptions.dataAdded' : 'commerce.subscriptions.extended'));
+            await Promise.all([load(), refreshAccess()]);
+          });
+        }}
+      />}
+
       {/* Create / Edit Modal */}
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
@@ -673,11 +736,12 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                 <PackageOpen className="w-4 h-4 text-cyan-400" />
                 {editSub ? t('commerce.subscriptions.edit') : t('commerce.subscriptions.assignClient')}
               </h2>
-              <button onClick={() => setShowModal(false)} className="p-1.5 text-gray-500 hover:text-white rounded-lg cursor-pointer">
+              <button onClick={() => setShowModal(false)} disabled={saving} aria-label={t('commerce.common.close')} className="p-1.5 text-gray-500 hover:text-white rounded-lg cursor-pointer disabled:opacity-40">
                 <X className="w-4 h-4" />
               </button>
             </div>
             <form onSubmit={handleSubmit} className="p-6 space-y-4">
+              <fieldset disabled={saving} className="space-y-4">
               {!!formError && (
                 <div role="alert" className="flex items-center gap-2 p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-rose-400 text-sm">
                   <AlertTriangle className="w-4 h-4 shrink-0" /> {errorMessage(formError, 'commerce.common.errorSave')}
@@ -689,6 +753,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                   {t('commerce.subscriptions.assignHint')}
                 </p>
               )}
+              {editSub && <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-relaxed text-amber-200">{t('commerce.subscriptions.replaceHint')}</p>}
 
               <div>
                 <label className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">{t('commerce.common.vpnClientRequired')}</label>
@@ -699,7 +764,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                     <option value="">{t('commerce.common.chooseClient')}</option>
                     {clients.map(c => (
                       <option key={c.id} value={c.id}>
-                        {(c as any).user?.name || c.name || c.token || c.id}
+                        {c.user?.name || c.name || c.token || c.id}
                         {showsOwnerColumn && c.resellerName ? ` — ${ownerLabel(c.resellerName)}` : ''}
                       </option>
                     ))}
@@ -743,13 +808,13 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
 
               <div className="grid grid-cols-3 gap-3">
                 <div>
-                  <label className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">{t('commerce.common.quotaGbRequired')}</label>
+                  <label className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">{t(editSub ? 'commerce.subscriptions.replaceQuota' : 'commerce.common.quotaGbRequired')}</label>
                   <input type="number" min={0.5} max={1_000_000} step={0.5} value={form.quotaGB}
                     onChange={e => setForm(f => ({ ...f, quotaGB: Number(e.target.value) }))} required
                     className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-cyan-500" />
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">{t('commerce.common.durationDays')}</label>
+                  <label className="block text-xs text-gray-400 mb-1.5 uppercase tracking-wider font-semibold">{t(editSub ? 'commerce.subscriptions.replaceDuration' : 'commerce.common.durationDays')}</label>
                   <input type="number" min={1} max={3650} step={1} value={form.durationDays}
                     onChange={e => setForm(f => ({ ...f, durationDays: Number(e.target.value) }))} required
                     className="w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-cyan-500" />
@@ -774,6 +839,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                   {editSub ? t('commerce.common.update') : t('commerce.subscriptions.submit')}
                 </button>
               </div>
+              </fieldset>
             </form>
           </div>
         </div>

@@ -13,6 +13,20 @@
   "rateLimitDelay": "Trop de requêtes. Réessayez dans {{seconds}} s.",
   "sessionExpired": "Session expirée, veuillez vous reconnecter",
   "refreshUnavailable": "Renouvellement de session temporairement indisponible. Réessayez.",
+  "device": {
+    "suspended": "L'appareil est suspendu temporairement. Sa session et ses configurations sont conservées ; réactivez-le si sa validité n'est pas dépassée.",
+    "disabled": "L'appareil est désactivé : le VPN est bloqué, sans suppression du compte ni des configurations. Réactivez-le si sa validité n'est pas dépassée.",
+    "expired": "La validité de l'appareil a expiré. Renouvelez l'appareil pour prolonger cet accès et obtenir un nouveau code. Prolonger un forfait ne suffit pas.",
+    "revoked": "L'activation de l'appareil a été révoquée. Un renouvellement de l'appareil est nécessaire ; une simple réactivation ne suffit pas.",
+    "deleted": "L'appareil a été supprimé. Actualisez la liste avant toute nouvelle activation."
+  },
+  "configuration": {
+    "suspended": "Ce forfait est suspendu temporairement. Son profil et l'activation de l'appareil sont conservés.",
+    "expired": "Ce forfait a expiré. Prolongez le forfait, sans renouveler le code d'activation de l'appareil.",
+    "exhausted": "Les données de ce forfait sont épuisées. Ajoutez des données au forfait existant, sans changer l'activation de l'appareil.",
+    "revoked": "Ce forfait est révoqué : seul son profil mobile est retiré. L'appareil reste activé.",
+    "deleted": "Ce forfait a été supprimé : seul son profil mobile est retiré. L'appareil reste activé."
+  },
   "validation": "Vérifiez les champs indiqués.",
   "validationIssue": {
     "invalid": "Valeur invalide.",

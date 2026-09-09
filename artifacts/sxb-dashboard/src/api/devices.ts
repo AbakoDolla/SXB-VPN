@@ -1,10 +1,11 @@
 import { apiRequest } from "./client";
+import { DeviceStatus } from "../types";
 
 export interface Device {
   id: string;
   deviceId: string;
   token: string;
-  status: "active" | "suspended" | "expired";
+  status: DeviceStatus;
   expireAt: string | null;
   activatedAt: string | null;
   createdAt: string;
@@ -14,6 +15,8 @@ export interface Device {
   resellerName: string | null;
   subscriptionId: string | null;
   subscriptionName: string | null;
+  subscriptionStatus?: string | null;
+  subscriptionExpireAt?: string | null;
   /**
    * Un appareil SANS forfait est un état normal : l'activation crée le compte
    * appareil, jamais un plan. L'attribution reste une décision distincte.
@@ -30,13 +33,8 @@ export interface Device {
 }
 
 export async function fetchDevices(): Promise<Device[]> {
-  try {
-    const data = await apiRequest<{ devices: Device[] }>("/devices");
-    return data.devices || [];
-  } catch (error) {
-    console.error("Error fetching devices:", error);
-    return [];
-  }
+  const data = await apiRequest<{ devices: Device[] }>("/devices");
+  return data.devices;
 }
 
 /**
@@ -60,6 +58,14 @@ export async function generateDeviceToken(params: {
 
 export async function revokeDevice(id: string): Promise<Device> {
   return apiRequest<Device>(`/devices/${id}/revoke`, { method: "POST" });
+}
+
+export async function suspendDevice(id: string): Promise<Device> {
+  return apiRequest<Device>(`/devices/${id}/suspend`, { method: "POST" });
+}
+
+export async function resumeDevice(id: string): Promise<Device> {
+  return apiRequest<Device>(`/devices/${id}/resume`, { method: "POST" });
 }
 
 export async function renewDevice(id: string, durationDays = 365): Promise<Device> {

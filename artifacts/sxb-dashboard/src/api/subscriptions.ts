@@ -13,7 +13,7 @@ export interface Subscription {
   deviceId: string | null;
   startAt: string;
   expireAt: string | null;
-  status: 'active' | 'expired' | 'revoked' | 'suspended';
+  status: 'active' | 'expired' | 'revoked' | 'suspended' | 'exhausted';
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;

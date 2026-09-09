@@ -122,6 +122,11 @@ function fixture() {
       if (!(index in owned)) owned[index] = { value: typeof initial === "function" ? initial() : initial };
       return [owned[index].value, next => { owned[index].value = typeof next === "function" ? next(owned[index].value) : next; }];
     },
+    useRef(initial) {
+      const index = cursor++;
+      if (!(index in slots)) slots[index] = { current: initial };
+      return slots[index];
+    },
     useMemo: compute => compute(),
     useEffect(effect, dependencies) {
       const index = cursor++;

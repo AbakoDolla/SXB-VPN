@@ -53,6 +53,8 @@ export interface ResellerRef {
   accessExpiresAt?: string | null;
 }
 
+export type DeviceStatus = "active" | "suspended" | "disabled" | "expired" | "revoked";
+
 export interface Client {
   id: string;
   userId: string;
@@ -60,7 +62,7 @@ export interface Client {
   quotaTotal: string | number; // BigInt as string from API, converted to bytes
   quotaUsed: string | number;
   expireAt: string;
-  status: "active" | "suspended" | "expired";
+  status: DeviceStatus;
   user?: User;
   name?: string;
   email?: string;

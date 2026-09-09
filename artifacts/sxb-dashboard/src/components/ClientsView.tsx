@@ -1,13 +1,17 @@
 import React, { useEffect, useState, useMemo } from "react";
 import { useTranslation } from "../contexts/I18nContext";
-import { fetchClients, createClient, updateClient, deleteClient, suspendClient, activateClient, renewClient, resetClientAccess } from "../api/clients";
+import { fetchClients, createClient, deleteClient, suspendClient, activateClient, renewClient, resetClientAccess } from "../api/clients";
 import { fetchResellers } from "../api/resellers";
 import { Client, Reseller, UserRole } from "../types";
 import { useResellerAccess } from "../contexts/ResellerAccessContext";
 import { usePermissions } from "../contexts/PermissionsContext";
 import { ResellerAccessSummaryCard, ResellerActionNotice } from "./ResellerAccessBanner";
 import { isUpperRole, ownerLabel, percentOf } from "../lib/resellerAccess";
-import { Search, UserPlus, Trash2, ShieldAlert, KeyRound, CalendarDays, Ban, CheckCircle, RefreshCcw, MoreHorizontal, HelpCircle, Store } from "lucide-react";
+import { canResumeDevice, deviceStatus, lifecycleBadges } from "../lib/lifecycle";
+import { useActionLock } from "../hooks/useActionLock";
+import ActivationRenewalDialog from "./ActivationRenewalDialog";
+import ActivationCodeResult from "./ActivationCodeResult";
+import { Search, UserPlus, Trash2, ShieldAlert, KeyRound, CalendarDays, PauseCircle, PlayCircle, RefreshCcw, Store } from "lucide-react";
 import Pagination from "./ui/Pagination";
 import { toast } from "sonner";
 
@@ -16,13 +20,24 @@ interface ClientsViewProps {
   actorName: string;
 }
 
+const CLIENT_ACTIONS = {
+  suspend: { confirm: "commerce.devices.confirmSuspend", success: "commerce.clients.suspended", request: suspendClient },
+  resume: { confirm: "commerce.devices.confirmResume", success: "commerce.clients.activated", request: activateClient },
+  reset: { confirm: "commerce.clients.confirmReset", success: "commerce.clients.reset", request: resetClientAccess },
+  delete: { confirm: "commerce.clients.confirmDelete", success: "commerce.clients.deleted", request: deleteClient },
+};
+
 export default function ClientsView({ currentUserRole, actorName }: ClientsViewProps) {
   const { t, locale, formatBytes, message, errorText } = useTranslation();
+  const STATUS_CONFIG = lifecycleBadges(t);
   const [clients, setClients] = useState<Client[]>([]);
   const [resellers, setResellers] = useState<Reseller[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const { pending, run } = useActionLock();
+  const [renewTarget, setRenewTarget] = useState<Client | null>(null);
+  const [resetResult, setResetResult] = useState<Client | null>(null);
   
   // Create client form states
   const [showAddModal, setShowAddModal] = useState(false);
@@ -37,12 +52,13 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
   // Un revendeur ne voit que ses propres clients, l'étiquette n'y apprendrait rien.
   const showsOwnerColumn = isUpperRole(currentUserRole);
   const { allows, refresh: refreshAccess } = useResellerAccess();
-  // Créer un client engage le parc du revendeur : fermé si l'agrément est
-  // expiré ou le plafond atteint. Suspendre, renouveler et supprimer restent
-  // ouverts au plafond — ce sont les gestes qui libèrent.
   const can = usePermissions();
   const canCreate = !isSupport && allows() && can("clients.create");
   const canReduce = !isSupport && allows({ reducesExposure: true }) && can("clients.manage");
+  const canRenew = canCreate;
+  const canResume = canCreate;
+  const canReset = !isSupport && allows({ reducesExposure: true }) && can("clients.create");
+  const canDelete = !isSupport && allows({ reducesExposure: true }) && can("clients.delete");
 
   const loadClients = async () => {
     setLoading(true);
@@ -50,9 +66,9 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
       const data = await fetchClients();
       setClients(data);
       // Rattachement commercial explicite, réservé aux rôles supérieurs.
-      if (showsOwnerColumn) setResellers(await fetchResellers().catch(() => [] as Reseller[]));
+      if (showsOwnerColumn && can("reseller.manage")) setResellers(await fetchResellers());
     } catch (err) {
-      console.error("Error fetching clients:", err);
+      toast.error(errorText(err, 'commerce.common.errorLoad'));
     } finally {
       setLoading(false);
     }
@@ -64,76 +80,55 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name) return;
+    if (!canCreate) { toast.error(message('commerce.common.unavailableAccess')); return; }
+    if (!name.trim()) { toast.error(message('commerce.clients.nameRequired')); return; }
 
     try {
-      await createClient({
-        name,
-        email: email || undefined,
-        phone: phone || undefined,
-        // Un revendeur crée toujours pour lui-même : le serveur l'impose.
-        resellerId: showsOwnerColumn && resellerId ? resellerId : undefined,
+      await run("create", async () => {
+        await createClient({
+          name: name.trim(),
+          email: email || undefined,
+          phone: phone || undefined,
+          resellerId: showsOwnerColumn && resellerId ? resellerId : undefined,
+        });
+        setName("");
+        setEmail("");
+        setPhone("");
+        setResellerId("");
+        setShowAddModal(false);
+        toast.success(message('commerce.clients.created'));
+        await Promise.all([loadClients(), refreshAccess()]);
       });
-
-      // Reset form
-      setName("");
-      setEmail("");
-      setPhone("");
-      setResellerId("");
-      setShowAddModal(false);
-      toast.success(message('commerce.clients.created'));
-      await Promise.all([loadClients(), refreshAccess()]);
     } catch (err) {
       toast.error(errorText(err, 'commerce.common.errorGeneric'));
     }
   };
 
-  const handleSuspend = async (id: string, isCurrentlyActive: boolean) => {
-    if (isSupport) return;
-    try {
-      if (isCurrentlyActive) {
-        await suspendClient(id);
-        toast.success(message('commerce.clients.suspended'));
-      } else {
-        await activateClient(id);
-        toast.success(message('commerce.clients.activated'));
-      }
-      await Promise.all([loadClients(), refreshAccess()]);
-    } catch (err) {
-      toast.error(errorText(err, 'commerce.common.errorGeneric'));
+  const handleAction = async (client: Client, action: keyof typeof CLIENT_ACTIONS) => {
+    if (!(action === "delete" ? canDelete : action === "suspend" ? canReduce : action === "reset" ? canReset : canResume)) {
+      toast.error(message('commerce.common.unavailableAccess'));
+      return;
     }
-  };
-
-  const handleRenew = async (id: string) => {
-    if (isSupport) return;
-    try {
-      await renewClient(id);
-      toast.success(message('commerce.clients.renewed'));
-      await Promise.all([loadClients(), refreshAccess()]);
-    } catch (err) {
-      toast.error(errorText(err, 'commerce.common.errorGeneric'));
+    if (action === "resume" && !canResumeDevice(client)) {
+      toast.error(message('commerce.devices.resumeUnavailable'));
+      return;
     }
-  };
-
-  const handleResetAccess = async (id: string) => {
-    if (isSupport) return;
-    if (!window.confirm(t('commerce.clients.confirmReset'))) return;
+    const config = CLIENT_ACTIONS[action];
+    if (!window.confirm(t(config.confirm, { name: client.user?.name || client.name || client.id }))) return;
     try {
-      await resetClientAccess(id);
-      toast.success(message('commerce.clients.reset'));
-      await Promise.all([loadClients(), refreshAccess()]);
-    } catch (err) {
-      toast.error(errorText(err, 'commerce.common.errorGeneric'));
-    }
-  };
-
-  const handleDelete = async (id: string) => {
-    if (isSupport) return;
-    if (!window.confirm(t('commerce.clients.confirmDelete'))) return;
-    try {
-      await deleteClient(id);
-      toast.success(message('commerce.clients.deleted'));
-      await Promise.all([loadClients(), refreshAccess()]);
+      await run(`${action}:${client.id}`, async () => {
+        const updated = await config.request(client.id);
+        if (action === "reset") {
+          if (!updated || typeof updated.token !== "string" || !updated.token.startsWith("SXB-USER-") || updated.token === client.token) {
+            throw new Error("commerce.clients.resetResponseInvalid");
+          }
+          setResetResult(updated);
+        }
+        setClients(current => action === "delete" ? current.filter(item => item.id !== client.id)
+          : current.map(item => item.id === client.id && updated ? { ...item, ...updated } : item));
+        toast.success(message(config.success));
+        await Promise.all([loadClients(), refreshAccess()]);
+      });
     } catch (err) {
       toast.error(errorText(err, 'commerce.common.errorGeneric'));
     }
@@ -149,18 +144,13 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
     return clients.filter((client) => {
       // The API returns the display name and email on the related user object.
       // Keep fallbacks for older records and never call string methods on null.
-      const clientRecord = client as Client & {
-        user?: { name?: string | null; email?: string | null };
-        name?: string | null;
-        email?: string | null;
-      };
-      const clientName = String(clientRecord.user?.name ?? clientRecord.name ?? "");
-      const clientEmail = String(clientRecord.user?.email ?? clientRecord.email ?? "");
+      const clientName = String(client.user?.name ?? client.name ?? "");
+      const clientEmail = String(client.user?.email ?? client.email ?? "");
       const clientToken = String(client.token ?? "");
       const matchesSearch = !normalizedSearch || [clientName, clientEmail, clientToken]
         .some((value) => value.toLowerCase().includes(normalizedSearch));
 
-      const matchesStatus = statusFilter === "all" || client.status === statusFilter;
+      const matchesStatus = statusFilter === "all" || deviceStatus(client) === statusFilter;
       return matchesSearch && matchesStatus;
     });
   }, [clients, search, statusFilter]);
@@ -169,6 +159,8 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
     const start = (page - 1) * pageSize;
     return filteredClients.slice(start, start + pageSize);
   }, [filteredClients, page, pageSize]);
+
+  useEffect(() => setPage(1), [search, statusFilter]);
 
   return (
     <div className="space-y-6">
@@ -182,7 +174,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
         {!isSupport && (
           <button
             onClick={() => setShowAddModal(true)}
-            disabled={!canCreate}
+            disabled={!canCreate || !!pending || !!renewTarget || !!resetResult}
             title={canCreate ? undefined : t('commerce.common.unavailableQuota')}
             className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-medium text-sm rounded-lg shadow-lg shadow-cyan-950/20 transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
           >
@@ -194,6 +186,8 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
 
       {isReseller && <ResellerAccessSummaryCard />}
       {!isSupport && <ResellerActionNotice />}
+      <p className="text-xs leading-relaxed text-gray-400">{t('commerce.clients.lifecycleHint')}</p>
+      {pending && <p role="status" className="text-sm text-cyan-400">{t('commerce.common.actionPending')}</p>}
 
       {/* Filters & search */}
       <div className="flex flex-col md:flex-row gap-3 items-center justify-between">
@@ -209,7 +203,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
         </div>
 
         <div className="flex flex-wrap gap-2 w-full md:w-auto">
-          {["all", "active", "suspended", "expired"].map((filter) => (
+          {["all", "active", "suspended", "disabled", "expired", "revoked"].map((filter) => (
             <button
               key={filter}
               onClick={() => setStatusFilter(filter)}
@@ -219,14 +213,14 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                   : "bg-gray-900/60 border-gray-800 text-gray-400 hover:bg-gray-900"
               }`}
             >
-              {filter === "all" ? t('commerce.common.all') : filter === "active" ? t('commerce.common.active') : filter === "suspended" ? t('commerce.common.suspended') : t('commerce.common.expired')}
+              {filter === "all" ? t('commerce.common.all') : STATUS_CONFIG[filter].label}
             </button>
           ))}
         </div>
       </div>
 
       {/* Main client table */}
-      {loading ? (
+      {loading && clients.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 text-gray-400">
           <RefreshCcw className="h-7 w-7 animate-spin text-cyan-400 mb-4" />
           <p className="text-sm font-mono">{t('commerce.common.loading')}</p>
@@ -241,24 +235,25 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                   <th className="py-3 px-4">{t('commerce.clients.emailPhone')}</th>
                   {showsOwnerColumn && <th className="py-3 px-4">{t('commerce.common.reseller')}</th>}
                   <th className="py-3 px-4">{t('commerce.clients.sxbToken')}</th>
-                  <th className="py-3 px-4 text-center">{t('commerce.common.quota')}</th>
-                  <th className="py-3 px-4">{t('commerce.common.expirationDate')}</th>
-                  <th className="py-3 px-4 text-center">{t('commerce.common.status')}</th>
+                  <th className="py-3 px-4 text-center" title={t('commerce.clients.individualQuotaHint')}>{t('commerce.clients.individualQuota')}</th>
+                  <th className="py-3 px-4">{t('commerce.devices.accessExpiry')}</th>
+                  <th className="py-3 px-4 text-center">{t('commerce.devices.accessStatus')}</th>
                   {!isSupport && <th className="py-3 px-4 text-right">{t('commerce.common.actions')}</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-900 text-sm">
                 {paginatedClients.map((client) => {
                   const percent = percentOf(client.quotaUsed, client.quotaTotal);
-                  const isSuspended = client.status === "suspended";
+                  const effectiveStatus = deviceStatus(client);
+                  const status = STATUS_CONFIG[effectiveStatus] ?? STATUS_CONFIG.unknown;
                   
                   return (
                     <tr key={client.id} className="hover:bg-gray-900/20 transition-colors">
                       <td className="py-4 px-4 font-medium text-white">
-                        {(client as any).user?.name || client.name || "-"}
+                        {client.user?.name || client.name || "-"}
                       </td>
                       <td className="py-4 px-4 text-gray-400">
-                        {(client as any).user?.email || client.email || "-"}
+                        {client.user?.email || client.email || "-"}
                       </td>
                       {showsOwnerColumn && (
                         <td className="py-4 px-4">
@@ -295,17 +290,9 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                         {client.expireAt ? new Date(client.expireAt).toLocaleDateString(locale) : "-"}
                       </td>
                       <td className="py-4 px-4 text-center">
-                        <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold ${
-                          client.status === "active" 
-                            ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
-                            : isSuspended
-                            ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
-                            : "bg-rose-500/10 text-rose-400 border border-rose-500/20"
-                        }`}>
-                          <span className={`h-1.5 w-1.5 rounded-full ${
-                            client.status === "active" ? "bg-emerald-400" : isSuspended ? "bg-amber-400" : "bg-rose-400"
-                          }`} />
-                          {client.status === "active" ? t('commerce.common.active') : isSuspended ? t('commerce.common.suspended') : t('commerce.common.expired')}
+                        <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-semibold ${status.cls}`}>
+                          <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                          {status.label}
                         </span>
                       </td>
                       
@@ -313,33 +300,33 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                         <td className="py-4 px-4 text-right">
                           <div className="flex justify-end gap-1.5">
                             <button
-                              onClick={() => handleSuspend(client.id, client.status === "active")}
-                              disabled={!canReduce}
-                              title={client.status === "active" ? t('commerce.common.suspend') : t('commerce.common.reactivate')}
+                              onClick={() => handleAction(client, effectiveStatus === "active" ? "suspend" : "resume")}
+                              disabled={!(effectiveStatus === "active" ? canReduce : canResume) || !!pending || !!renewTarget || !!resetResult || showAddModal || (effectiveStatus !== "active" && !canResumeDevice(client))}
+                              title={t(effectiveStatus === "active" ? 'commerce.devices.suspendDevice' : canResumeDevice(client) ? 'commerce.devices.resumeDevice' : 'commerce.devices.resumeUnavailable')}
                               className="p-1 text-gray-500 hover:text-amber-400 hover:bg-gray-900/60 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                             >
-                              <Ban className="h-4 w-4" />
+                              {effectiveStatus === "active" ? <PauseCircle className="h-4 w-4" /> : <PlayCircle className="h-4 w-4" />}
                             </button>
                             <button
-                              onClick={() => handleRenew(client.id)}
-                              disabled={!canCreate}
-                              title={t('commerce.common.renewAccess')}
+                              onClick={() => setRenewTarget(client)}
+                              disabled={!canRenew || !!pending || !!renewTarget || !!resetResult || showAddModal}
+                              title={t('commerce.clients.renewDevice')}
                               className="p-1 text-gray-500 hover:text-emerald-400 hover:bg-gray-900/60 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               <CalendarDays className="h-4 w-4" />
                             </button>
                             <button
-                              onClick={() => handleResetAccess(client.id)}
-                              disabled={!canReduce}
+                              onClick={() => handleAction(client, "reset")}
+                              disabled={!canReset || !!pending || !!renewTarget || !!resetResult || showAddModal}
                               title={t('commerce.clients.resetAccess')}
                               className="p-1 text-gray-500 hover:text-cyan-400 hover:bg-gray-900/60 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               <KeyRound className="h-4 w-4" />
                             </button>
                             <button
-                              onClick={() => handleDelete(client.id)}
-                              disabled={!canReduce}
-                              title={t('commerce.common.delete')}
+                              onClick={() => handleAction(client, "delete")}
+                              disabled={!canDelete || !!pending || !!renewTarget || !!resetResult || showAddModal}
+                              title={t('commerce.clients.deleteClient')}
                               className="p-1 text-gray-500 hover:text-rose-400 hover:bg-gray-900/60 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               <Trash2 className="h-4 w-4" />
@@ -366,7 +353,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
           <p className="text-sm text-gray-400 max-w-sm mx-auto mt-1">{t('commerce.clients.emptyHint')}</p>
           {canCreate && (
             <button
-              onClick={() => setShowAddModal(true)}
+              onClick={() => setShowAddModal(true)} disabled={!!pending || !!renewTarget || !!resetResult}
               className="mt-5 px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-950 text-cyan-400 border border-cyan-800/40 hover:bg-cyan-900/50 transition-all cursor-pointer"
             >
               {t('commerce.clients.createFirst')}
@@ -374,6 +361,37 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
           )}
         </div>
       )}
+
+      {resetResult && <div role="dialog" aria-modal="true" aria-labelledby="activation-reset-title" className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+        <div className="w-full max-w-lg space-y-4 rounded-2xl border border-[#252b3b] bg-[#0f1218] p-6">
+          <h2 id="activation-reset-title" className="text-lg font-semibold text-white">{t('commerce.clients.reset')}</h2>
+          <p className="text-sm text-gray-300">{resetResult.user?.name || resetResult.name || resetResult.id}</p>
+          <ActivationCodeResult token={resetResult.token} expireAt={resetResult.expireAt} />
+          <p className="text-xs text-gray-400">{t('commerce.clients.resetNoRenewal')}</p>
+          <button type="button" onClick={() => setResetResult(null)} disabled={!!pending}
+            className="w-full rounded-lg border border-[#252b3b] px-3 py-2 text-sm text-gray-300 disabled:opacity-40">{t('commerce.common.close')}</button>
+        </div>
+      </div>}
+
+      {renewTarget && <ActivationRenewalDialog
+        key={renewTarget.id}
+        name={renewTarget.user?.name || renewTarget.name || renewTarget.id}
+        previousToken={renewTarget.token}
+        expireAt={renewTarget.expireAt}
+        fixedDurationDays={30}
+        allowed={canRenew}
+        busy={!!pending}
+        onClose={() => setRenewTarget(null)}
+        onRenew={async () => {
+          if (!canRenew) throw new Error("commerce.common.unavailableAccess");
+          return run(`renew:${renewTarget.id}`, async () => {
+            const renewed = await renewClient(renewTarget.id);
+            setClients(current => current.map(item => item.id === renewTarget.id ? { ...item, ...renewed } : item));
+            await Promise.all([loadClients(), refreshAccess()]);
+            return renewed;
+          });
+        }}
+      />}
 
       {/* Add Client Modal */}
       {showAddModal && (
@@ -385,6 +403,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
             </h2>
             
             <form onSubmit={handleCreate} className="space-y-4">
+              <fieldset disabled={!!pending} className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold text-gray-400 mb-1.5 uppercase tracking-wider">{t('commerce.common.fullName')}</label>
                 <input
@@ -454,11 +473,13 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black shadow-lg shadow-cyan-950/20 transition-all cursor-pointer"
+                  disabled={!!pending || !canCreate}
+                  className="px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black shadow-lg shadow-cyan-950/20 transition-all cursor-pointer disabled:opacity-40"
                 >
-                  {t('commerce.common.create')}
+                  {t(pending === "create" ? 'commerce.common.actionPending' : 'commerce.common.create')}
                 </button>
               </div>
+              </fieldset>
             </form>
           </div>
         </div>

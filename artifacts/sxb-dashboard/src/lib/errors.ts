@@ -15,6 +15,17 @@ const CODE_KEYS: Record<string, string> = {
   INVALID_BODY: "errors.badRequest",
   session_expired: "errors.sessionExpired",
   SESSION_REFRESH_UNAVAILABLE: "errors.refreshUnavailable",
+  DEVICE_SUSPENDED: "errors.device.suspended",
+  DEVICE_DISABLED: "errors.device.disabled",
+  DEVICE_EXPIRED: "errors.device.expired",
+  DEVICE_REVOKED: "errors.device.revoked",
+  DEVICE_DELETED: "errors.device.deleted",
+  CONFIG_SUSPENDED: "errors.configuration.suspended",
+  CONFIG_EXPIRED: "errors.configuration.expired",
+  CONFIG_EXHAUSTED: "errors.configuration.exhausted",
+  CONFIG_REVOKED: "errors.configuration.revoked",
+  CONFIG_DELETED: "errors.configuration.deleted",
+  SESSION_INVALID: "errors.sessionExpired",
   maintenance: "errors.maintenance",
   PROFILE_LOCKED: "configurations.lock.errors.PROFILE_LOCKED",
   PROFILE_UNLOCK_FAILED: "configurations.lock.errors.PROFILE_UNLOCK_FAILED",
@@ -119,7 +130,10 @@ export function apiErrorMessage(
     ...validationMessages(body?.issues, language),
   ] : [];
   if (issues.length) return `${translate(language, "errors.validation")} ${issues.join("; ")}`;
-  const known = knownMessage(body?.error, language) ?? knownMessage(code ?? body?.code, language);
+  const lifecycleCode = text(code ?? body?.code);
+  const lifecycleMessage = lifecycleCode && /^(DEVICE_|CONFIG_|SESSION_INVALID$)/.test(lifecycleCode)
+    ? knownMessage(lifecycleCode, language) : undefined;
+  const known = lifecycleMessage ?? knownMessage(body?.error, language) ?? knownMessage(code ?? body?.code, language);
   if (known) {
     const detail = text(body?.message);
     return body?.error === "errors.validation" && detail ? `${known} ${diagnostic(detail, language)}` : known;

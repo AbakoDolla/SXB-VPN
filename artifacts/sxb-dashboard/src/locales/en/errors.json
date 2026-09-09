@@ -13,6 +13,20 @@
   "rateLimitDelay": "Too many requests. Retry in {{seconds}} s.",
   "sessionExpired": "Session expired. Please sign in again",
   "refreshUnavailable": "Session renewal is temporarily unavailable. Please retry.",
+  "device": {
+    "suspended": "The device is temporarily suspended. Its session and configurations are preserved; reactivate it if its access is still valid.",
+    "disabled": "The device is disabled: VPN access is blocked without deleting the account or configurations. Reactivate it if its access is still valid.",
+    "expired": "Device validity has expired. Renew the device to extend this access and obtain a new code. Extending a plan is not enough.",
+    "revoked": "Device activation has been revoked. Device renewal is required; simple reactivation is not enough.",
+    "deleted": "The device was deleted. Refresh the list before a new activation."
+  },
+  "configuration": {
+    "suspended": "This plan is temporarily suspended. Its profile and device activation are preserved.",
+    "expired": "This plan has expired. Extend the plan without renewing the device activation code.",
+    "exhausted": "This plan has run out of data. Add data to the existing plan without changing device activation.",
+    "revoked": "This plan is revoked: only its mobile profile is removed. The device stays activated.",
+    "deleted": "This plan was deleted: only its mobile profile is removed. The device stays activated."
+  },
   "validation": "Check the indicated fields.",
   "validationIssue": {
     "invalid": "Invalid value.",
