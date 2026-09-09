@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import vm from 'node:vm';
 import { describe, it } from 'node:test';
+import { assertReleaseCertificate } from '../../app-mobile/scripts/validate-play-bundle.mjs';
 
 const require = createRequire(import.meta.url);
 const appRoot = new URL('../../app-mobile/', import.meta.url);
@@ -154,6 +155,13 @@ describe('Play channel and shared version configuration', () => {
     for (const [a, b] of [[badging.replace('com.sxbvpn.mobile', 'wrong.app'), signature],
       [badging, signature.replace('true', 'false')], [badging, `${signature}Android Debug`],
       [badging, signature + signature]]) assert.throws(() => parseBaseline(a, b));
+  });
+  it('blocks debug subject or issuer without replacing the persistent signing key', () => {
+    assertReleaseCertificate({ subject: 'CN=SXB VPN', issuer: 'CN=SXB VPN' });
+    for (const certificate of [
+      { subject: 'CN=Android Debug', issuer: 'CN=Android Debug' },
+      { subject: 'CN=SXB VPN', issuer: 'CN=Android Debug' },
+    ]) assert.throws(() => assertReleaseCertificate(certificate), /human signing review/);
   });
   it('keeps workflow publication and signing boundaries explicit', () => {
     const play = readFileSync(new URL('../../.github/workflows/build-google-play.yml', import.meta.url), 'utf8');

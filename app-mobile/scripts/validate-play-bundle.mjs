@@ -30,6 +30,11 @@ const disabledFirebase = [
   'firebase_data_collection_default_enabled',
 ];
 
+export function assertReleaseCertificate(certificate) {
+  assert.doesNotMatch(`${certificate.subject}\n${certificate.issuer}`, /Android Debug/i,
+    'Debug signing certificate is forbidden; human signing review required, do not replace the key automatically');
+}
+
 export function validateManifest(manifest, versionCode, versionName) {
   assert.equal(manifest.$?.package, PACKAGE, 'Application identity changed');
   assert.equal(manifest.$['android:versionCode'], String(versionCode), 'Incorrect versionCode');
@@ -126,7 +131,7 @@ export async function validateBundle({ bundle, bundletool, output, versionCode, 
     '-exportcert', '-keystore', keystore, '-storepass:env', 'KEYSTORE_PASSWORD',
     '-alias', process.env.KEY_ALIAS,
   ]));
-  assert.doesNotMatch(certificate.subject, /Android Debug/i, 'Debug keystore is forbidden');
+  assertReleaseCertificate(certificate);
   const fingerprint = certificate.fingerprint256.replaceAll(':', '').toLowerCase();
   const expected = process.env.SXB_DIRECT_CERT_SHA256?.toLowerCase();
   assert.match(expected || '', /^[0-9a-f]{64}$/, 'Verified current direct APK fingerprint required');
