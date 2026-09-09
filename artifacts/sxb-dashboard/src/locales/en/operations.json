@@ -78,7 +78,7 @@
       "healthReports": "Health reports",
       "healthDevices": "Health devices",
       "supportTickets": "Support tickets",
-      "adminTokens": "Administrative access tokens"
+      "adminTokens": "Access tokens of removed accounts"
     }
   },
   "bulkDelete": {

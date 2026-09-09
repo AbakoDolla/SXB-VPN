@@ -45,6 +45,9 @@ const WARNING_KEYS: Record<string, string> = {
   RESET_STORAGE_REUSED_NOT_FREED: "operations.reset.warnings.storage",
 };
 const REJECTED_PREVIEWS = ["errors.reset.challengeExpired", "errors.reset.previewChanged", "errors.reset.challengeInvalid"];
+const DATE_WITH_TIME: Intl.DateTimeFormatOptions = {
+  year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+};
 
 function Counts({ counts }: { counts: ResetCounts }) {
   const { t, formatNumber } = useTranslation();
@@ -259,7 +262,7 @@ function OwnerReset({ currentUserRole, ownerId, visible, onBusyChange }: Props) 
             : state.historical ? "operations.reset.historicalReceipt" : "operations.reset.completed")}</h3>
           {state.historical && <p className="text-sm text-amber-300">{t("operations.reset.historicalHint")}</p>}
           <p className="text-xs text-gray-400">{t("operations.reset.receipt", {
-            id: state.result.resetId, date: formatDate(state.result.completedAt),
+            id: state.result.resetId, date: formatDate(state.result.completedAt, DATE_WITH_TIME),
           })}</p>
           <div className="rounded-lg border border-emerald-500/30 p-3 text-sm text-gray-300 space-y-1">
             <p>{t("operations.reset.backupReceipt", { id: state.result.backup.id, bytes: formatBytes(state.result.backup.bytes) })}</p>
@@ -286,7 +289,7 @@ function OwnerReset({ currentUserRole, ownerId, visible, onBusyChange }: Props) 
           </button>
         </div> : preview && <div className="space-y-4">
           <p className="text-sm font-semibold text-rose-300">{t("operations.reset.productionScope")}</p>
-          <p className="text-xs text-gray-400">{t("operations.reset.expires", { date: formatDate(preview.expiresAt) })}</p>
+          <p className="text-xs text-gray-400">{t("operations.reset.expires", { date: formatDate(preview.expiresAt, DATE_WITH_TIME) })}</p>
           <h3 className="text-sm font-semibold text-white">{t("operations.reset.previewCounts")}</h3>
           <Counts counts={preview.counts} />
           <p className="text-xs text-gray-400">{t("operations.reset.usersScope")}</p>

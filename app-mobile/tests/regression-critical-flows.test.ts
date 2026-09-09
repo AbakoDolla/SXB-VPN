@@ -1308,7 +1308,9 @@ describe('garde-fous contre les régressions Android', () => {
     assertDashboardLabel(subscriptionsView, 'commerce.subscriptions.bulk.addData', /Ajouter des données \(\+Go\)/);
     assertDashboardLabel(subscriptionsView, 'commerce.subscriptions.bulk.extend', /Prolonger le forfait \(\+jours\)/);
     // « Tout sélectionner » doit porter sur le filtre, pas sur la page affichée.
-    assert.ok(subscriptionsView.includes('const selectAllFiltered = () => setSelected(new Set(filtered.map(s => s.id)))'));
+    assert.match(subscriptionsView, /const selectAllFiltered = bulkDelete\.selectAll/);
+    const bulkDelete = source('../artifacts/sxb-dashboard/src/hooks/useBulkDelete.ts');
+    assert.ok(bulkDelete.includes('selectAll: () => changeSelection(latest.current.filtered.map(item => item.id), true, true)'));
   });
 
   it('permet d’attribuer une configuration à des revendeurs depuis le dashboard', () => {

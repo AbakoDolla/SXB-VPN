@@ -78,7 +78,7 @@
       "healthReports": "Rapports de santé",
       "healthDevices": "Appareils de santé",
       "supportTickets": "Tickets support",
-      "adminTokens": "Jetons d'accès administratifs"
+      "adminTokens": "Jetons d'accès des comptes supprimés"
     }
   },
   "bulkDelete": {
