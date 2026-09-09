@@ -1,0 +1,169 @@
+{
+  "format": "SXB editorial draft, not a Play Console import format",
+  "version": "2026-09-09",
+  "sourceCommit": "5d2fd8adb4542ae012d65f63194df9e64f305d7f",
+  "reviewed": false,
+  "scope": "Active server/ plus current mobile source. Reconcile the final AAB, native SDK dependency graph, consent changes and every active Play track before submission. No production data or credentials inspected.",
+  "dataSafety": {
+    "reviewed": false,
+    "collectsUserData": { "proposed": true, "reviewed": false, "evidence": ["server.ts:89-102", "server/routes/mobile.ts:430-451", "server/routes/mobile.ts:1156-1197"] },
+    "allDataEncryptedInTransit": { "proposed": null, "reviewed": false, "action": "HTTPS API and encrypted local storage do not establish all-transports compliance. Verify device-to-endpoint encryption for all allowed imported/provisioned profiles, DNS, native components and SDKs in the final release; refuse plaintext VPN transports." },
+    "independentSecurityReview": { "proposed": null, "reviewed": false, "action": "No recognized independent review supplied. Do not claim one from source tests or this dossier." },
+    "deletionMechanism": { "proposed": "Public manual request form", "reviewed": false, "url": "https://vpnsxb.afrihall.com/data-deletion", "action": "Confirm live integration, staff intake, verified identity procedure, actual associated-data deletion, processors and retention. A 202 receipt alone is not deletion." },
+    "accountCreation": { "proposed": null, "reviewed": false, "action": "Code activation and staff-created technical users do not alone determine Google's user-facing account definition. Inspect the final app and any directed external enrolment; do not claim an exemption from account deletion without review.", "evidence": ["app-mobile/contexts/AuthContext.tsx", "server/routes/devices.ts:241-271", "server/routes/auth.ts:57-73"] },
+    "dataTypes": [
+      {
+        "id": "identifiers",
+        "playTypes": ["Personal info / User IDs", "Device or other IDs"],
+        "collected": true,
+        "requiredOrOptional": "Required for activation, entitlement and quota. FCM-related identifiers may be optional only if SDK initialization and sending are gated in every active release.",
+        "purposes": ["App functionality", "Account management", "Fraud prevention, security, and compliance"],
+        "sharing": null,
+        "ephemeral": false,
+        "retention": "No complete fixed schedule established for account/device/activation rows. Push token replacement and explicit unregister exist; no general push TTL established.",
+        "evidence": ["server/routes/mobile.ts:318-451", "server/routes/mobile.ts:507-604", "prisma/schema.prisma:493-552", "app-mobile/services/pushNotifications.ts:29-66"],
+        "reviewed": false
+      },
+      {
+        "id": "api-ip-and-session",
+        "playTypes": ["Device or other IDs", "App activity / App interactions", "App info and performance / Diagnostics"],
+        "collected": true,
+        "requiredOrOptional": "Operational API/session logs are currently required for service calls.",
+        "purposes": ["App functionality", "Fraud prevention, security, and compliance", "Analytics"],
+        "sharing": null,
+        "ephemeral": false,
+        "retention": "Operator must approve API, proxy, audit and VPN log periods, access scope and backups. Audit records may include account codes in legacy activation actions.",
+        "evidence": ["server.ts:89-102", "server/routes/mobile.ts:430-451", "server/routes/mobile.ts:891-902", "server/database.ts:339-397", "prisma/schema.prisma:244-256"],
+        "reviewed": false
+      },
+      {
+        "id": "usage-plans",
+        "playTypes": ["App activity / Other actions", "Financial info / Purchase history"],
+        "collected": true,
+        "requiredOrOptional": "Traffic totals, entitlement, redeemed plan codes and quota are required to supply code-based plans. Confirm whether plan records constitute purchase history in the operator's actual business model.",
+        "purposes": ["App functionality", "Account management", "Fraud prevention, security, and compliance"],
+        "sharing": null,
+        "ephemeral": false,
+        "retention": "No complete TTL established for subscriptions, vouchers and TrafficUsage. Do not delete shared reseller financial records wholesale.",
+        "evidence": ["server/routes/mobile.ts:124-200", "server/routes/mobile.ts:657-734", "server/routes/mobile.ts:1156-1197", "server/routes/mobile.ts:1324-1359", "prisma/schema.prisma:381-409"],
+        "reviewed": false
+      },
+      {
+        "id": "technical-health",
+        "playTypes": ["App info and performance / Diagnostics", "App info and performance / Other app performance data", "Device or other IDs", "App activity / App interactions"],
+        "collected": true,
+        "requiredOrOptional": "Optional only after final consent gating is integrated and verified. Current source sends health reports; a server pseudonym does not make collection anonymous.",
+        "purposes": ["Analytics", "App functionality"],
+        "sharing": null,
+        "ephemeral": false,
+        "retention": "Reports older than 30 days; device snapshots inactive over 90 days; opportunistic cleanup on report/summary at most once per six hours after success, not a guaranteed hard deadline.",
+        "evidence": ["app-mobile/services/mobileHealth.ts:164-225", "server/routes/mobile-health.ts:21-57", "server/services/mobile-health.ts:6-7", "server/services/mobile-health.ts:29-70", "server/services/mobile-health.ts:160-175"],
+        "reviewed": false
+      },
+      {
+        "id": "support-and-personal-info",
+        "playTypes": ["Messages / Other in-app messages", "Personal info / Name", "Personal info / Email address", "Personal info / Phone number"],
+        "collected": true,
+        "requiredOrOptional": "Support messages are user initiated. Email is required only for the public request form. Names, email and phone exist in legacy/staff account records; app-register accepts phone but no current mobile caller was established. Confirm data actually sent by the final app and any linked web flow.",
+        "purposes": ["App functionality", "Account management", "Developer communications"],
+        "sharing": null,
+        "ephemeral": false,
+        "retention": "No ticket or legacy registration TTL established. New public requests have no user owner; only authorized support staff can read them.",
+        "evidence": ["server/routes/mobile.ts:1372-1434", "server/routes/app-register.ts:15-101", "prisma/schema.prisma:264-278", "server/routes/public-privacy.ts"],
+        "reviewed": false
+      },
+      {
+        "id": "traffic-dns",
+        "playTypes": ["Web browsing / Web browsing history", "Device or other IDs"],
+        "collected": null,
+        "requiredOrOptional": "The VPN routes traffic and DNS queries to the selected endpoints. Determine ephemeral processing versus retained or repurposed data for each provider; do not infer no browsing-data collection from absence of an API history table.",
+        "purposes": ["App functionality"],
+        "sharing": null,
+        "ephemeral": null,
+        "retention": "VPN/DNS providers and infrastructure retention unconfirmed.",
+        "evidence": ["app-mobile/modules/android-native/SxbVpnService.kt:2873", "app-mobile/modules/android-native/SxbVpnService.kt:2975-2976", "app-mobile/modules/android-native/SxbVpnService.kt:4078"],
+        "reviewed": false
+      }
+    ],
+    "thirdParties": [
+      {
+        "name": "Google Firebase Cloud Messaging and Firebase Installations",
+        "data": "Push/installation identifiers, Firebase user agent and app metadata, messages used for notifications. Check the exact Firebase SDK graph and actual automatic initialization.",
+        "sharingClassification": null,
+        "action": "Google's service-provider exception may apply only when processing solely on the operator's behalf; confirm contracts, settings and subprocessors before selecting not shared. Notification permission alone does not prove no SDK collection.",
+        "sources": ["https://firebase.google.com/docs/android/play-data-disclosure#cloud-messaging", "https://firebase.google.com/support/privacy"],
+        "evidence": ["server/services/fcm.ts:163-187", "app-mobile/modules/android-native/SxbPushNotifications.kt:19-41", "app-mobile/modules/android-native/SxbFirebaseInitProvider.kt:8-10", "app-mobile/services/pushNotifications.ts:29-66"],
+        "reviewed": false
+      },
+      {
+        "name": "Cloudflare DNS / system DNS / profile-selected DNS and VPN operators",
+        "data": "DNS queries and routed network connections as applicable to the selected transport.",
+        "sharingClassification": null,
+        "action": "Identify actual operators, routing, purposes, retention and countries. Service-provider or user-initiated transfer exceptions cannot be assumed.",
+        "sources": ["https://developers.cloudflare.com/1.1.1.1/privacy/public-dns-resolver/"],
+        "evidence": ["app-mobile/modules/android-native/SxbVpnService.kt:2873", "app-mobile/modules/android-native/SxbVpnService.kt:2975-2976", "app-mobile/modules/android-native/SxbVpnService.kt:4078"],
+        "reviewed": false
+      },
+      {
+        "name": null,
+        "data": "Backend hosting, database, proxy logs, backups and support operations.",
+        "sharingClassification": null,
+        "action": "Operator must name hosting/service providers, processors and transfer locations; source code cannot verify deployment contracts.",
+        "reviewed": false
+      }
+    ],
+    "doNotInfer": [
+      "Pseudonymization is not anonymization.",
+      "Do not tick approximate location solely because IP is processed; determine whether IP is used to infer location.",
+      "Local-only encrypted configurations/PIN/biometric access are not automatically off-device collection. Trace any exports or uploads separately.",
+      "Mobile health is technical diagnostics, not health/fitness data.",
+      "FCM integration does not prove Firebase Analytics or Crashlytics is installed. Inspect final dependencies before marking those categories.",
+      "No payment SDK found does not prove no purchase-history collection.",
+      "No detected ad SDK is not approval to declare no ads without reviewing all active artifacts and business practices.",
+      "Not shared under a Play exception never means no third-party processing in the privacy policy.",
+      "This form covers every active Play release and region, not only the latest AAB."
+    ]
+  },
+  "vpnService": {
+    "coreFunctionality": true,
+    "explanation": "SXB VPN provides a user-initiated device-level VPN connection to the endpoint selected by an access-code profile. VpnService supplies the tunnel interface; the ongoing notification and app let the user stop it.",
+    "storeListingMentionsVpnService": true,
+    "trafficEncryptionVerified": null,
+    "trafficManipulationForMonetization": null,
+    "prominentDisclosureAndRefusalVerified": null,
+    "videoConnectionUrl": null,
+    "videoDisclosureUrl": null,
+    "maxVideoSeconds": 90,
+    "action": "Show actual app launch, complete disclosure, refusal and re-entry, affirmative consent, Android VPN permission, real connection and disconnect. Declare data accessed through VPN separately from general API/support flows. No simulated connection or fabricated video.",
+    "evidence": ["app-mobile/modules/android-native/SxbVpnService.kt:1048-1076", "app-mobile/modules/android-native/SxbVpnService.kt:4422", "app-mobile/plugins/withSxbVpn.js:80-105"],
+    "reviewed": false
+  },
+  "foregroundService": {
+    "type": "specialUse",
+    "permission": "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
+    "functionality": "Keep the explicitly user-started VPN tunnel running while other apps use the network, with an ongoing notification and a disconnect action.",
+    "impactIfDeferred": "The user-requested VPN connection would not be available when the user starts using it.",
+    "impactIfInterrupted": "The tunnel stops and active connections may fail. No always-on or leak-proof guarantee is claimed; actual interruption behavior must be demonstrated.",
+    "videoUrl": null,
+    "action": "Verify the final merged manifest, special-use subtype property, start/stop behavior and Play's current use-case selection. Do not assume source comments prove that specialUse is approved.",
+    "evidence": ["app-mobile/plugins/withSxbVpn.js:35-46", "app-mobile/plugins/withSxbVpn.js:80-105", "app-mobile/modules/android-native/SxbVpnService.kt:1048-1076", "app-mobile/modules/android-native/SxbVpnService.kt:4422"],
+    "reviewed": false
+  },
+  "appAccess": {
+    "restricted": true,
+    "reviewerCredentials": null,
+    "instructions": "An operator must provision dedicated stable non-admin review access and an active representative plan. Put the real code and any necessary unlock steps only in Play Console App access, never in this repository, screenshots or videos. Permit review devices without one-device lockout, geography restriction or expiry during review. Verify cold install, activation, real VPN, settings, support and deletion link. Supply instructions in English and repeat for every gated function.",
+    "reviewed": false
+  },
+  "distribution": {
+    "proposedCategory": "Tools",
+    "proposedBusinessModel": "Consumption-only access to existing code-based plans",
+    "playDownloadPrice": null,
+    "containsAds": null,
+    "targetAudience": null,
+    "contentRating": null,
+    "countries": null,
+    "action": "Human decisions required. No in-app payment SDK identified. Do not add a payment link or funnel via privacy/support. Reassess Play billing if digital purchases are added.",
+    "reviewed": false
+  }
+}

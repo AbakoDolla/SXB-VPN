@@ -1,0 +1,18 @@
+{
+  "version": "2026-09-09",
+  "status": "blocked-human-approval-required",
+  "organizationAccountVerified": { "reviewed": false, "evidence": null },
+  "dunsVerified": { "reviewed": false, "evidence": null },
+  "publicIdentityVerified": { "reviewed": false, "evidence": null },
+  "publicSupportEmailVerified": { "reviewed": false, "evidence": null },
+  "privacyApprovedAndLive": { "reviewed": false, "evidence": null },
+  "deletionProcessOperational": { "reviewed": false, "evidence": null },
+  "dataSafetyApproved": { "reviewed": false, "evidence": null },
+  "vpnServiceApproved": { "reviewed": false, "evidence": null },
+  "foregroundServiceApproved": { "reviewed": false, "evidence": null },
+  "reviewAccessReady": { "reviewed": false, "evidence": null },
+  "releaseArtifactApproved": { "reviewed": false, "evidence": null },
+  "screenshotsAndVideosReady": { "reviewed": false, "evidence": null },
+  "distributionChoicesApproved": { "reviewed": false, "evidence": null },
+  "assetsRightsApproved": { "reviewed": false, "evidence": null }
+}

@@ -1,0 +1,124 @@
+{
+  "fr": {
+    "privacyTitle": "SXB VPN - Confidentialité",
+    "deletionTitle": "SXB VPN - Contact et demande de suppression",
+    "draft": "Informations de prépublication : l'identité légale de l'exploitant, son contact public et les pratiques de conservation et des prestataires doivent encore être confirmés. Cette page décrit le code disponible ; elle ne constitue pas une politique approuvée pour une soumission Google Play.",
+    "version": "Version du contenu",
+    "operator": "Exploitant",
+    "operatorUnknown": "Identité légale non confirmée. SXB VPN est le nom de l'application, pas une identité juridique vérifiée.",
+    "contact": "Contact public",
+    "contactForm": "Contacter le support ou demander la suppression",
+    "contactUnknown": "Aucune adresse e-mail publique confirmée. Le formulaire ci-dessous transmet une demande au support dans la base du service ; il n'envoie pas d'e-mail automatique.",
+    "retentionNote": "Précisions de conservation validées par l'exploitant",
+    "processorsNote": "Prestataires, lieux de traitement et transferts validés par l'exploitant",
+    "sections": [
+      {
+        "title": "Service et données nécessaires",
+        "text": "SXB VPN est un client VPN à codes d'accès et profils. L'activation et le service transmettent au backend des identifiants de compte/client et d'appareil, les codes nécessaires à l'activation, les associations aux forfaits, les volumes montants/descendants, le quota, les dates et les actions de session. Ces données servent à fournir la configuration, contrôler l'accès, comptabiliser les forfaits et dépanner le service. Certains dossiers historiques contiennent un nom, un e-mail ou un téléphone fourni lors de l'inscription auprès du service ou d'un revendeur ; l'ancienne route d'enregistrement accepte aussi un téléphone. Ce n'est pas la preuve que chaque version mobile le demande."
+      },
+      {
+        "title": "Journaux et diagnostic",
+        "text": "L'API journalise l'adresse IP, la route appelée, la méthode, le statut, la durée et un identifiant de requête ; l'infrastructure peut horodater ces journaux. Les activations et actions de session alimentent aussi des journaux d'audit et certaines sessions stockent IP et agent utilisateur. Des rapports techniques mobiles peuvent transmettre version de l'app, version Android, modèle, protocole, état/erreur de connexion, durées, reconnexions et indicateurs d'activité/batterie. Le serveur les associe à un pseudonyme calculé depuis les identifiants de compte et d'appareil. Pseudonymisé ne signifie pas anonyme. Le schéma de ces rapports refuse les hôtes, IP, mots de passe et journaux bruts. SXB VPN ne promet pas une absence de journaux."
+      },
+      {
+        "title": "Trafic VPN et tiers",
+        "text": "Le tunnel achemine le trafic vers le serveur VPN du profil choisi. Le serveur VPN et le résolveur DNS traitent les connexions et requêtes nécessaires ; leurs propres pratiques de journalisation doivent être confirmées. Certains chemins DNS utilisent Cloudflare (1.1.1.1), d'autres le résolveur système ou celui du profil. Google Firebase Cloud Messaging est intégré pour les notifications : le jeton push, des identifiants d'installation/appareil, des versions et métadonnées SDK/appareil ainsi que les messages nécessaires sont traités par Google ; le backend conserve le jeton avec compte, appareil, plateforme et version. L'hébergeur du backend et les opérateurs VPN participent au traitement. Aucun engagement « rien n'est transmis à des tiers » ni garantie d'anonymat ne peut être fait. Les prestataires exacts, pays et éventuelles garanties de transfert restent à confirmer par l'exploitant."
+      },
+      {
+        "title": "Stockage sur votre appareil",
+        "text": "Sur Android, les configurations VPN importées ou provisionnées sont chiffrées localement (AES-256-GCM, clé protégée via SecureStore). Les préférences, métadonnées, compteurs et rapports techniques en attente peuvent aussi rester sur l'appareil. Les jetons de session sont stockés via SecureStore. Les journaux de diagnostic locaux ne sont pas équivalents aux rapports transmis au serveur. Un stockage exclusivement local n'est pas, à lui seul, une collecte hors appareil. Effacer un profil, se déconnecter ou désinstaller ne supprime pas les données déjà reçues par le service."
+      },
+      {
+        "title": "Conservation",
+        "text": "Le code prévoit un nettoyage des rapports techniques de plus de 30 jours et des fiches techniques sans activité depuis plus de 90 jours. Ce nettoyage est déclenché lors de rapports ou consultations, au plus une fois toutes les six heures après un nettoyage réussi ; ce n'est pas une échéance garantie en cas d'inactivité ou d'échec. Pour les comptes, inscriptions d'appareils, forfaits, volumes, journaux API/audit/VPN, jetons push et tickets de support, aucun calendrier complet de suppression automatique n'est établi par cet inventaire. La durée des sauvegardes et des traitements chez les tiers n'est pas confirmée. L'exploitant doit fixer et publier ces durées et les exceptions justifiées avant soumission."
+      },
+      {
+        "title": "Vos demandes et votre contact",
+        "text": "Le formulaire public permet de demander des précisions, l'accès, la correction ou la suppression des données liées à votre utilisation de SXB VPN, sans application installée ni connexion à un compte. Il recueille un e-mail de réponse, le type de demande, votre message et, facultativement, un identifiant d'appareil non secret. Le ticket et sa date de création sont conservés dans le support avec accès réservé au personnel habilité. Les messages envoyés depuis l'assistance de l'application sont aussi reçus avec le compte associé et son nom affiché. L'adresse IP peut apparaître dans les journaux HTTP et sert temporairement à limiter les abus. Un cookie de sécurité temporaire protège le formulaire ; aucun outil publicitaire ni script tiers n'est ajouté à ces pages. L'opérateur vérifie votre identité et le périmètre avant toute suppression. Un accusé de réception ne signifie pas que vos données sont déjà supprimées."
+      },
+      {
+        "title": "Choix, limites et mises à jour",
+        "text": "Les permissions Android permettent notamment d'accepter ou refuser l'établissement du VPN et de gérer les notifications. Les choix de diagnostics et de notifications proposés dans votre version de l'app doivent correspondre aux traitements réellement exécutés, y compris en arrière-plan. Refuser une permission ou retirer un accord n'efface pas rétroactivement les données. Le chiffrement du stockage local n'est pas une preuve que tous les profils importables chiffrent tout le trafic : la configuration et les transports de la version publiée doivent être vérifiés. Cette information doit être mise à jour lorsque le service change."
+      }
+    ],
+    "deletionIntro": "Demandez ici la suppression des données et, lorsqu'il existe, du compte individuel lié à votre utilisation de SXB VPN. L'application n'a pas besoin d'être installée. Aucun mot de passe, code d'accès VPN, clé privée, configuration ou justificatif d'identité ne doit être joint.",
+    "deletionScope": "Après vérification d'identité et du périmètre, le support doit traiter les données liées au client/appareil : inscriptions, activations, accès et forfaits, jetons push, volumes, diagnostics, tickets et journaux identifiables. Un compte de revendeur partagé ne doit jamais être supprimé pour effacer les données d'un seul client. Les éventuelles conservations légalement nécessaires doivent être expliquées avec leur motif et leur durée. Les durées de traitement et de sauvegarde restent à confirmer ; aucun délai non validé n'est promis ici.",
+    "manual": "Le formulaire enregistre une demande de traitement manuel. Il ne supprime, ne désactive et ne vérifie aucun compte automatiquement. Le support devra vous contacter par un canal de réponse opérationnel et vérifier votre identité avant toute action ; connaître un identifiant d'appareil ne prouve pas cette identité.",
+    "kind": "Objet",
+    "deleteOption": "Suppression de mes données / compte individuel",
+    "privacyOption": "Question, accès ou correction de mes données",
+    "email": "E-mail auquel le support peut vous répondre",
+    "device": "Identifiant d'appareil SXB (facultatif, jamais un code d'accès)",
+    "message": "Votre demande (10 à 2 000 caractères, sans secret)",
+    "acknowledge": "Je demande au support de traiter ce message et de me contacter pour vérification. Je comprends qu'envoyer ce formulaire n'effectue aucune suppression immédiate.",
+    "submit": "Envoyer au support",
+    "sent": "Votre demande a été enregistrée pour examen manuel. Ce message ne confirme ni l'existence d'un compte ni une suppression. Le support utilise l'adresse fournie pour la suite du traitement.",
+    "invalid": "Formulaire invalide. Vérifiez les longueurs, l'e-mail et l'absence de codes ou configurations. Rechargez le formulaire puis réessayez ; les informations saisies ne sont pas conservées en cas de refus.",
+    "csrfError": "La protection du formulaire a expiré ou la provenance est invalide. Rechargez cette page, autorisez son cookie de sécurité et réessayez après quelques secondes.",
+    "rateError": "Trop de demandes. Veuillez attendre avant de réessayer ; le délai figure dans l'en-tête Retry-After.",
+    "unavailable": "Le service de réception est temporairement indisponible. Aucune réception n'est confirmée. Réessayez plus tard ou utilisez le contact public affiché s'il est renseigné.",
+    "back": "Retour au formulaire",
+    "privacyLink": "Lire les informations de confidentialité"
+  },
+  "en": {
+    "privacyTitle": "SXB VPN - Privacy",
+    "deletionTitle": "SXB VPN - Contact and deletion request",
+    "draft": "Pre-publication information: the operator's legal identity, public contact, retention practices and service providers still require confirmation. This page describes the available code; it is not an approved policy for Google Play submission.",
+    "version": "Content version",
+    "operator": "Operator",
+    "operatorUnknown": "Legal identity not confirmed. SXB VPN is the application name, not a verified legal entity.",
+    "contact": "Public contact",
+    "contactForm": "Contact support or request deletion",
+    "contactUnknown": "No confirmed public email address. The form below submits a request to the service's support database; it does not send an automatic email.",
+    "retentionNote": "Retention details approved by the operator",
+    "processorsNote": "Service providers, processing locations and transfers approved by the operator",
+    "sections": [
+      {
+        "title": "Service and necessary data",
+        "text": "SXB VPN is a VPN client using access codes and profiles. Activation and service use send account/client and device identifiers, activation codes, plan associations, upload/download volumes, quotas, dates and session actions to the backend. These support configuration delivery, access control, plan accounting and troubleshooting. Some historical records contain a name, email or phone supplied when registering with the service or a reseller; the legacy registration route also accepts a phone number. This does not establish that every mobile version asks for it."
+      },
+      {
+        "title": "Logs and diagnostics",
+        "text": "The API logs IP address, route, method, status, duration and a request identifier; infrastructure may timestamp these logs. Activation and session actions also create audit records, and some sessions store IP address and user agent. Mobile technical reports may send app version, Android version, model, protocol, connection state/error, durations, reconnects and activity/battery indicators. The server associates them with a pseudonym calculated from account and device identifiers. Pseudonymous does not mean anonymous. The report schema rejects hosts, IP addresses, passwords and raw logs. SXB VPN does not promise a no-logs service."
+      },
+      {
+        "title": "VPN traffic and third parties",
+        "text": "The tunnel routes traffic to the VPN endpoint in the selected profile. The VPN operator and DNS resolver process the necessary connections and queries; their logging practices require confirmation. Some DNS paths use Cloudflare (1.1.1.1), others the system or profile resolver. Google Firebase Cloud Messaging is integrated for notifications: Google processes push tokens, installation/device identifiers, versions and SDK/device metadata, and the necessary messages; the backend stores the token with account, device, platform and version. Backend hosting providers and VPN operators also participate in processing. We cannot claim that nothing reaches third parties or guarantee anonymity. The operator must confirm the exact providers, countries and any transfer safeguards."
+      },
+      {
+        "title": "Storage on your device",
+        "text": "On Android, imported or provisioned VPN configurations are encrypted locally using AES-256-GCM with a key protected through SecureStore. Preferences, metadata, counters and pending technical reports may also remain on the device. Session tokens use SecureStore. Local diagnostic logs are distinct from reports transmitted to the server. Exclusively local storage is not, by itself, off-device collection. Removing a profile, signing out or uninstalling does not delete data already received by the service."
+      },
+      {
+        "title": "Retention",
+        "text": "The code implements cleanup of technical reports older than 30 days and technical device records inactive for over 90 days. Cleanup is triggered by reports or summary queries, at most once every six hours after a successful cleanup; it is not a guaranteed deadline during inactivity or failure. This inventory does not establish a complete automatic deletion schedule for accounts, device registrations, plans, volumes, API/audit/VPN logs, push tokens or support tickets. Backup and third-party retention periods are not confirmed. The operator must set and publish these periods and justified exceptions before submission."
+      },
+      {
+        "title": "Your requests and contact",
+        "text": "The public form lets you request information, access, correction or deletion of data associated with your use of SXB VPN without an installed app or account login. It collects a reply email, request type, message and optional non-secret device identifier. The ticket and creation date are stored in support with access limited to authorized staff. Messages sent through in-app support are also received with the associated account and display name. IP addresses may appear in HTTP logs and are used temporarily for abuse rate limiting. A temporary security cookie protects the form; these pages add no advertising tools or third-party scripts. The operator verifies your identity and scope before deletion. A receipt does not mean your data has already been deleted."
+      },
+      {
+        "title": "Choices, limitations and updates",
+        "text": "Android permissions let you accept or refuse establishing a VPN and manage notifications. Any diagnostic and notification choices offered by your app version must match actual processing, including in the background. Refusing a permission or withdrawing agreement does not retroactively erase data. Local storage encryption does not prove that every importable profile encrypts all traffic: the published version's configuration and transports require verification. This information must be updated when the service changes."
+      }
+    ],
+    "deletionIntro": "Request deletion of data and, where applicable, the individual account associated with your use of SXB VPN here. The app does not need to be installed. Do not include passwords, VPN access codes, private keys, configurations or identity documents.",
+    "deletionScope": "After verifying identity and scope, support must process client/device data: registrations, activations, access and plans, push tokens, volumes, diagnostics, tickets and identifiable logs. A shared reseller account must never be deleted to erase one client's data. Any legally necessary retention must be explained with its reason and duration. Processing and backup periods still require confirmation; no unapproved deadline is promised here.",
+    "manual": "This form records a request for manual handling. It does not automatically delete, deactivate or verify any account. Support must contact you through an operational reply channel and verify your identity before acting; knowing a device identifier is not proof of identity.",
+    "kind": "Request",
+    "deleteOption": "Delete my data / individual account",
+    "privacyOption": "Question, access or correction of my data",
+    "email": "Email where support can reply",
+    "device": "SXB device identifier (optional, never an access code)",
+    "message": "Your request (10 to 2,000 characters, no secrets)",
+    "acknowledge": "I ask support to process this message and contact me for verification. I understand that sending this form does not perform immediate deletion.",
+    "submit": "Send to support",
+    "sent": "Your request has been recorded for manual review. This message confirms neither the existence of an account nor deletion. Support uses the address you provided for follow-up.",
+    "invalid": "Invalid form. Check lengths, email and the absence of codes or configurations. Reload the form and retry; rejected input is not retained.",
+    "csrfError": "Form protection expired or the origin is invalid. Reload this page, allow its security cookie and retry after a few seconds.",
+    "rateError": "Too many requests. Please wait before retrying; the delay is supplied in the Retry-After header.",
+    "unavailable": "Request intake is temporarily unavailable. Receipt is not confirmed. Retry later or use the displayed public contact if one has been provided.",
+    "back": "Back to the form",
+    "privacyLink": "Read the privacy information"
+  }
+}
