@@ -1,12 +1,30 @@
 name: Build Google Play AAB - artifact only
 
 on:
+  workflow_call:
+    inputs:
+      previous_play_version_code:
+        required: true
+        type: string
+      play_history_verified:
+        required: false
+        default: false
+        type: boolean
+      version_code:
+        required: false
+        default: ""
+        type: string
   workflow_dispatch:
     inputs:
       previous_play_version_code:
-        description: "Highest versionCode ever uploaded to Play (0 only if none; operator declaration)"
+        description: "Known highest Play versionCode; 0 may be used as an unverified floor for a build-only candidate."
         required: true
         type: string
+      play_history_verified:
+        description: "The authorized Console owner has checked the prior Play version history."
+        required: true
+        default: false
+        type: boolean
       version_code:
         description: "Optional explicit versionCode; default shared UTC clock. Must exceed prior versions, not future."
         required: false
@@ -37,6 +55,7 @@ jobs:
       EXPO_NO_TELEMETRY: "1"
       NODE_ENV: production
       SXB_PREVIOUS_PLAY_VERSION_CODE: ${{ inputs.previous_play_version_code }}
+      SXB_PLAY_HISTORY_VERIFIED: ${{ inputs.play_history_verified }}
       SXB_REQUESTED_VERSION_CODE: ${{ inputs.version_code }}
       SXB_LIBBOX_TARGETS: android/arm,android/arm64
       # Public Firebase identifiers only, identical to the direct build.

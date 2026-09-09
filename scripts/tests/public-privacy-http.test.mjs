@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
 
@@ -12,6 +13,18 @@ const express = require("express");
 const jwt = require("jsonwebtoken");
 const secret = "isolated-public-privacy-fixture-secret-not-production";
 const origin = "https://vpnsxb.afrihall.com";
+
+test("public privacy routing precedes body parsing and maintenance on the production entrypoint", () => {
+  const entry = readFileSync(path.join(root, "server.ts"), "utf8");
+  const mounted = entry.indexOf('app.use("/api/public", publicPrivacyRouter)');
+  assert.ok(mounted >= 0, "Canonical public API routes must be mounted");
+  assert.ok(mounted < entry.indexOf("app.use(express.json())"));
+  assert.ok(mounted < entry.indexOf('app.use("/api/", maintenanceGuard)'));
+  const workflow = readFileSync(path.join(root, ".github", "workflows", "deploy-vps.yml"), "utf8");
+  assert.ok(workflow.indexOf("node scripts/verify-public-privacy.cjs") > 0);
+  assert.ok(workflow.indexOf("node scripts/verify-public-privacy.cjs") <
+    workflow.indexOf("mv .sxb-release/server.cjs dist/server.cjs"));
+});
 const publicBase = "/api/public";
 
 async function fixture(t, settings = {}, { rootAlias = false } = {}) {

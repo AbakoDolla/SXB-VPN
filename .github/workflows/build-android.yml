@@ -7,6 +7,26 @@ on:
       - "app-mobile/**"
       - ".github/workflows/build-android.yml"
   workflow_dispatch:
+    inputs:
+      distribution:
+        description: "direct publishes the existing APK; play builds an AAB candidate only"
+        type: choice
+        options:
+          - direct
+          - play
+        default: direct
+      previous_play_version_code:
+        description: "Known Play version floor; 0 is unverified unless history is confirmed"
+        type: string
+        default: "0"
+      play_history_verified:
+        description: "The Console owner has verified the prior Play version history"
+        type: boolean
+        default: false
+      version_code:
+        description: "Optional version override, bounded by the shared UTC allocator"
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -16,11 +36,25 @@ permissions:
 # l'ait déposée sur le VPS. Un build à la fois, et jamais d'annulation en
 # cours de route — le transfert `scp` de l'APK ne doit pas être interrompu.
 concurrency:
-  group: publication-apk
+  # The reusable Play workflow owns publication-apk. Holding the same lock in
+  # its caller would make it wait for itself instead of building the candidate.
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.distribution == 'play' && format('play-dispatch-{0}', github.run_id) || 'publication-apk' }}
   cancel-in-progress: false
 
 jobs:
+  build-play-candidate:
+    if: github.event_name == 'workflow_dispatch' && inputs.distribution == 'play'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build-google-play.yml
+    with:
+      previous_play_version_code: ${{ inputs.previous_play_version_code }}
+      play_history_verified: ${{ inputs.play_history_verified }}
+      version_code: ${{ inputs.version_code }}
+    secrets: inherit
+
   build-android:
+    if: github.event_name != 'workflow_dispatch' || inputs.distribution != 'play'
     name: Build Android APK
     runs-on: ubuntu-latest
     env:

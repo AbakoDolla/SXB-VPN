@@ -8,7 +8,9 @@ Commit: ${report.commit}
 AAB SHA-256: ${report.aabSha256}
 Upload certificate SHA-256: ${report.uploadCertificateSha256}
 Current direct APK versionCode: ${report.directApkVersionCode}
-Operator-declared highest prior Play versionCode: ${report.operatorDeclaredPreviousPlayVersionCode}
+Prior Play version floor used for this build: ${report.priorPlayVersionCodeFloor}
+Play version history verified by the Console owner: ${report.playHistoryVerified === true ? 'yes' : 'NO - confirm before uploading; this candidate may need rebuilding'}
+Operator-declared highest prior Play versionCode: ${report.operatorDeclaredPreviousPlayVersionCode ?? 'unknown'}
 
 The artifact contains the signed AAB, final merged manifest, exhaustive permission
 inventory, signature verification, and ELF LOAD alignment for every native library.

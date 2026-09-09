@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import vm from 'node:vm';
 import { describe, it } from 'node:test';
-import { assertReleaseCertificate } from '../../app-mobile/scripts/validate-play-bundle.mjs';
+import { assertReleaseCertificate, playVersionHistory } from '../../app-mobile/scripts/validate-play-bundle.mjs';
 
 const require = createRequire(import.meta.url);
 const appRoot = new URL('../../app-mobile/', import.meta.url);
@@ -50,6 +50,15 @@ function manifestPlugin(distribution, manifest) {
 }
 
 describe('Play channel and shared version configuration', () => {
+  it('keeps unverified version history separate from an operator declaration', () => {
+    assert.deepEqual(playVersionHistory(0), {
+      priorPlayVersionCodeFloor: 0,
+      playHistoryVerified: false,
+      operatorDeclaredPreviousPlayVersionCode: null,
+    });
+    assert.equal(playVersionHistory(420, true).operatorDeclaredPreviousPlayVersionCode, 420);
+    assert.equal(playVersionHistory(420, 'true').playHistoryVerified, false);
+  });
   it('keeps the same identity and direct defaults without a fictitious EAS project', () => {
     withEnv({}, () => {
       const config = configure({ config: structuredClone(base) });
@@ -166,12 +175,13 @@ describe('Play channel and shared version configuration', () => {
   it('keeps workflow publication and signing boundaries explicit', () => {
     const play = readFileSync(new URL('../../.github/workflows/build-google-play.yml', import.meta.url), 'utf8');
     const direct = readFileSync(new URL('../../.github/workflows/build-android.yml', import.meta.url), 'utf8');
-    assert.match(play, /on:\s*\n  workflow_dispatch:/);
-    assert.doesNotMatch(play, /^\s+(push|pull_request|schedule|workflow_call):/m);
+    assert.match(play, /^  workflow_dispatch:/m);
+    assert.match(play, /^  workflow_call:/m);
+    assert.doesNotMatch(play, /^\s+(push|pull_request|schedule):/m);
     assert.match(play, /contents: read/);
     assert.doesNotMatch(play, /contents: write|play-publisher|supply|upload-google-play|scp-action|ssh-action|gh release (create|delete)|apksigner sign/);
     for (const workflow of [play, direct]) {
-      assert.match(workflow, /group: publication-apk/);
+      assert.match(workflow, /group:.*publication-apk/);
       assert.ok(workflow.indexOf('node scripts/android-version.cjs') < workflow.indexOf('npx'));
     }
     assert.match(play, /sha256sum --check --strict/);
@@ -184,5 +194,9 @@ describe('Play channel and shared version configuration', () => {
     assert.doesNotMatch(play, /KEYSTORE_PASSWORD=.*GITHUB_ENV|KEY_PASSWORD=.*GITHUB_ENV/);
     assert.match(direct, /EXPO_PUBLIC_DISTRIBUTION: direct/);
     assert.match(direct, /Vérifier le versionCode commun Expo et Android/);
+    assert.match(direct, /build-play-candidate:[\s\S]*uses: \.\/\.github\/workflows\/build-google-play\.yml/);
+    assert.match(direct, /build-android:\s+if: github\.event_name != 'workflow_dispatch' \|\| inputs\.distribution != 'play'/);
+    assert.match(direct, /format\('play-dispatch-\{0\}', github\.run_id\)/);
+    assert.match(play, /SXB_PLAY_HISTORY_VERIFIED: \$\{\{ inputs\.play_history_verified \}\}/);
   });
 });

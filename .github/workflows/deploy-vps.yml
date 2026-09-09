@@ -268,6 +268,14 @@ jobs:
               --sourcemap \
               --outfile=.sxb-release/server.cjs
 
+            # Fail before replacing the running version if an operator marks
+            # the privacy policy reviewed but its required information is absent.
+            $ESBUILD server/services/public-privacy.ts \
+              --bundle --platform=node --format=cjs --packages=external \
+              --outfile=.sxb-release/public-privacy-settings.cjs
+            NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
+              node scripts/verify-public-privacy.cjs
+
             # ── Sauvegarde AVANT toute migration ──────────────────────────────
             #
             # `db push --accept-data-loss` autorise Prisma à supprimer colonnes et

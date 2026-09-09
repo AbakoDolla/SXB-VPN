@@ -44,6 +44,7 @@ import appUpdatesRouter from "./server/routes/app-updates";
 import mobileHealthRouter from "./server/routes/mobile-health";
 import { maintenanceGuard, MAINTENANCE_PAGE_HTML } from "./server/middleware/maintenance";
 import { getMaintenanceMode } from "./server/services/maintenance";
+import publicPrivacyRouter from "./server/routes/public-privacy";
 
 async function startServer() {
   const app = express();
@@ -79,6 +80,10 @@ async function startServer() {
     contentSecurityPolicy: false, // disabled for smooth swagger load & iframe preview rendering
   }));
 
+  // Public privacy resources have their own bounded form parser and remain
+  // available without an account, including during application maintenance.
+  app.use(publicPrivacyRouter);
+  app.use("/api/public", publicPrivacyRouter);
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
 

@@ -35,6 +35,14 @@ export function assertReleaseCertificate(certificate) {
     'Debug signing certificate is forbidden; human signing review required, do not replace the key automatically');
 }
 
+export function playVersionHistory(previousPlayVersionCode, verified = false) {
+  return {
+    priorPlayVersionCodeFloor: previousPlayVersionCode,
+    playHistoryVerified: verified === true,
+    operatorDeclaredPreviousPlayVersionCode: verified === true ? previousPlayVersionCode : null,
+  };
+}
+
 export function validateManifest(manifest, versionCode, versionName) {
   assert.equal(manifest.$?.package, PACKAGE, 'Application identity changed');
   assert.equal(manifest.$['android:versionCode'], String(versionCode), 'Incorrect versionCode');
@@ -102,6 +110,7 @@ export async function validateBundle({ bundle, bundletool, output, versionCode, 
   const { parseVersionCode } = require('./android-version.cjs');
   const directVersionCode = parseVersionCode(process.env.SXB_PUBLISHED_VERSION_CODE);
   const previousPlayVersionCode = parseVersionCode(process.env.SXB_PREVIOUS_PLAY_VERSION_CODE, true);
+  const playHistoryVerified = process.env.SXB_PLAY_HISTORY_VERIFIED === 'true';
   assert.ok(parseVersionCode(versionCode) > Math.max(directVersionCode, previousPlayVersionCode),
     'AAB versionCode must exceed both the direct APK and prior Play versions');
   const names = archiveEntries(bundle);
@@ -143,7 +152,7 @@ export async function validateBundle({ bundle, bundletool, output, versionCode, 
     ...manifest,
     uploadCertificateSha256: fingerprint,
     directApkVersionCode: directVersionCode,
-    operatorDeclaredPreviousPlayVersionCode: previousPlayVersionCode,
+    ...playVersionHistory(previousPlayVersionCode, playHistoryVerified),
     aabSha256: createHash('sha256').update(readFileSync(bundle)).digest('hex'),
     nativeLibraries,
     playAppSigning: 'Console owner must enroll the existing direct APK signing key as the Play app signing key; an upload signature alone does not guarantee device update compatibility.',

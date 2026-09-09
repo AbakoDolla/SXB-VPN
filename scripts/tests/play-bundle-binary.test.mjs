@@ -224,6 +224,13 @@ describe('Workflow syntax and release gates', () => {
       const workflow = document.toJS();
       assert.ok(workflow.on.workflow_dispatch !== undefined || 'workflow_dispatch' in workflow.on);
       for (const job of Object.values(workflow.jobs)) {
+        if (job.uses) {
+          assert.equal(job.uses, './.github/workflows/build-google-play.yml');
+          assert.equal(job.permissions.contents, 'read');
+          assert.match(job.if, /inputs\.distribution == 'play'/);
+          assert.equal(job.steps, undefined);
+          continue;
+        }
         for (const step of job.steps) {
           if (!step.run) continue;
           execFileSync('bash', ['-n'], {

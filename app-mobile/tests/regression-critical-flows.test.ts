@@ -1523,10 +1523,13 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(build, /tag_name: apk-\$\{\{ steps\.relno\.outputs\.n \}\}/);
     assert.doesNotMatch(build, /tag_name: apk-\$\{\{ github\.run_number \}\}/);
 
-    // …mais le versionCode reste github.run_number, strictement croissant :
-    // Android refuse d'installer un APK dont le versionCode n'augmente pas,
-    // donc le renuméroter bloquerait toute mise à jour des appareils installés.
-    assert.match(build, /SXB_VERSION_CODE: \$\{\{ github\.run_number \}\}/);
+    // Les deux canaux utilisent désormais la même horloge UTC, jamais deux
+    // compteurs de workflow indépendants susceptibles de rétrograder l'app.
+    assert.match(build, /node scripts\/android-version\.cjs/);
+    assert.match(build, /SXB_ANDROID_VERSION_CODE=\$VERSION_CODE/);
+    const allocator = source('scripts/android-version.cjs');
+    assert.match(allocator, /code <= floor/);
+    assert.match(allocator, /code > clock/);
   });
 
   it('ne montre au revendeur que sa propre activité, jamais celle de la plateforme', () => {
@@ -1785,13 +1788,22 @@ describe('garde-fous contre les régressions Android', () => {
       const flux = source(fichier);
       const bloc = flux.indexOf('concurrency:');
       assert.ok(bloc > 0, `${fichier} doit déclarer un groupe de concurrence`);
-      assert.match(flux.slice(bloc, bloc + 200), new RegExp(`group:\\s*${groupe}`), `groupe attendu : ${groupe}`);
+      const concurrence = flux.slice(bloc, flux.indexOf('\njobs:', bloc));
+      assert.match(concurrence, new RegExp(`group:.*${groupe}`), `groupe attendu : ${groupe}`);
+      if (groupe === 'publication-apk') {
+        // L'appelant Play ne doit pas tenir le verrou qu'attend son workflow
+        // réutilisable. Seul ce dernier partage le verrou APK de production.
+        const play = source('../.github/workflows/build-google-play.yml');
+        assert.match(play, /group: publication-apk/);
+        assert.match(concurrence, /inputs\.distribution == 'play'/);
+        assert.match(play, /cancel-in-progress: false/);
+      }
 
       // Annuler en cours de route est pire que d'attendre : l'interruption
       // peut tomber entre la migration et le redémarrage, ou pendant le
       // transfert de l'APK vers le VPS.
       assert.match(
-        flux.slice(bloc, bloc + 200),
+        concurrence,
         /cancel-in-progress:\s*false/,
         `${fichier} ne doit pas annuler un déploiement ou un transfert en cours`,
       );
