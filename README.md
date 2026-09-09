@@ -77,6 +77,40 @@ Points notables du moteur :
 - **Compteur de session** — détenu par le service natif, il survit à la mise en
   arrière-plan de l'application.
 
+### Activation de l'appareil et droits des configurations
+
+L'activation de l'application et les droits de chaque configuration sont deux
+niveaux distincts. Une erreur sur un forfait ne justifie pas de supprimer la
+session de l'appareil, ses autres profils ou son identité persistante.
+
+| Action du dashboard | Effet attendu dans le mobile |
+| --- | --- |
+| Révoquer ou supprimer une configuration attribuée | Retirer uniquement le fichier concerné, avec un message ciblé. Arrêter le VPN s'il utilise ce fichier ; conserver l'activation et les autres fichiers. |
+| Suspendre une configuration | Conserver le fichier mais bloquer son utilisation temporairement. Ne pas suspendre l'appareil ou un autre tunnel. |
+| Prolonger un forfait ou ajouter du quota | Actualiser ses métadonnées sans effacer la consommation, la session ou le code d'activation de l'appareil. |
+| Suspendre ou désactiver un appareil | Arrêter son VPN dès réception du changement et afficher le blocage correspondant, sans effacer les configurations ni exiger une nouvelle activation d'un appareil déjà lié. |
+| Reprendre un appareil | Lever le blocage si sa durée d'accès reste valide, sans modifier le code ou l'échéance. Ne pas reconnecter automatiquement un VPN. |
+| Renouveler un appareil | Prolonger sa propre échéance, générer un nouveau code `SXB-USER` visible dans le dashboard et conserver sa liaison et ses sessions existantes. Ne pas modifier les forfaits associés. |
+
+Les configurations locales indépendantes ne sont pas des fichiers orphelins du
+dashboard. Seule une réponse distante complète et authentifiée permet de
+réconcilier les configurations gérées par le serveur. Un échec réseau, une
+limitation `429` ou un `403`/`404` sans motif de session explicite ne constitue
+pas une preuve de révocation de l'application.
+
+Les changements sont suivis par une attente HTTP bornée sur
+`/api/mobile/access-state`, avec une révision du contenu et une reprise après
+interruption. Pendant un VPN Android actif, un observateur natif maintient ce
+suivi même si le JavaScript est en arrière-plan. Son ticket est lié à l'appareil,
+limité à la lecture des droits et ne permet ni provisionnement ni accès au
+dashboard. Ce contrôle nécessaire au VPN ne dépend pas du consentement aux
+notifications FCM ; le consentement VPN Play reste requis.
+
+**Limite réseau :** aucun serveur ne peut transmettre une nouvelle révocation
+à un appareil entièrement hors ligne. Un blocage déjà reçu est conservé et
+la reconnexion au serveur réconcilie les droits. La déconnexion est déclenchée
+à réception du changement, pas à partir d'une promesse de délai hors ligne.
+
 ---
 
 ## Tableau de bord et rôles
@@ -194,6 +228,13 @@ la mise à jour sur les appareils déjà équipés. Les canaux direct et Google 
 utilisent la même horloge UTC de versionnement et le même groupe de construction
 sérialisée. Le code exact figure dans les rapports de release ; ne pas utiliser
 le numéro `apk-*` à sa place dans le dashboard.
+
+Un lancement manuel de `build-android.yml` avec `distribution=direct` sur une
+branche autre que `main` produit seulement l'APK signée et ses rapports :
+il ne crée pas de release publique, ne remplace pas l'APK du VPS et ne purge
+pas les anciennes publications. Le candidat conserve le certificat de l'APK
+publique actuelle. Les mentions d'auteur visibles `AbakoDollar$` ne changent
+ni cette clé cryptographique ni l'identifiant Android.
 
 ### Préparation Google Play
 
