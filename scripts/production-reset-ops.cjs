@@ -69,7 +69,7 @@ async function runOperation({
     }
     return data;
   }
-  const session = await json('/auth/login', 'POST', { email: email.trim(), password });
+  const session = await json('/auth/login', 'POST', { email: email.trim().toLowerCase(), password });
   assert.equal(session.user?.role, 'OWNER', 'RESET_OWNER_REQUIRED');
   assert.ok(typeof session.accessToken === 'string' && session.accessToken.length > 20, 'RESET_SESSION_MISSING');
   const preview = await json('/ops/reset/preview', 'GET', undefined, session.accessToken);
@@ -116,8 +116,9 @@ if (require.main === module) {
     password: process.env.OWNER_PASSWORD,
     base: process.env.SXB_RESET_API_BASE || 'https://vpnsxb.afrihall.com/api',
   }).then(result => console.log(JSON.stringify(result, null, 2))).catch(error => {
-    const code = typeof error.message === 'string' && /^RESET_[A-Z_0-9:]+$/.test(error.message)
-      ? error.message : 'RESET_OPERATION_FAILED';
+    const code = typeof error.message === 'string'
+      ? error.message.match(/^RESET_[A-Z_0-9:]+(?=\n|$)/)?.[0] || 'RESET_OPERATION_FAILED'
+      : 'RESET_OPERATION_FAILED';
     console.error(code);
     process.exitCode = 1;
   });
