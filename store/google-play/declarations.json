@@ -1,13 +1,13 @@
 {
   "format": "SXB editorial draft, not a Play Console import format",
   "version": "2026-09-09",
-  "sourceCommit": "5d2fd8adb4542ae012d65f63194df9e64f305d7f",
+  "sourceCommit": "8edd183d76a01bd36bc8c0de60d8e56c886054c6",
   "reviewed": false,
-  "scope": "Active server/ plus current mobile source. Reconcile the final AAB, native SDK dependency graph, consent changes and every active Play track before submission. No production data or credentials inspected.",
+  "scope": "Integrated active server/ and mobile source for the signed candidate recorded in readiness.json. Native compilation and artifact checks do not establish device runtime behavior, operator approval or the state of other active Play tracks. Backend/privacy changes remain undeployed. No production data or credentials inspected for this dossier.",
   "dataSafety": {
     "reviewed": false,
-    "collectsUserData": { "proposed": true, "reviewed": false, "evidence": ["server.ts:89-102", "server/routes/mobile.ts:430-451", "server/routes/mobile.ts:1156-1197"] },
-    "allDataEncryptedInTransit": { "proposed": null, "reviewed": false, "action": "HTTPS API and encrypted local storage do not establish all-transports compliance. Verify device-to-endpoint encryption for all allowed imported/provisioned profiles, DNS, native components and SDKs in the final release; refuse plaintext VPN transports." },
+    "collectsUserData": { "proposed": true, "reviewed": false, "evidence": ["server.ts", "server/routes/mobile.ts:430-451", "server/routes/mobile.ts:1156-1197"] },
+    "allDataEncryptedInTransit": { "proposed": null, "reviewed": false, "action": "Play now checks the final native tunnel graph before libbox startup and rejects plaintext or ambiguous paths. Native JVM and artifact checks do not establish actual device-to-endpoint, DNS, SDK or operator behavior. Verify all permitted profiles and every active Play release before approving this declaration.", "evidence": ["app-mobile/modules/android-native/SxbPlayEncryption.kt", "app-mobile/modules/android-native/SxbVpnService.kt", "app-mobile/tests/PlayEncryptionTest.kt"] },
     "independentSecurityReview": { "proposed": null, "reviewed": false, "action": "No recognized independent review supplied. Do not claim one from source tests or this dossier." },
     "deletionMechanism": { "proposed": "Public manual request form", "reviewed": false, "url": "https://vpnsxb.afrihall.com/api/public/data-deletion", "action": "Confirm live integration, staff intake, verified identity procedure, actual associated-data deletion, processors and retention. A 202 receipt alone is not deletion." },
     "accountCreation": { "proposed": null, "reviewed": false, "action": "Code activation and staff-created technical users do not alone determine Google's user-facing account definition. Inspect the final app and any directed external enrolment; do not claim an exemption from account deletion without review.", "evidence": ["app-mobile/contexts/AuthContext.tsx", "server/routes/devices.ts:241-271", "server/routes/auth.ts:57-73"] },
@@ -16,12 +16,12 @@
         "id": "identifiers",
         "playTypes": ["Personal info / User IDs", "Device or other IDs"],
         "collected": true,
-        "requiredOrOptional": "Required for activation, entitlement and quota. FCM-related identifiers may be optional only if SDK initialization and sending are gated in every active release.",
+        "requiredOrOptional": "Account/device identifiers are required for activation, entitlement and quota after VPN consent. The Play candidate gates Firebase initialization and token registration behind a separate notifications opt-in. Confirm runtime behavior and every active Play release before declaring FCM identifiers optional.",
         "purposes": ["App functionality", "Account management", "Fraud prevention, security, and compliance"],
         "sharing": null,
         "ephemeral": false,
         "retention": "No complete fixed schedule established for account/device/activation rows. Push token replacement and explicit unregister exist; no general push TTL established.",
-        "evidence": ["server/routes/mobile.ts:318-451", "server/routes/mobile.ts:507-604", "prisma/schema.prisma:493-552", "app-mobile/services/pushNotifications.ts:29-66"],
+        "evidence": ["server/routes/mobile.ts:318-451", "server/routes/mobile.ts:507-604", "prisma/schema.prisma:493-552", "app-mobile/services/pushNotifications.ts", "app-mobile/modules/android-native/SxbPrivacyPolicy.kt"],
         "reviewed": false
       },
       {
@@ -33,7 +33,7 @@
         "sharing": null,
         "ephemeral": false,
         "retention": "Operator must approve API, proxy, audit and VPN log periods, access scope and backups. Audit records may include account codes in legacy activation actions.",
-        "evidence": ["server.ts:89-102", "server/routes/mobile.ts:430-451", "server/routes/mobile.ts:891-902", "server/database.ts:339-397", "prisma/schema.prisma:244-256"],
+        "evidence": ["server.ts", "server/routes/mobile.ts:430-451", "server/routes/mobile.ts:891-902", "server/database.ts:339-397", "prisma/schema.prisma:244-256"],
         "reviewed": false
       },
       {
@@ -52,12 +52,12 @@
         "id": "technical-health",
         "playTypes": ["App info and performance / Diagnostics", "App info and performance / Other app performance data", "Device or other IDs", "App activity / App interactions"],
         "collected": true,
-        "requiredOrOptional": "Optional only after final consent gating is integrated and verified. Current source sends health reports; a server pseudonym does not make collection anonymous.",
+        "requiredOrOptional": "The Play candidate gates health reporting behind an independent diagnostics opt-in. Confirm actual device behavior and other active releases before approving optional collection. A server pseudonym does not make collection anonymous.",
         "purposes": ["Analytics", "App functionality"],
         "sharing": null,
         "ephemeral": false,
         "retention": "Reports older than 30 days; device snapshots inactive over 90 days; opportunistic cleanup on report/summary at most once per six hours after success, not a guaranteed hard deadline.",
-        "evidence": ["app-mobile/services/mobileHealth.ts:164-225", "server/routes/mobile-health.ts:21-57", "server/services/mobile-health.ts:6-7", "server/services/mobile-health.ts:29-70", "server/services/mobile-health.ts:160-175"],
+        "evidence": ["app-mobile/services/mobileHealth.ts", "app-mobile/services/privacyConsent.ts", "server/routes/mobile-health.ts:21-57", "server/services/mobile-health.ts:6-7", "server/services/mobile-health.ts:29-70", "server/services/mobile-health.ts:160-175"],
         "reviewed": false
       },
       {
@@ -81,7 +81,7 @@
         "sharing": null,
         "ephemeral": null,
         "retention": "VPN/DNS providers and infrastructure retention unconfirmed.",
-        "evidence": ["app-mobile/modules/android-native/SxbVpnService.kt:2873", "app-mobile/modules/android-native/SxbVpnService.kt:2975-2976", "app-mobile/modules/android-native/SxbVpnService.kt:4078"],
+        "evidence": ["app-mobile/modules/android-native/SxbVpnService.kt", "app-mobile/modules/android-native/SxbPlayEncryption.kt"],
         "reviewed": false
       }
     ],
@@ -97,18 +97,18 @@
       "surface": "Historical/staff service records and legacy API, not current mobile collection",
       "actualLegacyRoutes": ["POST /api/app", "GET /api/app/status/:deviceId", "GET /api/app/pending"],
       "currentMobileCallsLegacyRoutes": false,
-      "action": "Current JS does not call /app/register or /app/status. The old registration comment is not the mounted route. Do not declare automatic phone/name/email collection from the mere existence of these endpoints. Preserve this context for historical data retention/deletion, and verify any other active Play artifacts separately. Parent secures these endpoints.",
-      "evidence": ["server.ts:140", "server/routes/app-register.ts:15-101", "app-mobile/contexts/AuthContext.tsx"],
+      "action": "Current JS does not call /app/register or /app/status. The integrated legacy router returns only a generic anonymous receipt; account details require an authenticated session bound to the client and device. This backend change is not yet deployed. Do not infer automatic phone/name/email collection from these unused endpoints. Preserve historical retention/deletion context and verify other active Play artifacts separately.",
+      "evidence": ["server.ts", "server/routes/app-register.ts", "app-mobile/contexts/AuthContext.tsx"],
       "reviewed": false
     },
     "thirdParties": [
       {
         "name": "Google Firebase Cloud Messaging and Firebase Installations",
-        "data": "Push/installation identifiers, Firebase user agent and app metadata, messages used for notifications. Check the exact Firebase SDK graph and actual automatic initialization.",
+        "data": "Push/installation identifiers, Firebase user agent and app metadata, messages used for notifications. The Play candidate removes initialization providers and disables FCM entry components until notifications consent; the direct channel retains its existing behavior. Verify runtime initialization and every active Play artifact.",
         "sharingClassification": null,
         "action": "Google's service-provider exception may apply only when processing solely on the operator's behalf; confirm contracts, settings and subprocessors before selecting not shared. Notification permission alone does not prove no SDK collection.",
         "sources": ["https://firebase.google.com/docs/android/play-data-disclosure#cloud-messaging", "https://firebase.google.com/support/privacy"],
-        "evidence": ["server/services/fcm.ts:163-187", "app-mobile/modules/android-native/SxbPushNotifications.kt:19-41", "app-mobile/modules/android-native/SxbFirebaseInitProvider.kt:8-10", "app-mobile/services/pushNotifications.ts:29-66"],
+        "evidence": ["server/services/fcm.ts:163-187", "app-mobile/modules/android-native/SxbPushNotifications.kt", "app-mobile/modules/android-native/SxbPrivacyPolicy.kt", "app-mobile/plugins/withSxbVpn.js", "app-mobile/services/pushNotifications.ts"],
         "reviewed": false
       },
       {
@@ -117,7 +117,7 @@
         "sharingClassification": null,
         "action": "Identify actual operators, routing, purposes, retention and countries. Service-provider or user-initiated transfer exceptions cannot be assumed.",
         "sources": ["https://developers.cloudflare.com/1.1.1.1/privacy/public-dns-resolver/"],
-        "evidence": ["app-mobile/modules/android-native/SxbVpnService.kt:2873", "app-mobile/modules/android-native/SxbVpnService.kt:2975-2976", "app-mobile/modules/android-native/SxbVpnService.kt:4078"],
+        "evidence": ["app-mobile/modules/android-native/SxbVpnService.kt", "app-mobile/modules/android-native/SxbPlayEncryption.kt"],
         "reviewed": false
       },
       {
@@ -151,7 +151,7 @@
     "videoDisclosureUrl": null,
     "maxVideoSeconds": 90,
     "action": "Show actual app launch, complete disclosure, refusal and re-entry, affirmative consent, Android VPN permission, real connection and disconnect. Declare data accessed through VPN separately from general API/support flows. No simulated connection or fabricated video.",
-    "evidence": ["app-mobile/modules/android-native/SxbVpnService.kt:1048-1076", "app-mobile/modules/android-native/SxbVpnService.kt:4422", "app-mobile/plugins/withSxbVpn.js:80-105"],
+    "evidence": ["app-mobile/components/PrivacyDisclosure.tsx", "app-mobile/contexts/PrivacyContext.tsx", "app-mobile/modules/android-native/SxbPrivacyPolicy.kt", "app-mobile/modules/android-native/SxbPlayEncryption.kt", "app-mobile/modules/android-native/SxbVpnService.kt", "app-mobile/plugins/withSxbVpn.js"],
     "reviewed": false
   },
   "foregroundService": {
@@ -162,7 +162,7 @@
     "impactIfInterrupted": "The tunnel stops and active connections may fail. No always-on or leak-proof guarantee is claimed; actual interruption behavior must be demonstrated.",
     "videoUrl": null,
     "action": "Verify the final merged manifest, special-use subtype property, start/stop behavior and Play's current use-case selection. Do not assume source comments prove that specialUse is approved.",
-    "evidence": ["app-mobile/plugins/withSxbVpn.js:35-46", "app-mobile/plugins/withSxbVpn.js:80-105", "app-mobile/modules/android-native/SxbVpnService.kt:1048-1076", "app-mobile/modules/android-native/SxbVpnService.kt:4422"],
+    "evidence": ["app-mobile/plugins/withSxbVpn.js", "app-mobile/modules/android-native/SxbVpnService.kt", "app-mobile/scripts/validate-play-bundle.mjs"],
     "reviewed": false
   },
   "appAccess": {

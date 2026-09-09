@@ -1,6 +1,23 @@
 # SXB VPN - dossier Google Play
 
-**Brouillon de publication, non autorisé à la soumission.** Préparé le 9 septembre 2026 depuis `5d2fd8adb4542ae012d65f63194df9e64f305d7f`. Les changements mobiles de consentement, de transport et du build doivent être rapprochés du binaire final ; ce dossier ne les certifie pas. Aucun compte, paiement, acceptation juridique, dépôt Play, push, déploiement ni PR n'est effectué par ce dossier.
+**Brouillon de publication, non autorisé à la soumission.** Mis à jour le 9 septembre 2026 pour le candidat signé issu de `8edd183d76a01bd36bc8c0de60d8e56c886054c6`. Les changements mobiles de consentement, de transport et du build sont intégrés ; les preuves de compilation ne remplacent pas les démonstrations sur appareil ni les validations de l'exploitant. La branche de préparation est poussée pour construire le candidat, sans intégration à `main`, déploiement, remplacement d'APK publique ou dépôt Play. Aucun compte, paiement ni contrat n'est accepté par ce dossier.
+
+## Candidat disponible
+
+[Télécharger le candidat et ses rapports](https://github.com/AbakoDolla/SXB-VPN/actions/runs/34311730339/artifacts/10088792259) depuis le [run de construction](https://github.com/AbakoDolla/SXB-VPN/actions/runs/34311730339). L'archive Actions expire après 30 jours : conserver l'AAB et les rapports avant expiration.
+
+| Élément | Valeur |
+|---|---|
+| Fichier | `sxb-vpn-play.aab` dans `sxb-vpn-google-play-211091973` |
+| Identité | `com.sxbvpn.mobile`, version `1.2.1`, versionCode `211091973` |
+| API | cible 36, minimum 24 |
+| SHA-256 AAB | `b0fd3d1ef3b49cd554dacefd9117c711db029ad0a86b5ae28217ab989dcbbf4b` |
+| Empreinte du certificat d'upload | `0140c97e6ba6e9bab0d0ce86935562fbdedd80a026de49642764c49dce56f726` |
+| Rapports | `report/validation.json`, manifeste fusionné, signature, bibliothèques natives et `RELEASE-HANDOFF.txt` |
+
+La compilation Android signée et le vrai harness Kotlin JVM ont abouti. Le contrôle final et la relecture du fichier téléchargé portent sur les 38 bibliothèques natives, dont 19 arm64 avec alignement ELF d'au moins 16 Ko, et les 13 permissions fusionnées. La permission d'installation APK externe est absente ; le canal direct n'a pas été distribué par ce run.
+
+**Ce candidat n'est ni approuvé par Google ni essayé sur un appareil réel.** L'historique Play reste inconnu, et le plancher `0` utilisé pour construire ne déclare pas une première publication. Le code de l'APK directe de référence était `339`. Confirmer les versions réellement distribuées et la clé Play App Signing avant tout upload, puis reconstruire si nécessaire. Le champ `candidate` de `readiness.json` conserve ces faits techniques sans valider les drapeaux humains. Les routes de confidentialité et les corrections backend de cette branche ne sont pas encore déployées.
 
 ## Fichiers à remettre à l'exploitant
 
@@ -34,7 +51,7 @@ Les chemins de consentement du binaire final doivent être démontrés : informa
 
 L'API collecte IP, identifiants, volumes et sessions. Les diagnostics pseudonymisés sont une collecte ; les configurations exclusivement locales ne le sont pas par ce seul stockage. Les résolveurs DNS (notamment Cloudflare selon le chemin), les endpoints VPN, l'hébergeur et Google FCM doivent être inventoriés. Une exemption de « partage » Data safety pour un prestataire n'autorise pas à prétendre « aucun tiers ». Le schéma technique health n'accepte pas de logs bruts, mais des journaux d'audit historiques peuvent contenir des codes de compte.
 
-Le parent corrige l'ancienne route d'enregistrement publique exposant des détails par téléphone/appareil. Le chemin réellement monté est `POST /api/app` (pas le `/api/app/register` de l'ancien commentaire). L'app JS actuelle n'appelle ni `/app/register` ni `/app/status` : **ne pas présenter cette API inutilisée comme une collecte mobile automatique**. Les dossiers historiques restent pertinents pour la conservation/suppression du service, mais ne justifient pas à eux seuls de déclarer téléphone/nom/e-mail collectés par l'app. Le formulaire public collecte séparément un e-mail de réponse sur action de l'utilisateur ; son éventuelle inclusion Data safety dépend du parcours web réellement proposé. Les références de `declarations.json` décrivent le commit source ci-dessus : après intégration, mettre à jour les preuves et ne pas attribuer l'ancien comportement corrigé à la nouvelle version. Ne jamais utiliser un téléphone ou identifiant publiquement fourni comme preuve d'identité.
+L'ancienne route d'enregistrement publique est corrigée dans cette branche : reçu anonyme générique, aucun détail de compte sans session authentifiée liée au client et à l'appareil. Cette correction backend reste à déployer. Le chemin réellement monté est `POST /api/app` (pas le `/api/app/register` de l'ancien commentaire). L'app JS actuelle n'appelle ni `/app/register` ni `/app/status` : **ne pas présenter cette API inutilisée comme une collecte mobile automatique**. Les dossiers historiques restent pertinents pour la conservation/suppression du service, mais ne justifient pas à eux seuls de déclarer téléphone/nom/e-mail collectés par l'app. Le formulaire public collecte séparément un e-mail de réponse sur action de l'utilisateur ; son éventuelle inclusion Data safety dépend du parcours web réellement proposé. Les références de `declarations.json` décrivent le commit du candidat ci-dessus, et non l'état actuel de la production. Ne jamais utiliser un téléphone ou identifiant publiquement fourni comme preuve d'identité.
 
 ## Accès de l'examinateur
 
