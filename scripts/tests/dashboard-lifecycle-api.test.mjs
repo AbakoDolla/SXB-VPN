@@ -115,7 +115,7 @@ test("all typed lifecycle failures retain codes, preserve dashboard credentials 
 test("device status and expiry never derive from a plan's exhausted data or earlier deadline", () => {
   const { api } = fixture();
   const now = Date.parse("2026-09-09T06:00:00Z");
-  const record = { status: "active", expireAt: "2028-01-01T00:00:00Z", subscriptionExpireAt: "2020-01-01T00:00:00Z", quotaBytes: "0", quotaUsed: "0" };
+  const record = { status: "active", expireAt: "2028-01-01T00:00:00Z", subscriptionExpireAt: "2020-01-01T00:00:00Z", quotaBytes: "1", quotaUsed: "1" };
   assert.equal(api.deviceStatus(record, now), "active");
   assert.equal(api.subscriptionStatus(record, now), "exhausted");
   for (const status of ["suspended", "disabled", "revoked"]) assert.equal(api.deviceStatus({ ...record, status }, now), status);
@@ -131,18 +131,20 @@ test("device status and expiry never derive from a plan's exhausted data or earl
   assert.equal(api.canResumeDevice({ ...record, status: "revoked" }, now), false);
 });
 
-test("plan exhaustion uses exact BigInt limits, with unlimited distinct from zero and suspension", () => {
+test("plan exhaustion uses exact positive BigInt limits and preserves zero-rated plans and suspension", () => {
   const { api } = fixture();
   const now = Date.parse("2026-09-09T06:00:00Z");
   const plan = { status: "active", expireAt: "2028-01-01T00:00:00Z", quotaBytes: "9007199254740993", quotaUsed: "9007199254740992" };
   assert.equal(api.isPlanExhausted(plan), false);
   assert.equal(api.isPlanExhausted({ ...plan, quotaUsed: plan.quotaBytes }), true);
   assert.equal(api.isPlanExhausted({ ...plan, quotaBytes: "-1" }), false);
-  assert.equal(api.isPlanExhausted({ ...plan, quotaBytes: "0", quotaUsed: "0" }), true);
+  assert.equal(api.isPlanExhausted({ ...plan, quotaBytes: "0", quotaUsed: "0" }), false);
+  assert.equal(api.isPlanExhausted({ ...plan, quotaBytes: "0" }), false);
   assert.equal(api.subscriptionStatus({ ...plan, status: "suspended", quotaBytes: "0" }, now), "suspended");
   assert.equal(api.subscriptionStatus({ ...plan, status: "revoked", quotaBytes: "0" }, now), "revoked");
   assert.equal(api.canResumeSubscription({ ...plan, status: "suspended" }, now), true);
-  assert.equal(api.canResumeSubscription({ ...plan, status: "suspended", quotaBytes: "0" }, now), false);
+  assert.equal(api.canResumeSubscription({ ...plan, status: "suspended", quotaBytes: "0" }, now), true);
+  assert.equal(api.canResumeSubscription({ ...plan, status: "suspended", quotaBytes: "1" }, now), false);
   assert.equal(api.canResumeSubscription({ ...plan, status: "suspended", expireAt: "2020-01-01T00:00:00Z" }, now), false);
   assert.deepEqual(plain(plan), plan);
 });

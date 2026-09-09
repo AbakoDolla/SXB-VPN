@@ -26,7 +26,7 @@ export function canResumeDevice(device: AccessRecord, now = Date.now()): boolean
 export function isPlanExhausted(plan: PlanRecord): boolean {
   const quota = toBigInt(plan.quotaBytes);
   const used = toBigInt(plan.quotaUsed);
-  return quota !== null && used !== null && quota >= BigInt(0) && used >= quota;
+  return quota !== null && used !== null && quota > BigInt(0) && used >= quota;
 }
 
 export function subscriptionStatus(plan: PlanRecord, now = Date.now()): string {

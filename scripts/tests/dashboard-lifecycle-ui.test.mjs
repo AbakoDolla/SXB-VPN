@@ -325,3 +325,17 @@ test("an exhausted or expired plan is labelled as a plan issue and cannot resume
   assert.ok(text(s.render()).includes(s.t("commerce.subscriptions.needsExtension")));
   assert.ok(text(s.render()).includes(s.t("commerce.subscriptions.needsData")));
 });
+
+test("a zero-rated plan is not exhausted and can resume, unlike a reseller with a zero capacity ceiling", async () => {
+  const f = fixture("SubscriptionsView", { data: { subscriptions: [{ ...subscription, status: "suspended", quotaBytes: "0", quotaUsed: "0" }] } });
+  await f.flush();
+  const table = nodes(f.render()).find(node => node.type === "tbody");
+  assert.ok(!text(table).includes(f.t("commerce.subscriptions.exhausted")));
+  assert.ok(!text(table).includes(f.t("commerce.subscriptions.needsData")));
+  assert.equal(f.button("commerce.subscriptions.resumePlan").props.disabled, false);
+  await f.button("commerce.subscriptions.resumePlan").props.onClick();
+  assert.deepEqual(mutations(f), [["updateSubscription", "plan-1", { status: "active" }]]);
+  f.setRole("RESELLER");
+  f.setAccess({ accessState: "active", quotaState: "reached", quotaBytes: "0", quotaAllocatedBytes: "0" });
+  assert.equal(f.button("commerce.subscriptions.extendPlan").props.disabled, true);
+});
