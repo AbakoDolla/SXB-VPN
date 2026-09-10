@@ -109,6 +109,15 @@ encapsulée dans un refus HTTP ne prouve pas que l'APN est défectueux, et un
 compteur TUN indisponible ne prouve pas une absence de trafic. Le blocage
 UDP/443 demandé par le profil reste appliqué ; sing-box peut le signaler par
 `operation not permitted`, sans qu'il s'agisse d'un besoin de permission root.
+
+Lorsqu'une configuration importée déclare plusieurs proxys HTTP interchangeables
+en amont d'un même tunnel, l'application peut les utiliser tous : le proxy actif
+est choisi d'après une mesure de santé, et un refus (`404`, `429`, connexion
+impossible) fait basculer la connexion suivante vers un autre proxy **déclaré
+dans le même fichier**. Aucun serveur, identifiant, en-tête ou paramètre TLS
+n'est inventé ni modifié, l'adresse du tunnel reste transmise sous forme de
+domaine au proxy, et les profils sans chaîne HTTP conservent exactement leur
+comportement précédent.
 Le contrôle CI complète le constructeur natif par des requêtes DNS et des
 transferts sur une chaîne VLESS/WS/TLS/HTTP entièrement locale. Cette preuve
 ne constitue pas une mesure du débit ou de la disponibilité du fournisseur.
