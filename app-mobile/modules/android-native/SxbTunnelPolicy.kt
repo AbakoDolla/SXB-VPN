@@ -142,10 +142,9 @@ object SxbTunnelPolicy {
         return explicit.firstOrNull() ?: if (httpChain) HTTP_CHAIN_MTU else DEFAULT_MTU
     }
 
-    fun reliableDns(dns: JSONObject, graph: OutboundGraph, strategy: String): JSONObject {
+    fun reliableDns(dns: JSONObject, graph: OutboundGraph): JSONObject {
         val result = JSONObject(dns.toString())
         if (!result.has("independent_cache")) result.put("independent_cache", true)
-        if (!result.has("strategy")) result.put("strategy", strategy)
         val servers = result.optJSONArray("servers") ?: return result
         for (i in 0 until servers.length()) {
             val server = servers.optJSONObject(i) ?: continue

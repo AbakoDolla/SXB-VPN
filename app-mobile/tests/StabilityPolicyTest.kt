@@ -84,7 +84,7 @@ fun main() {
         check(SxbTunnelPolicy.tunMtu(JSONObject(), graph, route("select")) == 1400)
         check(graph.chainEndServer("select").isEmpty())
         val mixedDns = dns("198.51.100.53", "select")
-        check(server(SxbTunnelPolicy.reliableDns(mixedDns, graph, "ipv4_only")).getString("address") == "198.51.100.53")
+        check(server(SxbTunnelPolicy.reliableDns(mixedDns, graph)).getString("address") == "198.51.100.53")
         val rules = route("direct").apply {
             getJSONArray("rules").put(JSONObject("""{"type":"logical","mode":"and","rules":[{"domain_suffix":["example.test"],"outbound":"proxy1"}]}"""))
         }
@@ -128,12 +128,13 @@ fun main() {
             val original = dns(address)
             server(original).put("address_resolver", "bootstrap")
             val before = original.toString()
-            val adapted = SxbTunnelPolicy.reliableDns(original, graph, "ipv4_only")
+            val adapted = SxbTunnelPolicy.reliableDns(original, graph)
             check(server(adapted).getString("address") == expected)
             check(server(adapted).getString("detour") == "proxy1")
             check(server(adapted).getString("address_resolver") == "bootstrap")
             check(original.toString() == before)
-            check(SxbTunnelPolicy.reliableDns(adapted, graph, "ipv4_only").similar(adapted))
+            check(SxbTunnelPolicy.reliableDns(adapted, graph).similar(adapted))
+            check(!adapted.has("strategy"))
         }
     }
     checkCase("explicit encrypted DNS, native rules, bootstrap, fakeip and UDP-capable routes are preserved") {
@@ -141,24 +142,27 @@ fun main() {
         for (address in listOf("udp://198.51.100.53:5300", "UDP://198.51.100.53:53",
             "https://resolver.example.test/dns-query", "tls://resolver.example.test:853",
             "tcp://198.51.100.53:5353", "quic://resolver.example.test", "local", "fakeip", "rcode://success", "dhcp://auto")) {
-            val adapted = SxbTunnelPolicy.reliableDns(dns(address), graph, "ipv4_only")
+            val adapted = SxbTunnelPolicy.reliableDns(dns(address), graph)
             check(server(adapted).getString("address") == address)
+            check(!adapted.has("strategy"))
         }
         for (detour in listOf("direct", "http1")) {
-            check(server(SxbTunnelPolicy.reliableDns(dns("udp://198.51.100.53:5353", detour), graph, "ipv4_only"))
+            check(server(SxbTunnelPolicy.reliableDns(dns("udp://198.51.100.53:5353", detour), graph))
                 .getString("address") == "udp://198.51.100.53:5353")
         }
         val plain = SxbTunnelPolicy.OutboundGraph(chain().apply { getJSONObject(1).remove("detour") })
-        check(server(SxbTunnelPolicy.reliableDns(dns("198.51.100.53"), plain, "prefer_ipv4")).getString("address") == "198.51.100.53")
+        val nonChained = SxbTunnelPolicy.reliableDns(dns("198.51.100.53"), plain)
+        check(server(nonChained).getString("address") == "198.51.100.53")
+        check(!nonChained.has("strategy"))
         val native = dns("198.51.100.53").put("independent_cache", false).put("strategy", "ipv6_only")
             .put("rules", JSONArray("""[{"domain_suffix":["example.test"],"server":"remote","disable_cache":true}]"""))
         server(native).put("strategy", "prefer_ipv6")
-        val adapted = SxbTunnelPolicy.reliableDns(native, graph, "ipv4_only")
+        val adapted = SxbTunnelPolicy.reliableDns(native, graph)
         check(!adapted.getBoolean("independent_cache") && adapted.getString("strategy") == "ipv6_only")
         check(server(adapted).getString("strategy") == "prefer_ipv6")
         check(adapted.getJSONArray("rules").similar(native.getJSONArray("rules")))
-        val defaults = SxbTunnelPolicy.reliableDns(dns("198.51.100.53"), graph, "ipv4_only")
-        check(defaults.getBoolean("independent_cache") && defaults.getString("strategy") == "ipv4_only")
+        val defaults = SxbTunnelPolicy.reliableDns(dns("198.51.100.53"), graph)
+        check(defaults.getBoolean("independent_cache") && !defaults.has("strategy"))
     }
     checkCase("bootstrap and HTTPS/SVCB rules are idempotent and preserve distinct native policies") {
         val guarded = dns("198.51.100.53").put("rules", JSONArray("""[

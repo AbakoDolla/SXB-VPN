@@ -3733,7 +3733,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // bloquent toute navigation. Ce repli de fiabilité est limité aux DNS
         // sans schéma sur VLESS/WS + HTTP : TCP vers le MEME résolveur, toujours
         // via la tête VLESS. Les choix explicites udp://, DoH et DoT sont conservés.
-        val reliableDns = SxbTunnelPolicy.reliableDns(sourceDns, graph, dnsStrategy())
+        val reliableDns = SxbTunnelPolicy.reliableDns(sourceDns, graph)
         val sourceServers = sourceDns.optJSONArray("servers") ?: JSONArray()
         val reliableServers = reliableDns.optJSONArray("servers") ?: JSONArray()
         val dnsTcpUpgrades = (0 until sourceServers.length()).count {

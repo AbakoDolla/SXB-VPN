@@ -738,7 +738,7 @@ describe('garde-fous contre les régressions Android', () => {
 
   it('applique la politique de stabilité au builder réel sans élargir les routes', () => {
     assert.match(nativeService, /SxbTunnelPolicy\.tunMtu\(cfg, graph,/);
-    assert.match(nativeService, /SxbTunnelPolicy\.reliableDns\(sourceDns, graph, dnsStrategy\(\)\)/);
+    assert.match(nativeService, /SxbTunnelPolicy\.reliableDns\(sourceDns, graph\)/);
     assert.match(nativeService, /put\("inbounds", JSONArray\(\)\.put\(tunInbound\(mtu\)\)\)/);
     assert.match(nativeService, /tunInbound\(mtu: Int = SxbTunnelPolicy\.DEFAULT_MTU\)/);
     assert.match(tunnelPolicy, /HTTP_CHAIN_MTU = 1400/);

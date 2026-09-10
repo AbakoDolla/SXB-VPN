@@ -28,13 +28,16 @@ async function freePort() {
   await new Promise(resolve => server.close(resolve));
   return port;
 }
-function dnsQuery(name, id) {
+function dnsQuery(name, id, type = 1) {
   const header = Buffer.alloc(12);
   header.writeUInt16BE(id, 0);
   header.writeUInt16BE(0x0100, 2);
   header.writeUInt16BE(1, 4);
   const encoded = name.split('.').flatMap(label => [Buffer.from([label.length]), Buffer.from(label)]);
-  return Buffer.concat([header, ...encoded, Buffer.from([0, 0, 1, 0, 1])]);
+  const question = Buffer.alloc(5);
+  question.writeUInt16BE(type, 1);
+  question.writeUInt16BE(1, 3);
+  return Buffer.concat([header, ...encoded, question]);
 }
 function dnsAnswer(query) {
   assert.equal(query.readUInt16BE(4), 1);
@@ -44,15 +47,18 @@ function dnsAnswer(query) {
     questionEnd += 1 + query[questionEnd];
   }
   questionEnd += 5;
+  const type = query.readUInt16BE(questionEnd - 4);
+  assert.ok(type === 1 || type === 28);
   const header = Buffer.from(query.subarray(0, 12));
   header.writeUInt16BE(0x8180, 2);
   header.writeUInt16BE(1, 6);
   header.writeUInt16BE(0, 8);
   header.writeUInt16BE(0, 10);
-  return Buffer.concat([header, query.subarray(12, questionEnd),
-    Buffer.from([0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 203, 0, 113, 9])]);
+  const address = type === 1 ? Buffer.from([203, 0, 113, 9]) : Buffer.from('20010db8000000000000000000000009', 'hex');
+  const answer = Buffer.from([0xc0, 0x0c, 0, type, 0, 1, 0, 0, 0, 60, 0, address.length]);
+  return Buffer.concat([header, query.subarray(12, questionEnd), answer, address]);
 }
-async function receiveDns(port, name, id) {
+async function receiveDns(port, name, id, type = 1) {
   const socket = dgram.createSocket('udp4');
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => { socket.close(); reject(new Error('Loopback DNS query timed out')); }, 4000);
@@ -62,7 +68,7 @@ async function receiveDns(port, name, id) {
       socket.close();
       resolve(data);
     });
-    socket.send(dnsQuery(name, id), port, '127.0.0.1');
+    socket.send(dnsQuery(name, id, type), port, '127.0.0.1');
   });
 }
 
@@ -79,6 +85,7 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
   const remote = runtime.dns.servers.find(server => server.tag === runtime.dns.final);
   assert.match(remote.address, /^tcp:\/\//, 'The source-derived native builder must select reliable DNS TCP for the HTTP chain');
   assert.equal(remote.detour, main.tag, 'DNS must enter the encrypted VLESS head, never the raw HTTP proxy');
+  assert.equal(runtime.dns.strategy, undefined, 'Changing DNS transport must not suppress imported AAAA queries');
   assert.equal(runtime.inbounds[0].mtu, 1400, 'The chained mobile TUN must not use a jumbo MTU');
   const blockTags = new Set(runtime.outbounds.filter(outbound => outbound.type === 'block').map(outbound => outbound.tag));
   assert.ok(runtime.route.rules.some(rule =>
@@ -238,6 +245,11 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
     assert.equal(response.readUInt16BE(6), 1);
     assert.deepEqual([...response.subarray(-4)], [203, 0, 113, 9]);
   }
+  const ipv6 = await receiveDns(ingressPort, 'ipv6.example.test', 6, 28);
+  assert.equal(ipv6.readUInt16BE(0), 6);
+  assert.equal(ipv6.readUInt16BE(2) & 0x000f, 0);
+  assert.equal(ipv6.readUInt16BE(6), 1);
+  assert.equal(ipv6.subarray(-16).toString('hex'), '20010db8000000000000000000000009');
   for (let index = 0; index < 3; index++) {
     const data = await new Promise((resolve, reject) => {
       const socket = keep(net.connect(dataIngressPort, '127.0.0.1'));
@@ -251,9 +263,9 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
     assert.equal(data.length, payload.length);
     assert.equal(createHash('sha256').update(data).digest('hex'), payloadHash);
   }
-  assert.ok(tcpDnsQueries >= 5);
+  assert.ok(tcpDnsQueries >= 6);
   assert.equal(udpDnsQueries, 0, 'The unreliable upstream UDP DNS path must not be attempted');
   assert.ok(connectRequests >= 1);
   assert.equal(forbiddenConnects, 0, 'The proxy sees only the VLESS endpoint, never a direct DNS destination');
-  console.log(`Loopback-only proof: five DNS responses and three intact 256KiB streams in ${Date.now() - started}ms over VLESS/WS/TLS/HTTP; not a carrier-speed measurement.`);
+  console.log(`Loopback-only proof: six A/AAAA DNS responses and three intact 256KiB streams in ${Date.now() - started}ms over VLESS/WS/TLS/HTTP; not a carrier-speed measurement.`);
 });
