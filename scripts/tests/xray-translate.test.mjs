@@ -241,7 +241,7 @@ test('the CI fixture exercises the actual Kotlin raw-config builder with only ph
   assert.match(harness, /normalizeRawSingBoxCompatibility\(convertXrayToSingBoxIfNeeded\(JSONObject\(rawCfg\.toString\(\)\)\)\)/);
   assert.match(harness, /put\("inbounds", JSONArray\(\)\.put\(tunInbound\(mtu\)\)\)/);
   assert.match(harness, /SxbTunnelPolicy\.tunMtu/);
-  assert.match(harness, /SxbTunnelPolicy\.reliableDns\(sourceDns, graph\)/);
+  assert.match(harness, /SxbTunnelPolicy\.reliableDns\(sourceDns, graph[,)]/);
   assert.match(harness, /val dnsObj = applyDnsLoopGuard\(/);
   assert.match(harness, /put\("outbounds", outbounds\)/);
   assert.match(harness, /routeRules\.put\(r\)/);
