@@ -2438,7 +2438,12 @@ describe('tableau de bord — comptes, revendeurs et habilitations', () => {
     // middleware et dans le menu, sans réinjection silencieuse par rôle.
     const auth = source('../server/middleware/auth.ts');
     assert.doesNotMatch(auth, /RESELLER_REQUIRED_PERMISSIONS|CORE_DATA_PERMISSIONS/);
-    assert.match(layoutTsx, /currentUser\.permissions\.includes\(item\.permission\)/);
+    // Le menu se filtre sur la liste vivante de l'utilisateur. Elle est lue une
+    // fois — le rendu se fait hors de la frontière d'erreur, où une liste
+    // absente ferait disparaître toute l'interface au lieu d'une section.
+    assert.match(layoutTsx, /const granted = Array\.isArray\(currentUser\.permissions\) \? currentUser\.permissions : \[\];/);
+    assert.match(layoutTsx, /granted\.includes\(item\.permission\)/);
+    assert.doesNotMatch(layoutTsx, /\bgranted = \[[^\]]/, 'Aucune permission ne doit être réinjectée par rôle');
   });
 
   it('écrit un français correct dans les écrans de gestion des comptes', () => {
