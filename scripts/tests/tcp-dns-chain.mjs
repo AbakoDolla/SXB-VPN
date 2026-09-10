@@ -109,7 +109,14 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
   assert.match(remote.address, /^tcp:\/\//, 'The source-derived native builder must select reliable DNS TCP for the HTTP chain');
   assert.ok([runtime.route.final, ...heads.map(head => head.tag)].includes(remote.detour),
     'DNS must enter the encrypted VLESS head, never the raw HTTP proxy');
-  assert.equal(runtime.dns.strategy, undefined, 'Changing DNS transport must not suppress imported AAAA queries');
+  assert.equal(remote.strategy, 'ipv4_only',
+    'This TUN carries no IPv6, so AAAA must be answered locally instead of crossing the chain');
+  assert.equal(runtime.dns.strategy, undefined,
+    'The AAAA policy must stay per-server: a global strategy would also bind the direct bootstrap');
+  assert.ok(runtime.dns.servers.every(server => server.detour || server.strategy === undefined),
+    'A server resolved outside the tunnel must keep the imported policy');
+  assert.equal(runtime.inbounds[0].inet6_address, undefined,
+    'The ipv4_only DNS policy is only justified while the TUN itself carries no IPv6');
   assert.equal(runtime.inbounds[0].mtu, 1400, 'The chained mobile TUN must not use a jumbo MTU');
   const blockTags = new Set(runtime.outbounds.filter(outbound => outbound.type === 'block').map(outbound => outbound.tag));
   assert.ok(runtime.route.rules.some(rule =>
@@ -319,11 +326,15 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
     assert.equal(response.readUInt16BE(6), 1);
     assert.deepEqual([...response.subarray(-4)], [203, 0, 113, 9]);
   }
+  const beforeIpv6 = tcpDnsQueries;
   const ipv6 = await receiveDns(ingressPort, 'ipv6.example.test', 6, 28);
   assert.equal(ipv6.readUInt16BE(0), 6);
-  assert.equal(ipv6.readUInt16BE(2) & 0x000f, 0);
-  assert.equal(ipv6.readUInt16BE(6), 1);
-  assert.equal(ipv6.subarray(-16).toString('hex'), '20010db8000000000000000000000009');
+  assert.equal(ipv6.readUInt16BE(2) & 0x000f, 0,
+    'An IPv4-only TUN must answer AAAA with NOERROR, never a failure the application would retry');
+  assert.equal(ipv6.readUInt16BE(6), 0,
+    'An AAAA answer would only buy an unroutable attempt on a TUN without IPv6');
+  assert.equal(tcpDnsQueries, beforeIpv6,
+    'The AAAA query must cost no chain round trip at all');
   for (let index = 0; index < 3; index++) {
     const data = await new Promise((resolve, reject) => {
       const socket = keep(net.connect(dataIngressPort, '127.0.0.1'));
@@ -337,7 +348,7 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
     assert.equal(data.length, payload.length);
     assert.equal(createHash('sha256').update(data).digest('hex'), payloadHash);
   }
-  assert.ok(tcpDnsQueries >= 6);
+  assert.ok(tcpDnsQueries >= 5);
   assert.equal(udpDnsQueries, 0, 'The unreliable upstream UDP DNS path must not be attempted');
   assert.ok(connectRequests >= 1);
   assert.equal(forbiddenConnects, 0, 'The proxy sees only the VLESS endpoint domain and the declared headers');
@@ -347,5 +358,5 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
       'DNS and data must keep working through another upstream declared by the same configuration');
     assert.ok(probeRequests >= 1, 'The engine health probe must traverse the chain, not the host network');
   }
-  console.log(`Loopback-only proof: ${upstreams.length} declared upstreams reachable, first one refused ${refusedConnects} CONNECT attempts, traffic served by ${[...acceptedVia].join(', ')}; six A/AAAA DNS responses and three intact 256KiB streams in ${Date.now() - started}ms over VLESS/WS/TLS/HTTP; not a carrier-speed measurement.`);
+  console.log(`Loopback-only proof: ${upstreams.length} declared upstreams reachable, first one refused ${refusedConnects} CONNECT attempts, traffic served by ${[...acceptedVia].join(', ')}; five A responses through the chain, one AAAA answered locally with zero round trips, and three intact 256KiB streams in ${Date.now() - started}ms over VLESS/WS/TLS/HTTP; not a carrier-speed measurement.`);
 });

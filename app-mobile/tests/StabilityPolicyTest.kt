@@ -194,6 +194,62 @@ fun main() {
         val defaults = SxbTunnelPolicy.reliableDns(dns("198.51.100.53"), graph)
         check(defaults.getBoolean("independent_cache") && !defaults.has("strategy"))
     }
+    checkCase("an IPv4-only TUN answers AAAA locally instead of paying a chain round trip") {
+        val graph = SxbTunnelPolicy.OutboundGraph(chain())
+        // sing-dns répond NOERROR vide sans solliciter le transport : la requête
+        // AAAA ne traverse plus la chaîne, et l'application ne tente plus une
+        // adresse v6 que ce TUN ne sait pas router.
+        val tunnelled = SxbTunnelPolicy.reliableDns(dns("198.51.100.53"), graph)
+        check(server(tunnelled).getString("strategy") == "ipv4_only")
+        check(server(tunnelled).getString("address") == "tcp://198.51.100.53")
+        // Jamais de stratégie globale : elle contraindrait aussi l'amorçage.
+        check(!tunnelled.has("strategy"))
+        check(SxbTunnelPolicy.reliableDns(tunnelled, graph).similar(tunnelled))
+
+        val dualStack = SxbTunnelPolicy.reliableDns(dns("198.51.100.53"), graph, tunnelHasIpv6 = true)
+        check(!server(dualStack).has("strategy")) { "An IPv6-capable TUN must keep AAAA answers" }
+        check(server(dualStack).getString("address") == "tcp://198.51.100.53")
+
+        val explicit = dns("198.51.100.53").also { server(it).put("strategy", "prefer_ipv6") }
+        check(server(SxbTunnelPolicy.reliableDns(explicit, graph)).getString("strategy") == "prefer_ipv6")
+
+        for (detour in listOf("direct", "block", "dns-out")) {
+            check(!server(SxbTunnelPolicy.reliableDns(dns("198.51.100.53", detour), graph)).has("strategy"))
+        }
+        val noDetour = dns("198.51.100.53").also { server(it).remove("detour") }
+        check(!server(SxbTunnelPolicy.reliableDns(noDetour, graph)).has("strategy"))
+        check(server(SxbTunnelPolicy.reliableDns(dns("udp://198.51.100.53:53", "http1"), graph))
+            .getString("strategy") == "ipv4_only")
+
+        val grouped = chain().put(JSONObject("""{"type":"selector","tag":"only-direct","outbounds":["direct","block"]}"""))
+        val groupedGraph = SxbTunnelPolicy.OutboundGraph(grouped)
+        check(!server(SxbTunnelPolicy.reliableDns(dns("198.51.100.53", "only-direct"), groupedGraph)).has("strategy"))
+        check(groupedGraph.isTunnelled("proxy1") && !groupedGraph.isTunnelled("direct"))
+        check(!groupedGraph.isTunnelled("absent") && !groupedGraph.isTunnelled(""))
+    }
+    checkCase("the probe cadence bounds how long a refusing upstream keeps being dialled") {
+        // `URLTest.DialContext` réutilise l'amont sélectionné et ne le réévalue
+        // qu'au cycle de sondes suivant : l'intervalle EST la fenêtre de 404.
+        fun seconds(value: String): Int {
+            val amount = value.dropLast(1).toInt()
+            return when (value.last()) {
+                's' -> amount
+                'm' -> amount * 60
+                'h' -> amount * 3600
+                else -> error("Unsupported duration: $value")
+            }
+        }
+        val interval = seconds(SxbTunnelPolicy.CHAIN_PROBE_INTERVAL)
+        val idle = seconds(SxbTunnelPolicy.CHAIN_PROBE_IDLE_TIMEOUT)
+        check(interval in 1..30) { "A refusing upstream must not stay selected for a whole minute" }
+        check(interval <= idle) { "sing-box rejects interval > idle_timeout" }
+        check(idle <= 15 * 60) { "Probing an idle tunnel burns data and battery" }
+        val outbounds = carrierChain()
+        val plan = installFailover(outbounds) ?: error("No failover")
+        val group = tagged(outbounds).getValue(plan.groupTag)
+        check(group.getString("interval") == SxbTunnelPolicy.CHAIN_PROBE_INTERVAL)
+        check(group.getString("idle_timeout") == SxbTunnelPolicy.CHAIN_PROBE_IDLE_TIMEOUT)
+    }
     checkCase("bootstrap and HTTPS/SVCB rules are idempotent and preserve distinct native policies") {
         val guarded = dns("198.51.100.53").put("rules", JSONArray("""[
           {"domain":["native.example.test"],"server":"remote","disable_cache":true},

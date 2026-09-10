@@ -3761,11 +3761,15 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // bloquent toute navigation. Ce repli de fiabilité est limité aux DNS
         // sans schéma sur VLESS/WS + HTTP : TCP vers le MEME résolveur, toujours
         // via la tête VLESS. Les choix explicites udp://, DoH et DoT sont conservés.
-        val reliableDns = SxbTunnelPolicy.reliableDns(sourceDns, graph)
+        val reliableDns = SxbTunnelPolicy.reliableDns(sourceDns, graph, tunInbound(mtu).has("inet6_address"))
         val sourceServers = sourceDns.optJSONArray("servers") ?: JSONArray()
         val reliableServers = reliableDns.optJSONArray("servers") ?: JSONArray()
         val dnsTcpUpgrades = (0 until sourceServers.length()).count {
             sourceServers.optJSONObject(it)?.optString("address") != reliableServers.optJSONObject(it)?.optString("address")
+        }
+        val dnsV4Only = (0 until reliableServers.length()).count {
+            reliableServers.optJSONObject(it)?.optString("strategy") == "ipv4_only" &&
+                sourceServers.optJSONObject(it)?.has("strategy") != true
         }
         val dnsObj = applyDnsLoopGuard(reliableDns, outboundServerHosts)
 
@@ -3785,7 +3789,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         broadcastLog(
             "[CONFIG] singbox importé — outbounds=${outbounds.length()} final=$finalTag " +
             "chaînage=${finalTag != mainTag} dns=${if (hasConfiguredDnsServers) "profil" else "moteur→$finalTag"} " +
-            "mtu=$mtu dns_tcp_chain=$dnsTcpUpgrades"
+            "mtu=$mtu dns_tcp_chain=$dnsTcpUpgrades dns_v4only=$dnsV4Only"
         )
         if (chainFailover != null) {
             broadcastLog(

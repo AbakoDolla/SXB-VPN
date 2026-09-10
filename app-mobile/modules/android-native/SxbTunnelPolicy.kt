@@ -25,8 +25,14 @@ object SxbTunnelPolicy {
     // `urltest` ne regarde pas le code de retour : seule l'ouverture compte,
     // donc un 404 de l'amont disqualifie la branche, ce que l'on veut ici.
     const val CHAIN_PROBE_URL = "http://www.gstatic.com/generate_204"
-    const val CHAIN_PROBE_INTERVAL = "1m"
-    const val CHAIN_PROBE_IDLE_TIMEOUT = "30m"
+    // `URLTest.DialContext` réutilise l'amont DÉJÀ sélectionné et ne le
+    // réévalue qu'à la fin d'un cycle de sondes (`performUpdateCheck`). Un
+    // amont qui se met à refuser reste donc appelé pendant tout l'intervalle :
+    // celui-ci borne directement la durée des rafales de 404 observées.
+    const val CHAIN_PROBE_INTERVAL = "30s"
+    // Le moteur refuse interval > idle_timeout. Dix minutes couvrent une pause
+    // de navigation sans continuer à sonder un tunnel réellement inactif.
+    const val CHAIN_PROBE_IDLE_TIMEOUT = "10m"
     // 50 ms (défaut moteur) fait osciller la sélection sur un lien opérateur.
     const val CHAIN_PROBE_TOLERANCE = 300
     // Le moteur borne déjà ses sondes à 10 en parallèle ; on borne le nombre de
@@ -111,6 +117,21 @@ object SxbTunnelPolicy {
                 outbound.optJSONObject("transport")?.optString("type", "") != "ws") return false
             val detour = outbound.optString("detour", "")
             return detour.isNotBlank() && hasHttpTransport(detour, everyPath)
+        }
+
+        /**
+         * Vrai quand le tag sort par le tunnel. Un outbound spécial (`direct`,
+         * `block`, `dns`) reste sur le réseau local ; un groupe suit ses
+         * membres. Sert à distinguer un DNS résolu DANS le tunnel d'un
+         * amorçage volontairement direct, qu'il ne faut pas contraindre.
+         */
+        fun isTunnelled(tag: String): Boolean {
+            if (tag.isBlank() || byTag[tag] == null) return false
+            val outbound = requireTag(tag)
+            val type = outbound.optString("type", "")
+            if (type in specialTypes) return false
+            if (type in groupTypes) return references(outbound).any { isTunnelled(it) }
+            return true
         }
 
         fun routeUsesHttpChain(route: JSONObject): Boolean {
@@ -396,14 +417,28 @@ object SxbTunnelPolicy {
         return explicit.firstOrNull() ?: if (httpChain) HTTP_CHAIN_MTU else DEFAULT_MTU
     }
 
-    fun reliableDns(dns: JSONObject, graph: OutboundGraph): JSONObject {
+    /**
+     * @param tunnelHasIpv6 le TUN transporte-t-il de l'IPv6 ? Quand il n'en
+     *   transporte pas, une réponse AAAA ne mène à aucune route utilisable :
+     *   l'application tente l'adresse v6 en premier (Happy Eyeballs) puis
+     *   attend son échec, et la requête AAAA a EN PLUS coûté un aller-retour
+     *   complet dans la chaîne. Avec `strategy: ipv4_only`, `sing-dns` répond
+     *   localement (NOERROR vide) sans solliciter le transport : les deux coûts
+     *   disparaissent. Appliqué au seul DNS résolu dans le tunnel, jamais à
+     *   l'amorçage direct, et jamais par-dessus un choix explicite du profil.
+     */
+    fun reliableDns(dns: JSONObject, graph: OutboundGraph, tunnelHasIpv6: Boolean = false): JSONObject {
         val result = JSONObject(dns.toString())
         if (!result.has("independent_cache")) result.put("independent_cache", true)
         val servers = result.optJSONArray("servers") ?: return result
         for (i in 0 until servers.length()) {
             val server = servers.optJSONObject(i) ?: continue
             val detour = server.optString("detour", "")
-            if (detour.isBlank() || !graph.isHttpChainedVlessWs(detour, everyPath = true)) continue
+            if (detour.isBlank()) continue
+            if (!tunnelHasIpv6 && !server.has("strategy") && graph.isTunnelled(detour)) {
+                server.put("strategy", "ipv4_only")
+            }
+            if (!graph.isHttpChainedVlessWs(detour, everyPath = true)) continue
             tcpDnsAddress(server.optString("address", ""))?.let { server.put("address", it) }
         }
         return result

@@ -796,7 +796,7 @@ describe('garde-fous contre les régressions Android', () => {
 
   it('applique la politique de stabilité au builder réel sans élargir les routes', () => {
     assert.match(nativeService, /SxbTunnelPolicy\.tunMtu\(cfg, graph,/);
-    assert.match(nativeService, /SxbTunnelPolicy\.reliableDns\(sourceDns, graph\)/);
+    assert.match(nativeService, /SxbTunnelPolicy\.reliableDns\(sourceDns, graph, tunInbound\(mtu\)\.has\("inet6_address"\)\)/);
     assert.match(nativeService, /put\("inbounds", JSONArray\(\)\.put\(tunInbound\(mtu\)\)\)/);
     assert.match(nativeService, /tunInbound\(mtu: Int = SxbTunnelPolicy\.DEFAULT_MTU\)/);
     assert.match(tunnelPolicy, /HTTP_CHAIN_MTU = 1400/);
@@ -1225,6 +1225,31 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(nativeService, /networkHasIpv6[\s\S]{0,600}TRANSPORT_VPN/);
     // Plus aucune stratégie figée en dur dans les générateurs DNS.
     assert.doesNotMatch(nativeService, /put\("strategy", "prefer_ipv4"\)/);
+  });
+
+  it('ne paie plus un aller-retour pour une réponse AAAA que le TUN ne sait pas router', () => {
+    // Le TUN ne déclare qu'`inet4_address` : une adresse v6 rendue à
+    // l'application n'est routable nulle part. Elle coûtait pourtant une
+    // requête complète dans la chaîne, puis une tentative de connexion perdue
+    // avant le repli IPv4 (Happy Eyeballs). `sing-dns` répond désormais
+    // NOERROR vide localement, sans solliciter le transport.
+    assert.match(tunnelPolicy, /fun reliableDns\(dns: JSONObject, graph: OutboundGraph, tunnelHasIpv6: Boolean = false\): JSONObject/);
+    assert.match(tunnelPolicy, /if \(!tunnelHasIpv6 && !server\.has\("strategy"\) && graph\.isTunnelled\(detour\)\)/);
+    assert.match(tunnelPolicy, /server\.put\("strategy", "ipv4_only"\)/);
+    assert.match(tunnelPolicy, /fun isTunnelled\(tag: String\): Boolean/);
+    // La décision vient du TUN réellement construit, pas d'une supposition.
+    assert.match(nativeService, /SxbTunnelPolicy\.reliableDns\(sourceDns, graph, tunInbound\(mtu\)\.has\("inet6_address"\)\)/);
+    // Jamais de stratégie globale : elle contraindrait aussi l'amorçage direct,
+    // qui résout les adresses des amonts hors du tunnel.
+    assert.doesNotMatch(tunnelPolicy, /result\.put\("strategy"/);
+  });
+
+  it('borne la durée pendant laquelle un amont qui refuse reste sélectionné', () => {
+    // `URLTest.DialContext` réutilise l'amont déjà sélectionné et ne le
+    // réévalue qu'à la fin d'un cycle de sondes : l'intervalle est exactement
+    // la durée des rafales de 404 observées sur le terrain.
+    assert.match(tunnelPolicy, /CHAIN_PROBE_INTERVAL = "30s"/);
+    assert.match(tunnelPolicy, /CHAIN_PROBE_IDLE_TIMEOUT = "10m"/);
   });
 
   it('ne déclare pas un échec pendant que des octets circulent', () => {
