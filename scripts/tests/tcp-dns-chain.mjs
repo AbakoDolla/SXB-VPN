@@ -77,14 +77,34 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
   for (const outbound of runtime.outbounds) {
     assert.ok(!outbound.server || outbound.server.endsWith('.example.test'), 'Never provide a private or real endpoint to this fixture');
   }
-  const main = runtime.outbounds.find(outbound => outbound.tag === runtime.route.final);
-  assert.equal(main.type, 'vless');
-  assert.equal(main.transport.type, 'ws');
-  const upstream = runtime.outbounds.find(outbound => outbound.tag === main.detour);
-  assert.equal(upstream.type, 'http');
+  const byTag = new Map(runtime.outbounds.map(outbound => [outbound.tag, outbound]));
+  const groupTypes = new Set(['selector', 'urltest']);
+  function branches(tag, seen = new Set()) {
+    const outbound = byTag.get(tag);
+    assert.ok(outbound, `The runtime graph must declare ${tag}`);
+    assert.ok(!seen.has(tag), 'The runtime graph must not contain a cycle');
+    seen.add(tag);
+    if (groupTypes.has(outbound.type)) {
+      return outbound.outbounds.flatMap(member => branches(member, new Set(seen)));
+    }
+    return [outbound];
+  }
+  const heads = branches(runtime.route.final);
+  const upstreams = [];
+  for (const head of heads) {
+    assert.equal(head.type, 'vless');
+    assert.equal(head.transport.type, 'ws');
+    assert.equal(head.domain_strategy, undefined, 'A chained head must not pre-resolve its own server domain');
+    assert.match(head.server, /\.example\.test$/, 'The chained head must keep its domain, never an address resolved beforehand');
+    const upstream = byTag.get(head.detour);
+    assert.equal(upstream.type, 'http');
+    upstreams.push(upstream);
+  }
+  const main = heads[0];
   const remote = runtime.dns.servers.find(server => server.tag === runtime.dns.final);
   assert.match(remote.address, /^tcp:\/\//, 'The source-derived native builder must select reliable DNS TCP for the HTTP chain');
-  assert.equal(remote.detour, main.tag, 'DNS must enter the encrypted VLESS head, never the raw HTTP proxy');
+  assert.ok([runtime.route.final, ...heads.map(head => head.tag)].includes(remote.detour),
+    'DNS must enter the encrypted VLESS head, never the raw HTTP proxy');
   assert.equal(runtime.dns.strategy, undefined, 'Changing DNS transport must not suppress imported AAAA queries');
   assert.equal(runtime.inbounds[0].mtu, 1400, 'The chained mobile TUN must not use a jumbo MTU');
   const blockTags = new Set(runtime.outbounds.filter(outbound => outbound.type === 'block').map(outbound => outbound.tag));
@@ -110,7 +130,8 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
     for (const server of servers) await new Promise(resolve => server.close(resolve));
     await rm(temporary, { recursive: true, force: true });
   });
-  let tcpDnsQueries = 0, udpDnsQueries = 0, connectRequests = 0, forbiddenConnects = 0;
+  let tcpDnsQueries = 0, udpDnsQueries = 0, connectRequests = 0, forbiddenConnects = 0, refusedConnects = 0;
+  const acceptedVia = new Set();
   const dns = net.createServer(socket => {
     keep(socket);
     let received = Buffer.alloc(0);
@@ -147,27 +168,41 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
   });
   servers.push(dataServer);
   const dataPort = await listen(dataServer);
-  const proxy = http.createServer((_request, response) => { response.writeHead(404); response.end(); });
-  proxy.on('connect', (request, client, head) => {
-    keep(client);
-    connectRequests++;
-    if (request.url !== `127.0.0.1:${vlessPort}` || request.headers['x-iorg'] !== 'synthetic-header-canary-1') {
-      forbiddenConnects++;
-      client.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n');
-      return;
-    }
-    const destination = keep(net.connect(vlessPort, '127.0.0.1'));
-    destination.on('error', () => client.destroy());
-    client.on('error', () => destination.destroy());
-    destination.once('connect', () => {
-      client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-      if (head.length) destination.write(head);
-      client.pipe(destination);
-      destination.pipe(client);
+  const upstreamPorts = new Map();
+  for (const [index, upstream] of upstreams.entries()) {
+    // The first declared upstream is deliberately unavailable, exactly like an operator proxy answering 404.
+    const unavailable = index === 0 && upstreams.length > 1;
+    const head = heads[index];
+    const expectedAuthority = `${head.server}:${head.server_port}`;
+    const expectedCanary = upstream.headers?.['X-iorg'];
+    const proxy = http.createServer((_request, response) => { response.writeHead(404); response.end(); });
+    proxy.on('connect', (request, client, head_) => {
+      keep(client);
+      connectRequests++;
+      if (request.url !== expectedAuthority || request.headers['x-iorg'] !== expectedCanary) {
+        forbiddenConnects++;
+        client.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n');
+        return;
+      }
+      if (unavailable) {
+        refusedConnects++;
+        client.end('HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n');
+        return;
+      }
+      acceptedVia.add(upstream.tag);
+      const destination = keep(net.connect(vlessPort, '127.0.0.1'));
+      destination.on('error', () => client.destroy());
+      client.on('error', () => destination.destroy());
+      destination.once('connect', () => {
+        client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        if (head_.length) destination.write(head_);
+        client.pipe(destination);
+        destination.pipe(client);
+      });
     });
-  });
-  servers.push(proxy);
-  const proxyPort = await listen(proxy);
+    servers.push(proxy);
+    upstreamPorts.set(upstream.tag, await listen(proxy));
+  }
   const keyPath = path.join(temporary, 'fixture.key');
   const certPath = path.join(temporary, 'fixture.crt');
   execFileSync('openssl', [
@@ -179,7 +214,7 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
     log: { level: 'error', disabled: false },
     inbounds: [{
       type: 'vless', tag: 'fixture-vless', listen: '127.0.0.1', listen_port: vlessPort,
-      users: [{ uuid: main.uuid }],
+      users: [...new Set(heads.map(head => head.uuid))].map(uuid => ({ uuid })),
       tls: { enabled: true, certificate_path: certPath, key_path: keyPath },
       transport: { type: 'ws', path: '/stability-fixture' },
     }],
@@ -197,12 +232,13 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
   }];
   delete clientConfig.route.auto_detect_interface; // No Android platform or TUN in this loopback-only test.
   clientConfig.route.rules.unshift({ inbound: ['fixture-dns'], outbound: 'dns-out' });
-  clientConfig.route.rules.unshift({ inbound: ['fixture-data'], outbound: main.tag });
+  clientConfig.route.rules.unshift({ inbound: ['fixture-data'], outbound: runtime.route.final });
   for (const outbound of clientConfig.outbounds) {
-    if (!outbound.server) continue;
-    outbound.server = '127.0.0.1';
-    outbound.server_port = outbound.type === 'http' ? proxyPort : vlessPort;
-    if (outbound.type === 'vless') {
+    if (outbound.type === 'http' && upstreamPorts.has(outbound.tag)) {
+      outbound.server = '127.0.0.1';
+      outbound.server_port = upstreamPorts.get(outbound.tag);
+    } else if (outbound.type === 'vless') {
+      // The head keeps its domain: the detour must receive it verbatim in CONNECT.
       outbound.transport.path = '/stability-fixture';
       outbound.tls.insecure = true; // Synthetic self-signed certificate; never alters the provider configuration.
     }
@@ -266,6 +302,11 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
   assert.ok(tcpDnsQueries >= 6);
   assert.equal(udpDnsQueries, 0, 'The unreliable upstream UDP DNS path must not be attempted');
   assert.ok(connectRequests >= 1);
-  assert.equal(forbiddenConnects, 0, 'The proxy sees only the VLESS endpoint, never a direct DNS destination');
+  assert.equal(forbiddenConnects, 0, 'The proxy sees only the VLESS endpoint domain and the declared headers');
+  if (upstreams.length > 1) {
+    assert.ok(refusedConnects >= 1, 'The unavailable first declared upstream must actually be attempted');
+    assert.ok(acceptedVia.size >= 1 && !acceptedVia.has(upstreams[0].tag),
+      'DNS and data must keep working through another upstream declared by the same configuration');
+  }
   console.log(`Loopback-only proof: six A/AAAA DNS responses and three intact 256KiB streams in ${Date.now() - started}ms over VLESS/WS/TLS/HTTP; not a carrier-speed measurement.`);
 });
