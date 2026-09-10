@@ -54,6 +54,7 @@ class TrafficStatsManager {
     // du service, qui ne représentent pas le trafic des applications routées.
     @Volatile private var tunInterface: String? = null
     @Volatile private var tunAttached = false
+    @Volatile private var tunCountersReadable = false
     private var lastTunTx = 0L
     private var lastTunRx = 0L
 
@@ -77,6 +78,7 @@ class TrafficStatsManager {
         speedDownload.set(0L)
         tunInterface = null
         tunAttached = false
+        tunCountersReadable = false
         lastTunTx = 0L
         lastTunRx = 0L
 
@@ -113,6 +115,7 @@ class TrafficStatsManager {
         pollThread?.interrupt()
         pollThread = null
         tunAttached = false
+        tunCountersReadable = false
         tunInterface = null
         Log.i(TAG, "TrafficStats arrêté — total UP=${totalUpload.get()} DOWN=${totalDownload.get()}")
     }
@@ -129,6 +132,7 @@ class TrafficStatsManager {
         if (tunAttached) {
             val tun = readTunCounters()
             if (tun == null) {
+                tunCountersReadable = false
                 speedUpload.set(0L)
                 speedDownload.set(0L)
                 lastPollMs = nowMs
@@ -143,6 +147,7 @@ class TrafficStatsManager {
             lastTunTx = tun.first
             lastTunRx = tun.second
             lastPollMs = nowMs
+            tunCountersReadable = true
             return
         }
 
@@ -191,6 +196,7 @@ class TrafficStatsManager {
         speedUpload.set(0L)
         speedDownload.set(0L)
         tunAttached = true
+        tunCountersReadable = true
         lastPollMs = System.currentTimeMillis()
         Log.i(TAG, "Compteurs TUN attachés — interface=$clean baseline_tx=${counters.first} baseline_rx=${counters.second}")
     }
@@ -208,7 +214,7 @@ class TrafficStatsManager {
 
     // ── Getters ───────────────────────────────────────────────────────────────
 
-    fun hasTunCounters(): Boolean = tunAttached
+    fun hasTunCounters(): Boolean = tunAttached && tunCountersReadable
 
     fun getStats(): TrafficSnapshot = TrafficSnapshot(
         uploadBytes   = totalUpload.get(),

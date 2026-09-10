@@ -359,6 +359,8 @@ describe('garde-fous contre les régressions Android', () => {
   const canonicalConfig = source('../server/services/canonical-config.ts');
   const xrayTranslate = source('../server/services/xray-translate.ts');
   const nativeService = source('modules/android-native/SxbVpnService.kt');
+  const tunnelPolicy = source('modules/android-native/SxbTunnelPolicy.kt');
+  const engineDiagnostics = source('modules/android-native/SxbEngineDiagnostics.kt');
   const activateScreen = source('app/activate.tsx');
   const planScreen = source('app/plan.tsx');
   const nativeModule = source('modules/android-native/SxbVpnModule.kt');
@@ -567,12 +569,13 @@ describe('garde-fous contre les régressions Android', () => {
     // `route.final`, et la tête de chaîne est identifiée comme l'outbound qui
     // n'est cité en `detour` par aucun autre.
     assert.match(nativeService, /defaultDnsObject\(finalTag\)/);
-    assert.match(nativeService, /val detourTargets = HashSet<String>\(\)/);
-    assert.match(nativeService, /if \(tag\.isEmpty\(\) \|\| tag in detourTargets\) continue/);
+    assert.match(nativeService, /SxbTunnelPolicy\.defaultProxyTag\(outbounds, null\)/);
+    assert.match(tunnelPolicy, /val targets = items\.flatMap \{ references\(it\) \}\.toSet\(\)/);
     // L'exclusion anti-boucle doit viser le serveur du BOUT de la chaîne :
     // c'est lui que le socket physique contacte réellement.
-    assert.match(nativeService, /chainEndServer/);
-    assert.match(nativeService, /if \(chainEndServer\.isNotBlank\(\)\) mainServer = chainEndServer/);
+    assert.match(nativeService, /val mainServer = graph\.chainEndServer\(finalTag\)/);
+    assert.match(tunnelPolicy, /TUNNEL_ROUTE_CYCLE/);
+    assert.doesNotMatch(nativeService, /guard\+\+ < 8/);
     // Le traducteur backend conserve les en-têtes personnalisés de l'amont.
     assert.match(canonicalConfig, /translateXrayToSingbox|hasXrayMarkers/);
     assert.match(xrayTranslate, /out\.headers = headers/);
@@ -729,7 +732,35 @@ describe('garde-fous contre les régressions Android', () => {
   it('explique les refus HTTP amont sans confondre le proxy avec une erreur d’import Xray', () => {
     assert.match(nativeService, /HTTP_429_RATE_LIMIT/);
     assert.match(nativeService, /HTTP_404_UPSTREAM/);
-    assert.match(nativeService, /val safeMessage = SecurityModule\.maskSensitive\(message\)/);
+    assert.match(nativeService, /origine non confirmée/);
+    assert.match(nativeService, /val safeMessage = SecurityModule\.maskSensitive\(SecurityModule\.maskCredentialsOnly\(cleanMessage\)\)/);
+  });
+
+  it('applique la politique de stabilité au builder réel sans élargir les routes', () => {
+    assert.match(nativeService, /SxbTunnelPolicy\.tunMtu\(cfg, graph,/);
+    assert.match(nativeService, /SxbTunnelPolicy\.reliableDns\(sourceDns, graph, dnsStrategy\(\)\)/);
+    assert.match(nativeService, /put\("inbounds", JSONArray\(\)\.put\(tunInbound\(mtu\)\)\)/);
+    assert.match(nativeService, /tunInbound\(mtu: Int = SxbTunnelPolicy\.DEFAULT_MTU\)/);
+    assert.match(tunnelPolicy, /HTTP_CHAIN_MTU = 1400/);
+    assert.match(tunnelPolicy, /DEFAULT_MTU = 9000/);
+    assert.match(tunnelPolicy, /if \(value\.contains\(":\/\/"\)\) return null/);
+    assert.ok(existsSync('tests/run-stability-policy.cjs'));
+  });
+
+  it('coalesce les erreurs opérationnelles et nettoie ANSI avant classification et masquage', () => {
+    const logStart = nativeService.indexOf('override fun writeLog(message: String)');
+    const logEnd = nativeService.indexOf('private fun broadcastEngineLogSummary', logStart);
+    const writeLog = nativeService.slice(logStart, logEnd);
+    assert.match(writeLog, /val cleanMessage = SxbEngineLogPolicy\.clean\(message\)/);
+    assert.match(writeLog, /val lower = cleanMessage\.lowercase/);
+    assert.match(writeLog, /engineLogThrottle\.record/);
+    assert.ok(writeLog.indexOf('if (operational == null || admission != null)') < writeLog.indexOf('SxbSecureLogger.debug'));
+    assert.ok(writeLog.includes('broadcastLog("[SXB] $label", priority = true)'));
+    assert.match(nativeService, /engineLogThrottle\.flushDue\(\)\.forEach\(::broadcastEngineLogSummary\)/);
+    assert.match(nativeService, /engineLogThrottle\.reset\(\)\.forEach\(::broadcastEngineLogSummary\)/);
+    assert.match(nativeService, /ENGINE_LOG_COALESCED.*suppressed=/);
+    assert.match(engineDiagnostics, /OperationalError\.PACKET_DENIED -> null/);
+    assert.match(nativeService, /cette ligne seule ne prouve pas un défaut de permission Android/);
   });
 
   it('synchronise les annonces vers un canal Android dédié et dédupliqué', () => {
@@ -1072,11 +1103,13 @@ describe('garde-fous contre les régressions Android', () => {
 
     // La règle d'exclusion passe EN TÊTE, sinon fakeip capture le domaine du
     // serveur et renvoie une adresse fictive pour la machine à joindre.
-    assert.ok(nativeService.includes('JSONObject().put("domain", JSONArray(domains)).put("server", directTag)'));
+    assert.ok(tunnelPolicy.includes('JSONObject().put("domain", JSONArray(domains)).put("server", directTag)'));
+    assert.match(nativeService, /val dns = JSONObject\(sourceDns\.toString\(\)\)/);
+    assert.match(nativeService, /SxbTunnelPolicy\.prependDnsGuardRules\(dns, domains, directTag, blockTag\)/);
 
     // Les deux chemins moteur sont couverts : profil plat ET sing-box importé.
     assert.ok(nativeService.includes('profileDnsObject(cfg.optStringOrNull("dns", "")) ?: defaultDnsObject(),'));
-    assert.ok(nativeService.includes('outboundServerHosts,'));
+    assert.ok(nativeService.includes('applyDnsLoopGuard(reliableDns, outboundServerHosts)'));
     // Sur une chaîne de proxys, chaque maillon nommé doit être résolu hors tunnel.
     assert.ok(nativeService.includes('val outboundServerHosts = LinkedHashSet<String>()'));
   });
@@ -1090,12 +1123,14 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(nativeService.includes('private fun noteOutboundFailure('));
     assert.ok(nativeService.includes('TUNNEL_SANS_TRAFIC'));
     // Le diagnostic distingue une panne de résolution d'un refus du serveur.
-    assert.ok(nativeService.includes('if (dnsFailureSeen)'));
+    assert.ok(engineDiagnostics.includes('dnsFailureSeen -> SxbEngineLogPolicy.Failure.DNS'));
+    assert.ok(engineDiagnostics.includes('httpFailureSeen -> SxbEngineLogPolicy.Failure.HTTP'));
+    assert.match(nativeService, /TUNNEL_TRAFFIC_UNMEASURED/);
     // Aucun changement d'état : couper sur un pic d'erreurs boucherait en
     // reconnexions sur un réseau lent.
     assert.doesNotMatch(nativeService, /noteOutboundFailure[\s\S]{0,1200}failVpn\(/);
     // Les compteurs repartent de zéro à chaque connexion.
-    assert.ok(nativeService.includes('dnsFailureSeen = false'));
+    assert.ok(nativeService.includes('outboundDiagnostics.reset()'));
   });
 
   it('présente une empreinte TLS de navigateur plutôt que celle de Go', () => {
@@ -1117,7 +1152,7 @@ describe('garde-fous contre les régressions Android', () => {
     // sur `final` → DoH à travers le tunnel et expiraient au bout de 10 s
     // (« IN HTTPS: context deadline exceeded ») avant le repli sur A/AAAA.
     assert.ok(nativeService.includes('put("address", "rcode://success")'));
-    assert.ok(nativeService.includes('.put("query_type", JSONArray().put("HTTPS").put("SVCB"))'));
+    assert.ok(tunnelPolicy.includes('.put("query_type", JSONArray().put("HTTPS").put("SVCB"))'));
     // Rien ne part sur le réseau : aucun domaine n'est exposé à l'opérateur.
     assert.doesNotMatch(nativeService, /query_type.*HTTPS.*server", *"dns-local/);
   });
@@ -1138,8 +1173,10 @@ describe('garde-fous contre les régressions Android', () => {
     // Le moteur ouvre des dizaines de connexions en parallèle : il est normal
     // qu'une partie échoue pendant que le tunnel fonctionne. Le verdict exige
     // donc des compteurs de trafic restés immobiles sur toute la fenêtre.
-    assert.ok(nativeService.includes('trafficAtWindowStart'));
-    assert.ok(nativeService.includes('if (bytes > trafficAtWindowStart) return'));
+    assert.ok(engineDiagnostics.includes('trafficAtWindowStart'));
+    assert.ok(engineDiagnostics.includes('if (bytes != trafficAtWindowStart) trafficSeen = true'));
+    assert.ok(engineDiagnostics.includes('|| trafficSeen) return null'));
+    assert.ok(nativeService.includes('outboundDiagnostics.note(failure, bytes, isSshRelay || trafficManager.hasTunCounters())'));
     // Un « connection refused » isolé ne doit plus conclure au refus du serveur.
     assert.doesNotMatch(nativeService, /Échec handshake — Le serveur a refusé la connexion/);
     // Sans preuve TCP/TLS, ne jamais affirmer que le serveur est joignable.

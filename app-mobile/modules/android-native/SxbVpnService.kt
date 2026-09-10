@@ -805,10 +805,6 @@ class SxbVpnService : VpnService(), PlatformInterface {
         /** ⚡ Plafond de diffusion des journaux vers l'interface (voir broadcastLog). */
         private const val LOG_RATE_WINDOW_MS = 1_000L
         private const val LOG_RATE_MAX_PER_WINDOW = 12
-        /** Seuils du diagnostic « tunnel connecté mais sans trafic ». */
-        private const val OUTBOUND_FAILURE_WINDOW_MS = 15_000L
-        private const val OUTBOUND_FAILURE_THRESHOLD = 5
-        private const val OUTBOUND_DIAGNOSIS_COOLDOWN_MS = 60_000L
 
         @Volatile var instance: SxbVpnService? = null
         @Volatile private var currentState: String = "disconnected"
@@ -917,17 +913,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private val logRateCount = java.util.concurrent.atomic.AtomicInteger(0)
     private val traceSequence = AtomicLong(0)
 
-    /**
-     * Détection d'un tunnel « connecté » qui ne transporte rien
-     * (voir noteOutboundFailure). Écrits depuis writeLog(), appelé par le moteur
-     * sur un seul fil : @Volatile suffit, aucun verrou nécessaire.
-     */
-    @Volatile private var outboundFailureCount = 0
-    @Volatile private var outboundFailureWindowStart = 0L
-    @Volatile private var lastOutboundDiagnosisAt = 0L
-    @Volatile private var dnsFailureSeen = false
-    /** Compteur de trafic au début de la fenêtre : preuve qu'un octet a circulé. */
-    @Volatile private var trafficAtWindowStart = 0L
+    private val engineLogThrottle = SxbEngineLogThrottle(SystemClock::elapsedRealtime)
+    private val outboundDiagnostics = SxbOutboundDiagnostics(SystemClock::elapsedRealtime)
 
     private data class SshTransportStrategy(
         val mode: String,
@@ -1338,11 +1325,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
         try {
         // Compteurs de diagnostic remis à zéro : un échec de la session
         // précédente ne doit pas déclencher un verdict sur celle qui démarre.
-        outboundFailureCount = 0
-        outboundFailureWindowStart = 0L
-        lastOutboundDiagnosisAt = 0L
-        dnsFailureSeen = false
-        trafficAtWindowStart = 0L
+        engineLogThrottle.reset().forEach(::broadcastEngineLogSummary)
+        outboundDiagnostics.reset()
+        logRateWindowStart.set(SystemClock.elapsedRealtime())
+        logRateCount.set(0)
         Log.i("SXB_DEBUG", "[SXB_DEBUG] STEP_2_CONFIG_RECEIVED proto=$proto")
         broadcastLog("[SXB_DEBUG] ▶ STEP_2_DISPATCH proto='$proto'")
         when (proto) {
@@ -2183,7 +2169,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 lower.contains("unsupported") || lower.contains("not supported") ||
                 lower.contains("unknown outbound") || lower.contains("outbound inconnu") ->
                 "CONFIG_UNSUPPORTED"
-            lower.contains("configuration refusée") || lower.contains("decode config") ||
+            lower.contains("configuration refusée") || lower.contains("configuration refusee") || lower.contains("decode config") ||
                 lower.contains("unknown field") || lower.contains("cannot unmarshal") ||
                 lower.contains("duplicate outbound") || lower.contains("outbound/endpoint tag") ->
                 "CONFIG_INVALID"
@@ -2538,31 +2524,39 @@ class SxbVpnService : VpnService(), PlatformInterface {
     override fun clearDNSCache() { /* géré par Android */ }
 
     override fun writeLog(message: String) {
-        if (message.isBlank()) return
-        SxbSecureLogger.debug("LIBBOX_LOG: $message")
-        val lower = message.lowercase(Locale.ROOT)
-
-        // ── Classement avant diffusion ───────────────────────────────────────
-        //
-        // Toute ligne du moteur était auparavant relayée telle quelle vers
-        // l'interface. Or sing-box journalise en ERROR des événements parfaitement
-        // normaux : une connexion annulée parce que l'application a fermé son
-        // socket, une requête recyclée, un changement de réseau. Le journal se
-        // remplissait donc d'erreurs rouges alors que le tunnel fonctionnait, et
-        // les vraies pannes devenaient impossibles à repérer.
-        //
-        // On classe désormais chaque ligne, et seules celles qui apprennent
-        // quelque chose à l'utilisateur atteignent l'interface. Rien n'est perdu :
-        // l'intégralité reste dans SxbSecureLogger pour le diagnostic.
-        val safeMessage = SecurityModule.maskSensitive(message)
-        when (classifyEngineEvent(lower)) {
-            EngineEvent.BUSINESS -> broadcastLog("[SXB] ℹ️ ${businessEventLabel(lower)}")
-            EngineEvent.FATAL -> broadcastLog("[engine] $safeMessage")
-            // Utile pendant l'établissement (on cherche pourquoi ça n'accroche
-            // pas), inutile une fois connecté : ce sont des connexions annexes.
-            EngineEvent.RECOVERABLE -> if (currentState != "connected") broadcastLog("[engine] $safeMessage")
-            // Jamais affiché : ni erreur, ni information exploitable.
-            EngineEvent.NORMAL -> { /* conservé dans SxbSecureLogger uniquement */ }
+        val cleanMessage = SxbEngineLogPolicy.clean(message)
+        if (cleanMessage.isBlank()) return
+        val lower = cleanMessage.lowercase(Locale.ROOT)
+        val operational = SxbEngineLogPolicy.operationalError(lower)
+        val admission = operational?.let { engineLogThrottle.record(it) }
+        // Les clés de coalescence sont fixes : ni domaines ni identifiants de
+        // connexion ne peuvent créer une entrée par requête dans le limiteur.
+        if (operational == null || admission != null) {
+            val safeMessage = SecurityModule.maskSensitive(SecurityModule.maskCredentialsOnly(cleanMessage))
+            SxbSecureLogger.debug("LIBBOX_LOG: $safeMessage")
+            if (operational != null) {
+                admission?.let(::broadcastEngineLogSummary)
+                val label = when (operational) {
+                    SxbEngineLogPolicy.OperationalError.HTTP_404 ->
+                        "HTTP_404_UPSTREAM — réponse HTTP 404 à l'ouverture d'une connexion. " +
+                        "Elle peut venir de l'amont HTTP ou de l'endpoint WebSocket ; origine non confirmée."
+                    SxbEngineLogPolicy.OperationalError.HTTP_429 ->
+                        "HTTP_429_RATE_LIMIT — une étape HTTP limite les requêtes. " +
+                        "L'amont HTTP ou l'endpoint WebSocket peut répondre ; ne pas multiplier les reconnexions."
+                    SxbEngineLogPolicy.OperationalError.PACKET_DENIED ->
+                        "UDP_PACKET_DENIED — paquet UDP refusé. Une règle de blocage (p. ex. UDP/443) " +
+                        "peut l'expliquer ; cette ligne seule ne prouve pas un défaut de permission Android."
+                    SxbEngineLogPolicy.OperationalError.PACKET_FAILURE ->
+                        "UDP_PACKET_FAILURE — échec d'un échange UDP ; les autres connexions peuvent continuer."
+                }
+                broadcastLog("[SXB] $label", priority = true)
+                broadcastLog("[engine] $safeMessage")
+            } else when (classifyEngineEvent(lower)) {
+                EngineEvent.BUSINESS -> broadcastLog("[SXB] ℹ️ ${businessEventLabel(lower)}")
+                EngineEvent.FATAL -> broadcastLog("[engine] $safeMessage")
+                EngineEvent.RECOVERABLE -> if (currentState != "connected") broadcastLog("[engine] $safeMessage")
+                EngineEvent.NORMAL -> { /* diagnostic local uniquement */ }
+            }
         }
 
         // DÉTECTION DU HANDSHAKE RÉELLEMENT ÉTABLI (§4 — ne jamais simuler).
@@ -2586,21 +2580,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
             autoReconnect.onConnected()
         }
 
-        when {
-            lower.contains("unexpected status: 429") ->
-                broadcastLog("[SXB] HTTP_429_RATE_LIMIT — le proxy HTTP amont limite ou refuse les requêtes.")
-            lower.contains("unexpected http response status: 404") ->
-                broadcastLog("[SXB] HTTP_404_UPSTREAM — le proxy HTTP amont ne reconnaît pas la destination.")
-            // Volontairement AUCUN message ici sur « connection refused ».
-            // L'état « handshaking » dure tant que le moteur n'a pas produit de
-            // preuve de flux, et le moteur ouvre en permanence des connexions
-            // parallèles : une seule d'entre elles refusée faisait conclure « le
-            // serveur a refusé » alors que le tunnel transportait des données.
-            // Le verdict est désormais rendu par noteOutboundFailure(), qui exige
-            // une accumulation d'échecs ET l'absence de trafic réel.
-        }
-
         noteOutboundFailure(lower)
+    }
+
+    private fun broadcastEngineLogSummary(summary: SxbEngineLogThrottle.Summary) {
+        if (summary.suppressed > 0L) {
+            broadcastLog("[SXB] ENGINE_LOG_COALESCED kind=${summary.error} suppressed=${summary.suppressed}")
+        }
     }
 
     /**
@@ -2615,57 +2601,34 @@ class SxbVpnService : VpnService(), PlatformInterface {
      * Un échec isolé ne prouve toutefois RIEN : le moteur ouvre des dizaines de
      * connexions en parallèle et il est normal qu'une partie échoue pendant que
      * le tunnel fonctionne. Le verdict exige donc deux conditions cumulées :
-     * une accumulation d'échecs ET des compteurs de trafic restés immobiles.
+     * une accumulation d'échecs ET une fenêtre d'observation sans progression.
+     * Des compteurs TUN indisponibles ne prouvent jamais l'absence de trafic.
      *
      * Aucun changement d'état n'est provoqué ici : couper ou relancer sur un pic
      * d'erreurs déclencherait des reconnexions en boucle sur un réseau lent. On
      * NOMME la panne, une seule fois, dans le journal unifié.
      */
     private fun noteOutboundFailure(lowerMessage: String) {
-        val isDnsFailure = lowerMessage.contains("dns: exchange failed") ||
-            (lowerMessage.contains("lookup ") && lowerMessage.contains("i/o timeout"))
-        val isOutboundFailure = lowerMessage.contains("open outbound connection") ||
-            lowerMessage.contains("listen outbound packet connection")
-        if (!isDnsFailure && !isOutboundFailure) return
-
-        val now = SystemClock.elapsedRealtime()
-        val bytes = runCatching {
-            val s = trafficManager.getStats()
-            s.uploadBytes + s.downloadBytes
-        }.getOrDefault(0L)
-
-        if (now - outboundFailureWindowStart > OUTBOUND_FAILURE_WINDOW_MS) {
-            outboundFailureWindowStart = now
-            outboundFailureCount = 0
-            dnsFailureSeen = false
-            trafficAtWindowStart = bytes
-        }
-        if (isDnsFailure) dnsFailureSeen = true
-        if (++outboundFailureCount < OUTBOUND_FAILURE_THRESHOLD) return
-        if (now - lastOutboundDiagnosisAt < OUTBOUND_DIAGNOSIS_COOLDOWN_MS) return
-
-        // Des octets ont circulé pendant la fenêtre : le tunnel fonctionne, les
-        // échecs sont ceux de connexions annexes. Aucun verdict d'échec.
-        if (bytes > trafficAtWindowStart) return
-
-        lastOutboundDiagnosisAt = now
-        if (dnsFailureSeen) {
-            broadcastLog(
-                "[SXB] ⛔ TUNNEL_SANS_TRAFIC — la résolution DNS échoue : aucune adresse " +
-                "n'est obtenue, donc aucune connexion ne peut s'ouvrir. Vérifiez que le " +
-                "réseau mobile fournit bien un résolveur (mode avion/APN), puis reconnectez."
-            )
+        val failure = SxbEngineLogPolicy.failure(lowerMessage) ?: return
+        val stats = trafficManager.getStats()
+        val bytes = if (isSshRelay) uploadBytes.get() + downloadBytes.get() else stats.uploadBytes + stats.downloadBytes
+        val diagnosis = outboundDiagnostics.note(failure, bytes, isSshRelay || trafficManager.hasTunCounters()) ?: return
+        val evidence = if (diagnosis.trafficMeasurable) {
+            "TUNNEL_SANS_TRAFIC — aucun nouvel octet mesuré pendant la fenêtre d'observation."
         } else {
-            // Sans preuve TCP/TLS, on ne peut PAS affirmer que le serveur est
-            // joignable : « connection refused » peut survenir bien avant que
-            // VLESS, TLS ou WebSocket n'entrent en jeu. On décrit le fait
-            // observé — aucun octet ne circule — sans en inventer la cause.
-            broadcastLog(
-                "[SXB] ⛔ TUNNEL_SANS_TRAFIC — les connexions sortantes échouent et aucun octet " +
-                "ne circule. Le serveur peut être injoignable depuis ce réseau, ou refuser le " +
-                "profil (UUID, chemin WebSocket, en-tête Host)."
-            )
+            "TUNNEL_TRAFFIC_UNMEASURED — compteurs TUN indisponibles ; l'absence de trafic n'est pas démontrée."
         }
+        val detail = when (diagnosis.failure) {
+            SxbEngineLogPolicy.Failure.HTTP ->
+                "PROXY_HTTP_FAILURE — plusieurs connexions rencontrent un refus HTTP (amont ou WebSocket). " +
+                "Un échange DNS qui traverse ce chemin peut échouer pour la même raison."
+            SxbEngineLogPolicy.Failure.DNS ->
+                "DNS_QUERY_FAILED — plusieurs échanges DNS ont échoué. Le résolveur ou son chemin de transport " +
+                "peut être en cause ; cela ne prouve pas l'absence d'un résolveur réseau."
+            SxbEngineLogPolicy.Failure.OUTBOUND ->
+                "OUTBOUND_FAILURE — plusieurs connexions sortantes ont échoué ; la cause n'est pas encore confirmée."
+        }
+        broadcastLog("[SXB] $evidence $detail")
     }
 
     /**
@@ -2889,14 +2852,14 @@ class SxbVpnService : VpnService(), PlatformInterface {
      * canoniques) et buildRawSingBoxConfig (sing-box importé / traduit).
      * JAMAIS de inbounds provenant du JSON stocké : le TUN est toujours celui-ci.
      */
-    private fun tunInbound(): JSONObject = JSONObject().apply {
+    private fun tunInbound(mtu: Int = SxbTunnelPolicy.DEFAULT_MTU): JSONObject = JSONObject().apply {
         put("type", "tun")
         put("tag", "tun-in")
         put("inet4_address", "172.19.0.1/30")
         put("auto_route", true)
         put("strict_route", false)
         put("stack", "system")
-        put("mtu", 9000)
+        put("mtu", mtu)
         put("sniff", true)
         put("sniff_override_destination", false)
     }
@@ -3077,7 +3040,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
      * `serverHosts` = adresses des serveurs de sortie (outbounds) ; seules les
      * valeurs non littérales exigent une résolution, donc un traitement.
      */
-    private fun applyDnsLoopGuard(dns: JSONObject, serverHosts: Collection<String>): JSONObject {
+    private fun applyDnsLoopGuard(sourceDns: JSONObject, serverHosts: Collection<String>): JSONObject {
+        val dns = JSONObject(sourceDns.toString())
         val servers = dns.optJSONArray("servers") ?: return dns
 
         // 1. Un serveur d'amorçage utilisable exige DEUX propriétés : sortir
@@ -3096,11 +3060,15 @@ class SxbVpnService : VpnService(), PlatformInterface {
         }
         if (directTag.isEmpty()) {
             directTag = "dns-bootstrap"
+            var suffix = 0
+            while ((0 until servers.length()).any { servers.optJSONObject(it)?.optString("tag", "") == directTag }) {
+                directTag = "dns-bootstrap-${++suffix}"
+            }
             val bootstrap = bootstrapDnsAddress()
             val strategy = dnsStrategy()
             servers.put(JSONObject().put("tag", directTag).put("address", bootstrap)
                 .put("strategy", strategy).put("detour", "direct"))
-            broadcastLog("[DNS] amorçage via le résolveur du réseau ($bootstrap, $strategy)")
+            broadcastLog("[DNS] amorçage via le résolveur du réseau ($strategy)")
         }
 
         // 2. Un DNS distant nommé (ex. https://dns.google/…) doit indiquer par
@@ -3124,10 +3092,17 @@ class SxbVpnService : VpnService(), PlatformInterface {
         //    A/AAAA, qui sont servis par fakeip. Rien n'est émis sur le réseau,
         //    donc aucun domaine n'est exposé au résolveur de l'opérateur.
         //    (Adresse `rcode://` : syntaxe historique, valide en 1.11.)
-        val blockTag = "dns-block"
+        var blockTag = "dns-block"
+        var blockSuffix = 0
         var hasBlockServer = false
-        for (i in 0 until servers.length()) {
-            if (servers.optJSONObject(i)?.optString("tag", "") == blockTag) { hasBlockServer = true; break }
+        while (true) {
+            val existing = (0 until servers.length()).mapNotNull { servers.optJSONObject(it) }
+                .firstOrNull { it.optString("tag", "") == blockTag } ?: break
+            if (existing.optString("address", "") == "rcode://success") {
+                hasBlockServer = true
+                break
+            }
+            blockTag = "dns-block-${++blockSuffix}"
         }
         if (!hasBlockServer) {
             servers.put(JSONObject().put("tag", blockTag).put("address", "rcode://success"))
@@ -3141,21 +3116,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
             .filter { it.isNotEmpty() && !isLiteralIp(it) }
             .distinct()
 
-        val previous = dns.optJSONArray("rules") ?: JSONArray()
-        val rules = JSONArray()
-        rules.put(JSONObject()
-            .put("query_type", JSONArray().put("HTTPS").put("SVCB"))
-            .put("server", blockTag))
-        if (domains.isNotEmpty()) {
-            rules.put(JSONObject().put("domain", JSONArray(domains)).put("server", directTag))
-        }
-        for (i in 0 until previous.length()) rules.put(previous.opt(i))
-        dns.put("rules", rules)
+        SxbTunnelPolicy.prependDnsGuardRules(dns, domains, directTag, blockTag)
 
         if (domains.isNotEmpty()) {
-            broadcastLog("[DNS] résolution hors tunnel pour ${domains.joinToString(", ")} (anti-boucle)")
+            broadcastLog("[DNS] amorçage anti-boucle pour ${domains.size} adresses de transport")
         }
-        broadcastLog("[DNS] requêtes HTTPS/SVCB court-circuitées (fin des attentes de 10 s)")
+        broadcastLog("[DNS] politique HTTPS/SVCB locale conservée")
         return dns
     }
 
@@ -3440,23 +3406,6 @@ class SxbVpnService : VpnService(), PlatformInterface {
         return JSONObject(cfg.toString()).apply {
             put("outbounds", newOutbounds)
 
-            // Le serveur VLESS est protégé par la règle carrier exclusion ;
-            // le DNS distant doit ensuite suivre ce proxy. Un detour direct
-            // peut être bloqué par l’opérateur et produit un tunnel connecté
-            // sans accès Internet.
-            var dnsDetour = "direct"
-            for (j in 0 until newOutbounds.length()) {
-                val candidate = newOutbounds.optJSONObject(j) ?: continue
-                val candidateType = candidate.optString("type", "")
-                if (candidateType !in setOf("direct", "dns", "block")) {
-                    val candidateTag = candidate.optString("tag", "")
-                    if (candidateTag.isNotBlank()) {
-                        dnsDetour = candidateTag
-                        break
-                    }
-                }
-            }
-
             // Les règles Xray utilisent outboundTag/inboundTag/ip alors que
             // sing-box attend outbound/inbound/ip_cidr.
             val xrayRouting = optJSONObject("routing")
@@ -3506,6 +3455,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 }
                 put("route", JSONObject().put("rules", convertedRules))
             }
+
+            val dnsDetour = SxbTunnelPolicy.defaultProxyTag(newOutbounds, optJSONObject("route")) ?: "direct"
 
             // Conversion DNS Xray vers le schéma sing-box. Les champs Xray
             // queryStrategy/serveStale/tag ne sont pas des champs DNS sing-box
@@ -3565,20 +3516,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private fun normalizeRawSingBoxCompatibility(cfg: JSONObject): JSONObject {
         cfg.remove("protocol")
 
-        var dnsDetour = "proxy"
-        cfg.optJSONArray("outbounds")?.let { existingOutbounds ->
-            for (i in 0 until existingOutbounds.length()) {
-                val outbound = existingOutbounds.optJSONObject(i) ?: continue
-                val type = outbound.optString("type", "")
-                if (type !in setOf("direct", "dns", "block")) {
-                    val outboundTag = outbound.optString("tag", "")
-                    if (outboundTag.isNotBlank()) {
-                        dnsDetour = outboundTag
-                        break
-                    }
-                }
-            }
-        }
+        val dnsDetour = SxbTunnelPolicy.defaultProxyTag(
+            cfg.optJSONArray("outbounds") ?: JSONArray(), cfg.optJSONObject("route"),
+        ) ?: "proxy"
 
         // Les anciens imports acceptaient `dns.servers: ["8.8.8.8"]`.
         // sing-box 1.11 attend des objets DNSServerOptions.
@@ -3691,7 +3631,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
     }
 
     private fun buildRawSingBoxConfig(rawCfg: JSONObject): String {
-        val cfg = normalizeRawSingBoxCompatibility(convertXrayToSingBoxIfNeeded(rawCfg))
+        val cfg = normalizeRawSingBoxCompatibility(convertXrayToSingBoxIfNeeded(JSONObject(rawCfg.toString())))
         val knownTypes = setOf(
             "vless", "vmess", "trojan", "shadowsocks", "wireguard", "hysteria2",
             "tuic", "hysteria", "ssh", "http", "socks", "direct", "dns", "block",
@@ -3705,9 +3645,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         val outbounds = JSONArray()
         val tags = HashSet<String>()
-        val byTag = HashMap<String, JSONObject>()
         var mainTag: String? = null
-        var mainServer = ""
         // Adresses de TOUS les maillons de sortie : sur une chaîne
         // (`detour`/`proxySettings`), chaque maillon désigné par un domaine doit
         // être résolu hors tunnel, pas seulement le premier.
@@ -3721,13 +3659,11 @@ class SxbVpnService : VpnService(), PlatformInterface {
             }
             val tag = o.optString("tag", "")
             tags.add(tag)
-            if (tag.isNotEmpty()) byTag[tag] = o
             if (type !in specialTypes) {
                 o.optString("server", "").takeIf { it.isNotBlank() }?.let { outboundServerHosts.add(it) }
             }
             if (mainTag == null && type !in specialTypes) {
                 mainTag = tag
-                mainServer = o.optString("server", "")
             }
             outbounds.put(o)
         }
@@ -3756,39 +3692,14 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // On repère d'abord la TÊTE de chaîne : un outbound cité en `detour` par
         // un autre est un maillon intermédiaire, jamais le point d'entrée du
         // trafic. Ce repli n'est utilisé que si `route.final` est absent.
-        val detourTargets = HashSet<String>()
-        for (i in 0 until outbounds.length()) {
-            val o = outbounds.optJSONObject(i) ?: continue
-            val detour = o.optString("detour", "")
-            if (detour.isNotEmpty()) detourTargets.add(detour)
-        }
-        for (i in 0 until outbounds.length()) {
-            val o = outbounds.optJSONObject(i) ?: continue
-            val tag = o.optString("tag", "")
-            if (tag.isEmpty() || tag in detourTargets) continue
-            if (o.optString("type", "") in specialTypes) continue
-            mainTag = tag
-            break
-        }
-
-        mainTag?.let { start ->
-            var current = byTag[start]
-            val seen = HashSet<String>()
-            var guard = 0
-            while (current != null && guard++ < 8) {
-                val detour = current.optString("detour", "")
-                if (detour.isEmpty() || !seen.add(detour)) break
-                current = byTag[detour] ?: break
-            }
-            val chainEndServer = current?.optString("server", "").orEmpty()
-            if (chainEndServer.isNotBlank()) mainServer = chainEndServer
-        }
+        mainTag = SxbTunnelPolicy.defaultProxyTag(outbounds, null) ?: mainTag
 
         // Compléter avec les outbounds système de l'app si absents
         val appOutbounds = listOf("direct" to "direct", "dns" to "dns-out", "block" to "block")
         for ((type, tag) in appOutbounds) {
-            if (!tags.contains(tag)) outbounds.put(JSONObject().put("type", type).put("tag", tag))
+            if (tags.add(tag)) outbounds.put(JSONObject().put("type", type).put("tag", tag))
         }
+        val graph = SxbTunnelPolicy.OutboundGraph(outbounds)
 
         // Route : exclusion anti-boucle + DNS hijack + ip_is_private (F3) puis règles stockées
         val routeObj = cfg.optJSONObject("route")
@@ -3801,6 +3712,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // le tunnel chiffré.
         var finalTag = routeObj?.optString("final", "") ?: ""
         if (finalTag.isEmpty() || !tags.contains(finalTag)) finalTag = mainTag ?: "proxy"
+        val mainServer = graph.chainEndServer(finalTag)
+        val mtu = SxbTunnelPolicy.tunMtu(cfg, graph, JSONObject().put("final", finalTag).put("rules", storedRules))
 
         // DNS : celui du JSON stocké sinon celui de l'app
         // Les traductions Xray peuvent supprimer les DNS `tcp+local://` non
@@ -3815,10 +3728,18 @@ class SxbVpnService : VpnService(), PlatformInterface {
         val hasConfiguredDnsServers = configuredDns?.optJSONArray("servers")?.let { it.length() > 0 } == true
         // Le garde s'applique aussi au DNS venu du profil : un JSON fournisseur
         // qui route son DNS par le proxy produit exactement la même récursion.
-        val dnsObj = applyDnsLoopGuard(
-            if (hasConfiguredDnsServers) configuredDns!! else defaultDnsObject(finalTag),
-            outboundServerHosts,
-        )
+        val sourceDns = if (hasConfiguredDnsServers) configuredDns!! else defaultDnsObject(finalTag)
+        // VLESS peut encapsuler l'UDP sur WS, mais des pertes/attentes DNS y
+        // bloquent toute navigation. Ce repli de fiabilité est limité aux DNS
+        // sans schéma sur VLESS/WS + HTTP : TCP vers le MEME résolveur, toujours
+        // via la tête VLESS. Les choix explicites udp://, DoH et DoT sont conservés.
+        val reliableDns = SxbTunnelPolicy.reliableDns(sourceDns, graph, dnsStrategy())
+        val sourceServers = sourceDns.optJSONArray("servers") ?: JSONArray()
+        val reliableServers = reliableDns.optJSONArray("servers") ?: JSONArray()
+        val dnsTcpUpgrades = (0 until sourceServers.length()).count {
+            sourceServers.optJSONObject(it)?.optString("address") != reliableServers.optJSONObject(it)?.optString("address")
+        }
+        val dnsObj = applyDnsLoopGuard(reliableDns, outboundServerHosts)
 
         val exclusion = if (mainServer.isNotBlank()) carrierExclusionRule(mainServer) else null
         val routeRules = JSONArray()
@@ -3833,13 +3754,14 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         broadcastLog(
             "[CONFIG] singbox importé — outbounds=${outbounds.length()} final=$finalTag " +
-            "chaînage=${finalTag != mainTag} dns=${if (hasConfiguredDnsServers) "profil" else "moteur→$finalTag"}"
+            "chaînage=${finalTag != mainTag} dns=${if (hasConfiguredDnsServers) "profil" else "moteur→$finalTag"} " +
+            "mtu=$mtu dns_tcp_chain=$dnsTcpUpgrades"
         )
 
         return JSONObject().apply {
             put("log", JSONObject().put("level", "warn").put("timestamp", true))
             put("dns", dnsObj)
-            put("inbounds", JSONArray().put(tunInbound()))
+            put("inbounds", JSONArray().put(tunInbound(mtu)))
             put("outbounds", outbounds)
             put("route", JSONObject().apply {
                 put("rules", routeRules)
@@ -4506,6 +4428,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         notifThread = Thread({
             while (running.get() && currentState == "connected") {
                 try {
+                    engineLogThrottle.flushDue().forEach(::broadcastEngineLogSummary)
                     val stats  = trafficManager.getStats()
                     val upKB   = formatSpeed(stats.uploadSpeed)
                     val downKB = formatSpeed(stats.downloadSpeed)
@@ -4592,7 +4515,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         broadcastLog("[SXB_TRACE] seq=$seq elapsed_ms=$elapsed stage=$stage$suffix")
     }
 
-    private fun broadcastLog(message: String) {
+    private fun broadcastLog(message: String, priority: Boolean = false) {
         val safeMessage = if (SxbSecureLogger.isDiagnosticEnabled()) {
             SecurityModule.maskCredentialsOnly(message)
         } else {
@@ -4602,6 +4525,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
         synchronized(fullLogBuffer) {
             fullLogBuffer.append(safeMessage).append("\n")
             trimLogBufferLocked()
+        }
+        // Les rares diagnostics déjà admis par le limiteur par catégorie ne
+        // doivent pas perdre leur première occurrence dans une rafale de traces.
+        if (priority) {
+            sendLogBroadcast(safeMessage)
+            return
         }
 
         // ⚡ Limitation de débit vers l'interface.
@@ -4743,6 +4672,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 .onFailure { Log.w(TAG, "libbox close: ${it.message}") }
         }
         boxService = null
+        engineLogThrottle.reset().forEach(::broadcastEngineLogSummary)
 
         runCatching { sshSession?.disconnect() }; sshSession     = null
 
