@@ -572,14 +572,72 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(nativeService, /SxbTunnelPolicy\.defaultProxyTag\(outbounds, null\)/);
     assert.match(tunnelPolicy, /val targets = items\.flatMap \{ references\(it\) \}\.toSet\(\)/);
     // L'exclusion anti-boucle doit viser le serveur du BOUT de la chaîne :
-    // c'est lui que le socket physique contacte réellement.
-    assert.match(nativeService, /val mainServer = graph\.chainEndServer\(finalTag\)/);
+    // c'est lui que le socket physique contacte réellement. Sur un groupe de
+    // bascule, chaque branche a sa propre sortie : toutes doivent être exclues.
+    assert.match(nativeService, /val chainServers = graph\.chainEndServers\(finalTag\)/);
+    assert.match(nativeService, /val exclusion = carrierExclusionRule\(chainServers\)/);
+    assert.match(nativeService, /private fun carrierExclusionRule\(servers: Collection<String>\)/);
+    assert.match(tunnelPolicy, /fun chainEndServers\(start: String\): Set<String>/);
     assert.match(tunnelPolicy, /TUNNEL_ROUTE_CYCLE/);
     assert.doesNotMatch(nativeService, /guard\+\+ < 8/);
     // Le traducteur backend conserve les en-têtes personnalisés de l'amont.
     assert.match(canonicalConfig, /translateXrayToSingbox|hasXrayMarkers/);
     assert.match(xrayTranslate, /out\.headers = headers/);
     assert.match(xrayTranslate, /out\.detour = tag/);
+  });
+
+  it('garde l’autorité CONNECT en forme de domaine sur toute la chaîne', () => {
+    // sing/protocol/http/client.go construit le CONNECT sur destination.String().
+    // Avec `domain_strategy`, le moteur résout le maillon suivant AVANT de
+    // composer : l'amont « zero-rated » reçoit alors CONNECT <ip>:443 au lieu du
+    // domaine autorisé et répond 404, ce qui casse aussi le DNS qui en dépend.
+    assert.match(tunnelPolicy, /fun enforceChainedDomainFidelity\(outbounds: JSONArray\): Int/);
+    assert.match(tunnelPolicy, /if \(outbound\.optString\("detour", ""\)\.isBlank\(\) \|\| !outbound\.has\("domain_strategy"\)\) continue/);
+    assert.match(nativeService, /val stripped = SxbTunnelPolicy\.enforceChainedDomainFidelity\(normalized\)/);
+    assert.match(nativeService, /SINGBOX_CHAIN_DOMAIN_STRATEGY_REMOVED/);
+    // Rien, nulle part, n'introduit une stratégie de domaine côté mobile.
+    assert.doesNotMatch(nativeService, /put\("domain_strategy"/);
+    assert.doesNotMatch(tunnelPolicy, /put\("domain_strategy"/);
+    // Le traducteur backend ignore explicitement « AsIs » (aucune stratégie).
+    assert.match(xrayTranslate, /if \(value === undefined \|\| value === '' \|\| value === 'AsIs'\) return;/);
+    // En-têtes fournisseur : recopiés verbatim, jamais complétés d'un Host
+    // fabriqué depuis l'IP de l'amont — c'était une autorité inventée.
+    assert.match(tunnelPolicy, /fun copyHeaders\(source: JSONObject\?\): JSONObject\?/);
+    assert.match(nativeService, /SxbTunnelPolicy\.copyHeaders\(headers\)\?\.let \{ put\("headers", it\) \}/);
+    assert.match(nativeService, /SxbTunnelPolicy\.copyHeaders\(ws\?\.optJSONObject\("headers"\)\)\?\.let \{ put\("headers", it\) \}/);
+    assert.doesNotMatch(nativeService, /headers\.put\("Host", addr\)/);
+  });
+
+  it('bascule sur les amonts HTTP que le profil déclare déjà, sans en inventer', () => {
+    // Un profil opérateur déclare souvent une dizaine d'amonts interchangeables
+    // et n'en câble qu'un : quand celui-ci répond 404, tout tombe, DNS compris.
+    // La bascule est confiée au moteur (groupe urltest), pas à une boucle de
+    // reconnexion maison, et n'utilise que des outbounds déclarés.
+    assert.match(tunnelPolicy, /fun installHttpChainFailover\(outbounds: JSONArray, graph: OutboundGraph, finalTag: String\): ChainFailover\?/);
+    assert.match(tunnelPolicy, /CHAIN_GROUP_TAG = "sxb-chain-auto"/);
+    assert.match(tunnelPolicy, /CHAIN_BRANCH_PREFIX = "sxb-chain-"/);
+    assert.match(tunnelPolicy, /MAX_CHAIN_BRANCHES = 12/);
+    assert.match(tunnelPolicy, /put\("type", "urltest"\)/);
+    assert.match(tunnelPolicy, /\.put\("interrupt_exist_connections", false\)/);
+    // Sortie anticipée : profils déjà groupés, non chaînés ou à amont unique.
+    assert.match(tunnelPolicy, /if \(head\.optString\("type", ""\) in groupTypes\) return null/);
+    assert.match(tunnelPolicy, /if \(!graph\.isHttpChainedVlessWs\(finalTag\)\) return null/);
+    assert.match(tunnelPolicy, /if \(upstreamTags\.size < 2\) return null/);
+    // Les branches clonent la tête déclarée : aucun endpoint nouveau.
+    assert.match(tunnelPolicy, /JSONObject\(head\.toString\(\)\)\.put\("tag", tag\)\.put\("detour", upstreamTag\)/);
+    assert.match(nativeService, /val chainFailover = SxbTunnelPolicy\.installHttpChainFailover\(outbounds, graph, finalTag\)/);
+    assert.match(nativeService, /finalTag = chainFailover\.groupTag/);
+    // Route et DNS suivent le groupe, jamais les `detour` d'outbound (cycle).
+    assert.match(nativeService, /SxbTunnelPolicy\.retargetRouteOutbound\(storedRules, chainFailover\.headTag, chainFailover\.groupTag\)/);
+    assert.match(nativeService, /SxbTunnelPolicy\.retargetDnsDetour\(sourceDns, it\.headTag, it\.groupTag\)/);
+    assert.doesNotMatch(tunnelPolicy, /fun retargetOutboundDetour/);
+    // Diagnostic : une seule ligne actionnable, sans verdict inventé.
+    assert.match(engineDiagnostics, /fun operationalLabel\(error: OperationalError, alternateUpstreams: Int\): String/);
+    assert.match(engineDiagnostics, /autres amonts déclarés dans votre profil/);
+    assert.match(engineDiagnostics, /Aucun autre amont interchangeable n'est déclaré/);
+    assert.match(nativeService, /SxbEngineLogPolicy\.operationalLabel\(\s*\n?\s*operational, SxbTunnelPolicy\.declaredAlternateUpstreams\(\),\s*\n?\s*\)/);
+    // Aucun redémarrage automatique du service n'est ajouté au diagnostic.
+    assert.doesNotMatch(engineDiagnostics, /stopSelf|startService|restart/);
   });
 
   it('affiche un bouton de téléchargement direct dans le mobile', () => {
@@ -730,9 +788,9 @@ describe('garde-fous contre les régressions Android', () => {
   });
 
   it('explique les refus HTTP amont sans confondre le proxy avec une erreur d’import Xray', () => {
-    assert.match(nativeService, /HTTP_429_RATE_LIMIT/);
-    assert.match(nativeService, /HTTP_404_UPSTREAM/);
-    assert.match(nativeService, /origine non confirmée/);
+    assert.match(engineDiagnostics, /HTTP_429_RATE_LIMIT/);
+    assert.match(engineDiagnostics, /HTTP_404_UPSTREAM/);
+    assert.match(engineDiagnostics, /origine non confirmée/);
     assert.match(nativeService, /val safeMessage = SecurityModule\.maskSensitive\(SecurityModule\.maskCredentialsOnly\(cleanMessage\)\)/);
   });
 
@@ -760,7 +818,7 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(nativeService, /engineLogThrottle\.reset\(\)\.forEach\(::broadcastEngineLogSummary\)/);
     assert.match(nativeService, /ENGINE_LOG_COALESCED.*suppressed=/);
     assert.match(engineDiagnostics, /OperationalError\.PACKET_DENIED -> null/);
-    assert.match(nativeService, /cette ligne seule ne prouve pas un défaut de permission Android/);
+    assert.match(engineDiagnostics, /cette ligne seule ne prouve pas un défaut de permission Android/);
   });
 
   it('synchronise les annonces vers un canal Android dédié et dédupliqué', () => {

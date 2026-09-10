@@ -2536,19 +2536,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
             SxbSecureLogger.debug("LIBBOX_LOG: $safeMessage")
             if (operational != null) {
                 admission?.let(::broadcastEngineLogSummary)
-                val label = when (operational) {
-                    SxbEngineLogPolicy.OperationalError.HTTP_404 ->
-                        "HTTP_404_UPSTREAM — réponse HTTP 404 à l'ouverture d'une connexion. " +
-                        "Elle peut venir de l'amont HTTP ou de l'endpoint WebSocket ; origine non confirmée."
-                    SxbEngineLogPolicy.OperationalError.HTTP_429 ->
-                        "HTTP_429_RATE_LIMIT — une étape HTTP limite les requêtes. " +
-                        "L'amont HTTP ou l'endpoint WebSocket peut répondre ; ne pas multiplier les reconnexions."
-                    SxbEngineLogPolicy.OperationalError.PACKET_DENIED ->
-                        "UDP_PACKET_DENIED — paquet UDP refusé. Une règle de blocage (p. ex. UDP/443) " +
-                        "peut l'expliquer ; cette ligne seule ne prouve pas un défaut de permission Android."
-                    SxbEngineLogPolicy.OperationalError.PACKET_FAILURE ->
-                        "UDP_PACKET_FAILURE — échec d'un échange UDP ; les autres connexions peuvent continuer."
-                }
+                val label = SxbEngineLogPolicy.operationalLabel(
+                    operational, SxbTunnelPolicy.declaredAlternateUpstreams(),
+                )
                 broadcastLog("[SXB] $label", priority = true)
                 broadcastLog("[engine] $safeMessage")
             } else when (classifyEngineEvent(lower)) {
@@ -3268,8 +3258,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
                                 put("transport", JSONObject().apply {
                                     put("type", "ws")
                                     put("path", ws?.optString("path", "/") ?: "/")
-                                    val headers = ws?.optJSONObject("headers")
-                                    if (headers != null) put("headers", headers)
+                                    // Copie verbatim : l'en-tête Host du WS fait
+                                    // partie de l'empreinte attendue par le fournisseur.
+                                    SxbTunnelPolicy.copyHeaders(ws?.optJSONObject("headers"))?.let { put("headers", it) }
                                 })
                             } else if (network == "grpc") {
                                 val grpc = stream.optJSONObject("grpcSettings")
@@ -3310,7 +3301,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                                 put("transport", JSONObject().apply {
                                     put("type", "ws")
                                     put("path", ws?.optString("path", "/") ?: "/")
-                                    ws?.optJSONObject("headers")?.let { put("headers", it) }
+                                    SxbTunnelPolicy.copyHeaders(ws?.optJSONObject("headers"))?.let { put("headers", it) }
                                 })
                             }
                             "grpc" -> {
@@ -3366,21 +3357,27 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     val srvs = settings?.optJSONArray("servers")?.optJSONObject(0)
                     val addr = srvs?.optString("address", "") ?: ""
                     val port = srvs?.optInt("port", 8080) ?: 8080
-                    val headers = settings?.optJSONObject("headers") ?: o.optJSONObject("headers")
+                    // Même ordre de recherche que le traducteur backend. Les
+                    // en-têtes sont RECOPIÉS verbatim, jamais fusionnés : un
+                    // amont « zero-rated » n'accepte que le CONNECT qu'il a
+                    // défini. En particulier, aucun `Host` n'est fabriqué — en
+                    // fabriquer un depuis l'IP de l'amont remplaçait l'autorité
+                    // attendue par le fournisseur et provoquait le refus 404.
+                    val headers = settings?.optJSONObject("headers")
+                        ?: srvs?.optJSONObject("headers")
+                        ?: o.optJSONObject("headers")
 
                     val sbOut = JSONObject().apply {
                         put("type", "http")
                         put("tag", tag)
                         put("server", addr)
                         put("server_port", port)
-                        // P7 — Fix headers http-upstream (MTN/Orange)
-                        if (headers != null) {
-                            // S'assurer que les headers sont bien propagés au CONNECT
-                            put("headers", headers)
-                            if (!headers.has("Host") && !headers.has("host")) {
-                                // Fallback Host header si manquant
-                                headers.put("Host", addr)
-                            }
+                        SxbTunnelPolicy.copyHeaders(headers)?.let { put("headers", it) }
+                        // L'authentification de l'amont fait partie du contrat
+                        // du fournisseur au même titre que ses en-têtes.
+                        srvs?.optJSONArray("users")?.optJSONObject(0)?.let { user ->
+                            user.optString("user", "").takeIf { it.isNotBlank() }?.let { put("username", it) }
+                            user.optString("pass", "").takeIf { it.isNotBlank() }?.let { put("password", it) }
                         }
                     }
                     preserveXrayDetour(sbOut)
@@ -3627,6 +3624,14 @@ class SxbVpnService : VpnService(), PlatformInterface {
             if (tag.isNotBlank()) byTag[tag] = outbound
         }
         cfg.put("outbounds", normalized)
+        // FIDÉLITÉ DE L'AUTORITÉ CONNECT — un outbound qui sort par un `detour`
+        // doit transmettre le NOM DE DOMAINE littéral à son amont. Avec
+        // `domain_strategy`, le moteur résout d'abord localement et l'amont
+        // reçoit « CONNECT <ip>:443 » au lieu du domaine autorisé : un proxy
+        // opérateur « zero-rated » répond alors 404, et tout ce qui dépend de
+        // ce flux (DNS compris) échoue avec lui.
+        val stripped = SxbTunnelPolicy.enforceChainedDomainFidelity(normalized)
+        if (stripped > 0) SxbSecureLogger.warn("SINGBOX_CHAIN_DOMAIN_STRATEGY_REMOVED count=$stripped")
         return cfg
     }
 
@@ -3699,7 +3704,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         for ((type, tag) in appOutbounds) {
             if (tags.add(tag)) outbounds.put(JSONObject().put("type", type).put("tag", tag))
         }
-        val graph = SxbTunnelPolicy.OutboundGraph(outbounds)
+        var graph = SxbTunnelPolicy.OutboundGraph(outbounds)
 
         // Route : exclusion anti-boucle + DNS hijack + ip_is_private (F3) puis règles stockées
         val routeObj = cfg.optJSONObject("route")
@@ -3712,7 +3717,24 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // le tunnel chiffré.
         var finalTag = routeObj?.optString("final", "") ?: ""
         if (finalTag.isEmpty() || !tags.contains(finalTag)) finalTag = mainTag ?: "proxy"
-        val mainServer = graph.chainEndServer(finalTag)
+
+        // BASCULE BORNÉE SUR LES AMONTS DÉJÀ DÉCLARÉS — un profil opérateur
+        // déclare souvent dix amonts HTTP interchangeables et n'en câble qu'un.
+        // Quand celui-ci répond 404, tout tombe, DNS compris. On confie la
+        // bascule au moteur (groupe `urltest`) plutôt qu'à une boucle de
+        // reconnexion : aucun endpoint n'est inventé, seules les branches
+        // déclarées sont utilisées, et la tête d'origine reste la première.
+        val chainFailover = SxbTunnelPolicy.installHttpChainFailover(outbounds, graph, finalTag)
+        if (chainFailover != null) {
+            graph = SxbTunnelPolicy.OutboundGraph(outbounds)
+            SxbTunnelPolicy.retargetRouteOutbound(storedRules, chainFailover.headTag, chainFailover.groupTag)
+            finalTag = chainFailover.groupTag
+        }
+        SxbTunnelPolicy.noteChainFailover(chainFailover)
+
+        // Chaque branche sort par un amont différent : toutes leurs adresses
+        // physiques doivent être exclues du TUN, pas seulement la première.
+        val chainServers = graph.chainEndServers(finalTag)
         val mtu = SxbTunnelPolicy.tunMtu(cfg, graph, JSONObject().put("final", finalTag).put("rules", storedRules))
 
         // DNS : celui du JSON stocké sinon celui de l'app
@@ -3729,6 +3751,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // Le garde s'applique aussi au DNS venu du profil : un JSON fournisseur
         // qui route son DNS par le proxy produit exactement la même récursion.
         val sourceDns = if (hasConfiguredDnsServers) configuredDns!! else defaultDnsObject(finalTag)
+        // Le DNS doit suivre la MÊME bascule que les données : sans cela un seul
+        // amont mort suffit à casser toute résolution, exactement le symptôme
+        // « dns: exchange failed … 404 » observé sur le terrain.
+        val dnsRetargets = chainFailover?.let {
+            SxbTunnelPolicy.retargetDnsDetour(sourceDns, it.headTag, it.groupTag)
+        } ?: 0
         // VLESS peut encapsuler l'UDP sur WS, mais des pertes/attentes DNS y
         // bloquent toute navigation. Ce repli de fiabilité est limité aux DNS
         // sans schéma sur VLESS/WS + HTTP : TCP vers le MEME résolveur, toujours
@@ -3741,7 +3769,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         }
         val dnsObj = applyDnsLoopGuard(reliableDns, outboundServerHosts)
 
-        val exclusion = if (mainServer.isNotBlank()) carrierExclusionRule(mainServer) else null
+        val exclusion = carrierExclusionRule(chainServers)
         val routeRules = JSONArray()
         exclusion?.let { routeRules.put(it) }
         routeRules
@@ -3752,11 +3780,20 @@ class SxbVpnService : VpnService(), PlatformInterface {
             routeRules.put(r)
         }
 
+        // Aucune adresse ni aucun tag fournisseur dans cette ligne : uniquement
+        // des compteurs, pour rester lisible sans exposer le profil.
         broadcastLog(
             "[CONFIG] singbox importé — outbounds=${outbounds.length()} final=$finalTag " +
             "chaînage=${finalTag != mainTag} dns=${if (hasConfiguredDnsServers) "profil" else "moteur→$finalTag"} " +
             "mtu=$mtu dns_tcp_chain=$dnsTcpUpgrades"
         )
+        if (chainFailover != null) {
+            broadcastLog(
+                "[SXB] CHAIN_FAILOVER — ${chainFailover.branchTags.size} amonts HTTP déclarés utilisables " +
+                "(${chainFailover.generatedTags.size} branches générées, dns_suivi=$dnsRetargets) ; " +
+                "le moteur bascule seul si l'amont en cours refuse la connexion."
+            )
+        }
 
         return JSONObject().apply {
             put("log", JSONObject().put("level", "warn").put("timestamp", true))
@@ -4033,18 +4070,29 @@ class SxbVpnService : VpnService(), PlatformInterface {
      * (SSH, VLESS, etc.) dans les règles de route TUN. Insérée EN PREMIÈRE.
      * Résout une fois (IPv4) et retourne la règle ip_cidr ou null.
      */
-    private fun carrierExclusionRule(host: String): JSONObject? {
+    private fun carrierExclusionRule(host: String): JSONObject? = carrierExclusionRule(listOf(host))
+
+    /**
+     * Toutes les sorties physiques d'une chaîne, y compris chaque branche d'un
+     * groupe : n'exclure que la première laissait les alternatives composer par
+     * le tunnel qu'elles alimentent, donc reboucler dès la bascule.
+     */
+    private fun carrierExclusionRule(servers: Collection<String>): JSONObject? {
         // Play uses protected native sockets for bootstrap, not a public-IP
         // TUN bypass that would also let application data avoid encryption.
         if (SxbPrivacyPolicy.isPlay(this)) return null
-        val ips = runCatching {
-            InetAddress.getAllByName(host)
-                .filterIsInstance<java.net.Inet4Address>()
-                .mapNotNull { it.hostAddress }
-                .map { "$it/32" }
-        }.getOrDefault(emptyList())
+        val ips = LinkedHashSet<String>()
+        for (host in servers) {
+            if (host.isBlank()) continue
+            runCatching {
+                InetAddress.getAllByName(host)
+                    .filterIsInstance<java.net.Inet4Address>()
+                    .mapNotNull { it.hostAddress }
+                    .map { "$it/32" }
+            }.getOrDefault(emptyList()).forEach { ips.add(it) }
+        }
         if (ips.isEmpty()) return null
-        return JSONObject().put("ip_cidr", JSONArray(ips)).put("outbound", "direct")
+        return JSONObject().put("ip_cidr", JSONArray(ips.toList())).put("outbound", "direct")
     }
 
     /**

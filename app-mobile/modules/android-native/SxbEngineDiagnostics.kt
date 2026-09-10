@@ -38,6 +38,36 @@ object SxbEngineLogPolicy {
             }
         }
     }
+
+    /**
+     * One actionable line per operational error. `alternateUpstreams` is the
+     * number of OTHER declared HTTP upstreams the engine can switch to, so the
+     * message says what is happening instead of listing every possible origin.
+     * It never claims a carrier, permission or provider verdict, and no tunnel
+     * is ever torn down or re-established from here.
+     */
+    fun operationalLabel(error: OperationalError, alternateUpstreams: Int): String = when (error) {
+        OperationalError.HTTP_404 -> if (alternateUpstreams > 0) {
+            "HTTP_404_UPSTREAM — l'amont HTTP en cours a refusé d'ouvrir la connexion (404). " +
+                "Bascule automatique vers les $alternateUpstreams autres amonts déclarés dans votre profil ; " +
+                "le tunnel reste actif et n'est pas redémarré."
+        } else {
+            "HTTP_404_UPSTREAM — l'amont HTTP a refusé d'ouvrir la connexion (404). " +
+                "Aucun autre amont interchangeable n'est déclaré dans votre profil : refus côté fournisseur."
+        }
+        OperationalError.HTTP_429 -> if (alternateUpstreams > 0) {
+            "HTTP_429_RATE_LIMIT — une étape HTTP limite les requêtes ; origine non confirmée. " +
+                "Les $alternateUpstreams autres amonts déclarés restent disponibles ; ne pas multiplier les reconnexions."
+        } else {
+            "HTTP_429_RATE_LIMIT — une étape HTTP limite les requêtes ; origine non confirmée. " +
+                "Ne pas multiplier les reconnexions."
+        }
+        OperationalError.PACKET_DENIED ->
+            "UDP_PACKET_DENIED — paquet UDP refusé. Une règle de blocage (p. ex. UDP/443) " +
+                "peut l'expliquer ; cette ligne seule ne prouve pas un défaut de permission Android."
+        OperationalError.PACKET_FAILURE ->
+            "UDP_PACKET_FAILURE — échec d'un échange UDP ; les autres connexions peuvent continuer."
+    }
 }
 
 class SxbEngineLogThrottle(

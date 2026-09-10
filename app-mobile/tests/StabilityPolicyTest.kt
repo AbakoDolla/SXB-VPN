@@ -35,6 +35,36 @@ private fun route(finalTag: String = "proxy1") = JSONObject("""{
   "rules":[{"network":["udp"],"port":[443],"outbound":"block"},
            {"ip_is_private":true,"outbound":"direct"}]
 }""")
+private const val CARRIER_UUID = "3f2b0c14-9a7d-4e51-b8c3-0d6a15e47f92"
+/** Shape of a zero-rated carrier profile: interchangeable heads and upstreams. */
+private fun carrierChain(upstreams: Int = 4, heads: Int = 2) = JSONArray().apply {
+    for (h in 1..heads) put(JSONObject("""{
+      "type":"vless","tag":"proxy$h","server":"edge.example.test","server_port":443,
+      "uuid":"$CARRIER_UUID","detour":"up$h",
+      "transport":{"type":"ws","path":"/ws","headers":{"Host":"edge.example.test"}},
+      "tls":{"enabled":true,"insecure":true,"server_name":"edge.example.test",
+             "utls":{"enabled":true,"fingerprint":"chrome"}}}"""))
+    for (i in 1..upstreams) put(JSONObject("""{
+      "type":"http","tag":"up$i","server":"198.51.100.$i","server_port":8080,
+      "headers":{"Host":"edge.example.test:443","X-Op-Bsid":"synthetic",
+                 "User-Agent":"Mozilla/5.0 (Linux; Android 13)"}}"""))
+    put(JSONObject().put("type", "direct").put("tag", "direct"))
+    put(JSONObject().put("type", "block").put("tag", "block"))
+    put(JSONObject().put("type", "dns").put("tag", "dns-out"))
+}
+private fun carrierRoute(finalTag: String = "proxy1") = JSONObject("""{
+  "final":"$finalTag",
+  "rules":[{"network":["udp"],"port":[443],"outbound":"block"},
+           {"ip_is_private":true,"outbound":"direct"},
+           {"type":"logical","mode":"or","rules":[{"port_range":["0:65535"],"outbound":"$finalTag"}]}]
+}""")
+private fun installFailover(outbounds: JSONArray, finalTag: String = "proxy1") =
+    SxbTunnelPolicy.installHttpChainFailover(outbounds, SxbTunnelPolicy.OutboundGraph(outbounds), finalTag)
+private fun tagged(outbounds: JSONArray): Map<String, JSONObject> =
+    (0 until outbounds.length()).mapNotNull { outbounds.optJSONObject(it) }.associateBy { it.optString("tag", "") }
+private fun servers(outbounds: JSONArray): Set<String> =
+    (0 until outbounds.length()).mapNotNull { outbounds.optJSONObject(it) }
+        .map { it.optString("server", "") }.filter { it.isNotEmpty() }.toSet()
 private fun dns(address: String, detour: String = "proxy1") = JSONObject()
     .put("servers", JSONArray().put(JSONObject().put("tag", "remote").put("address", address).put("detour", detour)))
     .put("final", "remote")
@@ -278,6 +308,239 @@ fun main() {
         repeat(4) { diagnostics.note(SxbEngineLogPolicy.Failure.DNS, 0L, true) }
         now += 5_000L
         check(diagnostics.note(SxbEngineLogPolicy.Failure.HTTP, 0L, true)?.failure == SxbEngineLogPolicy.Failure.HTTP)
+    }
+    checkCase("declared HTTP upstreams become one bounded engine group without inventing an endpoint") {
+        val outbounds = carrierChain()
+        val before = servers(outbounds)
+        val plan = installFailover(outbounds) ?: error("No failover for a multi-upstream carrier chain")
+        check(plan.groupTag == SxbTunnelPolicy.CHAIN_GROUP_TAG)
+        check(plan.headTag == "proxy1")
+        check(plan.upstreamTags == listOf("up1", "up2", "up3", "up4"))
+        // proxy2 est DÉCLARÉ et identique à la tête : il est réutilisé tel quel
+        // plutôt que dupliqué ; seuls les amonts orphelins reçoivent une branche.
+        check(plan.branchTags == listOf("proxy1", "proxy2", "sxb-chain-up3", "sxb-chain-up4"))
+        check(plan.generatedTags == listOf("sxb-chain-up3", "sxb-chain-up4"))
+        val byTag = tagged(outbounds)
+        check(servers(outbounds) == before) { "A branch introduced an endpoint the profile never declared" }
+        val head = byTag.getValue("proxy1")
+        for ((index, tag) in plan.branchTags.withIndex()) {
+            val branch = byTag.getValue(tag)
+            check(branch.getString("type") == "vless")
+            check(branch.getString("server") == head.getString("server"))
+            check(branch.getInt("server_port") == head.getInt("server_port"))
+            check(branch.getString("uuid") == head.getString("uuid"))
+            check(branch.getJSONObject("tls").similar(head.getJSONObject("tls")))
+            check(branch.getJSONObject("transport").similar(head.getJSONObject("transport")))
+            check(branch.getString("detour") == plan.upstreamTags[index])
+            check(!branch.has("domain_strategy"))
+        }
+        val group = byTag.getValue(plan.groupTag)
+        check(group.getString("type") == "urltest")
+        check(group.getString("url") == SxbTunnelPolicy.CHAIN_PROBE_URL)
+        check(group.getString("interval") == SxbTunnelPolicy.CHAIN_PROBE_INTERVAL)
+        check(group.getString("idle_timeout") == SxbTunnelPolicy.CHAIN_PROBE_IDLE_TIMEOUT)
+        check(group.getInt("tolerance") == SxbTunnelPolicy.CHAIN_PROBE_TOLERANCE)
+        check(!group.getBoolean("interrupt_exist_connections"))
+        val members = group.getJSONArray("outbounds")
+        check((0 until members.length()).map { members.getString(it) } == plan.branchTags)
+        // Sans historique de sonde le moteur retombe sur le PREMIER membre : la
+        // tête déclarée par l'utilisateur, donc le comportement d'aujourd'hui.
+        check(members.getString(0) == plan.headTag)
+        val graph = SxbTunnelPolicy.OutboundGraph(outbounds)
+        for (tag in plan.branchTags) check(graph.isHttpChainedVlessWs(tag))
+        check(graph.isHttpChainedVlessWs(plan.groupTag, everyPath = true))
+        val bounded = carrierChain(upstreams = 20)
+        val boundedPlan = installFailover(bounded) ?: error("No failover for twenty declared upstreams")
+        check(boundedPlan.branchTags.size == SxbTunnelPolicy.MAX_CHAIN_BRANCHES)
+        check(boundedPlan.branchTags.toSet().size == boundedPlan.branchTags.size)
+    }
+    checkCase("single-upstream, non-chained, already-grouped and mismatched profiles stay byte-identical") {
+        fun untouched(finalTag: String, mutate: (JSONArray) -> Unit = {}) {
+            val outbounds = carrierChain().also(mutate)
+            val before = outbounds.toString()
+            check(installFailover(outbounds, finalTag) == null) { "Unexpected failover for $finalTag" }
+            check(outbounds.toString() == before) { "Profile mutated while opting out for $finalTag" }
+        }
+        // Un seul amont déclaré : rien à quoi basculer.
+        val single = carrierChain(upstreams = 1, heads = 1)
+        val singleBefore = single.toString()
+        check(installFailover(single) == null && single.toString() == singleBefore)
+        // Profil non chaîné : chemin Play/direct strictement inchangé.
+        untouched("proxy1") { for (i in 0 until it.length()) it.optJSONObject(i)?.remove("detour") }
+        // Tête sortant par autre chose qu'un amont HTTP déclaré.
+        untouched("proxy1") {
+            it.put(JSONObject("""{"type":"socks","tag":"relay","server":"relay.example.test","server_port":1080}"""))
+            it.getJSONObject(0).put("detour", "relay")
+            it.getJSONObject(1).put("detour", "relay")
+        }
+        // Groupe déjà déclaré par l'utilisateur : sa politique prime.
+        untouched("select") {
+            it.put(JSONObject("""{"type":"selector","tag":"select","outbounds":["proxy1","proxy2"],"default":"proxy1"}"""))
+        }
+        // Amonts non interchangeables : en-têtes différents, aucune bascule.
+        untouched("proxy1") {
+            for (tag in listOf("up2", "up3", "up4")) {
+                tagged(it).getValue(tag).getJSONObject("headers").put("X-Op-Bsid", "other-$tag")
+            }
+        }
+        untouched("proxy1") { it.getJSONObject(0).remove("transport") }
+        untouched("absent")
+    }
+    checkCase("the generated group is deterministic and a rebuild never accumulates branches") {
+        val first = carrierChain()
+        val firstPlan = installFailover(first) ?: error("No failover")
+        val second = carrierChain()
+        val secondPlan = installFailover(second) ?: error("No failover")
+        check(first.toString() == second.toString())
+        check(firstPlan == secondPlan)
+        // Rejouer sur la config DÉJÀ construite (reconnexion) : aucun ajout.
+        val built = first.length()
+        check(installFailover(first, firstPlan.groupTag) == null)
+        check(first.length() == built)
+        // Même en repartant de la tête, aucune branche n'est dupliquée : les
+        // branches déjà présentes sont reconnues comme des têtes déclarées.
+        val again = installFailover(first, "proxy1") ?: error("No failover")
+        check(again.branchTags == firstPlan.branchTags && again.generatedTags.isEmpty())
+        val tags = (0 until first.length()).mapNotNull { first.optJSONObject(it) }.map { it.optString("tag", "") }
+        check(tags.size == tags.toSet().size) { "Rebuilding duplicated an outbound tag" }
+    }
+    checkCase("a chained outbound never carries a domain_strategy, so CONNECT keeps the domain") {
+        val declared = carrierChain()
+        declared.getJSONObject(0).put("domain_strategy", "prefer_ipv4")
+        declared.getJSONObject(2).put("domain_strategy", "ipv4_only")
+        check(SxbTunnelPolicy.enforceChainedDomainFidelity(declared) == 1)
+        check(!declared.getJSONObject(0).has("domain_strategy"))
+        // Un amont sans detour compose lui-même : sa stratégie lui appartient.
+        check(declared.getJSONObject(2).getString("domain_strategy") == "ipv4_only")
+        check(SxbTunnelPolicy.enforceChainedDomainFidelity(declared) == 0)
+        val outbounds = carrierChain()
+        val plan = installFailover(outbounds) ?: error("No failover")
+        val byTag = tagged(outbounds)
+        for (tag in plan.branchTags) {
+            check(byTag.getValue(tag).getString("server") == "edge.example.test")
+            check(!byTag.getValue(tag).has("domain_strategy"))
+        }
+        // Même clonée depuis une tête encore polluée, une branche reste propre.
+        val dirty = carrierChain()
+        dirty.getJSONObject(0).put("domain_strategy", "prefer_ipv4")
+        val dirtyPlan = installFailover(dirty) ?: error("No failover")
+        val dirtyByTag = tagged(dirty)
+        for (tag in dirtyPlan.generatedTags) check(!dirtyByTag.getValue(tag).has("domain_strategy"))
+        check(dirtyPlan.generatedTags.size == 3) { "A head carrying a strategy must not be reused as a branch" }
+        // Chaque branche sort par une adresse différente : toutes doivent être
+        // exclues du TUN, pas seulement celle du premier amont.
+        val graph = SxbTunnelPolicy.OutboundGraph(outbounds)
+        check(graph.chainEndServers(plan.groupTag) ==
+            setOf("198.51.100.1", "198.51.100.2", "198.51.100.3", "198.51.100.4"))
+        check(graph.chainEndServers("proxy1") == setOf("198.51.100.1"))
+        check(graph.chainEndServer("proxy1") == "198.51.100.1")
+        check(graph.chainEndServer(plan.groupTag).isEmpty())
+    }
+    checkCase("provider headers are copied verbatim: nothing renamed, dropped or invented") {
+        val source = JSONObject("""{"Host":"edge.example.test:443","x-op-bsid":"synthetic",
+          "User-Agent":"Mozilla/5.0 (Linux; Android 13)","X-Multi":["first","second"]}""")
+        val before = source.toString()
+        val copy = SxbTunnelPolicy.copyHeaders(source) ?: error("Header set dropped")
+        check(copy.similar(source) && source.toString() == before)
+        copy.put("X-Injected", "never")
+        check(!source.has("X-Injected"))
+        check(SxbTunnelPolicy.copyHeaders(null) == null)
+        check(SxbTunnelPolicy.copyHeaders(JSONObject()) == null)
+        rejected("HTTP_HEADER_INVALID") { SxbTunnelPolicy.copyHeaders(JSONObject().put("X-Op-Bsid", 1)) }
+        rejected("HTTP_HEADER_INVALID") { SxbTunnelPolicy.copyHeaders(JSONObject().put("X-Op-Bsid", JSONArray().put(1))) }
+        // Aucun Host fabriqué quand le fournisseur n'en déclare pas : le moteur
+        // utilise alors l'autorité réelle de la destination, ce qu'il faut.
+        val hostless = SxbTunnelPolicy.copyHeaders(JSONObject().put("X-Op-Bsid", "synthetic")) ?: error("dropped")
+        check(hostless.length() == 1 && !hostless.has("Host") && !hostless.has("host"))
+        val outbounds = carrierChain()
+        val plan = installFailover(outbounds) ?: error("No failover")
+        val byTag = tagged(outbounds)
+        val reference = byTag.getValue("up1").getJSONObject("headers")
+        for (tag in plan.upstreamTags) check(byTag.getValue(tag).getJSONObject("headers").similar(reference))
+        val wsHeaders = byTag.getValue("proxy1").getJSONObject("transport").getJSONObject("headers")
+        for (tag in plan.branchTags) {
+            check(byTag.getValue(tag).getJSONObject("transport").getJSONObject("headers").similar(wsHeaders))
+        }
+    }
+    checkCase("route, DNS and MTU follow the group while outbound detours stay untouched") {
+        val outbounds = carrierChain()
+        val plan = installFailover(outbounds) ?: error("No failover")
+        val graph = SxbTunnelPolicy.OutboundGraph(outbounds)
+        val rules = carrierRoute().getJSONArray("rules")
+        check(SxbTunnelPolicy.retargetRouteOutbound(rules, plan.headTag, plan.groupTag) == 1)
+        check(rules.getJSONObject(0).getString("outbound") == "block")
+        check(rules.getJSONObject(0).getJSONArray("port").getInt(0) == 443)
+        check(rules.getJSONObject(1).getString("outbound") == "direct")
+        check(rules.getJSONObject(2).getJSONArray("rules").getJSONObject(0).getString("outbound") == plan.groupTag)
+        check(SxbTunnelPolicy.retargetRouteOutbound(rules, plan.headTag, plan.groupTag) == 0)
+        // Retargeter un `detour` d'outbound créerait groupe → branche → groupe.
+        val byTag = tagged(outbounds)
+        check(byTag.getValue("proxy1").getString("detour") == "up1")
+        check(byTag.getValue("proxy2").getString("detour") == "up2")
+        val dnsObj = dns("198.51.100.53", "proxy1")
+        check(SxbTunnelPolicy.retargetDnsDetour(dnsObj, plan.headTag, plan.groupTag) == 1)
+        check(server(dnsObj).getString("detour") == plan.groupTag)
+        check(SxbTunnelPolicy.retargetDnsDetour(dnsObj, plan.headTag, plan.groupTag) == 0)
+        val adapted = SxbTunnelPolicy.reliableDns(dnsObj, graph)
+        check(server(adapted).getString("address") == "tcp://198.51.100.53")
+        check(server(adapted).getString("detour") == plan.groupTag)
+        val selected = JSONObject().put("final", plan.groupTag).put("rules", rules)
+        check(SxbTunnelPolicy.tunMtu(JSONObject(), graph, selected) == SxbTunnelPolicy.HTTP_CHAIN_MTU)
+        // Un membre non chaîné dans le groupe : plus de repli TCP silencieux.
+        val mixed = carrierChain()
+        installFailover(mixed)
+        tagged(mixed).getValue(SxbTunnelPolicy.CHAIN_GROUP_TAG).getJSONArray("outbounds").put("direct")
+        val mixedGraph = SxbTunnelPolicy.OutboundGraph(mixed)
+        check(server(SxbTunnelPolicy.reliableDns(dns("198.51.100.53", SxbTunnelPolicy.CHAIN_GROUP_TAG), mixedGraph))
+            .getString("address") == "198.51.100.53")
+    }
+    checkCase("a generated group still fails closed on unknown members or cycles") {
+        rejected("TUNNEL_OUTBOUND_MISSING") {
+            val outbounds = carrierChain()
+            val plan = installFailover(outbounds) ?: error("No failover")
+            tagged(outbounds).getValue(plan.groupTag).getJSONArray("outbounds").put("ghost")
+            SxbTunnelPolicy.OutboundGraph(outbounds)
+        }
+        rejected("TUNNEL_ROUTE_CYCLE") {
+            val outbounds = carrierChain()
+            val plan = installFailover(outbounds) ?: error("No failover")
+            tagged(outbounds).getValue("up1").put("detour", plan.groupTag)
+            SxbTunnelPolicy.OutboundGraph(outbounds)
+        }
+        rejected("TUNNEL_GROUP_TAG_INVALID") {
+            val outbounds = carrierChain()
+            val plan = installFailover(outbounds) ?: error("No failover")
+            tagged(outbounds).getValue(plan.groupTag).getJSONArray("outbounds").put(42)
+            SxbTunnelPolicy.OutboundGraph(outbounds)
+        }
+    }
+    checkCase("the 404 line names the upstream refusal and the declared alternates, without new verdicts") {
+        val withAlternates = SxbEngineLogPolicy.operationalLabel(SxbEngineLogPolicy.OperationalError.HTTP_404, 3)
+        check(withAlternates.startsWith("HTTP_404_UPSTREAM"))
+        check(withAlternates.contains("3 autres amonts déclarés"))
+        check(withAlternates.contains("n'est pas redémarré"))
+        val alone = SxbEngineLogPolicy.operationalLabel(SxbEngineLogPolicy.OperationalError.HTTP_404, 0)
+        check(alone.startsWith("HTTP_404_UPSTREAM") && alone.contains("Aucun autre amont"))
+        check(SxbEngineLogPolicy.operationalLabel(SxbEngineLogPolicy.OperationalError.PACKET_DENIED, 4)
+            .contains("ne prouve pas un défaut de permission Android"))
+        for (alternates in listOf(0, 1, 9)) {
+            for (kind in SxbEngineLogPolicy.OperationalError.entries) {
+                val label = SxbEngineLogPolicy.operationalLabel(kind, alternates)
+                check(label.isNotBlank() && label == SxbEngineLogPolicy.clean(label))
+                for (verdict in listOf("APN", "opérateur bloque", "permission Android manquante", "forfait")) {
+                    check(!label.contains(verdict)) { "The label states an unproven verdict: $verdict" }
+                }
+            }
+        }
+        // Le compteur vient de la configuration construite : aucune adresse.
+        SxbTunnelPolicy.noteChainFailover(null)
+        check(SxbTunnelPolicy.declaredAlternateUpstreams() == 0)
+        val outbounds = carrierChain()
+        val plan = installFailover(outbounds) ?: error("No failover")
+        SxbTunnelPolicy.noteChainFailover(plan)
+        check(SxbTunnelPolicy.declaredAlternateUpstreams() == plan.branchTags.size - 1)
+        SxbTunnelPolicy.noteChainFailover(null)
+        check(SxbTunnelPolicy.declaredAlternateUpstreams() == 0)
     }
     println("PASS $cases stability policy cases")
 }
