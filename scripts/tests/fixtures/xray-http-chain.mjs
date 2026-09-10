@@ -29,11 +29,12 @@ export function xrayHttpChainFixture() {
       ...Array.from({ length: 11 }, (_, index) => ({
         protocol: 'http', tag: `moodyibr${index + 1}`, domainStrategy: 'AsIs',
         settings: {
+          // Same shape as an operator front: interchangeable upstreams differing only by address.
           servers: [{ address: `upstream${index + 1}.example.test`, port: 8080 }],
           headers: {
             Host: 'front.example.test',
             'User-Agent': 'SXB-synthetic-fixture/1.0',
-            'X-iorg': `synthetic-header-canary-${index + 1}`,
+            'X-iorg': 'synthetic-header-canary',
           },
         },
       })),
