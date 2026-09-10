@@ -96,6 +96,23 @@ constructeur libbox `1.11.15` sur un graphe fictif équivalent, sans connexion V
 Une configuration fournisseur avec `allowInsecure: true` reste explicitement
 non admissible au canal Play ; l'import ne contourne pas cette protection.
 
+Pour les chaînes VLESS/WebSocket passant par un proxy HTTP, le moteur utilise
+un MTU mobile conservateur plutôt que le MTU jumbo, sauf valeur explicite
+valide. Un résolveur DNS indiqué par une adresse nue utilise TCP à travers
+la même tête VLESS : son adresse n'est pas remplacée et il n'est pas envoyé
+directement au proxy HTTP. Les transports DNS explicitement configurés et
+l'amorçage hors tunnel sont conservés.
+
+Les erreurs HTTP répétées sont regroupées dans le journal, sans déclencher une
+reconnexion du tunnel sur chaque connexion annexe refusée. Une erreur DNS
+encapsulée dans un refus HTTP ne prouve pas que l'APN est défectueux, et un
+compteur TUN indisponible ne prouve pas une absence de trafic. Le blocage
+UDP/443 demandé par le profil reste appliqué ; sing-box peut le signaler par
+`operation not permitted`, sans qu'il s'agisse d'un besoin de permission root.
+Le contrôle CI complète le constructeur natif par des requêtes DNS et des
+transferts sur une chaîne VLESS/WS/TLS/HTTP entièrement locale. Cette preuve
+ne constitue pas une mesure du débit ou de la disponibilité du fournisseur.
+
 ### Activation de l'appareil et droits des configurations
 
 L'activation de l'application et les droits de chaque configuration sont deux

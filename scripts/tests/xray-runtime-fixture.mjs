@@ -24,6 +24,7 @@ export function nativeCompatibilityHarnessSource() {
 import org.json.JSONObject
 import java.io.File
 import java.util.Locale
+import com.sxbvpn.vpnmodule.SxbTunnelPolicy
 
 private object SxbSecureLogger {
     fun warn(message: String) {}
