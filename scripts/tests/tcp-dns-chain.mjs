@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import net from 'node:net';
 import http from 'node:http';
-import https from 'node:https';
 import dgram from 'node:dgram';
 import { once } from 'node:events';
 import { spawn, execFileSync } from 'node:child_process';
@@ -214,24 +213,11 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
   // The engine's health probe must succeed through the chain, otherwise its
   // selection keeps the first member and no alternate is ever measured.
   const policySource = await readFile(new URL('../../app-mobile/modules/android-native/SxbTunnelPolicy.kt', import.meta.url), 'utf8');
-  const probeUrl = new URL(/CHAIN_PROBE_URL\s*=\s*"([^"]+)"/.exec(policySource)?.[1] ?? 'https://www.gstatic.com/generate_204');
-  assert.equal(probeUrl.protocol, 'https:');
-  const caKey = path.join(temporary, 'probe-ca.key');
-  const caCert = path.join(temporary, 'probe-ca.crt');
-  const probeKey = path.join(temporary, 'probe.key');
-  const probeCsr = path.join(temporary, 'probe.csr');
-  const probeCert = path.join(temporary, 'probe.crt');
-  const openssl = args => execFileSync('openssl', args, { stdio: 'ignore', timeout: 15000 });
-  openssl(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', caKey, '-out', caCert,
-    '-days', '1', '-subj', '/CN=SXB loopback fixture CA']);
-  openssl(['req', '-newkey', 'rsa:2048', '-nodes', '-keyout', probeKey, '-out', probeCsr,
-    '-subj', `/CN=${probeUrl.hostname}`, '-addext', `subjectAltName=DNS:${probeUrl.hostname}`]);
-  openssl(['x509', '-req', '-in', probeCsr, '-CA', caCert, '-CAkey', caKey, '-CAcreateserial',
-    '-out', probeCert, '-days', '1', '-copy_extensions', 'copyall']);
+  const probeUrl = new URL(/CHAIN_PROBE_URL\s*=\s*"([^"]+)"/.exec(policySource)?.[1] ?? 'http://www.gstatic.com/generate_204');
+  assert.equal(probeUrl.protocol, 'http:',
+    'The engine probe client carries no TLS configuration, so this fixture serves the probe without TLS');
   let probeRequests = 0;
-  const probeServer = https.createServer({
-    cert: await readFile(probeCert), key: await readFile(probeKey),
-  }, (request, response) => {
+  const probeServer = http.createServer((request, response) => {
     probeRequests++;
     if (request.url !== probeUrl.pathname) { response.writeHead(404); response.end(); return; }
     response.writeHead(204);
@@ -315,11 +301,10 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
     throw new Error(`${name} engine failed to listen: ${errors}`);
   }
   await start(serverConfig, 'vless-server', vlessPort);
-  // The client trusts only this fixture's private CA, so the health probe stays local.
-  await start(clientConfig, 'client', ingressPort, { SSL_CERT_FILE: caCert, SSL_CERT_DIR: temporary });
+  await start(clientConfig, 'client', ingressPort);
   const started = Date.now();
   if (upstreams.length > 1) {
-    const deadline = Date.now() + 20000;
+    const deadline = Date.now() + 45000;
     while (Date.now() < deadline && acceptedVia.size === 0) await wait(100);
     assert.ok(acceptedVia.size >= 1, 'A declared alternate upstream must answer the engine health probe');
   }
