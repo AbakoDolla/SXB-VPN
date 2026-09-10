@@ -8,6 +8,7 @@ import crypto from "crypto";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { requireAuth, requirePermission, requireRole, AuthenticatedRequest } from "../middleware/auth";
 import { canSeeUser, isOwnerRequest, OWNER_ROLE } from "../middleware/rbac/owner";
+import { sessionUser } from "../services/session-user";
 
 const router = Router();
 router.use(requireAuth, requireRole(["SUPER_ADMIN", "ADMIN", "SUPPORT", "RESELLER"]));
@@ -207,8 +208,7 @@ router.patch("/me", requireAuth, async (req: AuthenticatedRequest, res: Response
       data,
       include: { role: true },
     });
-    const { passwordHash, ...safe } = updated as any;
-    return res.json(safe);
+    return res.json(sessionUser(updated, req));
   } catch (err) {
     console.error("PATCH /me error:", err);
     return res.status(500).json({ error: "errors.server" });
@@ -227,7 +227,7 @@ router.post("/me/avatar", requireAuth, avatarUpload.single("avatar"), async (req
       include: { role: true },
     });
     const { passwordHash, ...safe } = updated as any;
-    return res.json({ success: true, avatarUrl, user: safe });
+    return res.json({ success: true, avatarUrl, user: sessionUser(safe, req) });
   } catch (err) {
     console.error("POST /me/avatar error:", err);
     return res.status(500).json({ error: "errors.server" });

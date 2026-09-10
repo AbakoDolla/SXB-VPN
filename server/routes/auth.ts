@@ -7,6 +7,7 @@ import { generateTokens, requireAuth, TokenPayload, AuthenticatedRequest } from 
 import { config } from "../config";
 import { refreshMobileSession } from "../services/mobile-session-refresh";
 import { MobileAccessError, sessionInvalidFailure } from "../services/access-lifecycle";
+import { sessionUser } from "../services/session-user";
 
 const router = Router();
 
@@ -352,28 +353,12 @@ router.get('/me', requireAuth, async (req: AuthenticatedRequest, res: Response) 
         include: { role: { include: { permissions: { include: { permission: true } } } } },
       });
       if (!user) return res.status(404).json({ error: 'errors.auth.user_not_found', message: 'Utilisateur introuvable' });
-      return res.json({
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: req.user.role,
-        status: user.status,
-        permissions: req.user.permissions,
-        avatarUrl: user.avatarUrl ?? null,
-      });
+      return res.json(sessionUser(user, req));
     }
     // Fallback in-memory
     const memUser = inMemoryDb.users.find((u) => u.id === req.user!.userId);
     if (!memUser) return res.status(404).json({ error: 'errors.auth.user_not_found', message: 'Utilisateur introuvable' });
-    return res.json({
-      id: memUser.id,
-      name: (memUser as any).name || req.user.email,
-      email: memUser.email,
-      role: req.user.role,
-      status: memUser.status,
-      permissions: req.user.permissions,
-      avatarUrl: null,
-    });
+    return res.json(sessionUser({ ...memUser, name: (memUser as any).name || req.user.email }, req));
   } catch (err) {
     console.error('auth/me error:', err);
     return res.status(500).json({ error: 'errors.server', message: 'Erreur interne' });

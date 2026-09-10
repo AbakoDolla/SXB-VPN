@@ -195,9 +195,12 @@ export default function Layout({
     },
   ];
 
+  // Le menu est rendu HORS de la frontière d'erreur : une liste de droits
+  // absente y ferait disparaître toute l'interface, pas seulement une section.
+  const granted = Array.isArray(currentUser.permissions) ? currentUser.permissions : [];
   const canSeeLeaf = (item: NavLeaf) =>
     item.roles.includes(role) &&
-    (role === UserRole.OWNER || !item.permission || currentUser.permissions.includes(item.permission));
+    (role === UserRole.OWNER || !item.permission || granted.includes(item.permission));
 
   const filteredNav = navStructure.filter(entry => entry.roles.includes(role)).map(entry => {
     if (entry.kind === 'group') {

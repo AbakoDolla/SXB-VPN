@@ -41,7 +41,8 @@ export default function VouchersView({ currentUserRole, permissions }: VouchersV
 
   const isSupport = currentUserRole === UserRole.SUPPORT;
   const showsOwner = isUpperRole(currentUserRole);
-  const hasPermission = (permission: string) => currentUserRole === UserRole.OWNER || permissions.includes(permission);
+  const hasPermission = (permission: string) =>
+    currentUserRole === UserRole.OWNER || (Array.isArray(permissions) && permissions.includes(permission));
   const { allows, refresh: refreshAccess } = useResellerAccess();
   // Émettre un bon engage du volume : fermé quand l'agrément est expiré ou le
   // plafond atteint.

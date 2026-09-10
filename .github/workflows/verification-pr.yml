@@ -50,7 +50,7 @@ jobs:
       # transports, épinglage des actions.
       - name: Garde-fous contre les régressions
         working-directory: app-mobile
-        run: npx tsx --test tests/regression-critical-flows.test.ts ../server/tests/reseller-lifecycle.test.ts
+        run: npx tsx --test tests/regression-critical-flows.test.ts ../server/tests/reseller-lifecycle.test.ts ../server/tests/session-user.test.ts
 
       - name: Contrat de confidentialité santé mobile
         run: node --test scripts/tests/mobile-health-static.test.mjs

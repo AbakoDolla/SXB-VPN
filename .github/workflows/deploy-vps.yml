@@ -103,7 +103,7 @@ jobs:
       # dont l'oubli a déjà provoqué des pannes ici.
       - name: Garde-fous contre les régressions
         working-directory: app-mobile
-        run: npx tsx --test tests/regression-critical-flows.test.ts ../server/tests/reseller-lifecycle.test.ts
+        run: npx tsx --test tests/regression-critical-flows.test.ts ../server/tests/reseller-lifecycle.test.ts ../server/tests/session-user.test.ts
 
       - name: Build Dashboard (React + Vite)
         working-directory: artifacts/sxb-dashboard
