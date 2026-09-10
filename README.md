@@ -77,6 +77,25 @@ Points notables du moteur :
 - **Compteur de session** — détenu par le service natif, il survit à la mise en
   arrière-plan de l'application.
 
+Les réponses d'activation mobile n'ont pas besoin de contenir une adresse e-mail.
+L'identité et le nom renvoyés par l'API suffisent ; un échec local de finalisation
+ou une réponse invalide ne doit pas être présenté comme une panne réseau.
+
+Les imports Xray compatibles conservent les tags, routes, plages de ports,
+options WebSocket/TLS et références aux proxys HTTP. Les références inconnues
+ou ambiguës sont refusées, plutôt que remplacées par une route inventée. Définir
+plusieurs proxys dans le fichier ne les active pas tous : les routes et `detour`
+déterminent lesquels sont effectivement utilisés. Aucun débit ou basculement
+automatique n'est garanti par le seul import.
+
+La base de domaines SagerNet/v2fly `20260908094002` est embarquée pour les règles
+`geosite`, avec empreinte vérifiée et notice de licence dans
+`app-mobile/assets/engine/`. Le démarrage ne dépend pas d'un téléchargement
+de cette base. Les gates Android exécutent le vrai générateur Kotlin et le
+constructeur libbox `1.11.15` sur un graphe fictif équivalent, sans connexion VPN.
+Une configuration fournisseur avec `allowInsecure: true` reste explicitement
+non admissible au canal Play ; l'import ne contourne pas cette protection.
+
 ### Activation de l'appareil et droits des configurations
 
 L'activation de l'application et les droits de chaque configuration sont deux

@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
+
+const { SHA256: geositeSha256, VERSION: geositeVersion } = createRequire(import.meta.url)('./prepare-geosite.cjs');
 
 export function archiveEntries(archive) {
   execFileSync('unzip', ['-t', archive], { maxBuffer: 32 * 1024 * 1024 });
@@ -18,6 +21,15 @@ export function archiveEntries(archive) {
 
 export function archiveRead(archive, entry) {
   return execFileSync('unzip', ['-p', archive, entry], { maxBuffer: 256 * 1024 * 1024 });
+}
+
+export function inspectEngineData(archive, prefix) {
+  const location = `${prefix}/sxb-engine`;
+  const sha256 = createHash('sha256').update(archiveRead(archive, `${location}/geosite.db`)).digest('hex');
+  assert.equal(sha256, geositeSha256, 'Packaged geosite database differs from the pinned offline data');
+  assert.equal(archiveRead(archive, `${location}/geosite.sha256`).toString().trim(), sha256);
+  assert.match(archiveRead(archive, `${location}/NOTICE.txt`).toString(), /Copyright \(c\) 2018-2019 V2Ray/);
+  return { version: geositeVersion, sha256, bundled: true };
 }
 
 const abiHeaders = {

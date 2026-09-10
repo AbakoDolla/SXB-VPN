@@ -694,7 +694,7 @@ jobs:
           import { createHash } from 'node:crypto';
           import { readFileSync, writeFileSync } from 'node:fs';
           import { createRequire } from 'node:module';
-          import { inspectNativeArchive } from './scripts/android-artifact.mjs';
+          import { inspectNativeArchive, inspectEngineData } from './scripts/android-artifact.mjs';
           const require = createRequire(import.meta.url);
           const { parseBaseline } = require('./scripts/read-direct-baseline.cjs');
           const identity = parseBaseline(
@@ -713,6 +713,7 @@ jobs:
             previousVersionCode: baseline.versionCode,
             apkSha256: createHash('sha256').update(readFileSync('build/sxb-vpn.apk')).digest('hex'),
             nativeLibraries: inspectNativeArchive('build/sxb-vpn.apk', 'lib', ['libbox.so', 'libdnstt.so']),
+            engineData: inspectEngineData('build/sxb-vpn.apk', 'assets'),
             publicationRequested: process.env.GITHUB_REF === 'refs/heads/main',
           };
           writeFileSync('build/report/validation.json', JSON.stringify(report, null, 2) + '\n');

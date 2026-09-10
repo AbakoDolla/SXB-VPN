@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { archiveEntries, inspectNativeArchive } from './android-artifact.mjs';
+import { archiveEntries, inspectNativeArchive, inspectEngineData } from './android-artifact.mjs';
 
 const require = createRequire(import.meta.url);
 const PACKAGE = 'com.sxbvpn.mobile';
@@ -157,6 +157,7 @@ export async function validateBundle({ bundle, bundletool, output, versionCode, 
     ...playVersionHistory(previousPlayVersionCode, playHistoryVerified),
     aabSha256: createHash('sha256').update(readFileSync(bundle)).digest('hex'),
     nativeLibraries,
+    engineData: inspectEngineData(bundle, 'base/assets'),
     playAppSigning: 'Console owner must enroll the existing direct APK signing key as the Play app signing key; an upload signature alone does not guarantee device update compatibility.',
   };
   writeFileSync(path.join(output, 'validation.json'), `${JSON.stringify(report, null, 2)}\n`);
