@@ -238,8 +238,10 @@ test('TLS is never disabled to accept an unknown security mode', () => {
 test('the CI fixture exercises the actual Kotlin raw-config builder with only physical network stubs', () => {
   const harness = nativeCompatibilityHarnessSource();
   assert.equal(SING_BOX_VERSION, '1.11.15');
-  assert.match(harness, /normalizeRawSingBoxCompatibility\(convertXrayToSingBoxIfNeeded\(rawCfg\)\)/);
-  assert.match(harness, /put\("inbounds", JSONArray\(\)\.put\(tunInbound\(\)\)\)/);
+  assert.match(harness, /normalizeRawSingBoxCompatibility\(convertXrayToSingBoxIfNeeded\(JSONObject\(rawCfg\.toString\(\)\)\)\)/);
+  assert.match(harness, /put\("inbounds", JSONArray\(\)\.put\(tunInbound\(mtu\)\)\)/);
+  assert.match(harness, /SxbTunnelPolicy\.tunMtu/);
+  assert.match(harness, /SxbTunnelPolicy\.reliableDns\(sourceDns, graph, dnsStrategy\(\)\)/);
   assert.match(harness, /val dnsObj = applyDnsLoopGuard\(/);
   assert.match(harness, /put\("outbounds", outbounds\)/);
   assert.match(harness, /routeRules\.put\(r\)/);

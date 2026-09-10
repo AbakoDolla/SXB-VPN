@@ -80,6 +80,12 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
   assert.match(remote.address, /^tcp:\/\//, 'The source-derived native builder must select reliable DNS TCP for the HTTP chain');
   assert.equal(remote.detour, main.tag, 'DNS must enter the encrypted VLESS head, never the raw HTTP proxy');
   assert.equal(runtime.inbounds[0].mtu, 1400, 'The chained mobile TUN must not use a jumbo MTU');
+  const blockTags = new Set(runtime.outbounds.filter(outbound => outbound.type === 'block').map(outbound => outbound.tag));
+  assert.ok(runtime.route.rules.some(rule =>
+    blockTags.has(rule.outbound) &&
+    (rule.network === 'udp' || (Array.isArray(rule.network) && rule.network.includes('udp'))) &&
+    (rule.port === 443 || (Array.isArray(rule.port) && rule.port.includes(443)))),
+  'The provider-requested UDP/443 block must remain in the actual native graph');
 
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'sxb-loopback-chain-'));
   const sockets = new Set();

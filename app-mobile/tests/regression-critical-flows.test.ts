@@ -1217,7 +1217,8 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(nativeService.includes('QUOTA_EXHAUSTED'));
     assert.ok(nativeService.includes('HOST_REDIRECT'));
     // Rien n'est perdu : tout reste dans le journal sécurisé pour diagnostic.
-    assert.ok(nativeService.includes('SxbSecureLogger.debug("LIBBOX_LOG: $message")'));
+    assert.ok(nativeService.includes('val cleanMessage = SxbEngineLogPolicy.clean(message)'));
+    assert.ok(nativeService.includes('SxbSecureLogger.debug("LIBBOX_LOG: $safeMessage")'));
     // Plus de diffusion inconditionnelle de chaque ligne du moteur.
     assert.doesNotMatch(nativeService, /val safeMessage = SecurityModule\.maskSensitive\(message\)\s*\n\s*broadcastLog\("\[engine\] \$safeMessage"\)/);
   });
