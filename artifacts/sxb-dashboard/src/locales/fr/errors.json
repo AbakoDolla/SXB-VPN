@@ -111,7 +111,18 @@
     "access_required": "Une date d'expiration future est requise pour un compte revendeur.",
     "unavailable": "L'état d'accès du revendeur est temporairement indisponible."
   },
-  "subscriptions": { "quota_below_usage": "Le quota du forfait ne peut pas être inférieur à sa consommation actuelle." },
+  "subscriptions": {
+    "not_found": "Forfait introuvable.",
+    "quota_below_usage": "Le quota du forfait ne peut pas être inférieur à sa consommation actuelle.",
+    "bulk": {
+      "empty": "Aucun élément sélectionné.",
+      "expiry_before_start": "L'échéance doit être postérieure au début.",
+      "expiry_conflict": "Une échéance et une durée ne peuvent pas être appliquées ensemble.",
+      "no_change": "Ce forfait a déjà ces valeurs.",
+      "no_field": "Aucun champ à appliquer.",
+      "too_many": "Un lot ne peut pas dépasser {{max}} forfaits."
+    }
+  },
   "profiles": { "invalid_resellers": "La liste des revendeurs attribués est invalide." },
   "vpnprofile": { "archived": "Cette configuration est archivée.", "not_assigned": "Cette configuration ne vous est pas attribuée.", "not_found": "Configuration VPN introuvable." },
   "servers": { "not_found": "Serveur introuvable." },

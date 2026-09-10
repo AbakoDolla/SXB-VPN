@@ -5,7 +5,7 @@ import { UserRole } from '../types';
 import {
   fetchSubscriptions, fetchSubStats, createSubscription,
   updateSubscription, deleteSubscription, revokeSubscription,
-  bulkSubscriptions, BulkAction, BulkResult,
+  bulkSubscriptions, BulkValueMode, BulkPayload, BulkResult, MAX_BULK_APPLY,
   Subscription,
 } from '../api/subscriptions';
 import { fetchVpnProfiles, fetchAssignedVpnProfiles, VpnProfile } from '../api/vpn-profiles';
@@ -44,21 +44,40 @@ function fmtDate(d: string | null, locale: string) {
 const DEFAULT_FORM = {
   clientId: '', profileId: '', name: '', quotaGB: 5, durationDays: 30, deviceLimit: 1,
 };
+
 // ── Opérations groupées ──────────────────────────────────────────────────────
-// « Définir » et « Ajouter » sont volontairement deux entrées distinctes : les
-// confondre ferait perdre le solde d'un client. Le libellé dit ce que l'action
-// FAIT, pas seulement son nom.
-const createBulkActions = (t: ReturnType<typeof useTranslation>['t']): Array<{ id: BulkAction; label: string; hint: string; needsProfile: boolean; needsQuota: boolean; needsDuration: boolean }> => [
-  { id: 'deploy',          label: t('commerce.subscriptions.bulk.deploy'), hint: t('commerce.subscriptions.bulk.deployHint'), needsProfile: true,  needsQuota: true,  needsDuration: true },
-  { id: 'set',             label: t('commerce.subscriptions.bulk.set'),          hint: t('commerce.subscriptions.bulk.setHint'), needsProfile: false, needsQuota: true,  needsDuration: true },
-  { id: 'add_data',        label: t('commerce.subscriptions.bulk.addData'),   hint: t('commerce.subscriptions.bulk.addDataHint'), needsProfile: false, needsQuota: true,  needsDuration: false },
-  { id: 'extend_duration', label: t('commerce.subscriptions.bulk.extend'), hint: t('commerce.subscriptions.bulk.extendHint'), needsProfile: false, needsQuota: false, needsDuration: true },
-];
+// L'écran n'offrait qu'UNE action à la fois : pour attribuer un serveur, un
+// volume ET une échéance à cent clients, l'exploitant devait enchaîner trois
+// opérations sans jamais voir l'ensemble de ce qu'il appliquait. Pire, le
+// sélecteur de configuration n'était rendu que par l'action « déployer », donc
+// invisible dans tous les autres cas.
+//
+// Le formulaire ci-dessous montre TOUS les champs en même temps ; chacun est
+// indépendamment facultatif, et ce qui est laissé vide n'est pas réécrit.
+// « Remplacer » et « Ajouter » restent deux modes nommés — les confondre ferait
+// perdre à un client le solde qu'il n'a pas encore consommé.
+type BulkScope = 'apply' | 'deploy';
+type ExpiryMode = 'duration' | 'date';
+
+/** Bornes partagées avec la validation du serveur. */
+const QUOTA_MIN = 0.5, QUOTA_MAX = 1_000_000, DAYS_MIN = 1, DAYS_MAX = 3650;
+
+/** Une saisie vide vaut « ne pas modifier », jamais zéro. */
+function optionalNumber(raw: string): number | undefined {
+  return raw.trim() === '' ? undefined : Number(raw);
+}
+
+/** `datetime-local` → Date locale. `null` signale une saisie inexploitable. */
+function optionalInstant(raw: string): Date | undefined | null {
+  if (!raw.trim()) return undefined;
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 
 export default function SubscriptionsView({ currentUserRole }: Props) {
   const { t, locale, formatNumber, message, errorMessage, errorText } = useTranslation();
   const STATUS_CFG = lifecycleBadges(t);
-  const BULK_ACTIONS = createBulkActions(t);
   const isAdmin = isAdminRole(currentUserRole);
   const isReseller = isResellerRole(currentUserRole);
   const showsOwnerColumn = isUpperRole(currentUserRole);
@@ -97,31 +116,66 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
 
   // Sélection et opérations groupées
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [bulkAction, setBulkAction] = useState<BulkAction>('add_data');
-  const [bulkQuota, setBulkQuota] = useState(5);
-  const [bulkDays, setBulkDays] = useState(30);
+  const [bulkScope, setBulkScope] = useState<BulkScope>('apply');
+  // Chaînes et non nombres : « vide » doit rester distinct de « 0 ».
+  const [bulkQuota, setBulkQuota] = useState('');
+  const [bulkQuotaMode, setBulkQuotaMode] = useState<BulkValueMode>('set');
+  const [bulkStart, setBulkStart] = useState('');
+  const [bulkExpiryMode, setBulkExpiryMode] = useState<ExpiryMode>('duration');
+  const [bulkDays, setBulkDays] = useState('');
+  const [bulkDurationMode, setBulkDurationMode] = useState<BulkValueMode>('set');
+  const [bulkExpire, setBulkExpire] = useState('');
   const [bulkProfile, setBulkProfile] = useState('');
   const [bulkConfirm, setBulkConfirm] = useState(false);
   const bulkRunning = pending === 'bulk';
   const [bulkResult, setBulkResult] = useState<BulkResult | null>(null);
+  const [profilesError, setProfilesError] = useState<unknown>(null);
+
+  const resetBulkFields = () => {
+    setBulkQuota(''); setBulkStart(''); setBulkDays(''); setBulkExpire(''); setBulkProfile('');
+    setBulkQuotaMode('set'); setBulkDurationMode('set'); setBulkExpiryMode('duration');
+  };
 
   const load = async () => {
     setLoading(true);
     try {
+      // ── Liste des configurations attribuables ──────────────────────────────
+      // CAUSE RACINE n°2 du sélecteur de serveur vide : `/vpn-profiles` exige
+      // la permission `vpnprofile.view`, qu'un administrateur habilité à vendre
+      // (`subscription.manage`) ne porte pas nécessairement. L'appel répondait
+      // alors 403, ce qui faisait échouer le `Promise.all` ENTIER : ni les
+      // forfaits, ni les clients, ni les configurations n'étaient chargés, et
+      // le sélecteur restait vide sans la moindre explication.
+      //
+      // Le partage reste celui d'origine — le revendeur ne lit QUE ses
+      // configurations attribuées, jamais le parc entier. Ce qui change : le
+      // repli du rôle supérieur sur `/vpn-profiles/assigned`, route de
+      // sélection qui n'exige aucune permission technique, et l'isolement de
+      // l'échec, conservé pour être expliqué à l'écran plutôt que de laisser
+      // une liste vide et muette.
+      const profilesPromise: Promise<VpnProfile[]> = canAssign
+        ? (isReseller ? fetchAssignedVpnProfiles() : fetchVpnProfiles())
+            .catch(async (err: unknown) => {
+              // Un revendeur n'a pas de repli : élargir sa lecture au parc
+              // entier lui montrerait des serveurs qui ne lui sont pas confiés.
+              if (isReseller) throw err;
+              return fetchAssignedVpnProfiles();
+            })
+        : Promise.resolve([]);
       const [s, st, cl, pr] = await Promise.all([
         fetchSubscriptions(),
         fetchSubStats(),
         can('clients.view') ? fetchClients() : Promise.resolve([]),
-        // Le revendeur n'a pas accès à `/vpn-profiles` (403) : sa liste de
-        // configurations restait vide et le formulaire refusait toute création,
-        // faute de profil sélectionnable. Il lit donc celles qui lui sont
-        // attribuées, sans aucun paramètre technique.
-        canAssign ? (isReseller ? fetchAssignedVpnProfiles() : fetchVpnProfiles()) : Promise.resolve([]),
+        profilesPromise.then(
+          list => ({ list, error: null as unknown }),
+          error => ({ list: [] as VpnProfile[], error }),
+        ),
       ]);
       setSubs(s);
       setStats(st);
       setClients(cl);
-      setProfiles(pr);
+      setProfiles(pr.list);
+      setProfilesError(pr.error);
     } catch (err: any) {
       toast.error(errorText(err, 'commerce.common.errorLoad'));
     } finally { setLoading(false); }
@@ -289,15 +343,78 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
   const clientMap = useMemo(() => Object.fromEntries(clients.map(c => [c.id, c])), [clients]);
 
   // ── Opérations groupées ────────────────────────────────────────────────────
-  const bulkCfg = BULK_ACTIONS.find(a => a.id === bulkAction)!;
-  // Seule `extend_duration` n'augmente pas le volume engagé, mais elle prolonge
-  // l'engagement : toutes ces actions sont traitées comme augmentatrices, donc
-  // fermées quand l'agrément ou le plafond l'exigent.
+  // Toute action de ce panneau augmente ou prolonge l'engagement : elles sont
+  // donc fermées quand l'agrément ou le plafond l'exigent.
   const bulkAllowed = canAssign && allows();
   const controlsBusy = !!pending || showModal || bulkConfirm || !!adjustment || !!bulkDelete.confirmation;
-  const bulkValuesValid = (!bulkCfg.needsProfile || !!bulkProfile) &&
-    (!bulkCfg.needsQuota || (Number.isFinite(bulkQuota) && bulkQuota >= 0.5 && bulkQuota <= 1_000_000)) &&
-    (!bulkCfg.needsDuration || (Number.isInteger(bulkDays) && bulkDays >= 1 && bulkDays <= 3650));
+
+  /**
+   * Traduit la saisie en charge utile, ou en motif de refus.
+   *
+   * Un champ vide vaut « ne pas modifier » : il n'entre pas dans la charge
+   * utile, donc le serveur ne le réécrit pas. Le refus est une CLÉ i18n, pour
+   * que l'écran dise précisément ce qui manque au lieu d'un bouton grisé muet.
+   */
+  const bulkPlan = useMemo<{ payload: BulkPayload | null; issue: string | null; summary: string[] }>(() => {
+    const refuse = (issue: string) => ({ payload: null, issue, summary: [] as string[] });
+    const quotaGB = optionalNumber(bulkQuota);
+    if (quotaGB !== undefined && !(Number.isFinite(quotaGB) && quotaGB >= QUOTA_MIN && quotaGB <= QUOTA_MAX)) {
+      return refuse('commerce.subscriptions.bulk.invalidQuota');
+    }
+    const durationDays = bulkExpiryMode === 'duration' ? optionalNumber(bulkDays) : undefined;
+    if (durationDays !== undefined && !(Number.isInteger(durationDays) && durationDays >= DAYS_MIN && durationDays <= DAYS_MAX)) {
+      return refuse('commerce.subscriptions.bulk.invalidDuration');
+    }
+    const startAt = optionalInstant(bulkStart);
+    const expireAt = bulkExpiryMode === 'date' ? optionalInstant(bulkExpire) : undefined;
+    if (startAt === null || expireAt === null) return refuse('commerce.subscriptions.bulk.invalidDate');
+    if (startAt && expireAt && expireAt.getTime() <= startAt.getTime()) {
+      return refuse('commerce.subscriptions.bulk.expiryBeforeStart');
+    }
+    const profileId = bulkProfile || undefined;
+
+    if (bulkScope === 'deploy') {
+      // Créer un forfait exige les trois : sans eux il n'y a rien à créer.
+      if (!profileId) return refuse('commerce.subscriptions.bulk.profileRequired');
+      if (quotaGB === undefined) return refuse('commerce.subscriptions.bulk.quotaRequired');
+      if (durationDays === undefined && !expireAt) return refuse('commerce.subscriptions.bulk.durationRequired');
+    } else if (!profileId && quotaGB === undefined && !startAt && !expireAt && durationDays === undefined) {
+      return refuse('commerce.subscriptions.bulk.nothingToApply');
+    }
+    if (selection.size === 0) return refuse('commerce.subscriptions.bulk.noSelection');
+    if (selection.size > MAX_BULK_APPLY) return refuse('commerce.subscriptions.bulk.tooMany');
+
+    const ids = Array.from(selection);
+    const payload: BulkPayload = {
+      action: bulkScope,
+      ...(bulkScope === 'deploy'
+        // `deploy` crée des forfaits : il vise les CLIENTS des lignes cochées.
+        ? { clientIds: Array.from(new Set(subs.filter(s => selection.has(s.id)).map(s => s.clientId))) }
+        : { subscriptionIds: ids }),
+      ...(profileId ? { profileId } : {}),
+      ...(quotaGB !== undefined ? { quotaGB, ...(bulkScope === 'apply' ? { quotaMode: bulkQuotaMode } : {}) } : {}),
+      ...(startAt ? { startAt: startAt.toISOString() } : {}),
+      ...(expireAt ? { expireAt: expireAt.toISOString() } : {}),
+      ...(durationDays !== undefined ? { durationDays, ...(bulkScope === 'apply' ? { durationMode: bulkDurationMode } : {}) } : {}),
+    };
+
+    // Récapitulatif : uniquement ce qui va réellement changer.
+    const summary: string[] = [];
+    if (profileId) summary.push(t('commerce.subscriptions.bulk.summaryProfile', { name: profiles.find(p => p.id === profileId)?.name ?? profileId }));
+    if (quotaGB !== undefined) {
+      summary.push(t(bulkScope === 'apply' && bulkQuotaMode === 'add'
+        ? 'commerce.subscriptions.bulk.summaryQuotaAdd'
+        : 'commerce.subscriptions.bulk.summaryQuotaSet', { value: formatNumber(quotaGB) }));
+    }
+    if (startAt) summary.push(t('commerce.subscriptions.bulk.summaryStart', { date: fmtDate(startAt.toISOString(), locale) }));
+    if (expireAt) summary.push(t('commerce.subscriptions.bulk.summaryExpire', { date: fmtDate(expireAt.toISOString(), locale) }));
+    if (durationDays !== undefined) {
+      summary.push(t(bulkScope === 'apply' && bulkDurationMode === 'add'
+        ? 'commerce.subscriptions.bulk.summaryDurationAdd'
+        : 'commerce.subscriptions.bulk.summaryDurationSet', { count: formatNumber(durationDays) }));
+    }
+    return { payload, issue: null, summary };
+  }, [bulkScope, bulkQuota, bulkQuotaMode, bulkStart, bulkExpiryMode, bulkDays, bulkDurationMode, bulkExpire, bulkProfile, selection, subs, profiles, locale, t, formatNumber]);
 
   const toggleOne = bulkDelete.toggle;
   // « Tout sélectionner » porte sur la sélection FILTRÉE, pas sur la page
@@ -309,30 +426,21 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
   const runBulk = async () => {
     if (bulkDelete.isDeleting()) { toast.error(message('commerce.common.actionPending')); return; }
     if (!bulkAllowed) { toast.error(message('commerce.common.unavailableAccess')); return; }
-    if (!selection.size || !bulkValuesValid) { toast.error(message('commerce.subscriptions.invalidAdjustment')); return; }
+    if (!bulkPlan.payload) { toast.error(message(bulkPlan.issue ?? 'commerce.subscriptions.invalidAdjustment')); return; }
+    const payload = bulkPlan.payload;
     try {
       await run('bulk', async () => {
-      const ids = Array.from(selection);
-      // `deploy` crée des forfaits : il vise des CLIENTS. Les autres modifient
-      // l'existant : elles visent des ABONNEMENTS.
-      const clientIds = bulkAction === 'deploy'
-        ? Array.from(new Set(subs.filter(s => selection.has(s.id)).map(s => s.clientId)))
-        : undefined;
-
-      const result = await bulkSubscriptions({
-        action: bulkAction,
-        ...(bulkAction === 'deploy' ? { clientIds } : { subscriptionIds: ids }),
-        ...(bulkCfg.needsProfile ? { profileId: bulkProfile } : {}),
-        ...(bulkCfg.needsQuota ? { quotaGB: bulkQuota } : {}),
-        ...(bulkCfg.needsDuration ? { durationDays: bulkDays } : {}),
-      });
-      setBulkResult(result);
-      setBulkConfirm(false);
-      if (result.failed > 0) toast.warning(message('commerce.subscriptions.bulk.partial', { succeeded: result.succeeded, failed: result.failed }));
-      else if (result.succeeded > 0) toast.success(message('commerce.subscriptions.bulk.updated', { count: result.succeeded }));
-      else toast.warning(message('commerce.subscriptions.bulk.noChange'));
-      setSelected(new Set());
-      await Promise.all([load(), refreshAccess()]);
+        const result = await bulkSubscriptions(payload);
+        setBulkResult(result);
+        setBulkConfirm(false);
+        // Réussites ET échecs sont rapportés : un échec isolé ne fait pas
+        // échouer le lot, et ne doit pas non plus passer inaperçu.
+        if (result.failed > 0) toast.warning(message('commerce.subscriptions.bulk.partial', { succeeded: result.succeeded, failed: result.failed }));
+        else if (result.succeeded > 0) toast.success(message('commerce.subscriptions.bulk.updated', { count: result.succeeded }));
+        else toast.warning(message('commerce.subscriptions.bulk.noChange'));
+        setSelected(new Set());
+        resetBulkFields();
+        await Promise.all([load(), refreshAccess()]);
       });
     } catch (err) {
       toast.error(errorText(err, 'commerce.subscriptions.bulk.error'));
@@ -440,49 +548,147 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
             </div>
           </div>
 
-          <fieldset disabled={controlsBusy || !canAssign} className="grid grid-cols-1 sm:grid-cols-4 gap-3">
-            <div className="sm:col-span-2">
-              <label className="block text-xs text-gray-400 mb-1.5">{t('commerce.common.action')}</label>
-              <select value={bulkAction} onChange={e => { setBulkAction(e.target.value as BulkAction); setBulkResult(null); }}
-                className="w-full px-3 py-2 text-sm bg-[#0a0d14] border border-[#1a1f2e] rounded-lg text-white focus:outline-none focus:border-cyan-500">
-                {BULK_ACTIONS.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
-              </select>
-              <p className="text-[11px] text-gray-500 mt-1">{bulkCfg.hint}</p>
+          {/* ── Formulaire groupé ──────────────────────────────────────────
+              Tous les champs sont visibles EN MÊME TEMPS et chacun est
+              indépendamment facultatif : ce qui est laissé vide n'est pas
+              réécrit. L'ancien menu « Action » à choix unique n'exposait
+              qu'un seul champ à la fois, et masquait le sélecteur de
+              configuration hors du mode « déployer ». */}
+          <fieldset disabled={controlsBusy || !canAssign} className="space-y-3">
+            <div className="flex items-center gap-2 flex-wrap">
+              {(['apply', 'deploy'] as const).map(scope => (
+                <button key={scope} type="button"
+                  onClick={() => { setBulkScope(scope); setBulkResult(null); }}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-all cursor-pointer ${
+                    bulkScope === scope
+                      ? 'bg-cyan-500/15 border-cyan-500/30 text-cyan-400'
+                      : 'bg-[#0a0d14] border-[#1a1f2e] text-gray-400 hover:text-gray-200'
+                  }`}>
+                  {t(scope === 'apply' ? 'commerce.subscriptions.bulk.scopeApply' : 'commerce.subscriptions.bulk.scopeDeploy')}
+                </button>
+              ))}
             </div>
-            {bulkCfg.needsProfile && (
-              <div>
-                <label className="block text-xs text-gray-400 mb-1.5">{t('commerce.common.configuration')}</label>
+            <p className="text-[11px] text-gray-500">
+              {t(bulkScope === 'apply' ? 'commerce.subscriptions.bulk.scopeApplyHint' : 'commerce.subscriptions.bulk.scopeDeployHint')}
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Serveur / configuration — TOUJOURS rendu, quel que soit le mode */}
+              <div className="sm:col-span-2">
+                <label className="block text-xs text-gray-400 mb-1.5">
+                  {t('commerce.common.configuration')}
+                  {bulkScope === 'apply' && <span className="text-gray-600"> · {t('commerce.subscriptions.bulk.optional')}</span>}
+                </label>
                 <select value={bulkProfile} onChange={e => setBulkProfile(e.target.value)}
-                  className="w-full px-3 py-2 text-sm bg-[#0a0d14] border border-[#1a1f2e] rounded-lg text-white focus:outline-none focus:border-cyan-500">
-                  <option value="">{t('commerce.common.choose')}</option>
+                  disabled={profiles.length === 0}
+                  className="w-full px-3 py-2 text-sm bg-[#0a0d14] border border-[#1a1f2e] rounded-lg text-white focus:outline-none focus:border-cyan-500 disabled:opacity-50">
+                  <option value="">
+                    {bulkScope === 'apply'
+                      ? t('commerce.subscriptions.bulk.keepProfile')
+                      : t('commerce.common.choose')}
+                  </option>
                   {profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
+                {/* Une liste vide doit DIRE pourquoi : un sélecteur muet est
+                    exactement le symptôme signalé en exploitation. */}
+                {profiles.length === 0 && (
+                  <p className="text-[11px] text-amber-400/90 mt-1">
+                    {profilesError
+                      ? errorText(profilesError, 'commerce.subscriptions.bulk.profilesUnavailable')
+                      : t(isReseller
+                          ? 'commerce.subscriptions.bulk.noProfilesReseller'
+                          : 'commerce.subscriptions.bulk.noProfilesAdmin')}
+                  </p>
+                )}
               </div>
-            )}
-            {bulkCfg.needsQuota && (
+
+              {/* Volume */}
               <div>
                 <label className="block text-xs text-gray-400 mb-1.5">
-                  {bulkAction === 'add_data' ? t('commerce.subscriptions.bulk.addGb') : t('commerce.subscriptions.bulk.dataGb')}
+                  {t('commerce.subscriptions.bulk.dataGb')}
+                  {bulkScope === 'apply' && <span className="text-gray-600"> · {t('commerce.subscriptions.bulk.optional')}</span>}
                 </label>
-                <input type="number" min={0.5} max={1_000_000} step={0.5} value={bulkQuota}
-                  onChange={e => setBulkQuota(Number(e.target.value))}
-                  className="w-full px-3 py-2 text-sm bg-[#0a0d14] border border-[#1a1f2e] rounded-lg text-white focus:outline-none focus:border-cyan-500" />
+                <div className="flex gap-2">
+                  <input type="number" min={QUOTA_MIN} max={QUOTA_MAX} step={0.5} value={bulkQuota}
+                    onChange={e => setBulkQuota(e.target.value)}
+                    placeholder={bulkScope === 'apply' ? t('commerce.subscriptions.bulk.unchanged') : undefined}
+                    className="flex-1 min-w-0 px-3 py-2 text-sm bg-[#0a0d14] border border-[#1a1f2e] rounded-lg text-white focus:outline-none focus:border-cyan-500" />
+                  {/* « Remplacer » et « Ajouter » restent nommés : les confondre
+                      ferait perdre au client le solde non consommé. */}
+                  {bulkScope === 'apply' && (
+                    <select value={bulkQuotaMode} onChange={e => setBulkQuotaMode(e.target.value as BulkValueMode)}
+                      className="px-2 py-2 text-xs bg-[#0a0d14] border border-[#1a1f2e] rounded-lg text-white focus:outline-none focus:border-cyan-500">
+                      <option value="set">{t('commerce.subscriptions.bulk.modeSet')}</option>
+                      <option value="add">{t('commerce.subscriptions.bulk.modeAdd')}</option>
+                    </select>
+                  )}
+                </div>
               </div>
-            )}
-            {bulkCfg.needsDuration && (
+
+              {/* Début */}
               <div>
                 <label className="block text-xs text-gray-400 mb-1.5">
-                  {bulkAction === 'extend_duration' ? t('commerce.subscriptions.bulk.addDays') : t('commerce.common.durationDays')}
+                  {t('commerce.subscriptions.bulk.startAt')}
+                  {bulkScope === 'apply' && <span className="text-gray-600"> · {t('commerce.subscriptions.bulk.optional')}</span>}
                 </label>
-                <input type="number" min={1} max={3650} step={1} value={bulkDays}
-                  onChange={e => setBulkDays(Number(e.target.value))}
+                <input type="datetime-local" value={bulkStart}
+                  onChange={e => setBulkStart(e.target.value)}
                   className="w-full px-3 py-2 text-sm bg-[#0a0d14] border border-[#1a1f2e] rounded-lg text-white focus:outline-none focus:border-cyan-500" />
               </div>
+
+              {/* Échéance : durée OU date, jamais les deux — ce sont deux
+                  façons contradictoires de fixer la même borne. */}
+              <div className="sm:col-span-2">
+                <div className="flex items-center gap-3 mb-1.5 flex-wrap">
+                  <label className="text-xs text-gray-400">
+                    {t('commerce.subscriptions.bulk.expiry')}
+                    {bulkScope === 'apply' && <span className="text-gray-600"> · {t('commerce.subscriptions.bulk.optional')}</span>}
+                  </label>
+                  {(['duration', 'date'] as const).map(mode => (
+                    <label key={mode} className="flex items-center gap-1 text-[11px] text-gray-400 cursor-pointer">
+                      <input type="radio" name="bulk-expiry-mode" value={mode}
+                        checked={bulkExpiryMode === mode}
+                        onChange={() => setBulkExpiryMode(mode)}
+                        className="accent-cyan-500 cursor-pointer" />
+                      {t(mode === 'duration' ? 'commerce.subscriptions.bulk.byDuration' : 'commerce.subscriptions.bulk.byDate')}
+                    </label>
+                  ))}
+                </div>
+                {bulkExpiryMode === 'duration' ? (
+                  <div className="flex gap-2">
+                    <input type="number" min={DAYS_MIN} max={DAYS_MAX} step={1} value={bulkDays}
+                      onChange={e => setBulkDays(e.target.value)}
+                      placeholder={bulkScope === 'apply' ? t('commerce.subscriptions.bulk.unchanged') : undefined}
+                      className="flex-1 min-w-0 px-3 py-2 text-sm bg-[#0a0d14] border border-[#1a1f2e] rounded-lg text-white focus:outline-none focus:border-cyan-500" />
+                    {bulkScope === 'apply' && (
+                      <select value={bulkDurationMode} onChange={e => setBulkDurationMode(e.target.value as BulkValueMode)}
+                        className="px-2 py-2 text-xs bg-[#0a0d14] border border-[#1a1f2e] rounded-lg text-white focus:outline-none focus:border-cyan-500">
+                        <option value="set">{t('commerce.subscriptions.bulk.modeSet')}</option>
+                        <option value="add">{t('commerce.subscriptions.bulk.modeAdd')}</option>
+                      </select>
+                    )}
+                  </div>
+                ) : (
+                  <input type="datetime-local" value={bulkExpire}
+                    onChange={e => setBulkExpire(e.target.value)}
+                    className="w-full px-3 py-2 text-sm bg-[#0a0d14] border border-[#1a1f2e] rounded-lg text-white focus:outline-none focus:border-cyan-500" />
+                )}
+              </div>
+            </div>
+
+            {bulkScope === 'apply' && (
+              <p className="text-[11px] text-gray-500">{t('commerce.subscriptions.bulk.emptyMeansUnchanged')}</p>
             )}
           </fieldset>
 
+          {/* Motif de blocage explicite : un bouton grisé sans raison est une
+              impasse pour l'exploitant. */}
+          {bulkPlan.issue && selection.size > 0 && (
+            <p className="text-[11px] text-amber-400/90">{t(bulkPlan.issue, { max: formatNumber(MAX_BULK_APPLY) })}</p>
+          )}
+
           <button type="button" onClick={() => setBulkConfirm(true)}
-            disabled={controlsBusy || !bulkValuesValid || !bulkAllowed}
+            disabled={controlsBusy || !bulkPlan.payload || !bulkAllowed}
             title={bulkAllowed ? undefined : t('commerce.common.unavailableAccess')}
             className="flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black transition-all disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed">
             {bulkRunning ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
@@ -523,25 +729,27 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
               <AlertTriangle className="w-4 h-4 text-amber-400" /> {t('commerce.subscriptions.bulk.confirm')}
             </h3>
             <div className="text-sm text-gray-300 space-y-1">
-              <p><span className="text-gray-500">{t('commerce.subscriptions.bulk.actionLabel')}</span> {bulkCfg.label}</p>
+              <p><span className="text-gray-500">{t('commerce.subscriptions.bulk.actionLabel')}</span> {t(bulkScope === 'apply' ? 'commerce.subscriptions.bulk.scopeApply' : 'commerce.subscriptions.bulk.scopeDeploy')}</p>
               <p><span className="text-gray-500">{t('commerce.subscriptions.bulk.plansLabel')}</span> {formatNumber(selection.size)}</p>
-              {bulkCfg.needsProfile && (
-                <p><span className="text-gray-500">{t('commerce.subscriptions.bulk.configurationLabel')}</span> {profiles.find(p => p.id === bulkProfile)?.name || '—'}</p>
-              )}
-              {bulkCfg.needsQuota && (
-                <p><span className="text-gray-500">{t('commerce.subscriptions.bulk.dataLabel')}</span> {formatNumber(bulkQuota, { signDisplay: bulkAction === 'add_data' ? 'always' : 'auto' })} {t('commerce.common.gb')}</p>
-              )}
-              {bulkCfg.needsDuration && (
-                <p><span className="text-gray-500">{t('commerce.subscriptions.bulk.durationLabel')}</span> {t('commerce.common.days', { count: formatNumber(bulkDays, { signDisplay: bulkAction === 'extend_duration' ? 'always' : 'auto' }) })}</p>
-              )}
             </div>
-            <p className="text-[11px] text-amber-300/80">{bulkCfg.hint}</p>
+            {/* Récapitulatif champ par champ : seuls les champs renseignés y
+                figurent, ce qui rend visible ce qui restera inchangé. */}
+            <ul className="text-xs text-gray-300 space-y-1 border-t border-[#1a1f2e] pt-2">
+              {bulkPlan.summary.map(line => (
+                <li key={line} className="flex gap-2"><span className="text-cyan-400">•</span><span>{line}</span></li>
+              ))}
+            </ul>
+            <p className="text-[11px] text-amber-300/80">
+              {t(bulkScope === 'apply'
+                ? 'commerce.subscriptions.bulk.confirmApplyHint'
+                : 'commerce.subscriptions.bulk.confirmDeployHint', { count: formatNumber(selection.size) })}
+            </p>
             <div className="flex gap-2 justify-end pt-1">
               <button type="button" onClick={() => setBulkConfirm(false)} disabled={bulkRunning}
                 className="px-3 py-2 text-xs rounded-lg border border-[#1a1f2e] text-gray-300 hover:bg-white/5 cursor-pointer">
                 {t('commerce.common.cancel')}
               </button>
-              <button type="button" onClick={runBulk} disabled={!!pending || !bulkAllowed || !bulkValuesValid}
+              <button type="button" onClick={runBulk} disabled={!!pending || !bulkAllowed || !bulkPlan.payload}
                 className="px-3 py-2 text-xs font-semibold rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black disabled:opacity-50 cursor-pointer">
                 {bulkRunning ? t('commerce.subscriptions.bulk.applying') : t('commerce.common.confirm')}
               </button>

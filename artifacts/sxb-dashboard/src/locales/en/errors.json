@@ -111,7 +111,18 @@
     "access_required": "A future access expiry date is required for a reseller account.",
     "unavailable": "The reseller's access status is temporarily unavailable."
   },
-  "subscriptions": { "quota_below_usage": "The subscription quota cannot be lower than its current usage." },
+  "subscriptions": {
+    "not_found": "Plan not found.",
+    "quota_below_usage": "The subscription quota cannot be lower than its current usage.",
+    "bulk": {
+      "empty": "No item selected.",
+      "expiry_before_start": "Expiry must be after the start.",
+      "expiry_conflict": "An expiry date and a duration cannot be applied together.",
+      "no_change": "This plan already has those values.",
+      "no_field": "No field to apply.",
+      "too_many": "A batch cannot exceed {{max}} plans."
+    }
+  },
   "profiles": { "invalid_resellers": "The list of assigned resellers is invalid." },
   "vpnprofile": { "archived": "This configuration is archived.", "not_assigned": "This configuration is not assigned to you.", "not_found": "VPN configuration not found." },
   "servers": { "not_found": "Server not found." },

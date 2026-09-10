@@ -99,12 +99,23 @@ export async function revokeSubscription(id: string, reason?: string): Promise<v
 
 // ── Opérations groupées ──────────────────────────────────────────────────────
 //
-// Quatre actions dont la sémantique ne doit jamais être confondue :
+// `apply` est le point d'entrée du formulaire groupé : chacun de ses champs est
+// indépendamment facultatif, et ce qui n'est pas renseigné n'est pas réécrit.
+// Les quatre actions historiques restent exposées pour les intégrations qui
+// les appellent encore ; l'interface, elle, n'utilise plus que `apply` et
+// `deploy`.
+//   apply           applique en une passe serveur / volume / début / échéance
 //   deploy          crée un forfait (config + quota + durée) pour N clients
 //   set             REMPLACE le quota et/ou la durée des forfaits visés
 //   add_data        AJOUTE du quota au solde existant, sans l'écraser
 //   extend_duration AJOUTE des jours à l'échéance existante
-export type BulkAction = 'deploy' | 'set' | 'add_data' | 'extend_duration';
+export type BulkAction = 'apply' | 'deploy' | 'set' | 'add_data' | 'extend_duration';
+
+/** `set` remplace la valeur ; `add` s'ajoute à l'existant. */
+export type BulkValueMode = 'set' | 'add';
+
+/** Taille maximale d'un lot « appliquer » — doit rester alignée sur le serveur. */
+export const MAX_BULK_APPLY = 200;
 
 export interface BulkResult {
   action: BulkAction;
@@ -115,13 +126,24 @@ export interface BulkResult {
   details: Array<{ id: string; status: string; reason?: string }>;
 }
 
-export async function bulkSubscriptions(payload: {
+export interface BulkPayload {
   action: BulkAction;
   clientIds?: string[];
   subscriptionIds?: string[];
+  /** Configuration VPN / serveur de rattachement. Omis = inchangé. */
   profileId?: string;
+  /** Volume en Go, interprété selon `quotaMode`. Omis = inchangé. */
   quotaGB?: number;
+  quotaMode?: BulkValueMode;
+  /** Date/heure ISO de début. Omis = inchangé. */
+  startAt?: string;
+  /** Échéance ISO explicite. Exclusive de `durationDays`. Omis = inchangé. */
+  expireAt?: string;
+  /** Durée en jours, interprétée selon `durationMode`. Omis = inchangé. */
   durationDays?: number;
-}): Promise<BulkResult> {
+  durationMode?: BulkValueMode;
+}
+
+export async function bulkSubscriptions(payload: BulkPayload): Promise<BulkResult> {
   return await apiRequest<BulkResult>('/subscriptions/bulk', { method: 'POST', body: payload });
 }

@@ -1424,16 +1424,32 @@ describe('garde-fous contre les régressions Android', () => {
   it('expose les opérations groupées avec confirmation et récapitulatif', () => {
     // Une opération groupée touche des centaines de clients d'un coup : elle
     // exige une confirmation, et l'opérateur doit ensuite savoir qui a échoué.
-    assert.ok(subscriptionsView.includes('BULK_ACTIONS'));
+    // L'écran n'offrait qu'UNE action à la fois (`BULK_ACTIONS`) : attribuer un
+    // serveur, un volume ET une échéance imposait trois passes successives, et
+    // le sélecteur de serveur n'était rendu que par l'action « déployer ».
+    // Les quatre attributs doivent donc être visibles et saisissables ENSEMBLE.
+    assert.ok(!subscriptionsView.includes('BULK_ACTIONS'), 'le menu à choix unique doit avoir disparu');
+    for (const champ of ['bulkQuota', 'bulkProfile', 'bulkStart', 'bulkExpire', 'bulkDays']) {
+      assert.ok(subscriptionsView.includes(`${champ},`) || subscriptionsView.includes(`${champ} `),
+        `le champ ${champ} doit rester saisissable`);
+    }
+    // Le sélecteur de serveur n'est plus conditionné par l'action choisie.
+    assert.ok(!subscriptionsView.includes('needsProfile'));
     assert.ok(subscriptionsView.includes('bulkConfirm'));
     assertDashboardLabel(subscriptionsView, 'commerce.subscriptions.bulk.confirm', /Confirmer l’opération/);
     assert.ok(subscriptionsView.includes('bulkResult'));
     assert.ok(subscriptionsView.includes("d.status === 'failed'"), 'le récapitulatif doit lister les échecs');
+    // Un champ vide ne doit rien réécrire, et l'écran doit le dire.
+    assertDashboardLabel(subscriptionsView, 'commerce.subscriptions.bulk.emptyMeansUnchanged', /laissé vide n’est pas réécrit/);
     // Les libellés disent ce que l'action FAIT : confondre « définir » et
-    // « ajouter » ferait perdre le solde d'un client.
-    assertDashboardLabel(subscriptionsView, 'commerce.subscriptions.bulk.set', /Remplacer le quota et la durée du forfait/);
-    assertDashboardLabel(subscriptionsView, 'commerce.subscriptions.bulk.addData', /Ajouter des données \(\+Go\)/);
-    assertDashboardLabel(subscriptionsView, 'commerce.subscriptions.bulk.extend', /Prolonger le forfait \(\+jours\)/);
+    // « ajouter » ferait perdre le solde d'un client. Le choix porte désormais
+    // sur chaque valeur — volume et durée ont chacun leur mode.
+    assertDashboardLabel(subscriptionsView, 'commerce.subscriptions.bulk.modeSet', /Remplacer/);
+    assertDashboardLabel(subscriptionsView, 'commerce.subscriptions.bulk.modeAdd', /Ajouter/);
+    assertDashboardLabel(subscriptionsView, 'commerce.subscriptions.bulk.summaryQuotaSet', /Volume remplacé par/);
+    assertDashboardLabel(subscriptionsView, 'commerce.subscriptions.bulk.summaryQuotaAdd', /Volume augmenté de/);
+    assertDashboardLabel(subscriptionsView, 'commerce.subscriptions.bulk.summaryDurationSet', /Durée remplacée par/);
+    assertDashboardLabel(subscriptionsView, 'commerce.subscriptions.bulk.summaryDurationAdd', /Durée prolongée de/);
     // « Tout sélectionner » doit porter sur le filtre, pas sur la page affichée.
     assert.match(subscriptionsView, /const selectAllFiltered = bulkDelete\.selectAll/);
     const bulkDelete = source('../artifacts/sxb-dashboard/src/hooks/useBulkDelete.ts');
