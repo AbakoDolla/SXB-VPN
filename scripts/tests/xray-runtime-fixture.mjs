@@ -39,8 +39,20 @@ private class XrayRuntimeHarness {
         error("Synthetic profile DNS must not be replaced by the app default")
     // Only physical network state is stubbed. No DNS lookup or socket is opened.
     private fun carrierExclusionRule(server: String): JSONObject {
-        check(server == "upstream1.example.test") { "Unexpected physical chain endpoint" }
-        return JSONObject().put("ip_cidr", JSONArray().put("192.0.2.100/32")).put("outbound", "direct")
+        val match = Regex("^upstream(\\\\d+)\\\\.example\\\\.test$").find(server)
+            ?: error("Unexpected physical chain endpoint")
+        return JSONObject().put("ip_cidr", JSONArray().put("192.0.2.\${match.groupValues[1]}/32")).put("outbound", "direct")
+    }
+
+    private fun carrierExclusionRule(servers: Collection<String>): JSONObject? {
+        if (servers.isEmpty()) return null
+        val addresses = JSONArray()
+        for (server in servers) {
+            val rule = carrierExclusionRule(server)
+            val entries = rule.getJSONArray("ip_cidr")
+            for (index in 0 until entries.length()) addresses.put(entries.get(index))
+        }
+        return JSONObject().put("ip_cidr", addresses).put("outbound", "direct")
     }
 
 ${methods.join('\n\n')}
