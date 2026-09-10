@@ -101,6 +101,10 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
     upstreams.push(upstream);
   }
   const main = heads[0];
+  assert.ok(upstreams.length >= 2,
+    'This synthetic profile declares interchangeable upstreams, so the native builder must expose them all');
+  assert.equal(new Set(upstreams.map(upstream => upstream.tag)).size, upstreams.length,
+    'Each branch must use a distinct declared upstream');
   const remote = runtime.dns.servers.find(server => server.tag === runtime.dns.final);
   assert.match(remote.address, /^tcp:\/\//, 'The source-derived native builder must select reliable DNS TCP for the HTTP chain');
   assert.ok([runtime.route.final, ...heads.map(head => head.tag)].includes(remote.detour),
@@ -343,5 +347,5 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
       'DNS and data must keep working through another upstream declared by the same configuration');
     assert.ok(probeRequests >= 1, 'The engine health probe must traverse the chain, not the host network');
   }
-  console.log(`Loopback-only proof: six A/AAAA DNS responses and three intact 256KiB streams in ${Date.now() - started}ms over VLESS/WS/TLS/HTTP; not a carrier-speed measurement.`);
+  console.log(`Loopback-only proof: ${upstreams.length} declared upstreams reachable, first one refused ${refusedConnects} CONNECT attempts, traffic served by ${[...acceptedVia].join(', ')}; six A/AAAA DNS responses and three intact 256KiB streams in ${Date.now() - started}ms over VLESS/WS/TLS/HTTP; not a carrier-speed measurement.`);
 });
