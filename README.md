@@ -103,6 +103,14 @@ la même tête VLESS : son adresse n'est pas remplacée et il n'est pas envoyé
 directement au proxy HTTP. Les transports DNS explicitement configurés et
 l'amorçage hors tunnel sont conservés.
 
+L'interface TUN ne transporte que de l'IPv4. Un résolveur interrogé **à
+l'intérieur** du tunnel répond donc lui-même aux requêtes AAAA, sans les faire
+traverser la chaîne : une adresse IPv6 rendue à l'application ne serait routable
+nulle part et lui coûterait une tentative perdue avant le repli IPv4. Cela ne
+s'applique ni à l'amorçage hors tunnel, qui résout les adresses des proxys, ni
+à un profil qui choisit lui-même sa stratégie de résolution ; aucune stratégie
+globale n'est imposée.
+
 Les erreurs HTTP répétées sont regroupées dans le journal, sans déclencher une
 reconnexion du tunnel sur chaque connexion annexe refusée. Une erreur DNS
 encapsulée dans un refus HTTP ne prouve pas que l'APN est défectueux, et un
@@ -117,7 +125,9 @@ impossible) fait basculer la connexion suivante vers un autre proxy **déclaré
 dans le même fichier**. Aucun serveur, identifiant, en-tête ou paramètre TLS
 n'est inventé ni modifié, l'adresse du tunnel reste transmise sous forme de
 domaine au proxy, et les profils sans chaîne HTTP conservent exactement leur
-comportement précédent.
+comportement précédent. Le moteur continue d'utiliser le proxy déjà retenu
+jusqu'à sa prochaine mesure de santé : la cadence de ces mesures borne donc la
+durée pendant laquelle un proxy qui refuse reste sollicité.
 Le contrôle CI complète le constructeur natif par des requêtes DNS et des
 transferts sur une chaîne VLESS/WS/TLS/HTTP entièrement locale. Cette preuve
 ne constitue pas une mesure du débit ou de la disponibilité du fournisseur.
