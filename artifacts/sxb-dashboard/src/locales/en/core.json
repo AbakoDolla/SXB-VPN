@@ -35,6 +35,7 @@
   "nav": {
     "services": "Available VPN services",
     "mobileHealth": "Mobile health",
+    "connectedUsers": "Connected now",
     "freeTrial": "Free trials",
     "ownerLog": "Owner audit log",
     "open": "Open menu",

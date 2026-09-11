@@ -25,6 +25,7 @@ import OwnerLogView from "./components/OwnerLogView";
 import AnnouncementsView from "./components/AnnouncementsView";
 import AppUpdatesView from "./components/AppUpdatesView";
 import MobileHealthView from "./components/MobileHealthView";
+import ConnectedUsersView from "./components/ConnectedUsersView";
 import FreeTrialView from "./components/FreeTrialView";
 import MaintenancePage from "./components/MaintenancePage";
 import Layout from "./components/Layout";
@@ -403,6 +404,11 @@ function MainApp() {
           return <DashboardView onNavigate={(route) => setActiveRoute(route)} currentUserRole={role} />;
         }
         return <MobileHealthView />;
+      // Suivi des connectés : ouvert à TOUS les rôles, revendeurs compris. Le
+      // serveur cloisonne — un revendeur n'y voit que ses propres clients et
+      // n'obtient jamais la vue globale des revendeurs.
+      case 'connected-users':
+        return <ConnectedUsersView currentUserRole={role} />;
       case 'accounts':
         return (
           <AccountsView

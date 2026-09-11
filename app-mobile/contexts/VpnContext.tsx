@@ -52,6 +52,8 @@ import {
   noteMobileHealthAppState,
   noteMobileHealthReconnect,
   reportMobileHealth,
+  sendMobileHealthHeartbeat,
+  MOBILE_HEALTH_HEARTBEAT_INTERVAL_MS,
 } from '@/services/mobileHealth';
 
 export { formatBytes, deriveQuota, DerivedQuota };
@@ -244,6 +246,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const trafficTimerRef  = useRef<ReturnType<typeof setInterval> | null>(null);
   const reportTimerRef   = useRef<ReturnType<typeof setInterval> | null>(null);
   const quotaTimerRef    = useRef<ReturnType<typeof setInterval> | null>(null);
+  const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionStartRef  = useRef<number>(0);
   const lastHealthStateRef = useRef<string>('disconnected');
 
@@ -332,6 +335,44 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       connectedProtocolRef.current = null;
       setConnectedProtocol(null);
     }
+  }, [isAuthenticated, vpnState]);
+
+  // ── BATTEMENT DE PRÉSENCE ────────────────────────────────────────────────
+  // Les rapports de santé ne partaient qu'aux CHANGEMENTS d'état. Un appareil
+  // qui perd brutalement le réseau (tunnel, batterie, application tuée par le
+  // système) n'émet donc jamais de « disconnected » : côté serveur, son dernier
+  // état connu reste « connected » pour toujours, et le tableau de bord le
+  // compte comme connecté des jours durant.
+  //
+  // Le battement contredit ce silence : tant que le tunnel est monté,
+  // l'application redit périodiquement qu'elle est là. Le serveur cesse alors
+  // de compter tout appareil qui s'est tu au-delà de sa fenêtre de présence.
+  //
+  // SOBRIÉTÉ : l'effet n'est armé QUE pour un tunnel monté et une session
+  // authentifiée ; il est démonté dès que le tunnel s'arrête, ne s'arme jamais
+  // sans tunnel, et n'existe donc pas en arrière-plan hors connexion. Il n'est
+  // en revanche pas suspendu quand l'application passe en arrière-plan : le
+  // tunnel, lui, continue de tourner dans le service natif de premier plan, et
+  // une présence qui disparaîtrait dès l'écran éteint serait un mensonge.
+  //
+  // CONSENTEMENT : sendMobileHealthHeartbeat refuse d'émettre sans accord
+  // « diagnostics » ET « vpn », comme tout le reste de la télémétrie.
+  //
+  // TOLÉRANCE AUX PANNES : l'envoi ne rejette jamais et n'est jamais attendu.
+  // Un réseau coupé ne peut ni interrompre ni ralentir le tunnel.
+  useEffect(() => {
+    if (!isAuthenticated || vpnState !== 'connected') return;
+    const beat = () => {
+      void sendMobileHealthHeartbeat({
+        tunnelState: 'connected',
+        protocol: connectedProtocolRef.current,
+      });
+    };
+    heartbeatTimerRef.current = setInterval(beat, MOBILE_HEALTH_HEARTBEAT_INTERVAL_MS);
+    return () => {
+      if (heartbeatTimerRef.current) clearInterval(heartbeatTimerRef.current);
+      heartbeatTimerRef.current = null;
+    };
   }, [isAuthenticated, vpnState]);
 
   // ── B3 — RAPPORT DELTA + SESSION ID ──────────────────────────────────────────

@@ -275,8 +275,16 @@ export default function DashboardView({
   const todayTraffic = trafficData.length > 0 ? trafficData[trafficData.length - 1] : null;
   const weeklyDownload = trafficData.slice(-7).reduce((acc, d) => acc + (d.download || 0), 0);
 
-  const resellerQuota = stats?.resellerQuota;
-  const assignedResellerQuota = resellerQuota?.unlimited
+  // Présence réelle. `connectedNow === null` signifie « la plateforme n'a rien
+  // pu mesurer » ; on ne le confond jamais avec « personne n'est connecté ».
+  const connectedMeasured = stats?.connectedNowMeasured === true
+    && stats?.connectedNow !== null && stats?.connectedNow !== undefined;
+  const presenceWindowMinutes = stats?.presenceWindowMinutes ?? 15;
+  // Comptes ouverts : ce que l'ancienne carte « CONNECTÉS » affichait en
+  // réalité. `activeUsers` reste l'alias historique du même nombre.
+  const activeAccounts = stats?.activeAccounts ?? stats?.activeUsers ?? 0;
+
+  const resellerQuota = stats?.resellerQuota;  const assignedResellerQuota = resellerQuota?.unlimited
     ? t("operations.common.unlimited")
     : formatBytes(resellerQuota?.assignedBytes);
   const committedResellerQuota = formatBytes(resellerQuota?.committedBytes);
@@ -400,9 +408,32 @@ export default function DashboardView({
         </p>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           <StatCard label={isReseller ? t("operations.common.myClients") : t("operations.dashboard.totalClients")} value={formatNumber(totalClients)} sub={t("operations.dashboard.registered")} icon={Users} color="text-cyan-400" accent="bg-cyan-500/10" onClick={() => onNavigate('clients')} />
-          <StatCard label={t("operations.dashboard.connected")} value={formatNumber(stats?.activeUsers || 0)} sub={t("operations.dashboard.activeSessionsSub")} icon={Wifi} color="text-emerald-400" accent="bg-emerald-500/10" onClick={() => onNavigate(isReseller ? 'clients' : 'sessions')} />
+          {/* CONNECTÉS — connexions RÉELLEMENT observées, plus le nombre de
+              comptes ouverts. `connectedNow` vaut null quand la plateforme n'a
+              rien pu mesurer : on l'écrit, on ne le remplace pas par zéro, qui
+              affirmerait que personne n'utilise le VPN. */}
+          <StatCard
+            label={t("operations.dashboard.connected")}
+            value={connectedMeasured ? formatNumber(stats?.connectedNow ?? 0) : t("operations.dashboard.connectedUnmeasured")}
+            sub={connectedMeasured
+              ? t("operations.dashboard.connectedSub", { minutes: formatNumber(presenceWindowMinutes) })
+              : t("operations.dashboard.connectedUnmeasuredSub")}
+            icon={Wifi}
+            color="text-emerald-400"
+            accent="bg-emerald-500/10"
+            onClick={() => onNavigate('connected-users')}
+          />
           <StatCard label={t("operations.dashboard.devices")} value={formatNumber(totalDevices)} sub={t("operations.dashboard.registered")} icon={HardDrive} color="text-blue-400" accent="bg-blue-500/10" onClick={() => onNavigate('devices')} />
-          <StatCard label={isReseller ? t("operations.dashboard.plans") : t("operations.common.sessions")} value={formatNumber(activeSessions)} sub={t("operations.dashboard.activeSub")} icon={Radio} color="text-violet-400" accent="bg-violet-500/10" onClick={() => onNavigate(isReseller ? 'subscriptions' : 'sessions')} />
+          {/* Cette carte annonçait « SESSIONS — 8 actives » en comptant des
+              sessions d'ACTIVATION d'appareil, ce qui se lisait comme huit
+              sessions VPN en cours. Elle nomme désormais ce qu'elle compte :
+              des comptes ouverts. Les sessions VPN en cours sont la carte
+              « CONNECTÉS » ci-dessus. */}
+          {isReseller ? (
+            <StatCard label={t("operations.dashboard.plans")} value={formatNumber(activeSessions)} sub={t("operations.dashboard.activeSub")} icon={Radio} color="text-violet-400" accent="bg-violet-500/10" onClick={() => onNavigate('subscriptions')} />
+          ) : (
+            <StatCard label={t("operations.dashboard.activeAccounts")} value={formatNumber(activeAccounts)} sub={t("operations.dashboard.activeAccountsSub")} icon={Radio} color="text-violet-400" accent="bg-violet-500/10" onClick={() => onNavigate('clients')} />
+          )}
           {/* L'infrastructure ne concerne pas le revendeur : il vend un service,
               il n'exploite pas les serveurs. On montre à la place les services
               qui lui sont attribués. */}

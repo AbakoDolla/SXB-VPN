@@ -49,7 +49,31 @@ interface MobileHealthPayload {
   backgroundDurationSeconds: number;
   wakeCount: number;
   batteryOptimization: 'optimized' | 'unrestricted' | 'unknown';
+  heartbeat?: boolean;
 }
+
+/**
+ * Cadence du battement de présence, en millisecondes.
+ *
+ * Tant que le tunnel est monté, l'application redit périodiquement « je suis
+ * toujours connecté ». Sans cela, un appareil qui perd brutalement le réseau
+ * resterait indéfiniment « connecté » côté serveur, puisque le dernier état
+ * reçu ne serait jamais contredit.
+ *
+ * 5 minutes est le compromis retenu : assez court pour que le serveur puisse
+ * fermer sa fenêtre de présence à 15 minutes (3 battements) et rester honnête,
+ * assez long pour rester négligeable en batterie et en données — un battement
+ * pèse moins d'un kilo-octet, soit ~12 requêtes par heure de tunnel.
+ *
+ * Surchargeable au build via EXPO_PUBLIC_MOBILE_HEALTH_HEARTBEAT_MS ; toute
+ * valeur absente, illisible ou inférieure à une minute retombe sur la valeur
+ * par défaut, afin qu'une configuration fautive ne puisse pas transformer le
+ * battement en matraquage réseau.
+ */
+export const MOBILE_HEALTH_HEARTBEAT_INTERVAL_MS = (() => {
+  const configured = Number(process.env.EXPO_PUBLIC_MOBILE_HEALTH_HEARTBEAT_MS);
+  return Number.isFinite(configured) && configured >= 60_000 ? configured : 5 * 60_000;
+})();
 
 const STORAGE_KEY = '@sxb_mobile_health_pending_v1';
 const ALLOWED_PROTOCOLS = new Set([
@@ -238,6 +262,56 @@ export async function reportMobileHealth(snapshot: MobileHealthSnapshot): Promis
     sendInFlight = null;
   });
   return sendInFlight;
+}
+
+/**
+ * Battement de présence — « le tunnel est toujours monté ».
+ *
+ * Volontairement distinct de reportMobileHealth, pour trois raisons :
+ *
+ *  1. AUCUNE REPRISE. Un battement en échec n'est jamais mis en file : rejoué
+ *     plus tard, il affirmerait une présence déjà expirée. Un battement perdu
+ *     est un battement oublié, et c'est exactement le comportement voulu.
+ *  2. AUCUN COMPTEUR. Il ne consomme ni ne réserve les durées accumulées, qui
+ *     restent intactes pour le prochain rapport de cycle de vie.
+ *  3. AUCUNE ÉCRITURE LOCALE. Ni AsyncStorage, ni état persistant : la réussite
+ *     comme l'échec ne coûtent qu'une requête.
+ *
+ * Il emprunte en revanche exactement le même chemin réseau que les rapports —
+ * même route, même schéma, même garde de consentement côté apiClient.
+ *
+ * Ne rejette jamais : un réseau coupé ne doit ni interrompre ni ralentir le
+ * tunnel, qui est piloté par le service natif et n'attend rien d'ici.
+ */
+export async function sendMobileHealthHeartbeat(snapshot: MobileHealthSnapshot): Promise<boolean> {
+  if (!getPrivacyConsent().diagnostics || !getPrivacyConsent().vpn) return false;
+  // Un battement n'a de sens que pour un tunnel effectivement monté ; sur tout
+  // autre état c'est la transition de cycle de vie qui fait foi.
+  if (snapshot.tunnelState !== 'connected') return false;
+  const signal = getPrivacySignal();
+  if (signal.aborted) return false;
+  try {
+    const payload: MobileHealthPayload = {
+      reportId: Crypto.randomUUID(),
+      ...appMetadata(),
+      tunnelState: 'connected',
+      protocol: normalizeMobileHealthProtocol(snapshot.protocol),
+      outcome: 'none',
+      errorCode: null,
+      sessionDurationSeconds: 0,
+      reconnectCount: 0,
+      activeDurationSeconds: 0,
+      backgroundDurationSeconds: 0,
+      wakeCount: 0,
+      batteryOptimization: await batteryOptimizationState(),
+      heartbeat: true,
+    };
+    if (signal.aborted) return false;
+    await apiClient.post('/mobile-health/report', payload, { timeout: 8_000 });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function clearMobileHealth(): Promise<void> {

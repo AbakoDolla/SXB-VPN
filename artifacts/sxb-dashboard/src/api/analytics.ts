@@ -16,7 +16,24 @@ export interface DashboardResellerQuota {
 }
 
 export interface DashboardStats {
+  /**
+   * Nombre de COMPTES ouverts. Ce n'est pas un nombre de personnes en ligne :
+   * la carte « CONNECTÉS » affichait cette valeur, d'où un parc de 82 comptes
+   * présenté comme 82 utilisateurs en train de se servir du VPN.
+   */
+  activeAccounts?: number;
+  /** Alias historique de `activeAccounts`, conservé pour compatibilité. */
   activeUsers: number;
+  /**
+   * Connexions RÉELLEMENT observées à l'instant. `null` signifie « non
+   * mesuré » — jamais « personne n'est connecté » : les deux doivent rester
+   * distinguables à l'écran.
+   */
+  connectedNow?: number | null;
+  connectedNowMeasured?: boolean;
+  /** Fenêtre au-delà de laquelle un silence cesse de valoir présence. */
+  presenceWindowMinutes?: number;
+  presenceHeartbeatMinutes?: number;
   expiredAccounts: number;
   consumedTraffic: number;
   provisionedTraffic: number;

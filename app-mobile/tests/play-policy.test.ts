@@ -220,6 +220,66 @@ describe('Play distribution and privacy runtime', () => {
     assert.equal(h.consent.getPrivacyConsent().vpn, true);
   });
 
+  // ── BATTEMENT DE PRÉSENCE ──────────────────────────────────────────────────
+  // Sans battement, un appareil qui perd brutalement le réseau n'émet jamais de
+  // « disconnected » et reste « connecté » indéfiniment côté serveur. Le
+  // battement doit donc partir — mais jamais avant le consentement, jamais sans
+  // tunnel, et jamais en différé.
+  it('sends the presence heartbeat only for a live tunnel, and only after diagnostics opt-in', async () => {
+    const h = await harness();
+    const requests: { url: string; body: any }[] = [];
+    h.api.defaults.adapter = async config => {
+      requests.push({ url: config.url || '', body: JSON.parse(String(config.data || '{}')) });
+      return { data: {}, status: 202, statusText: 'Accepted', headers: {}, config };
+    };
+
+    // Sans aucun consentement : rien ne part, rien n'est créé.
+    assert.equal(await h.health.sendMobileHealthHeartbeat({ tunnelState: 'connected' }), false);
+    assert.equal(requests.length, 0);
+
+    // Consentement VPN seul, diagnostics refusés : toujours rien.
+    await h.consent.savePrivacyConsent(accepted);
+    assert.equal(await h.health.sendMobileHealthHeartbeat({ tunnelState: 'connected' }), false);
+    assert.equal(requests.length, 0);
+
+    // Diagnostics acceptés : le battement emprunte la route de rapport.
+    await h.consent.savePrivacyConsent({ ...accepted, diagnostics: true });
+    assert.equal(await h.health.sendMobileHealthHeartbeat({ tunnelState: 'connected', protocol: 'ssh' }), true);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, '/mobile-health/report');
+    assert.equal(requests[0].body.heartbeat, true);
+    assert.equal(requests[0].body.tunnelState, 'connected');
+    assert.equal(requests[0].body.protocol, 'ssh');
+    // Un battement ne porte aucun compteur : il ne fausse aucune durée mesurée.
+    assert.equal(requests[0].body.outcome, 'none');
+    for (const compteur of ['sessionDurationSeconds', 'reconnectCount', 'activeDurationSeconds', 'backgroundDurationSeconds', 'wakeCount']) {
+      assert.equal(requests[0].body[compteur], 0, compteur);
+    }
+    // Et il ne transporte aucune donnée nominative ni de navigation.
+    for (const interdit of ['host', 'ip', 'payload', 'credentials', 'rawLog', 'userId', 'deviceId']) {
+      assert.equal(interdit in requests[0].body, false, `${interdit} ne doit jamais être envoyé`);
+    }
+
+    // Tunnel arrêté : le battement n'a plus lieu d'être et ne part pas.
+    for (const etat of ['disconnected', 'connecting', 'error'] as const) {
+      assert.equal(await h.health.sendMobileHealthHeartbeat({ tunnelState: etat }), false, etat);
+    }
+    assert.equal(requests.length, 1);
+  });
+
+  it('never queues a failed heartbeat, so a stale one can never assert presence later', async () => {
+    const h = await harness();
+    await h.consent.savePrivacyConsent({ ...accepted, diagnostics: true });
+    h.api.defaults.adapter = async () => { throw new Error('offline'); };
+
+    // Un échec réseau ne rejette pas : il ne peut donc ni interrompre ni
+    // ralentir le tunnel, qui n'attend rien de cet envoi.
+    assert.equal(await h.health.sendMobileHealthHeartbeat({ tunnelState: 'connected' }), false);
+    // Et il ne laisse aucune trace rejouable : rejoué plus tard, un battement
+    // affirmerait une présence déjà expirée.
+    assert.equal(h.state.storage.has('@sxb_mobile_health_pending_v1'), false);
+  });
+
   it('retains a failed remote deletion for retry without recreating a Firebase token', async () => {
     const h = await harness();
     h.state.storage.set('@sxb_fcm_registered_token_v1', 'cached');

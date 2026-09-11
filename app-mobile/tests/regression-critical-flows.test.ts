@@ -2237,7 +2237,21 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(telemetry, /backgroundDurationSeconds/);
     assert.match(telemetry, /wakeCount/);
     assert.match(telemetry, /batteryOptimization/);
+    // La télémétrie elle-même ne cadence RIEN : elle n'a aucune horloge propre
+    // et ne peut donc pas émettre en dehors d'un événement du cycle de vie ou
+    // d'un battement explicitement demandé par le contexte VPN.
     assert.doesNotMatch(telemetry, /setInterval\(/);
+
+    // Le battement de présence est le seul envoi périodique, et il est armé
+    // par le CONTEXTE, uniquement pour un tunnel monté : un appareil dont le
+    // réseau tombe brutalement cesse d'être compté comme connecté, au lieu de
+    // le rester indéfiniment faute d'un « disconnected » qui n'arrivera jamais.
+    assert.match(telemetry, /export const MOBILE_HEALTH_HEARTBEAT_INTERVAL_MS/);
+    assert.match(telemetry, /export async function sendMobileHealthHeartbeat/);
+    assert.match(telemetry, /snapshot\.tunnelState !== 'connected'\) return false/);
+    assert.match(contexte, /vpnState !== 'connected'\) return;/);
+    assert.match(contexte, /setInterval\(beat, MOBILE_HEALTH_HEARTBEAT_INTERVAL_MS\)/);
+    assert.match(contexte, /clearInterval\(heartbeatTimerRef\.current\)/);
 
     const payload = telemetry.slice(
       telemetry.indexOf('const payload ='),

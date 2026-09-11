@@ -5,9 +5,15 @@
  */
 import { Router, Response } from "express";
 import { prisma, inMemoryDb } from "../database";
+import { config } from "../config";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { isOwnerRequest } from "../middleware/rbac/owner";
 import { calculerAllocation, estIllimite } from "../services/reseller-quota";
+import {
+  compterConnectes,
+  PRESENCE_HEARTBEAT_MINUTES,
+  PRESENCE_WINDOW_MINUTES,
+} from "../services/vpn-presence";
 import {
   chargerFicheRevendeur,
   porteeClientsRevendeur,
@@ -74,7 +80,11 @@ function stealthWhere(requesterIsOwner: boolean): any {
 // GET /api/dashboard/stats — KPIs principaux
 router.get("/stats", requireAuth, requirePermission("analytics.read"), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    let activeUsers = 0;
+    // Nombre de COMPTES ouverts. Ce n'est PAS un nombre de personnes en ligne :
+    // la carte « CONNECTÉS » affichait cette valeur et prétendait donc que
+    // 82 comptes ouverts valaient 82 utilisateurs en train de se servir du VPN.
+    // Le nombre de connexions réelles est `connectedNow`, mesuré séparément.
+    let activeAccounts = 0;
     let expiredAccounts = 0;
     let consumedTrafficBytes = BigInt(0);
     let provisionedTrafficBytes = BigInt(0);
@@ -97,7 +107,7 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
     const resellerStealthWhere = stealthWhere(requesterIsOwner);
     if (prisma) {
       const clientStealthWhere = { ...stealthWhere(requesterIsOwner), ...ownScope };
-      [activeUsers, expiredAccounts, activeServers, activeResellers, totalVouchers, redeemedVouchers] = await Promise.all([
+      [activeAccounts, expiredAccounts, activeServers, activeResellers, totalVouchers, redeemedVouchers] = await Promise.all([
         prisma.vpnClient.count({ where: { status: "active", ...clientStealthWhere } }),
         prisma.vpnClient.count({ where: { status: "expired", ...clientStealthWhere } }),
         // Le revendeur ne pilote aucun serveur : la valeur reste à zéro et la
@@ -117,7 +127,7 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
       provisionedTrafficBytes = clients.reduce((acc, c) => acc + (c.quotaTotal || BigInt(0)), BigInt(0));
       consumedTrafficBytes = clients.reduce((acc, c) => acc + c.quotaUsed, BigInt(0));
     } else {
-      activeUsers = inMemoryDb.vpnClients.filter((c) => c.status === "active").length;
+      activeAccounts = inMemoryDb.vpnClients.filter((c) => c.status === "active").length;
       expiredAccounts = inMemoryDb.vpnClients.filter((c) => c.status === "expired").length;
       provisionedTrafficBytes = inMemoryDb.vpnClients.reduce((acc, c) => acc + (c.quotaTotal || BigInt(0)), BigInt(0));
       consumedTrafficBytes = inMemoryDb.vpnClients.reduce((acc, c) => acc + c.quotaUsed, BigInt(0));
@@ -128,6 +138,29 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
     const GB = 1024 * 1024 * 1024;
     const consumedTrafficGb = Number(consumedTrafficBytes) / GB;
     const provisionedTrafficGb = Number(provisionedTrafficBytes) / GB;
+
+    // Connexions RÉELLES en cours — la seule valeur que la carte « CONNECTÉS »
+    // ait le droit d'afficher. Elle dérive des signaux de santé mobile : le
+    // tunnel est déclaré monté et le dernier signal date de moins de
+    // `PRESENCE_WINDOW_MINUTES`. Elle est volontairement `null` — et non zéro —
+    // quand la plateforme ne peut RIEN mesurer (pas de base, pas de secret de
+    // pseudonymisation) : zéro affirmerait que personne n'est connecté, ce qui
+    // serait une invention. L'interface affiche alors « non mesuré ».
+    let connectedNow: number | null = null;
+    const pseudonymSecret = config.MOBILE_HEALTH_PSEUDONYM_SECRET
+      || (config.NODE_ENV !== "production" ? config.JWT_SECRET : null);
+    if (prisma && pseudonymSecret) {
+      try {
+        connectedNow = await compterConnectes(prisma as any, pseudonymSecret, {
+          porteeClients: isReseller ? (ownScope as Record<string, unknown>) : null,
+          masquerProprietaire: !requesterIsOwner,
+        });
+      } catch (presenceError: any) {
+        // Une présence indisponible ne doit pas priver l'exploitant de tous ses
+        // autres indicateurs : on laisse `null` et on le dit dans la réponse.
+        console.error("[dashboard] presence count failed:", presenceError?.message || presenceError);
+      }
+    }
 
     // Quota personnel du demandeur.
     //
@@ -187,7 +220,17 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
     }
 
     return res.json({
-      activeUsers,
+      // Comptes ouverts. Nommé pour ce qu'il est ; `activeUsers` n'est conservé
+      // que pour ne rien casser chez les consommateurs existants de l'API et
+      // vaut exactement la même chose.
+      activeAccounts,
+      activeUsers: activeAccounts,
+      // Connexions réellement observées. `null` = non mesuré, jamais « zéro
+      // connecté ». Le drapeau évite à l'interface d'avoir à deviner.
+      connectedNow,
+      connectedNowMeasured: connectedNow !== null,
+      presenceWindowMinutes: PRESENCE_WINDOW_MINUTES,
+      presenceHeartbeatMinutes: PRESENCE_HEARTBEAT_MINUTES,
       expiredAccounts,
       consumedTraffic: Math.round(consumedTrafficGb * 100) / 100,
       provisionedTraffic: Math.round(provisionedTrafficGb * 100) / 100,

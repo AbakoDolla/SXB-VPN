@@ -10,7 +10,7 @@ import {
   Menu, X, UserPlus, HeadphonesIcon, BadgePercent, Activity,
   ChevronDown, Network, Radio, Cpu, BarChart3, Ticket,
   PackageOpen, GitBranch, ScrollText, BellRing, Download,
-  HeartPulse, Gift,
+  HeartPulse, Gift, Wifi,
 } from 'lucide-react';
 
 interface LayoutProps {
@@ -77,7 +77,7 @@ export default function Layout({
   useEffect(() => {
     const groupMap: Record<string, string> = {
       clients: 'clients', devices: 'clients', tokens: 'clients', vouchers: 'clients',
-      subscriptions: 'clients', 'free-trial': 'clients',
+      subscriptions: 'clients', 'free-trial': 'clients', 'connected-users': 'clients',
       'vpn-engine': 'vpnengine', xray: 'vpnengine', singbox: 'vpnengine', payload: 'vpnengine',
       'vpn-profiles': 'vpnengine', announcements: 'admin',
       sessions: 'monitoring', analytics: 'monitoring', servers: 'monitoring', monitoring: 'monitoring',
@@ -112,6 +112,10 @@ export default function Layout({
       roles: ALL_ROLES,
       items: [
         { kind: 'leaf', id: 'clients', label: t('sidebar.vpn_accounts'), icon: Users, roles: ALL_ROLES, permission: 'clients.view' },
+        // Suivi des connectés : chaque rôle y voit la portée qui le concerne —
+        // un revendeur, ses seuls clients. C'est le seul groupe visible d'un
+        // revendeur, et le propriétaire veut qu'il en bénéficie aussi.
+        { kind: 'leaf', id: 'connected-users', label: t('core.nav.connectedUsers'), icon: Wifi, roles: ALL_ROLES, permission: 'clients.view' },
         { kind: 'leaf', id: 'subscriptions', label: t('sidebar.subscriptions'), icon: PackageOpen, roles: ALL_ROLES, permission: 'subscription.view' },
         // Le revendeur doit suivre les appareils de SES clients : c'est là
         // qu'il constate une activation ou une consommation anormale.

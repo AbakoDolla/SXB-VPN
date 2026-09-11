@@ -12,7 +12,7 @@ const ts = require("typescript");
 const src = path.join(root, "artifacts", "sxb-dashboard", "src");
 const names = [
   "DashboardView", "MonitoringView", "SessionsView", "SupportView", "SettingsView",
-  "AnnouncementsView", "AppUpdatesView", "MobileHealthView", "OwnerLogView",
+  "AnnouncementsView", "AppUpdatesView", "MobileHealthView", "ConnectedUsersView", "OwnerLogView",
   "MaintenancePage", "ErrorBoundary",
 ];
 const sources = Object.fromEntries(names.map(name => [name, readFileSync(path.join(src, "components", `${name}.tsx`), "utf8")]));
@@ -233,7 +233,37 @@ const summary = {
   devices: [mobileDevice],
 };
 
-test("all eleven screens render in both languages, including dialogs, failures and loaded data", () => {
+const connectedUser = {
+  clientId: "cli-1", clientName: "Client Un", deviceId: "SXBDEVICE0000001",
+  resellerId: "res-1", resellerName: "Revendeur Un", directClient: false,
+  protocol: "vless", appVersion: "1.9.0", deviceModel: "Pixel 8",
+  lastSeenAt: log.timestamp, lastSeenSecondsAgo: 3665,
+  connectedSinceAt: log.timestamp, connectedSinceMeasured: true,
+};
+const directUser = {
+  ...connectedUser, clientId: "cli-2", clientName: null, deviceId: "SXBDEVICE0000002",
+  resellerId: null, resellerName: null, directClient: true, protocol: null, deviceModel: null,
+  lastSeenSecondsAgo: 45, connectedSinceAt: null, connectedSinceMeasured: false,
+};
+const connectedPage = {
+  generatedAt: log.timestamp, presenceWindowMinutes: 15, heartbeatMinutes: 5, measured: true,
+  scope: "platform", total: 2, limit: 200, offset: 0, truncated: false, unmatched: 1,
+  users: [connectedUser, directUser],
+};
+const resellerPresence = {
+  generatedAt: log.timestamp, presenceWindowMinutes: 15, heartbeatMinutes: 5, measured: true,
+  totalConnected: 2, unmatched: 1, truncated: false,
+  resellers: [{
+    resellerId: "res-1", resellerName: "Revendeur Un", status: "active", directClients: false,
+    connectedNow: 1, totalClients: 12, activeClients: 9, users: [connectedUser],
+  }],
+  direct: {
+    resellerId: null, resellerName: null, status: null, directClients: true,
+    connectedNow: 1, totalClients: 0, activeClients: 0, users: [directUser],
+  },
+};
+
+test("all twelve screens render in both languages, including dialogs, failures and loaded data", () => {
   const fixtures = [
     ["DashboardView", { currentUserRole: "OWNER" }, {
       loading: false, stats: { activeUsers: 1234, expiredAccounts: 1, resellerQuota: { assignedBytes: "9007199254740993", committedBytes: "1024", remainingBytes: "9007199254739969", resellerCount: 2 } },
@@ -247,6 +277,10 @@ test("all eleven screens render in both languages, including dialogs, failures a
     ["AnnouncementsView", {}, { loading: false, formOpen: true, announcements: [{ id: "a", title: "Titre utilisateur", message: "Texte utilisateur", level: "warning", active: true, createdAt: log.timestamp, expiresAt: "2099-01-01" }] }, "Nouvelle annonce", "New announcement"],
     ["AppUpdatesView", { currentUserRole: "SUPER_ADMIN" }, { loading: false }, "Publier et distribuer", "Publish and distribute"],
     ["MobileHealthView", {}, { loading: false, summary }, "Sans restriction", "Unrestricted"],
+    // La vue de suivi des connectés doit rester lisible dans les deux langues,
+    // y compris le volet revendeurs déplié et le libellé « non mesuré » qui ne
+    // doit jamais se confondre avec « personne n'est connecté ».
+    ["ConnectedUsersView", { currentUserRole: "OWNER" }, { loading: false, page: connectedPage, resellers: resellerPresence, tab: "resellers", expanded: { "res-1": true } }, "Revendeur Un", "Connected users"],
     ["OwnerLogView", {}, { loading: false, logs: [log], maintenance: { enabled: true, loading: false } }, "Journal propriétaire", "Owner log"],
     ["MaintenancePage", {}, { showOwnerAccess: true }, "Maintenance en cours", "Maintenance in progress"],
     ["ErrorBoundary", {}, { hasError: true }, "Une erreur est survenue", "An error occurred"],

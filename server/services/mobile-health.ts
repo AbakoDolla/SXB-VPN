@@ -51,6 +51,19 @@ export const mobileHealthReportSchema = z.object({
   backgroundDurationSeconds: z.number().int().nonnegative().max(7 * 24 * 60 * 60).default(0),
   wakeCount: z.number().int().nonnegative().max(100).default(0),
   batteryOptimization: z.enum(["optimized", "unrestricted", "unknown"]).default("unknown"),
+  /**
+   * Battement de présence — rafraîchit `lastSeenAt` sans écrire d'historique.
+   *
+   * L'application émet un signal toutes les quelques minutes tant que le tunnel
+   * est monté, faute de quoi un appareil ayant brutalement perdu le réseau
+   * resterait « connecté » indéfiniment. Insérer une ligne de rapport à chaque
+   * battement multiplierait l'historique par ~288 par appareil et par jour et
+   * ferait exploser l'agrégation de la vue « Santé mobile ». Un battement ne
+   * met donc à jour QUE l'état de présence de l'appareil, et n'incrémente aucun
+   * compteur : les mesures de durée restent portées par les transitions de
+   * cycle de vie, qui, elles, écrivent bien une ligne.
+   */
+  heartbeat: z.boolean().default(false),
 }).strict().superRefine((value, ctx) => {
   if (value.outcome !== "failure" && value.errorCode !== null) {
     ctx.addIssue({
@@ -196,6 +209,39 @@ export async function storeMobileHealthReport(
 
   const now = new Date();
   const pseudonym = pseudonymizeMobileDevice(userId, deviceId, secret);
+
+  // Battement : seule la présence est rafraîchie. Ni ligne d'historique, ni
+  // incrément de compteur — voir le commentaire du champ `heartbeat`.
+  if (input.heartbeat) {
+    await (prisma as any).mobileHealthDevice.upsert({
+      where: { pseudonym },
+      create: {
+        pseudonym,
+        appVersion: input.appVersion,
+        versionCode: input.versionCode,
+        androidApi: input.androidApi,
+        deviceModel: input.deviceModel,
+        lastSeenAt: now,
+        tunnelState: input.tunnelState,
+        protocol: input.protocol,
+        reportCount: 0,
+        batteryOptimization: input.batteryOptimization,
+      },
+      update: {
+        appVersion: input.appVersion,
+        versionCode: input.versionCode,
+        androidApi: input.androidApi,
+        deviceModel: input.deviceModel,
+        lastSeenAt: now,
+        tunnelState: input.tunnelState,
+        protocol: input.protocol,
+        batteryOptimization: input.batteryOptimization,
+      },
+      select: { id: true },
+    });
+    return "accepted";
+  }
+
   try {
     await (prisma as any).$transaction(async (tx: any) => {
       const device = await tx.mobileHealthDevice.upsert({

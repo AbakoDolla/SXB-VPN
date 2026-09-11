@@ -47,7 +47,15 @@ describe('mobile health wiring and privacy', () => {
     const context = source('app-mobile/contexts/VpnContext.tsx');
     const nativeModule = source('app-mobile/modules/android-native/SxbVpnModule.kt');
 
+    // The telemetry service owns no clock of its own.
     assert.doesNotMatch(telemetry, /setInterval\(/);
+    // The one periodic send is the presence heartbeat, armed by the VPN context
+    // for a live tunnel only and torn down as soon as the tunnel stops, so a
+    // device that silently loses the network stops counting as connected.
+    assert.match(telemetry, /export async function sendMobileHealthHeartbeat/);
+    assert.match(telemetry, /snapshot\.tunnelState !== 'connected'\) return false/);
+    assert.match(context, /vpnState !== 'connected'\) return;/);
+    assert.match(context, /clearInterval\(heartbeatTimerRef\.current\)/);
     assert.match(context, /noteMobileHealthAppState\(next\)/);
     assert.match(context, /outcome: 'success'/);
     assert.match(context, /outcome: 'failure'/);
@@ -55,6 +63,19 @@ describe('mobile health wiring and privacy', () => {
     assert.match(telemetry, /pending\.outbox\.shift\(\)/);
     assert.match(nativeModule, /isIgnoringBatteryOptimizations/);
     assert.doesNotMatch(nativeModule, /REQUEST_IGNORE_BATTERY_OPTIMIZATIONS/);
+  });
+
+  it('keeps the presence heartbeat cheap and non-retrying', () => {
+    const telemetry = source('app-mobile/services/mobileHealth.ts');
+    const service = source('server/services/mobile-health.ts');
+    const heartbeat = telemetry.slice(telemetry.indexOf('export async function sendMobileHealthHeartbeat'));
+
+    // A queued heartbeat replayed later would assert a presence that expired.
+    assert.doesNotMatch(heartbeat.slice(0, heartbeat.indexOf('export async function clearMobileHealth')), /outbox|persist\(/);
+    // A heartbeat writes no history row: at one every few minutes it would
+    // otherwise multiply mobile_health_reports by hundreds per device per day.
+    assert.match(service, /if \(input\.heartbeat\) \{/);
+    assert.match(service, /heartbeat: z\.boolean\(\)\.default\(false\)/);
   });
 
   it('leaves the dead duplicated backend server untouched', () => {
