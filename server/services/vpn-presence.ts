@@ -52,7 +52,7 @@
  * pseudonyme et cherche la correspondance. La fonction de hachage reste à sens
  * unique ; la table de santé reste anonyme même lue seule.
  */
-import { pseudonymizeMobileDevice } from "./mobile-health";
+import { pseudonymizeMobileDevice } from "./mobile-pseudonym";
 
 /** Cadence du battement émis par l'application tant que le tunnel est monté. */
 export const PRESENCE_HEARTBEAT_MINUTES = 5;

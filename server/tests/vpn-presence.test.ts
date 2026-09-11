@@ -16,7 +16,7 @@ import {
   regrouperParRevendeur,
   viderCachePresence,
 } from "../services/vpn-presence";
-import { pseudonymizeMobileDevice } from "../services/mobile-health";
+import { pseudonymizeMobileDevice } from "../services/mobile-pseudonym";
 
 const SECRET = "0123456789abcdef0123456789abcdef";
 const MAINTENANT = new Date("2026-09-11T12:00:00.000Z");

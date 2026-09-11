@@ -1,5 +1,19 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+/**
+ * Ce fichier n'est PAS dans `npm run test:regression`, et ce n'est pas un oubli.
+ *
+ * Il importe le service de santé complet, donc la validation d'entrée, le
+ * client de base et le service de mise à jour qui l'accompagnent. Or `server/`
+ * n'a pas de `node_modules` : lancé depuis `app-mobile/`, il s'arrête sur la
+ * première dépendance serveur introuvable. L'y ajouter ne ferait pas passer le
+ * test, il ferait échouer toute la série.
+ *
+ * Le calcul du pseudonyme, lui, est vérifié par `vpn-presence.test.ts` via
+ * `server/services/mobile-pseudonym.ts`, qui ne dépend que de `crypto` — c'est
+ * la partie dont dépend le suivi de présence. Ce fichier reste exécutable à la
+ * main depuis un environnement qui dispose des dépendances du serveur.
+ */
 import {
   mobileHealthReportSchema,
   pseudonymizeMobileDevice,

@@ -1,4 +1,3 @@
-import { createHmac } from "crypto";
 import { z } from "zod";
 import { prisma } from "../database";
 import { readPublishedAppUpdate } from "./app-update";
@@ -76,12 +75,10 @@ export const mobileHealthReportSchema = z.object({
 
 export type MobileHealthReportInput = z.infer<typeof mobileHealthReportSchema>;
 
-export function pseudonymizeMobileDevice(userId: string, deviceId: string, secret: string): string {
-  return createHmac("sha256", secret)
-    .update(`${userId}\0${deviceId}`)
-    .digest("base64url")
-    .slice(0, 22);
-}
+// Le calcul vit dans `mobile-pseudonym` : il est pur, et le suivi de présence
+// n'a pas à embarquer la validation d'entrée ni la base pour l'appeler. La
+// réexportation garde intacts tous les appelants existants.
+export { pseudonymizeMobileDevice } from "./mobile-pseudonym";
 
 export interface MobileHealthDeviceSnapshot {
   pseudonym: string;

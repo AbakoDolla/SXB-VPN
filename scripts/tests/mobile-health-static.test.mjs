@@ -21,7 +21,15 @@ describe('mobile health wiring and privacy', () => {
     const rootSchema = source('prisma/schema.prisma');
     const deviceModel = schema.slice(schema.indexOf('model MobileHealthDevice'));
 
-    assert.match(service, /createHmac\("sha256", secret\)/);
+    // Le calcul vit à part (`mobile-pseudonym.ts`) pour que le suivi de
+    // présence puisse l'appeler sans embarquer la validation d'entrée ni la
+    // base. Ce qui compte reste vérifié : c'est un HMAC-SHA256 lié à un secret
+    // serveur, et le service continue d'écrire ce pseudonyme et lui seul.
+    const pseudonym = source('server/services/mobile-pseudonym.ts');
+    assert.match(pseudonym, /createHmac\("sha256", secret\)/);
+    assert.match(pseudonym, /\.update\(`\$\{userId\}\\0\$\{deviceId\}`\)/);
+    assert.match(service, /export \{ pseudonymizeMobileDevice \} from "\.\/mobile-pseudonym"/);
+    assert.doesNotMatch(pseudonym, /prisma|import .* from "\.\.\/database"/);
     assert.match(service, /\.strict\(\)/);
     assert.match(service, /reportId: z\.string\(\)\.uuid\(\)/);
     assert.match(service, /error\?\.code !== "P2002" \|\| !target\.includes\("reportId"\)/);
