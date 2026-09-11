@@ -188,7 +188,22 @@ app.use("/api/free-trial", freeTrialRouter);
     console.log("📦 Mounting production static file serving (Serving compiled React frontend)...");
     const distPath = path.join(process.cwd(), "dist");
     const _uploadDir = path.join(process.cwd(), "public", "uploads", "avatars"); if (!fs.existsSync(_uploadDir)) fs.mkdirSync(_uploadDir, { recursive: true }); app.use("/uploads", express.static(path.join(process.cwd(), "public", "uploads")));
-    app.use(express.static(distPath));
+    // Le document d'entrée ne porte pas de version dans son nom : c'est LUI qui
+    // désigne le bundle à charger. Servi sans consigne, le navigateur applique
+    // sa propre heuristique de fraîcheur et peut resservir une page périmée
+    // pendant des heures — l'utilisateur reste alors sur l'ancienne interface
+    // alors que la nouvelle est déployée. `no-cache` ne l'empêche pas de le
+    // conserver : il impose de le revalider, ce que l'ETag rend gratuit quand
+    // rien n'a changé. Les fichiers de `/assets` portent une empreinte dans
+    // leur nom et gardent leur cache long.
+    const revalidateEntryDocument = (res: Response) => {
+      res.setHeader("Cache-Control", "no-cache");
+    };
+    app.use(express.static(distPath, {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith(`${path.sep}index.html`)) revalidateEntryDocument(res as Response);
+      },
+    }));
     app.get("*", async (req: Request, res: Response) => {
       // Page maintenance statique pour les routes non-API (sauf /login et
       // /maintenance) — l'OWNER garde l'accès au dashboard pendant la pause.
@@ -206,6 +221,7 @@ app.use("/api/free-trial", freeTrialRouter);
       } catch (err) {
         console.error("Maintenance static page check error:", err);
       }
+      revalidateEntryDocument(res);
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
