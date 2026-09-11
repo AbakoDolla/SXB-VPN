@@ -89,7 +89,12 @@ function RootLayoutNav() {
   useEffect(() => {
     if (isLoading || isAuthenticated) return;
     const firstSegment = segments[0] as string | undefined;
-    const publicSegments = new Set(['index', 'onboarding', 'activate', 'privacy', '+not-found']);
+    // `free-trial` DOIT figurer ici : l'essai gratuit s'adresse par définition
+    // à quelqu'un qui n'a pas encore de compte. Sans lui, le clic depuis
+    // l'écran d'activation ouvrait bien l'écran, puis cet effet le renvoyait
+    // aussitôt sur `/activate` — la fonctionnalité était donc inatteignable
+    // pour la totalité de son public.
+    const publicSegments = new Set(['index', 'onboarding', 'activate', 'free-trial', 'privacy', '+not-found']);
     if (firstSegment && !publicSegments.has(firstSegment)) {
       router.replace('/activate');
     }

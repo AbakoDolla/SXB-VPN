@@ -668,4 +668,27 @@ describe('mobile access runtime with real encrypted store, auth and HTTP interce
     assert.match(read('app/_layout.tsx'), /accessRedirect\(isAuthenticated, accessReady, deviceAccess/);
     for (const file of ['app/settings.tsx', 'app/activate.tsx']) assert.match(read(file), /t\(["']created_by["']\)/);
   });
+
+  it('laisse atteindre l’essai gratuit, seule porte de ceux qui n’ont pas encore de compte', async () => {
+    const h = await harness();
+    const read = (file: string) => readFileSync(path.join(mobile, file), 'utf8');
+
+    // Sans compte : l'écran d'activation propose « J'ai un jeton d'essai
+    // gratuit ». Si `free-trial` n'est pas déclaré public, la navigation part
+    // bien puis la garde renvoie aussitôt sur `/activate` — l'utilisateur
+    // revient au même écran et la fonctionnalité est inatteignable pour la
+    // totalité de son public.
+    const publicSegments = read('app/_layout.tsx').match(/publicSegments = new Set\(\[([^\]]*)\]/);
+    assert.ok(publicSegments, 'La liste des écrans publics doit rester lisible');
+    for (const segment of ['activate', 'free-trial', 'privacy', 'onboarding']) {
+      assert.ok(publicSegments[1].includes(`'${segment}'`), `${segment} doit rester atteignable sans compte`);
+    }
+    assert.match(read('app/activate.tsx'), /router\.push\('\/free-trial'/);
+
+    // Avec un appareil bloqué : la demande d'essai ne donne aucun accès par
+    // elle-même, donc l'écarter enfermerait un appareil révoqué sans recours.
+    const blocked = snapshot('revoked', 'revoked').device;
+    assert.equal(h.policy.accessRedirect(true, true, blocked, 'free-trial'), null);
+    assert.equal(h.policy.accessRedirect(true, true, blocked, '(tabs)'), '/access-blocked');
+  });
 });
