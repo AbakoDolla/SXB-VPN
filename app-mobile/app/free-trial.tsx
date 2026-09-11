@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator, Animated, KeyboardAvoidingView, Platform, Pressable,
+  ActivityIndicator, Animated, FlatList, KeyboardAvoidingView, Modal, Platform, Pressable,
   ScrollView, StyleSheet, Text, TextInput, View,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
@@ -8,9 +8,14 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import * as Haptics from "expo-haptics";
+import * as Localization from "expo-localization";
 import { useAuthContext } from "@/contexts/AuthContext";
 import { useColors } from "@/hooks/useColors";
 import { useTranslation } from "@/localization";
+import {
+  countryFlag, countryName, isCountryCode, normalizeCountryCode, sortedCountries, type Country,
+} from "@/services/countries";
+import { lireEmpreinteAppareil } from "@/services/deviceFingerprint";
 import {
   cleErreurEssai, effacerDemandeLocale, ecrireDemandeLocale, INTERVALLE_VERIFICATION_MS,
   inscrireEssaiGratuit, intervalleVerificationMs, lireDemandeLocale, normaliserJetonEssai,
@@ -21,7 +26,7 @@ import {
  * Écran « ESSAI GRATUIT ».
  *
  * Trois états, et trois seulement :
- *  1. saisie   — jeton + nom obligatoire ;
+ *  1. saisie   — jeton + nom + pays, tous les trois obligatoires ;
  *  2. attente  — « En attente de vérification », bouton « ↻ Vérifier le statut »
  *                et vérification automatique périodique ;
  *  3. approuvé — invitation à recharger l'application ; la configuration
@@ -31,9 +36,14 @@ import {
  * configuration : ces informations n'existent pas dans les réponses tant que
  * l'administration n'a pas déployé l'accès, et une fois déployées elles sont
  * consommées par le flux d'activation habituel, pas par cet écran.
+ *
+ * LE PAYS EST SAISI, JAMAIS MESURÉ. L'écran ne demande aucune permission de
+ * localisation et n'interroge aucun service d'adresses IP. La seule aide
+ * apportée est le pays déjà déclaré dans les réglages du système, présélectionné
+ * et modifiable d'un geste.
  */
 export default function FreeTrialScreen() {
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const insets = useSafeAreaInsets();
@@ -41,6 +51,9 @@ export default function FreeTrialScreen() {
 
   const [token, setToken] = useState("");
   const [name, setName] = useState("");
+  const [country, setCountry] = useState("");
+  const [listePaysOuverte, setListePaysOuverte] = useState(false);
+  const [recherchePays, setRecherchePays] = useState("");
   const [demande, setDemande] = useState<DemandeEssaiLocale | null>(null);
   const [statut, setStatut] = useState<FreeTrialStatus>("pending");
   const [messageServeur, setMessageServeur] = useState("");
@@ -51,6 +64,16 @@ export default function FreeTrialScreen() {
   const [erreur, setErreur] = useState("");
   const shakeAnim = useRef(new Animated.Value(0)).current;
   const basculeEnCours = useRef(false);
+
+  const pays = useMemo(() => sortedCountries(language), [language]);
+  const paysFiltres = useMemo(() => {
+    const requete = recherchePays.trim().toLocaleLowerCase(language);
+    if (!requete) return pays;
+    return pays.filter((entree) =>
+      entree[language].toLocaleLowerCase(language).includes(requete) ||
+      entree.code.toLowerCase().includes(requete));
+  }, [pays, recherchePays, language]);
+  const nomPaysChoisi = countryName(country, language);
 
   const shake = () => Animated.sequence([
     Animated.timing(shakeAnim, { toValue: 10, duration: 55, useNativeDriver: true }),
@@ -73,6 +96,20 @@ export default function FreeTrialScreen() {
     });
     return () => { actif = false; };
   }, []);
+
+  // Présélection du pays à partir de la RÉGION DÉCLARÉE dans les réglages du
+  // système. C'est une lecture locale, sans permission et sans réseau : rien
+  // n'est mesuré, rien n'est envoyé, et l'utilisateur peut changer le choix.
+  useEffect(() => {
+    if (country) return;
+    try {
+      const region = normalizeCountryCode(Localization.getLocales()[0]?.regionCode);
+      if (isCountryCode(region)) setCountry(region);
+    } catch {
+      // Réglages illisibles : l'utilisateur choisira lui-même, ce qui reste la
+      // source de vérité de toute façon.
+    }
+  }, [country]);
 
   /**
    * Bascule vers l'accès réel.
@@ -131,6 +168,7 @@ export default function FreeTrialScreen() {
   const soumettre = async () => {
     const jeton = normaliserJetonEssai(token);
     const nom = name.trim();
+    const codePays = normalizeCountryCode(country);
     if (!jeton) {
       setErreur(t("free_trial_error_token"));
       shake();
@@ -141,14 +179,28 @@ export default function FreeTrialScreen() {
       shake();
       return;
     }
+    // Le pays est obligatoire au même titre que le nom : sans lui, impossible
+    // de savoir d'où viennent les inscrits, ce qui est justement la raison
+    // d'être du champ.
+    if (!isCountryCode(codePays)) {
+      setErreur(t("free_trial_error_country"));
+      shake();
+      return;
+    }
     setErreur("");
     setChargement(true);
     try {
-      const reponse = await inscrireEssaiGratuit({ token: jeton, name: nom, deviceId });
+      // L'empreinte est lue AU MOMENT de l'envoi, jamais conservée : elle
+      // traverse cette fonction et la requête, rien de plus.
+      const deviceFingerprint = await lireEmpreinteAppareil();
+      const reponse = await inscrireEssaiGratuit({
+        token: jeton, name: nom, country: codePays, deviceId, deviceFingerprint,
+      });
       const locale: DemandeEssaiLocale = {
         requestId: reponse.requestId,
         claimSecret: reponse.claimSecret,
         name: reponse.name,
+        country: reponse.country ?? codePays,
         submittedAt: reponse.submittedAt,
         status: reponse.status,
       };
@@ -165,6 +217,13 @@ export default function FreeTrialScreen() {
     } finally {
       setChargement(false);
     }
+  };
+
+  const choisirPays = (code: string) => {
+    setCountry(code);
+    setListePaysOuverte(false);
+    setRecherchePays("");
+    setErreur("");
   };
 
   const recommencer = async () => {
@@ -228,6 +287,14 @@ export default function FreeTrialScreen() {
               <Text style={styles.summaryLabel}>{t("free_trial_name_label")}</Text>
               <Text style={styles.summaryValue} numberOfLines={1}>{demande.name}</Text>
             </View>
+            {countryName(demande.country, language) ? (
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>{t("free_trial_country_label")}</Text>
+                <Text style={styles.summaryValue} numberOfLines={1}>
+                  {`${countryFlag(demande.country)}  ${countryName(demande.country, language)}`}
+                </Text>
+              </View>
+            ) : null}
             <View style={styles.summaryRow}>
               <Text style={styles.summaryLabel}>{t("device_id")}</Text>
               <Text style={styles.summaryValue} numberOfLines={1} ellipsizeMode="middle">{deviceId}</Text>
@@ -300,29 +367,58 @@ export default function FreeTrialScreen() {
             </View>
 
             <Animated.View style={{ transform: [{ translateX: shakeAnim }] }}>
-              <TextInput
-                style={[styles.input, !!erreur && { borderColor: colors.disconnected }]}
-                placeholder={t("free_trial_token_placeholder")}
-                placeholderTextColor={colors.textMuted}
-                value={token}
-                onChangeText={(valeur) => { setToken(valeur.toUpperCase()); setErreur(""); }}
-                autoCapitalize="characters"
-                autoCorrect={false}
-                returnKeyType="next"
-                accessibilityLabel={t("free_trial_token_label")}
-              />
-              <TextInput
-                style={[styles.input, styles.inputName, !!erreur && { borderColor: colors.disconnected }]}
-                placeholder={t("free_trial_name_placeholder")}
-                placeholderTextColor={colors.textMuted}
-                value={name}
-                onChangeText={(valeur) => { setName(valeur); setErreur(""); }}
-                autoCapitalize="words"
-                autoCorrect={false}
-                returnKeyType="done"
-                onSubmitEditing={soumettre}
-                accessibilityLabel={t("free_trial_name_label")}
-              />
+              <Text style={styles.fieldLabel}>{t("free_trial_token_label")}</Text>
+              <View style={[styles.inputRow, !!erreur && { borderColor: colors.disconnected }]}>
+                <Ionicons name="key-outline" size={18} color={colors.textMuted} style={styles.inputIcon} />
+                <TextInput
+                  style={styles.input}
+                  placeholder={t("free_trial_token_placeholder")}
+                  placeholderTextColor={colors.textMuted}
+                  value={token}
+                  onChangeText={(valeur) => { setToken(valeur.toUpperCase()); setErreur(""); }}
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                  returnKeyType="next"
+                  accessibilityLabel={t("free_trial_token_label")}
+                />
+              </View>
+
+              <Text style={styles.fieldLabel}>{t("free_trial_name_label")}</Text>
+              <View style={[styles.inputRow, !!erreur && { borderColor: colors.disconnected }]}>
+                <Ionicons name="person-outline" size={18} color={colors.textMuted} style={styles.inputIcon} />
+                <TextInput
+                  style={styles.input}
+                  placeholder={t("free_trial_name_placeholder")}
+                  placeholderTextColor={colors.textMuted}
+                  value={name}
+                  onChangeText={(valeur) => { setName(valeur); setErreur(""); }}
+                  autoCapitalize="words"
+                  autoCorrect={false}
+                  returnKeyType="done"
+                  onSubmitEditing={soumettre}
+                  accessibilityLabel={t("free_trial_name_label")}
+                />
+              </View>
+
+              {/* Pays : sélecteur, jamais un champ libre. Une liste fermée est
+                  la seule façon d'obtenir des statistiques exploitables. */}
+              <Text style={styles.fieldLabel}>{t("free_trial_country_label")}</Text>
+              <Pressable
+                onPress={() => { setListePaysOuverte(true); setErreur(""); }}
+                accessibilityRole="button"
+                accessibilityLabel={t("free_trial_country_label")}
+                style={({ pressed }) => [
+                  styles.inputRow,
+                  !!erreur && { borderColor: colors.disconnected },
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Ionicons name="globe-outline" size={18} color={colors.textMuted} style={styles.inputIcon} />
+                <Text style={[styles.selectValue, !nomPaysChoisi && styles.selectPlaceholder]} numberOfLines={1}>
+                  {nomPaysChoisi ? `${countryFlag(country)}  ${nomPaysChoisi}` : t("free_trial_country_placeholder")}
+                </Text>
+                <Ionicons name="chevron-down" size={18} color={colors.textMuted} />
+              </Pressable>
             </Animated.View>
 
             {erreur ? (
@@ -340,7 +436,7 @@ export default function FreeTrialScreen() {
               style={({ pressed }) => [styles.primaryButton, chargement && styles.disabled, pressed && !chargement && styles.pressedLarge]}
             >
               <LinearGradient colors={colors.gradients.primary as [string, string]} style={styles.primaryButtonInner}>
-                <Ionicons name={chargement ? "sync" : "paper-plane-outline"} size={19} color={colors.primaryForeground} />
+                <Ionicons name={chargement ? "sync" : "shield-checkmark"} size={19} color={colors.primaryForeground} />
                 <Text style={[styles.primaryButtonText, { color: colors.primaryForeground }]}>
                   {chargement ? t("free_trial_submitting") : t("free_trial_submit")}
                 </Text>
@@ -358,9 +454,89 @@ export default function FreeTrialScreen() {
             </View>
           ) : null}
 
+          {/* Bandeau de réassurance : trois promesses, trois colonnes. */}
+          <View style={styles.assuranceBar}>
+            <View style={styles.assuranceCell}>
+              <Ionicons name="shield-checkmark-outline" size={20} color={colors.primary} />
+              <Text style={styles.assuranceTitle}>{t("free_trial_assurance_secure_title")}</Text>
+              <Text style={styles.assuranceDesc}>{t("free_trial_assurance_secure_desc")}</Text>
+            </View>
+            <View style={styles.assuranceDivider} />
+            <View style={styles.assuranceCell}>
+              <Ionicons name="flash-outline" size={20} color={colors.primary} />
+              <Text style={styles.assuranceTitle}>{t("free_trial_assurance_fast_title")}</Text>
+              <Text style={styles.assuranceDesc}>{t("free_trial_assurance_fast_desc")}</Text>
+            </View>
+            <View style={styles.assuranceDivider} />
+            <View style={styles.assuranceCell}>
+              <Ionicons name="lock-closed-outline" size={20} color={colors.primary} />
+              <Text style={styles.assuranceTitle}>{t("free_trial_assurance_free_title")}</Text>
+              <Text style={styles.assuranceDesc}>{t("free_trial_assurance_free_desc")}</Text>
+            </View>
+          </View>
+
+          {/* Promesse de sécurité explicite du propriétaire : elle reste
+              visible sur l'écran de saisie ET sur l'écran d'attente. */}
           <Text style={styles.footer}>{t("free_trial_no_config_notice")}</Text>
+          <Text style={styles.footer}>{t("activate_footer")}</Text>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      <Modal
+        visible={listePaysOuverte}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setListePaysOuverte(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { paddingBottom: insets.bottom + 12, marginTop: insets.top + 60 }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>{t("free_trial_country_label")}</Text>
+              <Pressable
+                onPress={() => setListePaysOuverte(false)}
+                accessibilityLabel={t("free_trial_country_close")}
+                style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
+              >
+                <Ionicons name="close" size={20} color={colors.textSecondary} />
+              </Pressable>
+            </View>
+            <View style={styles.inputRow}>
+              <Ionicons name="search-outline" size={18} color={colors.textMuted} style={styles.inputIcon} />
+              <TextInput
+                style={styles.input}
+                placeholder={t("free_trial_country_search")}
+                placeholderTextColor={colors.textMuted}
+                value={recherchePays}
+                onChangeText={setRecherchePays}
+                autoCorrect={false}
+                accessibilityLabel={t("free_trial_country_search")}
+              />
+            </View>
+            <FlatList
+              data={paysFiltres}
+              keyExtractor={(entree: Country) => entree.code}
+              keyboardShouldPersistTaps="handled"
+              style={styles.modalList}
+              ListEmptyComponent={<Text style={styles.secureHint}>{t("free_trial_country_none")}</Text>}
+              renderItem={({ item }: { item: Country }) => (
+                <Pressable
+                  onPress={() => choisirPays(item.code)}
+                  style={({ pressed }) => [styles.countryRow, pressed && styles.pressed]}
+                  accessibilityRole="button"
+                  accessibilityLabel={item[language]}
+                >
+                  <Text style={styles.countryFlag}>{countryFlag(item.code)}</Text>
+                  <Text style={styles.countryName} numberOfLines={1}>{item[language]}</Text>
+                  <Text style={styles.countryCode}>{item.code}</Text>
+                  {item.code === country ? (
+                    <Ionicons name="checkmark" size={18} color={colors.primary} />
+                  ) : null}
+                </Pressable>
+              )}
+            />
+          </View>
+        </View>
+      </Modal>
     </LinearGradient>
   );
 }
@@ -387,8 +563,28 @@ function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useCol
     formHeaderCopy: { flex: 1, gap: 2 },
     formTitle: { color: colors.textPrimary, fontSize: 15, fontFamily: "Inter_700Bold" },
     formHint: { color: colors.textMuted, fontSize: 11, fontFamily: "Inter_400Regular" },
-    input: { backgroundColor: colors.bgInput, borderWidth: 1, borderColor: colors.border2, borderRadius: 15, paddingHorizontal: 15, paddingVertical: 16, color: colors.textPrimary, fontSize: 14, fontFamily: "Inter_600SemiBold", letterSpacing: 1.2, textAlign: "center" },
-    inputName: { marginTop: 12, letterSpacing: 0.2 },
+    // Le champ vit désormais DANS une ligne à icône : la bordure et le fond
+    // appartiennent à la ligne, le champ ne porte plus que le texte.
+    input: { flex: 1, paddingVertical: 16, color: colors.textPrimary, fontSize: 14, fontFamily: "Inter_600SemiBold", letterSpacing: 0.4 },
+    fieldLabel: { color: colors.textSecondary, fontSize: 12, fontFamily: "Inter_600SemiBold", marginTop: 12, marginBottom: 7 },
+    inputRow: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.bgInput, borderWidth: 1, borderColor: colors.border2, borderRadius: 15, paddingHorizontal: 14 },
+    inputIcon: { width: 20, textAlign: "center" },
+    selectValue: { flex: 1, color: colors.textPrimary, fontSize: 14, fontFamily: "Inter_600SemiBold", paddingVertical: 16 },
+    selectPlaceholder: { color: colors.textMuted, fontFamily: "Inter_400Regular" },
+    assuranceBar: { flexDirection: "row", alignItems: "flex-start", backgroundColor: colors.bgCard + "D9", borderWidth: 1, borderColor: colors.border, borderRadius: 20, paddingVertical: 16, paddingHorizontal: 8 },
+    assuranceCell: { flex: 1, alignItems: "center", gap: 6, paddingHorizontal: 6 },
+    assuranceDivider: { width: 1, alignSelf: "stretch", backgroundColor: colors.border },
+    assuranceTitle: { color: colors.textPrimary, fontSize: 12, fontFamily: "Inter_700Bold", textAlign: "center" },
+    assuranceDesc: { color: colors.textMuted, fontSize: 10, lineHeight: 14, fontFamily: "Inter_400Regular", textAlign: "center" },
+    modalBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.62)", justifyContent: "flex-end" },
+    modalCard: { flex: 1, backgroundColor: colors.bg, borderTopLeftRadius: 24, borderTopRightRadius: 24, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 18, paddingTop: 16, gap: 12 },
+    modalHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+    modalTitle: { color: colors.textPrimary, fontSize: 17, fontFamily: "Inter_700Bold" },
+    modalList: { flex: 1 },
+    countryRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: colors.border },
+    countryFlag: { fontSize: 20 },
+    countryName: { flex: 1, color: colors.textPrimary, fontSize: 14, fontFamily: "Inter_500Medium" },
+    countryCode: { color: colors.textMuted, fontSize: 12, fontFamily: "Inter_600SemiBold", letterSpacing: 1 },
     errorWrap: { flexDirection: "row", alignItems: "center", gap: 7 },
     errorText: { color: colors.disconnected, fontSize: 12, flex: 1, fontFamily: "Inter_500Medium" },
     secureHint: { color: colors.textMuted, fontSize: 11, fontFamily: "Inter_400Regular", textAlign: "center" },

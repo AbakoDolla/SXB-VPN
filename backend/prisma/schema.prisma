@@ -658,8 +658,21 @@ model FreeTrialRequest {
   name       String
   /// Identifiant d'appareil transmis AUTOMATIQUEMENT par l'application.
   deviceId   String
+  /// Pays DÉCLARÉ par l'utilisateur (ISO 3166-1 alpha-2). C'est une saisie,
+  /// jamais une mesure : aucune géolocalisation ni résolution d'adresse IP
+  /// n'intervient. Nullable UNIQUEMENT pour les demandes déposées avant
+  /// l'ajout de la colonne ; obligatoire à l'inscription depuis.
+  country    String?
   platform   String?
   appVersion String?
+  /// Condensat SHA-256 (sel serveur) d'une empreinte d'appareil STABLE À
+  /// TRAVERS UNE RÉINSTALLATION — sur Android, Settings.Secure.ANDROID_ID.
+  ///
+  /// C'est le seul mécanisme qui empêche un second essai après désinstallation :
+  /// l'identifiant d'appareil habituel vit dans AsyncStorage et disparaît avec
+  /// l'application, l'empreinte non. La valeur BRUTE n'est ni stockée ni
+  /// journalisée : seul ce condensat existe côté serveur.
+  deviceFingerprint String?
   /// SHA-256 du secret de réclamation. Le secret en clair n'est jamais stocké.
   claimSecretHash String
   status     String         @default("pending") // pending | deployed | rejected
@@ -684,5 +697,11 @@ model FreeTrialRequest {
   @@unique([tokenId, deviceId])
   @@index([status, createdAt])
   @@index([deviceId])
+  /// Le contrôle « un seul essai par appareil » est une lecture INDEXÉE, pas
+  /// un balayage : il s'exécute à chaque inscription, sur une table qui grossit
+  /// à chaque campagne.
+  @@index([deviceFingerprint, status])
+  /// Statistiques « d'où viennent nos clients » sans parcourir toute la table.
+  @@index([country, status])
   @@map("free_trial_requests")
 }

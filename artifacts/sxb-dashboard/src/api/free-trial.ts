@@ -19,13 +19,29 @@ export interface FreeTrialToken {
   expiresAt: string | null;
   createdAt: string;
   requestCount?: number;
+  /**
+   * Compteurs par statut. Ils rendent la ligne du jeton lisible sans ouvrir le
+   * volet : « 12 en attente · 3 déployées » se lit d'un coup d'œil, et les
+   * demandes ne sont chargées qu'à l'ouverture.
+   */
+  pendingCount?: number;
+  deployedCount?: number;
+  rejectedCount?: number;
 }
 
-/** Demande déposée par un appareil : Nom | Identifiant d'appareil | Jeton. */
+/** Taille maximale d'un lot, alignée sur `MAX_LOT_ESSAI` côté serveur. */
+export const MAX_FREE_TRIAL_BATCH = 200;
+
+/** Demande déposée par un appareil : Nom | Pays | Identifiant d'appareil | Jeton. */
 export interface FreeTrialRequest {
   id: string;
   name: string;
   deviceId: string;
+  /**
+   * Pays DÉCLARÉ par l'inscrit (ISO 3166-1 alpha-2), ou null pour les demandes
+   * antérieures au champ. C'est une saisie, jamais une géolocalisation.
+   */
+  country: string | null;
   trialToken: string | null;
   trialLabel: string | null;
   platform: string | null;
@@ -38,6 +54,27 @@ export interface FreeTrialRequest {
   rejectedAt: string | null;
   lastCheckedAt: string | null;
   reviewNote: string | null;
+}
+
+/** Une ligne du récapitulatif « d'où viennent nos clients ». */
+export interface FreeTrialCountryStat {
+  /** Code ISO, ou null pour les demandes sans pays déclaré. */
+  country: string | null;
+  requests: number;
+  pending: number;
+  rejected: number;
+  clients: number;
+}
+
+export interface FreeTrialCountryStats {
+  countries: FreeTrialCountryStat[];
+  totals: {
+    countries: number;
+    requests: number;
+    clients: number;
+    pending: number;
+    rejected: number;
+  };
 }
 
 export interface FreeTrialDeployResult {
@@ -91,9 +128,60 @@ export async function revokeFreeTrialToken(id: string): Promise<FreeTrialToken> 
 }
 
 export async function fetchFreeTrialRequests(status?: string): Promise<FreeTrialRequest[]> {
-  const suffix = status ? `?status=${encodeURIComponent(status)}` : '';
-  const data = await apiRequest<{ requests: FreeTrialRequest[] }>(`/free-trial/requests${suffix}`);
-  return Array.isArray(data?.requests) ? data.requests : [];
+  const page = await fetchFreeTrialRequestPage({ status });
+  return page.requests;
+}
+
+/** Une page de demandes, éventuellement restreinte à UN jeton. */
+export interface FreeTrialRequestPage {
+  requests: FreeTrialRequest[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/**
+ * Lecture paginée, normalement restreinte à un jeton.
+ *
+ * C'est le chemin utilisé par le volet dépliable : on ne charge jamais les
+ * demandes de tous les jetons pour dessiner la page, et 200 inscriptions sous
+ * un même jeton se parcourent page par page.
+ */
+export async function fetchFreeTrialRequestPage(params: {
+  status?: string;
+  tokenId?: string;
+  limit?: number;
+  offset?: number;
+} = {}): Promise<FreeTrialRequestPage> {
+  const query = new URLSearchParams();
+  if (params.status) query.set('status', params.status);
+  if (params.tokenId) query.set('tokenId', params.tokenId);
+  if (params.limit) query.set('limit', String(params.limit));
+  if (params.offset) query.set('offset', String(params.offset));
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  const data = await apiRequest<FreeTrialRequestPage>(`/free-trial/requests${suffix}`);
+  const requests = Array.isArray(data?.requests) ? data.requests : [];
+  return {
+    requests,
+    total: Number.isFinite(data?.total) ? Number(data.total) : requests.length,
+    limit: Number(data?.limit ?? requests.length),
+    offset: Number(data?.offset ?? 0),
+  };
+}
+
+/**
+ * Récapitulatif par pays : combien de clients et de demandes, d'où.
+ *
+ * Ne renvoie QUE des compteurs — jamais un nom, un appareil ni un jeton. La
+ * route est réservée à l'exploitation interne : un revendeur reçoit un 403,
+ * ses propres clients lui parvenant déjà par /clients et /devices.
+ */
+export async function fetchFreeTrialCountryStats(): Promise<FreeTrialCountryStats> {
+  const data = await apiRequest<FreeTrialCountryStats>('/free-trial/stats/countries');
+  return {
+    countries: Array.isArray(data?.countries) ? data.countries : [],
+    totals: data?.totals ?? { countries: 0, requests: 0, clients: 0, pending: 0, rejected: 0 },
+  };
 }
 
 /**
@@ -103,6 +191,8 @@ export async function fetchFreeTrialRequests(status?: string): Promise<FreeTrial
  */
 export async function deployFreeTrialRequests(input: {
   requestIds: string[];
+  /** Jeton SOUS LEQUEL l'action est lancée : le serveur revérifie chaque demande. */
+  tokenId?: string;
   profileId: string;
   quotaGB: number;
   startAt?: string;
@@ -118,6 +208,7 @@ export async function deployFreeTrialRequests(input: {
 
 export async function rejectFreeTrialRequests(input: {
   requestIds: string[];
+  tokenId?: string;
   note?: string;
 }): Promise<{ success: boolean; rejected: number; total: number }> {
   return apiRequest<{ success: boolean; rejected: number; total: number }>(

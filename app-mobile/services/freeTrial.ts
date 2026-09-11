@@ -50,6 +50,8 @@ export interface DemandeEssaiLocale {
   requestId: string;
   claimSecret: string;
   name: string;
+  /** Pays déclaré, réaffiché sur l'écran d'attente. */
+  country: string | null;
   submittedAt: string;
   status: FreeTrialStatus;
 }
@@ -61,6 +63,8 @@ export interface ReponseInscriptionEssai {
   claimSecret: string;
   name: string;
   device: string;
+  /** Pays tel qu'il a été ENREGISTRÉ côté serveur (ISO 3166-1 alpha-2). */
+  country: string | null;
   status: FreeTrialStatus;
   message: string;
   submittedAt: string;
@@ -99,6 +103,7 @@ export async function lireDemandeLocale(): Promise<DemandeEssaiLocale | null> {
       requestId: valeur.requestId,
       claimSecret: valeur.claimSecret,
       name: valeur.name ?? '',
+      country: valeur.country ?? null,
       submittedAt: valeur.submittedAt ?? '',
       status: (valeur.status as FreeTrialStatus) ?? 'pending',
     };
@@ -124,18 +129,31 @@ export async function effacerDemandeLocale(): Promise<void> {
   }
 }
 
-/** ÉTAPE 2 — inscrit l'appareil. Le nom est obligatoire côté serveur ET ici. */
+/**
+ * ÉTAPE 2 — inscrit l'appareil.
+ *
+ * Le nom ET le pays sont obligatoires, ici comme côté serveur.
+ *
+ * `deviceFingerprint` est l'empreinte d'appareil stable à travers une
+ * réinstallation. Elle part une seule fois, par cette requête, et n'est jamais
+ * conservée localement : c'est elle qui garantit qu'un appareil n'obtient pas
+ * un second essai en désinstallant l'application.
+ */
 export async function inscrireEssaiGratuit(input: {
   token: string;
   name: string;
+  country: string;
   deviceId: string;
+  deviceFingerprint: string;
   platform?: string;
   appVersion?: string;
 }): Promise<ReponseInscriptionEssai> {
   const reponse = await apiClient.post<ReponseInscriptionEssai>('/free-trial/enroll', {
     token: input.token.trim().toUpperCase(),
     name: input.name.trim(),
+    country: input.country.trim().toUpperCase(),
     deviceId: input.deviceId,
+    deviceFingerprint: input.deviceFingerprint,
     platform: input.platform,
     appVersion: input.appVersion,
   });
@@ -168,6 +186,11 @@ export function normaliserJetonEssai(valeur: string): string {
  * technique et l'application est bilingue.
  */
 export function cleErreurEssai(erreur: unknown): TranslationKey {
+  // Empreinte impossible à lire : l'erreur naît dans l'application, pas dans
+  // une réponse serveur, et doit être annoncée sans jargon.
+  if ((erreur as { name?: string })?.name === 'EmpreinteIndisponible') {
+    return 'free_trial_error_fingerprint';
+  }
   const code = (erreur as { response?: { data?: { error?: string } } })?.response?.data?.error;
   switch (code) {
     case 'errors.free_trial.token_invalid':
@@ -180,6 +203,14 @@ export function cleErreurEssai(erreur: unknown): TranslationKey {
       return 'free_trial_error_exhausted';
     case 'errors.free_trial.device_required':
       return 'free_trial_error_device';
+    case 'errors.free_trial.fingerprint_required':
+      return 'free_trial_error_fingerprint';
+    // Refus volontairement sobre : l'appareil a déjà eu son essai, et rien
+    // n'est dit de la personne qui l'a utilisé.
+    case 'errors.free_trial.device_already_used':
+      return 'free_trial_error_already_used';
+    case 'errors.free_trial.country_invalid':
+      return 'free_trial_error_country';
     case 'errors.validation':
       return 'free_trial_error_name';
     default:

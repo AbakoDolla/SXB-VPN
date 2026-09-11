@@ -1,4 +1,14 @@
 {
+  "free_trial": {
+    "batch_empty": "Select at least one enrollee.",
+    "batch_too_large": "This batch exceeds the allowed limit. Narrow the selection.",
+    "profile_not_found": "Server (VPN profile) not found.",
+    "request_not_found": "Trial request not found.",
+    "already_deployed": "This request has already been deployed.",
+    "not_pending": "Only a pending request can be deployed.",
+    "window_invalid": "Check the start and expiry dates.",
+    "token_invalid": "Trial token not found or invalid."
+  },
   "reset": {
     "ownerOnly": "Only the OWNER account can request a global data reset.",
     "recoveredNotExecuted": "Maintenance was restored, but no data purge was performed. This nonce has been discarded. Load and explicitly confirm a fresh preview before any new deletion.",

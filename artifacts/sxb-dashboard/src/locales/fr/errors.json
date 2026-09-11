@@ -1,4 +1,14 @@
 {
+  "free_trial": {
+    "batch_empty": "Sélectionnez au moins un inscrit.",
+    "batch_too_large": "Ce lot dépasse la limite autorisée. Réduisez la sélection.",
+    "profile_not_found": "Serveur (profil VPN) introuvable.",
+    "request_not_found": "Demande d'essai introuvable.",
+    "already_deployed": "Cette demande a déjà été déployée.",
+    "not_pending": "Seule une demande en attente peut être déployée.",
+    "window_invalid": "Vérifiez les dates de début et d'expiration.",
+    "token_invalid": "Jeton d'essai introuvable ou invalide."
+  },
   "reset": {
     "ownerOnly": "Seul le compte OWNER peut demander une réinitialisation globale des données.",
     "recoveredNotExecuted": "La maintenance a été restaurée, mais aucune purge des données n'a été effectuée. Ce nonce a été abandonné. Chargez et confirmez explicitement un nouvel aperçu avant toute nouvelle suppression.",

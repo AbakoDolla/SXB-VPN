@@ -1,3 +1,5 @@
+import type { TrialMark } from "./lib/trial";
+
 export enum UserRole {
   OWNER = "OWNER",
   SUPER_ADMIN = "SUPER_ADMIN",
@@ -75,6 +77,11 @@ export interface Client {
   resellerId?: string | null;
   resellerName?: string | null;
   reseller?: ResellerRef | null;
+  /**
+   * Mention « Période d'essai » quand l'accès provient d'un essai gratuit
+   * déployé : pays déclaré et date de fin. `null` pour un accès ordinaire.
+   */
+  trial?: TrialMark | null;
 }
 
 export interface Reseller {

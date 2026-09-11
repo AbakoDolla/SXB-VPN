@@ -5,6 +5,7 @@ import bcrypt from "bcryptjs";
 import { prisma, logDbActivity } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { sanitizeDevice, selectDeviceSubscription } from "../services/device-quota";
+import { marquesEssaiParClient } from "../services/free-trial-marks";
 import { executerMutationQuota, PlafondQuotaDepasse } from "../services/reseller-quota";
 import { synchroniserEtatAccesClient } from "../services/client-access-state";
 import { makeUserToken, renewedDeviceExpiry } from "../services/device-token";
@@ -89,6 +90,10 @@ router.get("/", requireAuth, requirePermission("clients.view"), async (req: Auth
       orderBy: { createdAt: "desc" },
     });
     const ids = clients.map((client) => client.id);
+    // Mention « période d'essai » : une lecture indexée pour toute la page,
+    // jamais une par appareil. Le cloisonnement revendeur est déjà appliqué
+    // ci-dessus, donc un revendeur ne voit la mention que sur SES appareils.
+    const marquesEssai = await marquesEssaiParClient(prisma, ids);
     const usageRows = ids.length
       ? await (prisma as any).trafficUsage.findMany({
           where: { clientId: { in: ids } },
@@ -118,7 +123,12 @@ router.get("/", requireAuth, requirePermission("clients.view"), async (req: Auth
       const subscription = selectDeviceSubscription(client);
       const exactKey = subscription ? `${client.id}:${subscription.id}:${client.deviceId || ""}` : "";
       const scopedUsage = exactKey ? bySubscriptionDevice.get(exactKey) : undefined;
-      return sanitizeDevice(client, scopedUsage || byClient.get(client.id), subscription);
+      return sanitizeDevice(
+        client,
+        scopedUsage || byClient.get(client.id),
+        subscription,
+        marquesEssai.get(client.id) ?? null,
+      );
     }) });
   } catch (err) {
     console.error("List devices error:", err);

@@ -32,7 +32,7 @@ export function selectDeviceSubscription(client: any): any | null {
   })[0] || null;
 }
 
-export function sanitizeDevice(c: any, usage?: DeviceUsage, subscription?: any | null) {
+export function sanitizeDevice(c: any, usage?: DeviceUsage, subscription?: any | null, trial?: unknown) {
   const selected = subscription ?? selectDeviceSubscription(c);
   const quotaTotal = Number(selected?.quotaBytes ?? c.quotaTotal ?? 0);
   const quotaUsed = Number(selected?.quotaUsed ?? c.quotaUsed ?? 0);
@@ -68,5 +68,9 @@ export function sanitizeDevice(c: any, usage?: DeviceUsage, subscription?: any |
     trafficUpload: trafficUpload.toString(),
     trafficTotal: (trafficDownload + trafficUpload).toString(),
     lastTrafficAt: usage?.lastSeenAt ? new Date(usage.lastSeenAt).toISOString() : null,
+    // Mention « période d'essai » : présente uniquement quand l'accès provient
+    // d'un essai gratuit déployé. `null` est le cas ordinaire, et le tableau de
+    // bord n'affiche alors aucun badge.
+    trial: trial ?? null,
   };
 }

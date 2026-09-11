@@ -120,6 +120,31 @@ export function interdireMutationSupport() {
 }
 
 /**
+ * Ferme une surface d'EXPLOITATION INTERNE aux revendeurs.
+ *
+ * Même plafond en dur que `interdireMutationSupport`, et pour la même raison :
+ * un revendeur porte `clients.view`, ce qui suffirait à lui ouvrir une route
+ * protégée par cette seule permission. Or certaines surfaces ne sont pas
+ * « les siennes en plus petit » — elles sont GLOBALES par nature : le vivier
+ * de demandes d'essai de tous les revendeurs, les jetons d'invitation, les
+ * statistiques consolidées par pays.
+ *
+ * Ce que le revendeur garde : ses PROPRES clients et appareils, mention
+ * « période d'essai » et pays compris. Ces informations lui arrivent par
+ * `/api/clients` et `/api/devices`, déjà cloisonnés par `porteeClientsRevendeur`.
+ */
+export function interdireAccesRevendeur() {
+  return function garde(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+    if (req.user?.role !== "RESELLER") return next();
+    return res.status(403).json({
+      error: "errors.auth.forbidden",
+      code: CODES_REVENDEUR.OWNERSHIP_FORBIDDEN,
+      message: "Cette surface est réservée à l’exploitation interne.",
+    });
+  };
+}
+
+/**
  * Garde de plafond pour une action qui AUGMENTE l'engagement.
  * Renvoie un refus structuré quand le plafond est déjà atteint ; les rôles
  * sans quota et les revendeurs illimités passent sans requête supplémentaire.

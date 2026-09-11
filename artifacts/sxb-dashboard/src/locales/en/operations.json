@@ -1,5 +1,28 @@
 {
   "freeTrial": {
+    "groupedHint": "Every token carries its own enrollments: expand it to see them and act on them. Requests are never mixed between two tokens.",
+    "noToken": "No invitation token yet. Create one to get started.",
+    "counters": "{{pending}} pending · {{deployed}} deployed",
+    "searchTitle": "Search results",
+    "searchHint": "Cross-token search, read-only: to act, open the relevant token. It covers the enrollments loaded for the current filter.",
+    "batch": {
+      "loadedOnly": "\"Select all\" only covers the displayed enrollments of this token, never another token's or unloaded pages. At most {{max}} enrollees per deployment.",
+      "tooMany": "A batch cannot exceed {{max}} enrollees. Narrow the selection.",
+      "recap": "{{count}} enrollee(s) from token {{token}} will receive exactly the values above.",
+      "deployTo": "Deploy to {{count}} enrollee(s)",
+      "done": "Operation complete",
+      "summary": "{{selected}} selected · {{succeeded}} succeeded · {{failed}} failed",
+      "failedItem": "• {{id}} — {{reason}}"
+    },
+    "countryUnknown": "Not provided",
+    "countries": {
+      "title": "Where our customers come from",
+      "declaredHint": "Country declared by the enrollee when requesting the trial. No geolocation or IP address is used.",
+      "totals": "{{clients}} customer(s) · {{requests}} request(s) · {{countries}} countries",
+      "clients": "Customers",
+      "requests": "Requests",
+      "pending": "Pending"
+    },
     "title": "Free trial requests",
     "subtitle": "A trial token is only an invitation: it carries no server, quota, dates or configuration. You decide what each enrollee receives at deployment time.",
     "securityNotice": "A token can never be used to retrieve somebody else's configuration. Every enrollment creates its own request, bound to a single device ID; VPN access is returned to that exact device only, and only after you deploy it.",
@@ -25,6 +48,7 @@
     "usesLimited": "{{used}} / {{max}} enrollment(s)",
     "platformVersion": "{{platform}} · {{version}}",
     "columns": {
+    "country": "Country",
       "name": "Name",
       "deviceId": "Device ID",
       "token": "Token",

@@ -1,5 +1,28 @@
 {
   "freeTrial": {
+    "groupedHint": "Chaque jeton porte ses propres inscriptions : dépliez-le pour les voir et agir dessus. Les demandes ne sont jamais mélangées entre deux jetons.",
+    "noToken": "Aucun jeton d'invitation pour l'instant. Créez-en un pour commencer.",
+    "counters": "{{pending}} en attente · {{deployed}} déployée(s)",
+    "searchTitle": "Résultats de la recherche",
+    "searchHint": "Recherche transversale, en lecture seule : pour agir, ouvrez le jeton concerné. Elle porte sur les inscriptions chargées pour le filtre courant.",
+    "batch": {
+      "loadedOnly": "« Tout sélectionner » ne couvre que les inscriptions affichées de ce jeton, jamais celles d'un autre jeton ni les pages non chargées. Maximum {{max}} inscrits par déploiement.",
+      "tooMany": "Un lot ne peut pas dépasser {{max}} inscrits. Réduisez la sélection.",
+      "recap": "{{count}} inscrit(s) du jeton {{token}} recevront exactement les valeurs ci-dessus.",
+      "deployTo": "Déployer à {{count}} inscrit(s)",
+      "done": "Opération terminée",
+      "summary": "{{selected}} sélectionné(s) · {{succeeded}} réussi(s) · {{failed}} échoué(s)",
+      "failedItem": "• {{id}} — {{reason}}"
+    },
+    "countryUnknown": "Non renseigné",
+    "countries": {
+      "title": "D'où viennent nos clients",
+      "declaredHint": "Pays déclaré par l'inscrit lors de sa demande. Aucune géolocalisation ni adresse IP n'est utilisée.",
+      "totals": "{{clients}} client(s) · {{requests}} demande(s) · {{countries}} pays",
+      "clients": "Clients",
+      "requests": "Demandes",
+      "pending": "En attente"
+    },
     "title": "Demandes d'essai gratuit",
     "subtitle": "Le jeton d'essai n'est qu'une invitation : il ne contient ni serveur, ni quota, ni dates, ni configuration. Vous décidez de ce que reçoit chaque inscrit au moment du déploiement.",
     "securityNotice": "Un jeton ne permet jamais de récupérer la configuration d'une autre personne. Chaque inscription crée une demande distincte, liée à un seul identifiant d'appareil ; l'accès VPN n'est renvoyé qu'à cet appareil précis, et seulement après votre déploiement.",
@@ -25,6 +48,7 @@
     "usesLimited": "{{used}} / {{max}} inscription(s)",
     "platformVersion": "{{platform}} · {{version}}",
     "columns": {
+    "country": "Pays",
       "name": "Nom",
       "deviceId": "Identifiant d'appareil",
       "token": "Jeton",

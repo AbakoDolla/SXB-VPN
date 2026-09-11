@@ -432,3 +432,28 @@ CREATE INDEX IF NOT EXISTS "free_trial_requests_status_createdAt_idx"
   ON "free_trial_requests" ("status", "createdAt");
 CREATE INDEX IF NOT EXISTS "free_trial_requests_deviceId_idx"
   ON "free_trial_requests" ("deviceId");
+
+-- ── Essai gratuit : pays declare + empreinte d'appareil ─────────────────────
+-- STRICTEMENT ADDITIF : deux colonnes NULLABLES sur une table deja creee par
+-- le bloc ci-dessus. Aucune ligne existante n'est reecrite, aucune colonne
+-- existante n'est modifiee ni rendue obligatoire. Une base qui n'applique pas
+-- ce bloc continue de fonctionner : seules les nouvelles inscriptions
+-- exigeraient les colonnes.
+--
+-- "country" est le pays SAISI par l'utilisateur (ISO 3166-1 alpha-2). C'est
+-- une declaration, pas une mesure : aucune geolocalisation ni resolution
+-- d'adresse IP n'intervient nulle part dans ce chemin.
+--
+-- "deviceFingerprint" est un CONDENSAT SHA-256 (avec sel serveur) d'une
+-- empreinte d'appareil stable a travers une reinstallation. La valeur brute
+-- n'est jamais stockee ni journalisee. C'est ce qui interdit un second essai
+-- apres desinstallation / reinstallation de l'application.
+ALTER TABLE "free_trial_requests" ADD COLUMN IF NOT EXISTS "country" TEXT;
+ALTER TABLE "free_trial_requests" ADD COLUMN IF NOT EXISTS "deviceFingerprint" TEXT;
+
+-- Le controle « un seul essai par appareil » tourne a chaque inscription : il
+-- doit etre une lecture indexee, pas un balayage de table.
+CREATE INDEX IF NOT EXISTS "free_trial_requests_deviceFingerprint_status_idx"
+  ON "free_trial_requests" ("deviceFingerprint", "status");
+CREATE INDEX IF NOT EXISTS "free_trial_requests_country_status_idx"
+  ON "free_trial_requests" ("country", "status");

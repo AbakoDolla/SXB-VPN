@@ -11,6 +11,7 @@ import {
   synchroniserEtatAccesClient,
 } from "../services/client-access-state";
 import { makeUserToken, renewedDeviceExpiry } from "../services/device-token";
+import { marquesEssaiParClient } from "../services/free-trial-marks";
 import { assertResumeAllowed, deviceAccessFailure, MobileAccessError } from "../services/access-lifecycle";
 import { accessStateHub } from "../services/access-state-events";
 import {
@@ -66,7 +67,7 @@ const renewClientSchema = z.object({
 
 // Helper to convert BigInt to string for client-safe JSON parsing
 // Also removes sensitive data like passwordHash
-function sanitizeVpnClient(client: any) {
+function sanitizeVpnClient(client: any, trial?: unknown) {
   if (!client) return null;
   
   // Remove passwordHash from user object if present
@@ -95,6 +96,9 @@ function sanitizeVpnClient(client: any) {
     reseller,
     resellerId: client.resellerId ?? reseller?.id ?? null,
     resellerName: reseller?.name ?? null,
+    // Mention « période d'essai » : renseignée uniquement pour un accès issu
+    // d'un essai gratuit déployé, `null` partout ailleurs.
+    trial: trial ?? null,
     quotaTotal: client.quotaTotal ? client.quotaTotal.toString() : "0",
     quotaUsed: client.quotaUsed ? client.quotaUsed.toString() : "0",
   };
@@ -132,7 +136,11 @@ router.get("/", requireAuth, requirePermission("clients.view"), async (req: Auth
     // pour les non-OWNER (filtrage à la lecture uniquement).
     const visibleClients = clients.filter((c) => canSeeUser(req, c.user));
 
-    return res.json(visibleClients.map(sanitizeVpnClient));
+    // Mention « période d'essai » + pays déclaré. Calculée APRÈS le filtrage,
+    // donc jamais pour un client que l'appelant n'a pas le droit de voir.
+    const marquesEssai = await marquesEssaiParClient(prisma, visibleClients.map((c) => c.id));
+
+    return res.json(visibleClients.map((c) => sanitizeVpnClient(c, marquesEssai.get(c.id) ?? null)));
   } catch (err) {
     console.error("Fetch VPN clients error:", err);
     return res.status(500).json({ error: "errors.server", message: "Failed to fetch VPN clients" });

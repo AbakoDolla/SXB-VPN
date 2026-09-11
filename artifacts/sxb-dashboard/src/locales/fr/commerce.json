@@ -1,4 +1,9 @@
 {
+  "trial": {
+    "badge": "Période d'essai",
+    "endsOn": "Fin de l'essai : {{date}}",
+    "fromCountry": "Pays déclaré : {{country}}"
+  },
   "common": {
     "active": "Actif",
     "activePlural": "Actifs",

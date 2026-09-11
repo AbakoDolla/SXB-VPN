@@ -13,6 +13,7 @@ import { useBulkDelete } from "../hooks/useBulkDelete";
 import BulkDeleteControls from "./BulkDeleteControls";
 import ActivationRenewalDialog from "./ActivationRenewalDialog";
 import ActivationCodeResult from "./ActivationCodeResult";
+import { TrialBadge } from "./TrialBadge";
 import { Search, UserPlus, Trash2, ShieldAlert, KeyRound, CalendarDays, PauseCircle, PlayCircle, RefreshCcw, Store } from "lucide-react";
 import Pagination from "./ui/Pagination";
 import { toast } from "sonner";
@@ -284,6 +285,10 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                       </td>}
                       <td className="py-4 px-4 font-medium text-white">
                         {client.user?.name || client.name || "-"}
+                        {/* Accès issu d'un essai gratuit : mention, date de fin
+                            et pays déclaré, visibles aussi par le revendeur
+                            propriétaire du client. */}
+                        <TrialBadge trial={client.trial} />
                       </td>
                       <td className="py-4 px-4 text-gray-400">
                         {client.user?.email || client.email || "-"}

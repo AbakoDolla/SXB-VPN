@@ -1,4 +1,9 @@
 {
+  "trial": {
+    "badge": "Trial period",
+    "endsOn": "Trial ends: {{date}}",
+    "fromCountry": "Declared country: {{country}}"
+  },
   "common": {
     "active": "Active",
     "activePlural": "Active",

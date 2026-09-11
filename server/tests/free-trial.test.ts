@@ -25,25 +25,39 @@ import {
   CODES_ESSAI,
   INTERVALLE_VERIFICATION_MAX_S,
   INTERVALLE_VERIFICATION_MIN_S,
+  MAX_LOT_ESSAI,
   MOTIF_JETON_ESSAI,
+  RAISONS_LOT_ESSAI,
   STATUT_DEMANDE,
+  STATUTS_ESSAI_CONSOMME,
   calculerFenetreEssai,
   champsInterditsPresents,
+  deciderInscriptionParEmpreinte,
+  demandeAppartientAuJeton,
+  empreinteExploitable,
   etatJetonEssai,
   genererJetonEssai,
   genererSecretReclamation,
+  hacherEmpreinteAppareil,
   hacherSecretReclamation,
   intervalleVerificationEssai,
+  marqueEssaiPourClient,
   normaliserJetonEssai,
+  normaliserLotEssai,
   refusDeploiement,
+  refusEssaiDejaConsomme,
   refusJetonEssai,
+  refusLotEssai,
   secretCorrespond,
+  statistiquesParPays,
+  totauxParPays,
   verifierAucuneFuite,
   vueDemandePourAdmin,
   vueInscriptionEssai,
   vueJetonPourAdmin,
   vueStatutEssaiPourAppareil,
 } from "../services/free-trial";
+import { CODES_PAYS, estCodePaysValide, nomPays, normaliserCodePays } from "../services/countries";
 
 const DEMAIN = new Date(Date.now() + 24 * 3600 * 1000);
 const HIER = new Date(Date.now() - 24 * 3600 * 1000);
@@ -128,10 +142,13 @@ describe("étape 1 — le jeton d'essai ne transporte aucune configuration", () 
     for (const interdit of ["host", "port", "server", "serverId", "uuid", "sni", "config", "quotaBytes", "expireAt", "profileId"]) {
       assert.equal(interdit in vue, false, `le jeton exposerait « ${interdit} »`);
     }
-    // Ce qu'il contient : de la gestion de campagne, pas de l'accès.
+    // Ce qu'il contient : de la gestion de campagne, pas de l'accès. Les trois
+    // compteurs par statut servent à afficher « 12 en attente · 3 déployées »
+    // sur la ligne du jeton sans ouvrir son volet.
     assert.deepEqual(
       Object.keys(vue).sort(),
-      ["createdAt", "expiresAt", "id", "label", "maxUses", "requestCount", "state", "status", "token", "usedCount"],
+      ["createdAt", "deployedCount", "expiresAt", "id", "label", "maxUses", "pendingCount", "rejectedCount",
+        "requestCount", "state", "status", "token", "usedCount"],
     );
   });
 
@@ -523,6 +540,7 @@ describe("contrat de la route — la décision reste dans le service", () => {
       "'/requests'",
       "'/requests/deploy'",
       "'/requests/reject'",
+      "'/stats/countries'",
     ]) {
       assert.ok(source.includes(chemin), `route ${chemin} manquante`);
     }
@@ -531,11 +549,20 @@ describe("contrat de la route — la décision reste dans le service", () => {
   it("protège toutes les routes admin par requireAuth + requirePermission", () => {
     const adminRoutes = source.split(/router\.(?:get|post)\(/).slice(1)
       .filter((bloc) => !bloc.startsWith("'/enroll'") && !bloc.startsWith("'/status'"));
-    assert.equal(adminRoutes.length, 6, "nombre de routes admin inattendu");
+    // 7 routes internes : 3 jetons, 2 demandes (liste + statistiques) et
+    // 2 actions d'instruction (déploiement, refus).
+    assert.equal(adminRoutes.length, 7, "nombre de routes admin inattendu");
     for (const bloc of adminRoutes) {
-      const entete = bloc.slice(0, 400);
+      const entete = bloc.slice(0, 600);
       assert.ok(entete.includes("requireAuth"), `route admin sans requireAuth : ${entete.slice(0, 40)}`);
       assert.ok(entete.includes("requirePermission"), `route admin sans requirePermission : ${entete.slice(0, 40)}`);
+      // Le vivier des demandes, les jetons et les statistiques sont des
+      // surfaces d'exploitation INTERNE : un revendeur porte `clients.view`,
+      // la permission seule ne doit donc pas suffire à les lui ouvrir.
+      assert.ok(
+        entete.includes("interdireAccesRevendeur()"),
+        `route admin ouverte aux revendeurs : ${entete.slice(0, 40)}`,
+      );
     }
   });
 
@@ -611,5 +638,498 @@ describe("non-régression — le modèle de données reste ADDITIF", () => {
     assert.ok(bloc.includes("CREATE TABLE IF NOT EXISTS"), "création idempotente attendue");
     assert.equal(/DROP\s+(TABLE|COLUMN)/i.test(bloc), false, "aucune suppression tolérée");
     assert.equal(/ALTER\s+TABLE\s+"(?!free_trial)/i.test(bloc), false, "aucune table existante modifiée");
+  });
+
+  it("ajoute pays et empreinte en colonnes NULLABLES, avec leurs index", () => {
+    const schema = readFileSync(new URL("../../prisma/schema.prisma", import.meta.url), "utf8");
+    const debut = schema.indexOf("model FreeTrialRequest");
+    const bloc = schema.slice(debut, schema.indexOf('@@map("free_trial_requests")', debut));
+    // Nullables : les demandes déposées AVANT l'ajout des colonnes restent
+    // valides, donc la production ne casse pas au déploiement.
+    assert.match(bloc, /country\s+String\?/, "le pays doit rester nullable");
+    assert.match(bloc, /deviceFingerprint\s+String\?/, "l'empreinte doit rester nullable");
+    // Le contrôle « un seul essai par appareil » tourne à chaque inscription :
+    // il doit être une lecture indexée, pas un balayage.
+    assert.ok(bloc.includes("@@index([deviceFingerprint, status])"), "index d'unicité d'essai attendu");
+    assert.ok(bloc.includes("@@index([country, status])"), "index de statistiques par pays attendu");
+
+    const sql = readFileSync(new URL("../../prisma/migrations_manual.sql", import.meta.url), "utf8");
+    assert.ok(sql.includes('ADD COLUMN IF NOT EXISTS "country"'), "ajout idempotent du pays attendu");
+    assert.ok(sql.includes('ADD COLUMN IF NOT EXISTS "deviceFingerprint"'), "ajout idempotent de l'empreinte attendu");
+    assert.ok(sql.includes('"free_trial_requests_deviceFingerprint_status_idx"'), "index SQL d'empreinte attendu");
+    // Aucune colonne existante rendue obligatoire après coup.
+    assert.equal(/ALTER\s+TABLE[^;]*SET\s+NOT\s+NULL/i.test(sql.slice(sql.indexOf("free_trial_tokens"))), false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("PAYS — la localisation est SAISIE, jamais mesurée", () => {
+  it("n'accepte qu'un code d'une liste ISO 3166-1 alpha-2 FERMÉE", () => {
+    assert.equal(estCodePaysValide("CM"), true);
+    assert.equal(estCodePaysValide("cm"), true, "la casse ne doit pas faire échouer une saisie valide");
+    assert.equal(estCodePaysValide("  fr  "), true);
+    // Codes syntaxiquement plausibles mais inexistants : refusés, sinon le
+    // récapitulatif « d'où viennent nos clients » mélangerait du bruit.
+    for (const faux of ["XX", "ZZ", "AA", "QQ"]) {
+      assert.equal(estCodePaysValide(faux), false, `« ${faux} » ne devrait pas être accepté`);
+    }
+    // Texte libre, code à trois lettres, valeur vide : tous refusés.
+    for (const invalide of ["", "   ", "Cameroun", "CMR", "C", "12", null, undefined, 42, {}]) {
+      assert.equal(estCodePaysValide(invalide as unknown), false, `« ${String(invalide)} » ne devrait pas être accepté`);
+    }
+    assert.ok(CODES_PAYS.length > 200, "la liste doit couvrir le monde, pas une poignée de pays");
+  });
+
+  it("normalise sans « réparer » : une saisie douteuse échoue au lieu d'être devinée", () => {
+    assert.equal(normaliserCodePays(" cm "), "CM");
+    assert.equal(normaliserCodePays("CMR"), "", "un code à trois lettres n'est pas tronqué à deux");
+    assert.equal(normaliserCodePays("C1"), "");
+    assert.equal(normaliserCodePays(null), "");
+  });
+
+  it("rend le nom du pays dans les deux langues", () => {
+    assert.equal(nomPays("CM", "fr"), "Cameroun");
+    assert.equal(nomPays("CM", "en"), "Cameroon");
+    assert.equal(nomPays("XX", "fr"), null);
+  });
+
+  it("le pays saisi remonte jusqu'à la vue admin", () => {
+    const vue = vueDemandePourAdmin(demande({ country: "cm" })) as Record<string, unknown>;
+    // Normalisé à l'affichage : l'exploitation voit « CM », jamais « cm ».
+    assert.equal(vue.country, "CM");
+    const sansPays = vueDemandePourAdmin(demande({ country: null })) as Record<string, unknown>;
+    assert.equal(sansPays.country, null, "une demande historique sans pays reste lisible");
+    const bruit = vueDemandePourAdmin(demande({ country: "Cameroun" })) as Record<string, unknown>;
+    assert.equal(bruit.country, null, "un pays en texte libre ne doit pas s'afficher comme un code");
+  });
+
+  it("le pays est renvoyé à l'appareil qui vient de s'inscrire", () => {
+    const vue = vueInscriptionEssai({ demande: demande({ country: "CI" }), claimSecret: "s" });
+    assert.equal(vue.country, "CI");
+    assert.deepEqual(champsInterditsPresents(vue), []);
+  });
+
+  it("les trois copies de la table de pays sont IDENTIQUES", () => {
+    // Serveur, application mobile et tableau de bord sont trois paquets
+    // indépendants : sans ce contrôle, une copie dériverait en silence et un
+    // pays valide côté application serait refusé côté serveur.
+    const extraire = (chemin: string) => {
+      const source = readFileSync(new URL(chemin, import.meta.url), "utf8");
+      return [...source.matchAll(/\{\s*code:\s*"([A-Z]{2})",\s*fr:\s*"([^"]+)",\s*en:\s*"([^"]+)"\s*\}/g)]
+        .map((m) => `${m[1]}|${m[2]}|${m[3]}`);
+    };
+    const serveur = extraire("../services/countries.ts");
+    const mobile = extraire("../../app-mobile/services/countries.ts");
+    const tableau = extraire("../../artifacts/sxb-dashboard/src/lib/countries.ts");
+    assert.ok(serveur.length > 200, `table serveur trop courte : ${serveur.length}`);
+    assert.deepEqual(mobile, serveur, "app-mobile/services/countries.ts a dérivé");
+    assert.deepEqual(tableau, serveur, "artifacts/sxb-dashboard/src/lib/countries.ts a dérivé");
+  });
+
+  it("aucune géolocalisation ni service d'adresse IP n'intervient dans ce chemin", () => {
+    // Exigence explicite du propriétaire : la localisation est déclarée, pas
+    // observée. Le contrôle porte sur le texte des fichiers concernés.
+    for (const chemin of [
+      "../routes/free-trial.ts",
+      "../services/free-trial.ts",
+      "../services/countries.ts",
+      "../../app-mobile/app/free-trial.tsx",
+      "../../app-mobile/services/countries.ts",
+    ]) {
+      const source = readFileSync(new URL(chemin, import.meta.url), "utf8");
+      assert.equal(
+        /ipapi|ip-api|geoip|maxmind|ipinfo|geolocation|getCurrentPosition|watchPosition|expo-location/i.test(source),
+        false,
+        `${chemin} ne doit contenir aucune mesure de localisation`,
+      );
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("UN SEUL ESSAI PAR APPAREIL — même après désinstallation", () => {
+  const EMPREINTE = "a1b2c3d4e5f60718";
+  const AUTRE_EMPREINTE = "ffeeddccbbaa9988";
+
+  it("hache l'empreinte avec un sel : la valeur brute n'est jamais conservée", () => {
+    const condensat = hacherEmpreinteAppareil(EMPREINTE, "sel-de-test")!;
+    assert.match(condensat, /^[a-f0-9]{64}$/, "un SHA-256 hexadécimal est attendu");
+    assert.notEqual(condensat, EMPREINTE);
+    assert.equal(condensat.includes(EMPREINTE), false, "l'empreinte brute ne doit pas transparaître");
+    // Le sel change tout : sans lui, l'espace des ANDROID_ID serait assez
+    // petit pour être énuméré hors ligne.
+    assert.notEqual(hacherEmpreinteAppareil(EMPREINTE, "autre-sel"), condensat);
+    // Déterminisme : le même appareil produit toujours le même condensat,
+    // sinon la protection ne tiendrait pas d'une inscription à l'autre.
+    assert.equal(hacherEmpreinteAppareil(EMPREINTE, "sel-de-test"), condensat);
+    // La casse et les espaces d'une même valeur ne créent pas deux identités.
+    assert.equal(hacherEmpreinteAppareil("  A1B2C3D4E5F60718 ", "sel-de-test"), condensat);
+  });
+
+  it("refuse les empreintes inexploitables plutôt que d'accorder un essai intraçable", () => {
+    // « 9774d56d682e549c » est l'ANDROID_ID partagé par des milliers
+    // d'appareils bogués : l'accepter refuserait l'essai à tout le monde
+    // après le premier.
+    for (const inexploitable of ["", "   ", "null", "undefined", "0", "9774d56d682e549c", "0000000000", "abc"]) {
+      assert.equal(empreinteExploitable(inexploitable), false, `« ${inexploitable} » devrait être refusé`);
+      assert.equal(hacherEmpreinteAppareil(inexploitable, "sel"), null);
+    }
+    assert.equal(empreinteExploitable(EMPREINTE), true);
+  });
+
+  it("refuse une SECONDE demande depuis la même empreinte après un essai consommé", () => {
+    // Le scénario exact du propriétaire : l'utilisateur désinstalle, réinstalle
+    // (nouvel identifiant d'appareil), et présente un AUTRE jeton.
+    const consommee = demande({
+      id: "ft-req-1",
+      tokenId: "ft-token-1",
+      deviceId: "device-aaa",
+      deviceFingerprint: "condensat",
+      status: STATUT_DEMANDE.DEPLOYED,
+      deployedAt: new Date(),
+      clientId: "cli-1",
+    });
+    const decision = deciderInscriptionParEmpreinte([consommee]);
+    assert.equal(decision.type, "refuse");
+    assert.equal(decision.type === "refuse" && decision.refus.status, 409);
+    assert.equal(decision.type === "refuse" && decision.refus.body.code, CODES_ESSAI.DEVICE_ALREADY_USED);
+    // « quel que soit le jeton présenté et quel que soit le deviceId » : la
+    // décision ne prend NI l'un NI l'autre en paramètre.
+    assert.equal(deciderInscriptionParEmpreinte.length, 1, "signature inattendue");
+  });
+
+  it("un essai TERMINÉ compte comme consommé, un refus non", () => {
+    assert.deepEqual([...STATUTS_ESSAI_CONSOMME], [STATUT_DEMANDE.DEPLOYED]);
+    // Un essai déployé puis expiré reste « déployé » : il n'y a pas de
+    // deuxième fois, exactement comme demandé.
+    const expiree = demande({ status: STATUT_DEMANDE.DEPLOYED, deployedAt: HIER, clientId: "cli-1" });
+    assert.equal(deciderInscriptionParEmpreinte([expiree]).type, "refuse");
+    // Une demande REFUSÉE n'a jamais ouvert d'accès : fermer la porte à vie
+    // serait une punition, pas une protection.
+    const refusee = demande({ status: STATUT_DEMANDE.REJECTED, rejectedAt: HIER });
+    assert.equal(deciderInscriptionParEmpreinte([refusee]).type, "autorise");
+  });
+
+  it("une demande encore EN ATTENTE est retrouvée, pas refusée ni dupliquée", () => {
+    const enAttente = demande({ id: "ft-req-attente", status: STATUT_DEMANDE.PENDING, createdAt: HIER });
+    const decision = deciderInscriptionParEmpreinte([enAttente]);
+    assert.equal(decision.type, "reprise");
+    assert.equal(decision.type === "reprise" && decision.demande.id, "ft-req-attente");
+
+    // Plusieurs demandes en attente ne devraient pas coexister ; si cela
+    // arrive, on retient la plus récente plutôt que d'en créer une de plus.
+    const recente = demande({ id: "ft-req-recente", createdAt: new Date() });
+    const choisie = deciderInscriptionParEmpreinte([enAttente, recente]);
+    assert.equal(choisie.type === "reprise" && choisie.demande.id, "ft-req-recente");
+  });
+
+  it("un appareil inconnu est autorisé : la protection ne bloque personne à tort", () => {
+    assert.equal(deciderInscriptionParEmpreinte([]).type, "autorise");
+    assert.equal(deciderInscriptionParEmpreinte([null, undefined]).type, "autorise");
+  });
+
+  it("le refus ne divulgue AUCUNE donnée de la personne précédente", () => {
+    const refus = refusEssaiDejaConsomme();
+    const texte = JSON.stringify(refus.body);
+    for (const fuite of ["Awa", "device-aaa", "CM", "ft-req-1", "cli-1", "STUFF-"]) {
+      assert.equal(texte.includes(fuite), false, `le refus laisserait filtrer « ${fuite} »`);
+    }
+    // Corps minimal : un code, une clé de traduction, un message générique.
+    assert.deepEqual(Object.keys(refus.body).sort(), ["code", "error", "message"]);
+    assert.deepEqual(champsInterditsPresents(refus.body), []);
+  });
+
+  it("l'empreinte — même hachée — ne sort par AUCUNE vue", () => {
+    const avecEmpreinte = demande({ deviceFingerprint: "condensat-secret-0123456789abcdef" });
+    const vues: Record<string, unknown>[] = [
+      vueDemandePourAdmin(avecEmpreinte) as Record<string, unknown>,
+      vueInscriptionEssai({ demande: avecEmpreinte, claimSecret: "s" }),
+      vueStatutEssaiPourAppareil({
+        demande: { ...avecEmpreinte, claimSecretHash: hacherSecretReclamation("s") },
+        deviceId: avecEmpreinte.deviceId,
+        claimSecret: "s",
+      }).body,
+    ];
+    for (const vue of vues) {
+      const texte = JSON.stringify(vue);
+      assert.equal("deviceFingerprint" in vue, false, "le condensat ne doit apparaître dans aucune vue");
+      assert.equal(texte.includes("condensat-secret"), false, "le condensat ne doit pas transparaître");
+    }
+    // Filet de sécurité : le garde-fou anti-fuite connaît désormais le champ.
+    assert.ok(CHAMPS_INTERDITS_MOBILE.includes("deviceFingerprint"));
+    assert.throws(() => verifierAucuneFuite({ status: "pending", deviceFingerprint: "x" }));
+  });
+
+  it("l'empreinte n'est jamais journalisée par la route d'inscription", () => {
+    const route = readFileSync(new URL("../routes/free-trial.ts", import.meta.url), "utf8");
+    const debut = route.indexOf("router.post('/enroll'");
+    const bloc = route.slice(debut, route.indexOf("router.post('/status'", debut));
+    // Le seul usage autorisé de la valeur brute est son hachage immédiat.
+    const usages = [...bloc.matchAll(/body\.deviceFingerprint/g)];
+    assert.equal(usages.length, 1, "la valeur brute ne doit servir qu'au hachage");
+    assert.ok(bloc.includes("hacherEmpreinteAppareil(body.deviceFingerprint)"));
+    // Aucun journal ne reçoit l'empreinte, brute ou hachée.
+    for (const journal of [...bloc.matchAll(/logDbActivity\([\s\S]{0,400}?\)/g)].map((m) => m[0])) {
+      assert.equal(/empreinte|Fingerprint|fingerprint/.test(journal), false, "un journal recevrait l'empreinte");
+    }
+    assert.equal(/console\.(log|info|warn)\([^)]*[Ff]ingerprint/.test(bloc), false);
+  });
+
+  it("une reprise émet TOUJOURS un secret cohérent avec ce qui est stocké", () => {
+    // Remettre à l'appareil un secret dont le condensat n'a pas été écrit le
+    // laisserait bloqué : ses vérifications de statut échoueraient à jamais.
+    const route = readFileSync(new URL("../routes/free-trial.ts", import.meta.url), "utf8");
+    const debut = route.indexOf("router.post('/enroll'");
+    const bloc = route.slice(debut, route.indexOf("router.post('/status'", debut));
+    const reprise = bloc.slice(bloc.indexOf("const reprendre = async"), bloc.indexOf("const token ="));
+    assert.ok(reprise.includes("const secret = genererSecretReclamation()"));
+    assert.ok(reprise.includes("claimSecretHash: hacherSecretReclamation(secret)"));
+    assert.ok(reprise.includes("claimSecret: secret"), "le secret remis doit être celui qui vient d'être haché");
+    // Les trois reprises possibles (empreinte en attente, même jeton + même
+    // appareil, course perdue) passent par ce seul chemin : aucune ne peut
+    // renvoyer un secret orphelin.
+    assert.equal([...bloc.matchAll(/return reprendre\(/g)].length, 3, "chemins de reprise inattendus");
+    assert.equal(
+      [...bloc.matchAll(/vueInscriptionEssai\(/g)].length, 2,
+      "deux réponses d'inscription seulement : la reprise et la création",
+    );
+    // L'identifiant d'appareil est réaligné : après réinstallation il a changé,
+    // et la lecture de statut exige qu'il corresponde.
+    assert.ok(reprise.includes("deviceId,"), "l'appareil courant doit être réaligné sur la demande");
+  });
+
+  it("le contrôle d'empreinte précède la lecture du jeton, et se rejoue dans la transaction", () => {
+    const route = readFileSync(new URL("../routes/free-trial.ts", import.meta.url), "utf8");
+    const debut = route.indexOf("router.post('/enroll'");
+    const bloc = route.slice(debut, route.indexOf("router.post('/status'", debut));
+    const posEmpreinte = bloc.indexOf("deciderInscriptionParEmpreinte");
+    const posJeton = bloc.indexOf("freeTrialToken.findUnique");
+    assert.ok(posEmpreinte > 0 && posJeton > 0, "les deux contrôles doivent exister");
+    assert.ok(
+      posEmpreinte < posJeton,
+      "le refus « appareil déjà servi » ne doit dépendre d'aucun jeton, donc précéder sa lecture",
+    );
+    // Deux inscriptions simultanées depuis le même appareil ne doivent pas
+    // produire deux demandes : le contrôle est rejoué DANS la transaction.
+    const transaction = bloc.slice(bloc.indexOf("prisma.$transaction"));
+    assert.ok(transaction.includes("deciderInscriptionParEmpreinte"), "contrôle transactionnel attendu");
+    // La lecture est indexée sur `deviceFingerprint`, jamais un balayage.
+    assert.ok(bloc.includes("where: { deviceFingerprint: empreinte }"));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("STATISTIQUES PAR PAYS — « d'où viennent nos clients »", () => {
+  const lot = [
+    { country: "CM", status: STATUT_DEMANDE.DEPLOYED, clientId: "cli-1" },
+    { country: "CM", status: STATUT_DEMANDE.DEPLOYED, clientId: "cli-2" },
+    { country: "CM", status: STATUT_DEMANDE.PENDING, clientId: null },
+    { country: "CI", status: STATUT_DEMANDE.DEPLOYED, clientId: "cli-3" },
+    { country: "CI", status: STATUT_DEMANDE.REJECTED, clientId: null },
+    { country: "SN", status: STATUT_DEMANDE.PENDING, clientId: null },
+    { country: null, status: STATUT_DEMANDE.PENDING, clientId: null },
+  ];
+
+  it("compte les clients et les demandes par pays, par volume décroissant", () => {
+    const lignes = statistiquesParPays(lot);
+    assert.deepEqual(lignes.map((l) => l.country), ["CM", "CI", "SN", null]);
+    assert.deepEqual(lignes[0], { country: "CM", requests: 3, pending: 1, rejected: 0, clients: 2 });
+    assert.deepEqual(lignes[1], { country: "CI", requests: 2, pending: 0, rejected: 1, clients: 1 });
+  });
+
+  it("ne compte jamais deux fois le même client", () => {
+    // Deux demandes déployées sur le MÊME compte ne font pas deux clients,
+    // sinon le tableau de bord surévaluerait la base installée.
+    const lignes = statistiquesParPays([
+      { country: "CM", status: STATUT_DEMANDE.DEPLOYED, clientId: "cli-1" },
+      { country: "CM", status: STATUT_DEMANDE.DEPLOYED, clientId: "cli-1" },
+    ]);
+    assert.equal(lignes[0].clients, 1);
+    assert.equal(lignes[0].requests, 2);
+  });
+
+  it("range les pays invalides avec les demandes sans pays, sans les inventer", () => {
+    const lignes = statistiquesParPays([{ country: "XX", status: STATUT_DEMANDE.PENDING, clientId: null }]);
+    assert.equal(lignes[0].country, null, "« XX » ne doit pas apparaître comme un pays");
+  });
+
+  it("l'ordre est TOTAL : deux appels sur les mêmes données rendent le même ordre", () => {
+    const a = statistiquesParPays(lot).map((l) => l.country);
+    const b = statistiquesParPays([...lot].reverse()).map((l) => l.country);
+    assert.deepEqual(a, b, "un tableau qui se réordonne seul est illisible");
+  });
+
+  it("les totaux excluent le pays « non renseigné » du décompte de pays", () => {
+    const totaux = totauxParPays(statistiquesParPays(lot));
+    assert.equal(totaux.countries, 3);
+    assert.equal(totaux.clients, 3);
+    assert.equal(totaux.requests, 7);
+  });
+
+  it("le récapitulatif ne contient que des compteurs, jamais d'identité", () => {
+    const texte = JSON.stringify(statistiquesParPays(lot));
+    for (const fuite of ["Awa", "device-", "STUFF-", "cli-1"]) {
+      assert.equal(texte.includes(fuite), false, `la statistique laisserait filtrer « ${fuite} »`);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("MENTION « PÉRIODE D'ESSAI » — visible aussi côté revendeur", () => {
+  it("construit la mention avec le pays et la date de fin", () => {
+    const marque = marqueEssaiPourClient({
+      demande: { country: "cm", deployedAt: HIER },
+      expireAt: DEMAIN,
+    })!;
+    assert.equal(marque.trial, true);
+    assert.equal(marque.country, "CM");
+    assert.equal(marque.trialEndsAt, DEMAIN.toISOString());
+    assert.equal(marque.trialStartedAt, HIER.toISOString());
+  });
+
+  it("ne marque rien sans demande d'essai", () => {
+    assert.equal(marqueEssaiPourClient({ demande: null, expireAt: DEMAIN }), null);
+  });
+
+  it("seules les demandes DÉPLOYÉES marquent un client", () => {
+    const marques = readFileSync(new URL("../services/free-trial-marks.ts", import.meta.url), "utf8");
+    assert.ok(marques.includes("status: STATUT_DEMANDE.DEPLOYED"), "filtre sur le déploiement attendu");
+    // Une lecture par page, jamais une par ligne.
+    assert.ok(marques.includes("clientId: { in: ids }"));
+  });
+
+  it("la mention accompagne les appareils ET les clients", () => {
+    const appareils = readFileSync(new URL("../services/device-quota.ts", import.meta.url), "utf8");
+    assert.ok(appareils.includes("trial: trial ?? null"), "sanitizeDevice doit porter la mention");
+    const clients = readFileSync(new URL("../routes/clients.ts", import.meta.url), "utf8");
+    assert.ok(clients.includes("marquesEssaiParClient"), "la liste des clients doit charger la mention");
+    const devices = readFileSync(new URL("../routes/devices.ts", import.meta.url), "utf8");
+    assert.ok(devices.includes("marquesEssaiParClient"), "la liste des appareils doit charger la mention");
+  });
+
+  it("le REVENDEUR voit la mention sur ses clients, mais rien du vivier global", () => {
+    // La mention passe par /clients et /devices, déjà cloisonnés par
+    // `porteeClientsRevendeur` : elle n'élargit aucune portée.
+    const clients = readFileSync(new URL("../routes/clients.ts", import.meta.url), "utf8");
+    const listeClients = clients.slice(clients.indexOf('// GET /api/clients'), clients.indexOf('// GET /api/clients/'));
+    assert.ok(listeClients.includes("porteeClientsRevendeur"), "cloisonnement revendeur attendu");
+    assert.ok(listeClients.includes("marquesEssaiParClient"), "mention d'essai attendue");
+    const marques = readFileSync(new URL("../services/free-trial-marks.ts", import.meta.url), "utf8");
+    assert.equal(
+      /reseller|revendeur/i.test(marques.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "")),
+      false,
+      "le calcul de la mention ne doit contenir aucune logique de portée",
+    );
+
+    // À l'inverse, les surfaces GLOBALES sont fermées aux revendeurs.
+    const route = readFileSync(new URL("../routes/free-trial.ts", import.meta.url), "utf8");
+    for (const chemin of ["'/tokens'", "'/requests'", "'/stats/countries'", "'/requests/deploy'", "'/requests/reject'"]) {
+      const debut = route.indexOf(`${chemin},`);
+      assert.ok(debut > 0, `route ${chemin} introuvable`);
+      const entete = route.slice(debut, debut + 400);
+      assert.ok(entete.includes("interdireAccesRevendeur()"), `${chemin} doit refuser les revendeurs`);
+    }
+    const acces = readFileSync(new URL("../services/reseller-access.ts", import.meta.url), "utf8");
+    assert.ok(acces.includes("export function interdireAccesRevendeur"), "garde attendue dans reseller-access");
+    assert.ok(acces.includes('req.user?.role !== "RESELLER"'), "plafond de rôle en dur attendu");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LOTS — les demandes vivent SOUS leur jeton, jamais mélangées", () => {
+  it("une demande d'un autre jeton n'entre pas dans le lot", () => {
+    const sienne = demande({ id: "a", tokenId: "ft-token-1" });
+    const etrangere = demande({ id: "b", tokenId: "ft-token-2" });
+    assert.equal(demandeAppartientAuJeton(sienne, "ft-token-1"), true);
+    assert.equal(demandeAppartientAuJeton(etrangere, "ft-token-1"), false,
+      "« tout sélectionner » sous un jeton ne doit jamais toucher un autre jeton");
+    assert.equal(demandeAppartientAuJeton(null, "ft-token-1"), false);
+    // Sans contexte de jeton (liste globale), le contrôle laisse passer : la
+    // cohérence est alors assurée par les contrôles unitaires habituels.
+    assert.equal(demandeAppartientAuJeton(etrangere, undefined), true);
+  });
+
+  it("refuse un lot trop grand avec un message explicite, sans troncature", () => {
+    const trop = Array.from({ length: MAX_LOT_ESSAI + 1 }, (_, i) => `ft-req-${i}`);
+    const lot = normaliserLotEssai(trop);
+    assert.equal(lot.ok, false);
+    assert.equal(lot.ok === false && lot.raison, RAISONS_LOT_ESSAI.LOT_TROP_GRAND);
+    const refus = refusLotEssai(RAISONS_LOT_ESSAI.LOT_TROP_GRAND, MAX_LOT_ESSAI);
+    assert.equal(refus.status, 400);
+    assert.equal(refus.body.code, "FREE_TRIAL_BATCH_TOO_LARGE");
+    assert.equal(refus.body.limit, MAX_LOT_ESSAI);
+    assert.match(String(refus.body.message), new RegExp(String(MAX_LOT_ESSAI)));
+    // Un lot exactement à la limite passe : la borne est inclusive.
+    assert.equal(normaliserLotEssai(trop.slice(0, MAX_LOT_ESSAI)).ok, true);
+  });
+
+  it("retire les doublons : un identifiant deux fois ne déploie pas deux fois", () => {
+    const lot = normaliserLotEssai(["a", "a", " a ", "b", "", null, 42]);
+    assert.equal(lot.ok, true);
+    assert.deepEqual(lot.ok && lot.ids, ["a", "b"]);
+    assert.equal(normaliserLotEssai([]).ok, false);
+    assert.equal(normaliserLotEssai([""]).ok === false && normaliserLotEssai([""]).raison, RAISONS_LOT_ESSAI.LOT_VIDE);
+  });
+
+  it("une demande déjà déployée ou refusée ne peut pas être redéployée par le lot", () => {
+    assert.equal(refusDeploiement(demande({ status: STATUT_DEMANDE.DEPLOYED }))!.body.code, CODES_ESSAI.ALREADY_DEPLOYED);
+    assert.equal(refusDeploiement(demande({ status: STATUT_DEMANDE.REJECTED }))!.body.code, CODES_ESSAI.NOT_PENDING);
+    assert.equal(refusDeploiement(demande()), null, "une demande en attente reste déployable");
+  });
+
+  it("la route applique le lot demande par demande, sans annuler les réussites", () => {
+    const route = readFileSync(new URL("../routes/free-trial.ts", import.meta.url), "utf8");
+    const debut = route.indexOf("'/requests/deploy',");
+    assert.ok(debut > 0, "route de déploiement introuvable");
+    const bloc = route.slice(debut, route.indexOf("'/requests/reject',", debut));
+    // Bornage explicite du lot AVANT toute écriture.
+    assert.ok(bloc.includes("normaliserLotEssai(body.requestIds)"));
+    assert.ok(bloc.includes("refusLotEssai("));
+    // Cohérence jeton ↔ demande revérifiée côté serveur : la liste reçue
+    // n'est jamais crue sur parole.
+    assert.ok(bloc.includes("demandeAppartientAuJeton(demande, body.tokenId)"));
+    assert.ok(bloc.includes(RAISONS_LOT_ESSAI.TOKEN_MISMATCH) || bloc.includes("RAISONS_LOT_ESSAI.TOKEN_MISMATCH"));
+    // Chaque demande est traitée dans son propre try : un échec isolé est
+    // rapporté, il n'annule pas les précédentes.
+    assert.ok(/for \(const requestId of lot\.ids\)/.test(bloc), "itération sur le lot normalisé attendue");
+    assert.ok(bloc.includes("resultats.push({ id: requestId, status: 'deployed' })"));
+    assert.ok(/status: concurrent \? 'skipped' : 'failed'/.test(bloc));
+    assert.ok(bloc.includes("results: resultats"), "résultat rapporté élément par élément");
+    // Chaque déploiement reste conditionné à « encore en attente » : deux
+    // admins simultanés ne créent pas deux forfaits.
+    assert.ok(bloc.includes("status: STATUT_DEMANDE.PENDING"));
+  });
+
+  it("le refus groupé filtre lui aussi sur le jeton du contexte", () => {
+    const route = readFileSync(new URL("../routes/free-trial.ts", import.meta.url), "utf8");
+    const debut = route.indexOf("'/requests/reject',");
+    assert.ok(debut > 0, "route de refus introuvable");
+    const bloc = route.slice(debut);
+    assert.ok(bloc.includes("normaliserLotEssai(body.requestIds)"));
+    assert.ok(bloc.includes("...(body.tokenId ? { tokenId: body.tokenId } : {})"));
+    assert.ok(bloc.includes("status: STATUT_DEMANDE.PENDING"), "seule une demande en attente est refusable");
+  });
+
+  it("la liste des demandes se lit par jeton et par page", () => {
+    const route = readFileSync(new URL("../routes/free-trial.ts", import.meta.url), "utf8");
+    const bloc = route.slice(route.indexOf("const listeDemandesSchema"), route.indexOf("// ═", route.indexOf("const listeDemandesSchema")));
+    for (const champ of ["tokenId", "limit", "offset"]) {
+      assert.ok(bloc.includes(champ), `le filtre de lecture doit accepter « ${champ} »`);
+    }
+    const liste = route.slice(route.indexOf("'/requests',"), route.indexOf("'/stats/countries',"));
+    assert.ok(liste.includes("skip: decalage"), "pagination attendue");
+    assert.ok(liste.includes("take: limite"), "bornage de page attendu");
+    assert.ok(liste.includes("freeTrialRequest.count"), "total attendu pour la pagination");
+  });
+
+  it("les compteurs par statut accompagnent chaque jeton", () => {
+    const vue = vueJetonPourAdmin(jeton({ pendingCount: 12, deployedCount: 3, rejectedCount: 1 }));
+    assert.equal(vue.pendingCount, 12);
+    assert.equal(vue.deployedCount, 3);
+    assert.equal(vue.rejectedCount, 1);
+    // Valeurs par défaut : un jeton sans demande n'affiche pas « NaN ».
+    const nu = vueJetonPourAdmin(jeton());
+    assert.equal(nu.pendingCount, 0);
+    assert.equal(nu.deployedCount, 0);
   });
 });

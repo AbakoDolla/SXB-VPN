@@ -20,6 +20,7 @@
  * peut donc pas apparaître « par accident » en ajoutant une colonne.
  */
 import crypto from "node:crypto";
+import { estCodePaysValide, normaliserCodePays } from "./countries";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Codes métier stables (jamais de texte libre comme discriminant)
@@ -34,6 +35,12 @@ export const CODES_ESSAI = {
   ALREADY_DEPLOYED: "FREE_TRIAL_ALREADY_DEPLOYED",
   NOT_PENDING: "FREE_TRIAL_NOT_PENDING",
   WINDOW_INVALID: "FREE_TRIAL_WINDOW_INVALID",
+  /** Cet APPAREIL a déjà consommé son unique essai — réinstallation comprise. */
+  DEVICE_ALREADY_USED: "FREE_TRIAL_DEVICE_ALREADY_USED",
+  /** L'application n'a pas pu produire d'empreinte d'appareil exploitable. */
+  FINGERPRINT_REQUIRED: "FREE_TRIAL_FINGERPRINT_REQUIRED",
+  /** Pays absent ou hors de la liste ISO 3166-1 alpha-2. */
+  COUNTRY_INVALID: "FREE_TRIAL_COUNTRY_INVALID",
 } as const;
 
 export const STATUT_DEMANDE = {
@@ -112,6 +119,177 @@ export function secretCorrespond(secret: unknown, hachage: unknown): boolean {
   const calcule = Buffer.from(hacherSecretReclamation(secret), "hex");
   if (attendu.length !== calcule.length || attendu.length === 0) return false;
   return crypto.timingSafeEqual(attendu, calcule);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Empreinte d'appareil — UN SEUL essai, même après désinstallation
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// LE DÉFAUT CORRIGÉ ICI : l'identifiant d'appareil habituel (`@sxb_device_id`)
+// est un aléa écrit dans le stockage de l'application. Désinstaller efface ce
+// stockage ; l'application se réinstalle avec un identifiant NEUF, et un second
+// essai gratuit devenait possible indéfiniment.
+//
+// L'application transmet donc, à l'inscription seulement, une empreinte
+// SÉPARÉE qui survit à une réinstallation (sur Android :
+// `Settings.Secure.ANDROID_ID`, remis à zéro uniquement par une
+// réinitialisation d'usine). L'identifiant d'appareil historique n'est ni
+// modifié ni remplacé : les appareils déjà activés en production gardent
+// exactement le leur.
+//
+// CE QUI EST STOCKÉ : un condensat SHA-256 salé, et rien d'autre. La valeur
+// brute ne touche ni la base, ni un journal, ni une réponse d'API. Le sel
+// serveur empêche de reconstituer la table des empreintes possibles par
+// simple force brute, l'espace des ANDROID_ID étant trop petit pour résister
+// à un SHA-256 non salé.
+
+/**
+ * Sel serveur. `FREE_TRIAL_FINGERPRINT_SALT` s'il est fourni, sinon la clé de
+ * chiffrement déjà en place — un secret d'exploitation, pas une valeur
+ * publique. Le repli final n'existe que pour les environnements de test ; il
+ * n'affaiblit rien en production où `ENCRYPTION_KEY` est toujours défini.
+ *
+ * Conséquence à connaître : changer ce sel remet TOUS les compteurs d'essai à
+ * zéro, puisque les condensats déjà stockés ne correspondront plus.
+ */
+function selEmpreinte(): string {
+  return (
+    process.env.FREE_TRIAL_FINGERPRINT_SALT ||
+    process.env.ENCRYPTION_KEY ||
+    "sxb-free-trial-fingerprint-salt"
+  );
+}
+
+/** Longueur minimale exigée : un « 0 » ou un « null » stringifié ne passe pas. */
+const LONGUEUR_MIN_EMPREINTE = 8;
+
+/**
+ * Valeurs qu'Android renvoie quand il n'a rien de fiable à donner. Les laisser
+ * passer reviendrait à donner la MÊME empreinte à tous les appareils concernés,
+ * donc à refuser l'essai à tout le monde après le premier.
+ */
+const EMPREINTES_INEXPLOITABLES = new Set([
+  "null", "undefined", "unknown", "0", "9774d56d682e549c",
+]);
+
+/** Vrai si l'application a fourni une empreinte réellement exploitable. */
+export function empreinteExploitable(brut: unknown): boolean {
+  if (typeof brut !== "string") return false;
+  const propre = brut.trim().toLowerCase();
+  if (propre.length < LONGUEUR_MIN_EMPREINTE || propre.length > 255) return false;
+  if (EMPREINTES_INEXPLOITABLES.has(propre)) return false;
+  // Une empreinte entièrement composée du même caractère (« 0000000000 ») est
+  // un remplissage, pas une identité.
+  return !/^(.)\1*$/.test(propre);
+}
+
+/**
+ * Condensat salé de l'empreinte. Renvoie null si l'empreinte est inexploitable :
+ * l'appelant doit alors REFUSER l'inscription plutôt que d'accorder un essai
+ * que plus rien ne rattacherait à un appareil.
+ */
+export function hacherEmpreinteAppareil(brut: unknown, sel = selEmpreinte()): string | null {
+  if (!empreinteExploitable(brut)) return null;
+  return crypto
+    .createHmac("sha256", sel)
+    .update(String(brut).trim().toLowerCase(), "utf8")
+    .digest("hex");
+}
+
+/** Refus quand l'application n'a pas su produire d'empreinte. */
+export function refusEmpreinteManquante(): { status: number; body: Record<string, unknown> } {
+  return {
+    status: 400,
+    body: {
+      error: "errors.free_trial.fingerprint_required",
+      code: CODES_ESSAI.FINGERPRINT_REQUIRED,
+      message: "Cet appareil n’a pas pu être identifié de façon fiable.",
+    },
+  };
+}
+
+/**
+ * Refus quand l'appareil a DÉJÀ consommé son essai.
+ *
+ * Le corps ne contient ni nom, ni pays, ni date, ni identifiant de demande, ni
+ * jeton : il dit seulement « cet appareil a déjà eu son essai ». Quelqu'un qui
+ * rachèterait un téléphone d'occasion ne doit rien apprendre de son ancien
+ * propriétaire, et un curieux ne doit pas pouvoir sonder l'historique d'un
+ * appareil qui n'est pas le sien.
+ */
+export function refusEssaiDejaConsomme(): { status: number; body: Record<string, unknown> } {
+  return {
+    status: 409,
+    body: {
+      error: "errors.free_trial.device_already_used",
+      code: CODES_ESSAI.DEVICE_ALREADY_USED,
+      message: "Un essai gratuit a déjà été utilisé sur cet appareil.",
+    },
+  };
+}
+
+/** Refus quand le pays est absent ou hors de la liste ISO fermée. */
+export function refusPaysInvalide(): { status: number; body: Record<string, unknown> } {
+  return {
+    status: 400,
+    body: {
+      error: "errors.free_trial.country_invalid",
+      code: CODES_ESSAI.COUNTRY_INVALID,
+      message: "Veuillez choisir votre pays dans la liste.",
+    },
+  };
+}
+
+/**
+ * Statuts qui CONSOMMENT définitivement l'unique essai d'un appareil.
+ *
+ * Seul « déployé » consomme : l'essai a réellement été accordé, qu'il soit
+ * encore en cours ou déjà terminé — c'est exactement la règle du propriétaire
+ * (« quand l'essai est fini, il n'y en a plus une deuxième fois »).
+ *
+ * « refusé » ne consomme PAS : la personne n'a jamais reçu d'accès, lui fermer
+ * la porte à vie serait une punition, pas une protection. « en attente » ne
+ * consomme pas non plus — la demande est simplement retrouvée.
+ */
+export const STATUTS_ESSAI_CONSOMME: readonly string[] = [STATUT_DEMANDE.DEPLOYED];
+
+/** Issue du contrôle d'empreinte, avant toute écriture. */
+export type DecisionEmpreinte =
+  | { type: "autorise" }
+  | { type: "refuse"; refus: { status: number; body: Record<string, unknown> } }
+  | { type: "reprise"; demande: DemandeEssai };
+
+/**
+ * LE contrôle « un seul essai par appareil, réinstallation comprise ».
+ *
+ * Entrée : toutes les demandes portant la MÊME empreinte, quel que soit leur
+ * jeton et quel que soit leur identifiant d'appareil — c'est précisément ce
+ * qui rend le contrôle insensible à une réinstallation, qui change l'un et
+ * permet de présenter l'autre.
+ *
+ * Fonction PURE : aucune base, aucune horloge, aucun aléa. La route se contente
+ * de charger les lignes et d'appliquer la décision.
+ */
+export function deciderInscriptionParEmpreinte(
+  demandes: ReadonlyArray<DemandeEssai | null | undefined>,
+): DecisionEmpreinte {
+  const connues = demandes.filter((demande): demande is DemandeEssai => Boolean(demande));
+  if (connues.some((demande) => STATUTS_ESSAI_CONSOMME.includes(String(demande.status)))) {
+    return { type: "refuse", refus: refusEssaiDejaConsomme() };
+  }
+  // Plusieurs demandes en attente ne devraient pas coexister ; si cela arrive,
+  // on retient la plus récente plutôt que d'en créer une de plus.
+  const enAttente = connues
+    .filter((demande) => demande.status === STATUT_DEMANDE.PENDING)
+    .sort((a, b) => horodatage(b.createdAt) - horodatage(a.createdAt));
+  if (enAttente.length) return { type: "reprise", demande: enAttente[0] };
+  return { type: "autorise" };
+}
+
+function horodatage(valeur: Date | string | null | undefined): number {
+  if (!valeur) return 0;
+  const date = valeur instanceof Date ? valeur : new Date(valeur);
+  return Number.isNaN(date.getTime()) ? 0 : date.getTime();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -233,6 +411,10 @@ export const CHAMPS_INTERDITS_MOBILE: readonly string[] = [
   "subscriptionId", "quota", "quotaGB", "quotaBytes", "quotaUsed", "quotaTotal",
   "expireAt", "expiresAt", "startAt", "durationDays", "clientId",
   "claimSecretHash", "reviewNote", "deployedBy", "rejectedBy", "label",
+  // L'empreinte d'appareil est un secret d'exploitation : elle ne sort jamais,
+  // même hachée. La renvoyer permettrait de tester hors ligne si un appareil
+  // donné a déjà consommé son essai.
+  "deviceFingerprint", "fingerprint", "androidId",
 ];
 
 /** Erreur interne : une vue mobile a été construite avec un champ interdit. */
@@ -271,6 +453,10 @@ export interface DemandeEssai {
   tokenId?: string;
   name: string;
   deviceId: string;
+  /** Pays DÉCLARÉ (ISO 3166-1 alpha-2). Absent sur les demandes historiques. */
+  country?: string | null;
+  /** Condensat de l'empreinte. Jamais renvoyé, jamais journalisé. */
+  deviceFingerprint?: string | null;
   claimSecretHash: string;
   status: string;
   clientId?: string | null;
@@ -411,6 +597,9 @@ export function vueInscriptionEssai(params: {
     requestId: demande.id,
     name: demande.name,
     device: demande.deviceId,
+    // Le pays est renvoyé tel qu'il a été ENREGISTRÉ : l'application affiche
+    // ainsi ce que l'exploitation voit, sans écart possible entre les deux.
+    country: normaliserCodePays(demande.country) || null,
     // Toute inscription part EN ATTENTE, sans exception : rien n'est déployé
     // sur l'appareil à ce stade.
     status: STATUT_DEMANDE.PENDING,
@@ -422,15 +611,19 @@ export function vueInscriptionEssai(params: {
 }
 
 /**
- * Vue administrateur : « Nom | Identifiant d'appareil | Jeton | Statut |
+ * Vue administrateur : « Nom | Pays | Identifiant d'appareil | Jeton | Statut |
  * Action ». Le tableau de bord est une surface authentifiée et habilitée ;
- * elle voit l'instruction du dossier, jamais le secret de réclamation.
+ * elle voit l'instruction du dossier, jamais le secret de réclamation ni
+ * l'empreinte d'appareil.
  */
 export function vueDemandePourAdmin(demande: DemandeEssai & { trialToken?: { token?: string; label?: string | null } }) {
   return {
     id: demande.id,
     name: demande.name,
     deviceId: demande.deviceId,
+    // Pays SAISI par l'inscrit : « d'où viennent nos clients ». Jamais déduit
+    // d'une adresse IP ni d'une position — une déclaration, pas une mesure.
+    country: normaliserCodePays(demande.country) || null,
     trialToken: demande.trialToken?.token ?? null,
     trialLabel: demande.trialToken?.label ?? null,
     platform: (demande.platform as string | null) ?? null,
@@ -446,8 +639,115 @@ export function vueDemandePourAdmin(demande: DemandeEssai & { trialToken?: { tok
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Statistiques par pays — « savoir d'où viennent nos clients »
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Une ligne du récapitulatif par pays. */
+export interface StatistiquePays {
+  /** Code ISO, ou null pour les demandes déposées avant l'ajout du champ. */
+  country: string | null;
+  /** Demandes reçues depuis ce pays, tous statuts confondus. */
+  requests: number;
+  /** Demandes encore en attente d'instruction. */
+  pending: number;
+  /** Demandes refusées. */
+  rejected: number;
+  /**
+   * Clients issus d'un essai déployé depuis ce pays. Comptés par CLIENT
+   * distinct : deux demandes déployées sur le même compte ne font pas deux
+   * clients, sinon le tableau de bord surévaluerait la base installée.
+   */
+  clients: number;
+}
+
+/**
+ * Agrège les demandes par pays, du plus gros volume au plus petit.
+ *
+ * Fonction PURE : la route charge les lignes, cette fonction décide. Le tri est
+ * TOTAL (clients, puis demandes, puis code) pour que deux appels sur les mêmes
+ * données rendent toujours le même ordre — un tableau de bord qui se réordonne
+ * tout seul entre deux rafraîchissements est illisible.
+ */
+export function statistiquesParPays(
+  demandes: ReadonlyArray<{ country?: string | null; status?: string | null; clientId?: string | null }>,
+): StatistiquePays[] {
+  const parPays = new Map<string, { ligne: StatistiquePays; clients: Set<string> }>();
+  for (const demande of demandes) {
+    const code = normaliserCodePays(demande?.country) || "";
+    const cle = estCodePaysValide(code) ? code : "";
+    let entree = parPays.get(cle);
+    if (!entree) {
+      entree = {
+        ligne: { country: cle || null, requests: 0, pending: 0, rejected: 0, clients: 0 },
+        clients: new Set<string>(),
+      };
+      parPays.set(cle, entree);
+    }
+    entree.ligne.requests += 1;
+    if (demande?.status === STATUT_DEMANDE.PENDING) entree.ligne.pending += 1;
+    if (demande?.status === STATUT_DEMANDE.REJECTED) entree.ligne.rejected += 1;
+    if (demande?.status === STATUT_DEMANDE.DEPLOYED && demande.clientId) {
+      entree.clients.add(String(demande.clientId));
+    }
+  }
+  return [...parPays.values()]
+    .map(({ ligne, clients }) => ({ ...ligne, clients: clients.size }))
+    .sort((a, b) =>
+      b.clients - a.clients ||
+      b.requests - a.requests ||
+      (a.country ?? "ZZZZ").localeCompare(b.country ?? "ZZZZ"));
+}
+
+/** Totaux du récapitulatif, pour l'en-tête du tableau de bord. */
+export function totauxParPays(lignes: ReadonlyArray<StatistiquePays>) {
+  return {
+    countries: lignes.filter((ligne) => ligne.country !== null).length,
+    requests: lignes.reduce((somme, ligne) => somme + ligne.requests, 0),
+    clients: lignes.reduce((somme, ligne) => somme + ligne.clients, 0),
+    pending: lignes.reduce((somme, ligne) => somme + ligne.pending, 0),
+    rejected: lignes.reduce((somme, ligne) => somme + ligne.rejected, 0),
+  };
+}
+
+/**
+ * Mention « période d'essai » attachée à un client.
+ *
+ * C'est ce que le tableau de bord affiche sur un appareil ou un client dont
+ * l'accès provient d'un essai gratuit — y compris chez un REVENDEUR, qui voit
+ * la mention et le pays de SES clients, mais jamais les demandes, jetons ou
+ * statistiques globales (le cloisonnement se fait à la requête, pas ici).
+ */
+export interface MarqueEssai {
+  trial: true;
+  country: string | null;
+  trialEndsAt: string | null;
+  trialStartedAt: string | null;
+}
+
+/** Construit la mention depuis une demande déployée et sa fenêtre d'accès. */
+export function marqueEssaiPourClient(params: {
+  demande: { country?: string | null; deployedAt?: Date | string | null } | null | undefined;
+  expireAt?: Date | string | null;
+}): MarqueEssai | null {
+  if (!params.demande) return null;
+  return {
+    trial: true,
+    country: normaliserCodePays(params.demande.country) || null,
+    trialEndsAt: isoOuNull(params.expireAt ?? null),
+    trialStartedAt: isoOuNull(params.demande.deployedAt ?? null),
+  };
+}
+
 /** Vue administrateur d'un jeton d'invitation — sans aucun champ technique. */
-export function vueJetonPourAdmin(jeton: JetonEssai & { label?: string | null; createdAt?: Date | string | null; requestCount?: number }) {
+export function vueJetonPourAdmin(jeton: JetonEssai & {
+  label?: string | null;
+  createdAt?: Date | string | null;
+  requestCount?: number;
+  pendingCount?: number;
+  deployedCount?: number;
+  rejectedCount?: number;
+}) {
   return {
     id: jeton.id,
     token: jeton.token,
@@ -459,7 +759,85 @@ export function vueJetonPourAdmin(jeton: JetonEssai & { label?: string | null; c
     createdAt: isoOuNull(jeton.createdAt),
     state: etatJetonEssai(jeton),
     requestCount: Number(jeton.requestCount ?? 0),
+    // Compteurs par statut : ils permettent d'afficher « 12 en attente ·
+    // 3 déployées » sur la ligne du jeton SANS ouvrir le volet, donc sans
+    // charger les demandes de tous les jetons pour dessiner la page.
+    pendingCount: Number(jeton.pendingCount ?? 0),
+    deployedCount: Number(jeton.deployedCount ?? 0),
+    rejectedCount: Number(jeton.rejectedCount ?? 0),
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Lots de déploiement — mêmes règles que les forfaits groupés
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Taille maximale d'un lot de déploiement.
+ *
+ * Même borne que `MAX_BULK_APPLY` pour les forfaits : au-delà, une seule
+ * requête tiendrait la base ouverte trop longtemps et un échec en milieu de
+ * parcours deviendrait illisible. La borne est explicite côté utilisateur,
+ * jamais une troncature silencieuse de la sélection.
+ */
+export const MAX_LOT_ESSAI = 200;
+
+export const RAISONS_LOT_ESSAI = {
+  LOT_VIDE: "errors.free_trial.batch_empty",
+  LOT_TROP_GRAND: "errors.free_trial.batch_too_large",
+  /** La demande ne relève pas du jeton sous lequel l'action a été lancée. */
+  TOKEN_MISMATCH: "FREE_TRIAL_TOKEN_MISMATCH",
+} as const;
+
+/**
+ * Normalise un lot d'identifiants : doublons retirés, ordre conservé, bornes
+ * appliquées. Fonction PURE, donc testable sans base.
+ *
+ * Les doublons ne sont pas une coquetterie : deux fois le même identifiant
+ * dans un lot signifierait deux déploiements sur la même demande.
+ */
+export function normaliserLotEssai(
+  identifiants: ReadonlyArray<unknown>,
+  maximum = MAX_LOT_ESSAI,
+): { ok: true; ids: string[] } | { ok: false; raison: string; limite: number } {
+  const uniques: string[] = [];
+  for (const brut of identifiants ?? []) {
+    if (typeof brut !== "string") continue;
+    const propre = brut.trim();
+    if (propre && !uniques.includes(propre)) uniques.push(propre);
+  }
+  if (!uniques.length) return { ok: false, raison: RAISONS_LOT_ESSAI.LOT_VIDE, limite: maximum };
+  if (uniques.length > maximum) return { ok: false, raison: RAISONS_LOT_ESSAI.LOT_TROP_GRAND, limite: maximum };
+  return { ok: true, ids: uniques };
+}
+
+/** Refus explicite d'un lot hors bornes — jamais une troncature muette. */
+export function refusLotEssai(raison: string, limite: number): { status: number; body: Record<string, unknown> } {
+  return {
+    status: 400,
+    body: {
+      error: raison,
+      code: raison === RAISONS_LOT_ESSAI.LOT_TROP_GRAND ? "FREE_TRIAL_BATCH_TOO_LARGE" : "FREE_TRIAL_BATCH_EMPTY",
+      message: raison === RAISONS_LOT_ESSAI.LOT_TROP_GRAND
+        ? `Un lot ne peut pas dépasser ${limite} inscrits.`
+        : "Sélectionnez au moins un inscrit.",
+      limit: limite,
+    },
+  };
+}
+
+/**
+ * Cohérence jeton ↔ demande.
+ *
+ * Le tableau de bord agit TOUJOURS dans le contexte d'un jeton ; le serveur ne
+ * fait pas confiance à la liste d'identifiants reçue et revérifie, demande par
+ * demande, qu'elle relève bien de ce jeton. Sans ce contrôle, un identifiant
+ * glissé dans le corps de la requête ferait agir le lot sur la demande d'une
+ * autre campagne.
+ */
+export function demandeAppartientAuJeton(demande: DemandeEssai | null | undefined, tokenId?: string | null): boolean {
+  if (!tokenId) return true;
+  return Boolean(demande) && String(demande!.tokenId ?? "") === tokenId;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

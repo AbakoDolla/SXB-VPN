@@ -1,5 +1,6 @@
 import { apiRequest } from "./client";
 import { DeviceStatus } from "../types";
+import type { TrialMark } from "../lib/trial";
 
 export interface Device {
   id: string;
@@ -30,6 +31,11 @@ export interface Device {
   trafficUpload: string;
   trafficTotal: string;
   lastTrafficAt: string | null;
+  /**
+   * Mention « Période d'essai » quand l'accès provient d'un essai gratuit
+   * déployé : pays déclaré et date de fin. `null` pour un accès ordinaire.
+   */
+  trial?: TrialMark | null;
 }
 
 export async function fetchDevices(): Promise<Device[]> {

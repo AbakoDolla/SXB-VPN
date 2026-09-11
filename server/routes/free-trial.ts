@@ -31,24 +31,37 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { prisma, logDbActivity } from '../database';
 import { requireAuth, requirePermission, AuthenticatedRequest } from '../middleware/auth';
-import { interdireMutationSupport } from '../services/reseller-access';
+import { interdireAccesRevendeur, interdireMutationSupport } from '../services/reseller-access';
 import { executerMutationQuota } from '../services/reseller-quota';
 import { makeUserToken } from '../services/device-token';
+import { CODES_PAYS, normaliserCodePays } from '../services/countries';
 import {
   CODES_ESSAI,
+  MAX_LOT_ESSAI,
   MOTIF_JETON_ESSAI,
+  RAISONS_LOT_ESSAI,
   STATUT_DEMANDE,
   STATUT_JETON,
   calculerFenetreEssai,
+  deciderInscriptionParEmpreinte,
+  demandeAppartientAuJeton,
   etatJetonEssai,
   genererJetonEssai,
   genererSecretReclamation,
+  hacherEmpreinteAppareil,
   hacherSecretReclamation,
   intervalleVerificationEssai,
   normaliserJetonEssai,
+  normaliserLotEssai,
   refusDeploiement,
+  refusEmpreinteManquante,
+  refusEssaiDejaConsomme,
   refusJetonEssai,
+  refusLotEssai,
+  refusPaysInvalide,
   refusReclamationEssai,
+  statistiquesParPays,
+  totauxParPays,
   vueDemandePourAdmin,
   vueInscriptionEssai,
   vueJetonPourAdmin,
@@ -79,11 +92,36 @@ const creerJetonSchema = z.object({
   expiresAt: z.coerce.date().optional(),
 }).strict();
 
+/**
+ * Pays DÉCLARÉ, validé contre une liste FERMÉE de codes ISO 3166-1 alpha-2.
+ *
+ * Liste fermée et non `z.string().length(2)` : sans elle, « XX », « ZZ » ou
+ * « AA » entreraient en base et le récapitulatif « d'où viennent nos clients »
+ * mélangerait des pays réels et du bruit.
+ *
+ * C'est une SAISIE, jamais une mesure : aucune route de ce fichier ne lit
+ * l'adresse IP de l'appelant ni n'interroge un service de géolocalisation.
+ */
+const paysSchema = z.string()
+  .trim()
+  .transform((valeur) => normaliserCodePays(valeur))
+  .refine((code) => (CODES_PAYS as readonly string[]).includes(code), {
+    message: 'Pays invalide : choisissez un pays dans la liste.',
+  });
+
 const inscriptionSchema = z.object({
   token: z.string().trim().min(1).max(64),
   // Le nom est OBLIGATOIRE : c'est la seule information d'identification que
   // l'admin aura pour instruire la demande.
   name: z.string().trim().min(2, 'Le nom est obligatoire.').max(120),
+  // Le pays est OBLIGATOIRE au même titre que le nom, à la demande du
+  // propriétaire : c'est ce qui permet de savoir d'où viennent les clients.
+  country: paysSchema,
+  // Empreinte d'appareil STABLE À TRAVERS UNE RÉINSTALLATION, distincte de
+  // `deviceId`. Elle est OBLIGATOIRE : sans elle, un essai serait accordé sans
+  // qu'aucun mécanisme n'empêche le suivant après désinstallation. La valeur
+  // brute ne quitte jamais cette fonction : elle est immédiatement hachée.
+  deviceFingerprint: z.string().trim().min(1).max(255),
   deviceId: deviceIdSchema.optional(),
   platform: z.string().trim().max(40).optional(),
   appVersion: z.string().trim().max(40).optional(),
@@ -98,7 +136,11 @@ const statutSchema = z.object({
 const deployerSchema = z.object({
   // Sélection MULTIPLE : l'admin choisit un ou plusieurs inscrits, puis
   // seulement ensuite ce qu'ils reçoivent.
-  requestIds: z.array(identifiantSchema).min(1).max(200),
+  requestIds: z.array(identifiantSchema).min(1).max(MAX_LOT_ESSAI),
+  // Jeton SOUS LEQUEL l'action est lancée. Le tableau de bord agit toujours
+  // dans le contexte d'un jeton ; le serveur revérifie chaque demande plutôt
+  // que de faire confiance à la liste reçue.
+  tokenId: identifiantSchema.optional(),
   profileId: identifiantSchema,
   quotaGB: z.coerce.number().finite().positive('Le quota doit être supérieur à 0 Go.').max(100_000),
   // Dates ET heures : `z.coerce.date()` accepte l'ISO complet envoyé par le
@@ -110,9 +152,18 @@ const deployerSchema = z.object({
 }).strict();
 
 const refuserSchema = z.object({
-  requestIds: z.array(identifiantSchema).min(1).max(200),
+  requestIds: z.array(identifiantSchema).min(1).max(MAX_LOT_ESSAI),
+  tokenId: identifiantSchema.optional(),
   note: z.string().trim().max(500).optional(),
 }).strict();
+
+/** Filtres de lecture des demandes : par statut, par jeton, page par page. */
+const listeDemandesSchema = z.object({
+  status: z.enum([STATUT_DEMANDE.PENDING, STATUT_DEMANDE.DEPLOYED, STATUT_DEMANDE.REJECTED]).optional(),
+  tokenId: identifiantSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  offset: z.coerce.number().int().min(0).max(1_000_000).optional(),
+}).strip();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Utilitaires
@@ -157,6 +208,7 @@ function erreurValidation(res: Response, err: z.ZodError) {
 router.post(
   '/tokens',
   requireAuth,
+  interdireAccesRevendeur(),
   interdireMutationSupport(),
   requirePermission('tokens.create'),
   async (req: AuthenticatedRequest, res: Response) => {
@@ -206,6 +258,7 @@ router.post(
 router.get(
   '/tokens',
   requireAuth,
+  interdireAccesRevendeur(),
   requirePermission('tokens.view'),
   async (_req: AuthenticatedRequest, res: Response) => {
     try {
@@ -215,9 +268,33 @@ router.get(
         take: 500,
         include: { _count: { select: { requests: true } } },
       });
+      // Compteurs par statut : deux colonnes seulement, jamais les demandes
+      // elles-mêmes. C'est ce qui permet d'annoncer « 12 en attente ·
+      // 3 déployées » sur chaque ligne sans charger 200 inscriptions par jeton.
+      const repartition = new Map<string, { pending: number; deployed: number; rejected: number }>();
+      const projections = await (prisma as any).freeTrialRequest.findMany({
+        select: { tokenId: true, status: true },
+        take: 20_000,
+      });
+      for (const ligne of projections as any[]) {
+        const compteurs = repartition.get(ligne.tokenId)
+          ?? { pending: 0, deployed: 0, rejected: 0 };
+        if (ligne.status === STATUT_DEMANDE.PENDING) compteurs.pending += 1;
+        else if (ligne.status === STATUT_DEMANDE.DEPLOYED) compteurs.deployed += 1;
+        else if (ligne.status === STATUT_DEMANDE.REJECTED) compteurs.rejected += 1;
+        repartition.set(ligne.tokenId, compteurs);
+      }
       return res.json({
-        tokens: jetons.map((jeton: any) =>
-          vueJetonPourAdmin({ ...jeton, requestCount: jeton._count?.requests ?? 0 })),
+        tokens: jetons.map((jeton: any) => {
+          const compteurs = repartition.get(jeton.id) ?? { pending: 0, deployed: 0, rejected: 0 };
+          return vueJetonPourAdmin({
+            ...jeton,
+            requestCount: jeton._count?.requests ?? 0,
+            pendingCount: compteurs.pending,
+            deployedCount: compteurs.deployed,
+            rejectedCount: compteurs.rejected,
+          });
+        }),
       });
     } catch (err: any) {
       console.error('free-trial token list error:', err);
@@ -233,6 +310,7 @@ router.get(
 router.post(
   '/tokens/:id/revoke',
   requireAuth,
+  interdireAccesRevendeur(),
   interdireMutationSupport(),
   requirePermission('tokens.revoke'),
   async (req: AuthenticatedRequest, res: Response) => {
@@ -290,6 +368,75 @@ router.post('/enroll', async (req: Request, res: Response) => {
       });
     }
 
+    // ── UN SEUL ESSAI PAR APPAREIL, RÉINSTALLATION COMPRISE ─────────────────
+    //
+    // L'empreinte est hachée AVANT toute écriture et la valeur brute n'est
+    // reprise nulle part ensuite : ni dans une variable persistée, ni dans un
+    // journal, ni dans une réponse. Une inscription sans empreinte exploitable
+    // est refusée plutôt qu'accordée « en confiance » — un essai que rien ne
+    // rattache à un appareil est exactement ce que le propriétaire refuse.
+    const empreinte = hacherEmpreinteAppareil(body.deviceFingerprint);
+    if (!empreinte) {
+      const refusEmpreinte = refusEmpreinteManquante();
+      return res.status(refusEmpreinte.status).json(refusEmpreinte.body);
+    }
+
+    // Lecture INDEXÉE sur `(deviceFingerprint, status)`. Volontairement placée
+    // AVANT la lecture du jeton : la règle du propriétaire est absolue, elle ne
+    // dépend « ni du jeton présenté, ni du deviceId ». Présenter un second
+    // jeton depuis un appareil déjà servi ne doit donc même pas révéler si ce
+    // jeton existe.
+    const memeAppareil = await (prisma as any).freeTrialRequest.findMany({
+      where: { deviceFingerprint: empreinte },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
+    const decision = deciderInscriptionParEmpreinte(memeAppareil);
+    if (decision.type === 'refuse') {
+      // Le corps du refus ne contient ni nom, ni pays, ni date, ni demande :
+      // le porteur actuel de l'appareil n'apprend rien du précédent.
+      return res.status(decision.refus.status).json(decision.refus.body);
+    }
+
+    /**
+     * Reprise d'une demande EXISTANTE — jamais un doublon.
+     *
+     * Un secret de réclamation NEUF est émis et son condensat écrit dans la
+     * même opération : la valeur remise à l'appareil correspond donc toujours
+     * à ce qui est stocké. C'est aussi ce qui permet à quelqu'un qui a
+     * réinstallé l'application de reprendre la main sur sa demande — et qui
+     * invalide l'ancien secret du même coup.
+     *
+     * L'identifiant d'appareil est réaligné sur celui qui parle maintenant :
+     * après une réinstallation il a changé, et la lecture de statut exige
+     * qu'il corresponde.
+     */
+    const reprendre = async (existante: any) => {
+      const secret = genererSecretReclamation();
+      const rafraichie = await (prisma as any).freeTrialRequest.update({
+        where: { id: existante.id },
+        data: {
+          name: body.name,
+          country: body.country,
+          deviceId,
+          deviceFingerprint: empreinte,
+          claimSecretHash: hacherSecretReclamation(secret),
+          platform: body.platform ?? existante.platform ?? null,
+          appVersion: body.appVersion ?? existante.appVersion ?? null,
+        },
+      });
+      return res.status(200).json(vueInscriptionEssai({
+        demande: rafraichie,
+        claimSecret: secret,
+        pollIntervalSeconds: INTERVALLE_VERIFICATION_S,
+      }));
+    };
+
+    // Demande encore EN ATTENTE sur cet appareil : on la retrouve au lieu d'en
+    // créer une deuxième, y compris si l'application a été réinstallée entre
+    // temps (l'identifiant d'appareil a changé, l'empreinte non).
+    if (decision.type === 'reprise') return reprendre(decision.demande);
+
     const token = normaliserJetonEssai(body.token);
     if (!MOTIF_JETON_ESSAI.test(token)) {
       // Format invalide : même refus qu'un jeton inconnu, pour ne pas confirmer
@@ -303,32 +450,19 @@ router.post('/enroll', async (req: Request, res: Response) => {
     if (refus) return res.status(refus.status).json(refus.body);
 
     // Réinscription du MÊME appareil sous le MÊME jeton : on ne crée pas de
-    // doublon et on ne consomme pas une seconde place. Un nouveau secret est
-    // remis, ce qui permet à l'utilisateur qui a réinstallé l'application de
-    // retrouver sa demande — et invalide l'ancien secret du même coup.
+    // doublon et on ne consomme pas une seconde place.
+    //
+    // Ce chemin reste nécessaire pour les demandes HISTORIQUES, déposées avant
+    // l'ajout de l'empreinte : elles n'ont pas d'empreinte, donc la lecture
+    // ci-dessus ne les voit pas. Les retrouver ici évite de casser une demande
+    // en cours et en profite pour renseigner l'empreinte manquante.
     const existante = await (prisma as any).freeTrialRequest.findUnique({
       where: { tokenId_deviceId: { tokenId: jeton.id, deviceId } },
     });
+    if (existante) return reprendre(existante);
 
     const claimSecret = genererSecretReclamation();
     const claimSecretHash = hacherSecretReclamation(claimSecret);
-
-    if (existante) {
-      const rafraichie = await (prisma as any).freeTrialRequest.update({
-        where: { id: existante.id },
-        data: {
-          name: body.name,
-          claimSecretHash,
-          platform: body.platform ?? existante.platform ?? null,
-          appVersion: body.appVersion ?? existante.appVersion ?? null,
-        },
-      });
-      return res.status(200).json(vueInscriptionEssai({
-        demande: rafraichie,
-        claimSecret,
-        pollIntervalSeconds: INTERVALLE_VERIFICATION_S,
-      }));
-    }
 
     // Création + incrément du compteur dans la MÊME transaction : sans cela,
     // deux inscriptions simultanées passeraient toutes les deux le contrôle de
@@ -337,11 +471,22 @@ router.post('/enroll', async (req: Request, res: Response) => {
       const frais = await tx.freeTrialToken.findUnique({ where: { id: jeton.id } });
       const etat = etatJetonEssai(frais);
       if (etat !== 'active') return { conflit: etat } as const;
+      // Dernier contrôle d'empreinte, DANS la transaction : deux inscriptions
+      // simultanées depuis le même appareil ne doivent pas produire deux
+      // demandes, ce que la lecture initiale seule n'empêche pas.
+      const concurrentes = await tx.freeTrialRequest.findMany({
+        where: { deviceFingerprint: empreinte },
+        take: 50,
+      });
+      const verdict = deciderInscriptionParEmpreinte(concurrentes);
+      if (verdict.type !== 'autorise') return { empreinteConflit: true } as const;
       const creee = await tx.freeTrialRequest.create({
         data: {
           tokenId: jeton.id,
           name: body.name,
+          country: body.country,
           deviceId,
+          deviceFingerprint: empreinte,
           platform: body.platform ?? null,
           appVersion: body.appVersion ?? null,
           claimSecretHash,
@@ -359,7 +504,21 @@ router.post('/enroll', async (req: Request, res: Response) => {
       const tardif = refusJetonEssai((demande as any).conflit)!;
       return res.status(tardif.status).json(tardif.body);
     }
+    // Course perdue contre une inscription simultanée du même appareil : on
+    // rejoue la décision sur l'état réel, puis on refuse ou on reprend la
+    // demande gagnante — jamais on n'en crée une seconde.
+    if ((demande as any).empreinteConflit) {
+      const tardif = deciderInscriptionParEmpreinte(
+        await (prisma as any).freeTrialRequest.findMany({ where: { deviceFingerprint: empreinte }, take: 50 }),
+      );
+      if (tardif.type === 'refuse') return res.status(tardif.refus.status).json(tardif.refus.body);
+      if (tardif.type === 'reprise') return reprendre(tardif.demande);
+      const refusCourse = refusEssaiDejaConsomme();
+      return res.status(refusCourse.status).json(refusCourse.body);
+    }
 
+    // Journal d'exploitation : identifiant d'appareil TRONQUÉ, jamais
+    // l'empreinte — même hachée — et jamais le pays associé à un appareil.
     await logDbActivity(
       null,
       `Demande d'essai gratuit déposée pour l'appareil ${deviceId.slice(0, 12)}…`,
@@ -373,7 +532,20 @@ router.post('/enroll', async (req: Request, res: Response) => {
       pollIntervalSeconds: INTERVALLE_VERIFICATION_S,
     }));
   } catch (err: any) {
-    if (err instanceof z.ZodError) return erreurValidation(res, err);
+    if (err instanceof z.ZodError) {
+      // Deux refus méritent un message précis plutôt qu'une erreur de
+      // validation générique : ils correspondent à une action concrète de
+      // l'utilisateur (choisir un pays) ou à un appareil non identifiable.
+      if (err.issues.some((probleme) => probleme.path[0] === 'country')) {
+        const refusPays = refusPaysInvalide();
+        return res.status(refusPays.status).json(refusPays.body);
+      }
+      if (err.issues.some((probleme) => probleme.path[0] === 'deviceFingerprint')) {
+        const refusEmpreinte = refusEmpreinteManquante();
+        return res.status(refusEmpreinte.status).json(refusEmpreinte.body);
+      }
+      return erreurValidation(res, err);
+    }
     console.error('free-trial enroll error:', err);
     return res.status(500).json({ error: 'errors.server', message: 'Inscription impossible' });
   }
@@ -456,24 +628,79 @@ router.post('/status', async (req: Request, res: Response) => {
 router.get(
   '/requests',
   requireAuth,
+  // Le vivier des inscriptions est GLOBAL : un revendeur n'a rien à y voir,
+  // même avec `clients.view`. Ses propres clients issus d'un essai lui
+  // parviennent par /api/clients et /api/devices, avec la mention « période
+  // d'essai » et le pays.
+  interdireAccesRevendeur(),
   requirePermission('clients.view'),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       if (!prisma) return baseIndisponible(res);
-      const statut = typeof req.query.status === 'string' ? req.query.status : undefined;
-      const filtre = statut && Object.values(STATUT_DEMANDE).includes(statut as any)
-        ? { status: statut }
-        : {};
-      const demandes = await (prisma as any).freeTrialRequest.findMany({
-        where: filtre,
-        orderBy: { createdAt: 'desc' },
-        take: 500,
-        include: { trialToken: { select: { token: true, label: true } } },
+      const query = listeDemandesSchema.parse(req.query);
+      // Le regroupement par jeton est la lecture NORMALE : le tableau de bord
+      // n'ouvre qu'un volet à la fois, donc ne demande que les demandes de ce
+      // jeton, page par page. La liste globale reste possible pour la
+      // recherche transversale.
+      const filtre: Record<string, unknown> = {};
+      if (query.status) filtre.status = query.status;
+      if (query.tokenId) filtre.tokenId = query.tokenId;
+      const limite = query.limit ?? 100;
+      const decalage = query.offset ?? 0;
+      const [total, demandes] = await Promise.all([
+        (prisma as any).freeTrialRequest.count({ where: filtre }),
+        (prisma as any).freeTrialRequest.findMany({
+          where: filtre,
+          orderBy: { createdAt: 'desc' },
+          skip: decalage,
+          take: limite,
+          include: { trialToken: { select: { token: true, label: true } } },
+        }),
+      ]);
+      return res.json({
+        requests: demandes.map(vueDemandePourAdmin),
+        total: Number(total ?? demandes.length),
+        limit: limite,
+        offset: decalage,
       });
-      return res.json({ requests: demandes.map(vueDemandePourAdmin) });
     } catch (err: any) {
+      if (err instanceof z.ZodError) return erreurValidation(res, err);
       console.error('free-trial request list error:', err);
       return res.status(500).json({ error: 'errors.server', message: 'Lecture des demandes impossible' });
+    }
+  },
+);
+
+// ─── GET /api/free-trial/stats/countries ─────────────────────────────────────
+//
+// « Savoir d'où viennent nos clients » : nombre de clients et de demandes par
+// pays, du plus gros volume au plus petit.
+//
+// Le pays agrégé est celui que l'inscrit a DÉCLARÉ dans l'application. Aucune
+// adresse IP n'est lue, aucun service de géolocalisation n'est appelé : ce
+// récapitulatif ne sait rien de plus que ce que les gens ont saisi.
+//
+// Statistique GLOBALE, donc fermée aux revendeurs : elle agrège le parc de
+// tout le monde. Le lecteur ne voit que des compteurs — jamais un nom, un
+// appareil, un jeton ni une empreinte.
+router.get(
+  '/stats/countries',
+  requireAuth,
+  interdireAccesRevendeur(),
+  requirePermission('clients.view'),
+  async (_req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!prisma) return baseIndisponible(res);
+      // Projection minimale : trois colonnes suffisent à compter, et rien de
+      // nominatif ne remonte donc en mémoire pour produire un total.
+      const demandes = await (prisma as any).freeTrialRequest.findMany({
+        select: { country: true, status: true, clientId: true },
+      });
+      const countries = statistiquesParPays(demandes);
+      return res.json({ countries, totals: totauxParPays(countries) });
+    } catch (err: any) {
+      console.error('free-trial country stats error:', err);
+      return res.status(500).json({ error: 'errors.server', message: 'Lecture des statistiques impossible' });
     }
   },
 );
@@ -492,12 +719,22 @@ router.get(
 router.post(
   '/requests/deploy',
   requireAuth,
+  interdireAccesRevendeur(),
   interdireMutationSupport(),
   requirePermission('subscription.manage'),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       if (!prisma) return baseIndisponible(res);
       const body = deployerSchema.parse(req.body);
+
+      // Bornage EXPLICITE du lot : doublons retirés (deux fois le même
+      // identifiant vaudrait deux déploiements sur la même demande) et refus
+      // motivé au-delà de la limite, jamais une troncature silencieuse.
+      const lot = normaliserLotEssai(body.requestIds);
+      if (!lot.ok) {
+        const refusLot = refusLotEssai(lot.raison, lot.limite);
+        return res.status(refusLot.status).json(refusLot.body);
+      }
 
       const fenetre = calculerFenetreEssai({ startAt: body.startAt, expireAt: body.expireAt });
       if (!fenetre.ok) return res.status(fenetre.refus!.status).json(fenetre.refus!.body);
@@ -522,8 +759,15 @@ router.post(
       const resultats: Array<{ id: string; status: string; reason?: string }> = [];
       let deployees = 0;
 
-      for (const requestId of body.requestIds) {
+      for (const requestId of lot.ids) {
         const demande = await (prisma as any).freeTrialRequest.findUnique({ where: { id: requestId } });
+        // Le jeton du contexte est revérifié demande par demande : un
+        // identifiant glissé dans le corps de la requête ne fait pas agir le
+        // lot sur la campagne d'un autre jeton.
+        if (!demandeAppartientAuJeton(demande, body.tokenId)) {
+          resultats.push({ id: requestId, status: 'skipped', reason: RAISONS_LOT_ESSAI.TOKEN_MISMATCH });
+          continue;
+        }
         const refus = refusDeploiement(demande);
         if (refus) {
           resultats.push({ id: requestId, status: 'skipped', reason: String(refus.body.code || refus.body.error) });
@@ -647,7 +891,7 @@ router.post(
       return res.json({
         success: true,
         deployed: deployees,
-        total: body.requestIds.length,
+        total: lot.ids.length,
         results: resultats,
       });
     } catch (err: any) {
@@ -663,14 +907,26 @@ router.post(
 router.post(
   '/requests/reject',
   requireAuth,
+  interdireAccesRevendeur(),
   interdireMutationSupport(),
   requirePermission('subscription.manage'),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       if (!prisma) return baseIndisponible(res);
       const body = refuserSchema.parse(req.body);
+      const lot = normaliserLotEssai(body.requestIds);
+      if (!lot.ok) {
+        const refusLot = refusLotEssai(lot.raison, lot.limite);
+        return res.status(refusLot.status).json(refusLot.body);
+      }
       const refusees = await (prisma as any).freeTrialRequest.updateMany({
-        where: { id: { in: body.requestIds }, status: STATUT_DEMANDE.PENDING },
+        // Le jeton du contexte fait partie du filtre : un identifiant étranger
+        // à la campagne ne peut pas être refusé par ce lot.
+        where: {
+          id: { in: lot.ids },
+          status: STATUT_DEMANDE.PENDING,
+          ...(body.tokenId ? { tokenId: body.tokenId } : {}),
+        },
         data: {
           status: STATUT_DEMANDE.REJECTED,
           rejectedAt: new Date(),
@@ -684,7 +940,7 @@ router.post(
         'warning',
         req.ip || '',
       );
-      return res.json({ success: true, rejected: refusees.count, total: body.requestIds.length });
+      return res.json({ success: true, rejected: refusees.count, total: lot.ids.length });
     } catch (err: any) {
       if (err instanceof z.ZodError) return erreurValidation(res, err);
       console.error('free-trial reject error:', err);
