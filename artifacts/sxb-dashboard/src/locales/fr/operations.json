@@ -161,7 +161,9 @@
       "healthReports": "Rapports de santé",
       "healthDevices": "Appareils de santé",
       "supportTickets": "Tickets support",
-      "adminTokens": "Jetons d'accès des comptes supprimés"
+      "adminTokens": "Jetons d'accès des comptes supprimés",
+      "freeTrialTokens": "Jetons d'essai gratuit",
+      "freeTrialRequests": "Demandes d'essai gratuit"
     }
   },
   "bulkDelete": {

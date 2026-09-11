@@ -30,6 +30,7 @@ export const RESET_WARNINGS = [
 // EXCLUSIVE still permits pg_dump's ACCESS SHARE reads.
 export const RESET_TABLE_LOCK_SQL = `LOCK TABLE
   "activation_sessions", "admin_tokens", "app_registrations", "audit_logs",
+  "free_trial_requests", "free_trial_tokens",
   "mobile_health_devices", "mobile_health_reports", "permissions", "push_tokens",
   "reseller_quota_movements", "resellers", "role_permissions", "roles", "servers",
   "settings", "singbox_accounts", "ssh_accounts", "ssh_payloads", "subscription_devices",
@@ -44,6 +45,7 @@ const countsSchema = z.object({
   profiles: count, profileAssignments: count, sshAccounts: count, xrayAccounts: count,
   singboxAccounts: count, payloads: count, traffic: count, vpnLogs: count, pushTokens: count,
   healthReports: count, healthDevices: count, supportTickets: count, adminTokens: count,
+  freeTrialTokens: count, freeTrialRequests: count,
 }).strict();
 const retainedRolesSchema = z.object({ OWNER: count, ADMIN: count, SUPER_ADMIN: count }).strict();
 const backupSchema = z.object({
@@ -179,6 +181,8 @@ async function counts(tx: Tx): Promise<ResetCounts> {
     healthDevices: await tx.mobileHealthDevice.count(),
     supportTickets: await tx.supportTicket.count(),
     adminTokens: await tx.adminToken.count({ where: unprotectedAdminTokens }),
+    freeTrialTokens: await tx.freeTrialToken.count(),
+    freeTrialRequests: await tx.freeTrialRequest.count(),
   };
 }
 
@@ -279,6 +283,12 @@ async function structuralDigest(tx: Tx): Promise<string> {
 async function purge(tx: Tx): Promise<ResetCounts> {
   const healthReports = (await tx.mobileHealthReport.deleteMany()).count;
   const healthDevices = (await tx.mobileHealthDevice.deleteMany()).count;
+  // Une demande d'essai est une demande de COMPTE : la conserver ferait
+  // réapparaître, après réinitialisation, des demandes pointant vers des
+  // comptes qui n'existent plus. Les demandes partent avant leurs jetons,
+  // dont elles dépendent.
+  const freeTrialRequests = (await tx.freeTrialRequest.deleteMany()).count;
+  const freeTrialTokens = (await tx.freeTrialToken.deleteMany()).count;
   const subscriptionDevices = (await tx.subscriptionDevice.deleteMany()).count;
   const activations = (await tx.activationSession.deleteMany()).count;
   const registrations = (await tx.appRegistration.deleteMany()).count;
@@ -305,6 +315,7 @@ async function purge(tx: Tx): Promise<ResetCounts> {
     users, resellers, clients, registrations, activations, subscriptions, subscriptionDevices,
     tokens, vouchers, profiles, profileAssignments, sshAccounts, xrayAccounts, singboxAccounts,
     payloads, traffic, vpnLogs, pushTokens, healthReports, healthDevices, supportTickets, adminTokens,
+    freeTrialTokens, freeTrialRequests,
   };
 }
 

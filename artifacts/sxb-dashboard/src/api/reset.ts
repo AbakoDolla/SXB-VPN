@@ -8,6 +8,7 @@ export const RESET_COUNT_KEYS = [
   "subscriptionDevices", "tokens", "vouchers", "profiles", "profileAssignments",
   "sshAccounts", "xrayAccounts", "singboxAccounts", "payloads", "traffic", "vpnLogs",
   "pushTokens", "healthReports", "healthDevices", "supportTickets", "adminTokens",
+  "freeTrialTokens", "freeTrialRequests",
 ] as const;
 export const RESET_RETAINED_ROLES = ["OWNER", "ADMIN", "SUPER_ADMIN"] as const;
 export const RESET_PRESERVED_KEYS = [

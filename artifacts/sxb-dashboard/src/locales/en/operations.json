@@ -161,7 +161,9 @@
       "healthReports": "Health reports",
       "healthDevices": "Health devices",
       "supportTickets": "Support tickets",
-      "adminTokens": "Access tokens of removed accounts"
+      "adminTokens": "Access tokens of removed accounts",
+      "freeTrialTokens": "Free-trial tokens",
+      "freeTrialRequests": "Free-trial requests"
     }
   },
   "bulkDelete": {

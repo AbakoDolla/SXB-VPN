@@ -1,9 +1,13 @@
-export const resetCountKeys = [
-  "users", "resellers", "clients", "registrations", "activations", "subscriptions",
-  "subscriptionDevices", "tokens", "vouchers", "profiles", "profileAssignments",
-  "sshAccounts", "xrayAccounts", "singboxAccounts", "payloads", "traffic", "vpnLogs",
-  "pushTokens", "healthReports", "healthDevices", "supportTickets", "adminTokens",
-];
+import { readFileSync } from "node:fs";
+
+// La liste vient du tableau de bord lui-même, lue dans sa source : la dupliquer
+// ici laissait le banc d'essai valider un aperçu incomplet, que l'interface
+// refuse à juste titre — l'échec ressemblait alors à un défaut du composant.
+const source = readFileSync(new URL("../../../artifacts/sxb-dashboard/src/api/reset.ts", import.meta.url), "utf8");
+const declaration = source.match(/export const RESET_COUNT_KEYS = \[([\s\S]*?)\] as const;/);
+if (!declaration) throw new Error("RESET_COUNT_KEYS introuvable dans le tableau de bord");
+export const resetCountKeys = [...declaration[1].matchAll(/"([^"]+)"/g)].map(match => match[1]);
+if (!resetCountKeys.length) throw new Error("RESET_COUNT_KEYS vide");
 export const resetPreview = {
   mode: "production", confirmationText: "RESET SXB VPN",
   challenge: "fixture-original-reset-nonce", expiresAt: "2026-09-09T06:08:00.000Z",

@@ -80,6 +80,15 @@ function seed() {
   add("MobileHealthDevice", { id: "health-device", pseudonym: "pseudo", appVersion: "1.0", versionCode: 1, tunnelState: "connected" });
   add("MobileHealthReport", { id: "health-report", reportId: "report", deviceId: "health-device", tunnelState: "connected" });
   add("SupportTicket", { id: "support-ticket", title: "Fixture", clientName: secretCanary, userId: "admin" });
+  // Un essai gratuit est une demande de COMPTE : la réinitialisation doit
+  // l'effacer comme le reste, sinon des demandes survivraient en pointant vers
+  // des comptes supprimés. La demande précède son jeton : l'ordre de purge est
+  // ainsi réellement éprouvé.
+  add("FreeTrialToken", { id: "trial-token", token: "STUFF-FIXT-0001", label: secretCanary });
+  add("FreeTrialRequest", {
+    id: "trial-request", tokenId: "trial-token", name: "Fixture", deviceId,
+    claimSecretHash: "b".repeat(64),
+  });
   for (const userId of ["root", "admin", "super", "r1"]) {
     add("AdminToken", { id: `admin-token-${userId}`, userId, token: `SXB-ADMIN-${userId}`, expiresAt: tomorrow() });
   }
@@ -283,7 +292,7 @@ test("reset: preview is read-only, structural, private, complete and has no memo
   assert.equal(preview.body.mode, "production");
   assert.equal(preview.body.confirmationText, "RESET SXB VPN");
   assert.equal(preview.body.backupRequired, true);
-  assert.equal(Object.keys(preview.body.counts).length, 22);
+  assert.equal(Object.keys(preview.body.counts).length, 24);
   assert.ok(Object.values(preview.body.counts).every(value => Number.isInteger(value) && value > 0));
   assert.equal(preview.body.counts.users, 6);
   assert.equal(preview.body.counts.adminTokens, 1);
