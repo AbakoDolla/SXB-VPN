@@ -434,6 +434,14 @@ jobs:
             # préfixe : leur cache long n'est pas touché. L'opération est
             # idempotente (marqueur), sauvegardée, testée, et annulée si la
             # configuration devient invalide.
+            # Nginx charge TOUT fichier présent dans sites-enabled : une
+            # sauvegarde déposée là y est lue comme une configuration à part
+            # entière et duplique les upstreams, ce qui fait échouer `nginx -t`
+            # au prochain rechargement. Les sauvegardes vivent donc hors de ce
+            # répertoire, et toute sauvegarde égarée est retirée ici.
+            sudo find /etc/nginx/sites-enabled/ /etc/nginx/conf.d/ -name '*.sxb.bak' -delete 2>/dev/null || true
+            NGINX_BACKUP_DIR=/var/backups/sxb-nginx
+            sudo mkdir -p "$NGINX_BACKUP_DIR"
             # Plusieurs sites cohabitent sur ce serveur : retenir le premier
             # fichier trouvé donnait celui de XPanel, qui n'a pas de bloc
             # « location / ». On parcourt donc les candidats et on garde celui
@@ -451,13 +459,14 @@ jobs:
               echo "✅ Revalidation déjà en place dans $NGINX_CONF"
             else
               echo "🧊 Révalidation du document d'entrée dans $NGINX_CONF"
-              sudo cp "$NGINX_CONF" "$NGINX_CONF.sxb.bak"
+              NGINX_BACKUP="$NGINX_BACKUP_DIR/$(basename "$NGINX_CONF").$(date +%s)"
+              sudo cp "$NGINX_CONF" "$NGINX_BACKUP"
               sudo sed -i -E 's|^([[:space:]]*)location[[:space:]]+/[[:space:]]*\{|\1location / {\n\1    add_header Cache-Control "no-cache" always; # SXB_INDEX_NOCACHE|' "$NGINX_CONF"
               if sudo nginx -t; then
                 echo "✅ Revalidation appliquée"
               else
                 echo "⚠️ Configuration refusée — restauration de la version précédente"
-                sudo cp "$NGINX_CONF.sxb.bak" "$NGINX_CONF"
+                sudo cp "$NGINX_BACKUP" "$NGINX_CONF"
                 sudo nginx -t
               fi
             fi
