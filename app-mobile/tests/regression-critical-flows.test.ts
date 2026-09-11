@@ -1244,6 +1244,21 @@ describe('garde-fous contre les régressions Android', () => {
     assert.doesNotMatch(tunnelPolicy, /result\.put\("strategy"/);
   });
 
+  it('applique la même économie aux profils simples, pas seulement aux chaînes', () => {
+    // Un lien vless://, trojan:// ou une config SSH ne passe pas par le
+    // constructeur « brut » : ces profils gardaient la stratégie du RÉSEAU,
+    // donc des requêtes AAAA dès que l'opérateur fournit de l'IPv6 — alors que
+    // le tunnel, lui, n'en route jamais.
+    assert.match(nativeService, /private fun tunnelDnsStrategy\(\): String =\s*\n\s*if \(tunInbound\(\)\.has\("inet6_address"\)\) dnsStrategy\(\) else "ipv4_only"/);
+    // Le résolveur joint à travers le tunnel suit le tunnel…
+    assert.match(nativeService, /put\("tag", "dns-remote"\).*"proxy"|put\("strategy", tunnelDnsStrategy\(\)\)/s);
+    assert.match(nativeService, /put\("tag", "dns-r"\).*put\("strategy", tunnelDnsStrategy\(\)\)/);
+    assert.match(nativeService, /if \(detourTag == "direct"\) dnsStrategy\(\) else tunnelDnsStrategy\(\)/);
+    // … et l'amorçage hors tunnel garde la pile réellement disponible.
+    assert.match(nativeService, /put\("tag", "dns-local"\)[\s\S]{0,200}put\("strategy", dnsStrategy\(\)\)/);
+    assert.match(nativeService, /fun dnsStrategy\(\): String = if \(networkHasIpv6\(\)\) "prefer_ipv4" else "ipv4_only"/);
+  });
+
   it('borne la durée pendant laquelle un amont qui refuse reste sélectionné', () => {
     // `URLTest.DialContext` réutilise l'amont déjà sélectionné et ne le
     // réévalue qu'à la fin d'un cycle de sondes : l'intervalle est exactement

@@ -2876,7 +2876,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         return JSONObject().apply {
             put("servers", JSONArray()
                 .put(JSONObject().put("tag", "dns-remote").put("address", address)
-                    .put("strategy", dnsStrategy()).put("detour", "proxy"))
+                    .put("strategy", tunnelDnsStrategy()).put("detour", "proxy"))
                 // `local` déléguerait au résolveur Go, sans /etc/resolv.conf
                 // sous Android : ce serveur ne résolvait donc jamais rien.
                 .put(JSONObject().put("tag", "dns-local").put("address", bootstrapDnsAddress())
@@ -2894,7 +2894,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
     private fun defaultDnsObject(detourTag: String = "proxy"): JSONObject = JSONObject().apply {
         put("servers", JSONArray()
-            .put(JSONObject().put("tag", "dns-remote").put("address", "https://1.1.1.1/dns-query").put("strategy", dnsStrategy()).put("detour", detourTag))
+            .put(JSONObject().put("tag", "dns-remote").put("address", "https://1.1.1.1/dns-query").put("strategy", if (detourTag == "direct") dnsStrategy() else tunnelDnsStrategy()).put("detour", detourTag))
             // Résolveur du réseau plutôt que `local` : voir systemDnsServers().
             .put(JSONObject().put("tag", "dns-local").put("address", bootstrapDnsAddress())
                 .put("strategy", dnsStrategy()).put("detour", "direct"))
@@ -3022,8 +3022,26 @@ class SxbVpnService : VpnService(), PlatformInterface {
         }
     }.getOrDefault(false)
 
-    /** Stratégie de résolution adaptée à la pile IP réellement disponible. */
+    /**
+     * Stratégie de résolution pour un serveur DNS joint HORS du tunnel.
+     *
+     * L'amorçage sort par l'interface physique : c'est bien la pile du réseau
+     * qui décide ce qu'il peut atteindre.
+     */
     private fun dnsStrategy(): String = if (networkHasIpv6()) "prefer_ipv4" else "ipv4_only"
+
+    /**
+     * Stratégie de résolution pour un serveur DNS joint À TRAVERS le tunnel.
+     *
+     * L'interface TUN ne déclare qu'`inet4_address` : une adresse IPv6 rendue à
+     * l'application n'est routable nulle part, même quand le réseau mobile en
+     * possède une. Elle coûtait pourtant une requête AAAA complète dans le
+     * tunnel, puis une tentative de connexion perdue avant le repli IPv4
+     * (Happy Eyeballs). `ipv4_only` fait répondre `sing-dns` localement, sans
+     * solliciter le transport : les deux coûts disparaissent.
+     */
+    private fun tunnelDnsStrategy(): String =
+        if (tunInbound().has("inet6_address")) dnsStrategy() else "ipv4_only"
 
     /**
      * Insère l'exclusion anti-boucle dans un bloc `dns` déjà construit.
@@ -4123,7 +4141,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     // Le DoH sort par `proxy` (le SOCKS local alimenté par SSH) ;
                     // `dns-l` utilisait `local`, inopérant sous Android — même
                     // panne que sur le chemin sing-box (voir systemDnsServers()).
-                    .put(JSONObject().put("tag", "dns-r").put("address", "https://1.1.1.1/dns-query").put("strategy", dnsStrategy()))
+                    .put(JSONObject().put("tag", "dns-r").put("address", "https://1.1.1.1/dns-query").put("strategy", tunnelDnsStrategy()))
                     .put(JSONObject().put("tag", "dns-l").put("address", bootstrapDnsAddress())
                         .put("strategy", dnsStrategy()).put("detour", "direct"))
                 )
