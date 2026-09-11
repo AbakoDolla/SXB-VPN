@@ -1,4 +1,87 @@
 {
+  "freeTrial": {
+    "title": "Free trial requests",
+    "subtitle": "A trial token is only an invitation: it carries no server, quota, dates or configuration. You decide what each enrollee receives at deployment time.",
+    "securityNotice": "A token can never be used to retrieve somebody else's configuration. Every enrollment creates its own request, bound to a single device ID; VPN access is returned to that exact device only, and only after you deploy it.",
+    "loading": "Loading trial requests…",
+    "genericError": "The free trial operation failed.",
+    "refresh": "Refresh",
+    "cancel": "Cancel",
+    "dismiss": "Dismiss",
+    "copy": "Copy token",
+    "createToken": "Create a token",
+    "revoke": "Revoke",
+    "reject": "Reject",
+    "deploy": "DEPLOY",
+    "configureAndDeploy": "Choose access then deploy",
+    "tokensTitle": "Issued invitation tokens",
+    "requestsTitle": "Received enrollments",
+    "searchPlaceholder": "Name, device or token",
+    "empty": "No free trial request for this filter.",
+    "selected": "{{count}} enrollee(s) selected",
+    "selectAll": "Select all",
+    "selectOne": "Select {{name}}",
+    "usesUnlimited": "{{used}} enrollment(s)",
+    "usesLimited": "{{used}} / {{max}} enrollment(s)",
+    "platformVersion": "{{platform}} · {{version}}",
+    "columns": {
+      "name": "Name",
+      "deviceId": "Device ID",
+      "token": "Token",
+      "status": "Status",
+      "submittedAt": "Received on",
+      "label": "Label",
+      "uses": "Uses",
+      "tokenState": "State",
+      "createdAt": "Created on",
+      "action": "Action"
+    },
+    "status": {
+      "pending": "Pending verification",
+      "deployed": "Deployed",
+      "rejected": "Rejected",
+      "all": "All statuses"
+    },
+    "tokenState": {
+      "active": "Active",
+      "revoked": "Revoked",
+      "expired": "Expired",
+      "exhausted": "Exhausted"
+    },
+    "result": {
+      "deployed": "Deployed",
+      "skipped": "Skipped",
+      "failed": "Failed"
+    },
+    "tokenForm": {
+      "title": "Step 1 — Create an invitation token",
+      "hint": "The generated token contains no access information. Simply hand it to the person who wants to try the service.",
+      "label": "Internal label (optional)",
+      "maxUses": "Allowed enrollments",
+      "maxUsesHint": "Leave empty for a token with no enrollment limit.",
+      "expiresAt": "Invitation valid until",
+      "expiresAtHint": "Bounds the lifetime of the TOKEN, not of the trial.",
+      "submit": "Generate token"
+    },
+    "deployForm": {
+      "title": "Step 3 — Define the access for this selection",
+      "hint": "These settings will be applied to the {{count}} selected request(s).",
+      "server": "Server",
+      "serverPlaceholder": "Choose a server",
+      "quota": "Quota (GB)",
+      "deviceLimit": "Allowed devices",
+      "startAt": "Start date and time",
+      "expireAt": "Expiry date and time",
+      "note": "Internal note (optional)"
+    },
+    "notice": {
+      "tokenCreated": "Token created: {{token}}",
+      "tokenRevoked": "Token revoked: it no longer accepts new enrollments.",
+      "deployed": "{{deployed}} access deployed out of {{total}}.",
+      "partial": "Requests not deployed: {{items}}",
+      "rejected": "{{count}} request(s) rejected."
+    }
+  },
   "reset": {
     "tab": "Owner reset",
     "title": "Danger zone: global data reset",

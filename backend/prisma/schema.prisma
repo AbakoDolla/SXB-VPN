@@ -602,3 +602,87 @@ model MobileHealthReport {
   @@index([outcome, reportedAt])
   @@map("mobile_health_reports")
 }
+
+// ═══════════════════════════════════════════════════════════════
+// ESSAI GRATUIT — jeton d'invitation + demandes d'essai
+//
+// AJOUT PUREMENT ADDITIF : deux nouvelles tables, aucune colonne existante
+// modifiée, supprimée ou rendue obligatoire. Les comptes, revendeurs,
+// forfaits, configurations et quotas déjà en production sont intacts.
+// ═══════════════════════════════════════════════════════════════
+
+/// Jeton d'essai gratuit — CODE D'INVITATION, RIEN D'AUTRE.
+///
+/// RÈGLE DE CONCEPTION NON NÉGOCIABLE : ce modèle ne porte AUCUN champ
+/// technique VPN. Pas de serveur, pas de quota, pas de date d'accès, pas de
+/// profil, pas d'identifiants, pas de configuration. Il n'existe donc aucun
+/// chemin de lecture — même bogué — qui puisse faire fuiter une configuration
+/// à partir d'un jeton d'essai : l'information ne s'y trouve tout simplement
+/// pas. Le jeton sert uniquement à créer une demande EN ATTENTE.
+model FreeTrialToken {
+  id        String    @id @default(uuid())
+  token     String    @unique // STUFF-XXXX-XXXX
+  /// Libellé interne d'organisation (ex. « Campagne septembre »). Jamais
+  /// renvoyé à l'application mobile.
+  label     String?
+  /// Nombre maximal d'inscriptions autorisées. `null` = illimité. Chaque
+  /// inscription reste une demande SÉPARÉE avec son propre appareil.
+  maxUses   Int?
+  usedCount Int       @default(0)
+  status    String    @default("active") // active | revoked
+  /// Échéance du CODE D'INVITATION — sans aucun rapport avec la durée de
+  /// l'accès VPN, qui est choisie par l'admin au moment du déploiement.
+  expiresAt DateTime?
+  createdBy String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  requests FreeTrialRequest[]
+
+  @@index([status, createdAt])
+  @@map("free_trial_tokens")
+}
+
+/// Demande d'essai gratuit — une par couple (jeton, appareil).
+///
+/// Un même jeton peut être présenté par plusieurs personnes : chacune produit
+/// sa PROPRE demande, liée à son PROPRE identifiant d'appareil. Le secret de
+/// réclamation (stocké haché, remis une seule fois à l'appareil inscrivant)
+/// est ce qui rend impossible la lecture de la demande d'autrui, même en
+/// connaissant le jeton et l'identifiant d'appareil de la victime.
+model FreeTrialRequest {
+  id         String         @id @default(uuid())
+  tokenId    String
+  trialToken FreeTrialToken @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+  /// Nom saisi par l'utilisateur — OBLIGATOIRE côté application.
+  name       String
+  /// Identifiant d'appareil transmis AUTOMATIQUEMENT par l'application.
+  deviceId   String
+  platform   String?
+  appVersion String?
+  /// SHA-256 du secret de réclamation. Le secret en clair n'est jamais stocké.
+  claimSecretHash String
+  status     String         @default("pending") // pending | deployed | rejected
+
+  // ── Renseignés UNIQUEMENT au déploiement admin (étape 4) ─────────────────
+  // Instantanés sans clé étrangère, comme reseller_quota_movements : la
+  // suppression ultérieure d'un client ne doit pas réécrire l'historique des
+  // demandes d'essai.
+  clientId       String?
+  subscriptionId String?
+  deployedAt     DateTime?
+  deployedBy     String?
+  rejectedAt     DateTime?
+  rejectedBy     String?
+  /// Note interne d'instruction. Jamais renvoyée à l'application mobile.
+  reviewNote     String?
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  lastCheckedAt  DateTime?
+
+  @@unique([tokenId, deviceId])
+  @@index([status, createdAt])
+  @@index([deviceId])
+  @@map("free_trial_requests")
+}

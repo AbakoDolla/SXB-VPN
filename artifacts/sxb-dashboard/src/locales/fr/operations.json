@@ -1,4 +1,87 @@
 {
+  "freeTrial": {
+    "title": "Demandes d'essai gratuit",
+    "subtitle": "Le jeton d'essai n'est qu'une invitation : il ne contient ni serveur, ni quota, ni dates, ni configuration. Vous décidez de ce que reçoit chaque inscrit au moment du déploiement.",
+    "securityNotice": "Un jeton ne permet jamais de récupérer la configuration d'une autre personne. Chaque inscription crée une demande distincte, liée à un seul identifiant d'appareil ; l'accès VPN n'est renvoyé qu'à cet appareil précis, et seulement après votre déploiement.",
+    "loading": "Chargement des demandes d'essai…",
+    "genericError": "L'opération sur l'essai gratuit a échoué.",
+    "refresh": "Actualiser",
+    "cancel": "Annuler",
+    "dismiss": "Fermer",
+    "copy": "Copier le jeton",
+    "createToken": "Créer un jeton",
+    "revoke": "Révoquer",
+    "reject": "Refuser",
+    "deploy": "DÉPLOYER",
+    "configureAndDeploy": "Choisir l'accès puis déployer",
+    "tokensTitle": "Jetons d'invitation émis",
+    "requestsTitle": "Inscriptions reçues",
+    "searchPlaceholder": "Nom, appareil ou jeton",
+    "empty": "Aucune demande d'essai gratuit pour ce filtre.",
+    "selected": "{{count}} inscrit(s) sélectionné(s)",
+    "selectAll": "Tout sélectionner",
+    "selectOne": "Sélectionner {{name}}",
+    "usesUnlimited": "{{used}} inscription(s)",
+    "usesLimited": "{{used}} / {{max}} inscription(s)",
+    "platformVersion": "{{platform}} · {{version}}",
+    "columns": {
+      "name": "Nom",
+      "deviceId": "Identifiant d'appareil",
+      "token": "Jeton",
+      "status": "Statut",
+      "submittedAt": "Reçue le",
+      "label": "Libellé",
+      "uses": "Utilisations",
+      "tokenState": "État",
+      "createdAt": "Créé le",
+      "action": "Action"
+    },
+    "status": {
+      "pending": "En attente de vérification",
+      "deployed": "Déployé",
+      "rejected": "Refusé",
+      "all": "Tous les statuts"
+    },
+    "tokenState": {
+      "active": "Actif",
+      "revoked": "Révoqué",
+      "expired": "Expiré",
+      "exhausted": "Épuisé"
+    },
+    "result": {
+      "deployed": "Déployé",
+      "skipped": "Ignoré",
+      "failed": "Échec"
+    },
+    "tokenForm": {
+      "title": "Étape 1 — Créer un jeton d'invitation",
+      "hint": "Le jeton généré ne contient aucune information d'accès. Transmettez-le simplement à la personne qui souhaite tester.",
+      "label": "Libellé interne (facultatif)",
+      "maxUses": "Nombre d'inscriptions autorisées",
+      "maxUsesHint": "Laisser vide pour un jeton sans limite d'inscriptions.",
+      "expiresAt": "Fin de validité de l'invitation",
+      "expiresAtHint": "Borne la durée de vie du JETON, pas celle de l'essai.",
+      "submit": "Générer le jeton"
+    },
+    "deployForm": {
+      "title": "Étape 3 — Définir l'accès de la sélection",
+      "hint": "Ces paramètres seront appliqués aux {{count}} demande(s) sélectionnée(s).",
+      "server": "Serveur",
+      "serverPlaceholder": "Choisir un serveur",
+      "quota": "Quota (Go)",
+      "deviceLimit": "Appareils autorisés",
+      "startAt": "Date et heure de début",
+      "expireAt": "Date et heure d'expiration",
+      "note": "Note interne (facultative)"
+    },
+    "notice": {
+      "tokenCreated": "Jeton créé : {{token}}",
+      "tokenRevoked": "Jeton révoqué : il n'accepte plus de nouvelle inscription.",
+      "deployed": "{{deployed}} accès déployé(s) sur {{total}}.",
+      "partial": "Demandes non déployées : {{items}}",
+      "rejected": "{{count}} demande(s) refusée(s)."
+    }
+  },
   "reset": {
     "tab": "Réinitialisation propriétaire",
     "title": "Zone dangereuse : réinitialisation globale des données",

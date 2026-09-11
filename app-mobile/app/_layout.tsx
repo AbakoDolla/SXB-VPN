@@ -115,6 +115,7 @@ function RootLayoutNav() {
         <Stack.Screen name="index" options={{ animation: "fade" }} />
         <Stack.Screen name="onboarding" options={{ animation: "fade", gestureEnabled: false }} />
         <Stack.Screen name="activate" options={{ animation: "slide_from_right" }} />
+        <Stack.Screen name="free-trial" options={{ animation: "slide_from_right" }} />
         <Stack.Screen name="access-blocked" options={{ gestureEnabled: false }} />
         <Stack.Screen name="privacy" options={{ animation: "slide_from_right" }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />

@@ -42,6 +42,7 @@ import xapiRouter from "./server/routes/xapi";
 import announcementsRouter from "./server/routes/announcements";
 import appUpdatesRouter from "./server/routes/app-updates";
 import mobileHealthRouter from "./server/routes/mobile-health";
+import freeTrialRouter from "./server/routes/free-trial";
 import { maintenanceGuard, MAINTENANCE_PAGE_HTML } from "./server/middleware/maintenance";
 import { getMaintenanceMode } from "./server/services/maintenance";
 import publicPrivacyRouter from "./server/routes/public-privacy";
@@ -134,6 +135,7 @@ async function startServer() {
   app.use("/api/announcements", announcementsRouter);
   app.use("/api/app-updates", appUpdatesRouter);
   app.use("/api/mobile-health", mobileHealthRouter);
+app.use("/api/free-trial", freeTrialRouter);
   app.use("/api/audit-logs", auditLogsRouter);
   app.use("/api/devices", devicesRouter);
   app.use("/api/ssh", sshRouter);

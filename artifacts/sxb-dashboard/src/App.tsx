@@ -25,6 +25,7 @@ import OwnerLogView from "./components/OwnerLogView";
 import AnnouncementsView from "./components/AnnouncementsView";
 import AppUpdatesView from "./components/AppUpdatesView";
 import MobileHealthView from "./components/MobileHealthView";
+import FreeTrialView from "./components/FreeTrialView";
 import MaintenancePage from "./components/MaintenancePage";
 import Layout from "./components/Layout";
 import LanguageSelector from "./components/LanguageSelector";
@@ -382,6 +383,13 @@ function MainApp() {
         return <ServersView currentUserRole={role} />;
       case 'tokens':
         return <TokensView currentUserRole={role} />;
+      // Les essais gratuits restent une opération interne : un revendeur ne
+      // doit ni voir les inscriptions ni décider de l'accès déployé.
+      case 'free-trial':
+        if (role === UserRole.RESELLER) {
+          return <DashboardView onNavigate={(route) => setActiveRoute(route)} currentUserRole={role} />;
+        }
+        return <FreeTrialView />;
       case 'vouchers':
         return <VouchersView currentUserRole={role} permissions={currentUser.permissions} />;
       case 'support':

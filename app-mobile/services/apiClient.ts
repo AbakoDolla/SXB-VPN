@@ -93,7 +93,10 @@ apiClient.interceptors.request.use(
       requireVpnConsent();
       const path = config.url?.split('?')[0];
       const identityOrControl = path === '/mobile/me' || path === '/mobile/access-state' ||
-        path === '/mobile/auth/activate' || path === '/mobile/auth/refresh';
+        path === '/mobile/auth/activate' || path === '/mobile/auth/refresh' ||
+        // Essai gratuit : ces deux routes précèdent toute identité VPN. Elles ne
+        // renvoient jamais de configuration, seulement un statut de demande.
+        path === '/free-trial/enroll' || path === '/free-trial/status';
       if (!identityOrControl) requireDeviceAccess();
       if (config.url === '/mobile-health/report' && !getPrivacyConsent().diagnostics) {
         throw new Error('privacy_diagnostics_disabled');

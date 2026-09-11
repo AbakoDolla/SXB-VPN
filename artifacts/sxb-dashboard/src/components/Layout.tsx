@@ -10,7 +10,7 @@ import {
   Menu, X, UserPlus, HeadphonesIcon, BadgePercent, Activity,
   ChevronDown, Network, Radio, Cpu, BarChart3, Ticket,
   PackageOpen, GitBranch, ScrollText, BellRing, Download,
-  HeartPulse,
+  HeartPulse, Gift,
 } from 'lucide-react';
 
 interface LayoutProps {
@@ -77,7 +77,7 @@ export default function Layout({
   useEffect(() => {
     const groupMap: Record<string, string> = {
       clients: 'clients', devices: 'clients', tokens: 'clients', vouchers: 'clients',
-      subscriptions: 'clients',
+      subscriptions: 'clients', 'free-trial': 'clients',
       'vpn-engine': 'vpnengine', xray: 'vpnengine', singbox: 'vpnengine', payload: 'vpnengine',
       'vpn-profiles': 'vpnengine', announcements: 'admin',
       sessions: 'monitoring', analytics: 'monitoring', servers: 'monitoring', monitoring: 'monitoring',
@@ -117,6 +117,9 @@ export default function Layout({
         // qu'il constate une activation ou une consommation anormale.
         { kind: 'leaf', id: 'devices', label: t('sidebar.devices'), icon: Smartphone, roles: ALL_ROLES, permission: 'clients.view' },
         { kind: 'leaf', id: 'tokens', label: t('sidebar.tokens'), icon: Key, roles: ALL_ROLES, permission: 'tokens.view' },
+        // Essai gratuit : les demandes arrivent des appareils, pas des
+        // revendeurs. C'est l'exploitation interne qui décide de l'accès.
+        { kind: 'leaf', id: 'free-trial', label: t('core.nav.freeTrial'), icon: Gift, roles: STAFF, permission: 'clients.view' },
         { kind: 'leaf', id: 'vouchers', label: t('sidebar.vouchers'), icon: BadgePercent, roles: ALL_ROLES, permission: 'vouchers.view' },
       ],
     },

@@ -179,6 +179,22 @@ export default function ActivateScreen() {
             </View>
           ) : null}
 
+          {/* Section distincte « ESSAI GRATUIT » : un jeton d'essai n'est pas un
+              token d'activation et ne doit jamais être saisi dans le champ
+              ci-dessus, qui attend un compte déjà provisionné. */}
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => router.push('/free-trial' as any)}
+            style={({ pressed }) => [styles.trialCard, pressed && styles.pressed]}
+          >
+            <View style={styles.trialIcon}><Ionicons name="gift-outline" size={18} color={colors.primary} /></View>
+            <View style={styles.trialCopy}>
+              <Text style={styles.trialLabel}>{t("free_trial_badge")}</Text>
+              <Text style={styles.trialText}>{t("free_trial_entry")}</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+          </Pressable>
+
           <Text style={styles.footer}>{t("activate_footer")}</Text>
           <Text style={styles.footer}>{t("created_by")}</Text>
         </ScrollView>
@@ -224,6 +240,11 @@ function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useCol
     deviceValue: { color: colors.textPrimary, fontSize: 12, fontFamily: "Inter_600SemiBold" },
     copyButton: { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: colors.primaryDim, borderRadius: 11, paddingHorizontal: 10, paddingVertical: 8 },
     copyText: { color: colors.primary, fontSize: 11, fontFamily: "Inter_700Bold" },
+    trialCard: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.bgCard + "CC", borderWidth: 1, borderColor: colors.primary + "45", borderRadius: 18, padding: 13 },
+    trialIcon: { width: 36, height: 36, borderRadius: 12, backgroundColor: colors.primaryDim, alignItems: "center", justifyContent: "center" },
+    trialCopy: { flex: 1, gap: 2 },
+    trialLabel: { color: colors.primary, fontSize: 9, fontFamily: "Inter_700Bold", letterSpacing: 1.4 },
+    trialText: { color: colors.textPrimary, fontSize: 13, fontFamily: "Inter_600SemiBold" },
     footer: { color: colors.textMuted, textAlign: "center", fontSize: 10, fontFamily: "Inter_400Regular", letterSpacing: 0.8, paddingVertical: 4 },
     successScreen: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24, gap: 14 },
     successOrb: { width: 136, height: 136, borderRadius: 46, backgroundColor: colors.connectedDim, borderWidth: 1, borderColor: colors.connected + "55", alignItems: "center", justifyContent: "center", shadowColor: colors.connected, shadowOpacity: 0.28, shadowRadius: 30, shadowOffset: { width: 0, height: 8 }, elevation: 8 },

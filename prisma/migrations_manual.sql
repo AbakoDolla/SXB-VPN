@@ -377,3 +377,58 @@ BEGIN
   END IF;
 END
 $$;
+
+-- ── Essai gratuit : jeton d'invitation + demandes ────────────────────────────
+-- STRICTEMENT ADDITIF : deux nouvelles tables. Aucune table ni colonne
+-- existante n'est modifiee, supprimee ou rendue obligatoire. La base de
+-- production reste fonctionnelle a l'identique si ce bloc n'est pas applique
+-- (les routes d'essai repondent alors 503, rien d'autre ne change).
+--
+-- RAPPEL DE CONCEPTION : free_trial_tokens ne porte AUCUNE colonne technique
+-- VPN (ni serveur, ni quota, ni date d'acces, ni configuration). Un jeton
+-- d'essai ne peut donc pas faire fuiter une configuration : l'information ne
+-- s'y trouve pas.
+CREATE TABLE IF NOT EXISTS "free_trial_tokens" (
+  "id"        TEXT PRIMARY KEY,
+  "token"     TEXT NOT NULL UNIQUE,
+  "label"     TEXT,
+  "maxUses"   INTEGER,
+  "usedCount" INTEGER NOT NULL DEFAULT 0,
+  "status"    TEXT NOT NULL DEFAULT 'active',
+  "expiresAt" TIMESTAMP(3),
+  "createdBy" TEXT,
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS "free_trial_tokens_status_createdAt_idx"
+  ON "free_trial_tokens" ("status", "createdAt");
+
+CREATE TABLE IF NOT EXISTS "free_trial_requests" (
+  "id"              TEXT PRIMARY KEY,
+  "tokenId"         TEXT NOT NULL REFERENCES "free_trial_tokens"("id") ON DELETE CASCADE,
+  "name"            TEXT NOT NULL,
+  "deviceId"        TEXT NOT NULL,
+  "platform"        TEXT,
+  "appVersion"      TEXT,
+  "claimSecretHash" TEXT NOT NULL,
+  "status"          TEXT NOT NULL DEFAULT 'pending',
+  "clientId"        TEXT,
+  "subscriptionId"  TEXT,
+  "deployedAt"      TIMESTAMP(3),
+  "deployedBy"      TEXT,
+  "rejectedAt"      TIMESTAMP(3),
+  "rejectedBy"      TEXT,
+  "reviewNote"      TEXT,
+  "createdAt"       TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt"       TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "lastCheckedAt"   TIMESTAMP(3)
+);
+-- Une demande SEPAREE par couple (jeton, appareil) : deux personnes qui
+-- utilisent le meme jeton n'ont jamais la meme ligne, donc jamais le meme
+-- acces.
+CREATE UNIQUE INDEX IF NOT EXISTS "free_trial_requests_tokenId_deviceId_key"
+  ON "free_trial_requests" ("tokenId", "deviceId");
+CREATE INDEX IF NOT EXISTS "free_trial_requests_status_createdAt_idx"
+  ON "free_trial_requests" ("status", "createdAt");
+CREATE INDEX IF NOT EXISTS "free_trial_requests_deviceId_idx"
+  ON "free_trial_requests" ("deviceId");
