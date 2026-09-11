@@ -422,6 +422,29 @@ jobs:
             pm2 save
 
             echo "🔄 Reload Nginx..."
+            # `index.html` ne porte pas de version dans son nom : c'est lui qui
+            # désigne le bundle à charger. Nginx le sert depuis le disque, donc
+            # l'en-tête posé par l'application ne l'atteint jamais. Sans
+            # consigne, le navigateur applique son heuristique de fraîcheur et
+            # peut resservir une page périmée pendant des heures — une section
+            # déployée reste alors invisible, sans erreur pour l'expliquer.
+            #
+            # Les fichiers de /assets portent une empreinte dans leur nom et
+            # sont servis par un `location` d'extension, prioritaire sur ce
+            # préfixe : leur cache long n'est pas touché. L'opération est
+            # idempotente (marqueur), sauvegardée, testée, et annulée si la
+            # configuration devient invalide.
+            NGINX_CONF=$(grep -rl "vpnsxb.afrihall.com" /etc/nginx/sites-enabled/ /etc/nginx/conf.d/ 2>/dev/null | head -1 || true)
+            if [ -n "$NGINX_CONF" ] && ! grep -q "SXB_INDEX_NOCACHE" "$NGINX_CONF"; then
+              echo "🧊 Révalidation du document d'entrée dans $NGINX_CONF"
+              sudo cp "$NGINX_CONF" "$NGINX_CONF.sxb.bak"
+              sudo sed -i 's|location / {|location / {\n        add_header Cache-Control "no-cache" always; # SXB_INDEX_NOCACHE|g' "$NGINX_CONF"
+              if ! sudo nginx -t; then
+                echo "⚠️ Configuration refusée — restauration de la version précédente"
+                sudo cp "$NGINX_CONF.sxb.bak" "$NGINX_CONF"
+                sudo nginx -t
+              fi
+            fi
             sudo nginx -t && sudo systemctl reload nginx
 
             echo "✅ Deployment complete!"
@@ -435,6 +458,24 @@ jobs:
           HTTP=$(printf '%s' "$INDEX" | wc -c)
           echo "Frontend index bytes $HTTP"
           [ "$HTTP" -gt 500 ] || (echo "❌ Frontend index too small" && exit 1)
+
+          # Le document d'entrée doit être revalidé, sinon un navigateur peut
+          # resservir une page périmée qui désigne un ancien bundle : la mise
+          # en ligne serait invisible pour l'utilisateur, sans erreur.
+          INDEX_CACHE=$(curl -fsSI https://vpnsxb.afrihall.com/ | tr -d '\r' | grep -i '^cache-control:' || true)
+          echo "index.html cache-control: ${INDEX_CACHE:-<absent>}"
+          printf '%s' "$INDEX_CACHE" | grep -qi 'no-cache' ||
+            (echo "❌ index.html servi sans revalidation — une mise en ligne resterait invisible" && exit 1)
+
+          # À l'inverse, les fichiers versionnés doivent garder leur cache long :
+          # les revalider à chaque chargement coûterait un aller-retour par
+          # fichier sur un réseau mobile, sans rien apporter.
+          FIRST_ASSET=$(printf '%s' "$INDEX" | grep -oE 'assets/[^" ]+\.js' | head -1)
+          ASSET_CACHE=$(curl -fsSI "https://vpnsxb.afrihall.com/$FIRST_ASSET" | tr -d '\r' | grep -i '^cache-control:' || true)
+          echo "$FIRST_ASSET cache-control: ${ASSET_CACHE:-<absent>}"
+          printf '%s' "$ASSET_CACHE" | grep -qi 'immutable' ||
+            (echo "❌ Fichier versionné sans cache long" && exit 1)
+          echo "✅ Fraîcheur du tableau de bord vérifiée"
 
           # Le paquet est désormais découpé en plusieurs morceaux : un marqueur
           # donné ne vit que dans l'un d'eux. On les concatène donc tous avant
