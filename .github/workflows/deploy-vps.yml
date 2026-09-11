@@ -434,12 +434,22 @@ jobs:
             # préfixe : leur cache long n'est pas touché. L'opération est
             # idempotente (marqueur), sauvegardée, testée, et annulée si la
             # configuration devient invalide.
-            NGINX_CONF=$(grep -rl "vpnsxb.afrihall.com" /etc/nginx/sites-enabled/ /etc/nginx/conf.d/ 2>/dev/null | head -1 || true)
-            if [ -n "$NGINX_CONF" ] && ! grep -q "SXB_INDEX_NOCACHE" "$NGINX_CONF"; then
+            # Le fichier est repéré par la racine servie, pas par le nom de
+            # domaine : une configuration en `server_name _;` reste trouvable.
+            NGINX_CONF=$(grep -rl -e "vpnsxb.afrihall.com" -e "/var/www/sxb-vpn" /etc/nginx/ 2>/dev/null | grep -v '\.bak$' | head -1 || true)
+            if [ -z "$NGINX_CONF" ]; then
+              echo "⚠️ Configuration Nginx du site introuvable — revalidation non appliquée"
+            elif grep -q "SXB_INDEX_NOCACHE" "$NGINX_CONF"; then
+              echo "✅ Revalidation déjà en place dans $NGINX_CONF"
+            elif ! grep -qE '^[[:space:]]*location[[:space:]]+/[[:space:]]*\{' "$NGINX_CONF"; then
+              echo "⚠️ Aucun bloc « location / » dans $NGINX_CONF — revalidation non appliquée"
+            else
               echo "🧊 Révalidation du document d'entrée dans $NGINX_CONF"
               sudo cp "$NGINX_CONF" "$NGINX_CONF.sxb.bak"
-              sudo sed -i 's|location / {|location / {\n        add_header Cache-Control "no-cache" always; # SXB_INDEX_NOCACHE|g' "$NGINX_CONF"
-              if ! sudo nginx -t; then
+              sudo sed -i -E 's|^([[:space:]]*)location[[:space:]]+/[[:space:]]*\{|\1location / {\n\1    add_header Cache-Control "no-cache" always; # SXB_INDEX_NOCACHE|' "$NGINX_CONF"
+              if sudo nginx -t; then
+                echo "✅ Revalidation appliquée"
+              else
                 echo "⚠️ Configuration refusée — restauration de la version précédente"
                 sudo cp "$NGINX_CONF.sxb.bak" "$NGINX_CONF"
                 sudo nginx -t
