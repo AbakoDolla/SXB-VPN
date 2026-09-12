@@ -1015,7 +1015,7 @@ describe('garde-fous contre les régressions Android', () => {
     // seulement après avoir vérifié qu'une connexion existe.
     const schedule = nativeReconnectManager.slice(nativeReconnectManager.indexOf('private fun schedule('));
     assert.ok(schedule.length > 0, 'schedule() introuvable dans AutoReconnectManager');
-    const networkGuard = schedule.indexOf('if (!networkUp.get())');
+    const networkGuard = schedule.indexOf('if (!networkPresent())');
     const consume = schedule.indexOf('failedAttempts.incrementAndGet()');
     assert.ok(networkGuard >= 0 && consume > networkGuard,
       'Le compteur ne doit être consommé qu’après avoir constaté un réseau');
