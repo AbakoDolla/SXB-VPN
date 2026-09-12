@@ -18,7 +18,6 @@ import vouchersRouter from "./server/routes/vouchers";
 import analyticsRouter from "./server/routes/analytics";
 import serversRouter from "./server/routes/servers";
 import docsRouter from "./server/routes/docs";
-import vpnRouter from "./server/routes/vpn";
 import rbacRouter from "./server/routes/rbac";
 import dashboardRouter from "./server/routes/dashboard";
 import mobileRouter from "./server/routes/mobile";
@@ -127,7 +126,19 @@ async function startServer() {
   app.use("/api/analytics", analyticsRouter);
   app.use("/api/servers", serversRouter);
   app.use("/api/docs", docsRouter);
-  app.use("/api/vpn", vpnRouter);
+  // `/api/vpn` a été retiré : doublon non protégé de `/api/clients`.
+  //
+  // `GET /vpn/clients` rendait TOUT le parc — identifiants, jetons, quotas —
+  // à n'importe quel porteur de session, y compris l'application d'un client
+  // et un revendeur, sans aucun contrôle de permission ni cloisonnement.
+  // `POST` et `DELETE` laissaient de même créer ou suspendre un client, et
+  // `GET /vpn/config/:token` répondait SANS authentification en divulguant des
+  // identifiants de serveur. Enchaînés, ces défauts donnaient à tout utilisateur
+  // de l'application la configuration VPN de tous les autres.
+  //
+  // Aucun appelant n'existe : ni l'application, ni le tableau de bord, ni un
+  // script, à aucun moment de l'historique du dépôt. `/api/clients` couvre les
+  // mêmes besoins avec permissions et portée revendeur.
   app.use("/api/rbac", rbacRouter);
   app.use("/api/dashboard", dashboardRouter);
   app.use("/api/mobile", mobileRouter);
