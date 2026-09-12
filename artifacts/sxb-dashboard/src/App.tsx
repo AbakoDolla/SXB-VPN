@@ -4,7 +4,6 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import DashboardView from "./components/DashboardView";
 import ClientsView from "./components/ClientsView";
 import ServersView from "./components/ServersView";
-import TokensView from "./components/TokensView";
 import VouchersView from "./components/VouchersView";
 import { PermissionsProvider } from "./contexts/PermissionsContext";
 import SupportView from "./components/SupportView";
@@ -12,10 +11,6 @@ import SettingsView from "./components/SettingsView";
 import ResellerServicesView from "./components/ResellerServicesView";
 import AccountsView from "./components/AccountsView";
 import DevicesView from "./components/DevicesView";
-import SSHManagerView from "./components/SSHManagerView";
-import PayloadManagerView from "./components/PayloadManagerView";
-import XrayManagerView from "./components/XrayManagerView";
-import SingboxManagerView from "./components/SingboxManagerView";
 import SessionsView from "./components/SessionsView";
 import VpnEngineView from "./components/VpnEngineView";
 import MonitoringView from "./components/MonitoringView";
@@ -382,8 +377,12 @@ function MainApp() {
         );
       case 'servers':
         return <ServersView currentUserRole={role} />;
-      case 'tokens':
-        return <TokensView currentUserRole={role} />;
+      // « Tokens SXB » n'est plus routé : aucun écran mobile n'accepte le
+      // format SXB-XXXX-XXXX-XXXX produit par POST /api/tokens, et la seule
+      // route qui le valide (POST /api/tokens/validate) exige requireAuth +
+      // tokens.create — donc un administrateur, jamais un client. Le jeton
+      // créé ici n'était remettable à personne. L'API, la table TokenSXB et
+      // les jetons en base sont intacts ; seule la porte d'entrée disparaît.
       // Les essais gratuits restent une opération interne : un revendeur ne
       // doit ni voir les inscriptions ni décider de l'accès déployé.
       case 'free-trial':
@@ -427,20 +426,15 @@ function MainApp() {
         return <DevicesView currentUserRole={role} />;
       case 'sessions':
         return <SessionsView />;
-      case 'ssh':
-        return <SSHManagerView currentUserRole={role} />;
-      case 'payload':
-        return <PayloadManagerView currentUserRole={role} />;
-      case 'xray':
-        return <XrayManagerView currentUserRole={role} />;
-      case 'singbox':
-        return <SingboxManagerView currentUserRole={role} />;
+      // Les quatre gestionnaires du moteur (SSH, Payload, Xray, Sing-box)
+      // n'ont plus de route propre : rien ne naviguait vers 'ssh', 'payload',
+      // 'xray' ni 'singbox' — ni le menu, ni une tuile, ni une URL (le routage
+      // est un simple état React, jamais lu depuis l'adresse). Les écrans
+      // restent servis, à l'identique, par les onglets de « VPN Engine ».
       case 'vpn-engine':
         return <VpnEngineView currentUserRole={role} />;
       case 'analytics':
         return <MonitoringView currentUserRole={role} defaultTab="logs" />;
-      case 'monitoring':
-        return <MonitoringView currentUserRole={role} defaultTab="sessions" />;
       case 'owner-log':
         // Garde côté route React : « Journal propriétaire » réservé à l'OWNER.
         // La sécurité réelle est le filtre serveur (/api/audit-logs/owner).

@@ -1513,6 +1513,61 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(dashboardRoutes.includes('isReseller ? Promise.resolve(0) : prisma.vPSServer.count'));
   });
 
+  // ── Portes mortes du tableau de bord ────────────────────────────────────────
+  // Une entrée de menu qui ne mène à rien coûte plus cher qu'une absence : elle
+  // fait créer des objets inutilisables. Ces assertions empêchent le retour des
+  // portes retirées, SANS toucher au mécanisme serveur qui reste derrière.
+  it('ne rouvre pas la porte « Tokens SXB », morte côté client', () => {
+    const layout = source('../artifacts/sxb-dashboard/src/components/Layout.tsx');
+    const app = source('../artifacts/sxb-dashboard/src/App.tsx');
+    const tableauBord = source('../artifacts/sxb-dashboard/src/components/DashboardView.tsx');
+
+    // Preuve du caractère mort : le format produit par POST /api/tokens n'est
+    // lisible par aucun écran mobile, et la seule route qui l'accepte est
+    // réservée à un administrateur authentifié.
+    const jetons = source('../server/routes/tokens.ts');
+    assert.match(jetons, /return `SXB-\$\{part\(\)\}-\$\{part\(\)\}-\$\{part\(\)\}`/);
+    assert.match(jetons, /"\/validate",\s*\n\s*requireAuth,[\s\S]{0,160}requirePermission\("tokens\.create"\)/);
+    // L'activation mobile lit VpnClient.token (SXB-USER-…), jamais TokenSXB.
+    assert.match(source('../server/routes/mobile.ts'), /vpnClient\.findUnique\(\{\s*\n?\s*where: \{ token: normalized \}/);
+    assert.doesNotMatch(source('contexts/AuthContext.tsx'), /startsWith\('SXB-'\)/);
+
+    // La porte d'entrée est fermée : plus d'entrée de menu, plus de route,
+    // plus de raccourci.
+    assert.doesNotMatch(layout, /kind: 'leaf', id: 'tokens'/);
+    assert.doesNotMatch(layout, /\btokens: 'clients'/);
+    assert.doesNotMatch(app, /case 'tokens':/);
+    assert.doesNotMatch(app, /import TokensView/);
+    assert.doesNotMatch(tableauBord, /route: 'tokens'/);
+
+    // Le mécanisme, lui, reste intact : routes montées et table conservées.
+    assert.match(source('../server.ts'), /app\.use\("\/api\/tokens", tokensRouter\)/);
+    assert.match(source('../prisma/schema.prisma'), /model TokenSXB/);
+    // La table reste couverte par la réinitialisation propriétaire.
+    assert.match(source('../server/services/application-reset.ts'), /tx\.tokenSXB\.deleteMany\(\)/);
+  });
+
+  it('ne garde aucune route de tableau de bord que rien ne peut atteindre', () => {
+    const app = source('../artifacts/sxb-dashboard/src/App.tsx');
+    const moteur = source('../artifacts/sxb-dashboard/src/components/VpnEngineView.tsx');
+
+    // Le routage est un simple état React : il n'est jamais lu depuis l'URL.
+    // Une route que ni le menu, ni une tuile, ni un bouton ne demande est donc
+    // définitivement inatteignable.
+    assert.match(app, /const \[activeRoute, setActiveRoute\] = useState\('dashboard'\)/);
+    for (const mort of ['ssh', 'payload', 'xray', 'singbox', 'monitoring']) {
+      assert.doesNotMatch(app, new RegExp(`case '${mort}':`), `route inatteignable réintroduite : ${mort}`);
+    }
+    // Les quatre gestionnaires restent servis par les onglets de « VPN Engine ».
+    for (const vue of ['SSHManagerView', 'PayloadManagerView', 'XrayManagerView', 'SingboxManagerView']) {
+      assert.ok(moteur.includes(`import ${vue} from`), `${vue} n'est plus atteignable`);
+    }
+    assert.match(app, /case 'vpn-engine':/);
+    // Et la surveillance reste atteignable, onglets compris.
+    assert.match(app, /case 'analytics':/);
+    assert.match(source('../artifacts/sxb-dashboard/src/components/MonitoringView.tsx'), /id: "sessions"/);
+  });
+
   it('n’expose que le nom commercial des services au revendeur', () => {
     const view = source('../artifacts/sxb-dashboard/src/components/ResellerServicesView.tsx');
     assert.ok(view.includes("apiRequest<{ profiles: AssignedService[] }>('/vpn-profiles/assigned')"));

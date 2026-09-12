@@ -5,10 +5,10 @@ import { ResellerAccessBanner } from './ResellerAccessBanner';
 import { useResellerAccess } from '../contexts/ResellerAccessContext';
 import LanguageSelector from './LanguageSelector';
 import {
-  LayoutDashboard, Users, Server, Shield, Key, Smartphone,
-  Settings, LogOut, Terminal, Code2, Zap, Box,
+  LayoutDashboard, Users, Server, Shield, Smartphone,
+  Settings, LogOut,
   Menu, X, UserPlus, HeadphonesIcon, BadgePercent, Activity,
-  ChevronDown, Network, Radio, Cpu, BarChart3, Ticket,
+  ChevronDown, Radio, BarChart3,
   PackageOpen, GitBranch, ScrollText, BellRing, Download,
   HeartPulse, Gift, Wifi,
 } from 'lucide-react';
@@ -57,7 +57,6 @@ export default function Layout({
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
     clients: true,
-    vpnengine: false,
     monitoring: false,
     admin: false,
   });
@@ -73,14 +72,16 @@ export default function Layout({
     return () => { document.body.style.overflow = ''; };
   }, [mobileNavOpen]);
 
-  // Auto-open group that contains the active route
+  // Ouvre automatiquement le groupe qui contient la route active.
+  // La table ne recense que des routes réelles et des groupes qui existent :
+  // les entrées « vpnengine » visaient un groupe supprimé du menu, et
+  // « monitoring » une route que plus rien ne demandait.
   useEffect(() => {
     const groupMap: Record<string, string> = {
-      clients: 'clients', devices: 'clients', tokens: 'clients', vouchers: 'clients',
+      clients: 'clients', devices: 'clients', vouchers: 'clients',
       subscriptions: 'clients', 'free-trial': 'clients', 'connected-users': 'clients',
-      'vpn-engine': 'vpnengine', xray: 'vpnengine', singbox: 'vpnengine', payload: 'vpnengine',
-      'vpn-profiles': 'vpnengine', announcements: 'admin',
-      sessions: 'monitoring', analytics: 'monitoring', servers: 'monitoring', monitoring: 'monitoring',
+      announcements: 'admin',
+      sessions: 'monitoring', analytics: 'monitoring', servers: 'monitoring',
       accounts: 'admin', resellers: 'admin', rbac: 'admin', 'app-updates': 'admin', 'mobile-health': 'admin',
     };
     const group = groupMap[activeRoute];
@@ -120,7 +121,16 @@ export default function Layout({
         // Le revendeur doit suivre les appareils de SES clients : c'est là
         // qu'il constate une activation ou une consommation anormale.
         { kind: 'leaf', id: 'devices', label: t('sidebar.devices'), icon: Smartphone, roles: ALL_ROLES, permission: 'clients.view' },
-        { kind: 'leaf', id: 'tokens', label: t('sidebar.tokens'), icon: Key, roles: ALL_ROLES, permission: 'tokens.view' },
+        // « Tokens SXB » retiré du menu : la porte d'entrée égarait l'exploitant.
+        // Le format produit par POST /api/tokens (SXB-XXXX-XXXX-XXXX) n'est
+        // accepté par AUCUN écran mobile — l'application ne connaît que
+        // SXB-USER-… (activation, via VpnClient.token), SXB-DATA-…
+        // (/provision/activate) et VCH-… (/mobile/packages/activate). La seule
+        // route qui accepte ce format, POST /api/tokens/validate, exige
+        // requireAuth + tokens.create : un administrateur, jamais un client.
+        // Un jeton créé ici n'était donc remettable à personne.
+        // Les routes serveur, la table TokenSXB et les jetons existants sont
+        // CONSERVÉS : une intégration externe peut encore appeler l'API.
         // Essai gratuit : les demandes arrivent des appareils, pas des
         // revendeurs. C'est l'exploitation interne qui décide de l'accès.
         { kind: 'leaf', id: 'free-trial', label: t('core.nav.freeTrial'), icon: Gift, roles: STAFF, permission: 'clients.view' },

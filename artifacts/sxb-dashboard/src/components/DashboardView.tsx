@@ -580,10 +580,13 @@ export default function DashboardView({
           {(isReseller
             ? [
                 // Les raccourcis du revendeur pointent vers ses propres outils :
-                // aucun accès moteur ni serveur.
+                // aucun accès moteur ni serveur. Le raccourci « Tokens SXB » a
+                // été retiré avec la vue : il menait à une route inexistante,
+                // et le jeton qu'on y créait n'était utilisable par aucun
+                // écran de l'application mobile.
                 { label: t("operations.common.myClients"), route: 'clients', icon: Users, color: 'text-cyan-400' },
                 { label: t("operations.dashboard.dataPlans"), route: 'subscriptions', icon: Activity, color: 'text-emerald-400' },
-                { label: t("operations.dashboard.sxbTokens"), route: 'tokens', icon: Zap, color: 'text-violet-400' },
+                { label: t("operations.dashboard.devices"), route: 'devices', icon: HardDrive, color: 'text-violet-400' },
                 { label: t("operations.common.myServices"), route: 'reseller-services', icon: GitBranch, color: 'text-amber-400' },
               ]
             : [
