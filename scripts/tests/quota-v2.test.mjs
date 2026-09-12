@@ -101,6 +101,7 @@ __fixtures.vpnClient = { id: 'client1', quotaUsed: 0n };
 
   const r1 = await applyUsageDelta('client1', 'sub1', delta, sessionId, seq);
   assert.equal(r1.applied, true, 'Premier envoi de (sessionId, seq) accepté');
+  assert.equal(r1.subscriptionId, 'sub1', 'Le forfait crédité doit être nommé dans la réponse');
 
   const r2 = await applyUsageDelta('client1', 'sub1', delta, sessionId, seq);
   assert.equal(r2.applied, false, 'Rejeu de (sessionId, seq) doit être ignoré sans ré-incrément');
@@ -110,6 +111,28 @@ __fixtures.vpnClient = { id: 'client1', quotaUsed: 0n };
   assert.equal(r3.applied, true, 'Nouveau seq accepté');
 
   ok('Déduplication idempotente sur (sessionId, seq)');
+}
+
+// 2b. Idempotence DURABLE : la clé de rapport est écrite, pas seulement tenue
+// en mémoire. L'application persiste ses rapports non acquittés et les rejoue
+// parfois des heures plus tard, quand la mémoire du serveur a disparu.
+{
+  const ecritures = __fixtures.trafficUsageCreates;
+  assert.ok(ecritures.length >= 2, 'Chaque delta appliqué écrit une ligne de consommation');
+  assert.equal(ecritures[0].reportKey, 'client1:test-session-123:1',
+    'La clé d’idempotence doit être persistée avec la consommation');
+  assert.equal(ecritures[1].reportKey, 'client1:test-session-123:2');
+  ok('Clé d’idempotence persistée avec chaque rapport');
+}
+
+// 2c. Sans forfait précisé, la fonction choisit elle-même le forfait actif ET
+// le nomme : c'est ce nom que la route renvoie à l'application, qui affichait
+// auparavant le consommé d'un tout autre forfait.
+{
+  const resolu = await applyUsageDelta('client1', null, 1024n, 'test-session-resolu', 0);
+  assert.equal(resolu.applied, true);
+  assert.equal(resolu.subscriptionId, 'sub1', 'Le forfait effectivement débité doit être rendu');
+  ok('Le forfait crédité est toujours nommé, même sans identifiant fourni');
 }
 
 // 3. Dérivation locale deriveQuota

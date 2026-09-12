@@ -915,9 +915,71 @@ test("traffic counters and reseller consumption remain consistent after retryabl
   assert.equal(row("Subscription",id).quotaUsed,20n);
   assert.equal(db.state.TrafficUsage.length,1);
   assert.equal(db.state.TrafficUsage[0].upload,5n);
+  // La clé d'idempotence est ÉCRITE, pas seulement tenue en mémoire : la
+  // mémoire du serveur disparaît à son redémarrage, alors que l'application
+  // conserve et rejoue ses rapports non acquittés, parfois des heures plus tard.
+  assert.equal(db.state.TrafficUsage[0].reportKey,`c1:${session}:1`);
+  // Et cette clé est réellement unique en base : un second rapport identique
+  // est refusé par la base elle-même, mémoire vidée ou non.
+  await assert.rejects(
+    db.trafficUsage.create({ data: { clientId:"c1", reportKey:`c1:${session}:1` } }),
+    error => error.code === "P2002");
+  assert.equal(row("Subscription",id).quotaUsed,20n);
   const access = await api("r1","GET","/dashboard/stats");
   ok(access);
   assert.equal(access.body.resellerQuota.consumedBytes,"20");
+});
+
+test("le rapport de trafic nomme le forfait crédité, son consommé, et coupe l'accès à l'épuisement", async () => {
+  const premier = await createSub("r1",1);
+  ok(premier,201);
+  const second = await createSub("r1",2);
+  ok(second,201);
+  const forfaitA = premier.body.subscription.id;
+  const forfaitB = second.body.subscription.id;
+  const session = randomUUID();
+
+  // L'appareil consomme sur le forfait B. Le serveur renvoyait auparavant le
+  // seul restant, calculé sur « le premier abonnement actif » : l'application
+  // affichait donc le consommé d'un AUTRE forfait, ce qui faisait reculer le
+  // chiffre de 26,2 Mo à 4,2 Mo d'une lecture à l'autre.
+  const rapport = await api("u1","POST","/mobile/vpn/traffic",
+    { bytesUp:1_000_000, bytesDown:2_000_000, sessionId:session, seq:0, subscriptionId:forfaitB });
+  ok(rapport);
+  assert.equal(rapport.body.subscriptionId,forfaitB);
+  assert.equal(rapport.body.quotaTotalBytes,Number(2n * GO));
+  assert.equal(rapport.body.quotaUsedBytes,3_000_000);
+  assert.equal(rapport.body.quotaRemainingBytes,Number(2n * GO) - 3_000_000);
+  assert.equal(row("Subscription",forfaitA).quotaUsed,0n);
+  assert.equal(row("Subscription",forfaitB).quotaUsed,3_000_000n);
+
+  // Rejeu à l'identique après une réponse perdue : rien n'est débité deux fois
+  // et le consommé annoncé ne bouge pas d'un octet.
+  const rejeu = await api("u1","POST","/mobile/vpn/traffic",
+    { bytesUp:1_000_000, bytesDown:2_000_000, sessionId:session, seq:0, subscriptionId:forfaitB });
+  ok(rejeu);
+  assert.equal(rejeu.body.duplicate,true);
+  assert.equal(rejeu.body.quotaUsedBytes,3_000_000);
+  assert.equal(row("Subscription",forfaitB).quotaUsed,3_000_000n);
+
+  // Épuisement du forfait A : le serveur le dit à l'application…
+  row("Subscription",forfaitA).quotaUsed = 1n * GO - 100n;
+  const fin = await api("u1","POST","/mobile/vpn/traffic",
+    { bytesUp:0, bytesDown:100, sessionId:session, seq:1, subscriptionId:forfaitA });
+  ok(fin);
+  assert.equal(fin.body.subscriptionId,forfaitA);
+  assert.equal(fin.body.quotaExhausted,true);
+  assert.equal(fin.body.quotaUsedBytes,Number(1n * GO));
+  assert.equal(fin.body.state,"exhausted");
+
+  // … et refuse ensuite de le servir : l'épuisement coupe réellement l'accès,
+  // il n'est pas qu'un libellé à l'écran.
+  const refus = await api("u1","POST","/provision/sync",
+    { subscriptionId:forfaitA, downloadBytes:0, uploadBytes:0 });
+  ok(refus,403);
+  assert.equal(refus.body.code,"CONFIG_EXHAUSTED");
+  // Le forfait B, lui, reste servi : un épuisement n'emporte pas le voisin.
+  ok(await api("u1","POST","/provision/sync",{ subscriptionId:forfaitB, downloadBytes:0, uploadBytes:0 }));
 });
 
 test("legacy global vouchers keep working without granting access to newly orphaned vouchers", async () => {

@@ -40,6 +40,13 @@ export interface VpnTrafficStats {
   downloadBytes: number;
   uploadSpeed: number;
   downloadSpeed: number;
+  /**
+   * Compteur kilométrique du service : il ne repart jamais de zéro et survit à
+   * la reconnexion comme à la mort de l'application. Les deux premiers champs
+   * ne comptent que la session en cours ; seuls ceux-ci facturent le quota.
+   */
+  lifetimeUploadBytes?: number;
+  lifetimeDownloadBytes?: number;
 }
 
 export interface AppTrafficStat {

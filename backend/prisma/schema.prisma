@@ -387,6 +387,14 @@ model TrafficUsage {
   download    BigInt   @default(0)
   upload      BigInt   @default(0)
   timestamp   DateTime @default(now())
+  // Cle d'idempotence du rapport de consommation : "<client>:<session>:<seq>".
+  // L'application PERSISTE desormais ses rapports non acquittes et les rejoue,
+  // au besoin des heures plus tard : la deduplication en memoire du serveur ne
+  // suffit donc plus, elle disparait au moindre redemarrage. Un rejeu viole cet
+  // index unique, la transaction est annulee, et le quota n'est jamais debite
+  // deux fois. NULLABLE : les ecritures historiques et les chemins sans session
+  // restent acceptes tels quels.
+  reportKey   String?  @unique
 
   @@map("traffic_usage")
 }

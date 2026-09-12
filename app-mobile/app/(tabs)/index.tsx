@@ -129,13 +129,17 @@ export default function HomeScreen() {
     connect, disconnect, trafficStats: traffic,
     refreshVpnConfig, syncFromConnection,
     savedConfigs, activeConfigId, switchConfig, isSwitchingConfig, quotaData, revokedStatus, perAppTraffic,
-    deleteConfig,
+    deleteConfig, quotaSession,
   } = useVpnContext();
   const { t } = useTranslation();
   const activeQuotaSnapshot = quotaData && (!activeConfigId || quotaData.configId === activeConfigId)
     ? quotaData
     : (activeConnection as any)?.quota || null;
-  const derivedQuota = deriveQuota(activeQuotaSnapshot || (accountState as any), traffic as any, isConnected);
+  // `quotaSession` porte la ligne de base avancée à chaque rapport accepté : le
+  // consommé affiché est donc « ce que le serveur a compté » PLUS « ce qui a été
+  // mesuré depuis », jamais deux fois la même session. `traffic` était passé ici
+  // sans ses lignes de base, ce qui annulait purement et simplement le delta.
+  const derivedQuota = deriveQuota(activeQuotaSnapshot || (accountState as any), quotaSession, isConnected);
   const connectedSeconds = useConnectionDuration(isConnected, traffic.connectedSeconds);
 
   const [configPickerVisible, setConfigPickerVisible] = useState(false);

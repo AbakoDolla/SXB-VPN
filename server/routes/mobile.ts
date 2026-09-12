@@ -119,10 +119,36 @@ async function findClientByUserId(userId: string, clientId?: string | null, devi
 const processedReports = new Set<string>();
 const MAX_PROCESSED_REPORTS = 10000;
 
+// Le garde-fou mémoire ci-dessus disparaît au redémarrage du serveur. Depuis
+// que l'application PERSISTE ses rapports non acquittés et les rejoue — au
+// besoin plusieurs heures plus tard, après avoir été tuée par le système —
+// cette mémoire ne suffit plus : un rejeu tardif serait recompté. La clé de
+// rapport est donc aussi écrite dans `traffic_usage.reportKey`, colonne UNIQUE.
+// Deux fois la même clé, c'est une violation d'unicité, donc une transaction
+// annulée : le quota n'est jamais incrémenté deux fois.
+let reportKeyColumnSupported: boolean | null = null;
+
+function supportsReportKey(): boolean {
+  if (reportKeyColumnSupported !== null) return reportKeyColumnSupported;
+  // Lecture du modèle interne du client Prisma : aucune requête, donc aucune
+  // sensibilité à une panne passagère de la base. Un client pas encore
+  // régénéré ne décrit pas `reportKey` et l'on retombe alors sur la
+  // déduplication mémoire plutôt que de casser tout le comptage.
+  const model = (prisma as any)?._runtimeDataModel?.models?.TrafficUsage;
+  reportKeyColumnSupported = !model || !Array.isArray(model.fields)
+    ? true
+    : model.fields.some((field: any) => field?.name === "reportKey");
+  return reportKeyColumnSupported;
+}
+
+function isUniqueViolation(error: any): boolean {
+  return error?.code === "P2002";
+}
+
 /**
  * A1 — Fonction unique d'application du delta de consommation data.
  * Une seule transaction Prisma, une seule autorité de stockage (`subscription.quotaUsed` & `vpnClient.quotaUsed`).
- * Idempotence par déduplication sur (sessionId, seq).
+ * Idempotence par déduplication sur (sessionId, seq), en mémoire ET en base.
  * Garde anti-abus : rejet si deltaBytes < 0 ou deltaBytes > 5 Go par appel.
  */
 export async function applyUsageDelta(
@@ -156,6 +182,7 @@ export async function applyUsageDelta(
 
   try {
   let resolvedSubscriptionId = subscriptionId;
+  const durableKey = reportKey && supportsReportKey() ? reportKey : null;
   if (prisma) {
     await (prisma as any).$transaction(async (tx: any) => {
       let subId = resolvedSubscriptionId;
@@ -188,6 +215,9 @@ export async function applyUsageDelta(
           where: { id: clientId },
           data: { quotaUsed: { increment: deltaBytes } },
         });
+        // Cette écriture porte la clé d'idempotence : si le même rapport a déjà
+        // été appliqué, l'index unique la refuse et TOUTE la transaction —
+        // incréments compris — est annulée.
         await tx.trafficUsage.create({
           data: {
             clientId,
@@ -196,6 +226,7 @@ export async function applyUsageDelta(
             accountType: 'subscription',
             download: deltaBytes - uploadBytes,
             upload: uploadBytes,
+            ...(durableKey ? { reportKey: durableKey } : {}),
           },
         });
         if (resolvedSubscriptionId && deviceId) {
@@ -235,6 +266,9 @@ export async function applyUsageDelta(
   accessStateHub.invalidate({ clientId });
   return { applied: true, subscriptionId: resolvedSubscriptionId };
   } catch (error) {
+    // Rejeu déjà comptabilisé en base : rien n'a été incrémenté, la réponse est
+    // donc la même que pour un doublon détecté en mémoire.
+    if (isUniqueViolation(error)) return { applied: false, reason: "duplicate_report" };
     if (reportKey) processedReports.delete(reportKey);
     throw error;
   }
@@ -1186,8 +1220,17 @@ router.get('/history', async (req: AuthenticatedRequest, res: Response) => {
 });
 
 // POST /api/mobile/vpn/traffic — synchronisation consommation data réelle
-// Appelé toutes les 60s par VpnContext quand VPN actif + à la déconnexion.
+// Appelé périodiquement par le livre de comptes de VpnContext tant que le
+// tunnel est monté (premier plan ET arrière-plan), puis à la déconnexion.
 // Reçoit le DELTA et applique via applyUsageDelta (autorité unique).
+//
+// La réponse porte le consommé et le total du forfait EFFECTIVEMENT crédité.
+// Auparavant elle ne renvoyait que le restant, et l'application reconstituait
+// le consommé avec un total local parfois périmé ; pire, quand aucun forfait
+// n'était précisé, le restant était lu sur « le premier abonnement actif » et
+// non sur celui qui venait d'être débité. Un appareil portant plusieurs
+// forfaits voyait donc son consommé sauter d'un forfait à l'autre — 26,2 Mo
+// puis 4,2 Mo, en reculant. Le serveur nomme désormais le forfait crédité.
 router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => {
   try {
     const schema = z.object({
@@ -1205,6 +1248,8 @@ router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => 
     const client: any = await findClientByUserId(req.user!.userId, req.user!.clientId, deviceIdFromRequest(req));
     if (!client) return res.status(404).json({ error: "errors.mobile.no_account" });
 
+    let creditedSubscriptionId: string | null = subscriptionId || null;
+    let duplicate = false;
     if (totalBytes > 0n) {
       const applied = await applyUsageDelta(client.id, subscriptionId || null, totalBytes, sessionId, seq, BigInt(bytesUp), deviceId || null);
       if (!applied.applied && applied.reason === "subscription_not_owned") {
@@ -1214,18 +1259,30 @@ router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => 
           message: "Ce forfait n'appartient pas à cet appareil.",
         });
       }
+      duplicate = applied.reason === "duplicate_report";
+      // Le forfait crédité est celui que la transaction a réellement débité,
+      // jamais « le premier actif » trouvé au hasard de l'ordre du tableau.
+      if (applied.applied && applied.subscriptionId) creditedSubscriptionId = applied.subscriptionId;
     }
 
     const updatedClient: any = await findClientByUserId(req.user!.userId, req.user!.clientId, deviceIdFromRequest(req));
-    const selectedSub = subscriptionId
-      ? (updatedClient?.subscriptions || []).find((s: any) => s.id === subscriptionId)
-      : (updatedClient?.subscriptions || []).find((s: any) => s.status === "active");
+    const subscriptions = (updatedClient || client)?.subscriptions || [];
+    const selectedSub = creditedSubscriptionId
+      ? subscriptions.find((s: any) => s.id === creditedSubscriptionId) || null
+      : selectMobileSubscription(updatedClient || client);
     const state = computeAccountState(updatedClient || client, selectedSub);
     const quotaExhausted = state.quotaTotalBytes > 0 && state.quotaRemainingBytes <= 0;
     return res.json({
       ok: true,
+      duplicate,
+      // Identité du forfait débité : l'application refuse d'afficher un
+      // consommé qui ne serait pas celui du forfait en cours d'utilisation.
+      subscriptionId: selectedSub?.id ?? null,
+      quotaUsedBytes: state.quotaUsedBytes,
+      quotaTotalBytes: state.quotaTotalBytes,
       quotaRemainingGb: state.quotaRemainingGb,
       quotaRemainingBytes: state.quotaRemainingBytes,
+      expiresAt: state.expireAt,
       quotaExhausted,
       state: state.state,
     });

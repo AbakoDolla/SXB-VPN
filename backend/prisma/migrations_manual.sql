@@ -457,3 +457,21 @@ CREATE INDEX IF NOT EXISTS "free_trial_requests_deviceFingerprint_status_idx"
   ON "free_trial_requests" ("deviceFingerprint", "status");
 CREATE INDEX IF NOT EXISTS "free_trial_requests_country_status_idx"
   ON "free_trial_requests" ("country", "status");
+
+-- ── Comptage de consommation : idempotence durable des rapports ──────────────
+-- STRICTEMENT ADDITIF : une colonne NULLABLE sur une table existante, plus son
+-- index unique. Aucune ligne existante n'est reecrite, aucune colonne existante
+-- n'est modifiee. Une base qui n'applique pas ce bloc continue de fonctionner :
+-- le serveur detecte l'absence de la colonne et retombe sur sa deduplication
+-- en memoire.
+--
+-- POURQUOI : l'application mobile persiste desormais les rapports de trafic
+-- qu'elle n'a pas pu faire acquitter (reseau coupe, application tuee par le
+-- systeme) et les rejoue au demarrage suivant, parfois des heures plus tard.
+-- La deduplication en memoire du serveur ne survit pas a un redemarrage : sans
+-- cet index, un rejeu tardif debiterait une deuxieme fois le quota du client.
+-- "reportKey" vaut "<clientId>:<sessionId>:<seq>" : deux fois la meme valeur,
+-- c'est une violation d'unicite, donc une transaction annulee et aucun debit.
+ALTER TABLE "traffic_usage" ADD COLUMN IF NOT EXISTS "reportKey" TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS "traffic_usage_reportKey_key"
+  ON "traffic_usage" ("reportKey");

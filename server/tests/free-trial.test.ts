@@ -643,10 +643,17 @@ describe("non-régression — le modèle de données reste ADDITIF", () => {
 
   it("le SQL manuel est purement additif (aucun DROP ni NOT NULL rétroactif)", () => {
     const sql = readFileSync(new URL("../../prisma/migrations_manual.sql", import.meta.url), "utf8");
-    const bloc = sql.slice(sql.indexOf("free_trial_tokens"));
+    // L'assertion porte sur les sections de l'ESSAI GRATUIT, pas sur tout ce
+    // qui a été ajouté au fichier depuis. Le découpage par en-tête garde donc
+    // exactement la même exigence — l'essai ne touche à aucune table existante
+    // — sans se déclencher sur la migration additive d'un autre sujet.
+    const sections = sql.slice(sql.indexOf("free_trial_tokens")).split(/\n(?=-- ──)/);
+    const bloc = sections.filter(section => /free_trial|essai/i.test(section)).join("\n");
     assert.ok(bloc.includes("CREATE TABLE IF NOT EXISTS"), "création idempotente attendue");
     assert.equal(/DROP\s+(TABLE|COLUMN)/i.test(bloc), false, "aucune suppression tolérée");
     assert.equal(/ALTER\s+TABLE\s+"(?!free_trial)/i.test(bloc), false, "aucune table existante modifiée");
+    // Et le fichier entier, toutes sections confondues, reste sans suppression.
+    assert.equal(/DROP\s+(TABLE|COLUMN)/i.test(sql), false, "aucune suppression tolérée nulle part");
   });
 
   it("ajoute pays et empreinte en colonnes NULLABLES, avec leurs index", () => {

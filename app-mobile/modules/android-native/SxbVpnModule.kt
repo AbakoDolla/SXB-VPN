@@ -327,9 +327,16 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
     fun getTrafficStats(promise: Promise) {
         try {
             val service = SxbVpnService.instance
+            // Sans service en vie, les compteurs de session valent bien zéro,
+            // mais le compteur kilométrique, lui, se lit sur disque : c'est ce
+            // qui permet de rejouer au démarrage suivant la consommation
+            // mesurée pendant que l'application était morte.
+            val persisted = TrafficStatsManager.persistedLifetime(reactApplicationContext)
             val stats: Map<String, Long> = service?.getTrafficStats()
                 ?: mapOf("uploadBytes" to 0L, "downloadBytes" to 0L,
-                         "uploadSpeed" to 0L, "downloadSpeed" to 0L)
+                         "uploadSpeed" to 0L, "downloadSpeed" to 0L,
+                         "lifetimeUploadBytes" to persisted.first,
+                         "lifetimeDownloadBytes" to persisted.second)
 
             val map = Arguments.createMap().apply {
                 putDouble("uploadBytes",   stats["uploadBytes"]!!.toDouble())
@@ -337,6 +344,8 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                 putDouble("uploadSpeed",   stats["uploadSpeed"]!!.toDouble())
                 putDouble("downloadSpeed", stats["downloadSpeed"]!!.toDouble())
                 putBoolean("tunAttached", stats["tunAttached"] == 1L)
+                putDouble("lifetimeUploadBytes",   (stats["lifetimeUploadBytes"] ?: 0L).toDouble())
+                putDouble("lifetimeDownloadBytes", (stats["lifetimeDownloadBytes"] ?: 0L).toDouble())
                 // Durée détenue par le service : elle continue de courir quand
                 // l'application est fermée, contrairement à un compteur JS.
                 putDouble("connectedSeconds", (stats["connectedSeconds"] ?: 0L).toDouble())

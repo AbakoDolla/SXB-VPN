@@ -1028,5 +1028,44 @@ fun main() {
         check(SxbReconnectPolicy.Decision.GIVE_UP !in sim.decisions)
     }
 
+    checkCase("a counter that restarts from zero loses no measured byte") {
+        // Marche normale : le delta est la différence.
+        check(SxbUsageOdometer.step(0L, 1_000L) == 1_000L)
+        check(SxbUsageOdometer.step(1_000L, 1_500L) == 500L)
+        check(SxbUsageOdometer.step(1_000L, 1_000L) == 0L)
+
+        // LE DÉFAUT : le compteur natif repart de zéro à chaque reconnexion.
+        // 20 Mo avaient été remontés, la nouvelle session atteint 5 Mo. L'ancien
+        // calcul rendait max(0, 5 - 20) = 0, et rendait zéro tant que la session
+        // n'avait pas repassé 20 Mo : tout le trafic intermédiaire disparaissait.
+        val mo = 1024L * 1024L
+        check(SxbUsageOdometer.step(20 * mo, 5 * mo) == 5 * mo)
+        check(SxbUsageOdometer.step(78 * mo, 1L) == 1L)
+        // Une remise à zéro complète ne facture rien tant que rien n'est passé.
+        check(SxbUsageOdometer.step(78 * mo, 0L) == 0L)
+        // Valeurs aberrantes : jamais de delta négatif, jamais d'exception.
+        check(SxbUsageOdometer.step(-5L, 100L) == 100L)
+        check(SxbUsageOdometer.step(100L, -5L) == 0L)
+
+        // Le compteur kilométrique ne recule jamais, remise à zéro comprise.
+        var total = 0L
+        var previous = 0L
+        for (reading in listOf(10L, 40L, 78L, 5L, 9L, 0L, 3L)) {
+            total = SxbUsageOdometer.total(total, previous, reading)
+            previous = reading
+        }
+        // 78 mesurés avant la coupure, 9 avant la suivante, 3 ensuite.
+        check(total == 90L) { "Le cumul durable a perdu des octets : $total" }
+        check(SxbUsageOdometer.total(-1L, 0L, 7L) == 7L)
+        check(SxbUsageOdometer.total(Long.MAX_VALUE, 0L, 7L) == Long.MAX_VALUE)
+
+        // Écriture durable : ni à chaque poll, ni jamais.
+        check(!SxbUsageOdometer.shouldPersist(0L, 60_000L, 0L))
+        check(!SxbUsageOdometer.shouldPersist(0L, 5_000L, 1024L))
+        check(SxbUsageOdometer.shouldPersist(0L, 10_000L, 1024L))
+        check(SxbUsageOdometer.shouldPersist(0L, 1_000L, SxbUsageOdometer.PERSIST_THRESHOLD_BYTES))
+        // Horloge qui recule : on écrit au lieu de figer la sauvegarde à jamais.
+        check(SxbUsageOdometer.shouldPersist(50_000L, 1_000L, 1024L))
+    }
     println("PASS $cases stability policy cases")
 }

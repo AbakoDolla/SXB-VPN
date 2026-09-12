@@ -4501,6 +4501,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
             "uploadSpeed"   to stats.uploadSpeed,
             "downloadSpeed" to stats.downloadSpeed,
             "tunAttached"   to if (trafficManager.hasTunCounters()) 1L else 0L,
+            // Compteur kilométrique du service : il ne recule jamais et survit à
+            // la reconnexion comme à la mort de l'application. C'est LUI que le
+            // livre de comptes JavaScript compare à sa dernière lecture pour
+            // décider des octets à facturer : aucun octet mesuré ici ne peut
+            // être perdu, même si personne n'écoutait au moment où il a passé.
+            "lifetimeUploadBytes"   to stats.lifetimeUploadBytes,
+            "lifetimeDownloadBytes" to stats.lifetimeDownloadBytes,
             // Durée détenue par le service : elle survit à la fermeture de
             // l'application, contrairement au compteur JavaScript d'origine.
             "connectedSeconds" to getConnectedSeconds(),

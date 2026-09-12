@@ -25,7 +25,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient from '@/services/apiClient';
 import {
   saveVpnConfig, saveQuotaData, loadQuotaData, clearQuotaData,
-  isQuotaExhausted, isConfigExpired, consumeQuotaLocally,
+  isQuotaExhausted, isConfigExpired,
 } from '@/services/offlineStorage';
 import type { QuotaData } from '@/services/offlineStorage';
 import { ProvisioningError, provisionAndStore } from '@/services/provisionClient';
@@ -46,7 +46,11 @@ import {
   sanitizeEngineConfig,
   detectProtocolFromFields,
 } from '@/services/configValidator';
-import { deriveQuota, formatBytes, type DerivedQuota } from '@/services/quotaState';
+import { deriveQuota, formatBytes, type DerivedQuota, type SessionCounters } from '@/services/quotaState';
+import {
+  accumulate as accumulateUsage, anchorLedger, isFreshLedger, loadLedger, nextReport, pendingBytes,
+  saveLedger, settle as settleUsage, type UsageLedger,
+} from '@/services/usageLedger';
 import { useAuthContext } from './AuthContext';
 import type { VpnConnection } from '@/types/api';
 import {
@@ -102,6 +106,14 @@ export interface TrafficStats {
   downloadSpeed:  number;   // bytes/sec
   tunAttached:   boolean;   // true uniquement si les compteurs TUN noyau sont disponibles
   /**
+   * Compteur kilométrique du service natif : il ne repart JAMAIS de zéro et
+   * survit à la reconnexion comme à la mort de l'application. C'est la seule
+   * source de la facturation du quota ; `uploadBytes`/`downloadBytes`, eux,
+   * ne comptent que la session en cours et servent l'affichage temps réel.
+   */
+  lifetimeUploadBytes?: number;
+  lifetimeDownloadBytes?: number;
+  /**
    * Durée de la session détenue par le service natif. Elle survit à la
    * fermeture de l'application : tant que le tunnel tourne, le décompte
    * continue. Un compteur JavaScript repartait de zéro à chaque relance.
@@ -150,6 +162,13 @@ interface VpnContextType {
   // Quota
   quotaData:          QuotaData | null;
   derivedQuota:       DerivedQuota;
+  /**
+   * Compteurs de session à opposer au consommé serveur. La ligne de base est
+   * avancée à CHAQUE rapport accepté : le delta vivant ne représente donc que
+   * les octets pas encore comptabilisés par le serveur, jamais toute la
+   * session. Sans cela, l'écran additionnait deux fois le même trafic.
+   */
+  quotaSession:       SessionCounters;
   // Revocation
   revokedStatus:      'none' | 'revoked' | 'suspended' | 'expired' | 'disabled' | 'exhausted';
   perAppTraffic:      AppTrafficStat[];
@@ -172,6 +191,16 @@ interface VpnContextType {
 const DEFAULT_STATS: TrafficStats = { uploadBytes: 0, downloadBytes: 0, uploadSpeed: 0, downloadSpeed: 0, tunAttached: false, connectedSeconds: 0 };
 const DEFAULT_DERIVED_QUOTA = deriveQuota(null, null, false);
 
+/**
+ * Cadence de remontée de la consommation, tunnel monté.
+ *
+ * 20 s = trois remontées par minute : assez court pour que le tableau de bord
+ * suive la consommation réelle et pour qu'un quota épuisé coupe l'accès en
+ * quelques secondes, assez long pour rester négligeable devant le service de
+ * premier plan et son thread de statistiques qui tournent déjà en permanence.
+ */
+const USAGE_REPORT_INTERVAL_MS = 20_000;
+
 const VpnContext = createContext<VpnContextType>({
   isConnected: false, isConnecting: false, vpnState: 'disconnected',
   selectedProtocol: null, connectedProtocol: null, availableProtocols: [],
@@ -181,6 +210,7 @@ const VpnContext = createContext<VpnContextType>({
   savedConfigs: [], activeConfigId: null, switchConfig: async () => {}, isSwitchingConfig: false,
   quotaData: null,
   derivedQuota: DEFAULT_DERIVED_QUOTA,
+  quotaSession: { sessionUp: 0, sessionDown: 0, sessionBaselineUp: 0, sessionBaselineDown: 0 },
   revokedStatus: 'none',
   perAppTraffic: [],
   logs: [], traffic: DEFAULT_STATS,
@@ -376,20 +406,19 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     };
   }, [isAuthenticated, vpnState]);
 
-  // ── B3 — RAPPORT DELTA + SESSION ID ──────────────────────────────────────────
-  const lastReportUpRef    = useRef(0);
-  const lastReportDownRef  = useRef(0);
+  // ── LIVRE DE COMPTES DE LA CONSOMMATION ──────────────────────────────────────
+  //
+  // Le calcul du delta ne vit plus en mémoire. Il est tenu par `usageLedger`,
+  // persisté dans AsyncStorage, et il s'appuie sur le compteur KILOMÉTRIQUE du
+  // service natif — celui qui ne repart jamais de zéro. Une reconnexion, un
+  // redémarrage du moteur ou la mort de l'application ne peuvent donc plus
+  // effacer du trafic déjà mesuré : au pire, il est remonté plus tard.
+  const ledgerRef          = useRef<UsageLedger | null>(null);
+  const ledgerBusyRef      = useRef(false);
   const sessionBaselineRef = useRef<{ up: number; down: number }>({ up: 0, down: 0 });
   const sessionIdRef       = useRef<string | null>(null);
-  const seqRef             = useRef<number>(0);
-
-  // Alias marqueur d'état pour vérification `lastReported`
-  const lastReported = {
-    up: lastReportUpRef.current,
-    down: lastReportDownRef.current,
-    sessionId: sessionIdRef.current,
-    seq: seqRef.current,
-  };
+  /** Consommé serveur déjà affiché, par forfait : il ne doit jamais reculer. */
+  const shownUsageRef      = useRef<{ subscriptionId: string | null; total: number; used: number } | null>(null);
 
   const connectRef = useRef<(() => Promise<void>) | null>(null);
   const pendingAutoConnectRef = useRef<string | null>(null);
@@ -406,17 +435,16 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const watchdogRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastStepRef  = useRef<string>('INIT');
 
-  // Sélecteur unique deriveQuota
-  const currentDerivedQuota = deriveQuota(
-    quotaData || accountState,
-    {
-      sessionUp: trafficStats.uploadBytes,
-      sessionDown: trafficStats.downloadBytes,
-      sessionBaselineUp: sessionBaselineRef.current.up,
-      sessionBaselineDown: sessionBaselineRef.current.down,
-    },
-    isConnected
-  );
+  // Sélecteur unique deriveQuota. La ligne de base avance à chaque rapport
+  // accepté : le delta vivant ne couvre que les octets pas encore comptés par
+  // le serveur, il ne peut donc plus s'additionner au consommé déjà facturé.
+  const quotaSession: SessionCounters = {
+    sessionUp: trafficStats.uploadBytes,
+    sessionDown: trafficStats.downloadBytes,
+    sessionBaselineUp: sessionBaselineRef.current.up,
+    sessionBaselineDown: sessionBaselineRef.current.down,
+  };
+  const currentDerivedQuota = deriveQuota(quotaData || accountState, quotaSession, isConnected);
 
   // ── StepLogs helpers ────────────────────────────────────────────────────────
   const resetStepLogs = useCallback(() => {
@@ -576,9 +604,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         legacyDebugLog('VPN_CONNECTED');
         sessionStartRef.current = Date.now();
         
-        // Initialisation de la session de rapport delta
+        // Nouvelle session de rapport : les entrées déjà au livre gardent la
+        // leur, seules les futures porteront cet identifiant.
         sessionIdRef.current = 'sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
-        seqRef.current = 0;
 
         // FIX — Capturer la baseline immédiatement pour que les compteurs UI 
         // et le premier rapport delta soient précis dès la première seconde.
@@ -586,8 +614,6 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           SxbVpnNative.getTrafficStats().then((stats: any) => {
             const up = stats?.uploadBytes || 0;
             const down = stats?.downloadBytes || 0;
-            lastReportUpRef.current = up;
-            lastReportDownRef.current = down;
             sessionBaselineRef.current = { up, down };
             setTrafficStats({
               uploadBytes: up,
@@ -612,13 +638,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         legacyDebugLog('VPN_FAILED status=disconnected');
         addLog('🔴 VPN déconnecté');
         stopTrafficPolling();
-        if (IS_ANDROID && SxbVpnNative?.getTrafficStats) {
-          SxbVpnNative.getTrafficStats().then(async (stats: any) => {
-            const up = stats?.uploadBytes || 0;
-            const down = stats?.downloadBytes || 0;
-            await reportUsageToBackend(up, down);
-          }).catch(() => {});
-        }
+        // Une déconnexion subie — perte de réseau, arrêt du moteur — remonte
+        // immédiatement ce que le compteur kilométrique a mesuré.
+        void flushUsageRef.current({ final: true });
       } else if (s === 'error') {
         stopWatchdog();
         setVpnState('error');
@@ -782,106 +804,217 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     }
   }, [stopTrafficPolling, stopWatchdog, setVpnState]);
 
+  const stopForAccessRef = useRef<(() => Promise<void>) | null>(null);
+  useEffect(() => { stopForAccessRef.current = stopForAccess; });
+
   useEffect(() => {
     if (isConnected) startTrafficPolling();
     else stopTrafficPolling();
     return stopTrafficPolling;
   }, [isConnected, startTrafficPolling, stopTrafficPolling]);
 
-  // ── B3 — RAPPORT DELTA CÔTÉ APP ─────────────────────────────────────────────
-  const reportUsageToBackend = useCallback(async (up: number, down: number) => {
-    if (!isAuthenticated) return undefined;
-    const stamp = accessRequestStamp();
-    const reportingId = runningProfileRef.current?.subscriptionId || runningProfileRef.current?.configId || activeConfigIdRef.current;
-    const deltaUp   = Math.max(0, up - lastReportUpRef.current);
-    const deltaDown = Math.max(0, down - lastReportDownRef.current);
-    if (deltaUp <= 0 && deltaDown <= 0) return undefined;
+  // ── REMONTÉE DE LA CONSOMMATION ─────────────────────────────────────────────
+  //
+  // `flushUsage` est le SEUL chemin par lequel de la consommation part vers le
+  // serveur. Il fait toujours la même chose, dans cet ordre :
+  //   1. lire le compteur kilométrique du natif (jamais remis à zéro) ;
+  //   2. inscrire au livre les octets neufs — une lecture INFÉRIEURE à la
+  //      précédente signifie une remise à zéro, donc la valeur entière est du
+  //      trafic neuf, jamais un delta nul ;
+  //   3. ÉCRIRE le livre sur disque AVANT tout appel réseau ;
+  //   4. envoyer les entrées en attente, la plus ancienne d'abord ;
+  //   5. n'effacer une entrée qu'une fois le serveur formel — accepté, ou
+  //      reconnu comme déjà compté.
+  //
+  // Une entrée part avec les mêmes `sessionId`/`seq` et les mêmes octets à
+  // chaque tentative : un rejeu ne peut donc jamais être facturé deux fois.
+  const applyServerQuota = useCallback(async (data: any) => {
+    if (!data || data.quotaUsedBytes === undefined || data.quotaTotalBytes === undefined) return;
+    const subscriptionId: string | null = typeof data.subscriptionId === 'string' ? data.subscriptionId : null;
+    const totalBytes = Math.max(0, Number(data.quotaTotalBytes) || 0);
+    let usedBytes = Math.max(0, Number(data.quotaUsedBytes) || 0);
 
+    // Le consommé ne recule JAMAIS pour un même forfait de même volume. Une
+    // valeur plus basse venue d'un autre forfait — c'est le défaut qui faisait
+    // retomber l'écran de 26,2 Mo à 4,2 Mo — est ignorée plutôt qu'affichée.
+    const shown = shownUsageRef.current;
+    if (shown && shown.subscriptionId === subscriptionId && shown.total === totalBytes && usedBytes < shown.used) {
+      usedBytes = shown.used;
+    }
+    shownUsageRef.current = { subscriptionId, total: totalBytes, used: usedBytes };
+
+    const currentQuota = await loadQuotaData(activeConfigIdRef.current || undefined).catch(() => null);
+    const quotaConfigId = activeConfigIdRef.current || currentQuota?.configId || (activeConnection as any)?.id || 'vpn_config';
+    if (totalBytes <= 0 && !currentQuota) return;
+    const synced = await saveQuotaData({
+      configId: quotaConfigId,
+      totalQuota: totalBytes,
+      usedQuota: usedBytes,
+      expiryDate: data.expiresAt ?? currentQuota?.expiryDate ?? null,
+    }).catch(() => null);
+    if (synced) setQuotaData(synced);
+    else setQuotaData(prev => prev ? { ...prev, usedQuota: usedBytes, remainingQuota: Math.max(0, totalBytes - usedBytes) } : prev);
+  }, [activeConnection]);
+
+  const flushUsage = useCallback(async (options?: { final?: boolean }) => {
+    if (!isAuthenticated) return;
+    if (ledgerBusyRef.current) return;
+    ledgerBusyRef.current = true;
     try {
-      if (!sessionIdRef.current) {
-        sessionIdRef.current = 'sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
-        seqRef.current = 0;
-      }
-      const currentSeq = seqRef.current++;
-      const result = await apiClient.post('/mobile/vpn/traffic', {
-        bytesUp:   deltaUp,
-        bytesDown: deltaDown,
-        sessionId: sessionIdRef.current,
-        seq:       currentSeq,
-        reportMode: 'delta',
-        subscriptionId: reportingId || undefined,
-        deviceId: deviceId || undefined,
-      });
-      if (!currentAccessRequest(stamp) || reportingId !== (runningProfileRef.current?.subscriptionId || runningProfileRef.current?.configId || activeConfigIdRef.current)) return result;
+      let ledger = ledgerRef.current ?? await loadLedger();
+      const stats = IS_ANDROID && SxbVpnNative
+        ? await SxbVpnNative.getTrafficStats().catch(() => null)
+        : null;
 
-      // Mettre à jour lastReported SEULEMENT après envoi réussi
-      lastReportUpRef.current   = up;
-      lastReportDownRef.current = down;
-
-      if (result?.data?.quotaRemainingBytes !== undefined) {
-        const currentQuota = await loadQuotaData(activeConfigId || undefined).catch(() => null);
-        const totalBytes = Number(result.data.quotaTotalBytes ?? currentQuota?.totalQuota ?? 0);
-        const usedBytes = Number(result.data.quotaUsedBytes ?? Math.max(0, totalBytes - Number(result.data.quotaRemainingBytes)));
-        const remainingBytes = Math.max(0, Number(result.data.quotaRemainingBytes));
-        const quotaConfigId = activeConfigId || currentQuota?.configId || (activeConnection as any)?.id || 'vpn_config';
-        if (totalBytes > 0 || currentQuota) {
-          const synced = await saveQuotaData({
-            configId: quotaConfigId,
-            totalQuota: totalBytes,
-            usedQuota: usedBytes,
-            expiryDate: result.data.expiresAt ?? currentQuota?.expiryDate ?? null,
-          }).catch(() => null);
-          if (synced) setQuotaData(synced);
-          else setQuotaData(prev => prev ? { ...prev, usedQuota: usedBytes, remainingQuota: remainingBytes } : prev);
+      if (stats && typeof stats.lifetimeUploadBytes === 'number' && typeof stats.lifetimeDownloadBytes === 'number') {
+        const counters = { up: stats.lifetimeUploadBytes, down: stats.lifetimeDownloadBytes };
+        // Un livre qui vient de naître s'ANCRE sur le compteur au lieu de le
+        // facturer : le service peut déjà avoir des gigaoctets au compteur
+        // (stockage applicatif effacé, préférences conservées) et personne ne
+        // doit payer un passé que ce livre n'a jamais mesuré.
+        if (isFreshLedger(ledger)) {
+          ledger = anchorLedger(ledger, counters);
+        } else {
+          // SEUL un identifiant de forfait est envoyé. Envoyer un identifiant de
+          // configuration locale — ce que faisait la version précédente en repli —
+          // vaut « forfait inconnu » côté serveur, donc un refus, donc des octets
+          // perdus. Sans forfait connu, le serveur crédite le forfait actif et le
+          // NOMME dans sa réponse : rien ne se perd et rien n'est deviné ici.
+          const reportingId = runningProfileRef.current?.subscriptionId ?? null;
+          if (!sessionIdRef.current) {
+            sessionIdRef.current = 'sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
+          }
+          ledger = accumulateUsage(ledger, counters, { subscriptionId: reportingId, sessionId: sessionIdRef.current });
         }
       }
+      ledgerRef.current = ledger;
+      await saveLedger(ledger);
+      if (!pendingBytes(ledger)) return;
 
-      // Legacy traffic.state combines two scopes. Re-read the control snapshot
-      // instead of treating a selected plan's state as an identity revocation.
-      if (result?.data?.state && result.data.state !== 'ready') wakeAccessObservation();
+      const stamp = accessRequestStamp();
+      let exhaustedHandled = false;
+      // Quelques rapports par passage suffisent : le reste attend le prochain
+      // réveil plutôt que de marteler le réseau après une longue panne.
+      for (let attempt = 0; attempt < (options?.final ? 6 : 3); attempt++) {
+        const prepared = nextReport(ledgerRef.current ?? ledger);
+        if (!prepared) break;
+        ledgerRef.current = prepared.ledger;
+        // Le rapport est sur disque AVANT de partir : une application tuée
+        // pendant l'appel le rejouera à l'identique au démarrage suivant.
+        await saveLedger(prepared.ledger);
 
-      legacyDebugLog(`TRAFFIC_REPORT_SUCCESS up=${deltaUp} down=${deltaDown}`);
-      return result;
+        const result = await apiClient.post('/mobile/vpn/traffic', {
+          bytesUp:   prepared.report.bytesUp,
+          bytesDown: prepared.report.bytesDown,
+          sessionId: prepared.report.sessionId,
+          seq:       prepared.report.seq,
+          reportMode: 'delta',
+          subscriptionId: prepared.report.subscriptionId || undefined,
+          deviceId: deviceId || undefined,
+        }).catch((error: any) => {
+          // 403 « forfait non possédé » : l'entrée ne sera jamais acceptée,
+          // la garder bloquerait toutes les suivantes derrière elle.
+          if (error?.response?.status === 403) return { data: { ok: false, rejected: true } } as any;
+          return null;
+        });
+        if (!result) break; // Réseau indisponible : on rejouera à l'identique.
+
+        const settled = settleUsage(ledgerRef.current, prepared.report);
+        ledgerRef.current = settled;
+        await saveLedger(settled);
+        if (result.data?.rejected) continue;
+
+        // Le serveur a pris ces octets en compte : la ligne de base de
+        // l'affichage avance d'autant, sinon ils seraient comptés deux fois.
+        if (stats) sessionBaselineRef.current = { up: stats.uploadBytes || 0, down: stats.downloadBytes || 0 };
+        legacyDebugLog(`TRAFFIC_REPORT_SUCCESS up=${prepared.report.bytesUp} down=${prepared.report.bytesDown}`);
+
+        if (!currentAccessRequest(stamp)) break;
+        await applyServerQuota(result.data);
+
+        // Quota épuisé : le serveur fait autorité, le tunnel s'arrête tout de
+        // suite. Un simple affichage laisserait le client consommer au-delà de
+        // ce qu'il a acheté — c'est précisément la crainte commerciale.
+        if (result.data?.quotaExhausted === true && !exhaustedHandled) {
+          const running = runningProfileRef.current;
+          const credited = typeof result.data.subscriptionId === 'string'
+            ? result.data.subscriptionId
+            : prepared.report.subscriptionId;
+          const concerned = !running || !credited ||
+            running.subscriptionId === credited || running.configId === credited;
+          if (concerned) {
+            exhaustedHandled = true;
+            setRevokedStatus('exhausted');
+            addLog('⛔ Quota épuisé — arrêt du tunnel');
+            await stopForAccessRef.current?.();
+          }
+          wakeAccessObservation();
+          // On ne s'arrête PAS là : les entrées restantes doivent quand même
+          // partir, sinon elles attendraient la prochaine connexion.
+          continue;
+        }
+        // Legacy traffic.state combines two scopes. Re-read the control snapshot
+        // instead of treating a selected plan's state as an identity revocation.
+        if (result.data?.state && result.data.state !== 'ready') wakeAccessObservation();
+      }
     } catch {
-      // Rejet/Échec réseau : conserver le delta non envoyé pour le rejouer plus tard
-      return undefined;
+      // Un échec de remontée ne doit ni interrompre le tunnel ni perdre le
+      // livre : ce qui n'est pas parti reste sur disque et sera rejoué.
+    } finally {
+      ledgerBusyRef.current = false;
     }
-  }, [isAuthenticated, addLog, activeConfigId, activeConnection, deviceId]);
+  }, [isAuthenticated, deviceId, applyServerQuota, addLog]);
 
-  // Polling rapport delta
+  const flushUsageRef = useRef(flushUsage);
+  useEffect(() => { flushUsageRef.current = flushUsage; });
+
+  // ── CADENCE DE REMONTÉE ─────────────────────────────────────────────────────
+  //
+  // Le minuteur tournait UNIQUEMENT au premier plan : un VPN sert précisément
+  // quand l'application n'est pas à l'écran, donc plus rien ne remontait
+  // pendant toute la consommation réelle. Il suit désormais le TUNNEL, pas
+  // l'écran : armé tant que le tunnel est monté, démonté dès qu'il s'arrête.
+  //
+  // Coût : un réveil toutes les 20 s (3 par minute) et une requête HTTPS de
+  // quelques centaines d'octets, uniquement quand le tunnel tourne — le
+  // service de premier plan et son thread de statistiques à 1 Hz sont déjà là,
+  // de très loin la dépense dominante. Tunnel arrêté, zéro réveil.
   useEffect(() => {
     if (!isConnected || !isAuthenticated) return;
-    const report = async () => {
-      if (IS_ANDROID && SxbVpnNative) {
-        try {
-          const stats = await SxbVpnNative.getTrafficStats();
-          await reportUsageToBackend(stats.uploadBytes || 0, stats.downloadBytes || 0);
-        } catch { /* ignore */ }
-      }
-    };
-    const start = () => {
-      if (!reportTimerRef.current) reportTimerRef.current = setInterval(report, 30_000);
-    };
-    const stop = () => {
-      if (reportTimerRef.current) clearInterval(reportTimerRef.current);
-      reportTimerRef.current = null;
-    };
-    if (appActiveRef.current) start();
+    const report = () => { void flushUsageRef.current(); };
+    reportTimerRef.current = setInterval(report, USAGE_REPORT_INTERVAL_MS);
     const foregroundSub = AppState.addEventListener('change', (next) => {
-      if (next === 'active') {
-        // Envoie immédiatement le delta accumulé pendant la veille, puis
-        // reprend la cadence de premier plan.
-        void report();
-        start();
-      } else {
-        stop();
-      }
+      // Le retour à l'écran ne change pas la cadence ; il ne fait qu'avancer la
+      // remontée suivante pour que l'utilisateur voie un chiffre à jour.
+      if (next === 'active') report();
     });
     return () => {
-      stop();
+      if (reportTimerRef.current) clearInterval(reportTimerRef.current);
+      reportTimerRef.current = null;
       foregroundSub.remove();
     };
-  }, [isConnected, isAuthenticated, reportUsageToBackend]);
+  }, [isConnected, isAuthenticated]);
+
+  // ── REJEU AU DÉMARRAGE ──────────────────────────────────────────────────────
+  //
+  // Le delta non remonté ne vivait qu'en mémoire : le système tue régulièrement
+  // une application dont le service VPN tourne depuis des heures, et il
+  // mourait avec elle. Il est désormais sur disque, et cette passe le rejoue
+  // dès que la session est authentifiée — tunnel monté ou non, puisque les
+  // octets ont bien été consommés.
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let cancelled = false;
+    void (async () => {
+      ledgerRef.current = await loadLedger();
+      // Laisse `syncNativeRuntime` rétablir le profil en cours avant d'imputer
+      // à un forfait les octets mesurés pendant que l'application était morte.
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      if (cancelled) return;
+      await flushUsageRef.current();
+    })();
+    return () => { cancelled = true; };
+  }, [isAuthenticated]);
 
   // B6 — LISTENER NETINFO : re-synchro automatique dès le retour du réseau
   useEffect(() => {
@@ -1260,15 +1393,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         // Capturer le baseline initial natif
         try {
           const stats = await SxbVpnNative.getTrafficStats();
-          const initUp = stats?.uploadBytes || 0;
-          const initDown = stats?.downloadBytes || 0;
-          sessionBaselineRef.current = { up: initUp, down: initDown };
-          lastReportUpRef.current = initUp;
-          lastReportDownRef.current = initDown;
+          sessionBaselineRef.current = { up: stats?.uploadBytes || 0, down: stats?.downloadBytes || 0 };
         } catch {
           sessionBaselineRef.current = { up: 0, down: 0 };
-          lastReportUpRef.current = 0;
-          lastReportDownRef.current = 0;
         }
 
         await prepareNativeAccess();
@@ -1349,43 +1476,22 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     addLog('🔴 Déconnexion...');
 
     try {
-      let finalUp = 0;
-      let finalDown = 0;
-
       if (IS_ANDROID && SxbVpnNative) {
         // ⚡ L'arrêt du tunnel part AVANT toute autre opération. Il était
         // auparavant précédé d'une lecture des compteurs : le tunnel restait
         // donc actif le temps de cet aller-retour, donnant l'impression que le
         // bouton ne répondait pas.
-        const stopPromise = SxbVpnNative.stopVpn();
-
-        try {
-          const stats = await SxbVpnNative.getTrafficStats();
-          finalUp = stats?.uploadBytes || 0;
-          finalDown = stats?.downloadBytes || 0;
-        } catch { /* ignore */ }
-
-        await stopPromise.catch(() => {});
+        await SxbVpnNative.stopVpn().catch(() => {});
       } else {
         await apiClient.post('/mobile/vpn/session', { action: 'disconnect' });
         await new Promise(r => setTimeout(r, 600));
       }
 
-      // B2 : Calcule le delta de la session et persiste via consumeQuotaLocally AVANT la remise à zéro
-      const deltaUp = Math.max(0, finalUp - lastReportUpRef.current);
-      const deltaDown = Math.max(0, finalDown - lastReportDownRef.current);
-      const totalDelta = deltaUp + deltaDown;
-
-      if (totalDelta > 0) {
-        await consumeQuotaLocally(totalDelta, activeConfigId || undefined);
-        const loaded = await loadQuotaData(activeConfigId || undefined);
-        if (loaded) setQuotaData(loaded);
-      }
-
-      // PUIS envoie le rapport delta final au backend
-      if (finalUp > 0 || finalDown > 0) {
-        await reportUsageToBackend(finalUp, finalDown);
-      }
+      // B2 — La consommation de fin de session n'est plus recalculée ici : le
+      // livre de comptes a déjà tout inscrit, et cette passe finale l'écrit sur
+      // disque puis le remonte. Ce qui ne part pas reste au livre et sera
+      // rejoué, y compris après un redémarrage de l'application.
+      await flushUsageRef.current({ final: true });
     } catch (err: any) {
       addLog(`⚠️ Erreur déconnexion : ${err?.message || ''}`);
     } finally {
@@ -1395,15 +1501,12 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       setIsConnecting(false);
 
       // Remise à zéro des références de session
-      lastReportUpRef.current = 0;
-      lastReportDownRef.current = 0;
       sessionBaselineRef.current = { up: 0, down: 0 };
       sessionIdRef.current = null;
-      seqRef.current = 0;
       disconnectInFlightRef.current = false;
       runningProfileRef.current = null;
     }
-  }, [isConnecting, isConnected, activeConfigId, addLog, reportUsageToBackend, addStepLog]);
+  }, [isConnecting, isConnected, addLog, addStepLog]);
 
   /**
    * Suppression d'un profil local.
@@ -1578,6 +1681,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     savedConfigs, activeConfigId, switchConfig, isSwitchingConfig,
     quotaData,
     derivedQuota: currentDerivedQuota,
+    quotaSession,
     revokedStatus,
     perAppTraffic,
     logs:          vpnLogs,
@@ -1595,7 +1699,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     selectedProtocol, connectedProtocol, availableProtocols,
     trafficStats, vpnLogs, hasVpnPermission, hasValidConfig,
     activeConnection, stepLogs, savedConfigs, activeConfigId,
-    switchConfig, isSwitchingConfig, quotaData, currentDerivedQuota,
+    switchConfig, isSwitchingConfig, quotaData, currentDerivedQuota, quotaSession,
     revokedStatus, perAppTraffic, killSwitch, autoReconnect,
     syncFromConnection, connect, disconnect, selectProtocol,
     refreshVpnConfig, requestPermission, deleteConfig,

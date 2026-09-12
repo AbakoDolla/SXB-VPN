@@ -46,7 +46,7 @@ export async function getVpnState(): Promise<VpnState> {
 
 export async function getTrafficStats(): Promise<VpnTrafficStats> {
   if (!SxbVpnNative) {
-    return { uploadBytes: 0, downloadBytes: 0, uploadSpeed: 0, downloadSpeed: 0 };
+    return { uploadBytes: 0, downloadBytes: 0, uploadSpeed: 0, downloadSpeed: 0, lifetimeUploadBytes: 0, lifetimeDownloadBytes: 0 };
   }
   return SxbVpnNative.getTrafficStats();
 }

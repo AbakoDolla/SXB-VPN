@@ -9,6 +9,20 @@ package com.sxbvpn.vpnmodule
  * Upload   = octets envoyés par l'UID depuis le démarrage VPN
  * Download = octets reçus par l'UID depuis le démarrage VPN
  * Débit    = delta/seconde calculé sur fenêtre glissante de 1s
+ *
+ * DEUX COMPTEURS, DEUX RÔLES
+ * ──────────────────────────
+ * `totalUpload`/`totalDownload` comptent la SESSION en cours : ils repartent
+ * de zéro à chaque démarrage du tunnel, et c'est ce qu'affiche « TRAFIC TEMPS
+ * RÉEL ».
+ *
+ * `lifetimeUpload`/`lifetimeDownload` sont le COMPTEUR KILOMÉTRIQUE de
+ * l'appareil : ils ne reculent jamais, sont écrits dans les préférences du
+ * service et survivent donc à une reconnexion, à l'arrêt du moteur, à la mort
+ * de l'application et au redémarrage du téléphone. C'est sur eux, et sur eux
+ * seuls, que s'appuie la facturation du quota : tant que le service a mesuré
+ * un octet, cet octet reste comptabilisé même si le fil JavaScript qui le
+ * remonte a disparu entre-temps.
  */
 
 import android.content.Context
@@ -26,6 +40,23 @@ class TrafficStatsManager {
         private const val TAG            = "SXB-TrafficStats"
         private const val POLL_INTERVAL  = 1_000L  // 1 seconde
         private const val UID_REMOVED    = -1L
+        private const val USAGE_PREFS    = "sxb_usage_odometer"
+        private const val KEY_LIFETIME_UP   = "lifetime_upload_bytes"
+        private const val KEY_LIFETIME_DOWN = "lifetime_download_bytes"
+
+        /**
+         * Compteur kilométrique lisible SANS service en vie.
+         *
+         * Quand le tunnel est arrêté, `SxbVpnService.instance` est nul. Rendre
+         * zéro dans ce cas serait un mensonge dangereux : le livre de comptes
+         * JavaScript s'y ancrerait, puis facturerait une seconde fois tout le
+         * cumul dès la lecture suivante. La valeur vient donc du disque.
+         */
+        fun persistedLifetime(context: Context): Pair<Long, Long> = runCatching {
+            val store = context.getSharedPreferences(USAGE_PREFS, Context.MODE_PRIVATE)
+            store.getLong(KEY_LIFETIME_UP, 0L).coerceAtLeast(0L) to
+                store.getLong(KEY_LIFETIME_DOWN, 0L).coerceAtLeast(0L)
+        }.getOrDefault(0L to 0L)
     }
 
     private val uid = Process.myUid()
@@ -40,6 +71,13 @@ class TrafficStatsManager {
     // Compteurs cumulatifs depuis le démarrage VPN
     private val totalUpload   = AtomicLong(0L)
     private val totalDownload = AtomicLong(0L)
+
+    // Compteur kilométrique durable — jamais remis à zéro, écrit sur disque.
+    private val lifetimeUpload   = AtomicLong(0L)
+    private val lifetimeDownload = AtomicLong(0L)
+    @Volatile private var usageStore: android.content.SharedPreferences? = null
+    private val unsavedBytes = AtomicLong(0L)
+    @Volatile private var lastPersistMs = 0L
 
     // Débits instantanés (octets/seconde)
     private val speedUpload   = AtomicLong(0L)
@@ -65,6 +103,18 @@ class TrafficStatsManager {
 
     fun start(context: Context? = null) {
         if (running.getAndSet(true)) return
+
+        // Le compteur durable est rechargé AVANT toute mesure : une reconnexion
+        // reprend exactement là où la session précédente s'est arrêtée.
+        if (context != null && usageStore == null) {
+            usageStore = runCatching { context.getSharedPreferences(USAGE_PREFS, Context.MODE_PRIVATE) }.getOrNull()
+        }
+        usageStore?.let { store ->
+            lifetimeUpload.set(runCatching { store.getLong(KEY_LIFETIME_UP, 0L) }.getOrDefault(0L).coerceAtLeast(0L))
+            lifetimeDownload.set(runCatching { store.getLong(KEY_LIFETIME_DOWN, 0L) }.getOrDefault(0L).coerceAtLeast(0L))
+        }
+        unsavedBytes.set(0L)
+        lastPersistMs = System.currentTimeMillis()
 
         // Capturer les baselines AVANT de démarrer le poll
         baselineTx = safeGetTx()
@@ -96,7 +146,8 @@ class TrafficStatsManager {
             }
         }
 
-        Log.i(TAG, "TrafficStats démarré — UID=$uid baseline TX=$baselineTx RX=$baselineRx")
+        Log.i(TAG, "TrafficStats démarré — UID=$uid baseline TX=$baselineTx RX=$baselineRx " +
+            "cumul_durable UP=${lifetimeUpload.get()} DOWN=${lifetimeDownload.get()}")
 
         pollThread = Thread({
             while (running.get()) {
@@ -117,7 +168,39 @@ class TrafficStatsManager {
         tunAttached = false
         tunCountersReadable = false
         tunInterface = null
-        Log.i(TAG, "TrafficStats arrêté — total UP=${totalUpload.get()} DOWN=${totalDownload.get()}")
+        // Dernière écriture avant l'arrêt : une session qui se termine ne doit
+        // jamais laisser d'octets mesurés hors du compteur durable.
+        persistLifetime(force = true)
+        Log.i(TAG, "TrafficStats arrêté — total UP=${totalUpload.get()} DOWN=${totalDownload.get()} " +
+            "cumul_durable UP=${lifetimeUpload.get()} DOWN=${lifetimeDownload.get()}")
+    }
+
+    // ── Compteur durable ──────────────────────────────────────────────────────
+
+    /** Additionne les octets mesurés à la session ET au compteur durable. */
+    private fun accumulate(deltaTx: Long, deltaRx: Long) {
+        if (deltaTx <= 0L && deltaRx <= 0L) return
+        totalUpload.addAndGet(deltaTx)
+        totalDownload.addAndGet(deltaRx)
+        lifetimeUpload.addAndGet(deltaTx)
+        lifetimeDownload.addAndGet(deltaRx)
+        val pending = unsavedBytes.addAndGet(deltaTx + deltaRx)
+        if (SxbUsageOdometer.shouldPersist(lastPersistMs, System.currentTimeMillis(), pending)) {
+            persistLifetime(force = false)
+        }
+    }
+
+    private fun persistLifetime(force: Boolean) {
+        val store = usageStore ?: return
+        if (!force && unsavedBytes.get() <= 0L) return
+        runCatching {
+            store.edit()
+                .putLong(KEY_LIFETIME_UP, lifetimeUpload.get())
+                .putLong(KEY_LIFETIME_DOWN, lifetimeDownload.get())
+                .apply()
+        }
+        unsavedBytes.set(0L)
+        lastPersistMs = System.currentTimeMillis()
     }
 
     // ── Poll périodique ───────────────────────────────────────────────────────
@@ -138,10 +221,9 @@ class TrafficStatsManager {
                 lastPollMs = nowMs
                 return
             }
-            val deltaTx = (tun.first - lastTunTx).coerceAtLeast(0L)
-            val deltaRx = (tun.second - lastTunRx).coerceAtLeast(0L)
-            totalUpload.addAndGet(deltaTx)
-            totalDownload.addAndGet(deltaRx)
+            val deltaTx = SxbUsageOdometer.step(lastTunTx, tun.first)
+            val deltaRx = SxbUsageOdometer.step(lastTunRx, tun.second)
+            accumulate(deltaTx, deltaRx)
             speedUpload.set(deltaTx * 1000L / deltaMs)
             speedDownload.set(deltaRx * 1000L / deltaMs)
             lastTunTx = tun.first
@@ -155,10 +237,9 @@ class TrafficStatsManager {
         val currentRx = safeGetRx()
         if (currentTx == UID_REMOVED || currentRx == UID_REMOVED) return
 
-        val deltaTx = (currentTx - lastTx).coerceAtLeast(0L)
-        val deltaRx = (currentRx - lastRx).coerceAtLeast(0L)
-        totalUpload.addAndGet(deltaTx)
-        totalDownload.addAndGet(deltaRx)
+        val deltaTx = SxbUsageOdometer.step(lastTx, currentTx)
+        val deltaRx = SxbUsageOdometer.step(lastRx, currentRx)
+        accumulate(deltaTx, deltaRx)
         speedUpload.set(deltaTx * 1000L / deltaMs)
         speedDownload.set(deltaRx * 1000L / deltaMs)
         lastTx = currentTx
@@ -221,6 +302,8 @@ class TrafficStatsManager {
         downloadBytes = totalDownload.get(),
         uploadSpeed   = speedUpload.get(),
         downloadSpeed = speedDownload.get(),
+        lifetimeUploadBytes   = lifetimeUpload.get(),
+        lifetimeDownloadBytes = lifetimeDownload.get(),
     )
 
     // ── Helpers TrafficStats ──────────────────────────────────────────────────
@@ -300,6 +383,9 @@ class TrafficStatsManager {
         val downloadBytes: Long,
         val uploadSpeed:   Long,  // bytes/sec
         val downloadSpeed: Long,  // bytes/sec
+        // Compteur kilométrique : jamais remis à zéro, jamais décroissant.
+        val lifetimeUploadBytes:   Long = 0L,
+        val lifetimeDownloadBytes: Long = 0L,
     )
 
     data class AppTrafficInfo(

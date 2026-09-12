@@ -2310,11 +2310,24 @@ describe('garde-fous contre les régressions Android', () => {
     const contexte = source('contexts/VpnContext.tsx');
     const racine = source('app/_layout.tsx');
 
-    // Les rapports de trafic ne réveillent plus le modem toutes les 30 s en
-    // veille : l'intervalle est détruit. Au retour, le delta accumulé par les
-    // compteurs natifs est envoyé immédiatement.
-    const report = contexte.slice(contexte.indexOf('// Polling rapport delta'));
-    assert.match(report.slice(0, 1800), /if \(next === 'active'\)[\s\S]{0,180}void report\(\);[\s\S]{0,100}start\(\);[\s\S]{0,100}else \{[\s\S]{0,80}stop\(\);/);
+    // Les rapports de trafic suivent le TUNNEL, pas l'écran. Les détruire en
+    // veille — ce que faisait la version précédente — arrêtait le comptage
+    // pendant exactement la période où le VPN sert, et le trafic consommé
+    // n'était jamais facturé. La sobriété est obtenue autrement : l'intervalle
+    // n'existe QUE tunnel monté, et il disparaît dès que le tunnel s'arrête.
+    const report = contexte.slice(contexte.indexOf('// ── CADENCE DE REMONTÉE'));
+    const cadence = report.slice(0, 1800);
+    assert.match(cadence, /if \(!isConnected \|\| !isAuthenticated\) return;/);
+    assert.match(cadence, /setInterval\(report, USAGE_REPORT_INTERVAL_MS\)/);
+    assert.match(cadence, /return \(\) => \{[\s\S]{0,200}clearInterval\(reportTimerRef\.current\)/);
+    // Aucun arrêt sur passage en arrière-plan : c'était le défaut.
+    assert.doesNotMatch(cadence, /else \{[\s\S]{0,80}stop\(\);/);
+    // Quelques réveils par minute au maximum.
+    const intervalle = contexte.match(/const USAGE_REPORT_INTERVAL_MS = (\d[\d_]*);/);
+    assert.ok(intervalle, 'La cadence de remontée doit être une constante nommée');
+    assert.ok(Number(intervalle![1].replace(/_/g, '')) >= 20_000,
+      'La remontée ne doit pas réveiller le modem plus de trois fois par minute');
+
     // Les lots de logs ne conservent plus un intervalle à trois ticks par
     // seconde pendant la veille.
     const logs = contexte.slice(contexte.indexOf('logFlushTimerRef.current = setInterval'));
@@ -2420,6 +2433,133 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(routes, /username: null as string \| null/);
     assert.match(routes, /password: null as string \| null/);
     assert.match(routes, /canonicalConfig: encryptCanonical/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Comptage de la consommation — aucun octet perdu, aucun octet compté deux fois
+//
+// Défaut d'origine, signalé en production : 78 Mo consommés n'ont jamais été
+// ajoutés au forfait, et le consommé affiché a RECULÉ de 26,2 Mo à 4,2 Mo
+// pendant que le trafic temps réel, lui, montait. Trois causes distinctes :
+//   1. le compteur natif repart de zéro à chaque reconnexion, et le delta
+//      `max(0, courant - précédent)` rendait alors zéro ;
+//   2. la remontée s'arrêtait dès que l'application passait en arrière-plan,
+//      c'est-à-dire pendant toute la consommation réelle, et le delta accumulé
+//      ne vivait qu'en mémoire ;
+//   3. le serveur ne renvoyait pas le consommé, et l'application le
+//      reconstituait à partir du restant d'un forfait choisi au hasard.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('comptage de la consommation data', () => {
+  const vpnContext = source('contexts/VpnContext.tsx');
+  const ledger = source('services/usageLedger.ts');
+  const odometer = source('modules/android-native/SxbUsageOdometer.kt');
+  const trafficStats = source('modules/android-native/TrafficStatsManager.kt');
+  const nativeService = source('modules/android-native/SxbVpnService.kt');
+  const nativeModule = source('modules/android-native/SxbVpnModule.kt');
+  const mobileRoutes = source('../server/routes/mobile.ts');
+  const accueil = source('app/(tabs)/index.tsx');
+  const schema = source('../prisma/schema.prisma');
+  const migration = source('../prisma/migrations_manual.sql');
+
+  it('traite une remise à zéro du compteur comme du trafic neuf, des deux côtés du pont', () => {
+    // La règle est écrite deux fois — Kotlin pour le service, TypeScript pour
+    // le livre de comptes — et doit dire la même chose des deux côtés.
+    assert.match(odometer, /fun step\(previous: Long, current: Long\): Long/);
+    assert.match(odometer, /if \(current < floor\) current else current - floor/);
+    assert.match(ledger, /export function counterStep\(previous: number, current: number\): number/);
+    assert.match(ledger, /return next < floor \? next : next - floor/);
+    // Le calcul fautif ne doit revenir nulle part : il rendait zéro après une
+    // remise à zéro, et gelait le comptage jusqu'au dépassement de l'ancienne
+    // valeur. C'est exactement ainsi que les 78 Mo ont disparu.
+    assert.doesNotMatch(vpnContext, /Math\.max\(0, \w*[Uu]p - /);
+    assert.doesNotMatch(vpnContext, /Math\.max\(0, \w*[Dd]own - /);
+    assert.doesNotMatch(trafficStats, /- lastTunTx\)\.coerceAtLeast/);
+    assert.doesNotMatch(trafficStats, /- lastTx\)\.coerceAtLeast/);
+  });
+
+  it('tient un compteur kilométrique qui survit à la reconnexion et à la mort de l’application', () => {
+    // `start()` remet les compteurs de SESSION à zéro — c'est l'affichage temps
+    // réel — mais recharge le cumul durable depuis le disque avant toute mesure.
+    assert.match(trafficStats, /lifetimeUpload\.set\(runCatching \{ store\.getLong\(KEY_LIFETIME_UP, 0L\) \}/);
+    assert.match(trafficStats, /lifetimeUpload\.addAndGet\(deltaTx\)/);
+    assert.match(trafficStats, /lifetimeDownload\.addAndGet\(deltaRx\)/);
+    assert.match(trafficStats, /SxbUsageOdometer\.shouldPersist\(lastPersistMs, System\.currentTimeMillis\(\), pending\)/);
+    // Une session qui s'arrête écrit ce qu'elle a mesuré, sans condition.
+    assert.match(trafficStats, /persistLifetime\(force = true\)/);
+    // Sans service en vie, le cumul se lit sur disque : rendre zéro ferait
+    // ancrer le livre à zéro puis refacturer tout le cumul à la lecture suivante.
+    assert.match(trafficStats, /fun persistedLifetime\(context: Context\): Pair<Long, Long>/);
+    assert.match(nativeModule, /TrafficStatsManager\.persistedLifetime\(reactApplicationContext\)/);
+    assert.match(nativeService, /"lifetimeUploadBytes"\s+to stats\.lifetimeUploadBytes/);
+    assert.match(nativeModule, /putDouble\("lifetimeUploadBytes"/);
+    // Et c'est bien ce compteur-là, jamais celui de la session, qui facture.
+    assert.match(vpnContext, /up: stats\.lifetimeUploadBytes, down: stats\.lifetimeDownloadBytes/);
+  });
+
+  it('écrit le rapport sur disque avant de l’envoyer, et le rejoue tel quel', () => {
+    assert.match(vpnContext, /const prepared = nextReport\(/);
+    // L'ordre compte : la persistance PUIS l'appel réseau. L'inverse perdrait
+    // le rapport si le système tuait l'application pendant l'envoi.
+    const envoi = vpnContext.slice(vpnContext.indexOf('const prepared = nextReport('));
+    assert.match(envoi.slice(0, 900), /await saveLedger\(prepared\.ledger\);[\s\S]{0,400}apiClient\.post\('\/mobile\/vpn\/traffic'/);
+    // Les identifiants partent du rapport gelé, jamais d'un compteur vivant.
+    assert.match(envoi.slice(0, 900), /sessionId: prepared\.report\.sessionId/);
+    assert.match(envoi.slice(0, 900), /seq:\s+prepared\.report\.seq/);
+    // Le livre n'est purgé qu'une fois le serveur formel.
+    assert.match(envoi, /settleUsage\(ledgerRef\.current, prepared\.report\)/);
+    // Rejeu au démarrage : le livre est relu et vidé même sans tunnel monté,
+    // car les octets ont bien été consommés.
+    assert.match(vpnContext, /ledgerRef\.current = await loadLedger\(\)/);
+    // Un livre neuf s'ancre sur le compteur au lieu de facturer un passé qu'il
+    // n'a jamais mesuré — stockage applicatif effacé, préférences conservées.
+    assert.match(vpnContext, /if \(isFreshLedger\(ledger\)\) \{\s*\n\s*ledger = anchorLedger\(ledger, counters\);/);
+    // Le livre gèle une entrée dès sa première tentative : les octets suivants
+    // vont ailleurs, et un rejeu porte donc exactement le même contenu.
+    assert.match(ledger, /frozen: true/);
+    assert.match(ledger, /if \(last && !last\.frozen && last\.subscriptionId === context\.subscriptionId\)/);
+  });
+
+  it('affiche le consommé du forfait crédité, sans jamais le recalculer ni le faire reculer', () => {
+    // Le serveur nomme le forfait qu'il vient de débiter et donne son consommé.
+    assert.match(mobileRoutes, /if \(applied\.applied && applied\.subscriptionId\) creditedSubscriptionId = applied\.subscriptionId/);
+    assert.match(mobileRoutes, /quotaUsedBytes: state\.quotaUsedBytes/);
+    assert.match(mobileRoutes, /quotaTotalBytes: state\.quotaTotalBytes/);
+    assert.match(mobileRoutes, /subscriptionId: selectedSub\?\.id \?\? null/);
+    // Le choix « le premier abonnement actif venu » est ce qui faisait afficher
+    // le consommé d'un autre forfait : il ne doit pas revenir.
+    assert.doesNotMatch(mobileRoutes, /\.find\(\(s: any\) => s\.status === "active"\)/);
+    // L'application prend la valeur telle quelle et refuse de la reconstituer.
+    assert.doesNotMatch(vpnContext, /totalBytes - Number\(result\.data\.quotaRemainingBytes\)/);
+    assert.match(vpnContext, /if \(!data \|\| data\.quotaUsedBytes === undefined \|\| data\.quotaTotalBytes === undefined\) return;/);
+    assert.match(vpnContext, /usedBytes < shown\.used/);
+    // L'accueil oppose au consommé serveur les seuls octets pas encore comptés.
+    assert.match(accueil, /const derivedQuota = deriveQuota\(activeQuotaSnapshot \|\| \(accountState as any\), quotaSession, isConnected\)/);
+    assert.match(vpnContext, /sessionBaselineRef\.current = \{ up: stats\.uploadBytes \|\| 0, down: stats\.downloadBytes \|\| 0 \}/);
+  });
+
+  it('coupe réellement le tunnel quand le serveur déclare le quota épuisé', () => {
+    assert.match(vpnContext, /if \(result\.data\?\.quotaExhausted === true && !exhaustedHandled\)/);
+    assert.match(vpnContext, /await stopForAccessRef\.current\?\.\(\)/);
+    assert.match(vpnContext, /setRevokedStatus\('exhausted'\)/);
+    // Côté serveur, l'épuisement est déduit du quota réellement consommé et
+    // ferme l'accès au forfait, pas seulement son affichage.
+    const lifecycle = source('../server/services/access-lifecycle.ts');
+    assert.match(lifecycle, /BigInt\(subscription\.quotaUsed \?\? 0\) >= BigInt\(subscription\.quotaBytes\)\)\) return "exhausted"/);
+    assert.match(source('../server/routes/provision.ts'), /return status === 'active' \? null : \{/);
+  });
+
+  it('ne peut pas facturer deux fois, même après un redémarrage du serveur', () => {
+    // Mémoire ET base : la mémoire disparaît au redémarrage, alors que
+    // l'application rejoue ses rapports en attente bien plus tard.
+    assert.match(mobileRoutes, /processedReports\.has\(reportKey\)/);
+    assert.match(mobileRoutes, /\.\.\.\(durableKey \? \{ reportKey: durableKey \} : \{\}\)/);
+    assert.match(mobileRoutes, /if \(isUniqueViolation\(error\)\) return \{ applied: false, reason: "duplicate_report" \}/);
+    // La colonne est unique, nullable, et la migration est strictement additive.
+    assert.match(schema, /reportKey\s+String\?\s+@unique/);
+    assert.match(migration, /ALTER TABLE "traffic_usage" ADD COLUMN IF NOT EXISTS "reportKey" TEXT;/);
+    assert.match(migration, /CREATE UNIQUE INDEX IF NOT EXISTS "traffic_usage_reportKey_key"/);
+    assert.doesNotMatch(migration, /DROP (TABLE|COLUMN) "traffic_usage"/);
   });
 });
 

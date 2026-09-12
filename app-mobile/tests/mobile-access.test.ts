@@ -29,6 +29,7 @@ type Harness = {
   provision: typeof import('../services/provisionClient');
   events: typeof import('../services/accessEvents');
   aes: typeof import('../services/aesGcm');
+  ledger: typeof import('../services/usageLedger');
   renderBlocked(language: 'fr' | 'en', status: DeviceStatus): string;
   state: {
     storage: Map<string, string>;
@@ -115,6 +116,7 @@ async function harness(distribution = 'direct'): Promise<Harness> {
         export * as provision from './services/provisionClient';
         export * as events from './services/accessEvents';
         export * as aes from './services/aesGcm';
+        export * as ledger from './services/usageLedger';
         export function renderBlocked(language,status) {
           const value={deviceAccess:{id:'client',status,code:'DEVICE_'+status.toUpperCase(),expireAt:null,activationRequired:false},accessNotices:[]};
           return renderToStaticMarkup(React.createElement(LanguageContext.Provider,{value:{language}},React.createElement(AuthContext.Provider,{value},React.createElement(DeviceAccessScreen))));
@@ -767,5 +769,159 @@ describe('mobile access runtime with real encrypted store, auth and HTTP interce
     const blocked = snapshot('revoked', 'revoked').device;
     assert.equal(h.policy.accessRedirect(true, true, blocked, 'free-trial'), null);
     assert.equal(h.policy.accessRedirect(true, true, blocked, '(tabs)'), '/access-blocked');
+  });
+});
+
+describe('livre de comptes de la consommation', () => {
+  const MO = 1024 * 1024;
+
+  it('ne perd aucun octet quand le compteur natif repart de zéro', async () => {
+    const h = await harness();
+    const contexte = { subscriptionId: 'a', sessionId: 'sess-1' };
+    let livre = h.ledger.emptyLedger();
+
+    // 78 Mo consommés, dont seulement 20 remontés.
+    livre = h.ledger.accumulate(livre, { up: 20 * MO, down: 0 }, contexte);
+    const premier = h.ledger.nextReport(livre)!;
+    livre = h.ledger.settle(premier.ledger, premier.report);
+    assert.equal(premier.report.bytesUp, 20 * MO);
+
+    livre = h.ledger.accumulate(livre, { up: 78 * MO, down: 0 }, contexte);
+    assert.equal(h.ledger.pendingBytes(livre), 58 * MO);
+
+    // LE DÉFAUT : le tunnel se reconnecte, le compteur retombe à zéro et la
+    // session suivante atteint 5 Mo. L'ancien calcul rendait max(0, 5 - 78) = 0
+    // et ne rendait plus rien tant que 78 Mo n'étaient pas repassés : les
+    // 58 Mo restants disparaissaient définitivement.
+    livre = h.ledger.accumulate(livre, { up: 5 * MO, down: 0 }, contexte);
+    assert.equal(h.ledger.pendingBytes(livre), 63 * MO,
+      'Une remise à zéro doit compter la valeur entière, jamais zéro');
+
+    // Et la mesure suivante reprend un delta normal, sans recompter.
+    livre = h.ledger.accumulate(livre, { up: 9 * MO, down: 0 }, contexte);
+    assert.equal(h.ledger.pendingBytes(livre), 67 * MO);
+  });
+
+  it('rejoue le delta non remonté après la mort de l’application', async () => {
+    const h = await harness();
+    let livre = h.ledger.accumulate(h.ledger.emptyLedger(),
+      { up: 3 * MO, down: 7 * MO }, { subscriptionId: 'a', sessionId: 'sess-1' });
+
+    // Le livre part sur disque AVANT tout appel réseau.
+    const prepare = h.ledger.nextReport(livre)!;
+    await h.ledger.saveLedger(prepare.ledger);
+    assert.ok(h.state.storage.has('@sxb_usage_ledger'));
+
+    // … puis le système tue l'application : la mémoire disparaît, pas le livre.
+    const relu = await h.ledger.loadLedger();
+    assert.equal(h.ledger.pendingBytes(relu), 10 * MO);
+    const rejeu = h.ledger.nextReport(relu)!;
+    // Mêmes identifiants, mêmes octets : le serveur reconnaîtra le doublon.
+    assert.equal(rejeu.report.sessionId, prepare.report.sessionId);
+    assert.equal(rejeu.report.seq, prepare.report.seq);
+    assert.equal(rejeu.report.bytesUp, 3 * MO);
+    assert.equal(rejeu.report.bytesDown, 7 * MO);
+    assert.equal(rejeu.report.subscriptionId, 'a');
+  });
+
+  it('fige les identifiants d’un rapport tenté, pour qu’un rejeu ne compte jamais deux fois', async () => {
+    const h = await harness();
+    const contexte = { subscriptionId: 'a', sessionId: 'sess-1' };
+    let livre = h.ledger.accumulate(h.ledger.emptyLedger(), { up: MO, down: 0 }, contexte);
+    const premier = h.ledger.nextReport(livre)!;
+    livre = premier.ledger;
+
+    // L'envoi échoue (réseau coupé) et la consommation continue : les octets
+    // neufs vont dans une entrée SUIVANTE, jamais dans celle déjà partie.
+    livre = h.ledger.accumulate(livre, { up: 3 * MO, down: 0 }, contexte);
+    const rejeu = h.ledger.nextReport(livre)!;
+    assert.equal(rejeu.report.seq, premier.report.seq);
+    assert.equal(rejeu.report.bytesUp, premier.report.bytesUp);
+
+    // Acquitté : l'entrée disparaît, la suivante porte un autre `seq`.
+    livre = h.ledger.settle(rejeu.ledger, rejeu.report);
+    const suivant = h.ledger.nextReport(livre)!;
+    assert.notEqual(suivant.report.seq, premier.report.seq);
+    assert.equal(suivant.report.bytesUp, 2 * MO);
+
+    // Acquitter deux fois le même rapport ne retire jamais une autre entrée.
+    const inchange = h.ledger.settle(livre, premier.report);
+    assert.equal(h.ledger.pendingBytes(inchange), h.ledger.pendingBytes(livre));
+  });
+
+  it('n’impute jamais à un forfait les octets d’un autre', async () => {
+    const h = await harness();
+    let livre = h.ledger.accumulate(h.ledger.emptyLedger(), { up: MO, down: 0 },
+      { subscriptionId: 'a', sessionId: 'sess-1' });
+    livre = h.ledger.accumulate(livre, { up: 4 * MO, down: 0 },
+      { subscriptionId: 'b', sessionId: 'sess-2' });
+    const premier = h.ledger.nextReport(livre)!;
+    assert.equal(premier.report.subscriptionId, 'a');
+    assert.equal(premier.report.bytesUp, MO);
+    const second = h.ledger.nextReport(h.ledger.settle(premier.ledger, premier.report))!;
+    assert.equal(second.report.subscriptionId, 'b');
+    assert.equal(second.report.bytesUp, 3 * MO);
+  });
+
+  it('découpe un retard énorme sous la limite que le serveur accepte', async () => {
+    const h = await harness();
+    const enorme = 6 * 1024 * 1024 * 1024; // 6 Go : le serveur refuse au-delà de 5.
+    const livre = h.ledger.accumulate(h.ledger.emptyLedger(), { up: 0, down: enorme },
+      { subscriptionId: 'a', sessionId: 'sess-1' });
+    const premier = h.ledger.nextReport(livre)!;
+    assert.ok(premier.report.bytesUp + premier.report.bytesDown <= h.ledger.MAX_REPORT_BYTES);
+    // Le reliquat reste au livre : rien n'est jeté.
+    assert.equal(h.ledger.pendingBytes(premier.ledger), enorme);
+    const reste = h.ledger.settle(premier.ledger, premier.report);
+    assert.equal(h.ledger.pendingBytes(reste), enorme - h.ledger.MAX_REPORT_BYTES);
+  });
+
+  it('s’ancre sur un compteur déjà avancé sans facturer le passé', async () => {
+    const h = await harness();
+    assert.equal(h.ledger.isFreshLedger(h.ledger.emptyLedger()), true);
+    const ancre = h.ledger.anchorLedger(h.ledger.emptyLedger(), { up: 500 * MO, down: 900 * MO });
+    assert.equal(h.ledger.pendingBytes(ancre), 0);
+    assert.equal(h.ledger.isFreshLedger(ancre), false);
+    const apres = h.ledger.accumulate(ancre, { up: 501 * MO, down: 900 * MO },
+      { subscriptionId: 'a', sessionId: 'sess-1' });
+    assert.equal(h.ledger.pendingBytes(apres), MO);
+  });
+
+  it('ne recule pas sur une lecture nulle, qui ne prouve rien', async () => {
+    const h = await harness();
+    const contexte = { subscriptionId: 'a', sessionId: 'sess-1' };
+    let livre = h.ledger.accumulate(h.ledger.emptyLedger(), { up: 40 * MO, down: 60 * MO }, contexte);
+    assert.equal(h.ledger.pendingBytes(livre), 100 * MO);
+
+    // Le service n'est pas encore en vie : ses compteurs rendent zéro. Avancer
+    // le livre à zéro sur cette lecture referait facturer les 100 Mo dès que le
+    // service aurait rechargé son cumul.
+    livre = h.ledger.accumulate(livre, { up: 0, down: 0 }, contexte);
+    assert.equal(h.ledger.pendingBytes(livre), 100 * MO);
+    assert.equal(livre.counterUp, 40 * MO);
+    assert.equal(livre.counterDown, 60 * MO);
+
+    livre = h.ledger.accumulate(livre, { up: 40 * MO, down: 61 * MO }, contexte);
+    assert.equal(h.ledger.pendingBytes(livre), 101 * MO, 'Seul le mégaoctet neuf doit être facturé');
+  });
+
+  it('ignore un livre corrompu au lieu d’inventer une facture', async () => {
+    const h = await harness();
+    h.state.storage.set('@sxb_usage_ledger', '{ pas du json');
+    assert.equal(h.ledger.pendingBytes(await h.ledger.loadLedger()), 0);
+    h.state.storage.set('@sxb_usage_ledger', JSON.stringify({
+      counterUp: -5, counterDown: 'x', nextSeq: 2,
+      entries: [
+        { subscriptionId: 'a', sessionId: 'sess-1', seq: 0, up: 10, down: 5 },
+        { subscriptionId: 'a', sessionId: '', seq: 1, up: 10, down: 5 },
+        { subscriptionId: 'a', sessionId: 'sess-1', seq: -1, up: 10, down: 5 },
+      ],
+    }));
+    const relu = await h.ledger.loadLedger();
+    assert.equal(relu.counterUp, 0);
+    assert.equal(relu.counterDown, 0);
+    assert.equal(h.ledger.pendingBytes(relu), 15);
+    // Une entrée relue est gelée d'office : elle a pu atteindre le serveur.
+    assert.equal(relu.entries[0].frozen, true);
   });
 });
