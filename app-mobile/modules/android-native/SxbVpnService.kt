@@ -1725,8 +1725,11 @@ class SxbVpnService : VpnService(), PlatformInterface {
             val commonProps = Properties().apply {
                 set("StrictHostKeyChecking", if (hostKeyVerifier.strict) "yes" else "no")
                 set("PreferredAuthentications", "password")
-                set("ServerAliveInterval", "10")
-                set("ServerAliveCountMax", "3")
+                // NE PAS remettre "ServerAliveInterval"/"ServerAliveCountMax" ici :
+                // JSch ne lit ces clés que depuis un ConfigRepository (fichier façon
+                // OpenSSH), jamais depuis les Properties d'une session. Elles y
+                // étaient inertes. La vitalité est armée par les setters réels,
+                // plus bas, avec les constantes de SxbSshKeepAlive.
             }
 
             fun newSession(strategy: SshTransportStrategy? = null): Session =
@@ -1773,7 +1776,22 @@ class SxbVpnService : VpnService(), PlatformInterface {
                             broadcastLog("[SXB_DEBUG] SSH_BANNER_RECEIVED")
                         })
                     }
-                    s.timeout = if (strategy == null) timeoutMs else minOf(timeoutMs, 12_000)
+                    // ── Vitalité de la session ────────────────────────────
+                    // `setServerAliveInterval` écrit le MÊME champ que l'ancien
+                    // `s.timeout = ...` : le délai de lecture appliqué à la
+                    // socket une fois l'authentification terminée. La différence
+                    // est qu'il arme EN PLUS l'émission d'une sonde à chaque
+                    // expiration, ce que l'affectation nue ne faisait pas.
+                    //
+                    // Ce délai n'est plus celui du profil. `timeoutMs` est un
+                    // budget de POIGNÉE DE MAIN — il reste passé explicitement à
+                    // `connect(...)` et n'est donc pas raccourci — alors que
+                    // celui-ci mesure le silence toléré sur un tunnel établi.
+                    // Les confondre faisait qu'un profil patient à la connexion
+                    // (jusqu'à 120 s) laissait un tunnel mort passer pour vivant
+                    // pendant quatre minutes.
+                    s.setServerAliveInterval(SxbSshKeepAlive.INTERVAL_MS)
+                    s.setServerAliveCountMax(SxbSshKeepAlive.COUNT_MAX)
                 }
 
             lateinit var session: Session
@@ -1916,22 +1934,40 @@ class SxbVpnService : VpnService(), PlatformInterface {
             startLibboxService(buildSshSocksRelayConfig(host), label)
 
             // ── Boucle de surveillance ────────────────────────────────────────
+            // C'est le seul détecteur du transport SSH : il ne passe pas par le
+            // moteur sing-box, donc rien d'autre ne constate sa mort. La
+            // décision est portée par SxbSshKeepAlive, prouvée en CI.
             while (running.get()) {
-                if (!session.isConnected) {
+                val liveness = SxbSshKeepAlive.classify(
+                    serviceRunning = running.get(),
+                    currentSession = sshSession === session,
+                    sessionConnected = session.isConnected,
+                    engineRunning = boxService != null,
+                )
+                if (liveness == SxbSshKeepAlive.Liveness.ALIVE) {
+                    Thread.sleep(SxbSshKeepAlive.POLL_INTERVAL_MS)
+                    continue
+                }
+                if (liveness == SxbSshKeepAlive.Liveness.SERVICE_STOPPED) break
+                if (liveness == SxbSshKeepAlive.Liveness.SUPERSEDED) {
+                    // Démontage volontaire (reprise en cours) : ne rien signaler,
+                    // sinon la reconnexion se compterait un échec à elle-même et
+                    // l'utilisateur verrait une erreur au milieu d'une reprise.
+                    broadcastLog("[SXB_DEBUG] SSH_SESSION_SUPERSEDED — démontage volontaire, aucune panne signalée")
+                    return
+                }
+                if (liveness == SxbSshKeepAlive.Liveness.SSH_LOST) {
                     Log.w("SXB_DEBUG", "[SXB_DEBUG] SSH_SESSION_LOST")
                     broadcastLog("[SXB] ⚠️ Session SSH perdue")
-                    broadcastStatus("error"); setCurrentState("error")
-                    if (autoReconnect.isEnabled()) { autoReconnect.onDisconnected(); return }
-                    break
-                }
-                if (boxService == null) {
+                } else {
+                    // ENGINE_LOST — le moteur qui porte le TUN a disparu sous
+                    // une session SSH pourtant vivante : même traitement.
                     Log.w("SXB_DEBUG", "[SXB_DEBUG] LIBBOX_STOPPED_IN_LOOP")
                     broadcastLog("[SXB] ⚠️ Moteur TUN arrêté")
-                    broadcastStatus("error"); setCurrentState("error")
-                    if (autoReconnect.isEnabled()) { autoReconnect.onDisconnected(); return }
-                    break
                 }
-                Thread.sleep(3_000)
+                broadcastStatus("error"); setCurrentState("error")
+                if (autoReconnect.isEnabled()) { autoReconnect.onDisconnected(); return }
+                break
             }
         } catch (e: InterruptedException) {
             Log.i(TAG, "Thread SSH interrompu")

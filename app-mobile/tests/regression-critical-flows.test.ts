@@ -1045,6 +1045,62 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(stabilityCases.includes('SxbReconnectPolicy.Trigger.NETWORK_AVAILABLE'));
   });
 
+  it('SSH : la sonde de vitalité est réellement armée et déclenche la reconnexion', () => {
+    const keepAlive = source('modules/android-native/SxbSshKeepAlive.kt');
+    const sshStabilityCases = source('tests/StabilityPolicyTest.kt');
+
+    // ── 1. Les options inertes ne doivent JAMAIS revenir ──────────────────
+    // Elles étaient passées via Session.setConfig(Properties). JSch ne lit ces
+    // clés que depuis un ConfigRepository : elles ne faisaient rien, tout en
+    // donnant à lire une surveillance de 10 s × 3 qui n'existait pas.
+    assert.doesNotMatch(nativeService, /set\("ServerAliveInterval"/);
+    assert.doesNotMatch(nativeService, /set\("ServerAliveCountMax"/);
+
+    // ── 2. Les vrais setters, avec les constantes partagées ───────────────
+    assert.match(nativeService, /s\.setServerAliveInterval\(SxbSshKeepAlive\.INTERVAL_MS\)/);
+    assert.match(nativeService, /s\.setServerAliveCountMax\(SxbSshKeepAlive\.COUNT_MAX\)/);
+
+    // ── 3. Vitalité ≠ délai de connexion ──────────────────────────────────
+    // `setServerAliveInterval` écrit le même champ que l'ancien `s.timeout =`.
+    // Laisser cette affectation écraserait l'intervalle et réarmerait le défaut :
+    // un profil patient à la connexion (jusqu'à 120 s) masquait un tunnel mort
+    // pendant quatre minutes.
+    assert.doesNotMatch(nativeService, /^\s*s\.timeout = /m);
+    // Le budget de poignée de main, lui, reste celui du profil.
+    assert.match(nativeService, /session\.connect\(timeoutMs\)/);
+
+    // ── 4. La sonde est en millisecondes, et la fenêtre est bornée ────────
+    assert.match(keepAlive, /const val INTERVAL_MS = 10_000/);
+    assert.match(keepAlive, /const val COUNT_MAX = 3/);
+    assert.match(keepAlive, /INTERVAL_MS\.toLong\(\) \* \(COUNT_MAX \+ 1\) \+ POLL_INTERVAL_MS/);
+
+    // ── 5. Le seul détecteur du transport SSH ─────────────────────────────
+    // SSH ne passe pas par sing-box : sans cette boucle, rien ne constate sa
+    // mort. Elle doit mener à la reconnexion déjà livrée, pas à un second
+    // mécanisme parallèle.
+    assert.match(nativeService, /SxbSshKeepAlive\.classify\(/);
+    assert.match(nativeService, /currentSession = sshSession === session/);
+    assert.match(nativeService, /Thread\.sleep\(SxbSshKeepAlive\.POLL_INTERVAL_MS\)/);
+    const sshLoop = nativeService.slice(nativeService.indexOf('SxbSshKeepAlive.classify('));
+    assert.match(sshLoop.slice(0, 2000), /autoReconnect\.onDisconnected\(\)/);
+
+    // ── 6. Un démontage volontaire n'est pas une panne ────────────────────
+    // Une reprise ferme elle-même la session précédente ; l'ancien fil la
+    // voyait tomber et signalait une panne au milieu de la reconnexion.
+    assert.match(nativeService, /SSH_SESSION_SUPERSEDED/);
+    assert.match(keepAlive, /!currentSession -> Liveness\.SUPERSEDED/);
+    const supersededIdx = keepAlive.indexOf('!currentSession -> Liveness.SUPERSEDED');
+    const disconnectedIdx = keepAlive.indexOf('!sessionConnected -> Liveness.SSH_LOST');
+    assert.ok(supersededIdx >= 0 && disconnectedIdx > supersededIdx,
+      'La session doit être reconnue comme périmée AVANT d’être déclarée perdue');
+
+    // ── 7. La décision pure est réellement exercée en CI ──────────────────
+    assert.ok(existsSync('modules/android-native/SxbSshKeepAlive.kt'));
+    assert.match(source('tests/run-stability-policy.cjs'), /SxbSshKeepAlive\.kt/);
+    assert.ok(sshStabilityCases.includes('SxbSshKeepAlive.classify('));
+    assert.ok(sshStabilityCases.includes('Google Cloud'));
+  });
+
   it('sing-box : normalise transport.host et déduplique les profils hors ligne hérités', () => {
     assert.ok(nativeService.includes('normalizeRawSingBoxCompatibility'));
     assert.ok(nativeService.includes('transport.has("host")'));

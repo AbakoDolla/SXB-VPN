@@ -31,6 +31,9 @@ try {
     // Arithmétique du comptage de consommation : aucune dépendance Android,
     // donc vérifiable ici plutôt que sur un appareil.
     path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbUsageOdometer.kt'),
+    // Vitalite du tunnel SSH : le transport SSH ne passe pas par sing-box, donc
+    // rien d'autre ne constate sa mort. La decision est pure, donc prouvable ici.
+    path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbSshKeepAlive.kt'),
     path.resolve(__dirname, 'StabilityPolicyTest.kt'),
     maskHarness,
     '-classpath', jsonJar, '-include-runtime', '-d', jar,

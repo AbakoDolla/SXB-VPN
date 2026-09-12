@@ -1067,5 +1067,139 @@ fun main() {
         // Horloge qui recule : on écrit au lieu de figer la sauvegarde à jamais.
         check(SxbUsageOdometer.shouldPersist(50_000L, 1_000L, 1024L))
     }
+
+    checkCase("SSH keepalive is armed in milliseconds and bounded") {
+        // LE DÉFAUT EXACT : les options étaient passées à JSch sous la forme
+        // « 10 » et « 3 », lues comme des SECONDES par un fichier OpenSSH mais
+        // comme des MILLISECONDES par l'unique setter réel de JSch. Dix
+        // millisecondes, c'est cent sondes par seconde sur un réseau mobile.
+        check(SxbSshKeepAlive.INTERVAL_MS >= 1_000) {
+            "Intervalle en secondes déguisé en millisecondes : ${SxbSshKeepAlive.INTERVAL_MS}"
+        }
+
+        // Assez court pour entretenir l'association NAT d'un opérateur mobile,
+        // que les passerelles oublient couramment après 30 s à 60 s d'inactivité.
+        check(SxbSshKeepAlive.INTERVAL_MS <= 30_000)
+
+        // La valeur par défaut de JSch est 1 : un seul aller-retour manqué
+        // condamnait une session parfaitement vivante.
+        check(SxbSshKeepAlive.COUNT_MAX > 1)
+
+        // La détection ne dépend plus du délai de connexion du profil. Celui-ci
+        // monte jusqu'à 120 s, ce qui laissait un tunnel mort passer pour vivant
+        // pendant quatre minutes. La fenêtre est désormais bornée, quoi que
+        // contienne la configuration.
+        val window = SxbSshKeepAlive.detectionWindowMs()
+        check(window == 43_000L) { "Fenêtre de détection inattendue : $window" }
+        check(window < 120_000L) { "La détection reste otage du délai de connexion" }
+    }
+
+    checkCase("a deliberate teardown is never reported as an SSH failure") {
+        // Tunnel en marche : rien à signaler.
+        check(
+            SxbSshKeepAlive.classify(
+                serviceRunning = true, currentSession = true,
+                sessionConnected = true, engineRunning = true,
+            ) == SxbSshKeepAlive.Liveness.ALIVE
+        )
+
+        // LE DÉFAUT : une reprise démonte volontairement le tunnel précédent.
+        // L'ancien fil de surveillance voyait sa session se fermer et criait à
+        // la panne EN PLEINE RECONNEXION — erreur affichée à l'utilisateur et
+        // tentative consommée pour un démontage que nous avions provoqué.
+        val superseded = SxbSshKeepAlive.classify(
+            serviceRunning = true, currentSession = false,
+            sessionConnected = false, engineRunning = false,
+        )
+        check(superseded == SxbSshKeepAlive.Liveness.SUPERSEDED)
+        check(!SxbSshKeepAlive.requiresReconnect(superseded))
+
+        // L'ordre des questions porte le correctif : « est-ce encore notre
+        // session ? » AVANT « est-elle connectée ? ». Inverser les deux
+        // ramènerait exactement le défaut ci-dessus.
+        check(
+            SxbSshKeepAlive.classify(
+                serviceRunning = true, currentSession = false,
+                sessionConnected = true, engineRunning = true,
+            ) == SxbSshKeepAlive.Liveness.SUPERSEDED
+        )
+
+        // Un service qui s'arrête ne relance rien non plus.
+        val stopped = SxbSshKeepAlive.classify(
+            serviceRunning = false, currentSession = true,
+            sessionConnected = false, engineRunning = false,
+        )
+        check(stopped == SxbSshKeepAlive.Liveness.SERVICE_STOPPED)
+        check(!SxbSshKeepAlive.requiresReconnect(stopped))
+
+        // Le moteur TUN peut tomber sous une session SSH intacte.
+        val engineLost = SxbSshKeepAlive.classify(
+            serviceRunning = true, currentSession = true,
+            sessionConnected = true, engineRunning = false,
+        )
+        check(engineLost == SxbSshKeepAlive.Liveness.ENGINE_LOST)
+        check(SxbSshKeepAlive.requiresReconnect(engineLost))
+    }
+
+    checkCase("SSH death reaches the reconnect policy for the three real failures") {
+        // Une session morte que le service détient TOUJOURS est une vraie panne.
+        val lost = SxbSshKeepAlive.classify(
+            serviceRunning = true, currentSession = true,
+            sessionConnected = false, engineRunning = true,
+        )
+        check(lost == SxbSshKeepAlive.Liveness.SSH_LOST)
+        check(SxbSshKeepAlive.requiresReconnect(lost))
+
+        // ── 1. Le serveur coupe une session oisive (Google Cloud) ─────────
+        // La ligne est intacte : aucun événement réseau ne sera émis. La sonde
+        // de vitalité est le SEUL détecteur, et elle doit mener à une tentative.
+        check(
+            SxbReconnectPolicy.decide(
+                SxbReconnectPolicy.Trigger.TUNNEL_LOST,
+                SxbReconnectPolicy.State(
+                    enabled = true, networkAvailable = true, failedAttempts = 0,
+                ),
+            ) == SxbReconnectPolicy.Decision.RETRY
+        )
+
+        // ── 2. Interruption réseau sans disparition d'interface ───────────
+        // Wi-Fi toujours associé mais lien amont mort : même chemin.
+        check(
+            SxbReconnectPolicy.decide(
+                SxbReconnectPolicy.Trigger.TUNNEL_LOST,
+                SxbReconnectPolicy.State(
+                    enabled = true, networkAvailable = true, failedAttempts = 2,
+                ),
+            ) == SxbReconnectPolicy.Decision.RETRY
+        )
+
+        // ── 3. Mode avion ─────────────────────────────────────────────────
+        // La radio est coupée : la chute SSH ne doit RIEN consommer, puis le
+        // retour du réseau doit relancer sans intervention de l'utilisateur.
+        check(
+            SxbReconnectPolicy.decide(
+                SxbReconnectPolicy.Trigger.TUNNEL_LOST,
+                SxbReconnectPolicy.State(enabled = true, networkAvailable = false),
+            ) == SxbReconnectPolicy.Decision.WAIT_FOR_NETWORK
+        )
+        check(
+            SxbReconnectPolicy.decide(
+                SxbReconnectPolicy.Trigger.NETWORK_AVAILABLE,
+                SxbReconnectPolicy.State(
+                    enabled = true, networkAvailable = true, awaitingNetwork = true,
+                ),
+            ) == SxbReconnectPolicy.Decision.RESUME
+        )
+
+        // Un arrêt volontaire ne redevient jamais une boucle, chute SSH ou non.
+        check(
+            SxbReconnectPolicy.decide(
+                SxbReconnectPolicy.Trigger.TUNNEL_LOST,
+                SxbReconnectPolicy.State(
+                    enabled = true, stopped = true, networkAvailable = true,
+                ),
+            ) == SxbReconnectPolicy.Decision.IGNORE
+        )
+    }
     println("PASS $cases stability policy cases")
 }
