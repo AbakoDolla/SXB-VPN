@@ -328,3 +328,100 @@ export function normaliserLot(
   if (uniques.length > maximum) return { ok: false, raison: RAISONS_GROUPEES.LOT_TROP_GRAND };
   return { ok: true, ids: uniques };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Transitions d'état — suspendre, réactiver, révoquer
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// POURQUOI ICI : la section « Essais gratuits » doit pouvoir fermer, rouvrir
+// ou couper l'accès d'un essai déjà déployé, sur une sélection multiple. Ce
+// sont exactement les gestes que `PUT /subscriptions/:id` et
+// `POST /subscriptions/:id/revoke` font à l'unité. Plutôt que d'écrire une
+// seconde mécanique dans la route d'essai, la décision est posée ici, à côté
+// de `planifierApplication`, avec le même contrat : rien à écrire → `skipped`,
+// geste impossible → `failed`, jamais une réussite muette.
+//
+// `planifierApplication` refuse volontairement de LEVER une suspension : une
+// simple recharge ne doit pas rouvrir un accès fermé à dessein. Ces transitions
+// sont l'inverse — un geste EXPLICITE de l'exploitant — et c'est pour cela
+// qu'elles sont séparées des champs de `apply`.
+
+/** Gestes d'état, tels que l'interface les nomme. */
+export const ETATS_GROUPES = {
+  SUSPENDRE: "suspend",
+  REACTIVER: "resume",
+  REVOQUER: "revoke",
+} as const;
+
+export type EtatGroupe = (typeof ETATS_GROUPES)[keyof typeof ETATS_GROUPES];
+
+export const RAISONS_ETAT = {
+  /** L'accès est déjà dans l'état demandé : rien à écrire. */
+  ETAT_INCHANGE: "errors.subscriptions.bulk.state_unchanged",
+  /** Une révocation ne se rattrape pas : elle ferme l'accès pour de bon. */
+  REVOCATION_DEFINITIVE: "errors.subscriptions.bulk.revoked_is_final",
+  /** Réactiver un accès échu ou épuisé ne rouvrirait rien du tout. */
+  REACTIVATION_SANS_EFFET: "errors.subscriptions.bulk.cannot_resume",
+  /** Geste inconnu. */
+  ETAT_INCONNU: "errors.subscriptions.bulk.unknown_state",
+} as const;
+
+export type PlanEtat =
+  | { statut: "ok"; data: Record<string, unknown>; reduitExposition: boolean }
+  | { statut: "skipped"; raison: string }
+  | { statut: "failed"; raison: string };
+
+/**
+ * Traduit un geste d'état en écritures pour UN forfait.
+ *
+ * La réactivation suit la MÊME règle que le tableau de bord
+ * (`canResumeSubscription`) : elle ne part que d'une suspension, et seulement
+ * si l'accès a encore une échéance devant lui et du volume disponible. Annoncer
+ * « réactivé » sur un forfait échu serait un mensonge à l'écran.
+ */
+export function planifierEtat(
+  forfait: ForfaitCible,
+  etat: EtatGroupe,
+  maintenant: Date = new Date(),
+  note?: string,
+): PlanEtat {
+  const statut = String(forfait.status ?? "active");
+  const instant = maintenant.getTime();
+
+  if (etat === ETATS_GROUPES.REVOQUER) {
+    if (statut === "revoked") return { statut: "skipped", raison: RAISONS_ETAT.ETAT_INCHANGE };
+    return {
+      statut: "ok",
+      reduitExposition: true,
+      data: {
+        status: "revoked",
+        revokedAt: maintenant,
+        revokeReason: note?.trim() || "Essai gratuit révoqué par l’exploitation",
+      },
+    };
+  }
+
+  if (etat === ETATS_GROUPES.SUSPENDRE) {
+    if (statut === "revoked") return { statut: "failed", raison: RAISONS_ETAT.REVOCATION_DEFINITIVE };
+    if (statut === "suspended") return { statut: "skipped", raison: RAISONS_ETAT.ETAT_INCHANGE };
+    return { statut: "ok", reduitExposition: true, data: { status: "suspended" } };
+  }
+
+  if (etat === ETATS_GROUPES.REACTIVER) {
+    if (statut === "revoked") return { statut: "failed", raison: RAISONS_ETAT.REVOCATION_DEFINITIVE };
+    if (statut !== "suspended") return { statut: "skipped", raison: RAISONS_ETAT.ETAT_INCHANGE };
+    const echeance = versDate(forfait.expireAt);
+    if (echeance !== null && echeance.getTime() <= instant) {
+      return { statut: "failed", raison: RAISONS_ETAT.REACTIVATION_SANS_EFFET };
+    }
+    const quota = versBigInt(forfait.quotaBytes);
+    if (quota > BigInt(0) && versBigInt(forfait.quotaUsed) >= quota) {
+      return { statut: "failed", raison: RAISONS_ETAT.REACTIVATION_SANS_EFFET };
+    }
+    // Rouvrir réengage le volume : c'est la seule transition qui AUGMENTE
+    // l'exposition, et la route doit le contrôler comme une augmentation.
+    return { statut: "ok", reduitExposition: false, data: { status: "active" } };
+  }
+
+  return { statut: "failed", raison: RAISONS_ETAT.ETAT_INCONNU };
+}

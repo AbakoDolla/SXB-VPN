@@ -20,7 +20,6 @@ import { useActionLock } from '../hooks/useActionLock';
 import { useBulkDelete } from '../hooks/useBulkDelete';
 import BulkDeleteControls from './BulkDeleteControls';
 import SubscriptionAdjustmentDialog, { SubscriptionAdjustment } from './SubscriptionAdjustmentDialog';
-import { FreeTrialToggle } from './FreeTrialToggle';
 import {
   PackageOpen, Plus, Trash2, RefreshCw, ShieldOff, Search,
   Calendar, HardDrive, Cpu, X, AlertTriangle, CheckCircle,
@@ -93,10 +92,6 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
   const canReduce = canAssign && allows({ reducesExposure: true });
 
   const [subs, setSubs] = useState<Subscription[]>([]);
-  // Essais gratuits masqués à l'ouverture, TOUJOURS : c'est le défaut signalé
-  // par le propriétaire — « Essai gratuit — Orange unlimited stuff » au milieu
-  // de ses abonnements payants. L'état n'est pas mémorisé.
-  const [inclureEssais, setInclureEssais] = useState(false);
   const [stats, setStats] = useState({ total: 0, active: 0, expired: 0 });
   const [clients, setClients] = useState<Client[]>([]);
   const [profiles, setProfiles] = useState<VpnProfile[]>([]);
@@ -168,12 +163,13 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
             })
         : Promise.resolve([]);
       const [s, st, cl, pr] = await Promise.all([
-        // Le filtre d'essai est un paramètre de requête : la liste ET les
-        // compteurs sortent du même périmètre, ils ne peuvent donc pas
-        // diverger. C'est ce qui empêchait « Essai gratuit — … » d'apparaître
-        // au milieu des abonnements payants.
-        fetchSubscriptions({ includeFreeTrial: inclureEssais }),
-        fetchSubStats({ includeFreeTrial: inclureEssais }),
+        // SÉPARATION TOTALE : aucun paramètre d'essai n'est envoyé et aucun ne
+        // peut l'être depuis cet écran. Le serveur exclut les forfaits d'essai
+        // par défaut, donc la liste ET les compteurs sortent du même périmètre
+        // et ne peuvent pas diverger. C'est ce qui empêche « Essai gratuit — … »
+        // d'apparaître au milieu des abonnements payants.
+        fetchSubscriptions(),
+        fetchSubStats(),
         // La liste des clients sert ici de SÉLECTEUR d'attribution : elle
         // garde son périmètre complet, sinon un essai deviendrait impossible à
         // doter d'un forfait ordinaire depuis cet écran.
@@ -193,7 +189,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
     } finally { setLoading(false); }
   };
 
-  useEffect(() => { load(); }, [inclureEssais]);
+  useEffect(() => { load(); }, []);
 
   // Filter + pagination
   const filtered = useMemo(() => subs.filter(s => {
@@ -213,12 +209,10 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
     eligible: ownsSubscription, canDelete: canReduce, canSelect: canAssign,
     remove: sub => deleteSubscription(sub.id),
     onDeleted: ids => setSubs(current => current.filter(sub => !ids.has(sub.id))),
-    afterDelete: async () => { await refreshAccess(); setStats(await fetchSubStats({ includeFreeTrial: inclureEssais })); },
+    afterDelete: async () => { await refreshAccess(); setStats(await fetchSubStats()); },
     pending, run, busy: loading || showModal || bulkConfirm || !!adjustment,
     scopeKey: `${currentUserRole}:${isReseller ? access?.resellerId ?? "" : ""}`,
-    // L'inclusion des essais fait partie du filtre : sans elle dans la clé, une
-    // sélection faite sur une ligne d'essai ressusciterait à la bascule suivante.
-    filterKey: `${search}\0${statusFilter}\0${inclureEssais}`,
+    filterKey: `${search}\0${statusFilter}`,
   });
   const selection = bulkDelete.selected;
 
@@ -228,7 +222,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
   }, [filtered, page, pageSize]);
 
   // Reset page when filter changes
-  useEffect(() => setPage(1), [search, statusFilter, inclureEssais]);
+  useEffect(() => setPage(1), [search, statusFilter]);
   useEffect(() => setPage(current => Math.max(1, Math.min(current, Math.ceil(filtered.length / pageSize)))), [filtered.length, pageSize]);
 
   const openCreate = () => {
@@ -516,7 +510,6 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
       </div>
 
       {/* Filters */}
-      <FreeTrialToggle checked={inclureEssais} onChange={setInclureEssais} disabled={controlsBusy || loading} />
       <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center">
         <div className="relative w-full sm:w-80">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />

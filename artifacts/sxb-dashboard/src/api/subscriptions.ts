@@ -33,27 +33,22 @@ export interface Subscription {
 export interface SubStats { total: number; active: number; expired: number }
 
 /**
- * Options de lecture communes aux écrans d'exploitation.
+ * SÉPARATION TOTALE — aucune option d'inclusion n'existe ici.
  *
- * `includeFreeTrial` est envoyé au SERVEUR, jamais appliqué après coup : masquer
- * des lignes déjà reçues fausserait la pagination et les compteurs, qui est
- * précisément le défaut corrigé. L'omettre laisse la réponse inchangée pour
- * tous les appelants historiques.
+ * « Forfaits Data », « Comptes VPN » et « Appareils » ne connaissent plus les
+ * essais gratuits : ils relèvent exclusivement de leur propre section. Aucun
+ * paramètre d'inclusion n'est donc construit, envoyé, ni même déclaré côté
+ * tableau de bord — il n'y a rien à basculer, et rien qui puisse les ramener.
+ * L'exclusion est appliquée par le SERVEUR, qui la tient pour règle par défaut.
  */
-export interface ListeOptions { includeFreeTrial?: boolean }
-
-/** Suffixe de requête `?includeFreeTrial=false`, ou rien du tout. */
-export function trialQuery(options?: ListeOptions): string {
-  return options?.includeFreeTrial === false ? '?includeFreeTrial=false' : '';
-}
-
-export async function fetchSubscriptions(options?: ListeOptions): Promise<Subscription[]> {
-  const data = await apiRequest<{ subscriptions: Subscription[] }>(`/subscriptions${trialQuery(options)}`);
+export async function fetchSubscriptions(): Promise<Subscription[]> {
+  const data = await apiRequest<{ subscriptions: Subscription[] }>('/subscriptions');
   return data.subscriptions ?? [];
 }
 
-export async function fetchSubStats(options?: ListeOptions): Promise<SubStats> {
-  const data = await apiRequest<SubStats>(`/subscriptions/stats${trialQuery(options)}`);
+/** Compteurs du même périmètre que la liste : ils ne peuvent pas diverger. */
+export async function fetchSubStats(): Promise<SubStats> {
+  const data = await apiRequest<SubStats>('/subscriptions/stats');
   return data;
 }
 

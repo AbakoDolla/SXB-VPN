@@ -14,7 +14,6 @@ import { useActionLock } from "../hooks/useActionLock";
 import { useClipboard } from "../hooks/useClipboard";
 import ActivationRenewalDialog from "./ActivationRenewalDialog";
 import { TrialBadge } from "./TrialBadge";
-import { FreeTrialToggle } from "./FreeTrialToggle";
 import { Smartphone, Plus, Copy, Check, Ban, RefreshCw, Search, X, Clock, Shield, Key, Store, PackageOpen, PauseCircle, PlayCircle } from "lucide-react";
 import Pagination from "./ui/Pagination";
 import { toast } from "sonner";
@@ -41,9 +40,6 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
   const { t, locale, formatNumber, formatBytes, formatDate, message, errorMessage, errorText } = useTranslation();
   const STATUS_CONFIG = lifecycleBadges(t);
   const [devices, setDevices] = useState<Device[]>([]);
-  // Essais gratuits masqués à l'ouverture, TOUJOURS : ils ont leur propre
-  // section. L'état n'est pas mémorisé d'une visite à l'autre.
-  const [inclureEssais, setInclureEssais] = useState(false);
   const [resellers, setResellers] = useState<Reseller[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -73,10 +69,11 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
   const load = async () => {
     setLoading(true);
     try {
-      // L'appel repart au serveur à chaque bascule : le filtre d'essai est un
-      // paramètre de requête, jamais un masquage de lignes déjà reçues, sinon
-      // les trois compteurs ci-dessous compteraient des lignes invisibles.
-      const data = await fetchDevices({ includeFreeTrial: inclureEssais });
+      // SÉPARATION TOTALE : aucun paramètre d'essai n'est envoyé et aucun ne
+      // peut l'être. Le serveur exclut les appareils d'essai par défaut, si
+      // bien que les trois compteurs ci-dessous portent exactement sur les
+      // lignes affichées.
+      const data = await fetchDevices();
       setDevices(data);
       if (showsOwnerColumn && can("reseller.manage")) setResellers(await fetchResellers());
     } catch (err) {
@@ -86,7 +83,7 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
     }
   };
 
-  useEffect(() => { load(); }, [inclureEssais]);
+  useEffect(() => { load(); }, []);
 
   const handleGenerate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -151,9 +148,9 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
     return filtered.slice(start, start + pageSize);
   }, [filtered, page, pageSize]);
 
-  useEffect(() => setPage(1), [search, inclureEssais]);
-  // Le périmètre change avec la bascule : une page haute deviendrait vide alors
-  // que la liste, elle, contient bien des appareils.
+  useEffect(() => setPage(1), [search]);
+  // Le périmètre change avec la recherche : une page haute deviendrait vide
+  // alors que la liste, elle, contient bien des appareils.
   useEffect(() => setPage(current => Math.max(1, Math.min(current, Math.ceil(Math.max(filtered.length, 1) / pageSize)))), [filtered.length, pageSize]);
 
   const active = devices.filter(d => deviceStatus(d) === "active").length;
@@ -225,8 +222,6 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
           </button>
         )}
       </div>
-
-      <FreeTrialToggle checked={inclureEssais} onChange={setInclureEssais} disabled={loading} />
 
       {/* Table */}
       <div className="bg-[#0f1218] border border-[#1a1f2e] rounded-2xl overflow-hidden">

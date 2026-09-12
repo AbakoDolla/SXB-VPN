@@ -977,6 +977,196 @@ export function refusLotEssai(raison: string, limite: number): { status: number;
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Plusieurs configurations pour plusieurs inscrits
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Un inscrit peut recevoir PLUSIEURS configurations VPN d'un seul geste,
+// exactement comme un client principal peut détenir plusieurs forfaits. Le
+// déploiement crée alors un forfait par couple (inscrit, configuration).
+//
+// C'est un PRODUIT, et un produit se borne : 200 inscrits × 10 configurations
+// feraient 2 000 forfaits d'un clic. Deux bornes le contiennent, toutes deux
+// annoncées à l'interface plutôt que devinées.
+
+/** Nombre maximal de configurations VPN retenues pour un même déploiement. */
+export const MAX_CONFIGS_ESSAI = 10;
+
+/**
+ * Nombre maximal de forfaits qu'UN déploiement peut créer.
+ *
+ * Le lot est écrit demande par demande, configuration par configuration,
+ * chacune avec ses propres contrôles : sans cette borne, une sélection large
+ * tiendrait la connexion ouverte assez longtemps pour être coupée, et
+ * l'exploitant se retrouverait sans compte rendu.
+ */
+export const MAX_FORFAITS_ESSAI = 400;
+
+export const RAISONS_CONFIGS_ESSAI = {
+  AUCUNE_CONFIG: "errors.free_trial.no_profile",
+  TROP_DE_CONFIGS: "errors.free_trial.too_many_profiles",
+  TROP_DE_FORFAITS: "errors.free_trial.too_many_subscriptions",
+} as const;
+
+/**
+ * Normalise la liste des configurations choisies : doublons retirés, ordre
+ * conservé, borne appliquée.
+ *
+ * Le dédoublonnage évite qu'un même serveur sélectionné deux fois fabrique
+ * deux forfaits identiques au même inscrit.
+ */
+export function normaliserConfigsEssai(
+  identifiants: ReadonlyArray<unknown>,
+  maximum = MAX_CONFIGS_ESSAI,
+): { ok: true; ids: string[] } | { ok: false; raison: string; limite: number } {
+  const uniques: string[] = [];
+  for (const brut of identifiants ?? []) {
+    if (typeof brut !== "string") continue;
+    const propre = brut.trim();
+    if (propre && !uniques.includes(propre)) uniques.push(propre);
+  }
+  if (!uniques.length) return { ok: false, raison: RAISONS_CONFIGS_ESSAI.AUCUNE_CONFIG, limite: maximum };
+  if (uniques.length > maximum) return { ok: false, raison: RAISONS_CONFIGS_ESSAI.TROP_DE_CONFIGS, limite: maximum };
+  return { ok: true, ids: uniques };
+}
+
+/**
+ * Combien de forfaits ce déploiement créerait — et le refus motivé si c'est
+ * trop. Le chiffre est rendu tel quel pour que l'interface l'annonce AVANT la
+ * confirmation : « 12 inscrits × 3 serveurs = 36 forfaits ».
+ */
+export function verifierProduitEssai(
+  demandes: number,
+  configurations: number,
+  maximum = MAX_FORFAITS_ESSAI,
+): { ok: true; total: number } | { ok: false; total: number; refus: { status: number; body: Record<string, unknown> } } {
+  const total = demandes * configurations;
+  if (total > maximum) {
+    return {
+      ok: false,
+      total,
+      refus: {
+        status: 400,
+        body: {
+          error: RAISONS_CONFIGS_ESSAI.TROP_DE_FORFAITS,
+          code: "FREE_TRIAL_TOO_MANY_SUBSCRIPTIONS",
+          message: `Ce déploiement créerait ${total} forfaits ; la limite est de ${maximum} par opération.`,
+          limit: maximum,
+          projected: total,
+        },
+      },
+    };
+  }
+  return { ok: true, total };
+}
+
+/** Refus motivé d'une sélection de configurations hors bornes. */
+export function refusConfigsEssai(raison: string, limite: number): { status: number; body: Record<string, unknown> } {
+  return {
+    status: 400,
+    body: {
+      error: raison,
+      code: raison === RAISONS_CONFIGS_ESSAI.TROP_DE_CONFIGS ? "FREE_TRIAL_TOO_MANY_PROFILES" : "FREE_TRIAL_NO_PROFILE",
+      message: raison === RAISONS_CONFIGS_ESSAI.TROP_DE_CONFIGS
+        ? `Un déploiement ne peut pas retenir plus de ${limite} configurations.`
+        : "Choisissez au moins une configuration VPN.",
+      limit: limite,
+    },
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Accès courant d'un essai déployé
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// TOUT se gère dans la section « Essais gratuits » : pour agir sur un essai
+// déjà déployé, l'exploitant doit d'abord VOIR ce qu'il a. Ces vues ne sont
+// jamais renvoyées à l'application mobile — elles n'existent que pour l'écran
+// d'administration, comme `vueDemandePourAdmin`.
+
+/** Un forfait d'essai, tel que la section Essais l'affiche. */
+export interface ForfaitEssaiVue {
+  id: string;
+  name: string;
+  profileId: string | null;
+  profileName: string | null;
+  status: string;
+  /** Volume accordé, en octets, `"0"` pour un accès sans plafond. */
+  quotaBytes: string;
+  /** Volume CONSOMMÉ, en octets : c'est ce que le propriétaire veut voir. */
+  quotaUsed: string;
+  deviceLimit: number | null;
+  startAt: string | null;
+  expireAt: string | null;
+}
+
+/** L'accès complet d'une demande déployée. */
+export interface AccesEssaiVue {
+  subscriptions: ForfaitEssaiVue[];
+  /** Total accordé et total consommé sur l'ensemble des forfaits d'essai. */
+  quotaBytes: string;
+  quotaUsed: string;
+  /** Échéance la plus lointaine : jusqu'à quand l'essai reste ouvert. */
+  expireAt: string | null;
+  /** Vrai dès qu'un des forfaits transporte encore quelque chose. */
+  active: boolean;
+}
+
+/**
+ * Agrège les forfaits d'un essai en une vue lisible d'un coup d'œil.
+ *
+ * `active` réutilise `estEssaiActif`, la mesure déjà en place : un second
+ * calcul divergerait tôt ou tard de l'indicateur « essais actifs ».
+ */
+export function vueAccesEssai(
+  forfaits: ReadonlyArray<{
+    id: string;
+    name?: string | null;
+    profileId?: string | null;
+    profile?: { name?: string | null } | null;
+    status?: string | null;
+    quotaBytes?: bigint | number | string | null;
+    quotaUsed?: bigint | number | string | null;
+    deviceLimit?: number | null;
+    startAt?: Date | string | null;
+    expireAt?: Date | string | null;
+  }>,
+  maintenant = new Date(),
+): AccesEssaiVue {
+  let total = BigInt(0);
+  let consomme = BigInt(0);
+  let echeance: number | null = null;
+  let active = false;
+
+  const subscriptions = forfaits.map((forfait) => {
+    total += versEntier(forfait.quotaBytes) ?? BigInt(0);
+    consomme += versEntier(forfait.quotaUsed) ?? BigInt(0);
+    const fin = forfait.expireAt ? new Date(forfait.expireAt as any).getTime() : null;
+    if (fin !== null && Number.isFinite(fin) && (echeance === null || fin > echeance)) echeance = fin;
+    if (estEssaiActif(forfait, maintenant)) active = true;
+    return {
+      id: String(forfait.id),
+      name: String(forfait.name ?? ""),
+      profileId: forfait.profileId ? String(forfait.profileId) : null,
+      profileName: forfait.profile?.name ? String(forfait.profile.name) : null,
+      status: String(forfait.status ?? "active"),
+      quotaBytes: String(versEntier(forfait.quotaBytes) ?? BigInt(0)),
+      quotaUsed: String(versEntier(forfait.quotaUsed) ?? BigInt(0)),
+      deviceLimit: forfait.deviceLimit ?? null,
+      startAt: isoOuNull(forfait.startAt ?? null),
+      expireAt: isoOuNull(forfait.expireAt ?? null),
+    };
+  });
+
+  return {
+    subscriptions,
+    quotaBytes: String(total),
+    quotaUsed: String(consomme),
+    expireAt: echeance === null ? null : new Date(echeance).toISOString(),
+    active,
+  };
+}
+
 /**
  * Cohérence jeton ↔ demande.
  *

@@ -475,3 +475,26 @@ CREATE INDEX IF NOT EXISTS "free_trial_requests_country_status_idx"
 ALTER TABLE "traffic_usage" ADD COLUMN IF NOT EXISTS "reportKey" TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS "traffic_usage_reportKey_key"
   ON "traffic_usage" ("reportKey");
+-- ── Essai gratuit : plusieurs configurations pour une meme demande ──────────
+-- STRICTEMENT ADDITIF : une colonne NULLABLE sur "subscriptions", plus son
+-- index. Aucune ligne existante n'est reecrite, aucune colonne existante n'est
+-- modifiee ni rendue obligatoire.
+--
+-- POURQUOI : l'exploitation peut desormais attribuer PLUSIEURS configurations
+-- VPN a une meme demande d'essai, donc creer plusieurs forfaits pour un meme
+-- inscrit. "free_trial_requests"."subscriptionId" ne peut en designer qu'un
+-- seul ; sans ce marqueur, les forfaits suivants passeraient pour des forfaits
+-- ordinaires et reapparaitraient dans « Forfaits Data », ce que le
+-- proprietaire a explicitement refuse.
+--
+-- Une base qui n'applique pas ce bloc continue de fonctionner a l'identique :
+-- les essais deja deployes restent reconnus par
+-- "free_trial_requests"."subscriptionId", sans aucune reprise de donnees.
+ALTER TABLE "subscriptions" ADD COLUMN IF NOT EXISTS "freeTrialRequestId" TEXT;
+
+-- La separation des essais lit ce marqueur a chaque affichage de « Forfaits
+-- Data », « Comptes VPN » et « Appareils » : ce doit etre une lecture indexee,
+-- pas un balayage de table.
+CREATE INDEX IF NOT EXISTS "subscriptions_freeTrialRequestId_idx"
+  ON "subscriptions" ("freeTrialRequestId");
+

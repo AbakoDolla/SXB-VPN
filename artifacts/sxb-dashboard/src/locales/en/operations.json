@@ -12,7 +12,11 @@
       "deployTo": "Deploy to {{count}} enrollee(s)",
       "done": "Operation complete",
       "summary": "{{selected}} selected · {{succeeded}} succeeded · {{failed}} failed",
-      "failedItem": "• {{id}} — {{reason}}"
+      "failedItem": "• {{id}} — {{reason}}",
+      "noProfile": "Pick at least one VPN configuration before deploying.",
+      "preview": "This will create {{subscriptions}} plan(s): {{requests}} enrollee(s) × {{profiles}} configuration(s).",
+      "tooManyProfiles": "A deployment cannot exceed {{max}} VPN configurations. Narrow the server selection.",
+      "tooManySubscriptions": "This batch would create {{count}} plans, beyond the limit of {{max}}. Reduce the number of enrollees or configurations."
     },
     "countryUnknown": "Not provided",
     "metrics": {
@@ -62,7 +66,7 @@
     "usesLimited": "{{used}} / {{max}} enrollment(s)",
     "platformVersion": "{{platform}} · {{version}}",
     "columns": {
-    "country": "Country",
+      "country": "Country",
       "name": "Name",
       "deviceId": "Device ID",
       "token": "Token",
@@ -72,7 +76,8 @@
       "uses": "Uses",
       "tokenState": "State",
       "createdAt": "Created on",
-      "action": "Action"
+      "action": "Action",
+      "access": "Granted access"
     },
     "status": {
       "pending": "Pending verification",
@@ -110,14 +115,73 @@
       "deviceLimit": "Allowed devices",
       "startAt": "Start date and time",
       "expireAt": "Expiry date and time",
-      "note": "Internal note (optional)"
+      "note": "Internal note (optional)",
+      "servers": "VPN configurations to assign",
+      "serversHint": "Each selected enrollee receives one plan per ticked configuration. At most {{maxProfiles}} configurations and {{maxSubscriptions}} plans per deployment.",
+      "noServer": "No VPN configuration available."
     },
     "notice": {
       "tokenCreated": "Token created: {{token}}",
       "tokenRevoked": "Token revoked: it no longer accepts new enrollments.",
-      "deployed": "{{deployed}} access deployed out of {{total}}.",
+      "deployed": "{{deployed}} access deployed out of {{total}} — {{subscriptions}} plan(s) created.",
       "partial": "Requests not deployed: {{items}}",
-      "rejected": "{{count}} request(s) rejected."
+      "rejected": "{{count}} request(s) rejected.",
+      "managed": "{{succeeded}} trial(s) updated out of {{total}}."
+    },
+    "marker": "Free trial",
+    "manage": "Manage deployed trials",
+    "selectedSplit": "{{count}} enrollee(s) selected · {{pending}} pending · {{deployed}} deployed",
+    "access": {
+      "none": "No access deployed",
+      "servers": "Assigned servers",
+      "serverUnknown": "Server removed",
+      "quota": "{{used}} used out of {{granted}}",
+      "unlimited": "unlimited",
+      "expiresOn": "Ends on {{date}}",
+      "noExpiry": "No expiry",
+      "active": "Trial active",
+      "inactive": "Trial inactive"
+    },
+    "manageForm": {
+      "title": "Manage already deployed trials",
+      "hint": "Everything is handled here: server, quota, expiry and state of the {{count}} selected trial(s). Every field is optional; only what you fill in is applied.",
+      "nothingToDo": "Fill in at least one change before confirming.",
+      "leaveEmpty": "Leave empty to keep unchanged",
+      "serverSection": "Assigned server",
+      "serverMode": "What to do with the server?",
+      "serverKeep": "Leave unchanged",
+      "serverReplace": "Replace with another server",
+      "serverAdd": "Add extra servers",
+      "replacement": "Replacement server",
+      "quotaSection": "Quota",
+      "quotaMode": "How to apply the quota?",
+      "quotaSet": "Set the quota to this value",
+      "quotaAdd": "Add this value to the current quota",
+      "quotaValue": "Quota (GB)",
+      "expirySection": "Expiry",
+      "expiryMode": "What to do with the expiry?",
+      "expiryKeep": "Leave unchanged",
+      "expiryDate": "Set an exact date",
+      "expiryDuration": "Extend or shorten in days",
+      "durationMode": "How to apply the duration?",
+      "durationAdd": "Add (negative value to shorten)",
+      "durationSet": "Restart from now for this duration",
+      "durationDays": "Duration (days)",
+      "state": "Access state",
+      "stateKeep": "Leave unchanged",
+      "stateSuspend": "Suspend access",
+      "stateResume": "Resume access",
+      "stateRevoke": "Revoke access",
+      "recap": "{{count}} trial(s) from token {{token}} will receive exactly the changes above.",
+      "addPreview": "This will create {{subscriptions}} extra plan(s): {{requests}} trial(s) × {{profiles}} configuration(s).",
+      "submit": "Apply to {{count}} trial(s)"
+    },
+    "manageResult": {
+      "done": "Management complete",
+      "summary": "{{selected}} selected · {{succeeded}} processed · {{updated}} plan(s) updated · {{created}} plan(s) created · {{failed}} failed",
+      "updated": "Updated",
+      "skipped": "Skipped",
+      "failed": "Failed"
     }
   },
   "reset": {
@@ -167,7 +231,11 @@
       "privateBackup": "The backup is private and server-side; no backup path or secret is displayed here.",
       "storage": "Deleted database space may be reused. No immediate disk-space or GB reduction is promised."
     },
-    "retainedRoles": { "OWNER": "Owner (OWNER)", "ADMIN": "Administrators (ADMIN)", "SUPER_ADMIN": "Super administrators (SUPER_ADMIN)" },
+    "retainedRoles": {
+      "OWNER": "Owner (OWNER)",
+      "ADMIN": "Administrators (ADMIN)",
+      "SUPER_ADMIN": "Super administrators (SUPER_ADMIN)"
+    },
     "preserved": {
       "roles": "Roles retained",
       "permissions": "Permissions retained",

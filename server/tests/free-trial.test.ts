@@ -18,7 +18,7 @@
  * bien de déléguer plutôt que de rouvrir un chemin parallèle.
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import {
   CHAMPS_INTERDITS_MOBILE,
@@ -547,6 +547,7 @@ describe("contrat de la route — la décision reste dans le service", () => {
       "'/status'",
       "'/requests'",
       "'/requests/deploy'",
+      "'/requests/manage'",
       "'/requests/reject'",
       "'/stats/countries'",
       "'/stats/overview'",
@@ -558,9 +559,12 @@ describe("contrat de la route — la décision reste dans le service", () => {
   it("protège toutes les routes admin par requireAuth + requirePermission", () => {
     const adminRoutes = source.split(/router\.(?:get|post)\(/).slice(1)
       .filter((bloc) => !bloc.startsWith("'/enroll'") && !bloc.startsWith("'/status'"));
-    // 8 routes internes : 3 jetons, 3 demandes (liste + deux récapitulatifs)
-    // et 2 actions d'instruction (déploiement, refus).
-    assert.equal(adminRoutes.length, 8, "nombre de routes admin inattendu");
+    // 9 routes internes : 3 jetons, 3 demandes (liste + deux récapitulatifs)
+    // et 3 actions d'instruction (déploiement, gestion des essais déployés,
+    // refus). La gestion est la contrepartie de la séparation totale : les
+    // écrans d'exploitation n'ayant plus aucune prise sur un essai, elle doit
+    // exister ICI — et rester aussi fermée que les autres.
+    assert.equal(adminRoutes.length, 9, "nombre de routes admin inattendu");
     for (const bloc of adminRoutes) {
       const entete = bloc.slice(0, 600);
       assert.ok(entete.includes("requireAuth"), `route admin sans requireAuth : ${entete.slice(0, 40)}`);
@@ -644,16 +648,33 @@ describe("non-régression — le modèle de données reste ADDITIF", () => {
   it("le SQL manuel est purement additif (aucun DROP ni NOT NULL rétroactif)", () => {
     const sql = readFileSync(new URL("../../prisma/migrations_manual.sql", import.meta.url), "utf8");
     // L'assertion porte sur les sections de l'ESSAI GRATUIT, pas sur tout ce
-    // qui a été ajouté au fichier depuis. Le découpage par en-tête garde donc
-    // exactement la même exigence — l'essai ne touche à aucune table existante
-    // — sans se déclencher sur la migration additive d'un autre sujet.
+    // qui a été ajouté au fichier depuis : le découpage par en-tête évite de
+    // se déclencher sur la migration additive d'un autre sujet. L'exigence,
+    // elle, ne faiblit pas — elle porte désormais sur la NATURE de chaque
+    // altération plutôt que sur le nom des tables touchées.
     const sections = sql.slice(sql.indexOf("free_trial_tokens")).split(/\n(?=-- ──)/);
     const bloc = sections.filter(section => /free_trial|essai/i.test(section)).join("\n");
     assert.ok(bloc.includes("CREATE TABLE IF NOT EXISTS"), "création idempotente attendue");
     assert.equal(/DROP\s+(TABLE|COLUMN)/i.test(bloc), false, "aucune suppression tolérée");
-    assert.equal(/ALTER\s+TABLE\s+"(?!free_trial)/i.test(bloc), false, "aucune table existante modifiée");
     // Et le fichier entier, toutes sections confondues, reste sans suppression.
     assert.equal(/DROP\s+(TABLE|COLUMN)/i.test(sql), false, "aucune suppression tolérée nulle part");
+
+    // Une table PRÉEXISTANTE ne peut être touchée que pour AJOUTER une colonne
+    // nullable et idempotente. C'est ce qu'exige le multi-configurations :
+    // `subscriptions.freeTrialRequestId` marque chaque forfait né d'un essai,
+    // faute de quoi les forfaits surnuméraires réapparaîtraient dans
+    // « Forfaits Data ». Le contrôle porte désormais sur la NATURE de
+    // l'altération plutôt que sur le nom de la table — c'est plus strict, car
+    // il interdit aussi un `ALTER COLUMN … SET NOT NULL` sur `free_trial_*`.
+    for (const [, alteration] of bloc.matchAll(/ALTER\s+TABLE\s+"[^"]+"\s+([\s\S]*?);/gi)) {
+      assert.match(
+        alteration,
+        /^ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+"[^"]+"\s+\w+$/i,
+        `altération non additive : ${alteration.trim().slice(0, 80)}`,
+      );
+      assert.doesNotMatch(alteration, /NOT\s+NULL|DEFAULT|USING/i,
+        "une colonne ajoutée doit rester nullable et sans réécriture de lignes");
+    }
   });
 
   it("ajoute pays et empreinte en colonnes NULLABLES, avec leurs index", () => {
@@ -1108,7 +1129,9 @@ describe("LOTS — les demandes vivent SOUS leur jeton, jamais mélangées", () 
     // Chaque demande est traitée dans son propre try : un échec isolé est
     // rapporté, il n'annule pas les précédentes.
     assert.ok(/for \(const requestId of lot\.ids\)/.test(bloc), "itération sur le lot normalisé attendue");
-    assert.ok(bloc.includes("resultats.push({ id: requestId, status: 'deployed' })"));
+    // Le compte rendu par élément dit aussi COMBIEN de forfaits la demande a
+    // reçus : avec plusieurs configurations, « déployé » seul serait ambigu.
+    assert.ok(bloc.includes("resultats.push({ id: requestId, status: 'deployed', subscriptions: profils.length })"));
     assert.ok(/status: concurrent \? 'skipped' : 'failed'/.test(bloc));
     assert.ok(bloc.includes("results: resultats"), "résultat rapporté élément par élément");
     // Chaque déploiement reste conditionné à « encore en attente » : deux
@@ -1208,8 +1231,11 @@ describe("séparation — les essais ne se mélangent plus aux clients principau
     assert.equal(portee.exploitable, true);
     assert.deepEqual(portee.subscriptionIds, ["sub-essai"]);
     assert.deepEqual(portee.clientsEssaiUniquement, ["cli-1"]);
-    // Trois lectures indexées pour toute une page, jamais une par ligne.
-    assert.equal(appels.length, 3);
+    // Quatre lectures indexées pour toute une page, jamais une par ligne : les
+    // demandes déployées, les forfaits portant le marqueur structurel, les
+    // forfaits des comptes touchés, puis les comptes eux-mêmes. Le nombre est
+    // CONSTANT — il ne dépend ni du nombre de lignes affichées ni du parc.
+    assert.equal(appels.length, 4);
   });
 
   it("ne compte QUE les demandes déployées : une demande en attente n'a ouvert aucun accès", async () => {
@@ -1277,16 +1303,21 @@ describe("séparation — les essais ne se mélangent plus aux clients principau
     assert.deepEqual(casse.subscriptionIds, []);
   });
 
-  it("l'absence de paramètre ne change le contrat d'aucun appelant historique", () => {
-    assert.equal(inclutEssaisGratuits(undefined), true);
-    assert.equal(inclutEssaisGratuits(null), true);
-    assert.equal(inclutEssaisGratuits(""), true);
-    assert.equal(inclutEssaisGratuits("true"), true);
-    assert.equal(inclutEssaisGratuits("1"), true);
+  it("aucun appelant ne peut obtenir les essais sans les demander EXPLICITEMENT", () => {
+    // DURCISSEMENT : l'absence de paramètre vaut désormais « sans essais ».
+    // Le serveur ne dépend plus de ce que l'interface pense à envoyer, ce qui
+    // est précisément la séparation totale exigée par le propriétaire.
+    assert.equal(inclutEssaisGratuits(undefined), false);
+    assert.equal(inclutEssaisGratuits(null), false);
+    assert.equal(inclutEssaisGratuits(""), false);
     for (const refus of ["false", "0", "no", "off", "non", "FALSE", " False "]) {
       assert.equal(inclutEssaisGratuits(refus), false, `« ${refus} » doit masquer les essais`);
     }
-    // Express rend un tableau quand le paramètre est répété.
+    // Seule une demande explicite d'inclusion est honorée.
+    assert.equal(inclutEssaisGratuits("true"), true);
+    assert.equal(inclutEssaisGratuits("1"), true);
+    // Express rend un tableau quand le paramètre est répété : la première
+    // valeur décide, et elle doit rester un refus.
     assert.equal(inclutEssaisGratuits(["false", "true"]), false);
   });
 
@@ -1326,19 +1357,48 @@ describe("séparation — les essais ne se mélangent plus aux clients principau
     assert.ok(stats.includes("exclureIdentifiants('id', portee.subscriptionIds)"));
   });
 
-  it("les trois vues s'ouvrent TOUJOURS essais masqués", () => {
+  /**
+   * SÉPARATION DEVENUE TOTALE.
+   *
+   * Le propriétaire a refusé l'interrupteur « Inclure les essais gratuits » :
+   * il n'existe plus. L'assertion qui exigeait sa PRÉSENCE est donc remplacée
+   * par la garantie plus forte qu'il a demandée — aucune option, nulle part,
+   * ne peut ramener un essai dans ces trois écrans.
+   */
+  it("les trois vues n'offrent AUCUNE option de ramener les essais", () => {
+    const racine = new URL("../../artifacts/sxb-dashboard/src/", import.meta.url);
+
+    // L'interrupteur est SUPPRIMÉ, pas seulement décroché.
+    assert.equal(existsSync(new URL("components/FreeTrialToggle.tsx", racine)), false,
+      "FreeTrialToggle.tsx doit avoir disparu du dépôt");
+
     for (const vue of ["SubscriptionsView", "ClientsView", "DevicesView"]) {
-      const source = readFileSync(
-        new URL(`../../artifacts/sxb-dashboard/src/components/${vue}.tsx`, import.meta.url),
-        "utf8",
-      );
-      assert.ok(/useState\(false\)/.test(source.slice(source.indexOf("inclureEssais"), source.indexOf("inclureEssais") + 200)),
-        `${vue} doit démarrer avec les essais masqués`);
-      assert.ok(source.includes("includeFreeTrial: inclureEssais"),
-        `${vue} doit transmettre le filtre au serveur`);
-      assert.ok(source.includes("<FreeTrialToggle"), `${vue} doit porter l'interrupteur`);
-      assert.ok(source.includes("}, [inclureEssais]);"), `${vue} doit recharger depuis le serveur à la bascule`);
+      const source = readFileSync(new URL(`components/${vue}.tsx`, racine), "utf8");
+      assert.doesNotMatch(source, /FreeTrialToggle/, `${vue} référence encore l'interrupteur`);
+      assert.doesNotMatch(source, /inclureEssais/, `${vue} garde un état d'inclusion`);
+      assert.doesNotMatch(source, /includeFreeTrial/, `${vue} envoie encore le paramètre`);
     }
+
+    // Aucune fonction d'accès HTTP du tableau de bord ne le construit non plus :
+    // le paramètre subsiste dans l'API, mais il est devenu inatteignable depuis
+    // l'interface, ce qui est exactement la consigne.
+    for (const fichier of ["subscriptions", "clients", "devices"]) {
+      const source = readFileSync(new URL(`api/${fichier}.ts`, racine), "utf8");
+      assert.doesNotMatch(source, /includeFreeTrial/, `api/${fichier}.ts peut encore demander les essais`);
+    }
+  });
+
+  it("l'exclusion s'applique même quand l'interface ne passe RIEN", () => {
+    // Contrôle de la règle au niveau du SOURCE : le défaut ne peut pas dériver
+    // sans que ce test le voie.
+    const source = readFileSync(new URL("../services/free-trial-marks.ts", import.meta.url), "utf8");
+    const bloc = source.slice(source.indexOf("export function inclutEssaisGratuits"));
+    assert.match(bloc, /valeur === undefined \|\| valeur === null\) return false/);
+    assert.match(bloc, /texte === ""\) return false/);
+    // L'inclusion est une liste FERMÉE : tout ce qui n'y figure pas exclut.
+    assert.match(bloc, /\["1", "true", "yes", "on", "oui"\]\.includes\(texte\)/);
+    // Une valeur inconnue n'ouvre donc jamais la porte par accident.
+    assert.equal(inclutEssaisGratuits("peut-être"), false);
   });
 });
 

@@ -46,27 +46,47 @@ export async function marquesEssaiParClient(
     // ou refusée n'a jamais ouvert d'accès, la signaler serait mensonger.
     const demandes = await db.freeTrialRequest.findMany({
       where: { clientId: { in: ids }, status: STATUT_DEMANDE.DEPLOYED },
-      select: { clientId: true, country: true, deployedAt: true, subscriptionId: true },
+      select: { id: true, clientId: true, country: true, deployedAt: true, subscriptionId: true },
     });
     if (!demandes.length) return marques;
 
-    // La date de fin est lue sur le FORFAIT, pas figée à la demande : si
+    // La date de fin est lue sur les FORFAITS, pas figée à la demande : si
     // l'exploitation prolonge l'essai, la mention suit, au lieu d'afficher
     // éternellement l'échéance d'origine.
+    //
+    // Une demande peut porter PLUSIEURS forfaits depuis le déploiement
+    // multi-configurations : on retient l'échéance la plus lointaine, celle qui
+    // dit jusqu'à quand l'essai reste ouvert.
     const forfaitIds = [...new Set(demandes.map((d: any) => d.subscriptionId).filter(Boolean))] as string[];
+    const demandeIds = [...new Set(demandes.map((d: any) => d.id).filter(Boolean))] as string[];
     const echeances = new Map<string, Date | string | null>();
-    if (forfaitIds.length && db.subscription) {
+    if (demandeIds.length && db.subscription) {
       const forfaits = await db.subscription.findMany({
-        where: { id: { in: forfaitIds } },
-        select: { id: true, expireAt: true },
+        where: {
+          OR: [
+            ...(forfaitIds.length ? [{ id: { in: forfaitIds } }] : []),
+            { freeTrialRequestId: { in: demandeIds } },
+          ],
+        },
+        select: { id: true, expireAt: true, freeTrialRequestId: true },
       });
-      for (const forfait of forfaits as any[]) echeances.set(forfait.id, forfait.expireAt ?? null);
+      for (const forfait of forfaits as any[]) {
+        const rattachements = [
+          forfait.freeTrialRequestId ? String(forfait.freeTrialRequestId) : null,
+          ...demandes.filter((d: any) => d.subscriptionId === forfait.id).map((d: any) => String(d.id)),
+        ].filter(Boolean) as string[];
+        for (const demandeId of new Set(rattachements)) {
+          const connue = echeances.get(demandeId);
+          const candidate = forfait.expireAt ?? null;
+          if (connue === undefined || plusTardifDate(candidate, connue)) echeances.set(demandeId, candidate);
+        }
+      }
     }
 
     for (const demande of demandes as any[]) {
       const marque = marqueEssaiPourClient({
         demande,
-        expireAt: demande.subscriptionId ? echeances.get(demande.subscriptionId) ?? null : null,
+        expireAt: echeances.has(demande.id) ? echeances.get(demande.id) ?? null : null,
       });
       if (!marque) continue;
       const existante = marques.get(demande.clientId);
@@ -89,6 +109,13 @@ function plusTardif(candidat: string | null, reference: string | null): boolean 
   return new Date(candidat).getTime() > new Date(reference).getTime();
 }
 
+/** Même comparaison, sur les valeurs brutes lues en base. */
+function plusTardifDate(candidat: Date | string | null, reference: Date | string | null): boolean {
+  if (candidat === null) return false;
+  if (reference === null) return true;
+  return new Date(candidat).getTime() > new Date(reference).getTime();
+}
+
 /**
  * Forfaits d'UN compte nés d'un essai gratuit déployé.
  *
@@ -101,6 +128,9 @@ function plusTardif(candidat: string | null, reference: string | null): boolean 
  *
  * Une seule lecture indexée, bornée au compte du demandeur : l'appareil ne
  * déclenche jamais la lecture globale du parc que fait `porteeEssaiDeploye`.
+ * Une seconde lecture, bornée au même compte, rattrape les forfaits nés d'un
+ * déploiement multi-configurations : `subscriptionId` n'en désigne qu'un seul,
+ * les autres ne portent que leur propre marqueur `freeTrialRequestId`.
  *
  * Rend un ensemble VIDE si la fonctionnalité d'essai n'est pas déployée sur
  * cette base ou si la lecture échoue : la liste des connexions est le chemin
@@ -114,9 +144,17 @@ export async function forfaitsEssaiDuClient(db: any, clientId: string): Promise<
       where: { clientId, status: STATUT_DEMANDE.DEPLOYED },
       select: { subscriptionId: true },
     });
-    return new Set(
+    const forfaits = new Set(
       (demandes as any[]).map((demande) => demande.subscriptionId).filter(Boolean).map(String),
     );
+    if (db.subscription) {
+      const marques = await db.subscription.findMany({
+        where: { clientId, freeTrialRequestId: { not: null } },
+        select: { id: true },
+      });
+      for (const forfait of marques as any[]) forfaits.add(String(forfait.id));
+    }
+    return forfaits;
   } catch (erreur) {
     console.error("free-trial mobile mark error:", erreur);
     return new Set<string>();
@@ -173,16 +211,34 @@ export async function porteeEssaiDeploye(db: any): Promise<PorteeEssai> {
     // masquerait des lignes qui n'ont rien à voir avec un essai.
     const demandes = await db.freeTrialRequest.findMany({
       where: { status: STATUT_DEMANDE.DEPLOYED },
-      select: { clientId: true, subscriptionId: true },
+      select: { id: true, clientId: true, subscriptionId: true },
     });
     const clientIds = [...new Set(
       (demandes as any[]).map((d) => d.clientId).filter(Boolean).map(String),
     )];
-    const subscriptionIds = [...new Set(
+    const subscriptionIds = new Set(
       (demandes as any[]).map((d) => d.subscriptionId).filter(Boolean).map(String),
-    )];
+    );
+
+    // Un déploiement multi-configurations crée PLUSIEURS forfaits pour la même
+    // demande ; `subscriptionId` n'en désigne qu'un. Le marqueur porté par le
+    // forfait lui-même (`freeTrialRequestId`) rattrape tous les autres. Sans
+    // cette lecture, les forfaits surnuméraires passeraient pour ordinaires et
+    // réapparaîtraient dans « Forfaits Data ».
+    if (db.subscription) {
+      const marques = await db.subscription.findMany({
+        where: { freeTrialRequestId: { not: null } },
+        select: { id: true, clientId: true },
+      });
+      for (const forfait of marques as any[]) subscriptionIds.add(String(forfait.id));
+    }
     if (clientIds.length === 0) {
-      return { subscriptionIds, clientIds, clientsEssaiUniquement: [], exploitable: true };
+      return {
+        subscriptionIds: [...subscriptionIds],
+        clientIds,
+        clientsEssaiUniquement: [],
+        exploitable: true,
+      };
     }
 
     // Un compte qui dispose d'un accès ORDINAIRE — un forfait qui n'est pas né
@@ -190,15 +246,15 @@ export async function porteeEssaiDeploye(db: any): Promise<PorteeEssai> {
     // client comme les autres : l'essai n'est qu'un épisode de son histoire.
     // Le doute profite toujours à l'affichage : mieux vaut montrer une ligne de
     // trop que perdre de vue un vrai client.
-    const forfaitsEssai = new Set(subscriptionIds);
     const convertis = new Set<string>();
     if (db.subscription) {
       const forfaits = await db.subscription.findMany({
         where: { clientId: { in: clientIds } },
-        select: { id: true, clientId: true },
+        select: { id: true, clientId: true, freeTrialRequestId: true },
       });
       for (const forfait of forfaits as any[]) {
-        if (!forfaitsEssai.has(String(forfait.id))) convertis.add(String(forfait.clientId));
+        const estEssai = subscriptionIds.has(String(forfait.id)) || Boolean(forfait.freeTrialRequestId);
+        if (!estEssai) convertis.add(String(forfait.clientId));
       }
     }
     if (db.vpnClient) {
@@ -217,7 +273,7 @@ export async function porteeEssaiDeploye(db: any): Promise<PorteeEssai> {
     }
 
     return {
-      subscriptionIds,
+      subscriptionIds: [...subscriptionIds],
       clientIds,
       clientsEssaiUniquement: clientIds.filter((id) => !convertis.has(id)),
       exploitable: true,
@@ -229,21 +285,25 @@ export async function porteeEssaiDeploye(db: any): Promise<PorteeEssai> {
 }
 
 /**
- * Le demandeur a-t-il explicitement demandé à REVOIR les essais ?
+ * Le demandeur a-t-il explicitement demandé à voir les essais ?
  *
- * L'absence de paramètre vaut « oui » : aucune route HTTP ne change de sens
- * pour les appelants qui existaient avant cette correction (annonces, mises à
- * jour, bons, jetons, indicateurs d'accueil…). Ce sont les trois écrans
- * d'exploitation nommés par le propriétaire qui demandent explicitement
- * `includeFreeTrial=false`, et leur interrupteur est TOUJOURS sur « masqué » à
- * l'ouverture.
+ * L'EXCLUSION EST LA RÈGLE, y compris quand rien n'est passé. Le propriétaire
+ * exige une séparation TOTALE : « Forfaits Data », « Comptes VPN » et
+ * « Appareils » n'offrent plus aucune option d'inclusion, et le serveur ne doit
+ * pas dépendre de ce que l'interface pense à envoyer. Un appelant qui oublie le
+ * paramètre obtient donc le parc SANS les essais — c'est-à-dire exactement ce
+ * que ces écrans affichent.
+ *
+ * Le paramètre subsiste pour les rares lectures internes qui ont besoin du parc
+ * complet, mais il n'est plus atteignable depuis le tableau de bord : aucune
+ * fonction de `src/api/` ne l'envoie plus.
  */
 export function inclutEssaisGratuits(valeur: unknown): boolean {
-  if (valeur === undefined || valeur === null) return true;
+  if (valeur === undefined || valeur === null) return false;
   const brut = Array.isArray(valeur) ? valeur[0] : valeur;
   const texte = String(brut).trim().toLowerCase();
-  if (texte === "") return true;
-  return !["0", "false", "no", "off", "non"].includes(texte);
+  if (texte === "") return false;
+  return ["1", "true", "yes", "on", "oui"].includes(texte);
 }
 
 /**

@@ -12,7 +12,11 @@
       "deployTo": "Déployer à {{count}} inscrit(s)",
       "done": "Opération terminée",
       "summary": "{{selected}} sélectionné(s) · {{succeeded}} réussi(s) · {{failed}} échoué(s)",
-      "failedItem": "• {{id}} — {{reason}}"
+      "failedItem": "• {{id}} — {{reason}}",
+      "noProfile": "Choisissez au moins une configuration VPN avant de déployer.",
+      "preview": "Cela créera {{subscriptions}} forfait(s) : {{requests}} inscrit(s) × {{profiles}} configuration(s).",
+      "tooManyProfiles": "Un déploiement ne peut pas dépasser {{max}} configurations VPN. Réduisez la sélection de serveurs.",
+      "tooManySubscriptions": "Ce lot créerait {{count}} forfaits, au-delà de la limite de {{max}}. Réduisez le nombre d’inscrits ou de configurations."
     },
     "countryUnknown": "Non renseigné",
     "metrics": {
@@ -62,7 +66,7 @@
     "usesLimited": "{{used}} / {{max}} inscription(s)",
     "platformVersion": "{{platform}} · {{version}}",
     "columns": {
-    "country": "Pays",
+      "country": "Pays",
       "name": "Nom",
       "deviceId": "Identifiant d'appareil",
       "token": "Jeton",
@@ -72,7 +76,8 @@
       "uses": "Utilisations",
       "tokenState": "État",
       "createdAt": "Créé le",
-      "action": "Action"
+      "action": "Action",
+      "access": "Accès attribué"
     },
     "status": {
       "pending": "En attente de vérification",
@@ -110,14 +115,73 @@
       "deviceLimit": "Appareils autorisés",
       "startAt": "Date et heure de début",
       "expireAt": "Date et heure d'expiration",
-      "note": "Note interne (facultative)"
+      "note": "Note interne (facultative)",
+      "servers": "Configurations VPN à attribuer",
+      "serversHint": "Chaque inscrit retenu reçoit un forfait par configuration cochée. Maximum {{maxProfiles}} configurations et {{maxSubscriptions}} forfaits par déploiement.",
+      "noServer": "Aucune configuration VPN disponible."
     },
     "notice": {
       "tokenCreated": "Jeton créé : {{token}}",
       "tokenRevoked": "Jeton révoqué : il n'accepte plus de nouvelle inscription.",
-      "deployed": "{{deployed}} accès déployé(s) sur {{total}}.",
+      "deployed": "{{deployed}} accès déployé(s) sur {{total}} — {{subscriptions}} forfait(s) créé(s).",
       "partial": "Demandes non déployées : {{items}}",
-      "rejected": "{{count}} demande(s) refusée(s)."
+      "rejected": "{{count}} demande(s) refusée(s).",
+      "managed": "{{succeeded}} essai(s) mis à jour sur {{total}}."
+    },
+    "marker": "Essai gratuit",
+    "manage": "Gérer les essais déployés",
+    "selectedSplit": "{{count}} inscrit(s) sélectionné(s) · {{pending}} en attente · {{deployed}} déployé(s)",
+    "access": {
+      "none": "Aucun accès déployé",
+      "servers": "Serveurs attribués",
+      "serverUnknown": "Serveur retiré",
+      "quota": "{{used}} consommé(s) sur {{granted}}",
+      "unlimited": "illimité",
+      "expiresOn": "Fin le {{date}}",
+      "noExpiry": "Sans échéance",
+      "active": "Essai actif",
+      "inactive": "Essai inactif"
+    },
+    "manageForm": {
+      "title": "Gérer les essais déjà déployés",
+      "hint": "Tout se règle ici : serveur, quota, échéance et état des {{count}} essai(s) sélectionné(s). Chaque champ est facultatif ; seul ce qui est renseigné est appliqué.",
+      "nothingToDo": "Renseignez au moins un changement avant de valider.",
+      "leaveEmpty": "Laisser vide pour ne pas changer",
+      "serverSection": "Serveur attribué",
+      "serverMode": "Que faire du serveur ?",
+      "serverKeep": "Ne pas changer",
+      "serverReplace": "Remplacer par un autre serveur",
+      "serverAdd": "Ajouter des serveurs supplémentaires",
+      "replacement": "Serveur de remplacement",
+      "quotaSection": "Quota",
+      "quotaMode": "Comment appliquer le quota ?",
+      "quotaSet": "Fixer le quota à cette valeur",
+      "quotaAdd": "Ajouter cette valeur au quota actuel",
+      "quotaValue": "Quota (Go)",
+      "expirySection": "Échéance",
+      "expiryMode": "Que faire de l’échéance ?",
+      "expiryKeep": "Ne pas changer",
+      "expiryDate": "Fixer une date précise",
+      "expiryDuration": "Prolonger ou raccourcir en jours",
+      "durationMode": "Comment appliquer la durée ?",
+      "durationAdd": "Ajouter (valeur négative pour raccourcir)",
+      "durationSet": "Repartir de maintenant pour cette durée",
+      "durationDays": "Durée (jours)",
+      "state": "État de l’accès",
+      "stateKeep": "Ne pas changer",
+      "stateSuspend": "Suspendre l’accès",
+      "stateResume": "Réactiver l’accès",
+      "stateRevoke": "Révoquer l’accès",
+      "recap": "{{count}} essai(s) du jeton {{token}} recevront exactement les changements ci-dessus.",
+      "addPreview": "Cela créera {{subscriptions}} forfait(s) supplémentaire(s) : {{requests}} essai(s) × {{profiles}} configuration(s).",
+      "submit": "Appliquer à {{count}} essai(s)"
+    },
+    "manageResult": {
+      "done": "Gestion terminée",
+      "summary": "{{selected}} sélectionné(s) · {{succeeded}} traité(s) · {{updated}} forfait(s) modifié(s) · {{created}} forfait(s) créé(s) · {{failed}} échoué(s)",
+      "updated": "Modifié",
+      "skipped": "Ignoré",
+      "failed": "Échec"
     }
   },
   "reset": {
@@ -167,7 +231,11 @@
       "privateBackup": "La sauvegarde est privée et conservée sur le serveur ; aucun chemin de sauvegarde ni secret n'est affiché ici.",
       "storage": "L'espace libéré dans la base peut être réutilisé. Aucune réduction immédiate de l'espace disque ou des Go n'est promise."
     },
-    "retainedRoles": { "OWNER": "Propriétaire (OWNER)", "ADMIN": "Administrateurs (ADMIN)", "SUPER_ADMIN": "Super administrateurs (SUPER_ADMIN)" },
+    "retainedRoles": {
+      "OWNER": "Propriétaire (OWNER)",
+      "ADMIN": "Administrateurs (ADMIN)",
+      "SUPER_ADMIN": "Super administrateurs (SUPER_ADMIN)"
+    },
     "preserved": {
       "roles": "Rôles conservés",
       "permissions": "Permissions conservées",

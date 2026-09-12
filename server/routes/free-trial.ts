@@ -31,10 +31,15 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { config } from '../config';
 import { prisma, logDbActivity } from '../database';
+import { accessStateHub } from '../services/access-state-events';
 import { requireAuth, requirePermission, AuthenticatedRequest } from '../middleware/auth';
 import { isOwnerRequest } from '../middleware/rbac/owner';
-import { interdireAccesRevendeur, interdireMutationSupport } from '../services/reseller-access';
-import { executerMutationQuota } from '../services/reseller-quota';
+import {
+  interdireAccesRevendeur,
+  interdireMutationSupport,
+  reponsePlafondDepasse,
+} from '../services/reseller-access';
+import { executerMutationQuota, PlafondQuotaDepasse } from '../services/reseller-quota';
 import { makeUserToken } from '../services/device-token';
 import { CODES_PAYS, normaliserCodePays } from '../services/countries';
 import {
@@ -58,8 +63,10 @@ import {
   hacherEmpreinteAppareil,
   hacherSecretReclamation,
   intervalleVerificationEssai,
+  normaliserConfigsEssai,
   normaliserJetonEssai,
   normaliserLotEssai,
+  refusConfigsEssai,
   refusDeploiement,
   refusEmpreinteManquante,
   refusEssaiDejaConsomme,
@@ -70,12 +77,24 @@ import {
   resumerEssais,
   statistiquesParPays,
   totauxParPays,
+  verifierProduitEssai,
+  vueAccesEssai,
   vueDemandePourAdmin,
   vueInscriptionEssai,
   vueJetonPourAdmin,
   vueStatutEssaiPourAppareil,
+  type AccesEssaiVue,
   type MesurePresenceEssai,
 } from '../services/free-trial';
+import {
+  ETATS_GROUPES,
+  RAISONS_GROUPEES,
+  aucunChampRenseigne,
+  planifierApplication,
+  planifierEtat,
+  type ChangementsGroupes,
+  type EtatGroupe,
+} from '../services/subscription-bulk';
 
 const router = Router();
 const GIB = 1024 ** 3;
@@ -161,7 +180,18 @@ const deployerSchema = z.object({
   // dans le contexte d'un jeton ; le serveur revérifie chaque demande plutôt
   // que de faire confiance à la liste reçue.
   tokenId: identifiantSchema.optional(),
-  profileId: identifiantSchema,
+  // Une SEULE configuration (contrat historique, toujours accepté)…
+  profileId: identifiantSchema.optional(),
+  // …ou PLUSIEURS : chaque inscrit retenu reçoit alors un forfait par
+  // configuration choisie, comme un client principal peut détenir plusieurs
+  // forfaits. Les deux champs coexistent pour ne casser aucun appelant ; les
+  // valeurs sont fusionnées puis dédoublonnées.
+  //
+  // La borne métier (`MAX_CONFIGS_ESSAI`) n'est volontairement PAS posée ici :
+  // un `.max()` de schéma rendrait un « errors.validation » muet, alors que
+  // `normaliserConfigsEssai` rend un refus MOTIVÉ qui annonce la limite. Le
+  // plafond de schéma ne sert qu'à borner la taille du corps reçu.
+  profileIds: z.array(identifiantSchema).max(100).optional(),
   quotaGB: z.coerce.number().finite().positive('Le quota doit être supérieur à 0 Go.').max(100_000),
   // Dates ET heures : `z.coerce.date()` accepte l'ISO complet envoyé par le
   // tableau de bord, donc « 2026-09-12T18:30:00Z » aussi bien qu'une date nue.
@@ -169,7 +199,60 @@ const deployerSchema = z.object({
   expireAt: z.coerce.date(),
   deviceLimit: z.coerce.number().int().min(1).max(100).optional(),
   note: z.string().trim().max(500).optional(),
-}).strict();
+}).strict().superRefine((corps, ctx) => {
+  if (!corps.profileId && !(corps.profileIds?.length)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'profileId ou profileIds est requis' });
+  }
+});
+
+/**
+ * Gestion groupée des essais DÉJÀ DÉPLOYÉS.
+ *
+ * Tous les champs d'accès sont indépendamment facultatifs — ce qui n'est pas
+ * renseigné n'est pas réécrit —, exactement comme l'action « apply » des
+ * forfaits, dont la mécanique est RÉUTILISÉE et non recopiée. `state` s'y
+ * ajoute parce que suspendre, réactiver ou révoquer n'est pas un champ mais un
+ * geste, et que le mélanger aux valeurs rendrait le récapitulatif illisible.
+ */
+const gererSchema = z.object({
+  requestIds: z.array(identifiantSchema).min(1).max(MAX_LOT_ESSAI),
+  tokenId: identifiantSchema.optional(),
+  profileId: identifiantSchema.optional(),
+  // Même raison qu'au déploiement : la borne métier est appliquée par
+  // `normaliserConfigsEssai`, qui annonce la limite dans son refus.
+  profileIds: z.array(identifiantSchema).max(100).optional(),
+  quotaGB: z.coerce.number().finite().positive().max(100_000).optional(),
+  quotaMode: z.enum(['set', 'add']).optional(),
+  startAt: z.coerce.date().optional(),
+  expireAt: z.coerce.date().optional(),
+  durationDays: z.coerce.number().int().min(1).max(3650).optional(),
+  durationMode: z.enum(['set', 'add']).optional(),
+  state: z.enum([ETATS_GROUPES.SUSPENDRE, ETATS_GROUPES.REACTIVER, ETATS_GROUPES.REVOQUER]).optional(),
+  note: z.string().trim().max(500).optional(),
+}).strict().superRefine((corps, ctx) => {
+  const changements = {
+    ...(corps.profileId !== undefined ? { profileId: corps.profileId } : {}),
+    ...(corps.quotaGB !== undefined ? { quotaGB: corps.quotaGB } : {}),
+    ...(corps.startAt !== undefined ? { startAt: corps.startAt } : {}),
+    ...(corps.expireAt !== undefined ? { expireAt: corps.expireAt } : {}),
+    ...(corps.durationDays !== undefined ? { durationDays: corps.durationDays } : {}),
+  } as ChangementsGroupes;
+  const attribue = Boolean(corps.profileIds?.length);
+  if (aucunChampRenseigne(changements) && !attribue && corps.state === undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Au moins un champ ou un geste est requis' });
+  }
+  // Échéance explicite et durée sont deux façons contradictoires de fixer la
+  // même borne : accepter les deux reviendrait à en ignorer une en silence.
+  if (corps.expireAt !== undefined && corps.durationDays !== undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'expireAt et durationDays s’excluent' });
+  }
+  // Attribuer de NOUVELLES configurations et remplacer celle des forfaits
+  // existants sont deux gestes distincts : les confondre dans une même requête
+  // rendrait l'aperçu avant confirmation faux.
+  if (attribue && corps.profileId !== undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'profileId et profileIds s’excluent' });
+  }
+});
 
 const refuserSchema = z.object({
   requestIds: z.array(identifiantSchema).min(1).max(MAX_LOT_ESSAI),
@@ -214,6 +297,71 @@ function erreurValidation(res: Response, err: z.ZodError) {
     message: 'Requête invalide',
     details: err.issues,
   });
+}
+
+/**
+ * Forfaits d'UNE demande d'essai, quel qu'en soit le nombre.
+ *
+ * Deux rattachements coexistent, et c'est volontaire :
+ *   • `subscription.freeTrialRequestId` — posé à chaque forfait créé par un
+ *     déploiement d'essai, y compris quand plusieurs configurations sont
+ *     attribuées d'un coup ;
+ *   • `freeTrialRequest.subscriptionId` — le forfait PRINCIPAL, qui existait
+ *     avant le multi-configurations. Les essais déployés auparavant n'ont que
+ *     celui-là : les lire par les deux chemins évite toute reprise de données.
+ */
+function conditionForfaitsEssai(demandes: ReadonlyArray<{ id?: unknown; subscriptionId?: unknown }>) {
+  const demandeIds = [...new Set(demandes.map((d) => String(d.id ?? '')).filter(Boolean))];
+  const forfaitIds = [...new Set(demandes.map((d) => String(d.subscriptionId ?? '')).filter(Boolean))];
+  const clauses: Record<string, unknown>[] = [];
+  if (demandeIds.length) clauses.push({ freeTrialRequestId: { in: demandeIds } });
+  if (forfaitIds.length) clauses.push({ id: { in: forfaitIds } });
+  return clauses.length ? { OR: clauses } : null;
+}
+
+/** Rattache chaque forfait lu à la demande dont il provient. */
+function demandeDuForfait(
+  forfait: { id?: unknown; freeTrialRequestId?: unknown },
+  parForfaitPrincipal: Map<string, string>,
+): string | null {
+  if (forfait.freeTrialRequestId) return String(forfait.freeTrialRequestId);
+  return parForfaitPrincipal.get(String(forfait.id)) ?? null;
+}
+
+/** Accès courant de chaque demande déployée, en UNE lecture pour toute la page. */
+async function accesParDemande(
+  demandes: ReadonlyArray<{ id?: unknown; status?: unknown; subscriptionId?: unknown }>,
+): Promise<Map<string, AccesEssaiVue>> {
+  const acces = new Map<string, AccesEssaiVue>();
+  const deployees = demandes.filter((d) => d.status === STATUT_DEMANDE.DEPLOYED);
+  const condition = conditionForfaitsEssai(deployees);
+  if (!prisma || !condition) return acces;
+
+  const parForfaitPrincipal = new Map<string, string>();
+  for (const demande of deployees) {
+    if (demande.subscriptionId) parForfaitPrincipal.set(String(demande.subscriptionId), String(demande.id));
+  }
+  try {
+    const forfaits = await (prisma as any).subscription.findMany({
+      where: condition,
+      include: { profile: { select: { name: true } } },
+      orderBy: { createdAt: 'asc' },
+    });
+    const groupes = new Map<string, any[]>();
+    for (const forfait of forfaits as any[]) {
+      const demandeId = demandeDuForfait(forfait, parForfaitPrincipal);
+      if (!demandeId) continue;
+      const liste = groupes.get(demandeId) ?? [];
+      liste.push(forfait);
+      groupes.set(demandeId, liste);
+    }
+    for (const [demandeId, liste] of groupes) acces.set(demandeId, vueAccesEssai(liste));
+  } catch (erreur) {
+    // L'accès est une LECTURE d'appoint : son échec ne doit pas priver
+    // l'exploitant de la liste des demandes elle-même.
+    console.error('free-trial access read error:', erreur);
+  }
+  return acces;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -677,8 +825,18 @@ router.get(
           include: { trialToken: { select: { token: true, label: true } } },
         }),
       ]);
+
+      // ACCÈS COURANT des demandes déployées : serveur(s) attribué(s), volume
+      // accordé ET consommé, échéance, état. C'est ce que l'exploitant doit
+      // voir AVANT d'agir, et il ne doit plus avoir à quitter cette section
+      // pour l'obtenir. Une seule lecture indexée pour toute la page, jamais
+      // une requête par ligne.
+      const acces = await accesParDemande(demandes as any[]);
       return res.json({
-        requests: demandes.map(vueDemandePourAdmin),
+        requests: (demandes as any[]).map((demande) => ({
+          ...vueDemandePourAdmin(demande),
+          access: acces.get(String(demande.id)) ?? null,
+        })),
         total: Number(total ?? demandes.length),
         limit: limite,
         offset: decalage,
@@ -822,13 +980,22 @@ router.get(
 // ─── POST /api/free-trial/requests/deploy ────────────────────────────────────
 //
 // Étape 4. L'admin a sélectionné un ou plusieurs inscrits, puis choisi ce
-// qu'ils reçoivent : quota, serveur, dates (heures comprises).
+// qu'ils reçoivent : quota, serveur(s), dates (heures comprises).
 //
 // Pour CHAQUE demande, l'association est : Utilisateur → Identifiant
-// d'appareil → Serveur attribué → Go attribués → Dates attribuées.
+// d'appareil → Serveur(s) attribué(s) → Go attribués → Dates attribuées.
+//
+// PLUSIEURS CONFIGURATIONS, PLUSIEURS INSCRITS : `profileIds` attribue en une
+// fois N configurations à M inscrits ; chaque inscrit retenu reçoit alors UN
+// forfait par configuration, comme un client principal peut détenir plusieurs
+// forfaits. Le quota et les dates s'appliquent à CHAQUE forfait créé. Le
+// produit M × N est borné (`MAX_FORFAITS_ESSAI`) et le refus est explicite :
+// une sélection large ne fabrique jamais des milliers de forfaits d'un clic.
+//
+// RÉTROCOMPATIBILITÉ : `profileId` seul continue de fonctionner à l'identique.
 //
 // La configuration réelle n'est jamais recopiée ici : on crée le compte
-// appareil et le forfait, exactement comme le fait l'exploitation ordinaire,
+// appareil et les forfaits, exactement comme le fait l'exploitation ordinaire,
 // et l'application récupère ensuite sa configuration par le canal VPN normal.
 router.post(
   '/requests/deploy',
@@ -850,16 +1017,39 @@ router.post(
         return res.status(refusLot.status).json(refusLot.body);
       }
 
+      // Les deux écritures de la demande — historique et multiple — sont
+      // fusionnées puis dédoublonnées : un même serveur choisi deux fois ne
+      // fabrique pas deux forfaits identiques.
+      const configs = normaliserConfigsEssai([...(body.profileIds ?? []), ...(body.profileId ? [body.profileId] : [])]);
+      if (!configs.ok) {
+        const refus = refusConfigsEssai(configs.raison, configs.limite);
+        return res.status(refus.status).json(refus.body);
+      }
+
+      // Le produit est contrôlé AVANT toute écriture : mieux vaut un refus
+      // motivé qu'un lot appliqué à moitié puis coupé en cours de route.
+      const produit = verifierProduitEssai(lot.ids.length, configs.ids.length);
+      if (!produit.ok) return res.status(produit.refus.status).json(produit.refus.body);
+
       const fenetre = calculerFenetreEssai({ startAt: body.startAt, expireAt: body.expireAt });
       if (!fenetre.ok) return res.status(fenetre.refus!.status).json(fenetre.refus!.body);
       const { startAt, expireAt, durationDays } = fenetre.fenetre!;
 
-      const profil = await (prisma as any).vpnProfile.findUnique({ where: { id: body.profileId } });
-      if (!profil) {
-        return res.status(404).json({
-          error: 'errors.free_trial.profile_not_found',
-          message: 'Serveur (profil VPN) introuvable.',
-        });
+      // Toutes les configurations sont validées d'un coup : un serveur
+      // introuvable doit arrêter l'opération avant la première écriture,
+      // plutôt que produire N échecs identiques.
+      const profils: any[] = [];
+      for (const profileId of configs.ids) {
+        const profil = await (prisma as any).vpnProfile.findUnique({ where: { id: profileId } });
+        if (!profil) {
+          return res.status(404).json({
+            error: 'errors.free_trial.profile_not_found',
+            code: 'FREE_TRIAL_PROFILE_NOT_FOUND',
+            message: 'Serveur (profil VPN) introuvable.',
+            profileId,
+          });
+        }
+        profils.push(profil);
       }
 
       const quotaBytes = BigInt(Math.round(body.quotaGB * GIB));
@@ -870,8 +1060,9 @@ router.post(
         return res.status(500).json({ error: 'errors.server', message: 'Rôle CLIENT introuvable' });
       }
 
-      const resultats: Array<{ id: string; status: string; reason?: string }> = [];
+      const resultats: Array<{ id: string; status: string; reason?: string; subscriptions?: number }> = [];
       let deployees = 0;
+      let forfaitsCrees = 0;
 
       for (const requestId of lot.ids) {
         const demande = await (prisma as any).freeTrialRequest.findUnique({ where: { id: requestId } });
@@ -942,35 +1133,45 @@ router.post(
               });
             }
 
-            // 2. Forfait : serveur, Go et dates choisis par l'admin.
+            // 2. UN forfait PAR CONFIGURATION retenue : serveur, Go et dates
+            //    choisis par l'admin, appliqués à chacun. Chaque forfait porte
+            //    `freeTrialRequestId` — c'est ce marqueur STRUCTUREL qui le
+            //    tient hors de « Forfaits Data », quel que soit son nom.
             const part = () => crypto.randomBytes(2).toString('hex').toUpperCase();
-            const forfait = await tx.subscription.create({
-              data: {
-                name: `Essai gratuit — ${profil.name}`,
-                clientId: compte.id,
-                profileId: profil.id,
-                dataToken: `SXB-DATA-${part()}-${part()}-${part()}`,
-                quotaBytes,
-                quotaUsed: BigInt(0),
-                durationDays,
-                deviceLimit: body.deviceLimit ?? 1,
-                deviceId: demande.deviceId,
-                startAt,
-                expireAt,
-                status: 'active',
-                createdBy: req.user?.userId ?? null,
-              },
-            });
+            const crees: any[] = [];
+            for (const profil of profils) {
+              crees.push(await tx.subscription.create({
+                data: {
+                  name: `Essai gratuit — ${profil.name}`,
+                  clientId: compte.id,
+                  profileId: profil.id,
+                  dataToken: `SXB-DATA-${part()}-${part()}-${part()}`,
+                  quotaBytes,
+                  quotaUsed: BigInt(0),
+                  durationDays,
+                  deviceLimit: body.deviceLimit ?? 1,
+                  deviceId: demande.deviceId,
+                  startAt,
+                  expireAt,
+                  status: 'active',
+                  createdBy: req.user?.userId ?? null,
+                  freeTrialRequestId: demande.id,
+                },
+              }));
+            }
 
             // 3. La demande passe « déployée ». Le passage est conditionné à
             //    `status: pending` : deux admins qui déploient la même demande
             //    en même temps ne créent pas deux forfaits.
+            //    `subscriptionId` reste le forfait PRINCIPAL — le premier créé —
+            //    pour ne changer le contrat d'aucun appelant existant ; les
+            //    autres se lisent par `freeTrialRequestId`.
             const bascule = await tx.freeTrialRequest.updateMany({
               where: { id: demande.id, status: STATUT_DEMANDE.PENDING },
               data: {
                 status: STATUT_DEMANDE.DEPLOYED,
                 clientId: compte.id,
-                subscriptionId: forfait.id,
+                subscriptionId: crees[0].id,
                 deployedAt: new Date(),
                 deployedBy: req.user?.userId ?? null,
                 reviewNote: body.note ?? null,
@@ -979,14 +1180,15 @@ router.post(
             if (bascule.count !== 1) {
               throw new Error('FREE_TRIAL_CONCURRENT_DEPLOY');
             }
-            return { clientId: compte.id, subscriptionId: forfait.id };
+            return { clientId: compte.id, subscriptionIds: crees.map((forfait: any) => forfait.id) };
           });
 
           deployees += 1;
-          resultats.push({ id: requestId, status: 'deployed' });
+          forfaitsCrees += profils.length;
+          resultats.push({ id: requestId, status: 'deployed', subscriptions: profils.length });
           await logDbActivity(
             req.user?.userId || null,
-            `Essai gratuit déployé pour ${demande.name} (${body.quotaGB} Go, ${profil.name}, expire ${expireAt.toISOString()})`,
+            `Essai gratuit déployé pour ${demande.name} (${body.quotaGB} Go, ${profils.map((p: any) => p.name).join(' + ')}, expire ${expireAt.toISOString()})`,
             'success',
             req.ip || '',
           );
@@ -1006,6 +1208,10 @@ router.post(
         success: true,
         deployed: deployees,
         total: lot.ids.length,
+        // Ce que l'exploitant a réellement fabriqué : l'interface l'annonce
+        // avant la confirmation, la réponse le confirme après.
+        profiles: configs.ids.length,
+        subscriptionsCreated: forfaitsCrees,
         results: resultats,
       });
     } catch (err: any) {
@@ -1059,6 +1265,268 @@ router.post(
       if (err instanceof z.ZodError) return erreurValidation(res, err);
       console.error('free-trial reject error:', err);
       return res.status(500).json({ error: 'errors.server', message: 'Refus impossible' });
+    }
+  },
+);
+
+// ─── POST /api/free-trial/requests/manage ────────────────────────────────────
+//
+// TOUT SE GÈRE ICI. Les trois écrans d'exploitation n'offrent plus aucune prise
+// sur un essai ; c'est donc cette route qui porte les gestes qu'ils portaient :
+// attribuer ou remplacer un serveur, modifier le quota, prolonger ou raccourcir
+// l'échéance, suspendre, réactiver, révoquer — sur UNE SÉLECTION d'essais
+// déployés, comme le déploiement groupé.
+//
+// LA MÉCANIQUE N'EST PAS RÉÉCRITE : chaque forfait est planifié par
+// `planifierApplication` / `planifierEtat` de `subscription-bulk.ts`, les mêmes
+// fonctions que l'action « apply » des forfaits. Mêmes propriétés, donc :
+// champs indépendamment facultatifs, rien de renseigné = rien de réécrit,
+// résultat rapporté élément par élément, échec isolé sans annuler les
+// réussites.
+//
+// Réservée à l'exploitation interne, comme le déploiement : un revendeur est
+// refusé avant toute lecture.
+router.post(
+  '/requests/manage',
+  requireAuth,
+  interdireAccesRevendeur(),
+  interdireMutationSupport(),
+  requirePermission('subscription.manage'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!prisma) return baseIndisponible(res);
+      const body = gererSchema.parse(req.body);
+
+      const lot = normaliserLotEssai(body.requestIds);
+      if (!lot.ok) {
+        const refusLot = refusLotEssai(lot.raison, lot.limite);
+        return res.status(refusLot.status).json(refusLot.body);
+      }
+
+      // Attribution de NOUVELLES configurations : chaque essai retenu reçoit un
+      // forfait de plus par configuration. Même borne de produit que le
+      // déploiement — une sélection large ne fabrique pas des milliers de
+      // forfaits d'un clic.
+      const attribution = body.profileIds?.length ? normaliserConfigsEssai(body.profileIds) : null;
+      if (attribution && !attribution.ok) {
+        const refus = refusConfigsEssai(attribution.raison, attribution.limite);
+        return res.status(refus.status).json(refus.body);
+      }
+      const configsAjoutees = attribution && attribution.ok ? attribution.ids : [];
+      if (configsAjoutees.length) {
+        const produit = verifierProduitEssai(lot.ids.length, configsAjoutees.length);
+        if (!produit.ok) return res.status(produit.refus.status).json(produit.refus.body);
+      }
+
+      const changements: ChangementsGroupes = {
+        ...(body.profileId !== undefined ? { profileId: body.profileId } : {}),
+        ...(body.quotaGB !== undefined ? { quotaGB: body.quotaGB, quotaMode: body.quotaMode ?? 'set' } : {}),
+        ...(body.startAt !== undefined ? { startAt: body.startAt } : {}),
+        ...(body.expireAt !== undefined ? { expireAt: body.expireAt } : {}),
+        ...(body.durationDays !== undefined ? { durationDays: body.durationDays, durationMode: body.durationMode ?? 'set' } : {}),
+      };
+      const modifie = !aucunChampRenseigne(changements);
+      const etat = body.state as EtatGroupe | undefined;
+
+      // Les configurations demandées sont validées UNE fois : elles sont les
+      // mêmes pour tout le lot, et un refus doit arrêter l'opération avant
+      // toute écriture plutôt que produire N échecs identiques.
+      const profilsAjoutes: any[] = [];
+      for (const profileId of [...configsAjoutees, ...(body.profileId ? [body.profileId] : [])]) {
+        const profil = await (prisma as any).vpnProfile.findUnique({ where: { id: profileId } });
+        if (!profil) {
+          return res.status(404).json({
+            error: 'errors.free_trial.profile_not_found',
+            code: 'FREE_TRIAL_PROFILE_NOT_FOUND',
+            message: 'Serveur (profil VPN) introuvable.',
+            profileId,
+          });
+        }
+        if (configsAjoutees.includes(profileId)) profilsAjoutes.push(profil);
+      }
+
+      const resultats: Array<{ id: string; status: string; reason?: string; updated?: number; created?: number }> = [];
+      let reussies = 0;
+      let forfaitsTouches = 0;
+      let forfaitsCrees = 0;
+
+      for (const requestId of lot.ids) {
+        const demande = await (prisma as any).freeTrialRequest.findUnique({ where: { id: requestId } });
+        // Même contrôle qu'au déploiement : le jeton du contexte est revérifié
+        // demande par demande, jamais déduit de la liste reçue.
+        if (!demandeAppartientAuJeton(demande, body.tokenId)) {
+          resultats.push({ id: requestId, status: 'skipped', reason: RAISONS_LOT_ESSAI.TOKEN_MISMATCH });
+          continue;
+        }
+        if (!demande) {
+          resultats.push({ id: requestId, status: 'failed', reason: CODES_ESSAI.REQUEST_NOT_FOUND });
+          continue;
+        }
+        if (demande.status !== STATUT_DEMANDE.DEPLOYED) {
+          // Un essai non déployé n'a aucun accès à gérer : le dire vaut mieux
+          // que compter une réussite sur un dossier qui n'a rien reçu.
+          resultats.push({ id: requestId, status: 'skipped', reason: CODES_ESSAI.NOT_PENDING });
+          continue;
+        }
+
+        const condition = conditionForfaitsEssai([demande]);
+        const forfaits = condition
+          ? await (prisma as any).subscription.findMany({
+              where: condition,
+              include: { client: { select: { userId: true, resellerId: true } } },
+            })
+          : [];
+        if (!forfaits.length && !profilsAjoutes.length) {
+          resultats.push({ id: requestId, status: 'skipped', reason: 'errors.free_trial.no_access' });
+          continue;
+        }
+
+        let touches = 0;
+        let crees = 0;
+        let echec: string | null = null;
+
+        // ── Modifications et gestes d'état sur les forfaits EXISTANTS ───────
+        for (const forfait of forfaits as any[]) {
+          try {
+            const data: Record<string, unknown> = {};
+            let reduit = true;
+
+            if (modifie) {
+              const plan = planifierApplication(forfait, changements);
+              if (plan.statut === 'failed') { echec = plan.raison; continue; }
+              if (plan.statut === 'ok') {
+                Object.assign(data, plan.data);
+                const avant = plan.engageAvant ? plan.quotaAvant : BigInt(0);
+                const apres = plan.engageApres ? plan.quotaApres : BigInt(0);
+                if (apres > avant) reduit = false;
+              }
+            }
+            if (etat) {
+              const planEtat = planifierEtat(forfait, etat, new Date(), body.note);
+              if (planEtat.statut === 'failed') { echec = planEtat.raison; continue; }
+              if (planEtat.statut === 'ok') {
+                // Le geste d'état a le dernier mot sur `status` : il est
+                // explicite, là où `planifierApplication` ne fait que déduire.
+                Object.assign(data, planEtat.data);
+                if (!planEtat.reduitExposition) reduit = false;
+              }
+            }
+            if (Object.keys(data).length === 0) continue;
+
+            await executerMutationQuota(prisma, {
+              resellerUserId: forfait.client?.userId,
+              resellerId: forfait.client?.resellerId ?? null,
+              auteur: { userId: req.user?.userId, email: req.user?.email },
+              reason: `Gestion d'essai gratuit pour ${demande.name}`,
+              referenceType: 'subscription',
+              referenceId: forfait.id,
+              autoriserReductionAuDessusDuPlafond: reduit,
+            }, (tx: any) => tx.subscription.update({ where: { id: forfait.id }, data }));
+            accessStateHub.invalidate({ clientId: forfait.clientId });
+            touches += 1;
+          } catch (erreurForfait: any) {
+            echec = erreurForfait?.message || 'errors.server';
+            console.error('free-trial manage error:', erreurForfait);
+          }
+        }
+
+        // ── Attribution de configurations SUPPLÉMENTAIRES ──────────────────
+        // L'échéance et le volume viennent de la requête quand ils y sont, et
+        // de l'accès existant sinon : un serveur ajouté doit courir jusqu'à la
+        // même date que les autres, pas jusqu'à une date inventée.
+        if (profilsAjoutes.length && demande.clientId) {
+          const reference = (forfaits as any[])[0] ?? null;
+          const debut = body.startAt ?? new Date();
+          const echeance = body.expireAt
+            ?? (body.durationDays ? new Date(debut.getTime() + body.durationDays * 86_400_000) : null)
+            ?? (reference?.expireAt ? new Date(reference.expireAt) : null);
+          if (!echeance) {
+            echec = 'errors.free_trial.window_invalid';
+          } else {
+            const fenetre = calculerFenetreEssai({ startAt: debut, expireAt: echeance });
+            if (!fenetre.ok) {
+              echec = String(fenetre.refus!.body.code || fenetre.refus!.body.error);
+            } else {
+              const volume = body.quotaGB !== undefined
+                ? BigInt(Math.round(body.quotaGB * GIB))
+                : BigInt(reference?.quotaBytes ?? 0);
+              const part = () => crypto.randomBytes(2).toString('hex').toUpperCase();
+              for (const profil of profilsAjoutes) {
+                try {
+                  await executerMutationQuota(prisma, {
+                    resellerUserId: reference?.client?.userId,
+                    resellerId: reference?.client?.resellerId ?? null,
+                    auteur: { userId: req.user?.userId, email: req.user?.email },
+                    reason: `Attribution d'un serveur d'essai pour ${demande.name}`,
+                    referenceType: 'subscription',
+                  }, (tx: any) => tx.subscription.create({
+                    data: {
+                      name: `Essai gratuit — ${profil.name}`,
+                      clientId: demande.clientId,
+                      profileId: profil.id,
+                      dataToken: `SXB-DATA-${part()}-${part()}-${part()}`,
+                      quotaBytes: volume,
+                      quotaUsed: BigInt(0),
+                      durationDays: fenetre.fenetre!.durationDays,
+                      deviceLimit: reference?.deviceLimit ?? 1,
+                      deviceId: demande.deviceId,
+                      startAt: fenetre.fenetre!.startAt,
+                      expireAt: fenetre.fenetre!.expireAt,
+                      status: 'active',
+                      createdBy: req.user?.userId ?? null,
+                      // Le marqueur STRUCTUREL suit le forfait dès sa création :
+                      // il ne peut pas apparaître une seule seconde dans
+                      // « Forfaits Data ».
+                      freeTrialRequestId: demande.id,
+                    },
+                  }));
+                  accessStateHub.invalidate({ clientId: demande.clientId });
+                  crees += 1;
+                } catch (erreurAjout: any) {
+                  echec = erreurAjout?.message || 'errors.server';
+                  console.error('free-trial assign error:', erreurAjout);
+                }
+              }
+            }
+          }
+        }
+
+        forfaitsTouches += touches;
+        forfaitsCrees += crees;
+        if (touches + crees > 0) {
+          reussies += 1;
+          resultats.push({ id: requestId, status: 'ok', updated: touches, created: crees });
+        } else {
+          resultats.push({
+            id: requestId,
+            status: echec ? 'failed' : 'skipped',
+            reason: echec ?? RAISONS_GROUPEES.AUCUN_CHANGEMENT,
+          });
+        }
+      }
+
+      await logDbActivity(
+        req.user?.userId || null,
+        `Gestion groupée d'essais gratuits : ${reussies} essai(s) sur ${lot.ids.length}, ${forfaitsTouches} forfait(s) modifié(s), ${forfaitsCrees} créé(s)`,
+        resultats.some((ligne) => ligne.status === 'failed') ? 'warning' : 'info',
+        req.ip || '',
+      );
+
+      return res.json({
+        success: true,
+        total: lot.ids.length,
+        succeeded: reussies,
+        updated: forfaitsTouches,
+        created: forfaitsCrees,
+        results: resultats,
+      });
+    } catch (err: any) {
+      if (err instanceof z.ZodError) return erreurValidation(res, err);
+      if (err instanceof PlafondQuotaDepasse) {
+        return res.status(409).json(reponsePlafondDepasse(err.alloue, err.plafond));
+      }
+      console.error('free-trial manage error:', err);
+      return res.status(500).json({ error: 'errors.server', message: 'Gestion impossible' });
     }
   },
 );

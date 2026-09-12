@@ -2,19 +2,25 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   Ban,
+  CalendarClock,
   Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   Copy,
-  Gift,
   Globe2,
+  HardDrive,
   Loader2,
+  PauseCircle,
+  PlayCircle,
   Plus,
   RefreshCw,
   Rocket,
   Search,
+  Server,
   ShieldCheck,
+  ShieldOff,
+  SlidersHorizontal,
   X,
 } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
@@ -26,19 +32,26 @@ import {
   fetchFreeTrialOverview,
   fetchFreeTrialRequestPage,
   fetchFreeTrialTokens,
+  manageFreeTrialRequests,
   rejectFreeTrialRequests,
   revokeFreeTrialToken,
+  FREE_TRIAL_STATE,
   FREE_TRIAL_STATUS,
   MAX_FREE_TRIAL_BATCH,
+  MAX_FREE_TRIAL_PROFILES,
+  MAX_FREE_TRIAL_SUBSCRIPTIONS,
   type FreeTrialCountryStats,
   type FreeTrialDeployResponse,
+  type FreeTrialManageResponse,
   type FreeTrialOverview,
   type FreeTrialRequest,
+  type FreeTrialState,
   type FreeTrialToken,
 } from '../api/free-trial';
 import { countryFlag, countryName } from '../lib/countries';
 import { fetchVpnProfiles, type VpnProfile } from '../api/vpn-profiles';
 import Pagination from './ui/Pagination';
+import { TrialGlyph, TrialTag } from './TrialBadge';
 
 /// FreeTrialView — Étapes 1 et 3 de l'essai gratuit, côté administration.
 ///
@@ -62,6 +75,18 @@ import Pagination from './ui/Pagination';
 /// La recherche transversale reste disponible pour retrouver quelqu'un sans
 /// savoir sous quel jeton il se trouve ; elle est volontairement en LECTURE
 /// SEULE, l'action se faisant toujours dans le contexte d'un jeton.
+///
+/// SÉPARATION TOTALE — « Forfaits Data », « Comptes VPN » et « Appareils » ne
+/// portent plus AUCUNE option d'essai : ni bascule, ni filtre, ni case. Tout ce
+/// qui concerne un essai se décide ici, y compris sur un essai DÉJÀ déployé.
+/// C'est pourquoi cette vue offre, en plus du déploiement :
+///   • la LECTURE de l'accès courant (serveurs attribués, quota accordé et
+///     consommé, échéance, état) directement sur la ligne de l'inscrit ;
+///   • un panneau de GESTION GROUPÉE qui attribue ou remplace un serveur,
+///     modifie le quota, prolonge ou raccourcit l'échéance, suspend, réactive
+///     ou révoque — sur une sélection multiple, comme le déploiement.
+/// Ces capacités ne dupliquent pas celles des forfaits : la route serveur
+/// s'appuie sur la mécanique groupée déjà écrite (`subscription-bulk`).
 
 /** Correspondance statut de demande → clé i18n. */
 const STATUS_LABELS: Record<string, string> = {
@@ -84,6 +109,19 @@ const RESULT_LABELS: Record<string, string> = {
   skipped: 'operations.freeTrial.result.skipped',
   failed: 'operations.freeTrial.result.failed',
 };
+
+/** Issue d'une gestion unitaire → clé i18n. */
+const MANAGE_RESULT_LABELS: Record<string, string> = {
+  updated: 'operations.freeTrial.manageResult.updated',
+  skipped: 'operations.freeTrial.manageResult.skipped',
+  failed: 'operations.freeTrial.manageResult.failed',
+};
+
+/** Ce que le panneau de gestion fait des configurations VPN. */
+type ModeServeur = 'keep' | 'replace' | 'add';
+
+/** Ce que le panneau de gestion fait de l'échéance. */
+type ModeEcheance = 'keep' | 'expire' | 'duration';
 
 /** Demandes affichées par page dans un volet. 200 inscrits restent lisibles. */
 const TAILLE_PAGE = 25;
@@ -116,7 +154,7 @@ interface VoletJeton {
 const VOLET_VIDE: VoletJeton = { requests: [], total: 0, page: 1, loading: true };
 
 export default function FreeTrialView() {
-  const { t, language, formatDate, formatNumber, errorMessage } = useTranslation();
+  const { t, language, formatDate, formatNumber, formatBytes, errorMessage } = useTranslation();
   const can = usePermissions();
 
   const [tokens, setTokens] = useState<FreeTrialToken[]>([]);
@@ -140,6 +178,7 @@ export default function FreeTrialView() {
   // sélection qui traverse deux campagnes.
   const [selectionParJeton, setSelectionParJeton] = useState<Record<string, string[]>>({});
   const [resultatLot, setResultatLot] = useState<FreeTrialDeployResponse | null>(null);
+  const [resultatGestion, setResultatGestion] = useState<FreeTrialManageResponse | null>(null);
 
   // ── Recherche transversale, en lecture seule ───────────────────────────────
   const [search, setSearch] = useState('');
@@ -154,12 +193,32 @@ export default function FreeTrialView() {
 
   // ── Étape 3 : formulaire de déploiement, ouvert APRÈS sélection ────────────
   const [showDeployForm, setShowDeployForm] = useState(false);
-  const [profileId, setProfileId] = useState('');
+  // PLUSIEURS configurations, pas une : le propriétaire veut attribuer
+  // plusieurs serveurs à plusieurs profils d'essai d'un même geste. Chaque
+  // inscrit retenu reçoit alors un forfait par configuration cochée.
+  const [profileIds, setProfileIds] = useState<string[]>([]);
   const [quotaGB, setQuotaGB] = useState('2');
   const [startAt, setStartAt] = useState('');
   const [expireAt, setExpireAt] = useState('');
   const [deviceLimit, setDeviceLimit] = useState('1');
   const [deployNote, setDeployNote] = useState('');
+
+  // ── Étape 4 : gestion des essais DÉJÀ déployés, en sélection multiple ──────
+  // Chaque champ est indépendamment facultatif : ce qui reste sur « ne pas
+  // toucher » n'est pas envoyé, donc pas réécrit. C'est la règle de l'action
+  // groupée « apply » des forfaits, dont la mécanique serveur est réutilisée.
+  const [showManageForm, setShowManageForm] = useState(false);
+  const [modeServeur, setModeServeur] = useState<ModeServeur>('keep');
+  const [serveurRemplacant, setServeurRemplacant] = useState('');
+  const [serveursAjoutes, setServeursAjoutes] = useState<string[]>([]);
+  const [gestionQuotaGB, setGestionQuotaGB] = useState('');
+  const [gestionQuotaMode, setGestionQuotaMode] = useState<'set' | 'add'>('set');
+  const [modeEcheance, setModeEcheance] = useState<ModeEcheance>('keep');
+  const [gestionExpireAt, setGestionExpireAt] = useState('');
+  const [gestionDuree, setGestionDuree] = useState('');
+  const [gestionDureeMode, setGestionDureeMode] = useState<'set' | 'add'>('add');
+  const [gestionEtat, setGestionEtat] = useState<'' | FreeTrialState>('');
+  const [gestionNote, setGestionNote] = useState('');
 
   const canDeploy = can('subscription.manage');
   const canCreateToken = can('tokens.create');
@@ -218,7 +277,9 @@ export default function FreeTrialView() {
 
   const basculerJeton = (tokenId: string) => {
     setResultatLot(null);
+    setResultatGestion(null);
     setShowDeployForm(false);
+    setShowManageForm(false);
     if (jetonOuvert === tokenId) {
       setJetonOuvert(null);
       return;
@@ -285,10 +346,15 @@ export default function FreeTrialView() {
 
   // ── Sélection, strictement bornée au jeton courant ─────────────────────────
   const volet = jetonOuvert ? volets[jetonOuvert] ?? VOLET_VIDE : null;
-  // Seules les demandes EN ATTENTE sont déployables : une demande déjà servie
-  // ne doit pas pouvoir être re-servie par une case cochée par mégarde.
+  // Deux gestes coexistent désormais sur la même sélection :
+  //   • DÉPLOYER, qui n'a de sens que sur une demande EN ATTENTE ;
+  //   • GÉRER, qui n'a de sens que sur une demande DÉJÀ DÉPLOYÉE.
+  // Une demande refusée n'est ni l'un ni l'autre, donc elle n'est pas cochable.
+  // Chaque geste filtre ensuite la sélection sur ce qui le concerne, plutôt que
+  // d'imposer à l'exploitant de vider ses cases entre deux actions.
   const selectionnables = useMemo(
-    () => (volet?.requests ?? []).filter(demande => demande.status === FREE_TRIAL_STATUS.PENDING),
+    () => (volet?.requests ?? []).filter(demande =>
+      demande.status === FREE_TRIAL_STATUS.PENDING || demande.status === FREE_TRIAL_STATUS.DEPLOYED),
     [volet],
   );
   const selectionCourante = jetonOuvert ? selectionParJeton[jetonOuvert] ?? [] : [];
@@ -296,8 +362,51 @@ export default function FreeTrialView() {
     () => selectionCourante.filter(id => selectionnables.some(demande => demande.id === id)),
     [selectionCourante, selectionnables],
   );
+  /** Sous-ensemble déployable : les demandes encore en attente. */
+  const selectionEnAttente = useMemo(
+    () => selectionValide.filter(id =>
+      selectionnables.some(demande => demande.id === id && demande.status === FREE_TRIAL_STATUS.PENDING)),
+    [selectionValide, selectionnables],
+  );
+  /** Sous-ensemble gérable : les essais déjà servis. */
+  const selectionDeployee = useMemo(
+    () => selectionValide.filter(id =>
+      selectionnables.some(demande => demande.id === id && demande.status === FREE_TRIAL_STATUS.DEPLOYED)),
+    [selectionValide, selectionnables],
+  );
   const toutSelectionne = selectionnables.length > 0 && selectionValide.length === selectionnables.length;
   const lotTropGrand = selectionValide.length > MAX_FREE_TRIAL_BATCH;
+
+  // ── Borne du produit « inscrits × configurations » ─────────────────────────
+  // Sans elle, cocher 200 inscrits et 10 serveurs fabriquerait 2 000 forfaits
+  // d'un clic. L'interface ANNONCE la limite et affiche le total AVANT de
+  // confirmer, plutôt que de laisser le serveur refuser après coup.
+  const forfaitsAcreer = selectionEnAttente.length * profileIds.length;
+  const tropDeConfigs = profileIds.length > MAX_FREE_TRIAL_PROFILES;
+  const tropDeForfaits = forfaitsAcreer > MAX_FREE_TRIAL_SUBSCRIPTIONS;
+  const deploiementBorne = lotTropGrand || tropDeConfigs || tropDeForfaits;
+
+  /** Au moins un champ renseigné : sinon la gestion ne ferait rien du tout. */
+  const gestionRenseignee =
+    (modeServeur === 'replace' && serveurRemplacant !== '') ||
+    (modeServeur === 'add' && serveursAjoutes.length > 0) ||
+    gestionQuotaGB.trim() !== '' ||
+    (modeEcheance === 'expire' && gestionExpireAt !== '') ||
+    (modeEcheance === 'duration' && gestionDuree.trim() !== '') ||
+    gestionEtat !== '';
+  const forfaitsAjoutes = modeServeur === 'add' ? selectionDeployee.length * serveursAjoutes.length : 0;
+  const gestionBornee =
+    selectionDeployee.length > MAX_FREE_TRIAL_BATCH ||
+    serveursAjoutes.length > MAX_FREE_TRIAL_PROFILES ||
+    forfaitsAjoutes > MAX_FREE_TRIAL_SUBSCRIPTIONS;
+
+  const basculerProfil = (id: string) => {
+    setProfileIds(prev => (prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]));
+  };
+
+  const basculerServeurAjoute = (id: string) => {
+    setServeursAjoutes(prev => (prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]));
+  };
 
   const basculer = (id: string) => {
     if (!jetonOuvert) return;
@@ -332,7 +441,14 @@ export default function FreeTrialView() {
     const dansTrenteJours = new Date(maintenant.getTime() + 30 * 24 * 3600 * 1000);
     if (!startAt) setStartAt(toLocalInput(maintenant));
     if (!expireAt) setExpireAt(toLocalInput(dansTrenteJours));
+    setShowManageForm(false);
     setShowDeployForm(true);
+  };
+
+  const ouvrirGestion = () => {
+    setShowDeployForm(false);
+    setResultatGestion(null);
+    setShowManageForm(true);
   };
 
   const creerJeton = async (event: React.FormEvent) => {
@@ -375,22 +491,38 @@ export default function FreeTrialView() {
 
   const deployer = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!jetonOuvert || selectionValide.length === 0) return;
+    if (!jetonOuvert || selectionEnAttente.length === 0) return;
     if (lotTropGrand) {
       setError(t('operations.freeTrial.batch.tooMany', { max: formatNumber(MAX_FREE_TRIAL_BATCH) }));
+      return;
+    }
+    if (profileIds.length === 0) {
+      setError(t('operations.freeTrial.batch.noProfile'));
+      return;
+    }
+    if (tropDeConfigs) {
+      setError(t('operations.freeTrial.batch.tooManyProfiles', { max: formatNumber(MAX_FREE_TRIAL_PROFILES) }));
+      return;
+    }
+    if (tropDeForfaits) {
+      setError(t('operations.freeTrial.batch.tooManySubscriptions', {
+        count: formatNumber(forfaitsAcreer),
+        max: formatNumber(MAX_FREE_TRIAL_SUBSCRIPTIONS),
+      }));
       return;
     }
     setBusy(true);
     setError(null);
     setNotice(null);
     setResultatLot(null);
+    setResultatGestion(null);
     try {
       const reponse = await deployFreeTrialRequests({
-        requestIds: selectionValide,
+        requestIds: selectionEnAttente,
         // Le jeton du contexte accompagne le lot : le serveur revérifie que
         // chaque demande en relève, plutôt que de croire la liste reçue.
         tokenId: jetonOuvert,
-        profileId,
+        profileIds,
         quotaGB: Number(quotaGB),
         startAt: startAt ? new Date(startAt).toISOString() : undefined,
         expireAt: new Date(expireAt).toISOString(),
@@ -401,6 +533,7 @@ export default function FreeTrialView() {
       setNotice(t('operations.freeTrial.notice.deployed', {
         deployed: formatNumber(reponse.deployed),
         total: formatNumber(reponse.total),
+        subscriptions: formatNumber(reponse.subscriptionsCreated ?? reponse.deployed),
       }));
       setSelectionParJeton(prev => ({ ...prev, [jetonOuvert]: [] }));
       setShowDeployForm(false);
@@ -412,12 +545,70 @@ export default function FreeTrialView() {
     }
   };
 
+  /**
+   * Gestion groupée des essais DÉJÀ déployés.
+   *
+   * Ce que l'exploitant faisait auparavant depuis « Forfaits Data » sur une
+   * ligne d'essai se fait ici, sur une sélection, sans jamais quitter la
+   * section Essais. Un champ laissé sur « ne pas toucher » n'est PAS envoyé :
+   * le serveur ne réécrit donc que ce qui a été explicitement demandé.
+   */
+  const gerer = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!jetonOuvert || selectionDeployee.length === 0) return;
+    if (!gestionRenseignee) {
+      setError(t('operations.freeTrial.manageForm.nothingToDo'));
+      return;
+    }
+    if (gestionBornee) {
+      setError(t('operations.freeTrial.batch.tooManySubscriptions', {
+        count: formatNumber(forfaitsAjoutes),
+        max: formatNumber(MAX_FREE_TRIAL_SUBSCRIPTIONS),
+      }));
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    setResultatLot(null);
+    setResultatGestion(null);
+    try {
+      const reponse = await manageFreeTrialRequests({
+        requestIds: selectionDeployee,
+        tokenId: jetonOuvert,
+        profileId: modeServeur === 'replace' && serveurRemplacant ? serveurRemplacant : undefined,
+        profileIds: modeServeur === 'add' && serveursAjoutes.length > 0 ? serveursAjoutes : undefined,
+        quotaGB: gestionQuotaGB.trim() ? Number(gestionQuotaGB) : undefined,
+        quotaMode: gestionQuotaGB.trim() ? gestionQuotaMode : undefined,
+        expireAt: modeEcheance === 'expire' && gestionExpireAt
+          ? new Date(gestionExpireAt).toISOString()
+          : undefined,
+        durationDays: modeEcheance === 'duration' && gestionDuree.trim() ? Number(gestionDuree) : undefined,
+        durationMode: modeEcheance === 'duration' && gestionDuree.trim() ? gestionDureeMode : undefined,
+        state: gestionEtat || undefined,
+        note: gestionNote.trim() || undefined,
+      });
+      setResultatGestion(reponse);
+      setNotice(t('operations.freeTrial.notice.managed', {
+        succeeded: formatNumber(reponse.succeeded),
+        total: formatNumber(reponse.total),
+      }));
+      setSelectionParJeton(prev => ({ ...prev, [jetonOuvert]: [] }));
+      setShowManageForm(false);
+      await Promise.all([charger(), chargerVolet(jetonOuvert, volet?.page ?? 1)]);
+    } catch (err) {
+      setError(errorMessage(err, 'operations.freeTrial.genericError'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const refuser = async () => {
-    if (!jetonOuvert || selectionValide.length === 0) return;
+    if (!jetonOuvert || selectionEnAttente.length === 0) return;
     setBusy(true);
     setError(null);
     try {
-      const reponse = await rejectFreeTrialRequests({ requestIds: selectionValide, tokenId: jetonOuvert });
+      const reponse = await rejectFreeTrialRequests({ requestIds: selectionEnAttente, tokenId: jetonOuvert });
       setNotice(t('operations.freeTrial.notice.rejected', { count: formatNumber(reponse.rejected) }));
       setSelectionParJeton(prev => ({ ...prev, [jetonOuvert]: [] }));
       await Promise.all([charger(), chargerVolet(jetonOuvert, volet?.page ?? 1)]);
@@ -438,10 +629,13 @@ export default function FreeTrialView() {
   }
 
   /** Ligne de demande, réutilisée par le volet et par la recherche. */
-  const ligneDemande = (demande: FreeTrialRequest, selectionnable: boolean) => (
+  const ligneDemande = (demande: FreeTrialRequest, selectionnable: boolean) => {
+    const cochable = demande.status === FREE_TRIAL_STATUS.PENDING || demande.status === FREE_TRIAL_STATUS.DEPLOYED;
+    const acces = demande.access ?? null;
+    return (
     <tr key={demande.id} className="align-top hover:bg-white/[0.02]">
       <td className="px-4 py-3">
-        {selectionnable && canDeploy && demande.status === FREE_TRIAL_STATUS.PENDING && (
+        {selectionnable && canDeploy && cochable && (
           <input
             type="checkbox"
             checked={selectionValide.includes(demande.id)}
@@ -453,6 +647,10 @@ export default function FreeTrialView() {
       </td>
       <td className="px-4 py-3 font-medium text-gray-200">
         {demande.name}
+        {/* Marqueur d'essai : même pastille que dans le menu, l'en-tête et la
+            mention « Période d'essai » des autres écrans. Il porte son propre
+            libellé, il n'est donc jamais seul porteur du sens. */}
+        <TrialTag label={t('operations.freeTrial.marker')} className="mt-1" />
         {demande.platform && (
           <div className="mt-1 text-[11px] text-gray-500">
             {demande.appVersion
@@ -480,9 +678,54 @@ export default function FreeTrialView() {
           {t(STATUS_LABELS[demande.status] ?? 'operations.common.unknown')}
         </span>
       </td>
+      {/* ── Accès courant ────────────────────────────────────────────────────
+          Serveur(s) attribué(s), quota accordé ET consommé, échéance, état.
+          C'est ce que l'exploitant lisait auparavant dans « Forfaits Data » :
+          il le lit désormais ici, sur la ligne même de l'inscrit. */}
+      <td className="px-4 py-3 text-[11px] text-gray-400">
+        {!acces || acces.subscriptions.length === 0 ? (
+          <span className="text-gray-600">{t('operations.freeTrial.access.none')}</span>
+        ) : (
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Server className="h-3 w-3 shrink-0 text-fuchsia-300" aria-hidden="true" />
+              <span className="sr-only">{t('operations.freeTrial.access.servers')}</span>
+              {acces.subscriptions.map(forfait => (
+                <span
+                  key={forfait.id}
+                  className="inline-flex rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] text-gray-300"
+                >
+                  {forfait.profileName ?? t('operations.freeTrial.access.serverUnknown')}
+                </span>
+              ))}
+            </div>
+            <p className="flex items-center gap-1.5">
+              <HardDrive className="h-3 w-3 shrink-0 text-gray-500" aria-hidden="true" />
+              {t('operations.freeTrial.access.quota', {
+                used: formatBytes(acces.quotaUsed),
+                granted: acces.quotaBytes === '0'
+                  ? t('operations.freeTrial.access.unlimited')
+                  : formatBytes(acces.quotaBytes),
+              })}
+            </p>
+            <p className="flex items-center gap-1.5">
+              <CalendarClock className="h-3 w-3 shrink-0 text-gray-500" aria-hidden="true" />
+              {acces.expireAt
+                ? t('operations.freeTrial.access.expiresOn', { date: formatDate(acces.expireAt) })
+                : t('operations.freeTrial.access.noExpiry')}
+            </p>
+            <p className={acces.active ? 'text-emerald-300' : 'text-amber-300'}>
+              {acces.active
+                ? t('operations.freeTrial.access.active')
+                : t('operations.freeTrial.access.inactive')}
+            </p>
+          </div>
+        )}
+      </td>
       <td className="px-4 py-3 text-xs text-gray-500">{formatDate(demande.submittedAt)}</td>
     </tr>
-  );
+    );
+  };
 
   const enteteDemandes = (avecSelection: boolean) => (
     <thead className="text-[11px] uppercase tracking-wide text-gray-500">
@@ -502,6 +745,7 @@ export default function FreeTrialView() {
         <th className="px-4 py-2">{t('operations.freeTrial.columns.country')}</th>
         <th className="px-4 py-2">{t('operations.freeTrial.columns.deviceId')}</th>
         <th className="px-4 py-2">{t('operations.freeTrial.columns.status')}</th>
+        <th className="px-4 py-2">{t('operations.freeTrial.columns.access')}</th>
         <th className="px-4 py-2">{t('operations.freeTrial.columns.submittedAt')}</th>
       </tr>
     </thead>
@@ -512,7 +756,7 @@ export default function FreeTrialView() {
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-bold text-gray-100">
-            <Gift className="h-6 w-6 text-cyan-400" />
+            <TrialGlyph className="h-8 w-8" />
             {t('operations.freeTrial.title')}
           </h1>
           <p className="mt-1 max-w-3xl text-sm text-gray-400">{t('operations.freeTrial.subtitle')}</p>
@@ -553,7 +797,7 @@ export default function FreeTrialView() {
         <section className="overflow-hidden rounded-xl border border-white/10 bg-white/[0.02]">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
             <h2 className="inline-flex items-center gap-2 text-sm font-semibold text-gray-200">
-              <Gift className="h-4 w-4 text-fuchsia-400" />
+              <TrialGlyph className="h-5 w-5" />
               {t('operations.freeTrial.metrics.title')}
             </h2>
             <p className="text-xs text-gray-500">{t('operations.freeTrial.metrics.hint')}</p>
@@ -840,7 +1084,11 @@ export default function FreeTrialView() {
                           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-cyan-500/[0.06] px-4 py-3">
                             <div>
                               <span className="text-sm text-cyan-200">
-                                {t('operations.freeTrial.selected', { count: formatNumber(selectionValide.length) })}
+                                {t('operations.freeTrial.selectedSplit', {
+                                  count: formatNumber(selectionValide.length),
+                                  pending: formatNumber(selectionEnAttente.length),
+                                  deployed: formatNumber(selectionDeployee.length),
+                                })}
                               </span>
                               {/* Même avertissement que la suppression groupée :
                                   « tout sélectionner » ne couvre que ce qui est
@@ -849,11 +1097,11 @@ export default function FreeTrialView() {
                                 {t('operations.freeTrial.batch.loadedOnly', { max: formatNumber(MAX_FREE_TRIAL_BATCH) })}
                               </p>
                             </div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
                               <button
                                 type="button"
                                 onClick={refuser}
-                                disabled={busy}
+                                disabled={busy || selectionEnAttente.length === 0}
                                 className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/25 px-3 py-1.5 text-xs text-rose-300 transition hover:bg-rose-500/10 disabled:opacity-50"
                               >
                                 <Ban className="h-3.5 w-3.5" />
@@ -862,11 +1110,25 @@ export default function FreeTrialView() {
                               <button
                                 type="button"
                                 onClick={ouvrirDeploiement}
-                                disabled={busy || lotTropGrand}
+                                disabled={busy || lotTropGrand || selectionEnAttente.length === 0}
                                 className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500/90 px-3 py-1.5 text-xs font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:opacity-50"
                               >
                                 <Rocket className="h-3.5 w-3.5" />
                                 {t('operations.freeTrial.configureAndDeploy')}
+                              </button>
+                              {/* Gestion des essais DÉJÀ déployés. Ce bouton
+                                  remplace tout ce que l'exploitant faisait
+                                  auparavant depuis « Forfaits Data » avec
+                                  l'interrupteur d'inclusion : serveur, quota,
+                                  échéance, suspension, révocation. */}
+                              <button
+                                type="button"
+                                onClick={ouvrirGestion}
+                                disabled={busy || lotTropGrand || selectionDeployee.length === 0}
+                                className="inline-flex items-center gap-1.5 rounded-lg bg-fuchsia-500/90 px-3 py-1.5 text-xs font-semibold text-slate-950 transition hover:bg-fuchsia-400 disabled:opacity-50"
+                              >
+                                <SlidersHorizontal className="h-3.5 w-3.5" />
+                                {t('operations.freeTrial.manage')}
                               </button>
                             </div>
                           </div>
@@ -882,29 +1144,49 @@ export default function FreeTrialView() {
                             l'ordre imposé par la spécification — d'abord qui,
                             ensuite quoi. Tous les champs sont visibles en même
                             temps, comme pour les forfaits groupés. */}
-                        {showDeployForm && canDeploy && selectionValide.length > 0 && (
+                        {showDeployForm && canDeploy && selectionEnAttente.length > 0 && (
                           <form onSubmit={deployer} className="space-y-4 border-b border-white/10 bg-slate-900/40 px-4 py-5">
                             <div>
                               <h3 className="text-sm font-semibold text-gray-200">{t('operations.freeTrial.deployForm.title')}</h3>
                               <p className="mt-1 text-xs text-gray-500">
-                                {t('operations.freeTrial.deployForm.hint', { count: formatNumber(selectionValide.length) })}
+                                {t('operations.freeTrial.deployForm.hint', { count: formatNumber(selectionEnAttente.length) })}
                               </p>
                             </div>
+                            {/* ── Configurations VPN : sélection MULTIPLE ────────
+                                Chaque inscrit retenu reçoit un forfait PAR
+                                configuration cochée, exactement comme un client
+                                principal peut détenir plusieurs forfaits. */}
+                            <fieldset className="rounded-lg border border-white/10 bg-slate-950/50 px-3 py-3">
+                              <legend className="px-1 text-xs text-gray-300">
+                                {t('operations.freeTrial.deployForm.servers')}
+                              </legend>
+                              <p className="mb-2 text-[11px] text-gray-500">
+                                {t('operations.freeTrial.deployForm.serversHint', {
+                                  maxProfiles: formatNumber(MAX_FREE_TRIAL_PROFILES),
+                                  maxSubscriptions: formatNumber(MAX_FREE_TRIAL_SUBSCRIPTIONS),
+                                })}
+                              </p>
+                              <div className="grid max-h-44 gap-1.5 overflow-y-auto sm:grid-cols-2 lg:grid-cols-3">
+                                {profiles.map(profil => (
+                                  <label
+                                    key={profil.id}
+                                    className="flex items-center gap-2 rounded-md border border-white/10 bg-white/[0.02] px-2 py-1.5 text-xs text-gray-200"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={profileIds.includes(profil.id)}
+                                      onChange={() => basculerProfil(profil.id)}
+                                      className="h-3.5 w-3.5 rounded border-white/20 bg-slate-900"
+                                    />
+                                    <span className="truncate">{profil.name}</span>
+                                  </label>
+                                ))}
+                              </div>
+                              {profiles.length === 0 && (
+                                <p className="text-[11px] text-gray-500">{t('operations.freeTrial.deployForm.noServer')}</p>
+                              )}
+                            </fieldset>
                             <div className="grid gap-4 md:grid-cols-3">
-                              <label className="block text-xs text-gray-400">
-                                {t('operations.freeTrial.deployForm.server')}
-                                <select
-                                  required
-                                  value={profileId}
-                                  onChange={event => setProfileId(event.target.value)}
-                                  className="mt-1 w-full rounded-lg border border-white/10 bg-slate-900/60 px-3 py-2 text-sm text-gray-100 outline-none focus:border-cyan-500/50"
-                                >
-                                  <option value="">{t('operations.freeTrial.deployForm.serverPlaceholder')}</option>
-                                  {profiles.map(profil => (
-                                    <option key={profil.id} value={profil.id}>{profil.name}</option>
-                                  ))}
-                                </select>
-                              </label>
                               <label className="block text-xs text-gray-400">
                                 {t('operations.freeTrial.deployForm.quota')}
                                 <input
@@ -947,7 +1229,7 @@ export default function FreeTrialView() {
                                   className="mt-1 w-full rounded-lg border border-white/10 bg-slate-900/60 px-3 py-2 text-sm text-gray-100 outline-none focus:border-cyan-500/50"
                                 />
                               </label>
-                              <label className="block text-xs text-gray-400">
+                              <label className="block text-xs text-gray-400 md:col-span-2">
                                 {t('operations.freeTrial.deployForm.note')}
                                 <input
                                   value={deployNote}
@@ -958,13 +1240,33 @@ export default function FreeTrialView() {
                               </label>
                             </div>
                             {/* Récapitulatif avant confirmation : qui reçoit
-                                quoi, sous quel jeton, et rien d'implicite. */}
+                                quoi, sous quel jeton, COMBIEN de forfaits, et
+                                rien d'implicite. */}
                             <p className="rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-[11px] text-gray-400">
                               {t('operations.freeTrial.batch.recap', {
-                                count: formatNumber(selectionValide.length),
+                                count: formatNumber(selectionEnAttente.length),
                                 token: jeton.token,
                               })}
+                              {' '}
+                              {t('operations.freeTrial.batch.preview', {
+                                requests: formatNumber(selectionEnAttente.length),
+                                profiles: formatNumber(profileIds.length),
+                                subscriptions: formatNumber(forfaitsAcreer),
+                              })}
                             </p>
+                            {tropDeConfigs && (
+                              <p className="rounded-lg border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200">
+                                {t('operations.freeTrial.batch.tooManyProfiles', { max: formatNumber(MAX_FREE_TRIAL_PROFILES) })}
+                              </p>
+                            )}
+                            {tropDeForfaits && (
+                              <p className="rounded-lg border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200">
+                                {t('operations.freeTrial.batch.tooManySubscriptions', {
+                                  max: formatNumber(MAX_FREE_TRIAL_SUBSCRIPTIONS),
+                                  count: formatNumber(forfaitsAcreer),
+                                })}
+                              </p>
+                            )}
                             <div className="flex justify-end gap-2">
                               <button
                                 type="button"
@@ -975,11 +1277,244 @@ export default function FreeTrialView() {
                               </button>
                               <button
                                 type="submit"
-                                disabled={busy || !profileId || !expireAt || lotTropGrand}
+                                disabled={busy || profileIds.length === 0 || !expireAt || deploiementBorne}
                                 className="inline-flex items-center gap-2 rounded-lg bg-emerald-500/90 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:opacity-50"
                               >
                                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
-                                {t('operations.freeTrial.batch.deployTo', { count: formatNumber(selectionValide.length) })}
+                                {t('operations.freeTrial.batch.deployTo', { count: formatNumber(selectionEnAttente.length) })}
+                              </button>
+                            </div>
+                          </form>
+                        )}
+
+                        {/* ── Gestion des essais DÉJÀ déployés ─────────────────
+                            Tout ce que l'exploitant obtenait auparavant en
+                            cochant « Inclure les essais gratuits » dans
+                            « Forfaits Data » se fait ici, sur une sélection
+                            multiple : chaque champ est INDÉPENDAMMENT facultatif
+                            et seul ce qui est renseigné est appliqué. */}
+                        {showManageForm && canDeploy && selectionDeployee.length > 0 && (
+                          <form onSubmit={gerer} className="space-y-4 border-b border-white/10 bg-fuchsia-500/[0.04] px-4 py-5">
+                            <div>
+                              <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-200">
+                                <TrialGlyph className="h-5 w-5" />
+                                {t('operations.freeTrial.manageForm.title')}
+                              </h3>
+                              <p className="mt-1 text-xs text-gray-500">
+                                {t('operations.freeTrial.manageForm.hint', { count: formatNumber(selectionDeployee.length) })}
+                              </p>
+                            </div>
+
+                            {/* Serveur : conserver, remplacer, ou ajouter. */}
+                            <fieldset className="rounded-lg border border-white/10 bg-slate-950/50 px-3 py-3">
+                              <legend className="flex items-center gap-1.5 px-1 text-xs text-gray-300">
+                                <Server className="h-3.5 w-3.5 text-fuchsia-300" aria-hidden="true" />
+                                {t('operations.freeTrial.manageForm.serverSection')}
+                              </legend>
+                              <label className="block text-xs text-gray-400">
+                                {t('operations.freeTrial.manageForm.serverMode')}
+                                <select
+                                  value={modeServeur}
+                                  onChange={event => setModeServeur(event.target.value as ModeServeur)}
+                                  className="mt-1 w-full rounded-lg border border-white/10 bg-slate-900/60 px-3 py-2 text-sm text-gray-100 outline-none focus:border-cyan-500/50"
+                                >
+                                  <option value="keep">{t('operations.freeTrial.manageForm.serverKeep')}</option>
+                                  <option value="replace">{t('operations.freeTrial.manageForm.serverReplace')}</option>
+                                  <option value="add">{t('operations.freeTrial.manageForm.serverAdd')}</option>
+                                </select>
+                              </label>
+                              {modeServeur === 'replace' && (
+                                <label className="mt-2 block text-xs text-gray-400">
+                                  {t('operations.freeTrial.manageForm.replacement')}
+                                  <select
+                                    value={serveurRemplacant}
+                                    onChange={event => setServeurRemplacant(event.target.value)}
+                                    className="mt-1 w-full rounded-lg border border-white/10 bg-slate-900/60 px-3 py-2 text-sm text-gray-100 outline-none focus:border-cyan-500/50"
+                                  >
+                                    <option value="">{t('operations.freeTrial.deployForm.serverPlaceholder')}</option>
+                                    {profiles.map(profil => (
+                                      <option key={profil.id} value={profil.id}>{profil.name}</option>
+                                    ))}
+                                  </select>
+                                </label>
+                              )}
+                              {modeServeur === 'add' && (
+                                <div className="mt-2 grid max-h-40 gap-1.5 overflow-y-auto sm:grid-cols-2 lg:grid-cols-3">
+                                  {profiles.map(profil => (
+                                    <label
+                                      key={profil.id}
+                                      className="flex items-center gap-2 rounded-md border border-white/10 bg-white/[0.02] px-2 py-1.5 text-xs text-gray-200"
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={serveursAjoutes.includes(profil.id)}
+                                        onChange={() => basculerServeurAjoute(profil.id)}
+                                        className="h-3.5 w-3.5 rounded border-white/20 bg-slate-900"
+                                      />
+                                      <span className="truncate">{profil.name}</span>
+                                    </label>
+                                  ))}
+                                </div>
+                              )}
+                            </fieldset>
+
+                            <div className="grid gap-4 md:grid-cols-2">
+                              {/* Quota : remplacer la valeur ou l'augmenter. */}
+                              <fieldset className="rounded-lg border border-white/10 bg-slate-950/50 px-3 py-3">
+                                <legend className="flex items-center gap-1.5 px-1 text-xs text-gray-300">
+                                  <HardDrive className="h-3.5 w-3.5 text-fuchsia-300" aria-hidden="true" />
+                                  {t('operations.freeTrial.manageForm.quotaSection')}
+                                </legend>
+                                <label className="block text-xs text-gray-400">
+                                  {t('operations.freeTrial.manageForm.quotaMode')}
+                                  <select
+                                    value={gestionQuotaMode}
+                                    onChange={event => setGestionQuotaMode(event.target.value as 'set' | 'add')}
+                                    className="mt-1 w-full rounded-lg border border-white/10 bg-slate-900/60 px-3 py-2 text-sm text-gray-100 outline-none focus:border-cyan-500/50"
+                                  >
+                                    <option value="set">{t('operations.freeTrial.manageForm.quotaSet')}</option>
+                                    <option value="add">{t('operations.freeTrial.manageForm.quotaAdd')}</option>
+                                  </select>
+                                </label>
+                                <label className="mt-2 block text-xs text-gray-400">
+                                  {t('operations.freeTrial.manageForm.quotaValue')}
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    step={0.1}
+                                    value={gestionQuotaGB}
+                                    onChange={event => setGestionQuotaGB(event.target.value)}
+                                    placeholder={t('operations.freeTrial.manageForm.leaveEmpty')}
+                                    className="mt-1 w-full rounded-lg border border-white/10 bg-slate-900/60 px-3 py-2 text-sm text-gray-100 outline-none focus:border-cyan-500/50"
+                                  />
+                                </label>
+                              </fieldset>
+
+                              {/* Échéance : prolonger, raccourcir, ou fixer. */}
+                              <fieldset className="rounded-lg border border-white/10 bg-slate-950/50 px-3 py-3">
+                                <legend className="flex items-center gap-1.5 px-1 text-xs text-gray-300">
+                                  <CalendarClock className="h-3.5 w-3.5 text-fuchsia-300" aria-hidden="true" />
+                                  {t('operations.freeTrial.manageForm.expirySection')}
+                                </legend>
+                                <label className="block text-xs text-gray-400">
+                                  {t('operations.freeTrial.manageForm.expiryMode')}
+                                  <select
+                                    value={modeEcheance}
+                                    onChange={event => setModeEcheance(event.target.value as ModeEcheance)}
+                                    className="mt-1 w-full rounded-lg border border-white/10 bg-slate-900/60 px-3 py-2 text-sm text-gray-100 outline-none focus:border-cyan-500/50"
+                                  >
+                                    <option value="keep">{t('operations.freeTrial.manageForm.expiryKeep')}</option>
+                                    <option value="expire">{t('operations.freeTrial.manageForm.expiryDate')}</option>
+                                    <option value="duration">{t('operations.freeTrial.manageForm.expiryDuration')}</option>
+                                  </select>
+                                </label>
+                                {modeEcheance === 'expire' && (
+                                  <label className="mt-2 block text-xs text-gray-400">
+                                    {t('operations.freeTrial.deployForm.expireAt')}
+                                    <input
+                                      type="datetime-local"
+                                      value={gestionExpireAt}
+                                      onChange={event => setGestionExpireAt(event.target.value)}
+                                      className="mt-1 w-full rounded-lg border border-white/10 bg-slate-900/60 px-3 py-2 text-sm text-gray-100 outline-none focus:border-cyan-500/50"
+                                    />
+                                  </label>
+                                )}
+                                {modeEcheance === 'duration' && (
+                                  <>
+                                    <label className="mt-2 block text-xs text-gray-400">
+                                      {t('operations.freeTrial.manageForm.durationMode')}
+                                      <select
+                                        value={gestionDureeMode}
+                                        onChange={event => setGestionDureeMode(event.target.value as 'set' | 'add')}
+                                        className="mt-1 w-full rounded-lg border border-white/10 bg-slate-900/60 px-3 py-2 text-sm text-gray-100 outline-none focus:border-cyan-500/50"
+                                      >
+                                        <option value="add">{t('operations.freeTrial.manageForm.durationAdd')}</option>
+                                        <option value="set">{t('operations.freeTrial.manageForm.durationSet')}</option>
+                                      </select>
+                                    </label>
+                                    <label className="mt-2 block text-xs text-gray-400">
+                                      {t('operations.freeTrial.manageForm.durationDays')}
+                                      <input
+                                        type="number"
+                                        step={1}
+                                        value={gestionDuree}
+                                        onChange={event => setGestionDuree(event.target.value)}
+                                        placeholder={t('operations.freeTrial.manageForm.leaveEmpty')}
+                                        className="mt-1 w-full rounded-lg border border-white/10 bg-slate-900/60 px-3 py-2 text-sm text-gray-100 outline-none focus:border-cyan-500/50"
+                                      />
+                                    </label>
+                                  </>
+                                )}
+                              </fieldset>
+                            </div>
+
+                            {/* État : suspendre, réactiver, révoquer. */}
+                            <div className="grid gap-4 md:grid-cols-2">
+                              <label className="block text-xs text-gray-400">
+                                {t('operations.freeTrial.manageForm.state')}
+                                <select
+                                  value={gestionEtat}
+                                  onChange={event => setGestionEtat(event.target.value as FreeTrialState | '')}
+                                  className="mt-1 w-full rounded-lg border border-white/10 bg-slate-900/60 px-3 py-2 text-sm text-gray-100 outline-none focus:border-cyan-500/50"
+                                >
+                                  <option value="">{t('operations.freeTrial.manageForm.stateKeep')}</option>
+                                  <option value={FREE_TRIAL_STATE.SUSPEND}>{t('operations.freeTrial.manageForm.stateSuspend')}</option>
+                                  <option value={FREE_TRIAL_STATE.RESUME}>{t('operations.freeTrial.manageForm.stateResume')}</option>
+                                  <option value={FREE_TRIAL_STATE.REVOKE}>{t('operations.freeTrial.manageForm.stateRevoke')}</option>
+                                </select>
+                              </label>
+                              <label className="block text-xs text-gray-400">
+                                {t('operations.freeTrial.deployForm.note')}
+                                <input
+                                  value={gestionNote}
+                                  onChange={event => setGestionNote(event.target.value)}
+                                  maxLength={280}
+                                  className="mt-1 w-full rounded-lg border border-white/10 bg-slate-900/60 px-3 py-2 text-sm text-gray-100 outline-none focus:border-cyan-500/50"
+                                />
+                              </label>
+                            </div>
+
+                            <p className="rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-[11px] text-gray-400">
+                              {gestionRenseignee
+                                ? t('operations.freeTrial.manageForm.recap', {
+                                    count: formatNumber(selectionDeployee.length),
+                                    token: jeton.token,
+                                  })
+                                : t('operations.freeTrial.manageForm.nothingToDo')}
+                              {modeServeur === 'add' && serveursAjoutes.length > 0 && (
+                                <>
+                                  {' '}
+                                  {t('operations.freeTrial.manageForm.addPreview', {
+                                    requests: formatNumber(selectionDeployee.length),
+                                    profiles: formatNumber(serveursAjoutes.length),
+                                    subscriptions: formatNumber(forfaitsAjoutes),
+                                  })}
+                                </>
+                              )}
+                            </p>
+                            {gestionBornee && (
+                              <p className="rounded-lg border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200">
+                                {t('operations.freeTrial.batch.tooManySubscriptions', {
+                                  max: formatNumber(MAX_FREE_TRIAL_SUBSCRIPTIONS),
+                                  count: formatNumber(forfaitsAjoutes),
+                                })}
+                              </p>
+                            )}
+                            <div className="flex justify-end gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setShowManageForm(false)}
+                                className="rounded-lg border border-white/10 px-3 py-2 text-sm text-gray-300 transition hover:bg-white/5"
+                              >
+                                {t('operations.freeTrial.cancel')}
+                              </button>
+                              <button
+                                type="submit"
+                                disabled={busy || !gestionRenseignee || gestionBornee || lotTropGrand}
+                                className="inline-flex items-center gap-2 rounded-lg bg-fuchsia-500/90 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-fuchsia-400 disabled:opacity-50"
+                              >
+                                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <SlidersHorizontal className="h-4 w-4" />}
+                                {t('operations.freeTrial.manageForm.submit', { count: formatNumber(selectionDeployee.length) })}
                               </button>
                             </div>
                           </form>
@@ -1002,6 +1537,30 @@ export default function FreeTrialView() {
                                 {t('operations.freeTrial.batch.failedItem', {
                                   id: item.id,
                                   reason: t(RESULT_LABELS[item.status] ?? 'operations.freeTrial.result.failed'),
+                                })}
+                              </p>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Même rapport, même exigence, pour la gestion. */}
+                        {resultatGestion && (
+                          <div className="border-b border-white/10 bg-slate-900/40 px-4 py-3 text-xs text-gray-300">
+                            <p className="font-semibold text-gray-200">{t('operations.freeTrial.manageResult.done')}</p>
+                            <p className="mt-1">
+                              {t('operations.freeTrial.manageResult.summary', {
+                                selected: formatNumber(resultatGestion.total),
+                                succeeded: formatNumber(resultatGestion.succeeded),
+                                updated: formatNumber(resultatGestion.updated),
+                                created: formatNumber(resultatGestion.created),
+                                failed: formatNumber(resultatGestion.results.filter(item => item.status === 'failed').length),
+                              })}
+                            </p>
+                            {resultatGestion.results.filter(item => item.status !== 'updated').map(item => (
+                              <p key={item.id} className="mt-0.5 text-rose-300/90">
+                                {t('operations.freeTrial.batch.failedItem', {
+                                  id: item.id,
+                                  reason: t(MANAGE_RESULT_LABELS[item.status] ?? 'operations.freeTrial.manageResult.failed'),
                                 })}
                               </p>
                             ))}

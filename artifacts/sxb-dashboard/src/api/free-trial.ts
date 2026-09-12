@@ -32,6 +32,53 @@ export interface FreeTrialToken {
 /** Taille maximale d'un lot, alignée sur `MAX_LOT_ESSAI` côté serveur. */
 export const MAX_FREE_TRIAL_BATCH = 200;
 
+/**
+ * Nombre maximal de configurations VPN retenues d'un même geste, aligné sur
+ * `MAX_CONFIGS_ESSAI`. Annoncé à l'écran plutôt que découvert par un refus.
+ */
+export const MAX_FREE_TRIAL_PROFILES = 10;
+
+/**
+ * Plafond du PRODUIT « inscrits × configurations », aligné sur
+ * `MAX_FORFAITS_ESSAI`. C'est lui qui empêche une sélection large de fabriquer
+ * des milliers de forfaits d'un clic ; l'interface l'annonce et calcule le
+ * total avant toute confirmation.
+ */
+export const MAX_FREE_TRIAL_SUBSCRIPTIONS = 400;
+
+/** Un forfait d'essai tel que la section Essais l'affiche. */
+export interface FreeTrialSubscriptionView {
+  id: string;
+  name: string;
+  profileId: string | null;
+  profileName: string | null;
+  status: string;
+  /** Octets accordés, `"0"` pour un accès sans plafond. */
+  quotaBytes: string;
+  /** Octets CONSOMMÉS : le propriétaire veut voir ce qui a été utilisé. */
+  quotaUsed: string;
+  deviceLimit: number | null;
+  startAt: string | null;
+  expireAt: string | null;
+}
+
+/**
+ * Accès courant d'un essai DÉJÀ déployé.
+ *
+ * C'est ce qui rend la section Essais autonome : serveur(s) attribué(s), quota
+ * accordé et consommé, échéance, état. Sans cette lecture, retirer les options
+ * d'essai des écrans d'exploitation priverait l'exploitant de tout moyen de
+ * voir ce qu'un essai a reçu.
+ */
+export interface FreeTrialAccess {
+  subscriptions: FreeTrialSubscriptionView[];
+  quotaBytes: string;
+  quotaUsed: string;
+  /** Échéance la plus lointaine de l'ensemble des forfaits d'essai. */
+  expireAt: string | null;
+  active: boolean;
+}
+
 /** Demande déposée par un appareil : Nom | Pays | Identifiant d'appareil | Jeton. */
 export interface FreeTrialRequest {
   id: string;
@@ -54,6 +101,12 @@ export interface FreeTrialRequest {
   rejectedAt: string | null;
   lastCheckedAt: string | null;
   reviewNote: string | null;
+  /**
+   * Accès courant, présent uniquement pour une demande déployée. `null` tant
+   * que rien n'a été attribué — jamais un objet vide qui se lirait « aucun
+   * quota ».
+   */
+  access?: FreeTrialAccess | null;
 }
 
 /** Une ligne du récapitulatif « d'où viennent nos clients ». */
@@ -81,14 +134,49 @@ export interface FreeTrialDeployResult {
   id: string;
   status: string;
   reason?: string;
+  /** Nombre de forfaits créés pour CETTE demande — un par configuration. */
+  subscriptions?: number;
 }
 
 export interface FreeTrialDeployResponse {
   success: boolean;
   deployed: number;
   total: number;
+  /** Nombre de configurations retenues pour ce déploiement. */
+  profiles?: number;
+  /** Nombre TOTAL de forfaits créés : inscrits déployés × configurations. */
+  subscriptionsCreated?: number;
   results: FreeTrialDeployResult[];
 }
+
+/** Un essai traité par la gestion groupée, rapporté élément par élément. */
+export interface FreeTrialManageResult {
+  id: string;
+  status: string;
+  reason?: string;
+  /** Forfaits existants modifiés pour cet essai. */
+  updated?: number;
+  /** Forfaits créés par l'attribution de configurations supplémentaires. */
+  created?: number;
+}
+
+export interface FreeTrialManageResponse {
+  success: boolean;
+  total: number;
+  succeeded: number;
+  updated: number;
+  created: number;
+  results: FreeTrialManageResult[];
+}
+
+/** Gestes d'état applicables à un essai déployé. */
+export const FREE_TRIAL_STATE = {
+  SUSPEND: 'suspend',
+  RESUME: 'resume',
+  REVOKE: 'revoke',
+} as const;
+
+export type FreeTrialState = (typeof FREE_TRIAL_STATE)[keyof typeof FREE_TRIAL_STATE];
 
 /** Statuts d'une demande, alignés sur `STATUT_DEMANDE` du service. */
 export const FREE_TRIAL_STATUS = {
@@ -228,12 +316,20 @@ export async function fetchFreeTrialOverview(): Promise<FreeTrialOverview> {
  * Étape 3 → 4 : l'admin a sélectionné des inscrits, puis décide de ce que
  * CHACUN reçoit. Une seule requête couvre toute la sélection ; le serveur
  * traite les demandes une par une et rend le détail par identifiant.
+ *
+ * `profileIds` accepte PLUSIEURS configurations : chaque inscrit retenu reçoit
+ * alors un forfait par configuration, comme un client principal peut détenir
+ * plusieurs forfaits. Le quota et les dates s'appliquent à chacun. Le produit
+ * « inscrits × configurations » est borné par `MAX_FREE_TRIAL_SUBSCRIPTIONS`.
+ *
+ * `profileId` reste accepté par le serveur pour les appelants historiques ;
+ * le tableau de bord envoie toujours `profileIds`, même à une seule valeur.
  */
 export async function deployFreeTrialRequests(input: {
   requestIds: string[];
   /** Jeton SOUS LEQUEL l'action est lancée : le serveur revérifie chaque demande. */
   tokenId?: string;
-  profileId: string;
+  profileIds: string[];
   quotaGB: number;
   startAt?: string;
   expireAt: string;
@@ -241,6 +337,44 @@ export async function deployFreeTrialRequests(input: {
   note?: string;
 }): Promise<FreeTrialDeployResponse> {
   return apiRequest<FreeTrialDeployResponse>('/free-trial/requests/deploy', {
+    method: 'POST',
+    body: input,
+  });
+}
+
+/**
+ * Gestion des essais DÉJÀ déployés, en sélection multiple.
+ *
+ * C'est la contrepartie de la séparation totale : les écrans d'exploitation
+ * n'offrent plus aucune prise sur un essai, donc TOUT se fait ici. Chaque champ
+ * est indépendamment facultatif — ce qui n'est pas renseigné n'est pas
+ * réécrit —, exactement comme l'action groupée « apply » des forfaits, dont la
+ * mécanique serveur est réutilisée et non recopiée.
+ *
+ *  • `profileId`   — REMPLACE la configuration des forfaits d'essai existants ;
+ *  • `profileIds`  — ATTRIBUE des configurations SUPPLÉMENTAIRES (un forfait de
+ *                    plus par configuration) ; s'exclut de `profileId` ;
+ *  • `quotaGB`     — volume accordé, `quotaMode` valant `set` (par défaut) ou `add` ;
+ *  • `expireAt`    — échéance explicite, exclusive de `durationDays` ;
+ *  • `durationDays`— durée, `durationMode` valant `set` (par défaut) ou `add`,
+ *                    ce qui prolonge ou raccourcit ;
+ *  • `state`       — geste explicite : suspendre, réactiver ou révoquer.
+ */
+export async function manageFreeTrialRequests(input: {
+  requestIds: string[];
+  tokenId?: string;
+  profileId?: string;
+  profileIds?: string[];
+  quotaGB?: number;
+  quotaMode?: 'set' | 'add';
+  startAt?: string;
+  expireAt?: string;
+  durationDays?: number;
+  durationMode?: 'set' | 'add';
+  state?: FreeTrialState;
+  note?: string;
+}): Promise<FreeTrialManageResponse> {
+  return apiRequest<FreeTrialManageResponse>('/free-trial/requests/manage', {
     method: 'POST',
     body: input,
   });

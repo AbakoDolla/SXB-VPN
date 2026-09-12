@@ -10,8 +10,9 @@ import {
   Menu, X, UserPlus, HeadphonesIcon, BadgePercent, Activity,
   ChevronDown, Radio, BarChart3,
   PackageOpen, GitBranch, ScrollText, BellRing, Download,
-  HeartPulse, Gift, Wifi,
+  HeartPulse, Wifi,
 } from 'lucide-react';
+import { TrialGlyph } from './TrialBadge';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -133,7 +134,10 @@ export default function Layout({
         // CONSERVÉS : une intégration externe peut encore appeler l'API.
         // Essai gratuit : les demandes arrivent des appareils, pas des
         // revendeurs. C'est l'exploitation interne qui décide de l'accès.
-        { kind: 'leaf', id: 'free-trial', label: t('core.nav.freeTrial'), icon: Gift, roles: STAFF, permission: 'clients.view' },
+        // L'entrée porte le MARQUEUR partagé, pas un `Gift` nu : le menu est le
+        // premier endroit où l'exploitant doit voir que cette section ne se
+        // mélange à aucune autre. L'intitulé reste seul porteur du sens.
+        { kind: 'leaf', id: 'free-trial', label: t('core.nav.freeTrial'), icon: TrialGlyph, roles: STAFF, permission: 'clients.view' },
         { kind: 'leaf', id: 'vouchers', label: t('sidebar.vouchers'), icon: BadgePercent, roles: ALL_ROLES, permission: 'vouchers.view' },
       ],
     },

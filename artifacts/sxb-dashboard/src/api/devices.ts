@@ -1,7 +1,6 @@
 import { apiRequest } from "./client";
 import { DeviceStatus } from "../types";
 import type { TrialMark } from "../lib/trial";
-import { trialQuery, type ListeOptions } from "./subscriptions";
 
 export interface Device {
   id: string;
@@ -39,8 +38,13 @@ export interface Device {
   trial?: TrialMark | null;
 }
 
-export async function fetchDevices(options?: ListeOptions): Promise<Device[]> {
-  const data = await apiRequest<{ devices: Device[] }>(`/devices${trialQuery(options)}`);
+/**
+ * SÉPARATION TOTALE : « Appareils » n'affiche jamais d'appareil d'essai, et
+ * aucun paramètre ne permet de l'y ramener. Les appareils d'essai se gèrent
+ * dans la section « Essais gratuits ».
+ */
+export async function fetchDevices(): Promise<Device[]> {
+  const data = await apiRequest<{ devices: Device[] }>('/devices');
   return data.devices;
 }
 

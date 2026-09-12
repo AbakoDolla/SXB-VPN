@@ -1,10 +1,14 @@
 import { Client } from "../types";
 import { apiRequest } from "./client";
-import { trialQuery, type ListeOptions } from "./subscriptions";
 
-export async function fetchClients(options?: ListeOptions): Promise<Client[]> {
+/**
+ * SÉPARATION TOTALE : « Comptes VPN » ne reçoit jamais de compte d'essai, et
+ * aucun paramètre ne permet de l'y ramener. L'exclusion est la règle par défaut
+ * du serveur ; l'interface n'a rien à demander.
+ */
+export async function fetchClients(): Promise<Client[]> {
     // Backend returns a direct array (not { clients: [] })
-    const data = await apiRequest<Client[] | { clients: Client[] }>(`/clients${trialQuery(options)}`);
+    const data = await apiRequest<Client[] | { clients: Client[] }>('/clients');
     if (Array.isArray(data)) return data;
     return data.clients;
 }

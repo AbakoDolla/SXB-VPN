@@ -488,11 +488,26 @@ model Subscription {
   deviceId          String?
   revokeReason      String?
   createdBy         String?
+  /// Demande d'essai gratuit qui a fait naître ce forfait ; `null` pour tout
+  /// forfait ordinaire.
+  ///
+  /// POURQUOI CETTE COLONNE : une demande d'essai peut désormais recevoir
+  /// PLUSIEURS configurations VPN d'un seul geste, donc plusieurs forfaits.
+  /// `freeTrialRequest.subscriptionId` ne peut en désigner qu'un ; sans ce
+  /// marqueur, les forfaits suivants passeraient pour des forfaits ordinaires
+  /// et réapparaîtraient dans « Forfaits Data ».
+  ///
+  /// Instantané sans clé étrangère, comme `freeTrialRequest.subscriptionId` :
+  /// l'historique d'une demande ne doit pas être réécrit par une suppression.
+  /// Colonne NULLABLE : les essais déployés avant son ajout restent reconnus
+  /// par `freeTrialRequest.subscriptionId`, sans reprise de données.
+  freeTrialRequestId String?
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt
 
   devices           SubscriptionDevice[]
 
+  @@index([freeTrialRequestId])
   @@map("subscriptions")
 }
 
