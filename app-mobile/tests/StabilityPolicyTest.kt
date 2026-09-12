@@ -962,6 +962,9 @@ fun main() {
         sim.advance(10_000)
         sim.airplaneModeOff()
         check(sim.decisions.last() == SxbReconnectPolicy.Decision.RESUME)
+        // La reprise arme une minuterie : il faut laisser passer son délai,
+        // sinon on prouverait qu'une tentative part avant son échéance.
+        sim.advance(sim.pendingDelayMs)
         sim.fireScheduled(succeeds = true)
         check(sim.connected)
         check(sim.failedAttempts == 0)
@@ -981,6 +984,7 @@ fun main() {
         }
         sim.airplaneModeOff()
         check(sim.decisions.last() == SxbReconnectPolicy.Decision.RESUME)
+        sim.advance(sim.pendingDelayMs)
         sim.fireScheduled(succeeds = true)
         check(sim.connected && sim.failedAttempts == 0)
     }
@@ -995,7 +999,10 @@ fun main() {
         // Les rappels suivants de la même bascule sont absorbés.
         sim.networkAppeared()
         check(sim.decisions.last() == SxbReconnectPolicy.Decision.DEBOUNCE)
-        sim.advance(SxbReconnectPolicy.retryDelayMs(1))
+        // Le délai armé est bien celui de la première tentative, et on le laisse
+        // s'écouler entièrement avant de déclencher.
+        check(sim.pendingDelayMs == SxbReconnectPolicy.retryDelayMs(1))
+        sim.advance(sim.pendingDelayMs)
         sim.fireScheduled(succeeds = true)
         check(sim.connected)
         check(sim.attempts == 1) { "Une bascule ne doit produire qu'une tentative: ${sim.attempts}" }
