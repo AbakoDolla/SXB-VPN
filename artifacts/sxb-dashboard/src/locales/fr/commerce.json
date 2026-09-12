@@ -2,10 +2,7 @@
   "trial": {
     "badge": "Période d'essai",
     "endsOn": "Fin de l'essai : {{date}}",
-    "fromCountry": "Pays déclaré : {{country}}",
-    "include": "Inclure les essais gratuits",
-    "includeHint": "Masqués par défaut : les essais gratuits ont leur propre section, avec leurs propres indicateurs. Activez cette option pour traiter un essai problématique depuis cet écran.",
-    "included": "Les essais gratuits sont affichés dans cette liste et comptés dans les chiffres ci-dessus."
+    "fromCountry": "Pays déclaré : {{country}}"
   },
   "common": {
     "active": "Actif",

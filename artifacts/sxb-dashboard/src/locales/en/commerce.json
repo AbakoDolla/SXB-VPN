@@ -2,10 +2,7 @@
   "trial": {
     "badge": "Trial period",
     "endsOn": "Trial ends: {{date}}",
-    "fromCountry": "Declared country: {{country}}",
-    "include": "Include free trials",
-    "includeHint": "Hidden by default: free trials have their own section, with their own indicators. Turn this on to handle a problematic trial from this screen.",
-    "included": "Free trials are shown in this list and counted in the figures above."
+    "fromCountry": "Declared country: {{country}}"
   },
   "common": {
     "active": "Active",

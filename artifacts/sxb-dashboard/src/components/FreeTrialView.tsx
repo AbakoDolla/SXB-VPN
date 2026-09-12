@@ -1288,11 +1288,12 @@ export default function FreeTrialView() {
                         )}
 
                         {/* ── Gestion des essais DÉJÀ déployés ─────────────────
-                            Tout ce que l'exploitant obtenait auparavant en
-                            cochant « Inclure les essais gratuits » dans
-                            « Forfaits Data » se fait ici, sur une sélection
-                            multiple : chaque champ est INDÉPENDAMMENT facultatif
-                            et seul ce qui est renseigné est appliqué. */}
+                            Attribuer un serveur, corriger un quota, prolonger,
+                            suspendre ou révoquer un essai se fait ICI et nulle
+                            part ailleurs : « Forfaits Data » ne porte plus
+                            aucune option d'essai. Sur une sélection multiple,
+                            chaque champ est INDÉPENDAMMENT facultatif et seul
+                            ce qui est renseigné est appliqué. */}
                         {showManageForm && canDeploy && selectionDeployee.length > 0 && (
                           <form onSubmit={gerer} className="space-y-4 border-b border-white/10 bg-fuchsia-500/[0.04] px-4 py-5">
                             <div>
