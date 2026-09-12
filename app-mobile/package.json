@@ -11,7 +11,7 @@
     "build:android": "eas build --platform android",
     "build:ios": "eas build --platform ios",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:regression": "tsx --test tests/**/*.test.ts ../server/tests/ssh-transports.test.ts ../server/tests/reseller-lifecycle.test.ts ../server/tests/subscription-bulk.test.ts ../server/tests/free-trial.test.ts ../server/tests/session-user.test.ts ../server/tests/dashboard-freshness.test.ts ../server/tests/vpn-presence.test.ts ../server/tests/admin-surface.test.ts"
+    "test:regression": "tsx --test tests/**/*.test.ts ../server/tests/ssh-transports.test.ts ../server/tests/reseller-lifecycle.test.ts ../server/tests/subscription-bulk.test.ts ../server/tests/free-trial.test.ts ../server/tests/session-user.test.ts ../server/tests/dashboard-freshness.test.ts ../server/tests/vpn-presence.test.ts ../server/tests/admin-surface.test.ts ../server/tests/admin-roles.test.ts"
   },
   "dependencies": {
     "@expo-google-fonts/inter": "^0.4.0",

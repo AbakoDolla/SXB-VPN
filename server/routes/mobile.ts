@@ -1051,7 +1051,7 @@ router.get('/notifications', async (req: AuthenticatedRequest, res: Response) =>
         notifications.push({
           id: `app-update-${version.versionCode}`,
           type: 'info',
-          title: 'Nouvelle version SXB VPN disponible',
+          title: 'Nouvelle version Stuff x Bilal x Global Users disponible',
           message: `${version.versionName} est disponible. Téléchargez-la depuis cette notification.`,
           createdAt: version.publishedAt,
           read: false,

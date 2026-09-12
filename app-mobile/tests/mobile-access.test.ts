@@ -656,8 +656,8 @@ describe('mobile access runtime with real encrypted store, auth and HTTP interce
     assert.equal(h.policy.accessRedirect(true, true, disabled, 'settings'), null);
     assert.equal(h.policy.accessRedirect(true, true, snapshot('active').device, 'access-blocked'), '/(tabs)/');
     for (const [language, text, author] of [
-      ['fr', 'temporairement désactivé', 'Créé par AbakoDollar$'],
-      ['en', 'temporarily disabled', 'Created by AbakoDollar$'],
+      ['fr', 'temporairement désactivé', 'Powered by AbakoDollar$'],
+      ['en', 'temporarily disabled', 'Powered by AbakoDollar$'],
     ] as const) {
       const rendered = h.renderBlocked(language, 'disabled');
       assert.ok(rendered.includes(text));

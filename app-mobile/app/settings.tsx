@@ -717,7 +717,7 @@ export default function SettingsScreen() {
           </Pressable>
         )}
 
-        <Text style={styles.footer}>{t("app_name")} — STUFF X BILAL</Text>
+        <Text style={styles.footer}>{t("app_name")}</Text>
         <Text style={[styles.footer, { letterSpacing: 0 }]}>{t('created_by')}</Text>
       </ScrollView>
 

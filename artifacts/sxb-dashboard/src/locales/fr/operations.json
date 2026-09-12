@@ -269,7 +269,7 @@
   },
   "dashboard": {
     "title": "Tableau de bord",
-    "overview": "Vue d'ensemble du réseau SXB VPN",
+    "overview": "Vue d'ensemble du réseau Stuff x Bilal x Global Users",
     "updated": " · Mise à jour {{time}}",
     "operations": "Exploitation",
     "maintenanceActive": "MODE MAINTENANCE ACTIF — le dashboard est en pause pour tous les autres rôles",
@@ -426,7 +426,7 @@
     "passwordWarning": "⚠️ Le mot de passe ne sera plus affiché après fermeture. Copiez-le maintenant.",
     "dashboardUrl": "URL Dashboard",
     "copyAll": "Tout copier",
-    "credentialsCopy": "Dashboard SXB VPN\nURL: {{url}}\nNom: {{name}}\nEmail: {{email}}\nMot de passe: {{password}}\nRôle: {{role}}",
+    "credentialsCopy": "Dashboard Stuff x Bilal x Global Users\nURL: {{url}}\nNom: {{name}}\nEmail: {{email}}\nMot de passe: {{password}}\nRôle: {{role}}",
     "personalInfo": "Informations personnelles",
     "avatar": "Avatar",
     "changePhoto": "Changer la photo",
@@ -502,7 +502,7 @@
   "updates": {
     "distribution": "Distribution applicative",
     "title": "Mises à jour de l’app",
-    "description": "Publiez une version réelle et proposez son installation directement dans SXB VPN.",
+    "description": "Publiez une version réelle et proposez son installation directement dans Stuff x Bilal x Global Users.",
     "publishedVersion": "Version publiée",
     "none": "Aucune",
     "since": "Depuis {{date}}",
@@ -608,7 +608,7 @@
     "unavailable": "Santé mobile indisponible",
     "observability": "Observabilité applicative",
     "title": "Santé mobile",
-    "description": "Vue agrégée et pseudonymisée du parc Android SXB VPN.",
+    "description": "Vue agrégée et pseudonymisée du parc Android Stuff x Bilal x Global Users.",
     "generatedAt": "Générée le {{date}}",
     "activeWindow": "Fenêtre active : {{count}} h",
     "signals": "Signaux : {{count}} jours",
@@ -672,7 +672,7 @@
     "empty": "Aucune entrée de sécurité pour le moment"
   },
   "maintenance": {
-    "logo": "SXB VPN Logo",
+    "logo": "Logo Stuff x Bilal x Global Users",
     "active": "Mode maintenance actif",
     "title": "Maintenance en cours",
     "unavailable": "Notre plateforme est momentanément indisponible.",
@@ -680,7 +680,7 @@
     "ownerAccess": "Espace propriétaire",
     "loginAvailable": "L'accès à la connexion reste disponible pour l'exploitation.",
     "login": "Se connecter à l'espace d'exploitation",
-    "controlPanel": "SXB VPN Control Panel"
+    "controlPanel": "Panneau de contrôle Stuff x Bilal x Global Users"
   },
   "errorBoundary": {
     "title": "Une erreur est survenue",

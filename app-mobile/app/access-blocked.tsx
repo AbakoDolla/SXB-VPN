@@ -26,7 +26,7 @@ export default function DeviceAccessScreen() {
   return (
     <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', padding: 24,
       paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24, gap: 20, backgroundColor: colors.bg }}>
-      <Text style={{ fontSize: 14, color: colors.primary }}>SXB VPN</Text>
+      <Text style={{ fontSize: 14, color: colors.primary }}>{t("app_name")}</Text>
       <Text style={{ fontSize: 26, fontWeight: '700', color: colors.textPrimary }}>{t('access_device_title')}</Text>
       <Text accessibilityRole="alert" style={{ color: colors.warning, fontSize: 17 }}>{t(`access_device_${status}`)}</Text>
       <Text style={{ color: colors.textSecondary, lineHeight: 22 }}>{t('access_preserved')}</Text>

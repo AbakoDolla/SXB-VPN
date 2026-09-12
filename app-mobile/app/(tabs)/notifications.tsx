@@ -192,7 +192,7 @@ export default function NotificationsScreen() {
     <LinearGradient colors={colors.gradients.bg as [string, string, string]} style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + spacing.lg, borderBottomColor: colors.border }]}>
         <View style={{ flex: 1 }}>
-          <Text style={[type.overline, { color: colors.primary }]}>SXB VPN</Text>
+          <Text style={[type.overline, { color: colors.primary }]}>{t("app_name")}</Text>
           <View style={styles.titleRow}>
             <Text style={[type.h1, { color: colors.textPrimary }]}>{t("notifications")}</Text>
             {unreadCount > 0 && (

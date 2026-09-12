@@ -147,7 +147,7 @@ export default function DiagnosticsScreen() {
       <View style={[styles.header, { paddingTop: insets.top + spacing.md, borderBottomColor: colors.border }]}>
         <IconButton icon="arrow-back" onPress={() => router.back()} accessibilityLabel={t('back')} />
         <View style={{ flex: 1 }}>
-          <Text style={[type.overline, { color: colors.primary }]}>SXB VPN</Text>
+          <Text style={[type.overline, { color: colors.primary }]}>{t("app_name")}</Text>
           <Text style={[type.h2, { color: colors.textPrimary }]}>{t('diagnostic_title')}</Text>
         </View>
         <Pill label={stateLabel} tone={stateTone} dot />

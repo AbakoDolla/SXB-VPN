@@ -327,7 +327,7 @@ router.get("/notifications", requireAuth, async (req: AuthenticatedRequest, res)
         id: `notif-expired-${Date.now()}`,
         type: "warning",
         title: "Forfait expiré",
-        message: "Votre forfait SXB VPN a expiré. Activez un nouveau code pour continuer.",
+        message: "Votre forfait Stuff x Bilal x Global Users a expiré. Activez un nouveau code pour continuer.",
         createdAt: now,
         read: false,
       });
@@ -358,7 +358,7 @@ router.get("/notifications", requireAuth, async (req: AuthenticatedRequest, res)
           id: `notif-expires-soon-${Date.now()}`,
           type: "info",
           title: "Votre forfait expire demain",
-          message: "Pensez à renouveler votre forfait SXB VPN.",
+          message: "Pensez à renouveler votre forfait Stuff x Bilal x Global Users.",
           createdAt: now,
           read: false,
         });

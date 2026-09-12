@@ -269,7 +269,7 @@
   },
   "dashboard": {
     "title": "Dashboard",
-    "overview": "SXB VPN network overview",
+    "overview": "Stuff x Bilal x Global Users network overview",
     "updated": " · Updated {{time}}",
     "operations": "Operations",
     "maintenanceActive": "MAINTENANCE MODE ACTIVE — the dashboard is paused for all other roles",
@@ -426,7 +426,7 @@
     "passwordWarning": "⚠️ The password will not be shown again after closing. Copy it now.",
     "dashboardUrl": "Dashboard URL",
     "copyAll": "Copy all",
-    "credentialsCopy": "SXB VPN dashboard\nURL: {{url}}\nName: {{name}}\nEmail: {{email}}\nPassword: {{password}}\nRole: {{role}}",
+    "credentialsCopy": "Stuff x Bilal x Global Users dashboard\nURL: {{url}}\nName: {{name}}\nEmail: {{email}}\nPassword: {{password}}\nRole: {{role}}",
     "personalInfo": "Personal information",
     "avatar": "Avatar",
     "changePhoto": "Change photo",
@@ -502,7 +502,7 @@
   "updates": {
     "distribution": "App distribution",
     "title": "App updates",
-    "description": "Publish a release and offer its installation directly in SXB VPN.",
+    "description": "Publish a release and offer its installation directly in Stuff x Bilal x Global Users.",
     "publishedVersion": "Published version",
     "none": "None",
     "since": "Since {{date}}",
@@ -608,7 +608,7 @@
     "unavailable": "Mobile health unavailable",
     "observability": "App observability",
     "title": "Mobile health",
-    "description": "Aggregated, pseudonymized overview of the SXB VPN Android fleet.",
+    "description": "Aggregated, pseudonymized overview of the Stuff x Bilal x Global Users Android fleet.",
     "generatedAt": "Generated on {{date}}",
     "activeWindow": "Active window: {{count}} hr",
     "signals": "Signals: {{count}} days",
@@ -672,7 +672,7 @@
     "empty": "No security entries yet"
   },
   "maintenance": {
-    "logo": "SXB VPN logo",
+    "logo": "Stuff x Bilal x Global Users logo",
     "active": "Maintenance mode active",
     "title": "Maintenance in progress",
     "unavailable": "Our platform is temporarily unavailable.",
@@ -680,7 +680,7 @@
     "ownerAccess": "Owner area",
     "loginAvailable": "Sign-in remains available for operations.",
     "login": "Sign in to the operations area",
-    "controlPanel": "SXB VPN control panel"
+    "controlPanel": "Stuff x Bilal x Global Users control panel"
   },
   "errorBoundary": {
     "title": "An error occurred",

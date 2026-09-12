@@ -16,6 +16,7 @@ import {
   countryFlag, countryName, isCountryCode, normalizeCountryCode, sortedCountries, type Country,
 } from "@/services/countries";
 import { lireEmpreinteAppareil } from "@/services/deviceFingerprint";
+import SupportTelegramButton from "@/components/SupportTelegramButton";
 import {
   cleErreurEssai, effacerDemandeLocale, ecrireDemandeLocale, INTERVALLE_VERIFICATION_MS,
   inscrireEssaiGratuit, intervalleVerificationMs, lireDemandeLocale, normaliserJetonEssai,
@@ -331,6 +332,7 @@ export default function FreeTrialScreen() {
             ) : null}
           </View>
 
+          <SupportTelegramButton compact />
           <Text style={styles.footer}>{t("free_trial_no_config_notice")}</Text>
         </ScrollView>
       </LinearGradient>
@@ -475,6 +477,7 @@ export default function FreeTrialScreen() {
             </View>
           </View>
 
+          <SupportTelegramButton compact />
           {/* Promesse de sécurité explicite du propriétaire : elle reste
               visible sur l'écran de saisie ET sur l'écran d'attente. */}
           <Text style={styles.footer}>{t("free_trial_no_config_notice")}</Text>

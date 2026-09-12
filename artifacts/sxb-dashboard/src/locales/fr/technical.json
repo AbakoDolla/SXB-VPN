@@ -193,7 +193,7 @@
     "requiredFields": "Le nom et l'adresse IP du serveur sont requis.",
     "createError": "Impossible d'ajouter le serveur.",
     "statusError": "Impossible de modifier l'état du serveur.",
-    "confirmDelete": "Voulez-vous vraiment retirer ce serveur VPS du pool SXB VPN ?",
+    "confirmDelete": "Voulez-vous vraiment retirer ce serveur VPS du pool Stuff x Bilal x Global Users ?",
     "locations": {
       "paris": "Paris, France 🇫🇷",
       "frankfurt": "Francfort, Allemagne 🇩🇪",

@@ -12,6 +12,7 @@ import { useAuthContext } from "@/contexts/AuthContext";
 import { useColors } from "@/hooks/useColors";
 import { useTranslation } from "@/localization";
 import { activationErrorKey, normalizeActivationToken } from "@/services/activationError";
+import SupportTelegramButton from "@/components/SupportTelegramButton";
 
 const LOGO = require("../assets/images/icon.png");
 
@@ -104,7 +105,7 @@ export default function ActivateScreen() {
             <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]} accessibilityLabel={t("back")}>
               <Ionicons name="arrow-back" size={20} color={colors.textSecondary} />
             </Pressable>
-            <Text style={styles.topBarLabel}>SXB VPN</Text>
+            <Text style={styles.topBarLabel}>{t("app_name")}</Text>
             <View style={styles.iconButtonPlaceholder} />
           </View>
 
@@ -194,6 +195,10 @@ export default function ActivateScreen() {
             </View>
             <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
           </Pressable>
+
+          {/* L'utilisateur bloqué ici n'a pas encore de compte : le canal
+              Telegram est son seul recours immédiat, avant tout ticket. */}
+          <SupportTelegramButton />
 
           <Text style={styles.footer}>{t("activate_footer")}</Text>
           <Text style={styles.footer}>{t("created_by")}</Text>

@@ -50,7 +50,7 @@ export default function ProfileScreen() {
       >
         <View style={styles.headerRow}>
           <View style={{ flex: 1 }}>
-            <Text style={[type.overline, { color: colors.primary }]}>SXB VPN</Text>
+            <Text style={[type.overline, { color: colors.primary }]}>{t("app_name")}</Text>
             <Text style={[type.h1, { color: colors.textPrimary }]}>{t("profile")}</Text>
           </View>
           <IconButton icon="settings-outline" onPress={() => router.push("/settings")} accessibilityLabel={t("settings")} />
@@ -164,9 +164,9 @@ export default function ProfileScreen() {
 
         <View style={styles.appInfo}>
           <Text style={[type.caption, { color: colors.textMuted }]}>
-            SXB VPN v{Constants.expoConfig?.version ?? "1.0.0"}
+            {t("app_name")} v{Constants.expoConfig?.version ?? "1.0.0"}
           </Text>
-          <Text style={[type.micro, { color: colors.textMuted, letterSpacing: 2.4 }]}>STUFF X BILAL</Text>
+          <Text style={[type.micro, { color: colors.textMuted, letterSpacing: 2.4 }]}>{t("created_by")}</Text>
         </View>
       </ScrollView>
     </LinearGradient>

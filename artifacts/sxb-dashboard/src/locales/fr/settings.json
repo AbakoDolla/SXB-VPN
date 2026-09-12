@@ -10,7 +10,7 @@
   "fields": {
     "current_lang": "Langue actuelle de l'interface",
     "browser_lang_detected": "Langue du navigateur détectée",
-    "api_endpoint": "Endpoint API de SXB VPN",
+    "api_endpoint": "Endpoint API de Stuff x Bilal x Global Users",
     "xpanel_endpoint": "Hôte XPanel (SSH/Sing-box)",
     "secret_key": "Clé secrète d'administration"
   }

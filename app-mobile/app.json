@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "SXB VPN",
+    "name": "Stuff x Bilal",
     "slug": "sxb-mobile",
     "version": "1.2.1",
     "orientation": "portrait",
@@ -17,9 +17,9 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.sxbvpn.mobile",
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "SXB VPN uses your location to select the optimal server.",
-        "NSPhotoLibraryUsageDescription": "SXB VPN may access photos for profile customization.",
-        "NSCameraUsageDescription": "SXB VPN uses the camera for QR code scanning."
+        "NSLocationWhenInUseUsageDescription": "Stuff x Bilal x Global Users uses your location to select the optimal server.",
+        "NSPhotoLibraryUsageDescription": "Stuff x Bilal x Global Users may access photos for profile customization.",
+        "NSCameraUsageDescription": "Stuff x Bilal x Global Users uses the camera for QR code scanning."
       }
     },
     "android": {
@@ -50,7 +50,7 @@
       [
         "expo-local-authentication",
         {
-          "faceIDPermission": "Autoriser SXB VPN à utiliser Face ID pour déverrouiller l’application."
+          "faceIDPermission": "Autoriser Stuff x Bilal x Global Users à utiliser Face ID pour déverrouiller l’application."
         }
       ],
       "expo-web-browser",

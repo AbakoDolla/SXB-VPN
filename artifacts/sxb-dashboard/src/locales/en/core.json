@@ -1,7 +1,13 @@
 {
   "language": "Language",
   "languages": { "fr": "Français", "en": "English" },
-  "logo": "SXB VPN logo",
+  "logo": "Stuff x Bilal x Global Users logo",
+  "support": {
+    "telegram": {
+      "cta": "Telegram support",
+      "hint": "Reach support on Telegram, even while signed out."
+    }
+  },
   "login": {
     "subtitle": "VPN management platform",
     "passwordTab": "Email / Password",
@@ -19,7 +25,7 @@
     "signIn": "Sign in",
     "verifying": "Verifying…",
     "activate": "Activate with token",
-    "footer": "SXB VPN · Control panel · v2.1"
+    "footer": "Stuff x Bilal x Global Users · Control panel · v2.1"
   },
   "notFound": {
     "title": "404 — Page not found",

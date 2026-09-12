@@ -56,6 +56,7 @@ function MiniPill({ icon, label, color }: {
 }
 
 function Preview({ kind, accent }: { kind: PreviewKind; accent: string }) {
+  const { t } = useTranslation();
   const colors = useColors();
 
   if (kind === "welcome") {
@@ -195,7 +196,7 @@ function Preview({ kind, accent }: { kind: PreviewKind; accent: string }) {
           <Ionicons name="shield-checkmark" size={17} color={colors.connected} />
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={[type.captionMedium, { color: colors.textPrimary }]}>SXB VPN • Protection active</Text>
+          <Text style={[type.captionMedium, { color: colors.textPrimary }]}>{t("app_name")} • {t("protection_active")}</Text>
           <Text style={[type.micro, { color: colors.textMuted }]}>00:42:18 · ↑ 124 Ko/s · ↓ 1,8 Mo/s</Text>
         </View>
       </View>
@@ -351,7 +352,7 @@ export default function OnboardingScreen() {
             <Image source={LOGO} style={styles.logo} />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={[type.h3, { color: colors.textPrimary }]}>SXB VPN</Text>
+            <Text style={[type.h3, { color: colors.textPrimary }]}>{t("app_name")}</Text>
             <Text style={[type.micro, { color: colors.textMuted }]}>
               {user?.name ? `${t("tour_for")} ${user.name}` : t("tour_getting_started")}
             </Text>

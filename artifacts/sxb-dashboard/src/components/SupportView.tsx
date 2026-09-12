@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "../contexts/I18nContext";
 import { LifeBuoy, Search, Plus, RefreshCw, Send, CheckCircle2, Clock, AlertTriangle, Inbox } from "lucide-react";
 import { fetchTickets, createTicket, updateTicket, SupportTicket } from "../api/support";
+import { SUPPORT_TELEGRAM_URL } from "../constants/support";
 
 const PRIORITY_COLORS = {
   low: "text-emerald-400 bg-emerald-500/10 border-emerald-500/20",
@@ -123,12 +124,24 @@ export default function SupportView() {
           <p className="text-sm text-gray-400 mt-1">
             {t("operations.support.description")}</p>
         </div>
-        <button
-          onClick={() => setShowAddTicket(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-medium text-sm rounded-lg shadow-lg shadow-cyan-950/20 transition-all cursor-pointer"
-        >
-          <Plus className="h-4 w-4" />
-          {t("operations.support.openTicket")}</button>
+        <div className="flex items-center gap-2">
+          {/* Contact immédiat : complète les tickets, ne les remplace pas. */}
+          <a
+            href={SUPPORT_TELEGRAM_URL}
+            target="_blank"
+            rel="noreferrer noopener"
+            title={t("core.support.telegram.hint")}
+            className="flex items-center gap-2 px-4 py-2 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 font-medium text-sm rounded-lg transition-all cursor-pointer"
+          >
+            <Send className="h-4 w-4" />
+            {t("core.support.telegram.cta")}</a>
+          <button
+            onClick={() => setShowAddTicket(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-medium text-sm rounded-lg shadow-lg shadow-cyan-950/20 transition-all cursor-pointer"
+          >
+            <Plus className="h-4 w-4" />
+            {t("operations.support.openTicket")}</button>
+        </div>
       </div>
 
       {/* Error Banner */}

@@ -92,7 +92,7 @@ export default function HistoryScreen() {
   return (
     <LinearGradient colors={colors.gradients.bg as [string, string, string]} style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + spacing.lg, borderBottomColor: colors.border }]}>
-        <Text style={[type.overline, { color: colors.primary }]}>SXB VPN</Text>
+        <Text style={[type.overline, { color: colors.primary }]}>{t("app_name")}</Text>
         <Text style={[type.h1, { color: colors.textPrimary, marginBottom: spacing.md }]}>{t("history")}</Text>
 
         <View style={styles.filterRow}>

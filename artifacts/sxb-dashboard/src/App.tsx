@@ -33,7 +33,8 @@ import { activateWithAdminToken } from './api/accounts';
 import { ApiError, setTokens } from './api/client';
 import { fetchMaintenanceState, setMaintenanceMode } from './api/owner';
 import { User, UserRole } from './types';
-import { ShieldAlert, RefreshCw, LogIn, Eye, EyeOff, KeyRound, Mail } from 'lucide-react';
+import { ShieldAlert, RefreshCw, LogIn, Eye, EyeOff, KeyRound, Mail, Send } from 'lucide-react';
+import { SUPPORT_TELEGRAM_URL } from './constants/support';
 
 function LoginForm({ onLogin }: { onLogin: () => void }) {
   const { t, errorMessage, formatNumber } = useTranslation();
@@ -111,7 +112,7 @@ function LoginForm({ onLogin }: { onLogin: () => void }) {
           <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-cyan-500 to-blue-600 mx-auto mb-4 flex items-center justify-center shadow-xl shadow-cyan-500/20">
             <img src="/assets/images/logo_sxb_2026.png" alt={t('core.logo')} className="w-11 h-11 object-contain" />
           </div>
-          <h1 className="text-2xl font-bold text-white mb-1">SXB VPN</h1>
+          <h1 className="text-2xl font-bold text-white mb-1">Stuff x Bilal x Global Users</h1>
           <p className="text-sm text-gray-500">{t('core.login.subtitle')}</p>
         </div>
 
@@ -208,6 +209,18 @@ function LoginForm({ onLogin }: { onLogin: () => void }) {
             </form>
           )}
         </div>
+
+        {/* Un revendeur ou un administrateur bloqué ici n'a aucune session :
+            le canal Telegram est son seul recours pour joindre le support. */}
+        <a
+          href={SUPPORT_TELEGRAM_URL}
+          target="_blank"
+          rel="noreferrer noopener"
+          title={t('core.support.telegram.hint')}
+          className="mt-4 w-full py-2.5 text-sm font-semibold rounded-xl border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 transition-all cursor-pointer flex items-center justify-center gap-2"
+        >
+          <Send className="w-4 h-4" />
+          {t('core.support.telegram.cta')}</a>
 
         <p className="text-center text-xs text-gray-600 mt-4">{t('core.login.footer')}</p>
       </div>

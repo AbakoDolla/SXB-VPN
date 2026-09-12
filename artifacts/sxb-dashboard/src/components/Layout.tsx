@@ -263,10 +263,10 @@ export default function Layout({
       <div className="h-14 flex items-center justify-between px-4 border-b border-[#1a1f2e] shrink-0">
         <div className="flex items-center gap-2.5">
           <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center shadow-lg shadow-cyan-500/20">
-            <img src="/assets/images/logo_sxb_2026.png" alt="SXB" className="w-5 h-5 object-contain" />
+            <img src="/assets/images/logo_sxb_2026.png" alt="Stuff x Bilal" className="w-5 h-5 object-contain" />
           </div>
           <div>
-            <span className="text-white font-bold text-sm tracking-tight">SXB VPN</span>
+            <span className="text-white font-bold text-sm tracking-tight">Stuff x Bilal x Global Users</span>
             <div className="text-[10px] text-gray-500 leading-none">{t('control_panel')}</div>
           </div>
         </div>
@@ -397,9 +397,9 @@ export default function Layout({
           </button>
           <div className="flex items-center gap-2">
             <div className="w-5 h-5 rounded bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center">
-              <img src="/assets/images/logo_sxb_2026.png" alt="SXB VPN" className="w-4 h-4 object-contain" />
+              <img src="/assets/images/logo_sxb_2026.png" alt="Stuff x Bilal x Global Users" className="w-4 h-4 object-contain" />
             </div>
-            <span className="text-white font-bold text-sm">SXB VPN</span>
+            <span className="text-white font-bold text-sm truncate">Stuff x Bilal x Global Users</span>
           </div>
           <div className="w-8" />
         </div>

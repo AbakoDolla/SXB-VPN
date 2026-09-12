@@ -13,12 +13,12 @@ const sourceRoot = path.join(root, "artifacts", "sxb-dashboard", "src");
 // Exceptions identify an exact file, UI sink and literal, never a whole file,
 // language, regular expression or a snapshot of untranslated legacy labels.
 const exceptions = [
-  { file: "App.tsx", sink: "jsx", text: "SXB VPN", reason: "Product name" },
+  { file: "App.tsx", sink: "jsx", text: "Stuff x Bilal x Global Users", reason: "Product name" },
   { file: "App.tsx", sink: "attribute:placeholder", text: "admin@example.com", reason: "Example email address" },
   { file: "App.tsx", sink: "attribute:placeholder", text: "SXB-XXXX-XXXX-XXXX", reason: "Opaque token syntax" },
-  { file: "components/Layout.tsx", sink: "jsx", text: "SXB VPN", reason: "Product name" },
-  { file: "components/Layout.tsx", sink: "attribute:alt", text: "SXB", reason: "Product logotype" },
-  { file: "components/Layout.tsx", sink: "attribute:alt", text: "SXB VPN", reason: "Product logotype" },
+  { file: "components/Layout.tsx", sink: "jsx", text: "Stuff x Bilal x Global Users", reason: "Product name" },
+  { file: "components/Layout.tsx", sink: "attribute:alt", text: "Stuff x Bilal", reason: "Product logotype" },
+  { file: "components/Layout.tsx", sink: "attribute:alt", text: "Stuff x Bilal x Global Users", reason: "Product logotype" },
   { file: "components/Layout.tsx", sink: "expression", text: "U", reason: "Fallback avatar initial, not a role label" },
   { file: "components/AccountsView.tsx", sink: "attribute:placeholder", text: "+225 07 XX XX XX", reason: "Example phone syntax" },
   { file: "components/ClientsView.tsx", sink: "attribute:placeholder", text: "+225 07 XX XX XX XX", reason: "Example phone syntax" },
@@ -279,8 +279,8 @@ if (process.argv.includes("--report")) {
     `), []);
     assert.ok(auditSource('<span>Nouvelle chaîne</span>', "App.tsx").length);
     assert.ok(auditSource('<span>{"core.login.signIn"}</span>').some(item => item.sink === "expression"));
-    assert.equal(auditSource('<span>SXB VPN</span>', "App.tsx").length, 0);
-    assert.ok(auditSource('<span>SXB VPN</span>', "unapproved.tsx").length);
+    assert.equal(auditSource('<span>Stuff x Bilal x Global Users</span>', "App.tsx").length, 0);
+    assert.ok(auditSource('<span>Stuff x Bilal x Global Users</span>', "unapproved.tsx").length);
   });
 
   test("AST audit checks finite dynamic key maps as well as literal t calls", () => {
