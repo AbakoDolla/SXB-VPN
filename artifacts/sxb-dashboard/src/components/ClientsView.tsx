@@ -14,6 +14,7 @@ import BulkDeleteControls from "./BulkDeleteControls";
 import ActivationRenewalDialog from "./ActivationRenewalDialog";
 import ActivationCodeResult from "./ActivationCodeResult";
 import { TrialBadge } from "./TrialBadge";
+import { FreeTrialToggle } from "./FreeTrialToggle";
 import { Search, UserPlus, Trash2, ShieldAlert, KeyRound, CalendarDays, PauseCircle, PlayCircle, RefreshCcw, Store } from "lucide-react";
 import Pagination from "./ui/Pagination";
 import { toast } from "sonner";
@@ -34,6 +35,9 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
   const { t, locale, formatBytes, message, errorText } = useTranslation();
   const STATUS_CONFIG = lifecycleBadges(t);
   const [clients, setClients] = useState<Client[]>([]);
+  // Essais gratuits masqués à l'ouverture, TOUJOURS : ils relèvent de leur
+  // propre section. L'état n'est pas mémorisé d'une visite à l'autre.
+  const [inclureEssais, setInclureEssais] = useState(false);
   const [resellers, setResellers] = useState<Reseller[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -69,7 +73,10 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
   const loadClients = async () => {
     setLoading(true);
     try {
-      const data = await fetchClients();
+      // Le filtre d'essai est un paramètre de requête : la liste reçue est
+      // exactement celle qui s'affiche, donc les compteurs ne peuvent pas
+      // annoncer des lignes invisibles.
+      const data = await fetchClients({ includeFreeTrial: inclureEssais });
       setClients(data);
       // Rattachement commercial explicite, réservé aux rôles supérieurs.
       if (showsOwnerColumn && can("reseller.manage")) setResellers(await fetchResellers());
@@ -82,7 +89,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
 
   useEffect(() => {
     void loadClients();
-  }, []);
+  }, [inclureEssais]);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -173,7 +180,9 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
     afterDelete: refreshAccess, pending, run,
     busy: loading || showAddModal || !!renewTarget || !!resetResult,
     scopeKey: `${currentUserRole}:${isReseller ? access?.resellerId ?? "" : ""}`,
-    filterKey: `${search}\0${statusFilter}`,
+    // L'inclusion des essais fait partie du filtre : sans elle dans la clé, une
+    // sélection faite sur une ligne d'essai ressusciterait à la bascule suivante.
+    filterKey: `${search}\0${statusFilter}\0${inclureEssais}`,
   });
   const controlsBusy = !!pending || !!renewTarget || !!resetResult || showAddModal || !!bulkDelete.confirmation;
 
@@ -182,7 +191,7 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
     return filteredClients.slice(start, start + pageSize);
   }, [filteredClients, page, pageSize]);
 
-  useEffect(() => setPage(1), [search, statusFilter]);
+  useEffect(() => setPage(1), [search, statusFilter, inclureEssais]);
   useEffect(() => setPage(current => Math.max(1, Math.min(current, Math.ceil(filteredClients.length / pageSize)))), [filteredClients.length, pageSize]);
 
   return (
@@ -245,6 +254,8 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
       </div>
 
       {!isSupport && <BulkDeleteControls controller={bulkDelete} hintKey="operations.bulkDelete.clientHint" />}
+
+      <FreeTrialToggle checked={inclureEssais} onChange={setInclureEssais} disabled={controlsBusy || loading} />
 
       {/* Main client table */}
       {loading && clients.length === 0 ? (

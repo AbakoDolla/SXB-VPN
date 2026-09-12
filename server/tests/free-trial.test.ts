@@ -35,6 +35,7 @@ import {
   deciderInscriptionParEmpreinte,
   demandeAppartientAuJeton,
   empreinteExploitable,
+  estEssaiActif,
   etatJetonEssai,
   genererJetonEssai,
   genererSecretReclamation,
@@ -48,6 +49,7 @@ import {
   refusEssaiDejaConsomme,
   refusJetonEssai,
   refusLotEssai,
+  resumerEssais,
   secretCorrespond,
   statistiquesParPays,
   totauxParPays,
@@ -57,6 +59,12 @@ import {
   vueJetonPourAdmin,
   vueStatutEssaiPourAppareil,
 } from "../services/free-trial";
+import {
+  etFiltres,
+  exclureIdentifiants,
+  inclutEssaisGratuits,
+  porteeEssaiDeploye,
+} from "../services/free-trial-marks";
 import { CODES_PAYS, estCodePaysValide, nomPays, normaliserCodePays } from "../services/countries";
 
 const DEMAIN = new Date(Date.now() + 24 * 3600 * 1000);
@@ -541,6 +549,7 @@ describe("contrat de la route — la décision reste dans le service", () => {
       "'/requests/deploy'",
       "'/requests/reject'",
       "'/stats/countries'",
+      "'/stats/overview'",
     ]) {
       assert.ok(source.includes(chemin), `route ${chemin} manquante`);
     }
@@ -549,9 +558,9 @@ describe("contrat de la route — la décision reste dans le service", () => {
   it("protège toutes les routes admin par requireAuth + requirePermission", () => {
     const adminRoutes = source.split(/router\.(?:get|post)\(/).slice(1)
       .filter((bloc) => !bloc.startsWith("'/enroll'") && !bloc.startsWith("'/status'"));
-    // 7 routes internes : 3 jetons, 2 demandes (liste + statistiques) et
-    // 2 actions d'instruction (déploiement, refus).
-    assert.equal(adminRoutes.length, 7, "nombre de routes admin inattendu");
+    // 8 routes internes : 3 jetons, 3 demandes (liste + deux récapitulatifs)
+    // et 2 actions d'instruction (déploiement, refus).
+    assert.equal(adminRoutes.length, 8, "nombre de routes admin inattendu");
     for (const bloc of adminRoutes) {
       const entete = bloc.slice(0, 600);
       assert.ok(entete.includes("requireAuth"), `route admin sans requireAuth : ${entete.slice(0, 40)}`);
@@ -1131,5 +1140,290 @@ describe("LOTS — les demandes vivent SOUS leur jeton, jamais mélangées", () 
     const nu = vueJetonPourAdmin(jeton());
     assert.equal(nu.pendingCount, 0);
     assert.equal(nu.deployedCount, 0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("séparation — les essais ne se mélangent plus aux clients principaux", () => {
+  /**
+   * Faux ORM minimal : deux à trois lectures suffisent à établir ce qui, dans
+   * le parc, provient d'un essai. Le compteur d'appels est vérifié pour que la
+   * séparation ne devienne jamais une requête par ligne affichée.
+   */
+  function baseFictive(params: {
+    demandes?: Array<Record<string, unknown>>;
+    forfaits?: Array<Record<string, unknown>>;
+    comptes?: Array<Record<string, unknown>>;
+    sansEssai?: boolean;
+  }) {
+    const appels: string[] = [];
+    const db: any = {
+      subscription: {
+        findMany: async (args: any) => {
+          appels.push("subscription.findMany");
+          const ids: string[] = args?.where?.clientId?.in ?? [];
+          return (params.forfaits ?? []).filter((f) => ids.includes(String(f.clientId)));
+        },
+      },
+      vpnClient: {
+        findMany: async (args: any) => {
+          appels.push("vpnClient.findMany");
+          const ids: string[] = args?.where?.id?.in ?? [];
+          return (params.comptes ?? []).filter((c) => ids.includes(String(c.id)));
+        },
+      },
+    };
+    if (!params.sansEssai) {
+      db.freeTrialRequest = {
+        findMany: async (args: any) => {
+          appels.push("freeTrialRequest.findMany");
+          const statut = args?.where?.status;
+          return (params.demandes ?? []).filter((d) => !statut || d.status === statut);
+        },
+      };
+    }
+    return { db, appels };
+  }
+
+  it("reconnaît rétroactivement les essais DÉJÀ déployés, sans migration", async () => {
+    // C'est le cas de la capture du propriétaire : le forfait existe depuis
+    // longtemps et ne porte aucune colonne dédiée. Le lien passe par la
+    // demande d'essai, qui existe depuis l'origine.
+    const { db, appels } = baseFictive({
+      demandes: [
+        { status: STATUT_DEMANDE.DEPLOYED, clientId: "cli-1", subscriptionId: "sub-essai" },
+        { status: STATUT_DEMANDE.PENDING, clientId: null, subscriptionId: null },
+      ],
+      forfaits: [{ id: "sub-essai", clientId: "cli-1" }],
+      comptes: [{ id: "cli-1", quotaTotal: null }],
+    });
+    const portee = await porteeEssaiDeploye(db);
+    assert.equal(portee.exploitable, true);
+    assert.deepEqual(portee.subscriptionIds, ["sub-essai"]);
+    assert.deepEqual(portee.clientsEssaiUniquement, ["cli-1"]);
+    // Trois lectures indexées pour toute une page, jamais une par ligne.
+    assert.equal(appels.length, 3);
+  });
+
+  it("ne compte QUE les demandes déployées : une demande en attente n'a ouvert aucun accès", async () => {
+    const { db } = baseFictive({
+      demandes: [
+        { status: STATUT_DEMANDE.PENDING, clientId: "cli-attente", subscriptionId: "sub-attente" },
+        { status: STATUT_DEMANDE.REJECTED, clientId: "cli-refus", subscriptionId: "sub-refus" },
+      ],
+    });
+    const portee = await porteeEssaiDeploye(db);
+    assert.deepEqual(portee.clientIds, []);
+    assert.deepEqual(portee.subscriptionIds, []);
+  });
+
+  it("un essayeur devenu client payant sort de la liste des comptes d'essai", async () => {
+    const { db } = baseFictive({
+      demandes: [
+        { status: STATUT_DEMANDE.DEPLOYED, clientId: "cli-converti", subscriptionId: "sub-essai" },
+        { status: STATUT_DEMANDE.DEPLOYED, clientId: "cli-pur", subscriptionId: "sub-essai-2" },
+      ],
+      forfaits: [
+        { id: "sub-essai", clientId: "cli-converti" },
+        { id: "sub-paye", clientId: "cli-converti" },
+        { id: "sub-essai-2", clientId: "cli-pur" },
+      ],
+    });
+    const portee = await porteeEssaiDeploye(db);
+    // Les deux forfaits d'essai restent retranchés de « Forfaits Data »…
+    assert.deepEqual([...portee.subscriptionIds].sort(), ["sub-essai", "sub-essai-2"]);
+    // … mais le compte converti reste visible dans « Comptes VPN » et
+    // « Appareils » : c'est un vrai client, le perdre de vue serait pire.
+    assert.deepEqual(portee.clientsEssaiUniquement, ["cli-pur"]);
+    assert.deepEqual([...portee.clientIds].sort(), ["cli-converti", "cli-pur"]);
+  });
+
+  it("un volume attribué directement au compte vaut accès ordinaire", async () => {
+    // Cas sans forfait : l'appareil porte son propre quota (`quotaSource:
+    // "client"`). Le manquer ferait disparaître un vrai client de
+    // l'exploitation le jour où on lui accorde un essai.
+    const { db } = baseFictive({
+      demandes: [
+        { status: STATUT_DEMANDE.DEPLOYED, clientId: "cli-quota", subscriptionId: "sub-essai" },
+        { status: STATUT_DEMANDE.DEPLOYED, clientId: "cli-pur", subscriptionId: "sub-essai-2" },
+      ],
+      forfaits: [{ id: "sub-essai", clientId: "cli-quota" }, { id: "sub-essai-2", clientId: "cli-pur" }],
+      comptes: [
+        { id: "cli-quota", quotaTotal: BigInt(5) * BigInt(1024) ** BigInt(3) },
+        { id: "cli-pur", quotaTotal: BigInt(0) },
+      ],
+    });
+    const portee = await porteeEssaiDeploye(db);
+    assert.deepEqual(portee.clientsEssaiUniquement, ["cli-pur"]);
+  });
+
+  it("sans fonctionnalité d'essai déployée, AUCUNE ligne n'est masquée", async () => {
+    const { db } = baseFictive({ sansEssai: true });
+    const portee = await porteeEssaiDeploye(db);
+    assert.equal(portee.exploitable, false);
+    assert.deepEqual(portee.clientsEssaiUniquement, []);
+    // Une lecture qui échoue ne doit pas non plus amputer un écran critique.
+    const casse = await porteeEssaiDeploye({
+      freeTrialRequest: { findMany: async () => { throw new Error("base indisponible"); } },
+    });
+    assert.equal(casse.exploitable, false);
+    assert.deepEqual(casse.subscriptionIds, []);
+  });
+
+  it("l'absence de paramètre ne change le contrat d'aucun appelant historique", () => {
+    assert.equal(inclutEssaisGratuits(undefined), true);
+    assert.equal(inclutEssaisGratuits(null), true);
+    assert.equal(inclutEssaisGratuits(""), true);
+    assert.equal(inclutEssaisGratuits("true"), true);
+    assert.equal(inclutEssaisGratuits("1"), true);
+    for (const refus of ["false", "0", "no", "off", "non", "FALSE", " False "]) {
+      assert.equal(inclutEssaisGratuits(refus), false, `« ${refus} » doit masquer les essais`);
+    }
+    // Express rend un tableau quand le paramètre est répété.
+    assert.equal(inclutEssaisGratuits(["false", "true"]), false);
+  });
+
+  it("le filtre d'essai RETRANCHE toujours, il n'élargit jamais la portée revendeur", () => {
+    const portee = { resellerId: "res-1" };
+    const exclusion = exclureIdentifiants("id", ["cli-essai"]);
+    const combine = etFiltres(portee, exclusion)!;
+    // Un `{ ...a, ...b }` aurait écrasé une clé commune et rendu une liste trop
+    // large : la combinaison est un ET explicite.
+    assert.deepEqual(combine, { AND: [{ resellerId: "res-1" }, { id: { notIn: ["cli-essai"] } }] });
+    // Rien à retrancher : la requête d'origine reste strictement inchangée.
+    assert.equal(exclureIdentifiants("id", []), null);
+    assert.deepEqual(etFiltres(portee, null), portee);
+    assert.equal(etFiltres(null, undefined), undefined);
+  });
+
+  it("les trois écrans d'exploitation filtrent CÔTÉ SERVEUR, pas dans le navigateur", () => {
+    for (const [fichier, ancre] of [
+      ["../routes/subscriptions.ts", "router.get('/',"],
+      ["../routes/clients.ts", 'router.get("/",'],
+      ["../routes/devices.ts", 'router.get("/",'],
+    ] as const) {
+      const source = readFileSync(new URL(fichier, import.meta.url), "utf8");
+      const debut = source.indexOf(ancre);
+      assert.ok(debut > 0, `route de liste introuvable dans ${fichier}`);
+      const bloc = source.slice(debut, debut + 3000);
+      assert.ok(bloc.includes("inclutEssaisGratuits(req.query.includeFreeTrial)"),
+        `${fichier} doit lire le paramètre de requête`);
+      assert.ok(bloc.includes("porteeEssaiDeploye(prisma)"), `${fichier} doit réutiliser le marqueur existant`);
+      assert.ok(bloc.includes("exclureIdentifiants("), `${fichier} doit retrancher dans la requête`);
+      assert.ok(bloc.includes("etFiltres("), `${fichier} doit composer sans écraser la portée revendeur`);
+    }
+    // Les compteurs de « Forfaits Data » suivent le MÊME filtre que la liste.
+    const forfaits = readFileSync(new URL("../routes/subscriptions.ts", import.meta.url), "utf8");
+    const stats = forfaits.slice(forfaits.indexOf("router.get('/stats',"), forfaits.indexOf("router.get('/:id',"));
+    assert.ok(stats.includes("inclutEssaisGratuits(req.query.includeFreeTrial)"));
+    assert.ok(stats.includes("exclureIdentifiants('id', portee.subscriptionIds)"));
+  });
+
+  it("les trois vues s'ouvrent TOUJOURS essais masqués", () => {
+    for (const vue of ["SubscriptionsView", "ClientsView", "DevicesView"]) {
+      const source = readFileSync(
+        new URL(`../../artifacts/sxb-dashboard/src/components/${vue}.tsx`, import.meta.url),
+        "utf8",
+      );
+      assert.ok(/useState\(false\)/.test(source.slice(source.indexOf("inclureEssais"), source.indexOf("inclureEssais") + 200)),
+        `${vue} doit démarrer avec les essais masqués`);
+      assert.ok(source.includes("includeFreeTrial: inclureEssais"),
+        `${vue} doit transmettre le filtre au serveur`);
+      assert.ok(source.includes("<FreeTrialToggle"), `${vue} doit porter l'interrupteur`);
+      assert.ok(source.includes("}, [inclureEssais]);"), `${vue} doit recharger depuis le serveur à la bascule`);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("indicateurs propres à l'essai gratuit", () => {
+  const presence = { measured: true, reason: null, windowMinutes: 15, heartbeatMinutes: 5 };
+
+  it("distingue « déployé » (histoire) de « actif » (maintenant)", () => {
+    const futur = new Date(Date.now() + 3_600_000);
+    const passe = new Date(Date.now() - 3_600_000);
+    assert.equal(estEssaiActif({ status: "active", expireAt: futur }), true);
+    assert.equal(estEssaiActif({ status: "active", expireAt: null }), true);
+    assert.equal(estEssaiActif({ status: "active", expireAt: passe }), false);
+    assert.equal(estEssaiActif({ status: "suspended", expireAt: futur }), false);
+    assert.equal(estEssaiActif({ status: "revoked", expireAt: futur }), false);
+    // Volume épuisé : l'accès existe sur le papier mais ne transporte plus rien.
+    assert.equal(estEssaiActif({ status: "active", expireAt: futur, quotaBytes: 100, quotaUsed: 100 }), false);
+    assert.equal(estEssaiActif({ status: "active", expireAt: futur, quotaBytes: 100, quotaUsed: 99 }), true);
+    // Quota illimité (0) : l'épuisement n'a pas de sens.
+    assert.equal(estEssaiActif({ status: "active", expireAt: futur, quotaBytes: 0, quotaUsed: 5 }), true);
+    // Forfait introuvable : on ne suppose jamais un accès qu'on ne peut plus lire.
+    assert.equal(estEssaiActif(null), false);
+  });
+
+  it("compte les inscrits, les états et les essais encore ouverts", () => {
+    const futur = new Date(Date.now() + 3_600_000);
+    const resume = resumerEssais({
+      demandes: [
+        { status: STATUT_DEMANDE.DEPLOYED, clientId: "cli-1", subscriptionId: "sub-1" },
+        { status: STATUT_DEMANDE.DEPLOYED, clientId: "cli-2", subscriptionId: "sub-2" },
+        { status: STATUT_DEMANDE.PENDING },
+        { status: STATUT_DEMANDE.REJECTED },
+      ],
+      forfaits: new Map([
+        ["sub-1", { status: "active", expireAt: futur }],
+        ["sub-2", { status: "active", expireAt: new Date(Date.now() - 1_000) }],
+      ]),
+      clientsConnectes: new Set(["cli-1", "cli-2", "cli-inconnu"]),
+      presence,
+    });
+    assert.equal(resume.total, 4);
+    assert.equal(resume.deployed, 2);
+    assert.equal(resume.pending, 1);
+    assert.equal(resume.rejected, 1);
+    assert.equal(resume.active, 1);
+    // Ni un compte connecté étranger à l'essai, ni un ancien essayeur dont
+    // l'essai est terminé : la section d'essai ne compte que des essais ouverts.
+    assert.equal(resume.connectedNow, 1);
+  });
+
+  it("compte des COMPTES distincts, pas des demandes", () => {
+    const futur = new Date(Date.now() + 3_600_000);
+    const resume = resumerEssais({
+      demandes: [
+        { status: STATUT_DEMANDE.DEPLOYED, clientId: "cli-1", subscriptionId: "sub-1" },
+        { status: STATUT_DEMANDE.DEPLOYED, clientId: "cli-1", subscriptionId: "sub-2" },
+      ],
+      forfaits: new Map([
+        ["sub-1", { status: "active", expireAt: futur }],
+        ["sub-2", { status: "active", expireAt: futur }],
+      ]),
+      clientsConnectes: new Set(["cli-1"]),
+      presence,
+    });
+    assert.equal(resume.deployed, 2);
+    assert.equal(resume.connectedNow, 1, "deux essais sur le même compte ne font pas deux connectés");
+  });
+
+  it("dit « non mesuré » plutôt que zéro quand la présence est indisponible", () => {
+    const resume = resumerEssais({
+      demandes: [{ status: STATUT_DEMANDE.DEPLOYED, clientId: "cli-1", subscriptionId: "sub-1" }],
+      clientsConnectes: null,
+      presence: { measured: false, reason: "not_configured", windowMinutes: 15, heartbeatMinutes: 5 },
+    });
+    assert.equal(resume.connectedNow, null, "zéro se lirait « personne n'est connecté »");
+    assert.equal(resume.presence.measured, false);
+    assert.equal(resume.presence.reason, "not_configured");
+  });
+
+  it("la route réutilise LA mesure de présence existante, sans en écrire une seconde", () => {
+    const route = readFileSync(new URL("../routes/free-trial.ts", import.meta.url), "utf8");
+    const bloc = route.slice(route.indexOf("'/stats/overview',"), route.indexOf("'/requests/deploy',"));
+    assert.ok(bloc.includes("listerConnectes(prisma as any, secret"), "la présence vient de vpn-presence");
+    assert.ok(bloc.includes("resumerEssais("), "la décision reste dans le service testable");
+    // Aucune définition locale de « connecté » : pas de seconde vérité.
+    assert.equal(/tunnelState/.test(bloc), false, "la route ne doit pas recalculer la présence");
+    assert.ok(bloc.includes("interdireAccesRevendeur()") || route.slice(route.indexOf("'/stats/overview',") - 200,
+      route.indexOf("'/stats/overview',") + 300).includes("interdireAccesRevendeur()"));
+    // Le secret est LE même que celui de /api/presence, sinon aucun
+    // rapprochement n'aboutirait et le compteur serait faussement à zéro.
+    const lecture = route.slice(route.indexOf("function secretPresence()"), route.indexOf("function secretPresence()") + 300);
+    assert.ok(lecture.includes("config.MOBILE_HEALTH_PSEUDONYM_SECRET"));
+    assert.ok(lecture.includes("config.JWT_SECRET"));
   });
 });

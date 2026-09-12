@@ -287,7 +287,7 @@ process.env.DATABASE_URL = "";
 const temporary = await mkdtemp(path.join(root, "backend", ".sxb-http-"));
 const bundlePath = path.join(temporary, "routes.cjs");
 const routeNames = ["devices", "clients", "subscriptions", "tokens", "vouchers", "mobile", "resellers", "users", "rbac", "auth", "sessions", "dashboard", "provision",
-  "vpn-profiles", "config-test", "ssh", "xray", "singbox", "payload", "app-register"];
+  "vpn-profiles", "config-test", "ssh", "xray", "singbox", "payload", "app-register", "free-trial"];
 const routeKey = name => name.replaceAll("-", "_");
 await build({
   stdin: {

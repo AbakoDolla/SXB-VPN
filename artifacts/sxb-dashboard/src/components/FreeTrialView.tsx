@@ -23,6 +23,7 @@ import {
   createFreeTrialToken,
   deployFreeTrialRequests,
   fetchFreeTrialCountryStats,
+  fetchFreeTrialOverview,
   fetchFreeTrialRequestPage,
   fetchFreeTrialTokens,
   rejectFreeTrialRequests,
@@ -31,6 +32,7 @@ import {
   MAX_FREE_TRIAL_BATCH,
   type FreeTrialCountryStats,
   type FreeTrialDeployResponse,
+  type FreeTrialOverview,
   type FreeTrialRequest,
   type FreeTrialToken,
 } from '../api/free-trial';
@@ -119,6 +121,9 @@ export default function FreeTrialView() {
 
   const [tokens, setTokens] = useState<FreeTrialToken[]>([]);
   const [countryStats, setCountryStats] = useState<FreeTrialCountryStats | null>(null);
+  // Indicateurs PROPRES aux essais. Ils ne partagent aucune source avec les
+  // compteurs des comptes principaux : tout dérive des demandes d'essai.
+  const [overview, setOverview] = useState<FreeTrialOverview | null>(null);
   const [profiles, setProfiles] = useState<VpnProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -163,15 +168,17 @@ export default function FreeTrialView() {
   const charger = useCallback(async () => {
     setError(null);
     try {
-      const [listeJetons, stats] = await Promise.all([
+      const [listeJetons, stats, indicateurs] = await Promise.all([
         can('tokens.view') ? fetchFreeTrialTokens() : Promise.resolve([] as FreeTrialToken[]),
         // Le récapitulatif par pays porte sur TOUTES les demandes, pas
         // seulement sur celles du filtre affiché : « combien de clients et
         // d'où » est une question globale.
         fetchFreeTrialCountryStats(),
+        fetchFreeTrialOverview(),
       ]);
       setTokens(listeJetons);
       setCountryStats(stats);
+      setOverview(indicateurs);
     } catch (err) {
       setError(errorMessage(err, 'operations.freeTrial.genericError'));
     } finally {
@@ -536,6 +543,58 @@ export default function FreeTrialView() {
         <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-cyan-400" />
         <p>{t('operations.freeTrial.securityNotice')}</p>
       </div>
+
+      {/* ── Indicateurs PROPRES aux essais ───────────────────────────────────
+          Ils ne se mélangent jamais à ceux des comptes principaux : chacun
+          dérive des demandes d'essai, jamais du parc commercial. « Connectés
+          maintenant » réutilise la mesure de présence déjà en place, et dit
+          explicitement quand elle n'a pas pu être faite. */}
+      {overview && (
+        <section className="overflow-hidden rounded-xl border border-white/10 bg-white/[0.02]">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
+            <h2 className="inline-flex items-center gap-2 text-sm font-semibold text-gray-200">
+              <Gift className="h-4 w-4 text-fuchsia-400" />
+              {t('operations.freeTrial.metrics.title')}
+            </h2>
+            <p className="text-xs text-gray-500">{t('operations.freeTrial.metrics.hint')}</p>
+          </div>
+          <div className="grid grid-cols-2 gap-px bg-white/5 sm:grid-cols-3 lg:grid-cols-6">
+            {[
+              { cle: 'total', libelle: t('operations.freeTrial.metrics.total'), valeur: overview.total, couleur: 'text-gray-100' },
+              { cle: 'pending', libelle: t('operations.freeTrial.metrics.pending'), valeur: overview.pending, couleur: 'text-amber-300' },
+              { cle: 'deployed', libelle: t('operations.freeTrial.metrics.deployed'), valeur: overview.deployed, couleur: 'text-emerald-300' },
+              { cle: 'rejected', libelle: t('operations.freeTrial.metrics.rejected'), valeur: overview.rejected, couleur: 'text-rose-300' },
+              { cle: 'active', libelle: t('operations.freeTrial.metrics.active'), valeur: overview.active, couleur: 'text-cyan-300' },
+            ].map(({ cle, libelle, valeur, couleur }) => (
+              <div key={cle} className="bg-slate-950/40 px-4 py-3">
+                <p className={`text-2xl font-bold ${couleur}`}>{formatNumber(valeur)}</p>
+                <p className="text-xs text-gray-500">{libelle}</p>
+              </div>
+            ))}
+            <div className="bg-slate-950/40 px-4 py-3">
+              <p className="text-2xl font-bold text-fuchsia-300">
+                {overview.connectedNow === null
+                  ? t('operations.freeTrial.metrics.connectedUnmeasured')
+                  : formatNumber(overview.connectedNow)}
+              </p>
+              <p className="text-xs text-gray-500">{t('operations.freeTrial.metrics.connected')}</p>
+            </div>
+          </div>
+          {/* Honnêteté du chiffre : un essai déployé sur un appareil dont
+              l'application ne rapporte pas encore sa présence n'est pas compté.
+              Le dire vaut mieux que laisser lire un zéro comme « personne ». */}
+          <p className="px-4 py-3 text-[11px] leading-relaxed text-gray-500">
+            {overview.connectedNow === null
+              ? t('operations.freeTrial.metrics.connectedUnmeasuredHint')
+              : t('operations.freeTrial.metrics.connectedHint', {
+                  window: formatNumber(overview.presence.windowMinutes),
+                  heartbeat: formatNumber(overview.presence.heartbeatMinutes),
+                })}
+            {' '}
+            {t('operations.freeTrial.metrics.activeHint')}
+          </p>
+        </section>
+      )}
 
       {/* ── D'où viennent nos clients ────────────────────────────────────────
           Récapitulatif par pays, du plus gros volume au plus petit. Le pays est

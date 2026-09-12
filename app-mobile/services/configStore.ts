@@ -5,6 +5,7 @@ import { Platform } from 'react-native';
 import { encryptAes256Gcm, decryptAes256Gcm, hexToBytes, bytesToHex, utf8Decode, utf8Encode } from './aesGcm';
 import { genererLeurre, semerAppats } from './decoy';
 import { requireProfileAccess } from './accessState';
+import { reprendLeProfilActif } from './activeProfile';
 import type { ProfileStatus } from './accessPolicy';
 
 /** The only owner of locally provisioned VPN credentials. Registry is deliberately non-sensitive. */
@@ -147,15 +148,24 @@ export async function save(id: string, config: Record<string, any>, meta: Partia
     const entries = await registry();
     // Equal payload hashes are not equal entitlements: A and B can share a server.
     const old = entries.find(x => x.configId === id);
-    const finalMeta: ConfigMeta = { ...old, ...meta, configId: id,
-      source: meta.source ?? old?.source ?? (meta.subscriptionId ? 'backend' : 'manual'),
-      isActive: meta.isActive ?? old?.isActive ?? entries.length === 0, savedAt: new Date().toISOString() };
+    const autres = entries.filter(x => x.configId !== id);
+    const candidat: ConfigMeta = { ...old, ...meta, configId: id,
+      source: meta.source ?? old?.source ?? (meta.subscriptionId ? 'backend' : 'manual') };
+    // Une configuration qui vient d'arriver ne vole jamais la place d'une
+    // active encore utilisable ; elle la prend quand celle-ci est terminée —
+    // typiquement l'essai gratuit expiré doublé d'un forfait ordinaire.
+    const finalMeta: ConfigMeta = { ...candidat,
+      isActive: meta.isActive ?? (old?.isActive === true ? true : reprendLeProfilActif(autres, candidat)),
+      savedAt: new Date().toISOString() };
     requireProfileAccess({ ...finalMeta,
       subscriptionId: finalMeta.subscriptionId || (typeof config.subscriptionId === 'string' ? config.subscriptionId : undefined),
       configHash: finalMeta.configHash || (typeof config.configHash === 'string' ? config.configHash : undefined),
     });
     await AsyncStorage.setItem(payloadKey(id), encrypt(config, key));
-    await putRegistry([...entries.filter(x => x.configId !== id), finalMeta]);
+    // Un seul profil actif à la fois : sans ce déclassement, `getActive()`
+    // rendrait la première entrée marquée active, c'est-à-dire l'ancienne.
+    await putRegistry([...(finalMeta.isActive ? autres.map(x => ({ ...x, isActive: false })) : autres), finalMeta]);
+    if (finalMeta.isActive) await AsyncStorage.setItem('@sxb_active_config_id', id);
     // Les appâts sont semés en même temps que la première vraie configuration :
     // un stockage qui ne contiendrait QUE des appâts se remarquerait.
     await semerAppats();

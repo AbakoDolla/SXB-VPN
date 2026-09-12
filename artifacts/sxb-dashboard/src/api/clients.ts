@@ -1,9 +1,10 @@
 import { Client } from "../types";
 import { apiRequest } from "./client";
+import { trialQuery, type ListeOptions } from "./subscriptions";
 
-export async function fetchClients(): Promise<Client[]> {
+export async function fetchClients(options?: ListeOptions): Promise<Client[]> {
     // Backend returns a direct array (not { clients: [] })
-    const data = await apiRequest<Client[] | { clients: Client[] }>("/clients");
+    const data = await apiRequest<Client[] | { clients: Client[] }>(`/clients${trialQuery(options)}`);
     if (Array.isArray(data)) return data;
     return data.clients;
 }

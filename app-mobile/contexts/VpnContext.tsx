@@ -37,6 +37,7 @@ import {
   registerAccessRuntime, reportAccessSyncError, storeValue, wakeAccessObservation,
 } from '@/services/accessSync';
 import * as configStore from '@/services/configStore';
+import { choisirProfilActif } from '@/services/activeProfile';
 import { estLeurre } from '@/services/decoy';
 import {
   isCompleteOfflineConfig,
@@ -943,9 +944,20 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     const entries = storeValue(await configStore.list()) ?? [];
     const persistedId = await AsyncStorage.getItem('@sxb_active_config_id');
     const requested = activeConfigIdRef.current || persistedId;
-    const selected = entries.find(entry => entry.configId === requested) ||
-      entries.find(entry => entry.isActive && !profileRestriction(authority, entry)) ||
-      entries.find(entry => !profileRestriction(authority, entry)) || entries[0];
+    // Un profil qui ne peut plus servir — essai gratuit arrivé à échéance,
+    // forfait épuisé — cède la place dès qu'une configuration utilisable
+    // existe. Il reste stocké : c'est un déclassement, jamais une suppression.
+    //
+    // SAUF s'il est celui du tunnel EN COURS : l'écran doit dire ce qui se
+    // passe réellement. Présenter un autre profil comme actif pendant qu'un
+    // tunnel tourne sur celui-ci ferait mentir l'interface ; le remplacement se
+    // fera au prochain passage, une fois la connexion arrêtée.
+    const running = runningProfileRef.current?.configId ?? null;
+    const enCours = running ? entries.find(entry => entry.configId === running) : undefined;
+    const selected = enCours ?? choisirProfilActif(entries, {
+      demande: requested,
+      restreint: entry => !!profileRestriction(authority, entry),
+    });
     const id = selected?.configId ?? null;
     const stored = id ? storeValue(await configStore.get(id)) : undefined;
     const quota = id ? await loadQuotaData(id) : null;

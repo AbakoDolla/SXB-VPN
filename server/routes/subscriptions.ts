@@ -39,6 +39,12 @@ import {
   normaliserLot,
   planifierApplication,
 } from '../services/subscription-bulk';
+import {
+  etFiltres,
+  exclureIdentifiants,
+  inclutEssaisGratuits,
+  porteeEssaiDeploye,
+} from '../services/free-trial-marks';
 import crypto from 'crypto';
 
 const router = Router();
@@ -334,6 +340,12 @@ async function assertResellerCanUseProfile(req: AuthenticatedRequest, profileId:
 }
 
 // ─── GET /api/subscriptions ───────────────────────────────────────────────────
+//
+// SÉPARATION DES ESSAIS : par défaut la liste n'est PAS amputée — les appelants
+// historiques gardent leur contrat. C'est « Forfaits Data » qui demande
+// explicitement `includeFreeTrial=false`, et le retranchement se fait ICI, à la
+// requête : masquer des lignes déjà chargées côté navigateur rendrait la
+// pagination et les totaux faux, ce qui est précisément le défaut à corriger.
 router.get('/', requireAuth, requirePermission('subscription.view'), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const canSeeTechnical = canViewTechnicalProfile(req);
@@ -341,6 +353,7 @@ router.get('/', requireAuth, requirePermission('subscription.view'), async (req:
     // ne portait aucun filtre : il recevait l'intégralité du parc, y compris
     // les abonnements des autres revendeurs.
     const isReseller = req.user?.role === 'RESELLER';
+    const avecEssais = inclutEssaisGratuits(req.query.includeFreeTrial);
 
     if (!prisma) {
       const all = inMemoryDb.subscriptions || [];
@@ -350,8 +363,16 @@ router.get('/', requireAuth, requirePermission('subscription.view'), async (req:
         : all;
       return res.json({ success: true, subscriptions: scoped.map((s: any) => serializeSub(s, canSeeTechnical)) });
     }
+    const portee = avecEssais ? null : await porteeEssaiDeploye(prisma);
+    const where = etFiltres(
+      isReseller ? { client: porteeClientsRevendeur(await chargerFicheRevendeur(prisma, req.user?.userId)) } : null,
+      // Le retranchement porte sur le FORFAIT, jamais sur le compte : un
+      // essayeur devenu client payant garde son forfait ordinaire à l'écran,
+      // seul son forfait d'essai disparaît.
+      portee ? exclureIdentifiants('id', portee.subscriptionIds) : null,
+    );
     const subs = await (prisma as any).subscription.findMany({
-      where: isReseller ? { client: porteeClientsRevendeur(await chargerFicheRevendeur(prisma, req.user?.userId)) } : undefined,
+      where,
       orderBy: { createdAt: 'desc' },
       include: INCLUDE_FORFAIT,
     });
@@ -363,9 +384,14 @@ router.get('/', requireAuth, requirePermission('subscription.view'), async (req:
 });
 
 // ─── GET /api/subscriptions/stats ────────────────────────────────────────────
+//
+// Les compteurs suivent EXACTEMENT le même filtre que la liste : une carte
+// « 42 forfaits » au-dessus d'un tableau qui n'en montre que 37 est le piège
+// que cette route doit éviter.
 router.get('/stats', requireAuth, requirePermission('subscription.view'), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const isReseller = req.user?.role === 'RESELLER';
+    const avecEssais = inclutEssaisGratuits(req.query.includeFreeTrial);
     if (!prisma) {
       const ficheMemoire = isReseller ? await chargerFicheRevendeur(null, req.user?.userId) : null;
       const subs = isReseller
@@ -376,12 +402,14 @@ router.get('/stats', requireAuth, requirePermission('subscription.view'), async 
       const expired = subs.filter(s => s.status === 'expired').length;
       return res.json({ success: true, total, active, expired });
     }
-    const scope = isReseller
-      ? { client: porteeClientsRevendeur(await chargerFicheRevendeur(prisma, req.user?.userId)) }
-      : undefined;
+    const portee = avecEssais ? null : await porteeEssaiDeploye(prisma);
+    const scope = etFiltres(
+      isReseller ? { client: porteeClientsRevendeur(await chargerFicheRevendeur(prisma, req.user?.userId)) } : null,
+      portee ? exclureIdentifiants('id', portee.subscriptionIds) : null,
+    );
     const total   = await (prisma as any).subscription.count({ where: scope });
-    const active  = await (prisma as any).subscription.count({ where: { ...(scope || {}), status: 'active' } });
-    const expired = await (prisma as any).subscription.count({ where: { ...(scope || {}), status: 'expired' } });
+    const active  = await (prisma as any).subscription.count({ where: etFiltres(scope, { status: 'active' }) });
+    const expired = await (prisma as any).subscription.count({ where: etFiltres(scope, { status: 'expired' }) });
     return res.json({ success: true, total, active, expired });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Failed to get stats' });

@@ -15,6 +15,20 @@
       "failedItem": "• {{id}} — {{reason}}"
     },
     "countryUnknown": "Non renseigné",
+    "metrics": {
+      "title": "Indicateurs des essais gratuits",
+      "hint": "Ces compteurs ne portent QUE sur les essais gratuits. Ils ne sont jamais additionnés aux comptes principaux, qui ont leurs propres écrans.",
+      "total": "Inscrits",
+      "pending": "En attente",
+      "deployed": "Déployés",
+      "rejected": "Refusés",
+      "active": "Essais actifs",
+      "activeHint": "Accès déployé dont l'échéance n'est pas passée.",
+      "connected": "Connectés maintenant",
+      "connectedHint": "Tunnel déclaré monté il y a moins de {{window}} min (battement toutes les {{heartbeat}} min). Un essai déployé sur un appareil dont l'application ne rapporte pas encore sa présence n'est pas compté ici : ce nombre est un minimum, pas un total.",
+      "connectedUnmeasured": "Non mesuré",
+      "connectedUnmeasuredHint": "La présence n'a pas pu être mesurée sur cette installation. Aucun chiffre n'est affiché plutôt qu'un zéro qui se lirait « personne n'est connecté »."
+    },
     "countries": {
       "title": "D'où viennent nos clients",
       "declaredHint": "Pays déclaré par l'inscrit lors de sa demande. Aucune géolocalisation ni adresse IP n'est utilisée.",

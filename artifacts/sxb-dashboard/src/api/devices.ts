@@ -1,6 +1,7 @@
 import { apiRequest } from "./client";
 import { DeviceStatus } from "../types";
 import type { TrialMark } from "../lib/trial";
+import { trialQuery, type ListeOptions } from "./subscriptions";
 
 export interface Device {
   id: string;
@@ -38,8 +39,8 @@ export interface Device {
   trial?: TrialMark | null;
 }
 
-export async function fetchDevices(): Promise<Device[]> {
-  const data = await apiRequest<{ devices: Device[] }>("/devices");
+export async function fetchDevices(options?: ListeOptions): Promise<Device[]> {
+  const data = await apiRequest<{ devices: Device[] }>(`/devices${trialQuery(options)}`);
   return data.devices;
 }
 

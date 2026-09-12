@@ -15,6 +15,20 @@
       "failedItem": "• {{id}} — {{reason}}"
     },
     "countryUnknown": "Not provided",
+    "metrics": {
+      "title": "Free trial indicators",
+      "hint": "These counters cover free trials ONLY. They are never added to the main accounts, which have their own screens.",
+      "total": "Enrollees",
+      "pending": "Pending",
+      "deployed": "Deployed",
+      "rejected": "Rejected",
+      "active": "Active trials",
+      "activeHint": "Deployed access whose expiry date has not passed.",
+      "connected": "Connected now",
+      "connectedHint": "Tunnel reported up less than {{window}} min ago (heartbeat every {{heartbeat}} min). A trial deployed on a device whose app does not report presence yet is not counted here: this number is a minimum, not a total.",
+      "connectedUnmeasured": "Not measured",
+      "connectedUnmeasuredHint": "Presence could not be measured on this installation. No figure is shown rather than a zero that would read as \"nobody is connected\"."
+    },
     "countries": {
       "title": "Where our customers come from",
       "declaredHint": "Country declared by the enrollee when requesting the trial. No geolocation or IP address is used.",

@@ -170,6 +170,33 @@ export async function fetchFreeTrialRequestPage(params: {
 }
 
 /**
+ * Indicateurs de la SECTION essai gratuit — jamais mélangés à ceux des comptes
+ * principaux, puisqu'ils dérivent tous des demandes d'essai.
+ */
+export interface FreeTrialOverview {
+  total: number;
+  pending: number;
+  deployed: number;
+  rejected: number;
+  /** Essais déployés dont l'accès est encore ouvert aujourd'hui. */
+  active: number;
+  /** `null` quand la présence n'a pas pu être mesurée — jamais un zéro trompeur. */
+  connectedNow: number | null;
+  presence: {
+    measured: boolean;
+    reason: string | null;
+    windowMinutes: number;
+    heartbeatMinutes: number;
+    /**
+     * La lecture des signaux de présence est bornée. Au-delà du plafond, un
+     * essai connecté peut se trouver hors de la tranche lue : le compteur reste
+     * alors un minimum, ce que dit déjà la mention sous les indicateurs.
+     */
+    truncated?: boolean;
+  };
+}
+
+/**
  * Récapitulatif par pays : combien de clients et de demandes, d'où.
  *
  * Ne renvoie QUE des compteurs — jamais un nom, un appareil ni un jeton. La
@@ -182,6 +209,19 @@ export async function fetchFreeTrialCountryStats(): Promise<FreeTrialCountryStat
     countries: Array.isArray(data?.countries) ? data.countries : [],
     totals: data?.totals ?? { countries: 0, requests: 0, clients: 0, pending: 0, rejected: 0 },
   };
+}
+
+/**
+ * Indicateurs propres à l'essai : inscrits, en attente, déployés, refusés,
+ * essais encore actifs et essais connectés maintenant.
+ *
+ * « Connectés maintenant » vient de la mesure de présence déjà en place
+ * (fenêtre de 15 min, battement de 5 min) : aucun second calcul n'existe.
+ * Quand elle n'est pas mesurable, `connectedNow` vaut `null` et l'interface le
+ * dit, au lieu d'afficher un zéro qui se lirait « personne n'est connecté ».
+ */
+export async function fetchFreeTrialOverview(): Promise<FreeTrialOverview> {
+  return apiRequest<FreeTrialOverview>('/free-trial/stats/overview');
 }
 
 /**

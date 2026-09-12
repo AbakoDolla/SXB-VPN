@@ -710,6 +710,157 @@ export function totauxParPays(lignes: ReadonlyArray<StatistiquePays>) {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Tableau de bord PROPRE aux essais — jamais mélangé aux comptes principaux
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Un accès d'essai est-il encore ouvert ?
+ *
+ * « Déployé » est un fait d'HISTOIRE : la demande a été instruite, elle le
+ * reste pour toujours. « Actif » est un fait de MAINTENANT : le forfait existe,
+ * n'a pas été suspendu ou révoqué, son échéance n'est pas passée et son volume
+ * n'est pas épuisé. Les deux chiffres doivent coexister, sinon le propriétaire
+ * lit « 40 déployés » et croit avoir 40 personnes sous essai alors que 35 sont
+ * terminées.
+ *
+ * Un forfait absent (supprimé depuis) n'est PAS actif : on ne suppose jamais
+ * l'existence d'un accès qu'on ne peut plus lire.
+ *
+ * LIMITE ASSUMÉE : la décision porte sur le FORFAIT. Un compte suspendu par
+ * ailleurs reste compté actif tant que son forfait d'essai l'est ; l'écran des
+ * comptes VPN reste la source de vérité sur l'état d'un compte.
+ */
+export function estEssaiActif(
+  forfait: {
+    status?: string | null;
+    expireAt?: Date | string | null;
+    quotaBytes?: bigint | number | string | null;
+    quotaUsed?: bigint | number | string | null;
+  } | null | undefined,
+  maintenant = new Date(),
+): boolean {
+  if (!forfait) return false;
+  if (String(forfait.status ?? "active").toLowerCase() !== "active") return false;
+  if (forfait.expireAt !== null && forfait.expireAt !== undefined) {
+    const fin = new Date(forfait.expireAt as any).getTime();
+    if (Number.isFinite(fin) && fin <= maintenant.getTime()) return false;
+  }
+  // Quota épuisé : l'accès existe encore sur le papier, mais il ne transporte
+  // plus rien. Le compter « actif » gonflerait le chiffre d'essais en cours.
+  const total = versEntier(forfait.quotaBytes);
+  const consomme = versEntier(forfait.quotaUsed);
+  if (total !== null && total > BigInt(0) && consomme !== null && consomme >= total) return false;
+  return true;
+}
+
+function versEntier(valeur: bigint | number | string | null | undefined): bigint | null {
+  if (valeur === null || valeur === undefined) return null;
+  try {
+    return typeof valeur === "bigint" ? valeur : BigInt(Math.trunc(Number(valeur)));
+  } catch {
+    return null;
+  }
+}
+
+/** Ce que la plateforme a pu mesurer de la présence, et ce qu'elle n'a pas pu. */
+export interface MesurePresenceEssai {
+  /** false quand la présence n'a PAS pu être calculée — jamais un zéro trompeur. */
+  measured: boolean;
+  /** Pourquoi la mesure manque, quand elle manque. */
+  reason: string | null;
+  windowMinutes: number;
+  heartbeatMinutes: number;
+  /**
+   * true quand la lecture des signaux a été bornée : au-delà du plafond de la
+   * mesure de présence, un essai connecté peut se trouver hors de la tranche
+   * lue. Le compteur reste alors un minimum — ce qu'il est déjà par nature.
+   */
+  truncated?: boolean;
+}
+
+/** Indicateurs de la section « Essai gratuit », et d'elle seule. */
+export interface ResumeEssais {
+  /** Inscrits, tous statuts confondus. */
+  total: number;
+  pending: number;
+  deployed: number;
+  rejected: number;
+  /** Essais déployés dont l'accès est encore ouvert aujourd'hui. */
+  active: number;
+  /**
+   * Comptes dont l'essai est ENCORE OUVERT et qui sont vus en ligne dans la
+   * fenêtre de présence. `null` quand la présence n'a pas pu être mesurée :
+   * zéro voudrait dire « personne », ce qui serait un mensonge.
+   */
+  connectedNow: number | null;
+  presence: MesurePresenceEssai;
+}
+
+/**
+ * Résume les essais — fonction PURE, la route ne fait que charger les lignes.
+ *
+ * Les compteurs de cette section ne partagent AUCUNE source avec ceux des
+ * comptes principaux : ils dérivent tous des demandes d'essai, et rien d'autre.
+ *
+ * `connectedNow` compte des COMPTES distincts dont l'essai est ENCORE OUVERT.
+ * Deux appareils d'un même compte ne font pas deux personnes connectées, et un
+ * ancien essayeur devenu client payant n'est plus un essai : le compter ici
+ * gonflerait la section d'essai avec du parc principal, ce que le propriétaire
+ * veut précisément éviter.
+ */
+export function resumerEssais(params: {
+  demandes: ReadonlyArray<{ status?: string | null; clientId?: string | null; subscriptionId?: string | null }>;
+  /** Forfaits nés d'un essai, indexés par identifiant. Absent = accès introuvable. */
+  forfaits?: ReadonlyMap<string, {
+    status?: string | null;
+    expireAt?: Date | string | null;
+    quotaBytes?: bigint | number | string | null;
+    quotaUsed?: bigint | number | string | null;
+  }> | null;
+  /** Comptes actuellement connectés, tous parcs confondus. */
+  clientsConnectes?: ReadonlySet<string> | null;
+  presence: MesurePresenceEssai;
+  maintenant?: Date;
+}): ResumeEssais {
+  const maintenant = params.maintenant ?? new Date();
+  const forfaits = params.forfaits ?? new Map();
+  let pending = 0;
+  let deployed = 0;
+  let rejected = 0;
+  let active = 0;
+  const comptesEnEssai = new Set<string>();
+
+  for (const demande of params.demandes) {
+    if (demande?.status === STATUT_DEMANDE.PENDING) pending += 1;
+    else if (demande?.status === STATUT_DEMANDE.REJECTED) rejected += 1;
+    else if (demande?.status === STATUT_DEMANDE.DEPLOYED) {
+      deployed += 1;
+      if (demande.subscriptionId && estEssaiActif(forfaits.get(String(demande.subscriptionId)), maintenant)) {
+        active += 1;
+        if (demande.clientId) comptesEnEssai.add(String(demande.clientId));
+      }
+    }
+  }
+
+  let connectedNow: number | null = null;
+  if (params.presence.measured && params.clientsConnectes) {
+    let vus = 0;
+    for (const clientId of comptesEnEssai) if (params.clientsConnectes.has(clientId)) vus += 1;
+    connectedNow = vus;
+  }
+
+  return {
+    total: params.demandes.length,
+    pending,
+    deployed,
+    rejected,
+    active,
+    connectedNow,
+    presence: params.presence,
+  };
+}
+
 /**
  * Mention « période d'essai » attachée à un client.
  *

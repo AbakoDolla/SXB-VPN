@@ -1506,7 +1506,11 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(layout, /id: 'reseller-services'[\s\S]{0,120}roles: \['RESELLER'\]/);
 
     // Les routes correspondantes doivent filtrer sur SES clients.
-    assert.ok(devicesRoutes.includes('where: isReseller ? (porteeClientsRevendeur(fiche) as any) : undefined'));
+    // La portée revendeur reste la PREMIÈRE condition de la requête ; le filtre
+    // « essai gratuit » ne peut que la restreindre, jamais l'élargir — d'où le
+    // ET explicite plutôt qu'une fusion d'objets qui écraserait une clé commune.
+    assert.ok(devicesRoutes.includes('isReseller ? (porteeClientsRevendeur(fiche) as any) : null'));
+    assert.match(devicesRoutes, /where: etFiltres\(\s*\n\s*isReseller \? \(porteeClientsRevendeur\(fiche\) as any\) : null,\s*\n\s*porteeEssai \? exclureIdentifiants\("id", porteeEssai\.clientsEssaiUniquement\) : null,/);
     const portees = dashboardRoutes.match(/porteeClientsRevendeur\(/g) || [];
     assert.ok(portees.length >= 3, `portée revendeur absente des indicateurs (${portees.length})`);
     // Le compte de serveurs ne doit jamais lui être communiqué.

@@ -32,13 +32,28 @@ export interface Subscription {
 
 export interface SubStats { total: number; active: number; expired: number }
 
-export async function fetchSubscriptions(): Promise<Subscription[]> {
-  const data = await apiRequest<{ subscriptions: Subscription[] }>('/subscriptions');
+/**
+ * Options de lecture communes aux écrans d'exploitation.
+ *
+ * `includeFreeTrial` est envoyé au SERVEUR, jamais appliqué après coup : masquer
+ * des lignes déjà reçues fausserait la pagination et les compteurs, qui est
+ * précisément le défaut corrigé. L'omettre laisse la réponse inchangée pour
+ * tous les appelants historiques.
+ */
+export interface ListeOptions { includeFreeTrial?: boolean }
+
+/** Suffixe de requête `?includeFreeTrial=false`, ou rien du tout. */
+export function trialQuery(options?: ListeOptions): string {
+  return options?.includeFreeTrial === false ? '?includeFreeTrial=false' : '';
+}
+
+export async function fetchSubscriptions(options?: ListeOptions): Promise<Subscription[]> {
+  const data = await apiRequest<{ subscriptions: Subscription[] }>(`/subscriptions${trialQuery(options)}`);
   return data.subscriptions ?? [];
 }
 
-export async function fetchSubStats(): Promise<SubStats> {
-  const data = await apiRequest<SubStats>('/subscriptions/stats');
+export async function fetchSubStats(options?: ListeOptions): Promise<SubStats> {
+  const data = await apiRequest<SubStats>(`/subscriptions/stats${trialQuery(options)}`);
   return data;
 }
 

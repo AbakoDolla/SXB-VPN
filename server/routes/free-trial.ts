@@ -29,12 +29,19 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
+import { config } from '../config';
 import { prisma, logDbActivity } from '../database';
 import { requireAuth, requirePermission, AuthenticatedRequest } from '../middleware/auth';
+import { isOwnerRequest } from '../middleware/rbac/owner';
 import { interdireAccesRevendeur, interdireMutationSupport } from '../services/reseller-access';
 import { executerMutationQuota } from '../services/reseller-quota';
 import { makeUserToken } from '../services/device-token';
 import { CODES_PAYS, normaliserCodePays } from '../services/countries';
+import {
+  listerConnectes,
+  PRESENCE_HEARTBEAT_MINUTES,
+  PRESENCE_WINDOW_MINUTES,
+} from '../services/vpn-presence';
 import {
   CODES_ESSAI,
   MAX_LOT_ESSAI,
@@ -60,16 +67,29 @@ import {
   refusLotEssai,
   refusPaysInvalide,
   refusReclamationEssai,
+  resumerEssais,
   statistiquesParPays,
   totauxParPays,
   vueDemandePourAdmin,
   vueInscriptionEssai,
   vueJetonPourAdmin,
   vueStatutEssaiPourAppareil,
+  type MesurePresenceEssai,
 } from '../services/free-trial';
 
 const router = Router();
 const GIB = 1024 ** 3;
+
+/**
+ * Secret de pseudonymisation de la présence — strictement celui de
+ * `/api/presence`, sinon aucun rapprochement ne pourrait aboutir. Sa lecture
+ * est volontairement recopiée telle quelle : un second secret, ou un repli
+ * différent, produirait un compteur « connectés » divergent de la vue de suivi.
+ */
+function secretPresence(): string | null {
+  return config.MOBILE_HEALTH_PSEUDONYM_SECRET
+    || (config.NODE_ENV !== 'production' ? config.JWT_SECRET : null);
+}
 
 /**
  * Intervalle de vérification automatique renvoyé à l'application.
@@ -701,6 +721,100 @@ router.get(
     } catch (err: any) {
       console.error('free-trial country stats error:', err);
       return res.status(500).json({ error: 'errors.server', message: 'Lecture des statistiques impossible' });
+    }
+  },
+);
+
+// ─── GET /api/free-trial/stats/overview ──────────────────────────────────────
+//
+// Indicateurs de la SECTION ESSAI, et d'elle seule. Ils ne partagent aucune
+// source avec les compteurs des comptes principaux : tout dérive des demandes
+// d'essai, si bien qu'un chiffre d'ici ne peut structurellement pas contenir un
+// client ordinaire, ni l'inverse.
+//
+// « Connectés maintenant » réutilise LA mesure de présence existante
+// (`vpn-presence`, fenêtre de 15 min, battement de 5 min) : aucun second calcul
+// de présence n'a été écrit, sinon deux écrans finiraient par annoncer deux
+// vérités. Quand la présence n'est pas mesurable, la réponse le DIT
+// (`presence.measured = false`, `connectedNow = null`) au lieu de renvoyer un
+// zéro qui se lirait « personne n'est connecté ».
+//
+// Statistique GLOBALE, donc fermée aux revendeurs, comme le récapitulatif par
+// pays. Le lecteur ne voit que des compteurs — jamais un nom ni un appareil.
+router.get(
+  '/stats/overview',
+  requireAuth,
+  interdireAccesRevendeur(),
+  requirePermission('clients.view'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!prisma) return baseIndisponible(res);
+      // Projection minimale : trois colonnes suffisent à compter.
+      const demandes = await (prisma as any).freeTrialRequest.findMany({
+        select: { status: true, clientId: true, subscriptionId: true },
+      });
+
+      // Échéances lues sur les forfaits d'essai : « actif » se décide sur
+      // l'accès réel, pas sur la date figée au moment du déploiement.
+      const forfaitIds = [...new Set(
+        (demandes as any[])
+          .filter((d) => d.status === STATUT_DEMANDE.DEPLOYED && d.subscriptionId)
+          .map((d) => String(d.subscriptionId)),
+      )];
+      const forfaits = new Map<string, { status?: string | null; expireAt?: Date | string | null; quotaBytes?: bigint | null; quotaUsed?: bigint | null }>();
+      if (forfaitIds.length) {
+        const lignes = await (prisma as any).subscription.findMany({
+          where: { id: { in: forfaitIds } },
+          select: { id: true, status: true, expireAt: true, quotaBytes: true, quotaUsed: true },
+        });
+        for (const ligne of lignes as any[]) {
+          forfaits.set(String(ligne.id), {
+            status: ligne.status,
+            expireAt: ligne.expireAt,
+            quotaBytes: ligne.quotaBytes,
+            quotaUsed: ligne.quotaUsed,
+          });
+        }
+      }
+
+      // Présence : même service, même fenêtre, même secret que /api/presence.
+      const secret = secretPresence();
+      let clientsConnectes: Set<string> | null = null;
+      let presence: MesurePresenceEssai = {
+        measured: false,
+        reason: 'not_configured',
+        windowMinutes: PRESENCE_WINDOW_MINUTES,
+        heartbeatMinutes: PRESENCE_HEARTBEAT_MINUTES,
+      };
+      if (secret) {
+        try {
+          const vue = await listerConnectes(prisma as any, secret, {
+            // Furtivité identique au reste de la plateforme : hors OWNER, les
+            // comptes OWNER n'existent pas.
+            masquerProprietaire: !isOwnerRequest(req),
+            sansDatation: true,
+          });
+          clientsConnectes = new Set(vue.lignes.map((ligne) => ligne.clientId));
+          presence = {
+            measured: true,
+            reason: null,
+            windowMinutes: vue.presenceWindowMinutes,
+            heartbeatMinutes: vue.heartbeatMinutes,
+            // La lecture des signaux est bornée : au-delà du plafond, un essai
+            // connecté peut se trouver hors de la tranche lue. Le dire vaut
+            // mieux que laisser croire à un total.
+            truncated: vue.devicesTruncated,
+          };
+        } catch (erreurPresence: any) {
+          console.error('free-trial presence error:', erreurPresence?.message || erreurPresence);
+          presence = { ...presence, reason: 'unavailable' };
+        }
+      }
+
+      return res.json(resumerEssais({ demandes, forfaits, clientsConnectes, presence }));
+    } catch (err: any) {
+      console.error('free-trial overview error:', err);
+      return res.status(500).json({ error: 'errors.server', message: 'Lecture des indicateurs impossible' });
     }
   },
 );

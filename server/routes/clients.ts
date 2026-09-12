@@ -11,7 +11,7 @@ import {
   synchroniserEtatAccesClient,
 } from "../services/client-access-state";
 import { makeUserToken, renewedDeviceExpiry } from "../services/device-token";
-import { marquesEssaiParClient } from "../services/free-trial-marks";
+import { marquesEssaiParClient, etFiltres, exclureIdentifiants, inclutEssaisGratuits, porteeEssaiDeploye } from "../services/free-trial-marks";
 import { assertResumeAllowed, deviceAccessFailure, MobileAccessError } from "../services/access-lifecycle";
 import { accessStateHub } from "../services/access-state-events";
 import {
@@ -105,15 +105,28 @@ function sanitizeVpnClient(client: any, trial?: unknown) {
 }
 
 // GET /api/clients
+//
+// SÉPARATION DES ESSAIS : `includeFreeTrial=false` retranche les comptes dont
+// TOUT l'accès vient d'un essai gratuit — jamais ceux qui possèdent aussi un
+// forfait ordinaire, qui sont des clients comme les autres. Le retranchement
+// est fait par la requête, donc les compteurs de l'écran comptent exactement ce
+// qu'il affiche.
 router.get("/", requireAuth, requirePermission("clients.view"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     let clients: any[] = [];
     const isReseller = req.user?.role === "RESELLER";
+    const avecEssais = inclutEssaisGratuits(req.query.includeFreeTrial);
 
     if (prisma) {
       const fiche = isReseller ? await chargerFicheRevendeur(prisma, req.user?.userId) : null;
+      const portee = avecEssais ? null : await porteeEssaiDeploye(prisma);
       clients = await prisma.vpnClient.findMany({
-        where: isReseller ? (porteeClientsRevendeur(fiche) as any) : undefined,
+        // Le cloisonnement revendeur reste la première condition et n'est
+        // jamais élargi : le filtre d'essai ne fait que retrancher.
+        where: etFiltres(
+          isReseller ? (porteeClientsRevendeur(fiche) as any) : null,
+          portee ? exclureIdentifiants("id", portee.clientsEssaiUniquement) : null,
+        ) as any,
         include: {
           user: { include: { role: true } },
           // Jointure unique : l'étiquette revendeur sans requête par ligne.

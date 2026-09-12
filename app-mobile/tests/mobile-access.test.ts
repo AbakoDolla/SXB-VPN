@@ -23,6 +23,7 @@ type Harness = {
   auth: typeof import('../services/identitySession');
   api: typeof import('../services/apiClient');
   store: typeof import('../services/configStore');
+  profiles: typeof import('../services/activeProfile');
   offline: typeof import('../services/offlineStorage');
   consent: typeof import('../services/privacyConsent');
   provision: typeof import('../services/provisionClient');
@@ -108,6 +109,7 @@ async function harness(distribution = 'direct'): Promise<Harness> {
         export * as auth from './services/identitySession';
         export * as api from './services/apiClient';
         export * as store from './services/configStore';
+        export * as profiles from './services/activeProfile';
         export * as offline from './services/offlineStorage';
         export * as consent from './services/privacyConsent';
         export * as provision from './services/provisionClient';
@@ -203,6 +205,81 @@ function remoteConnections(value: AccessSnapshot) {
 const equal = (actual: unknown, expected: unknown) => assert.deepEqual(JSON.parse(JSON.stringify(actual)), expected);
 
 describe('mobile access runtime with real encrypted store, auth and HTTP interceptors', () => {
+  /**
+   * Passage d'un ESSAI GRATUIT à un compte normal activé par jeton.
+   *
+   * Ce que fait RÉELLEMENT le serveur : le déploiement d'un essai réutilise le
+   * compte déjà lié au téléphone, et `/api/devices/generate-token` rend le
+   * jeton EXISTANT pour un appareil déjà enrôlé. Le compte — donc l'identité —
+   * ne change pas, si bien que `acceptActivatedIdentity` ne purge rien : c'est
+   * voulu, purger détruirait un accès encore valide.
+   *
+   * Le défaut était ailleurs : la configuration d'essai restait ACTIVE après
+   * son échéance, et le forfait ordinaire arrivé ensuite était enregistré
+   * inactif. L'application proposait donc l'essai terminé alors qu'un accès
+   * valide existait.
+   */
+  it('remplace une configuration d’essai terminée par celle du compte actif, sans jamais la supprimer', async () => {
+    const h = await harness();
+    h.state.storage.set('@sxb_device_id', 'hardware');
+    await h.auth.acceptActivatedIdentity({ accessToken: 'trial-access', refreshToken: 'trial-refresh', user, accountState }, 'hardware');
+
+    const passe = new Date(Date.now() - 86_400_000).toISOString();
+    const futur = new Date(Date.now() + 30 * 86_400_000).toISOString();
+    assert.equal((await h.store.save('trial-sub', { ...config, configId: 'trial-sub' }, {
+      source: 'backend', subscriptionId: 'trial-sub', name: 'Essai gratuit — Orange', expiryDate: futur,
+    })).status, 'ok');
+    assert.equal((await h.store.getActive()).value?.meta.configId, 'trial-sub');
+
+    // Tant que l'essai fonctionne, un forfait ordinaire ne lui vole pas la place.
+    assert.equal((await h.store.save('paid-sub', { ...config, configId: 'paid-sub' }, {
+      source: 'backend', subscriptionId: 'paid-sub', name: 'Forfait 50 Go', expiryDate: futur,
+    })).status, 'ok');
+    assert.equal((await h.store.getActive()).value?.meta.configId, 'trial-sub');
+
+    // L'essai arrive à échéance : le serveur le rapporte « expired ».
+    await h.store.updateMetadata('trial-sub', { accessStatus: 'expired', expiryDate: passe });
+
+    // Le compte normal se réactive avec le MÊME identifiant utilisateur : rien
+    // n'est purgé, et c'est précisément le cas que le propriétaire redoutait.
+    await h.auth.acceptActivatedIdentity({ accessToken: 'renewed-access', refreshToken: 'renewed-refresh', user, accountState }, 'hardware');
+    assert.equal((await h.store.get('trial-sub')).status, 'ok', 'une configuration stockée ne doit pas être supprimée');
+
+    // Le forfait ordinaire est reprovisionné : il devient l'actif.
+    assert.equal((await h.store.save('paid-sub', { ...config, configId: 'paid-sub' }, {
+      source: 'backend', subscriptionId: 'paid-sub', name: 'Forfait 50 Go', expiryDate: futur, configVersion: 2,
+    })).status, 'ok');
+    assert.equal((await h.store.getActive()).value?.meta.configId, 'paid-sub');
+    assert.equal(h.state.storage.get('@sxb_active_config_id'), 'paid-sub');
+
+    // Un seul actif à la fois, et l'essai reste stocké — déclassé, pas détruit.
+    const entrees = (await h.store.list()).value ?? [];
+    assert.deepEqual([...entrees.filter(entree => entree.isActive).map(entree => entree.configId)], ['paid-sub']);
+    assert.equal(entrees.some(entree => entree.configId === 'trial-sub'), true);
+  });
+
+  it('choisit la configuration du compte actif et n’en invente pas quand tout est terminé', async () => {
+    const h = await harness();
+    const passe = new Date(Date.now() - 3_600_000).toISOString();
+    const futur = new Date(Date.now() + 3_600_000).toISOString();
+    const essai = { configId: 'trial', subscriptionId: 'trial', source: 'backend' as const, expiryDate: passe, isActive: true };
+    const paye = { configId: 'paid', subscriptionId: 'paid', source: 'backend' as const, expiryDate: futur, isActive: false };
+
+    // L'essai terminé était le dernier choix mémorisé : il cède la place.
+    assert.equal(h.profiles.choisirProfilActif([essai, paye], { demande: 'trial' })?.configId, 'paid');
+    // Un profil encore valide explicitement choisi n'est jamais déclassé.
+    assert.equal(h.profiles.choisirProfilActif([{ ...essai, expiryDate: futur }, paye], { demande: 'trial' })?.configId, 'trial');
+    // Plus rien d'utilisable : on garde le profil demandé pour pouvoir
+    // EXPLIQUER le blocage, au lieu de n'afficher rien du tout.
+    assert.equal(h.profiles.choisirProfilActif([essai, { ...paye, expiryDate: passe }], { demande: 'trial' })?.configId, 'trial');
+    // Une restriction connue (suspendu, révoqué) reste prioritaire sur le choix.
+    assert.equal(h.profiles.choisirProfilActif([{ ...essai, expiryDate: futur }, paye], {
+      demande: 'trial', restreint: entree => entree.configId === 'trial',
+    })?.configId, 'paid');
+    assert.equal(h.profiles.profilEpuiseOuExpire({ accessStatus: 'exhausted' }), true);
+    assert.equal(h.profiles.profilUtilisable({ expiryDate: null }), true);
+  });
+
   it('accepts the real token-only activation and account response without an e-mail', async () => {
     const h = await harness();
     h.state.storage.set('@sxb_device_id', 'hardware');

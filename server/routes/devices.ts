@@ -5,7 +5,7 @@ import bcrypt from "bcryptjs";
 import { prisma, logDbActivity } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { sanitizeDevice, selectDeviceSubscription } from "../services/device-quota";
-import { marquesEssaiParClient } from "../services/free-trial-marks";
+import { marquesEssaiParClient, etFiltres, exclureIdentifiants, inclutEssaisGratuits, porteeEssaiDeploye } from "../services/free-trial-marks";
 import { executerMutationQuota, PlafondQuotaDepasse } from "../services/reseller-quota";
 import { synchroniserEtatAccesClient } from "../services/client-access-state";
 import { makeUserToken, renewedDeviceExpiry } from "../services/device-token";
@@ -66,6 +66,11 @@ async function chargerAppareilPossede(req: AuthenticatedRequest, id: string) {
 }
 
 // GET /api/devices — list all VPN clients with device info
+//
+// SÉPARATION DES ESSAIS : `includeFreeTrial=false` retranche les appareils dont
+// TOUT l'accès vient d'un essai gratuit. Le retranchement est fait par la
+// requête, jamais après coup : les trois compteurs de l'écran dérivent de la
+// liste reçue et ne peuvent donc pas annoncer des lignes invisibles.
 router.get("/", requireAuth, requirePermission("clients.view"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     if (!prisma) return res.status(503).json({ error: "Database unavailable" });
@@ -74,15 +79,28 @@ router.get("/", requireAuth, requirePermission("clients.view"), async (req: Auth
     // historique, sur le compte utilisateur porteur.
     const isReseller = req.user?.role === "RESELLER";
     const fiche = isReseller ? await chargerFicheRevendeur(prisma, req.user?.userId) : null;
+    const avecEssais = inclutEssaisGratuits(req.query.includeFreeTrial);
+    const porteeEssai = avecEssais ? null : await porteeEssaiDeploye(prisma);
     const clients = await prisma.vpnClient.findMany({
-      where: isReseller ? (porteeClientsRevendeur(fiche) as any) : undefined,
+      where: etFiltres(
+        isReseller ? (porteeClientsRevendeur(fiche) as any) : null,
+        porteeEssai ? exclureIdentifiants("id", porteeEssai.clientsEssaiUniquement) : null,
+      ) as any,
       include: {
         user: true,
         // Une seule jointure pour l'étiquette revendeur : la charger appareil
         // par appareil produirait 84 requêtes supplémentaires par affichage.
         reseller: { include: { user: { select: { id: true, name: true, email: true } } } },
         subscriptions: {
-          where: { status: { not: "revoked" } },
+          // Le forfait retenu pour la ligne est choisi par
+          // `selectDeviceSubscription`, qui privilégie celui lié à l'appareil —
+          // c'est exactement le cas du forfait d'essai. Sans ce retranchement,
+          // un compte converti afficherait encore « Essai gratuit — … », son
+          // volume et son échéance alors que les essais sont masqués.
+          where: etFiltres(
+            { status: { not: "revoked" } },
+            porteeEssai ? exclureIdentifiants("id", porteeEssai.subscriptionIds) : null,
+          ) as any,
           include: { devices: true },
           orderBy: [{ lastProvisionAt: "desc" }, { createdAt: "desc" }],
         },
