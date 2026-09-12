@@ -68,6 +68,14 @@ export interface VpnConnection {
   /** §6.4 — métadonnées d'invalidation de cache (jamais de champs techniques) */
   configVersion: number;
   configHash: string | null;
+  /**
+   * Cet accès provient-il d'un ESSAI GRATUIT déployé ?
+   *
+   * Calculé par le serveur à partir de la demande d'essai déployée qui porte ce
+   * forfait. Ne jamais le déduire du NOM du forfait : « Essai gratuit — … » est
+   * un libellé modifiable, et un forfait ordinaire peut le porter.
+   */
+  isFreeTrial: boolean;
 }
 
 export interface ConnectionsResponse {

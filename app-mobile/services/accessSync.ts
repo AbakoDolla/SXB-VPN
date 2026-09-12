@@ -112,6 +112,9 @@ function parseConnections(data: unknown): VpnConnection[] {
       createdAt: typeof entry.createdAt === 'string' ? entry.createdAt : '',
       configVersion: typeof entry.configVersion === 'number' ? entry.configVersion : 1,
       configHash: typeof entry.configHash === 'string' ? entry.configHash : null,
+      // Un serveur antérieur à cette correction n'envoie rien : l'absence vaut
+      // « accès ordinaire », jamais un essai supposé.
+      isFreeTrial: entry.isFreeTrial === true,
     };
   });
 }
@@ -198,6 +201,10 @@ export function refreshMobileConfigs(): Promise<VpnConnection[]> {
     const dismissed = new Set(storeValue(await configStore.listDismissed()) ?? []);
     connections = remote.filter(entry => !dismissed.has(entry.id));
     await reconcileAccess();
+    // Une seule lecture du registre pour toute la boucle : elle sert à n'écrire
+    // le marqueur d'essai QUE lorsqu'il change réellement, plutôt qu'à chaque
+    // rafraîchissement (toutes les 30 s en mode hérité).
+    const connus = new Map((storeValue(await configStore.list()) ?? []).map(meta => [meta.configId, meta]));
     for (const entry of connections) {
       if (epoch !== lifecycle || !currentIdentityRequest(identity)) return [];
       const current = getAccessState().authority;
@@ -205,6 +212,14 @@ export function refreshMobileConfigs(): Promise<VpnConnection[]> {
       const restriction = profileRestriction(current, {
         configId: entry.id, subscriptionId: entry.id, source: 'backend', configHash: entry.configHash,
       });
+      // « Période d'essai » : le serveur seul en décide, à partir de la demande
+      // d'essai déployée. On recopie sa réponse dans le registre pour que
+      // l'accueil reste juste hors ligne — y compris quand le profil est
+      // restreint, puisqu'un essai terminé doit encore pouvoir s'expliquer.
+      const connu = connus.get(entry.id);
+      if (connu && !!connu.isFreeTrial !== entry.isFreeTrial) {
+        storeValue(await configStore.updateMetadata(entry.id, { isFreeTrial: entry.isFreeTrial }));
+      }
       if (restriction || entry.status !== 'active' || !entry.dataToken) continue;
       const stored = storeValue(await configStore.get(entry.id));
       const changed = stored && (entry.configHash ? stored.meta.configHash !== entry.configHash : stored.meta.configVersion !== entry.configVersion);
@@ -214,6 +229,10 @@ export function refreshMobileConfigs(): Promise<VpnConnection[]> {
           if (error instanceof ProvisioningError) console.warn('[Access] Provisioning deferred:', error.diagnostic.code);
           else reportAccessSyncError(error);
         }
+        // Le provisionnement construit sa fiche à partir de la réponse
+        // `/provision/activate`, qui ne connaît pas les essais : le marqueur est
+        // apposé juste après, sans attendre le rafraîchissement suivant.
+        if (entry.isFreeTrial) storeValue(await configStore.updateMetadata(entry.id, { isFreeTrial: true }));
       }
       if (controlSupported === false) {
         storeValue(await configStore.updateMetadata(entry.id, { name: entry.name, accessStatus: entry.status as 'active' }));

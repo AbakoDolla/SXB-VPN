@@ -1731,7 +1731,12 @@ describe('garde-fous contre les régressions Android', () => {
     assert.doesNotMatch(accueil, /["'`]\/mobile\/ip["'`]/);
     // La latence, elle, reste affichée.
     assert.match(accueil, /info_ping/);
-    assert.match(accueil, /Abakodollar\$/);
+    // L'attribution développeur reste rendue sur l'accueil. Elle a quitté la
+    // carte « Informations de connexion » (retirée) pour le pied de l'écran, et
+    // passe désormais par la clé traduite « Powered by AbakoDollar$ » — même
+    // mention, même endroit visible, une seule forme dans toute l'application.
+    assert.match(accueil, /t\('created_by'\)/);
+    assert.doesNotMatch(accueil, />Abakodollar\$</);
   });
 
   it('numérote les publications à partir de 1 sans toucher au versionCode Android', () => {

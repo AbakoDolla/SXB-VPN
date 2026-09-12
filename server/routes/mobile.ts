@@ -27,6 +27,7 @@ import {
   appliquerVoucherAuClient,
   VoucherRedemptionError,
 } from "../services/voucher-redemption";
+import { forfaitsEssaiDuClient } from "../services/free-trial-marks";
 
 // ── AES-256-CBC decrypt (same key as vpn-profiles.ts) ─────────────────────────
 const ENC_ALGO = "aes-256-cbc";
@@ -1260,6 +1261,11 @@ router.get("/connections", async (req: AuthenticatedRequest, res: Response) => {
 
     const now = Date.now();
 
+    // « Période d'essai » : marqueur STRUCTUREL, lu une seule fois pour toute la
+    // liste et borné à ce compte. Jamais le nom du forfait — c'est précisément
+    // le défaut corrigé côté tableau de bord.
+    const forfaitsEssai = await forfaitsEssaiDuClient(prisma, String(client.id));
+
     const connections = subscriptions.map((sub: any) => {
       const profile = sub?.profile || null;
 
@@ -1297,6 +1303,8 @@ router.get("/connections", async (req: AuthenticatedRequest, res: Response) => {
         createdAt:  sub.createdAt ? new Date(sub.createdAt).toISOString() : new Date().toISOString(),
         configVersion: configVersionForProfile(profile),
         configHash:    configHashForProfile(profile),
+        /** Cet accès provient-il d'un essai gratuit déployé ? (marqueur structurel) */
+        isFreeTrial:   forfaitsEssai.has(String(sub.id)),
       };
     });
 

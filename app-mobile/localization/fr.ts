@@ -117,7 +117,6 @@ export const fr = {
   card_quota_plan: 'QUOTA DU FORFAIT',
   card_traffic_realtime: 'TRAFIC EN TEMPS RÉEL',
   card_traffic_per_app: 'CONSOMMATION PAR APPLICATION',
-  card_connection_info: 'INFORMATIONS DE CONNEXION',
   no_app_data: 'Aucune donnée applicative disponible',
   revocation_msg_revoked: "Cette configuration a été révoquée par l'administrateur.",
   revocation_msg_suspended: 'Cette configuration est temporairement suspendue. Votre session et les autres profils restent disponibles.',
@@ -581,6 +580,20 @@ export const fr = {
   quota_remaining_full: 'Quota restant',
   quota_exhausted: 'Quota épuisé',
   quota_reload: 'Rechargez votre forfait',
+  // Le serveur n'a jamais communiqué de volume : le dire franchement, plutôt
+  // que d'afficher « 0 o » qui se lirait comme « rien consommé ».
+  quota_not_measured: 'Non mesuré',
+
+  // ── Carte « Période d'essai » (accueil) ────────────────────────────────────
+  // Visible uniquement quand l'accès actif PROVIENT d'un essai gratuit déployé.
+  // Un appareil à accès complet ne voit jamais ces textes.
+  card_trial_period: 'PÉRIODE D\'ESSAI',
+  trial_headline: 'Votre accès est un essai gratuit',
+  trial_used: 'Consommé pendant l\'essai',
+  trial_ends_on: 'Fin de l\'essai',
+  trial_ends_unknown: 'Aucune date de fin communiquée',
+  trial_card_hint: 'Gardez le doigt sur la carte pour l\'incliner',
+  trial_a11y_card: 'Carte de période d\'essai',
 
   // Expiration
   config_expired: 'Configuration expirée',
@@ -588,7 +601,6 @@ export const fr = {
 
   // Connection Info
   info_protocol: 'Protocole',
-  info_last_conn: 'Dernière conn.',
   info_ip_address: 'Adresse IP',
   info_ping: 'Ping',
 

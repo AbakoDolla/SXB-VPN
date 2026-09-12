@@ -89,6 +89,40 @@ function plusTardif(candidat: string | null, reference: string | null): boolean 
   return new Date(candidat).getTime() > new Date(reference).getTime();
 }
 
+/**
+ * Forfaits d'UN compte nés d'un essai gratuit déployé.
+ *
+ * C'est ce que l'application mobile a besoin de savoir pour présenter à son
+ * utilisateur un écran d'essai plutôt que l'écran ordinaire. Le marqueur est le
+ * MÊME que celui du tableau de bord — une demande d'essai DÉPLOYÉE qui pointe
+ * vers son forfait — et surtout PAS le nom du forfait : « Essai gratuit — … »
+ * est un libellé que l'exploitation peut changer à tout moment, et un forfait
+ * ordinaire peut porter ce nom sans être un essai.
+ *
+ * Une seule lecture indexée, bornée au compte du demandeur : l'appareil ne
+ * déclenche jamais la lecture globale du parc que fait `porteeEssaiDeploye`.
+ *
+ * Rend un ensemble VIDE si la fonctionnalité d'essai n'est pas déployée sur
+ * cette base ou si la lecture échoue : la liste des connexions est le chemin
+ * par lequel un téléphone récupère son accès, elle ne doit jamais tomber parce
+ * qu'une mention n'a pas pu être calculée.
+ */
+export async function forfaitsEssaiDuClient(db: any, clientId: string): Promise<Set<string>> {
+  if (!db?.freeTrialRequest || !clientId) return new Set<string>();
+  try {
+    const demandes = await db.freeTrialRequest.findMany({
+      where: { clientId, status: STATUT_DEMANDE.DEPLOYED },
+      select: { subscriptionId: true },
+    });
+    return new Set(
+      (demandes as any[]).map((demande) => demande.subscriptionId).filter(Boolean).map(String),
+    );
+  } catch (erreur) {
+    console.error("free-trial mobile mark error:", erreur);
+    return new Set<string>();
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Séparation — ce qui relève de l'essai gratuit, et ce qui n'en relève plus
 // ─────────────────────────────────────────────────────────────────────────────

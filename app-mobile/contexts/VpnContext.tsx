@@ -143,7 +143,7 @@ interface VpnContextType {
   activeConnection:   VpnConnection | null;
   stepLogs:           StepLogItem[];
   // Multi-config
-  savedConfigs:       Array<{ id: string; name: string; protocol: string; isActive: boolean; status?: ProfileStatus }>;
+  savedConfigs:       Array<{ id: string; name: string; protocol: string; isActive: boolean; status?: ProfileStatus; isFreeTrial?: boolean }>;
   activeConfigId:     string | null;
   switchConfig:       (configId: string) => Promise<void>;
   isSwitchingConfig:  boolean;
@@ -221,12 +221,12 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const [killSwitch,         setKillSwitchState]      = useState<boolean>(false);
   const [autoReconnect,      setAutoReconnectState]   = useState<boolean>(true);
   const [stepLogs,           setStepLogs]             = useState<StepLogItem[]>([]);
-  const [savedConfigs,       _setSavedConfigs]        = useState<Array<{ id: string; name: string; protocol: string; isActive: boolean }>>([]);
+  const [savedConfigs,       _setSavedConfigs]        = useState<Array<{ id: string; name: string; protocol: string; isActive: boolean; isFreeTrial?: boolean }>>([]);
   // Miroir synchrone de la liste : deleteConfig doit pouvoir rétablir l'état
   // exact d'avant le retrait optimiste sans dépendre de `savedConfigs`, ce qui
   // changerait l'identité du callback et redessinerait tous les écrans.
-  const savedConfigsRef = useRef<Array<{ id: string; name: string; protocol: string; isActive: boolean }>>([]);
-  const setSavedConfigs = useCallback<React.Dispatch<React.SetStateAction<Array<{ id: string; name: string; protocol: string; isActive: boolean }>>>>((value) => {
+  const savedConfigsRef = useRef<Array<{ id: string; name: string; protocol: string; isActive: boolean; isFreeTrial?: boolean }>>([]);
+  const setSavedConfigs = useCallback<React.Dispatch<React.SetStateAction<Array<{ id: string; name: string; protocol: string; isActive: boolean; isFreeTrial?: boolean }>>>>((value) => {
     _setSavedConfigs(prev => {
       const next = typeof value === 'function' ? (value as (p: typeof prev) => typeof prev)(prev) : value;
       savedConfigsRef.current = next;
@@ -973,6 +973,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     setSavedConfigs(entries.map(entry => ({
       id: entry.configId, name: entry.name || 'VPN', protocol: entry.displayProtocol || entry.protocol || 'VPN',
       isActive: entry.configId === id, status: profileRestriction(authority, entry)?.status ?? entry.accessStatus,
+      // Marqueur d'essai tel que le serveur l'a établi, conservé au registre :
+      // l'accueil s'y fie hors ligne, sans jamais relire le nom du forfait.
+      isFreeTrial: entry.isFreeTrial === true,
     })));
     if (id && !selected?.isActive) storeValue(await configStore.setActive(id));
   }, [setSavedConfigs, setActiveConfigId]);
@@ -1447,6 +1450,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       name: entry.name || entry.configId,
       protocol: entry.displayProtocol || entry.protocol || '',
       isActive: entry.isActive === true,
+      isFreeTrial: entry.isFreeTrial === true,
     })));
 
     if (wasActive) {

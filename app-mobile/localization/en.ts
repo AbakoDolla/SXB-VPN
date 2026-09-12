@@ -112,7 +112,6 @@ export const en = {
   card_quota_plan: 'PLAN QUOTA',
   card_traffic_realtime: 'REAL-TIME TRAFFIC',
   card_traffic_per_app: 'PER-APP TRAFFIC',
-  card_connection_info: 'CONNECTION INFO',
   no_app_data: 'No per-app data available',
   revocation_msg_revoked: 'This configuration has been revoked by the administrator.',
   revocation_msg_suspended: 'This configuration is temporarily suspended. Your session and other profiles remain available.',
@@ -561,6 +560,16 @@ export const en = {
   quota_remaining_full: 'Remaining quota',
   quota_exhausted: 'Quota exhausted',
   quota_reload: 'Reload your plan',
+  quota_not_measured: 'Not measured',
+
+  // ── Free trial card (home screen) ──────────────────────────────────────────
+  card_trial_period: 'FREE TRIAL PERIOD',
+  trial_headline: 'Your access is a free trial',
+  trial_used: 'Used during the trial',
+  trial_ends_on: 'Trial ends',
+  trial_ends_unknown: 'No end date provided',
+  trial_card_hint: 'Hold the card to tilt it',
+  trial_a11y_card: 'Free trial period card',
 
   // Expiration
   config_expired: 'Configuration expired',
@@ -568,7 +577,6 @@ export const en = {
 
   // Connection Info
   info_protocol: 'Protocol',
-  info_last_conn: 'Last conn.',
   info_ip_address: 'IP Address',
   info_ping: 'Ping',
 

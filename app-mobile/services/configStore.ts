@@ -22,6 +22,15 @@ export interface ConfigMeta {
   quotaTotal?: number; quotaUsed?: number; expiryDate?: string | null; configVersion?: number;
   configHash?: string | null; isActive?: boolean; savedAt?: string; dataToken?: string;
   source?: 'backend' | 'manual'; accessStatus?: ProfileStatus;
+  /**
+   * Accès issu d'un ESSAI GRATUIT, recopié depuis `/mobile/connections`.
+   *
+   * Le serveur seul décide : il le calcule à partir de la demande d'essai
+   * DÉPLOYÉE qui porte ce forfait. On le conserve ici pour que l'écran
+   * d'accueil sache ce qu'il présente même hors ligne — jamais pour le déduire
+   * localement du nom du forfait.
+   */
+  isFreeTrial?: boolean;
 }
 export interface StoredConfig { config: Record<string, any>; meta: ConfigMeta; }
 
@@ -221,7 +230,7 @@ export async function clearAll(): Promise<StoreResult<void>> {
 }
 
 export async function updateMetadata(id: string, update: Partial<Pick<ConfigMeta,
-  'name' | 'quotaTotal' | 'quotaUsed' | 'expiryDate' | 'accessStatus'>>): Promise<StoreResult<ConfigMeta>> {
+  'name' | 'quotaTotal' | 'quotaUsed' | 'expiryDate' | 'accessStatus' | 'isFreeTrial'>>): Promise<StoreResult<ConfigMeta>> {
   try { return await mutate(async () => {
     const entries = await registry();
     const old = entries.find(x => x.configId === id);

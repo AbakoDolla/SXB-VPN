@@ -7,7 +7,6 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import Constants from "expo-constants";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import apiClient from "@/services/apiClient";
 import { useAuthContext } from "@/contexts/AuthContext";
@@ -33,6 +32,7 @@ import {
 } from "@/components/ui/Primitives";
 import { useConnectionDuration } from "@/hooks/useConnectionDuration";
 import AccessNotices from "@/components/AccessNotices";
+import FreeTrialCard from "@/components/FreeTrialCard";
 import { blocksDevice } from "@/services/accessPolicy";
 
 const LOGO = require("../../assets/images/icon.png");
@@ -141,7 +141,6 @@ export default function HomeScreen() {
   const [configPickerVisible, setConfigPickerVisible] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [ping, setPing] = useState<number | null>(null);
-  const [lastConnection, setLastConnection] = useState<string>("—");
   const [connections, setConnections] = useState<VpnConnection[]>([]);
   const [connectionsLoading, setConnectionsLoading] = useState(false);
   const [activeAnnouncement, setActiveAnnouncement] = useState<any>(null);
@@ -185,20 +184,6 @@ export default function HomeScreen() {
     }
     return () => clearInterval(timerId);
   }, [isConnected]);
-
-  useEffect(() => {
-    if (isConnected) {
-      const nowStr = new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
-      setLastConnection(nowStr);
-      AsyncStorage.setItem("@last_conn_time", nowStr).catch(() => {});
-    }
-  }, [isConnected]);
-
-  useEffect(() => {
-    AsyncStorage.getItem("@last_conn_time").then(t => {
-      if (t) setLastConnection(t);
-    });
-  }, []);
 
   const fetchConnections = React.useCallback(async () => {
     try {
@@ -312,6 +297,19 @@ export default function HomeScreen() {
 
   const activeConfig = savedConfigs.find((cfg) => cfg.id === activeConfigId) || savedConfigs[0] || null;
 
+  // ── L'accès actif provient-il d'un ESSAI GRATUIT ? ────────────────────────
+  //
+  // La réponse vient du SERVEUR et de lui seul : `/mobile/connections` marque
+  // le forfait né d'une demande d'essai DÉPLOYÉE. On ne lit jamais le nom du
+  // forfait (« Essai gratuit — … » est un libellé modifiable, et un forfait
+  // ordinaire peut le porter) — c'est précisément le défaut corrigé côté
+  // tableau de bord.
+  //
+  // Deux lectures du MÊME marqueur, jamais deux mécanismes : la connexion
+  // distante quand l'application vient de se synchroniser, le registre local
+  // — qui recopie cette même réponse — pour rester juste hors ligne.
+  const isTrialAccess = activeConnection?.isFreeTrial === true || activeConfig?.isFreeTrial === true;
+
   return (
     <LinearGradient colors={colors.gradients.bg as [string, string, string]} style={styles.container}>
       <AnnouncementModal
@@ -381,6 +379,25 @@ export default function HomeScreen() {
           </Surface>
         )}
 
+        {/* ── PÉRIODE D'ESSAI ─────────────────────────────────────────────
+            Carte réservée aux accès issus d'un essai gratuit. Elle est placée
+            avant tout le reste : c'est l'information qui change le sens de
+            l'écran. Un appareil à ACCÈS COMPLET ne la monte jamais — son écran
+            reste rigoureusement celui d'avant.
+
+            La consommation vient de `derivedQuota`, exactement la même source
+            que la carte « Quota du forfait » plus bas : aucune requête
+            supplémentaire, aucun risque de deux chiffres divergents. */}
+        {isTrialAccess && (
+          <FreeTrialCard
+            usedBytes={derivedQuota.usedBytes}
+            remainingBytes={derivedQuota.remainingBytes}
+            totalBytes={derivedQuota.totalBytes}
+            usedRatio={derivedQuota.usedRatio}
+            endsAt={derivedQuota.expiryDate ?? activeConnection?.expiresAt ?? null}
+          />
+        )}
+
         {/* Sélecteur de profils. Les pastilles sur une ligne devenaient
             illisibles au-delà de deux profils et ne permettaient aucune
             suppression : l'accueil n'affiche plus que le profil courant et
@@ -423,6 +440,9 @@ export default function HomeScreen() {
             Statut, bouton et informations vives forment un bloc unique : c'est
             la seule partie de l'écran qui doit être lisible à bout de bras. */}
         <View style={styles.hero}>
+          {/* Conservée : c'est le seul endroit qui dit « Protection inactive ».
+              La légende du bouton, elle, donne l'instruction (« Appuyez pour
+              vous connecter »), pas l'état. */}
           <Pill
             label={isConnected ? t('protection_active') : isConnecting ? t('connecting_status') : t('protection_inactive')}
             tone={btnColor}
@@ -577,64 +597,49 @@ export default function HomeScreen() {
           </Surface>
         )}
 
-        {/* Consommation par application */}
-        {isConnected && (
+        {/* Consommation par application.
+
+            La carte n'apparaît QUE lorsque le moteur natif rapporte réellement
+            quelque chose. Auparavant elle occupait une carte entière pour
+            annoncer « Aucune donnée applicative disponible » : à chaque
+            connexion avant le premier relevé (~30 s), et en permanence là où le
+            module natif n'expose pas `getPerAppStats`. Un bloc qui ne dit que
+            son propre vide n'apprend rien ; la mesure elle-même est conservée
+            intacte dès qu'elle existe. */}
+        {isConnected && perAppTraffic && perAppTraffic.length > 0 && (
           <Surface>
             <SectionHeader title={t('card_traffic_per_app')} icon="apps-outline" />
-            {perAppTraffic && perAppTraffic.length > 0 ? (
-              perAppTraffic.map((appStat, index) => (
-                <View
-                  key={`${appStat.packageName}-${index}`}
-                  style={[
-                    styles.appRow,
-                    index < perAppTraffic.length - 1 && {
-                      borderBottomWidth: StyleSheet.hairlineWidth,
-                      borderBottomColor: colors.border,
-                    },
-                  ]}
-                >
-                  <View style={{ flex: 1, paddingRight: spacing.sm }}>
-                    <Text style={[type.bodyMedium, { color: colors.textPrimary }]} numberOfLines={1}>
-                      {appStat.appName || appStat.packageName}
-                    </Text>
-                    <Text style={[type.micro, { color: colors.textMuted }]} numberOfLines={1}>
-                      {appStat.packageName}
-                    </Text>
-                  </View>
-                  <View style={{ alignItems: 'flex-end' }}>
-                    <Text style={[type.h3, { color: colors.textPrimary, fontVariant: ['tabular-nums' as const] }]}>
-                      {formatBytes(appStat.totalBytes)}
-                    </Text>
-                    <Text style={[type.micro, { color: colors.textMuted }]}>
-                      ↑ {formatBytes(appStat.uploadBytes)} · ↓ {formatBytes(appStat.downloadBytes)}
-                    </Text>
-                  </View>
+            {perAppTraffic.map((appStat, index) => (
+              <View
+                key={`${appStat.packageName}-${index}`}
+                style={[
+                  styles.appRow,
+                  index < perAppTraffic.length - 1 && {
+                    borderBottomWidth: StyleSheet.hairlineWidth,
+                    borderBottomColor: colors.border,
+                  },
+                ]}
+              >
+                <View style={{ flex: 1, paddingRight: spacing.sm }}>
+                  <Text style={[type.bodyMedium, { color: colors.textPrimary }]} numberOfLines={1}>
+                    {appStat.appName || appStat.packageName}
+                  </Text>
+                  <Text style={[type.micro, { color: colors.textMuted }]} numberOfLines={1}>
+                    {appStat.packageName}
+                  </Text>
                 </View>
-              ))
-            ) : (
-              <EmptyState icon="apps-outline" title={t('no_app_data')} />
-            )}
+                <View style={{ alignItems: 'flex-end' }}>
+                  <Text style={[type.h3, { color: colors.textPrimary, fontVariant: ['tabular-nums' as const] }]}>
+                    {formatBytes(appStat.totalBytes)}
+                  </Text>
+                  <Text style={[type.micro, { color: colors.textMuted }]}>
+                    ↑ {formatBytes(appStat.uploadBytes)} · ↓ {formatBytes(appStat.downloadBytes)}
+                  </Text>
+                </View>
+              </View>
+            ))}
           </Surface>
         )}
-
-        {/* Détails secondaires. Le protocole et la latence figurent déjà dans le
-            bandeau vif : ne restent ici que les informations de contexte. */}
-        <Surface>
-          <SectionHeader title={t('card_connection_info')} icon="information-circle-outline" />
-          <View style={styles.infoGrid}>
-            <View style={styles.infoRow}>
-              <Text style={[type.caption, { color: colors.textMuted }]}>{t('info_last_conn')}</Text>
-              <Text style={[type.captionMedium, { color: colors.textPrimary }]}>{lastConnection}</Text>
-            </View>
-            <View style={styles.infoRow}>
-              <Text style={[type.caption, { color: colors.textMuted }]}>{t('app_version')}</Text>
-              <Text style={[type.captionMedium, { color: colors.textPrimary }]}>
-                v{Constants.expoConfig?.version ?? "1.0.0"}
-              </Text>
-            </View>
-          </View>
-          <Text style={[styles.signature, { color: colors.textMuted }]} accessibilityRole="text">Abakodollar$</Text>
-        </Surface>
 
         {/* ── Connexions VPN ──────────────────────────────────────────────── */}
         <Surface>
@@ -666,11 +671,13 @@ export default function HomeScreen() {
           )}
         </Surface>
 
-        {/* Accès rapides */}
+        {/* Accès rapides. « Historique » n'y figure plus : c'est un onglet
+            permanent de la barre du bas, donc déjà à une seule touche depuis
+            n'importe quel écran. Ne restent ici que les destinations qui n'ont
+            pas d'onglet. */}
         <View style={styles.quickRow}>
           {[
             { icon: "gift-outline", label: t('activate_plan'), action: () => router.push("/plan"), color: colors.purple },
-            { icon: "time-outline", label: t('history'), action: () => router.push("/(tabs)/history"), color: colors.primary },
             { icon: "headset-outline", label: t('support'), action: () => router.push("/support"), color: colors.connected },
           ].map((item) => (
             <Pressable
@@ -693,6 +700,14 @@ export default function HomeScreen() {
             </Pressable>
           ))}
         </View>
+
+        {/* Mention développeur. Elle vivait au bas de la carte « Informations de
+            connexion », retirée : elle reste donc ici, au pied de l'accueil, et
+            reprend la forme employée partout ailleurs dans l'application
+            (« Powered by AbakoDollar$ », traduite comme le reste). */}
+        <Text style={[styles.signature, { color: colors.textMuted }]} accessibilityRole="text">
+          {t('created_by')}
+        </Text>
       </ScrollView>
 
       <UpdatePrompt />
@@ -784,11 +799,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: spacing.md,
   },
-  infoGrid: { gap: spacing.md },
-  infoRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: spacing.md },
 
   // Signature discrète de l'auteur, volontairement très effacée : présente
-  // sans jamais concurrencer l'information utile de la carte. La couleur est
+  // sans jamais concurrencer l'information utile de l'écran. La couleur est
   // appliquée à l'usage, comme partout ailleurs dans ce fichier (la feuille de
   // styles est définie hors du composant, où le thème n'est pas accessible).
   signature: {

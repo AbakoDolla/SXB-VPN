@@ -674,7 +674,10 @@ export default function SettingsScreen() {
 
         {/* About */}
         <Section title="À PROPOS">
-          <Row icon="information-circle-outline" label="Version" value={`v${Constants.expoConfig?.version ?? "1.0.0"}`} />
+          {/* Version de l'application : c'est désormais le SEUL endroit
+              complet, l'accueil ne la portant plus. Le libellé passe donc par
+              les traductions, comme la valeur qu'il annonce. */}
+          <Row icon="information-circle-outline" label={t('app_version')} value={`v${Constants.expoConfig?.version ?? "1.0.0"}`} />
           <View style={styles.divider} />
           <Row icon="code-slash-outline" label="Build" value={Constants.expoConfig?.android?.versionCode?.toString() ?? "1"} />
           <View style={styles.divider} />
