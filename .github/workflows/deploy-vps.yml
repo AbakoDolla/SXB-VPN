@@ -331,6 +331,28 @@ jobs:
               exit 1
             fi
 
+            # Le SQL additif passe AVANT `db push`.
+            #
+            # `db push` refuse de poser un index unique sur une colonne qu'il
+            # vient de créer : il ne peut pas savoir qu'elle est vide, et
+            # réclame `--accept-data-loss`. Ce drapeau autoriserait aussi, sur
+            # une autre exécution, la suppression d'une colonne portant de
+            # vraies données : on ne l'emploie pas.
+            #
+            # `migrations_manual.sql` est idempotent (IF NOT EXISTS partout) et
+            # strictement additif. Appliqué d'abord, la colonne et son index
+            # existent déjà, et `db push` n'a plus rien à créer — donc plus
+            # d'avertissement, et aucune donnée exposée.
+            MANUAL_SQL="backend/prisma/migrations_manual.sql"
+            if [ -f "$MANUAL_SQL" ]; then
+              if ! command -v psql >/dev/null 2>&1; then
+                echo "::error::psql introuvable — migrations additives non installables"
+                exit 1
+              fi
+              psql "${DB_URL%%\?*}" -v ON_ERROR_STOP=1 -f "$MANUAL_SQL" >/tmp/sxb-manual-migration.log
+              echo "✅ Migrations additives appliquées"
+            fi
+
             echo "🗄️ Push Prisma schema..."
             set -o pipefail
             NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
