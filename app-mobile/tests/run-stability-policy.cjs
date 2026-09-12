@@ -27,6 +27,7 @@ try {
   run(process.env.KOTLINC || 'kotlinc', [
     path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbTunnelPolicy.kt'),
     path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbEngineDiagnostics.kt'),
+    path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbReconnectPolicy.kt'),
     path.resolve(__dirname, 'StabilityPolicyTest.kt'),
     maskHarness,
     '-classpath', jsonJar, '-include-runtime', '-d', jar,

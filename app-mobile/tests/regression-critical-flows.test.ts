@@ -359,6 +359,8 @@ describe('garde-fous contre les régressions Android', () => {
   const canonicalConfig = source('../server/services/canonical-config.ts');
   const xrayTranslate = source('../server/services/xray-translate.ts');
   const nativeService = source('modules/android-native/SxbVpnService.kt');
+  const nativeReconnectPolicy = source('modules/android-native/SxbReconnectPolicy.kt');
+  const nativeReconnectManager = source('modules/android-native/AutoReconnectManager.kt');
   const tunnelPolicy = source('modules/android-native/SxbTunnelPolicy.kt');
   const engineDiagnostics = source('modules/android-native/SxbEngineDiagnostics.kt');
   const activateScreen = source('app/activate.tsx');
@@ -976,9 +978,71 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(nativeService.includes('"CONFIG_INVALID"'));
     // Les erreurs définitives sont désormais regroupées : CONFIG_INVALID (schéma
     // illisible) et CONFIG_UNSUPPORTED (capacité absente du moteur) ne doivent
-    // ni l'une ni l'autre déclencher une boucle de reconnexion.
-    assert.ok(nativeService.includes('code !in PERMANENT_ERROR_CODES'));
+    // ni l'une ni l'autre déclencher une boucle de reconnexion — ni au moment de
+    // l'échec, ni plus tard au retour du réseau : la reconnexion est désarmée.
+    assert.ok(nativeService.includes('code in PERMANENT_ERROR_CODES && ::autoReconnect.isInitialized'));
+    assert.ok(nativeService.includes('autoReconnect.markStopped(code)'));
     assert.ok(nativeService.includes('PERMANENT_ERROR_CODES = setOf("CONFIG_INVALID", "CONFIG_UNSUPPORTED")'));
+  });
+
+  it('relance le tunnel au retour du réseau sans jamais brûler de tentative à vide', () => {
+    // ── 1. Le retour du réseau RELANCE ────────────────────────────────────
+    // La régression signalée en production : `onAvailable` se contentait de
+    // journaliser NETWORK_AVAILABLE, donc désactiver le mode avion ne relançait
+    // rien. Ce test échoue si ce rappel redevient un simple journal.
+    const onAvailable = nativeService.slice(
+      nativeService.indexOf('override fun onAvailable(network: Network)'),
+      nativeService.indexOf('override fun onLost(network: Network)'),
+    );
+    assert.ok(onAvailable.length > 0, 'onAvailable introuvable dans le rappel réseau');
+    assert.match(onAvailable, /autoReconnect\.onNetworkAvailable\(\)/);
+    assert.match(onAvailable, /availableNetworks\.add\(network\)/);
+
+    // ── 2. Coupure totale ≠ bascule d'interface ───────────────────────────
+    // Sans ce décompte, un mode avion serait confondu avec un simple changement
+    // Wi-Fi ↔ données mobiles, et inversement.
+    assert.match(nativeService, /val stillAvailable = availableNetworks\.isNotEmpty\(\)/);
+    assert.match(nativeService, /autoReconnect\.onNetworkLost\(stillAvailable\)/);
+    assert.match(nativeService, /releaseTunnelForReconnect\("network_lost"\)/);
+    // La sélection d'interface reste celle d'Android : aucune bascule forcée.
+    assert.doesNotMatch(nativeService, /bindProcessToNetwork\(/);
+    assert.match(nativeService, /NETWORK_CHANGE_BLOCKED reason=network_callback_only/);
+    // Une tentative démonte le tunnel précédent : jamais deux moteurs sur le TUN.
+    assert.match(nativeService, /drainTunnelBeforeReconnect\(\)/);
+
+    // ── 3. Aucune tentative consommée sans réseau ─────────────────────────
+    // Le compteur n'est incrémenté qu'au démarrage EFFECTIF d'une tentative, et
+    // seulement après avoir vérifié qu'une connexion existe.
+    const schedule = nativeReconnectManager.slice(nativeReconnectManager.indexOf('private fun schedule('));
+    assert.ok(schedule.length > 0, 'schedule() introuvable dans AutoReconnectManager');
+    const networkGuard = schedule.indexOf('if (!networkUp.get())');
+    const consume = schedule.indexOf('failedAttempts.incrementAndGet()');
+    assert.ok(networkGuard >= 0 && consume > networkGuard,
+      'Le compteur ne doit être consommé qu’après avoir constaté un réseau');
+    assert.match(nativeReconnectManager, /SxbReconnectPolicy\.decide\(trigger, state\)/);
+    assert.match(nativeReconnectPolicy, /!state\.networkAvailable -> Decision\.WAIT_FOR_NETWORK/);
+    assert.match(nativeReconnectPolicy, /state\.failedAttempts >= MAX_RETRIES -> Decision\.GIVE_UP/);
+
+    // ── 4. Recul progressif borné, jamais de martèlement ──────────────────
+    assert.doesNotMatch(nativeReconnectManager, /RETRY_DELAYS/);
+    assert.match(nativeReconnectPolicy, /MAX_RETRY_DELAY_MS = 60_000L/);
+    assert.match(nativeReconnectPolicy, /MAX_RESUME_DELAY_MS = 30_000L/);
+    assert.match(nativeReconnectPolicy, /MIN_EVENT_INTERVAL_MS = 3_000L/);
+    assert.match(nativeReconnectPolicy, /state\.attemptScheduled -> Decision\.DEBOUNCE/);
+
+    // ── 5. Un refus légitime ne devient pas une boucle ────────────────────
+    assert.match(nativeService, /autoReconnect\.markStopped\("user_stop"\)/);
+    assert.match(nativeReconnectPolicy, /!state\.enabled \|\| state\.stopped -> Decision\.IGNORE/);
+    // Un tunnel debout n'est jamais coupé par l'arrivée d'une interface.
+    assert.match(nativeReconnectPolicy, /state\.connected -> Decision\.IGNORE/);
+
+    // ── 6. La décision pure est réellement exercée en CI ──────────────────
+    assert.ok(existsSync('modules/android-native/SxbReconnectPolicy.kt'));
+    assert.match(source('tests/run-stability-policy.cjs'), /SxbReconnectPolicy\.kt/);
+    const stabilityCases = source('tests/StabilityPolicyTest.kt');
+    assert.ok(stabilityCases.includes('mode avion de 10 minutes'));
+    assert.ok(stabilityCases.includes('bascule Wi-Fi'));
+    assert.ok(stabilityCases.includes('SxbReconnectPolicy.Trigger.NETWORK_AVAILABLE'));
   });
 
   it('sing-box : normalise transport.host et déduplique les profils hors ligne hérités', () => {

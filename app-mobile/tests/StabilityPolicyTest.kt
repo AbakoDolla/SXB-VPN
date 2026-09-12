@@ -71,6 +71,160 @@ private fun dns(address: String, detour: String = "proxy1") = JSONObject()
 private fun server(dns: JSONObject, index: Int = 0): JSONObject = dns.getJSONArray("servers").getJSONObject(index)
 private fun lower(message: String) = SxbEngineLogPolicy.clean(message).lowercase(Locale.ROOT)
 
+// ═══════════════════════════════════════════════════════════════════════════
+// REPRISE RÉSEAU — outils de test
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** État « nominal » : VPN demandé, réseau présent, rien d'armé, tunnel à terre. */
+private fun reconnectState(
+    enabled: Boolean = true,
+    stopped: Boolean = false,
+    networkAvailable: Boolean = true,
+    attemptScheduled: Boolean = false,
+    dispatchInFlight: Boolean = false,
+    connected: Boolean = false,
+    awaitingNetwork: Boolean = false,
+    failedAttempts: Int = 0,
+    sinceLastEventMs: Long = Long.MAX_VALUE / 4,
+) = SxbReconnectPolicy.State(
+    enabled = enabled,
+    stopped = stopped,
+    networkAvailable = networkAvailable,
+    attemptScheduled = attemptScheduled,
+    dispatchInFlight = dispatchInFlight,
+    connected = connected,
+    awaitingNetwork = awaitingNetwork,
+    failedAttempts = failedAttempts,
+    sinceLastEventMs = sinceLastEventMs,
+)
+
+/**
+ * Simulateur de scénarios réseau.
+ *
+ * Il reproduit l'ordonnancement d'`AutoReconnectManager` : une décision arme
+ * une minuterie datée, et la tentative n'est COMPTÉE qu'à son échéance,
+ * uniquement si un réseau est présent. Comme dans le gestionnaire, la minuterie
+ * est désarmée AVANT l'appel au service — `onReconnect()` ne rend la main qu'à
+ * la mort du tunnel, et laisser la minuterie active ferait passer l'échec
+ * suivant pour un doublon.
+ */
+private class ReconnectSim(var connected: Boolean = true) {
+    var enabled = true
+    var stopped = false
+    var networkAvailable = true
+    var attemptScheduled = false
+    var dispatchInFlight = false
+    var awaitingNetwork = false
+    var failedAttempts = 0
+    var resumeStreak = 0
+    var attempts = 0
+    var pendingDelayMs = 0L
+    private var dueAtMs = Long.MAX_VALUE
+    private var clockMs = 0L
+    private var lastEventAtMs = -3_600_000L
+    val decisions = mutableListOf<SxbReconnectPolicy.Decision>()
+
+    fun advance(ms: Long) { clockMs += ms }
+
+    private fun state() = SxbReconnectPolicy.State(
+        enabled = enabled,
+        stopped = stopped,
+        networkAvailable = networkAvailable,
+        attemptScheduled = attemptScheduled,
+        dispatchInFlight = dispatchInFlight,
+        connected = connected,
+        awaitingNetwork = awaitingNetwork,
+        failedAttempts = failedAttempts,
+        sinceLastEventMs = clockMs - lastEventAtMs,
+    )
+
+    private fun event(trigger: SxbReconnectPolicy.Trigger): SxbReconnectPolicy.Decision {
+        val decision = SxbReconnectPolicy.decide(trigger, state())
+        decisions += decision
+        when (decision) {
+            SxbReconnectPolicy.Decision.RETRY -> arm(SxbReconnectPolicy.retryDelayMs(failedAttempts + 1))
+            SxbReconnectPolicy.Decision.RESUME -> {
+                failedAttempts = 0
+                arm(SxbReconnectPolicy.resumeDelayMs(resumeStreak++))
+            }
+            SxbReconnectPolicy.Decision.WAIT_FOR_NETWORK -> { disarm(); awaitingNetwork = true }
+            SxbReconnectPolicy.Decision.GIVE_UP -> disarm()
+            else -> Unit
+        }
+        return decision
+    }
+
+    private fun arm(delayMs: Long) {
+        attemptScheduled = true
+        pendingDelayMs = delayMs
+        lastEventAtMs = clockMs
+        dueAtMs = clockMs + delayMs
+    }
+
+    private fun disarm() {
+        attemptScheduled = false
+        pendingDelayMs = 0
+        dueAtMs = Long.MAX_VALUE
+    }
+
+    /** La minuterie arrive à échéance. */
+    fun fireScheduled(succeeds: Boolean) {
+        check(attemptScheduled) { "Aucune tentative armée" }
+        check(clockMs >= dueAtMs) { "Tentative déclenchée avant son échéance" }
+        if (!networkAvailable) {
+            // Réseau reperdu pendant l'attente : compteur intact.
+            disarm()
+            awaitingNetwork = true
+            return
+        }
+        disarm()
+        awaitingNetwork = false
+        attempts++
+        failedAttempts++
+        dispatchInFlight = true
+        if (succeeds) {
+            connected = true
+            failedAttempts = 0
+            resumeStreak = 0
+            dispatchInFlight = false
+        } else {
+            connected = false
+            // `failVpn()` notifie la chute pendant que le dispatch tourne encore.
+            event(SxbReconnectPolicy.Trigger.TUNNEL_LOST)
+            dispatchInFlight = false
+        }
+    }
+
+    fun airplaneModeOn() {
+        networkAvailable = false
+        // `onNetworkLost(false)` annule toute minuterie : elle ne pourrait
+        // qu'échouer à vide, et passe en attente pure.
+        disarm()
+        awaitingNetwork = true
+        connected = false
+        event(SxbReconnectPolicy.Trigger.TUNNEL_LOST)
+    }
+
+    fun airplaneModeOff() {
+        networkAvailable = true
+        event(SxbReconnectPolicy.Trigger.NETWORK_AVAILABLE)
+    }
+
+    fun networkAppeared() {
+        networkAvailable = true
+        event(SxbReconnectPolicy.Trigger.NETWORK_AVAILABLE)
+    }
+
+    fun networkDisappeared(stillAvailable: Boolean) {
+        networkAvailable = stillAvailable
+        connected = false
+        event(SxbReconnectPolicy.Trigger.TUNNEL_LOST)
+    }
+
+    /** Filet de sécurité du service : le dispatch périmé vient de se terminer. */
+    fun reevaluate() { event(SxbReconnectPolicy.Trigger.NETWORK_AVAILABLE) }
+}
+
 fun main() {
     checkCase("only the selected HTTP-chained VLESS/WS path gets a non-jumbo MTU") {
         val outbounds = chain()
@@ -598,5 +752,274 @@ fun main() {
         SxbTunnelPolicy.noteChainFailover(null)
         check(SxbTunnelPolicy.declaredAlternateUpstreams() == 0)
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // REPRISE RÉSEAU — SxbReconnectPolicy
+    // ═══════════════════════════════════════════════════════════════════════
+    checkCase("le retour du réseau relance le tunnel, y compris après un abandon") {
+        // Le défaut corrigé : `onAvailable` ne faisait que journaliser, donc un
+        // aller-retour en mode avion laissait le tunnel définitivement à terre.
+        check(SxbReconnectPolicy.decide(SxbReconnectPolicy.Trigger.NETWORK_AVAILABLE, reconnectState())
+            == SxbReconnectPolicy.Decision.RESUME)
+        // Même après épuisement des tentatives réelles : tant que le service
+        // vit et que la reconnexion est armée, une ligne qui revient est une
+        // nouvelle chance, pas la suite d'une série d'échecs périmés.
+        check(SxbReconnectPolicy.decide(
+            SxbReconnectPolicy.Trigger.NETWORK_AVAILABLE,
+            reconnectState(failedAttempts = SxbReconnectPolicy.MAX_RETRIES + 3),
+        ) == SxbReconnectPolicy.Decision.RESUME)
+    }
+
+    checkCase("sans réseau, aucune tentative n'est consommée et rien n'est abandonné") {
+        for (consumed in 0..(SxbReconnectPolicy.MAX_RETRIES + 5)) {
+            val decision = SxbReconnectPolicy.decide(
+                SxbReconnectPolicy.Trigger.TUNNEL_LOST,
+                reconnectState(networkAvailable = false, failedAttempts = consumed),
+            )
+            check(decision == SxbReconnectPolicy.Decision.WAIT_FOR_NETWORK) {
+                "Une coupure réseau ne doit ni retenter ni abandonner: $decision"
+            }
+        }
+    }
+
+    checkCase("le compteur reste réservé aux échecs réels, serveur joignable") {
+        for (consumed in 0 until SxbReconnectPolicy.MAX_RETRIES) {
+            check(SxbReconnectPolicy.decide(
+                SxbReconnectPolicy.Trigger.TUNNEL_LOST,
+                reconnectState(failedAttempts = consumed),
+            ) == SxbReconnectPolicy.Decision.RETRY)
+        }
+        check(SxbReconnectPolicy.decide(
+            SxbReconnectPolicy.Trigger.TUNNEL_LOST,
+            reconnectState(failedAttempts = SxbReconnectPolicy.MAX_RETRIES),
+        ) == SxbReconnectPolicy.Decision.GIVE_UP)
+    }
+
+    checkCase("une rafale d'événements Android n'arme qu'une seule tentative") {
+        // Une bascule Wi-Fi ↔ données mobiles produit plusieurs rappels.
+        for (trigger in SxbReconnectPolicy.Trigger.entries) {
+            check(SxbReconnectPolicy.decide(trigger, reconnectState(attemptScheduled = true))
+                == SxbReconnectPolicy.Decision.DEBOUNCE)
+        }
+        check(SxbReconnectPolicy.decide(
+            SxbReconnectPolicy.Trigger.NETWORK_AVAILABLE,
+            reconnectState(dispatchInFlight = true),
+        ) == SxbReconnectPolicy.Decision.DEBOUNCE)
+        check(SxbReconnectPolicy.decide(
+            SxbReconnectPolicy.Trigger.NETWORK_AVAILABLE,
+            reconnectState(sinceLastEventMs = SxbReconnectPolicy.MIN_EVENT_INTERVAL_MS - 1),
+        ) == SxbReconnectPolicy.Decision.DEBOUNCE)
+        check(SxbReconnectPolicy.decide(
+            SxbReconnectPolicy.Trigger.NETWORK_AVAILABLE,
+            reconnectState(sinceLastEventMs = SxbReconnectPolicy.MIN_EVENT_INTERVAL_MS),
+        ) == SxbReconnectPolicy.Decision.RESUME)
+    }
+
+    checkCase("un arrêt volontaire ou une erreur permanente ne relance jamais rien") {
+        for (trigger in SxbReconnectPolicy.Trigger.entries) {
+            check(SxbReconnectPolicy.decide(trigger, reconnectState(enabled = false))
+                == SxbReconnectPolicy.Decision.IGNORE)
+            check(SxbReconnectPolicy.decide(trigger, reconnectState(stopped = true))
+                == SxbReconnectPolicy.Decision.IGNORE)
+            // Le refus prime même sur un réseau qui revient et un compteur vierge.
+            check(SxbReconnectPolicy.decide(
+                trigger,
+                reconnectState(stopped = true, networkAvailable = true, failedAttempts = 0),
+            ) == SxbReconnectPolicy.Decision.IGNORE)
+        }
+    }
+
+    checkCase("un tunnel debout n'est jamais coupé par l'arrivée d'un réseau") {
+        // Règle 6 : on ne bascule pas de transport, Android garde sa sélection.
+        check(SxbReconnectPolicy.decide(
+            SxbReconnectPolicy.Trigger.NETWORK_AVAILABLE,
+            reconnectState(connected = true),
+        ) == SxbReconnectPolicy.Decision.IGNORE)
+        // En revanche un « connected » PÉRIMÉ — le tunnel a été perdu avec le
+        // réseau, le moteur n'a simplement pas encore été démonté — ne doit pas
+        // absorber le seul événement de retour du réseau.
+        check(SxbReconnectPolicy.decide(
+            SxbReconnectPolicy.Trigger.NETWORK_AVAILABLE,
+            reconnectState(connected = true, awaitingNetwork = true),
+        ) == SxbReconnectPolicy.Decision.RESUME)
+    }
+
+    checkCase("un échec réel programme la tentative suivante, jusqu'à l'abandon") {
+        // Régression : la garde anti-doublon ne doit pas confondre « une
+        // tentative est armée » avec « une tentative est en cours ». Sinon le
+        // premier échec paraît être un doublon et plus aucune tentative n'est
+        // jamais programmée — l'abandon ne survient plus, mais la reconnexion
+        // non plus.
+        val sim = ReconnectSim(connected = false)
+        sim.networkDisappeared(stillAvailable = true)
+        var armed = 0
+        while (sim.attemptScheduled) {
+            armed++
+            sim.advance(sim.pendingDelayMs)
+            sim.fireScheduled(succeeds = false)
+        }
+        check(armed == SxbReconnectPolicy.MAX_RETRIES) { "Tentatives réellement tentées: $armed" }
+        check(sim.attempts == SxbReconnectPolicy.MAX_RETRIES)
+        check(sim.decisions.last() == SxbReconnectPolicy.Decision.GIVE_UP)
+    }
+
+    checkCase("un retour du réseau absorbé par un moteur périmé n'est pas perdu") {
+        val sim = ReconnectSim()
+        sim.airplaneModeOn()
+        // Le moteur précédent n'a pas encore fini de se démonter.
+        sim.dispatchInFlight = true
+        sim.advance(60_000)
+        sim.airplaneModeOff()
+        check(sim.decisions.last() == SxbReconnectPolicy.Decision.DEBOUNCE) {
+            "Jamais deux tentatives simultanées sur le même TUN"
+        }
+        check(sim.awaitingNetwork) { "La reprise reste due tant qu'elle n'a pas démarré" }
+        // Filet de sécurité du service : le dispatch périmé se termine.
+        sim.dispatchInFlight = false
+        sim.reevaluate()
+        check(sim.decisions.last() == SxbReconnectPolicy.Decision.RESUME)
+        sim.advance(sim.pendingDelayMs)
+        sim.fireScheduled(succeeds = true)
+        check(sim.connected && !sim.awaitingNetwork)
+    }
+
+    checkCase("mode avion de 10 secondes : le tunnel repart, compteur intact") {
+        val sim = ReconnectSim()
+        sim.airplaneModeOn()
+        check(sim.failedAttempts == 0) { "Une coupure ne doit rien consommer" }
+        check(!sim.attemptScheduled) { "Aucune minuterie ne doit être armée sans réseau" }
+        sim.advance(10_000)
+        sim.airplaneModeOff()
+        check(sim.decisions.last() == SxbReconnectPolicy.Decision.RESUME)
+        sim.advance(sim.pendingDelayMs)
+        sim.fireScheduled(succeeds = true)
+        check(sim.connected)
+        check(sim.failedAttempts == 0)
+    }
+
+    checkCase("mode avion de 10 minutes : aucun réveil, reprise au retour") {
+        val sim = ReconnectSim()
+        sim.airplaneModeOn()
+        // Dix minutes d'attente PURE : pas une seule minuterie, pas une seule
+        // tentative. C'est ce que l'ancienne politique ne savait pas faire —
+        // elle abandonnait définitivement au bout d'une cinquantaine de secondes.
+        for (minute in 1..10) {
+            sim.advance(60_000)
+            check(!sim.attemptScheduled) { "Aucun réveil radio pendant l'attente" }
+            check(sim.failedAttempts == 0) { "Aucune tentative consommée à la minute $minute" }
+            check(SxbReconnectPolicy.Decision.GIVE_UP !in sim.decisions) { "Une coupure longue ne doit pas abandonner" }
+        }
+        sim.airplaneModeOff()
+        check(sim.decisions.last() == SxbReconnectPolicy.Decision.RESUME)
+        sim.advance(sim.pendingDelayMs)
+        sim.fireScheduled(succeeds = true)
+        check(sim.connected && sim.failedAttempts == 0)
+    }
+
+    checkCase("bascule Wi-Fi → données mobiles : une seule reprise, pas deux") {
+        val sim = ReconnectSim()
+        // Android annonce d'abord la nouvelle interface, puis retire l'ancienne.
+        sim.networkAppeared()
+        check(sim.decisions.last() == SxbReconnectPolicy.Decision.IGNORE) { "Le tunnel debout n'est pas coupé" }
+        sim.networkDisappeared(stillAvailable = true)
+        check(sim.attemptScheduled && sim.decisions.last() == SxbReconnectPolicy.Decision.RETRY)
+        // Les rappels suivants de la même bascule sont absorbés.
+        sim.networkAppeared()
+        check(sim.decisions.last() == SxbReconnectPolicy.Decision.DEBOUNCE)
+        sim.advance(sim.pendingDelayMs)
+        sim.fireScheduled(succeeds = true)
+        check(sim.connected)
+        check(sim.attempts == 1) { "Une bascule ne doit produire qu'une tentative: ${sim.attempts}" }
+    }
+
+    checkCase("le recul est progressif, borné, et jamais une boucle serrée") {
+        val retries = (1..SxbReconnectPolicy.MAX_RETRIES).map { SxbReconnectPolicy.retryDelayMs(it) }
+        check(retries == listOf(5_000L, 10_000L, 20_000L, 40_000L, 60_000L)) { "Échelle inattendue: $retries" }
+        check(retries.sum() >= 120_000L) { "Une panne serveur d'une minute ne doit pas suffire à abandonner" }
+        for (attempt in 1..40) {
+            val delay = SxbReconnectPolicy.retryDelayMs(attempt)
+            check(delay >= SxbReconnectPolicy.BASE_RETRY_DELAY_MS) { "Pas de martèlement" }
+            check(delay <= SxbReconnectPolicy.MAX_RETRY_DELAY_MS) { "Le recul doit rester borné" }
+        }
+        val resumes = (0..4).map { SxbReconnectPolicy.resumeDelayMs(it) }
+        check(resumes == listOf(2_000L, 4_000L, 8_000L, 16_000L, 30_000L)) { "Échelle inattendue: $resumes" }
+        // La première reprise doit rester imperceptible pour l'utilisateur qui
+        // vient de quitter le mode avion, tout en laissant la pile Android finir
+        // son association (DHCP, DNS, validation).
+        check(SxbReconnectPolicy.resumeDelayMs(0) in 1_000L..3_000L)
+        for (streak in 0..40) {
+            val delay = SxbReconnectPolicy.resumeDelayMs(streak)
+            check(delay >= SxbReconnectPolicy.BASE_RESUME_DELAY_MS)
+            check(delay <= SxbReconnectPolicy.MAX_RESUME_DELAY_MS)
+        }
+    }
+
+    checkCase("mode avion de 10 secondes : le tunnel repart, compteur intact") {
+        val sim = ReconnectSim()
+        sim.airplaneModeOn()
+        check(sim.failedAttempts == 0) { "Une coupure ne doit rien consommer" }
+        check(!sim.attemptScheduled) { "Aucune minuterie ne doit être armée sans réseau" }
+        sim.advance(10_000)
+        sim.airplaneModeOff()
+        check(sim.decisions.last() == SxbReconnectPolicy.Decision.RESUME)
+        sim.fireScheduled(succeeds = true)
+        check(sim.connected)
+        check(sim.failedAttempts == 0)
+    }
+
+    checkCase("mode avion de 10 minutes : aucun réveil, reprise au retour") {
+        val sim = ReconnectSim()
+        sim.airplaneModeOn()
+        // Dix minutes d'attente PURE : pas une seule minuterie, pas une seule
+        // tentative. C'est ce que l'ancienne politique ne savait pas faire —
+        // elle abandonnait définitivement au bout d'une cinquantaine de secondes.
+        for (minute in 1..10) {
+            sim.advance(60_000)
+            check(!sim.attemptScheduled) { "Aucun réveil radio pendant l'attente" }
+            check(sim.failedAttempts == 0) { "Aucune tentative consommée à la minute $minute" }
+            check(SxbReconnectPolicy.Decision.GIVE_UP !in sim.decisions) { "Une coupure longue ne doit pas abandonner" }
+        }
+        sim.airplaneModeOff()
+        check(sim.decisions.last() == SxbReconnectPolicy.Decision.RESUME)
+        sim.fireScheduled(succeeds = true)
+        check(sim.connected && sim.failedAttempts == 0)
+    }
+
+    checkCase("bascule Wi-Fi → données mobiles : une seule reprise, pas deux") {
+        val sim = ReconnectSim()
+        // Android annonce d'abord la nouvelle interface, puis retire l'ancienne.
+        sim.networkAppeared()
+        check(sim.decisions.last() == SxbReconnectPolicy.Decision.IGNORE) { "Le tunnel debout n'est pas coupé" }
+        sim.networkDisappeared(stillAvailable = true)
+        check(sim.attemptScheduled && sim.decisions.last() == SxbReconnectPolicy.Decision.RETRY)
+        // Les rappels suivants de la même bascule sont absorbés.
+        sim.networkAppeared()
+        check(sim.decisions.last() == SxbReconnectPolicy.Decision.DEBOUNCE)
+        sim.advance(SxbReconnectPolicy.retryDelayMs(1))
+        sim.fireScheduled(succeeds = true)
+        check(sim.connected)
+        check(sim.attempts == 1) { "Une bascule ne doit produire qu'une tentative: ${sim.attempts}" }
+    }
+
+    checkCase("un réseau qui oscille reste borné et ne martèle pas") {
+        val sim = ReconnectSim()
+        sim.airplaneModeOn()
+        var previous = 0L
+        for (flap in 0 until 6) {
+            sim.advance(SxbReconnectPolicy.MIN_EVENT_INTERVAL_MS)
+            sim.airplaneModeOff()
+            check(sim.decisions.last() == SxbReconnectPolicy.Decision.RESUME)
+            check(sim.pendingDelayMs >= previous) { "Le recul des reprises doit croître" }
+            previous = sim.pendingDelayMs
+            check(sim.pendingDelayMs <= SxbReconnectPolicy.MAX_RESUME_DELAY_MS)
+            sim.advance(sim.pendingDelayMs)
+            sim.fireScheduled(succeeds = false)
+            sim.airplaneModeOn()
+        }
+        // Chaque reprise remet le compteur d'échecs réels à zéro : l'abandon ne
+        // peut pas venir d'une ligne instable, seulement d'un serveur qui refuse.
+        check(SxbReconnectPolicy.Decision.GIVE_UP !in sim.decisions)
+    }
+
     println("PASS $cases stability policy cases")
 }

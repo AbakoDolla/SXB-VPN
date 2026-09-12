@@ -184,6 +184,10 @@ object SxbSecureLogger {
         RECONNECT_GIVEUP        ("E24"),
         RECONNECT_RESET         ("E25"),
         RECONNECT_SKIP          ("E26"),
+        /** Aucun réseau : reconnexion suspendue, aucune tentative consommée. */
+        RECONNECT_WAIT_NETWORK  ("E27"),
+        /** Un réseau est revenu : reprise armée sans intervention utilisateur. */
+        RECONNECT_NETWORK_BACK  ("E28"),
         // Config
         CONFIG_LOADED           ("E30"),
         CONFIG_WRITE_FAILED     ("E31"),

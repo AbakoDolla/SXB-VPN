@@ -45,7 +45,9 @@
  * FEATURES
  * ═══════════════════════════════════════════════════════════════════
  *  ✅ Kill Switch    — coupe tout le trafic si VPN déconnecté
- *  ✅ Auto-Reconnect — délais fixes, 3 tentatives
+ *  ✅ Auto-Reconnect — recul progressif borné, tentatives réservées aux échecs
+ *                     réels : sans réseau on attend `onAvailable` (voir
+ *                     SxbReconnectPolicy / AutoReconnectManager)
  *  ✅ TrafficStats   — Android TrafficStats (valeurs réelles)
  *  ✅ Notifications  — upload/download en temps réel
  *  ✅ Foreground     — type `specialUse` (exigé pour les VPN sur Android 14+)
@@ -103,6 +105,7 @@ import java.util.HashSet
 import java.util.Properties
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.ConcurrentHashMap
 import java.util.Locale
 import javax.net.ssl.SSLParameters
 import javax.net.ssl.SSLSocket
@@ -883,7 +886,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
     @Volatile private var tunInterfaceName: String? = null
     private var isSshRelay: Boolean = false
     private val protocolIdle = Object()
-    private var activeDispatches = 0
+    /** Lu sans verrou par `dispatchInFlight()` : jamais depuis le thread principal sous `synchronized`. */
+    @Volatile private var activeDispatches = 0
     private var accessObserver: SxbAccessObserver? = null
 
     // Managers
@@ -907,6 +911,16 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private var notifThread: Thread? = null
     private var connectionWatchdog: Thread? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    /** Libération asynchrone d'un tunnel périmé — unique, et rejointe avant toute tentative. */
+    @Volatile private var tunnelReleaseThread: Thread? = null
+    /**
+     * Réseaux capables d'Internet actuellement annoncés par le système.
+     *
+     * Android n'expose pas « y a-t-il encore une connectivité ? » depuis un
+     * `onLost` : il faut le déduire. Sans ce décompte, une bascule
+     * Wi-Fi → données mobiles serait confondue avec un mode avion.
+     */
+    private val availableNetworks: MutableSet<Network> = ConcurrentHashMap.newKeySet()
     private val cleanupStarted = AtomicBoolean(false)
     /** ⚡ Fenêtre glissante de limitation des journaux diffusés (voir broadcastLog). */
     private val logRateWindowStart = AtomicLong(0L)
@@ -1085,9 +1099,21 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 if (running.get() && currentConfig.isNotEmpty() && SxbPrivacyPolicy.vpnAllowed(this)) {
                     broadcastLog("[SXB_DEBUG] AUTO_RECONNECT_TRIGGERED")
                     broadcastLog("[SXB] Auto-reconnexion en cours...")
-                    val json = JSONObject(currentConfig)
-                    // Dispatch handles a concurrently persisted denial as a cancelled attempt.
-                    dispatchProtocol(currentConfig, json.optString("protocol", "").lowercase())
+                    // Une coupure de radio ne tue pas toujours le moteur : il
+                    // peut encore détenir le TUN. Le démonter et attendre la
+                    // fin de son dispatch est la seule façon de garantir une
+                    // seule instance libbox par tentative.
+                    if (drainTunnelBeforeReconnect()) {
+                        val json = JSONObject(currentConfig)
+                        // Dispatch handles a concurrently persisted denial as a cancelled attempt.
+                        dispatchProtocol(currentConfig, json.optString("protocol", "").lowercase())
+                    } else {
+                        // La place n'est pas libre : ne jamais démarrer un second
+                        // moteur. On reprogramme, la tentative suivante trouvera
+                        // le dispatch précédent terminé.
+                        broadcastLog("[SXB_DEBUG] RECONNECT_ABORTED reason=previous_dispatch_alive")
+                        autoReconnect.onDisconnected()
+                    }
                 }
             },
             onGiveUp = {
@@ -1095,11 +1121,17 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     // B10 — L'abandon des reconnexions ne doit pas rendre le réseau
                     // en clair : on maintient le service et l'interface de blocage
                     // jusqu'à une déconnexion explicite de l'utilisateur.
+                    // La reconnexion reste ARMÉE : le service survit, donc un
+                    // retour du réseau relancera le tunnel sans intervention.
                     broadcastLog("[SXB] ⛔ Reconnexion impossible — Kill Switch : trafic maintenu bloqué")
                     broadcastStatus("error")
                     setCurrentState("error")
                     installKillSwitchBlackhole("reconnexions épuisées")
                 } else {
+                    // Le service s'arrête : plus rien ne doit être relancé après
+                    // ce point, sous peine de monter un tunnel sur un service en
+                    // cours de destruction.
+                    autoReconnect.markStopped("giveup_stop_service")
                     broadcastLog("[SXB] ❌ Auto-reconnect échoué — arrêt")
                     broadcastStatus("error")
                     setCurrentState("error")
@@ -1107,12 +1139,20 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 }
             },
             onLog = { broadcastLog(it) },
+            hasNetwork = { hasUsableNetwork() },
+            isTunnelUp = { currentState == "connected" },
+            isDispatchInFlight = { dispatchInFlight() },
+            elapsedMs = { SystemClock.elapsedRealtime() },
         )
         registerNetworkCallback()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            // Arrêt volontaire : on désarme AVANT le nettoyage pour qu'aucun
+            // événement réseau ne puisse relancer un tunnel que l'utilisateur
+            // vient de couper.
+            if (::autoReconnect.isInitialized) autoReconnect.markStopped("user_stop")
             SxbAccessControl.cancelStarts(this)
             cleanup()
             return START_NOT_STICKY
@@ -1350,6 +1390,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
             synchronized(protocolIdle) {
                 activeDispatches--
                 protocolIdle.notifyAll()
+            }
+            // Filet de sécurité : si l'unique événement « réseau revenu » est
+            // arrivé pendant qu'une tentative périmée occupait encore le moteur,
+            // il a été absorbé. La place est désormais libre : réévaluer ici est
+            // le seul moyen de ne pas perdre ce retour du réseau.
+            if (::autoReconnect.isInitialized && autoReconnect.isAwaitingNetwork() && !dispatchInFlight()) {
+                autoReconnect.reevaluate()
             }
         }
     }
@@ -2219,9 +2266,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // startSingBoxTunnel appelle déjà cleanup(). Un double appel provoquait un
         // stopForeground + stopSelf() en double, laissant l'UI dans un état incohérent.
         // Une erreur de schéma est permanente pour cette configuration :
-        // relancer automatiquement trois fois ne peut pas la corriger et masque
+        // relancer automatiquement ne peut pas la corriger et masque
         // la cause dans les logs. Les erreurs réseau/auth restent éligibles.
-        if (code !in PERMANENT_ERROR_CODES && ::autoReconnect.isInitialized && autoReconnect.isEnabled() && running.get()) {
+        // Le désarmement est explicite : sans lui, le retour du réseau
+        // relancerait en boucle une configuration que le moteur a refusée.
+        if (code in PERMANENT_ERROR_CODES && ::autoReconnect.isInitialized) {
+            autoReconnect.markStopped(code)
+        } else if (::autoReconnect.isInitialized && autoReconnect.isEnabled() && running.get()) {
             autoReconnect.onDisconnected()
         }
         // Pas de cleanup() ici : géré exclusivement dans le bloc finally du tunnel.
@@ -2257,18 +2308,41 @@ class SxbVpnService : VpnService(), PlatformInterface {
             .build()
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
+                // Un `Network` est un identifiant opaque : le mémoriser permet de
+                // savoir, sur `onLost`, s'il RESTE une connectivité (bascule
+                // Wi-Fi ↔ données mobiles) ou si la radio est totalement coupée
+                // (mode avion). Les deux cas n'appellent pas la même réaction.
+                availableNetworks.add(network)
                 Log.i("SXB_DEBUG", "[SXB_DEBUG] NETWORK_AVAILABLE")
-                broadcastLog("[SXB_DEBUG] NETWORK_AVAILABLE")
+                broadcastLog("[SXB_DEBUG] NETWORK_AVAILABLE count=${availableNetworks.size}")
+                // Cœur du correctif : le retour du réseau RELANCE la connexion
+                // quand l'utilisateur avait demandé le VPN. Sans cela, un simple
+                // aller-retour en mode avion laissait le tunnel définitivement à
+                // terre. La décision (reprendre / absorber / ignorer) appartient
+                // à SxbReconnectPolicy, qui absorbe les rafales d'événements.
+                autoReconnect.onNetworkAvailable()
             }
 
             override fun onLost(network: Network) {
+                availableNetworks.remove(network)
+                val stillAvailable = availableNetworks.isNotEmpty()
                 Log.w("SXB_DEBUG", "[SXB_DEBUG] NETWORK_LOST")
-                broadcastLog("[SXB_DEBUG] NETWORK_LOST")
+                broadcastLog("[SXB_DEBUG] NETWORK_LOST still_available=$stillAvailable")
                 broadcastLog("[SXB_DEBUG] NETWORK_CHANGE_BLOCKED reason=network_callback_only")
                 // Ne pas appeler bindProcessToNetwork ni basculer de transport :
                 // Android/VpnService garde la sélection réseau courante.
+                autoReconnect.onNetworkLost(stillAvailable)
                 if (running.get() && currentState == "connected" && autoReconnect.isEnabled()) {
                     broadcastLog("[SXB_DEBUG] AUTO_RECONNECT_TRIGGERED reason=NETWORK_LOST")
+                    if (!stillAvailable) {
+                        // Plus aucune radio : sing-box ne meurt pas forcément et
+                        // resterait propriétaire du TUN pendant toute l'attente.
+                        // Le démonter maintenant réinstalle aussi le blackhole
+                        // Kill Switch (B10), sans quoi le trafic repartirait en
+                        // clair à la seconde même où le réseau revient.
+                        releaseTunnelForReconnect("network_lost")
+                        runCatching { updateNotification("SXB VPN — En attente du réseau...") }
+                    }
                     autoReconnect.onDisconnected()
                 }
             }
@@ -2278,6 +2352,101 @@ class SxbVpnService : VpnService(), PlatformInterface {
             networkCallback = callback
         }.onFailure {
             Log.w("SXB_DEBUG", "[SXB_DEBUG] NETWORK_CALLBACK_REGISTER_FAILED")
+        }
+        seedNetworkAvailability(manager)
+    }
+
+    /**
+     * Amorce l'état réseau connu du gestionnaire de reconnexion.
+     *
+     * `registerNetworkCallback` rejoue normalement `onAvailable` pour chaque
+     * réseau déjà présent, mais deux cas doivent être couverts explicitement :
+     * la fenêtre de quelques millisecondes avant ce rejeu, et l'échec pur et
+     * simple de l'enregistrement. Sans ce repli, `networkUp` resterait faux et
+     * la reconnexion attendrait indéfiniment un événement qui n'arriverait
+     * jamais — exactement la panne que ce correctif élimine.
+     */
+    private fun seedNetworkAvailability(manager: ConnectivityManager) {
+        val active = runCatching { manager.activeNetwork }.getOrNull()
+        val hasInternet = runCatching {
+            active != null && manager.getNetworkCapabilities(active)
+                ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+        }.getOrDefault(false)
+        if (active != null && hasInternet) availableNetworks.add(active)
+    }
+
+    /**
+     * Y a-t-il une connectivité utilisable ?
+     *
+     * Le décompte des réseaux annoncés par le rappel système est la source la
+     * plus fidèle : il est mis à jour au moment exact de l'événement. Si aucun
+     * rappel n'a pu être enregistré, on interroge Android directement plutôt
+     * que de se fier à une valeur qui ne serait plus jamais rafraîchie.
+     */
+    private fun hasUsableNetwork(): Boolean {
+        if (networkCallback != null) return availableNetworks.isNotEmpty()
+        val manager = getSystemService(ConnectivityManager::class.java) ?: return true
+        return runCatching {
+            val active = manager.activeNetwork ?: return@runCatching false
+            manager.getNetworkCapabilities(active)
+                ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+        }.getOrDefault(true)
+    }
+
+    /**
+     * Une tentative de connexion est-elle en cours d'exécution ?
+     *
+     * Lecture volatile sans verrou : appelée depuis le thread principal par le
+     * rappel réseau, elle ne doit jamais attendre le moniteur `protocolIdle`.
+     */
+    private fun dispatchInFlight(): Boolean = activeDispatches > 0
+
+    /**
+     * Démonte le tunnel encore en place, hors du thread appelant.
+     *
+     * Un `NetworkCallback` s'exécute sur le thread principal : fermer le moteur
+     * et les sockets depuis ce thread exposerait l'application à un ANR. Le
+     * thread créé est mémorisé et unique : `drainTunnelBeforeReconnect()` le
+     * rejoint avant toute nouvelle tentative, sinon une libération en retard
+     * fermerait le moteur de la tentative suivante.
+     */
+    @Synchronized
+    private fun releaseTunnelForReconnect(reason: String) {
+        if (tunnelReleaseThread?.isAlive == true) return
+        if (boxService == null && sshSession == null && tunPfd == null) return
+        broadcastLog("[SXB_DEBUG] RECONNECT_RELEASE_TUNNEL reason=$reason")
+        tunnelReleaseThread = Thread({
+            // Un arrêt volontaire a pu survenir entre-temps : ne pas ressusciter
+            // l'interface de blocage ni republier « connecting » après un arrêt.
+            if (running.get() && !cleanupStarted.get()) {
+                runCatching { cleanup(stopService = false, keepRunning = true) }
+            }
+        }, "SXB-ReconnectRelease").apply { isDaemon = true; start() }
+    }
+
+    /**
+     * Prépare une tentative de reconnexion : ferme le tunnel précédent et
+     * attend que son dispatch soit réellement terminé.
+     *
+     * Retourne `false` si la place n'est pas libre. L'appelant NE DOIT PAS
+     * démarrer de tentative dans ce cas : deux instances libbox se disputeraient
+     * le même TUN, et le `finally` de l'ancienne fermerait le moteur de la
+     * nouvelle.
+     */
+    private fun drainTunnelBeforeReconnect(): Boolean {
+        runCatching { tunnelReleaseThread?.join(10_000) }
+        if (boxService != null || sshSession != null || tunPfd != null) {
+            broadcastLog("[SXB_DEBUG] RECONNECT_RELEASE_TUNNEL reason=before_attempt")
+            runCatching { cleanup(stopService = false, keepRunning = true) }
+        }
+        val deadline = SystemClock.elapsedRealtime() + 10_000
+        synchronized(protocolIdle) {
+            while (activeDispatches > 0) {
+                val remaining = deadline - SystemClock.elapsedRealtime()
+                if (remaining <= 0) break
+                try { protocolIdle.wait(remaining) } catch (_: InterruptedException) { break }
+            }
+            return activeDispatches == 0
         }
     }
 
@@ -4727,6 +4896,11 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 runCatching { manager?.unregisterNetworkCallback(callback) }
             }
             networkCallback = null
+            // Plus de rappel système : le décompte n'est plus tenu à jour et ne
+            // doit pas laisser croire qu'un réseau reste disponible.
+            availableNetworks.clear()
+            // Le service disparaît : rien ne doit survivre pour le relancer.
+            autoReconnect.disable()
         }
 
         stopDnstt()
