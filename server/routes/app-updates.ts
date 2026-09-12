@@ -12,6 +12,7 @@ import {
   clearPublishedAppUpdate,
 } from "../services/app-update";
 import { sendAppUpdatePush } from "../services/fcm";
+import { readLatestBuildManifest } from "../services/app-build-manifest";
 
 const router = Router();
 const roleSchema = z.enum(DISTRIBUTABLE_ROLES);
@@ -60,6 +61,29 @@ router.get("/current", requireAuth, async (req: AuthenticatedRequest, res: Respo
   } catch (err: any) {
     return res.status(503).json({ error: "DB_UNAVAILABLE", message: err.message || "Version indisponible" });
   }
+});
+
+/**
+ * GET /latest-build — la dernière APK réellement déployée.
+ *
+ * Sert à PROPOSER une publication, jamais à en déclencher une : le choix des
+ * appareils, des rôles et du caractère obligatoire reste entièrement manuel.
+ * Évite de ressaisir à la main un versionCode et 64 caractères de condensat,
+ * dont la moindre faute ne se voit qu'une fois la mise à jour refusée par tous
+ * les appareils.
+ */
+router.get("/latest-build", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  if (!isSuperAdmin(req)) {
+    return res.status(403).json({ error: "SUPER_ADMIN_ONLY", message: "Réservé au SUPER_ADMIN" });
+  }
+  const build = readLatestBuildManifest();
+  const published = await readPublishedAppUpdate().catch(() => null);
+  return res.json({
+    build,
+    // Vrai quand une build plus récente que la publication en cours attend
+    // d'être distribuée — y compris lorsque plus rien n'est publié.
+    newerThanPublished: Boolean(build && (!published || build.versionCode > published.versionCode)),
+  });
 });
 
 router.post("/publish", requireAuth, async (req: AuthenticatedRequest, res: Response) => {

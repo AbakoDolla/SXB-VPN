@@ -692,7 +692,7 @@ jobs:
           node --input-type=module - << 'NODEJS_EOF'
           import assert from 'node:assert/strict';
           import { createHash } from 'node:crypto';
-          import { readFileSync, writeFileSync } from 'node:fs';
+          import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
           import { createRequire } from 'node:module';
           import { inspectNativeArchive, inspectEngineData } from './scripts/android-artifact.mjs';
           const require = createRequire(import.meta.url);
@@ -717,6 +717,14 @@ jobs:
             publicationRequested: process.env.GITHUB_REF === 'refs/heads/main',
           };
           writeFileSync('build/report/validation.json', JSON.stringify(report, null, 2) + '\n');
+          // Le nom de version affiché à l'utilisateur n'est nulle part ailleurs :
+          // parseBaseline ne rend que le versionCode. Le tableau de bord en a
+          // besoin pour proposer cette build sans qu'on la retape à la main.
+          const badging = readFileSync('build/report/apk-badging.txt', 'utf8');
+          const versionName = badging.match(/versionName='([^']+)'/)?.[1];
+          assert.ok(versionName, 'versionName absent du manifeste APK');
+          appendFileSync(process.env.GITHUB_ENV,
+            `SXB_APK_VERSION_NAME=${versionName}\nSXB_APK_SHA256=${report.apkSha256}\n`);
           NODEJS_EOF
           echo "✅ APK alignée, signée v1/v2, manifeste et ABI validés : $(stat -c%s "$APK") octets"
           sha256sum "$APK"
@@ -816,6 +824,39 @@ jobs:
             sudo mkdir -p /var/www/sxb-vpn/dist/download
             sudo install -m 0644 /tmp/sxb-vpn.apk /var/www/sxb-vpn/dist/download/.sxbvpn-latest.apk.tmp
             sudo mv -f /var/www/sxb-vpn/dist/download/.sxbvpn-latest.apk.tmp /var/www/sxb-vpn/dist/download/sxbvpn-latest.apk
+
+            # ── Manifeste de la build, pour le tableau de bord ──────────────────
+            #
+            # Sans lui, publier une mise à jour obligeait à ressaisir à la main le
+            # versionCode, l'URL et les 64 caractères du SHA-256. Une seule faute
+            # de frappe sur le condensat et CHAQUE appareil refuse l'installation
+            # (integrity_mismatch), après avoir tout de même téléchargé 62 Mo ;
+            # une faute sur le versionCode et soit personne ne voit la mise à
+            # jour, soit Android la refuse comme un retour en arrière.
+            #
+            # Le condensat et la taille sont relus SUR LE FICHIER DÉPLOYÉ, pas
+            # recopiés depuis la machine de build : ce qui est annoncé est donc
+            # exactement ce que les appareils vont télécharger.
+            #
+            # /var/www/apk survit au nettoyage ci-dessous (seuls les .apk y sont
+            # supprimés), et n'est pas servi publiquement.
+            sudo mkdir -p /var/www/apk
+            APK_PATH=/var/www/sxb-vpn/dist/download/sxbvpn-latest.apk
+            sudo tee /var/www/apk/latest-build.json >/dev/null <<MANIFEST_EOF
+            {
+              "versionCode": ${{ env.SXB_ANDROID_VERSION_CODE }},
+              "versionName": "${{ env.SXB_APK_VERSION_NAME }}",
+              "apkUrl": "https://vpnsxb.afrihall.com/download/sxbvpn-latest.apk",
+              "apkSha256": "$(sudo sha256sum "$APK_PATH" | cut -d' ' -f1)",
+              "sizeBytes": $(sudo stat -c%s "$APK_PATH"),
+              "releaseTag": "apk-${{ steps.relno.outputs.n }}",
+              "releaseUrl": "https://github.com/${{ github.repository }}/releases/download/apk-${{ steps.relno.outputs.n }}/sxb-vpn.apk",
+              "commit": "${{ github.sha }}",
+              "builtAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            }
+            MANIFEST_EOF
+            sudo chmod 0644 /var/www/apk/latest-build.json
+            echo "📝 Manifeste de build : $(sudo cat /var/www/apk/latest-build.json | tr -d '\n' | cut -c1-160)…"
 
             # Purge des archives par build.
             #

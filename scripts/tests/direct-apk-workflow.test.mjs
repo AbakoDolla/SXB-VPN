@@ -49,6 +49,44 @@ test('APK candidates compare the existing identity and inspect native binaries b
   assert.doesNotMatch(script, /status: 'published'/);
 });
 
+test('the deployed APK offers itself to the dashboard, hashed from the file devices will download', () => {
+  // Publier une mise à jour exigeait de recopier à la main le versionCode,
+  // l'URL et 64 caractères de condensat depuis le journal CI. Une faute sur le
+  // condensat ne se voit qu'après que CHAQUE appareil a téléchargé 62 Mo puis
+  // refusé l'installation ; une faute sur le versionCode rend la mise à jour
+  // soit invisible, soit refusée par Android comme un retour en arrière.
+  const install = job.steps.find(step => /Installer APK dans dossier distribution VPS/.test(step.name));
+  assert.ok(install, 'étape de déploiement introuvable');
+  const script = install.with.script;
+
+  // Le manifeste vit hors du chemin public et survit au nettoyage des archives.
+  assert.match(script, /\/var\/www\/apk\/latest-build\.json/);
+  assert.doesNotMatch(script, /\/var\/www\/sxb-vpn\/dist\/download\/latest-build\.json/);
+
+  // Cœur de la garantie : condensat et taille sont relus SUR LE FICHIER DÉPLOYÉ.
+  // Les recopier depuis la machine de build laisserait passer une corruption
+  // survenue pendant le transfert, et c'est précisément ce que le condensat
+  // est censé détecter.
+  const manifest = script.slice(script.indexOf('<<MANIFEST_EOF'), script.lastIndexOf('MANIFEST_EOF'));
+  assert.match(manifest, /sha256sum "\$APK_PATH"/);
+  assert.match(manifest, /stat -c%s "\$APK_PATH"/);
+  assert.ok(!/apkSha256":\s*"\$\{\{/.test(manifest), 'le condensat ne doit pas venir de la machine de build');
+
+  // Le versionCode annoncé est celui que la validation a vérifié dans l'APK.
+  assert.match(script, /"versionCode": \$\{\{ env\.SXB_ANDROID_VERSION_CODE \}\}/);
+  assert.match(script, /"versionName": "\$\{\{ env\.SXB_APK_VERSION_NAME \}\}"/);
+
+  // Ce nom de version n'existe nulle part ailleurs : parseBaseline ne rend que
+  // le versionCode. Il doit donc être extrait du manifeste APK et exporté.
+  const validation = job.steps.find(step => /Valider APK/.test(step.name));
+  assert.match(validation.run, /versionName='\(\[\^'\]\+\)'/);
+  assert.match(validation.run, /SXB_APK_VERSION_NAME=\$\{versionName\}/);
+
+  // L'URL annoncée est le chemin public réellement servi, pas l'archive de
+  // diagnostic /var/www/apk — qui rendait jadis la page HTML du tableau de bord.
+  assert.match(script, /"apkUrl": "https:\/\/vpnsxb\.afrihall\.com\/download\/sxbvpn-latest\.apk"/);
+});
+
 test('both Android channels run the same production Kotlin policy harnesses before signing', () => {
   const nativeGate = job.steps.find(step => step.run?.includes('run-android-policy-gates.sh'));
   assert.ok(nativeGate);

@@ -1,5 +1,10 @@
 import { randomUUID } from "crypto";
 import { prisma } from "../database";
+import { normalizeApkSha256 } from "./apk-digest";
+
+// Ré-export : la règle vit dans `apk-digest` pour rester lisible sans la base
+// de données, mais ce module reste sa porte d'entrée historique.
+export { normalizeApkSha256 };
 
 export const APP_UPDATE_SETTING_KEY = "sxb.app-update.v1";
 export const DISTRIBUTABLE_ROLES = ["OWNER", "SUPER_ADMIN", "ADMIN", "SUPPORT", "RESELLER"] as const;
@@ -19,12 +24,6 @@ export interface PublishedAppUpdate {
   targetDeviceIds: string[];
   publishedAt: string;
   updatedAt: string;
-}
-
-/** Un condensat SHA-256 est exactement 64 caractères hexadécimaux. */
-export function normalizeApkSha256(value: unknown): string {
-  const raw = String(value ?? "").trim().replace(/^sha256:/i, "").replace(/[:\s]/g, "");
-  return /^[0-9a-f]{64}$/i.test(raw) ? raw.toLowerCase() : "";
 }
 
 function normalize(value: unknown): PublishedAppUpdate | null {
