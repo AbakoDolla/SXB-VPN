@@ -406,6 +406,17 @@ export default function DashboardView({
         <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-widest mb-3">
           {isReseller ? t("operations.common.myClients") : t("operations.dashboard.network")}
         </p>
+        {/* Ces indicateurs décrivent l'activité COMMERCIALE seule. Les essais
+            gratuits étaient additionnés ici, ce qui gonflait les comptes, le
+            trafic et les connexions avec des accès offerts : l'exploitant
+            lisait une base de clients qui n'était pas la sienne. Ils ont leurs
+            propres compteurs dans « Essais gratuits ». On l'annonce, plutôt que
+            de laisser croire à un total. */}
+        {stats?.freeTrialExcluded && (
+          <p className="-mt-2 mb-3 text-[11px] text-gray-500">
+            {t("operations.dashboard.freeTrialExcluded")}
+          </p>
+        )}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           <StatCard label={isReseller ? t("operations.common.myClients") : t("operations.dashboard.totalClients")} value={formatNumber(totalClients)} sub={t("operations.dashboard.registered")} icon={Users} color="text-cyan-400" accent="bg-cyan-500/10" onClick={() => onNavigate('clients')} />
           {/* CONNECTÉS — connexions RÉELLEMENT observées, plus le nombre de

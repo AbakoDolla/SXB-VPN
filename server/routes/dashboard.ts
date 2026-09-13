@@ -19,6 +19,11 @@ import {
   porteeClientsRevendeur,
   resumerAccesRevendeur,
 } from "../services/reseller-access";
+import {
+  etFiltres,
+  exclureIdentifiants,
+  porteeEssaiDeploye,
+} from "../services/free-trial-marks";
 
 const router = Router();
 const ROLES_QUOTA_REVENDEURS = new Set(["OWNER", "SUPER_ADMIN", "ADMIN"]);
@@ -105,8 +110,32 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
     const ficheRevendeur = isReseller ? await chargerFicheRevendeur(prisma, req.user?.userId) : null;
     const ownScope = isReseller ? (porteeClientsRevendeur(ficheRevendeur) as any) : {};
     const resellerStealthWhere = stealthWhere(requesterIsOwner);
+    // ── Les essais gratuits ne comptent PAS dans les indicateurs principaux ──
+    //
+    // Ce tableau de bord décrit l'activité COMMERCIALE. Un essai gratuit n'en
+    // fait pas partie : il a ses propres compteurs dans « Essais gratuits », et
+    // les additionner ici gonflait le nombre de comptes, le trafic et les
+    // connexions avec des accès offerts. L'exploitant lisait donc une base de
+    // clients et une consommation qui n'étaient pas les siennes.
+    //
+    // On retranche `clientsEssaiUniquement`, c'est-à-dire les comptes dont TOUT
+    // l'accès vient d'un essai. Un essayeur devenu client payant reste compté :
+    // c'est un vrai client, et le faire disparaître d'ici serait une seconde
+    // erreur, symétrique de la première.
+    //
+    // `exploitable` vaut faux quand la fonctionnalité d'essai n'est pas déployée
+    // sur cette base : rien n'est alors retranché, et les chiffres restent ceux
+    // d'avant plutôt que de rétrécir sur un calcul qui n'a pas abouti.
+    const porteeEssai = prisma ? await porteeEssaiDeploye(prisma) : null;
+    const exclusionEssais = porteeEssai?.exploitable
+      ? exclureIdentifiants("id", porteeEssai.clientsEssaiUniquement)
+      : null;
     if (prisma) {
-      const clientStealthWhere = { ...stealthWhere(requesterIsOwner), ...ownScope };
+      const clientStealthWhere = etFiltres(
+        stealthWhere(requesterIsOwner),
+        Object.keys(ownScope).length ? ownScope : null,
+        exclusionEssais,
+      ) ?? {};
       [activeAccounts, expiredAccounts, activeServers, activeResellers, totalVouchers, redeemedVouchers] = await Promise.all([
         prisma.vpnClient.count({ where: { status: "active", ...clientStealthWhere } }),
         prisma.vpnClient.count({ where: { status: "expired", ...clientStealthWhere } }),
@@ -152,7 +181,13 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
     if (prisma && pseudonymSecret) {
       try {
         connectedNow = await compterConnectes(prisma as any, pseudonymSecret, {
-          porteeClients: isReseller ? (ownScope as Record<string, unknown>) : null,
+          // Même règle que les compteurs ci-dessus : un essai gratuit connecté
+          // n'est pas une connexion commerciale. Il est compté dans « Essais
+          // gratuits », qui affiche ses propres connectés.
+          porteeClients: etFiltres(
+            isReseller ? (ownScope as Record<string, unknown>) : null,
+            exclusionEssais,
+          ) ?? null,
           masquerProprietaire: !requesterIsOwner,
         });
       } catch (presenceError: any) {
@@ -229,6 +264,14 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
       // connecté ». Le drapeau évite à l'interface d'avoir à deviner.
       connectedNow,
       connectedNowMeasured: connectedNow !== null,
+      // Ces indicateurs portent sur l'activité COMMERCIALE seule : les comptes
+      // dont tout l'accès vient d'un essai gratuit en sont retranchés, et ont
+      // leurs propres compteurs dans « Essais gratuits ». Le drapeau permet à
+      // l'écran de l'annoncer plutôt que de laisser croire à un total.
+      freeTrialExcluded: Boolean(porteeEssai?.exploitable),
+      freeTrialAccountsExcluded: porteeEssai?.exploitable
+        ? porteeEssai.clientsEssaiUniquement.length
+        : 0,
       presenceWindowMinutes: PRESENCE_WINDOW_MINUTES,
       presenceHeartbeatMinutes: PRESENCE_HEARTBEAT_MINUTES,
       expiredAccounts,

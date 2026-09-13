@@ -31,6 +31,17 @@ export interface DashboardStats {
    */
   connectedNow?: number | null;
   connectedNowMeasured?: boolean;
+  /**
+   * Vrai quand les essais gratuits ont été retranchés de ces indicateurs.
+   *
+   * Ils y étaient additionnés, ce qui gonflait comptes, trafic et connexions
+   * avec des accès offerts. Ils ont désormais leurs propres compteurs dans
+   * « Essais gratuits ». Le drapeau permet à l'écran de l'annoncer au lieu de
+   * laisser lire un total.
+   */
+  freeTrialExcluded?: boolean;
+  /** Nombre de comptes d'essai retranchés, à titre indicatif. */
+  freeTrialAccountsExcluded?: number;
   /** Fenêtre au-delà de laquelle un silence cesse de valoir présence. */
   presenceWindowMinutes?: number;
   presenceHeartbeatMinutes?: number;

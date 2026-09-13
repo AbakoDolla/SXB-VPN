@@ -676,3 +676,59 @@ test("les comptes activés ont leur propre sous-section, et rien d'un essai ne s
   assert.match(route, /porteeEssaiDeploye/);
   assert.match(route, /exclureIdentifiants\('id', portee\.subscriptionIds\)/);
 });
+
+test("le tableau de bord principal ne compte plus les essais dans ses indicateurs", async () => {
+  // LE DÉFAUT : ces cartes décrivent l'activité COMMERCIALE, mais additionnaient
+  // les essais gratuits. Comptes ouverts, trafic et connexions étaient gonflés
+  // par des accès offerts : l'exploitant lisait une base de clients et une
+  // consommation qui n'étaient pas les siennes, alors même que « Forfaits
+  // Data », « Comptes VPN » et « Appareils » les avaient déjà retranchés.
+  const avant = await api("admin", "GET", "/dashboard/stats");
+  ok(avant);
+  const comptesAvant = avant.body.activeAccounts ?? avant.body.activeUsers;
+  const consommeAvant = BigInt(avant.body.consumedTrafficBytes ?? "0");
+
+  // Un essai complet : inscription, puis déploiement d'un accès de 2 Go.
+  const { demande } = await essaiDeploye({ deviceId: "SXB-TRIAL-DASHBOARD-01", empreinte: "android-id-fixture-dash" });
+  assert.ok(demande.clientId, "l'essai doit avoir créé son compte");
+
+  const apres = await api("admin", "GET", "/dashboard/stats");
+  ok(apres);
+  const comptesApres = apres.body.activeAccounts ?? apres.body.activeUsers;
+
+  // Le compte d'essai n'ajoute RIEN aux indicateurs principaux.
+  assert.equal(comptesApres, comptesAvant,
+    "un essai déployé ne doit pas augmenter le nombre de comptes commerciaux");
+  assert.equal(BigInt(apres.body.consumedTrafficBytes ?? "0"), consommeAvant,
+    "un essai déployé ne doit pas peser sur le trafic commercial");
+
+  // Et l'écran doit pouvoir le DIRE : un total silencieusement amputé se lirait
+  // comme un total.
+  assert.equal(apres.body.freeTrialExcluded, true);
+  assert.ok((apres.body.freeTrialAccountsExcluded ?? 0) >= 1);
+
+  // À l'inverse, la section Essais, elle, le compte.
+  const indicateurs = await api("admin", "GET", "/free-trial/stats/overview");
+  ok(indicateurs);
+  assert.ok(indicateurs.body.deployed >= 1, "l'essai doit être compté dans SES indicateurs");
+});
+
+test("un essayeur devenu client payant recompte, lui, dans le tableau de bord", async () => {
+  // Symétrie indispensable : retrancher les essais ne doit pas faire disparaître
+  // un VRAI client des indicateurs sous prétexte qu'il a commencé par un essai.
+  const { demande } = await essaiDeploye({ deviceId: "SXB-TRIAL-DASHBOARD-02", empreinte: "android-id-fixture-dash2" });
+  const avant = await api("admin", "GET", "/dashboard/stats");
+  ok(avant);
+  const comptesAvant = avant.body.activeAccounts ?? avant.body.activeUsers;
+
+  const paye = await api("admin", "POST", "/subscriptions", {
+    clientId: demande.clientId, profileId: "p1", quotaGB: 50, durationDays: 30,
+  });
+  ok(paye, 201);
+
+  const apres = await api("admin", "GET", "/dashboard/stats");
+  ok(apres);
+  const comptesApres = apres.body.activeAccounts ?? apres.body.activeUsers;
+  assert.equal(comptesApres, comptesAvant + 1,
+    "le compte converti doit réapparaître dans les indicateurs commerciaux");
+});

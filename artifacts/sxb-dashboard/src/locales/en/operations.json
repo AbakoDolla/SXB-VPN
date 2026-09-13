@@ -365,6 +365,7 @@
     "serviceOnline": "Service online — the dashboard is available to all roles",
     "pause": "Pause dashboard",
     "resume": "Restore service",
+    "freeTrialExcluded": "These figures cover commercial activity only: free trials are subtracted and have their own counters in Free trials.",
     "network": "Clients & network",
     "totalClients": "Total clients",
     "registered": "registered",

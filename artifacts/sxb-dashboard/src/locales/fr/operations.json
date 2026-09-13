@@ -365,6 +365,7 @@
     "serviceOnline": "Service en ligne — le dashboard est accessible à tous les rôles",
     "pause": "Mettre le dashboard en pause",
     "resume": "Remettre en service",
+    "freeTrialExcluded": "Ces indicateurs ne portent que sur l'activité commerciale : les essais gratuits en sont retranchés et ont leurs propres compteurs dans « Essais gratuits ».",
     "network": "Clients & Réseau",
     "totalClients": "Total Clients",
     "registered": "enregistrés",
