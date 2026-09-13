@@ -168,7 +168,18 @@ export default function FreeTrialView() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const [statusFilter, setStatusFilter] = useState<string>(FREE_TRIAL_STATUS.PENDING);
+  /**
+   * Filtre de statut — TOUS par défaut.
+   *
+   * Il s'ouvrait sur « En attente de vérification », ce qui masquait chaque
+   * essai déjà déployé : dépliez un jeton dont toutes les demandes sont
+   * traitées et vous lisiez « Aucune demande d'essai gratuit pour ce filtre »,
+   * alors que la ligne existait avec son forfait attribué, son quota et son
+   * échéance. Or c'est précisément ici, et nulle part ailleurs, que se
+   * consultent et se gèrent les accès d'essai : partir d'une vue qui en cache
+   * une partie fait croire qu'ils ne sont pas affichés du tout.
+   */
+  const [statusFilter, setStatusFilter] = useState<string>('');
   const [copied, setCopied] = useState<string | null>(null);
 
   // ── Volets par jeton : ouverture, contenu, sélection ───────────────────────
@@ -995,10 +1006,12 @@ export default function FreeTrialView() {
               onChange={event => setStatusFilter(event.target.value)}
               className="rounded-lg border border-white/10 bg-slate-900/60 px-3 py-1.5 text-sm text-gray-200 outline-none focus:border-cyan-500/50"
             >
+              {/* « Tous » en tête : c'est le choix par défaut, et l'ordre du
+                  menu doit le refléter plutôt que de le reléguer en bas. */}
+              <option value="">{t('operations.freeTrial.status.all')}</option>
               <option value={FREE_TRIAL_STATUS.PENDING}>{t('operations.freeTrial.status.pending')}</option>
               <option value={FREE_TRIAL_STATUS.DEPLOYED}>{t('operations.freeTrial.status.deployed')}</option>
               <option value={FREE_TRIAL_STATUS.REJECTED}>{t('operations.freeTrial.status.rejected')}</option>
-              <option value="">{t('operations.freeTrial.status.all')}</option>
             </select>
           </div>
         </div>

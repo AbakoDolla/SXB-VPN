@@ -619,3 +619,18 @@ test("indicateurs d'essai : comptés séparément, et honnêtes sur ce qu'ils ne
   assert.equal(apres.body.deployed, 1);
   assert.equal(apres.body.active, 0);
 });
+
+test("la section essai s'ouvre sur TOUS les statuts, pas seulement les demandes en attente", () => {
+  // Le filtre partait sur « En attente de vérification », donc tout essai déjà
+  // déployé était masqué : déplier un jeton entièrement traité affichait
+  // « Aucune demande d'essai gratuit pour ce filtre », alors que la ligne
+  // existait avec son forfait attribué, son quota et son échéance. C'est
+  // pourtant ICI, et nulle part ailleurs, que ces accès se consultent et se
+  // gèrent : partir d'une vue qui en cache une partie fait croire qu'ils ne
+  // sont pas affichés du tout.
+  const vue = source("artifacts/sxb-dashboard/src/components/FreeTrialView.tsx");
+  assert.match(vue, /const \[statusFilter, setStatusFilter\] = useState<string>\(''\)/);
+  assert.doesNotMatch(vue, /useState<string>\(FREE_TRIAL_STATUS\.PENDING\)/);
+  // La valeur vide correspond bien à l'option « tous les statuts ».
+  assert.match(vue, /<option value="">\{t\('operations\.freeTrial\.status\.all'\)\}<\/option>/);
+});
