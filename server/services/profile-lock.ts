@@ -92,11 +92,29 @@ export function profileLockWhere(profile: LockableProfile) {
 const metadataFields = [
   'id', 'name', 'description', 'displayProtocol', 'offlineValidDays', 'status',
   'createdAt', 'updatedAt', '_count',
+  // Verdict du dernier préflight, et quand il a eu lieu.
+  //
+  // Ces deux champs étaient classés « techniques », donc invisibles tant que le
+  // profil n'était pas déverrouillé. Comme toutes les configurations de
+  // production portent un verrou, l'écran affichait une pastille de verdict qui
+  // ne pouvait JAMAIS apparaître : pour savoir si une configuration avait déjà
+  // été éprouvée, il fallait la déverrouiller une par une.
+  //
+  // Or un verdict ne décrit pas la configuration. `transport_ok`,
+  // `unreachable_from_probe`, `invalid`, `unsupported`, `unknown` : aucune de
+  // ces valeurs ne nomme un hôte, un port, un identifiant ni un payload. Elles
+  // disent seulement si le dernier test a abouti — exactement ce qu'un
+  // exploitant doit voir d'un coup d'œil sur sa liste.
+  //
+  // `validationMessage` reste technique, lui, et c'est délibéré : il reprend le
+  // détail de l'étape en échec, qui peut citer la bannière du serveur ou une
+  // passerelle. C'est une description de la configuration, pas un verdict.
+  'validationStatus', 'validatedAt',
 ] as const;
 const technicalFields = [
   'protocol', 'host', 'port', 'username', 'uuid', 'path', 'network', 'tls', 'sni',
   'dns', 'payloadId', 'method', 'canonicalConfigHash', 'configVersion', 'sourceFormat',
-  'validationStatus', 'validationMessage', 'validatedAt', 'importedAt',
+  'validationMessage', 'importedAt',
 ] as const;
 
 export function serializeLockedProfile(

@@ -437,6 +437,9 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
   const [showReimport, setShowReimport]   = useState(false);
   const [saving, setSaving]     = useState(false);
   const [testing, setTesting]   = useState(false);
+  /** Profil en cours de test depuis la LISTE — distinct de `testing`, qui
+      concerne le formulaire d'édition et n'identifie aucune ligne. */
+  const [testingId, setTestingId] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<ConfigTestResult | null>(null);
   const [error, setError]       = useState<React.ReactNode>('');
   const [fieldErrors, setFieldErrors] = useState<string[]>([]);
@@ -644,16 +647,20 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
     if (bulkDelete.isDeleting()) { setError(message('commerce.common.actionPending')); return; }
     const epoch = generation.current;
     const token = tokenFor(id);
-    setTesting(true); setError(''); setTestResult(null);
+    setTesting(true); setTestingId(id); setError(''); setTestResult(null);
     try {
       const result = await testProfileConfig(id, token);
       if (epoch !== generation.current || (token && token !== tokenFor(id))) return;
       setTestResult(result);
+      // Le serveur consigne le verdict sur le profil. Sans relecture, la
+      // pastille de la liste continuerait d'afficher le résultat précédent —
+      // ou rien du tout pour une configuration jamais éprouvée.
+      await load();
     } catch (err: any) {
       if (epoch !== generation.current) return;
       if (err?.status === 423) relock(id);
       setError(extractErrors(err));
-    } finally { if (epoch === generation.current) setTesting(false); }
+    } finally { if (epoch === generation.current) { setTesting(false); setTestingId(null); } }
   };
 
   // ── Soumission ──────────────────────────────────────────────────────────────
@@ -1008,6 +1015,23 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
               {p.unlockExpiresAt && !p.isLocked && <span className="text-gray-500">
                 {t('configurations.lock.expires', { time: new Date(p.unlockExpiresAt).toLocaleTimeString(locale) })}
               </span>}
+              {/* Éprouver la configuration sans quitter la liste.
+                  Le préflight exige un profil déverrouillé — il lit la
+                  configuration déchiffrée — donc l'action n'apparaît qu'une
+                  fois le verrou ouvert. Elle évite d'ouvrir le formulaire
+                  d'édition et d'y descendre pour tester, geste qu'il fallait
+                  répéter configuration par configuration. */}
+              {isAdmin && !p.isLocked && (
+                <button className="text-sky-400 disabled:opacity-40" disabled={controlsBusy || testingId === p.id}
+                  onClick={() => { void handleTestProfile(p.id); }}>
+                  {testingId === p.id ? t('configurations.ui.testing') : t('configurations.ui.testImported')}
+                </button>
+              )}
+              {p.validatedAt && (
+                <span className="text-gray-500" title={new Date(p.validatedAt).toLocaleString(locale)}>
+                  {t('configurations.notices.testedAt', { date: new Date(p.validatedAt).toLocaleString(locale) })}
+                </span>
+              )}
             </div>
             {!p.isLocked && <div className="grid grid-cols-2 gap-2 text-xs">
               <div className="bg-[#07090e] rounded-lg p-2.5">

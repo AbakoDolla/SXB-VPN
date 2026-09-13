@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createRequire } from 'node:module';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
@@ -282,4 +282,67 @@ test('actual API client sends proofs only on explicitly requested profile operat
   assert.equal(calls[4].headers['X-VPN-Profile-Unlock'], undefined);
   assert.ok(calls.every(c => !c.url.includes('proof') && !c.url.includes('password')));
   assert.equal(writes.length, 0);
+});
+
+test('un verrou cache la configuration, jamais le verdict de son dernier test', async () => {
+  // LE DÉFAUT : `validationStatus` et `validatedAt` étaient classés parmi les
+  // champs TECHNIQUES, donc omis tant que le profil restait verrouillé. Comme
+  // toutes les configurations de production portent un verrou, la pastille de
+  // verdict affichée par la liste ne pouvait JAMAIS apparaître : pour savoir si
+  // une configuration avait été éprouvée, il fallait les déverrouiller une par
+  // une.
+  const bundle = await build({
+    stdin: {
+      contents: 'export { serializeLockedProfile } from "./server/services/profile-lock";',
+      resolveDir: root, loader: 'ts',
+    },
+    bundle: true, platform: 'node', format: 'cjs', packages: 'external',
+    outfile: path.join(root, 'backend', '.sxb-lock-serialize.cjs'), logLevel: 'silent',
+  });
+  void bundle;
+  const { serializeLockedProfile } = require(path.join(root, 'backend', '.sxb-lock-serialize.cjs'));
+
+  const profil = {
+    id: 'p1', name: 'SSH production', lockPasswordHash: 'hash', lockVersion: 1,
+    protocol: 'ssh+payload', host: 'ssh.exemple.net', port: 443, username: 'u',
+    sni: 'front.exemple.net', payloadId: 'pl1', canonicalConfigHash: 'abc',
+    validationStatus: 'transport_ok',
+    validatedAt: new Date('2026-09-13T04:29:49Z'),
+    validationMessage: 'SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.19',
+  };
+
+  const verrouille = serializeLockedProfile(profil, undefined);
+  assert.equal(verrouille.isLocked, true);
+
+  // Le verdict et sa date restent lisibles : ils ne nomment ni hôte, ni port,
+  // ni identifiant, ni payload. Ils disent seulement si le dernier test a
+  // abouti — ce qu'un exploitant doit voir sans ouvrir chaque configuration.
+  assert.equal(verrouille.validationStatus, 'transport_ok');
+  assert.ok(verrouille.validatedAt);
+
+  // Le MESSAGE, lui, reprend le détail de l'étape : ici la bannière du serveur,
+  // qui décrit la configuration. Il reste derrière le verrou.
+  assert.equal(verrouille.validationMessage, undefined);
+  for (const secret of ['host', 'port', 'username', 'sni', 'protocol', 'payloadId', 'canonicalConfigHash']) {
+    assert.equal(verrouille[secret], undefined, `${secret} ne doit pas fuir`);
+  }
+
+  rmSync(path.join(root, 'backend', '.sxb-lock-serialize.cjs'), { force: true });
+});
+
+test('la liste offre le préflight et affiche son verdict, sans ouvrir chaque configuration', () => {
+  const vue = readFileSync(path.join(src, 'components', 'VpnProfilesView.tsx'), 'utf8');
+  const liste = vue.slice(vue.indexOf("configurations.lock.expires"));
+  // Le test se déclenche depuis la ligne, et seulement quand le verrou est
+  // ouvert : le préflight lit la configuration déchiffrée.
+  assert.match(liste, /handleTestProfile\(p\.id\)/);
+  const bouton = liste.slice(liste.indexOf('handleTestProfile(p.id)') - 400, liste.indexOf('handleTestProfile(p.id)'));
+  assert.match(bouton, /!p\.isLocked/, 'le préflight ne doit pas être proposé sur un profil verrouillé');
+  // Le verdict consigné par le serveur doit être relu, sinon la pastille
+  // continuerait d'afficher le résultat précédent.
+  assert.match(vue, /setTestResult\(result\);[\s\S]{0,400}?await load\(\);/);
+  // Une ligne en cours de test est identifiée : `testing` seul ne dit pas
+  // LAQUELLE, et ferait clignoter toutes les lignes à la fois.
+  assert.match(vue, /const \[testingId, setTestingId\]/);
+  assert.match(liste, /testingId === p\.id/);
 });
