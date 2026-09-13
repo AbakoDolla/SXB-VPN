@@ -634,3 +634,45 @@ test("la section essai s'ouvre sur TOUS les statuts, pas seulement les demandes 
   // La valeur vide correspond bien à l'option « tous les statuts ».
   assert.match(vue, /<option value="">\{t\('operations\.freeTrial\.status\.all'\)\}<\/option>/);
 });
+
+test("les comptes activés ont leur propre sous-section, et rien d'un essai ne subsiste dans Forfaits Data", () => {
+  const vue = source("artifacts/sxb-dashboard/src/components/FreeTrialView.tsx");
+
+  // ── 1. La sous-section existe et rassemble TOUS les jetons ────────────────
+  // Un accès déployé ne se lisait qu'en dépliant le jeton qui l'avait servi :
+  // savoir qui est en essai demandait d'ouvrir chaque jeton l'un après l'autre.
+  assert.match(vue, /operations\.freeTrial\.activeAccounts\.title/);
+  assert.match(vue, /const \[comptesEssai, setComptesEssai\]/);
+  assert.match(
+    vue,
+    /fetchFreeTrialRequestPage\(\{ status: FREE_TRIAL_STATUS\.DEPLOYED/,
+    "la sous-section doit lire les demandes DÉPLOYÉES, tous jetons confondus",
+  );
+  // Elle ne dépend pas du filtre de statut : « qui est en essai en ce moment »
+  // ne doit pas changer de réponse selon un filtre choisi plus bas.
+  const chargement = vue.slice(vue.indexOf('const chargerComptesEssai'), vue.indexOf('const chargerComptesEssai') + 900);
+  assert.ok(!chargement.includes('statusFilter'), "la liste ne doit pas suivre le filtre de statut");
+
+  // ── 2. Elle se rafraîchit après un déploiement ET après une gestion ───────
+  // Sans cela, un accès tout juste attribué — ou révoqué — resterait affiché
+  // tel qu'il était avant l'action.
+  assert.equal((vue.match(/chargerComptesEssai\(\)/g) || []).length >= 3, true,
+    "la liste doit être relue au montage, après un déploiement et après une gestion");
+
+  // ── 3. Elle affiche le forfait attribué, pas seulement le nom ─────────────
+  // `ligneDemande` porte serveur, quota accordé/consommé, échéance et état.
+  assert.match(vue, /\(comptesEssai \?\? \[\]\)\.map\(demande => ligneDemande\(demande, false\)\)/);
+  assert.match(vue, /operations\.freeTrial\.access\.quota/);
+  assert.match(vue, /operations\.freeTrial\.access\.servers/);
+
+  // ── 4. « Forfaits Data » ne porte plus AUCUNE option ni mention d'essai ───
+  const forfaits = source("artifacts/sxb-dashboard/src/components/SubscriptionsView.tsx");
+  for (const trace of ["TrialBadge", "TrialTag", "includeFreeTrial", "freeTrial"]) {
+    assert.ok(!forfaits.includes(trace), `SubscriptionsView ne doit plus contenir « ${trace} »`);
+  }
+  // Le serveur l'impose aussi : la liste retranche les essais même si
+  // l'interface oubliait de le demander.
+  const route = source("server/routes/subscriptions.ts");
+  assert.match(route, /porteeEssaiDeploye/);
+  assert.match(route, /exclureIdentifiants\('id', portee\.subscriptionIds\)/);
+});

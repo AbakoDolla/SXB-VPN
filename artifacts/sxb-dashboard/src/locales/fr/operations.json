@@ -4,6 +4,13 @@
     "noToken": "Aucun jeton d'invitation pour l'instant. Créez-en un pour commencer.",
     "counters": "{{pending}} en attente · {{deployed}} déployée(s)",
     "searchTitle": "Résultats de la recherche",
+    "activeAccounts": {
+      "title": "Comptes en période d'essai",
+      "hint": "Les accès que vous avez activés, tous jetons confondus : serveur attribué, quota accordé et consommé, échéance et état. C'est ici qu'ils se consultent — « Forfaits Data » n'en montre aucun.",
+      "count": "{{count}} compte(s)",
+      "empty": "Aucun essai activé pour le moment. Un accès apparaît ici dès que vous l'avez déployé.",
+      "manageHint": "Pour modifier un accès — serveur, quota, échéance, suspension ou révocation — dépliez le jeton qui l'a servi, plus bas, et utilisez « Gérer les essais déployés ». La sélection reste volontairement cloisonnée par jeton : elle ne traverse jamais deux campagnes."
+    },
     "searchHint": "Recherche transversale, en lecture seule : pour agir, ouvrez le jeton concerné. Elle porte sur les inscriptions chargées pour le filtre courant.",
     "batch": {
       "loadedOnly": "« Tout sélectionner » ne couvre que les inscriptions affichées de ce jeton, jamais celles d'un autre jeton ni les pages non chargées. Maximum {{max}} inscrits par déploiement.",

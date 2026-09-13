@@ -196,6 +196,22 @@ export default function FreeTrialView() {
   const [resultats, setResultats] = useState<FreeTrialRequest[] | null>(null);
   const [rechercheEnCours, setRechercheEnCours] = useState(false);
 
+  // ── Comptes en période d'essai ─────────────────────────────────────────────
+  //
+  // Les accès déployés se lisaient uniquement en dépliant LE jeton qui les a
+  // servis, campagne par campagne. Pour savoir qui est en essai en ce moment,
+  // il fallait donc ouvrir chaque jeton l'un après l'autre — et comme « Forfaits
+  // Data » ne montre plus rien d'un essai, ces comptes n'apparaissaient nulle
+  // part d'un seul tenant.
+  //
+  // Cette liste les rassemble, tous jetons confondus, avec le forfait attribué,
+  // le quota accordé et consommé, l'échéance et l'état. Elle reste en LECTURE :
+  // la sélection est volontairement cloisonnée par jeton — aucune sélection ne
+  // traverse deux campagnes — et chaque ligne renvoie donc vers son jeton pour
+  // la gestion.
+  const [comptesEssai, setComptesEssai] = useState<FreeTrialRequest[] | null>(null);
+  const [comptesEssaiEnCours, setComptesEssaiEnCours] = useState(true);
+
   // ── Étape 1 : formulaire de création du jeton ──────────────────────────────
   const [showTokenForm, setShowTokenForm] = useState(false);
   const [tokenLabel, setTokenLabel] = useState('');
@@ -309,6 +325,26 @@ export default function FreeTrialView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statusFilter]);
 
+  const chargerComptesEssai = useCallback(async () => {
+    setComptesEssaiEnCours(true);
+    try {
+      // Une seule lecture bornée, indépendante du filtre de statut : cette
+      // liste répond à « qui est en essai en ce moment », question qui ne doit
+      // pas changer de réponse selon le filtre choisi plus bas.
+      const page = await fetchFreeTrialRequestPage({ status: FREE_TRIAL_STATUS.DEPLOYED, limit: 200 });
+      setComptesEssai(page.requests);
+    } catch (err) {
+      // L'échec ne doit pas emporter l'écran : le reste de la section reste
+      // utilisable, et la liste dit qu'elle n'a rien pu lire.
+      setComptesEssai([]);
+      setError(errorMessage(err));
+    } finally {
+      setComptesEssaiEnCours(false);
+    }
+  }, [errorMessage]);
+
+  useEffect(() => { void chargerComptesEssai(); }, [chargerComptesEssai]);
+
   useEffect(() => {
     // Les serveurs proposés au déploiement sont les configurations VPN
     // existantes : on ne crée surtout pas un second référentiel de serveurs.
@@ -317,7 +353,6 @@ export default function FreeTrialView() {
       .then(setProfiles)
       .catch(() => setProfiles([]));
   }, [canDeploy]);
-
   useEffect(() => {
     if (!copied) return;
     const timer = window.setTimeout(() => setCopied(null), 1600);
@@ -548,7 +583,7 @@ export default function FreeTrialView() {
       }));
       setSelectionParJeton(prev => ({ ...prev, [jetonOuvert]: [] }));
       setShowDeployForm(false);
-      await Promise.all([charger(), chargerVolet(jetonOuvert, volet?.page ?? 1)]);
+      await Promise.all([charger(), chargerVolet(jetonOuvert, volet?.page ?? 1), chargerComptesEssai()]);
     } catch (err) {
       setError(errorMessage(err, 'operations.freeTrial.genericError'));
     } finally {
@@ -606,7 +641,7 @@ export default function FreeTrialView() {
       }));
       setSelectionParJeton(prev => ({ ...prev, [jetonOuvert]: [] }));
       setShowManageForm(false);
-      await Promise.all([charger(), chargerVolet(jetonOuvert, volet?.page ?? 1)]);
+      await Promise.all([charger(), chargerVolet(jetonOuvert, volet?.page ?? 1), chargerComptesEssai()]);
     } catch (err) {
       setError(errorMessage(err, 'operations.freeTrial.genericError'));
     } finally {
@@ -983,6 +1018,52 @@ export default function FreeTrialView() {
           </div>
         </form>
       )}
+
+      {/* ── Comptes en période d'essai ────────────────────────────────────────
+          Les accès activés, tous jetons confondus. Ils ne se lisaient
+          qu'en dépliant le jeton qui les avait servis, campagne par campagne :
+          savoir qui est en essai en ce moment demandait d'ouvrir chaque jeton
+          l'un après l'autre. Et comme « Forfaits Data » ne montre plus rien
+          d'un essai, ces comptes n'apparaissaient nulle part d'un seul tenant. */}
+      <section className="overflow-hidden rounded-xl border border-fuchsia-400/20 bg-fuchsia-500/[0.03]">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
+          <div className="flex items-start gap-2.5">
+            <TrialGlyph className="mt-0.5 h-6 w-6" />
+            <div>
+              <h2 className="text-sm font-semibold text-gray-200">{t('operations.freeTrial.activeAccounts.title')}</h2>
+              <p className="mt-0.5 text-[11px] text-gray-500">{t('operations.freeTrial.activeAccounts.hint')}</p>
+            </div>
+          </div>
+          <span className="text-[11px] text-gray-500">
+            {t('operations.freeTrial.activeAccounts.count', { count: formatNumber(comptesEssai?.length ?? 0) })}
+          </span>
+        </div>
+
+        {comptesEssaiEnCours && (
+          <p className="flex items-center gap-2 px-4 py-6 text-sm text-gray-400">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            {t('operations.freeTrial.loading')}
+          </p>
+        )}
+        {!comptesEssaiEnCours && (comptesEssai?.length ?? 0) === 0 && (
+          <p className="px-4 py-8 text-center text-sm text-gray-500">
+            {t('operations.freeTrial.activeAccounts.empty')}
+          </p>
+        )}
+        {!comptesEssaiEnCours && (comptesEssai?.length ?? 0) > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              {enteteDemandes(false)}
+              <tbody className="divide-y divide-white/5">
+                {(comptesEssai ?? []).map(demande => ligneDemande(demande, false))}
+              </tbody>
+            </table>
+            <p className="px-4 py-3 text-[11px] text-gray-500">
+              {t('operations.freeTrial.activeAccounts.manageHint')}
+            </p>
+          </div>
+        )}
+      </section>
 
       {/* ── Étapes 2-3 : chaque jeton porte SES demandes ─────────────────────── */}
       <section className="overflow-hidden rounded-xl border border-white/10 bg-white/[0.02]">

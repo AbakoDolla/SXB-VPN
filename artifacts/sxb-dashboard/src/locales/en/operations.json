@@ -4,6 +4,13 @@
     "noToken": "No invitation token yet. Create one to get started.",
     "counters": "{{pending}} pending · {{deployed}} deployed",
     "searchTitle": "Search results",
+    "activeAccounts": {
+      "title": "Accounts on trial",
+      "hint": "The accesses you activated, across every token: assigned server, quota granted and used, expiry and state. This is where they are read — Data Plans shows none of them.",
+      "count": "{{count}} account(s)",
+      "empty": "No trial activated yet. An access appears here as soon as you deploy it.",
+      "manageHint": "To change an access — server, quota, expiry, suspension or revocation — expand the token that served it, below, and use \"Manage deployed trials\". Selection stays deliberately scoped to one token: it never spans two campaigns."
+    },
     "searchHint": "Cross-token search, read-only: to act, open the relevant token. It covers the enrollments loaded for the current filter.",
     "batch": {
       "loadedOnly": "\"Select all\" only covers the displayed enrollments of this token, never another token's or unloaded pages. At most {{max}} enrollees per deployment.",
