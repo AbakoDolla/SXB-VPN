@@ -820,7 +820,7 @@ export default function FreeTrialView() {
   }
 
   /** Ligne de demande, réutilisée par le volet et par la recherche. */
-  const ligneDemande = (demande: FreeTrialRequest, selectionnable: boolean) => {
+  const ligneDemande = (demande: FreeTrialRequest, selectionnable: boolean, avecJeton = false) => {
     const cochable = demande.status === FREE_TRIAL_STATUS.PENDING || demande.status === FREE_TRIAL_STATUS.DEPLOYED;
     const acces = demande.access ?? null;
     return (
@@ -842,6 +842,17 @@ export default function FreeTrialView() {
             mention « Période d'essai » des autres écrans. Il porte son propre
             libellé, il n'est donc jamais seul porteur du sens. */}
         <TrialTag label={t('operations.freeTrial.marker')} className="mt-1" />
+        {/* Jeton d'origine — affiché UNIQUEMENT dans les listes transversales.
+            Sous un jeton déplié il serait redondant : l'en-tête le porte déjà.
+            Dans la liste des comptes en essai, en revanche, rien ne disait de
+            quelle campagne venait la personne, alors que c'est une information
+            que le propriétaire attend sur la fiche d'un essayeur. */}
+        {avecJeton && demande.trialToken && (
+          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+            <span className="font-mono text-[10px] text-cyan-300">{demande.trialToken}</span>
+            {demande.trialLabel && <span className="text-[10px] text-gray-500">{demande.trialLabel}</span>}
+          </div>
+        )}
         {demande.platform && (
           <div className="mt-1 text-[11px] text-gray-500">
             {demande.appVersion
@@ -1458,7 +1469,7 @@ export default function FreeTrialView() {
             <table className="w-full text-left text-sm">
               {enteteDemandes(false)}
               <tbody className="divide-y divide-white/5">
-                {(comptesEssai ?? []).map(demande => ligneDemande(demande, false))}
+                {(comptesEssai ?? []).map(demande => ligneDemande(demande, false, true))}
               </tbody>
             </table>
             <p className="px-4 py-3 text-[11px] text-gray-500">
@@ -2169,7 +2180,7 @@ export default function FreeTrialView() {
               <table className="w-full text-left text-sm">
                 {enteteDemandes(false)}
                 <tbody className="divide-y divide-white/5">
-                  {(resultats ?? []).map(demande => ligneDemande(demande, false))}
+                  {(resultats ?? []).map(demande => ligneDemande(demande, false, true))}
                 </tbody>
               </table>
             </div>

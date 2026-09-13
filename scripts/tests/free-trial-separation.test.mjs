@@ -661,7 +661,7 @@ test("les comptes activés ont leur propre sous-section, et rien d'un essai ne s
 
   // ── 3. Elle affiche le forfait attribué, pas seulement le nom ─────────────
   // `ligneDemande` porte serveur, quota accordé/consommé, échéance et état.
-  assert.match(vue, /\(comptesEssai \?\? \[\]\)\.map\(demande => ligneDemande\(demande, false\)\)/);
+  assert.match(vue, /\(comptesEssai \?\? \[\]\)\.map\(demande => ligneDemande\(demande, false, true\)\)/);
   assert.match(vue, /operations\.freeTrial\.access\.quota/);
   assert.match(vue, /operations\.freeTrial\.access\.servers/);
 
@@ -961,4 +961,42 @@ test("un rafraîchissement de fond n'alarme pas et n'efface rien", () => {
   assert.match(vue, /!contenu\?\.loading && !contenu\?\.failed && \(contenu\?\.requests\.length \?\? 0\) === 0/);
   // Et l'exploitant peut réessayer sans recharger toute la page.
   assert.match(vue, /operations\.freeTrial\.retry/);
+});
+
+test("la fiche d'un essayeur porte son jeton d'origine, là où rien d'autre ne le dit", () => {
+  // § 1 du cahier des charges : la fiche d'un essayeur doit contenir son
+  // « Free Trial Token ». Sous un jeton déplié, l'en-tête le porte déjà ; mais
+  // dans la liste des comptes en essai — celle qui les rassemble TOUS — rien
+  // ne disait de quelle campagne venait la personne.
+  const vue = source("artifacts/sxb-dashboard/src/components/FreeTrialView.tsx");
+  assert.match(vue, /const ligneDemande = \(demande: FreeTrialRequest, selectionnable: boolean, avecJeton = false\)/);
+  assert.match(vue, /\{avecJeton && demande\.trialToken &&/);
+  // Listes transversales : le jeton s'affiche.
+  assert.match(vue, /\(comptesEssai \?\? \[\]\)\.map\(demande => ligneDemande\(demande, false, true\)\)/);
+  assert.match(vue, /\(resultats \?\? \[\]\)\.map\(demande => ligneDemande\(demande, false, true\)\)/);
+  // Sous un jeton déplié : PAS de répétition, l'en-tête le porte.
+  assert.match(vue, /\(contenu\?\.requests \?\? \[\]\)\.map\(demande => ligneDemande\(demande, true\)\)/);
+
+  // Le serveur le fournit déjà sur chaque demande : aucune requête de plus.
+  const route = source("server/routes/free-trial.ts");
+  assert.match(route, /include: \{ trialToken: \{ select: \{ token: true, label: true \} \} \}/);
+});
+
+test("les connectés du tableau de bord principal sont MESURÉS, pas déduits d'un compte actif", () => {
+  // § 5, en majuscules chez le propriétaire : « It should NOT simply show a
+  // user as connected because they have an active account ».
+  const dashboard = source("server/routes/dashboard.ts");
+
+  // La carte « CONNECTÉS » vient de la mesure de présence, pas d'un count.
+  assert.match(dashboard, /compterConnectes\(prisma as any, pseudonymSecret/);
+  // `activeAccounts` existe toujours, mais c'est une AUTRE valeur, nommée pour
+  // ce qu'elle est : des comptes ouverts, jamais des gens en ligne.
+  assert.match(dashboard, /activeAccounts/);
+  assert.match(dashboard, /connectedNowMeasured: connectedNow !== null/);
+
+  // `null` signifie « non mesuré » et JAMAIS zéro : zéro affirmerait que
+  // personne n'utilise le VPN, ce qui serait une invention.
+  assert.match(dashboard, /let connectedNow: number \| null = null/);
+  const vue = source("artifacts/sxb-dashboard/src/components/DashboardView.tsx");
+  assert.match(vue, /stats\?\.connectedNowMeasured === true/);
 });
