@@ -13,7 +13,7 @@
     "editMaxUsesHint": "Clear the field to lift the cap. It cannot go below the enrolments already taken.",
     "editExpiresAtHint": "Clear the field to remove the invitation code's expiry.",
     "save": "Save",
-    "presence": { "online": "Connected", "offline": "Offline", "unmeasured": "Presence not measured" },
+    "presence": { "online": "Connected", "offline": "Offline", "unmeasured": "Presence not measured", "lastSeen": "Last seen {{date}}" },
     "searchTitle": "Search results",
     "activeAccounts": {
       "title": "Accounts on trial",
@@ -48,6 +48,10 @@
       "activeHint": "Deployed access whose expiry date has not passed.",
       "connected": "Connected now",
       "connectedHint": "Tunnel reported up less than {{window}} min ago (heartbeat every {{heartbeat}} min). A trial deployed on a device whose app does not report presence yet is not counted here: this number is a minimum, not a total.",
+      "trafficGranted": "Data granted",
+      "trafficUsed": "Data used",
+      "trafficRemaining": "Data remaining",
+      "trafficUnlimited": "including {{count}} uncapped plan(s)",
       "connectedUnmeasured": "Not measured",
       "connectedUnmeasuredHint": "Presence could not be measured on this installation. No figure is shown rather than a zero that would read as \"nobody is connected\"."
     },
@@ -156,6 +160,7 @@
       "servers": "Assigned servers",
       "serverUnknown": "Server removed",
       "quota": "{{used}} used out of {{granted}}",
+      "remaining": "{{remaining}} remaining",
       "unlimited": "unlimited",
       "expiresOn": "Ends on {{date}}",
       "noExpiry": "No expiry",

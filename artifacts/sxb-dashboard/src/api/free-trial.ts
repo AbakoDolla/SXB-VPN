@@ -325,6 +325,15 @@ export interface FreeTrialOverview {
      */
     truncated?: boolean;
   };
+  /**
+   * Volume PROPRE aux essais, en octets et en chaînes (BigInt non transportable
+   * en JSON). Il ne se mélange jamais au trafic commercial.
+   */
+  trafficGrantedBytes?: string;
+  trafficUsedBytes?: string;
+  trafficRemainingBytes?: string;
+  /** Forfaits d'essai sans plafond : ils ne s'additionnent pas à l'accordé. */
+  unlimitedPlans?: number;
 }
 
 /**

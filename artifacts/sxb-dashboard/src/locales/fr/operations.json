@@ -13,7 +13,7 @@
     "editMaxUsesHint": "Videz le champ pour lever le plafond. Il ne peut pas descendre sous le nombre d'inscriptions déjà prises.",
     "editExpiresAtHint": "Videz le champ pour retirer l'échéance du code d'invitation.",
     "save": "Enregistrer",
-    "presence": { "online": "Connecté", "offline": "Hors ligne", "unmeasured": "Présence non mesurée" },
+    "presence": { "online": "Connecté", "offline": "Hors ligne", "unmeasured": "Présence non mesurée", "lastSeen": "Vu le {{date}}" },
     "searchTitle": "Résultats de la recherche",
     "activeAccounts": {
       "title": "Comptes en période d'essai",
@@ -48,6 +48,10 @@
       "activeHint": "Accès déployé dont l'échéance n'est pas passée.",
       "connected": "Connectés maintenant",
       "connectedHint": "Tunnel déclaré monté il y a moins de {{window}} min (battement toutes les {{heartbeat}} min). Un essai déployé sur un appareil dont l'application ne rapporte pas encore sa présence n'est pas compté ici : ce nombre est un minimum, pas un total.",
+      "trafficGranted": "Volume accordé",
+      "trafficUsed": "Volume consommé",
+      "trafficRemaining": "Volume restant",
+      "trafficUnlimited": "dont {{count}} forfait(s) sans plafond",
       "connectedUnmeasured": "Non mesuré",
       "connectedUnmeasuredHint": "La présence n'a pas pu être mesurée sur cette installation. Aucun chiffre n'est affiché plutôt qu'un zéro qui se lirait « personne n'est connecté »."
     },
@@ -156,6 +160,7 @@
       "servers": "Serveurs attribués",
       "serverUnknown": "Serveur retiré",
       "quota": "{{used}} consommé(s) sur {{granted}}",
+      "remaining": "{{remaining}} restant(s)",
       "unlimited": "illimité",
       "expiresOn": "Fin le {{date}}",
       "noExpiry": "Sans échéance",

@@ -795,6 +795,20 @@ export interface ResumeEssais {
    */
   connectedNow: number | null;
   presence: MesurePresenceEssai;
+  /**
+   * Volume PROPRE aux essais — accordé, consommé, restant — en octets, transmis
+   * en chaînes parce qu'il dépasse le nombre sûr en JavaScript dès quelques
+   * téraoctets et que le JSON ne transporte pas de BigInt.
+   *
+   * Il ne se mélange jamais au trafic commercial : le tableau de bord principal
+   * retranche ces mêmes forfaits des siens.
+   */
+  trafficGrantedBytes: string;
+  trafficUsedBytes: string;
+  /** Jamais négatif : un dépassement se lit « 0 restant ». */
+  trafficRemainingBytes: string;
+  /** Forfaits d'essai SANS plafond : ils ne s'additionnent pas au volume accordé. */
+  unlimitedPlans: number;
 }
 
 /**
@@ -850,6 +864,27 @@ export function resumerEssais(params: {
     connectedNow = vus;
   }
 
+  // ── Trafic PROPRE aux essais ────────────────────────────────────────────
+  //
+  // Le propriétaire exige deux jeux de chiffres qui ne se mélangent jamais :
+  // « Free Trial traffic/data » d'un côté, le trafic commercial de l'autre. Ce
+  // volume est donc calculé ICI, sur les forfaits nés d'un essai et sur eux
+  // seuls — le tableau de bord principal les a retranchés des siens.
+  //
+  // Un forfait ILLIMITÉ porte un quota nul : il ne s'additionne pas, mais son
+  // consommé compte. On dit alors qu'un illimité existe plutôt que d'annoncer
+  // un plafond qui n'en est pas un.
+  let trafficGrantedBytes = 0n;
+  let trafficUsedBytes = 0n;
+  let unlimitedPlans = 0;
+  for (const forfait of forfaits.values()) {
+    const accorde = BigInt(forfait?.quotaBytes ?? 0);
+    const consomme = BigInt(forfait?.quotaUsed ?? 0);
+    if (accorde > 0n) trafficGrantedBytes += accorde; else unlimitedPlans += 1;
+    trafficUsedBytes += consomme;
+  }
+  const reste = trafficGrantedBytes - trafficUsedBytes;
+
   return {
     total: params.demandes.length,
     pending,
@@ -858,6 +893,13 @@ export function resumerEssais(params: {
     active,
     connectedNow,
     presence: params.presence,
+    // Chaînes : ces volumes dépassent le nombre sûr en JavaScript dès quelques
+    // téraoctets, et le JSON ne sait pas transporter un BigInt.
+    trafficGrantedBytes: trafficGrantedBytes.toString(),
+    trafficUsedBytes: trafficUsedBytes.toString(),
+    // Jamais négatif : un dépassement se lit « 0 restant », pas « -2 Go ».
+    trafficRemainingBytes: (reste > 0n ? reste : 0n).toString(),
+    unlimitedPlans,
   };
 }
 

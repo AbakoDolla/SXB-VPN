@@ -30,6 +30,7 @@ import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { config } from '../config';
+import { pseudonymizeMobileDevice } from '../services/mobile-pseudonym';
 import { prisma, logDbActivity } from '../database';
 import { accessStateHub } from '../services/access-state-events';
 import { requireAuth, requirePermission, AuthenticatedRequest } from '../middleware/auth';
@@ -365,7 +366,7 @@ function demandeDuForfait(
  * Une seule lecture pour toute la page, jamais une par ligne.
  */
 async function presenceParDemande(
-  demandes: ReadonlyArray<{ clientId?: unknown }>,
+  demandes: ReadonlyArray<{ clientId?: unknown; deviceId?: unknown }>,
 ): Promise<{ measured: boolean; parClient: Map<string, { connected: boolean; lastSeenAt: string | null; measured: boolean }> }> {
   const parClient = new Map<string, { connected: boolean; lastSeenAt: string | null; measured: boolean }>();
   const secret = config.MOBILE_HEALTH_PSEUDONYM_SECRET
@@ -377,22 +378,57 @@ async function presenceParDemande(
     return { measured: false, parClient };
   }
   try {
+    // ── 1. DERNIÈRE ACTIVITÉ, y compris hors ligne ──────────────────────────
+    //
+    // `listerConnectes` ne rend que les tunnels montés : elle ne peut donc rien
+    // dire d'un essayeur déconnecté, alors que c'est précisément là que la date
+    // compte — « hors ligne depuis dix minutes » et « hors ligne depuis trois
+    // semaines » n'appellent pas la même décision.
+    //
+    // Le pseudonyme est DÉTERMINISTE : le serveur le recalcule pour un appareil
+    // qu'il connaît déjà, et retrouve sa ligne de santé sans qu'aucune identité
+    // n'ait jamais été écrite dans cette table.
+    const parPseudonyme = new Map<string, string>();
+    for (const demande of demandes) {
+      const clientId = demande.clientId ? String(demande.clientId) : '';
+      const deviceId = demande.deviceId ? String(demande.deviceId) : '';
+      if (!clientId || !deviceId) continue;
+      parPseudonyme.set(pseudonymizeMobileDevice(clientId, deviceId, secret), clientId);
+      parClient.set(clientId, { connected: false, lastSeenAt: null, measured: true });
+    }
+    if (parPseudonyme.size > 0) {
+      const signaux = await (prisma as any).mobileHealthDevice.findMany({
+        where: { pseudonym: { in: [...parPseudonyme.keys()] } },
+        select: { pseudonym: true, lastSeenAt: true },
+      });
+      for (const signal of signaux as any[]) {
+        const clientId = parPseudonyme.get(String(signal.pseudonym));
+        if (!clientId) continue;
+        const vu = signal.lastSeenAt ? new Date(signal.lastSeenAt).toISOString() : null;
+        const connue = parClient.get(clientId);
+        // Plusieurs appareils sur un compte : on garde le signal le plus récent.
+        if (vu && (!connue?.lastSeenAt || vu > connue.lastSeenAt)) {
+          parClient.set(clientId, { connected: connue?.connected ?? false, lastSeenAt: vu, measured: true });
+        }
+      }
+    }
+
+    // ── 2. CONNEXION EN COURS ───────────────────────────────────────────────
+    // La même mesure que le reste de la plateforme : tunnel déclaré monté et
+    // battement récent. Un compte « actif » ne vaut jamais présence.
     const presence = await listerConnectes(prisma as any, secret, { sansDatation: true });
     for (const ligne of presence.lignes) {
       if (!comptes.has(ligne.clientId)) continue;
       const connue = parClient.get(ligne.clientId);
-      // Plusieurs appareils sur un même compte : on retient le signal le plus
-      // récent, c'est lui qui dit si quelqu'un est en ligne maintenant.
-      if (!connue || (ligne.lastSeenAt && connue.lastSeenAt && ligne.lastSeenAt > connue.lastSeenAt) || !connue.lastSeenAt) {
-        parClient.set(ligne.clientId, { connected: true, lastSeenAt: ligne.lastSeenAt ?? null, measured: true });
-      }
+      const vu = ligne.lastSeenAt ?? connue?.lastSeenAt ?? null;
+      parClient.set(ligne.clientId, { connected: true, lastSeenAt: vu, measured: true });
     }
     return { measured: true, parClient };
   } catch (err: any) {
     // Une présence indisponible ne doit pas emporter la liste des demandes :
     // elle est le cœur de cet écran, la présence n'en est qu'une colonne.
     console.error('free-trial presence error:', err?.message || err);
-    return { measured: false, parClient };
+    return { measured: false, parClient: new Map() };
   }
 }
 
@@ -1149,9 +1185,16 @@ router.get(
           .map((d) => String(d.subscriptionId)),
       )];
       const forfaits = new Map<string, { status?: string | null; expireAt?: Date | string | null; quotaBytes?: bigint | null; quotaUsed?: bigint | null }>();
-      if (forfaitIds.length) {
+      // Le déploiement multi-configurations crée PLUSIEURS forfaits pour une
+      // même demande ; `subscriptionId` n'en désigne qu'un. Sans la seconde
+      // condition, le volume d'essai ne compterait qu'une configuration sur
+      // trois et le tableau annoncerait un tiers du trafic réel.
+      const conditions: any[] = [];
+      if (forfaitIds.length) conditions.push({ id: { in: forfaitIds } });
+      conditions.push({ freeTrialRequestId: { not: null } });
+      {
         const lignes = await (prisma as any).subscription.findMany({
-          where: { id: { in: forfaitIds } },
+          where: { OR: conditions },
           select: { id: true, status: true, expireAt: true, quotaBytes: true, quotaUsed: true },
         });
         for (const ligne of lignes as any[]) {

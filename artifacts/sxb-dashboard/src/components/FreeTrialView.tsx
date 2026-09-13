@@ -807,6 +807,16 @@ export default function FreeTrialView() {
                 {t('operations.freeTrial.presence.offline')}
               </span>
             )}
+            {/* Dernière activité observée — utile précisément quand la ligne
+                est hors ligne : « hors ligne depuis dix minutes » et « hors
+                ligne depuis trois semaines » ne se traitent pas pareil. */}
+            {demande.presence?.lastSeenAt && (
+              <div className="mt-0.5 text-gray-600">
+                {t('operations.freeTrial.presence.lastSeen', {
+                  date: formatDate(demande.presence.lastSeenAt),
+                })}
+              </div>
+            )}
           </div>
         )}
       </td>
@@ -840,6 +850,27 @@ export default function FreeTrialView() {
                   : formatBytes(acces.quotaBytes),
               })}
             </p>
+            {/* RESTANT — le propriétaire le demande explicitement à côté de
+                l'accordé et du consommé. Calculé ici plutôt que servi par le
+                serveur : c'est une soustraction des deux valeurs déjà
+                présentes, et en faire un champ de plus ouvrirait la porte à
+                deux chiffres qui se contredisent. Un dépassement se lit
+                « 0 restant », jamais un négatif. */}
+            {acces.quotaBytes !== '0' && (
+              <p className="flex items-center gap-1.5 text-gray-300">
+                <HardDrive className="h-3 w-3 shrink-0 text-gray-600" aria-hidden="true" />
+                {t('operations.freeTrial.access.remaining', {
+                  remaining: formatBytes(
+                    String(
+                      (() => {
+                        const reste = BigInt(acces.quotaBytes || '0') - BigInt(acces.quotaUsed || '0');
+                        return reste > 0n ? reste : 0n;
+                      })(),
+                    ),
+                  ),
+                })}
+              </p>
+            )}
             <p className="flex items-center gap-1.5">
               <CalendarClock className="h-3 w-3 shrink-0 text-gray-500" aria-hidden="true" />
               {acces.expireAt
@@ -954,6 +985,31 @@ export default function FreeTrialView() {
                   : formatNumber(overview.connectedNow)}
               </p>
               <p className="text-xs text-gray-500">{t('operations.freeTrial.metrics.connected')}</p>
+            </div>
+          </div>
+          {/* ── Trafic PROPRE aux essais ──────────────────────────────────
+              Le propriétaire exige deux jeux de chiffres qui ne se mélangent
+              jamais. Celui-ci ne porte que sur les forfaits nés d'un essai ;
+              le tableau de bord principal les a retranchés des siens. */}
+          <div className="grid grid-cols-1 divide-y divide-white/5 border-t border-white/10 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+            <div className="bg-slate-950/40 px-4 py-3">
+              <p className="text-lg font-bold text-gray-200">{formatBytes(overview.trafficGrantedBytes ?? '0')}</p>
+              <p className="text-xs text-gray-500">{t('operations.freeTrial.metrics.trafficGranted')}</p>
+              {(overview.unlimitedPlans ?? 0) > 0 && (
+                <p className="mt-0.5 text-[11px] text-gray-600">
+                  {t('operations.freeTrial.metrics.trafficUnlimited', {
+                    count: formatNumber(overview.unlimitedPlans ?? 0),
+                  })}
+                </p>
+              )}
+            </div>
+            <div className="bg-slate-950/40 px-4 py-3">
+              <p className="text-lg font-bold text-amber-300">{formatBytes(overview.trafficUsedBytes ?? '0')}</p>
+              <p className="text-xs text-gray-500">{t('operations.freeTrial.metrics.trafficUsed')}</p>
+            </div>
+            <div className="bg-slate-950/40 px-4 py-3">
+              <p className="text-lg font-bold text-emerald-300">{formatBytes(overview.trafficRemainingBytes ?? '0')}</p>
+              <p className="text-xs text-gray-500">{t('operations.freeTrial.metrics.trafficRemaining')}</p>
             </div>
           </div>
           {/* Honnêteté du chiffre : un essai déployé sur un appareil dont

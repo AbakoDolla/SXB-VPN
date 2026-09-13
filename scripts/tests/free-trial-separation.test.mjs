@@ -843,3 +843,43 @@ test("la présence d'un essayeur vient de la VRAIE mesure, jamais de son statut 
   assert.match(vue, /operations\.freeTrial\.presence\.online/);
   assert.match(vue, /operations\.freeTrial\.presence\.offline/);
 });
+
+test("le trafic des essais se compte à part, et n'oublie aucun forfait", async () => {
+  // Le propriétaire veut deux jeux de chiffres qui ne se mélangent jamais :
+  // « Free Trial traffic/data » ici, le trafic commercial dans le tableau de
+  // bord principal — qui retranche précisément ces forfaits.
+  const avant = await api("admin", "GET", "/free-trial/stats/overview");
+  ok(avant);
+  const accordeAvant = BigInt(avant.body.trafficGrantedBytes ?? "0");
+
+  // Déploiement sur DEUX configurations : le piège est là. `subscriptionId` ne
+  // désigne qu'un seul forfait ; sans la lecture par `freeTrialRequestId`, le
+  // volume annoncé ne compterait que la moitié de ce qui a été accordé.
+  garantirProfil("p2");
+  const jeton = await creerJeton("Campagne deux serveurs");
+  const inscription = await inscrire(jeton, {
+    deviceId: "SXB-TRIAL-TRAFFIC-01", empreinte: "android-id-fixture-traffic",
+  });
+  await deployer(jeton, inscription.requestId, { quotaGB: 3, profileIds: ["p1", "p2"] });
+
+  const apres = await api("admin", "GET", "/free-trial/stats/overview");
+  ok(apres);
+  const accordeApres = BigInt(apres.body.trafficGrantedBytes ?? "0");
+  const GIO = BigInt(1024 ** 3);
+  assert.equal(accordeApres - accordeAvant, BigInt(6) * GIO,
+    "3 Go sur DEUX configurations font 6 Go accordés, pas 3");
+
+  // Restant = accordé − consommé, et jamais négatif.
+  const reste = BigInt(apres.body.trafficRemainingBytes ?? "0");
+  assert.equal(reste >= 0n, true);
+  assert.equal(
+    reste,
+    accordeApres - BigInt(apres.body.trafficUsedBytes ?? "0"),
+    "le restant doit être exactement la différence",
+  );
+
+  // Et ce volume reste HORS du tableau de bord commercial.
+  const principal = await api("admin", "GET", "/dashboard/stats");
+  ok(principal);
+  assert.equal(principal.body.freeTrialExcluded, true);
+});
