@@ -978,6 +978,35 @@ function parseImportedConfigSingle(raw: string): ParseResult {
     } else if (obj.protocol) {
       // déjà traité par un format plus spécifique.
     } else if (!parsed) {
+      // ── SSH déduit de la FORME, comme le fait déjà l'application ─────────
+      //
+      // Les configurations SSH circulent entre exploitants sous leur forme la
+      // plus courte — hôte, port, identifiants, et le payload quand il y en a
+      // un — sans jamais nommer le protocole : il se lit dans les champs.
+      // L'application mobile le déduit ainsi depuis toujours
+      // (`detectProtocolFromFields`), mais l'import du tableau de bord, lui,
+      // exigeait un champ `protocol` que ces configurations ne portent pas.
+      // Elles étaient donc refusées à l'entrée, et l'exploitant devait deviner
+      // qu'il fallait ajouter une ligne pour que le serveur accepte ce que
+      // l'application aurait compris seule.
+      //
+      // La règle est la MÊME des deux côtés, et volontairement étroite : un
+      // nom d'utilisateur avec un secret, c'est du SSH ; s'y ajoute un
+      // payload, c'est du SSH+payload. Rien d'autre n'est deviné — un JSON qui
+      // ne ressemble à rien reste refusé, avec le message d'origine.
+      const aIdentifiants = typeof obj.username === 'string' && obj.username.trim() !== ''
+        && ((typeof obj.password === 'string' && obj.password !== '')
+          || (typeof obj.privateKeyBase64 === 'string' && obj.privateKeyBase64 !== ''));
+      const aPayload = typeof obj.payload === 'string' && obj.payload.trim() !== '';
+      if (aIdentifiants && typeof obj.host === 'string' && obj.host.trim() !== '') {
+        const deduit = aPayload ? 'ssh+payload' : 'ssh';
+        const normalized = normalizeSshAlias({ ...obj, protocol: deduit });
+        parsed = { cfg: { ...normalized, protocol: deduit } };
+        sourceFormat = deduit === 'ssh' ? 'ssh-json' : 'ssh+payload-json';
+        warnings.push(`Protocole déduit des champs : ${deduit}`);
+      }
+    }
+    if (!parsed) {
       errors.push('JSON non reconnu : ni HTTP Custom, sing-box ni Xray — champ "protocol" requis (ssh, ssh+payload, vless, vmess, trojan, shadowsocks, wireguard, hysteria2, tuic) pour le format canonique SXB');
       return { ok: false, errors, warnings };
     }

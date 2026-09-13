@@ -174,10 +174,14 @@ async function probeWsTunnel(
   const code = statusMatch ? Number(statusMatch[1]) : null;
 
   if (code === 101) steps.push({ event: 'HTTP_STATUS_101', ok: true, detail: 'upgrade accepté' });
-  else if (code === 200) steps.push({ event: 'HTTP_STATUS_200', ok: true, detail: 'tunnel HTTP accepté' });
+  // Tout 2xx, pas seulement 200 : le moteur mobile accepte la même famille, et
+  // deux verdicts qui divergent sur la même réponse feraient douter du bon.
+  else if (code !== null && code >= 200 && code < 300) {
+    steps.push({ event: 'HTTP_STATUS_200', ok: true, detail: `tunnel HTTP accepté (${code})` });
+  }
   else steps.push({ event: 'HTTP_STATUS_UNEXPECTED', ok: false, detail: code ? `code ${code}` : 'réponse non-HTTP/vide' });
 
-  if (code === 101 || code === 200) {
+  if (code === 101 || (code !== null && code >= 200 && code < 300)) {
     // Le flux sous-jacent doit devenir SSH : chercher 'SSH-' (frames WS incluses)
     const m = text.match(/SSH-[0-9A-Za-z.\-_ ]+/);
     if (m) {

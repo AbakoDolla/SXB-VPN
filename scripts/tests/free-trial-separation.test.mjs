@@ -1080,3 +1080,46 @@ test("le quota ne se lit qu'UNE fois par écran", () => {
   //    qui porte déjà consommé, restant, barre et échéance.
   assert.match(accueil, /\{derivedQuota\.totalBytes > 0 && !isTrialAccess && \(/);
 });
+
+test("une config SSH d'injection s'importe telle qu'elle circule, et se connecte", () => {
+  // LA CONFIG DU PROPRIÉTAIRE, mot pour mot :
+  //   host, username, password, port, payload — et AUCUN champ « protocol ».
+  // C'est la forme sous laquelle ces configurations circulent entre
+  // exploitants : le protocole se lit dans les champs. L'application le
+  // déduisait déjà (`detectProtocolFromFields`), mais l'import du tableau de
+  // bord exigeait un champ que ces configurations ne portent pas — elles
+  // étaient refusées à l'entrée.
+  const canonique = source("server/services/canonical-config.ts");
+  assert.match(canonique, /const aIdentifiants = typeof obj\.username === 'string'/);
+  assert.match(canonique, /const deduit = aPayload \? 'ssh\+payload' : 'ssh'/);
+  // La règle est la MÊME des deux côtés : un nom d'utilisateur avec un secret,
+  // c'est du SSH ; s'y ajoute un payload, c'est du SSH+payload.
+  const validateur = source("app-mobile/services/configValidator.ts");
+  assert.match(validateur, /if \(obj\.payload && obj\.username\)\s+return 'ssh\+payload'/);
+  // Et rien d'autre n'est deviné : sans secret, le JSON reste refusé.
+  assert.match(canonique, /\|\| \(typeof obj\.privateKeyBase64 === 'string' && obj\.privateKeyBase64 !== ''\)/);
+});
+
+test("un « 200 OK » simple est un tunnel ouvert, pas un refus", () => {
+  // LE DÉFAUT QUI EMPÊCHAIT LA CONNEXION : seul « 200 Connection established »
+  // — la réponse d'un proxy à un CONNECT — était reconnu. Or la façon la plus
+  // répandue de monter ce tunnel est une requête ordinaire vers un hôte non
+  // facturé (GET http://mtnplay.com HTTP/1.0), à laquelle la façade répond
+  // « HTTP/1.1 200 OK » tout court avant de laisser la socket devenir le flux
+  // SSH. Ce 200 tombait dans le refus : on rejetait un tunnel qui venait de
+  // s'ouvrir, avec « pas de tunnel sur cette réponse ».
+  const natif = source("app-mobile/modules/android-native/SxbVpnService.kt");
+  assert.match(natif, /val deuxCentOuvert = statusCode != null && statusCode in 200\.\.299 && !portal/);
+  assert.match(natif, /&& !deuxCentOuvert/);
+  assert.match(natif, /reason=http_2xx_tunnel/);
+
+  // LE PIÈGE À NE PAS OUVRIR : un portail captif répond lui aussi 200, avec sa
+  // page de connexion. La PREUVE décide, jamais le code de statut seul — le
+  // `!portal` ci-dessus est ce qui distingue les deux.
+  assert.match(natif, /bodyLooksPortal = body\.contains\("<html", true\)/);
+  assert.match(natif, /val errorCode = if \(portal\) "CAPTIVE_PORTAL" else "TUNNEL_REFUSED"/);
+
+  // Le payload lui-même n'a PAS d'en-tête Upgrade : il ne doit surtout pas
+  // être traité comme du WebSocket, qui attend une trame binaire 0x82.
+  assert.match(natif, /hasWsUpgradeHeader && hasWsKey && !connectPayload/);
+});

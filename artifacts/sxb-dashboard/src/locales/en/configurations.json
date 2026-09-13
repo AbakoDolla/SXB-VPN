@@ -49,7 +49,7 @@
     "xrayOutbounds": "{{count}} Xray outbound(s) preserved in full; the mobile engine will convert them for libbox.",
     "singboxOutbounds": "{{count}} sing-box outbound(s) detected; the JSON will be provisioned without truncation.",
     "invalidFormat": "Invalid format: expected a share URI, V2Ray/Xray or sing-box JSON, or a WireGuard configuration.",
-    "placeholder": "Paste a share URI or the provider's complete JSON configuration.",
+    "placeholder": "Paste a share URI, the provider's JSON, or an SSH configuration — for example:\n{\"host\":\"1.2.3.4\",\"port\":80,\"username\":\"my-account\",\"password\":\"my-secret\",\"payload\":\"GET http://example.com HTTP/1.0[crlf]Host: example.com[crlf]Connection: keep-alive[crlf][crlf]\"}\nThe protocol is inferred from the fields: you do not need to write it.",
     "size": "{{characters}} characters · {{lines}} lines"
   },
   "notices": {
@@ -96,7 +96,7 @@
     "syntaxHint": "The JSON syntax is correct; preflight will check the schema and transport.",
     "unrecognized": "Unrecognized format",
     "editorTitle": "Complete V2Ray / Xray editor + share URIs",
-    "editorHint": "Paste either a share URI (`vless://`, `vmess://`, `trojan://`, `ss://`, `hy2://`, `tuic://`) or JSON exported from V2Ray/Xray, as in the mobile app. The `dns`, `inbounds`, `outbounds`, `routing`, `streamSettings`, `proxySettings` fields and headers are preserved; do not use a shortened version containing `…`.",
+    "editorHint": "Paste a share URI (`vless://`, `vmess://`, `trojan://`, `ss://`, `hy2://`, `tuic://`), JSON exported from V2Ray/Xray, or an SSH configuration (`host`, `port`, `username`, `password`, plus `payload` for HTTP injection — the protocol is inferred from the fields). The `dns`, `inbounds`, `outbounds`, `routing`, `streamSettings`, `proxySettings` fields and headers are preserved; do not use a shortened version containing `…`.",
     "format": "Format",
     "minify": "Minify",
     "clear": "Clear",

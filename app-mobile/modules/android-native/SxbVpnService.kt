@@ -472,16 +472,41 @@ private class SxbPayloadProxy(
             // Les réponses 301/302 ou les pages HTML de portail restent toujours
             // bloquantes, y compris pour un payload CONNECT.
             val statusForFail = response.substringBefore("\r\n")
-            if (statusForFail.startsWith("HTTP/") && !(isConnectPayload && httpTunnelCompatible)) {
-                val loc = Regex("(?i)location:\\s*(\\S+)").find(response)?.groupValues?.getOrNull(1) ?: ""
-                val statusCode = Regex("^HTTP/\\S+\\s+(\\d{3})").find(statusForFail)?.groupValues?.getOrNull(1)?.toIntOrNull()
-                val body = response.substringAfter("\r\n\r\n", "")
-                val bodyLooksPortal = body.contains("<html", true) &&
-                    (body.contains("captive", true) || body.contains("nointernet", true) || body.contains("portal", true))
-                                val portal = bodyLooksPortal ||
-                    loc.contains("nointernet", true) ||
-                    loc.contains("captive", true) ||
-                    loc.contains("portal", true)
+            val statusCode = Regex("^HTTP/\\S+\\s+(\\d{3})").find(statusForFail)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            val loc = Regex("(?i)location:\\s*(\\S+)").find(response)?.groupValues?.getOrNull(1) ?: ""
+            val body = response.substringAfter("\r\n\r\n", "")
+            val bodyLooksPortal = body.contains("<html", true) &&
+                (body.contains("captive", true) || body.contains("nointernet", true) || body.contains("portal", true))
+            val portal = bodyLooksPortal ||
+                loc.contains("nointernet", true) ||
+                loc.contains("captive", true) ||
+                loc.contains("portal", true)
+
+            // ── Un 2xx SIMPLE est un tunnel ouvert ────────────────────────────
+            //
+            // Seul « 200 Connection established » était reconnu, c'est-à-dire la
+            // réponse d'un proxy à un CONNECT. Or la façon la plus répandue de
+            // monter ce tunnel n'est pas un CONNECT : c'est une requête ordinaire
+            // vers un hôte non facturé —
+            //   GET http://exemple.com HTTP/1.0[crlf]Host: ...[crlf][crlf]
+            // — à laquelle la façade répond « HTTP/1.1 200 OK » tout court, puis
+            // laisse la socket devenir le flux SSH. C'est exactement ce que font
+            // les autres applications d'injection.
+            //
+            // Ce 200 tombait donc dans le refus : on rejetait un tunnel qui venait
+            // de s'ouvrir, avec « pas de tunnel sur cette réponse ». Un 2xx est
+            // désormais accepté et la lecture continue plus bas, où les premiers
+            // octets sont relus et replacés devant le flux.
+            //
+            // La détection de portail reste prioritaire : un portail captif répond
+            // lui aussi 200, avec sa page de connexion. Un 2xx dont le corps
+            // ressemble à un portail est toujours refusé — c'est la PREUVE qui
+            // décide, jamais le code de statut seul.
+            val deuxCentOuvert = statusCode != null && statusCode in 200..299 && !portal
+
+            if (statusForFail.startsWith("HTTP/")
+                && !deuxCentOuvert
+                && !(isConnectPayload && httpTunnelCompatible)) {
                 val hint = if (portal)
                     " — portail captif détecté avec preuve HTTP/HTML : rechargez la ligne ou utilisez le Host zéro-rated"
                 else
@@ -490,6 +515,9 @@ private class SxbPayloadProxy(
                 onEvent("[SXB_DEBUG] NON_TUNNEL_HTTP code=$errorCode status='$statusForFail' location='$loc' proof=$portal")
                 Log.w("SXB_DEBUG", "[SXB_DEBUG] NON_TUNNEL_HTTP code=$errorCode status='$statusForFail' location='$loc' proof=$portal")
                 throw java.io.IOException("$errorCode $statusForFail$hint")
+            }
+            if (deuxCentOuvert) {
+                onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=SSH_RAW reason=http_2xx_tunnel status=$statusCode")
             }
             // Essayer de voir les premiers octets après les headers (ex: début SSH banner)
             val peekBuf = ByteArray(16)

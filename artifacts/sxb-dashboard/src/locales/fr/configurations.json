@@ -49,7 +49,7 @@
     "xrayOutbounds": "{{count}} outbound(s) Xray conservé(s) intégralement ; le moteur mobile les convertira pour libbox.",
     "singboxOutbounds": "{{count}} outbound(s) sing-box détecté(s) ; le JSON sera provisionné sans troncature.",
     "invalidFormat": "Format invalide : URI de partage, JSON V2Ray/Xray ou sing-box, ou configuration WireGuard attendu.",
-    "placeholder": "Collez une URI de partage ou la configuration JSON complète du fournisseur.",
+    "placeholder": "Collez une URI de partage, le JSON du fournisseur, ou une configuration SSH — par exemple :\n{\"host\":\"1.2.3.4\",\"port\":80,\"username\":\"mon-compte\",\"password\":\"mon-secret\",\"payload\":\"GET http://exemple.com HTTP/1.0[crlf]Host: exemple.com[crlf]Connection: keep-alive[crlf][crlf]\"}\nLe protocole est déduit des champs : inutile de l'écrire.",
     "size": "{{characters}} caractères · {{lines}} lignes"
   },
   "notices": {
@@ -96,7 +96,7 @@
     "syntaxHint": "La syntaxe JSON est correcte; le préflight vérifiera le schéma et le transport.",
     "unrecognized": "Format non reconnu",
     "editorTitle": "Éditeur V2Ray / Xray complet + URI de partage",
-    "editorHint": "Collez soit une URI de partage (`vless://`, `vmess://`, `trojan://`, `ss://`, `hy2://`, `tuic://`), soit le JSON exporté depuis V2Ray/Xray, comme dans l'application mobile. Les champs `dns`, `inbounds`, `outbounds`, `routing`, `streamSettings`, `proxySettings` et les en-têtes sont conservés; aucun résumé avec `…` ne doit être utilisé.",
+    "editorHint": "Collez une URI de partage (`vless://`, `vmess://`, `trojan://`, `ss://`, `hy2://`, `tuic://`), le JSON exporté depuis V2Ray/Xray, ou une configuration SSH (`host`, `port`, `username`, `password`, et `payload` pour l'injection HTTP — le protocole est déduit des champs). Les champs `dns`, `inbounds`, `outbounds`, `routing`, `streamSettings`, `proxySettings` et les en-têtes sont conservés; aucun résumé avec `…` ne doit être utilisé.",
     "format": "Formater",
     "minify": "Réduire",
     "clear": "Effacer",
