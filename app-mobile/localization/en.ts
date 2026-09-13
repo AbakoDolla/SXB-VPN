@@ -588,6 +588,10 @@ export const en = {
   notif_kill_switch: 'Kill Switch active — connection blocked',
 
   // In-app update
+  // Nouvelle connexion deployee depuis le tableau de bord
+  new_connection_title: 'New connection available',
+  new_connection_body: 'A new VPN connection was added to your account. Load it to start using it.',
+  new_connection_action: 'Load',
   update_available_title: 'New version available',
   update_available_body: 'A new version of SXB VPN is ready. Your data will be preserved.',
   update_current_label: 'Current version',

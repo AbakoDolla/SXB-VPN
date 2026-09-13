@@ -34,6 +34,16 @@ import { useConnectionDuration } from "@/hooks/useConnectionDuration";
 import AccessNotices from "@/components/AccessNotices";
 import FreeTrialCard from "@/components/FreeTrialCard";
 import { blocksDevice } from "@/services/accessPolicy";
+import { connexionsNouvelles, memoriser } from "@/services/newConnectionWatch";
+
+/**
+ * Cadence de relecture des connexions pendant que l'écran est ouvert.
+ *
+ * Une minute : assez court pour qu'un déploiement fait depuis le tableau de
+ * bord se remarque pendant que l'utilisateur est encore là, assez long pour
+ * rester négligeable — c'est une requête authentifiée, pas un battement.
+ */
+const NOUVELLES_CONNEXIONS_INTERVALLE_MS = 60_000;
 
 const LOGO = require("../../assets/images/icon.png");
 
@@ -147,6 +157,8 @@ export default function HomeScreen() {
   const [ping, setPing] = useState<number | null>(null);
   const [connections, setConnections] = useState<VpnConnection[]>([]);
   const [connectionsLoading, setConnectionsLoading] = useState(false);
+  /** Connexions déployées depuis le tableau de bord et jamais encore montrées. */
+  const [nouvellesConnexions, setNouvellesConnexions] = useState<string[]>([]);
   const [activeAnnouncement, setActiveAnnouncement] = useState<any>(null);
 
   const checkAnnouncements = React.useCallback(async () => {
@@ -196,6 +208,17 @@ export default function HomeScreen() {
       const conns: VpnConnection[] = res.data?.connections || [];
       setConnections(conns);
 
+      // ── Nouveauté déployée depuis le tableau de bord ────────────────────
+      // Sans cette comparaison, une connexion tout juste ajoutée n'était
+      // signalée par rien : l'utilisateur devait deviner qu'il fallait
+      // rafraîchir. On compare les IDENTIFIANTS, pas le nombre — une connexion
+      // retirée et une autre ajoutée laissent le compte inchangé alors qu'il y
+      // a bien du neuf.
+      try {
+        const nouvelles = await connexionsNouvelles(conns.map(c => c.id));
+        if (nouvelles.length > 0) setNouvellesConnexions(nouvelles);
+      } catch { /* la détection est un confort : elle ne doit rien casser */ }
+
       // Le statut `active` est celui du serveur et peut concerner plusieurs
       // abonnements. La sélection locale (`activeConfigId`) est l’autorité UI.
       const activeConn = conns.find(c => c.id === activeConfigId) || null;
@@ -211,6 +234,27 @@ export default function HomeScreen() {
     fetchConnections();
     checkAnnouncements();
   }, [fetchConnections, checkAnnouncements]);
+
+  // Nouvelle connexion déployée pendant que l'application est ouverte.
+  //
+  // Une relecture périodique, et non un intervalle serré : `/mobile/connections`
+  // est une requête authentifiée, et la découverte n'a pas besoin d'être
+  // instantanée — elle doit seulement arriver SANS que l'utilisateur ait à s'en
+  // douter. Le minuteur est démonté avec l'écran.
+  useEffect(() => {
+    const timer = setInterval(() => { void fetchConnections(); }, NOUVELLES_CONNEXIONS_INTERVALLE_MS);
+    return () => clearInterval(timer);
+  }, [fetchConnections]);
+
+  /** L'utilisateur charge la nouveauté : on recharge, PUIS on mémorise. */
+  const chargerNouvellesConnexions = async () => {
+    const aMemoriser = nouvellesConnexions;
+    setNouvellesConnexions([]);
+    await handleRefresh();
+    // Mémorisé seulement après le rafraîchissement : si celui-ci échoue, la
+    // nouveauté reste annoncée au lieu de disparaître sans avoir été chargée.
+    await memoriser(aMemoriser).catch(() => {});
+  };
 
   const handleRefresh = async () => {
     if (isRefreshing) return;
@@ -366,6 +410,40 @@ export default function HomeScreen() {
         </View>
 
         <AccessNotices />
+        {/* ── NOUVELLE CONNEXION DÉPLOYÉE ─────────────────────────────────
+            Jusqu'ici, une connexion ajoutée depuis le tableau de bord
+            n'apparaissait qu'au prochain démarrage, ou si l'utilisateur pensait
+            de lui-même à rafraîchir : rien ne le lui disait, il devait le
+            deviner. Placée juste sous les avis d'accès, l'annonce est vue sans
+            faire défiler, et le bouton fait le geste à sa place. */}
+        {nouvellesConnexions.length > 0 && (
+          <Surface tone={colors.primary}>
+            <View style={styles.bannerRow}>
+              <Ionicons name="notifications" size={22} color={colors.primary} />
+              <View style={{ flex: 1, gap: 2 }}>
+                <Text style={[type.h3, { color: colors.primary }]}>{t('new_connection_title')}</Text>
+                <Text style={[type.caption, { color: colors.textSecondary }]}>
+                  {t('new_connection_body')}
+                </Text>
+              </View>
+              <Pressable
+                onPress={() => { void chargerNouvellesConnexions(); }}
+                disabled={isRefreshing}
+                accessibilityRole="button"
+                accessibilityLabel={t('new_connection_action')}
+                style={{
+                  paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
+                  borderRadius: radius.md, backgroundColor: colors.primary + alpha.f16,
+                  opacity: isRefreshing ? 0.5 : 1,
+                }}
+              >
+                <Text style={[type.caption, { color: colors.primary, fontWeight: '700' }]}>
+                  {t('new_connection_action')}
+                </Text>
+              </Pressable>
+            </View>
+          </Surface>
+        )}
         {/* Only the selected configuration is blocked here, never the identity. */}
         {revokedStatus !== 'none' && (
           <Surface tone={colors.disconnected}>
