@@ -108,10 +108,22 @@ router.get("/", requireAuth, requirePermission("clients.view"), async (req: Auth
       orderBy: { createdAt: "desc" },
     });
     const ids = clients.map((client) => client.id);
-    // Mention « période d'essai » : une lecture indexée pour toute la page,
-    // jamais une par appareil. Le cloisonnement revendeur est déjà appliqué
-    // ci-dessus, donc un revendeur ne voit la mention que sur SES appareils.
-    const marquesEssai = await marquesEssaiParClient(prisma, ids);
+    // Mention « période d'essai » — UNIQUEMENT quand les essais sont
+    // explicitement demandés.
+    //
+    // Elle était calculée dans tous les cas, y compris sur l'affichage par
+    // défaut qui RETRANCHE les essais. La mention se retrouvait donc collée au
+    // forfait ordinaire de la ligne, avec une échéance qui n'était pas la
+    // sienne : on lisait « Période d'essai, fin le 12/10 » en face d'un forfait
+    // « SSH — 30j » expirant le même jour, comme si c'était lui l'essai.
+    //
+    // La règle est désormais simple : la mention n'accompagne que ce qu'elle
+    // décrit. Sur l'écran d'exploitation, les essais se gèrent dans « Essais
+    // gratuits » et n'apparaissent plus ici, donc rien ne les signale ici non
+    // plus. Une lecture indexée pour toute la page, jamais une par appareil.
+    const marquesEssai = avecEssais
+      ? await marquesEssaiParClient(prisma, ids)
+      : new Map<string, any>();
     const usageRows = ids.length
       ? await (prisma as any).trafficUsage.findMany({
           where: { clientId: { in: ids } },

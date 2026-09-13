@@ -149,9 +149,15 @@ router.get("/", requireAuth, requirePermission("clients.view"), async (req: Auth
     // pour les non-OWNER (filtrage à la lecture uniquement).
     const visibleClients = clients.filter((c) => canSeeUser(req, c.user));
 
-    // Mention « période d'essai » + pays déclaré. Calculée APRÈS le filtrage,
-    // donc jamais pour un client que l'appelant n'a pas le droit de voir.
-    const marquesEssai = await marquesEssaiParClient(prisma, visibleClients.map((c) => c.id));
+    // Mention « période d'essai » — UNIQUEMENT quand les essais sont
+    // explicitement demandés, pour la même raison que sur « Appareils » :
+    // signaler un essai sur un écran qui le retranche accole la mention au
+    // forfait ordinaire de la ligne, et lui prête une échéance qui n'est pas la
+    // sienne. Calculée APRÈS le filtrage, donc jamais pour un client que
+    // l'appelant n'a pas le droit de voir.
+    const marquesEssai = avecEssais
+      ? await marquesEssaiParClient(prisma, visibleClients.map((c) => c.id))
+      : new Map<string, any>();
 
     return res.json(visibleClients.map((c) => sanitizeVpnClient(c, marquesEssai.get(c.id) ?? null)));
   } catch (err) {

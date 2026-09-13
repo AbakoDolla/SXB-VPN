@@ -1035,22 +1035,52 @@ describe("MENTION « PÉRIODE D'ESSAI » — visible aussi côté revendeur", ()
     assert.ok(marques.includes("clientId: { in: ids }"));
   });
 
-  it("la mention accompagne les appareils ET les clients", () => {
+  it("la mention n'accompagne QUE ce qu'elle décrit", () => {
+    // LE DÉFAUT CORRIGÉ : « Appareils » et « Comptes VPN » calculaient la
+    // mention « Période d'essai — fin le … » dans TOUS les cas, y compris sur
+    // l'affichage par défaut, qui RETRANCHE les essais. La mention se
+    // retrouvait donc collée au forfait ordinaire de la ligne, avec une
+    // échéance qui n'était pas la sienne : on lisait « Période d'essai, fin le
+    // 12/10 » en face d'un forfait « SSH — 30j » expirant le même jour, comme
+    // si c'était lui l'essai.
+    const clients = readFileSync(new URL("../routes/clients.ts", import.meta.url), "utf8");
+    const devices = readFileSync(new URL("../routes/devices.ts", import.meta.url), "utf8");
+    for (const [nom, source] of [["clients", clients], ["devices", devices]]) {
+      assert.ok(source.includes("marquesEssaiParClient"), `${nom} : la mention doit rester calculable`);
+      // Elle n'est calculée que si l'appelant a demandé les essais. Sans cette
+      // condition, elle réapparaîtrait sur l'écran qui les exclut.
+      assert.match(
+        source,
+        /const marquesEssai = avecEssais\s*\n?\s*\?\s*await marquesEssaiParClient/,
+        `${nom} : la mention doit être conditionnée à l'inclusion explicite`,
+      );
+    }
     const appareils = readFileSync(new URL("../services/device-quota.ts", import.meta.url), "utf8");
     assert.ok(appareils.includes("trial: trial ?? null"), "sanitizeDevice doit porter la mention");
-    const clients = readFileSync(new URL("../routes/clients.ts", import.meta.url), "utf8");
-    assert.ok(clients.includes("marquesEssaiParClient"), "la liste des clients doit charger la mention");
-    const devices = readFileSync(new URL("../routes/devices.ts", import.meta.url), "utf8");
-    assert.ok(devices.includes("marquesEssaiParClient"), "la liste des appareils doit charger la mention");
+
+    // L'essai reste parfaitement reconnaissable LÀ OÙ IL SE GÈRE : la section
+    // « Essais gratuits » affiche le forfait attribué, son quota, son échéance
+    // et son état sur la ligne de l'inscrit.
+    const vue = readFileSync(
+      new URL("../../artifacts/sxb-dashboard/src/components/FreeTrialView.tsx", import.meta.url),
+      "utf8",
+    );
+    assert.ok(vue.includes("TrialTag"), "le marqueur d'essai vit dans la section essai");
+
+    // Et il ne se signale plus sur les écrans qui l'excluent.
+    for (const ecran of ["DevicesView", "ClientsView"]) {
+      const source = readFileSync(
+        new URL(`../../artifacts/sxb-dashboard/src/components/${ecran}.tsx`, import.meta.url),
+        "utf8",
+      );
+      assert.ok(!source.includes("<TrialBadge"), `${ecran} ne doit plus afficher la mention`);
+    }
   });
 
-  it("le REVENDEUR voit la mention sur ses clients, mais rien du vivier global", () => {
-    // La mention passe par /clients et /devices, déjà cloisonnés par
-    // `porteeClientsRevendeur` : elle n'élargit aucune portée.
+  it("le REVENDEUR reste cloisonné, et les surfaces globales lui sont fermées", () => {
     const clients = readFileSync(new URL("../routes/clients.ts", import.meta.url), "utf8");
     const listeClients = clients.slice(clients.indexOf('// GET /api/clients'), clients.indexOf('// GET /api/clients/'));
     assert.ok(listeClients.includes("porteeClientsRevendeur"), "cloisonnement revendeur attendu");
-    assert.ok(listeClients.includes("marquesEssaiParClient"), "mention d'essai attendue");
     const marques = readFileSync(new URL("../services/free-trial-marks.ts", import.meta.url), "utf8");
     assert.equal(
       /reseller|revendeur/i.test(marques.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "")),

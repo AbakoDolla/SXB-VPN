@@ -13,7 +13,6 @@ import { canResumeDevice, deviceStatus, hasExpired, lifecycleBadges, subscriptio
 import { useActionLock } from "../hooks/useActionLock";
 import { useClipboard } from "../hooks/useClipboard";
 import ActivationRenewalDialog from "./ActivationRenewalDialog";
-import { TrialBadge } from "./TrialBadge";
 import { Smartphone, Plus, Copy, Check, Ban, RefreshCw, Search, X, Clock, Shield, Key, Store, PackageOpen, PauseCircle, PlayCircle } from "lucide-react";
 import Pagination from "./ui/Pagination";
 import { toast } from "sonner";
@@ -281,9 +280,6 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
                               </button>
                             )}
                           </div>
-                          {/* Accès issu d'un essai gratuit : la mention suit
-                              l'appareil partout, revendeur compris. */}
-                          <TrialBadge trial={device.trial} />
                         </div>
                       </td>
                       {showsOwnerColumn && (
