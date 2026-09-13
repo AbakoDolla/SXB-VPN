@@ -252,6 +252,16 @@ const gererSchema = z.object({
   // Même raison qu'au déploiement : la borne métier est appliquée par
   // `normaliserConfigsEssai`, qui annonce la limite dans son refus.
   profileIds: z.array(identifiantSchema).max(100).optional(),
+  /**
+   * Serveurs à RETIRER de l'essai.
+   *
+   * Il manquait : on pouvait ajouter un serveur ou remplacer celui d'un
+   * forfait, jamais en enlever un. Or révoquer ne le retire pas de l'appareil
+   * — la liste des connexions renvoie aussi les forfaits révoqués, que
+   * l'application affiche comme indisponibles. Pour que la connexion
+   * DISPARAISSE du téléphone, il faut retirer le forfait lui-même.
+   */
+  removeProfileIds: z.array(identifiantSchema).max(100).optional(),
   quotaGB: z.coerce.number().finite().positive().max(100_000).optional(),
   quotaMode: z.enum(['set', 'add']).optional(),
   startAt: z.coerce.date().optional(),
@@ -269,8 +279,17 @@ const gererSchema = z.object({
     ...(corps.durationDays !== undefined ? { durationDays: corps.durationDays } : {}),
   } as ChangementsGroupes;
   const attribue = Boolean(corps.profileIds?.length);
-  if (aucunChampRenseigne(changements) && !attribue && corps.state === undefined) {
+  const retire = Boolean(corps.removeProfileIds?.length);
+  if (aucunChampRenseigne(changements) && !attribue && !retire && corps.state === undefined) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Au moins un champ ou un geste est requis' });
+  }
+  // Ajouter et retirer le MÊME serveur dans un seul geste n'a pas de sens, et
+  // l'ordre d'exécution déciderait silencieusement du résultat.
+  if (attribue && retire) {
+    const communs = corps.profileIds!.filter((id) => corps.removeProfileIds!.includes(id));
+    if (communs.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Un même serveur ne peut pas être ajouté et retiré' });
+    }
   }
   // Échéance explicite et durée sont deux façons contradictoires de fixer la
   // même borne : accepter les deux reviendrait à en ignorer une en silence.
@@ -1742,10 +1761,11 @@ router.post(
         if (configsAjoutees.includes(profileId)) profilsAjoutes.push(profil);
       }
 
-      const resultats: Array<{ id: string; status: string; reason?: string; updated?: number; created?: number }> = [];
+      const resultats: Array<{ id: string; status: string; reason?: string; updated?: number; created?: number; removed?: number }> = [];
       let reussies = 0;
       let forfaitsTouches = 0;
       let forfaitsCrees = 0;
+      let forfaitsRetires = 0;
 
       for (const requestId of lot.ids) {
         const demande = await (prisma as any).freeTrialRequest.findUnique({ where: { id: requestId } });
@@ -1767,7 +1787,7 @@ router.post(
         }
 
         const condition = conditionForfaitsEssai([demande]);
-        const forfaits = condition
+        let forfaits: any[] = condition
           ? await (prisma as any).subscription.findMany({
               where: condition,
               include: { client: { select: { userId: true, resellerId: true } } },
@@ -1780,7 +1800,55 @@ router.post(
 
         let touches = 0;
         let crees = 0;
+        let retires = 0;
         let echec: string | null = null;
+
+        // ── Retrait de serveurs ─────────────────────────────────────────────
+        //
+        // Le forfait est SUPPRIMÉ, pas révoqué : la liste des connexions rend
+        // aussi les forfaits révoqués, que l'application affiche comme
+        // indisponibles. Révoquer laisserait donc la connexion sur le
+        // téléphone, barrée — ce n'est pas « retirer un serveur ».
+        //
+        // GARDE-FOU : seuls les forfaits NÉS DE CET ESSAI sont candidats. Un
+        // compte peut détenir des forfaits ordinaires à côté — c'est le cas dès
+        // qu'un essayeur devient client payant —, et les emporter ici
+        // supprimerait un accès acheté au motif qu'on retire un essai.
+        if (body.removeProfileIds?.length) {
+          const aRetirer = (forfaits as any[]).filter((forfait) => {
+            const neDeCetEssai = String(forfait.freeTrialRequestId ?? '') === String(demande.id)
+              || String(demande.subscriptionId ?? '') === String(forfait.id);
+            return neDeCetEssai && body.removeProfileIds!.includes(String(forfait.profileId ?? ''));
+          });
+          for (const forfait of aRetirer) {
+            try {
+              // `deleteMany` porte la MÊME condition que le tri ci-dessus : un
+              // forfait qui aurait cessé d'être un forfait d'essai entre-temps
+              // n'est pas emporté.
+              const supprime = await (prisma as any).subscription.deleteMany({
+                where: {
+                  id: forfait.id,
+                  OR: [
+                    { freeTrialRequestId: demande.id },
+                    ...(demande.subscriptionId ? [{ id: demande.subscriptionId }] : []),
+                  ],
+                },
+              });
+              if (supprime.count === 1) {
+                accessStateHub.invalidate({ clientId: forfait.clientId });
+                retires += 1;
+              }
+            } catch (erreurRetrait: any) {
+              echec = erreurRetrait?.message || 'errors.server';
+              console.error('free-trial remove error:', erreurRetrait);
+            }
+          }
+          if (aRetirer.length === 0) echec = echec ?? 'errors.free_trial.no_access';
+          // Les forfaits retirés sortent du lot : la boucle de modification qui
+          // suit tenterait sinon d'écrire sur une ligne qui n'existe plus.
+          const retiresIds = new Set(aRetirer.map((f: any) => String(f.id)));
+          forfaits = (forfaits as any[]).filter((f) => !retiresIds.has(String(f.id)));
+        }
 
         // ── Modifications et gestes d'état sur les forfaits EXISTANTS ───────
         for (const forfait of forfaits as any[]) {
@@ -1890,9 +1958,10 @@ router.post(
 
         forfaitsTouches += touches;
         forfaitsCrees += crees;
-        if (touches + crees > 0) {
+        forfaitsRetires += retires;
+        if (touches + crees + retires > 0) {
           reussies += 1;
-          resultats.push({ id: requestId, status: 'ok', updated: touches, created: crees });
+          resultats.push({ id: requestId, status: 'ok', updated: touches, created: crees, removed: retires });
         } else {
           resultats.push({
             id: requestId,
@@ -1904,7 +1973,7 @@ router.post(
 
       await logDbActivity(
         req.user?.userId || null,
-        `Gestion groupée d'essais gratuits : ${reussies} essai(s) sur ${lot.ids.length}, ${forfaitsTouches} forfait(s) modifié(s), ${forfaitsCrees} créé(s)`,
+        `Gestion groupée d'essais gratuits : ${reussies} essai(s) sur ${lot.ids.length}, ${forfaitsTouches} forfait(s) modifié(s), ${forfaitsCrees} créé(s), ${forfaitsRetires} retiré(s)`,
         resultats.some((ligne) => ligne.status === 'failed') ? 'warning' : 'info',
         req.ip || '',
       );
@@ -1915,6 +1984,7 @@ router.post(
         succeeded: reussies,
         updated: forfaitsTouches,
         created: forfaitsCrees,
+        removed: forfaitsRetires,
         results: resultats,
       });
     } catch (err: any) {

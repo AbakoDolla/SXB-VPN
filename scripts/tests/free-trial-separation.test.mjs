@@ -1000,3 +1000,60 @@ test("les connectés du tableau de bord principal sont MESURÉS, pas déduits d'
   const vue = source("artifacts/sxb-dashboard/src/components/DashboardView.tsx");
   assert.match(vue, /stats\?\.connectedNowMeasured === true/);
 });
+
+test("retirer un serveur le fait DISPARAÎTRE de l'appareil, sans toucher aux forfaits ordinaires", async () => {
+  // LE MANQUE : on pouvait ajouter un serveur ou remplacer celui d'un forfait,
+  // jamais en enlever un. Et révoquer ne suffit pas — /mobile/connections rend
+  // aussi les forfaits révoqués, que l'application affiche comme
+  // indisponibles : la connexion resterait sur le téléphone, barrée.
+  garantirProfil("p2");
+  const jeton = await creerJeton("Campagne retrait");
+  const inscription = await inscrire(jeton, {
+    deviceId: "SXB-TRIAL-REMOVE-01", empreinte: "android-id-fixture-remove",
+  });
+  await deployer(jeton, inscription.requestId, { quotaGB: 2, profileIds: ["p1", "p2"] });
+  const demande = db.state.FreeTrialRequest.find(l => l.id === inscription.requestId);
+
+  // Le compte détient AUSSI un forfait ordinaire : c'est le cas dès qu'un
+  // essayeur devient client payant, et c'est exactement ce qu'il ne faut pas
+  // emporter en retirant un essai.
+  const paye = await api("admin", "POST", "/subscriptions", {
+    clientId: demande.clientId, profileId: "p1", quotaGB: 50, durationDays: 30,
+  });
+  ok(paye, 201);
+
+  const avant = db.state.Subscription.filter(s => s.clientId === demande.clientId);
+  assert.equal(avant.length, 3, "2 forfaits d'essai + 1 payant");
+
+  const retrait = await api("admin", "POST", "/free-trial/requests/manage", {
+    requestIds: [demande.id], tokenId: jeton.id, removeProfileIds: ["p1"],
+  });
+  ok(retrait);
+  assert.equal(retrait.body.removed, 1, "un seul forfait retiré");
+
+  const apres = db.state.Subscription.filter(s => s.clientId === demande.clientId);
+  // Le forfait PAYANT sur le même profil survit : seul celui né de l'essai part.
+  assert.ok(apres.some(s => s.id === paye.body.subscription.id),
+    "le forfait ordinaire ne doit JAMAIS être emporté");
+  assert.equal(apres.length, 2, "il reste l'essai sur p2 et le forfait payant");
+  assert.equal(apres.filter(s => s.freeTrialRequestId === demande.id).length, 1,
+    "il ne doit rester qu'un seul forfait d'essai");
+
+  // Et il a bien DISPARU, il n'est pas simplement révoqué : la connexion ne
+  // doit plus figurer du tout sur l'appareil.
+  assert.equal(apres.some(s => s.profileId === "p1" && s.freeTrialRequestId === demande.id), false);
+});
+
+test("ajouter et retirer le même serveur d'un seul geste est refusé", async () => {
+  // L'ordre d'exécution déciderait sinon du résultat, en silence.
+  const jeton = await creerJeton("Contradiction");
+  const inscription = await inscrire(jeton, {
+    deviceId: "SXB-TRIAL-CONTRA-01", empreinte: "android-id-fixture-contra",
+  });
+  await deployer(jeton, inscription.requestId, { quotaGB: 1 });
+  const refus = await api("admin", "POST", "/free-trial/requests/manage", {
+    requestIds: [inscription.requestId], tokenId: jeton.id,
+    profileIds: ["p2"], removeProfileIds: ["p2"],
+  });
+  assert.equal(refus.status, 400);
+});

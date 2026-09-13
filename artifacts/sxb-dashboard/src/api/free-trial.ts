@@ -460,6 +460,14 @@ export async function manageFreeTrialRequests(input: {
   tokenId?: string;
   profileId?: string;
   profileIds?: string[];
+  /**
+   * Serveurs à RETIRER : le forfait correspondant disparaît de l'appareil.
+   *
+   * Révoquer ne suffisait pas — la liste des connexions rend aussi les
+   * forfaits révoqués, que l'application affiche comme indisponibles. Pour
+   * que la connexion parte du téléphone, il faut retirer le forfait.
+   */
+  removeProfileIds?: string[];
   quotaGB?: number;
   quotaMode?: 'set' | 'add';
   startAt?: string;

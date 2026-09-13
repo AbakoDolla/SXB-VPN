@@ -124,7 +124,7 @@ const MANAGE_RESULT_LABELS: Record<string, string> = {
 };
 
 /** Ce que le panneau de gestion fait des configurations VPN. */
-type ModeServeur = 'keep' | 'replace' | 'add';
+type ModeServeur = 'keep' | 'replace' | 'add' | 'remove';
 
 /** Ce que le panneau de gestion fait de l'échéance. */
 type ModeEcheance = 'keep' | 'expire' | 'duration';
@@ -276,6 +276,8 @@ export default function FreeTrialView() {
   const [modeServeur, setModeServeur] = useState<ModeServeur>('keep');
   const [serveurRemplacant, setServeurRemplacant] = useState('');
   const [serveursAjoutes, setServeursAjoutes] = useState<string[]>([]);
+  /** Serveurs à RETIRER de l'essai — le forfait disparaît de l'appareil. */
+  const [serveursRetires, setServeursRetires] = useState<string[]>([]);
   const [gestionQuotaGB, setGestionQuotaGB] = useState('');
   const [gestionQuotaMode, setGestionQuotaMode] = useState<'set' | 'add'>('set');
   const [modeEcheance, setModeEcheance] = useState<ModeEcheance>('keep');
@@ -527,11 +529,34 @@ export default function FreeTrialView() {
   const gestionRenseignee =
     (modeServeur === 'replace' && serveurRemplacant !== '') ||
     (modeServeur === 'add' && serveursAjoutes.length > 0) ||
+    (modeServeur === 'remove' && serveursRetires.length > 0) ||
     gestionQuotaGB.trim() !== '' ||
     (modeEcheance === 'expire' && gestionExpireAt !== '') ||
     (modeEcheance === 'duration' && gestionDuree.trim() !== '') ||
     gestionEtat !== '';
   const forfaitsAjoutes = modeServeur === 'add' ? selectionDeployee.length * serveursAjoutes.length : 0;
+
+  /**
+   * Serveurs réellement attribués à la sélection, seuls candidats au retrait.
+   *
+   * Proposer tout le catalogue laisserait cocher un serveur que personne ne
+   * détient : le geste ne ferait rien, et rien n'expliquerait pourquoi.
+   */
+  const serveursRetirables = useMemo(() => {
+    const detenus = new Map<string, { id: string; name: string }>();
+    for (const demande of volet?.requests ?? []) {
+      if (!selectionDeployee.includes(demande.id)) continue;
+      for (const forfait of demande.access?.subscriptions ?? []) {
+        if (forfait.profileId) {
+          detenus.set(forfait.profileId, {
+            id: forfait.profileId,
+            name: forfait.profileName ?? forfait.name,
+          });
+        }
+      }
+    }
+    return [...detenus.values()];
+  }, [volet, selectionDeployee]);
   const gestionBornee =
     selectionDeployee.length > MAX_FREE_TRIAL_BATCH ||
     serveursAjoutes.length > MAX_FREE_TRIAL_PROFILES ||
@@ -769,6 +794,7 @@ export default function FreeTrialView() {
         tokenId: jetonOuvert,
         profileId: modeServeur === 'replace' && serveurRemplacant ? serveurRemplacant : undefined,
         profileIds: modeServeur === 'add' && serveursAjoutes.length > 0 ? serveursAjoutes : undefined,
+        removeProfileIds: modeServeur === 'remove' && serveursRetires.length > 0 ? serveursRetires : undefined,
         quotaGB: gestionQuotaGB.trim() ? Number(gestionQuotaGB) : undefined,
         quotaMode: gestionQuotaGB.trim() ? gestionQuotaMode : undefined,
         expireAt: modeEcheance === 'expire' && gestionExpireAt
@@ -936,34 +962,28 @@ export default function FreeTrialView() {
             </div>
             <p className="flex items-center gap-1.5">
               <HardDrive className="h-3 w-3 shrink-0 text-gray-500" aria-hidden="true" />
-              {t('operations.freeTrial.access.quota', {
-                used: formatBytes(acces.quotaUsed),
-                granted: acces.quotaBytes === '0'
-                  ? t('operations.freeTrial.access.unlimited')
-                  : formatBytes(acces.quotaBytes),
-              })}
-            </p>
-            {/* RESTANT — le propriétaire le demande explicitement à côté de
-                l'accordé et du consommé. Calculé ici plutôt que servi par le
-                serveur : c'est une soustraction des deux valeurs déjà
-                présentes, et en faire un champ de plus ouvrirait la porte à
-                deux chiffres qui se contredisent. Un dépassement se lit
-                « 0 restant », jamais un négatif. */}
-            {acces.quotaBytes !== '0' && (
-              <p className="flex items-center gap-1.5 text-gray-300">
-                <HardDrive className="h-3 w-3 shrink-0 text-gray-600" aria-hidden="true" />
-                {t('operations.freeTrial.access.remaining', {
-                  remaining: formatBytes(
-                    String(
-                      (() => {
-                        const reste = BigInt(acces.quotaBytes || '0') - BigInt(acces.quotaUsed || '0');
-                        return reste > 0n ? reste : 0n;
-                      })(),
+              {/* Une SEULE ligne pour le volume.
+                  Consommé, accordé et restant tenaient sur deux lignes
+                  séparées : c'était une ligne de plus à lire, par essayeur,
+                  pour une information qui se dit d'un trait. */}
+              {acces.quotaBytes === '0'
+                ? t('operations.freeTrial.access.quota', {
+                    used: formatBytes(acces.quotaUsed),
+                    granted: t('operations.freeTrial.access.unlimited'),
+                  })
+                : t('operations.freeTrial.access.quotaLine', {
+                    used: formatBytes(acces.quotaUsed),
+                    granted: formatBytes(acces.quotaBytes),
+                    remaining: formatBytes(
+                      String(
+                        (() => {
+                          const reste = BigInt(acces.quotaBytes || '0') - BigInt(acces.quotaUsed || '0');
+                          return reste > 0n ? reste : 0n;
+                        })(),
+                      ),
                     ),
-                  ),
-                })}
-              </p>
-            )}
+                  })}
+            </p>
             <p className="flex items-center gap-1.5">
               <CalendarClock className="h-3 w-3 shrink-0 text-gray-500" aria-hidden="true" />
               {acces.expireAt
@@ -1094,30 +1114,25 @@ export default function FreeTrialView() {
               <p className="text-xs text-gray-500">{t('operations.freeTrial.metrics.connected')}</p>
             </div>
           </div>
-          {/* ── Trafic PROPRE aux essais ──────────────────────────────────
-              Le propriétaire exige deux jeux de chiffres qui ne se mélangent
-              jamais. Celui-ci ne porte que sur les forfaits nés d'un essai ;
-              le tableau de bord principal les a retranchés des siens. */}
-          <div className="grid grid-cols-1 divide-y divide-white/5 border-t border-white/10 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
-            <div className="bg-slate-950/40 px-4 py-3">
-              <p className="text-lg font-bold text-gray-200">{formatBytes(overview.trafficGrantedBytes ?? '0')}</p>
-              <p className="text-xs text-gray-500">{t('operations.freeTrial.metrics.trafficGranted')}</p>
+          {/* Volume PROPRE aux essais, sur UNE ligne.
+              Trois cartes pleine largeur pour trois nombres qui se lisent
+              ensemble, c'était un écran de plus à parcourir pour une seule
+              information : « tant consommé sur tant, tant restant ». */}
+          <div className="border-t border-white/10 bg-slate-950/40 px-4 py-3">
+            <p className="text-sm text-gray-200">
+              {t('operations.freeTrial.metrics.trafficLine', {
+                used: formatBytes(overview.trafficUsedBytes ?? '0'),
+                granted: formatBytes(overview.trafficGrantedBytes ?? '0'),
+                remaining: formatBytes(overview.trafficRemainingBytes ?? '0'),
+              })}
               {(overview.unlimitedPlans ?? 0) > 0 && (
-                <p className="mt-0.5 text-[11px] text-gray-600">
+                <span className="ml-1.5 text-[11px] text-gray-500">
                   {t('operations.freeTrial.metrics.trafficUnlimited', {
                     count: formatNumber(overview.unlimitedPlans ?? 0),
                   })}
-                </p>
+                </span>
               )}
-            </div>
-            <div className="bg-slate-950/40 px-4 py-3">
-              <p className="text-lg font-bold text-amber-300">{formatBytes(overview.trafficUsedBytes ?? '0')}</p>
-              <p className="text-xs text-gray-500">{t('operations.freeTrial.metrics.trafficUsed')}</p>
-            </div>
-            <div className="bg-slate-950/40 px-4 py-3">
-              <p className="text-lg font-bold text-emerald-300">{formatBytes(overview.trafficRemainingBytes ?? '0')}</p>
-              <p className="text-xs text-gray-500">{t('operations.freeTrial.metrics.trafficRemaining')}</p>
-            </div>
+            </p>
           </div>
           {/* Honnêteté du chiffre : un essai déployé sur un appareil dont
               l'application ne rapporte pas encore sa présence n'est pas compté.
@@ -1882,6 +1897,7 @@ export default function FreeTrialView() {
                                   <option value="keep">{t('operations.freeTrial.manageForm.serverKeep')}</option>
                                   <option value="replace">{t('operations.freeTrial.manageForm.serverReplace')}</option>
                                   <option value="add">{t('operations.freeTrial.manageForm.serverAdd')}</option>
+                                  <option value="remove">{t('operations.freeTrial.manageForm.serverRemove')}</option>
                                 </select>
                               </label>
                               {modeServeur === 'replace' && (
@@ -1916,6 +1932,42 @@ export default function FreeTrialView() {
                                     </label>
                                   ))}
                                 </div>
+                              )}
+                              {/* Retrait : on ne propose QUE les serveurs
+                                  réellement attribués à la sélection. Offrir
+                                  tout le catalogue laisserait cocher un serveur
+                                  que personne n'a, et le geste ne ferait rien
+                                  sans qu'on comprenne pourquoi. */}
+                              {modeServeur === 'remove' && (
+                                serveursRetirables.length === 0 ? (
+                                  <p className="mt-2 text-[11px] text-gray-500">
+                                    {t('operations.freeTrial.manageForm.removeNone')}
+                                  </p>
+                                ) : (
+                                  <>
+                                    <div className="mt-2 grid max-h-40 gap-1.5 overflow-y-auto sm:grid-cols-2 lg:grid-cols-3">
+                                      {serveursRetirables.map(profil => (
+                                        <label
+                                          key={profil.id}
+                                          className="flex items-center gap-2 rounded-md border border-rose-500/20 bg-rose-500/[0.04] px-2 py-1.5 text-xs text-gray-200"
+                                        >
+                                          <input
+                                            type="checkbox"
+                                            checked={serveursRetires.includes(profil.id)}
+                                            onChange={() => setServeursRetires(prev => prev.includes(profil.id)
+                                              ? prev.filter(x => x !== profil.id)
+                                              : [...prev, profil.id])}
+                                            className="h-3.5 w-3.5 rounded border-white/20 bg-slate-900"
+                                          />
+                                          <span className="truncate">{profil.name}</span>
+                                        </label>
+                                      ))}
+                                    </div>
+                                    <p className="mt-1.5 text-[11px] text-amber-300/90">
+                                      {t('operations.freeTrial.manageForm.removeHint')}
+                                    </p>
+                                  </>
+                                )
                               )}
                             </fieldset>
 
