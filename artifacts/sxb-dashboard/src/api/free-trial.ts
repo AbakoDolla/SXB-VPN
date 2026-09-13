@@ -107,6 +107,13 @@ export interface FreeTrialRequest {
    * quota ».
    */
   access?: FreeTrialAccess | null;
+  /**
+   * Connexion RÉELLE de l'essayeur, mesurée par les battements de
+   * l'application tant que le tunnel est monté — jamais déduite d'un compte
+   * « actif ». `measured: false` signifie « rien n'a pu être mesuré », ce qui
+   * n'est pas la même chose que « hors ligne ».
+   */
+  presence?: { connected: boolean; lastSeenAt: string | null; measured: boolean } | null;
 }
 
 /** Une ligne du récapitulatif « d'où viennent nos clients ». */

@@ -13,6 +13,7 @@
     "editMaxUsesHint": "Videz le champ pour lever le plafond. Il ne peut pas descendre sous le nombre d'inscriptions déjà prises.",
     "editExpiresAtHint": "Videz le champ pour retirer l'échéance du code d'invitation.",
     "save": "Enregistrer",
+    "presence": { "online": "Connecté", "offline": "Hors ligne", "unmeasured": "Présence non mesurée" },
     "searchTitle": "Résultats de la recherche",
     "activeAccounts": {
       "title": "Comptes en période d'essai",

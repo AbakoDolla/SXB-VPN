@@ -13,6 +13,7 @@
     "editMaxUsesHint": "Clear the field to lift the cap. It cannot go below the enrolments already taken.",
     "editExpiresAtHint": "Clear the field to remove the invitation code's expiry.",
     "save": "Save",
+    "presence": { "online": "Connected", "offline": "Offline", "unmeasured": "Presence not measured" },
     "searchTitle": "Search results",
     "activeAccounts": {
       "title": "Accounts on trial",

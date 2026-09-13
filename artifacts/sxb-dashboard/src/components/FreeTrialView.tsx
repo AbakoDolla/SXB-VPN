@@ -786,6 +786,29 @@ export default function FreeTrialView() {
         <span className={`inline-flex rounded-md border px-2 py-0.5 text-[11px] font-semibold ${statusClasses(demande.status)}`}>
           {t(STATUS_LABELS[demande.status] ?? 'operations.common.unknown')}
         </span>
+        {/* ── Connexion RÉELLE ────────────────────────────────────────────
+            Le tunnel est déclaré monté et le dernier battement date de moins
+            que la fenêtre de présence. Un compte « actif » ne vaut jamais
+            présence. Quand rien ne peut être mesuré, on l'écrit plutôt que
+            d'afficher « hors ligne » pour tout le monde — ce qui affirmerait
+            quelque chose de faux. */}
+        {demande.status === FREE_TRIAL_STATUS.DEPLOYED && (
+          <div className="mt-1.5 text-[11px]">
+            {demande.presence?.measured === false ? (
+              <span className="text-gray-600">{t('operations.freeTrial.presence.unmeasured')}</span>
+            ) : demande.presence?.connected ? (
+              <span className="inline-flex items-center gap-1.5 text-emerald-300">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" aria-hidden="true" />
+                {t('operations.freeTrial.presence.online')}
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 text-gray-500">
+                <span className="h-1.5 w-1.5 rounded-full bg-gray-600" aria-hidden="true" />
+                {t('operations.freeTrial.presence.offline')}
+              </span>
+            )}
+          </div>
+        )}
       </td>
       {/* ── Accès courant ────────────────────────────────────────────────────
           Serveur(s) attribué(s), quota accordé ET consommé, échéance, état.

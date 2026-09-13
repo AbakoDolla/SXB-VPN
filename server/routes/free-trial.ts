@@ -350,10 +350,55 @@ function demandeDuForfait(
 }
 
 /** Accès courant de chaque demande déployée, en UNE lecture pour toute la page. */
+/**
+ * État de connexion RÉEL des comptes d'essai affichés sur la page.
+ *
+ * Rien n'est réinventé : c'est la mesure de présence de la plateforme, fondée
+ * sur les battements que l'application émet tant que le tunnel est monté. Un
+ * compte « actif » ne vaut jamais présence, et c'est exactement la confusion
+ * que cette mesure évite.
+ *
+ * `measured: false` quand rien ne peut être mesuré — pas de base, pas de
+ * secret de pseudonymisation. On le dit plutôt que de renvoyer « hors ligne »
+ * pour tout le monde, ce qui affirmerait quelque chose de faux.
+ *
+ * Une seule lecture pour toute la page, jamais une par ligne.
+ */
+async function presenceParDemande(
+  demandes: ReadonlyArray<{ clientId?: unknown }>,
+): Promise<{ measured: boolean; parClient: Map<string, { connected: boolean; lastSeenAt: string | null; measured: boolean }> }> {
+  const parClient = new Map<string, { connected: boolean; lastSeenAt: string | null; measured: boolean }>();
+  const secret = config.MOBILE_HEALTH_PSEUDONYM_SECRET
+    || (config.NODE_ENV !== 'production' ? config.JWT_SECRET : null);
+  const comptes = new Set(
+    demandes.map((d) => (d.clientId ? String(d.clientId) : '')).filter(Boolean),
+  );
+  if (!prisma || !secret || comptes.size === 0) {
+    return { measured: false, parClient };
+  }
+  try {
+    const presence = await listerConnectes(prisma as any, secret, { sansDatation: true });
+    for (const ligne of presence.lignes) {
+      if (!comptes.has(ligne.clientId)) continue;
+      const connue = parClient.get(ligne.clientId);
+      // Plusieurs appareils sur un même compte : on retient le signal le plus
+      // récent, c'est lui qui dit si quelqu'un est en ligne maintenant.
+      if (!connue || (ligne.lastSeenAt && connue.lastSeenAt && ligne.lastSeenAt > connue.lastSeenAt) || !connue.lastSeenAt) {
+        parClient.set(ligne.clientId, { connected: true, lastSeenAt: ligne.lastSeenAt ?? null, measured: true });
+      }
+    }
+    return { measured: true, parClient };
+  } catch (err: any) {
+    // Une présence indisponible ne doit pas emporter la liste des demandes :
+    // elle est le cœur de cet écran, la présence n'en est qu'une colonne.
+    console.error('free-trial presence error:', err?.message || err);
+    return { measured: false, parClient };
+  }
+}
+
 async function accesParDemande(
   demandes: ReadonlyArray<{ id?: unknown; status?: unknown; subscriptionId?: unknown }>,
-): Promise<Map<string, AccesEssaiVue>> {
-  const acces = new Map<string, AccesEssaiVue>();
+): Promise<Map<string, AccesEssaiVue>> {  const acces = new Map<string, AccesEssaiVue>();
   const deployees = demandes.filter((d) => d.status === STATUT_DEMANDE.DEPLOYED);
   const condition = conditionForfaitsEssai(deployees);
   if (!prisma || !condition) return acces;
@@ -996,11 +1041,31 @@ router.get(
       // pour l'obtenir. Une seule lecture indexée pour toute la page, jamais
       // une requête par ligne.
       const acces = await accesParDemande(demandes as any[]);
+      // ── ÉTAT DE CONNEXION RÉEL ────────────────────────────────────────────
+      //
+      // Le propriétaire veut lire « John — connecté / Michael — hors ligne »
+      // ici même. La mesure existe déjà et n'est PAS réinventée : c'est celle
+      // du reste de la plateforme, fondée sur les battements que l'application
+      // émet tant que le tunnel est monté. Un compte « actif » ne vaut jamais
+      // présence — c'est précisément la confusion que cette mesure évite.
+      //
+      // Une seule lecture pour toute la page. Et quand rien ne peut être
+      // mesuré — base absente, secret de pseudonymisation manquant —, on le
+      // DIT (`measured: false`) au lieu de renvoyer « hors ligne » pour tout le
+      // monde, ce qui affirmerait quelque chose de faux.
+      const presence = await presenceParDemande(demandes as any[]);
       return res.json({
         requests: (demandes as any[]).map((demande) => ({
           ...vueDemandePourAdmin(demande),
           access: acces.get(String(demande.id)) ?? null,
+          presence: presence.parClient.get(String(demande.clientId ?? '')) ?? {
+            connected: false,
+            lastSeenAt: null,
+            measured: presence.measured,
+          },
         })),
+        presenceMeasured: presence.measured,
+        presenceWindowMinutes: PRESENCE_WINDOW_MINUTES,
         total: Number(total ?? demandes.length),
         limit: limite,
         offset: decalage,

@@ -813,3 +813,33 @@ test("un jeton jamais utilisé se supprime, et disparaît vraiment", async () =>
   assert.equal(suppression.body.deleted, true);
   assert.equal(db.state.FreeTrialToken.find(ligne => ligne.id === jeton.id), undefined);
 });
+
+test("la présence d'un essayeur vient de la VRAIE mesure, jamais de son statut de compte", () => {
+  // Le propriétaire l'a écrit en majuscules : « It should NOT simply show a
+  // user as connected because they have an active account ». La route ne doit
+  // donc PAS déduire la présence du statut de la demande ni du compte.
+  const route = source("server/routes/free-trial.ts");
+
+  // Elle réutilise la mesure existante de la plateforme — battements émis tant
+  // que le tunnel est monté — au lieu d'en écrire une seconde.
+  assert.match(route, /listerConnectes\(prisma as any, secret/);
+  assert.match(route, /from '\.\.\/services\/vpn-presence'/);
+
+  // Une seule lecture pour toute la page, jamais une par ligne.
+  const fonction = route.slice(route.indexOf('async function presenceParDemande'));
+  const corps = fonction.slice(0, fonction.indexOf('async function accesParDemande'));
+  assert.equal((corps.match(/listerConnectes\(/g) || []).length, 1);
+
+  // « Non mesuré » n'est pas « hors ligne » : sans secret ni base, la route le
+  // DIT plutôt que d'affirmer que personne n'est connecté.
+  assert.match(corps, /return \{ measured: false, parClient \}/);
+  assert.match(route, /presenceMeasured: presence\.measured/);
+
+  // L'écran distingue les trois cas, et ne peint jamais « hors ligne » sur une
+  // mesure absente.
+  const vue = source("artifacts/sxb-dashboard/src/components/FreeTrialView.tsx");
+  assert.match(vue, /presence\?\.measured === false/);
+  assert.match(vue, /operations\.freeTrial\.presence\.unmeasured/);
+  assert.match(vue, /operations\.freeTrial\.presence\.online/);
+  assert.match(vue, /operations\.freeTrial\.presence\.offline/);
+});
