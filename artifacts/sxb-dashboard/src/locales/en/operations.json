@@ -14,6 +14,7 @@
     "editExpiresAtHint": "Clear the field to remove the invitation code's expiry.",
     "save": "Save",
     "presence": { "online": "Connected", "offline": "Offline", "unmeasured": "Presence not measured", "lastSeen": "Last seen {{date}}" },
+    "activity": { "open": "View activity", "title": "Activity of {{name}}", "window": "Last {{days}} days", "truncated": "partial history", "sessions": "VPN sessions", "sessionsEmpty": "No session in this period.", "sessionsUnmeasured": "Sessions not measured: this device has reported nothing yet, or measurement is not configured.", "sessionDetail": "{{duration}} min · {{reconnects}} reconnection(s)", "usage": "Data usage", "usageEmpty": "No usage reported in this period." },
     "searchTitle": "Search results",
     "activeAccounts": {
       "title": "Accounts on trial",

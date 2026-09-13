@@ -14,6 +14,7 @@
     "editExpiresAtHint": "Videz le champ pour retirer l'échéance du code d'invitation.",
     "save": "Enregistrer",
     "presence": { "online": "Connecté", "offline": "Hors ligne", "unmeasured": "Présence non mesurée", "lastSeen": "Vu le {{date}}" },
+    "activity": { "open": "Voir l'activité", "title": "Activité de {{name}}", "window": "Derniers {{days}} jours", "truncated": "historique partiel", "sessions": "Sessions VPN", "sessionsEmpty": "Aucune session sur cette période.", "sessionsUnmeasured": "Sessions non mesurées : cet appareil n'a encore rien rapporté, ou la mesure n'est pas configurée.", "sessionDetail": "{{duration}} min · {{reconnects}} reconnexion(s)", "usage": "Consommation", "usageEmpty": "Aucune consommation remontée sur cette période." },
     "searchTitle": "Résultats de la recherche",
     "activeAccounts": {
       "title": "Comptes en période d'essai",

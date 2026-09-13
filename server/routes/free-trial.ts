@@ -125,6 +125,15 @@ const INTERVALLE_VERIFICATION_S = intervalleVerificationEssai(process.env.FREE_T
 const identifiantSchema = z.string().trim().min(1).max(100);
 const deviceIdSchema = z.string().trim().min(1).max(255);
 
+/**
+ * Profondeur et volume de l'historique d'un essayeur.
+ *
+ * Bornés des deux côtés : un appareil bavard depuis des mois rendrait la page
+ * inutilisable, et la question posée — « qu'a fait cette personne pendant son
+ * essai ? » — porte sur une période courte par nature.
+ */
+const ACTIVITE_ESSAI_JOURS = 30;
+const ACTIVITE_ESSAI_MAX_LIGNES = 200;
 const creerJetonSchema = z.object({
   label: z.string().trim().max(160).optional(),
   // `null` = illimité, et le dit explicitement plutôt que par omission.
@@ -1110,6 +1119,122 @@ router.get(
       if (err instanceof z.ZodError) return erreurValidation(res, err);
       console.error('free-trial request list error:', err);
       return res.status(500).json({ error: 'errors.server', message: 'Lecture des demandes impossible' });
+    }
+  },
+);
+
+// ─── GET /api/free-trial/requests/:id/activity ───────────────────────────────
+//
+// Historique d'UN essayeur : ses sessions VPN et sa consommation.
+//
+// Le propriétaire veut pouvoir « ouvrir un utilisateur et voir son
+// activité/historique ». Les deux sources existent déjà et ne sont pas
+// dupliquées : les rapports de santé mobile pour les sessions, la table de
+// consommation pour les volumes. Aucune nouvelle écriture n'est introduite.
+//
+// La lecture est BORNÉE des deux côtés — nombre de lignes et profondeur — parce
+// qu'un appareil bavard depuis des mois rendrait cette page inutilisable.
+router.get(
+  '/requests/:id/activity',
+  requireAuth,
+  interdireAccesRevendeur(),
+  requirePermission('clients.view'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!prisma) return baseIndisponible(res);
+      const demande = await (prisma as any).freeTrialRequest.findUnique({
+        where: { id: req.params.id },
+        select: { id: true, clientId: true, deviceId: true, name: true, status: true },
+      });
+      if (!demande) {
+        return res.status(404).json({
+          error: 'errors.free_trial.request_not_found',
+          code: CODES_ESSAI.REQUEST_NOT_FOUND,
+          message: 'Demande d’essai introuvable.',
+        });
+      }
+
+      const depuis = new Date(Date.now() - ACTIVITE_ESSAI_JOURS * 86_400_000);
+
+      // ── Sessions VPN ────────────────────────────────────────────────────
+      // Le pseudonyme est déterministe : on retrouve les rapports de CET
+      // appareil sans qu'aucune identité n'ait jamais été écrite dans la table
+      // de santé.
+      const secret = config.MOBILE_HEALTH_PSEUDONYM_SECRET
+        || (config.NODE_ENV !== 'production' ? config.JWT_SECRET : null);
+      let sessions: any[] = [];
+      let sessionsMeasured = false;
+      if (secret && demande.clientId && demande.deviceId) {
+        try {
+          const pseudonyme = pseudonymizeMobileDevice(
+            String(demande.clientId), String(demande.deviceId), secret,
+          );
+          const appareil = await (prisma as any).mobileHealthDevice.findFirst({
+            where: { pseudonym: pseudonyme },
+            select: { id: true },
+          });
+          if (appareil) {
+            const rapports = await (prisma as any).mobileHealthReport.findMany({
+              where: { deviceId: appareil.id, reportedAt: { gte: depuis } },
+              orderBy: { reportedAt: 'desc' },
+              take: ACTIVITE_ESSAI_MAX_LIGNES,
+              select: {
+                reportedAt: true, tunnelState: true, protocol: true,
+                outcome: true, errorCode: true, sessionDurationSeconds: true,
+                reconnectCount: true,
+              },
+            });
+            sessions = (rapports as any[]).map((r) => ({
+              at: r.reportedAt ? new Date(r.reportedAt).toISOString() : null,
+              tunnelState: r.tunnelState ?? null,
+              protocol: r.protocol ?? null,
+              outcome: r.outcome ?? null,
+              errorCode: r.errorCode ?? null,
+              durationSeconds: Number(r.sessionDurationSeconds ?? 0),
+              reconnects: Number(r.reconnectCount ?? 0),
+            }));
+          }
+          sessionsMeasured = true;
+        } catch (erreur: any) {
+          console.error('free-trial activity sessions error:', erreur?.message || erreur);
+        }
+      }
+
+      // ── Consommation ────────────────────────────────────────────────────
+      let usage: any[] = [];
+      if (demande.clientId) {
+        const lignes = await (prisma as any).trafficUsage.findMany({
+          where: { clientId: String(demande.clientId), timestamp: { gte: depuis } },
+          orderBy: { timestamp: 'desc' },
+          take: ACTIVITE_ESSAI_MAX_LIGNES,
+          select: { timestamp: true, download: true, upload: true, deviceId: true },
+        });
+        usage = (lignes as any[]).map((l) => ({
+          at: l.timestamp ? new Date(l.timestamp).toISOString() : null,
+          // Chaînes : ces volumes dépassent le nombre sûr en JavaScript, et le
+          // JSON ne transporte pas de BigInt.
+          downloadBytes: String(l.download ?? 0),
+          uploadBytes: String(l.upload ?? 0),
+          deviceId: l.deviceId ?? null,
+        }));
+      }
+
+      return res.json({
+        requestId: demande.id,
+        name: demande.name,
+        deviceId: demande.deviceId,
+        windowDays: ACTIVITE_ESSAI_JOURS,
+        // `false` signifie « rien n'a pu être lu », ce qui n'est pas la même
+        // chose qu'un historique vide.
+        sessionsMeasured,
+        sessions,
+        usage,
+        truncated: sessions.length >= ACTIVITE_ESSAI_MAX_LIGNES
+          || usage.length >= ACTIVITE_ESSAI_MAX_LIGNES,
+      });
+    } catch (err: any) {
+      console.error('free-trial activity error:', err);
+      return res.status(500).json({ error: 'errors.server', message: 'Lecture de l’activité impossible' });
     }
   },
 );

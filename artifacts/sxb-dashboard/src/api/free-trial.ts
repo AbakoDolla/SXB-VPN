@@ -258,8 +258,51 @@ export async function deleteFreeTrialToken(id: string): Promise<void> {
   );
 }
 
-export async function fetchFreeTrialRequests(status?: string): Promise<FreeTrialRequest[]> {
-  const page = await fetchFreeTrialRequestPage({ status });
+/** Une session VPN observée pour un essayeur. */
+export interface FreeTrialSession {
+  at: string | null;
+  tunnelState: string | null;
+  protocol: string | null;
+  outcome: string | null;
+  errorCode: string | null;
+  durationSeconds: number;
+  reconnects: number;
+}
+
+/** Une remontée de consommation pour un essayeur. */
+export interface FreeTrialUsageEntry {
+  at: string | null;
+  downloadBytes: string;
+  uploadBytes: string;
+  deviceId: string | null;
+}
+
+/**
+ * Historique d'UN essayeur : ses sessions VPN et sa consommation.
+ *
+ * `sessionsMeasured: false` signifie « rien n'a pu être lu » — pas de secret de
+ * pseudonymisation, appareil inconnu de la table de santé —, ce qui n'est pas
+ * la même chose qu'un historique vide.
+ */
+export interface FreeTrialActivity {
+  requestId: string;
+  name: string;
+  deviceId: string;
+  windowDays: number;
+  sessionsMeasured: boolean;
+  sessions: FreeTrialSession[];
+  usage: FreeTrialUsageEntry[];
+  /** La lecture est bornée : au-delà, l'historique affiché est partiel. */
+  truncated: boolean;
+}
+
+export async function fetchFreeTrialActivity(requestId: string): Promise<FreeTrialActivity> {
+  return apiRequest<FreeTrialActivity>(
+    `/free-trial/requests/${encodeURIComponent(requestId)}/activity`,
+  );
+}
+
+export async function fetchFreeTrialRequests(status?: string): Promise<FreeTrialRequest[]> {  const page = await fetchFreeTrialRequestPage({ status });
   return page.requests;
 }
 

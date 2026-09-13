@@ -883,3 +883,42 @@ test("le trafic des essais se compte à part, et n'oublie aucun forfait", async 
   ok(principal);
   assert.equal(principal.body.freeTrialExcluded, true);
 });
+
+test("on peut ouvrir un essayeur et lire son historique, sans qu'il soit inventé", async () => {
+  // Le propriétaire veut « open a user and see their activity/history ».
+  const { demande } = await essaiDeploye({
+    deviceId: "SXB-TRIAL-HISTO-01", empreinte: "android-id-fixture-histo",
+  });
+
+  const activite = await api("admin", "GET", `/free-trial/requests/${demande.id}/activity`);
+  ok(activite);
+  assert.equal(activite.body.requestId, demande.id);
+  assert.equal(Array.isArray(activite.body.sessions), true);
+  assert.equal(Array.isArray(activite.body.usage), true);
+  // La fenêtre est BORNÉE et annoncée : un appareil bavard depuis des mois
+  // rendrait la page inutilisable, et la question porte sur une période courte.
+  assert.equal(typeof activite.body.windowDays, "number");
+  assert.equal(activite.body.windowDays > 0, true);
+
+  // « Non mesuré » n'est PAS « aucune session » : sans secret de
+  // pseudonymisation ou appareil inconnu de la table de santé, rien n'a pu être
+  // lu, et laisser croire que la personne ne s'est jamais connectée serait faux.
+  assert.equal(typeof activite.body.sessionsMeasured, "boolean");
+
+  // Une demande inexistante ne rend pas un historique vide : elle est refusée.
+  const absente = await api("admin", "GET", "/free-trial/requests/inexistante/activity");
+  assert.equal(absente.status, 404);
+});
+
+test("la section essai rafraîchit son état de connexion sans intervention", () => {
+  // « When a Free Trial user connects, their status should update
+  // automatically » : l'écran relit la présence tout seul.
+  const vue = source("artifacts/sxb-dashboard/src/components/FreeTrialView.tsx");
+  assert.match(vue, /const RAFRAICHISSEMENT_PRESENCE_MS = 60_000/);
+  assert.match(vue, /setInterval\(\(\) => \{[\s\S]{0,400}?chargerComptesEssai\(\)/);
+  // Mais JAMAIS pendant une action groupée : recharger sous les pieds de
+  // l'exploitant ferait bouger la liste qu'il est en train de sélectionner.
+  assert.match(vue, /if \(busy \|\| showDeployForm \|\| showManageForm\) return;/);
+  // Et le minuteur est démonté avec l'écran.
+  assert.match(vue, /return \(\) => clearInterval\(timer\);/);
+});

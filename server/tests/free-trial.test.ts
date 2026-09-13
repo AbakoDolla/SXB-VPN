@@ -542,10 +542,12 @@ describe("contrat de la route — la décision reste dans le service", () => {
   it("expose les routes attendues par l'application et le tableau de bord", () => {
     for (const chemin of [
       "'/tokens'",
+      "'/tokens/:id'",
       "'/tokens/:id/revoke'",
       "'/enroll'",
       "'/status'",
       "'/requests'",
+      "'/requests/:id/activity'",
       "'/requests/deploy'",
       "'/requests/manage'",
       "'/requests/reject'",
@@ -557,14 +559,22 @@ describe("contrat de la route — la décision reste dans le service", () => {
   });
 
   it("protège toutes les routes admin par requireAuth + requirePermission", () => {
-    const adminRoutes = source.split(/router\.(?:get|post)\(/).slice(1)
+    // TOUS les verbes, pas seulement get et post.
+    //
+    // Le découpage ne lisait que `router.get(` et `router.post(` : une route
+    // écrite en `patch` ou `delete` échappait donc entièrement à ce garde-fou.
+    // Modifier et supprimer un jeton sont précisément les gestes qu'on ne veut
+    // pas voir arriver sans protection — c'est le cas que ce test doit couvrir
+    // en premier, pas celui qu'il oubliait.
+    const adminRoutes = source.split(/router\.(?:get|post|put|patch|delete)\(/).slice(1)
       .filter((bloc) => !bloc.startsWith("'/enroll'") && !bloc.startsWith("'/status'"));
-    // 9 routes internes : 3 jetons, 3 demandes (liste + deux récapitulatifs)
-    // et 3 actions d'instruction (déploiement, gestion des essais déployés,
-    // refus). La gestion est la contrepartie de la séparation totale : les
-    // écrans d'exploitation n'ayant plus aucune prise sur un essai, elle doit
-    // exister ICI — et rester aussi fermée que les autres.
-    assert.equal(adminRoutes.length, 9, "nombre de routes admin inattendu");
+    // 12 routes internes : 4 jetons (liste, création, modification,
+    // suppression) + révocation, 4 demandes (liste, activité d'un inscrit, et
+    // deux récapitulatifs) et 3 actions d'instruction (déploiement, gestion des
+    // essais déployés, refus). La gestion est la contrepartie de la séparation
+    // totale : les écrans d'exploitation n'ayant plus aucune prise sur un
+    // essai, elle doit exister ICI — et rester aussi fermée que les autres.
+    assert.equal(adminRoutes.length, 12, "nombre de routes admin inattendu");
     for (const bloc of adminRoutes) {
       const entete = bloc.slice(0, 600);
       assert.ok(entete.includes("requireAuth"), `route admin sans requireAuth : ${entete.slice(0, 40)}`);

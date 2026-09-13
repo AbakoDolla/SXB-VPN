@@ -39,6 +39,7 @@ import {
   revokeFreeTrialToken,
   updateFreeTrialToken,
   deleteFreeTrialToken,
+  fetchFreeTrialActivity,
   FREE_TRIAL_STATE,
   FREE_TRIAL_STATUS,
   MAX_FREE_TRIAL_BATCH,
@@ -50,6 +51,7 @@ import {
   type FreeTrialOverview,
   type FreeTrialRequest,
   type FreeTrialState,
+  type FreeTrialActivity,
   type FreeTrialToken,
 } from '../api/free-trial';
 import { countryFlag, countryName } from '../lib/countries';
@@ -129,6 +131,15 @@ type ModeEcheance = 'keep' | 'expire' | 'duration';
 
 /** Demandes affichées par page dans un volet. 200 inscrits restent lisibles. */
 const TAILLE_PAGE = 25;
+
+/**
+ * Cadence de relecture de l'état de connexion.
+ *
+ * Une minute : la fenêtre de présence est de 15 minutes et le battement de 5,
+ * donc rien de plus fin n'apporterait d'information — cela ne ferait que
+ * transformer cet écran en sonde.
+ */
+const RAFRAICHISSEMENT_PRESENCE_MS = 60_000;
 
 function statusClasses(status: string): string {
   if (status === FREE_TRIAL_STATUS.DEPLOYED) return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300';
@@ -215,6 +226,14 @@ export default function FreeTrialView() {
   // la gestion.
   const [comptesEssai, setComptesEssai] = useState<FreeTrialRequest[] | null>(null);
   const [comptesEssaiEnCours, setComptesEssaiEnCours] = useState(true);
+
+  // ── Activité d'un essayeur ─────────────────────────────────────────────────
+  // Ouvrir quelqu'un pour lire ses sessions et sa consommation. Chargé à la
+  // demande : l'historique d'un seul inscrit n'a aucune raison d'être lu pour
+  // dessiner la page.
+  const [activiteDe, setActiviteDe] = useState<FreeTrialRequest | null>(null);
+  const [activite, setActivite] = useState<FreeTrialActivity | null>(null);
+  const [activiteEnCours, setActiviteEnCours] = useState(false);
 
   // ── Étape 1 : formulaire de création du jeton ──────────────────────────────
   const [showTokenForm, setShowTokenForm] = useState(false);
@@ -353,6 +372,40 @@ export default function FreeTrialView() {
   }, [errorMessage]);
 
   useEffect(() => { void chargerComptesEssai(); }, [chargerComptesEssai]);
+
+  // Mise à jour AUTOMATIQUE de l'état de connexion.
+  //
+  // Le propriétaire veut voir le statut changer quand quelqu'un se connecte,
+  // sans avoir à recharger. La fenêtre de présence est de 15 minutes et le
+  // battement de 5 : une relecture par minute suffit largement à refléter un
+  // changement, sans transformer cet écran en sonde.
+  //
+  // Le minuteur est démonté avec l'écran, et ne tourne pas pendant qu'une
+  // action groupée est en cours — recharger sous les pieds de l'exploitant
+  // ferait bouger la liste qu'il est en train de sélectionner.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (busy || showDeployForm || showManageForm) return;
+      void chargerComptesEssai();
+      if (jetonOuvert) void chargerVolet(jetonOuvert, volet?.page ?? 1);
+    }, RAFRAICHISSEMENT_PRESENCE_MS);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chargerComptesEssai, jetonOuvert, busy, showDeployForm, showManageForm]);
+
+  const ouvrirActivite = async (demande: FreeTrialRequest) => {
+    setActiviteDe(demande);
+    setActivite(null);
+    setActiviteEnCours(true);
+    try {
+      setActivite(await fetchFreeTrialActivity(demande.id));
+    } catch (err) {
+      setError(errorMessage(err, 'operations.freeTrial.genericError'));
+      setActiviteDe(null);
+    } finally {
+      setActiviteEnCours(false);
+    }
+  };
 
   useEffect(() => {
     // Les serveurs proposés au déploiement sont les configurations VPN
@@ -885,7 +938,21 @@ export default function FreeTrialView() {
           </div>
         )}
       </td>
-      <td className="px-4 py-3 text-xs text-gray-500">{formatDate(demande.submittedAt)}</td>
+      <td className="px-4 py-3 text-xs text-gray-500">
+        {formatDate(demande.submittedAt)}
+        {/* Ouvrir cette personne pour lire ses sessions et sa consommation.
+            Chargé à la demande : l'historique d'un seul inscrit n'a aucune
+            raison d'être lu pour dessiner la page. */}
+        {demande.status === FREE_TRIAL_STATUS.DEPLOYED && (
+          <button
+            type="button"
+            onClick={() => void ouvrirActivite(demande)}
+            className="mt-1 block text-[11px] text-cyan-300 transition hover:text-cyan-200"
+          >
+            {t('operations.freeTrial.activity.open')}
+          </button>
+        )}
+      </td>
     </tr>
     );
   };
@@ -1159,6 +1226,105 @@ export default function FreeTrialView() {
             </button>
           </div>
         </form>
+      )}
+
+      {/* ── Activité d'un essayeur ─────────────────────────────────────────
+          Ses sessions VPN et sa consommation, sur une fenêtre bornée. Les deux
+          sources existaient déjà — rapports de santé et table de consommation —
+          et ne sont pas dupliquées : rien de neuf n'est écrit pour cet écran. */}
+      {activiteDe && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-white/10 bg-slate-950">
+            <div className="flex items-start justify-between gap-3 border-b border-white/10 px-5 py-4">
+              <div>
+                <h2 className="text-sm font-semibold text-gray-200">
+                  {t('operations.freeTrial.activity.title', { name: activiteDe.name })}
+                </h2>
+                <p className="mt-0.5 font-mono text-[11px] text-gray-500">{activiteDe.deviceId}</p>
+                {activite && (
+                  <p className="mt-1 text-[11px] text-gray-500">
+                    {t('operations.freeTrial.activity.window', { days: formatNumber(activite.windowDays) })}
+                    {activite.truncated ? ` · ${t('operations.freeTrial.activity.truncated')}` : ''}
+                  </p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => { setActiviteDe(null); setActivite(null); }}
+                aria-label={t('operations.freeTrial.cancel')}
+                className="rounded-lg p-1.5 text-gray-400 transition hover:bg-white/5 hover:text-gray-200"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {activiteEnCours && (
+              <p className="flex items-center gap-2 px-5 py-8 text-sm text-gray-400">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                {t('operations.freeTrial.loading')}
+              </p>
+            )}
+
+            {!activiteEnCours && activite && (
+              <div className="space-y-5 px-5 py-4">
+                <section>
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                    {t('operations.freeTrial.activity.sessions')}
+                  </h3>
+                  {/* « Non mesuré » n'est pas « aucune session » : sans secret
+                      de pseudonymisation ou appareil inconnu de la table de
+                      santé, rien n'a pu être lu. Le dire évite de laisser
+                      croire que cette personne ne s'est jamais connectée. */}
+                  {!activite.sessionsMeasured ? (
+                    <p className="mt-2 text-xs text-gray-600">{t('operations.freeTrial.activity.sessionsUnmeasured')}</p>
+                  ) : activite.sessions.length === 0 ? (
+                    <p className="mt-2 text-xs text-gray-600">{t('operations.freeTrial.activity.sessionsEmpty')}</p>
+                  ) : (
+                    <ul className="mt-2 space-y-1.5">
+                      {activite.sessions.map((session, index) => (
+                        <li key={`${session.at}-${index}`} className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 text-[11px]">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-gray-300">{session.at ? formatDate(session.at) : '—'}</span>
+                            <span className={session.tunnelState === 'connected' ? 'text-emerald-300' : 'text-gray-500'}>
+                              {session.tunnelState ?? '—'}
+                            </span>
+                            {session.protocol && <span className="text-gray-500">{session.protocol}</span>}
+                            {session.errorCode && <span className="text-rose-300">{session.errorCode}</span>}
+                          </div>
+                          <div className="mt-0.5 text-gray-500">
+                            {t('operations.freeTrial.activity.sessionDetail', {
+                              duration: formatNumber(Math.round(session.durationSeconds / 60)),
+                              reconnects: formatNumber(session.reconnects),
+                            })}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+
+                <section>
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                    {t('operations.freeTrial.activity.usage')}
+                  </h3>
+                  {activite.usage.length === 0 ? (
+                    <p className="mt-2 text-xs text-gray-600">{t('operations.freeTrial.activity.usageEmpty')}</p>
+                  ) : (
+                    <ul className="mt-2 space-y-1.5">
+                      {activite.usage.map((ligne, index) => (
+                        <li key={`${ligne.at}-${index}`} className="flex flex-wrap items-center gap-3 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 text-[11px]">
+                          <span className="text-gray-300">{ligne.at ? formatDate(ligne.at) : '—'}</span>
+                          <span className="text-gray-400">↓ {formatBytes(ligne.downloadBytes)}</span>
+                          <span className="text-gray-400">↑ {formatBytes(ligne.uploadBytes)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       {/* ── Modification d'un jeton ────────────────────────────────────────
