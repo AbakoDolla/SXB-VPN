@@ -841,6 +841,24 @@ class SxbVpnService : VpnService(), PlatformInterface {
         @Volatile private var currentState: String = "disconnected"
 
         /**
+         * Le tunnel a-t-il DÉJÀ été debout depuis le dernier démarrage demandé ?
+         *
+         * Sert à distinguer deux situations que l'utilisateur ne vit pas du tout
+         * de la même façon :
+         *
+         *  • un échec au DÉMARRAGE — mot de passe faux, hôte injoignable : il
+         *    vient d'appuyer sur « connecter » et doit lire la cause tout de
+         *    suite, sans attendre l'épuisement des tentatives ;
+         *  • une coupure APRÈS COUP — la connexion marchait, une façade l'a
+         *    fermée : il n'a rien demandé, la reprise est automatique, et lui
+         *    annoncer une panne ne ferait que l'inviter à reconnecter lui-même.
+         *
+         * Remis à faux uniquement sur un arrêt demandé : une reprise en cours ne
+         * doit pas se retrouver traitée comme un premier démarrage.
+         */
+        @Volatile private var tunnelEverUp: Boolean = false
+
+        /**
          * Horodatage d'entrée dans l'état « connected », en temps monotone.
          *
          * La durée de session était comptée côté JavaScript : elle repartait de
@@ -1181,6 +1199,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
             // événement réseau ne puisse relancer un tunnel que l'utilisateur
             // vient de couper.
             if (::autoReconnect.isInitialized) autoReconnect.markStopped("user_stop")
+            // Un arrêt DEMANDÉ clôt l'épisode : le prochain démarrage est un
+            // vrai démarrage, dont les échecs doivent se lire tout de suite.
+            tunnelEverUp = false
             SxbAccessControl.cancelStarts(this)
             cleanup()
             return START_NOT_STICKY
@@ -1993,8 +2014,33 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     Log.w("SXB_DEBUG", "[SXB_DEBUG] LIBBOX_STOPPED_IN_LOOP")
                     broadcastLog("[SXB] ⚠️ Moteur TUN arrêté")
                 }
+                // ── Une reprise en cours n'est pas une panne ────────────────
+                //
+                // « error » était diffusé ICI, avant même de lancer la reprise.
+                // L'application le rend par « ❌ Erreur VPN — connexion perdue »
+                // et remet le bouton au repos : on annonçait donc une panne à
+                // l'instant précis où le service allait la réparer seul. Devant
+                // une erreur, l'utilisateur reconnecte à la main — et son geste
+                // arrête la reprise automatique qui était déjà programmée.
+                //
+                // C'est ce qui rendait chaque coupure manuelle : une façade qui
+                // ferme la connexion au bout de dix minutes (limite de durée
+                // d'un frontal, indépendante de tout trafic) suffisait à
+                // ramener l'utilisateur à son téléphone toutes les dix minutes.
+                //
+                // Tant que la reprise est armée, l'état annoncé est donc
+                // « connecting » : l'écran montre une reconnexion, pas un
+                // échec, et l'utilisateur n'a rien à faire. L'erreur reste
+                // diffusée quand il n'y a plus de reprise possible — soit ici
+                // même si elle est désarmée, soit par `onGiveUp` quand les
+                // tentatives sont épuisées.
+                if (autoReconnect.isEnabled()) {
+                    broadcastStatus("connecting"); setCurrentState("connecting")
+                    broadcastLog("[SXB] 🔄 Connexion perdue — reprise automatique en cours")
+                    autoReconnect.onDisconnected()
+                    return
+                }
                 broadcastStatus("error"); setCurrentState("error")
-                if (autoReconnect.isEnabled()) { autoReconnect.onDisconnected(); return }
                 break
             }
         } catch (e: InterruptedException) {
@@ -2245,6 +2291,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // On s'assure que l'état est bien "connected" (déjà fait normalement dans openTun)
         if (currentState != "connected") {
             broadcastStatus("connected"); setCurrentState("connected")
+            tunnelEverUp = true
             autoReconnect.onConnected()
             updateNotification("SXB VPN — $label connecté")
             startNotificationUpdater()
@@ -2324,8 +2371,30 @@ class SxbVpnService : VpnService(), PlatformInterface {
         trace("VPN_FAILED", "code=$code state=$currentState")
         broadcastLog("[SXB_DEBUG] VPN_FAILED code=$code")
         broadcastLog("[SXB] $code — ${displayMessage.removePrefix("❌ ").take(160)}")
-        broadcastStatus("error", code)
-        setCurrentState("error")
+        // Une coupure APRÈS COUP n'est pas annoncée comme une panne.
+        //
+        // « error » remet le bouton au repos et affiche « connexion perdue » :
+        // devant cela, l'utilisateur reconnecte à la main, et son geste annule
+        // la reprise déjà programmée. Une façade qui ferme la connexion toutes
+        // les dix minutes suffisait alors à le ramener à son téléphone toutes
+        // les dix minutes.
+        //
+        // La distinction porte sur `tunnelEverUp`, jamais sur le code d'erreur :
+        // un échec au DÉMARRAGE doit se lire immédiatement — mot de passe faux,
+        // hôte injoignable —, sans faire attendre l'épuisement des tentatives.
+        val repriseSilencieuse = tunnelEverUp
+            && code !in PERMANENT_ERROR_CODES
+            && ::autoReconnect.isInitialized
+            && autoReconnect.isEnabled()
+            && running.get()
+        if (repriseSilencieuse) {
+            broadcastStatus("connecting")
+            setCurrentState("connecting")
+            broadcastLog("[SXB] 🔄 Connexion perdue — reprise automatique en cours")
+        } else {
+            broadcastStatus("error", code)
+            setCurrentState("error")
+        }
         // FIX — Ne pas appeler cleanup() ici : le bloc finally de startSshTunnel /
         // startSingBoxTunnel appelle déjà cleanup(). Un double appel provoquait un
         // stopForeground + stopSelf() en double, laissant l'UI dans un état incohérent.
@@ -2798,6 +2867,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             broadcastLog("[SXB] ✅ Handshake réussi — Données en transit")
             setCurrentState("connected")
             broadcastStatus("connected")
+            tunnelEverUp = true
             updateNotification("SXB VPN — Connecté")
             startNotificationUpdater()
             autoReconnect.onConnected()

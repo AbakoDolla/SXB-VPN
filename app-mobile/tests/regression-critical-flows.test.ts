@@ -1082,7 +1082,32 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(nativeService, /currentSession = sshSession === session/);
     assert.match(nativeService, /Thread\.sleep\(SxbSshKeepAlive\.POLL_INTERVAL_MS\)/);
     const sshLoop = nativeService.slice(nativeService.indexOf('SxbSshKeepAlive.classify('));
-    assert.match(sshLoop.slice(0, 2000), /autoReconnect\.onDisconnected\(\)/);
+    assert.match(sshLoop.slice(0, 4000), /autoReconnect\.onDisconnected\(\)/);
+
+    // ── 5 bis. Une reprise en cours n'est pas annoncée comme une panne ─────
+    //
+    // LE DÉFAUT VÉCU : « error » était diffusé avant même de lancer la reprise.
+    // L'application le rend par « ❌ Erreur VPN — connexion perdue » et remet le
+    // bouton au repos ; devant cela l'utilisateur reconnecte à la main, et son
+    // geste annule la reprise déjà programmée. Une façade qui ferme la
+    // connexion toutes les dix minutes — limite de durée d'un frontal,
+    // indépendante du trafic — suffisait donc à le ramener à son téléphone
+    // toutes les dix minutes.
+    const boucleReprise = sshLoop.slice(0, 4000);
+    assert.match(boucleReprise, /if \(autoReconnect\.isEnabled\(\)\) \{\s*\n\s*broadcastStatus\("connecting"\)/);
+    // L'erreur reste diffusée quand plus aucune reprise n'est possible.
+    assert.match(boucleReprise, /broadcastStatus\("error"\); setCurrentState\("error"\)/);
+
+    // La même distinction vaut pour `failVpn`, et elle porte sur le fait
+    // d'avoir DÉJÀ été connecté — jamais sur le code d'erreur : un échec au
+    // démarrage (mot de passe faux) doit se lire tout de suite, sans attendre
+    // l'épuisement des tentatives.
+    assert.match(nativeService, /val repriseSilencieuse = tunnelEverUp/);
+    assert.match(nativeService, /&& code !in PERMANENT_ERROR_CODES/);
+    // Le drapeau est levé à la connexion et retombe sur un arrêt DEMANDÉ, pour
+    // qu'une reprise ne soit jamais confondue avec un premier démarrage.
+    assert.match(nativeService, /tunnelEverUp = true/);
+    assert.match(nativeService, /markStopped\("user_stop"\)[\s\S]{0,300}?tunnelEverUp = false/);
 
     // ── 6. Un démontage volontaire n'est pas une panne ────────────────────
     // Une reprise ferme elle-même la session précédente ; l'ancien fil la
