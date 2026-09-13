@@ -915,10 +915,50 @@ test("la section essai rafraîchit son état de connexion sans intervention", ()
   // automatically » : l'écran relit la présence tout seul.
   const vue = source("artifacts/sxb-dashboard/src/components/FreeTrialView.tsx");
   assert.match(vue, /const RAFRAICHISSEMENT_PRESENCE_MS = 60_000/);
-  assert.match(vue, /setInterval\(\(\) => \{[\s\S]{0,400}?chargerComptesEssai\(\)/);
+  assert.match(vue, /setInterval\(\(\) => \{[\s\S]{0,600}?chargerComptesEssai\(true\)/);
   // Mais JAMAIS pendant une action groupée : recharger sous les pieds de
   // l'exploitant ferait bouger la liste qu'il est en train de sélectionner.
   assert.match(vue, /if \(busy \|\| showDeployForm \|\| showManageForm\) return;/);
   // Et le minuteur est démonté avec l'écran.
   assert.match(vue, /return \(\) => clearInterval\(timer\);/);
+});
+
+test("un rafraîchissement de fond n'alarme pas et n'efface rien", () => {
+  // LE DÉFAUT SIGNALÉ, capture à l'appui : « Connexion au service impossible.
+  // Diagnostic : Failed to fetch » en rouge, sur un écran par ailleurs
+  // parfaitement lisible — et le volet du jeton annonçant « Aucune demande
+  // d'essai gratuit pour ce filtre » juste sous une ligne qui affichait
+  // « 1 déployée(s) ».
+  //
+  // Trois fautes, une seule cause : la relecture AUTOMATIQUE que je venais
+  // d'ajouter se comportait comme une action de l'exploitant.
+  const vue = source("artifacts/sxb-dashboard/src/components/FreeTrialView.tsx");
+
+  // 1. La relecture de fond est distinguée à l'appel.
+  assert.match(vue, /chargerComptesEssai\(true\)/);
+  assert.match(vue, /chargerVolet\(jetonOuvert, volet\?\.page \?\? 1, true\)/);
+
+  // 2. Elle ne lève AUCUNE bannière et n'efface RIEN. Vider la liste la ferait
+  //    lire « aucun essai activé » — un mensonge, ces accès existent toujours.
+  const comptes = vue.slice(vue.indexOf('const chargerComptesEssai'));
+  const corpsComptes = comptes.slice(0, comptes.indexOf('useEffect'));
+  assert.match(corpsComptes, /if \(fond\) return;/);
+  const iRetour = corpsComptes.indexOf('if (fond) return;');
+  assert.ok(iRetour < corpsComptes.indexOf('setComptesEssai([])'),
+    "la sortie doit précéder l'effacement de la liste");
+  assert.ok(iRetour < corpsComptes.indexOf('setError('),
+    "la sortie doit précéder la bannière d'erreur");
+
+  // 3. Elle ne fait pas clignoter l'indicateur de chargement chaque minute.
+  assert.match(corpsComptes, /if \(!fond\) setComptesEssaiEnCours\(true\)/);
+  const volet = vue.slice(vue.indexOf('const chargerVolet'));
+  assert.match(volet.slice(0, 900), /if \(!fond\) \{/);
+
+  // 4. Un échec de lecture ne se rend plus comme une absence de demandes.
+  assert.match(vue, /failed\?: boolean/);
+  assert.match(vue, /loading: false, failed: true/);
+  assert.match(vue, /!contenu\?\.loading && contenu\?\.failed/);
+  assert.match(vue, /!contenu\?\.loading && !contenu\?\.failed && \(contenu\?\.requests\.length \?\? 0\) === 0/);
+  // Et l'exploitant peut réessayer sans recharger toute la page.
+  assert.match(vue, /operations\.freeTrial\.retry/);
 });

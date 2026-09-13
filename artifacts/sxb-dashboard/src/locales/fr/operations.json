@@ -15,6 +15,8 @@
     "save": "Enregistrer",
     "presence": { "online": "Connecté", "offline": "Hors ligne", "unmeasured": "Présence non mesurée", "lastSeen": "Vu le {{date}}" },
     "activity": { "open": "Voir l'activité", "title": "Activité de {{name}}", "window": "Derniers {{days}} jours", "truncated": "historique partiel", "sessions": "Sessions VPN", "sessionsEmpty": "Aucune session sur cette période.", "sessionsUnmeasured": "Sessions non mesurées : cet appareil n'a encore rien rapporté, ou la mesure n'est pas configurée.", "sessionDetail": "{{duration}} min · {{reconnects}} reconnexion(s)", "usage": "Consommation", "usageEmpty": "Aucune consommation remontée sur cette période." },
+    "loadFailed": "Les inscriptions de ce jeton n'ont pas pu être lues. Elles ne sont pas perdues : seule la lecture a échoué.",
+    "retry": "Réessayer",
     "searchTitle": "Résultats de la recherche",
     "activeAccounts": {
       "title": "Comptes en période d'essai",

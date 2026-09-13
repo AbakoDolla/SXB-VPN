@@ -164,6 +164,16 @@ interface VoletJeton {
   total: number;
   page: number;
   loading: boolean;
+  /**
+   * Vrai quand la lecture a ÉCHOUÉ.
+   *
+   * Sans ce drapeau, un volet dont la requête tombe se rend exactement comme un
+   * volet légitimement vide, et affiche « Aucune demande d'essai gratuit pour
+   * ce filtre » alors que la ligne du jeton annonce juste au-dessus
+   * « 1 déployée(s) ». L'écran se contredit, et l'exploitant conclut que sa
+   * campagne a disparu.
+   */
+  failed?: boolean;
 }
 
 const VOLET_VIDE: VoletJeton = { requests: [], total: 0, page: 1, loading: true };
@@ -310,9 +320,20 @@ export default function FreeTrialView() {
    * C'est le seul chemin de lecture des demandes en mode groupé : la page
    * d'accueil n'en charge aucune, et ouvrir un jeton ne charge jamais celles
    * des autres.
+   *
+   * `fond` distingue une relecture AUTOMATIQUE d'une lecture demandée. Une
+   * relecture de fond ne montre pas d'indicateur de chargement — la liste
+   * clignoterait toutes les minutes — et surtout ne signale pas ses échecs :
+   * une coupure réseau d'une seconde afficherait « Connexion au service
+   * impossible » en rouge sur un écran parfaitement lisible, et le
+   * rafraîchissement suivant recommencerait. On garde alors ce qui est déjà
+   * affiché, qui reste vrai, plutôt que d'alarmer sur un incident que
+   * l'exploitant n'a pas provoqué et dont il n'a rien à faire.
    */
-  const chargerVolet = useCallback(async (tokenId: string, page: number) => {
-    setVolets(prev => ({ ...prev, [tokenId]: { ...(prev[tokenId] ?? VOLET_VIDE), page, loading: true } }));
+  const chargerVolet = useCallback(async (tokenId: string, page: number, fond = false) => {
+    if (!fond) {
+      setVolets(prev => ({ ...prev, [tokenId]: { ...(prev[tokenId] ?? VOLET_VIDE), page, loading: true } }));
+    }
     try {
       const resultat = await fetchFreeTrialRequestPage({
         tokenId,
@@ -322,10 +343,11 @@ export default function FreeTrialView() {
       });
       setVolets(prev => ({
         ...prev,
-        [tokenId]: { requests: resultat.requests, total: resultat.total, page, loading: false },
+        [tokenId]: { requests: resultat.requests, total: resultat.total, page, loading: false, failed: false },
       }));
     } catch (err) {
-      setVolets(prev => ({ ...prev, [tokenId]: { ...(prev[tokenId] ?? VOLET_VIDE), page, loading: false } }));
+      if (fond) return; // Ce qui est affiché reste affiché.
+      setVolets(prev => ({ ...prev, [tokenId]: { ...(prev[tokenId] ?? VOLET_VIDE), page, loading: false, failed: true } }));
       setError(errorMessage(err, 'operations.freeTrial.genericError'));
     }
   }, [statusFilter, errorMessage]);
@@ -353,8 +375,8 @@ export default function FreeTrialView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statusFilter]);
 
-  const chargerComptesEssai = useCallback(async () => {
-    setComptesEssaiEnCours(true);
+  const chargerComptesEssai = useCallback(async (fond = false) => {
+    if (!fond) setComptesEssaiEnCours(true);
     try {
       // Une seule lecture bornée, indépendante du filtre de statut : cette
       // liste répond à « qui est en essai en ce moment », question qui ne doit
@@ -362,12 +384,17 @@ export default function FreeTrialView() {
       const page = await fetchFreeTrialRequestPage({ status: FREE_TRIAL_STATUS.DEPLOYED, limit: 200 });
       setComptesEssai(page.requests);
     } catch (err) {
-      // L'échec ne doit pas emporter l'écran : le reste de la section reste
-      // utilisable, et la liste dit qu'elle n'a rien pu lire.
+      // Une relecture AUTOMATIQUE qui échoue ne doit RIEN changer à l'écran.
+      //
+      // Vider la liste la ferait lire « aucun essai activé » — un mensonge,
+      // puisque ces accès existent toujours —, et lever une bannière rouge
+      // alarmerait sur une coupure d'une seconde que l'exploitant n'a pas
+      // provoquée, une fois par minute.
+      if (fond) return;
       setComptesEssai([]);
       setError(errorMessage(err));
     } finally {
-      setComptesEssaiEnCours(false);
+      if (!fond) setComptesEssaiEnCours(false);
     }
   }, [errorMessage]);
 
@@ -386,8 +413,10 @@ export default function FreeTrialView() {
   useEffect(() => {
     const timer = setInterval(() => {
       if (busy || showDeployForm || showManageForm) return;
-      void chargerComptesEssai();
-      if (jetonOuvert) void chargerVolet(jetonOuvert, volet?.page ?? 1);
+      // `true` : relecture de FOND. Elle ne montre aucun indicateur de
+      // chargement et ne signale aucun échec — voir `chargerComptesEssai`.
+      void chargerComptesEssai(true);
+      if (jetonOuvert) void chargerVolet(jetonOuvert, volet?.page ?? 1, true);
     }, RAFRAICHISSEMENT_PRESENCE_MS);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1575,11 +1604,30 @@ export default function FreeTrialView() {
                       </p>
                     )}
 
-                    {!contenu?.loading && (contenu?.requests.length ?? 0) === 0 && (
+                    {/* Échec de lecture ≠ absence de demandes. Le second cas
+                        se rendait comme le premier : le volet annonçait
+                        « Aucune demande pour ce filtre » alors que la ligne du
+                        jeton, juste au-dessus, affichait « 1 déployée(s) ».
+                        L'écran se contredisait, et on pouvait en conclure que
+                        la campagne avait disparu. */}
+                    {!contenu?.loading && contenu?.failed && (
+                      <div className="px-4 py-8 text-center">
+                        <p className="text-sm text-amber-300">{t('operations.freeTrial.loadFailed')}</p>
+                        <button
+                          type="button"
+                          onClick={() => void chargerVolet(jeton.id, contenu?.page ?? 1)}
+                          className="mt-2 text-xs text-cyan-300 transition hover:text-cyan-200"
+                        >
+                          {t('operations.freeTrial.retry')}
+                        </button>
+                      </div>
+                    )}
+
+                    {!contenu?.loading && !contenu?.failed && (contenu?.requests.length ?? 0) === 0 && (
                       <p className="px-4 py-8 text-center text-sm text-gray-500">{t('operations.freeTrial.empty')}</p>
                     )}
 
-                    {!contenu?.loading && (contenu?.requests.length ?? 0) > 0 && (
+                    {!contenu?.loading && !contenu?.failed && (contenu?.requests.length ?? 0) > 0 && (
                       <>
                         {canDeploy && selectionValide.length > 0 && (
                           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-cyan-500/[0.06] px-4 py-3">
