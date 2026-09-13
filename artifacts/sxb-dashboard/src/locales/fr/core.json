@@ -1,7 +1,7 @@
 {
   "language": "Langue",
   "languages": { "fr": "Français", "en": "English" },
-  "logo": "Logo Stuff x Bilal x Global Users",
+  "logo": "Logo SXB VPN",
   "support": {
     "telegram": {
       "cta": "Support Telegram",
@@ -25,7 +25,7 @@
     "signIn": "Se connecter",
     "verifying": "Vérification…",
     "activate": "Activer avec le jeton",
-    "footer": "Stuff x Bilal x Global Users · Panneau de gestion · v2.1"
+    "footer": "SXB VPN · Panneau de gestion · v2.1"
   },
   "notFound": {
     "title": "404 — Page introuvable",

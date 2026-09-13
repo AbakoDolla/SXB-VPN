@@ -451,7 +451,7 @@
     "clients": "Associated clients",
     "status": "Partnership status",
     "empty": "No active resellers",
-    "emptyHint": "Invite your first reseller partners to join the Stuff x Bilal x Global Users network.",
+    "emptyHint": "Invite your first reseller partners to join the SXB VPN network.",
     "futureExpiry": "An access expiry date in the future is required.",
     "invalidExpiry": "The access expiry date is invalid.",
     "created": "Reseller created — account, role and authorization in one operation",

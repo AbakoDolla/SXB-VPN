@@ -112,7 +112,7 @@ function LoginForm({ onLogin }: { onLogin: () => void }) {
           <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-cyan-500 to-blue-600 mx-auto mb-4 flex items-center justify-center shadow-xl shadow-cyan-500/20">
             <img src="/assets/images/logo_sxb_2026.png" alt={t('core.logo')} className="w-11 h-11 object-contain" />
           </div>
-          <h1 className="text-2xl font-bold text-white mb-1">Stuff x Bilal x Global Users</h1>
+          <h1 className="text-2xl font-bold text-white mb-1">SXB VPN</h1>
           <p className="text-sm text-gray-500">{t('core.login.subtitle')}</p>
         </div>
 

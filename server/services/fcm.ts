@@ -340,8 +340,8 @@ export async function sendAppUpdatePush(update: PublishedAppUpdate): Promise<Pus
   return deliver({
     type: "app_update",
     notificationId: `app-update-${update.id}`,
-    title: `Mise à jour Stuff x Bilal x Global Users ${update.versionName}`,
-    body: update.notes || "Une nouvelle version de Stuff x Bilal x Global Users est disponible.",
+    title: `Mise à jour SXB VPN ${update.versionName}`,
+    body: update.notes || "Une nouvelle version de SXB VPN est disponible.",
     level: update.forceUpdate ? "warning" : "info",
     screen: "notifications",
     versionCode: String(update.versionCode),
