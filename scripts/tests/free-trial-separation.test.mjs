@@ -732,3 +732,84 @@ test("un essayeur devenu client payant recompte, lui, dans le tableau de bord", 
   assert.equal(comptesApres, comptesAvant + 1,
     "le compte converti doit réapparaître dans les indicateurs commerciaux");
 });
+
+test("un jeton se modifie après émission, sauf son code", async () => {
+  const jeton = await creerJeton("Campagne à corriger");
+
+  const modifie = await api("admin", "PATCH", `/free-trial/tokens/${jeton.id}`, {
+    label: "Campagne corrigée", maxUses: 25,
+  });
+  ok(modifie);
+  assert.equal(modifie.body.token.label, "Campagne corrigée");
+  assert.equal(modifie.body.token.maxUses, 25);
+  // Le CODE reste celui qui a été distribué : le changer invaliderait en
+  // silence chaque exemplaire déjà remis, sans que personne puisse le
+  // constater avant d'échouer à s'inscrire.
+  assert.equal(modifie.body.token.token, jeton.token);
+
+  // Une tentative de le renommer est REFUSÉE, pas ignorée : un champ accepté
+  // puis écarté ferait croire au changement.
+  const refus = await api("admin", "PATCH", `/free-trial/tokens/${jeton.id}`, { token: "STUFF-AAAA-BBBB" });
+  assert.equal(refus.status, 400);
+
+  // `null` est signifiant : il LÈVE le plafond, là où une clé absente ne
+  // changerait rien.
+  const sansPlafond = await api("admin", "PATCH", `/free-trial/tokens/${jeton.id}`, { maxUses: null });
+  ok(sansPlafond);
+  assert.equal(sansPlafond.body.token.maxUses, null);
+});
+
+test("le plafond ne peut pas descendre sous les inscriptions déjà prises", async () => {
+  // Sinon la base l'accepterait et le jeton serait instantanément épuisé, sans
+  // rien annuler : l'exploitant croirait avoir réduit une campagne alors qu'il
+  // vient de l'arrêter.
+  const jeton = await creerJeton("Campagne entamée");
+  await inscrire(jeton, { deviceId: "SXB-TRIAL-EDIT-01", empreinte: "android-id-fixture-edit" });
+
+  const refus = await api("admin", "PATCH", `/free-trial/tokens/${jeton.id}`, { maxUses: 0 });
+  assert.equal(refus.status, 400, "zéro est hors des bornes acceptées");
+
+  const refusBas = await api("admin", "PATCH", `/free-trial/tokens/${jeton.id}`, { maxUses: 1 });
+  // Une inscription prise : un plafond de 1 reste cohérent.
+  ok(refusBas);
+  assert.equal(refusBas.body.token.maxUses, 1);
+});
+
+test("supprimer un jeton n'efface JAMAIS les inscriptions qu'il a servies", async () => {
+  // LE DANGER : `FreeTrialRequest.trialToken` porte `onDelete: Cascade`.
+  // Supprimer un jeton qui a servi effacerait toutes ses inscriptions, y
+  // compris déployées — l'historique de vraies personnes, le pays déclaré, et
+  // le lien entre leur accès VPN et son origine.
+  const { jeton, demande } = await essaiDeploye({
+    deviceId: "SXB-TRIAL-DELETE-01", empreinte: "android-id-fixture-del",
+  });
+
+  const refus = await api("admin", "DELETE", `/free-trial/tokens/${jeton.id}`);
+  assert.equal(refus.status, 409, "un jeton qui a servi ne doit pas être supprimable");
+  assert.equal(refus.body.code, "TOKEN_HAS_REQUESTS");
+
+  // Rien n'a bougé : ni le jeton, ni l'inscription, ni l'accès.
+  assert.ok(db.state.FreeTrialToken.find(ligne => ligne.id === jeton.id), "le jeton doit survivre");
+  assert.ok(db.state.FreeTrialRequest.find(ligne => ligne.id === demande.id), "l'inscription doit survivre");
+
+  // La révocation, elle, est la bonne réponse : elle ferme le jeton sans rien
+  // détruire, et bloque IMMÉDIATEMENT toute nouvelle inscription.
+  const revoque = await api("admin", "POST", `/free-trial/tokens/${jeton.id}/revoke`);
+  ok(revoque);
+  const apres = await api(null, "POST", "/free-trial/enroll", {
+    token: jeton.token, name: "Trop tard", country: "CM",
+    deviceFingerprint: "android-id-fixture-late", deviceId: "SXB-TRIAL-LATE-01",
+  }, { "X-SXB-Device-ID": "SXB-TRIAL-LATE-01" });
+  assert.notEqual(apres.status, 201, "un jeton révoqué ne doit plus inscrire personne");
+  assert.ok(db.state.FreeTrialRequest.find(ligne => ligne.id === demande.id), "l'inscription survit à la révocation");
+});
+
+test("un jeton jamais utilisé se supprime, et disparaît vraiment", async () => {
+  // C'est le seul cas où la suppression ne détruit rien : un code créé par
+  // erreur, une campagne abandonnée avant son lancement.
+  const jeton = await creerJeton("Créé par erreur");
+  const suppression = await api("admin", "DELETE", `/free-trial/tokens/${jeton.id}`);
+  ok(suppression);
+  assert.equal(suppression.body.deleted, true);
+  assert.equal(db.state.FreeTrialToken.find(ligne => ligne.id === jeton.id), undefined);
+});

@@ -12,6 +12,7 @@ import {
   HardDrive,
   Loader2,
   PauseCircle,
+  Pencil,
   PlayCircle,
   Plus,
   RefreshCw,
@@ -21,6 +22,7 @@ import {
   ShieldCheck,
   ShieldOff,
   SlidersHorizontal,
+  Trash2,
   X,
 } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
@@ -35,6 +37,8 @@ import {
   manageFreeTrialRequests,
   rejectFreeTrialRequests,
   revokeFreeTrialToken,
+  updateFreeTrialToken,
+  deleteFreeTrialToken,
   FREE_TRIAL_STATE,
   FREE_TRIAL_STATUS,
   MAX_FREE_TRIAL_BATCH,
@@ -214,6 +218,11 @@ export default function FreeTrialView() {
 
   // ── Étape 1 : formulaire de création du jeton ──────────────────────────────
   const [showTokenForm, setShowTokenForm] = useState(false);
+  /** Jeton en cours de modification — `null` quand aucun formulaire n'est ouvert. */
+  const [jetonEdite, setJetonEdite] = useState<FreeTrialToken | null>(null);
+  const [editLabel, setEditLabel] = useState('');
+  const [editMaxUses, setEditMaxUses] = useState('');
+  const [editExpiresAt, setEditExpiresAt] = useState('');
   const [tokenLabel, setTokenLabel] = useState('');
   const [tokenMaxUses, setTokenMaxUses] = useState('');
   const [tokenExpiresAt, setTokenExpiresAt] = useState('');
@@ -530,6 +539,60 @@ export default function FreeTrialView() {
       setNotice(t('operations.freeTrial.notice.tokenRevoked'));
     } catch (err) {
       setError(errorMessage(err, 'operations.freeTrial.genericError'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Ouvre l'édition d'un jeton, pré-remplie avec ses valeurs courantes. */
+  const ouvrirEditionJeton = (jeton: FreeTrialToken) => {
+    setJetonEdite(jeton);
+    setEditLabel(jeton.label ?? '');
+    setEditMaxUses(jeton.maxUses === null || jeton.maxUses === undefined ? '' : String(jeton.maxUses));
+    setEditExpiresAt(jeton.expiresAt ? toLocalInput(new Date(jeton.expiresAt)) : '');
+    setError(null);
+  };
+
+  const enregistrerJeton = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!jetonEdite) return;
+    setBusy(true);
+    setError(null);
+    try {
+      // Un champ vidé signifie « retirer », pas « ne pas changer » : c'est la
+      // seule façon de lever un plafond ou de supprimer une échéance depuis un
+      // formulaire. On envoie donc `null`, jamais `undefined`.
+      const misAJour = await updateFreeTrialToken(jetonEdite.id, {
+        label: editLabel.trim() || null,
+        maxUses: editMaxUses.trim() === '' ? null : Number(editMaxUses),
+        expiresAt: editExpiresAt ? new Date(editExpiresAt).toISOString() : null,
+      });
+      setTokens(prev => prev.map(jeton => (jeton.id === misAJour.id ? { ...jeton, ...misAJour } : jeton)));
+      setJetonEdite(null);
+      setNotice(t('operations.freeTrial.notice.tokenUpdated'));
+    } catch (err) {
+      setError(errorMessage(err, 'operations.freeTrial.genericError'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const supprimerJeton = async (jeton: FreeTrialToken) => {
+    // Confirmation explicite : la suppression n'est proposée que sur un jeton
+    // jamais utilisé, mais elle reste définitive.
+    if (!window.confirm(t('operations.freeTrial.deleteTokenConfirm', { token: jeton.token }))) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteFreeTrialToken(jeton.id);
+      setTokens(prev => prev.filter(item => item.id !== jeton.id));
+      if (jetonOuvert === jeton.id) setJetonOuvert(null);
+      setNotice(t('operations.freeTrial.notice.tokenDeleted'));
+    } catch (err) {
+      // Le serveur refuse (409) si une inscription vient d'arriver : le message
+      // explique alors quoi faire à la place, plutôt que d'échouer en silence.
+      setError(errorMessage(err, 'operations.freeTrial.genericError'));
+      await charger();
     } finally {
       setBusy(false);
     }
@@ -1019,6 +1082,72 @@ export default function FreeTrialView() {
         </form>
       )}
 
+      {/* ── Modification d'un jeton ────────────────────────────────────────
+          Libellé, plafond et échéance. Le CODE n'y figure pas : il est
+          distribué, et le changer invaliderait en silence tous les exemplaires
+          déjà remis. Un champ vidé RETIRE la contrainte — c'est la seule façon
+          de lever un plafond ou une échéance depuis un formulaire. */}
+      {jetonEdite && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <form
+            onSubmit={enregistrerJeton}
+            className="w-full max-w-md space-y-4 rounded-xl border border-white/10 bg-slate-950 p-5"
+          >
+            <div>
+              <h2 className="text-sm font-semibold text-gray-200">{t('operations.freeTrial.editTokenTitle')}</h2>
+              <p className="mt-1 font-mono text-xs text-cyan-300">{jetonEdite.token}</p>
+              <p className="mt-1 text-[11px] text-gray-500">{t('operations.freeTrial.editTokenHint')}</p>
+            </div>
+            <label className="block text-xs text-gray-400">
+              {t('operations.freeTrial.tokenForm.label')}
+              <input
+                value={editLabel}
+                onChange={event => setEditLabel(event.target.value)}
+                maxLength={160}
+                className="mt-1 w-full rounded-lg border border-white/10 bg-slate-900/60 px-3 py-2 text-sm text-gray-100 outline-none focus:border-cyan-500/50"
+              />
+            </label>
+            <label className="block text-xs text-gray-400">
+              {t('operations.freeTrial.tokenForm.maxUses')}
+              <input
+                type="number"
+                min={jetonEdite.usedCount || 1}
+                value={editMaxUses}
+                onChange={event => setEditMaxUses(event.target.value)}
+                className="mt-1 w-full rounded-lg border border-white/10 bg-slate-900/60 px-3 py-2 text-sm text-gray-100 outline-none focus:border-cyan-500/50"
+              />
+              <span className="mt-1 block text-[11px] text-gray-600">{t('operations.freeTrial.editMaxUsesHint')}</span>
+            </label>
+            <label className="block text-xs text-gray-400">
+              {t('operations.freeTrial.tokenForm.expiresAt')}
+              <input
+                type="datetime-local"
+                value={editExpiresAt}
+                onChange={event => setEditExpiresAt(event.target.value)}
+                className="mt-1 w-full rounded-lg border border-white/10 bg-slate-900/60 px-3 py-2 text-sm text-gray-100 outline-none focus:border-cyan-500/50"
+              />
+              <span className="mt-1 block text-[11px] text-gray-600">{t('operations.freeTrial.editExpiresAtHint')}</span>
+            </label>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setJetonEdite(null)}
+                className="rounded-lg border border-white/10 px-3 py-2 text-sm text-gray-300 transition hover:bg-white/5"
+              >
+                {t('operations.freeTrial.cancel')}
+              </button>
+              <button
+                type="submit"
+                disabled={busy}
+                className="rounded-lg bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:opacity-50"
+              >
+                {t('operations.freeTrial.save')}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {/* ── Comptes en période d'essai ────────────────────────────────────────
           Les accès activés, tous jetons confondus. Ils ne se lisaient
           qu'en dépliant le jeton qui les avait servis, campagne par campagne :
@@ -1145,6 +1274,24 @@ export default function FreeTrialView() {
                     })}
                   </span>
                   <span className="ml-auto text-[11px] text-gray-500">{formatDate(jeton.createdAt)}</span>
+                  {/* Utilisé ou non : la réponse tient sur la ligne, sans avoir
+                      à déplier le volet pour la deviner. */}
+                  <span className={`text-[11px] ${(jeton.requestCount ?? 0) > 0 ? 'text-gray-400' : 'text-gray-600'}`}>
+                    {(jeton.requestCount ?? 0) > 0
+                      ? t('operations.freeTrial.tokenUsed')
+                      : t('operations.freeTrial.tokenUnused')}
+                  </span>
+                  {canRevokeToken && (
+                    <button
+                      type="button"
+                      onClick={() => ouvrirEditionJeton(jeton)}
+                      disabled={busy}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 px-2.5 py-1 text-xs text-gray-300 transition hover:bg-white/5 disabled:opacity-50"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                      {t('operations.freeTrial.editToken')}
+                    </button>
+                  )}
                   {canRevokeToken && jeton.state === 'active' && (
                     <button
                       type="button"
@@ -1154,6 +1301,21 @@ export default function FreeTrialView() {
                     >
                       <Ban className="h-3.5 w-3.5" />
                       {t('operations.freeTrial.revoke')}
+                    </button>
+                  )}
+                  {/* Suppression proposée UNIQUEMENT sur un jeton jamais
+                      utilisé. Le serveur refuse les autres (409) parce que la
+                      relation cascade : supprimer un jeton qui a servi
+                      effacerait l'historique des personnes inscrites. */}
+                  {canRevokeToken && (jeton.requestCount ?? 0) === 0 && (
+                    <button
+                      type="button"
+                      onClick={() => void supprimerJeton(jeton)}
+                      disabled={busy}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/25 px-2.5 py-1 text-xs text-rose-300 transition hover:bg-rose-500/10 disabled:opacity-50"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      {t('operations.freeTrial.deleteToken')}
                     </button>
                   )}
                 </div>

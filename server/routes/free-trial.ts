@@ -132,6 +132,27 @@ const creerJetonSchema = z.object({
 }).strict();
 
 /**
+ * Modification d'un jeton déjà émis.
+ *
+ * Le CODE lui-même n'est pas modifiable, et c'est délibéré : il est distribué,
+ * parfois imprimé ou envoyé par message. Le changer invaliderait en silence
+ * tous les exemplaires déjà dans la nature, sans que personne puisse le
+ * constater avant d'échouer à s'inscrire.
+ *
+ * `null` est une valeur SIGNIFIANTE ici : `maxUses: null` lève le plafond,
+ * `expiresAt: null` retire l'échéance. Une clé absente, elle, ne change rien —
+ * l'interface n'a donc pas à renvoyer les champs qu'elle n'édite pas.
+ */
+const modifierJetonSchema = z.object({
+  label: z.string().trim().max(160).nullable().optional(),
+  maxUses: z.coerce.number().int().min(1).max(10_000).nullable().optional(),
+  expiresAt: z.coerce.date().nullable().optional(),
+}).strict().refine(
+  (body) => Object.keys(body).length > 0,
+  { message: 'Au moins une modification est requise' },
+);
+
+/**
  * Pays DÉCLARÉ, validé contre une liste FERMÉE de codes ISO 3166-1 alpha-2.
  *
  * Liste fermée et non `z.string().length(2)` : sans elle, « XX », « ZZ » ou
@@ -510,10 +531,153 @@ router.post(
   },
 );
 
+// ─── PATCH /api/free-trial/tokens/:id ────────────────────────────────────────
+//
+// Modifier un jeton déjà émis : libellé, plafond d'inscriptions, échéance.
+// Le CODE n'est pas modifiable — voir `modifierJetonSchema`.
+router.patch(
+  '/tokens/:id',
+  requireAuth,
+  interdireAccesRevendeur(),
+  interdireMutationSupport(),
+  requirePermission('tokens.create'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!prisma) return baseIndisponible(res);
+      const body = modifierJetonSchema.parse(req.body);
+      const jeton = await (prisma as any).freeTrialToken.findUnique({
+        where: { id: req.params.id },
+        include: { _count: { select: { requests: true } } },
+      });
+      if (!jeton) {
+        return res.status(404).json({
+          error: 'errors.free_trial.token_invalid',
+          code: CODES_ESSAI.TOKEN_NOT_FOUND,
+          message: 'Jeton d’essai introuvable.',
+        });
+      }
+
+      // Un plafond inférieur aux inscriptions DÉJÀ prises serait accepté par la
+      // base et rendrait le jeton immédiatement épuisé, sans annuler quoi que
+      // ce soit. Mieux vaut le dire que de laisser l'exploitant croire qu'il
+      // vient de réduire une campagne alors qu'il l'a arrêtée.
+      const dejaPris = Number(jeton.usedCount ?? 0);
+      if (body.maxUses !== undefined && body.maxUses !== null && body.maxUses < dejaPris) {
+        return res.status(409).json({
+          error: 'errors.free_trial.token_max_uses_below_used',
+          code: 'TOKEN_MAX_USES_BELOW_USED',
+          message: `Ce jeton compte déjà ${dejaPris} inscription(s) : le plafond ne peut pas descendre en dessous.`,
+          usedCount: dejaPris,
+        });
+      }
+
+      const data: Record<string, unknown> = {};
+      if (body.label !== undefined) data.label = body.label || null;
+      if (body.maxUses !== undefined) data.maxUses = body.maxUses;
+      if (body.expiresAt !== undefined) data.expiresAt = body.expiresAt;
+
+      const misAJour = await (prisma as any).freeTrialToken.update({
+        where: { id: jeton.id },
+        data,
+        include: { _count: { select: { requests: true } } },
+      });
+      await logDbActivity(
+        req.user?.userId || null,
+        `Jeton d'essai gratuit modifié : ${jeton.token}`,
+        'info',
+        req.ip || '',
+      );
+      return res.json({
+        success: true,
+        token: vueJetonPourAdmin({ ...misAJour, requestCount: misAJour._count?.requests ?? 0 }),
+      });
+    } catch (err: any) {
+      if (err instanceof z.ZodError) return erreurValidation(res, err);
+      console.error('free-trial token update error:', err);
+      return res.status(500).json({ error: 'errors.server', message: 'Modification du jeton impossible' });
+    }
+  },
+);
+
+// ─── DELETE /api/free-trial/tokens/:id ───────────────────────────────────────
+//
+// SUPPRESSION RÉSERVÉE AUX JETONS JAMAIS UTILISÉS — et ce n'est pas une
+// prudence de principe.
+//
+// En base, `FreeTrialRequest.trialToken` porte `onDelete: Cascade`. Supprimer
+// un jeton qui a servi effacerait donc TOUTES ses inscriptions, y compris
+// celles déjà déployées à de vraies personnes : l'historique de leur demande,
+// le pays déclaré, la trace de ce qui leur a été attribué et le lien entre leur
+// accès VPN et son origine. Les forfaits eux-mêmes survivraient — ils
+// appartiennent au compte, pas au jeton — mais plus rien ne dirait d'où ils
+// viennent, et les indicateurs d'essai perdraient ces personnes d'un coup.
+//
+// Un jeton qui a servi se RÉVOQUE : il cesse immédiatement d'accepter de
+// nouvelles inscriptions, et tout ce qu'il a produit reste lisible. La
+// suppression ne garde donc de sens que là où elle ne détruit rien : un code
+// créé par erreur, une campagne abandonnée avant son lancement.
+router.delete(
+  '/tokens/:id',
+  requireAuth,
+  interdireAccesRevendeur(),
+  interdireMutationSupport(),
+  requirePermission('tokens.revoke'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!prisma) return baseIndisponible(res);
+      const jeton = await (prisma as any).freeTrialToken.findUnique({
+        where: { id: req.params.id },
+        include: { _count: { select: { requests: true } } },
+      });
+      if (!jeton) {
+        return res.status(404).json({
+          error: 'errors.free_trial.token_invalid',
+          code: CODES_ESSAI.TOKEN_NOT_FOUND,
+          message: 'Jeton d’essai introuvable.',
+        });
+      }
+
+      const inscriptions = Number(jeton._count?.requests ?? 0);
+      if (inscriptions > 0) {
+        return res.status(409).json({
+          error: 'errors.free_trial.token_has_requests',
+          code: 'TOKEN_HAS_REQUESTS',
+          message: `Ce jeton porte ${inscriptions} inscription(s). Le supprimer effacerait leur historique : révoquez-le pour qu'il cesse d'accepter de nouvelles inscriptions.`,
+          requestCount: inscriptions,
+        });
+      }
+
+      // `deleteMany` avec la même condition que le contrôle ci-dessus : une
+      // inscription arrivée entre la lecture et l'écriture annule la
+      // suppression au lieu d'emporter la ligne qui vient de naître.
+      const supprime = await (prisma as any).freeTrialToken.deleteMany({
+        where: { id: jeton.id, requests: { none: {} } },
+      });
+      if (supprime.count !== 1) {
+        return res.status(409).json({
+          error: 'errors.free_trial.token_has_requests',
+          code: 'TOKEN_HAS_REQUESTS',
+          message: 'Une inscription vient d’arriver sur ce jeton : suppression annulée.',
+        });
+      }
+
+      await logDbActivity(
+        req.user?.userId || null,
+        `Jeton d'essai gratuit supprimé : ${jeton.token}`,
+        'warning',
+        req.ip || '',
+      );
+      return res.json({ success: true, deleted: true, id: jeton.id });
+    } catch (err: any) {
+      console.error('free-trial token delete error:', err);
+      return res.status(500).json({ error: 'errors.server', message: 'Suppression du jeton impossible' });
+    }
+  },
+);
+
 // ═════════════════════════════════════════════════════════════════════════════
 // ÉTAPE 2 — Inscription depuis l'application mobile
 // ═════════════════════════════════════════════════════════════════════════════
-
 // ─── POST /api/free-trial/enroll ─────────────────────────────────────────────
 //
 // Route ouverte : l'appareil n'a pas encore de compte, c'est justement l'objet

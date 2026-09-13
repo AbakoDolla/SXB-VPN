@@ -215,6 +215,42 @@ export async function revokeFreeTrialToken(id: string): Promise<FreeTrialToken> 
   return data.token;
 }
 
+/**
+ * Modifie un jeton déjà émis : libellé, plafond, échéance.
+ *
+ * Le CODE n'est pas modifiable — il est distribué, et le changer invaliderait
+ * en silence tous les exemplaires déjà dans la nature.
+ *
+ * `null` est signifiant : il LÈVE le plafond ou RETIRE l'échéance. Une clé
+ * absente ne change rien, donc l'appelant n'envoie que ce qu'il édite.
+ */
+export async function updateFreeTrialToken(id: string, input: {
+  label?: string | null;
+  maxUses?: number | null;
+  expiresAt?: string | null;
+}): Promise<FreeTrialToken> {
+  const data = await apiRequest<{ success: boolean; token: FreeTrialToken }>(
+    `/free-trial/tokens/${encodeURIComponent(id)}`,
+    { method: 'PATCH', body: input },
+  );
+  return data.token;
+}
+
+/**
+ * Supprime un jeton JAMAIS UTILISÉ.
+ *
+ * Le serveur refuse (409) dès qu'une inscription existe : la relation porte un
+ * `onDelete: Cascade`, si bien que supprimer un jeton qui a servi effacerait
+ * l'historique des personnes qu'il a inscrites. Pour celles-là, la révocation
+ * est la bonne réponse — elle ferme le jeton sans rien détruire.
+ */
+export async function deleteFreeTrialToken(id: string): Promise<void> {
+  await apiRequest<{ success: boolean; deleted: boolean }>(
+    `/free-trial/tokens/${encodeURIComponent(id)}`,
+    { method: 'DELETE' },
+  );
+}
+
 export async function fetchFreeTrialRequests(status?: string): Promise<FreeTrialRequest[]> {
   const page = await fetchFreeTrialRequestPage({ status });
   return page.requests;
