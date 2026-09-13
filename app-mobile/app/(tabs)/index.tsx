@@ -111,13 +111,22 @@ function VpnConnectionCard({ conn, isActive }: { conn: VpnConnection; isActive: 
         <Pill label={statusLabel} tone={statusColor} dot />
       </View>
 
-      <StatRow>
-        <StatTile label={t('quota_remaining')} value={formatBytes(remainingBytes)} tone={colors.connected} monospace />
-        <StatTile label={t('quota_used')} value={formatBytes(usedBytes)} monospace />
-        <StatTile label={t('quota_total')} value={formatBytes(totalBytes)} monospace />
-      </StatRow>
+      {/* Le VOLUME n'est plus répété ici pour la connexion ACTIVE.
+          La carte « Quota du forfait », juste au-dessus sur le même écran,
+          donne déjà total, consommé et restant avec sa barre de progression —
+          et elle les tient de `derivedQuota`, la source qui fait autorité. Les
+          répéter obligeait à lire les mêmes trois nombres deux fois en
+          descendant, trois fois pendant un essai.
 
-      <ProgressBar progress={pct / 100} tone={statusColor} warnTone={colors.disconnected} />
+          Les AUTRES connexions gardent une ligne : leur volume leur est propre
+          et ne figure nulle part ailleurs. Une ligne, pas trois tuiles et une
+          barre : de quoi comparer, sans refaire la carte du dessus. */}
+      {!isActive && totalBytes > 0 && (
+        <Text style={[type.caption, { color: colors.textSecondary }]}>
+          {formatBytes(remainingBytes)} / {formatBytes(totalBytes)}
+        </Text>
+      )}
+
 
       {conn.expiresAt && (
         <Text style={[type.caption, { color: colors.textMuted }]}>
@@ -595,8 +604,13 @@ export default function HomeScreen() {
           </Pressable>
         </View>
 
-        {/* ── QUOTA — Consomme deriveQuota (B1/B4) ────────────────────────── */}
-        {derivedQuota.totalBytes > 0 && (
+        {/* ── QUOTA — Consomme deriveQuota (B1/B4) ──────────────────────────
+            Masqué pendant un ESSAI : la carte d'essai, juste au-dessus, porte
+            déjà le consommé, le restant, la barre de progression et
+            l'échéance — et elle les tient de la MÊME source. Les deux ensemble
+            faisaient lire les mêmes nombres deux fois en descendant un seul
+            écran. */}
+        {derivedQuota.totalBytes > 0 && !isTrialAccess && (
           <Surface>
             <SectionHeader title={t('card_quota_plan')} icon="cellular-outline" />
             {derivedQuota.isExhausted ? (

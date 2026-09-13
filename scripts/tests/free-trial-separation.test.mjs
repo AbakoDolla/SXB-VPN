@@ -1057,3 +1057,26 @@ test("ajouter et retirer le même serveur d'un seul geste est refusé", async ()
   });
   assert.equal(refus.status, 400);
 });
+
+test("le quota ne se lit qu'UNE fois par écran", () => {
+  // Le propriétaire : « je ne veux pas autant d'écran pour voir le quota ».
+  // Sur l'accueil, les mêmes trois nombres apparaissaient deux fois — la carte
+  // « Quota du forfait » ET la carte de la connexion active — et trois fois
+  // pendant un essai, la carte d'essai les portant déjà.
+  const accueil = source('app-mobile/app/(tabs)/index.tsx');
+
+  // 1. La carte de la connexion ACTIVE ne répète plus le volume : il est juste
+  //    au-dessus, tenu de `derivedQuota`, la source qui fait autorité.
+  const carte = accueil.slice(accueil.indexOf('function VpnConnectionCard'), accueil.indexOf('function VpnConnectionCard') + 4200);
+  assert.match(carte, /\{!isActive && totalBytes > 0 && \(/);
+  assert.ok(!/StatTile label=\{t\('quota_total'\)\}/.test(carte),
+    'la carte de connexion ne doit plus porter les trois tuiles de quota');
+
+  // 2. Les AUTRES connexions gardent une ligne : leur volume leur est propre et
+  //    ne figure nulle part ailleurs.
+  assert.match(carte, /formatBytes\(remainingBytes\)\} \/ \{formatBytes\(totalBytes\)\}/);
+
+  // 3. Pendant un essai, le bloc générique s'efface derrière la carte d'essai,
+  //    qui porte déjà consommé, restant, barre et échéance.
+  assert.match(accueil, /\{derivedQuota\.totalBytes > 0 && !isTrialAccess && \(/);
+});
