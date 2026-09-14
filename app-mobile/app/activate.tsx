@@ -13,6 +13,7 @@ import { useColors } from "@/hooks/useColors";
 import { useTranslation } from "@/localization";
 import { activationErrorKey, normalizeActivationToken } from "@/services/activationError";
 import SupportTelegramButton from "@/components/SupportTelegramButton";
+import LanguageToggle from "@/components/ui/LanguageToggle";
 
 const LOGO = require("../assets/images/icon.png");
 
@@ -106,7 +107,7 @@ export default function ActivateScreen() {
               <Ionicons name="arrow-back" size={20} color={colors.textSecondary} />
             </Pressable>
             <Text style={styles.topBarLabel}>{t("app_name")}</Text>
-            <View style={styles.iconButtonPlaceholder} />
+            <LanguageToggle />
           </View>
 
           <View style={styles.brandBlock}>

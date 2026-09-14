@@ -17,6 +17,8 @@ import {
 } from "@/services/countries";
 import { lireEmpreinteAppareil } from "@/services/deviceFingerprint";
 import SupportTelegramButton from "@/components/SupportTelegramButton";
+import LanguageToggle from "@/components/ui/LanguageToggle";
+import { alpha } from "@/constants/theme";
 import {
   cleErreurEssai, effacerDemandeLocale, ecrireDemandeLocale, INTERVALLE_VERIFICATION_MS,
   inscrireEssaiGratuit, intervalleVerificationMs, lireDemandeLocale, normaliserJetonEssai,
@@ -242,7 +244,7 @@ export default function FreeTrialScreen() {
         <Ionicons name="arrow-back" size={20} color={colors.textSecondary} />
       </Pressable>
       <Text style={styles.topBarLabel}>{t("free_trial_badge")}</Text>
-      <View style={styles.iconButtonPlaceholder} />
+      <LanguageToggle tone={colors.accents.violet} />
     </View>
   );
 
@@ -373,17 +375,27 @@ export default function FreeTrialScreen() {
               <View style={[styles.inputRow, !!erreur && { borderColor: colors.disconnected }]}>
                 <Ionicons name="key-outline" size={18} color={colors.textMuted} style={styles.inputIcon} />
                 <TextInput
-                  style={styles.input}
+                  style={[styles.input, styles.inputJeton]}
+                  // Le format ATTENDU, pas une invite générique : « Saisissez
+                  // votre jeton » ne dit ni la longueur, ni les tirets, ni le
+                  // préfixe, et laissait recopier un code mal formé sans le
+                  // savoir. Le motif exact est celui du serveur
+                  // (/^STUFF-[A-Z0-9]{4}-[A-Z0-9]{4}$/).
                   placeholder={t("free_trial_token_placeholder")}
-                  placeholderTextColor={colors.textMuted}
+                  placeholderTextColor={colors.accents.violet + alpha.f40}
                   value={token}
                   onChangeText={(valeur) => { setToken(valeur.toUpperCase()); setErreur(""); }}
                   autoCapitalize="characters"
                   autoCorrect={false}
                   returnKeyType="next"
                   accessibilityLabel={t("free_trial_token_label")}
+                  accessibilityHint={t("free_trial_token_format")}
                 />
               </View>
+              {/* L'aide RESTE affichée pendant la saisie : un placeholder
+                  disparaît dès la première lettre, c'est-à-dire précisément
+                  quand on vérifie qu'on recopie bien. */}
+              <Text style={styles.formatHint}>{t("free_trial_token_format")}</Text>
 
               <Text style={styles.fieldLabel}>{t("free_trial_name_label")}</Text>
               <View style={[styles.inputRow, !!erreur && { borderColor: colors.disconnected }]}>
@@ -572,6 +584,11 @@ function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useCol
     // Le champ vit désormais DANS une ligne à icône : la bordure et le fond
     // appartiennent à la ligne, le champ ne porte plus que le texte.
     input: { flex: 1, paddingVertical: 16, color: colors.textPrimary, fontSize: 14, fontFamily: "Inter_600SemiBold", letterSpacing: 0.4 },
+    // Le jeton se recopie caractère par caractère : un espacement plus large et
+    // des chiffres à chasse fixe rendent la comparaison avec le message reçu
+    // beaucoup plus sûre.
+    inputJeton: { letterSpacing: 2, fontVariant: ["tabular-nums"] },
+    formatHint: { color: colors.textMuted, fontSize: 10.5, fontFamily: "Inter_400Regular", marginTop: 6 },
     fieldLabel: { color: colors.textSecondary, fontSize: 12, fontFamily: "Inter_600SemiBold", marginTop: 12, marginBottom: 7 },
     inputRow: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.bgInput, borderWidth: 1, borderColor: colors.border2, borderRadius: 15, paddingHorizontal: 14 },
     inputIcon: { width: 20, textAlign: "center" },

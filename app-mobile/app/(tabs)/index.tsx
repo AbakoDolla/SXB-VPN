@@ -32,6 +32,7 @@ import {
   Surface,
 } from "@/components/ui/Primitives";
 import { useConnectionDuration } from "@/hooks/useConnectionDuration";
+import { protocolTone } from "@/constants/protocolTone";
 import AccessNotices from "@/components/AccessNotices";
 import FreeTrialCard from "@/components/FreeTrialCard";
 import { blocksDevice } from "@/services/accessPolicy";
@@ -94,13 +95,7 @@ function VpnConnectionCard({ conn, isActive }: { conn: VpnConnection; isActive: 
   // Une teinte par protocole : la liste de connexions se parcourt alors par
   // familles, sans relire le nom de chacune. La pastille du protocole porte
   // déjà le texte — la couleur ne remplace jamais l'étiquette.
-  const protocoleTeinte = ({
-    VLESS: colors.accents.violet,
-    VMESS: colors.accents.indigo,
-    TROJAN: colors.accents.rose,
-    SSH: colors.accents.turquoise,
-    SHADOWSOCKS: colors.accents.ambre,
-  } as Record<string, string>)[conn.technicalProtocol?.toUpperCase() ?? ''] ?? colors.accents.cyan;
+  const protocoleTeinte = protocolTone(colors, conn.technicalProtocol);
 
   return (
     <Surface

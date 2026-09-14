@@ -2509,6 +2509,53 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(onglets, /borderWidth: 1,\s*\n\s*borderColor: "transparent"/);
   });
 
+  it('permet de changer de langue AVANT d’avoir un compte, sur les deux écrans d’entrée', () => {
+    // CAUSE RACINE : la langue ne se changeait que depuis les Réglages, écran
+    // inaccessible tant que le compte n'est pas activé. Quelqu'un qui reçoit
+    // l'application dans une langue qu'il ne lit pas devait traverser en
+    // aveugle l'activation ou la demande d'essai — les deux écrans où une
+    // erreur de saisie coûte un appel au support.
+    const bascule = source('components/ui/LanguageToggle.tsx');
+    assert.match(bascule, /useLanguageContext\(\)/, 'doit écrire dans le contexte existant');
+    assert.doesNotMatch(bascule, /AsyncStorage/,
+      'la persistance appartient au LanguageContext : un second chemin divergerait');
+    // Le libellé est le code lui-même : « FR »/« EN » se comprennent sans
+    // traduction, ce qui est précisément le but.
+    assert.match(bascule, /code\.toUpperCase\(\)/);
+
+    for (const ecran of ['app/activate.tsx', 'app/free-trial.tsx']) {
+      assert.match(source(ecran), /<LanguageToggle/, `${ecran} : bascule absente`);
+    }
+  });
+
+  it('montre le FORMAT attendu du jeton d’essai, et le garde visible pendant la saisie', () => {
+    // Le serveur impose /^STUFF-[A-Z0-9]{4}-[A-Z0-9]{4}$/. L'invite disait
+    // seulement « Saisissez votre jeton » : ni la longueur, ni les tirets, ni
+    // le préfixe, donc rien ne signalait une recopie mal formée.
+    for (const langue of ['fr', 'en']) {
+      const dico = source(`localization/${langue}.ts`);
+      assert.match(dico, /free_trial_token_placeholder: 'STUFF-XXXX-XXXX'/,
+        `${langue} : le format exact doit être l'invite`);
+      assert.match(dico, /free_trial_token_format:/, `${langue} : aide de format absente`);
+    }
+    const ecran = source('app/free-trial.tsx');
+    // L'aide RESTE affichée : un placeholder disparaît à la première lettre,
+    // c'est-à-dire au moment précis où l'on vérifie sa recopie.
+    assert.match(ecran, /<Text style=\{styles\.formatHint\}>\{t\("free_trial_token_format"\)\}<\/Text>/);
+  });
+
+  it('ne garde AUCUN composant que personne ne rend', () => {
+    // Dix composants n'étaient importés nulle part. Ils donnaient une fausse
+    // idée du vocabulaire disponible — `AppHeader` codait même ses tailles en
+    // dur au lieu des jetons, et aurait servi de mauvais modèle.
+    const morts = ['AppHeader', 'GlassCard', 'KeyboardAwareScrollViewCompat', 'LoadingOverlay',
+      'NotificationCard', 'SmartButton', 'StepLogs', 'SubscriptionCard', 'TokenInput', 'VpnStatusCard'];
+    for (const nom of morts) {
+      assert.equal(existsSync(`components/${nom}.tsx`), false,
+        `${nom} est mort : il ne doit pas revenir sans être rendu quelque part`);
+    }
+  });
+
   it('applique réellement les thèmes clair et sombre aux surfaces importantes', () => {
     const reglages = source('app/settings.tsx');
     const notifications = source('app/(tabs)/notifications.tsx');

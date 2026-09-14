@@ -25,7 +25,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { useColors } from '@/hooks/useColors';
 import { useTranslation } from '@/localization';
 import { alpha, layout, radius, spacing, type } from '@/constants/theme';
-import { EmptyState, Pill } from '@/components/ui/Primitives';
+import { EmptyState, Pill, ProgressBar } from '@/components/ui/Primitives';
+import { protocolTone } from '@/constants/protocolTone';
+import { formatBytes } from '@/services/quotaState';
 import type { VpnConnection } from '@/types/api';
 import type { ProfileStatus } from '@/services/accessPolicy';
 
@@ -115,18 +117,33 @@ export default function ConfigPicker({
                 const hasNotice = isUnusable || status === 'expired' || status === 'exhausted';
                 const isActive = entry.id === activeConfigId;
                 const isDeleting = deletingId === entry.id;
-                const tone = isUnusable ? colors.disconnected : isActive ? colors.primary : colors.textMuted;
+                const teinteProtocole = protocolTone(colors, entry.protocol || remote?.technicalProtocol);
+                const tone = isUnusable ? colors.accents.corail : isActive ? colors.accents.emeraude : teinteProtocole;
+                // Le quota vient de la connexion distante : l'entrée locale ne
+                // porte que l'identité du profil, pas sa consommation.
+                const volumeTotal = remote
+                  ? (remote.quota.totalBytes ?? remote.quota.totalGB * 1024 ** 3)
+                  : 0;
+                const volumeUtilise = remote
+                  ? (remote.quota.usedBytes ?? remote.quota.usedGB * 1024 ** 3)
+                  : 0;
+                const volumeRestant = Math.max(0, volumeTotal - volumeUtilise);
+                const partConsommee = volumeTotal > 0 ? volumeUtilise / volumeTotal : 0;
 
                 return (
                   <View
                     key={entry.id}
-                    style={[
-                      styles.row,
-                      {
-                        borderColor: isActive ? colors.primary + alpha.f40 : colors.border,
-                        backgroundColor: isActive ? colors.primaryDim : colors.bgCard2,
-                      },
-                    ]}
+                      style={[
+                        styles.row,
+                        {
+                          borderColor: isActive ? colors.accents.emeraude + alpha.f40 : colors.border,
+                          backgroundColor: isActive ? colors.accents.emeraude + alpha.f08 : colors.bgCard2,
+                        },
+                        // Une connexion inutilisable s'estompe au lieu de
+                        // disparaître : l'utilisateur doit comprendre POURQUOI
+                        // elle ne répond plus, pas la croire supprimée.
+                        isUnusable && { opacity: 0.55 },
+                      ]}
                   >
                     <Pressable
                       style={styles.rowMain}
@@ -152,11 +169,40 @@ export default function ConfigPicker({
                           {entry.name}
                         </Text>
                         <View style={styles.rowMeta}>
-                          <Text style={[type.micro, { color: colors.textMuted }]}>{entry.protocol || '—'}</Text>
-                          {isActive && <Pill label={t('config_active')} tone={colors.connected} />}
+                          <Pill label={entry.protocol || '—'} tone={teinteProtocole} />
+                          {isActive && <Pill label={t('config_active')} tone={colors.accents.emeraude} dot />}
                           {hasNotice && <Pill label={t(status === 'suspended' ? 'connection_suspended' :
-                            status === 'expired' ? 'expired' : status === 'exhausted' ? 'quota_exhausted' : 'connection_revoked')} tone={colors.disconnected} />}
+                            status === 'expired' ? 'expired' : status === 'exhausted' ? 'quota_exhausted' : 'connection_revoked')} tone={colors.accents.corail} />}
                         </View>
+
+                        {/* Le quota de CETTE connexion. Il ne figurait nulle
+                            part dans le sélecteur : on choisissait donc un
+                            profil sans savoir ce qu'il lui restait, et il
+                            fallait basculer dessus pour l'apprendre. */}
+                        {volumeTotal > 0 && (
+                          <View style={styles.rowQuota}>
+                            <View style={styles.rowQuotaLine}>
+                              <Text style={[type.micro, { color: colors.textSecondary }]} numberOfLines={1}>
+                                {formatBytes(volumeRestant)}
+                              </Text>
+                              <Text style={[type.micro, { color: colors.textMuted }]} numberOfLines={1}>
+                                / {formatBytes(volumeTotal)}
+                              </Text>
+                            </View>
+                            <ProgressBar
+                              progress={partConsommee}
+                              tone={teinteProtocole}
+                              warnTone={colors.accents.corail}
+                              height={4}
+                            />
+                          </View>
+                        )}
+
+                        {remote?.expiresAt && (
+                          <Text style={[type.micro, { color: colors.textMuted }]} numberOfLines={1}>
+                            {t('expires_on')} {new Date(remote.expiresAt).toLocaleDateString(undefined, { dateStyle: 'medium' })}
+                          </Text>
+                        )}
                       </View>
                     </Pressable>
 
@@ -223,6 +269,8 @@ const styles = StyleSheet.create({
   },
   rowCopy: { flex: 1, gap: spacing.xs },
   rowMeta: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, flexWrap: 'wrap' },
+  rowQuota: { gap: spacing.xs, marginTop: spacing.xs },
+  rowQuotaLine: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm },
   deleteBtn: {
     width: 40,
     height: 40,
