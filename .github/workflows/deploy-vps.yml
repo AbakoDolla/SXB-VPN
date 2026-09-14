@@ -431,7 +431,13 @@ jobs:
             cp -a artifacts/sxb-dashboard/dist/public/assets/. dist/assets/
             mv .sxb-release/server.cjs dist/server.cjs
             mv .sxb-release/server.cjs.map dist/server.cjs.map
-            for asset in favicon.svg favicon.png robots.txt; do
+            # Liste explicite, et non une copie du dossier entier : `dist/`
+            # contient aussi server.cjs et download/*.apk, qu'un miroir
+            # effacerait. Tout fichier statique nouveau doit donc être ajouté
+            # ICI, faute de quoi il est construit puis silencieusement laissé
+            # de côté — la page répond alors 200 avec le tableau de bord, ce
+            # qui ressemble à un problème de nginx sans en être un.
+            for asset in favicon.svg favicon.png robots.txt telecharger.html; do
               if [ -f "artifacts/sxb-dashboard/dist/public/$asset" ]; then
                 cp -f "artifacts/sxb-dashboard/dist/public/$asset" "dist/$asset"
               fi
