@@ -18,12 +18,13 @@ import { formatBytes, isUpperRole, ownerLabel, percentOf, toBigInt } from '../li
 import { canResumeSubscription, hasExpired, isPlanExhausted, lifecycleBadges, subscriptionStatus } from '../lib/lifecycle';
 import { useActionLock } from '../hooks/useActionLock';
 import { useBulkDelete } from '../hooks/useBulkDelete';
+import { comparerForfaitsParClient } from '../lib/planOrder';
 import BulkDeleteControls from './BulkDeleteControls';
 import SubscriptionAdjustmentDialog, { SubscriptionAdjustment } from './SubscriptionAdjustmentDialog';
 import {
   PackageOpen, Plus, Trash2, RefreshCw, ShieldOff, Search,
   Calendar, HardDrive, Cpu, X, AlertTriangle, CheckCircle,
-  Clock, Edit3, ChevronDown, PauseCircle, PlayCircle, Store,
+  Clock, Edit3, ChevronDown, PauseCircle, PlayCircle, Store, User,
 } from 'lucide-react';
 import Pagination from './ui/Pagination';
 import { toast } from 'sonner';
@@ -191,6 +192,14 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
 
   useEffect(() => { load(); }, []);
 
+  const clientMap = useMemo(() => Object.fromEntries(clients.map(c => [c.id, c])), [clients]);
+
+  // Le serveur renvoie les forfaits par date de création : ceux d'une même
+  // personne se retrouvaient donc dispersés dans toute la liste. L'ordre
+  // d'affichage les regroupe par client (voir `lib/planOrder`).
+  const nomClient = (s: Subscription) =>
+    s.client?.user?.name || clientMap[s.clientId]?.user?.name || s.client?.token || '';
+
   // Filter + pagination
   const filtered = useMemo(() => subs.filter(s => {
     const clientName = s.client?.user?.name || s.client?.token || '';
@@ -200,7 +209,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
       clientName.toLowerCase().includes(search.toLowerCase());
     const matchStatus = statusFilter === 'all' || subscriptionStatus(s) === statusFilter;
     return matchSearch && matchStatus;
-  }), [subs, search, statusFilter]);
+  }).sort((a, b) => comparerForfaitsParClient(a, b, nomClient)), [subs, search, statusFilter, clientMap]);
 
   const ownsSubscription = (sub: Subscription) => !isReseller || !!access?.resellerId
     && (sub.resellerId ?? sub.client?.resellerId ?? clients.find(client => client.id === sub.clientId)?.resellerId) === access.resellerId;
@@ -220,6 +229,14 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
     const start = (page - 1) * pageSize;
     return filtered.slice(start, start + pageSize);
   }, [filtered, page, pageSize]);
+
+  // Le compteur d'un groupe porte sur TOUT le filtre, pas sur la page : il
+  // annonce ce que la personne possède, et non ce qui tient sur cet écran.
+  const forfaitsParClient = useMemo(() => {
+    const compte = new Map<string, number>();
+    filtered.forEach(s => compte.set(s.clientId, (compte.get(s.clientId) ?? 0) + 1));
+    return compte;
+  }, [filtered]);
 
   // Reset page when filter changes
   useEffect(() => setPage(1), [search, statusFilter]);
@@ -347,8 +364,6 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
     URL.revokeObjectURL(url);
     toast.success(message('commerce.subscriptions.exported'));
   };
-
-  const clientMap = useMemo(() => Object.fromEntries(clients.map(c => [c.id, c])), [clients]);
 
   // ── Opérations groupées ────────────────────────────────────────────────────
   // Toute action de ce panneau augmente ou prolonge l'engagement : elles sont
@@ -811,13 +826,57 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#1a1f2e]">
-                  {paginated.map(sub => {
+                  {paginated.map((sub, index) => {
                     const pct = percentOf(sub.quotaUsed, sub.quotaBytes);
                     const effectiveStatus = subscriptionStatus(sub);
                     const cfg = STATUS_CFG[effectiveStatus] || STATUS_CFG.unknown;
                     const client = clientMap[sub.clientId];
+                    // Les forfaits étant groupés par client, la bannière ne
+                    // s'ouvre qu'au changement de propriétaire.
+                    const debutGroupe = index === 0 || paginated[index - 1].clientId !== sub.clientId;
+                    // Un groupe que la pagination coupe reprend en haut de la
+                    // page suivante : le signaler évite de faire croire à un
+                    // second lot de forfaits pour la même personne.
+                    const suiteDePage = index === 0 && page > 1
+                      && filtered[(page - 1) * pageSize - 1]?.clientId === sub.clientId;
+                    const eligiblesGroupe = debutGroupe
+                      ? paginated.filter(s => s.clientId === sub.clientId && ownsSubscription(s))
+                      : [];
+                    const groupeCoche = eligiblesGroupe.length > 0
+                      && eligiblesGroupe.every(s => selection.has(s.id));
+                    const nomGroupe = nomClient(sub) || t('commerce.subscriptions.groupUnknownClient');
                     return (
-                      <tr key={sub.id} className={`hover:bg-white/[0.02] transition-colors ${selection.has(sub.id) ? 'bg-cyan-500/5' : ''}`}>
+                      <React.Fragment key={sub.id}>
+                        {debutGroupe && (
+                          <tr className="bg-[#0d1119]">
+                            <td className="px-4 py-2">
+                              <input
+                                type="checkbox"
+                                data-group-select="true"
+                                aria-label={t('commerce.subscriptions.selectClientPlans', { name: nomGroupe })}
+                                checked={groupeCoche}
+                                disabled={controlsBusy || !canAssign || eligiblesGroupe.length === 0}
+                                onChange={e => bulkDelete.changeSelection(
+                                  eligiblesGroupe.map(s => s.id), e.target.checked,
+                                )}
+                                className="rounded border-[#1a1f2e] bg-[#07090e] accent-cyan-500 cursor-pointer"
+                              />
+                            </td>
+                            <td colSpan={showsOwnerColumn ? 10 : 9} className="px-4 py-2">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <User className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                                <span className="text-sm font-semibold text-white">{nomGroupe}</span>
+                                <span className="text-[11px] px-1.5 py-0.5 rounded-md bg-cyan-500/10 text-cyan-300 border border-cyan-500/20">
+                                  {t('commerce.subscriptions.groupCount', { count: forfaitsParClient.get(sub.clientId) ?? 0 })}
+                                </span>
+                                {suiteDePage && (
+                                  <span className="text-[11px] text-gray-500">{t('commerce.subscriptions.groupContinued')}</span>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      <tr className={`hover:bg-white/[0.02] transition-colors ${selection.has(sub.id) ? 'bg-cyan-500/5' : ''}`}>
                         <td className="px-4 py-3">
                           <input
                             type="checkbox"
@@ -921,6 +980,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
                           )}
                         </td>
                       </tr>
+                      </React.Fragment>
                     );
                   })}
                 </tbody>

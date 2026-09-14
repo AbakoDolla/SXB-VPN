@@ -32,6 +32,7 @@ import {
   type ForfaitCible,
 } from "../services/subscription-bulk";
 import { calculerAllocation } from "../services/reseller-quota";
+import { comparerForfaitsParClient } from "../../artifacts/sxb-dashboard/src/lib/planOrder";
 import { possedeClient } from "../services/reseller-state";
 
 const GO = BigInt(GIB);
@@ -462,6 +463,95 @@ describe("écran des forfaits — le sélecteur de serveur est toujours rendu", 
     for (const cle of new Set(clefs)) {
       assert.equal(typeof fr.subscriptions.bulk[cle], "string", `FR manquant : ${cle}`);
       assert.equal(typeof en.subscriptions.bulk[cle], "string", `EN manquant : ${cle}`);
+    }
+  });
+});
+
+describe("ordre d'affichage — les forfaits d'un client restent groupés", () => {
+  // CAUSE RACINE : le serveur trie par `createdAt: 'desc'`. Les forfaits d'une
+  // même personne se retrouvaient éparpillés sur toute la liste, au gré de la
+  // date d'attribution de chacun.
+  const forfaitDe = (clientId: string, createdAt: string) => ({ clientId, createdAt });
+  const noms: Record<string, string> = {
+    "cli-evans": "Evans",
+    "cli-benbilal": "Benbilal",
+    "cli-muet": "",
+    "cli-app2": "Appareil 2",
+    "cli-app10": "Appareil 10",
+    "cli-homonyme": "Evans",
+  };
+  const trier = (items: Array<{ clientId: string; createdAt: string }>) =>
+    [...items].sort((a, b) => comparerForfaitsParClient(a, b, item => noms[item.clientId] ?? ""));
+
+  it("réunit les forfaits d'un même client, quelles que soient leurs dates", () => {
+    const eparpille = [
+      forfaitDe("cli-evans", "2026-03-01T00:00:00.000Z"),
+      forfaitDe("cli-benbilal", "2026-02-01T00:00:00.000Z"),
+      forfaitDe("cli-evans", "2026-01-01T00:00:00.000Z"),
+      forfaitDe("cli-benbilal", "2026-04-01T00:00:00.000Z"),
+    ];
+    assert.deepEqual(
+      trier(eparpille).map(f => f.clientId),
+      ["cli-benbilal", "cli-benbilal", "cli-evans", "cli-evans"],
+      "les forfaits d'un client doivent se suivre",
+    );
+  });
+
+  it("classe du plus récent au plus ancien À L'INTÉRIEUR d'un client", () => {
+    const ordonne = trier([
+      forfaitDe("cli-evans", "2026-01-01T00:00:00.000Z"),
+      forfaitDe("cli-evans", "2026-03-01T00:00:00.000Z"),
+      forfaitDe("cli-evans", "2026-02-01T00:00:00.000Z"),
+    ]);
+    assert.deepEqual(ordonne.map(f => f.createdAt.slice(0, 7)), ["2026-03", "2026-02", "2026-01"]);
+  });
+
+  it("renvoie un client sans nom EN FIN de liste, pas en tête", () => {
+    // Une chaîne vide trie avant toutes les lettres : sans règle explicite, une
+    // fiche incomplète s'installerait en première position.
+    const ordonne = trier([
+      forfaitDe("cli-muet", "2026-01-01T00:00:00.000Z"),
+      forfaitDe("cli-evans", "2026-01-01T00:00:00.000Z"),
+    ]);
+    assert.equal(ordonne[0].clientId, "cli-evans");
+    assert.equal(ordonne[1].clientId, "cli-muet");
+  });
+
+  it("classe « Appareil 2 » avant « Appareil 10 »", () => {
+    // Un tri lexical placerait « 10 » avant « 2 ».
+    const ordonne = trier([
+      forfaitDe("cli-app10", "2026-01-01T00:00:00.000Z"),
+      forfaitDe("cli-app2", "2026-01-01T00:00:00.000Z"),
+    ]);
+    assert.deepEqual(ordonne.map(f => f.clientId), ["cli-app2", "cli-app10"]);
+  });
+
+  it("ne fusionne JAMAIS deux comptes portant le même nom affiché", () => {
+    // Deux personnes peuvent s'appeler « Evans » : les réunir sous une seule
+    // bannière laisserait croire qu'un compte détient les forfaits des deux.
+    const ordonne = trier([
+      forfaitDe("cli-evans", "2026-01-01T00:00:00.000Z"),
+      forfaitDe("cli-homonyme", "2026-02-01T00:00:00.000Z"),
+      forfaitDe("cli-evans", "2026-03-01T00:00:00.000Z"),
+    ]);
+    assert.deepEqual(
+      ordonne.map(f => f.clientId),
+      ["cli-evans", "cli-evans", "cli-homonyme"],
+      "chaque identifiant garde son propre groupe",
+    );
+  });
+
+  it("garde un ordre total cohérent (jamais deux éléments 'égaux' distincts)", () => {
+    // Un comparateur incohérent produit un ordre qui dépend de l'implémentation
+    // de tri du navigateur : la même liste s'afficherait différemment ailleurs.
+    const tous = Object.keys(noms).map(id => forfaitDe(id, "2026-01-01T00:00:00.000Z"));
+    for (const a of tous) {
+      for (const b of tous) {
+        const ab = comparerForfaitsParClient(a, b, item => noms[item.clientId] ?? "");
+        const ba = comparerForfaitsParClient(b, a, item => noms[item.clientId] ?? "");
+        if (a.clientId === b.clientId) assert.equal(ab, 0);
+        else assert.ok(ab !== 0 && Math.sign(ab) === -Math.sign(ba), `incohérent : ${a.clientId} / ${b.clientId}`);
+      }
     }
   });
 });

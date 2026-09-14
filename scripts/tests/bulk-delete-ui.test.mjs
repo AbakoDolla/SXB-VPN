@@ -19,8 +19,12 @@ const rows = (sample, count) => Array.from({ length: count }, (_, index) => ({
 }));
 const dialog = f => nodes(f.render()).find(node => node.props["aria-labelledby"] === "bulk-delete-title");
 const deletes = f => f.calls.filter(([name]) => String(name).startsWith("delete"));
+// Compte les cases de LIGNE. Sont exclues la case d'en-tête de tableau et
+// celles des bannières de client : ce sont des raccourcis de sélection, pas des
+// forfaits, et les compter fausserait le nombre de lignes attendu.
 const rowCheckboxes = f => nodes(f.render()).filter(node => node.type === "input" && node.props.type === "checkbox"
-  && node.props["aria-label"] !== f.t("commerce.subscriptions.selectPage"));
+  && node.props["aria-label"] !== f.t("commerce.subscriptions.selectPage")
+  && !node.props["data-group-select"]);
 const selectAll = (f, count) => f.button("operations.bulkDelete.selectAll", f.render(), { count }).props.onClick();
 const confirmSelection = (f, count) => f.button("operations.bulkDelete.deleteSelected", f.render(), { count }).props.onClick();
 const execute = (f, count) => f.button("operations.bulkDelete.confirmDelete", dialog(f), { count }).props.onClick();
