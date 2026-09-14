@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>SXB VPN — Télécharger l'application</title>
+<link rel="icon" type="image/png" href="/favicon.png">
+<style>
+  :root{
+    --bg:#050B16; --card:#0C1526; --input:#0A1220; --bd:#1D2C44; --bd2:#294059;
+    --cyan:#41D8FF; --vert:#39E6B0; --rouge:#FF9776; --ambre:#FFC857;
+    --t1:#F6FAFF; --t2:#AFC0D6; --t3:#6B819F;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:linear-gradient(170deg,#050B16,#0A1729 45%,#050B16);
+    min-height:100vh;color:var(--t1);
+    font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    display:flex;align-items:center;justify-content:center;padding:20px;
+  }
+  .carte{
+    width:100%;max-width:440px;background:var(--card);border:1px solid var(--bd);
+    border-radius:22px;padding:24px;
+  }
+  .marque{display:flex;align-items:center;gap:12px;margin-bottom:20px}
+  .logo{
+    width:46px;height:46px;border-radius:15px;flex:none;object-fit:contain;
+    background:rgba(65,216,255,.10);border:1px solid rgba(65,216,255,.30);padding:5px;
+  }
+  h1{font-size:17px;font-weight:700;letter-spacing:-.2px}
+  .sous{font-size:11px;color:var(--t3);margin-top:2px}
+  .bloc{
+    background:var(--input);border:1px solid var(--bd);border-radius:14px;
+    padding:13px;margin-bottom:14px;
+  }
+  .ligne{display:flex;justify-content:space-between;gap:12px;font-size:12.5px;padding:3px 0}
+  .ligne span:first-child{color:var(--t3)}
+  .ligne span:last-child{color:var(--t1);font-weight:600;text-align:right;
+    word-break:break-all;font-variant-numeric:tabular-nums}
+  .empreinte{font-size:10px;line-height:1.5;color:var(--t2);word-break:break-all;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;margin-top:6px}
+  button{
+    width:100%;border:0;border-radius:14px;padding:15px;font-size:14px;font-weight:700;
+    font-family:inherit;cursor:pointer;background:var(--cyan);color:#06101D;
+  }
+  button:disabled{opacity:.5;cursor:default}
+  button.secondaire{background:transparent;color:var(--t2);border:1px solid var(--bd2);margin-top:9px}
+  .piste{height:7px;border-radius:99px;background:var(--input);overflow:hidden;margin:14px 0 8px;display:none}
+  /* `transform` plutôt que `width` : animer une propriété de disposition
+     provoque un recalcul de mise en page à chaque paquet reçu, ce qui saccade
+     précisément pendant le téléchargement qu'on cherche à rendre fluide. */
+  .piste i{display:block;height:100%;width:100%;background:var(--cyan);border-radius:99px;
+    transform:scaleX(0);transform-origin:left;transition:transform .2s ease-out;will-change:transform}
+  .etat{font-size:12.5px;line-height:1.55;text-align:center;color:var(--t2);min-height:34px;
+    display:flex;align-items:center;justify-content:center;padding:4px 0}
+  .ok{color:var(--vert)} .ko{color:var(--rouge)} .attention{color:var(--ambre)}
+  .note{font-size:11px;line-height:1.6;color:var(--t3);margin-top:16px;
+    border-top:1px solid var(--bd);padding-top:14px}
+  .note b{color:var(--t2)}
+</style>
+</head>
+<body>
+<main class="carte">
+  <div class="marque">
+    <img class="logo" src="/assets/images/logo_sxb_2026.png" alt="">
+    <div>
+      <h1>SXB VPN</h1>
+      <div class="sous">Application Android</div>
+    </div>
+  </div>
+
+  <div class="bloc" id="infos">
+    <div class="ligne"><span>Version</span><span id="i-version">…</span></div>
+    <div class="ligne"><span>Taille</span><span id="i-taille">…</span></div>
+    <div class="ligne"><span>Publiée le</span><span id="i-date">…</span></div>
+  </div>
+
+  <button id="lancer">Télécharger et vérifier</button>
+  <div class="piste" id="piste"><i id="jauge"></i></div>
+  <div class="etat" id="etat">Le fichier est vérifié avant de vous être remis.</div>
+  <button class="secondaire" id="direct" hidden>Télécharger sans vérification</button>
+
+  <div class="note">
+    <b>Pourquoi cette page&nbsp;:</b> une application Android refuse de s'installer
+    — « le package semble ne pas être valide » — dès qu'il manque un seul octet au
+    fichier. Or un transfert interrompu garde la taille annoncée, donc rien ne le
+    signale. Cette page recalcule l'empreinte du fichier reçu et ne vous le remet
+    que si elle correspond exactement à celle publiée.
+  </div>
+</main>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// Le condensat de référence est publié par la chaîne de construction, à côté de
+// l'APK. Il n'est jamais recopié à la main : ce qui est comparé ici est ce que
+// la construction a réellement produit.
+// ─────────────────────────────────────────────────────────────────────────────
+const APK = '/download/sxbvpn-latest.apk';
+const MANIFESTE = '/download/sxbvpn-latest.json';
+
+const $ = id => document.getElementById(id);
+const octets = n => n >= 1e6 ? (n / 1e6).toFixed(1) + ' Mo' : Math.round(n / 1e3) + ' ko';
+const dire = (texte, classe) => { const e = $('etat'); e.textContent = texte; e.className = 'etat ' + (classe || ''); };
+
+let attendu = null;
+
+(async function chargerInfos() {
+  try {
+    const r = await fetch(MANIFESTE, { cache: 'no-store' });
+    if (!r.ok) throw new Error(r.status);
+    attendu = await r.json();
+    $('i-version').textContent = attendu.versionName || '—';
+    $('i-taille').textContent = attendu.sizeBytes ? octets(attendu.sizeBytes) : '—';
+    $('i-date').textContent = attendu.builtAt
+      ? new Date(attendu.builtAt).toLocaleDateString('fr-FR', { dateStyle: 'long' }) : '—';
+    if (attendu.apkSha256) {
+      const p = document.createElement('div');
+      p.className = 'empreinte';
+      p.textContent = 'SHA-256 attendu : ' + attendu.apkSha256;
+      $('infos').appendChild(p);
+    }
+  } catch {
+    // Sans manifeste, la vérification est impossible : le dire franchement
+    // plutôt que de laisser croire à un contrôle qui n'aura pas lieu.
+    dire("Informations de version indisponibles — la vérification ne peut pas être faite.", 'attention');
+    $('lancer').hidden = true;
+    $('direct').hidden = false;
+  }
+})();
+
+$('direct').onclick = () => { window.location.href = APK; };
+
+$('lancer').onclick = async () => {
+  if (!attendu?.apkSha256) return;
+  $('lancer').disabled = true;
+  $('piste').style.display = 'block';
+  dire('Téléchargement en cours…');
+
+  try {
+    const r = await fetch(APK, { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const total = Number(r.headers.get('content-length')) || attendu.sizeBytes || 0;
+
+    const morceaux = [];
+    let recu = 0;
+    const lecteur = r.body.getReader();
+    for (;;) {
+      const { done, value } = await lecteur.read();
+      if (done) break;
+      morceaux.push(value);
+      recu += value.length;
+      if (total) $('jauge').style.transform = 'scaleX(' + (recu / total).toFixed(4) + ')';
+      dire('Téléchargement… ' + octets(recu) + (total ? ' / ' + octets(total) : ''));
+    }
+
+    const blob = new Blob(morceaux, { type: 'application/vnd.android.package-archive' });
+
+    // Une taille correcte ne prouve rien : c'est l'empreinte qui tranche.
+    dire('Vérification de l’empreinte…');
+    const condense = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+    const obtenu = [...new Uint8Array(condense)].map(b => b.toString(16).padStart(2, '0')).join('');
+
+    if (obtenu.toLowerCase() !== String(attendu.apkSha256).toLowerCase()) {
+      dire("Le fichier reçu est incomplet ou altéré. Ne l’installez pas : retéléchargez-le.", 'ko');
+      $('lancer').disabled = false;
+      $('lancer').textContent = 'Réessayer';
+      return;
+    }
+
+    dire('Fichier vérifié — ouvrez-le pour l’installer.', 'ok');
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'sxb-vpn-' + (attendu.versionName || 'latest') + '.apk';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 120000);
+    $('lancer').textContent = 'Télécharger à nouveau';
+    $('lancer').disabled = false;
+  } catch (e) {
+    dire('Téléchargement interrompu : ' + (e?.message || e) + '. Réessayez.', 'ko');
+    $('lancer').disabled = false;
+    $('lancer').textContent = 'Réessayer';
+    $('direct').hidden = false;
+  }
+};
+</script>
+</body>
+</html>

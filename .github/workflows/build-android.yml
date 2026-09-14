@@ -856,6 +856,13 @@ jobs:
             }
             MANIFEST_EOF
             sudo chmod 0644 /var/www/apk/latest-build.json
+            # Copie PUBLIQUE, à côté de l'APK : la page de téléchargement
+            # vérifié (/telecharger.html) compare le condensat du fichier reçu à
+            # celui-ci. Sans elle, la page ne pourrait rien vérifier — et un
+            # transfert tronqué resterait indétectable, alors qu'il suffit d'un
+            # octet manquant pour qu'Android refuse « le package ».
+            sudo install -m 0644 /var/www/apk/latest-build.json \
+              /var/www/sxb-vpn/dist/download/sxbvpn-latest.json
             echo "📝 Manifeste de build : $(sudo cat /var/www/apk/latest-build.json | tr -d '\n' | cut -c1-160)…"
 
             # Purge des archives par build.
