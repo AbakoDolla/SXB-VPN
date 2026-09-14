@@ -2,6 +2,9 @@ import React, { useEffect, useState, useMemo } from "react";
 import { useTranslation } from "../contexts/I18nContext";
 import { fetchClients, createClient, deleteClient, suspendClient, activateClient, renewClient, resetClientAccess } from "../api/clients";
 import { fetchResellers } from "../api/resellers";
+import { fetchSubscriptions, type Subscription } from "../api/subscriptions";
+import { fetchVpnProfiles, type VpnProfile } from "../api/vpn-profiles";
+import ClientBulkPlans from "./ClientBulkPlans";
 import { Client, Reseller, UserRole } from "../types";
 import { useResellerAccess } from "../contexts/ResellerAccessContext";
 import { usePermissions } from "../contexts/PermissionsContext";
@@ -13,7 +16,7 @@ import { useBulkDelete } from "../hooks/useBulkDelete";
 import BulkDeleteControls from "./BulkDeleteControls";
 import ActivationRenewalDialog from "./ActivationRenewalDialog";
 import ActivationCodeResult from "./ActivationCodeResult";
-import { Search, UserPlus, Trash2, ShieldAlert, KeyRound, CalendarDays, PauseCircle, PlayCircle, RefreshCcw, Store } from "lucide-react";
+import { Search, UserPlus, Trash2, ShieldAlert, KeyRound, CalendarDays, PauseCircle, PlayCircle, RefreshCcw, Store, ChevronDown, ChevronRight } from "lucide-react";
 import Pagination from "./ui/Pagination";
 import { toast } from "sonner";
 
@@ -49,6 +52,20 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
   const [phone, setPhone] = useState("");
   const [resellerId, setResellerId] = useState("");
 
+  // ── Forfaits par client ────────────────────────────────────────────────────
+  //
+  // « Qu'est-ce que cette personne a reçu ? » ne se lit pas dans la liste des
+  // clients, et « Forfaits Data » range les forfaits à plat : ceux d'un même
+  // client y sont dispersés entre ceux de tous les autres. On charge donc les
+  // forfaits ICI, une seule fois pour la page, et on les regroupe par personne.
+  //
+  // Une seule lecture, jamais une par ligne : un parc de plusieurs centaines de
+  // clients s'afficherait sinon en autant de requêtes.
+  const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
+  const [profiles, setProfiles] = useState<VpnProfile[]>([]);
+  /** Client déplié — un seul à la fois, pour garder la liste lisible. */
+  const [clientOuvert, setClientOuvert] = useState<string | null>(null);
+
   const isSupport = currentUserRole === UserRole.SUPPORT;
   const isReseller = currentUserRole === UserRole.RESELLER;
   // Étiquette « Client de … » : réservée aux rôles qui voient tout le parc.
@@ -74,6 +91,20 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
       // ne peuvent pas annoncer des lignes invisibles.
       const data = await fetchClients();
       setClients(data);
+      // Forfaits et configurations : lecture unique, réutilisée par le volet
+      // de chaque ligne ET par le panneau d'attribution groupée.
+      //
+      // L'échec n'emporte pas la liste des clients : elle est l'objet de
+      // l'écran, les forfaits n'en sont qu'un complément. On perd le volet,
+      // jamais la page.
+      try {
+        const [subs, profs] = await Promise.all([
+          fetchSubscriptions(),
+          can("vpnprofile.view") ? fetchVpnProfiles() : Promise.resolve([] as VpnProfile[]),
+        ]);
+        setSubscriptions(subs);
+        setProfiles(profs);
+      } catch { /* le volet restera vide, la liste reste utilisable */ }
       // Rattachement commercial explicite, réservé aux rôles supérieurs.
       if (showsOwnerColumn && can("reseller.manage")) setResellers(await fetchResellers());
     } catch (err) {
@@ -168,6 +199,22 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
     });
   }, [clients, search, statusFilter]);
 
+  /**
+   * Forfaits indexés par client.
+   *
+   * Calculé une fois pour toute la page : chaque ligne lit sa clé au lieu de
+   * balayer la liste complète, ce qui redeviendrait quadratique sur un parc
+   * de plusieurs centaines de clients.
+   */
+  const forfaitsParClient = useMemo(() => {
+    const table = new Map<string, Subscription[]>();
+    for (const sub of subscriptions) {
+      const liste = table.get(sub.clientId);
+      if (liste) liste.push(sub); else table.set(sub.clientId, [sub]);
+    }
+    return table;
+  }, [subscriptions]);
+
   const bulkDelete = useBulkDelete({
     items: clients, filtered: filteredClients, selected, setSelected,
     label: client => client.user?.name || client.name || client.id,
@@ -249,6 +296,20 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
 
       {!isSupport && <BulkDeleteControls controller={bulkDelete} hintKey="operations.bulkDelete.clientHint" />}
 
+      {/* ── Attribuer ou modifier des forfaits, sur la sélection ─────────────
+          La même sélection sert déjà à la suppression groupée : en réutiliser
+          une seconde ferait cohabiter deux jeux de cases sur les mêmes lignes,
+          et l'exploitant ne saurait plus laquelle il vient de cocher. */}
+      {!isSupport && canCreate && bulkDelete.selected.size > 0 && (
+        <ClientBulkPlans
+          clientIds={[...bulkDelete.selected]}
+          subscriptions={subscriptions}
+          profiles={profiles}
+          busy={controlsBusy}
+          onDone={loadClients}
+        />
+      )}
+
       {/* Main client table */}
       {loading && clients.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 text-gray-400">
@@ -277,17 +338,48 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                   const percent = percentOf(client.quotaUsed, client.quotaTotal);
                   const effectiveStatus = deviceStatus(client);
                   const status = STATUS_CONFIG[effectiveStatus] ?? STATUS_CONFIG.unknown;
+                  const forfaits = forfaitsParClient.get(client.id) ?? [];
+                  const ouvert = clientOuvert === client.id;
+                  // Extrait de la classe : les deux cas vivent dans des chaînes
+                  // distinctes, ce qui évite de lire une couleur de fond et une
+                  // couleur de texte appartenant à des branches différentes
+                  // comme si elles s'appliquaient ensemble.
+                  const pastille = forfaits.length
+                    ? 'bg-cyan-500/15 text-cyan-300'
+                    : 'border border-gray-700 text-gray-400';
                   
                   return (
-                    <tr key={client.id} className="hover:bg-gray-900/20 transition-colors">
+                    <React.Fragment key={client.id}>
+                    <tr className="hover:bg-gray-900/20 transition-colors">
                       {!isSupport && <td className="py-4 px-4">
+                        {/* La case sert AUSSI à l'attribution de forfaits, pas
+                            seulement à la suppression : la lier au droit de
+                            supprimer empêcherait d'attribuer à quelqu'un qu'on
+                            n'a pas le droit d'effacer, ce qui n'a aucun
+                            rapport. Le droit de supprimer reste vérifié par le
+                            bouton de suppression lui-même. */}
                         <input type="checkbox" checked={bulkDelete.selected.has(client.id)}
-                          disabled={controlsBusy || !canDelete || !ownsClient(client)}
+                          disabled={controlsBusy || !ownsClient(client)}
                           aria-label={t('operations.bulkDelete.selectOne', { name: client.user?.name || client.name || client.id })}
                           onChange={() => bulkDelete.toggle(client.id)} />
                       </td>}
                       <td className="py-4 px-4 font-medium text-white">
-                        {client.user?.name || client.name || "-"}
+                        {/* Le nom devient le bouton d'ouverture : c'est
+                            l'endroit où l'on clique déjà pour « voir cette
+                            personne », et le compteur dit ce qu'on y trouvera
+                            avant même d'ouvrir. */}
+                        <button
+                          type="button"
+                          onClick={() => setClientOuvert(ouvert ? null : client.id)}
+                          aria-expanded={ouvert}
+                          className="inline-flex items-center gap-1.5 text-left transition hover:text-cyan-300"
+                        >
+                          {ouvert ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
+                          <span>{client.user?.name || client.name || "-"}</span>
+                          <span className={`rounded-full px-1.5 py-0.5 text-[10px] ${pastille}`}>
+                            {forfaits.length}
+                          </span>
+                        </button>
                       </td>
                       <td className="py-4 px-4 text-gray-400">
                         {client.user?.email || client.email || "-"}
@@ -372,6 +464,57 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                         </td>
                       )}
                     </tr>
+
+                    {/* ── Volet : LES FORFAITS DE CETTE PERSONNE ─────────────
+                        « Forfaits Data » les range à plat, mêlés à ceux de tous
+                        les autres. Ici ils sont sous leur propriétaire, avec ce
+                        qui se décide vraiment : quel serveur, combien accordé,
+                        combien consommé, combien reste, et jusqu'à quand. */}
+                    {ouvert && (
+                      <tr className="bg-gray-950/40">
+                        <td colSpan={12} className="px-4 py-3">
+                          {forfaits.length === 0 ? (
+                            <p className="text-xs text-gray-500">{t('commerce.clientPlans.none')}</p>
+                          ) : (
+                            <ul className="space-y-1.5">
+                              {forfaits.map(sub => {
+                                const accorde = BigInt(sub.quotaBytes ?? 0);
+                                const consomme = BigInt(sub.quotaUsed ?? 0);
+                                const reste = accorde > consomme ? accorde - consomme : 0n;
+                                return (
+                                  <li key={sub.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-gray-800 bg-black/20 px-3 py-2 text-[11px]">
+                                    <span className="font-medium text-gray-200">{sub.name}</span>
+                                    {sub.profile?.name && (
+                                      <span className="rounded border border-cyan-500/25 px-1.5 py-0.5 text-cyan-300">{sub.profile.name}</span>
+                                    )}
+                                    <span className="text-gray-400">
+                                      {/* Une seule ligne pour le volume : accordé,
+                                          consommé et restant se lisent ensemble. */}
+                                      {accorde === 0n
+                                        ? t('commerce.clientPlans.unlimited')
+                                        : t('commerce.clientPlans.quotaLine', {
+                                            used: formatBytes(String(consomme)),
+                                            granted: formatBytes(String(accorde)),
+                                            remaining: formatBytes(String(reste)),
+                                          })}
+                                    </span>
+                                    <span className="text-gray-400">
+                                      {sub.expireAt
+                                        ? t('commerce.clientPlans.until', { date: new Date(sub.expireAt).toLocaleDateString(locale) })
+                                        : t('commerce.clientPlans.noExpiry')}
+                                    </span>
+                                    <span className={sub.status === 'active' ? 'text-emerald-400' : 'text-amber-400'}>
+                                      {sub.status}
+                                    </span>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>

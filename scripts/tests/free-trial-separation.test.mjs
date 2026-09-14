@@ -1123,3 +1123,63 @@ test("un « 200 OK » simple est un tunnel ouvert, pas un refus", () => {
   // être traité comme du WebSocket, qui attend une trame binaire 0x82.
   assert.match(natif, /hasWsUpgradeHeader && hasWsKey && !connectPayload/);
 });
+
+test("on voit et on gère les forfaits d'un client DEPUIS la liste des clients", () => {
+  // LE BESOIN : « Forfaits Data » range les forfaits à plat, ceux d'un même
+  // client dispersés entre ceux de tous les autres. L'exploitant raisonne par
+  // PERSONNE — il attribue à quelqu'un, il prolonge quelqu'un — et devait
+  // filtrer, lire et recouper pour répondre à « qu'a reçu cette personne ? ».
+  const vue = source("artifacts/sxb-dashboard/src/components/ClientsView.tsx");
+  const panneau = source("artifacts/sxb-dashboard/src/components/ClientBulkPlans.tsx");
+
+  // ── 1. Un client se déplie et montre SES forfaits ───────────────────────
+  assert.match(vue, /const \[clientOuvert, setClientOuvert\]/);
+  assert.match(vue, /setClientOuvert\(ouvert \? null : client\.id\)/);
+  assert.match(vue, /commerce\.clientPlans\.quotaLine/);
+  assert.match(vue, /commerce\.clientPlans\.none/);
+
+  // ── 2. Une seule lecture, jamais une par ligne ──────────────────────────
+  // Un parc de plusieurs centaines de clients s'afficherait sinon en autant de
+  // requêtes, et le regroupement redeviendrait quadratique à chaque rendu.
+  assert.match(vue, /const forfaitsParClient = useMemo/);
+  assert.match(vue, /table\.get\(sub\.clientId\)/);
+  assert.equal((vue.match(/fetchSubscriptions\(\)/g) || []).length, 1);
+
+  // ── 3. L'échec des forfaits n'emporte pas la liste des clients ──────────
+  // Elle est l'objet de l'écran ; les forfaits n'en sont qu'un complément.
+  assert.match(vue, /catch \{ \/\* le volet restera vide, la liste reste utilisable \*\/ \}/);
+
+  // ── 4. Aucun SECOND chemin d'écriture ───────────────────────────────────
+  // Le panneau envoie la MÊME requête que « Forfaits Data », avec les mêmes
+  // bornes et les mêmes refus. Deux chemins divergents finiraient par appliquer
+  // deux règles différentes au même geste.
+  assert.match(panneau, /bulkSubscriptions\(plan\.payload\)/);
+  assert.match(panneau, /MAX_BULK_APPLY/);
+  assert.ok(!/fetch\(|apiRequest\(/.test(panneau), "le panneau ne doit pas écrire par un chemin à lui");
+
+  // ── 5. Attribuer et modifier ne se mélangent pas ────────────────────────
+  // Créer exige serveur + volume + échéance ; modifier n'exige qu'un champ et
+  // laisse intact tout ce qui est laissé vide.
+  assert.match(panneau, /if \(!profileId\) return refuse\('commerce\.subscriptions\.bulk\.profileRequired'\)/);
+  assert.match(panneau, /nothingToApply/);
+  // `deploy` vise les CLIENTS, `apply` vise les FORFAITS : le serveur exige
+  // l'un ou l'autre, jamais les deux.
+  assert.match(panneau, /action: 'deploy',\s*\n\s*clientIds,/);
+  assert.match(panneau, /action: 'apply',\s*\n\s*subscriptionIds: cibles\.subscriptionIds,/);
+
+  // ── 6. Une personne SANS forfait est annoncée, pas ignorée en silence ───
+  // `apply` ne sait viser que des forfaits : cocher quelqu'un qui n'en a aucun
+  // ne produirait rien, et rien ne l'expliquerait.
+  assert.match(panneau, /sansForfait: clientIds\.filter/);
+  assert.match(panneau, /commerce\.clientPlans\.withoutPlans/);
+  assert.match(panneau, /return refuse\('commerce\.clientPlans\.noPlans'\)/);
+
+  // ── 7. Une seule sélection sur les lignes ───────────────────────────────
+  // Deux jeux de cases sur les mêmes lignes et l'exploitant ne saurait plus
+  // laquelle il vient de cocher.
+  assert.match(vue, /clientIds=\{\[\.\.\.bulkDelete\.selected\]\}/);
+  // Et cocher ne dépend plus du droit de SUPPRIMER : attribuer un forfait à
+  // quelqu'un qu'on n'a pas le droit d'effacer n'a aucun rapport.
+  const caseLigne = vue.slice(vue.indexOf('type="checkbox" checked={bulkDelete.selected'));
+  assert.match(caseLigne.slice(0, 200), /disabled=\{controlsBusy \|\| !ownsClient\(client\)\}/);
+});
