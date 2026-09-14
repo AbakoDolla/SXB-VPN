@@ -79,6 +79,19 @@ class AutoReconnectManager(
 
     private val lastEventAtMs = AtomicLong(Long.MIN_VALUE / 4)
 
+    /**
+     * Instant de montée du tunnel, en temps monotone. `0` tant qu'il n'a pas
+     * été monté depuis le dernier démarrage.
+     *
+     * Sert à mesurer combien de temps la dernière session a TENU — la seule
+     * façon de distinguer un serveur injoignable d'un serveur qui fonctionne
+     * mais dont la connexion est plafonnée en durée par un frontal.
+     */
+    private val connectedAtMs = AtomicLong(0)
+
+    /** Durée de la dernière session montée, en ms. `0` si jamais montée. */
+    private val lastSessionUpMs = AtomicLong(0)
+
     private var job: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -122,6 +135,9 @@ class AutoReconnectManager(
         failedAttempts.set(0)
         resumeStreak.set(0)
         awaitingNetwork.set(false)
+        // Départ du chronomètre de session : c'est lui qui dira, à la chute,
+        // si le tunnel avait tenu assez longtemps pour prouver que tout marche.
+        connectedAtMs.set(elapsedMs())
         cancel()
         SxbSecureLogger.vpn(VpnEvent.RECONNECT_RESET)
     }
@@ -155,7 +171,15 @@ class AutoReconnectManager(
     }
 
     /** Le tunnel est tombé — déclenche la reconnexion si elle est armée. */
-    fun onDisconnected() = evaluate(SxbReconnectPolicy.Trigger.TUNNEL_LOST)
+    @Synchronized
+    fun onDisconnected() {
+        // Fige la durée qu'a tenue la session qui vient de tomber, AVANT de
+        // décider : c'est elle qui distingue un serveur injoignable d'un
+        // serveur sain dont la connexion est plafonnée en durée.
+        val depuis = connectedAtMs.getAndSet(0)
+        lastSessionUpMs.set(if (depuis > 0) elapsedMs() - depuis else 0)
+        evaluate(SxbReconnectPolicy.Trigger.TUNNEL_LOST)
+    }
 
     private fun networkPresent() = runCatching { hasNetwork() }.getOrDefault(true)
 
@@ -169,6 +193,7 @@ class AutoReconnectManager(
         awaitingNetwork = awaitingNetwork.get(),
         failedAttempts = failedAttempts.get(),
         sinceLastEventMs = elapsedMs() - lastEventAtMs.get(),
+        lastSessionUpMs = lastSessionUpMs.get(),
     )
 
     @Synchronized
@@ -189,15 +214,18 @@ class AutoReconnectManager(
             }
 
             SxbReconnectPolicy.Decision.RETRY -> {
-                val attempt = state.failedAttempts + 1
-                // Une session qui FONCTIONNAIT vient de tomber : rien ne dit que
-                // le serveur va mal, donc rien ne justifie de faire patienter.
-                // C'est le cas d'une façade qui ferme la connexion à son plafond
-                // de durée — attendre y fabriquerait une panne, toutes les fois.
-                val sessionEtaitSaine = trigger == SxbReconnectPolicy.Trigger.TUNNEL_LOST
-                    && state.failedAttempts == 0
+                // Une session qui a TENU efface les échecs précédents : ils
+                // décrivaient un état du serveur que la session saine vient de
+                // démentir. Sans cette remise à zéro, cinq coupures espacées
+                // d'une heure finiraient par arrêter la reconnexion, comme si
+                // le serveur était injoignable.
+                if (state.lastSessionUpMs >= SxbReconnectPolicy.SESSION_HEALTHY_MS) {
+                    failedAttempts.set(0)
+                    onLog("[SXB_DEBUG] RECONNECT_COUNTER_RESET reason=healthy_session up_ms=${state.lastSessionUpMs}")
+                }
+                val attempt = failedAttempts.get() + 1
                 schedule(
-                    delayMs = SxbReconnectPolicy.retryDelayMs(attempt, sessionEtaitSaine),
+                    delayMs = SxbReconnectPolicy.retryDelayMs(attempt),
                     label = "tentative $attempt/${SxbReconnectPolicy.MAX_RETRIES}",
                 )
             }
@@ -264,6 +292,8 @@ class AutoReconnectManager(
         failedAttempts.set(0)
         resumeStreak.set(0)
         awaitingNetwork.set(false)
+        connectedAtMs.set(0)
+        lastSessionUpMs.set(0)
         cancel()
     }
 

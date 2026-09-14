@@ -1124,6 +1124,41 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(source('tests/run-stability-policy.cjs'), /SxbSshKeepAlive\.kt/);
     assert.ok(sshStabilityCases.includes('SxbSshKeepAlive.classify('));
     assert.ok(sshStabilityCases.includes('Google Cloud'));
+
+    // ── 8. Une connexion plafonnée en DURÉE ne mène jamais à l'abandon ────
+    //
+    // Le serveur est derrière un frontal qui ferme la connexion toutes les dix
+    // minutes quoi qu'il arrive. Chaque reprise réussit, tient dix minutes,
+    // puis tombe. Le compteur n'additionnait que des « échecs » et abandonnait
+    // au cinquième : après moins d'une heure d'usage normal, la reconnexion
+    // s'arrêtait pour de bon.
+    //
+    // Une session qui a TENU dément les échecs précédents — le serveur, les
+    // identifiants et le transport fonctionnent —, donc le compteur repart de
+    // zéro. Les échecs qui comptent restent ceux qui s'enchaînent SANS que le
+    // tunnel ait jamais tenu.
+    const politique = source('modules/android-native/SxbReconnectPolicy.kt');
+    assert.match(politique, /const val SESSION_HEALTHY_MS = 30_000L/);
+    assert.match(politique, /state\.lastSessionUpMs >= SESSION_HEALTHY_MS -> Decision\.RETRY/);
+    // La garde d'abandon vient APRÈS : une session saine la court-circuite.
+    const perdu = politique.slice(politique.indexOf('private fun onTunnelLost'));
+    assert.ok(
+      perdu.indexOf('lastSessionUpMs >= SESSION_HEALTHY_MS') < perdu.indexOf('failedAttempts >= MAX_RETRIES'),
+      'la session saine doit être évaluée avant la garde d’abandon',
+    );
+    // Mais l'absence de réseau reste prioritaire sur les deux : une tentative
+    // sans radio ne prouverait rien et ne doit rien coûter.
+    assert.ok(
+      perdu.indexOf('!state.networkAvailable') < perdu.indexOf('lastSessionUpMs >= SESSION_HEALTHY_MS'),
+      'l’absence de réseau doit primer',
+    );
+    // La durée est MESURÉE par le gestionnaire, pas supposée.
+    const gestionnaire = source('modules/android-native/AutoReconnectManager.kt');
+    assert.match(gestionnaire, /connectedAtMs\.set\(elapsedMs\(\)\)/);
+    assert.match(gestionnaire, /lastSessionUpMs\.set\(if \(depuis > 0\) elapsedMs\(\) - depuis else 0\)/);
+    assert.match(gestionnaire, /RECONNECT_COUNTER_RESET reason=healthy_session/);
+    // Les cas sont exercés sur la JVM en CI.
+    assert.ok(sshStabilityCases.includes('une connexion plafonnée en durée ne doit JAMAIS mener à l\'abandon'));
   });
 
   it('sing-box : normalise transport.host et déduplique les profils hors ligne hérités', () => {

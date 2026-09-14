@@ -86,6 +86,7 @@ private fun reconnectState(
     awaitingNetwork: Boolean = false,
     failedAttempts: Int = 0,
     sinceLastEventMs: Long = Long.MAX_VALUE / 4,
+    lastSessionUpMs: Long = 0,
 ) = SxbReconnectPolicy.State(
     enabled = enabled,
     stopped = stopped,
@@ -96,6 +97,7 @@ private fun reconnectState(
     awaitingNetwork = awaitingNetwork,
     failedAttempts = failedAttempts,
     sinceLastEventMs = sinceLastEventMs,
+    lastSessionUpMs = lastSessionUpMs,
 )
 
 /**
@@ -789,10 +791,71 @@ fun main() {
                 reconnectState(failedAttempts = consumed),
             ) == SxbReconnectPolicy.Decision.RETRY)
         }
+        // Cinq échecs D'AFFILÉE sans que le tunnel ait jamais tenu : le serveur
+        // est injoignable ou la configuration fausse. Marteler n'y changerait
+        // rien et viderait la batterie.
         check(SxbReconnectPolicy.decide(
             SxbReconnectPolicy.Trigger.TUNNEL_LOST,
             reconnectState(failedAttempts = SxbReconnectPolicy.MAX_RETRIES),
         ) == SxbReconnectPolicy.Decision.GIVE_UP)
+    }
+
+    checkCase("une connexion plafonnée en durée ne doit JAMAIS mener à l'abandon") {
+        // LE DÉFAUT VÉCU : le serveur est derrière un frontal qui ferme la
+        // connexion toutes les dix minutes, quoi qu'il arrive — limite de DURÉE,
+        // pas d'inactivité. Chaque reprise réussit, tient dix minutes, puis
+        // tombe. Le compteur n'additionnait que des « échecs » et abandonnait au
+        // cinquième : après moins d'une heure d'usage normal, la reconnexion
+        // s'arrêtait pour de bon et l'utilisateur devait relancer à la main.
+        //
+        // Une session qui a TENU dément les échecs précédents : le serveur, les
+        // identifiants et le transport fonctionnent. La coupure qui suit est un
+        // épisode de plus, pas un pas vers l'abandon.
+        val dixMinutes = 10 * 60 * 1000L
+        for (cycle in 0..20) {
+            val decision = SxbReconnectPolicy.decide(
+                SxbReconnectPolicy.Trigger.TUNNEL_LOST,
+                // `failedAttempts` au maximum : même là, une session saine relance.
+                reconnectState(
+                    failedAttempts = SxbReconnectPolicy.MAX_RETRIES + cycle,
+                    lastSessionUpMs = dixMinutes,
+                ),
+            )
+            check(decision == SxbReconnectPolicy.Decision.RETRY) {
+                "Cycle $cycle : une session de 10 min doit relancer, pas abandonner ($decision)"
+            }
+        }
+
+        // La frontière est la DURÉE, pas le nombre de cycles : un tunnel qui
+        // tombe aussitôt monté reste un échec, et finit bien par s'arrêter.
+        check(SxbReconnectPolicy.decide(
+            SxbReconnectPolicy.Trigger.TUNNEL_LOST,
+            reconnectState(
+                failedAttempts = SxbReconnectPolicy.MAX_RETRIES,
+                lastSessionUpMs = SxbReconnectPolicy.SESSION_HEALTHY_MS - 1,
+            ),
+        ) == SxbReconnectPolicy.Decision.GIVE_UP)
+
+        // Et le seuil lui-même compte comme sain.
+        check(SxbReconnectPolicy.decide(
+            SxbReconnectPolicy.Trigger.TUNNEL_LOST,
+            reconnectState(
+                failedAttempts = SxbReconnectPolicy.MAX_RETRIES,
+                lastSessionUpMs = SxbReconnectPolicy.SESSION_HEALTHY_MS,
+            ),
+        ) == SxbReconnectPolicy.Decision.RETRY)
+
+        // Un arrêt volontaire garde le dernier mot, session saine ou non.
+        check(SxbReconnectPolicy.decide(
+            SxbReconnectPolicy.Trigger.TUNNEL_LOST,
+            reconnectState(stopped = true, lastSessionUpMs = dixMinutes),
+        ) == SxbReconnectPolicy.Decision.IGNORE)
+
+        // Sans réseau, on attend toujours : une tentative ne prouverait rien.
+        check(SxbReconnectPolicy.decide(
+            SxbReconnectPolicy.Trigger.TUNNEL_LOST,
+            reconnectState(networkAvailable = false, lastSessionUpMs = dixMinutes),
+        ) == SxbReconnectPolicy.Decision.WAIT_FOR_NETWORK)
     }
 
     checkCase("une rafale d'événements Android n'arme qu'une seule tentative") {
@@ -1201,26 +1264,5 @@ fun main() {
             ) == SxbReconnectPolicy.Decision.IGNORE
         )
     }
-    // ── Une session SAINE qui tombe se reprend sans faire patienter ─────────
-    //
-    // Le recul progressif sert à ménager un serveur en difficulté. Quand une
-    // façade ferme la connexion à son plafond de DURÉE, le serveur va très
-    // bien : imposer cinq secondes y fabrique une panne, répétée à chaque
-    // coupure. C'est ce qui ramenait l'utilisateur à son téléphone.
-    check(SxbReconnectPolicy.retryDelayMs(1, sessionEtaitSaine = true) == SxbReconnectPolicy.IMMEDIATE_RETRY_DELAY_MS)
-    cases++
-    // Dès le SECOND échec d'affilée, le recul reprend ses droits : deux échecs
-    // de suite disent que quelque chose ne va vraiment pas.
-    check(SxbReconnectPolicy.retryDelayMs(2, sessionEtaitSaine = true) >= SxbReconnectPolicy.BASE_RETRY_DELAY_MS)
-    cases++
-    // Un premier échec SANS session saine derrière garde l'attente d'origine.
-    check(SxbReconnectPolicy.retryDelayMs(1) == SxbReconnectPolicy.BASE_RETRY_DELAY_MS)
-    cases++
-    // L'attente immédiate reste NON NULLE : la socket précédente doit pouvoir
-    // se refermer avant qu'on rouvre, sinon on reconnecte dans le même souffle.
-    check(SxbReconnectPolicy.IMMEDIATE_RETRY_DELAY_MS > 0)
-    check(SxbReconnectPolicy.IMMEDIATE_RETRY_DELAY_MS < SxbReconnectPolicy.BASE_RETRY_DELAY_MS)
-    cases++
-
     println("PASS $cases stability policy cases")
 }

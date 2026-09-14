@@ -52,17 +52,22 @@ object SxbReconnectPolicy {
     /** Échecs RÉELS tolérés — jamais consommés en l'absence de réseau. */
     const val MAX_RETRIES = 5
 
+    /**
+     * Durée au-delà de laquelle une session est tenue pour SAINE.
+     *
+     * Trente secondes : assez long pour exclure un tunnel qui monte puis tombe
+     * aussitôt (mauvais transport, serveur qui refuse après la poignée de
+     * main), assez court pour couvrir les plafonds de durée les plus serrés des
+     * frontaux, qui se comptent en minutes.
+     *
+     * Une session qui a tenu ce temps a prouvé que tout fonctionne : la
+     * coupure qui suit ne dit rien de la santé du serveur, et ne doit pas
+     * rapprocher l'application de l'abandon.
+     */
+    const val SESSION_HEALTHY_MS = 30_000L
+
     const val BASE_RETRY_DELAY_MS = 5_000L
     const val MAX_RETRY_DELAY_MS = 60_000L
-
-    /**
-     * Attente avant de reprendre une session qui FONCTIONNAIT.
-     *
-     * Assez court pour que la coupure reste imperceptible, assez long pour
-     * laisser la socket précédente se refermer proprement et ne pas tenter la
-     * reconnexion dans le même souffle que la fermeture.
-     */
-    const val IMMEDIATE_RETRY_DELAY_MS = 700L
 
     const val BASE_RESUME_DELAY_MS = 2_000L
     const val MAX_RESUME_DELAY_MS = 30_000L
@@ -127,6 +132,14 @@ object SxbReconnectPolicy {
         val awaitingNetwork: Boolean = false,
         val failedAttempts: Int = 0,
         val sinceLastEventMs: Long = Long.MAX_VALUE,
+        /**
+         * Durée pendant laquelle le tunnel a tenu lors de la dernière session,
+         * en ms. `0` quand il n'a jamais été monté depuis le dernier démarrage.
+         *
+         * C'est ce qui distingue un serveur INJOIGNABLE d'un serveur qui
+         * fonctionne mais dont la connexion est plafonnée en durée.
+         */
+        val lastSessionUpMs: Long = 0,
     )
 
     fun decide(trigger: Trigger, state: State): Decision = when {
@@ -160,6 +173,26 @@ object SxbReconnectPolicy {
         // Cœur du correctif : sans réseau, une tentative ne peut pas aboutir.
         // On attend `onAvailable` au lieu de vider le compteur.
         !state.networkAvailable -> Decision.WAIT_FOR_NETWORK
+        // ── Une session qui a TENU n'est pas un échec ──────────────────────
+        //
+        // Le compteur ne distinguait pas cinq échecs d'affilée de cinq
+        // coupures espacées d'une heure : il additionnait les deux et finissait
+        // par abandonner. Or ces situations n'ont rien de commun.
+        //
+        // Un serveur derrière un frontal qui plafonne la DURÉE d'une connexion
+        // — le cas ici, en-têtes Google Cloud à l'appui — ferme le tunnel toutes
+        // les dix minutes quoi qu'on fasse. Chaque reprise réussit, tient dix
+        // minutes, puis tombe. Après cinq cycles, soit moins d'une heure
+        // d'usage normal, la reconnexion s'arrêtait définitivement et
+        // l'utilisateur devait relancer à la main pour de bon.
+        //
+        // Une session qui a tenu au moins `SESSION_HEALTHY_MS` prouve que le
+        // serveur, les identifiants et le transport fonctionnent : ce qui suit
+        // n'est pas une panne mais une coupure de plus, et on repart d'un
+        // compteur neuf. Les échecs qui comptent restent ceux qui s'enchaînent
+        // SANS que le tunnel ait jamais tenu — serveur éteint, mot de passe
+        // faux —, et ceux-là s'arrêtent toujours après cinq tentatives.
+        state.lastSessionUpMs >= SESSION_HEALTHY_MS -> Decision.RETRY
         state.failedAttempts >= MAX_RETRIES -> Decision.GIVE_UP
         else -> Decision.RETRY
     }
@@ -168,23 +201,8 @@ object SxbReconnectPolicy {
      * Délai avant la tentative numéro `attempt` (1 = première), en ms.
      * Recul géométrique borné : 5 s, 10 s, 20 s, 40 s, 60 s, 60 s…
      */
-    /**
-     * Délai avant la tentative n° `attempt`, en ms.
-     *
-     * `sessionEtaitSaine` dit que le tunnel qui vient de tomber FONCTIONNAIT.
-     * Dans ce cas la première tentative est quasi immédiate, et c'est une
-     * différence de nature, pas de réglage : le recul progressif sert à
-     * ménager un serveur en difficulté, or ici rien ne suggère qu'il le soit.
-     * Une façade qui ferme la connexion à son plafond de durée coupe un
-     * serveur en parfaite santé — attendre cinq secondes est alors une panne
-     * fabriquée, répétée à chaque coupure.
-     *
-     * Dès la SECONDE tentative consécutive, le recul reprend ses droits :
-     * deux échecs d'affilée signifient que quelque chose ne va pas, et
-     * marteler ne ferait que vider la batterie.
-     */
-    fun retryDelayMs(attempt: Int, sessionEtaitSaine: Boolean = false): Long {
-        if (attempt <= 1) return if (sessionEtaitSaine) IMMEDIATE_RETRY_DELAY_MS else BASE_RETRY_DELAY_MS
+    fun retryDelayMs(attempt: Int): Long {
+        if (attempt <= 1) return BASE_RETRY_DELAY_MS
         var delay = BASE_RETRY_DELAY_MS
         var step = attempt
         while (step > 1 && delay < MAX_RETRY_DELAY_MS) {

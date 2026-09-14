@@ -30,7 +30,7 @@ type PluginSetup = {
 };
 type Banc = {
   bouton: { openSupportTelegram: (onError: () => void, open?: (url: string) => Promise<unknown>) => Promise<boolean> };
-  constante: { SUPPORT_TELEGRAM_URL: string; telegramAppUrl: (lien?: string) => string | null };
+  constante: { SUPPORT_TELEGRAM_URL: string; telegramAppUrl: (lien: string) => string | null };
   rendre(langue: 'fr' | 'en'): string;
   state: { ouvertures: string[]; alertes: string[][] };
 };
