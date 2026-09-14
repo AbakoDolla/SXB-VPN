@@ -85,6 +85,12 @@ function RootLayoutNav() {
   const { isAuthenticated, isLoading, deviceAccess, accessReady } = useAuthContext();
   const segments = useSegments();
   const { consent } = usePrivacy();
+  // Ces couleurs étaient écrites en dur, et le fond sombre y était resté à
+  // #07101F alors que le thème est passé à #050B16 : l'arrière-plan de la
+  // navigation ne correspondait plus à celui des écrans, ce qui se voyait
+  // pendant chaque transition. Les lire depuis le thème supprime la
+  // possibilité même de cet écart.
+  const colors = useColors();
 
   useEffect(() => {
     if (isLoading || isAuthenticated) return;
@@ -116,7 +122,7 @@ function RootLayoutNav() {
     <>
       <StatusBar style={colorScheme === "dark" ? "light" : "dark"} />
       <AnnouncementNotificationSync />
-      <Stack screenOptions={{ headerShown: false, animation: "fade", contentStyle: { backgroundColor: colorScheme === "dark" ? "#07101F" : "#F4F8FC" } }}>
+      <Stack screenOptions={{ headerShown: false, animation: "fade", contentStyle: { backgroundColor: colors.bg } }}>
         <Stack.Screen name="index" options={{ animation: "fade" }} />
         <Stack.Screen name="onboarding" options={{ animation: "fade", gestureEnabled: false }} />
         <Stack.Screen name="activate" options={{ animation: "slide_from_right" }} />
@@ -129,15 +135,15 @@ function RootLayoutNav() {
           headerShown: true,
           animation: "slide_from_right",
           headerTitle: "Support",
-          headerStyle: { backgroundColor: colorScheme === "dark" ? "#07101F" : "#F4F8FC" },
-          headerTintColor: colorScheme === "dark" ? "#F6FAFF" : "#102033",
+          headerStyle: { backgroundColor: colors.bg },
+          headerTintColor: colors.textPrimary,
         }} />
                 <Stack.Screen name="settings" options={{
           headerShown: false,
           animation: "slide_from_right",
           headerTitle: "Paramètres",
-          headerStyle: { backgroundColor: colorScheme === "dark" ? "#07101F" : "#F4F8FC" },
-          headerTintColor: colorScheme === "dark" ? "#F6FAFF" : "#102033",
+          headerStyle: { backgroundColor: colors.bg },
+          headerTintColor: colors.textPrimary,
         }} />
         <Stack.Screen name="+not-found" />
       </Stack>
