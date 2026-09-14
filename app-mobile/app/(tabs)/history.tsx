@@ -8,7 +8,7 @@ import type { HistoryItem } from "@/types/api";
 import { useColors } from "@/hooks/useColors";
 import { useTranslation } from "@/localization";
 import { alpha, layout, radius, spacing, type } from "@/constants/theme";
-import { EmptyState } from "@/components/ui/Primitives";
+import { EmptyState, ScreenHeader } from "@/components/ui/Primitives";
 
 /**
  * Une ligne d'historique. La frise verticale relie les événements entre eux :
@@ -17,12 +17,15 @@ import { EmptyState } from "@/components/ui/Primitives";
 function HistoryRow({ item, isLast }: { item: HistoryItem; isLast: boolean }) {
   const colors = useColors();
 
+  // Une teinte par type d'événement : la frise se parcourt alors en diagonale,
+  // sans lire chaque libellé, pour retrouver « la dernière connexion » ou
+  // « l'activation ». L'icône dit le sens ; la couleur ne fait que l'accélérer.
   const metadata: Record<string, { icon: string; color: string }> = {
-    connect: { icon: "shield-checkmark", color: colors.connected },
-    disconnect: { icon: "power", color: colors.disconnected },
-    account_activated: { icon: "key", color: colors.primary },
-    plan_activated: { icon: "sparkles", color: colors.purple },
-    default: { icon: "time", color: colors.textMuted },
+    connect: { icon: "shield-checkmark", color: colors.accents.emeraude },
+    disconnect: { icon: "power", color: colors.accents.corail },
+    account_activated: { icon: "key", color: colors.accents.cyan },
+    plan_activated: { icon: "sparkles", color: colors.accents.violet },
+    default: { icon: "time", color: colors.accents.indigo },
   };
   const meta = metadata[item.action] || metadata.default;
   const date = new Date(item.createdAt);
@@ -91,10 +94,13 @@ export default function HistoryScreen() {
 
   return (
     <LinearGradient colors={colors.gradients.bg as [string, string, string]} style={styles.container}>
-      <View style={[styles.header, { paddingTop: insets.top + spacing.lg, borderBottomColor: colors.border }]}>
-        <Text style={[type.overline, { color: colors.primary }]}>{t("app_name")}</Text>
-        <Text style={[type.h1, { color: colors.textPrimary, marginBottom: spacing.md }]}>{t("history")}</Text>
-
+      <ScreenHeader
+        title={t("history")}
+        eyebrow={t("app_name")}
+        icon="time"
+        tone={colors.accents.violet}
+        paddingTop={insets.top + spacing.lg}
+      >
         <View style={styles.filterRow}>
           {filters.map((item) => {
             const isActive = filter === item.key;
@@ -107,20 +113,20 @@ export default function HistoryScreen() {
                 style={({ pressed }) => [
                   styles.filterButton,
                   {
-                    backgroundColor: isActive ? colors.primaryDim : colors.bgCard,
-                    borderColor: isActive ? colors.primary + alpha.f60 : colors.border,
+                    backgroundColor: isActive ? colors.accents.violet + alpha.f16 : colors.bgCard,
+                    borderColor: isActive ? colors.accents.violet + alpha.f60 : colors.border,
                   },
                   pressed && styles.pressed,
                 ]}
               >
-                <Text style={[type.captionMedium, { color: isActive ? colors.primary : colors.textMuted }]}>
+                <Text style={[type.captionMedium, { color: isActive ? colors.accents.violet : colors.textMuted }]}>
                   {item.label}
                 </Text>
               </Pressable>
             );
           })}
         </View>
-      </View>
+      </ScreenHeader>
 
       {loading ? (
         <View style={styles.center}>

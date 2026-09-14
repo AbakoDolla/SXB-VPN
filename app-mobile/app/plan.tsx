@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { Animated, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -6,7 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { useAuthContext } from "@/contexts/AuthContext";
-import Colors from "@/constants/colors";
+import { useColors } from "@/hooks/useColors";
 import { useTranslation } from "@/localization";
 import { activationErrorKey } from "@/services/activationError";
 
@@ -14,6 +14,11 @@ export default function PlanScreen() {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const { activatePlan } = useAuthContext();
+  // Cet écran importait le module statique `Colors` : il restait sombre même
+  // quand l'utilisateur avait choisi le thème clair — le seul de l'application
+  // à se comporter ainsi, et la règle est déjà épinglée par un test ailleurs.
+  const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
 
   const [token, setToken]       = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -52,33 +57,33 @@ export default function PlanScreen() {
 
   if (success) {
     return (
-      <LinearGradient colors={["#060914", "#0A1025", "#060914"]} style={[styles.container, { justifyContent: "center", alignItems: "center" }]}>
+      <LinearGradient colors={colors.gradients.bg as [string, string, string]} style={[styles.container, { justifyContent: "center", alignItems: "center" }]}>
         <Animated.View style={[{ alignItems: "center", gap: 16 }, { transform: [{ scale: successScale }] }]}>
-          <View style={[styles.iconCircle, { backgroundColor: Colors.connectedDim, borderColor: Colors.connected + "40" }]}>
-            <Ionicons name="checkmark-circle" size={72} color={Colors.connected} />
+          <View style={[styles.iconCircle, { backgroundColor: colors.connectedDim, borderColor: colors.connected + "40" }]}>
+            <Ionicons name="checkmark-circle" size={72} color={colors.connected} />
           </View>
-          <Text style={{ fontSize: 26, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold" }}>{t("plan_success")}</Text>
-          <Text style={{ fontSize: 14, color: Colors.textSecondary, fontFamily: "Inter_400Regular" }}>{t("quota_added")}</Text>
+          <Text style={{ fontSize: 26, fontWeight: "700", color: colors.textPrimary, fontFamily: "Inter_700Bold" }}>{t("plan_success")}</Text>
+          <Text style={{ fontSize: 14, color: colors.textSecondary, fontFamily: "Inter_400Regular" }}>{t("quota_added")}</Text>
         </Animated.View>
       </LinearGradient>
     );
   }
 
   return (
-    <LinearGradient colors={["#060914", "#0A1025", "#060914"]} style={styles.container}>
+    <LinearGradient colors={colors.gradients.bg as [string, string, string]} style={styles.container}>
       <ScrollView
         contentContainerStyle={[styles.content, { paddingTop: insets.top + 20, paddingBottom: insets.bottom + 40 }]}
         showsVerticalScrollIndicator={false}
       >
         {/* Back */}
         <Pressable onPress={() => router.back()} style={styles.backBtn}>
-          <Ionicons name="arrow-back" size={22} color={Colors.textSecondary} />
+          <Ionicons name="arrow-back" size={22} color={colors.textSecondary} />
         </Pressable>
 
         {/* Icon */}
         <View style={{ alignItems: "center", paddingVertical: 16 }}>
-          <View style={[styles.iconCircle, { backgroundColor: Colors.purpleDim, borderColor: Colors.purple + "40" }]}>
-            <Ionicons name="gift" size={52} color={Colors.purple} />
+          <View style={[styles.iconCircle, { backgroundColor: colors.accents.violet + "1F", borderColor: colors.accents.violet + "40" }]}>
+            <Ionicons name="gift" size={52} color={colors.accents.violet} />
           </View>
         </View>
 
@@ -88,9 +93,9 @@ export default function PlanScreen() {
         {/* Input */}
         <Animated.View style={{ transform: [{ translateX: shakeAnim }] }}>
           <TextInput
-            style={[styles.input, error && { borderColor: Colors.disconnected }]}
+            style={[styles.input, error && { borderColor: colors.disconnected }]}
             placeholder="SXB-DATA-XXXX-XXXX-XXXX"
-            placeholderTextColor={Colors.textMuted}
+            placeholderTextColor={colors.textMuted}
             value={token}
             onChangeText={(t) => { setToken(t.toUpperCase()); setError(""); }}
             autoCapitalize="characters"
@@ -102,14 +107,14 @@ export default function PlanScreen() {
 
         {error ? (
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-            <Ionicons name="alert-circle" size={14} color={Colors.disconnected} />
-            <Text style={{ fontSize: 13, color: Colors.disconnected, fontFamily: "Inter_500Medium" }}>{error}</Text>
+            <Ionicons name="alert-circle" size={14} color={colors.disconnected} />
+            <Text style={{ fontSize: 13, color: colors.disconnected, fontFamily: "Inter_500Medium" }}>{error}</Text>
           </View>
         ) : null}
 
         {/* Activate button */}
         <Pressable onPress={handleActivate} disabled={isLoading} style={[styles.btn, isLoading && { opacity: 0.6 }]}>
-          <LinearGradient colors={[Colors.purple, "#6D28D9"]} style={styles.btnGrad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
+          <LinearGradient colors={[colors.accents.violet, colors.accents.indigo]} style={styles.btnGrad} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
             {isLoading
 ? <Text style={styles.btnText}>{t("plan_activating")}</Text>
 	              : <>
@@ -122,7 +127,7 @@ export default function PlanScreen() {
 
         {/* Info card */}
         <View style={styles.infoCard}>
-          <Ionicons name="information-circle-outline" size={18} color={Colors.primary} />
+          <Ionicons name="information-circle-outline" size={18} color={colors.accents.cyan} />
 <Text style={styles.infoText}>{t("faq_a2")}</Text>
         </View>
 
@@ -132,17 +137,20 @@ export default function PlanScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function makeStyles(colors: ReturnType<typeof useColors>) {
+  return StyleSheet.create({
   container: { flex: 1 },
   content: { paddingHorizontal: 24, gap: 14 },
-  backBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: Colors.bgCard, borderWidth: 1, borderColor: Colors.border, alignItems: "center", justifyContent: "center", marginBottom: 8 },
+  backBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.bgCard, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center", marginBottom: 8 },
   iconCircle: { width: 110, height: 110, borderRadius: 55, borderWidth: 1, alignItems: "center", justifyContent: "center" },
-  title: { fontSize: 26, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold", textAlign: "center" },
-  subtitle: { fontSize: 14, color: Colors.textSecondary, fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 22 },
-  input: { backgroundColor: Colors.bgInput, borderWidth: 1.5, borderColor: Colors.border, borderRadius: 14, paddingHorizontal: 18, paddingVertical: 16, fontSize: 15, color: "#FFF", fontFamily: "Inter_600SemiBold", letterSpacing: 1.5, textAlign: "center" },
+  title: { fontSize: 26, fontWeight: "700", color: colors.textPrimary, fontFamily: "Inter_700Bold", textAlign: "center" },
+  subtitle: { fontSize: 14, color: colors.textSecondary, fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 22 },
+  input: { backgroundColor: colors.bgInput, borderWidth: 1.5, borderColor: colors.border, borderRadius: 14, paddingHorizontal: 18, paddingVertical: 16, fontSize: 15, color: colors.textPrimary, fontFamily: "Inter_600SemiBold", letterSpacing: 1.5, textAlign: "center" },
   btn: { borderRadius: 16, overflow: "hidden" },
   btnGrad: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 16 },
-  btnText: { fontSize: 16, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold" },
-  infoCard: { flexDirection: "row", alignItems: "flex-start", gap: 10, backgroundColor: Colors.bgCard, borderRadius: 12, borderWidth: 1, borderColor: Colors.border, padding: 14 },
-  infoText: { flex: 1, fontSize: 12, color: Colors.textSecondary, fontFamily: "Inter_400Regular", lineHeight: 18 },
-});
+  // Blanc assumé : ce libellé est posé sur un dégradé violet saturé, identique
+  // dans les deux thèmes, où seul un blanc garde un contraste suffisant.
+  btnText: { fontSize: 16, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold" },  infoCard: { flexDirection: "row", alignItems: "flex-start", gap: 10, backgroundColor: colors.bgCard, borderRadius: 12, borderWidth: 1, borderColor: colors.border, padding: 14 },
+  infoText: { flex: 1, fontSize: 12, color: colors.textSecondary, fontFamily: "Inter_400Regular", lineHeight: 18 },
+  });
+}

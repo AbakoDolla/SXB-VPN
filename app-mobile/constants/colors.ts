@@ -26,6 +26,29 @@ export type ThemeColors = {
   tabActive: string;
   tabInactive: string;
   overlay: string;
+  /**
+   * Teintes d'accent nommées.
+   *
+   * POURQUOI : toute l'interface tirait sur un seul cyan, si bien que rien ne
+   * distinguait un écran d'un autre ni une catégorie d'une autre — l'ensemble
+   * était cohérent mais monotone, et le repérage reposait uniquement sur la
+   * lecture des titres.
+   *
+   * Chaque teinte est choisie pour rester lisible sur le fond sombre ET sur le
+   * fond clair, et pour se distinguer des voisines même en vision daltonienne
+   * (les couples critiques ne sont jamais rouge/vert seuls : un icône ou un
+   * libellé accompagne toujours la couleur).
+   */
+  accents: {
+    cyan: string;
+    violet: string;
+    emeraude: string;
+    ambre: string;
+    rose: string;
+    indigo: string;
+    corail: string;
+    turquoise: string;
+  };
   gradients: {
     bg: readonly string[];
     primary: readonly string[];
@@ -64,6 +87,19 @@ const darkColors: ThemeColors = {
   tabActive: "#41D8FF",
   tabInactive: "#6B819F",
   overlay: "rgba(3,7,14,0.9)",
+  // Teintes saturées mais non fluorescentes : sur un fond très sombre, une
+  // couleur pure « bave » et fatigue l'œil. Chacune garde assez de luminance
+  // pour rester lisible en texte de petite taille.
+  accents: {
+    cyan: "#41D8FF",
+    violet: "#A78BFA",
+    emeraude: "#39E6B0",
+    ambre: "#FFC857",
+    rose: "#FF7EB6",
+    indigo: "#7C9CFF",
+    corail: "#FF9776",
+    turquoise: "#4BE3D2",
+  },
   gradients: {
     // Dégradé en trois temps : le point le plus clair est légèrement au-dessus
     // du centre, là où se trouve le bouton, ce qui crée une lumière naturelle.
@@ -101,6 +137,19 @@ const lightColors: ThemeColors = {
   tabActive: "#1769E8",
   tabInactive: "#71869D",
   overlay: "rgba(16,32,51,0.58)",
+  // Mêmes familles qu'en sombre, assombries : les teintes claires du thème
+  // sombre passeraient pour du pastel délavé sur un fond blanc, et un texte
+  // écrit avec ne serait plus lisible.
+  accents: {
+    cyan: "#0E86B8",
+    violet: "#6D4BD2",
+    emeraude: "#07966B",
+    ambre: "#A66A00",
+    rose: "#C63C82",
+    indigo: "#3C5FD0",
+    corail: "#CC5A33",
+    turquoise: "#0E8F86",
+  },
   gradients: {
     bg: ["#F4F8FC", "#EAF2FB", "#F4F8FC"],
     primary: ["#1769E8", "#4E8DFF"],

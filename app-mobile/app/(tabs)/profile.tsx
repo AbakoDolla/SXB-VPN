@@ -32,11 +32,13 @@ export default function ProfileScreen() {
     { text: t("logout"), style: "destructive", onPress: () => logout().then(() => router.replace("/activate")) },
   ]);
 
+  // Une teinte par entrée : quatre icônes du même cyan formaient un bloc
+  // indistinct où seul le libellé distinguait les lignes.
   const menu = [
-    { icon: "person-outline", label: t("section_personal_info"), action: () => router.push("/settings") },
-    { icon: "phone-portrait-outline", label: t("section_authorized_devices"), value: `${accountState?.deviceLimit ?? 1} ${accountState?.deviceLimit && accountState.deviceLimit > 1 ? t("devices") : t("device")}` },
-    { icon: "shield-checkmark-outline", label: t("section_security_conn"), action: () => router.push("/settings") },
-    { icon: "notifications-outline", label: t("notifications"), action: () => router.push("/(tabs)/notifications") },
+    { icon: "person-outline", label: t("section_personal_info"), tone: colors.accents.cyan, action: () => router.push("/settings") },
+    { icon: "phone-portrait-outline", label: t("section_authorized_devices"), tone: colors.accents.indigo, value: `${accountState?.deviceLimit ?? 1} ${accountState?.deviceLimit && accountState.deviceLimit > 1 ? t("devices") : t("device")}` },
+    { icon: "shield-checkmark-outline", label: t("section_security_conn"), tone: colors.accents.emeraude, action: () => router.push("/settings") },
+    { icon: "notifications-outline", label: t("notifications"), tone: colors.accents.ambre, action: () => router.push("/(tabs)/notifications") },
   ];
 
   return (
@@ -49,8 +51,11 @@ export default function ProfileScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.headerRow}>
+          <View style={[styles.headerIcon, { backgroundColor: colors.accents.emeraude + alpha.f16, borderColor: colors.accents.emeraude + alpha.f40 }]}>
+            <Ionicons name="person" size={19} color={colors.accents.emeraude} />
+          </View>
           <View style={{ flex: 1 }}>
-            <Text style={[type.overline, { color: colors.primary }]}>{t("app_name")}</Text>
+            <Text style={[type.overline, { color: colors.accents.emeraude }]}>{t("app_name")}</Text>
             <Text style={[type.h1, { color: colors.textPrimary }]}>{t("profile")}</Text>
           </View>
           <IconButton icon="settings-outline" onPress={() => router.push("/settings")} accessibilityLabel={t("settings")} />
@@ -65,8 +70,8 @@ export default function ProfileScreen() {
             accessibilityLabel={t("section_personal_info")}
             style={({ pressed }) => [styles.identityRow, pressed && styles.pressed]}
           >
-            <View style={[styles.avatar, { backgroundColor: colors.primaryDim, borderColor: colors.primary + alpha.f40 }]}>
-              <Text style={[type.h1, { color: colors.primary }]}>{initials}</Text>
+            <View style={[styles.avatar, { backgroundColor: colors.accents.emeraude + alpha.f16, borderColor: colors.accents.emeraude + alpha.f40 }]}>
+              <Text style={[type.h1, { color: colors.accents.emeraude }]}>{initials}</Text>
             </View>
             <View style={styles.identityCopy}>
               <Text style={[type.h2, { color: colors.textPrimary }]} numberOfLines={1}>
@@ -123,8 +128,8 @@ export default function ProfileScreen() {
                 pressed && styles.pressed,
               ]}
             >
-              <View style={[styles.menuIcon, { backgroundColor: colors.primaryDim }]}>
-                <Ionicons name={item.icon as any} size={17} color={colors.primary} />
+              <View style={[styles.menuIcon, { backgroundColor: item.tone + alpha.f16, borderColor: item.tone + alpha.f24 }]}>
+                <Ionicons name={item.icon as any} size={17} color={item.tone} />
               </View>
               <Text style={[type.bodyMedium, { color: colors.textPrimary, flex: 1 }]}>{item.label}</Text>
               {item.value && <Text style={[type.caption, { color: colors.textMuted }]}>{item.value}</Text>}
@@ -177,6 +182,14 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   content: { paddingHorizontal: layout.screenPadding, gap: spacing.lg },
   headerRow: { flexDirection: "row", alignItems: "center", gap: spacing.md },
+  headerIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   pressed: { opacity: 0.7, transform: [{ scale: 0.98 }] },
 
   identityRow: { flexDirection: "row", alignItems: "center", gap: spacing.md },
@@ -203,6 +216,7 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: radius.md,
+    borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
   },

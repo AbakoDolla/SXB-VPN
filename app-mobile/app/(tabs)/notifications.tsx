@@ -36,13 +36,15 @@ function NotifRow({ item, onMarkRead }: { item: Notification; onMarkRead: (id: s
   const { t } = useTranslation();
   const [downloading, setDownloading] = React.useState(false);
 
+  // Les alertes se distinguent d'abord par leur gravité : la teinte de la
+  // famille d'accents rend cette gravité lisible avant le texte.
   const color = item.type === "warning"
-    ? colors.warning
+    ? colors.accents.ambre
     : item.type === "error"
-    ? colors.disconnected
+    ? colors.accents.corail
     : item.type === "success"
-    ? colors.connected
-    : colors.primary;
+    ? colors.accents.emeraude
+    : colors.accents.indigo;
 
   const diff = Math.max(0, Date.now() - new Date(item.createdAt).getTime());
   const minutes = Math.floor(diff / 60000);
@@ -191,12 +193,15 @@ export default function NotificationsScreen() {
   return (
     <LinearGradient colors={colors.gradients.bg as [string, string, string]} style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + spacing.lg, borderBottomColor: colors.border }]}>
+        <View style={[styles.headerIcon, { backgroundColor: colors.accents.ambre + alpha.f16, borderColor: colors.accents.ambre + alpha.f40 }]}>
+          <Ionicons name="notifications" size={19} color={colors.accents.ambre} />
+        </View>
         <View style={{ flex: 1 }}>
-          <Text style={[type.overline, { color: colors.primary }]}>{t("app_name")}</Text>
+          <Text style={[type.overline, { color: colors.accents.ambre }]}>{t("app_name")}</Text>
           <View style={styles.titleRow}>
             <Text style={[type.h1, { color: colors.textPrimary }]}>{t("notifications")}</Text>
             {unreadCount > 0 && (
-              <View style={[styles.badge, { backgroundColor: colors.primary }]}>
+              <View style={[styles.badge, { backgroundColor: colors.accents.ambre }]}>
                 <Text style={[type.micro, { color: colors.primaryForeground }]}>{unreadCount}</Text>
               </View>
             )}
@@ -209,11 +214,11 @@ export default function NotificationsScreen() {
             accessibilityRole="button"
             style={({ pressed }) => [
               styles.markAllBtn,
-              { borderColor: colors.border, backgroundColor: colors.bgCard },
+              { borderColor: colors.accents.ambre + alpha.f40, backgroundColor: colors.accents.ambre + alpha.f08 },
               pressed && styles.pressed,
             ]}
           >
-            <Text style={[type.captionMedium, { color: colors.primary }]}>{t("notifications_read_all")}</Text>
+            <Text style={[type.captionMedium, { color: colors.accents.ambre }]}>{t("notifications_read_all")}</Text>
           </Pressable>
         )}
       </View>
@@ -281,8 +286,16 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.lg,
     borderBottomWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
-    alignItems: "flex-end",
+    alignItems: "center",
     gap: spacing.md,
+  },
+  headerIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
   },
   titleRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   badge: {

@@ -2483,6 +2483,32 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(contexte, /!appActiveRef\.current && vpnStateRef\.current !== 'handshaking'[\s\S]{0,220}clearInterval\(trafficTimerRef\.current\)/);
   });
 
+  it('donne une couleur propre à chaque onglet, sans jamais s’y fier seule', () => {
+    // CAUSE RACINE : toute l'application tirait sur un seul cyan. Rien ne
+    // distinguait un écran d'un autre, et le repérage reposait uniquement sur
+    // la lecture du titre.
+    const palette = source('constants/colors.ts');
+    for (const teinte of ['cyan', 'violet', 'emeraude', 'ambre', 'rose', 'indigo', 'corail', 'turquoise']) {
+      assert.match(palette, new RegExp(`${teinte}:`), `accent manquant : ${teinte}`);
+    }
+    // Les DEUX thèmes portent la famille : n'en servir qu'un laisserait le
+    // thème clair sans accents, donc `undefined` à l'écran.
+    assert.equal((palette.match(/accents: \{/g) ?? []).length, 3,
+      'accents absents d’un thème (type + sombre + clair attendus)');
+
+    const onglets = source('app/(tabs)/_layout.tsx');
+    for (const teinte of ['cyan', 'violet', 'emeraude', 'ambre']) {
+      assert.match(onglets, new RegExp(`tone: "${teinte}"`), `onglet sans teinte : ${teinte}`);
+    }
+    // L'icône reste porteuse du sens : la couleur seule ne distingue rien pour
+    // qui ne la perçoit pas.
+    assert.match(onglets, /iconFocused: "home"/);
+    assert.match(onglets, /\{t\(tab\.labelKey\)\}/, 'le libellé d’onglet doit rester affiché');
+    // La bordure existe au repos, transparente : n'apparaître qu'à l'état actif
+    // ajouterait 2 px et ferait sauter l'icône d'un onglet à l'autre.
+    assert.match(onglets, /borderWidth: 1,\s*\n\s*borderColor: "transparent"/);
+  });
+
   it('applique réellement les thèmes clair et sombre aux surfaces importantes', () => {
     const reglages = source('app/settings.tsx');
     const notifications = source('app/(tabs)/notifications.tsx');
@@ -2492,6 +2518,18 @@ describe('garde-fous contre les régressions Android', () => {
     // statique : toutes leurs couleurs viennent de useColors().
     assert.doesNotMatch(reglages, /import Colors from/);
     assert.match(reglages, /function makeStyles\(colors:/);
+
+    // Même règle pour l'écran d'activation d'un forfait : il importait la
+    // palette sombre statique et restait donc sombre alors que l'utilisateur
+    // avait choisi le thème clair — et son titre, sa saisie et son fond
+    // étaient écrits en dur, ce qu'aucun réglage ne pouvait rattraper.
+    const forfait = source('app/plan.tsx');
+    assert.doesNotMatch(forfait, /import Colors from/);
+    assert.match(forfait, /function makeStyles\(colors:/);
+    assert.match(forfait, /colors\.gradients\.bg/, 'plan.tsx : fond encore figé');
+    assert.doesNotMatch(forfait, /color: "#FFF", fontFamily: "Inter_700Bold", textAlign/,
+      'plan.tsx : titre encore en blanc figé');
+
     assert.match(reglages, /backgroundColor: colors\.bgCard/);
     assert.match(reglages, /backgroundColor: colors\.overlay/);
     assert.match(reglages, /label=\{t\("replay_tutorial"\)\}/);

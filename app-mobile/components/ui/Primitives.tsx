@@ -12,6 +12,7 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View, type ViewStyle, type StyleProp } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useColors } from '@/hooks/useColors';
 import { alpha, elevation, layout, radius, spacing, type } from '@/constants/theme';
 
@@ -216,6 +217,126 @@ export function IconButton({ icon, onPress, accessibilityLabel, tone, disabled, 
   );
 }
 
+// ── AccentCard ───────────────────────────────────────────────────────────────
+
+interface AccentCardProps {
+  children: React.ReactNode;
+  /** Teinte de la carte, issue de `colors.accents`. */
+  tone: string;
+  icon?: keyof typeof Ionicons.glyphMap;
+  title?: string;
+  subtitle?: string;
+  trailing?: React.ReactNode;
+  style?: StyleProp<ViewStyle>;
+}
+
+/**
+ * Carte à en-tête teinté.
+ *
+ * POURQUOI : toutes les cartes étaient identiques — même bordure, même fond,
+ * même absence de couleur. Rien ne signalait d'un coup d'œil qu'on regardait un
+ * quota plutôt qu'un support ou une alerte ; il fallait lire chaque titre.
+ *
+ * La teinte est portée par une bande dégradée derrière l'en-tête, pas par le
+ * fond entier : une carte intégralement colorée écraserait son contenu et
+ * rendrait le texte moins lisible.
+ */
+export function AccentCard({ children, tone, icon, title, subtitle, trailing, style }: AccentCardProps) {
+  const colors = useColors();
+  return (
+    <View
+      style={[
+        styles.surface,
+        { borderColor: tone + alpha.f24, backgroundColor: colors.bgCard, overflow: 'hidden' },
+        elevation.sm,
+        style,
+      ]}
+      // Le padding vit sur le corps, pour que le dégradé touche les bords.
+      >
+      <LinearGradient
+        colors={[tone + alpha.f24, tone + alpha.f08, 'transparent']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.accentWash}
+        pointerEvents="none"
+      />
+      {(title || icon) && (
+        <View style={styles.accentHeader}>
+          {icon && (
+            <View style={[styles.accentIcon, { backgroundColor: tone + alpha.f16, borderColor: tone + alpha.f24 }]}>
+              <Ionicons name={icon} size={16} color={tone} />
+            </View>
+          )}
+          <View style={{ flex: 1 }}>
+            {title && (
+              <Text style={[type.h3, { color: colors.textPrimary }]} numberOfLines={1}>{title}</Text>
+            )}
+            {subtitle && (
+              <Text style={[type.caption, { color: colors.textMuted }]} numberOfLines={2}>{subtitle}</Text>
+            )}
+          </View>
+          {trailing}
+        </View>
+      )}
+      <View style={styles.accentBody}>{children}</View>
+    </View>
+  );
+}
+
+// ── ScreenHeader ─────────────────────────────────────────────────────────────
+
+interface ScreenHeaderProps {
+  title: string;
+  /** Surtitre discret — en général le nom du produit. */
+  eyebrow?: string;
+  icon?: keyof typeof Ionicons.glyphMap;
+  /** Teinte de l'écran. Reprend celle de l'onglet, pour que la couleur reste un repère. */
+  tone: string;
+  trailing?: React.ReactNode;
+  children?: React.ReactNode;
+  paddingTop: number;
+}
+
+/**
+ * En-tête d'écran teinté.
+ *
+ * POURQUOI : chaque écran répétait le même en-tête cyan, si bien que passer de
+ * l'historique au profil ne se voyait pas — seul le titre changeait. La teinte
+ * reprend ici celle de l'onglet correspondant : la couleur devient le repère
+ * qui dit « où je suis » avant même la lecture.
+ */
+export function ScreenHeader({
+  title, eyebrow, icon, tone, trailing, children, paddingTop,
+}: ScreenHeaderProps) {
+  const colors = useColors();
+  return (
+    <View style={[styles.screenHeader, { paddingTop, borderBottomColor: colors.border }]}>
+      <LinearGradient
+        colors={[tone + alpha.f16, 'transparent']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 0.6, y: 1 }}
+        style={StyleSheet.absoluteFill}
+        pointerEvents="none"
+      />
+      <View style={styles.screenHeaderRow}>
+        {icon && (
+          <View style={[styles.screenHeaderIcon, { backgroundColor: tone + alpha.f16, borderColor: tone + alpha.f40 }]}>
+            <Ionicons name={icon} size={19} color={tone} />
+          </View>
+        )}
+        <View style={{ flex: 1 }}>
+          {eyebrow && (
+            <Text style={[type.overline, { color: tone }]} numberOfLines={1}>{eyebrow}</Text>
+          )}
+          <Text style={[type.h1, { color: colors.textPrimary }]} numberOfLines={1}>{title}</Text>
+        </View>
+        {trailing}
+      </View>
+      {children}
+    </View>
+  );
+}
+
 // ── EmptyState ───────────────────────────────────────────────────────────────
 
 export function EmptyState({
@@ -308,13 +429,51 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing.sm,
     paddingVertical: spacing.xl,
-  },
-  emptyIcon: {
+  },  emptyIcon: {
     width: 48,
     height: 48,
     borderRadius: radius.full,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: spacing.xs,
+  },
+
+  // ── AccentCard ─────────────────────────────────────────────────────────────
+  // Le lavis ne couvre que le haut de la carte : au-delà, il passerait derrière
+  // le texte du corps et en abaisserait le contraste.
+  accentWash: { position: 'absolute', left: 0, right: 0, top: 0, height: 96 },
+  accentHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    paddingHorizontal: layout.cardPadding,
+    paddingTop: layout.cardPadding,
+  },
+  accentIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  accentBody: { padding: layout.cardPadding, gap: spacing.md },
+
+  // ── ScreenHeader ───────────────────────────────────────────────────────────
+  screenHeader: {
+    paddingHorizontal: layout.screenPadding,
+    paddingBottom: spacing.lg,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: spacing.md,
+    overflow: 'hidden',
+  },
+  screenHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  screenHeaderIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

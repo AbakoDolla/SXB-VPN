@@ -456,25 +456,28 @@ export default function FreeTrialScreen() {
             </View>
           ) : null}
 
-          {/* Bandeau de réassurance : trois promesses, trois colonnes. */}
+          {/* Bandeau de réassurance : trois promesses, trois colonnes.
+              Une teinte par promesse plutôt qu'un cyan uniforme : les trois
+              cellules se lisaient comme un seul bloc gris-bleu, alors qu'elles
+              disent trois choses différentes. L'icône reste porteuse du sens —
+              la couleur ne fait que la souligner. */}
           <View style={styles.assuranceBar}>
-            <View style={styles.assuranceCell}>
-              <Ionicons name="shield-checkmark-outline" size={20} color={colors.primary} />
-              <Text style={styles.assuranceTitle}>{t("free_trial_assurance_secure_title")}</Text>
-              <Text style={styles.assuranceDesc}>{t("free_trial_assurance_secure_desc")}</Text>
-            </View>
-            <View style={styles.assuranceDivider} />
-            <View style={styles.assuranceCell}>
-              <Ionicons name="flash-outline" size={20} color={colors.primary} />
-              <Text style={styles.assuranceTitle}>{t("free_trial_assurance_fast_title")}</Text>
-              <Text style={styles.assuranceDesc}>{t("free_trial_assurance_fast_desc")}</Text>
-            </View>
-            <View style={styles.assuranceDivider} />
-            <View style={styles.assuranceCell}>
-              <Ionicons name="lock-closed-outline" size={20} color={colors.primary} />
-              <Text style={styles.assuranceTitle}>{t("free_trial_assurance_free_title")}</Text>
-              <Text style={styles.assuranceDesc}>{t("free_trial_assurance_free_desc")}</Text>
-            </View>
+            {[
+              { icon: "shield-checkmark", tone: colors.accents.cyan, titre: "free_trial_assurance_secure_title", desc: "free_trial_assurance_secure_desc" },
+              { icon: "flash", tone: colors.accents.ambre, titre: "free_trial_assurance_fast_title", desc: "free_trial_assurance_fast_desc" },
+              { icon: "gift", tone: colors.accents.emeraude, titre: "free_trial_assurance_free_title", desc: "free_trial_assurance_free_desc" },
+            ].map((cellule, i) => (
+              <React.Fragment key={cellule.titre}>
+                {i > 0 && <View style={styles.assuranceDivider} />}
+                <View style={styles.assuranceCell}>
+                  <View style={[styles.assuranceIcon, { backgroundColor: cellule.tone + "1F", borderColor: cellule.tone + "3D" }]}>
+                    <Ionicons name={cellule.icon as any} size={17} color={cellule.tone} />
+                  </View>
+                  <Text style={styles.assuranceTitle}>{t(cellule.titre as any)}</Text>
+                  <Text style={styles.assuranceDesc}>{t(cellule.desc as any)}</Text>
+                </View>
+              </React.Fragment>
+            ))}
           </View>
 
           <SupportTelegramButton compact />
@@ -576,6 +579,7 @@ function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useCol
     selectPlaceholder: { color: colors.textMuted, fontFamily: "Inter_400Regular" },
     assuranceBar: { flexDirection: "row", alignItems: "flex-start", backgroundColor: colors.bgCard + "D9", borderWidth: 1, borderColor: colors.border, borderRadius: 20, paddingVertical: 16, paddingHorizontal: 8 },
     assuranceCell: { flex: 1, alignItems: "center", gap: 6, paddingHorizontal: 6 },
+    assuranceIcon: { width: 34, height: 34, borderRadius: 12, borderWidth: 1, alignItems: "center", justifyContent: "center", marginBottom: 2 },
     assuranceDivider: { width: 1, alignSelf: "stretch", backgroundColor: colors.border },
     assuranceTitle: { color: colors.textPrimary, fontSize: 12, fontFamily: "Inter_700Bold", textAlign: "center" },
     assuranceDesc: { color: colors.textMuted, fontSize: 10, lineHeight: 14, fontFamily: "Inter_400Regular", textAlign: "center" },

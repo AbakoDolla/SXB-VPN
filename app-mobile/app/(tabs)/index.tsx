@@ -86,22 +86,32 @@ function VpnConnectionCard({ conn, isActive }: { conn: VpnConnection; isActive: 
   const { t } = useTranslation();
   const colors = useColors();
   const statusColor = isExpired || isExhausted || isRevoked || isSuspended
-    ? colors.disconnected
+    ? colors.accents.corail
     : isActive
-    ? colors.connected
-    : colors.primary;
+    ? colors.accents.emeraude
+    : colors.accents.cyan;
   const statusLabel = isExhausted ? t('friendly_quota_exhausted') : isExpired ? t('expired') : isRevoked ? t('connection_revoked') : isSuspended ? t('suspended_status') : isActive ? t('active') : t('active');
+  // Une teinte par protocole : la liste de connexions se parcourt alors par
+  // familles, sans relire le nom de chacune. La pastille du protocole porte
+  // déjà le texte — la couleur ne remplace jamais l'étiquette.
+  const protocoleTeinte = ({
+    VLESS: colors.accents.violet,
+    VMESS: colors.accents.indigo,
+    TROJAN: colors.accents.rose,
+    SSH: colors.accents.turquoise,
+    SHADOWSOCKS: colors.accents.ambre,
+  } as Record<string, string>)[conn.technicalProtocol?.toUpperCase() ?? ''] ?? colors.accents.cyan;
 
   return (
     <Surface
-      tone={isActive ? colors.connected : undefined}
+      tone={isActive ? colors.accents.emeraude : protocoleTeinte}
       style={{ marginTop: spacing.md }}
     >
       <View style={styles.connHeader}>
         <View style={{ flex: 1, gap: spacing.xs }}>
           <Text style={[type.h3, { color: colors.textPrimary }]} numberOfLines={1}>{conn.name}</Text>
           <View style={styles.connProtoRow}>
-            <Pill label={conn.displayProtocol} tone={statusColor} />
+            <Pill label={conn.displayProtocol} tone={protocoleTeinte} />
             {conn.displayProtocol !== conn.technicalProtocol.toUpperCase() && (
               <Text style={[type.micro, { color: colors.textMuted }]}>
                 {conn.technicalProtocol.toUpperCase()}
@@ -808,8 +818,8 @@ export default function HomeScreen() {
             pas d'onglet. */}
         <View style={styles.quickRow}>
           {[
-            { icon: "gift-outline", label: t('activate_plan'), action: () => router.push("/plan"), color: colors.purple },
-            { icon: "headset-outline", label: t('support'), action: () => router.push("/support"), color: colors.connected },
+            { icon: "gift-outline", label: t('activate_plan'), action: () => router.push("/plan"), color: colors.accents.violet },
+            { icon: "headset-outline", label: t('support'), action: () => router.push("/support"), color: colors.accents.turquoise },
           ].map((item) => (
             <Pressable
               key={item.label}
@@ -818,11 +828,11 @@ export default function HomeScreen() {
               accessibilityLabel={item.label}
               style={({ pressed }) => [
                 styles.quickItem,
-                { borderColor: colors.border, backgroundColor: colors.bgCard },
+                { borderColor: item.color + alpha.f24, backgroundColor: item.color + alpha.f08 },
                 pressed && { opacity: 0.75, transform: [{ scale: 0.97 }] },
               ]}
             >
-              <View style={[styles.quickIcon, { backgroundColor: item.color + alpha.f12 }]}>
+              <View style={[styles.quickIcon, { backgroundColor: item.color + alpha.f16, borderColor: item.color + alpha.f24 }]}>
                 <Ionicons name={item.icon as any} size={19} color={item.color} />
               </View>
               <Text style={[type.micro, { color: colors.textSecondary }]} numberOfLines={1}>
@@ -994,6 +1004,7 @@ const styles = StyleSheet.create({
     width: 42,
     height: 42,
     borderRadius: radius.md,
+    borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
   },
