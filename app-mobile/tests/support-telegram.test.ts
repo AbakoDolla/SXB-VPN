@@ -30,7 +30,7 @@ type PluginSetup = {
 };
 type Banc = {
   bouton: { openSupportTelegram: (onError: () => void, open?: (url: string) => Promise<unknown>) => Promise<boolean> };
-  constante: { SUPPORT_TELEGRAM_URL: string };
+  constante: { SUPPORT_TELEGRAM_URL: string; telegramAppUrl: (lien?: string) => string | null };
   rendre(langue: 'fr' | 'en'): string;
   state: { ouvertures: string[]; alertes: string[][] };
 };
@@ -95,22 +95,60 @@ async function banc(): Promise<Banc> {
 }
 
 describe('bouton de support Telegram', () => {
-  it('ouvre réellement le lien du propriétaire et signale l’échec au lieu de le taire', async () => {
+  it('ouvre Telegram DIRECTEMENT, et retombe sur le web sans jamais échouer en silence', async () => {
     const h = await banc();
     assert.equal(h.constante.SUPPORT_TELEGRAM_URL, URL_TELEGRAM);
 
-    // Cas nominal : l'URL part telle quelle, aucune alerte.
+    // LE DÉFAUT CORRIGÉ : le bouton ouvrait `https://t.me/...`, qu'Android
+    // confie au NAVIGATEUR — Telegram n'est appelé sur un lien https que si le
+    // domaine a été vérifié et que l'utilisateur n'a pas renvoyé les liens pris
+    // en charge vers son navigateur. Le support n'était donc jamais rejoint.
+    //
+    // Pire, l'échec était SILENCIEUX : `openURL` sur une https réussit toujours,
+    // le navigateur la prenant, si bien que l'alerte ne pouvait jamais paraître.
+    const NATIF = 'tg://join?invite=LkoFkoSDuxpiM2Q8';
+    assert.equal(h.constante.telegramAppUrl(URL_TELEGRAM), NATIF);
+
+    // Cas nominal : Telegram installé — l'adresse NATIVE part, et elle seule.
     const alerte: string[] = [];
     assert.equal(await h.bouton.openSupportTelegram(() => alerte.push('erreur')), true);
-    assert.deepEqual([...h.state.ouvertures], [URL_TELEGRAM]);
+    assert.deepEqual([...h.state.ouvertures], [NATIF]);
     assert.equal(alerte.length, 0, 'aucune alerte quand le lien s’ouvre');
 
-    // Cas Telegram absent : l'utilisateur doit être averti, pas laissé sans réponse.
+    // Cas Telegram ABSENT : `tg://` échoue franchement — c'est précisément ce
+    // qui permet de le savoir — et le lien web prend le relais pour proposer
+    // l'installation. Toujours aucune alerte : il reste quelque chose à faire.
+    const essais: string[] = [];
+    assert.equal(await h.bouton.openSupportTelegram(
+      () => alerte.push('erreur'),
+      async (url: string) => {
+        essais.push(url);
+        if (url.startsWith('tg://')) throw new Error('No activity found to handle Intent');
+      },
+    ), true);
+    assert.deepEqual(essais, [NATIF, URL_TELEGRAM], 'natif d’abord, web ensuite');
+    assert.equal(alerte.length, 0, 'le repli web ne doit pas alerter');
+
+    // Cas où plus RIEN ne peut ouvrir le lien : là, et là seulement, on avertit.
     assert.equal(await h.bouton.openSupportTelegram(
       () => alerte.push('erreur'),
       async () => { throw new Error('No activity found to handle Intent'); },
     ), false);
     assert.deepEqual(alerte, ['erreur']);
+  });
+
+  it('traduit les formes de lien que Telegram distribue, et refuse d’inventer', async () => {
+    const h = await banc();
+    const { telegramAppUrl } = h.constante;
+    // Invitation privée, ancienne invitation, canal public.
+    assert.equal(telegramAppUrl('https://t.me/+ABC123'), 'tg://join?invite=ABC123');
+    assert.equal(telegramAppUrl('https://t.me/joinchat/ABC123'), 'tg://join?invite=ABC123');
+    assert.equal(telegramAppUrl('https://t.me/sxbsupport'), 'tg://resolve?domain=sxbsupport');
+    // Hors de ces formes, on rend `null` : ouvrir le lien d'origine vaut mieux
+    // que fabriquer une adresse native approximative qui échouerait en silence.
+    assert.equal(telegramAppUrl('https://example.com/+ABC'), null);
+    assert.equal(telegramAppUrl('https://t.me/'), null);
+    assert.equal(telegramAppUrl('pas une url'), null);
   });
 
   it('affiche un libellé traduit dans les deux langues, jamais une clé brute', async () => {

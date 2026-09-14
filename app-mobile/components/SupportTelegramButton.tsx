@@ -5,22 +5,46 @@
  * compte (écran d'activation, écran d'essai gratuit). Il n'a donc besoin
  * d'aucune session.
  *
- * L'ouverture réutilise le mécanisme déjà employé ailleurs dans l'application
- * (Linking.openURL encadré d'un try/catch suivi d'une Alert) : si aucune
- * application ne peut prendre l'URL en charge, l'utilisateur voit un message
- * explicite, jamais un échec silencieux.
+ * L'ouverture vise Telegram DIRECTEMENT : l'adresse native `tg://` est essayée
+ * avant le lien `https://t.me/...`, qu'Android confie au navigateur dans la
+ * plupart des cas. Le repli https sert à qui n'a pas Telegram, et l'alerte ne
+ * s'affiche que si plus rien ne peut ouvrir le lien.
  */
 import React from 'react';
 import { Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { SUPPORT_TELEGRAM_URL } from '@/constants/support';
+import { SUPPORT_TELEGRAM_URL, telegramAppUrl } from '@/constants/support';
 import { useColors } from '@/hooks/useColors';
 import { useTranslation } from '@/localization';
 
+/**
+ * Ouvre le canal de support DANS Telegram quand l'application est installée.
+ *
+ * L'adresse native (`tg://`) est essayée d'abord : elle n'est réclamée que par
+ * Telegram, donc elle y mène directement. Le lien `https://t.me/...` ne le
+ * faisait pas — Android ne confie un lien https à une application que si le
+ * domaine a été vérifié et que l'utilisateur n'a pas renvoyé les liens vers son
+ * navigateur ; le bouton ouvrait donc une page web au lieu de Telegram.
+ *
+ * Le repli https reste indispensable pour qui n'a pas Telegram : la page web
+ * propose alors de l'installer. Et comme `openURL` sur une https réussit
+ * toujours, l'alerte ne se déclenche que si même le navigateur est absent —
+ * c'est-à-dire quand il n'y a effectivement plus rien à faire.
+ */
 export async function openSupportTelegram(
   onError: () => void,
   open: (url: string) => Promise<unknown> = Linking.openURL,
 ): Promise<boolean> {
+  const natif = telegramAppUrl(SUPPORT_TELEGRAM_URL);
+  if (natif) {
+    try {
+      await open(natif);
+      return true;
+    } catch {
+      // Telegram n'est pas installé : `openURL` échoue franchement sur une
+      // adresse `tg://`, et c'est précisément ce qui permet de le savoir.
+    }
+  }
   try {
     await open(SUPPORT_TELEGRAM_URL);
     return true;

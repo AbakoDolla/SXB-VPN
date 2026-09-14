@@ -190,8 +190,14 @@ class AutoReconnectManager(
 
             SxbReconnectPolicy.Decision.RETRY -> {
                 val attempt = state.failedAttempts + 1
+                // Une session qui FONCTIONNAIT vient de tomber : rien ne dit que
+                // le serveur va mal, donc rien ne justifie de faire patienter.
+                // C'est le cas d'une façade qui ferme la connexion à son plafond
+                // de durée — attendre y fabriquerait une panne, toutes les fois.
+                val sessionEtaitSaine = trigger == SxbReconnectPolicy.Trigger.TUNNEL_LOST
+                    && state.failedAttempts == 0
                 schedule(
-                    delayMs = SxbReconnectPolicy.retryDelayMs(attempt),
+                    delayMs = SxbReconnectPolicy.retryDelayMs(attempt, sessionEtaitSaine),
                     label = "tentative $attempt/${SxbReconnectPolicy.MAX_RETRIES}",
                 )
             }

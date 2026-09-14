@@ -55,6 +55,15 @@ object SxbReconnectPolicy {
     const val BASE_RETRY_DELAY_MS = 5_000L
     const val MAX_RETRY_DELAY_MS = 60_000L
 
+    /**
+     * Attente avant de reprendre une session qui FONCTIONNAIT.
+     *
+     * Assez court pour que la coupure reste imperceptible, assez long pour
+     * laisser la socket précédente se refermer proprement et ne pas tenter la
+     * reconnexion dans le même souffle que la fermeture.
+     */
+    const val IMMEDIATE_RETRY_DELAY_MS = 700L
+
     const val BASE_RESUME_DELAY_MS = 2_000L
     const val MAX_RESUME_DELAY_MS = 30_000L
 
@@ -159,8 +168,23 @@ object SxbReconnectPolicy {
      * Délai avant la tentative numéro `attempt` (1 = première), en ms.
      * Recul géométrique borné : 5 s, 10 s, 20 s, 40 s, 60 s, 60 s…
      */
-    fun retryDelayMs(attempt: Int): Long {
-        if (attempt <= 1) return BASE_RETRY_DELAY_MS
+    /**
+     * Délai avant la tentative n° `attempt`, en ms.
+     *
+     * `sessionEtaitSaine` dit que le tunnel qui vient de tomber FONCTIONNAIT.
+     * Dans ce cas la première tentative est quasi immédiate, et c'est une
+     * différence de nature, pas de réglage : le recul progressif sert à
+     * ménager un serveur en difficulté, or ici rien ne suggère qu'il le soit.
+     * Une façade qui ferme la connexion à son plafond de durée coupe un
+     * serveur en parfaite santé — attendre cinq secondes est alors une panne
+     * fabriquée, répétée à chaque coupure.
+     *
+     * Dès la SECONDE tentative consécutive, le recul reprend ses droits :
+     * deux échecs d'affilée signifient que quelque chose ne va pas, et
+     * marteler ne ferait que vider la batterie.
+     */
+    fun retryDelayMs(attempt: Int, sessionEtaitSaine: Boolean = false): Long {
+        if (attempt <= 1) return if (sessionEtaitSaine) IMMEDIATE_RETRY_DELAY_MS else BASE_RETRY_DELAY_MS
         var delay = BASE_RETRY_DELAY_MS
         var step = attempt
         while (step > 1 && delay < MAX_RETRY_DELAY_MS) {

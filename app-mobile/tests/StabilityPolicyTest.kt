@@ -1201,5 +1201,26 @@ fun main() {
             ) == SxbReconnectPolicy.Decision.IGNORE
         )
     }
+    // ── Une session SAINE qui tombe se reprend sans faire patienter ─────────
+    //
+    // Le recul progressif sert à ménager un serveur en difficulté. Quand une
+    // façade ferme la connexion à son plafond de DURÉE, le serveur va très
+    // bien : imposer cinq secondes y fabrique une panne, répétée à chaque
+    // coupure. C'est ce qui ramenait l'utilisateur à son téléphone.
+    check(SxbReconnectPolicy.retryDelayMs(1, sessionEtaitSaine = true) == SxbReconnectPolicy.IMMEDIATE_RETRY_DELAY_MS)
+    cases++
+    // Dès le SECOND échec d'affilée, le recul reprend ses droits : deux échecs
+    // de suite disent que quelque chose ne va vraiment pas.
+    check(SxbReconnectPolicy.retryDelayMs(2, sessionEtaitSaine = true) >= SxbReconnectPolicy.BASE_RETRY_DELAY_MS)
+    cases++
+    // Un premier échec SANS session saine derrière garde l'attente d'origine.
+    check(SxbReconnectPolicy.retryDelayMs(1) == SxbReconnectPolicy.BASE_RETRY_DELAY_MS)
+    cases++
+    // L'attente immédiate reste NON NULLE : la socket précédente doit pouvoir
+    // se refermer avant qu'on rouvre, sinon on reconnecte dans le même souffle.
+    check(SxbReconnectPolicy.IMMEDIATE_RETRY_DELAY_MS > 0)
+    check(SxbReconnectPolicy.IMMEDIATE_RETRY_DELAY_MS < SxbReconnectPolicy.BASE_RETRY_DELAY_MS)
+    cases++
+
     println("PASS $cases stability policy cases")
 }
