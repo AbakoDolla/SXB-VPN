@@ -1159,6 +1159,29 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(gestionnaire, /RECONNECT_COUNTER_RESET reason=healthy_session/);
     // Les cas sont exercés sur la JVM en CI.
     assert.ok(sshStabilityCases.includes('une connexion plafonnée en durée ne doit JAMAIS mener à l\'abandon'));
+
+    // ── 9. Le tunnel remonté par le service ne doit pas être RECOUPÉ ──────
+    //
+    // `acceptNativeConnectedRef` protège d'un « connected » tardif appartenant
+    // à une tentative que le chien de garde a annulée. Il était désarmé dès la
+    // première connexion réussie — or une reprise AUTOMATIQUE n'est pas
+    // demandée par l'application : c'est le service qui remonte le tunnel seul,
+    // puis annonce « connected ». Cette annonce passait donc pour une réponse
+    // périmée, et l'application ARRÊTAIT le tunnel qui venait de se rétablir.
+    const contexte = source('contexts/VpnContext.tsx');
+    assert.match(contexte, /acceptNativeConnectedRef\.current = autoReconnectRef\.current/);
+    // La valeur est lue via une référence : l'écouteur natif est enregistré une
+    // fois et ne verrait jamais un changement de réglage capturé dans l'état.
+    assert.match(contexte, /autoReconnectRef\.current = autoReconnect/);
+    // Le garde-fou reste entier : le chien de garde désarme en tirant.
+    const chien = contexte.slice(contexte.indexOf('const startWatchdog'));
+    assert.match(chien.slice(0, 900), /acceptNativeConnectedRef\.current = false/);
+
+    // Et côté service, une reprise ne repasse JAMAIS par « disconnected » —
+    // qui désarmerait le drapeau : le nettoyage partiel annonce « connecting ».
+    const nettoyage = nativeService.slice(nativeService.indexOf('} else if (keepRunning) {'));
+    assert.match(nettoyage.slice(0, 400), /setCurrentState\("connecting"\)/);
+    assert.match(nettoyage.slice(0, 400), /broadcastStatus\("connecting"\)/);
   });
 
   it('sing-box : normalise transport.host et déduplique les profils hors ligne hérités', () => {

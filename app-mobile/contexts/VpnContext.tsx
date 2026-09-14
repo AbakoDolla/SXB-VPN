@@ -432,6 +432,14 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   // si JSch était encore bloqué dans session.connect(). Ce marqueur empêche
   // l'ancienne tentative de ressusciter l'UI après une annulation.
   const acceptNativeConnectedRef = useRef(false);
+  /**
+   * Valeur courante de `autoReconnect`, lisible depuis l'écouteur natif.
+   *
+   * L'écouteur est enregistré une fois ; il capturerait sinon la valeur de
+   * l'état au moment de son enregistrement, et ne verrait jamais un changement
+   * de réglage ultérieur.
+   */
+  const autoReconnectRef = useRef(true);
   const watchdogRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastStepRef  = useRef<string>('INIT');
 
@@ -526,6 +534,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  useEffect(() => { autoReconnectRef.current = autoReconnect; }, [autoReconnect]);
+
   const startWatchdog = useCallback((stepName: string, attemptId: number) => {
     if (watchdogRef.current) clearTimeout(watchdogRef.current);
     watchdogRef.current = setTimeout(() => {
@@ -587,6 +597,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         addStepLog('handshaking', 'step_handshake', 'pending');
         startTrafficPolling();
       } else if (s === 'connected') {
+        // Le drapeau `acceptNativeConnectedRef` protège d'un « connected »
+        // tardif appartenant à une tentative que le chien de garde a déjà
+        // annulée — il le désarme lui-même en tirant.
         if (!acceptNativeConnectedRef.current && vpnState !== 'handshaking') {
           // Réponse tardive d'une tentative déjà annulée par le watchdog.
           setVpnState('error');
@@ -595,7 +608,19 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           return;
         }
         setVpnState('connected');
-        acceptNativeConnectedRef.current = false;
+        // Le drapeau reste ARMÉ tant que la reconnexion automatique l'est.
+        //
+        // Il était désarmé ici, à la première connexion réussie. Or une reprise
+        // automatique n'est pas demandée par l'application : c'est le service
+        // natif qui remonte le tunnel seul, puis annonce « connected ». Avec le
+        // drapeau désarmé, cette annonce passait pour la réponse tardive d'une
+        // tentative annulée — et l'application ARRÊTAIT le tunnel qui venait de
+        // se rétablir, exactement ce que la reconnexion cherche à éviter.
+        //
+        // Le garde-fou reste entier : le chien de garde désarme lui-même en
+        // tirant, une déconnexion demandée aussi. Un « connected » tardif après
+        // l'un ou l'autre est donc toujours rejeté.
+        acceptNativeConnectedRef.current = autoReconnectRef.current;
         stopWatchdog();
         addStepLog('connected', 'step_vpn_active', 'done');
         setIsConnected(true);
