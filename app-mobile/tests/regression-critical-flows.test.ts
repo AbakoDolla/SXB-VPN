@@ -304,6 +304,55 @@ describe('compatibilité URI VLESS / JSON complète', () => {
     assert.equal(fromJson.config?.wsHost, 'ss.alphaeconet.co.zw');
   });
 
+  it('traduit les noms courts d’une URI vers ceux que le MOTEUR lit réellement', () => {
+    // CAUSE RACINE : une URI porte `fp`, `pbk`, `sid`, `serviceName`, alors que
+    // le moteur natif lit `fingerprint`, `publicKey`, `shortId` et
+    // `grpcServiceName` (SxbVpnService.kt, buildSingBoxConfig). Le backend fait
+    // déjà cette traduction, donc une configuration importée DEPUIS LE TABLEAU
+    // DE BORD fonctionnait tandis que la MÊME URI collée dans l'application
+    // perdait ces champs sans le dire.
+    //
+    // Ce n'est pas cosmétique : sans `fingerprint`, aucun profil uTLS n'est
+    // appliqué et le ClientHello redevient celui de Go — exactement ce que
+    // `fp=chrome` sert à éviter sur un réseau qui filtre.
+    const uri = 'vless://aaaa1111-bbbb-4ccc-8ddd-eeeeffff0000@crashlyticsreports-pa.googleapis.com:443'
+      + '?path=%2FTelegram%2F%40AM2_D3%2F%40AHMAD3214&security=tls&encryption=none&insecure=0'
+      + '&host=ahmed-vip1-1043171676591.us-central1.run.app&fp=chrome&type=ws&allowInsecure=0'
+      + '&sni=crashlyticsreports-pa.googleapis.com#websocket-coldplay';
+    const { config, name } = parseVlessUri(uri);
+
+    assert.equal(name, 'websocket-coldplay');
+    assert.equal(config.fingerprint, 'chrome', 'fp doit devenir fingerprint');
+    assert.equal(config.fp, undefined, 'le nom court ne doit pas subsister en double');
+
+    // Les trois noms d'hôte restent distincts, et le chemin garde ses « @ ».
+    assert.equal(config.host, 'crashlyticsreports-pa.googleapis.com');
+    assert.equal(config.wsHost, 'ahmed-vip1-1043171676591.us-central1.run.app');
+    assert.equal(config.sni, 'crashlyticsreports-pa.googleapis.com');
+    assert.equal(config.path, '/Telegram/@AM2_D3/@AHMAD3214');
+    assert.equal(config.network, 'ws');
+    assert.equal(config.tls, true);
+    assert.equal(config.insecure, false, 'insecure=0 ne doit pas désactiver la vérification');
+
+    // Reality et gRPC empruntent le même chemin de traduction.
+    const reality = parseVlessUri(
+      'vless://aaaa1111-bbbb-4ccc-8ddd-eeeeffff0000@ex.com:443'
+      + '?security=reality&type=grpc&pbk=ABC123&sid=ff00&serviceName=monsvc&fp=firefox#r',
+    ).config;
+    assert.equal(reality.publicKey, 'ABC123', 'pbk doit devenir publicKey');
+    assert.equal(reality.shortId, 'ff00', 'sid doit devenir shortId');
+    assert.equal(reality.grpcServiceName, 'monsvc', 'serviceName doit devenir grpcServiceName');
+    assert.equal(reality.pbk, undefined);
+    assert.equal(reality.sid, undefined);
+
+    // La validation complète accepte la configuration et la juge utilisable
+    // hors ligne : l'import ne dépend d'aucun appel réseau.
+    const validation = validateVpnConfig(uri);
+    assert.equal(validation.valid, true, validation.errors.join(' | '));
+    assert.equal(validation.config?.fingerprint, 'chrome');
+    assert.equal(isCompleteOfflineConfig(validation.config).complete, true);
+  });
+
   it('importe l’URI VLESS ws+tls du dashboard en distinguant les trois noms d’hôte', () => {
     // Cas réel fourni par l'exploitant : l'adresse TCP, l'en-tête Host et le SNI
     // sont trois valeurs indépendantes. Les confondre produit un profil accepté
@@ -2554,6 +2603,34 @@ describe('garde-fous contre les régressions Android', () => {
       assert.equal(existsSync(`components/${nom}.tsx`), false,
         `${nom} est mort : il ne doit pas revenir sans être rendu quelque part`);
     }
+  });
+
+  it('n’affiche AUCUN emoji : les icônes sont vectorielles, pas typographiques', () => {
+    // Un emoji n'est pas une icône : son dessin appartient au système, change
+    // d'un Android à l'autre, ne suit ni la teinte ni la taille du thème, et
+    // certains — les drapeaux notamment — ne sont tout simplement pas rendus
+    // sur une partie des appareils, où ils apparaissent en deux lettres brutes
+    // ou en carré vide. L'application dispose d'Ionicons, qui héritent de la
+    // couleur et de l'échelle.
+    const emoji = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}]/u;
+    for (const fichier of ['localization/fr.ts', 'localization/en.ts']) {
+      const lignes = source(fichier).split('\n');
+      lignes.forEach((ligne, i) => {
+        if (/^\s*(\/\/|\*|\/\*)/.test(ligne)) return; // commentaires exclus
+        assert.ok(!emoji.test(ligne), `${fichier}:${i + 1} contient un emoji : ${ligne.trim()}`);
+      });
+    }
+    // Les drapeaux de langue sont remplacés par le code, qui se lit partout.
+    const reglages = source('app/settings.tsx');
+    assert.doesNotMatch(reglages, /flag: "/, 'les drapeaux emoji ne doivent pas revenir');
+    assert.match(reglages, /\{l\.code\.toUpperCase\(\)\}/);
+
+    // EXCEPTION ASSUMÉE : app/diagnostics.tsx cherche ✅/⚠️/❌ dans les journaux
+    // du moteur natif, qui les émet lui-même (SxbVpnService.kt). Ce sont des
+    // DONNÉES à reconnaître, pas une décoration à afficher ; les retirer
+    // casserait le filtrage et la coloration des journaux.
+    assert.match(source('app/diagnostics.tsx'), /\/❌\|⚠️\|error\|failed/,
+      'le filtre de journaux doit continuer à reconnaître les marqueurs du moteur');
   });
 
   it('applique réellement les thèmes clair et sombre aux surfaces importantes', () => {

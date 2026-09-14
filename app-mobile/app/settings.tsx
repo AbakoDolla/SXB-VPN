@@ -105,9 +105,13 @@ function Section({ title, children, subtitle }: { title: string; children: React
 
 // ── Language selector modal ───────────────────────────────────────────────────
 
+// Le code de langue remplace le drapeau : un drapeau ne désigne pas une langue
+// (le français n'appartient pas à la France, l'anglais pas au Royaume-Uni), et
+// les emoji drapeaux ne sont même pas rendus sur une partie des Android — ils
+// y apparaissent en deux lettres brutes ou en carré vide.
 const LANGS = [
-  { code: "fr", label: "Français", flag: "🇫🇷" },
-  { code: "en", label: "English",  flag: "🇬🇧" },
+  { code: "fr", label: "Français" },
+  { code: "en", label: "English" },
 ];
 
 function LangModal({ visible, current, onSelect, onClose }: {
@@ -128,7 +132,7 @@ function LangModal({ visible, current, onSelect, onClose }: {
               onPress={() => { onSelect(l.code); onClose(); }}
               style={[styles.langRow, current === l.code && styles.langRowActive]}
             >
-              <Text style={styles.langFlag}>{l.flag}</Text>
+              <Text style={styles.langFlag}>{l.code.toUpperCase()}</Text>
               <Text style={[styles.langLabel, current === l.code && { color: colors.primary }]}>{l.label}</Text>
               {current === l.code && <Ionicons name="checkmark" size={18} color={colors.primary} />}
             </Pressable>
@@ -364,9 +368,9 @@ export default function SettingsScreen() {
     setRefreshingConfig(true);
     try {
       await refreshVpnConfig();
-      Alert.alert("✅ " + t('refresh_config_success'), t('config_synced_title'));
+      Alert.alert(t('refresh_config_success'), t('config_synced_title'));
     } catch {
-      Alert.alert("❌ " + t('error_generic'), t('config_sync_error_msg'));
+      Alert.alert(t('error_generic'), t('config_sync_error_msg'));
     } finally {
       setRefreshingConfig(false);
     }
@@ -638,7 +642,7 @@ export default function SettingsScreen() {
           <View style={styles.divider} />
           <Row
             icon="language-outline" label="Langue"
-            value={`${currentLang.flag} ${currentLang.label}`}
+            value={currentLang.label}
             onPress={() => setLangModal(true)} color={colors.primary}
           />
           <View style={styles.divider} />

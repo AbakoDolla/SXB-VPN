@@ -97,9 +97,33 @@ export function parseVlessUri(rawUri: string): ParsedVlessUri {
   if (sni !== null && sni !== '') config.sni = sni;
   else if (config.tls) config.sni = wsHost || endpoint.host;
 
-  for (const key of ['encryption', 'flow', 'fp', 'alpn', 'pbk', 'sid', 'spx', 'headerType']) {
+  // ── Noms CANONIQUES attendus par le moteur ────────────────────────────────
+  //
+  // CAUSE RACINE : une URI porte des noms courts (`fp`, `pbk`, `sid`,
+  // `serviceName`) que le moteur natif ne lit pas — il attend `fingerprint`,
+  // `publicKey`, `shortId`, `grpcServiceName`. Le backend fait déjà cette
+  // traduction (server/services/canonical-config.ts), si bien qu'une
+  // configuration importée DEPUIS LE TABLEAU DE BORD fonctionnait, tandis que
+  // la MÊME URI collée dans l'application perdait ces champs en silence.
+  //
+  // Les conséquences ne sont pas cosmétiques :
+  //  • `fp` perdu  → pas de profil uTLS, donc un ClientHello de Go que le
+  //    filtrage réseau reconnaît — c'est justement ce que `fp=chrome` évite ;
+  //  • `pbk`/`sid` perdus → un profil Reality devient du TLS ordinaire, que le
+  //    serveur refuse ;
+  //  • `serviceName` perdu → gRPC retombe sur `path`, donc sur un service
+  //    inexistant.
+  const ALIAS: Record<string, string> = {
+    fp: 'fingerprint',
+    pbk: 'publicKey',
+    sid: 'shortId',
+    servicename: 'grpcServiceName',
+  };
+  for (const key of ['encryption', 'flow', 'fp', 'alpn', 'pbk', 'sid', 'spx', 'headerType', 'serviceName']) {
     const value = q.get(key.toLowerCase());
-    if (value !== null && value !== '') config[key] = value;
+    // `parseQuery` a déjà décodé chaque valeur : re-décoder ici casserait toute
+    // valeur contenant un « %25 » littéral.
+    if (value !== null && value !== '') config[ALIAS[key.toLowerCase()] ?? key] = value;
   }
   const insecure = q.get('allowinsecure') ?? q.get('insecure');
   if (insecure !== undefined) config.insecure = ['1', 'true', 'yes'].includes(insecure.toLowerCase());
