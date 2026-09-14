@@ -46,6 +46,7 @@ import { useTranslation } from '@/localization';
 import { alpha, elevation, glow, radius, spacing, type } from '@/constants/theme';
 import { formatBytes } from '@/services/quotaState';
 import { Pill, ProgressBar, StatRow, StatTile } from '@/components/ui/Primitives';
+import QuotaRing from '@/components/ui/QuotaRing';
 
 export interface FreeTrialCardProps {
   /** Volume consommé pendant l'essai, en octets. */
@@ -171,15 +172,15 @@ export default function FreeTrialCard({
       {...(mouvementReduit ? {} : gestes.panHandlers)}
       style={[
         styles.carte,
-        { borderColor: colors.purple + alpha.f40, backgroundColor: colors.bgCard },
+        { borderColor: colors.accents.violet + alpha.f40, backgroundColor: colors.bgCard },
         elevation.md,
-        glow(colors.purple, 'sm'),
+        glow(colors.accents.violet, 'sm'),
         relief ? { transform: relief } : null,
       ]}
     >
       {/* Fond en relief : clair en haut à gauche, sombre en bas à droite. */}
       <LinearGradient
-        colors={[colors.purple + alpha.f24, colors.purple + alpha.f08, 'rgba(0,0,0,0.22)']}
+        colors={[colors.accents.violet + alpha.f24, colors.accents.violet + alpha.f08, 'rgba(0,0,0,0.22)']}
         start={{ x: 0.1, y: 0 }}
         end={{ x: 0.9, y: 1 }}
         style={styles.fond}
@@ -215,24 +216,53 @@ export default function FreeTrialCard({
       )}
 
       <View style={styles.enTete}>
-        <Pill label={t('card_trial_period')} tone={colors.purple} icon="gift-outline" />
-        <Ionicons name="hourglass-outline" size={18} color={colors.purple} />
+        <Pill label={t('card_trial_period')} tone={colors.accents.violet} icon="gift-outline" />
+        <Ionicons name="hourglass-outline" size={18} color={colors.accents.violet} />
       </View>
 
       <Text style={[type.h3, { color: colors.textPrimary }]}>{t('trial_headline')}</Text>
 
-      <StatRow>
-        <StatTile label={t('trial_used')} value={texteConsomme} tone={colors.purple} monospace />
-        <StatTile
-          label={t('quota_remaining')}
-          value={texteRestant}
-          tone={volumeConnu ? colors.connected : colors.textMuted}
-          monospace
-        />
-      </StatRow>
+      {/* Même hiérarchie que la carte de quota de l'accueil : le RESTANT en
+          premier, avec l'anneau à côté. L'essai affichait deux tuiles de poids
+          égal, si bien que « ce qu'il me reste » ne ressortait pas davantage
+          ici que sur un forfait payant — alors que c'est justement la question
+          qui décide de la suite. */}
+      {volumeConnu ? (
+        <View style={styles.quotaHero}>
+          <View style={styles.quotaHeroText}>
+            <Text
+              style={[type.display, { color: colors.accents.emeraude, fontVariant: ['tabular-nums'] }]}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.6}
+            >
+              {texteRestant}
+            </Text>
+            <Text style={[type.captionMedium, { color: colors.textSecondary }]}>
+              {t('quota_remaining')}
+            </Text>
+          </View>
+          <QuotaRing
+            progress={usedRatio}
+            tone={colors.accents.violet}
+            warnTone={colors.accents.corail}
+            label={t('trial_used')}
+          />
+        </View>
+      ) : (
+        <StatRow>
+          <StatTile label={t('trial_used')} value={texteConsomme} tone={colors.accents.violet} monospace />
+          <StatTile label={t('quota_remaining')} value={texteRestant} tone={colors.textMuted} monospace />
+        </StatRow>
+      )}
 
       {volumeConnu && (
-        <ProgressBar progress={usedRatio} tone={colors.purple} warnTone={colors.disconnected} />
+        <>
+          <ProgressBar progress={usedRatio} tone={colors.accents.violet} warnTone={colors.accents.corail} />
+          <Text style={[type.caption, { color: colors.textMuted }]}>
+            {t('trial_used')} · {texteConsomme}
+          </Text>
+        </>
       )}
 
       <View style={styles.piedRow}>
@@ -265,6 +295,10 @@ const styles = StyleSheet.create({
   // le recoupe, ce qui évite un bord net quand il glisse.
   reflet: { position: 'absolute', top: -80, left: -80, right: -80, height: 190 },
   enTete: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md },
+  // `flexWrap` plutôt qu'une largeur figée : sur un écran étroit avec une
+  // police agrandie, la valeur et l'anneau passent l'un sous l'autre.
+  quotaHero: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: spacing.md },
+  quotaHeroText: { flex: 1, minWidth: 130, gap: spacing.xs },
   piedRow: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -86,10 +86,20 @@ async function banc(): Promise<Banc> {
       export const Ionicons=({name})=>React.createElement('i',{'data-icon':name});`,
     'expo-linear-gradient': `import React from 'react';
       export const LinearGradient=({children})=>React.createElement('div',null,children);`,
+    // L'anneau de quota s'appuie sur react-native-svg, dont le module natif
+    // embarque du Flow qu'esbuild ne sait pas lire. Il est remplacé comme les
+    // autres primitives natives : le banc vérifie le TEXTE de la carte, pas le
+    // tracé du cercle.
+    'react-native-svg': `import React from 'react';
+      const forme=tag=>props=>React.createElement(tag,null,props.children);
+      export const Circle=forme('circle'), Path=forme('path'), G=forme('g');
+      export default forme('svg');`,
     '@/hooks/useColors': `export const useColors=()=>({
       primary:'#008',primaryDim:'#eef',purple:'#70f',connected:'#0a8',disconnected:'#a00',
       textPrimary:'#111',textSecondary:'#333',textMuted:'#666',bg:'#fff',bgCard:'#eee',
-      bgCard2:'#ddd',bgInput:'#f5f5f5',border:'#ccc',border2:'#bbb'});`,
+      bgCard2:'#ddd',bgInput:'#f5f5f5',border:'#ccc',border2:'#bbb',
+      accents:{cyan:'#0bd',violet:'#70f',emeraude:'#0a8',ambre:'#fb0',
+        rose:'#f5a',indigo:'#59f',corail:'#f74',turquoise:'#0cc'}});`,
     '@react-native-async-storage/async-storage': `export default {getItem:async()=>null,setItem:async()=>{}};`,
   };
   const output = await build({
