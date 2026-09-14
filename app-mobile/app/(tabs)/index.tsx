@@ -19,6 +19,7 @@ import { useTranslation } from "@/localization";
 import type { VpnConnection } from "@/types/api";
 import { alpha, elevation, layout, radius, spacing, type } from "@/constants/theme";
 import PowerButton from "@/components/ui/PowerButton";
+import QuotaRing from "@/components/ui/QuotaRing";
 import ConfigPicker from "@/components/ui/ConfigPicker";
 import {
   EmptyState,
@@ -393,6 +394,23 @@ export default function HomeScreen() {
         ]}
         showsVerticalScrollIndicator={false}
       >
+        {/* Ligne de marque. Le logo était importé mais jamais rendu : l'écran
+            principal ne portait aucune identité visuelle, alors que le splash,
+            l'activation et l'accueil hors session la portent tous. */}
+        <View style={styles.brandRow}>
+          <View style={[styles.brandMark, { borderColor: colors.primary + alpha.f24, backgroundColor: colors.primary + alpha.f08 }]}>
+            <Image source={LOGO} style={styles.brandLogo} resizeMode="contain" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={[type.h3, { color: colors.textPrimary }]} numberOfLines={1}>
+              {t('app_name')}
+            </Text>
+            <Text style={[type.micro, { color: colors.textMuted }]} numberOfLines={1}>
+              {t('created_by')}
+            </Text>
+          </View>
+        </View>
+
         {/* En-tête : identité à gauche, actions à droite. */}
         <View style={styles.headerRow}>
           <View style={{ flex: 1 }}>
@@ -617,16 +635,31 @@ export default function HomeScreen() {
               <EmptyState icon="warning-outline" title={t('quota_exhausted')} description={t('quota_reload')} />
             ) : (
               <>
-                <StatRow>
-                  <StatTile label={t('quota_total')} value={derivedQuota.formattedTotal} monospace />
-                  <StatTile label={t('quota_used')} value={derivedQuota.formattedUsed} monospace />
-                  <StatTile
-                    label={t('quota_remaining')}
-                    value={derivedQuota.formattedRemaining}
-                    tone={colors.connected}
-                    monospace
+                {/* Le RESTANT devient le chiffre principal : c'est la seule
+                    question que l'utilisateur se pose devant cette carte. Total
+                    et consommé restent lisibles juste en dessous, mais cessent
+                    de lui disputer le regard. */}
+                <View style={styles.quotaHero}>
+                  <View style={styles.quotaHeroText}>
+                    <Text
+                      style={[type.display, { color: colors.connected, fontVariant: ['tabular-nums'] }]}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.6}
+                    >
+                      {derivedQuota.formattedRemaining}
+                    </Text>
+                    <Text style={[type.captionMedium, { color: colors.textSecondary }]}>
+                      {t('quota_remaining')}
+                    </Text>
+                  </View>
+                  <QuotaRing
+                    progress={derivedQuota.usedRatio}
+                    tone={colors.primary}
+                    warnTone={colors.disconnected}
+                    label={t('quota_used')}
                   />
-                </StatRow>
+                </View>
 
                 <ProgressBar
                   progress={derivedQuota.usedRatio}
@@ -634,16 +667,18 @@ export default function HomeScreen() {
                   warnTone={colors.disconnected}
                 />
 
-                <View style={styles.metaRow}>
-                  <Text style={[type.caption, { color: colors.textMuted }]}>
-                    {(derivedQuota.usedRatio * 100).toFixed(0)}% {t('quota_used')}
-                  </Text>
-                  {derivedQuota.expiryDate && (
+                <StatRow>
+                  <StatTile label={t('quota_used')} value={derivedQuota.formattedUsed} monospace />
+                  <StatTile label={t('quota_total')} value={derivedQuota.formattedTotal} monospace />
+                </StatRow>
+
+                {derivedQuota.expiryDate && (
+                  <View style={styles.metaRow}>
                     <Text style={[type.caption, { color: colors.textMuted }]} numberOfLines={1}>
                       {t('config_expires_at')} {new Date(derivedQuota.expiryDate).toLocaleDateString("fr-FR", { dateStyle: "medium" })}
                     </Text>
-                  )}
-                </View>
+                  </View>
+                )}
               </>
             )}
           </Surface>
@@ -835,6 +870,39 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
   },
   headerActions: { flexDirection: "row", gap: spacing.sm },
+
+  // ── Ligne de marque ────────────────────────────────────────────────────────
+  // Le logo est encadré plutôt que posé nu : le PNG porte ses propres marges,
+  // et sans cadre il paraissait flotter, désaligné du texte qui le suit.
+  brandRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    paddingTop: spacing.sm,
+  },
+  brandMark: {
+    width: 40,
+    height: 40,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  brandLogo: { width: 30, height: 30 },
+
+  // ── Quota ──────────────────────────────────────────────────────────────────
+  // `flexWrap` plutôt qu'une largeur figée : sur un écran de 360 px avec une
+  // police agrandie, la valeur et l'anneau passent l'un sous l'autre au lieu
+  // de se chevaucher.
+  quotaHero: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    flexWrap: "wrap",
+    gap: spacing.md,
+  },
+  quotaHeroText: { flex: 1, minWidth: 140, gap: spacing.xs },
 
   bannerRow: { flexDirection: "row", alignItems: "center", gap: spacing.md },
 

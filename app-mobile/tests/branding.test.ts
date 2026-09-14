@@ -57,8 +57,29 @@ describe('identité de marque', () => {
     // L'attribution doit rester rendue : une clé traduite mais jamais affichée
     // équivaut à l'avoir supprimée.
     for (const ecran of ['app-mobile/app/settings.tsx', 'app-mobile/app/activate.tsx',
-      'app-mobile/app/index.tsx', 'app-mobile/app/(tabs)/profile.tsx']) {
+      'app-mobile/app/index.tsx', 'app-mobile/app/(tabs)/profile.tsx',
+      'app-mobile/app/(tabs)/index.tsx']) {
       assert.match(lire(ecran), /t\(["']created_by["']\)/, `${ecran} : attribution absente`);
+    }
+  });
+
+  it('rend le logo existant sur l’écran principal, jamais un autre fichier', () => {
+    // Le logo était IMPORTÉ dans l'accueil mais jamais rendu : l'écran le plus
+    // vu de l'application ne portait aucune identité visuelle. Un import seul
+    // ne prouve rien — on exige ici que la source soit effectivement passée à
+    // une balise Image.
+    const accueil = lire('app-mobile/app/(tabs)/index.tsx');
+    assert.match(accueil, /const LOGO = require\("\.\.\/\.\.\/assets\/images\/icon\.png"\)/);
+    assert.match(accueil, /<Image\s+source=\{LOGO\}/, 'accueil : le logo est importé mais pas rendu');
+
+    // Tous les écrans qui affichent une marque tirent du MÊME fichier : une
+    // refonte visuelle ne doit jamais introduire un second logo à côté.
+    for (const ecran of ['app-mobile/app/index.tsx', 'app-mobile/app/activate.tsx',
+      'app-mobile/app/onboarding.tsx', 'app-mobile/app/(tabs)/index.tsx']) {
+      const source = lire(ecran);
+      const requires = [...source.matchAll(/require\(["'][^"']*assets\/images\/([^"']+)["']\)/g)]
+        .map(m => m[1]);
+      assert.deepEqual([...new Set(requires)], ['icon.png'], `${ecran} : image de marque inattendue`);
     }
   });
 
