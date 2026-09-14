@@ -219,6 +219,12 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
     items: clients, filtered: filteredClients, selected, setSelected,
     label: client => client.user?.name || client.name || client.id,
     eligible: ownsClient, canDelete, remove: client => deleteClient(client.id),
+    // Cocher sert désormais à DEUX gestes : supprimer, et attribuer ou modifier
+    // un forfait. Lier la case au seul droit de supprimer empêcherait
+    // d'attribuer à quelqu'un qu'on n'a pas le droit d'effacer — deux choses
+    // sans rapport. Le droit de supprimer, lui, reste vérifié par le crochet
+    // avant toute suppression, et par le bouton de chaque ligne.
+    canSelect: canDelete || canCreate,
     onDeleted: ids => setClients(current => current.filter(client => !ids.has(client.id))),
     afterDelete: refreshAccess, pending, run,
     busy: loading || showAddModal || !!renewTarget || !!resetResult,
@@ -353,13 +359,13 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
                     <tr className="hover:bg-gray-900/20 transition-colors">
                       {!isSupport && <td className="py-4 px-4">
                         {/* La case sert AUSSI à l'attribution de forfaits, pas
-                            seulement à la suppression : la lier au droit de
-                            supprimer empêcherait d'attribuer à quelqu'un qu'on
-                            n'a pas le droit d'effacer, ce qui n'a aucun
-                            rapport. Le droit de supprimer reste vérifié par le
-                            bouton de suppression lui-même. */}
+                            seulement à la suppression. Le crochet distingue
+                            déjà les deux droits : `canSelect` ouvre la case,
+                            `canDelete` garde la suppression. Retirer le
+                            contrôle d'ici affaiblirait le second au lieu
+                            d'élargir le premier. */}
                         <input type="checkbox" checked={bulkDelete.selected.has(client.id)}
-                          disabled={controlsBusy || !ownsClient(client)}
+                          disabled={controlsBusy || !bulkDelete.canSelect || !ownsClient(client)}
                           aria-label={t('operations.bulkDelete.selectOne', { name: client.user?.name || client.name || client.id })}
                           onChange={() => bulkDelete.toggle(client.id)} />
                       </td>}

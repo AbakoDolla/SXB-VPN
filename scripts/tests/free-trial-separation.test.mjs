@@ -1178,8 +1178,11 @@ test("on voit et on gère les forfaits d'un client DEPUIS la liste des clients",
   // Deux jeux de cases sur les mêmes lignes et l'exploitant ne saurait plus
   // laquelle il vient de cocher.
   assert.match(vue, /clientIds=\{\[\.\.\.bulkDelete\.selected\]\}/);
-  // Et cocher ne dépend plus du droit de SUPPRIMER : attribuer un forfait à
-  // quelqu'un qu'on n'a pas le droit d'effacer n'a aucun rapport.
+  // Cocher sert à DEUX gestes : supprimer, et attribuer un forfait. Le crochet
+  // distingue déjà les deux droits — `canSelect` ouvre la case, `canDelete`
+  // garde la suppression. Retirer le contrôle de la case affaiblirait le
+  // second au lieu d'élargir le premier.
+  assert.match(vue, /canSelect: canDelete \|\| canCreate/);
   const caseLigne = vue.slice(vue.indexOf('type="checkbox" checked={bulkDelete.selected'));
-  assert.match(caseLigne.slice(0, 200), /disabled=\{controlsBusy \|\| !ownsClient\(client\)\}/);
+  assert.match(caseLigne.slice(0, 220), /!bulkDelete\.canSelect/);
 });
