@@ -21,10 +21,10 @@
  * ─────────────────────
  * Il tient un livre de comptes PERSISTANT (AsyncStorage) :
  *
- *  - `counterUp`/`counterDown` : dernière lecture du compteur kilométrique du
- *    service natif. Une lecture INFÉRIEURE à la précédente signifie une remise
- *    à zéro : le delta vaut alors la nouvelle valeur ENTIÈRE, jamais zéro.
- *    C'est la même règle que `SxbUsageOdometer.step` côté Kotlin.
+ *  - `counterUp`/`counterDown` : dernière lecture de l'odomètre durable natif.
+ *    Un recul positif peut venir d'une ancienne sauvegarde non terminée :
+ *    il recale l'ancre sans refacturer cet historique. Les remises à zéro
+ *    des compteurs de session sont déjà absorbées par l'odomètre natif.
  *
  *  - `entries` : la file des octets mesurés mais pas encore acceptés par le
  *    serveur. Elle est écrite sur disque avant chaque envoi, donc elle survit
@@ -44,6 +44,15 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const STORAGE_KEY = '@sxb_usage_ledger';
 
+export class UsageLedgerReadError extends Error {
+  readonly code = 'VPN_USAGE_LEDGER_UNAVAILABLE';
+
+  constructor(readonly reason: 'read' | 'corrupt') {
+    super('VPN_USAGE_LEDGER_UNAVAILABLE');
+    this.name = 'UsageLedgerReadError';
+  }
+}
+
 /**
  * Le serveur rejette tout rapport de plus de 5 Go en un appel (garde
  * anti-abus de `applyUsageDelta`). Un rapport accumulé pendant une longue
@@ -52,17 +61,26 @@ const STORAGE_KEY = '@sxb_usage_ledger';
  */
 export const MAX_REPORT_BYTES = 4 * 1024 * 1024 * 1024;
 
-/** Au-delà, le livre cesse d'accumuler : une mesure aberrante ne doit pas devenir une facture. */
-export const MAX_PENDING_BYTES = 64 * 1024 * 1024 * 1024;
-
 export interface UsageCounters {
   up: number;
   down: number;
 }
 
+export interface UsageContext {
+  subscriptionId: string | null;
+  configId?: string | null;
+  sessionId: string;
+}
+
+export interface UsageQuotaSnapshot {
+  usedBytes: number;
+  totalBytes: number;
+}
+
 export interface UsageEntry {
   /** Forfait qui a réellement porté ce trafic. */
   subscriptionId: string | null;
+  configId?: string | null;
   sessionId: string;
   seq: number;
   up: number;
@@ -72,14 +90,21 @@ export interface UsageEntry {
 }
 
 export interface UsageLedger {
+  /** Même une ancre à zéro est une mesure, pas un livre encore vierge. */
+  initialized?: boolean;
   counterUp: number;
   counterDown: number;
   nextSeq: number;
   entries: UsageEntry[];
+  /** Dernier profil mesuré, encore identifiable si le service s'est arrêté hors JS. */
+  context?: UsageContext;
+  /** Snapshots appariés aux acquittements, jamais à un compteur de session remis à zéro. */
+  quotas?: Record<string, UsageQuotaSnapshot>;
 }
 
 export interface UsageReport {
   subscriptionId: string | null;
+  configId?: string | null;
   sessionId: string;
   seq: number;
   bytesUp: number;
@@ -114,6 +139,53 @@ export function pendingBytes(ledger: UsageLedger): number {
   return ledger.entries.reduce((total, entry) => total + entry.up + entry.down, 0);
 }
 
+function scopeKey(context: Pick<UsageContext, 'subscriptionId' | 'configId'>): string | null {
+  return context.subscriptionId || context.configId || null;
+}
+
+export function pendingUsage(ledger: UsageLedger, context: Pick<UsageContext, 'subscriptionId' | 'configId'>): UsageCounters {
+  const key = scopeKey(context);
+  return ledger.entries.reduce((sum, entry) => scopeKey(entry) === key
+    ? { up: sum.up + entry.up, down: sum.down + entry.down }
+    : sum, { up: 0, down: 0 });
+}
+
+export function recordQuota(
+  ledger: UsageLedger,
+  context: Pick<UsageContext, 'subscriptionId' | 'configId'>,
+  quota: UsageQuotaSnapshot,
+): UsageLedger {
+  const key = scopeKey(context);
+  if (!key) return ledger;
+  const totalBytes = safeCount(quota.totalBytes);
+  const previous = ledger.quotas?.[key];
+  const usedBytes = Math.max(safeCount(quota.usedBytes),
+    previous?.totalBytes === totalBytes ? previous.usedBytes : 0);
+  return { ...ledger, quotas: { ...ledger.quotas, [key]: {
+    usedBytes, totalBytes,
+  } } };
+}
+
+/** Somme du retard durable et du delta natif non encore échantillonné par le reporter. */
+export function quotaProjection(
+  ledger: UsageLedger | null,
+  context: Pick<UsageContext, 'subscriptionId' | 'configId'>,
+  counters?: UsageCounters | null,
+): { pendingBytes: number; accountedUsedBytes?: number } {
+  const key = scopeKey(context);
+  const quota = key ? ledger?.quotas?.[key] : undefined;
+  // Un ancien livre sans snapshot ne permet pas de savoir si sa tête a déjà
+  // atteint le serveur : attendre son rejeu plutôt que l'additionner deux fois.
+  if (!ledger || !quota) return { pendingBytes: 0 };
+  const pending = pendingUsage(ledger, context);
+  const live = counters && !isFreshLedger(ledger)
+    // Le dernier rendu peut précéder la lecture du reporter. Une lecture UI
+    // plus ancienne n'est PAS une remise à zéro de l'odomètre durable.
+    ? Math.max(0, safeCount(counters.up) - ledger.counterUp) + Math.max(0, safeCount(counters.down) - ledger.counterDown)
+    : 0;
+  return { pendingBytes: pending.up + pending.down + live, accountedUsedBytes: quota.usedBytes };
+}
+
 /**
  * Cale le livre sur la lecture courante SANS rien facturer.
  *
@@ -122,12 +194,12 @@ export function pendingBytes(ledger: UsageLedger): number {
  * L'ancrage interdit de facturer rétroactivement un passé qu'on n'a pas mesuré.
  */
 export function anchorLedger(ledger: UsageLedger, counters: UsageCounters): UsageLedger {
-  return { ...ledger, counterUp: safeCount(counters.up), counterDown: safeCount(counters.down) };
+  return { ...ledger, initialized: true, counterUp: safeCount(counters.up), counterDown: safeCount(counters.down) };
 }
 
 /** Livre qui n'a encore jamais rien observé : il doit s'ancrer, pas facturer. */
 export function isFreshLedger(ledger: UsageLedger): boolean {
-  return ledger.counterUp === 0 && ledger.counterDown === 0 &&
+  return !ledger.initialized && ledger.counterUp === 0 && ledger.counterDown === 0 &&
     ledger.nextSeq === 0 && ledger.entries.length === 0;
 }
 
@@ -135,18 +207,20 @@ export function isFreshLedger(ledger: UsageLedger): boolean {
  * Enregistre la consommation mesurée depuis la lecture précédente.
  *
  * Les octets rejoignent la dernière entrée encore ouverte du même forfait, ou
- * ouvrent une nouvelle entrée. Le compteur est avancé même quand les octets
- * sont refusés (plafond atteint) : le livre reste aligné sur le natif.
+ * ouvrent une nouvelle entrée. Seuls les envois sont plafonnés ; plafonner le
+ * cumul en attente jetterait du trafic réel pendant une longue panne réseau.
  */
 export function accumulate(
   ledger: UsageLedger,
   counters: UsageCounters,
-  context: { subscriptionId: string | null; sessionId: string },
+  context: UsageContext,
 ): UsageLedger {
-  const up = counterStep(ledger.counterUp, counters.up);
-  const down = counterStep(ledger.counterDown, counters.down);
+  const up = counters.up < ledger.counterUp ? 0 : counterStep(ledger.counterUp, counters.up);
+  const down = counters.down < ledger.counterDown ? 0 : counterStep(ledger.counterDown, counters.down);
   const advanced: UsageLedger = {
     ...ledger,
+    initialized: true,
+    context,
     // Une lecture NULLE ne prouve rien : le service peut être en cours de
     // démarrage et n'avoir pas encore rechargé son compteur durable. Reculer le
     // livre à zéro sur cette lecture ferait refacturer tout le cumul à la
@@ -156,15 +230,14 @@ export function accumulate(
     entries: [...ledger.entries],
   };
   if (up <= 0 && down <= 0) return advanced;
-  if (pendingBytes(ledger) >= MAX_PENDING_BYTES) return advanced;
-
   const last = advanced.entries[advanced.entries.length - 1];
-  if (last && !last.frozen && last.subscriptionId === context.subscriptionId) {
+  if (last && !last.frozen && last.subscriptionId === context.subscriptionId && last.sessionId === context.sessionId) {
     advanced.entries[advanced.entries.length - 1] = { ...last, up: last.up + up, down: last.down + down };
     return advanced;
   }
   advanced.entries.push({
     subscriptionId: context.subscriptionId,
+    configId: context.configId,
     sessionId: context.sessionId,
     seq: advanced.nextSeq,
     up,
@@ -203,6 +276,7 @@ export function nextReport(ledger: UsageLedger): { ledger: UsageLedger; report: 
   if (remainderUp > 0 || remainderDown > 0) {
     entries.splice(1, 0, {
       subscriptionId: head.subscriptionId,
+      configId: head.configId,
       sessionId: head.sessionId,
       seq: next.nextSeq,
       up: remainderUp,
@@ -216,6 +290,7 @@ export function nextReport(ledger: UsageLedger): { ledger: UsageLedger; report: 
     ledger: next,
     report: {
       subscriptionId: head.subscriptionId,
+      configId: head.configId,
       sessionId: head.sessionId,
       seq: head.seq,
       bytesUp,
@@ -232,22 +307,34 @@ export function settle(ledger: UsageLedger, report: UsageReport): UsageLedger {
 }
 
 function sanitize(value: unknown): UsageLedger {
-  if (!value || typeof value !== 'object') return emptyLedger();
+  const isCount = (count: unknown): count is number =>
+    typeof count === 'number' && Number.isSafeInteger(count) && count >= 0;
+  const isOptionalId = (id: unknown): boolean => id == null || typeof id === 'string';
+  const corrupt = (): never => { throw new UsageLedgerReadError('corrupt'); };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return corrupt();
   const raw = value as Partial<UsageLedger>;
-  const entries = Array.isArray(raw.entries) ? raw.entries : [];
+  if (!isCount(raw.counterUp) || !isCount(raw.counterDown) || !isCount(raw.nextSeq) ||
+      !Array.isArray(raw.entries)) return corrupt();
+  if (raw.initialized !== undefined && typeof raw.initialized !== 'boolean') return corrupt();
+  if (raw.context !== undefined && (!raw.context || typeof raw.context !== 'object' ||
+      typeof raw.context.sessionId !== 'string' || !raw.context.sessionId ||
+      !isOptionalId(raw.context.subscriptionId) || !isOptionalId(raw.context.configId))) return corrupt();
+  const entries = raw.entries;
   const clean: UsageEntry[] = [];
   for (const entry of entries) {
-    if (!entry || typeof entry !== 'object') continue;
+    if (!entry || typeof entry !== 'object') return corrupt();
     const candidate = entry as Partial<UsageEntry>;
-    if (typeof candidate.sessionId !== 'string' || !candidate.sessionId) continue;
-    if (!Number.isSafeInteger(candidate.seq) || (candidate.seq as number) < 0) continue;
-    const up = safeCount(candidate.up);
-    const down = safeCount(candidate.down);
-    if (up + down <= 0) continue;
+    if (typeof candidate.sessionId !== 'string' || !candidate.sessionId ||
+        !isCount(candidate.seq) || !isCount(candidate.up) || !isCount(candidate.down) ||
+        !isOptionalId(candidate.subscriptionId) || !isOptionalId(candidate.configId)) return corrupt();
+    const up = candidate.up;
+    const down = candidate.down;
+    if (up + down <= 0) return corrupt();
     clean.push({
       subscriptionId: typeof candidate.subscriptionId === 'string' ? candidate.subscriptionId : null,
+      configId: typeof candidate.configId === 'string' ? candidate.configId : undefined,
       sessionId: candidate.sessionId,
-      seq: candidate.seq as number,
+      seq: candidate.seq,
       up,
       down,
       // Une entrée relue après un redémarrage a pu être reçue par le serveur
@@ -256,32 +343,53 @@ function sanitize(value: unknown): UsageLedger {
     });
   }
   const highestSeq = clean.reduce((max, entry) => Math.max(max, entry.seq + 1), 0);
+  const quotas: Record<string, UsageQuotaSnapshot> = {};
+  if (raw.quotas !== undefined && (!raw.quotas || typeof raw.quotas !== 'object' || Array.isArray(raw.quotas))) return corrupt();
+  if (raw.quotas && typeof raw.quotas === 'object') {
+    for (const [id, quota] of Object.entries(raw.quotas)) {
+      if (!quota || typeof quota !== 'object' || !isCount(quota.usedBytes) || !isCount(quota.totalBytes)) return corrupt();
+      quotas[id] = { usedBytes: quota.usedBytes, totalBytes: quota.totalBytes };
+    }
+  }
+  const context = raw.context && typeof raw.context.sessionId === 'string'
+    ? {
+      sessionId: raw.context.sessionId,
+      subscriptionId: typeof raw.context.subscriptionId === 'string' ? raw.context.subscriptionId : null,
+      configId: typeof raw.context.configId === 'string' ? raw.context.configId : undefined,
+    }
+    : undefined;
   return {
+    initialized: raw.initialized === true,
     counterUp: safeCount(raw.counterUp),
     counterDown: safeCount(raw.counterDown),
     nextSeq: Math.max(safeCount(raw.nextSeq), highestSeq),
     entries: clean,
+    context,
+    quotas,
   };
 }
 
-/** Relit le livre. Un stockage absent ou corrompu rend un livre vierge, jamais une exception. */
+/** Seule l'absence réelle du livre autorise un nouvel ancrage. */
 export async function loadLedger(): Promise<UsageLedger> {
+  let raw: string | null;
   try {
-    const raw = await AsyncStorage.getItem(STORAGE_KEY);
-    if (!raw) return emptyLedger();
+    raw = await AsyncStorage.getItem(STORAGE_KEY);
+  } catch {
+    throw new UsageLedgerReadError('read');
+  }
+  if (raw === null) return emptyLedger();
+  try {
     return sanitize(JSON.parse(raw));
   } catch {
-    return emptyLedger();
+    throw new UsageLedgerReadError('corrupt');
   }
 }
 
 /** Écrit le livre. Appelé AVANT chaque envoi réseau : rien ne part sans trace sur disque. */
 export async function saveLedger(ledger: UsageLedger): Promise<void> {
-  try {
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(ledger));
-  } catch {
-    /* Un stockage indisponible ne doit jamais interrompre le tunnel. */
-  }
+  // Le reporter diffère l'envoi si cette écriture échoue. Masquer l'erreur
+  // autoriserait un envoi sans clé de rejeu durable, donc une double facture.
+  await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(ledger));
 }
 
 export async function clearLedger(): Promise<void> {

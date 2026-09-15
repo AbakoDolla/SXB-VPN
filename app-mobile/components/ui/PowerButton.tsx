@@ -28,6 +28,7 @@ import { Animated, Easing, Pressable, StyleSheet, Text, View } from 'react-nativ
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useColors } from '@/hooks/useColors';
+import { useMotionPreference } from '@/hooks/useMotionPreference';
 import { alpha, glow, radius, spacing, type } from '@/constants/theme';
 
 const CORE = 150;          // dôme central
@@ -44,6 +45,7 @@ interface PowerButtonProps {
   busy: boolean;
   onPress: () => void;
   accessibilityLabel: string;
+  visible?: boolean;
 }
 
 export default function PowerButton({
@@ -55,17 +57,26 @@ export default function PowerButton({
   busy,
   onPress,
   accessibilityLabel,
+  visible = true,
 }: PowerButtonProps) {
   const colors = useColors();
+  const { motionEnabled } = useMotionPreference();
+  const animate = motionEnabled && visible;
 
   const ripple = useRef(new Animated.Value(0)).current;
   const spin = useRef(new Animated.Value(0)).current;
   const breathe = useRef(new Animated.Value(0)).current;
   const depth = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!animate) {
+      depth.stopAnimation();
+      depth.setValue(0);
+    }
+  }, [animate, depth]);
 
   // Ondes concentriques : uniquement quand le tunnel transporte réellement.
   useEffect(() => {
-    if (!active) {
+    if (!active || !animate) {
       ripple.stopAnimation();
       ripple.setValue(0);
       return;
@@ -76,16 +87,17 @@ export default function PowerButton({
         duration: 2800,
         easing: Easing.out(Easing.ease),
         useNativeDriver: true,
+        isInteraction: false,
       }),
     );
     loop.start();
     return () => loop.stop();
-  }, [active, ripple]);
+  }, [active, animate, ripple]);
 
   // Balayage lumineux continu : c'est lui qui donne l'impression d'une surface
   // vitrée, en faisant glisser un reflet sur la couronne.
   useEffect(() => {
-    if (!active && !busy) {
+    if ((!active && !busy) || !animate) {
       spin.stopAnimation();
       spin.setValue(0);
       return;
@@ -96,29 +108,30 @@ export default function PowerButton({
         duration: busy ? 1600 : 5200,
         easing: Easing.linear,
         useNativeDriver: true,
+        isInteraction: false,
       }),
     );
     loop.start();
     return () => loop.stop();
-  }, [active, busy, spin]);
+  }, [active, animate, busy, spin]);
 
   // Respiration pendant l'établissement — volontairement différente des ondes,
   // pour que « en cours » et « connecté » ne se confondent jamais.
   useEffect(() => {
-    if (!busy) {
+    if (!busy || !animate) {
       breathe.stopAnimation();
       breathe.setValue(0);
       return;
     }
     const loop = Animated.loop(
       Animated.sequence([
-        Animated.timing(breathe, { toValue: 1, duration: 850, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-        Animated.timing(breathe, { toValue: 0, duration: 850, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+        Animated.timing(breathe, { toValue: 1, duration: 850, easing: Easing.inOut(Easing.ease), useNativeDriver: true, isInteraction: false }),
+        Animated.timing(breathe, { toValue: 0, duration: 850, easing: Easing.inOut(Easing.ease), useNativeDriver: true, isInteraction: false }),
       ]),
     );
     loop.start();
     return () => loop.stop();
-  }, [busy, breathe]);
+  }, [animate, busy, breathe]);
 
   const breatheScale = breathe.interpolate({ inputRange: [0, 1], outputRange: [1, 1.035] });
   // À l'appui, le dôme s'enfonce dans son embase : l'échelle diminue pendant que
@@ -135,8 +148,14 @@ export default function PowerButton({
     };
   };
 
-  const setDepth = (to: number) =>
+  const setDepth = (to: number) => {
+    if (!animate) {
+      depth.stopAnimation();
+      depth.setValue(0);
+      return;
+    }
     Animated.spring(depth, { toValue: to, useNativeDriver: true, speed: 40, bounciness: 3 }).start();
+  };
 
   return (
     <View style={styles.wrap}>
@@ -150,7 +169,7 @@ export default function PowerButton({
         />
 
         {/* 2. Ondes concentriques. */}
-        {active && (
+        {active && animate && (
           <>
             <Animated.View style={[styles.ripple, { borderColor: tone }, ringStyle(0)]} />
             <Animated.View style={[styles.ripple, { borderColor: tone }, ringStyle(0.33)]} />

@@ -87,8 +87,8 @@ object SxbSshKeepAlive {
      */
     const val COUNT_MAX = 3
 
-    /** Période d'observation de la session par le service, en millisecondes. */
-    const val POLL_INTERVAL_MS = 3_000L
+    /** Lecture de l'état local uniquement : aucune sonde réseau supplémentaire. */
+    const val POLL_INTERVAL_MS = 500L
 
     /**
      * Temps maximal entre la mort réelle du pair et sa constatation.

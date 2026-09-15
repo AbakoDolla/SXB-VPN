@@ -20,9 +20,10 @@ package com.sxbvpn.vpnmodule
  * l'appareil : ils ne reculent jamais, sont écrits dans les préférences du
  * service et survivent donc à une reconnexion, à l'arrêt du moteur, à la mort
  * de l'application et au redémarrage du téléphone. C'est sur eux, et sur eux
- * seuls, que s'appuie la facturation du quota : tant que le service a mesuré
- * un octet, cet octet reste comptabilisé même si le fil JavaScript qui le
- * remonte a disparu entre-temps.
+ * seuls, que s'appuie la facturation du quota. Chaque instantané exporté est
+ * confirmé sur disque avant de rejoindre JavaScript. Une fin brutale avant
+ * le prochain relevé/checkpoint peut encore perdre une fin de trafic privée,
+ * mais ne fait jamais reculer un cumul déjà exposé par cette version.
  */
 
 import android.content.Context
@@ -43,6 +44,24 @@ class TrafficStatsManager {
         private const val USAGE_PREFS    = "sxb_usage_odometer"
         private const val KEY_LIFETIME_UP   = "lifetime_upload_bytes"
         private const val KEY_LIFETIME_DOWN = "lifetime_download_bytes"
+        private var checkpoint: SxbUsageCheckpoint? = null
+
+        @Synchronized
+        private fun usageCheckpoint(context: Context): SxbUsageCheckpoint {
+            checkpoint?.let { return it }
+            val store = context.getSharedPreferences(USAGE_PREFS, Context.MODE_PRIVATE)
+            return SxbUsageCheckpoint(
+                load = {
+                    store.getLong(KEY_LIFETIME_UP, 0L) to store.getLong(KEY_LIFETIME_DOWN, 0L)
+                },
+                commit = { snapshot ->
+                    store.edit()
+                        .putLong(KEY_LIFETIME_UP, snapshot.first)
+                        .putLong(KEY_LIFETIME_DOWN, snapshot.second)
+                        .commit()
+                },
+            ).also { checkpoint = it }
+        }
 
         /**
          * Compteur kilométrique lisible SANS service en vie.
@@ -52,11 +71,8 @@ class TrafficStatsManager {
          * JavaScript s'y ancrerait, puis facturerait une seconde fois tout le
          * cumul dès la lecture suivante. La valeur vient donc du disque.
          */
-        fun persistedLifetime(context: Context): Pair<Long, Long> = runCatching {
-            val store = context.getSharedPreferences(USAGE_PREFS, Context.MODE_PRIVATE)
-            store.getLong(KEY_LIFETIME_UP, 0L).coerceAtLeast(0L) to
-                store.getLong(KEY_LIFETIME_DOWN, 0L).coerceAtLeast(0L)
-        }.getOrDefault(0L to 0L)
+        fun persistedLifetime(context: Context): Pair<Long, Long> =
+            usageCheckpoint(context).read()
     }
 
     private val uid = Process.myUid()
@@ -75,9 +91,10 @@ class TrafficStatsManager {
     // Compteur kilométrique durable — jamais remis à zéro, écrit sur disque.
     private val lifetimeUpload   = AtomicLong(0L)
     private val lifetimeDownload = AtomicLong(0L)
-    @Volatile private var usageStore: android.content.SharedPreferences? = null
+    private var usageStore: SxbUsageCheckpoint? = null
     private val unsavedBytes = AtomicLong(0L)
-    @Volatile private var lastPersistMs = 0L
+    private var lastPersistMs = 0L
+    private var persistenceErrorLogged = false
 
     // Débits instantanés (octets/seconde)
     private val speedUpload   = AtomicLong(0L)
@@ -101,18 +118,15 @@ class TrafficStatsManager {
 
     // ── Démarrage ─────────────────────────────────────────────────────────────
 
-    fun start(context: Context? = null) {
-        if (running.getAndSet(true)) return
+    @Synchronized
+    fun start(context: Context) {
+        if (running.get()) return
 
         // Le compteur durable est rechargé AVANT toute mesure : une reconnexion
         // reprend exactement là où la session précédente s'est arrêtée.
-        if (context != null && usageStore == null) {
-            usageStore = runCatching { context.getSharedPreferences(USAGE_PREFS, Context.MODE_PRIVATE) }.getOrNull()
-        }
-        usageStore?.let { store ->
-            lifetimeUpload.set(runCatching { store.getLong(KEY_LIFETIME_UP, 0L) }.getOrDefault(0L).coerceAtLeast(0L))
-            lifetimeDownload.set(runCatching { store.getLong(KEY_LIFETIME_DOWN, 0L) }.getOrDefault(0L).coerceAtLeast(0L))
-        }
+        initializeUsage(context)
+        persistLifetime(force = true)
+        running.set(true)
         unsavedBytes.set(0L)
         lastPersistMs = System.currentTimeMillis()
 
@@ -134,15 +148,13 @@ class TrafficStatsManager {
 
         uidRxBaseline.clear()
         uidTxBaseline.clear()
-        if (context != null) {
-            runCatching {
-                val pm = context.packageManager
-                for (app in pm.getInstalledApplications(0)) {
-                    val r = safeGetUidRx(app.uid)
-                    val t = safeGetUidTx(app.uid)
-                    uidRxBaseline[app.uid] = r
-                    uidTxBaseline[app.uid] = t
-                }
+        runCatching {
+            val pm = context.packageManager
+            for (app in pm.getInstalledApplications(0)) {
+                val r = safeGetUidRx(app.uid)
+                val t = safeGetUidTx(app.uid)
+                uidRxBaseline[app.uid] = r
+                uidTxBaseline[app.uid] = t
             }
         }
 
@@ -161,21 +173,33 @@ class TrafficStatsManager {
 
     // ── Arrêt ─────────────────────────────────────────────────────────────────
 
+    @Synchronized
     fun stop() {
-        running.set(false)
+        val wasRunning = running.getAndSet(false)
         pollThread?.interrupt()
         pollThread = null
-        tunAttached = false
-        tunCountersReadable = false
-        tunInterface = null
-        // Dernière écriture avant l'arrêt : une session qui se termine ne doit
-        // jamais laisser d'octets mesurés hors du compteur durable.
-        persistLifetime(force = true)
+        try {
+            if (wasRunning) sample()
+            if (usageStore != null) persistLifetime(force = true)
+        } finally {
+            tunAttached = false
+            tunCountersReadable = false
+            tunInterface = null
+        }
         Log.i(TAG, "TrafficStats arrêté — total UP=${totalUpload.get()} DOWN=${totalDownload.get()} " +
             "cumul_durable UP=${lifetimeUpload.get()} DOWN=${lifetimeDownload.get()}")
     }
 
     // ── Compteur durable ──────────────────────────────────────────────────────
+
+    private fun initializeUsage(context: Context) {
+        if (usageStore != null) return
+        val store = usageCheckpoint(context)
+        val persisted = store.read()
+        lifetimeUpload.set(persisted.first)
+        lifetimeDownload.set(persisted.second)
+        usageStore = store
+    }
 
     /** Additionne les octets mesurés à la session ET au compteur durable. */
     private fun accumulate(deltaTx: Long, deltaRx: Long) {
@@ -184,28 +208,45 @@ class TrafficStatsManager {
         totalDownload.addAndGet(deltaRx)
         lifetimeUpload.addAndGet(deltaTx)
         lifetimeDownload.addAndGet(deltaRx)
-        val pending = unsavedBytes.addAndGet(deltaTx + deltaRx)
-        if (SxbUsageOdometer.shouldPersist(lastPersistMs, System.currentTimeMillis(), pending)) {
-            persistLifetime(force = false)
-        }
+        unsavedBytes.addAndGet(deltaTx + deltaRx)
     }
 
-    private fun persistLifetime(force: Boolean) {
-        val store = usageStore ?: return
-        if (!force && unsavedBytes.get() <= 0L) return
-        runCatching {
-            store.edit()
-                .putLong(KEY_LIFETIME_UP, lifetimeUpload.get())
-                .putLong(KEY_LIFETIME_DOWN, lifetimeDownload.get())
-                .apply()
+    private fun persistLifetime(force: Boolean, snapshot: TrafficSnapshot = captureSnapshot()) {
+        val store = checkNotNull(usageStore) { "USAGE_CHECKPOINT_UNAVAILABLE" }
+        val pending = unsavedBytes.get()
+        if (!force && !SxbUsageOdometer.shouldPersist(lastPersistMs, System.currentTimeMillis(), pending)) return
+        try {
+            store.write(snapshot.lifetimeUploadBytes to snapshot.lifetimeDownloadBytes)
+        } catch (error: Exception) {
+            if (!persistenceErrorLogged) Log.e(TAG, "USAGE_CHECKPOINT_UNAVAILABLE", error)
+            persistenceErrorLogged = true
+            throw error
         }
+        persistenceErrorLogged = false
         unsavedBytes.set(0L)
         lastPersistMs = System.currentTimeMillis()
     }
 
     // ── Poll périodique ───────────────────────────────────────────────────────
 
+    @Synchronized
     private fun poll() {
+        if (!running.get() || Thread.currentThread() !== pollThread) return
+        sample()
+        try {
+            persistLifetime(force = false)
+        } catch (_: Exception) {
+            // L'erreur est journalisée ; les deltas restent en mémoire et seront
+            // retentés. Les baselines ont déjà avancé, sans recompter le poll.
+        }
+    }
+
+    @Synchronized
+    fun sampleBeforeStop() {
+        if (running.get()) sample()
+    }
+
+    private fun sample() {
         val nowMs = System.currentTimeMillis()
         val deltaMs = (nowMs - lastPollMs).coerceAtLeast(1L)
 
@@ -248,7 +289,9 @@ class TrafficStatsManager {
     }
 
     /** Appelé après Builder.establish(), quand le nom TUN est connu. */
+    @Synchronized
     fun attachTunInterface(name: String?) {
+        if (!running.get()) return
         val clean = name?.trim().orEmpty()
         if (clean.isBlank()) {
             Log.w(TAG, "TUN attaché mais interface introuvable : compteurs TUN indisponibles")
@@ -295,9 +338,23 @@ class TrafficStatsManager {
 
     // ── Getters ───────────────────────────────────────────────────────────────
 
+    @Synchronized
     fun hasTunCounters(): Boolean = tunAttached && tunCountersReadable
 
-    fun getStats(): TrafficSnapshot = TrafficSnapshot(
+    @Synchronized
+    fun getSessionStats(): SessionSnapshot = SessionSnapshot(
+        totalUpload.get(), totalDownload.get(), speedUpload.get(), speedDownload.get(),
+    )
+
+    @Synchronized
+    fun getStats(context: Context? = null): TrafficSnapshot {
+        if (usageStore == null && context != null) initializeUsage(context)
+        val captured = captureSnapshot()
+        persistLifetime(force = true, snapshot = captured)
+        return captured
+    }
+
+    private fun captureSnapshot(): TrafficSnapshot = TrafficSnapshot(
         uploadBytes   = totalUpload.get(),
         downloadBytes = totalDownload.get(),
         uploadSpeed   = speedUpload.get(),
@@ -377,6 +434,13 @@ class TrafficStatsManager {
     }
 
     // ── Data class ────────────────────────────────────────────────────────────
+
+    data class SessionSnapshot(
+        val uploadBytes: Long,
+        val downloadBytes: Long,
+        val uploadSpeed: Long,
+        val downloadSpeed: Long,
+    )
 
     data class TrafficSnapshot(
         val uploadBytes:   Long,

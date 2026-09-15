@@ -233,7 +233,8 @@ describe('accueil mobile — période d’essai', () => {
       assert.match(accueil, new RegExp(`${champ}=\\{derivedQuota\\.${champ}\\}`), `${champ} ne vient pas de deriveQuota`);
     }
     // La carte « Quota du forfait » lit la MÊME dérivation : un seul chiffre.
-    assert.match(accueil, /const derivedQuota = deriveQuota\(/);
+    assert.match(accueil, /deleteConfig, derivedQuota/);
+    assert.doesNotMatch(accueil, /deriveQuota\(/);
     // Trois appels réseau sur cet écran, comme avant : santé, notifications,
     // connexions. La carte d'essai n'en ajoute aucun.
     assert.equal((accueil.match(/apiClient\.get\(/g) || []).length, 3);
@@ -326,7 +327,8 @@ describe('accueil mobile — période d’essai', () => {
 
     // 5. « Historique » quitte les accès rapides : c'est un onglet permanent.
     assert.doesNotMatch(accueil, /router\.push\("\/\(tabs\)\/history"\)/);
-    assert.match(lire('app-mobile/app/(tabs)/_layout.tsx'), /name: "history", labelKey: "history"/);
+    assert.match(lire('app-mobile/app/(tabs)/_layout.tsx'), /<Tabs\.Screen name="history"/);
+    assert.match(lire('app-mobile/components/ui/TabDock.tsx'), /history: \{ labelKey: 'history'/);
 
     // Ce qui n'est PAS redondant reste en place : état, quota, trafic,
     // connexions et profils.

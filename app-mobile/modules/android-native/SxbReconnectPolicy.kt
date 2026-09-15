@@ -34,8 +34,11 @@ package com.sxbvpn.vpnmodule
  * ═══════════════════════════════════════════════════════════════════════════
  * BORNES
  * ═══════════════════════════════════════════════════════════════════════════
- * Deux reculs progressifs bornés, jamais une boucle serrée :
+ * Une reprise rapide, puis deux reculs progressifs bornés :
  *
+ *  • SESSION SAINE (au moins 30 s) : une seule première tentative à 250 ms.
+ *    Une simple poignée de main ne renouvelle pas ce droit : les connexions
+ *    qui retombent aussitôt restent dans le budget d'échecs précédent.
  *  • ÉCHECS RÉELS (réseau présent) : 5 s → 10 s → 20 s → 40 s → 60 s, plafond
  *    à 60 s, cinq tentatives soit ~2 min 15 s de persistance. Un serveur
  *    momentanément saturé revient dans cette fenêtre ; au-delà, l'échec est
@@ -45,7 +48,7 @@ package com.sxbvpn.vpnmodule
  *    (DHCP, DNS, validation du portail) : `onAvailable` annonce une interface,
  *    pas encore un Internet joignable. Le recul croissant borne le cas
  *    pathologique d'un réseau qui oscille — au pire une tentative toutes les
- *    30 s — et il est remis à zéro dès que le tunnel remonte.
+ *    30 s — et il est remis à zéro seulement après une session saine.
  */
 object SxbReconnectPolicy {
 
@@ -66,6 +69,7 @@ object SxbReconnectPolicy {
      */
     const val SESSION_HEALTHY_MS = 30_000L
 
+    const val FAST_RETRY_DELAY_MS = 250L
     const val BASE_RETRY_DELAY_MS = 5_000L
     const val MAX_RETRY_DELAY_MS = 60_000L
 
@@ -152,16 +156,19 @@ object SxbReconnectPolicy {
     }
 
     private fun onNetworkAvailable(state: State): Decision = when {
+        !state.networkAvailable -> Decision.WAIT_FOR_NETWORK
         // Une tentative est déjà armée ou en cours : la laisser courir plutôt
         // que d'en empiler une seconde pour la même bascule.
         state.attemptScheduled -> Decision.DEBOUNCE
         state.dispatchInFlight -> Decision.DEBOUNCE
-        state.sinceLastEventMs < MIN_EVENT_INTERVAL_MS -> Decision.DEBOUNCE
         // Une reprise explicitement due prime sur l'état du tunnel précédent :
         // celui-ci a été perdu AVEC le réseau, il est périmé par construction.
         // Sans cette priorité, un « connected » obsolète absorberait le seul
         // événement de retour du réseau et le tunnel resterait à terre.
         state.awaitingNetwork -> Decision.RESUME
+        // Le seul retour d'une radio brièvement coupée ne doit jamais être
+        // perdu, même si la minuterie précédente vient d'être annulée.
+        state.sinceLastEventMs < MIN_EVENT_INTERVAL_MS -> Decision.DEBOUNCE
         // Le tunnel tient : Android a simplement ajouté une interface. On ne
         // bascule pas de transport et on ne coupe rien (règle 6).
         state.connected -> Decision.IGNORE
@@ -199,10 +206,13 @@ object SxbReconnectPolicy {
 
     /**
      * Délai avant la tentative numéro `attempt` (1 = première), en ms.
-     * Recul géométrique borné : 5 s, 10 s, 20 s, 40 s, 60 s, 60 s…
+     * Une session saine autorise 250 ms uniquement pour la première tentative.
+     * Sinon, recul inchangé : 5 s, 10 s, 20 s, 40 s, 60 s, 60 s…
      */
-    fun retryDelayMs(attempt: Int): Long {
-        if (attempt <= 1) return BASE_RETRY_DELAY_MS
+    fun retryDelayMs(attempt: Int, lastSessionUpMs: Long = 0): Long {
+        if (attempt <= 1) {
+            return if (lastSessionUpMs >= SESSION_HEALTHY_MS) FAST_RETRY_DELAY_MS else BASE_RETRY_DELAY_MS
+        }
         var delay = BASE_RETRY_DELAY_MS
         var step = attempt
         while (step > 1 && delay < MAX_RETRY_DELAY_MS) {
@@ -214,8 +224,8 @@ object SxbReconnectPolicy {
 
     /**
      * Délai de stabilisation avant une reprise, en ms. `streak` compte les
-     * reprises consécutives qui n'ont PAS abouti à un tunnel monté ; il repart
-     * de zéro dès la connexion établie.
+     * reprises consécutives qui n'ont PAS abouti à une session saine ; il repart
+     * de zéro après au moins [SESSION_HEALTHY_MS] de connexion.
      */
     fun resumeDelayMs(streak: Int): Long {
         if (streak <= 0) return BASE_RESUME_DELAY_MS

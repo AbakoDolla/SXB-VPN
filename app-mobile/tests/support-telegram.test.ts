@@ -29,15 +29,15 @@ type PluginSetup = {
   onLoad(options: { filter: RegExp; namespace: string }, callback: (args: { path: string }) => unknown): void;
 };
 type Banc = {
-  bouton: { openSupportTelegram: (onError: () => void, open?: (url: string) => Promise<unknown>) => Promise<boolean> };
+  bouton: { openSupportTelegram: (onError: () => void, browser?: (url: string) => Promise<unknown>, link?: (url: string) => Promise<unknown>) => Promise<boolean> };
   constante: { SUPPORT_TELEGRAM_URL: string; telegramAppUrl: (lien: string) => string | null };
   rendre(langue: 'fr' | 'en'): string;
-  state: { ouvertures: string[]; alertes: string[][] };
+  state: { ouvertures: string[]; navigateurs: string[]; alertes: string[][]; refuser?: boolean };
 };
 
 async function banc(): Promise<Banc> {
   const stubs: Record<string, string> = {
-    'test:state': `export const state = { ouvertures: [], alertes: [] };`,
+    'test:state': `export const state = { ouvertures: [], navigateurs: [], alertes: [] };`,
     // Linking.openURL refuse toute URL non prise en charge : c'est exactement
     // le cas « Telegram absent de l'appareil » que l'utilisateur doit voir.
     'react-native': `
@@ -45,19 +45,31 @@ async function banc(): Promise<Banc> {
       import {state} from 'test:state';
       const primitive=tag=>({children,accessibilityRole,accessibilityLabel,...props})=>
         React.createElement(tag,{role:accessibilityRole,'aria-label':accessibilityLabel,onClick:props.onPress},children);
-      export const Text=primitive('span'),View=primitive('div');
+      export const Text=primitive('span'),View=primitive('div'),ActivityIndicator=primitive('span');
       export const Pressable=({children,accessibilityRole,accessibilityLabel,style,onPress})=>
         React.createElement('button',{role:accessibilityRole,'aria-label':accessibilityLabel},
           typeof children==='function'?children({pressed:false}):children);
       export const StyleSheet={create:x=>x,absoluteFillObject:{}};
       export const Alert={alert:(...args)=>{state.alertes.push(args)}};
-      export const Linking={openURL:async url=>{
-        state.ouvertures.push(url);
-        if(state.refuser) throw new Error('No activity found to handle Intent');
-      }};`,
+      export const Linking={
+        _validateURL(url) {
+          if(typeof url!=='string'||!url) throw new Error('Invalid URL');
+        },
+        async openURL(url) {
+          this._validateURL(url);
+          state.ouvertures.push(url);
+          if(state.refuser) throw new Error('No activity found to handle Intent');
+        }
+      };`,
+    'expo-web-browser': `
+      import {state} from 'test:state';
+      export async function openBrowserAsync(url) {
+        state.navigateurs.push(url);
+        return {type:'opened'};
+      }`,
     '@expo/vector-icons': `import React from 'react';
       export const Ionicons=({name})=>React.createElement('i',{'data-icon':name});`,
-    '@/hooks/useColors': `export const useColors=()=>({primary:'#008',primaryDim:'#eef',primaryForeground:'#fff',textPrimary:'#111',textMuted:'#666',bgCard:'#eee'});`,
+    '@/hooks/useColors': `export const useColors=()=>({primary:'#008',primaryDim:'#eef',primaryForeground:'#fff',textPrimary:'#111',textSecondary:'#444',bgCard:'#eee'});`,
   };
   const output = await build({
     stdin: {
@@ -95,53 +107,46 @@ async function banc(): Promise<Banc> {
 }
 
 describe('bouton de support Telegram', () => {
-  it('ouvre le lien t.me, qu’Android remet à Telegram ou au navigateur', async () => {
+  it('ouvre le navigateur sans exiger Telegram, avec un repli HTTPS lié correctement', async () => {
     const h = await banc();
     assert.equal(h.constante.SUPPORT_TELEGRAM_URL, URL_TELEGRAM);
 
-    // HISTORIQUE DE CE GARDE-FOU — deux défauts successifs, opposés.
-    //
-    // 1. À l'origine le bouton ouvrait `https://t.me/...` et l'alerte d'échec
-    //    ne pouvait jamais paraître : `openURL` sur une https réussit toujours.
-    // 2. La correction a inversé l'ordre pour viser `tg://` en premier. Elle a
-    //    créé un défaut PIRE : `openURL` réussit dès que Telegram déclare le
-    //    schéma, donc le repli web n'était plus jamais atteint — mais Telegram
-    //    ne résout pas toujours une invitation par `tg://join?invite=` et
-    //    s'ouvrait sur un écran vide. Le bouton « ne faisait rien », sans la
-    //    moindre erreur pour l'expliquer.
-    //
-    // L'ordre retenu est donc le lien https D'ABORD : Telegram déclare t.me en
-    // lien d'application vérifié, donc Android l'ouvre dans l'application quand
-    // elle est installée, et le navigateur affiche sinon la page t.me qui
-    // propose elle-même « Ouvrir dans Telegram ». Les deux chemins aboutissent.
-    const NATIF = 'tg://join?invite=LkoFkoSDuxpiM2Q8';
-    assert.equal(h.constante.telegramAppUrl(URL_TELEGRAM), NATIF);
-
-    // Cas nominal : le lien web part, et lui seul.
     const alerte: string[] = [];
     assert.equal(await h.bouton.openSupportTelegram(() => alerte.push('erreur')), true);
-    assert.deepEqual([...h.state.ouvertures], [URL_TELEGRAM]);
+    assert.deepEqual([...h.state.navigateurs], [URL_TELEGRAM]);
+    assert.deepEqual([...h.state.ouvertures], [], 'ne délègue pas au lien Telegram vérifié');
     assert.equal(alerte.length, 0, 'aucune alerte quand le lien s’ouvre');
 
-    // Cas d'un appareil SANS navigateur : l'adresse native prend le relais.
-    // Toujours aucune alerte — il reste quelque chose à tenter.
     const essais: string[] = [];
     assert.equal(await h.bouton.openSupportTelegram(
       () => alerte.push('erreur'),
       async (url: string) => {
         essais.push(url);
-        if (url.startsWith('http')) throw new Error('No activity found to handle Intent');
+        throw new Error('Custom Tabs unavailable');
       },
     ), true);
-    assert.deepEqual(essais, [URL_TELEGRAM, NATIF], 'web d’abord, natif en recours');
-    assert.equal(alerte.length, 0, 'le recours natif ne doit pas alerter');
+    assert.deepEqual(essais, [URL_TELEGRAM]);
+    assert.deepEqual([...h.state.ouvertures], [URL_TELEGRAM], 'le repli garde le contexte this de Linking');
+    assert.equal(alerte.length, 0);
 
-    // Cas où plus RIEN ne peut ouvrir le lien : là, et là seulement, on avertit.
+    h.state.refuser = true;
     assert.equal(await h.bouton.openSupportTelegram(
       () => alerte.push('erreur'),
-      async () => { throw new Error('No activity found to handle Intent'); },
+      async () => { throw new Error('Custom Tabs unavailable'); },
     ), false);
     assert.deepEqual(alerte, ['erreur']);
+    assert.ok(h.state.ouvertures.every(url => url.startsWith('https://')));
+  });
+
+  it('respecte la fermeture volontaire du navigateur sans relancer un lien', async () => {
+    const h = await banc();
+    const alerte: string[] = [];
+    assert.equal(await h.bouton.openSupportTelegram(
+      () => alerte.push('erreur'),
+      async () => ({ type: 'cancel' }),
+    ), true);
+    assert.deepEqual([...h.state.ouvertures], []);
+    assert.deepEqual(alerte, []);
   });
 
   it('traduit les formes de lien que Telegram distribue, et refuse d’inventer', async () => {
@@ -164,7 +169,8 @@ describe('bouton de support Telegram', () => {
       const rendu = h.rendre(langue);
       assert.ok(rendu.includes(attendu), `${langue} : libellé manquant`);
       assert.doesNotMatch(rendu, /support_telegram_/, `${langue} : clé i18n non résolue`);
-      assert.ok(rendu.includes(langue === 'fr' ? 'Discuter avec le support' : 'Chat with support'));
+      assert.ok(rendu.includes(langue === 'fr' ? 'Ouvrir le canal' : 'Open the Telegram channel'));
+      assert.ok(rendu.includes(langue === 'fr' ? 'navigateur' : 'browser'));
     }
   });
 
@@ -210,6 +216,9 @@ describe('bouton de support Telegram', () => {
       for (const langue of ['fr', 'en']) {
         assert.match(lire(`app-mobile/localization/${langue}.ts`), new RegExp(`${cle}: '[^']+'`), `${langue}.${cle}`);
       }
+    }
+    for (const langue of ['fr', 'en']) {
+      assert.doesNotMatch(lire(`app-mobile/localization/${langue}.ts`), /(?:Installez|Install) Telegram/);
     }
     for (const langue of ['fr', 'en']) {
       const core = JSON.parse(lire(`artifacts/sxb-dashboard/src/locales/${langue}/core.json`));

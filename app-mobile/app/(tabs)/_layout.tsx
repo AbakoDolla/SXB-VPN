@@ -1,108 +1,20 @@
-import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
-import { Tabs } from "expo-router";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
-import * as Haptics from "expo-haptics";
-import { useColors } from "@/hooks/useColors";
-import { useTranslation } from "@/localization";
-import { alpha, elevation, radius, spacing, type } from "@/constants/theme";
-
-type TabName = "index" | "history" | "profile" | "notifications";
-type TabItem = {
-  name: TabName;
-  labelKey: "home" | "history" | "profile" | "alerts_tab";
-  icon: string;
-  iconFocused: string;
-  /** Clé de teinte dans `colors.accents`. */
-  tone: "cyan" | "violet" | "emeraude" | "ambre";
-};
-
-// Une teinte par onglet plutôt qu'un cyan unique partout : la couleur devient
-// un repère à part entière, et l'onglet actif se reconnaît sans lire son
-// libellé. L'icône reste porteuse du sens — la couleur seule ne distingue rien
-// pour qui ne la perçoit pas.
-const TAB_ITEMS: TabItem[] = [
-  { name: "index", labelKey: "home", icon: "home-outline", iconFocused: "home", tone: "cyan" },
-  { name: "history", labelKey: "history", icon: "time-outline", iconFocused: "time", tone: "violet" },
-  { name: "profile", labelKey: "profile", icon: "person-outline", iconFocused: "person", tone: "emeraude" },
-  { name: "notifications", labelKey: "alerts_tab", icon: "notifications-outline", iconFocused: "notifications", tone: "ambre" },
-];
-
-function CustomTabBar({ state, navigation }: any) {
-  const insets = useSafeAreaInsets();
-  const colors = useColors();
-  const { t } = useTranslation();
-  const bottomPadding = Platform.OS === "web" ? spacing.md : Math.max(insets.bottom, spacing.md);
-
-  return (
-    <View style={[styles.shell, { paddingBottom: bottomPadding }]}>
-      <View
-        style={[
-          styles.tabBar,
-          { backgroundColor: colors.bgCard, borderColor: colors.border },
-          elevation.lg,
-        ]}
-      >
-        {state.routes.map((route: any, index: number) => {
-          const tab = TAB_ITEMS[index];
-          const isFocused = state.index === index;
-          const teinte = colors.accents[tab.tone];
-          const onPress = () => {
-            const event = navigation.emit({ type: "tabPress", target: route.key, canPreventDefault: true });
-            if (!isFocused && !event.defaultPrevented) {
-              if (Platform.OS !== "web") void Haptics.selectionAsync();
-              navigation.navigate(route.name);
-            }
-          };
-
-          return (
-            <Pressable
-              key={route.key}
-              onPress={onPress}
-              accessibilityRole="tab"
-              accessibilityState={{ selected: isFocused }}
-              style={({ pressed }) => [styles.tabItem, pressed && styles.pressed]}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              {/* Pastille pleine derrière l'onglet actif : repère plus lisible
-                  qu'un simple changement de teinte, notamment en plein soleil.
-                  Le liseré reprend la teinte de l'onglet pour que la pastille
-                  ne paraisse pas simplement plus claire, mais bien colorée. */}
-              <View
-                style={[
-                  styles.iconWrap,
-                  isFocused && {
-                    backgroundColor: teinte + alpha.f16,
-                    borderColor: teinte + alpha.f40,
-                  },
-                ]}
-              >
-                <Ionicons
-                  name={(isFocused ? tab.iconFocused : tab.icon) as any}
-                  size={20}
-                  color={isFocused ? teinte : colors.tabInactive}
-                />
-              </View>
-              <Text
-                style={[
-                  type.micro,
-                  { color: isFocused ? teinte : colors.tabInactive },
-                ]}
-                numberOfLines={1}
-              >
-                {t(tab.labelKey)}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </View>
-    </View>
-  );
-}
+import { Tabs } from 'expo-router';
+import TabDock from '@/components/ui/TabDock';
+import { useColors } from '@/hooks/useColors';
+import { useMotionPreference } from '@/hooks/useMotionPreference';
 
 export default function TabLayout() {
+  const colors = useColors();
+  const { reduceMotion } = useMotionPreference();
   return (
-    <Tabs tabBar={(props) => <CustomTabBar {...props} />} screenOptions={{ headerShown: false, animation: "fade" }}>
+    <Tabs
+      tabBar={(props) => <TabDock {...props} />}
+      screenOptions={{
+        headerShown: false,
+        animation: reduceMotion ? 'none' : 'fade',
+        sceneStyle: { backgroundColor: colors.bg },
+      }}
+    >
       <Tabs.Screen name="index" />
       <Tabs.Screen name="history" />
       <Tabs.Screen name="profile" />
@@ -110,31 +22,3 @@ export default function TabLayout() {
     </Tabs>
   );
 }
-
-const styles = StyleSheet.create({
-  // La barre flotte au-dessus du contenu, sans fond plein ni filet supérieur :
-  // le dégradé de l'écran reste visible en dessous, ce qui allège l'ensemble.
-  shell: { paddingTop: spacing.sm, paddingHorizontal: spacing.lg, backgroundColor: "transparent" },
-  tabBar: {
-    flexDirection: "row",
-    borderWidth: 1,
-    borderRadius: radius.xl,
-    paddingHorizontal: spacing.sm,
-    paddingTop: spacing.sm,
-    paddingBottom: spacing.xs,
-  },
-  tabItem: { flex: 1, alignItems: "center", gap: spacing.xs, minHeight: 52 },
-  pressed: { opacity: 0.68, transform: [{ scale: 0.97 }] },
-  iconWrap: {
-    width: 40,
-    height: 30,
-    borderRadius: radius.md,
-    alignItems: "center",
-    justifyContent: "center",
-    // Bordure présente en permanence, transparente au repos : n'apparaître
-    // qu'à l'état actif ajouterait 2 px et ferait sauter l'icône d'un onglet
-    // à l'autre.
-    borderWidth: 1,
-    borderColor: "transparent",
-  },
-});

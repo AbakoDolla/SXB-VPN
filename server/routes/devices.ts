@@ -133,6 +133,7 @@ router.get("/", requireAuth, requirePermission("clients.view"), async (req: Auth
       : [];
     const byClient = new Map<string, { download: bigint; upload: bigint; lastSeenAt: Date | null }>();
     const bySubscriptionDevice = new Map<string, { download: bigint; upload: bigint; lastSeenAt: Date | null }>();
+    const deviceByClient = new Map(clients.map(client => [client.id, client.deviceId || ""]));
     for (const row of usageRows as any[]) {
       const current = byClient.get(row.clientId) || { download: 0n, upload: 0n, lastSeenAt: null };
       current.download += BigInt(row.download || 0);
@@ -141,7 +142,9 @@ router.get("/", requireAuth, requirePermission("clients.view"), async (req: Auth
       byClient.set(row.clientId, current);
 
       if (row.accountId) {
-        const key = `${row.clientId}:${row.accountId}:${row.deviceId || ""}`;
+        // Les anciens rapports n'envoyaient pas deviceId. Ils restent ceux du
+        // même appareil activé et du même forfait, pas ceux d'un autre plan.
+        const key = `${row.clientId}:${row.accountId}:${row.deviceId || deviceByClient.get(row.clientId) || ""}`;
         const scoped = bySubscriptionDevice.get(key) || { download: 0n, upload: 0n, lastSeenAt: null };
         scoped.download += BigInt(row.download || 0);
         scoped.upload += BigInt(row.upload || 0);
@@ -155,7 +158,11 @@ router.get("/", requireAuth, requirePermission("clients.view"), async (req: Auth
       const scopedUsage = exactKey ? bySubscriptionDevice.get(exactKey) : undefined;
       return sanitizeDevice(
         client,
-        scopedUsage || byClient.get(client.id),
+        // Aucun trafic pour ce forfait ne signifie pas « tout le trafic du
+        // client » : ce repli affichait l'ancien essai sur un forfait neuf.
+        subscription
+          ? scopedUsage || bySubscriptionDevice.get(`${client.id}:${subscription.id}:`)
+          : byClient.get(client.id),
         subscription,
         marquesEssai.get(client.id) ?? null,
       );

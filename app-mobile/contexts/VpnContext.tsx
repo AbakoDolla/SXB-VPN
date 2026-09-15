@@ -49,7 +49,8 @@ import {
 import { deriveQuota, formatBytes, type DerivedQuota, type SessionCounters } from '@/services/quotaState';
 import {
   accumulate as accumulateUsage, anchorLedger, isFreshLedger, loadLedger, nextReport, pendingBytes,
-  saveLedger, settle as settleUsage, type UsageLedger,
+  pendingUsage, quotaProjection, recordQuota, saveLedger, settle as settleUsage,
+  type UsageContext, type UsageLedger, type UsageReport,
 } from '@/services/usageLedger';
 import { useAuthContext } from './AuthContext';
 import type { VpnConnection } from '@/types/api';
@@ -162,11 +163,11 @@ interface VpnContextType {
   // Quota
   quotaData:          QuotaData | null;
   derivedQuota:       DerivedQuota;
+  currentDerivedQuota: DerivedQuota;
   /**
-   * Compteurs de session à opposer au consommé serveur. La ligne de base est
-   * avancée à CHAQUE rapport accepté : le delta vivant ne représente donc que
-   * les octets pas encore comptabilisés par le serveur, jamais toute la
-   * session. Sans cela, l'écran additionnait deux fois le même trafic.
+   * Projection du livre durable pour le forfait sélectionné. Les compteurs
+   * de session restent exposés pour compatibilité, mais pendingBytes couvre
+   * aussi le retard hors ligne et les anciennes sessions non acquittées.
    */
   quotaSession:       SessionCounters;
   // Revocation
@@ -210,6 +211,7 @@ const VpnContext = createContext<VpnContextType>({
   savedConfigs: [], activeConfigId: null, switchConfig: async () => {}, isSwitchingConfig: false,
   quotaData: null,
   derivedQuota: DEFAULT_DERIVED_QUOTA,
+  currentDerivedQuota: DEFAULT_DERIVED_QUOTA,
   quotaSession: { sessionUp: 0, sessionDown: 0, sessionBaselineUp: 0, sessionBaselineDown: 0 },
   revokedStatus: 'none',
   perAppTraffic: [],
@@ -414,7 +416,11 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   // redémarrage du moteur ou la mort de l'application ne peuvent donc plus
   // effacer du trafic déjà mesuré : au pire, il est remonté plus tard.
   const ledgerRef          = useRef<UsageLedger | null>(null);
+  const [usageLedger, setUsageLedger] = useState<UsageLedger | null>(null);
   const ledgerBusyRef      = useRef(false);
+  const ledgerFlushRef     = useRef<Promise<void> | null>(null);
+  const usageRetryTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const usageMountedRef     = useRef(true);
   const sessionBaselineRef = useRef<{ up: number; down: number }>({ up: 0, down: 0 });
   const sessionIdRef       = useRef<string | null>(null);
   /** Consommé serveur déjà affiché, par forfait : il ne doit jamais reculer. */
@@ -443,16 +449,34 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const watchdogRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastStepRef  = useRef<string>('INIT');
 
-  // Sélecteur unique deriveQuota. La ligne de base avance à chaque rapport
-  // accepté : le delta vivant ne couvre que les octets pas encore comptés par
-  // le serveur, il ne peut donc plus s'additionner au consommé déjà facturé.
+  const quotaProfile = runningProfileRef.current?.configId === activeConfigId
+    ? runningProfileRef.current
+    : usageLedger?.context?.configId === activeConfigId
+      ? usageLedger.context
+      : { configId: activeConfigId, subscriptionId: activeConnection?.id === activeConfigId ? activeConnection.id : null };
+  const quotaLiveCounters = runningProfileRef.current?.configId === activeConfigId &&
+    typeof trafficStats.lifetimeUploadBytes === 'number' && typeof trafficStats.lifetimeDownloadBytes === 'number'
+    ? { up: trafficStats.lifetimeUploadBytes, down: trafficStats.lifetimeDownloadBytes }
+    : null;
   const quotaSession: SessionCounters = {
     sessionUp: trafficStats.uploadBytes,
     sessionDown: trafficStats.downloadBytes,
     sessionBaselineUp: sessionBaselineRef.current.up,
     sessionBaselineDown: sessionBaselineRef.current.down,
+    ...quotaProjection(usageLedger, {
+      configId: quotaProfile?.configId, subscriptionId: quotaProfile?.subscriptionId ?? null,
+    }, quotaLiveCounters),
   };
-  const currentDerivedQuota = deriveQuota(quotaData || accountState, quotaSession, isConnected);
+  const selectedQuota = quotaData?.configId === activeConfigId ? quotaData : null;
+  const selectedConnection = activeConnection && (activeConnection.id === activeConfigId ||
+    activeConnection.id === quotaProfile?.subscriptionId) ? activeConnection : null;
+  const selectedAccountQuota = !activeConfigId || (accountState?.subscription?.id &&
+    (accountState.subscription.id === activeConfigId || accountState.subscription.id === quotaProfile?.subscriptionId))
+    ? accountState : null;
+  const currentDerivedQuota = deriveQuota(
+    selectedQuota || (selectedConnection ? { ...selectedConnection.quota, expiresAt: selectedConnection.expiresAt } : selectedAccountQuota),
+    quotaSession, isConnected,
+  );
 
   // ── StepLogs helpers ────────────────────────────────────────────────────────
   const resetStepLogs = useCallback(() => {
@@ -647,6 +671,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
               downloadSpeed: 0,
               tunAttached: stats?.tunAttached === true || stats?.tunAttached === 1,
               connectedSeconds: stats?.connectedSeconds || 0,
+              lifetimeUploadBytes: stats?.lifetimeUploadBytes,
+              lifetimeDownloadBytes: stats?.lifetimeDownloadBytes,
             });
           }).catch(() => {});
         }
@@ -707,6 +733,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           downloadSpeed: stats.downloadSpeed || 0,
           tunAttached:   stats.tunAttached === true || stats.tunAttached === 1,
           connectedSeconds: stats.connectedSeconds || 0,
+          lifetimeUploadBytes: stats.lifetimeUploadBytes,
+          lifetimeDownloadBytes: stats.lifetimeDownloadBytes,
         });
 
         // FALLBACK HANDSHAKE — Si on est en "handshaking" et qu'on voit du trafic réel
@@ -784,6 +812,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           downloadSpeed: stats.downloadSpeed || 0,
           tunAttached: stats.tunAttached === true || stats.tunAttached === 1,
           connectedSeconds: stats.connectedSeconds || 0,
+          lifetimeUploadBytes: stats.lifetimeUploadBytes,
+          lifetimeDownloadBytes: stats.lifetimeDownloadBytes,
         });
         startTrafficPolling();
       } else {
@@ -800,7 +830,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     void syncNativeRuntime();
     const foregroundSub = AppState.addEventListener('change', (next) => {
-      if (next === 'active') void syncNativeRuntime();
+      if (next === 'active') void syncNativeRuntime().then(() => flushUsageRef.current());
       // Pendant le handshake, le polling est aussi le filet de détection qui
       // promeut le tunnel dès que les premiers octets passent. Le supprimer
       // ferait échouer une connexion lorsque l'utilisateur change d'app.
@@ -843,9 +873,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   // `flushUsage` est le SEUL chemin par lequel de la consommation part vers le
   // serveur. Il fait toujours la même chose, dans cet ordre :
   //   1. lire le compteur kilométrique du natif (jamais remis à zéro) ;
-  //   2. inscrire au livre les octets neufs — une lecture INFÉRIEURE à la
-  //      précédente signifie une remise à zéro, donc la valeur entière est du
-  //      trafic neuf, jamais un delta nul ;
+  //   2. inscrire les octets neufs ; un ancien checkpoint natif qui recule
+  //      recale l'ancre sans refacturer son historique ;
   //   3. ÉCRIRE le livre sur disque AVANT tout appel réseau ;
   //   4. envoyer les entrées en attente, la plus ancienne d'abord ;
   //   5. n'effacer une entrée qu'une fois le serveur formel — accepté, ou
@@ -853,9 +882,15 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   //
   // Une entrée part avec les mêmes `sessionId`/`seq` et les mêmes octets à
   // chaque tentative : un rejeu ne peut donc jamais être facturé deux fois.
-  const applyServerQuota = useCallback(async (data: any) => {
+  const applyServerQuota = useCallback(async (data: any, report?: UsageReport) => {
     if (!data || data.quotaUsedBytes === undefined || data.quotaTotalBytes === undefined) return;
+    const stamp = accessRequestStamp();
     const subscriptionId: string | null = typeof data.subscriptionId === 'string' ? data.subscriptionId : null;
+    const profiles = storeValue(await configStore.list()) ?? [];
+    const profile = profiles.find(entry => subscriptionId && (entry.subscriptionId === subscriptionId || entry.configId === subscriptionId))
+      ?? profiles.find(entry => report?.configId === entry.configId && !report.subscriptionId);
+    if (!profile || !currentAccessRequest(stamp)) return;
+    const quotaConfigId = profile.configId;
     const totalBytes = Math.max(0, Number(data.quotaTotalBytes) || 0);
     let usedBytes = Math.max(0, Number(data.quotaUsedBytes) || 0);
 
@@ -868,8 +903,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     }
     shownUsageRef.current = { subscriptionId, total: totalBytes, used: usedBytes };
 
-    const currentQuota = await loadQuotaData(activeConfigIdRef.current || undefined).catch(() => null);
-    const quotaConfigId = activeConfigIdRef.current || currentQuota?.configId || (activeConnection as any)?.id || 'vpn_config';
+    const currentQuota = await loadQuotaData(quotaConfigId).catch(() => null);
+    if (!currentAccessRequest(stamp)) return;
+    if (currentQuota?.totalQuota === totalBytes) usedBytes = Math.max(usedBytes, currentQuota.usedQuota);
     if (totalBytes <= 0 && !currentQuota) return;
     const synced = await saveQuotaData({
       configId: quotaConfigId,
@@ -877,21 +913,55 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       usedQuota: usedBytes,
       expiryDate: data.expiresAt ?? currentQuota?.expiryDate ?? null,
     }).catch(() => null);
+    if (!currentAccessRequest(stamp) || activeConfigIdRef.current !== quotaConfigId) return;
     if (synced) setQuotaData(synced);
-    else setQuotaData(prev => prev ? { ...prev, usedQuota: usedBytes, remainingQuota: Math.max(0, totalBytes - usedBytes) } : prev);
-  }, [activeConnection]);
+    else setQuotaData(prev => prev?.configId === quotaConfigId ? { ...prev, usedQuota: usedBytes, remainingQuota: Math.max(0, totalBytes - usedBytes) } : prev);
+  }, []);
 
-  const flushUsage = useCallback(async (options?: { final?: boolean }) => {
-    if (!isAuthenticated) return;
-    if (ledgerBusyRef.current) return;
+  const flushUsage = useCallback(async (options?: { final?: boolean; beforeConnect?: boolean }) => {
+    if (!isAuthenticated || !usageMountedRef.current) return;
+    const stamp = accessRequestStamp();
+    if (ledgerBusyRef.current) {
+      if (options?.final || options?.beforeConnect) {
+        await ledgerFlushRef.current;
+        if (currentIdentityRequest(stamp)) await flushUsageRef.current(options);
+      }
+      return;
+    }
     ledgerBusyRef.current = true;
+    if (usageRetryTimerRef.current) clearTimeout(usageRetryTimerRef.current);
+    usageRetryTimerRef.current = null;
+    let finish!: () => void;
+    ledgerFlushRef.current = new Promise<void>(resolve => { finish = resolve; });
+    let retryNeeded = false;
     try {
       let ledger = ledgerRef.current ?? await loadLedger();
+      const running = runningProfileRef.current;
+      const previous = options?.beforeConnect ? ledger.context : null;
+      if (!sessionIdRef.current) sessionIdRef.current = 'sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
+      const context: UsageContext = previous ?? (running
+        ? { subscriptionId: running.subscriptionId ?? null, configId: running.configId, sessionId: sessionIdRef.current }
+        : ledger.context ?? { subscriptionId: null, sessionId: sessionIdRef.current });
+      const seedQuota = async (owner: UsageContext) => {
+        const pending = pendingUsage(ledger, owner);
+        if (!owner.configId || pending.up + pending.down > 0) return;
+        const cached = await loadQuotaData(owner.configId);
+        if (cached) ledger = recordQuota(ledger, owner, { usedBytes: cached.usedQuota, totalBytes: cached.totalQuota });
+      };
+      await seedQuota(context);
       const stats = IS_ANDROID && SxbVpnNative
-        ? await SxbVpnNative.getTrafficStats().catch(() => null)
+        ? await SxbVpnNative.getTrafficStats().catch(() => {
+          retryNeeded = true;
+          console.warn('[SXB] USAGE_COUNTERS_UNAVAILABLE');
+          return null;
+        })
         : null;
+      if (!currentIdentityRequest(stamp) || !usageMountedRef.current) return;
+      const validCounters = stats && Number.isSafeInteger(stats.lifetimeUploadBytes) && stats.lifetimeUploadBytes >= 0 &&
+        Number.isSafeInteger(stats.lifetimeDownloadBytes) && stats.lifetimeDownloadBytes >= 0;
+      if (options?.beforeConnect && !validCounters) throw new Error('VPN_USAGE_COUNTERS_UNAVAILABLE');
 
-      if (stats && typeof stats.lifetimeUploadBytes === 'number' && typeof stats.lifetimeDownloadBytes === 'number') {
+      if (validCounters) {
         const counters = { up: stats.lifetimeUploadBytes, down: stats.lifetimeDownloadBytes };
         // Un livre qui vient de naître s'ANCRE sur le compteur au lieu de le
         // facturer : le service peut déjà avoir des gigaoctets au compteur
@@ -905,18 +975,22 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           // vaut « forfait inconnu » côté serveur, donc un refus, donc des octets
           // perdus. Sans forfait connu, le serveur crédite le forfait actif et le
           // NOMME dans sa réponse : rien ne se perd et rien n'est deviné ici.
-          const reportingId = runningProfileRef.current?.subscriptionId ?? null;
-          if (!sessionIdRef.current) {
-            sessionIdRef.current = 'sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
-          }
-          ledger = accumulateUsage(ledger, counters, { subscriptionId: reportingId, sessionId: sessionIdRef.current });
+          ledger = accumulateUsage(ledger, counters, context);
         }
       }
+      ledger = { ...ledger, context };
+      if (options?.beforeConnect && running) {
+        const next = { subscriptionId: running.subscriptionId ?? null, configId: running.configId, sessionId: sessionIdRef.current };
+        await seedQuota(next);
+        ledger = { ...ledger, context: next };
+      }
+      if (!currentIdentityRequest(stamp) || !usageMountedRef.current) return;
       ledgerRef.current = ledger;
+      setUsageLedger(ledger);
       await saveLedger(ledger);
+      if (options?.beforeConnect) return;
       if (!pendingBytes(ledger)) return;
 
-      const stamp = accessRequestStamp();
       let exhaustedHandled = false;
       // Quelques rapports par passage suffisent : le reste attend le prochain
       // réveil plutôt que de marteler le réseau après une longue panne.
@@ -927,6 +1001,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         // Le rapport est sur disque AVANT de partir : une application tuée
         // pendant l'appel le rejouera à l'identique au démarrage suivant.
         await saveLedger(prepared.ledger);
+        if (!currentIdentityRequest(stamp) || !usageMountedRef.current) break;
 
         const result = await apiClient.post('/mobile/vpn/traffic', {
           bytesUp:   prepared.report.bytesUp,
@@ -939,23 +1014,40 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         }).catch((error: any) => {
           // 403 « forfait non possédé » : l'entrée ne sera jamais acceptée,
           // la garder bloquerait toutes les suivantes derrière elle.
-          if (error?.response?.status === 403) return { data: { ok: false, rejected: true } } as any;
+          if (error?.response?.status === 403 && error?.response?.data?.code === 'OWNERSHIP_FORBIDDEN') {
+            return { data: { ok: false, rejected: true } } as any;
+          }
+          retryNeeded = true;
+          console.warn('[SXB] USAGE_SYNC_DEFERRED');
           return null;
         });
         if (!result) break; // Réseau indisponible : on rejouera à l'identique.
+        if (!currentIdentityRequest(stamp) || !usageMountedRef.current) break;
+        if (!result.data?.rejected && result.data?.ok !== true && result.data?.duplicate !== true) break;
+        if (prepared.report.subscriptionId && result.data?.subscriptionId &&
+            prepared.report.subscriptionId !== result.data.subscriptionId) break;
 
-        const settled = settleUsage(ledgerRef.current, prepared.report);
+        let settled = settleUsage(ledgerRef.current, prepared.report);
+        if (!result.data?.rejected && Number.isSafeInteger(result.data?.quotaUsedBytes) &&
+            Number.isSafeInteger(result.data?.quotaTotalBytes)) {
+          settled = recordQuota(settled, prepared.report, {
+            usedBytes: result.data.quotaUsedBytes, totalBytes: result.data.quotaTotalBytes,
+          });
+        }
         ledgerRef.current = settled;
+        setUsageLedger(settled);
         await saveLedger(settled);
         if (result.data?.rejected) continue;
 
         // Le serveur a pris ces octets en compte : la ligne de base de
         // l'affichage avance d'autant, sinon ils seraient comptés deux fois.
-        if (stats) sessionBaselineRef.current = { up: stats.uploadBytes || 0, down: stats.downloadBytes || 0 };
+        if (stats && context.configId === activeConfigIdRef.current && prepared.report.subscriptionId === context.subscriptionId) {
+          sessionBaselineRef.current = { up: stats.uploadBytes || 0, down: stats.downloadBytes || 0 };
+        }
         legacyDebugLog(`TRAFFIC_REPORT_SUCCESS up=${prepared.report.bytesUp} down=${prepared.report.bytesDown}`);
 
-        if (!currentAccessRequest(stamp)) break;
-        await applyServerQuota(result.data);
+        if (currentAccessRequest(stamp)) await applyServerQuota(result.data, prepared.report);
+        if (!currentIdentityRequest(stamp) || !usageMountedRef.current) break;
 
         // Quota épuisé : le serveur fait autorité, le tunnel s'arrête tout de
         // suite. Un simple affichage laisserait le client consommer au-delà de
@@ -965,8 +1057,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           const credited = typeof result.data.subscriptionId === 'string'
             ? result.data.subscriptionId
             : prepared.report.subscriptionId;
-          const concerned = !running || !credited ||
-            running.subscriptionId === credited || running.configId === credited;
+          const concerned = running
+            ? (credited ? running.subscriptionId === credited || running.configId === credited
+              : prepared.report.configId === running.configId)
+            : !!activeConfigIdRef.current && activeConfigIdRef.current === (prepared.report.configId || credited);
           if (concerned) {
             exhaustedHandled = true;
             setRevokedStatus('exhausted');
@@ -982,16 +1076,37 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         // instead of treating a selected plan's state as an identity revocation.
         if (result.data?.state && result.data.state !== 'ready') wakeAccessObservation();
       }
-    } catch {
+    } catch (error) {
       // Un échec de remontée ne doit ni interrompre le tunnel ni perdre le
       // livre : ce qui n'est pas parti reste sur disque et sera rejoué.
+      // En revanche un NOUVEAU tunnel attend son ancre durable.
+      retryNeeded = true;
+      console.warn('[SXB] USAGE_SYNC_DEFERRED');
+      if (options?.beforeConnect) throw error;
     } finally {
       ledgerBusyRef.current = false;
+      ledgerFlushRef.current = null;
+      finish();
+      if (usageMountedRef.current && currentIdentityRequest(stamp) &&
+          (retryNeeded || (ledgerRef.current && pendingBytes(ledgerRef.current) > 0))) {
+        usageRetryTimerRef.current = setTimeout(() => {
+          usageRetryTimerRef.current = null;
+          if (currentIdentityRequest(stamp)) void flushUsageRef.current({ final: true });
+        }, USAGE_REPORT_INTERVAL_MS);
+      }
     }
   }, [isAuthenticated, deviceId, applyServerQuota, addLog]);
 
   const flushUsageRef = useRef(flushUsage);
   useEffect(() => { flushUsageRef.current = flushUsage; });
+  useEffect(() => {
+    usageMountedRef.current = true;
+    return () => { usageMountedRef.current = false; };
+  }, []);
+  useEffect(() => () => {
+    if (usageRetryTimerRef.current) clearTimeout(usageRetryTimerRef.current);
+    usageRetryTimerRef.current = null;
+  }, [isAuthenticated]);
 
   // ── CADENCE DE REMONTÉE ─────────────────────────────────────────────────────
   //
@@ -1003,7 +1118,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   // Coût : un réveil toutes les 20 s (3 par minute) et une requête HTTPS de
   // quelques centaines d'octets, uniquement quand le tunnel tourne — le
   // service de premier plan et son thread de statistiques à 1 Hz sont déjà là,
-  // de très loin la dépense dominante. Tunnel arrêté, zéro réveil.
+  // de très loin la dépense dominante. Tunnel arrêté, seul un retard durable
+  // garde une tentative de rejeu armée ; une file vide ne réveille rien.
   useEffect(() => {
     if (!isConnected || !isAuthenticated) return;
     const report = () => { void flushUsageRef.current(); };
@@ -1031,15 +1147,14 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     if (!isAuthenticated) return;
     let cancelled = false;
     void (async () => {
-      ledgerRef.current = await loadLedger();
-      // Laisse `syncNativeRuntime` rétablir le profil en cours avant d'imputer
-      // à un forfait les octets mesurés pendant que l'application était morte.
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      // Attend le vrai résultat du pont, pas un délai arbitraire qui pouvait
+      // laisser le profil inconnu lors du rejeu après redémarrage.
+      await syncNativeRuntime();
       if (cancelled) return;
       await flushUsageRef.current();
     })();
     return () => { cancelled = true; };
-  }, [isAuthenticated]);
+  }, [isAuthenticated, syncNativeRuntime]);
 
   // B6 — LISTENER NETINFO : re-synchro automatique dès le retour du réseau
   useEffect(() => {
@@ -1050,6 +1165,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         if (netState.isConnected && netState.isInternetReachable) {
           // refreshVpnConfig is declared below; defer lookup until this listener fires.
           wakeAccessObservation();
+          void flushUsageRef.current({ final: true });
         }
       });
     } catch { /* ignore */ }
@@ -1064,8 +1180,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   // Quota polling
   const refreshQuotaData = useCallback(async () => {
     try {
-      const loaded = await loadQuotaData(activeConfigId || undefined);
-      if (loaded) setQuotaData(loaded);
+      const requestedId = activeConfigIdRef.current;
+      const stamp = accessRequestStamp();
+      const loaded = await loadQuotaData(requestedId || undefined);
+      if (loaded && currentAccessRequest(stamp) && activeConfigIdRef.current === requestedId) setQuotaData(loaded);
     } catch { /* ignore */ }
   }, [activeConfigId]);
 
@@ -1429,6 +1547,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         if (!currentProfile) throw new Error('ACCESS_PROFILE_MISSING');
         requireProfileAccess(currentProfile.meta);
         runningProfileRef.current = currentProfile.meta;
+        // Une ancre durable existe AVANT les premiers paquets du nouveau
+        // tunnel, même si ses deux compteurs valent encore zéro.
+        await flushUsageRef.current({ beforeConnect: true });
         const optionsJson = JSON.stringify(sanitizeEngineConfig({
           ...configToUse,
           configId: selectedId,
@@ -1706,6 +1827,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     savedConfigs, activeConfigId, switchConfig, isSwitchingConfig,
     quotaData,
     derivedQuota: currentDerivedQuota,
+    currentDerivedQuota,
     quotaSession,
     revokedStatus,
     perAppTraffic,

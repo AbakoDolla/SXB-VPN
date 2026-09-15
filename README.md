@@ -132,6 +132,62 @@ Le contrôle CI complète le constructeur natif par des requêtes DNS et des
 transferts sur une chaîne VLESS/WS/TLS/HTTP entièrement locale. Cette preuve
 ne constitue pas une mesure du débit ou de la disponibilité du fournisseur.
 
+### Consommation data et synchronisation des quotas
+
+La consommation est mesurée en **octets envoyés + reçus**, jamais en secondes.
+Le livre mobile persiste l'ancre de l'odomètre avant un nouveau tunnel et fige
+chaque rapport `(sessionId, seq)` avant envoi. L'API accepte des **deltas**,
+pas des compteurs absolus ; sa clé `traffic_usage.reportKey` unique garantit
+le rejeu après redémarrage. Un doublon n'est acquitté qu'après commit, avec
+l'identité du forfait réellement débité.
+
+Le service confirme l'écriture des deux compteurs natifs **avant de les
+exposer** au mobile. Une écriture refusée n'est pas présentée comme réussie,
+même si le cache Android contient déjà la nouvelle valeur. Les mesures, les
+exports et le dernier relevé à l'arrêt sont sérialisés. Les diagnostics et la
+notification lisent séparément les compteurs de session, sans écriture disque.
+La reprise automatique relance aussi le relevé de consommation après le
+démontage de l'ancien tunnel, sans remettre l'odomètre à zéro.
+Une ancienne version ayant sauvegardé un cumul inférieur au dernier rapport
+ne provoque pas la refacturation de cet historique lors de la mise à jour.
+Un livre mobile illisible reste intact : sa relecture est retentée, et il
+n'est jamais remplacé silencieusement par une nouvelle ancre.
+
+Les octets en attente restent visibles après déconnexion, puis sont rejoués
+tant que la file n'est pas vide. Le forfait d'essai et le forfait ordinaire
+gardent leurs propres snapshots ; changer de configuration ne déplace jamais
+un ancien reçu sur le nouveau profil. Le consommé peut dépasser le volume du
+forfait au dernier relevé : seul le restant et la jauge sont bornés. Les
+métadonnées de provisionnement conservent aussi leur précision en octets.
+
+Le dashboard ne peut connaître un retard hors ligne avant réception. La
+cadence normale est de 20 secondes, sous réserve de disponibilité de l'API
+et du processus JavaScript. Les tests isolés
+`app-mobile/tests/usage-accounting.test.ts` et
+`scripts/tests/usage-accounting.test.mjs` couvrent le rejeu, les basculements
+et les agrégats. Le contrôle JVM `NativeUsageTest.kt` exécute le vrai gestionnaire
+de compteurs avec un stockage Android simulé, y compris ses échecs et la
+concurrence. Il ne remplace pas une mesure sur appareil de l'interface TUN.
+Un arrêt brutal peut perdre une fin de trafic qui n'a pas encore été relevée
+ou sauvegardée ; les compteurs déjà exportés par cette version sont durables.
+
+### Navigation et assistance mobile
+
+Les quatre onglets conservent leurs destinations dans une barre de navigation
+en relief, adaptée aux thèmes clair/sombre et aux zones de sécurité de l'écran.
+Les animations du bouton de connexion s'arrêtent hors premier plan ou lorsque
+l'écran n'est plus visible ; le réglage système de réduction des animations
+est respecté. Le sélecteur affiche les noms sur deux lignes, place le profil
+sélectionné en premier et permet de rechercher les connexions par nom, sans
+afficher leurs paramètres techniques.
+La ligne du profil actif partage le quota dérivé de l'accueil ; les autres
+profils conservent leurs propres valeurs.
+
+Le bouton Telegram ouvre le lien HTTPS dans le navigateur intégré au système,
+y compris avant activation du compte. Si les onglets de navigateur ne sont pas
+disponibles, il essaie le gestionnaire HTTPS de l'appareil, puis indique l'échec
+explicitement. Installer Telegram n'est pas requis.
+
 ### Activation de l'appareil et droits des configurations
 
 L'activation de l'application et les droits de chaque configuration sont deux

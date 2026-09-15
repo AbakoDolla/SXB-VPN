@@ -6,12 +6,11 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import apiClient from "@/services/apiClient";
 import { useAuthContext } from "@/contexts/AuthContext";
 import { useVpnContext, formatBytes, formatSpeed } from "@/contexts/VpnContext";
-import { deriveQuota } from "@/services/quotaState";
 import { useColors } from "@/hooks/useColors";
 import UpdatePrompt from "@/components/UpdatePrompt";
 import AnnouncementModal from "@/components/AnnouncementModal";
@@ -173,21 +172,18 @@ export default function HomeScreen() {
     hasValidConfig, activeConnection,
     connect, disconnect, trafficStats: traffic,
     refreshVpnConfig, syncFromConnection,
-    savedConfigs, activeConfigId, switchConfig, isSwitchingConfig, quotaData, revokedStatus, perAppTraffic,
-    deleteConfig, quotaSession,
+    savedConfigs, activeConfigId, switchConfig, isSwitchingConfig, revokedStatus, perAppTraffic,
+    deleteConfig, derivedQuota,
   } = useVpnContext();
   const { t } = useTranslation();
-  const activeQuotaSnapshot = quotaData && (!activeConfigId || quotaData.configId === activeConfigId)
-    ? quotaData
-    : (activeConnection as any)?.quota || null;
-  // `quotaSession` porte la ligne de base avancée à chaque rapport accepté : le
-  // consommé affiché est donc « ce que le serveur a compté » PLUS « ce qui a été
-  // mesuré depuis », jamais deux fois la même session. `traffic` était passé ici
-  // sans ses lignes de base, ce qui annulait purement et simplement le delta.
-  const derivedQuota = deriveQuota(activeQuotaSnapshot || (accountState as any), quotaSession, isConnected);
   const connectedSeconds = useConnectionDuration(isConnected, traffic.connectedSeconds);
 
   const [configPickerVisible, setConfigPickerVisible] = useState(false);
+  const [screenFocused, setScreenFocused] = useState(true);
+  useFocusEffect(useCallback(() => {
+    setScreenFocused(true);
+    return () => setScreenFocused(false);
+  }, []));
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [ping, setPing] = useState<number | null>(null);
   const [suiviRelais, setSuiviRelais] = useState(SUIVI_RELAIS_INITIAL);
@@ -586,12 +582,11 @@ export default function HomeScreen() {
                 <Ionicons name="shield-checkmark" size={19} color={colors.primary} />
               </View>
               <View style={{ flex: 1, gap: spacing.xs }}>
-                <Text style={[type.h3, { color: colors.textPrimary }]} numberOfLines={1}>
+                <Text style={[type.h3, { color: colors.textPrimary }]} numberOfLines={2}>
                   {activeConfig?.name || t('config_switch')}
                 </Text>
-                <Text style={[type.micro, { color: colors.textMuted }]} numberOfLines={1}>
-                  {activeConfig?.protocol || '—'}
-                  {savedConfigs.length > 1 ? ` · ${savedConfigs.length} ${t('config_plural')}` : ''}
+                <Text style={[type.caption, { color: colors.textSecondary }]}>
+                  {savedConfigs.length} {t(savedConfigs.length > 1 ? 'config_plural' : 'config_singular')}
                 </Text>
               </View>
               <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
@@ -622,6 +617,7 @@ export default function HomeScreen() {
             timer={isConnected ? formatTimer(connectedSeconds) : null}
             active={isConnected}
             busy={isConnecting}
+            visible={screenFocused}
             onPress={handleVpnButton}
             accessibilityLabel={btnLabel}
           />
@@ -912,6 +908,7 @@ export default function HomeScreen() {
         onClose={() => setConfigPickerVisible(false)}
         configs={savedConfigs}
         activeConfigId={activeConfigId}
+        activeQuota={derivedQuota}
         connections={connections}
         switching={isSwitchingConfig}
         onSelect={(id) => { setConfigPickerVisible(false); void switchConfig(id); }}

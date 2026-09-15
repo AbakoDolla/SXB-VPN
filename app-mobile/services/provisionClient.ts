@@ -298,8 +298,10 @@ export async function provisionAndStore(
     profileName:     prov.profileName || '',
     protocol:        prov.protocol || '',
     displayProtocol: prov.displayProtocol || '',
-    quotaGB:         prov.quotaGB || 0,
-    quotaUsedGB:     prov.quotaUsedGB || 0,
+    quotaGB:         Number.isSafeInteger(prov.quotaTotalBytes) && prov.quotaTotalBytes >= 0
+      ? prov.quotaTotalBytes / 1024 ** 3 : prov.quotaGB || 0,
+    quotaUsedGB:     Number.isSafeInteger(prov.quotaUsedBytes) && prov.quotaUsedBytes >= 0
+      ? prov.quotaUsedBytes / 1024 ** 3 : prov.quotaUsedGB || 0,
     expireAt:        prov.expireAt || null,
     configExpiresAt: configExpiresAt,
     provisionedAt:   provisionedAt,

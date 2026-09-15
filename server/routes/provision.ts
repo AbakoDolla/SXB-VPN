@@ -374,8 +374,10 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
       signature:       serverSignature,
       configExpiresAt,
       provisionedAt,
-      quotaGB:         parseFloat(quotaGB.toFixed(4)),
-      quotaUsedGB:     parseFloat(quotaUsedGB.toFixed(4)),
+      quotaGB,
+      quotaUsedGB,
+      quotaTotalBytes: Number(sub.quotaBytes),
+      quotaUsedBytes:  Number(sub.quotaUsed),
       expireAt:        sub.expireAt,
       deviceId,
       // §6.4 — invalidation de cache côté mobile (métadonnées only)
@@ -434,8 +436,10 @@ router.post('/sync', requireAuth, async (req: AuthenticatedRequest, res: Respons
       success:      true,
       status:       effectiveStatus,
       expireAt:     updated.expireAt,
-      quotaGB:      parseFloat(quotaGB.toFixed(4)),
-      quotaUsedGB:  parseFloat(quotaUsedGB.toFixed(4)),
+      quotaGB,
+      quotaUsedGB,
+      quotaTotalBytes: Number(updated.quotaBytes),
+      quotaUsedBytes: Number(updated.quotaUsed),
       revoked:      updated.status === 'revoked',
       ...(effectiveStatus !== 'active' ? subscriptionAccessFailure(effectiveStatus, sub.id) : {}),
     });
@@ -464,8 +468,10 @@ router.get('/status/:subscriptionId', requireAuth, async (req: AuthenticatedRequ
       success:      true,
       status:       subscriptionAccessStatus(sub),
       expireAt:     sub.expireAt,
-      quotaGB:      parseFloat(quotaGB.toFixed(4)),
-      quotaUsedGB:  parseFloat(quotaUsedGB.toFixed(4)),
+      quotaGB,
+      quotaUsedGB,
+      quotaTotalBytes: Number(sub.quotaBytes),
+      quotaUsedBytes: Number(sub.quotaUsed),
       revoked:      sub.status === 'revoked',
     });
   } catch (err: any) {

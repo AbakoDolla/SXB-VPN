@@ -29,6 +29,10 @@ export interface SessionCounters {
   sessionDown: number;
   sessionBaselineUp: number;
   sessionBaselineDown: number;
+  /** Retard du livre durable, y compris après déconnexion/reconnexion. */
+  pendingBytes?: number;
+  /** Consommé du snapshot apparié au dernier acquittement de ce livre. */
+  accountedUsedBytes?: number;
 }
 
 export function formatBytes(bytes: number): string {
@@ -86,13 +90,20 @@ export function deriveQuota(
   }
 
   let sessionDelta = 0;
-  if (isConnected && sessionStats) {
+  if (sessionStats?.pendingBytes !== undefined) {
+    const projected = (sessionStats.accountedUsedBytes ?? baseUsedBytes) + Math.max(0, sessionStats.pendingBytes);
+    // Un snapshot de contrôle peut inclure un rapport dont la réponse est
+    // encore en vol. Ne jamais lui additionner une seconde fois la même tête.
+    sessionDelta = Math.max(0, projected - baseUsedBytes);
+  } else if (isConnected && sessionStats) {
     const sessionCumul = Math.max(0, (sessionStats.sessionUp || 0) + (sessionStats.sessionDown || 0));
     const sessionBaseline = Math.max(0, (sessionStats.sessionBaselineUp || 0) + (sessionStats.sessionBaselineDown || 0));
     sessionDelta = Math.max(0, sessionCumul - sessionBaseline);
   }
 
-  const usedBytes = Math.min(totalBytes > 0 ? totalBytes : Number.MAX_SAFE_INTEGER, baseUsedBytes + sessionDelta);
+  // Le dernier rapport peut dépasser le forfait avant son arrêt par le
+  // serveur. Le consommé reste réel ; seuls le restant et la jauge sont bornés.
+  const usedBytes = baseUsedBytes + sessionDelta;
   const remainingBytes = Math.max(0, totalBytes - usedBytes);
 
   const GB = 1024 ** 3;

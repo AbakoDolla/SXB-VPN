@@ -331,12 +331,13 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             // mais le compteur kilométrique, lui, se lit sur disque : c'est ce
             // qui permet de rejouer au démarrage suivant la consommation
             // mesurée pendant que l'application était morte.
-            val persisted = TrafficStatsManager.persistedLifetime(reactApplicationContext)
             val stats: Map<String, Long> = service?.getTrafficStats()
-                ?: mapOf("uploadBytes" to 0L, "downloadBytes" to 0L,
-                         "uploadSpeed" to 0L, "downloadSpeed" to 0L,
-                         "lifetimeUploadBytes" to persisted.first,
-                         "lifetimeDownloadBytes" to persisted.second)
+                ?: TrafficStatsManager.persistedLifetime(reactApplicationContext).let { persisted ->
+                    mapOf("uploadBytes" to 0L, "downloadBytes" to 0L,
+                          "uploadSpeed" to 0L, "downloadSpeed" to 0L,
+                          "lifetimeUploadBytes" to persisted.first,
+                          "lifetimeDownloadBytes" to persisted.second)
+                }
 
             val map = Arguments.createMap().apply {
                 putDouble("uploadBytes",   stats["uploadBytes"]!!.toDouble())

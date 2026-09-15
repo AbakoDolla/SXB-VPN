@@ -1153,7 +1153,7 @@ fun main() {
         // pendant quatre minutes. La fenêtre est désormais bornée, quoi que
         // contienne la configuration.
         val window = SxbSshKeepAlive.detectionWindowMs()
-        check(window == 43_000L) { "Fenêtre de détection inattendue : $window" }
+        check(window == 40_500L) { "Fenêtre de détection inattendue : $window" }
         check(window < 120_000L) { "La détection reste otage du délai de connexion" }
     }
 

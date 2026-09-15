@@ -21,6 +21,8 @@ package com.sxbvpn.vpnmodule
 import com.sxbvpn.vpnmodule.SxbSecureLogger
 import com.sxbvpn.vpnmodule.SxbSecureLogger.VpnEvent
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -45,6 +47,8 @@ class AutoReconnectManager(
     private val isDispatchInFlight: () -> Boolean = { false },
     /** Horloge monotone injectable — `elapsedRealtime()` en production. */
     private val elapsedMs: () -> Long = { System.nanoTime() / 1_000_000L },
+    dispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val waitForRetry: suspend (Long) -> Unit = { delay(it) },
 ) {
     private val enabled = AtomicBoolean(false)
 
@@ -74,7 +78,7 @@ class AutoReconnectManager(
     /** Échecs RÉELS consommés — incrémenté au démarrage effectif d'une tentative. */
     private val failedAttempts = AtomicInteger(0)
 
-    /** Reprises consécutives n'ayant pas abouti à un tunnel monté. */
+    /** Reprises consécutives n'ayant pas abouti à une session saine. */
     private val resumeStreak = AtomicInteger(0)
 
     private val lastEventAtMs = AtomicLong(Long.MIN_VALUE / 4)
@@ -93,7 +97,11 @@ class AutoReconnectManager(
     private val lastSessionUpMs = AtomicLong(0)
 
     private var job: Job? = null
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var scheduleGeneration = 0L
+    // Le rappel synchrone inclut le drainage puis toute la vie du tunnel :
+    // sérialiser les rappels, pas seulement la création des minuteries.
+    private val reconnectMutex = Mutex()
+    private val scope = CoroutineScope(dispatcher + SupervisorJob())
 
     @Synchronized
     fun enable() {
@@ -129,17 +137,14 @@ class AutoReconnectManager(
     /** Vrai tant qu'une reprise reste due au retour du réseau. */
     fun isAwaitingNetwork() = awaitingNetwork.get()
 
-    /** Appelé quand la connexion est établie — réinitialise les compteurs. */
+    /** La connexion est établie, mais sa stabilité reste à mesurer. */
     @Synchronized
     fun onConnected() {
-        failedAttempts.set(0)
-        resumeStreak.set(0)
         awaitingNetwork.set(false)
-        // Départ du chronomètre de session : c'est lui qui dira, à la chute,
-        // si le tunnel avait tenu assez longtemps pour prouver que tout marche.
-        connectedAtMs.set(elapsedMs())
+        // Une poignée de main suivie d'une chute immédiate ne doit ni effacer
+        // le budget d'échecs ni renouveler la tentative rapide.
+        if (connectedAtMs.get() == 0L) connectedAtMs.set(elapsedMs())
         cancel()
-        SxbSecureLogger.vpn(VpnEvent.RECONNECT_RESET)
     }
 
     /** Le système annonce un réseau capable d'Internet. */
@@ -181,14 +186,14 @@ class AutoReconnectManager(
         evaluate(SxbReconnectPolicy.Trigger.TUNNEL_LOST)
     }
 
-    private fun networkPresent() = runCatching { hasNetwork() }.getOrDefault(true)
+    private fun networkPresent() = runCatching { hasNetwork() }.getOrDefault(false)
 
     private fun snapshot() = SxbReconnectPolicy.State(
         enabled = enabled.get(),
         stopped = stopped.get(),
         networkAvailable = networkPresent(),
         attemptScheduled = attemptScheduled.get(),
-        dispatchInFlight = runCatching { isDispatchInFlight() }.getOrDefault(false),
+        dispatchInFlight = reconnectMutex.isLocked || runCatching { isDispatchInFlight() }.getOrDefault(false),
         connected = runCatching { isTunnelUp() }.getOrDefault(false),
         awaitingNetwork = awaitingNetwork.get(),
         failedAttempts = failedAttempts.get(),
@@ -206,6 +211,9 @@ class AutoReconnectManager(
                 SxbSecureLogger.vpn(VpnEvent.RECONNECT_SKIP)
 
             SxbReconnectPolicy.Decision.WAIT_FOR_NETWORK -> {
+                if (state.lastSessionUpMs >= SxbReconnectPolicy.SESSION_HEALTHY_MS) {
+                    resumeStreak.set(0)
+                }
                 cancel()
                 if (awaitingNetwork.compareAndSet(false, true)) {
                     SxbSecureLogger.vpn(VpnEvent.RECONNECT_WAIT_NETWORK)
@@ -221,11 +229,13 @@ class AutoReconnectManager(
                 // le serveur était injoignable.
                 if (state.lastSessionUpMs >= SxbReconnectPolicy.SESSION_HEALTHY_MS) {
                     failedAttempts.set(0)
+                    resumeStreak.set(0)
+                    SxbSecureLogger.vpn(VpnEvent.RECONNECT_RESET)
                     onLog("[SXB_DEBUG] RECONNECT_COUNTER_RESET reason=healthy_session up_ms=${state.lastSessionUpMs}")
                 }
                 val attempt = failedAttempts.get() + 1
                 schedule(
-                    delayMs = SxbReconnectPolicy.retryDelayMs(attempt),
+                    delayMs = SxbReconnectPolicy.retryDelayMs(attempt, state.lastSessionUpMs),
                     label = "tentative $attempt/${SxbReconnectPolicy.MAX_RETRIES}",
                 )
             }
@@ -251,40 +261,66 @@ class AutoReconnectManager(
     }
 
     private fun schedule(delayMs: Long, label: String) {
+        val generation = ++scheduleGeneration
         lastEventAtMs.set(elapsedMs())
         attemptScheduled.set(true)
         SxbSecureLogger.vpn(VpnEvent.RECONNECT_SCHEDULED)
-        onLog("🔄 Auto-reconnect — $label dans ${delayMs / 1000}s...")
-        job = scope.launch {
-            delay(delayMs)
-            if (!isEnabled()) { attemptScheduled.set(false); return@launch }
-            // Dernière vérification : la radio a pu retomber pendant l'attente.
-            // Une tentative sans réseau ne prouve rien et ne doit rien coûter.
-            if (!networkPresent()) {
-                attemptScheduled.set(false)
-                awaitingNetwork.set(true)
-                SxbSecureLogger.vpn(VpnEvent.RECONNECT_WAIT_NETWORK)
-                onLog("📴 Réseau reperdu avant la tentative — compteur intact, attente du retour")
-                return@launch
+        onLog("🔄 Auto-reconnect — $label dans ${delayMs} ms...")
+        // Affecter le job avant de le démarrer : même une échéance immédiate
+        // ne doit pas écraser la minuterie suivante avec le job précédent.
+        job = scope.launch(start = CoroutineStart.LAZY) {
+            waitForRetry(delayMs)
+            try {
+                reconnectMutex.withLock {
+                    val attempt = beginAttempt(generation) ?: return@withLock
+                    SxbSecureLogger.vpn(VpnEvent.RECONNECT_FIRED)
+                    onLog("🔄 Reconnexion automatique (tentative réelle $attempt/${SxbReconnectPolicy.MAX_RETRIES})...")
+                    onReconnect()
+                }
+            } finally {
+                // Le service peut réévaluer avant que le rappel ne rende la
+                // main. Rejouer après libération du verrou préserve ce retour.
+                if (awaitingNetwork.get()) reevaluate()
             }
-            // La tentative COMMENCE : désarmer avant d'appeler le service, car
-            // `onReconnect()` ne rend la main qu'à la mort du tunnel. Sans cela
-            // l'échec suivant serait pris pour un doublon et aucune tentative
-            // ultérieure ne serait plus jamais programmée.
-            attemptScheduled.set(false)
-            awaitingNetwork.set(false)
-            val attempt = failedAttempts.incrementAndGet()
-            SxbSecureLogger.vpn(VpnEvent.RECONNECT_FIRED)
-            onLog("🔄 Reconnexion automatique (tentative réelle $attempt/${SxbReconnectPolicy.MAX_RETRIES})...")
-            onReconnect()
         }
+        job?.start()
+    }
+
+    @Synchronized
+    private fun beginAttempt(generation: Long): Int? {
+        if (generation != scheduleGeneration || !attemptScheduled.get() || !isEnabled()) return null
+        if (!networkPresent()) {
+            attemptScheduled.set(false)
+            job = null
+            awaitingNetwork.set(true)
+            SxbSecureLogger.vpn(VpnEvent.RECONNECT_WAIT_NETWORK)
+            onLog("📴 Réseau reperdu avant la tentative — compteur intact, attente du retour")
+            return null
+        }
+        // Un signal de perte a déjà figé connectedAtMs : l'état Android peut
+        // encore dire « connected » jusqu'au drainage (bascule d'interface).
+        if (connectedAtMs.get() > 0L && !awaitingNetwork.get() && runCatching { isTunnelUp() }.getOrDefault(false)) {
+            attemptScheduled.set(false)
+            job = null
+            return null
+        }
+        // La tentative commence après le drainage du rappel précédent. Le
+        // jeton sain est consommé une seule fois, même si les événements doublent.
+        attemptScheduled.set(false)
+        job = null
+        awaitingNetwork.set(false)
+        connectedAtMs.set(0)
+        lastSessionUpMs.set(0)
+        return failedAttempts.incrementAndGet()
     }
 
     @Synchronized
     fun cancel() {
+        scheduleGeneration++
         attemptScheduled.set(false)
-        job?.cancel()
+        val pendingJob = job
         job = null
+        pendingJob?.cancel()
     }
 
     @Synchronized
@@ -298,6 +334,7 @@ class AutoReconnectManager(
     }
 
     fun destroy() {
+        markStopped("destroyed")
         scope.cancel()
     }
 }

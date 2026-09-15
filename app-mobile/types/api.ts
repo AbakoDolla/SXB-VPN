@@ -17,6 +17,10 @@ export interface AccountState {
   quotaTotalGb: number;
   quotaUsedGb: number;
   quotaRemainingGb: number;
+  quotaTotalBytes?: number;
+  quotaUsedBytes?: number;
+  quotaRemainingBytes?: number;
+  subscription?: { id: string; status?: string } | null;
   expireAt: string | null;
   deviceLimit: number;
 }

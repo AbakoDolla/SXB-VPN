@@ -1202,7 +1202,7 @@ describe('garde-fous contre les régressions Android', () => {
     // l'échec, ni plus tard au retour du réseau : la reconnexion est désarmée.
     assert.ok(nativeService.includes('code in PERMANENT_ERROR_CODES && ::autoReconnect.isInitialized'));
     assert.ok(nativeService.includes('autoReconnect.markStopped(code)'));
-    assert.ok(nativeService.includes('PERMANENT_ERROR_CODES = setOf("CONFIG_INVALID", "CONFIG_UNSUPPORTED")'));
+    assert.ok(nativeService.includes('PERMANENT_ERROR_CODES = setOf("CONFIG_INVALID", "CONFIG_UNSUPPORTED", "USAGE_CHECKPOINT_UNAVAILABLE")'));
   });
 
   it('relance le tunnel au retour du réseau sans jamais brûler de tentative à vide', () => {
@@ -2716,17 +2716,20 @@ describe('garde-fous contre les régressions Android', () => {
     assert.equal((palette.match(/accents: \{/g) ?? []).length, 3,
       'accents absents d’un thème (type + sombre + clair attendus)');
 
-    const onglets = source('app/(tabs)/_layout.tsx');
+    assert.match(source('app/(tabs)/_layout.tsx'), /tabBar=\{\(props\) => <TabDock \{\.\.\.props\}/);
+    const onglets = source('components/ui/TabDock.tsx');
     for (const teinte of ['cyan', 'violet', 'emeraude', 'ambre']) {
-      assert.match(onglets, new RegExp(`tone: "${teinte}"`), `onglet sans teinte : ${teinte}`);
+      assert.match(onglets, new RegExp(`tone: '${teinte}'`), `onglet sans teinte : ${teinte}`);
     }
     // L'icône reste porteuse du sens : la couleur seule ne distingue rien pour
     // qui ne la perçoit pas.
-    assert.match(onglets, /iconFocused: "home"/);
-    assert.match(onglets, /\{t\(tab\.labelKey\)\}/, 'le libellé d’onglet doit rester affiché');
+    assert.match(onglets, /activeIcon: 'home'/);
+    assert.match(onglets, /label=\{options\.tabBarAccessibilityLabel \|\| t\(tab\.labelKey\)\}/);
+    assert.match(onglets, /\{label\}/, 'le libellé d’onglet doit rester affiché');
     // La bordure existe au repos, transparente : n'apparaître qu'à l'état actif
     // ajouterait 2 px et ferait sauter l'icône d'un onglet à l'autre.
-    assert.match(onglets, /borderWidth: 1,\s*\n\s*borderColor: "transparent"/);
+    assert.match(onglets, /borderWidth: 2/);
+    assert.match(onglets, /borderColor: focused \? colors\.textPrimary : 'transparent'/);
   });
 
   it('permet de changer de langue AVANT d’avoir un compte, sur les deux écrans d’entrée', () => {
@@ -2968,7 +2971,7 @@ describe('comptage de la consommation data', () => {
   it('tient un compteur kilométrique qui survit à la reconnexion et à la mort de l’application', () => {
     // `start()` remet les compteurs de SESSION à zéro — c'est l'affichage temps
     // réel — mais recharge le cumul durable depuis le disque avant toute mesure.
-    assert.match(trafficStats, /lifetimeUpload\.set\(runCatching \{ store\.getLong\(KEY_LIFETIME_UP, 0L\) \}/);
+    assert.match(trafficStats, /val persisted = store\.read\(\)[\s\S]*lifetimeUpload\.set\(persisted\.first\)/);
     assert.match(trafficStats, /lifetimeUpload\.addAndGet\(deltaTx\)/);
     assert.match(trafficStats, /lifetimeDownload\.addAndGet\(deltaRx\)/);
     assert.match(trafficStats, /SxbUsageOdometer\.shouldPersist\(lastPersistMs, System\.currentTimeMillis\(\), pending\)/);
@@ -2980,6 +2983,16 @@ describe('comptage de la consommation data', () => {
     assert.match(nativeModule, /TrafficStatsManager\.persistedLifetime\(reactApplicationContext\)/);
     assert.match(nativeService, /"lifetimeUploadBytes"\s+to stats\.lifetimeUploadBytes/);
     assert.match(nativeModule, /putDouble\("lifetimeUploadBytes"/);
+    assert.match(trafficStats, /@Synchronized\s+fun getStats\([\s\S]+val captured = captureSnapshot\(\)\s+persistLifetime\(force = true, snapshot = captured\)\s+return captured/);
+    assert.match(trafficStats, /\.commit\(\)/);
+    assert.doesNotMatch(trafficStats, /\.apply\(\)/);
+    assert.match(trafficStats, /if \(wasRunning\) sample\(\)[\s\S]+finally \{\s+tunAttached = false/);
+    const cleanup = nativeService.slice(nativeService.indexOf('private fun cleanup('), nativeService.indexOf('fun interruptForAccess('));
+    for (const operation of ['trafficManager.sampleBeforeStop()', 'svc.close()', 'trafficManager.stop()', 'tunPfd?.close()']) {
+      assert.ok(cleanup.includes(operation), `Nettoyage incomplet : ${operation}`);
+    }
+    assert.ok(cleanup.indexOf('trafficManager.sampleBeforeStop()') < cleanup.indexOf('svc.close()'));
+    assert.ok(cleanup.indexOf('trafficManager.stop()') < cleanup.indexOf('tunPfd?.close()'));
     // Et c'est bien ce compteur-là, jamais celui de la session, qui facture.
     assert.match(vpnContext, /up: stats\.lifetimeUploadBytes, down: stats\.lifetimeDownloadBytes/);
   });
@@ -2989,27 +3002,27 @@ describe('comptage de la consommation data', () => {
     // L'ordre compte : la persistance PUIS l'appel réseau. L'inverse perdrait
     // le rapport si le système tuait l'application pendant l'envoi.
     const envoi = vpnContext.slice(vpnContext.indexOf('const prepared = nextReport('));
-    assert.match(envoi.slice(0, 900), /await saveLedger\(prepared\.ledger\);[\s\S]{0,400}apiClient\.post\('\/mobile\/vpn\/traffic'/);
+    assert.match(envoi.slice(0, 1200), /await saveLedger\(prepared\.ledger\);[\s\S]{0,400}apiClient\.post\('\/mobile\/vpn\/traffic'/);
     // Les identifiants partent du rapport gelé, jamais d'un compteur vivant.
-    assert.match(envoi.slice(0, 900), /sessionId: prepared\.report\.sessionId/);
-    assert.match(envoi.slice(0, 900), /seq:\s+prepared\.report\.seq/);
+    assert.match(envoi.slice(0, 1200), /sessionId: prepared\.report\.sessionId/);
+    assert.match(envoi.slice(0, 1200), /seq:\s+prepared\.report\.seq/);
     // Le livre n'est purgé qu'une fois le serveur formel.
     assert.match(envoi, /settleUsage\(ledgerRef\.current, prepared\.report\)/);
     // Rejeu au démarrage : le livre est relu et vidé même sans tunnel monté,
     // car les octets ont bien été consommés.
-    assert.match(vpnContext, /ledgerRef\.current = await loadLedger\(\)/);
+    assert.match(vpnContext, /let ledger = ledgerRef\.current \?\? await loadLedger\(\)/);
     // Un livre neuf s'ancre sur le compteur au lieu de facturer un passé qu'il
     // n'a jamais mesuré — stockage applicatif effacé, préférences conservées.
     assert.match(vpnContext, /if \(isFreshLedger\(ledger\)\) \{\s*\n\s*ledger = anchorLedger\(ledger, counters\);/);
     // Le livre gèle une entrée dès sa première tentative : les octets suivants
     // vont ailleurs, et un rejeu porte donc exactement le même contenu.
     assert.match(ledger, /frozen: true/);
-    assert.match(ledger, /if \(last && !last\.frozen && last\.subscriptionId === context\.subscriptionId\)/);
+    assert.match(ledger, /if \(last && !last\.frozen && last\.subscriptionId === context\.subscriptionId && last\.sessionId === context\.sessionId\)/);
   });
 
   it('affiche le consommé du forfait crédité, sans jamais le recalculer ni le faire reculer', () => {
     // Le serveur nomme le forfait qu'il vient de débiter et donne son consommé.
-    assert.match(mobileRoutes, /if \(applied\.applied && applied\.subscriptionId\) creditedSubscriptionId = applied\.subscriptionId/);
+    assert.match(mobileRoutes, /if \(applied\.subscriptionId !== undefined\) creditedSubscriptionId = applied\.subscriptionId/);
     assert.match(mobileRoutes, /quotaUsedBytes: state\.quotaUsedBytes/);
     assert.match(mobileRoutes, /quotaTotalBytes: state\.quotaTotalBytes/);
     assert.match(mobileRoutes, /subscriptionId: selectedSub\?\.id \?\? null/);
@@ -3021,7 +3034,9 @@ describe('comptage de la consommation data', () => {
     assert.match(vpnContext, /if \(!data \|\| data\.quotaUsedBytes === undefined \|\| data\.quotaTotalBytes === undefined\) return;/);
     assert.match(vpnContext, /usedBytes < shown\.used/);
     // L'accueil oppose au consommé serveur les seuls octets pas encore comptés.
-    assert.match(accueil, /const derivedQuota = deriveQuota\(activeQuotaSnapshot \|\| \(accountState as any\), quotaSession, isConnected\)/);
+    assert.match(accueil, /deleteConfig, derivedQuota/);
+    assert.match(accueil, /activeQuota=\{derivedQuota\}/);
+    assert.match(vpnContext, /const currentDerivedQuota = deriveQuota\(\s*selectedQuota/);
     assert.match(vpnContext, /sessionBaselineRef\.current = \{ up: stats\.uploadBytes \|\| 0, down: stats\.downloadBytes \|\| 0 \}/);
   });
 
@@ -3041,7 +3056,9 @@ describe('comptage de la consommation data', () => {
     // l'application rejoue ses rapports en attente bien plus tard.
     assert.match(mobileRoutes, /processedReports\.has\(reportKey\)/);
     assert.match(mobileRoutes, /\.\.\.\(durableKey \? \{ reportKey: durableKey \} : \{\}\)/);
-    assert.match(mobileRoutes, /if \(isUniqueViolation\(error\)\) return \{ applied: false, reason: "duplicate_report" \}/);
+    const uniqueConflict = mobileRoutes.slice(mobileRoutes.indexOf('if (durableKey && isUniqueViolation(error))'), mobileRoutes.indexOf('throw error;'));
+    assert.match(uniqueConflict, /trafficUsage\.findUnique\(/);
+    assert.match(uniqueConflict, /if \(receipt\)[\s\S]+return \{ applied: false, reason: "duplicate_report", subscriptionId: receipt\.accountId \}/);
     // La colonne est unique, nullable, et la migration est strictement additive.
     assert.match(schema, /reportKey\s+String\?\s+@unique/);
     assert.match(migration, /ALTER TABLE "traffic_usage" ADD COLUMN IF NOT EXISTS "reportKey" TEXT;/);

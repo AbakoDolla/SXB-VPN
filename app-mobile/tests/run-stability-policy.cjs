@@ -39,6 +39,7 @@ try {
     '-classpath', jsonJar, '-include-runtime', '-d', jar,
   ]);
   run(process.env.JAVA || 'java', ['-cp', `${jar}${path.delimiter}${jsonJar}`, 'com.sxbvpn.vpnmodule.StabilityPolicyTestKt']);
+  run(process.execPath, [path.resolve(__dirname, 'run-reconnect-recovery.cjs')]);
 } finally {
   rmSync(temp, { recursive: true, force: true });
 }

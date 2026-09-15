@@ -685,7 +685,7 @@ describe('mobile access runtime with real encrypted store, auth and HTTP interce
     assert.match(bind, /SxbAccessPolicy\.bindingRequired\(previous, userId, deviceId\)/);
     assert.ok(bind.indexOf('service.stopForAccess()') < bind.indexOf('SxbAccessControl.bind('));
     const service = readFileSync(path.join(mobile, 'modules/android-native/SxbVpnService.kt'), 'utf8');
-    const reconnect = service.slice(service.indexOf('onReconnect = {'), service.indexOf('onGiveUp = {'));
+    const reconnect = service.slice(service.indexOf('onReconnect ='), service.indexOf('onGiveUp = {'));
     assert.match(reconnect, /dispatchProtocol\(currentConfig,/);
     assert.doesNotMatch(reconnect, /SxbAccessControl\.checkStart/);
     const dispatch = service.slice(service.indexOf('private fun dispatchProtocol('), service.indexOf('activeDispatches++'));
@@ -775,7 +775,7 @@ describe('mobile access runtime with real encrypted store, auth and HTTP interce
 describe('livre de comptes de la consommation', () => {
   const MO = 1024 * 1024;
 
-  it('ne perd aucun octet quand le compteur natif repart de zéro', async () => {
+  it('conserve les octets quand le compteur de session repart de zéro', async () => {
     const h = await harness();
     const contexte = { subscriptionId: 'a', sessionId: 'sess-1' };
     let livre = h.ledger.emptyLedger();
@@ -789,16 +789,14 @@ describe('livre de comptes de la consommation', () => {
     livre = h.ledger.accumulate(livre, { up: 78 * MO, down: 0 }, contexte);
     assert.equal(h.ledger.pendingBytes(livre), 58 * MO);
 
-    // LE DÉFAUT : le tunnel se reconnecte, le compteur retombe à zéro et la
-    // session suivante atteint 5 Mo. L'ancien calcul rendait max(0, 5 - 78) = 0
-    // et ne rendait plus rien tant que 78 Mo n'étaient pas repassés : les
-    // 58 Mo restants disparaissaient définitivement.
-    livre = h.ledger.accumulate(livre, { up: 5 * MO, down: 0 }, contexte);
+    // La session suivante compte 5 Mo, mais l'odomètre natif durable continue
+    // à 83 Mo. Le ledger ne reçoit plus le compteur de session remis à zéro.
+    livre = h.ledger.accumulate(livre, { up: 83 * MO, down: 0 }, contexte);
     assert.equal(h.ledger.pendingBytes(livre), 63 * MO,
-      'Une remise à zéro doit compter la valeur entière, jamais zéro');
+      'Le reliquat précédent et les nouveaux octets doivent rester comptés');
 
     // Et la mesure suivante reprend un delta normal, sans recompter.
-    livre = h.ledger.accumulate(livre, { up: 9 * MO, down: 0 }, contexte);
+    livre = h.ledger.accumulate(livre, { up: 87 * MO, down: 0 }, contexte);
     assert.equal(h.ledger.pendingBytes(livre), 67 * MO);
   });
 
@@ -905,10 +903,11 @@ describe('livre de comptes de la consommation', () => {
     assert.equal(h.ledger.pendingBytes(livre), 101 * MO, 'Seul le mégaoctet neuf doit être facturé');
   });
 
-  it('ignore un livre corrompu au lieu d’inventer une facture', async () => {
+  it('préserve un livre corrompu au lieu de le remplacer par une nouvelle facture', async () => {
     const h = await harness();
     h.state.storage.set('@sxb_usage_ledger', '{ pas du json');
-    assert.equal(h.ledger.pendingBytes(await h.ledger.loadLedger()), 0);
+    await assert.rejects(h.ledger.loadLedger(), /VPN_USAGE_LEDGER_UNAVAILABLE/);
+    assert.equal(h.state.storage.get('@sxb_usage_ledger'), '{ pas du json');
     h.state.storage.set('@sxb_usage_ledger', JSON.stringify({
       counterUp: -5, counterDown: 'x', nextSeq: 2,
       entries: [
@@ -917,9 +916,16 @@ describe('livre de comptes de la consommation', () => {
         { subscriptionId: 'a', sessionId: 'sess-1', seq: -1, up: 10, down: 5 },
       ],
     }));
+    const original = h.state.storage.get('@sxb_usage_ledger');
+    await assert.rejects(h.ledger.loadLedger(), /VPN_USAGE_LEDGER_UNAVAILABLE/);
+    assert.equal(h.state.storage.get('@sxb_usage_ledger'), original);
+    h.state.storage.set('@sxb_usage_ledger', JSON.stringify({
+      counterUp: 10, counterDown: 5, nextSeq: 2,
+      entries: [{ subscriptionId: 'a', sessionId: 'sess-1', seq: 0, up: 10, down: 5 }],
+    }));
     const relu = await h.ledger.loadLedger();
-    assert.equal(relu.counterUp, 0);
-    assert.equal(relu.counterDown, 0);
+    assert.equal(relu.counterUp, 10);
+    assert.equal(relu.counterDown, 5);
     assert.equal(h.ledger.pendingBytes(relu), 15);
     // Une entrée relue est gelée d'office : elle a pu atteindre le serveur.
     assert.equal(relu.entries[0].frozen, true);

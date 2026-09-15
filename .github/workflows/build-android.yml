@@ -768,8 +768,10 @@ jobs:
             - ✅ **Shadowsocks / WireGuard / Hysteria2 / TUIC** — sing-box
             - ✅ **SSH / SSH+Payload** — JSch natif Java
             - ✅ **Kill Switch** — coupe le trafic si VPN déconnecté
-            - ✅ **Auto-reconnect** — backoff exponentiel (1s→30s, 10 tentatives)
-            - ✅ **Trafic temps réel** — Android TrafficStats (valeurs réelles)
+            - **Reconnexion automatique** — reprise SSH rapide après une session établie, recul borné en cas d'échecs
+            - **Quota et trafic** — compteurs natifs, rapports persistants et dédupliqués
+            - **Navigation mobile** — barre en relief, recherche des connexions, thèmes clair/sombre
+            - **Support Telegram** — ouverture dans le navigateur, sans installation obligatoire de Telegram
             - ✅ **Config chiffrée** — Android Keystore AES-256-GCM
             - ✅ **Détection Root/Frida/Xposed** — audit sécurité avant connexion
             - ✅ **Foreground Service** — fonctionne écran verrouillé / swipe

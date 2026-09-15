@@ -831,7 +831,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
          * §30 — Erreurs définitives pour la configuration courante : réessayer
          * ne peut pas les corriger et noierait la cause réelle dans les logs.
          */
-        private val PERMANENT_ERROR_CODES = setOf("CONFIG_INVALID", "CONFIG_UNSUPPORTED")
+        private val PERMANENT_ERROR_CODES = setOf("CONFIG_INVALID", "CONFIG_UNSUPPORTED", "USAGE_CHECKPOINT_UNAVAILABLE")
 
         /** ⚡ Plafond de diffusion des journaux vers l'interface (voir broadcastLog). */
         private const val LOG_RATE_WINDOW_MS = 1_000L
@@ -1140,9 +1140,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
         }
 
         autoReconnect = AutoReconnectManager(
-            onReconnect = {
+            onReconnect = reconnect@ {
                 val currentConfig = configJson
-                if (running.get() && currentConfig.isNotEmpty() && SxbPrivacyPolicy.vpnAllowed(this)) {
+                if (running.get() && autoReconnect.isEnabled() && currentConfig.isNotEmpty() && SxbPrivacyPolicy.vpnAllowed(this)) {
                     broadcastLog("[SXB_DEBUG] AUTO_RECONNECT_TRIGGERED")
                     broadcastLog("[SXB] Auto-reconnexion en cours...")
                     // Une coupure de radio ne tue pas toujours le moteur : il
@@ -1150,7 +1150,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     // fin de son dispatch est la seule façon de garantir une
                     // seule instance libbox par tentative.
                     if (drainTunnelBeforeReconnect()) {
+                        if (!running.get() || !autoReconnect.isEnabled()) return@reconnect
+                        if (!hasUsableNetwork()) {
+                            autoReconnect.onNetworkLost(false)
+                            return@reconnect
+                        }
                         val json = JSONObject(currentConfig)
+                        if (!startTrafficAccounting()) return@reconnect
                         // Dispatch handles a concurrently persisted denial as a cancelled attempt.
                         dispatchProtocol(currentConfig, json.optString("protocol", "").lowercase())
                     } else {
@@ -1355,7 +1361,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         cleanupStarted.set(false)  // FIX — Réinitialiser le guard cleanup pour cette nouvelle connexion
         running.set(true)
         restartAccessObserver()
-        trafficManager.start(this)
+        if (!startTrafficAccounting()) return START_NOT_STICKY
         startConnectionWatchdog()
 
         vpnThread = Thread({ dispatchProtocol(json, proto) }, "SXB-VpnMain")
@@ -2367,6 +2373,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
     private fun failVpn(code: String, displayMessage: String) {
         if (code == SxbPlayEncryption.ERROR || code == "PRIVACY_CONSENT_REQUIRED") disableAutoReconnect()
+        if (code == "AUTH_FAILED" && ::autoReconnect.isInitialized) autoReconnect.markStopped(code)
         Log.e("SXB_DEBUG", "[SXB_DEBUG] VPN_FAILED code=$code")
         trace("VPN_FAILED", "code=$code state=$currentState")
         broadcastLog("[SXB_DEBUG] VPN_FAILED code=$code")
@@ -2400,7 +2407,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // stopForeground + stopSelf() en double, laissant l'UI dans un état incohérent.
         // Une erreur de schéma est permanente pour cette configuration :
         // relancer automatiquement ne peut pas la corriger et masque
-        // la cause dans les logs. Les erreurs réseau/auth restent éligibles.
+        // la cause dans les logs. Les erreurs réseau restent éligibles ;
+        // un refus d'authentification a déjà désarmé la reprise ci-dessus.
         // Le désarmement est explicite : sans lui, le retour du réseau
         // relancerait en boucle une configuration que le moteur a refusée.
         if (code in PERMANENT_ERROR_CODES && ::autoReconnect.isInitialized) {
@@ -2518,12 +2526,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
      */
     private fun hasUsableNetwork(): Boolean {
         if (networkCallback != null) return availableNetworks.isNotEmpty()
-        val manager = getSystemService(ConnectivityManager::class.java) ?: return true
+        val manager = getSystemService(ConnectivityManager::class.java) ?: return false
         return runCatching {
             val active = manager.activeNetwork ?: return@runCatching false
             manager.getNetworkCapabilities(active)
                 ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
-        }.getOrDefault(true)
+        }.getOrDefault(false)
     }
 
     /**
@@ -2903,7 +2911,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
      */
     private fun noteOutboundFailure(lowerMessage: String) {
         val failure = SxbEngineLogPolicy.failure(lowerMessage) ?: return
-        val stats = trafficManager.getStats()
+        val stats = trafficManager.getSessionStats()
         val bytes = if (isSshRelay) uploadBytes.get() + downloadBytes.get() else stats.uploadBytes + stats.downloadBytes
         val diagnosis = outboundDiagnostics.note(failure, bytes, isSshRelay || trafficManager.hasTunCounters()) ?: return
         val evidence = if (diagnosis.trafficMeasurable) {
@@ -4624,8 +4632,19 @@ class SxbVpnService : VpnService(), PlatformInterface {
     // STATISTIQUES DE TRAFIC
     // ═════════════════════════════════════════════════════════════════════════
 
+    private fun startTrafficAccounting(): Boolean = try {
+        trafficManager.start(this)
+        true
+    } catch (error: Exception) {
+        Log.e(TAG, "USAGE_CHECKPOINT_UNAVAILABLE", error)
+        autoReconnect.markStopped("USAGE_CHECKPOINT_UNAVAILABLE")
+        cleanup(stopService = !killSwitchEnabled, keepRunning = killSwitchEnabled)
+        failVpn("USAGE_CHECKPOINT_UNAVAILABLE", "Le stockage de la consommation est indisponible")
+        false
+    }
+
     fun getTrafficStats(): Map<String, Long> {
-        val stats = trafficManager.getStats()
+        val stats = trafficManager.getStats(this)
         // Les compteurs du relais SSH mesurent le contrôle/relayage et doublonnent
         // les octets des applications déjà comptés sur le TUN. Ils ne servent pas
         // de preuve de quota et ne sont jamais ajoutés aux statistiques exposées.
@@ -4809,7 +4828,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             while (running.get() && currentState == "connected") {
                 try {
                     engineLogThrottle.flushDue().forEach(::broadcastEngineLogSummary)
-                    val stats  = trafficManager.getStats()
+                    val stats  = trafficManager.getSessionStats()
                     val upKB   = formatSpeed(stats.uploadSpeed)
                     val downKB = formatSpeed(stats.downloadSpeed)
                     // La notification est le SEUL indicateur visible quand
@@ -5052,6 +5071,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         // Arrêt du moteur libbox AVANT la fermeture du TUN : sing-box doit
         // pouvoir vider ses connexions avant que le descripteur disparaisse.
+        trafficManager.sampleBeforeStop()
         boxService?.let { svc ->
             runCatching { svc.close() }
                 .onFailure { Log.w(TAG, "libbox close: ${it.message}") }
@@ -5061,6 +5081,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         runCatching { sshSession?.disconnect() }; sshSession     = null
 
+        runCatching { trafficManager.stop() }
+            .onFailure { Log.e(TAG, "USAGE_CHECKPOINT_STOP_PENDING", it) }
         runCatching { tunPfd?.close() };  tunPfd = null
         tunInterfaceName = null
         // B10 — Fenêtre de reconnexion : sans interface de blocage le trafic
@@ -5069,7 +5091,6 @@ class SxbVpnService : VpnService(), PlatformInterface {
         else if (keepRunning) runCatching { installKillSwitchBlackhole("reconnexion en cours") }
         if (stopService) SxbDefaultNetworkMonitor.stop()
 
-        trafficManager.stop()
         if (stopService) autoReconnect.reset()
 
         if (stopService) {

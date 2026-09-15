@@ -18,6 +18,7 @@ import React from 'react';
 import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 import { useColors } from '@/hooks/useColors';
+import { useMotionPreference } from '@/hooks/useMotionPreference';
 import { duration, type } from '@/constants/theme';
 
 const CercleAnime = Animated.createAnimatedComponent(Circle);
@@ -43,33 +44,31 @@ export default function QuotaRing({
   label,
 }: QuotaRingProps) {
   const colors = useColors();
+  const { motionEnabled } = useMotionPreference();
   const part = Math.max(0, Math.min(1, Number.isFinite(progress) ? progress : 0));
   const teinte = part > 0.8 && warnTone ? warnTone : tone || colors.primary;
 
   const rayon = (size - stroke) / 2;
   const circonference = 2 * Math.PI * rayon;
 
-  // L'anneau se REMPLIT à l'ouverture plutôt que d'apparaître complet.
-  //
-  // Ce n'est pas décoratif : le mouvement dit que la valeur vient d'être
-  // mesurée, là où un arc figé pourrait passer pour une image. Il part de zéro
-  // et rejoint la valeur réelle, puis suit chaque changement de quota.
-  //
-  // `useNativeDriver` est impossible ici — `strokeDashoffset` n'est pas une
-  // propriété de transformation, elle traverse donc le pont JS. C'est
-  // acceptable pour une animation qui ne joue qu'à l'ouverture et sur un seul
-  // élément ; c'est aussi la raison pour laquelle on ne la boucle pas.
-  const avance = React.useRef(new Animated.Value(0)).current;
+  // La valeur est exacte dès le premier rendu ; seules les mises à jour sont animées.
+  const avance = React.useRef(new Animated.Value(part)).current;
   React.useEffect(() => {
+    if (!motionEnabled) {
+      avance.stopAnimation();
+      avance.setValue(part);
+      return;
+    }
     const anim = Animated.timing(avance, {
       toValue: part,
       duration: duration.slow,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
+      isInteraction: false,
     });
     anim.start();
     return () => anim.stop();
-  }, [avance, part]);
+  }, [avance, motionEnabled, part]);
 
   const offset = avance.interpolate({
     inputRange: [0, 1],

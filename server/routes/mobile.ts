@@ -116,8 +116,21 @@ async function findClientByUserId(userId: string, clientId?: string | null, devi
 }
 
 // Deduplication memory store for (sessionId, seq)
-const processedReports = new Set<string>();
+const processedReports = new Map<string, string | null>();
+const pendingReports = new Map<string, Promise<UsageDeltaResult>>();
 const MAX_PROCESSED_REPORTS = 10000;
+const MAX_USAGE_REPORT_BYTES = 5 * 1024 * 1024 * 1024;
+
+type UsageDeltaResult = { applied: boolean; reason?: string; subscriptionId?: string | null };
+
+function rememberReport(key: string | null, subscriptionId: string | null) {
+  if (!key) return;
+  processedReports.set(key, subscriptionId);
+  if (processedReports.size > MAX_PROCESSED_REPORTS) {
+    const first = processedReports.keys().next().value;
+    if (first) processedReports.delete(first);
+  }
+}
 
 // Le garde-fou mémoire ci-dessus disparaît au redémarrage du serveur. Depuis
 // que l'application PERSISTE ses rapports non acquittés et les rejoue — au
@@ -159,9 +172,9 @@ export async function applyUsageDelta(
   seq?: number,
   uploadBytes: bigint = 0n,
   deviceId: string | null = null,
-) {
+): Promise<UsageDeltaResult> {
   // Garde anti-abus : rejet si <= 0 ou > 5 Go par appel
-  const MAX_DELTA = BigInt(5 * 1024 * 1024 * 1024); // 5 Go
+  const MAX_DELTA = BigInt(MAX_USAGE_REPORT_BYTES);
   if (deltaBytes <= 0n || deltaBytes > MAX_DELTA || uploadBytes < 0n || uploadBytes > deltaBytes) {
     return { applied: false, reason: "invalid_delta" };
   }
@@ -170,21 +183,33 @@ export async function applyUsageDelta(
   // Idempotence : déduplication sur (sessionId, seq)
   const reportKey = sessionId && seq !== undefined ? `${clientId}:${sessionId}:${seq}` : null;
   if (reportKey) {
-    if (processedReports.has(reportKey)) {
-      return { applied: false, reason: "duplicate_report" };
+    const pending = pendingReports.get(reportKey);
+    if (pending) {
+      const result = await pending;
+      return result.applied ? { ...result, applied: false, reason: "duplicate_report" } : result;
     }
-    processedReports.add(reportKey);
-    if (processedReports.size > MAX_PROCESSED_REPORTS) {
-      const first = processedReports.values().next().value;
-      if (first) processedReports.delete(first);
+    if (processedReports.has(reportKey)) {
+      return { applied: false, reason: "duplicate_report", subscriptionId: processedReports.get(reportKey) };
     }
   }
 
+  const operation = (async (): Promise<UsageDeltaResult> => {
+  const durableKey = reportKey && supportsReportKey() ? reportKey : null;
   try {
   let resolvedSubscriptionId = subscriptionId;
-  const durableKey = reportKey && supportsReportKey() ? reportKey : null;
+  let duplicate = false;
   if (prisma) {
     await (prisma as any).$transaction(async (tx: any) => {
+      if (durableKey) {
+        const receipt = await tx.trafficUsage.findUnique?.({
+          where: { reportKey: durableKey }, select: { accountId: true },
+        });
+        if (receipt) {
+          resolvedSubscriptionId = receipt.accountId;
+          duplicate = true;
+          return;
+        }
+      }
       let subId = resolvedSubscriptionId;
       if (!subId && clientId) {
         const activeSub = await tx.subscription.findFirst({
@@ -238,18 +263,21 @@ export async function applyUsageDelta(
       }
     });
 
-    if (subscriptionId && !resolvedSubscriptionId) {
-      if (reportKey) processedReports.delete(reportKey);
+    if (!duplicate && subscriptionId && !resolvedSubscriptionId) {
       return { applied: false, reason: "subscription_not_owned" };
     }
   } else {
     // In-memory fallback
+    if (!resolvedSubscriptionId) {
+      resolvedSubscriptionId = selectMobileSubscription({
+        subscriptions: inMemoryDb.subscriptions?.filter((sub: any) => sub.clientId === clientId),
+      })?.id ?? null;
+    }
     if (resolvedSubscriptionId) {
       const sub = inMemoryDb.subscriptions?.find(
         (s: any) => s.id === resolvedSubscriptionId && s.clientId === clientId
       );
       if (!sub) {
-        if (reportKey) processedReports.delete(reportKey);
         return { applied: false, reason: "subscription_not_owned" };
       }
       if (sub) sub.quotaUsed = BigInt(sub.quotaUsed || 0) + deltaBytes;
@@ -260,18 +288,31 @@ export async function applyUsageDelta(
     }
   }
 
-  if (subscriptionId && !resolvedSubscriptionId) {
+  if (!duplicate && subscriptionId && !resolvedSubscriptionId) {
     return { applied: false, reason: "subscription_not_owned" };
   }
+  rememberReport(reportKey, resolvedSubscriptionId);
+  if (duplicate) return { applied: false, reason: "duplicate_report", subscriptionId: resolvedSubscriptionId };
   accessStateHub.invalidate({ clientId });
   return { applied: true, subscriptionId: resolvedSubscriptionId };
   } catch (error) {
-    // Rejeu déjà comptabilisé en base : rien n'a été incrémenté, la réponse est
-    // donc la même que pour un doublon détecté en mémoire.
-    if (isUniqueViolation(error)) return { applied: false, reason: "duplicate_report" };
-    if (reportKey) processedReports.delete(reportKey);
+    // Deux processus serveur peuvent recevoir la même clé simultanément.
+    // L'unicité annule le perdant ; seul un reçu COMMITTÉ prouve le doublon.
+    if (durableKey && isUniqueViolation(error)) {
+      const receipt = await (prisma as any).trafficUsage.findUnique({
+        where: { reportKey: durableKey }, select: { accountId: true },
+      });
+      if (receipt) {
+        rememberReport(reportKey, receipt.accountId);
+        return { applied: false, reason: "duplicate_report", subscriptionId: receipt.accountId };
+      }
+    }
     throw error;
   }
+  })();
+  if (reportKey) pendingReports.set(reportKey, operation);
+  try { return await operation; }
+  finally { if (reportKey) pendingReports.delete(reportKey); }
 }
 
 // Compute the single source of truth for the mobile "smart button" state.
@@ -1234,16 +1275,17 @@ router.get('/history', async (req: AuthenticatedRequest, res: Response) => {
 router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => {
   try {
     const schema = z.object({
-      bytesUp:   z.number().int().min(0),
-      bytesDown: z.number().int().min(0),
+      bytesUp:   z.number().int().min(0).max(MAX_USAGE_REPORT_BYTES),
+      bytesDown: z.number().int().min(0).max(MAX_USAGE_REPORT_BYTES),
       sessionId: z.string().optional(),
       seq:       z.number().int().min(0).optional(),
-      reportMode: z.enum(['delta','absolute']).optional(),
+      reportMode: z.literal('delta').optional(),
       subscriptionId: z.string().optional(),
       deviceId: z.string().min(5).optional(),
     });
     const { bytesUp, bytesDown, sessionId, seq, subscriptionId, deviceId } = schema.parse(req.body);
-    const totalBytes = BigInt(bytesUp + bytesDown);
+    const totalBytes = BigInt(bytesUp) + BigInt(bytesDown);
+    if (totalBytes > BigInt(MAX_USAGE_REPORT_BYTES)) return res.status(400).json({ ok: false, error: "errors.validation", code: "INVALID_USAGE_DELTA" });
 
     const client: any = await findClientByUserId(req.user!.userId, req.user!.clientId, deviceIdFromRequest(req));
     if (!client) return res.status(404).json({ error: "errors.mobile.no_account" });
@@ -1259,10 +1301,13 @@ router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => 
           message: "Ce forfait n'appartient pas à cet appareil.",
         });
       }
+      if (!applied.applied && applied.reason !== "duplicate_report") {
+        return res.status(400).json({ ok: false, error: "errors.validation", code: "INVALID_USAGE_DELTA" });
+      }
       duplicate = applied.reason === "duplicate_report";
       // Le forfait crédité est celui que la transaction a réellement débité,
       // jamais « le premier actif » trouvé au hasard de l'ordre du tableau.
-      if (applied.applied && applied.subscriptionId) creditedSubscriptionId = applied.subscriptionId;
+      if (applied.subscriptionId !== undefined) creditedSubscriptionId = applied.subscriptionId;
     }
 
     const updatedClient: any = await findClientByUserId(req.user!.userId, req.user!.clientId, deviceIdFromRequest(req));
@@ -1270,6 +1315,10 @@ router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => 
     const selectedSub = creditedSubscriptionId
       ? subscriptions.find((s: any) => s.id === creditedSubscriptionId) || null
       : selectMobileSubscription(updatedClient || client);
+    if (creditedSubscriptionId && !selectedSub) {
+      // Un reçu d'un ancien forfait supprimé ne décrit jamais le nouveau.
+      return res.json({ ok: true, duplicate, subscriptionId: creditedSubscriptionId });
+    }
     const state = computeAccountState(updatedClient || client, selectedSub);
     const quotaExhausted = state.quotaTotalBytes > 0 && state.quotaRemainingBytes <= 0;
     return res.json({
@@ -1446,6 +1495,8 @@ router.post("/vpn/usage", async (req: AuthenticatedRequest, res: Response) => {
       return res.status(404).json({ error: "errors.mobile.no_account", message: "Client non trouvé" });
     }
 
+    let creditedSubscriptionId: string | null = subscriptionId || null;
+    let duplicate = false;
     if (totalBytes > 0n) {
       const applied = await applyUsageDelta(client.id, subscriptionId || null, totalBytes, sessionId, seq, BigInt(upload), deviceId || null);
       if (!applied.applied && applied.reason === "subscription_not_owned") {
@@ -1455,19 +1506,36 @@ router.post("/vpn/usage", async (req: AuthenticatedRequest, res: Response) => {
           message: "Ce forfait n'appartient pas à cet appareil.",
         });
       }
+      if (!applied.applied && applied.reason !== "duplicate_report") {
+        return res.status(400).json({ success: false, error: "errors.validation", code: "INVALID_USAGE_DELTA" });
+      }
+      duplicate = applied.reason === "duplicate_report";
+      if (applied.subscriptionId !== undefined) creditedSubscriptionId = applied.subscriptionId;
     }
 
     const updatedClient: any = await findClientByUserId(req.user!.userId, req.user!.clientId, deviceIdFromRequest(req));
-    const state = computeAccountState(updatedClient || client);
+    const subscriptions = (updatedClient || client).subscriptions || [];
+    const selectedSub = creditedSubscriptionId
+      ? subscriptions.find((sub: any) => sub.id === creditedSubscriptionId) || null
+      : selectMobileSubscription(updatedClient || client);
+    if (creditedSubscriptionId && !selectedSub) {
+      return res.json({ success: true, duplicate, subscriptionId: creditedSubscriptionId });
+    }
+    const state = computeAccountState(updatedClient || client, selectedSub);
 
     return res.json({
       success: true,
+      duplicate,
+      subscriptionId: selectedSub?.id ?? null,
+      quotaUsedBytes: state.quotaUsedBytes,
+      quotaTotalBytes: state.quotaTotalBytes,
       message: "Usage enregistré avec succès",
       quotaRemainingGb: state.quotaRemainingGb,
       quotaRemainingBytes: state.quotaRemainingBytes,
       state: state.state,
     });
   } catch (err: any) {
+    if (err instanceof z.ZodError) return res.status(400).json({ success: false, error: "errors.validation" });
     console.error("vpn/usage endpoint error:", err);
     return res.status(500).json({ error: "errors.server", message: "Erreur enregistrement de consommation" });
   }
