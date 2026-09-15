@@ -9,12 +9,12 @@
  * Exemple accepté :
  * vless://uuid@server:443?path=%2Fvless&security=tls&encryption=none&host=ws.example&type=ws&sni=ws.example#Nom
  */
+import { alpnPourTransport } from './alpnPolicy';
 
 export interface ParsedVlessUri {
   config: Record<string, any>;
   name?: string;
 }
-
 function decode(value: string): string {
   try {
     // Les query strings URI traitent également + comme un espace.
@@ -127,6 +127,14 @@ export function parseVlessUri(rawUri: string): ParsedVlessUri {
   }
   const insecure = q.get('allowinsecure') ?? q.get('insecure');
   if (insecure !== undefined) config.insecure = ['1', 'true', 'yes'].includes(insecure.toLowerCase());
+
+  // ALPN des transports WebSocket — voir `alpnPolicy.ts` pour le POURQUOI
+  // détaillé. En deux mots : uTLS « chrome » annonce `h2` en premier, le
+  // frontal le choisit, et le WebSocket de sing-box — qui parle HTTP/1.1
+  // Upgrade — ne peut plus établir sa liaison. Le TLS aboutit malgré tout,
+  // d'où un tunnel « connecté » qui ne transporte rien.
+  const alpnDeduit = alpnPourTransport(config.network, config.tls, config.alpn);
+  if (alpnDeduit) config.alpn = alpnDeduit;
 
   return { config, name: name || undefined };
 }

@@ -49,6 +49,21 @@ const NOUVELLES_CONNEXIONS_INTERVALLE_MS = 60_000;
 
 const LOGO = require("../../assets/images/icon.png");
 
+/**
+ * Emoji du salut — la SEULE exception à la règle « pas d'emoji dans l'app ».
+ *
+ * Demandé explicitement par le propriétaire pour cette ligne précise. Il est
+ * isolé dans une constante nommée pour deux raisons : le garde-fou qui interdit
+ * les emoji ailleurs peut viser cette exception sans la confondre avec un
+ * retour en arrière, et un futur lecteur comprend qu'elle est délibérée plutôt
+ * que d'y voir un oubli de nettoyage.
+ *
+ * Il est purement décoratif : le salut est déjà écrit à côté, et l'emoji est
+ * masqué aux lecteurs d'écran — l'entendre annoncer « main qui salue » après le
+ * mot « Bonjour » n'ajoute rien.
+ */
+const GREETING_EMOJI = "👋";
+
 // ── VPN Button States ─────────────────────────────────────────────────────────
 type BtnState = "no_account" | "no_package" | "connect" | "connecting" | "connected" | "exhausted" | "expired" | "blocked";
 
@@ -105,14 +120,11 @@ function VpnConnectionCard({ conn, isActive }: { conn: VpnConnection; isActive: 
       <View style={styles.connHeader}>
         <View style={{ flex: 1, gap: spacing.xs }}>
           <Text style={[type.h3, { color: colors.textPrimary }]} numberOfLines={1}>{conn.name}</Text>
-          <View style={styles.connProtoRow}>
-            <Pill label={conn.displayProtocol} tone={protocoleTeinte} />
-            {conn.displayProtocol !== conn.technicalProtocol.toUpperCase() && (
-              <Text style={[type.micro, { color: colors.textMuted }]}>
-                {conn.technicalProtocol.toUpperCase()}
-              </Text>
-            )}
-          </View>
+          {/* Le protocole n'est PLUS affiché. Il désigne la technique de
+              transport, et l'exposer revient à décrire la configuration que
+              l'exploitant vend — une capture d'écran suffisait à la deviner.
+              La teinte de la carte continue de distinguer les familles entre
+              elles, sans jamais les nommer. */}
         </View>
         <Pill label={statusLabel} tone={statusColor} dot />
       </View>
@@ -353,11 +365,6 @@ export default function HomeScreen() {
     ? t('tap_to_connect')
     : btnLabel;
 
-  const protocolLabel = connectedProtocol
-    || (activeConnection ? activeConnection.displayProtocol : null)
-    || selectedProtocol
-    || "—";
-
   const activeConfig = savedConfigs.find((cfg) => cfg.id === activeConfigId) || savedConfigs[0] || null;
 
   // ── L'accès actif provient-il d'un ESSAI GRATUIT ? ────────────────────────
@@ -401,26 +408,25 @@ export default function HomeScreen() {
       >
         {/* Ligne de marque. Le logo était importé mais jamais rendu : l'écran
             principal ne portait aucune identité visuelle, alors que le splash,
-            l'activation et l'accueil hors session la portent tous. */}
-        <View style={styles.brandRow}>
-          <View style={[styles.brandMark, { borderColor: colors.primary + alpha.f24, backgroundColor: colors.primary + alpha.f08 }]}>
-            <Image source={LOGO} style={styles.brandLogo} resizeMode="contain" />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={[type.h3, { color: colors.textPrimary }]} numberOfLines={1}>
-              {t('app_name')}
-            </Text>
-            <Text style={[type.micro, { color: colors.textMuted }]} numberOfLines={1}>
-              {t('created_by')}
-            </Text>
-          </View>
-        </View>
-
-        {/* En-tête : identité à gauche, actions à droite. */}
+        {/* En-tête : le salut porte l'identité, les actions restent à droite.
+            La ligne « logo + SXB VPN » qui précédait a été retirée : le nom du
+            produit est déjà partout — écran de démarrage, notification,
+            libellé sous l'icône — et le répéter ici volait la première ligne à
+            la seule information qui change, celle de la personne. */}
         <View style={styles.headerRow}>
           <View style={{ flex: 1 }}>
-            <Text style={[type.caption, { color: colors.textMuted }]}>{t('greeting_default')}</Text>
-            <Text style={[type.h1, { color: colors.textPrimary }]} numberOfLines={1}>
+            <View style={styles.greetingRow}>
+              <Text style={[type.caption, { color: colors.textMuted }]}>{t('greeting_default')}</Text>
+              <Text style={styles.greetingEmoji} accessibilityElementsHidden importantForAccessibility="no">
+                {GREETING_EMOJI}
+              </Text>
+            </View>
+            <Text
+              style={[type.h1, { color: colors.textPrimary }]}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.7}
+            >
               {user?.name || t('user_default')}
             </Text>
           </View>
@@ -591,21 +597,24 @@ export default function HomeScreen() {
             <Text style={[type.h3, { color: colors.primaryForeground }]}>{btnLabel}</Text>
           </Pressable>
 
-          {/* Bandeau vif : protocole et latence côte à côte, comme sur les
-              applications VPN de référence, plutôt que noyés dans une liste.
+          {/* Bandeau vif : le PING, et lui seul.
 
-              L'adresse de sortie n'y figure plus et n'est même plus demandée :
-              l'afficher revenait à exposer en clair, sur l'écran principal, la
-              donnée qui identifie le serveur derrière le tunnel. La durée de
-              session est déjà lisible dans l'en-tête. */}
+              Le protocole a été retiré — il désigne la technique de transport,
+              et l'exposer sur l'écran principal revenait à décrire la
+              configuration que l'exploitant vend : une capture d'écran
+              suffisait à la deviner.
+
+              L'adresse de sortie n'y figure pas davantage, pour la même raison.
+              La durée de session est déjà lisible au centre du bouton. Reste
+              donc la seule mesure qui renseigne l'utilisateur sur la QUALITÉ de
+              sa liaison, sans rien dire de sa nature. */}
           <Surface style={styles.liveStrip} padded={false}>
             <StatRow>
-              <StatTile label={t('info_protocol')} value={protocolLabel} icon="git-branch-outline" />
               <StatTile
                 label={t('info_ping')}
                 value={ping ? `${ping} ms` : "—"}
                 icon="pulse-outline"
-                tone={colors.connected}
+                tone={colors.accents.emeraude}
                 monospace
               />
             </StatRow>
@@ -733,49 +742,17 @@ export default function HomeScreen() {
           </Surface>
         )}
 
-        {/* Consommation par application.
+        {/* La carte « Consommation par application » a été retirée sur demande
+            du propriétaire. Elle listait des noms de paquets bruts avec deux
+            volumes chacun — une sortie de débogage, pas une information : rien
+            n'y était actionnable, et elle allongeait l'accueil entre le trafic
+            temps réel et la liste des connexions, qui sont les deux blocs
+            réellement consultés.
 
-            La carte n'apparaît QUE lorsque le moteur natif rapporte réellement
-            quelque chose. Auparavant elle occupait une carte entière pour
-            annoncer « Aucune donnée applicative disponible » : à chaque
-            connexion avant le premier relevé (~30 s), et en permanence là où le
-            module natif n'expose pas `getPerAppStats`. Un bloc qui ne dit que
-            son propre vide n'apprend rien ; la mesure elle-même est conservée
-            intacte dès qu'elle existe. */}
-        {isConnected && perAppTraffic && perAppTraffic.length > 0 && (
-          <Surface>
-            <SectionHeader title={t('card_traffic_per_app')} icon="apps-outline" />
-            {perAppTraffic.map((appStat, index) => (
-              <View
-                key={`${appStat.packageName}-${index}`}
-                style={[
-                  styles.appRow,
-                  index < perAppTraffic.length - 1 && {
-                    borderBottomWidth: StyleSheet.hairlineWidth,
-                    borderBottomColor: colors.border,
-                  },
-                ]}
-              >
-                <View style={{ flex: 1, paddingRight: spacing.sm }}>
-                  <Text style={[type.bodyMedium, { color: colors.textPrimary }]} numberOfLines={1}>
-                    {appStat.appName || appStat.packageName}
-                  </Text>
-                  <Text style={[type.micro, { color: colors.textMuted }]} numberOfLines={1}>
-                    {appStat.packageName}
-                  </Text>
-                </View>
-                <View style={{ alignItems: 'flex-end' }}>
-                  <Text style={[type.h3, { color: colors.textPrimary, fontVariant: ['tabular-nums' as const] }]}>
-                    {formatBytes(appStat.totalBytes)}
-                  </Text>
-                  <Text style={[type.micro, { color: colors.textMuted }]}>
-                    ↑ {formatBytes(appStat.uploadBytes)} · ↓ {formatBytes(appStat.downloadBytes)}
-                  </Text>
-                </View>
-              </View>
-            ))}
-          </Surface>
-        )}
+            La MESURE n'est pas supprimée : `perAppTraffic` reste exposé par
+            `VpnContext` et alimenté par le moteur. Seul son affichage disparaît,
+            de sorte qu'un futur écran dédié puisse la reprendre sans rien
+            recâbler. */}
 
         {/* ── Connexions VPN ──────────────────────────────────────────────── */}
         <Surface>
@@ -876,25 +853,13 @@ const styles = StyleSheet.create({
   },
   headerActions: { flexDirection: "row", gap: spacing.sm },
 
-  // ── Ligne de marque ────────────────────────────────────────────────────────
-  // Le logo est encadré plutôt que posé nu : le PNG porte ses propres marges,
-  // et sans cadre il paraissait flotter, désaligné du texte qui le suit.
-  brandRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-    paddingTop: spacing.sm,
-  },
-  brandMark: {
-    width: 40,
-    height: 40,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    overflow: "hidden",
-  },
-  brandLogo: { width: 30, height: 30 },
+  // ── Salut ──────────────────────────────────────────────────────────────────
+  // Les styles `brandRow`/`brandMark`/`brandLogo` ont disparu avec la ligne
+  // « logo + SXB VPN » qu'ils habillaient.
+  greetingRow: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
+  // L'emoji suit la taille du salut plutôt que la sienne : posé à sa taille
+  // naturelle, il dépassait la ligne et décalait le nom d'un pixel.
+  greetingEmoji: { fontSize: 13, lineHeight: 17 },
 
   // ── Quota ──────────────────────────────────────────────────────────────────
   // `flexWrap` plutôt qu'une largeur figée : sur un écran de 360 px avec une

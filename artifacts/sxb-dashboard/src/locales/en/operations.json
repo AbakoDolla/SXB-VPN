@@ -79,6 +79,9 @@
     "createToken": "Create a token",
     "revoke": "Revoke",
     "reject": "Reject",
+    "deleteRequests": "Delete",
+    "deleteRequestsHint": "Erases the selected sign-ups and the plans born of their trial. Access leaves the device immediately.",
+    "deleteRequestsConfirm": "Permanently delete {{count}} sign-up(s)? The plans born of their trial go with them, and access leaves their device immediately. Paid plans on the same account are untouched. This cannot be undone.",
     "deploy": "DEPLOY",
     "configureAndDeploy": "Choose access then deploy",
     "tokensTitle": "Issued invitation tokens",
@@ -154,7 +157,8 @@
       "deployed": "{{deployed}} access deployed out of {{total}} — {{subscriptions}} plan(s) created.",
       "partial": "Requests not deployed: {{items}}",
       "rejected": "{{count}} request(s) rejected.",
-      "managed": "{{succeeded}} trial(s) updated out of {{total}}."
+      "managed": "{{succeeded}} trial(s) updated out of {{total}}.",
+      "deletedRequests": "{{count}} sign-up(s) deleted · {{plans}} plan(s) removed — access has left the devices."
     },
     "marker": "Free trial",
     "manage": "Manage deployed trials",

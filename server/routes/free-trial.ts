@@ -310,6 +310,15 @@ const refuserSchema = z.object({
   note: z.string().trim().max(500).optional(),
 }).strict();
 
+/**
+ * Suppression d'inscrits. Pas de `note` : rien ne subsiste pour la porter —
+ * l'accepter laisserait croire qu'elle est conservée quelque part.
+ */
+const supprimerSchema = z.object({
+  requestIds: z.array(identifiantSchema).min(1).max(MAX_LOT_ESSAI),
+  tokenId: identifiantSchema.optional(),
+}).strict();
+
 /** Filtres de lecture des demandes : par statut, par jeton, page par page. */
 const listeDemandesSchema = z.object({
   status: z.enum([STATUT_DEMANDE.PENDING, STATUT_DEMANDE.DEPLOYED, STATUT_DEMANDE.REJECTED]).optional(),
@@ -1681,6 +1690,125 @@ router.post(
       if (err instanceof z.ZodError) return erreurValidation(res, err);
       console.error('free-trial reject error:', err);
       return res.status(500).json({ error: 'errors.server', message: 'Refus impossible' });
+    }
+  },
+);
+
+// ─── POST /api/free-trial/requests/delete ────────────────────────────────────
+//
+// SUPPRIMER un inscrit d'essai — et tout ce que cet essai lui a donné.
+//
+// POURQUOI CETTE ROUTE EXISTE
+// ───────────────────────────
+// Le tableau de bord savait REFUSER une demande en attente et RETIRER un
+// serveur d'un essai déployé, mais rien n'effaçait l'inscrit lui-même. Une
+// inscription créée par erreur, un doublon, un essai de test : la ligne restait
+// pour toujours dans « Essais gratuits » et continuait d'alimenter les
+// compteurs. Le seul recours était de supprimer le JETON, ce que le serveur
+// refuse justement dès qu'il porte des inscriptions.
+//
+// CE QUI EST EMPORTÉ, ET CE QUI NE L'EST PAS
+// ──────────────────────────────────────────
+// Sont supprimés : la demande, et les forfaits NÉS DE CET ESSAI — sans quoi
+// l'appareil garderait son accès alors que l'inscrit a disparu de la vue.
+//
+// Ne sont PAS touchés : les forfaits ordinaires du même compte. Un essayeur
+// devenu client payant en détient, et les emporter reviendrait à supprimer un
+// accès ACHETÉ au motif qu'on efface un essai. C'est le même garde-fou que le
+// retrait de serveur ci-dessus, et pour la même raison.
+//
+// Le compte VPN lui-même survit : il peut porter d'autres forfaits, et le
+// supprimer se fait depuis « Comptes VPN », explicitement.
+//
+// EFFET IMMÉDIAT : chaque client touché est invalidé dans `accessStateHub`, ce
+// qui réveille son long-poll. L'appareil perd l'accès dans la seconde, sans
+// attendre la prochaine synchronisation.
+router.post(
+  '/requests/delete',
+  requireAuth,
+  interdireAccesRevendeur(),
+  interdireMutationSupport(),
+  requirePermission('subscription.manage'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!prisma) return baseIndisponible(res);
+      const body = supprimerSchema.parse(req.body);
+      const lot = normaliserLotEssai(body.requestIds);
+      if (!lot.ok) {
+        const refusLot = refusLotEssai(lot.raison, lot.limite);
+        return res.status(refusLot.status).json(refusLot.body);
+      }
+
+      const demandes = await (prisma as any).freeTrialRequest.findMany({
+        where: {
+          id: { in: lot.ids },
+          ...(body.tokenId ? { tokenId: body.tokenId } : {}),
+        },
+      });
+
+      let supprimees = 0;
+      let forfaitsSupprimes = 0;
+      const clientsTouches = new Set<string>();
+      const resultats: Array<{ id: string; status: string; removed?: number; reason?: string }> = [];
+
+      for (const demande of demandes) {
+        try {
+          // Les forfaits nés de CET essai, et eux seuls. Deux façons pour un
+          // forfait d'en être issu : porter `freeTrialRequestId`, ou être celui
+          // que la demande désigne par `subscriptionId` (déploiements anciens,
+          // antérieurs à la colonne).
+          const conditions: any[] = [{ freeTrialRequestId: demande.id }];
+          if (demande.subscriptionId) conditions.push({ id: demande.subscriptionId });
+
+          const forfaits = await (prisma as any).subscription.findMany({
+            where: { OR: conditions },
+            select: { id: true, clientId: true },
+          });
+
+          if (forfaits.length > 0) {
+            const efface = await (prisma as any).subscription.deleteMany({
+              where: { id: { in: forfaits.map((f: any) => f.id) }, OR: conditions },
+            });
+            forfaitsSupprimes += efface.count;
+            for (const f of forfaits) if (f.clientId) clientsTouches.add(String(f.clientId));
+          }
+
+          const effaceDemande = await (prisma as any).freeTrialRequest.deleteMany({
+            where: { id: demande.id },
+          });
+          if (effaceDemande.count === 1) {
+            supprimees += 1;
+            resultats.push({ id: demande.id, status: 'ok', removed: forfaits.length });
+          } else {
+            resultats.push({ id: demande.id, status: 'skipped' });
+          }
+        } catch (erreur: any) {
+          console.error('free-trial delete error:', erreur);
+          resultats.push({ id: demande.id, status: 'failed', reason: erreur?.message || 'errors.server' });
+        }
+      }
+
+      // L'invalidation vient APRÈS les écritures : réveiller un appareil avant
+      // que la base ne soit à jour lui ferait relire l'ancien état.
+      for (const clientId of clientsTouches) accessStateHub.invalidate({ clientId });
+
+      await logDbActivity(
+        req.user?.userId || null,
+        `${supprimees} inscrit(s) d'essai gratuit supprimé(s) — ${forfaitsSupprimes} forfait(s) retiré(s)`,
+        'danger',
+        req.ip || '',
+      );
+      return res.json({
+        success: true,
+        deleted: supprimees,
+        subscriptionsRemoved: forfaitsSupprimes,
+        total: lot.ids.length,
+        results: resultats,
+      });
+    } catch (err: any) {
+      if (err instanceof z.ZodError) return erreurValidation(res, err);
+      console.error('free-trial delete error:', err);
+      return res.status(500).json({ error: 'errors.server', message: 'Suppression impossible' });
     }
   },
 );

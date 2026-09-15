@@ -291,18 +291,30 @@ describe('accueil mobile — période d’essai', () => {
     assert.match(lire('app-mobile/app/settings.tsx'), /label=\{t\('app_version'\)\}[\s\S]{0,80}expoConfig\?\.version/);
     assert.match(lire('app-mobile/app/(tabs)/profile.tsx'), /expoConfig\?\.version/);
 
-    // 3. L'attribution développeur reste visible sur l'accueil, sous la forme
-    //    employée partout ailleurs.
-    assert.match(accueil, /t\('created_by'\)/);
+    // 3. L'attribution développeur a quitté l'EN-TÊTE avec la ligne de marque :
+    //    le nom du produit s'affiche déjà au démarrage, dans la notification et
+    //    sous l'icône, et le répéter en haut volait la première ligne au nom de
+    //    la personne. Elle demeure en PIED DE PAGE, où elle signe l'écran sans
+    //    disputer la place à l'information.
+    assert.match(accueil, /styles\.signature[\s\S]{0,120}t\('created_by'\)/,
+      'la signature doit rester en pied de page');
+    assert.doesNotMatch(accueil, /styles\.brandRow/, 'la ligne de marque en en-tête doit rester retirée');
     for (const langue of ['fr', 'en']) {
-      assert.match(lire(`app-mobile/localization/${langue}.ts`), /created_by: 'Powered by AbakoDollar\$'/);
+      assert.match(lire(`app-mobile/localization/${langue}.ts`), /created_by: 'StuffxBillal'/);
     }
 
-    // 4. « Consommation par application » ne s'affiche plus pour annoncer son
-    //    propre vide ; la mesure, elle, est intacte dès qu'elle existe.
-    assert.match(accueil, /\{isConnected && perAppTraffic && perAppTraffic\.length > 0 && \(/);
+    // 4. « Consommation par application » est RETIRÉE de l'accueil sur demande
+    //    du propriétaire : elle listait des noms de paquets bruts avec deux
+    //    volumes chacun — une sortie de débogage, rien d'actionnable — entre
+    //    les deux blocs réellement consultés.
+    //
+    //    La MESURE n'est pas supprimée : `perAppTraffic` reste exposé par
+    //    VpnContext et alimenté par le moteur, de sorte qu'un futur écran dédié
+    //    puisse la reprendre sans rien recâbler.
+    assert.doesNotMatch(accueil, /card_traffic_per_app/, 'la carte par application doit rester retirée');
     assert.doesNotMatch(accueil, /no_app_data/);
-    assert.match(accueil, /card_traffic_per_app/);
+    assert.match(lire('app-mobile/contexts/VpnContext.tsx'), /perAppTraffic/,
+      'la mesure par application ne doit pas être démontée avec son affichage');
 
     // 5. « Historique » quitte les accès rapides : c'est un onglet permanent.
     assert.doesNotMatch(accueil, /router\.push\("\/\(tabs\)\/history"\)/);

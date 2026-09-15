@@ -169,7 +169,10 @@ export default function ConfigPicker({
                           {entry.name}
                         </Text>
                         <View style={styles.rowMeta}>
-                          <Pill label={entry.protocol || '—'} tone={teinteProtocole} />
+                          {/* Le protocole n'est plus nommé : il décrit la
+                              technique de transport, donc la configuration que
+                              l'exploitant vend. La teinte de la ligne continue
+                              de distinguer les familles, sans les révéler. */}
                           {isActive && <Pill label={t('config_active')} tone={colors.accents.emeraude} dot />}
                           {hasNotice && <Pill label={t(status === 'suspended' ? 'connection_suspended' :
                             status === 'expired' ? 'expired' : status === 'exhausted' ? 'quota_exhausted' : 'connection_revoked')} tone={colors.accents.corail} />}

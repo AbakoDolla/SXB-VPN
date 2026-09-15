@@ -551,6 +551,7 @@ describe("contrat de la route — la décision reste dans le service", () => {
       "'/requests/deploy'",
       "'/requests/manage'",
       "'/requests/reject'",
+      "'/requests/delete'",
       "'/stats/countries'",
       "'/stats/overview'",
     ]) {
@@ -568,13 +569,15 @@ describe("contrat de la route — la décision reste dans le service", () => {
     // en premier, pas celui qu'il oubliait.
     const adminRoutes = source.split(/router\.(?:get|post|put|patch|delete)\(/).slice(1)
       .filter((bloc) => !bloc.startsWith("'/enroll'") && !bloc.startsWith("'/status'"));
-    // 12 routes internes : 4 jetons (liste, création, modification,
+    // 13 routes internes : 4 jetons (liste, création, modification,
     // suppression) + révocation, 4 demandes (liste, activité d'un inscrit, et
-    // deux récapitulatifs) et 3 actions d'instruction (déploiement, gestion des
-    // essais déployés, refus). La gestion est la contrepartie de la séparation
-    // totale : les écrans d'exploitation n'ayant plus aucune prise sur un
-    // essai, elle doit exister ICI — et rester aussi fermée que les autres.
-    assert.equal(adminRoutes.length, 12, "nombre de routes admin inattendu");
+    // deux récapitulatifs) et 4 actions d'instruction (déploiement, gestion des
+    // essais déployés, refus, suppression d'inscrits). La gestion est la
+    // contrepartie de la séparation totale : les écrans d'exploitation n'ayant
+    // plus aucune prise sur un essai, elle doit exister ICI — et rester aussi
+    // fermée que les autres. La suppression l'est tout autant : elle efface un
+    // inscrit ET les forfaits nés de son essai.
+    assert.equal(adminRoutes.length, 13, "nombre de routes admin inattendu");
     for (const bloc of adminRoutes) {
       const entete = bloc.slice(0, 600);
       assert.ok(entete.includes("requireAuth"), `route admin sans requireAuth : ${entete.slice(0, 40)}`);

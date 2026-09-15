@@ -493,3 +493,31 @@ export async function rejectFreeTrialRequests(input: {
     { method: 'POST', body: input },
   );
 }
+
+/**
+ * Supprime des inscrits d'essai, et les forfaits NÉS DE CET ESSAI avec eux.
+ *
+ * Refuser laisse la ligne en place, marquée « refusée » ; retirer un serveur
+ * enlève l'accès mais garde l'inscrit. Cette route efface l'inscrit lui-même :
+ * une inscription créée par erreur, un doublon, un essai de test.
+ *
+ * Les forfaits ORDINAIRES du même compte ne sont pas touchés — un essayeur
+ * devenu client payant en détient, et les emporter reviendrait à supprimer un
+ * accès acheté. Le compte VPN survit également : il se supprime depuis
+ * « Comptes VPN », explicitement.
+ *
+ * L'appareil perd son accès dans la seconde : le serveur réveille son long-poll
+ * au lieu d'attendre la prochaine synchronisation.
+ */
+export async function deleteFreeTrialRequests(input: {
+  requestIds: string[];
+  tokenId?: string;
+}): Promise<{
+  success: boolean;
+  deleted: number;
+  subscriptionsRemoved: number;
+  total: number;
+  results: Array<{ id: string; status: string; removed?: number; reason?: string }>;
+}> {
+  return apiRequest('/free-trial/requests/delete', { method: 'POST', body: input });
+}

@@ -79,6 +79,9 @@
     "createToken": "Créer un jeton",
     "revoke": "Révoquer",
     "reject": "Refuser",
+    "deleteRequests": "Supprimer",
+    "deleteRequestsHint": "Efface les inscrits cochés et les forfaits nés de leur essai. L'accès quitte l'appareil immédiatement.",
+    "deleteRequestsConfirm": "Supprimer définitivement {{count}} inscrit(s) ? Les forfaits nés de leur essai partent avec eux, et l'accès quitte leur appareil immédiatement. Les forfaits payants du même compte ne sont pas touchés. Cette action est irréversible.",
     "deploy": "DÉPLOYER",
     "configureAndDeploy": "Choisir l'accès puis déployer",
     "tokensTitle": "Jetons d'invitation émis",
@@ -154,7 +157,8 @@
       "deployed": "{{deployed}} accès déployé(s) sur {{total}} — {{subscriptions}} forfait(s) créé(s).",
       "partial": "Demandes non déployées : {{items}}",
       "rejected": "{{count}} demande(s) refusée(s).",
-      "managed": "{{succeeded}} essai(s) mis à jour sur {{total}}."
+      "managed": "{{succeeded}} essai(s) mis à jour sur {{total}}.",
+      "deletedRequests": "{{count}} inscrit(s) supprimé(s) · {{plans}} forfait(s) retiré(s) — l'accès a quitté les appareils."
     },
     "marker": "Essai gratuit",
     "manage": "Gérer les essais déployés",

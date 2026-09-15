@@ -50,36 +50,34 @@ describe('identité de marque', () => {
     }
   });
 
-  it('signe « Powered by AbakoDollar$ » dans les deux langues, sans perdre l’attribution', () => {
+  it('signe « StuffxBillal » dans les deux langues, sans perdre l’attribution', () => {
+    // La signature est passée de « Powered by AbakoDollar$ » à « StuffxBillal »
+    // sur décision du propriétaire. Ce qui est épinglé ici n'est donc pas une
+    // formule figée, mais le fait que l'attribution EXISTE et reste RENDUE :
+    // une clé traduite mais jamais affichée équivaut à l'avoir supprimée.
     for (const langue of ['fr', 'en']) {
-      assert.match(lire(`app-mobile/localization/${langue}.ts`), /created_by: 'Powered by AbakoDollar\$'/);
+      assert.match(lire(`app-mobile/localization/${langue}.ts`), /created_by: 'StuffxBillal'/);
     }
-    // L'attribution doit rester rendue : une clé traduite mais jamais affichée
-    // équivaut à l'avoir supprimée.
     for (const ecran of ['app-mobile/app/settings.tsx', 'app-mobile/app/activate.tsx',
-      'app-mobile/app/index.tsx', 'app-mobile/app/(tabs)/profile.tsx',
-      'app-mobile/app/(tabs)/index.tsx']) {
+      'app-mobile/app/index.tsx', 'app-mobile/app/(tabs)/profile.tsx']) {
       assert.match(lire(ecran), /t\(["']created_by["']\)/, `${ecran} : attribution absente`);
     }
   });
 
-  it('rend le logo existant sur l’écran principal, jamais un autre fichier', () => {
-    // Le logo était IMPORTÉ dans l'accueil mais jamais rendu : l'écran le plus
-    // vu de l'application ne portait aucune identité visuelle. Un import seul
-    // ne prouve rien — on exige ici que la source soit effectivement passée à
-    // une balise Image.
-    const accueil = lire('app-mobile/app/(tabs)/index.tsx');
-    assert.match(accueil, /const LOGO = require\("\.\.\/\.\.\/assets\/images\/icon\.png"\)/);
-    assert.match(accueil, /<Image\s+source=\{LOGO\}/, 'accueil : le logo est importé mais pas rendu');
-
-    // Tous les écrans qui affichent une marque tirent du MÊME fichier : une
-    // refonte visuelle ne doit jamais introduire un second logo à côté.
+  it('ne tire le logo que du fichier de marque existant, jamais d’un autre', () => {
+    // L'accueil ne PORTE PLUS le logo : la ligne « logo + SXB VPN » a été
+    // retirée sur demande du propriétaire, le nom du produit étant déjà présent
+    // au démarrage, dans la notification et sous l'icône. Ce qui reste épinglé
+    // est donc la règle qui compte : partout où une marque est affichée, elle
+    // vient du MÊME fichier — une refonte ne doit jamais glisser un second logo
+    // à côté de l'existant.
     for (const ecran of ['app-mobile/app/index.tsx', 'app-mobile/app/activate.tsx',
-      'app-mobile/app/onboarding.tsx', 'app-mobile/app/(tabs)/index.tsx']) {
+      'app-mobile/app/onboarding.tsx']) {
       const source = lire(ecran);
       const requires = [...source.matchAll(/require\(["'][^"']*assets\/images\/([^"']+)["']\)/g)]
         .map(m => m[1]);
       assert.deepEqual([...new Set(requires)], ['icon.png'], `${ecran} : image de marque inattendue`);
+      assert.match(source, /<Image\s+source=\{LOGO\}/, `${ecran} : le logo est importé mais pas rendu`);
     }
   });
 

@@ -18,6 +18,33 @@
 import crypto from 'crypto';
 import { translateXrayToSingbox, isSingboxNativeJson, hasXrayMarkers } from './xray-translate';
 
+// ── ALPN des transports WebSocket ────────────────────────────────────────────
+//
+// JUMEAU VOLONTAIRE de `app-mobile/services/alpnPolicy.ts`, qui porte
+// l'explication complète du défaut. Serveur et mobile ne partagent pas de
+// module : la règle est donc écrite des deux côtés, et un test vérifie qu'elles
+// restent d'accord. La dupliquer en silence serait le vrai danger — un profil
+// importé depuis le tableau de bord ne se comporterait plus comme le même lien
+// collé dans l'application.
+//
+// En deux phrases : uTLS « chrome » annonce `h2` avant `http/1.1`, un frontal
+// moderne choisit donc h2, et le WebSocket de sing-box — qui parle HTTP/1.1
+// Upgrade — ne peut plus établir sa liaison. Le TLS aboutit malgré tout, d'où
+// un tunnel « connecté » qui ne transporte rien.
+const TRANSPORTS_UPGRADE = new Set(['ws', 'websocket', 'httpupgrade', 'http-upgrade']);
+export const ALPN_UPGRADE = 'http/1.1';
+
+export function alpnPourTransport(
+  network: string | null | undefined,
+  tls: boolean,
+  alpnDeja?: string | null,
+): string | null {
+  if (typeof alpnDeja === 'string' && alpnDeja.trim() !== '') return null;
+  if (!tls) return null;
+  const clef = String(network ?? '').trim().toLowerCase();
+  return TRANSPORTS_UPGRADE.has(clef) ? ALPN_UPGRADE : null;
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export type SourceFormat =
@@ -1020,6 +1047,30 @@ function parseImportedConfigSingle(raw: string): ParseResult {
   const cfg = parsed.cfg;
   if (cfg.port !== undefined) cfg.port = Number(cfg.port);
   if (cfg.tls !== undefined) cfg.tls = cfg.tls === true;
+
+  // ── ALPN des transports WebSocket ─────────────────────────────────────────
+  //
+  // LE DÉFAUT CORRIGÉ : un tunnel qui se déclare monté et ne transporte rien.
+  //
+  // Le moteur applique uTLS « chrome » dès que TLS est actif — volontaire, un
+  // ClientHello de la bibliothèque Go se repère et se bride. Or le ClientHello
+  // de Chrome annonce `h2` AVANT `http/1.1`, et un frontal moderne
+  // (Cloudflare, Google Front End, Cloud Run…) choisit donc h2. Le transport
+  // WebSocket de sing-box, lui, parle « HTTP/1.1 Upgrade » : le WebSocket sur
+  // HTTP/2 exigerait l'Extended CONNECT de la RFC 8441, qu'il n'émet pas.
+  //
+  // La poignée de main TLS réussit — d'où le « connecté » —, l'upgrade échoue,
+  // et plus rien ne passe. Annoncer `http/1.1` retire l'ambiguïté.
+  //
+  // Placé ICI, au point de sortie commun : toutes les formes d'import (URI,
+  // JSON canonique, HTTP Custom, v2rayN…) reçoivent la même règle. La poser
+  // dans un seul parseur laisserait les autres produire des profils muets.
+  //
+  // N'écrase JAMAIS un ALPN du profil : un exploitant qui écrit `alpn=h2` a une
+  // raison, et la deviner à sa place produirait une panne indiagnosticable.
+  // Ne touche ni gRPC (qui EXIGE h2) ni les profils sans TLS.
+  const alpnDeduit = alpnPourTransport(cfg.network, cfg.tls === true, cfg.alpn);
+  if (alpnDeduit) cfg.alpn = alpnDeduit;
 
   // Cohérence transport — règles moteur
   const coherence = validateTransportCoherence(cfg);

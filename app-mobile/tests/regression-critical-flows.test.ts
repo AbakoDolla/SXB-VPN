@@ -20,6 +20,7 @@ import {
   shouldLockAfterBackground,
 } from '../services/appLockPolicy';
 import { activationErrorKey, normalizeActivationToken } from '../services/activationError';
+import { traduireJournal, traduireLigne } from '../services/logTranslator';
 
 const XRAY_VLESS_D2L = {
   remarks: 'BYPASS',
@@ -302,6 +303,107 @@ describe('compatibilité URI VLESS / JSON complète', () => {
     const fromJson = validateVpnConfig(vlessUriToJson(VLESS_URI));
     assert.equal(fromJson.valid, true, fromJson.errors.join(' | '));
     assert.equal(fromJson.config?.wsHost, 'ss.alphaeconet.co.zw');
+  });
+
+  it('ne laisse AUCUN détail technique atteindre l’écran de diagnostic', () => {
+    // CAUSE RACINE : l'écran affichait les messages du moteur tels quels. Ces
+    // lignes portent le protocole, le nom d'hôte, le port, le chemin WebSocket
+    // — de quoi reconstituer la configuration que l'exploitant vend. Une simple
+    // capture d'écran suffisait.
+    //
+    // LE PRINCIPE RETENU est une LISTE BLANCHE, jamais un nettoyage. Un
+    // masquage par expression régulière est une course perdue : il suffit qu'un
+    // message du moteur évolue pour que la fuite revienne, en silence. Ici
+    // chaque ligne est RECONNUE puis REMPLACÉE ; rien de l'originale ne
+    // subsiste, et l'inconnu devient un message neutre.
+    const brutes = [
+      '[CONFIG] proto=vless transport=ws tls=true sni_set=true host_hdr_set=true',
+      '[SXB] dial crashlyticsreports-pa.googleapis.com:443 uuid=aaaa1111-bbbb',
+      '[engine] TUNNEL_REFUSED after handshake',
+      'un message que personne n’a prévu',
+    ];
+    const traduit = traduireJournal(brutes);
+
+    // Aucune sortie ne doit contenir autre chose qu'une CLÉ de traduction.
+    for (const ligne of traduit) {
+      assert.match(ligne.cle, /^log_[a-z_]+$/, `sortie non canonique : ${ligne.cle}`);
+    }
+    const concat = traduit.map(l => l.cle).join(' ');
+    for (const fuite of ['vless', 'googleapis', '443', 'uuid', 'aaaa1111', 'ws', 'sni']) {
+      assert.ok(!concat.includes(fuite), `« ${fuite} » a traversé la traduction`);
+    }
+
+    // Une ligne inconnue ne fuit pas : elle devient un message neutre.
+    assert.equal(traduireLigne('texte totalement imprévu').cle, 'log_activity');
+
+    // L'ORDRE des règles compte : « handshake failed » contient « handshake »,
+    // et serait annoncé comme une réussite si les échecs passaient après.
+    assert.equal(traduireLigne('ws handshake failed').niveau, 'echec');
+
+    // L'écran ne doit plus proposer ni copie ni partage du journal : ce sont
+    // eux qui faisaient sortir le détail technique de l'appareil.
+    const ecran = source('app/diagnostics.tsx');
+    assert.match(ecran, /traduireJournal/, 'le journal doit passer par la traduction');
+    assert.doesNotMatch(ecran, /Clipboard\.setStringAsync\(vpnLogs/, 'copie du journal brut interdite');
+    assert.doesNotMatch(ecran, /Share\.share\(\{ message: vpnLogs/, 'partage du journal brut interdit');
+
+    // Le protocole ne s'affiche plus nulle part ; seul le ping demeure.
+    assert.doesNotMatch(ecran, /t\('info_protocol'\)/, 'diagnostics : protocole encore affiché');
+    const accueil = source('app/(tabs)/index.tsx');
+    assert.doesNotMatch(accueil, /t\('info_protocol'\)/, 'accueil : protocole encore affiché');
+    assert.match(accueil, /t\('info_ping'\)/, 'le ping doit rester');
+    assert.doesNotMatch(source('components/ui/ConfigPicker.tsx'), /label=\{entry\.protocol/,
+      'sélecteur : protocole encore affiché');
+  });
+
+  it('annonce http/1.1 sur un transport WebSocket, sans quoi le tunnel monte à vide', () => {
+    // ═══════════════════════════════════════════════════════════════════════
+    // LE DÉFAUT CORRIGÉ — « ça affiche un bon débit mais Internet ne marche pas »
+    // ═══════════════════════════════════════════════════════════════════════
+    // Le moteur applique uTLS « chrome » dès que TLS est actif (volontaire : un
+    // ClientHello de la bibliothèque Go se repère et se bride). Or le
+    // ClientHello de Chrome annonce `h2` AVANT `http/1.1`, et un frontal
+    // moderne — Cloudflare, Google Front End, Cloud Run — choisit donc h2.
+    //
+    // Le transport WebSocket de sing-box parle « HTTP/1.1 Upgrade » : le
+    // WebSocket sur HTTP/2 exigerait l'Extended CONNECT de la RFC 8441, qu'il
+    // n'émet pas. La poignée de main TLS réussit — d'où le « connecté » —,
+    // l'upgrade échoue, et rien ne transite.
+    //
+    // Le débit affiché venait, lui, des compteurs de l'interface TUN : ils
+    // mesurent ce que le système ÉCRIT DANS le tunnel, retransmissions
+    // comprises. Un relais cassé produit donc un chiffre flatteur. Les deux
+    // symptômes avaient la même origine.
+    const uri = 'vless://aaaa1111-bbbb-4ccc-8ddd-eeeeffff0000@crashlyticsreports-pa.googleapis.com:443'
+      + '?path=%2FTelegram%2F%40AM2_D3%2F%40AHMAD3214&security=tls&encryption=none&insecure=0'
+      + '&host=ahmed-vip1-357280775671.us-central1.run.app&fp=chrome&type=ws&allowInsecure=0'
+      + '&sni=crashlyticsreports-pa.googleapis.com#websocket-coldplay';
+    const { config } = parseVlessUri(uri);
+
+    assert.equal(config.alpn, 'http/1.1', 'un WebSocket sur TLS doit annoncer http/1.1');
+    // Le reste du profil ne doit pas avoir bougé au passage.
+    assert.equal(config.fingerprint, 'chrome');
+    assert.equal(config.host, 'crashlyticsreports-pa.googleapis.com');
+    assert.equal(config.wsHost, 'ahmed-vip1-357280775671.us-central1.run.app');
+    assert.equal(config.path, '/Telegram/@AM2_D3/@AHMAD3214');
+
+    // UN CHOIX DU PROFIL N'EST JAMAIS ÉCRASÉ. Un exploitant qui écrit `alpn=h2`
+    // a une raison de le faire ; deviner à sa place produirait une panne
+    // impossible à diagnostiquer depuis le tableau de bord.
+    const explicite = parseVlessUri(uri.replace('&fp=chrome', '&fp=chrome&alpn=h2')).config;
+    assert.equal(explicite.alpn, 'h2', 'l’ALPN du profil prime toujours');
+
+    // gRPC EXIGE h2 : lui imposer http/1.1 casserait un profil qui marchait.
+    const grpc = parseVlessUri(
+      'vless://aaaa1111-bbbb-4ccc-8ddd-eeeeffff0000@ex.com:443?security=tls&type=grpc&serviceName=s#g',
+    ).config;
+    assert.equal(grpc.alpn, undefined, 'gRPC ne doit jamais recevoir http/1.1');
+
+    // Sans TLS, l'ALPN n'existe pas : le poser n'aurait aucun sens.
+    const clair = parseVlessUri(
+      'vless://aaaa1111-bbbb-4ccc-8ddd-eeeeffff0000@ex.com:80?type=ws&security=none#c',
+    ).config;
+    assert.equal(clair.alpn, undefined, 'pas d’ALPN sans TLS');
   });
 
   it('traduit les noms courts d’une URI vers ceux que le MOTEUR lit réellement', () => {
@@ -2605,13 +2707,18 @@ describe('garde-fous contre les régressions Android', () => {
     }
   });
 
-  it('n’affiche AUCUN emoji : les icônes sont vectorielles, pas typographiques', () => {
+  it('n’affiche AUCUN emoji hors l’exception nommée du salut', () => {
     // Un emoji n'est pas une icône : son dessin appartient au système, change
     // d'un Android à l'autre, ne suit ni la teinte ni la taille du thème, et
     // certains — les drapeaux notamment — ne sont tout simplement pas rendus
     // sur une partie des appareils, où ils apparaissent en deux lettres brutes
     // ou en carré vide. L'application dispose d'Ionicons, qui héritent de la
     // couleur et de l'échelle.
+    //
+    // UNE SEULE EXCEPTION, demandée explicitement par le propriétaire : la main
+    // qui salue, sur la ligne de bienvenue de l'accueil. Elle vit dans une
+    // constante nommée `GREETING_EMOJI`, ce qui la rend reconnaissable ici et
+    // empêche qu'un retour en arrière général passe pour elle.
     const emoji = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}]/u;
     for (const fichier of ['localization/fr.ts', 'localization/en.ts']) {
       const lignes = source(fichier).split('\n');
@@ -2620,17 +2727,27 @@ describe('garde-fous contre les régressions Android', () => {
         assert.ok(!emoji.test(ligne), `${fichier}:${i + 1} contient un emoji : ${ligne.trim()}`);
       });
     }
+
+    // L'exception est DÉCLARÉE, isolée, et masquée aux lecteurs d'écran :
+    // entendre « main qui salue » après le mot « Bonjour » n'apprend rien.
+    const accueil = source('app/(tabs)/index.tsx');
+    assert.match(accueil, /const GREETING_EMOJI = "👋"/, 'l’emoji du salut doit rester nommé');
+    assert.match(accueil, /accessibilityElementsHidden importantForAccessibility="no"/);
+
     // Les drapeaux de langue sont remplacés par le code, qui se lit partout.
     const reglages = source('app/settings.tsx');
     assert.doesNotMatch(reglages, /flag: "/, 'les drapeaux emoji ne doivent pas revenir');
     assert.match(reglages, /\{l\.code\.toUpperCase\(\)\}/);
 
-    // EXCEPTION ASSUMÉE : app/diagnostics.tsx cherche ✅/⚠️/❌ dans les journaux
-    // du moteur natif, qui les émet lui-même (SxbVpnService.kt). Ce sont des
-    // DONNÉES à reconnaître, pas une décoration à afficher ; les retirer
-    // casserait le filtrage et la coloration des journaux.
-    assert.match(source('app/diagnostics.tsx'), /\/❌\|⚠️\|error\|failed/,
-      'le filtre de journaux doit continuer à reconnaître les marqueurs du moteur');
+    // EXCEPTION ASSUMÉE : `services/logTranslator.ts` cherche ✅/⚠️/❌ dans les
+    // journaux du moteur natif, qui les émet lui-même (SxbVpnService.kt). Ce
+    // sont des DONNÉES à reconnaître, pas une décoration à afficher — et c'est
+    // désormais le seul endroit qui les connaît, l'écran de diagnostic ne
+    // voyant plus que des phrases traduites.
+    assert.match(source('services/logTranslator.ts'), /❌/,
+      'le traducteur doit continuer à reconnaître les marqueurs du moteur');
+    assert.doesNotMatch(source('app/diagnostics.tsx'), /❌/,
+      'l’écran ne doit plus manipuler les marqueurs bruts');
   });
 
   it('applique réellement les thèmes clair et sombre aux surfaces importantes', () => {

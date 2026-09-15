@@ -35,6 +35,7 @@ import { useColors } from '@/hooks/useColors';
 import { useTranslation } from '@/localization';
 import { alpha, layout, radius, spacing, type } from '@/constants/theme';
 import { EmptyState, IconButton, Pill, SectionHeader, StatRow, StatTile, Surface } from '@/components/ui/Primitives';
+import { traduireJournal } from '@/services/logTranslator';
 
 type Filter = 'all' | 'errors' | 'engine';
 
@@ -100,27 +101,18 @@ export default function DiagnosticsScreen() {
     ? Math.round(Math.max(...pingHistory) - Math.min(...pingHistory))
     : null;
 
-  const filtered = useMemo(() => {
-    if (filter === 'errors') {
-      return vpnLogs.filter(line => /❌|⚠️|error|failed|refus|invalid/i.test(line));
-    }
-    if (filter === 'engine') {
-      return vpnLogs.filter(line => /\[engine\]|\[SXB_TRACE\]|\[JSch/i.test(line));
-    }
-    return vpnLogs;
+  // ── Journaux : traduits, jamais bruts ──────────────────────────────────────
+  //
+  // Les messages du moteur portent le protocole, l'hôte, le port, le chemin
+  // WebSocket — tout ce qui permet de reconstituer la configuration. Ils sont
+  // donc REMPLACÉS par des phrases écrites à l'avance (`logTranslator`), jamais
+  // nettoyés : un masquage par expression régulière laisse passer le premier
+  // message non prévu, en silence.
+  const journal = useMemo(() => {
+    const traduit = traduireJournal(vpnLogs);
+    if (filter === 'errors') return traduit.filter(l => l.niveau === 'echec' || l.niveau === 'attention');
+    return traduit;
   }, [vpnLogs, filter]);
-
-  const handleCopy = useCallback(async () => {
-    await Clipboard.setStringAsync(vpnLogs.join('\n')).catch(() => {});
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1800);
-  }, [vpnLogs]);
-
-  const handleShare = useCallback(async () => {
-    // Les journaux sont déjà masqués à la source (SecurityModule) : aucun
-    // identifiant ni secret ne peut sortir par ce partage.
-    await Share.share({ message: vpnLogs.slice(0, 200).join('\n') }).catch(() => {});
-  }, [vpnLogs]);
 
   const stateTone = isConnected ? colors.connected : isConnecting ? colors.warning : colors.textMuted;
   const stateLabel = isConnected
@@ -181,19 +173,7 @@ export default function DiagnosticsScreen() {
           </StatRow>
           <StatRow>
             <StatTile label={t('session_duration')} value={formatDuration(sessionSeconds)} icon="time-outline" monospace />
-            <StatTile label={t('info_protocol')} value={connectedProtocol || selectedProtocol || '—'} icon="git-branch-outline" />
-            <StatTile
-              label={t('traffic_speed')}
-              value={`↓${formatSpeed(trafficStats.downloadSpeed)}`}
-              icon="speedometer-outline"
-              tone={colors.connected}
-              monospace
-            />
-          </StatRow>
-          <StatRow>
-            <StatTile label={t('traffic_sent')} value={formatBytes(trafficStats.uploadBytes)} monospace />
-            <StatTile label={t('traffic_received')} value={formatBytes(trafficStats.downloadBytes)} monospace />
-            <StatTile label={t('engine_state')} value={vpnState} />
+            <StatTile label={t('engine_state')} value={stateLabel} icon="pulse-outline" />
           </StatRow>
         </Surface>
 
@@ -233,13 +213,13 @@ export default function DiagnosticsScreen() {
           </Surface>
         )}
 
-        {/* Flux brut */}
+        {/* Journal d'activité — traduit, jamais brut. */}
         <Surface>
           <SectionHeader
             title={t('vpn_logs')}
-            icon="terminal-outline"
+            icon="pulse-outline"
             trailing={
-              <Text style={[type.micro, { color: colors.textMuted }]}>{filtered.length}</Text>
+              <Text style={[type.micro, { color: colors.textMuted }]}>{journal.length}</Text>
             }
           />
 
@@ -269,62 +249,36 @@ export default function DiagnosticsScreen() {
             })}
           </View>
 
-          {filtered.length === 0 ? (
-            <EmptyState icon="terminal-outline" title={t('logs_waiting')} />
+          {journal.length === 0 ? (
+            <EmptyState icon="pulse-outline" title={t('logs_waiting')} />
           ) : (
-            <View style={[styles.logBox, { backgroundColor: colors.bgInput, borderColor: colors.border }]}>
-              {filtered.slice(0, 200).map((line, i) => (
-                <Text
-                  key={`${i}-${line.slice(0, 24)}`}
-                  style={[
-                    type.micro,
-                    {
-                      color: /❌|error|failed/i.test(line)
-                        ? colors.disconnected
-                        : /⚠️|warn/i.test(line)
-                        ? colors.warning
-                        : /✅/.test(line)
-                        ? colors.connected
-                        : colors.textSecondary,
-                      fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-                    },
-                  ]}
-                >
-                  {line}
-                </Text>
-              ))}
+            <View style={styles.journalBox}>
+              {journal.slice(0, 60).map((ligne, i) => {
+                const teinte = ligne.niveau === 'echec'
+                  ? colors.accents.corail
+                  : ligne.niveau === 'attention'
+                  ? colors.accents.ambre
+                  : ligne.niveau === 'ok'
+                  ? colors.accents.emeraude
+                  : colors.textSecondary;
+                return (
+                  <View key={`${i}-${ligne.cle}`} style={styles.journalRow}>
+                    <View style={[styles.journalDot, { backgroundColor: teinte }]} />
+                    <Text style={[type.caption, { color: colors.textSecondary, flex: 1 }]}>
+                      {t(ligne.cle as any)}
+                    </Text>
+                  </View>
+                );
+              })}
             </View>
           )}
 
-          <View style={styles.actionRow}>
-            <Pressable
-              onPress={handleCopy}
-              accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.actionBtn,
-                { borderColor: colors.primary + alpha.f40, backgroundColor: colors.primaryDim },
-                pressed && styles.pressed,
-              ]}
-            >
-              <Ionicons name={copied ? 'checkmark' : 'copy-outline'} size={15} color={colors.primary} />
-              <Text style={[type.captionMedium, { color: colors.primary }]}>
-                {copied ? t('logs_copied') : t('logs_copy')}
-              </Text>
-            </Pressable>
-
-            <Pressable
-              onPress={handleShare}
-              accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.actionBtn,
-                { borderColor: colors.border, backgroundColor: colors.bgCard2 },
-                pressed && styles.pressed,
-              ]}
-            >
-              <Ionicons name="share-outline" size={15} color={colors.textSecondary} />
-              <Text style={[type.captionMedium, { color: colors.textSecondary }]}>{t('logs_share')}</Text>
-            </Pressable>
-          </View>
+          {/* Ni copie ni partage : ce sont eux qui faisaient sortir le détail
+              technique de l'appareil. Une phrase dit pourquoi, plutôt que de
+              laisser croire à un bouton oublié. */}
+          <Text style={[type.micro, { color: colors.textMuted }]}>
+            {t('diagnostic_plain_hint')}
+          </Text>
         </Surface>
       </ScrollView>
     </LinearGradient>
@@ -333,6 +287,11 @@ export default function DiagnosticsScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  journalBox: { gap: spacing.sm },
+  journalRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
+  // La pastille est décalée d'un cheveu pour s'aligner sur la première ligne du
+  // texte plutôt que sur le haut du bloc, qui la laissait flotter.
+  journalDot: { width: 6, height: 6, borderRadius: 3, marginTop: 5 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',

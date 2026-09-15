@@ -36,6 +36,7 @@ import {
   fetchFreeTrialTokens,
   manageFreeTrialRequests,
   rejectFreeTrialRequests,
+  deleteFreeTrialRequests,
   revokeFreeTrialToken,
   updateFreeTrialToken,
   deleteFreeTrialToken,
@@ -827,6 +828,38 @@ export default function FreeTrialView() {
     try {
       const reponse = await rejectFreeTrialRequests({ requestIds: selectionEnAttente, tokenId: jetonOuvert });
       setNotice(t('operations.freeTrial.notice.rejected', { count: formatNumber(reponse.rejected) }));
+      setSelectionParJeton(prev => ({ ...prev, [jetonOuvert]: [] }));
+      await Promise.all([charger(), chargerVolet(jetonOuvert, volet?.page ?? 1)]);
+    } catch (err) {
+      setError(errorMessage(err, 'operations.freeTrial.genericError'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * Supprime les inscrits cochés, et les forfaits nés de leur essai.
+   *
+   * Distinct du refus : refuser laisse la ligne en place, marquée « refusée » ;
+   * supprimer l'efface. La confirmation nomme donc ce qui part, y compris le
+   * nombre d'accès retirés, parce que rien ne permettra de revenir en arrière.
+   *
+   * S'applique à TOUTE la sélection valide — en attente comme déployée — là où
+   * le refus ne vise que les demandes en attente.
+   */
+  const supprimerInscrits = async () => {
+    if (!jetonOuvert || selectionValide.length === 0) return;
+    if (!window.confirm(t('operations.freeTrial.deleteRequestsConfirm', {
+      count: formatNumber(selectionValide.length),
+    }))) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const reponse = await deleteFreeTrialRequests({ requestIds: selectionValide, tokenId: jetonOuvert });
+      setNotice(t('operations.freeTrial.notice.deletedRequests', {
+        count: formatNumber(reponse.deleted),
+        plans: formatNumber(reponse.subscriptionsRemoved),
+      }));
       setSelectionParJeton(prev => ({ ...prev, [jetonOuvert]: [] }));
       await Promise.all([charger(), chargerVolet(jetonOuvert, volet?.page ?? 1)]);
     } catch (err) {
@@ -1704,6 +1737,24 @@ export default function FreeTrialView() {
                               >
                                 <SlidersHorizontal className="h-3.5 w-3.5" />
                                 {t('operations.freeTrial.manage')}
+                              </button>
+                              {/* SUPPRIMER — distinct de « Refuser ».
+                                  Refuser laisse la ligne, marquée refusée ;
+                                  supprimer efface l'inscrit ET les forfaits nés
+                                  de son essai, donc l'accès part de l'appareil
+                                  dans la seconde. Séparé des autres par un
+                                  filet : c'est le seul geste irréversible de
+                                  cette barre. */}
+                              <span className="mx-1 h-5 w-px bg-white/10" aria-hidden="true" />
+                              <button
+                                type="button"
+                                onClick={supprimerInscrits}
+                                disabled={busy || selectionValide.length === 0}
+                                title={t('operations.freeTrial.deleteRequestsHint')}
+                                className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-1.5 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:opacity-50"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                                {t('operations.freeTrial.deleteRequests')}
                               </button>
                             </div>
                           </div>

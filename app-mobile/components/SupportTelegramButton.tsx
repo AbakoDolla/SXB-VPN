@@ -5,10 +5,11 @@
  * compte (écran d'activation, écran d'essai gratuit). Il n'a donc besoin
  * d'aucune session.
  *
- * L'ouverture vise Telegram DIRECTEMENT : l'adresse native `tg://` est essayée
- * avant le lien `https://t.me/...`, qu'Android confie au navigateur dans la
- * plupart des cas. Le repli https sert à qui n'a pas Telegram, et l'alerte ne
- * s'affiche que si plus rien ne peut ouvrir le lien.
+ * L'ouverture vise le lien `https://t.me/...` EN PREMIER : Telegram déclare
+ * t.me en lien d'application vérifié, donc Android l'ouvre directement dans
+ * l'application quand elle est installée, et le navigateur affiche sinon la
+ * page t.me — qui propose elle-même d'ouvrir Telegram. L'adresse native
+ * `tg://` ne sert plus que de second recours (voir `openSupportTelegram`).
  */
 import React from 'react';
 import { Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -18,40 +19,51 @@ import { useColors } from '@/hooks/useColors';
 import { useTranslation } from '@/localization';
 
 /**
- * Ouvre le canal de support DANS Telegram quand l'application est installée.
+ * Ouvre le canal de support.
  *
- * L'adresse native (`tg://`) est essayée d'abord : elle n'est réclamée que par
- * Telegram, donc elle y mène directement. Le lien `https://t.me/...` ne le
- * faisait pas — Android ne confie un lien https à une application que si le
- * domaine a été vérifié et que l'utilisateur n'a pas renvoyé les liens vers son
- * navigateur ; le bouton ouvrait donc une page web au lieu de Telegram.
+ * ORDRE : le lien `https://t.me/...` D'ABORD, l'adresse native ensuite.
  *
- * Le repli https reste indispensable pour qui n'a pas Telegram : la page web
- * propose alors de l'installer. Et comme `openURL` sur une https réussit
- * toujours, l'alerte ne se déclenche que si même le navigateur est absent —
- * c'est-à-dire quand il n'y a effectivement plus rien à faire.
+ * POURQUOI CET ORDRE — et pourquoi l'inverse a échoué
+ * ───────────────────────────────────────────────────
+ * L'implémentation précédente tentait `tg://join?invite=HASH` en premier, en
+ * partant du principe qu'une adresse native mène forcément à l'application.
+ * C'est faux pour une invitation : `openURL` RÉUSSIT dès que Telegram déclare
+ * le schéma `tg://`, donc le repli web n'est jamais atteint — mais Telegram,
+ * lui, ne résout pas toujours l'invitation ainsi et s'ouvre sur un écran vide.
+ * Résultat vu par l'utilisateur : le bouton « ne fait rien », sans la moindre
+ * erreur pour l'expliquer.
+ *
+ * Le lien https n'a pas ce défaut :
+ *   • Telegram déclare t.me en lien d'application vérifié : sur un appareil où
+ *     l'application est installée, Android l'ouvre DIRECTEMENT dedans ;
+ *   • sinon le navigateur affiche la page t.me, qui propose elle-même
+ *     « Ouvrir dans Telegram » — un chemin qui aboutit dans les deux cas.
+ *
+ * L'adresse native reste un second recours, pour l'appareil où le navigateur
+ * a été désactivé. L'alerte ne paraît que si plus rien n'ouvre le lien.
  */
 export async function openSupportTelegram(
   onError: () => void,
   open: (url: string) => Promise<unknown> = Linking.openURL,
 ): Promise<boolean> {
+  try {
+    await open(SUPPORT_TELEGRAM_URL);
+    return true;
+  } catch {
+    // Aucun navigateur et aucun gestionnaire de lien : cas rare, mais réel sur
+    // un appareil où le navigateur système a été retiré.
+  }
   const natif = telegramAppUrl(SUPPORT_TELEGRAM_URL);
   if (natif) {
     try {
       await open(natif);
       return true;
     } catch {
-      // Telegram n'est pas installé : `openURL` échoue franchement sur une
-      // adresse `tg://`, et c'est précisément ce qui permet de le savoir.
+      // Telegram absent lui aussi : il n'y a plus rien à tenter.
     }
   }
-  try {
-    await open(SUPPORT_TELEGRAM_URL);
-    return true;
-  } catch {
-    onError();
-    return false;
-  }
+  onError();
+  return false;
 }
 
 export default function SupportTelegramButton({ compact = false }: { compact?: boolean }) {
