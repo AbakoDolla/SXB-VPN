@@ -74,6 +74,14 @@ async function banc(): Promise<Banc> {
       export const Animated={
         View:primitive('div'), Value:Valeur,
         spring:()=>inerte, timing:()=>inerte, loop:()=>inerte,
+        createAnimatedComponent:c=>c,
+      };
+      // Easing est requis des qu'un composant anime avec une courbe. Absent du
+      // stub, esbuild refuse le bundle et le banc entier tombe — pour une
+      // animation dont ce test ne verifie meme pas le rendu.
+      export const Easing={
+        out:f=>f, inOut:f=>f, in:f=>f,
+        ease:x=>x, linear:x=>x, cubic:x=>x, quad:x=>x,
       };
       export const PanResponder={create:()=>({panHandlers:{}})};
       export const AccessibilityInfo={

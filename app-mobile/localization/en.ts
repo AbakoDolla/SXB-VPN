@@ -1,5 +1,9 @@
 export const en = {
   created_by: 'StuffxBillal',
+  relay_broken_title: 'Connected, but nothing is getting through',
+  relay_broken_hint: 'The tunnel is up, yet nothing crosses it. Try another connection, or reconnect.',
+  relay_checking: 'Checking',
+  relay_checking_hint: 'Checking that data really crosses the tunnel…',
   log_auth_failed: 'Credentials refused by the server.',
   log_quota_exhausted: 'Your data allowance is used up.',
   log_access_revoked: 'This access has been withdrawn.',

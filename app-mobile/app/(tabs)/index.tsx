@@ -21,6 +21,7 @@ import { alpha, elevation, layout, radius, spacing, type } from "@/constants/the
 import PowerButton from "@/components/ui/PowerButton";
 import QuotaRing from "@/components/ui/QuotaRing";
 import ConfigPicker from "@/components/ui/ConfigPicker";
+import AmbientGlow from "@/components/ui/AmbientGlow";
 import {
   EmptyState,
   IconButton,
@@ -33,6 +34,13 @@ import {
 } from "@/components/ui/Primitives";
 import { useConnectionDuration } from "@/hooks/useConnectionDuration";
 import { protocolTone } from "@/constants/protocolTone";
+import {
+  SUIVI_INITIAL as SUIVI_RELAIS_INITIAL,
+  echec as echecRelais,
+  etatRelais,
+  peutMontrerDebit,
+  succes as succesRelais,
+} from "@/services/relayProbe";
 import AccessNotices from "@/components/AccessNotices";
 import FreeTrialCard from "@/components/FreeTrialCard";
 import { blocksDevice } from "@/services/accessPolicy";
@@ -182,6 +190,7 @@ export default function HomeScreen() {
   const [configPickerVisible, setConfigPickerVisible] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [ping, setPing] = useState<number | null>(null);
+  const [suiviRelais, setSuiviRelais] = useState(SUIVI_RELAIS_INITIAL);
   const [connections, setConnections] = useState<VpnConnection[]>([]);
   const [connectionsLoading, setConnectionsLoading] = useState(false);
   /** Connexions déployées depuis le tableau de bord et jamais encore montrées. */
@@ -210,9 +219,16 @@ export default function HomeScreen() {
         const start = Date.now();
         try {
           await apiClient.get("/health", { timeout: 4000 });
-          setPing(Date.now() - start);
+          const latence = Date.now() - start;
+          setPing(latence);
+          // La requête a TRAVERSÉ le tunnel : c'est la seule preuve qu'il
+          // transporte réellement. Voir `relayProbe.ts`.
+          setSuiviRelais(prev => succesRelais(prev, latence));
         } catch {
-          setPing(null);
+          // On ne remet PAS le ping à null ici : un creux réseau effacerait la
+          // latence de l'écran alors que le tunnel va très bien. C'est le
+          // compteur d'échecs qui tranche, après trois de suite.
+          setSuiviRelais(prev => echecRelais(prev));
         }
       };
       measurePing();
@@ -224,6 +240,7 @@ export default function HomeScreen() {
       }, 10_000);
     } else {
       setPing(null);
+      setSuiviRelais(SUIVI_RELAIS_INITIAL);
     }
     return () => clearInterval(timerId);
   }, [isConnected]);
@@ -367,6 +384,22 @@ export default function HomeScreen() {
 
   const activeConfig = savedConfigs.find((cfg) => cfg.id === activeConfigId) || savedConfigs[0] || null;
 
+  // Le tunnel transporte-t-il vraiment ? Voir `relayProbe.ts` : la seule preuve
+  // possible est une requête qui a réellement traversé.
+  const relais = etatRelais(suiviRelais, isConnected);
+  const debitFiable = peutMontrerDebit(relais);
+
+  // Teinte d'ambiance. `null` au repos : un fond qui change en permanence
+  // n'informe plus de rien, il doit rester silencieux tant qu'il n'a rien à
+  // dire.
+  const ambianceTeinte = relais === 'prouve'
+    ? colors.accents.emeraude
+    : relais === 'rompu'
+    ? colors.accents.corail
+    : isConnecting || relais === 'incertain'
+    ? colors.accents.ambre
+    : null;
+
   // ── L'accès actif provient-il d'un ESSAI GRATUIT ? ────────────────────────
   //
   // La réponse vient du SERVEUR et de lui seul : `/mobile/connections` marque
@@ -382,6 +415,16 @@ export default function HomeScreen() {
 
   return (
     <LinearGradient colors={colors.gradients.bg as [string, string, string]} style={styles.container}>
+      {/* Halo d'ambiance piloté par l'ÉTAT RÉEL de la liaison.
+          
+          La couleur répond ici à « est-ce que ça marche » plutôt que de
+          décorer : émeraude quand le tunnel a prouvé qu'il relaie, corail
+          quand il est monté sans rien transporter, ambre pendant
+          l'établissement, rien au repos.
+          
+          Il est posé DERRIÈRE le contenu et n'intercepte aucun geste. Il
+          n'anime que son opacité, donc sur le GPU. */}
+      <AmbientGlow tone={ambianceTeinte} visible={ambianceTeinte !== null} />
       <AnnouncementModal
         announcement={activeAnnouncement}
         onClose={async () => {
@@ -698,47 +741,86 @@ export default function HomeScreen() {
           </Surface>
         )}
 
-        {/* Trafic temps réel — visible seulement quand il y a du trafic à montrer. */}
-        {isConnected && (
+        {/* Trafic temps réel — conditionné à la PREUVE que le tunnel relaie.
+
+            LE DÉFAUT CORRIGÉ : cette carte affichait un débit tiré des
+            compteurs de l'interface TUN, qui mesurent ce que le système ÉCRIT
+            DANS le tunnel — retransmissions comprises. Quand le relais était
+            cassé, les applications réessayaient et le compteur grimpait
+            d'autant plus vite que rien ne passait. L'indicateur le plus
+            rassurant de l'écran était alimenté par l'échec lui-même.
+
+            Le débit n'apparaît donc plus que si une requête a RÉELLEMENT
+            traversé le tunnel (voir `relayProbe.ts`). */}
+        {isConnected && relais === 'rompu' && (
+          <Surface tone={colors.accents.corail}>
+            <View style={styles.relaisRow}>
+              <View style={[styles.relaisIcon, { backgroundColor: colors.accents.corail + alpha.f16, borderColor: colors.accents.corail + alpha.f40 }]}>
+                <Ionicons name="warning-outline" size={19} color={colors.accents.corail} />
+              </View>
+              <View style={{ flex: 1, gap: spacing.xs }}>
+                <Text style={[type.h3, { color: colors.accents.corail }]}>{t('relay_broken_title')}</Text>
+                <Text style={[type.caption, { color: colors.textSecondary }]}>{t('relay_broken_hint')}</Text>
+              </View>
+            </View>
+          </Surface>
+        )}
+
+        {isConnected && relais !== 'rompu' && (
           <Surface>
             <SectionHeader
               title={t('card_traffic_realtime')}
               icon="swap-vertical-outline"
-              trailing={<Pill label={t('protection_active')} tone={colors.connected} dot />}
+              trailing={
+                debitFiable
+                  ? <Pill label={t('protection_active')} tone={colors.accents.emeraude} dot />
+                  : <Pill label={t('relay_checking')} tone={colors.accents.ambre} />
+              }
             />
-            <StatRow>
-              <StatTile
-                label={t('traffic_sent')}
-                value={formatBytes(traffic.uploadBytes)}
-                icon="arrow-up-outline"
-                tone={colors.primary}
-                monospace
-              />
-              <StatTile
-                label={t('traffic_received')}
-                value={formatBytes(traffic.downloadBytes)}
-                icon="arrow-down-outline"
-                tone={colors.connected}
-                monospace
-              />
-            </StatRow>
-            {/* Les débits instantanés sont séparés des volumes cumulés : ce sont
-                deux natures de mesure, les mêler nuisait à la lecture. */}
-            <View style={[styles.speedRow, { borderTopColor: colors.border }]}>
-              <View style={styles.speedItem}>
-                <Ionicons name="arrow-up" size={13} color={colors.primary} />
-                <Text style={[type.captionMedium, { color: colors.textSecondary, fontVariant: ['tabular-nums' as const] }]}>
-                  {formatSpeed(traffic.uploadSpeed)}
-                </Text>
-              </View>
-              <View style={styles.speedItem}>
-                <Ionicons name="arrow-down" size={13} color={colors.connected} />
-                <Text style={[type.captionMedium, { color: colors.textSecondary, fontVariant: ['tabular-nums' as const] }]}>
-                  {formatSpeed(traffic.downloadSpeed)}
-                </Text>
-              </View>
-              <Text style={[type.micro, { color: colors.textMuted }]}>{t('traffic_speed')}</Text>
-            </View>
+            {!debitFiable ? (
+              // Tant que rien n'a traversé, on ne montre AUCUN chiffre : mieux
+              // vaut dire qu'on vérifie que d'annoncer une vitesse à quelqu'un
+              // dont la connexion ne fonctionne peut-être pas.
+              <Text style={[type.caption, { color: colors.textMuted }]}>
+                {t('relay_checking_hint')}
+              </Text>
+            ) : (
+              <>
+                <StatRow>
+                  <StatTile
+                    label={t('traffic_sent')}
+                    value={formatBytes(traffic.uploadBytes)}
+                    icon="arrow-up-outline"
+                    tone={colors.accents.cyan}
+                    monospace
+                  />
+                  <StatTile
+                    label={t('traffic_received')}
+                    value={formatBytes(traffic.downloadBytes)}
+                    icon="arrow-down-outline"
+                    tone={colors.accents.emeraude}
+                    monospace
+                  />
+                </StatRow>
+                {/* Les débits instantanés sont séparés des volumes cumulés : ce
+                    sont deux natures de mesure, les mêler nuisait à la lecture. */}
+                <View style={[styles.speedRow, { borderTopColor: colors.border }]}>
+                  <View style={styles.speedItem}>
+                    <Ionicons name="arrow-up" size={13} color={colors.accents.cyan} />
+                    <Text style={[type.captionMedium, { color: colors.textSecondary, fontVariant: ['tabular-nums' as const] }]}>
+                      {formatSpeed(traffic.uploadSpeed)}
+                    </Text>
+                  </View>
+                  <View style={styles.speedItem}>
+                    <Ionicons name="arrow-down" size={13} color={colors.accents.emeraude} />
+                    <Text style={[type.captionMedium, { color: colors.textSecondary, fontVariant: ['tabular-nums' as const] }]}>
+                      {formatSpeed(traffic.downloadSpeed)}
+                    </Text>
+                  </View>
+                  <Text style={[type.micro, { color: colors.textMuted }]}>{t('traffic_speed')}</Text>
+                </View>
+              </>
+            )}
           </Surface>
         )}
 
@@ -860,6 +942,17 @@ const styles = StyleSheet.create({
   // L'emoji suit la taille du salut plutôt que la sienne : posé à sa taille
   // naturelle, il dépassait la ligne et décalait le nom d'un pixel.
   greetingEmoji: { fontSize: 13, lineHeight: 17 },
+
+  // ── Alerte de relais rompu ─────────────────────────────────────────────────
+  relaisRow: { flexDirection: "row", alignItems: "flex-start", gap: spacing.md },
+  relaisIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
 
   // ── Quota ──────────────────────────────────────────────────────────────────
   // `flexWrap` plutôt qu'une largeur figée : sur un écran de 360 px avec une

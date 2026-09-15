@@ -14,7 +14,7 @@ import { Pressable, StyleSheet, Text, View, type ViewStyle, type StyleProp } fro
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useColors } from '@/hooks/useColors';
-import { alpha, elevation, layout, radius, spacing, type } from '@/constants/theme';
+import { alpha, elevation, glow, layout, radius, spacing, type } from '@/constants/theme';
 
 // ── Surface ──────────────────────────────────────────────────────────────────
 
@@ -28,6 +28,20 @@ interface SurfaceProps {
   padded?: boolean;
 }
 
+/**
+ * Carte de base.
+ *
+ * LE RELIEF suit la règle établie par `PowerButton` : **une seule source de
+ * lumière, en haut à gauche**. Ce n'est pas le nombre de couches qui produit la
+ * profondeur, c'est la cohérence de cette convention d'un composant à l'autre.
+ *
+ * Deux couches seulement ici, et elles suffisent :
+ *  1. un lavis clair en haut, qui simule la lumière reçue par l'arête haute ;
+ *  2. un liseré clair sur cette même arête, qui lui donne son épaisseur.
+ *
+ * L'ombre est TEINTÉE par l'accent de la carte plutôt que noire : sur un fond
+ * très sombre, une ombre neutre ternit au lieu de creuser.
+ */
 export function Surface({ children, variant = 'flat', tone, style, padded = true }: SurfaceProps) {
   const colors = useColors();
   const toned = tone
@@ -38,13 +52,29 @@ export function Surface({ children, variant = 'flat', tone, style, padded = true
     <View
       style={[
         styles.surface,
-        padded && { padding: layout.cardPadding },
         toned,
         variant === 'raised' && elevation.md,
+        // Une carte teintée porte le halo de sa propre teinte : c'est ce qui la
+        // détache du fond sans l'éclaircir.
+        tone ? glow(tone, 'sm') : null,
         style,
       ]}
     >
-      {children}
+      {variant !== 'outline' && (
+        <>
+          <LinearGradient
+            colors={['rgba(255,255,255,0.055)', 'rgba(255,255,255,0.012)', 'transparent']}
+            start={{ x: 0.15, y: 0 }}
+            end={{ x: 0.85, y: 1 }}
+            style={styles.surfaceWash}
+            pointerEvents="none"
+          />
+          <View style={styles.surfaceEdge} pointerEvents="none" />
+        </>
+      )}
+      <View style={padded ? { padding: layout.cardPadding, gap: spacing.md } : undefined}>
+        {children}
+      </View>
     </View>
   );
 }
@@ -367,6 +397,21 @@ const styles = StyleSheet.create({
     borderRadius: radius.lg,
     borderWidth: 1,
     gap: spacing.md,
+    // `overflow` contient le lavis dans les coins arrondis ; sans lui il
+    // débordait en carré au-dessus de la bordure.
+    overflow: 'hidden',
+  },
+  // Le lavis ne couvre que le haut : au-delà, il passerait derrière le texte
+  // du corps et en abaisserait le contraste.
+  surfaceWash: { position: 'absolute', left: 0, right: 0, top: 0, height: 72 },
+  // Arête haute : un cheveu de lumière qui donne son épaisseur à la carte.
+  surfaceEdge: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(255,255,255,0.10)',
   },
   sectionHeader: {
     flexDirection: 'row',

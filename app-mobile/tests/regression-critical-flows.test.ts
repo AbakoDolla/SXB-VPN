@@ -21,6 +21,14 @@ import {
 } from '../services/appLockPolicy';
 import { activationErrorKey, normalizeActivationToken } from '../services/activationError';
 import { traduireJournal, traduireLigne } from '../services/logTranslator';
+import {
+  ECHECS_AVANT_RUPTURE,
+  SUIVI_INITIAL as SUIVI_RELAIS_INITIAL,
+  echec as echecRelais,
+  etatRelais,
+  peutMontrerDebit,
+  succes as succesRelais,
+} from '../services/relayProbe';
 
 const XRAY_VLESS_D2L = {
   remarks: 'BYPASS',
@@ -303,6 +311,67 @@ describe('compatibilité URI VLESS / JSON complète', () => {
     const fromJson = validateVpnConfig(vlessUriToJson(VLESS_URI));
     assert.equal(fromJson.valid, true, fromJson.errors.join(' | '));
     assert.equal(fromJson.config?.wsHost, 'ss.alphaeconet.co.zw');
+  });
+
+  it('ne montre JAMAIS un débit tant que le tunnel n’a pas prouvé qu’il relaie', () => {
+    // ═══════════════════════════════════════════════════════════════════════
+    // LE DÉFAUT CORRIGÉ — l'indicateur rassurant alimenté par l'échec
+    // ═══════════════════════════════════════════════════════════════════════
+    // `TrafficStatsManager` lit les compteurs du noyau sur l'interface TUN. Ils
+    // mesurent ce que le système ÉCRIT DANS le tunnel, retransmissions
+    // comprises. Quand le relais est cassé, les applications réessaient — et le
+    // compteur grimpe d'autant plus vite que rien ne passe.
+    //
+    // L'écran affichait donc un débit honorable pendant qu'aucune page ne se
+    // chargeait. Le chiffre n'était pas faux : il était sans rapport avec ce
+    // qu'on croyait lire.
+    //
+    // La seule preuve possible est une requête qui TRAVERSE réellement. Le
+    // moteur route tout vers `proxy` (seules les adresses privées et l'hôte du
+    // serveur sont exclus), donc un appel à l'API passe par le tunnel.
+    assert.equal(etatRelais(SUIVI_RELAIS_INITIAL, false), 'hors_ligne');
+    assert.equal(etatRelais(SUIVI_RELAIS_INITIAL, true), 'incertain',
+      'monté sans mesure : on ne sait pas encore');
+    assert.equal(peutMontrerDebit('incertain'), false, 'aucun chiffre sans preuve');
+
+    // Une requête aboutie prouve le relais.
+    const prouve = succesRelais(SUIVI_RELAIS_INITIAL, 120);
+    assert.equal(etatRelais(prouve, true), 'prouve');
+    assert.equal(peutMontrerDebit('prouve'), true);
+
+    // UN échec isolé ne suffit pas : passage d'antenne, ascenseur, serveur qui
+    // redémarre. Annoncer la panne au premier creux ferait clignoter l'écran, et
+    // l'utilisateur apprendrait à ignorer le message — pire que de se taire.
+    let suivi = echecRelais(prouve);
+    assert.equal(etatRelais(suivi, true), 'incertain', 'un échec isolé n’est pas une panne');
+    assert.equal(peutMontrerDebit(etatRelais(suivi, true)), false,
+      'le débit se retire dès le doute, il ne revient qu’avec la preuve');
+
+    // TROIS d'affilée, à dix secondes d'intervalle : une demi-minute sans
+    // qu'aucune donnée n'aboutisse. Là, ce n'est plus un creux.
+    suivi = echecRelais(echecRelais(suivi));
+    assert.equal(suivi.echecsConsecutifs, ECHECS_AVANT_RUPTURE);
+    assert.equal(etatRelais(suivi, true), 'rompu');
+    assert.equal(peutMontrerDebit('rompu'), false);
+
+    // La latence est CONSERVÉE à travers un échec : l'effacer ferait
+    // disparaître le ping de l'écran au premier creux réseau.
+    assert.equal(suivi.dernierPing, 120);
+
+    // Une mesure qui aboutit efface les échecs : le tunnel s'est rétabli.
+    assert.equal(etatRelais(succesRelais(suivi, 90), true), 'prouve');
+
+    // L'écran applique bien la règle plutôt que d'afficher inconditionnellement.
+    const accueil = source('app/(tabs)/index.tsx');
+    assert.match(accueil, /peutMontrerDebit/, 'l’accueil doit conditionner le débit');
+    assert.match(accueil, /relais === 'rompu'/, 'la panne doit être annoncée');
+    assert.match(accueil, /relay_broken_title/, 'un message explicite doit exister');
+    for (const langue of ['fr', 'en']) {
+      const dico = source(`localization/${langue}.ts`);
+      for (const cle of ['relay_broken_title', 'relay_broken_hint', 'relay_checking', 'relay_checking_hint']) {
+        assert.match(dico, new RegExp(`${cle}:`), `${langue} : ${cle} manquante`);
+      }
+    }
   });
 
   it('ne laisse AUCUN détail technique atteindre l’écran de diagnostic', () => {

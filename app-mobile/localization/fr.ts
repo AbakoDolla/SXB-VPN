@@ -1,5 +1,9 @@
 export const fr = {
   created_by: 'StuffxBillal',
+  relay_broken_title: 'Connecté, mais aucune donnée ne passe',
+  relay_broken_hint: 'Le tunnel est monté, pourtant rien ne le traverse. Essayez une autre connexion, ou reconnectez-vous.',
+  relay_checking: 'Vérification',
+  relay_checking_hint: 'Vérification que les données traversent bien le tunnel…',
   log_auth_failed: 'Identifiants refusés par le serveur.',
   log_quota_exhausted: 'Votre volume de données est épuisé.',
   log_access_revoked: 'Cet accès a été retiré.',
