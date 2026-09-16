@@ -151,7 +151,7 @@ router.post('/report', requireAuth, async (req: AuthenticatedRequest, res: Respo
     signals: evaluation.signaux.join(','),
     riskScore: evaluation.score,
     action: evaluation.action,
-    status: attestation,
+    attestation,
   };
 
   const typeAlerte = evaluation.signaux.includes('decoyTouched')

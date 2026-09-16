@@ -79,7 +79,7 @@ const METADATA_KEYS = new Set([
   // D'OÙ, sans quoi il lit un incident sans pouvoir agir dessus. Ces champs ne
   // sortent que par la console propriétaire, qui est déjà cloisonnée.
   'ip', 'clientName', 'deviceModel', 'appVersion',
-  'signals', 'riskScore', 'action',
+  'signals', 'riskScore', 'action', 'attestation',
 ]);
 
 function nettoyerMetadata(metadata: Record<string, unknown> | null | undefined): string | null {

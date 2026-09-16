@@ -980,21 +980,24 @@
       "appVersion": "App version",
       "signals": "Signals observed",
       "riskScore": "Risk score",
-      "action": "Decision"
+      "action": "Decision",
+      "attestation": "Google attestation"
     },
     "metaValues": {
       "bad_password": "Wrong password",
       "unknown_account": "Unknown account",
-      "not_configured": "Door not configured",
+      "not_configured": "Not configured on the platform",
       "passkey": "Fingerprint",
       "password": "Password",
       "exhausted": "Quota exhausted",
-      "unavailable": "Service unavailable",
+      "unavailable": "Google unreachable",
       "none": "No action",
       "watch": "Watched",
       "block": "Access cut",
       "suspended": "Suspended",
-      "failed": "Cut failed"
+      "failed": "Cut failed",
+      "absent": "Not supplied by the app",
+      "valid": "Install recognised"
     },
     "actionLabels": {
       "SESSIONS_CLOSED": "Every open session was closed",

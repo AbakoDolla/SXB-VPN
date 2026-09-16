@@ -980,21 +980,24 @@
       "appVersion": "Version de l'application",
       "signals": "Signaux relevés",
       "riskScore": "Score de risque",
-      "action": "Décision"
+      "action": "Décision",
+      "attestation": "Attestation Google"
     },
     "metaValues": {
       "bad_password": "Mot de passe incorrect",
       "unknown_account": "Compte inconnu",
-      "not_configured": "Porte non configurée",
+      "not_configured": "Non configurée sur la plateforme",
       "passkey": "Empreinte",
       "password": "Mot de passe",
       "exhausted": "Quota épuisé",
-      "unavailable": "Service indisponible",
+      "unavailable": "Google injoignable",
       "none": "Aucune action",
       "watch": "Sous surveillance",
       "block": "Accès coupé",
       "suspended": "Suspendu",
-      "failed": "Coupure impossible"
+      "failed": "Coupure impossible",
+      "absent": "Non fournie par l'application",
+      "valid": "Installation reconnue"
     },
     "actionLabels": {
       "SESSIONS_CLOSED": "Toutes les ouvertures en cours ont été fermées",
