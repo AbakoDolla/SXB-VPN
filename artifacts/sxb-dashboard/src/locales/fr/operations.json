@@ -933,7 +933,11 @@
       "SECURITY_GATE_PASSWORD_ROTATED": "Mot de passe du Centre changé",
       "SECURITY_PASSKEY_ENROLLED": "Empreinte enrôlée",
       "SECURITY_PASSKEY_REMOVED": "Empreinte retirée",
-      "SECURITY_PASSKEY_REJECTED": "Empreinte refusée"
+      "SECURITY_PASSKEY_REJECTED": "Empreinte refusée",
+      "DEVICE_INTEGRITY_ALERT": "Appareil altéré",
+      "DEVICE_AUTO_BLOCKED": "Accès coupé automatiquement",
+      "DEVICE_DECOY_TOUCHED": "Leurre touché",
+      "DEVICE_ATTESTATION_FAILED": "Attestation refusée"
     },
     "eventExplain": {
       "LOGIN_FAILED": "Un identifiant ou un mot de passe incorrect a été présenté au panneau. Isolé, c'est une faute de frappe ; répété depuis la même origine, c'est une tentative de devinette.",
@@ -951,7 +955,11 @@
       "SECURITY_GATE_PASSWORD_ROTATED": "Le propriétaire a remplacé le mot de passe de la porte. Toutes les consoles encore ouvertes ont été fermées.",
       "SECURITY_PASSKEY_ENROLLED": "Une nouvelle empreinte peut désormais ouvrir le Centre. Retirez-la si elle ne vous appartient pas.",
       "SECURITY_PASSKEY_REMOVED": "Cette empreinte n'ouvre plus le Centre.",
-      "SECURITY_PASSKEY_REJECTED": "Une vérification d'empreinte a échoué. Un échec isolé vient souvent du capteur ; répété, il mérite un examen."
+      "SECURITY_PASSKEY_REJECTED": "Une vérification d'empreinte a échoué. Un échec isolé vient souvent du capteur ; répété, il mérite un examen.",
+      "DEVICE_INTEGRITY_ALERT": "L'application s'exécute dans un environnement modifié : appareil rooté, instrumentation active ou signature non conforme. Le détail figure dans les signaux ci-dessous, avec le score retenu par le serveur.",
+      "DEVICE_AUTO_BLOCKED": "Le risque a dépassé le seuil et l'accès de cet appareil a été suspendu sans attendre. La coupure est réversible : réactivez le client depuis sa fiche si l'alerte se révèle infondée.",
+      "DEVICE_DECOY_TOUCHED": "Une valeur appât, qu'une application intacte n'utilise jamais, a été employée. C'est la preuve qu'un tiers lit ou rejoue la configuration : à traiter en premier.",
+      "DEVICE_ATTESTATION_FAILED": "Google n'a pas reconnu cette installation comme authentique. Seule, l'alerte peut venir d'un appareil sans services Google ; répétée avec d'autres signaux, elle désigne une copie."
     },
     "metaLabels": {
       "reason": "Motif",
@@ -965,7 +973,14 @@
       "profileId": "Profil",
       "subscriptionId": "Abonnement",
       "count": "Nombre",
-      "label": "Libellé"
+      "label": "Libellé",
+      "ip": "Adresse source",
+      "clientName": "Client",
+      "deviceModel": "Modèle d'appareil",
+      "appVersion": "Version de l'application",
+      "signals": "Signaux relevés",
+      "riskScore": "Score de risque",
+      "action": "Décision"
     },
     "metaValues": {
       "bad_password": "Mot de passe incorrect",
@@ -974,10 +989,17 @@
       "passkey": "Empreinte",
       "password": "Mot de passe",
       "exhausted": "Quota épuisé",
-      "unavailable": "Service indisponible"
+      "unavailable": "Service indisponible",
+      "none": "Aucune action",
+      "watch": "Sous surveillance",
+      "block": "Accès coupé",
+      "suspended": "Suspendu",
+      "failed": "Coupure impossible"
     },
     "actionLabels": {
-      "SESSIONS_CLOSED": "Toutes les ouvertures en cours ont été fermées"
+      "SESSIONS_CLOSED": "Toutes les ouvertures en cours ont été fermées",
+      "ACCESS_SUSPENDED": "L'accès de cet appareil a été suspendu",
+      "SUSPEND_FAILED": "La suspension n'a pas pu être appliquée — à couper à la main"
     },
     "detailsTitle": "Ce que cela signifie",
     "metaTitle": "Détails techniques",
@@ -985,6 +1007,17 @@
     "legendHint": "Chaque alerte porte une gravité et un type. Voici ce que chacun veut dire et ce qu'il appelle de votre part.",
     "legendShow": "Afficher la légende",
     "legendHide": "Masquer la légende",
+    "signalLabels": {
+      "signatureInvalid": "Signature de l'application non conforme",
+      "decoyTouched": "Leurre touché",
+      "hooked": "Fonctions détournées",
+      "frida": "Frida détecté",
+      "xposed": "Xposed détecté",
+      "attestationFailed": "Attestation refusée",
+      "debugger": "Débogueur attaché",
+      "rooted": "Appareil rooté",
+      "emulator": "Émulateur"
+    },
     "errors": {
       "gate": "Impossible de lire l’état de la porte de sécurité.",
       "console": "Impossible de charger les données du centre de sécurité.",

@@ -42,6 +42,7 @@ import announcementsRouter from "./server/routes/announcements";
 import appUpdatesRouter from "./server/routes/app-updates";
 import securityRouter from "./server/routes/security";
 import mobileHealthRouter from "./server/routes/mobile-health";
+import mobileSecurityRouter from "./server/routes/mobile-security";
 import presenceRouter from "./server/routes/presence";
 import freeTrialRouter from "./server/routes/free-trial";
 import { maintenanceGuard, MAINTENANCE_PAGE_HTML } from "./server/middleware/maintenance";
@@ -151,6 +152,9 @@ async function startServer() {
   // empreinte. Aucune autre route n'en dépend, l'application mobile non plus.
   app.use("/api/security", securityRouter);
   app.use("/api/mobile-health", mobileHealthRouter);
+  // Remontée d'intégrité de l'application mobile. L'appareil observe, le
+  // serveur décide : la route ne reçoit jamais de verdict.
+  app.use("/api/mobile-security", mobileSecurityRouter);
   app.use("/api/presence", presenceRouter);
 app.use("/api/free-trial", freeTrialRouter);
   app.use("/api/audit-logs", auditLogsRouter);

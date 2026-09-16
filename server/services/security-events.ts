@@ -44,6 +44,10 @@ export const SECURITY_EVENT_TYPES = [
   'SECURITY_PASSKEY_ENROLLED',
   'SECURITY_PASSKEY_REMOVED',
   'SECURITY_PASSKEY_REJECTED',
+  'DEVICE_INTEGRITY_ALERT',
+  'DEVICE_AUTO_BLOCKED',
+  'DEVICE_DECOY_TOUCHED',
+  'DEVICE_ATTESTATION_FAILED',
 ] as const;
 export type SecurityEventType = (typeof SECURITY_EVENT_TYPES)[number];
 
@@ -71,6 +75,11 @@ export const SECURITY_EVENTS_MAX_PAGE_SIZE = 200;
 const METADATA_KEYS = new Set([
   'reason', 'route', 'method', 'attempts', 'windowMinutes', 'status',
   'role', 'target', 'profileId', 'subscriptionId', 'count', 'label',
+  // Attribution d'une alerte mobile. L'exploitant a besoin de savoir QUI et
+  // D'OÙ, sans quoi il lit un incident sans pouvoir agir dessus. Ces champs ne
+  // sortent que par la console propriétaire, qui est déjà cloisonnée.
+  'ip', 'clientName', 'deviceModel', 'appVersion',
+  'signals', 'riskScore', 'action',
 ]);
 
 function nettoyerMetadata(metadata: Record<string, unknown> | null | undefined): string | null {

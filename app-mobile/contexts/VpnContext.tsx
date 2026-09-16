@@ -61,6 +61,7 @@ import {
   sendMobileHealthHeartbeat,
   MOBILE_HEALTH_HEARTBEAT_INTERVAL_MS,
 } from '@/services/mobileHealth';
+import { remonterIntegrite } from '@/services/securityReport';
 
 export { formatBytes, deriveQuota, DerivedQuota };
 
@@ -305,6 +306,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         ) as 'disconnected' | 'connecting' | 'connected' | 'error',
         protocol: connectedProtocolRef.current,
       });
+      // Constat d'intégrité au démarrage, cadencé par le service lui-même.
+      void remonterIntegrite();
     }
     const sub = AppState.addEventListener('change', (next) => {
       appActiveRef.current = next !== 'background' && next !== 'inactive';
@@ -335,6 +338,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         protocol: connectedProtocolRef.current,
         outcome: 'success',
       });
+      // Le moment qui compte : un tunnel qui s'ouvre sur un appareil instrumenté
+      // est exactement ce que l'exploitant doit voir tout de suite. Le constat
+      // est refait ici même si le précédent est récent.
+      void remonterIntegrite({ force: true });
       return;
     }
 

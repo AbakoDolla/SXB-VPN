@@ -87,6 +87,14 @@ function readableVocabulary(language: Language) {
     eventExplain: (code: string) => lookup("eventExplain", code) ?? "",
     metaKey: (code: string) => lookup("metaLabels", code) ?? code,
     metaValue: (value: string) => lookup("metaValues", value) ?? value,
+    // Les signaux arrivent en liste séparée par des virgules : chacun est
+    // traduit, et un signal inconnu reste affiché brut plutôt qu'escamoté.
+    signalList: (value: string) => value
+      .split(",")
+      .map(nom => nom.trim())
+      .filter(Boolean)
+      .map(nom => lookup("signalLabels", nom) ?? nom)
+      .join(" · "),
     action: (value: string) => lookup("actionLabels", value) ?? value,
     // Le journal de la porte partage le vocabulaire de niveau du reste du
     // panneau, qui l'écrit en minuscules.
@@ -100,7 +108,9 @@ function parseMetadata(metadata: string | null): Array<[string, string]> {
   try {
     const parsed = JSON.parse(metadata);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [["metadata", metadata]];
-    return Object.entries(parsed).slice(0, 6).map(([key, value]) => [key, typeof value === "string" ? value : JSON.stringify(value)]);
+    // Une alerte d'intégrité porte sept champs de contexte : couper à six en
+    // escamotait un, et c'était la décision prise par le serveur.
+    return Object.entries(parsed).slice(0, 10).map(([key, value]) => [key, typeof value === "string" ? value : JSON.stringify(value)]);
   } catch {
     return [["metadata", metadata]];
   }
@@ -555,12 +565,15 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
                         {event.actionTaken && <p className="mt-2 text-xs text-slate-300">{vocabulary.action(event.actionTaken)}</p>}
                         {parseMetadata(event.metadata).length > 0 && (
                           <dl className="mt-3 grid gap-2 rounded-xl border border-[#263149] bg-[#07090e]/60 p-3 text-[11px] sm:grid-cols-2">
-                            {parseMetadata(event.metadata).map(([key, value]) => (
-                              <div key={key} className="min-w-0">
-                                <dt className="text-slate-500">{vocabulary.metaKey(key)}</dt>
-                                <dd className="truncate text-slate-300" title={vocabulary.metaValue(value)}>{vocabulary.metaValue(value)}</dd>
-                              </div>
-                            ))}
+                            {parseMetadata(event.metadata).map(([key, value]) => {
+                              const lisible = key === "signals" ? vocabulary.signalList(value) : vocabulary.metaValue(value);
+                              return (
+                                <div key={key} className="min-w-0">
+                                  <dt className="text-slate-500">{vocabulary.metaKey(key)}</dt>
+                                  <dd className="truncate text-slate-300" title={lisible}>{lisible}</dd>
+                                </div>
+                              );
+                            })}
                           </dl>
                         )}
                       </div>

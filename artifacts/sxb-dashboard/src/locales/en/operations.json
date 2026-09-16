@@ -933,7 +933,11 @@
       "SECURITY_GATE_PASSWORD_ROTATED": "Security Center password changed",
       "SECURITY_PASSKEY_ENROLLED": "Fingerprint enrolled",
       "SECURITY_PASSKEY_REMOVED": "Fingerprint removed",
-      "SECURITY_PASSKEY_REJECTED": "Fingerprint refused"
+      "SECURITY_PASSKEY_REJECTED": "Fingerprint refused",
+      "DEVICE_INTEGRITY_ALERT": "Tampered device",
+      "DEVICE_AUTO_BLOCKED": "Access cut automatically",
+      "DEVICE_DECOY_TOUCHED": "Decoy touched",
+      "DEVICE_ATTESTATION_FAILED": "Attestation refused"
     },
     "eventExplain": {
       "LOGIN_FAILED": "A wrong e-mail or password was presented to the panel. On its own it is a typo; repeated from one origin it is guessing.",
@@ -951,7 +955,11 @@
       "SECURITY_GATE_PASSWORD_ROTATED": "The owner replaced the door password. Every console still open was closed.",
       "SECURITY_PASSKEY_ENROLLED": "A new fingerprint can now open the Center. Remove it if it is not yours.",
       "SECURITY_PASSKEY_REMOVED": "This fingerprint no longer opens the Center.",
-      "SECURITY_PASSKEY_REJECTED": "A fingerprint check failed. A single failure is usually the sensor; repeated, it deserves a look."
+      "SECURITY_PASSKEY_REJECTED": "A fingerprint check failed. A single failure is usually the sensor; repeated, it deserves a look.",
+      "DEVICE_INTEGRITY_ALERT": "The app runs in a modified environment: rooted device, active instrumentation, or a signature that does not match. The detail is in the signals below, with the score the server assigned.",
+      "DEVICE_AUTO_BLOCKED": "Risk passed the threshold and this device was suspended without waiting. The cut is reversible: re-enable the client from its record if the alert proves unfounded.",
+      "DEVICE_DECOY_TOUCHED": "A decoy value, which an intact app never uses, was used. That proves a third party reads or replays the configuration: treat it first.",
+      "DEVICE_ATTESTATION_FAILED": "Google did not recognise this install as genuine. On its own it can mean a device without Google services; repeated alongside other signals, it points at a clone."
     },
     "metaLabels": {
       "reason": "Reason",
@@ -965,7 +973,14 @@
       "profileId": "Profile",
       "subscriptionId": "Subscription",
       "count": "Count",
-      "label": "Label"
+      "label": "Label",
+      "ip": "Source address",
+      "clientName": "Client",
+      "deviceModel": "Device model",
+      "appVersion": "App version",
+      "signals": "Signals observed",
+      "riskScore": "Risk score",
+      "action": "Decision"
     },
     "metaValues": {
       "bad_password": "Wrong password",
@@ -974,10 +989,17 @@
       "passkey": "Fingerprint",
       "password": "Password",
       "exhausted": "Quota exhausted",
-      "unavailable": "Service unavailable"
+      "unavailable": "Service unavailable",
+      "none": "No action",
+      "watch": "Watched",
+      "block": "Access cut",
+      "suspended": "Suspended",
+      "failed": "Cut failed"
     },
     "actionLabels": {
-      "SESSIONS_CLOSED": "Every open session was closed"
+      "SESSIONS_CLOSED": "Every open session was closed",
+      "ACCESS_SUSPENDED": "This device was suspended",
+      "SUSPEND_FAILED": "The suspension could not be applied — cut it by hand"
     },
     "detailsTitle": "What this means",
     "metaTitle": "Technical details",
@@ -985,6 +1007,17 @@
     "legendHint": "Every alert carries a severity and a type. Here is what each one means and what it asks of you.",
     "legendShow": "Show legend",
     "legendHide": "Hide legend",
+    "signalLabels": {
+      "signatureInvalid": "App signature does not match",
+      "decoyTouched": "Decoy touched",
+      "hooked": "Hooked functions",
+      "frida": "Frida detected",
+      "xposed": "Xposed detected",
+      "attestationFailed": "Attestation refused",
+      "debugger": "Debugger attached",
+      "rooted": "Rooted device",
+      "emulator": "Emulator"
+    },
     "errors": {
       "gate": "Unable to read the security gate state.",
       "console": "Unable to load Security Center data.",

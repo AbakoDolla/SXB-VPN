@@ -510,10 +510,19 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
     }
 
     // ── checkSecurity ─────────────────────────────────────────────────────────
+    /**
+     * Observations d'intégrité destinées a la remontée serveur.
+     *
+     * Aucun verdict n'est rendu ici : `isSafe` reste indicatif pour l'interface,
+     * et c'est le serveur qui pondère. L'état de signature est joint parce que
+     * c'est le signal le plus fort du lot — une signature qui ne correspond pas
+     * prouve un remballage, ce qui n'a aucune cause légitime.
+     */
     @ReactMethod
     fun checkSecurity(promise: Promise) {
         try {
             val report = SecurityModule.audit(reactApplicationContext, deep = true)
+            val signature = SecurityModule.checkSignature(reactApplicationContext)
             val map = Arguments.createMap().apply {
                 putBoolean("isRooted",   report.isRooted)
                 putBoolean("hasFrida",   report.hasFrida)
@@ -521,6 +530,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                 putBoolean("isEmulator", report.isEmulator)
                 putBoolean("isHooked",   report.isHooked)
                 putBoolean("isSafe",     report.isSafe)
+                putString("signatureStatus", signature.name)
             }
             promise.resolve(map)
         } catch (e: Exception) {
