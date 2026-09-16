@@ -299,6 +299,12 @@ test('chaque code du journal se lit dans la langue choisie', () => {
   assert.match(routes, /actionTaken: 'SESSIONS_CLOSED'/);
   assert.doesNotMatch(routes, /actionTaken: '[^']*[éèêàùç]/, "aucune phrase française ne doit être stockée telle quelle");
 
+  // Les lignes écrites avant ce changement portent encore la phrase française :
+  // elles sont relues sous leur code, sans réécrire la base.
+  const service2 = lireSource('server/services/security-events.ts');
+  assert.match(service2, /ACTIONS_HERITEES/);
+  assert.match(service2, /'Toutes les ouvertures en cours ont été fermées', 'SESSIONS_CLOSED'/);
+
   // La vue ne rend plus aucun code brut.
   const vue = lireSource('artifacts/sxb-dashboard/src/components/SecurityCenterView.tsx');
   assert.doesNotMatch(vue, /\{event\.severity\}/, 'la gravité doit passer par le vocabulaire traduit');

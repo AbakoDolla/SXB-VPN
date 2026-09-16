@@ -143,6 +143,17 @@ export function construireFiltre(query: SecurityEventQuery): Record<string, unkn
   return where;
 }
 
+/**
+ * Actions écrites avant que le serveur ne stocke des codes.
+ *
+ * Ces lignes portent une phrase française figée, qui s'afficherait telle quelle
+ * à un opérateur anglophone. On les relit sous leur code, que le tableau de bord
+ * sait traduire ; la base n'est pas réécrite pour autant.
+ */
+const ACTIONS_HERITEES = new Map<string, string>([
+  ['Toutes les ouvertures en cours ont été fermées', 'SESSIONS_CLOSED'],
+]);
+
 /** Page d'événements, la plus récente d'abord, avec son total filtré. */
 export async function listSecurityEvents(query: SecurityEventQuery) {
   if (!prisma) return { events: [], total: 0, limit: SECURITY_EVENTS_PAGE_SIZE, offset: 0 };
@@ -154,7 +165,12 @@ export async function listSecurityEvents(query: SecurityEventQuery) {
     }),
     (prisma as any).securityEvent.count({ where }),
   ]);
-  return { events, total, limit, offset };
+  const lisibles = events.map((evenement: any) => (
+    evenement?.actionTaken && ACTIONS_HERITEES.has(evenement.actionTaken)
+      ? { ...evenement, actionTaken: ACTIONS_HERITEES.get(evenement.actionTaken) }
+      : evenement
+  ));
+  return { events: lisibles, total, limit, offset };
 }
 
 /** Compteurs de l'aperçu. Une seule lecture groupée, pas une par carte. */
