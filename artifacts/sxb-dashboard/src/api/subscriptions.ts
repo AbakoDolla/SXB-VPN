@@ -127,13 +127,17 @@ export type BulkValueMode = 'set' | 'add';
 /** Taille maximale d'un lot « appliquer » — doit rester alignée sur le serveur. */
 export const MAX_BULK_APPLY = 200;
 
+/** Configurations attribuables en une fois — alignée sur `MAX_BULK_PROFILES`. */
+export const MAX_BULK_PROFILES = 20;
+
 export interface BulkResult {
   action: BulkAction;
   selected: number;
   succeeded: number;
   skipped: number;
   failed: number;
-  details: Array<{ id: string; status: string; reason?: string }>;
+  /** `profileId` n'est renseigné que par un déploiement multi-configurations. */
+  details: Array<{ id: string; profileId?: string; status: string; reason?: string }>;
 }
 
 export interface BulkPayload {
@@ -142,6 +146,11 @@ export interface BulkPayload {
   subscriptionIds?: string[];
   /** Configuration VPN / serveur de rattachement. Omis = inchangé. */
   profileId?: string;
+  /**
+   * Plusieurs configurations à déployer d'un coup : un forfait est créé par
+   * couple appareil × configuration. Réservé à l'action `deploy`.
+   */
+  profileIds?: string[];
   /** Volume en Go, interprété selon `quotaMode`. Omis = inchangé. */
   quotaGB?: number;
   quotaMode?: BulkValueMode;

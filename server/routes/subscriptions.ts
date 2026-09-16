@@ -33,6 +33,7 @@ import {
 import {
   ChangementsGroupes,
   MAX_BULK_APPLY,
+  MAX_BULK_PROFILES,
   RAISONS_GROUPEES,
   aucunChampRenseigne,
   deltaAllocationGroupee,
@@ -99,6 +100,17 @@ const bulkSubscriptionSchema = z.object({
   clientIds: z.array(identifiantSchema).max(1000).optional(),
   subscriptionIds: z.array(identifiantSchema).max(1000).optional(),
   profileId: identifiantSchema.optional(),
+  /**
+   * Déploiement de PLUSIEURS configurations d'un coup.
+   *
+   * L'exploitant attribue souvent plusieurs forfaits à un même appareil — un
+   * par opérateur, ou un de secours. Il fallait répéter l'opération autant de
+   * fois qu'il y a de configurations, et le plafond du revendeur était alors
+   * contrôlé une fois par envoi : chaque appel isolé paraissait valide, et le
+   * cumul dépassait l'enveloppe. Le lot complet est donc décrit ici, et son
+   * cumul est évalué avant la moindre écriture.
+   */
+  profileIds: z.array(identifiantSchema).max(MAX_BULK_PROFILES).optional(),
   quotaGB: quotaGbSchema.optional(),
   quotaMode: modeValeurSchema.optional(),
   durationDays: durationDaysSchema.optional(),
@@ -130,7 +142,9 @@ const bulkSubscriptionSchema = z.object({
     }
   }
   if (body.action === 'deploy') {
-    if (!body.profileId) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'profileId est requis' });
+    if (!body.profileId && !body.profileIds?.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'profileId ou profileIds est requis' });
+    }
     if (body.quotaGB === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'quotaGB est requis' });
     // Une échéance explicite remplace la durée : exiger les deux obligerait
     // l'interface à en inventer une pour satisfaire la validation.
@@ -140,6 +154,11 @@ const bulkSubscriptionSchema = z.object({
     if (body.durationDays !== undefined && body.expireAt !== undefined) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'expireAt et durationDays s’excluent' });
     }
+  }
+  // `profileIds` n'a de sens qu'à la création : sur `apply`, une seule
+  // configuration remplace celle des forfaits visés.
+  if (body.action !== 'deploy' && body.profileIds !== undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'profileIds n’est accepté que par l’action « deploy »' });
   }
   if (body.action === 'set' && body.quotaGB === undefined && body.durationDays === undefined) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'quotaGB ou durationDays est requis' });
@@ -556,7 +575,7 @@ router.post(
     if (!prisma) return res.status(503).json({ error: 'errors.db.unavailable', message: 'Base de données indisponible' });
 
     const isReseller = req.user?.role === 'RESELLER';
-    const details: Array<{ id: string; status: string; reason?: string }> = [];
+    const details: Array<{ id: string; profileId?: string; status: string; reason?: string }> = [];
     let succeeded = 0, skipped = 0, failed = 0;
 
     // Champs de l'action `apply`, tous indépendamment facultatifs.
@@ -588,6 +607,22 @@ router.post(
     }
     const targetIds = lot.ids;
 
+    // Configurations à déployer. `profileId` reste accepté seul : c'est la
+    // forme historique, et un appel existant ne doit pas cesser de fonctionner.
+    const lotProfils = action === 'deploy'
+      ? normaliserLot(body.profileIds?.length ? body.profileIds : [profileId!], MAX_BULK_PROFILES)
+      : { ok: true as const, ids: [] as string[] };
+    if (!lotProfils.ok) {
+      return res.status(400).json({
+        error: lotProfils.raison,
+        message: lotProfils.raison === RAISONS_GROUPEES.LOT_TROP_GRAND
+          ? `Un déploiement ne peut pas viser plus de ${MAX_BULK_PROFILES} configurations.`
+          : 'Aucune configuration sélectionnée.',
+        limit: MAX_BULK_PROFILES,
+      });
+    }
+    const profileTargets = lotProfils.ids;
+
     // ── Contrôle du quota revendeur sur le CUMUL ────────────────────────────
     // Vérifier client par client laisserait passer 100 × 5 Go pour un
     // revendeur qui n'a que 100 Go : chaque appel isolé serait valide. Le
@@ -609,7 +644,10 @@ router.post(
           const ownedTargets = await (prisma as any).vpnClient.count({
             where: { id: { in: targetIds }, ...porteeClientsRevendeur(reseller) },
           });
-          projected += unit * BigInt(ownedTargets);
+          // Un forfait est créé par COUPLE appareil × configuration : projeter
+          // le seul nombre d'appareils laisserait passer autant de fois
+          // l'enveloppe qu'il y a de configurations dans le lot.
+          projected += unit * BigInt(ownedTargets) * BigInt(profileTargets.length);
         } else if (action === 'apply') {
           // `apply` peut à la fois recharger, prolonger et réactiver : la
           // projection est calculée forfait par forfait à partir du plan réel,
@@ -723,63 +761,77 @@ router.post(
       }
     } else if (action === 'deploy') {
       // ── deploy ────────────────────────────────────────────────────────────
-      const profile = await (prisma as any).vpnProfile.findUnique({ where: { id: profileId! } });
-      if (!profile) return res.status(404).json({ error: 'Profil VPN introuvable' });
+      // Les configurations sont chargées et contrôlées UNE fois, avant toute
+      // écriture : sur un lot de 200 appareils, un profil interdit doit être
+      // refusé d'emblée plutôt que produire 200 échecs identiques.
+      const profils = new Map<string, any>();
+      for (const id of profileTargets) {
+        const profile = await (prisma as any).vpnProfile.findUnique({ where: { id } });
+        if (!profile) return res.status(404).json({ error: 'Profil VPN introuvable', profileId: id });
+        // Le profil doit être attribué au revendeur, exactement comme en création
+        // unitaire : sans ce contrôle, l'opération groupée était la porte dérobée
+        // permettant de revendre la configuration d'un concurrent.
+        const profilRefus = await assertResellerCanUseProfile(req, id);
+        if (profilRefus) return res.status(profilRefus.status).json(profilRefus.body);
+        profils.set(id, profile);
+      }
 
       const quotaBytes = gigabytesToBytes(quotaGB!);
-      // Le profil doit être attribué au revendeur, exactement comme en création
-      // unitaire : sans ce contrôle, l'opération groupée était la porte dérobée
-      // permettant de revendre la configuration d'un concurrent.
-      const profilRefus = await assertResellerCanUseProfile(req, profileId!);
-      if (profilRefus) return res.status(profilRefus.status).json(profilRefus.body);
       const ficheBulk = isReseller
         ? ((req as any).reseller ?? (await chargerFicheRevendeur(prisma, req.user!.userId)))
         : null;
       for (const clientId of targetIds) {
-        try {
-          const client = await prisma.vpnClient.findUnique({ where: { id: clientId }, select: { id: true, userId: true, resellerId: true } });
-          // 404 et non 403 : ne pas confirmer l'existence d'une ressource
-          // appartenant à autrui (convention du dépôt).
-          if (!client || (isReseller && !possedeClient(client, ficheBulk))) {
-            failed++; details.push({ id: clientId, status: 'failed', reason: 'Client introuvable' });
-            continue;
+        const client = await prisma.vpnClient.findUnique({ where: { id: clientId }, select: { id: true, userId: true, resellerId: true } });
+        // 404 et non 403 : ne pas confirmer l'existence d'une ressource
+        // appartenant à autrui (convention du dépôt).
+        if (!client || (isReseller && !possedeClient(client, ficheBulk))) {
+          for (const profileTarget of profileTargets) {
+            failed++; details.push({ id: clientId, profileId: profileTarget, status: 'failed', reason: 'Client introuvable' });
           }
-          const accessError = await refusAccesProprietaireClient(prisma, client);
-          if (accessError) {
-            failed++; details.push({ id: clientId, status: 'failed', reason: accessError.body.message });
-            continue;
-          }
-          // Un déploiement peut être daté : sans début explicite il démarre
-          // maintenant, et sans échéance explicite il court `durationDays`.
-          const startAt  = body.startAt ?? new Date();
-          const expireAt = body.expireAt ?? new Date(startAt.getTime() + durationDays! * 24 * 3600 * 1000);
-          const joursEffectifs = durationDays ?? Math.max(1, Math.round((expireAt.getTime() - startAt.getTime()) / 86_400_000));
-          await executerMutationQuota(prisma, {
-            resellerUserId: client.userId,
-            resellerId: client.resellerId ?? null,
-            auteur: { userId: req.user?.userId, email: req.user?.email },
-            reason: `Deploiement groupe du forfait ${profile.name}`,
-            referenceType: 'subscription',
-          }, (tx) => (tx as any).subscription.create({
-            data: {
-              name: `${profile.name} — ${joursEffectifs}j`,
-              clientId, profileId: profileId!,
-              dataToken: generateDataToken(),
-              quotaBytes, quotaUsed: BigInt(0),
-              durationDays: joursEffectifs,
-              deviceLimit: 1,
-              startAt, expireAt,
-              status: 'active',
-              createdBy: req.user!.userId,
-            },
-          }));
-          accessStateHub.invalidate({ clientId });
-          succeeded++; details.push({ id: clientId, status: 'ok' });
-        } catch (e: any) {
-          // Un échec isolé ne doit pas interrompre les autres : sur 150 clients,
-          // l'opérateur veut le maximum de réussites et la liste des échecs.
-          failed++; details.push({ id: clientId, status: 'failed', reason: e?.message || 'Erreur inconnue' });
+          continue;
         }
+        const accessError = await refusAccesProprietaireClient(prisma, client);
+        if (accessError) {
+          for (const profileTarget of profileTargets) {
+            failed++; details.push({ id: clientId, profileId: profileTarget, status: 'failed', reason: accessError.body.message });
+          }
+          continue;
+        }
+        for (const profileTarget of profileTargets) {
+          const profile = profils.get(profileTarget);
+          try {
+            // Un déploiement peut être daté : sans début explicite il démarre
+            // maintenant, et sans échéance explicite il court `durationDays`.
+            const startAt  = body.startAt ?? new Date();
+            const expireAt = body.expireAt ?? new Date(startAt.getTime() + durationDays! * 24 * 3600 * 1000);
+            const joursEffectifs = durationDays ?? Math.max(1, Math.round((expireAt.getTime() - startAt.getTime()) / 86_400_000));
+            await executerMutationQuota(prisma, {
+              resellerUserId: client.userId,
+              resellerId: client.resellerId ?? null,
+              auteur: { userId: req.user?.userId, email: req.user?.email },
+              reason: `Deploiement groupe du forfait ${profile.name}`,
+              referenceType: 'subscription',
+            }, (tx) => (tx as any).subscription.create({
+              data: {
+                name: `${profile.name} — ${joursEffectifs}j`,
+                clientId, profileId: profileTarget,
+                dataToken: generateDataToken(),
+                quotaBytes, quotaUsed: BigInt(0),
+                durationDays: joursEffectifs,
+                deviceLimit: 1,
+                startAt, expireAt,
+                status: 'active',
+                createdBy: req.user!.userId,
+              },
+            }));
+            succeeded++; details.push({ id: clientId, profileId: profileTarget, status: 'ok' });
+          } catch (e: any) {
+            // Un échec isolé ne doit pas interrompre les autres : sur 150 clients,
+            // l'opérateur veut le maximum de réussites et la liste des échecs.
+            failed++; details.push({ id: clientId, profileId: profileTarget, status: 'failed', reason: e?.message || 'Erreur inconnue' });
+          }
+        }
+        accessStateHub.invalidate({ clientId });
       }
     } else {
       // ── set / add_data / extend_duration ──────────────────────────────────
@@ -865,7 +917,11 @@ router.post(
       failed > 0 ? 'warning' : 'info',
       req.ip || '',
     );
-    return res.json({ success: true, action, selected: targetIds.length, succeeded, skipped, failed, details });
+    // `selected` compte les FORFAITS visés, pas les lignes cochées : un
+    // déploiement de trois configurations sur deux appareils en crée six, et
+    // annoncer « 2 » rendrait le compte rendu incompréhensible.
+    const selected = action === 'deploy' ? targetIds.length * profileTargets.length : targetIds.length;
+    return res.json({ success: true, action, selected, succeeded, skipped, failed, details });
   } catch (err: any) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: 'errors.validation', details: err.issues });

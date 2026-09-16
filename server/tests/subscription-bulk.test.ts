@@ -20,6 +20,7 @@ import {
   GIB,
   JOUR_MS,
   MAX_BULK_APPLY,
+  MAX_BULK_PROFILES,
   RAISONS_GROUPEES,
   aucunChampRenseigne,
   deltaAllocationGroupee,
@@ -407,6 +408,79 @@ describe("gardes posées sur la route groupée", () => {
     for (const action of ["deploy", "set", "add_data", "extend_duration", "apply"]) {
       assert.ok(route.includes(`'${action}'`), `action absente : ${action}`);
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("attribuer plusieurs forfaits à un appareil en une fois", () => {
+  const route = lire("../routes/subscriptions.ts");
+
+  it("crée un forfait par couple appareil × configuration", () => {
+    // La demande de l'exploitant : cocher un appareil, puis lui attribuer
+    // plusieurs forfaits d'un coup — un par opérateur, plus un de secours.
+    assert.ok(route.includes("for (const profileTarget of profileTargets)"));
+    assert.ok(route.includes("clientId, profileId: profileTarget"));
+    // La forme historique à une seule configuration reste acceptée : des
+    // intégrations déployées l'appellent encore.
+    assert.ok(route.includes("body.profileIds?.length ? body.profileIds : [profileId!]"));
+  });
+
+  it("projette le plafond revendeur sur le produit, pas sur le seul nombre d'appareils", () => {
+    // Sans ce facteur, dix configurations à 5 Go sur un appareil ne pesaient
+    // que 5 Go dans la projection : le revendeur dépassait son enveloppe en
+    // un seul envoi, exactement le contournement que le lot existe pour fermer.
+    assert.ok(
+      route.includes("projected += unit * BigInt(ownedTargets) * BigInt(profileTargets.length)"),
+      "le cumul doit compter appareils × configurations",
+    );
+  });
+
+  it("refuse le lot entier avant d'écrire quand une configuration est interdite", () => {
+    const deploiement = route.slice(route.indexOf("} else if (action === 'deploy') {"), route.indexOf("accessStateHub.invalidate({ clientId });"));
+    const controle = deploiement.indexOf("assertResellerCanUseProfile(req, id)");
+    const ecriture = deploiement.indexOf("subscription.create");
+    assert.ok(controle >= 0 && ecriture > controle, "les configurations sont validées avant toute écriture");
+    assert.ok(deploiement.includes("return res.status(404).json({ error: 'Profil VPN introuvable', profileId: id })"));
+  });
+
+  it("borne le nombre de configurations et dédoublonne le lot", () => {
+    assert.ok(route.includes("normaliserLot(body.profileIds?.length ? body.profileIds : [profileId!], MAX_BULK_PROFILES)"));
+    assert.equal(MAX_BULK_PROFILES, 20);
+    // `normaliserLot` dédoublonne : deux fois la même configuration ne doit pas
+    // écrire deux forfaits identiques.
+    const lot = normaliserLot(["p1", "p2", "p1"], MAX_BULK_PROFILES);
+    assert.deepEqual(lot.ok && lot.ids, ["p1", "p2"]);
+    assert.equal(normaliserLot(Array.from({ length: MAX_BULK_PROFILES + 1 }, (_, i) => `p${i}`), MAX_BULK_PROFILES).ok, false);
+  });
+
+  it("rapporte le forfait concerné et compte les forfaits réellement visés", () => {
+    // Un compte rendu qui annonce « 2 sélectionnés » pour six forfaits créés
+    // serait incompréhensible.
+    assert.ok(route.includes("targetIds.length * profileTargets.length"));
+    assert.ok(route.includes("details.push({ id: clientId, profileId: profileTarget, status: 'ok' })"));
+  });
+
+  it("n'accepte `profileIds` que pour un déploiement", () => {
+    assert.ok(route.includes("body.action !== 'deploy' && body.profileIds !== undefined"));
+    // `apply` remplace la configuration des forfaits visés : plusieurs valeurs
+    // n'y auraient aucun sens défini.
+    assert.ok(route.includes("profileIds n’est accepté que par l’action « deploy »"));
+  });
+
+  it("propose la sélection multiple dans les deux écrans qui attribuent", () => {
+    for (const chemin of [
+      "../../artifacts/sxb-dashboard/src/components/SubscriptionsView.tsx",
+      "../../artifacts/sxb-dashboard/src/components/ClientBulkPlans.tsx",
+    ]) {
+      const vue = lire(chemin);
+      assert.ok(vue.includes("ProfileMultiSelect"), `${chemin} : sélection multiple absente`);
+      assert.ok(vue.includes("MAX_BULK_PROFILES"), `${chemin} : borne serveur non reprise`);
+      assert.ok(vue.includes("profileIds"), `${chemin} : le lot n'est pas envoyé`);
+    }
+    // Le composant partagé reste cloisonné à la seule liste qu'on lui donne.
+    const composant = lire("../../artifacts/sxb-dashboard/src/components/ProfileMultiSelect.tsx");
+    assert.ok(!composant.includes("apiRequest") && !composant.includes("fetch("));
+    assert.ok(composant.includes('role="checkbox"') && composant.includes("aria-checked"));
   });
 });
 

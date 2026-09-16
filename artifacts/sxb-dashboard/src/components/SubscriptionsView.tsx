@@ -5,9 +5,10 @@ import { UserRole } from '../types';
 import {
   fetchSubscriptions, fetchSubStats, createSubscription,
   updateSubscription, deleteSubscription, revokeSubscription,
-  bulkSubscriptions, BulkValueMode, BulkPayload, BulkResult, MAX_BULK_APPLY,
+  bulkSubscriptions, BulkValueMode, BulkPayload, BulkResult, MAX_BULK_APPLY, MAX_BULK_PROFILES,
   Subscription,
 } from '../api/subscriptions';
+import ProfileMultiSelect from './ProfileMultiSelect';
 import { fetchVpnProfiles, fetchAssignedVpnProfiles, VpnProfile } from '../api/vpn-profiles';
 import { fetchClients } from '../api/clients';
 import { Client } from '../types';
@@ -127,13 +128,15 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
   const [bulkDurationMode, setBulkDurationMode] = useState<BulkValueMode>('set');
   const [bulkExpire, setBulkExpire] = useState('');
   const [bulkProfile, setBulkProfile] = useState('');
+  /** Déploiement multi-configurations : un forfait par configuration cochée. */
+  const [bulkProfiles, setBulkProfiles] = useState<string[]>([]);
   const [bulkConfirm, setBulkConfirm] = useState(false);
   const bulkRunning = pending === 'bulk';
   const [bulkResult, setBulkResult] = useState<BulkResult | null>(null);
   const [profilesError, setProfilesError] = useState<unknown>(null);
 
   const resetBulkFields = () => {
-    setBulkQuota(''); setBulkStart(''); setBulkDays(''); setBulkExpire(''); setBulkProfile('');
+    setBulkQuota(''); setBulkStart(''); setBulkDays(''); setBulkExpire(''); setBulkProfile(''); setBulkProfiles([]);
     setBulkQuotaMode('set'); setBulkDurationMode('set'); setBulkExpiryMode('duration');
   };
 
@@ -398,7 +401,8 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
 
     if (bulkScope === 'deploy') {
       // Créer un forfait exige les trois : sans eux il n'y a rien à créer.
-      if (!profileId) return refuse('commerce.subscriptions.bulk.profileRequired');
+      if (bulkProfiles.length === 0) return refuse('commerce.subscriptions.bulk.profileRequired');
+      if (bulkProfiles.length > MAX_BULK_PROFILES) return refuse('commerce.subscriptions.bulk.tooManyProfiles');
       if (quotaGB === undefined) return refuse('commerce.subscriptions.bulk.quotaRequired');
       if (durationDays === undefined && !expireAt) return refuse('commerce.subscriptions.bulk.durationRequired');
     } else if (!profileId && quotaGB === undefined && !startAt && !expireAt && durationDays === undefined) {
@@ -411,10 +415,14 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
     const payload: BulkPayload = {
       action: bulkScope,
       ...(bulkScope === 'deploy'
-        // `deploy` crée des forfaits : il vise les CLIENTS des lignes cochées.
-        ? { clientIds: Array.from(new Set(subs.filter(s => selection.has(s.id)).map(s => s.clientId))) }
+        // `deploy` crée des forfaits : il vise les CLIENTS des lignes cochées,
+        // et écrit un forfait par configuration cochée.
+        ? {
+          clientIds: Array.from(new Set(subs.filter(s => selection.has(s.id)).map(s => s.clientId))),
+          profileIds: bulkProfiles,
+        }
         : { subscriptionIds: ids }),
-      ...(profileId ? { profileId } : {}),
+      ...(profileId && bulkScope !== 'deploy' ? { profileId } : {}),
       ...(quotaGB !== undefined ? { quotaGB, ...(bulkScope === 'apply' ? { quotaMode: bulkQuotaMode } : {}) } : {}),
       ...(startAt ? { startAt: startAt.toISOString() } : {}),
       ...(expireAt ? { expireAt: expireAt.toISOString() } : {}),
@@ -423,7 +431,13 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
 
     // Récapitulatif : uniquement ce qui va réellement changer.
     const summary: string[] = [];
-    if (profileId) summary.push(t('commerce.subscriptions.bulk.summaryProfile', { name: profiles.find(p => p.id === profileId)?.name ?? profileId }));
+    if (bulkScope === 'deploy' && bulkProfiles.length > 0) {
+      summary.push(t('commerce.subscriptions.bulk.summaryProfiles', {
+        names: bulkProfiles.map(id => profiles.find(p => p.id === id)?.name ?? id).join(', '),
+      }));
+    } else if (profileId) {
+      summary.push(t('commerce.subscriptions.bulk.summaryProfile', { name: profiles.find(p => p.id === profileId)?.name ?? profileId }));
+    }
     if (quotaGB !== undefined) {
       summary.push(t(bulkScope === 'apply' && bulkQuotaMode === 'add'
         ? 'commerce.subscriptions.bulk.summaryQuotaAdd'
@@ -437,7 +451,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
         : 'commerce.subscriptions.bulk.summaryDurationSet', { count: formatNumber(durationDays) }));
     }
     return { payload, issue: null, summary };
-  }, [bulkScope, bulkQuota, bulkQuotaMode, bulkStart, bulkExpiryMode, bulkDays, bulkDurationMode, bulkExpire, bulkProfile, selection, subs, profiles, locale, t, formatNumber]);
+  }, [bulkScope, bulkQuota, bulkQuotaMode, bulkStart, bulkExpiryMode, bulkDays, bulkDurationMode, bulkExpire, bulkProfile, bulkProfiles, selection, subs, profiles, locale, t, formatNumber]);
 
   const toggleOne = bulkDelete.toggle;
   // « Tout sélectionner » porte sur la sélection FILTRÉE, pas sur la page
@@ -599,19 +613,32 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
               {/* Serveur / configuration — TOUJOURS rendu, quel que soit le mode */}
               <div className="sm:col-span-2">
                 <label className="block text-xs text-gray-400 mb-1.5">
-                  {t('commerce.common.configuration')}
+                  {t(bulkScope === 'deploy'
+                    ? 'commerce.subscriptions.bulk.configurationsLabel'
+                    : 'commerce.common.configuration')}
                   {bulkScope === 'apply' && <span className="text-gray-600"> · {t('commerce.subscriptions.bulk.optional')}</span>}
                 </label>
-                <select value={bulkProfile} onChange={e => setBulkProfile(e.target.value)}
-                  disabled={profiles.length === 0}
-                  className="w-full px-3 py-2 text-sm bg-[#0a0d14] border border-[#1a1f2e] rounded-lg text-white focus:outline-none focus:border-cyan-500 disabled:opacity-50">
-                  <option value="">
-                    {bulkScope === 'apply'
-                      ? t('commerce.subscriptions.bulk.keepProfile')
-                      : t('commerce.common.choose')}
-                  </option>
-                  {profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
+                {bulkScope === 'deploy' ? (
+                  <>
+                    <ProfileMultiSelect
+                      profiles={profiles}
+                      selected={bulkProfiles}
+                      onChange={setBulkProfiles}
+                      max={MAX_BULK_PROFILES}
+                      disabled={profiles.length === 0}
+                    />
+                    <p className="text-[11px] text-gray-500 mt-1">
+                      {t('commerce.subscriptions.bulk.configurationsHint')}
+                    </p>
+                  </>
+                ) : (
+                  <select value={bulkProfile} onChange={e => setBulkProfile(e.target.value)}
+                    disabled={profiles.length === 0}
+                    className="w-full px-3 py-2 text-sm bg-[#0a0d14] border border-[#1a1f2e] rounded-lg text-white focus:outline-none focus:border-cyan-500 disabled:opacity-50">
+                    <option value="">{t('commerce.subscriptions.bulk.keepProfile')}</option>
+                    {profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                )}
                 {/* Une liste vide doit DIRE pourquoi : un sélecteur muet est
                     exactement le symptôme signalé en exploitation. */}
                 {profiles.length === 0 && (

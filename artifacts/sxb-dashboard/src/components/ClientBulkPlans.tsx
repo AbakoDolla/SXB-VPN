@@ -34,10 +34,11 @@ import { useMemo, useState } from 'react';
 import { AlertTriangle, Loader2, PlusCircle, SlidersHorizontal } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
 import {
-  bulkSubscriptions, MAX_BULK_APPLY,
+  bulkSubscriptions, MAX_BULK_APPLY, MAX_BULK_PROFILES,
   type BulkPayload, type BulkResult, type BulkValueMode, type Subscription,
 } from '../api/subscriptions';
 import type { VpnProfile } from '../api/vpn-profiles';
+import ProfileMultiSelect from './ProfileMultiSelect';
 
 /** Ce que l'exploitant veut faire des personnes cochées. */
 type Mode = 'deploy' | 'apply';
@@ -78,6 +79,8 @@ export default function ClientBulkPlans({ clientIds, subscriptions, profiles, bu
   const { t, formatNumber } = useTranslation();
   const [mode, setMode] = useState<Mode>('deploy');
   const [profileId, setProfileId] = useState('');
+  /** Configurations cochées pour un déploiement : un forfait par configuration. */
+  const [profileIds, setProfileIds] = useState<string[]>([]);
   const [quota, setQuota] = useState('');
   const [quotaMode, setQuotaMode] = useState<BulkValueMode>('set');
   const [modeEcheance, setModeEcheance] = useState<ModeEcheance>('duration');
@@ -126,15 +129,17 @@ export default function ClientBulkPlans({ clientIds, subscriptions, profiles, bu
 
     if (mode === 'deploy') {
       // Créer exige les trois : sans eux, il n'y a rien à créer.
-      if (!profileId) return refuse('commerce.subscriptions.bulk.profileRequired');
+      if (profileIds.length === 0) return refuse('commerce.subscriptions.bulk.profileRequired');
       if (quotaGB === undefined) return refuse('commerce.subscriptions.bulk.quotaRequired');
       if (durationDays === undefined && !echeance) return refuse('commerce.subscriptions.bulk.durationRequired');
       if (clientIds.length > MAX_BULK_APPLY) return refuse('commerce.subscriptions.bulk.tooMany');
+      if (profileIds.length > MAX_BULK_PROFILES) return refuse('commerce.subscriptions.bulk.tooManyProfiles');
       return {
         payload: {
           action: 'deploy',
           clientIds,
-          profileId,
+          // Un forfait est créé par couple appareil × configuration.
+          profileIds,
           quotaGB,
           ...(durationDays !== undefined ? { durationDays } : {}),
           ...(debut ? { startAt: debut } : {}),
@@ -162,7 +167,7 @@ export default function ClientBulkPlans({ clientIds, subscriptions, profiles, bu
       },
       refus: null,
     };
-  }, [mode, clientIds, profileId, quota, quotaMode, modeEcheance, jours, dureeMode, expireAt, startAt, cibles]);
+  }, [mode, clientIds, profileId, profileIds, quota, quotaMode, modeEcheance, jours, dureeMode, expireAt, startAt, cibles]);
 
   const appliquer = async () => {
     if (!plan.payload || envoi) return;
@@ -228,12 +233,29 @@ export default function ClientBulkPlans({ clientIds, subscriptions, profiles, bu
       )}
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <label className="block text-xs text-gray-300">
-          {t('commerce.subscriptions.bulk.configurationLabel')}
-          <select value={profileId} onChange={e => setProfileId(e.target.value)} className={champ}>
-            <option value="">{t(mode === 'deploy' ? 'commerce.clientPlans.choose' : 'commerce.clientPlans.unchanged')}</option>
-            {profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
+        <label className="block text-xs text-gray-300 sm:col-span-2 lg:col-span-1">
+          {t(mode === 'deploy'
+            ? 'commerce.subscriptions.bulk.configurationsLabel'
+            : 'commerce.subscriptions.bulk.configurationLabel')}
+          {mode === 'deploy' ? (
+            <div className="mt-1">
+              <ProfileMultiSelect
+                profiles={profiles}
+                selected={profileIds}
+                onChange={setProfileIds}
+                max={MAX_BULK_PROFILES}
+                disabled={busy || envoi}
+              />
+              <p className="mt-1 text-[11px] text-gray-500">
+                {t('commerce.subscriptions.bulk.configurationsHint')}
+              </p>
+            </div>
+          ) : (
+            <select value={profileId} onChange={e => setProfileId(e.target.value)} className={champ}>
+              <option value="">{t('commerce.clientPlans.unchanged')}</option>
+              {profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          )}
         </label>
 
         <label className="block text-xs text-gray-300">

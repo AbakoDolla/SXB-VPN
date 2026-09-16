@@ -399,7 +399,16 @@
       "summaryDurationSet": "Durée remplacée par {{count}} jour(s)",
       "summaryDurationAdd": "Durée prolongée de {{count}} jour(s)",
       "confirmApplyHint": "Les champs renseignés ci-dessus seront appliqués à {{count}} forfait(s). Le reste est conservé. Les suspensions et révocations ne sont pas levées.",
-      "confirmDeployHint": "Un nouveau forfait sera créé pour le client de chacune des {{count}} ligne(s) sélectionnée(s)."
+      "confirmDeployHint": "Un nouveau forfait sera créé pour le client de chacune des {{count}} ligne(s) sélectionnée(s).",
+      "configurationsLabel": "Configurations à attribuer",
+      "configurationsHint": "Un forfait est créé par configuration cochée, avec le même volume et la même échéance.",
+      "configurationsSelected": "{{count}} configuration(s) cochée(s)",
+      "configurationsClear": "Tout décocher",
+      "configurationsSearch": "Rechercher une configuration",
+      "configurationsEmpty": "Aucune configuration ne correspond",
+      "configurationsMax": "Maximum atteint : {{count}} configurations par envoi.",
+      "tooManyProfiles": "Trop de configurations cochées pour un seul envoi.",
+      "summaryProfiles": "Configurations : {{names}}"
     },
     "empty": "Aucun forfait trouvé",
     "createFirst": "+ Attribuer un premier plan",
@@ -577,35 +586,121 @@
     "grant": "Accorder",
     "remove": "Retirer",
     "categories": {
-      "users": "Utilisateurs", "clients": "Clients", "vpn": "VPN", "servers": "Serveurs",
-      "server": "Serveur", "tokens": "Jetons", "vouchers": "Bons de recharge",
-      "resellers": "Revendeurs", "reseller": "Revendeur", "analytics": "Statistiques",
-      "rbac": "Habilitations", "settings": "Paramètres", "subscription": "Forfaits",
-      "vpnprofile": "Profils VPN", "config": "Configurations", "audit": "Audit",
-      "maintenance": "Maintenance", "owner": "Propriétaire", "general": "Général",
-      "ssh": "SSH", "payload": "Payloads SSH", "xray": "Xray", "singbox": "Sing-box"
+      "users": "Utilisateurs",
+      "clients": "Clients",
+      "vpn": "VPN",
+      "servers": "Serveurs",
+      "server": "Serveur",
+      "tokens": "Jetons",
+      "vouchers": "Bons de recharge",
+      "resellers": "Revendeurs",
+      "reseller": "Revendeur",
+      "analytics": "Statistiques",
+      "rbac": "Habilitations",
+      "settings": "Paramètres",
+      "subscription": "Forfaits",
+      "vpnprofile": "Profils VPN",
+      "config": "Configurations",
+      "audit": "Audit",
+      "maintenance": "Maintenance",
+      "owner": "Propriétaire",
+      "general": "Général",
+      "ssh": "SSH",
+      "payload": "Payloads SSH",
+      "xray": "Xray",
+      "singbox": "Sing-box"
     },
     "permissions": {
-      "users": { "view": "Voir les utilisateurs", "create": "Créer des utilisateurs", "edit": "Modifier les utilisateurs", "delete": "Supprimer les utilisateurs", "manage": "Gestion complète des utilisateurs" },
-      "clients": { "view": "Voir les clients", "view_own": "Voir ses propres clients", "create": "Créer des clients", "edit": "Modifier les clients", "delete": "Supprimer les clients", "manage": "Suspendre et réactiver les clients" },
-      "subscription": { "view": "Voir les forfaits data", "manage": "Créer et gérer les forfaits data" },
-      "vpnprofile": { "view": "Voir les profils VPN", "manage": "Gérer les profils VPN" },
-      "vpn": { "view": "Voir les VPN", "manage": "Gérer les VPN" },
-      "servers": { "view": "Voir les serveurs", "create": "Créer des serveurs", "edit": "Modifier les serveurs", "delete": "Supprimer les serveurs" },
-      "server": { "config": "Accéder à la configuration du serveur", "manage": "Gérer les serveurs VPN" },
-      "tokens": { "view": "Voir les jetons", "create": "Créer des jetons", "revoke": "Révoquer les jetons", "manage": "Gérer les jetons SXB" },
-      "vouchers": { "view": "Voir les bons de recharge", "create": "Créer des bons de recharge", "redeem": "Utiliser des bons de recharge", "revoke": "Révoquer les bons de recharge non utilisés", "manage": "Gérer les bons de recharge" },
-      "resellers": { "view": "Voir les revendeurs", "create": "Créer des revendeurs", "manage": "Gérer les revendeurs" },
-      "reseller": { "manage": "Gérer les revendeurs" },
-      "analytics": { "view": "Voir les statistiques", "read": "Lire les indicateurs du tableau de bord" },
-      "rbac": { "manage": "Gérer les habilitations" },
-      "settings": { "manage": "Gérer les paramètres" },
-      "config": { "view": "Voir les configurations système" },
-      "audit": { "view": "Voir le journal d'audit" },
-      "ssh": { "view": "Voir les comptes SSH", "manage": "Gérer les comptes SSH" },
-      "payload": { "view": "Voir les payloads SSH", "manage": "Gérer les payloads SSH" },
-      "xray": { "view": "Voir les comptes Xray", "manage": "Gérer les comptes Xray" },
-      "singbox": { "view": "Voir les comptes Sing-box", "manage": "Gérer les comptes Sing-box" }
+      "users": {
+        "view": "Voir les utilisateurs",
+        "create": "Créer des utilisateurs",
+        "edit": "Modifier les utilisateurs",
+        "delete": "Supprimer les utilisateurs",
+        "manage": "Gestion complète des utilisateurs"
+      },
+      "clients": {
+        "view": "Voir les clients",
+        "view_own": "Voir ses propres clients",
+        "create": "Créer des clients",
+        "edit": "Modifier les clients",
+        "delete": "Supprimer les clients",
+        "manage": "Suspendre et réactiver les clients"
+      },
+      "subscription": {
+        "view": "Voir les forfaits data",
+        "manage": "Créer et gérer les forfaits data"
+      },
+      "vpnprofile": {
+        "view": "Voir les profils VPN",
+        "manage": "Gérer les profils VPN"
+      },
+      "vpn": {
+        "view": "Voir les VPN",
+        "manage": "Gérer les VPN"
+      },
+      "servers": {
+        "view": "Voir les serveurs",
+        "create": "Créer des serveurs",
+        "edit": "Modifier les serveurs",
+        "delete": "Supprimer les serveurs"
+      },
+      "server": {
+        "config": "Accéder à la configuration du serveur",
+        "manage": "Gérer les serveurs VPN"
+      },
+      "tokens": {
+        "view": "Voir les jetons",
+        "create": "Créer des jetons",
+        "revoke": "Révoquer les jetons",
+        "manage": "Gérer les jetons SXB"
+      },
+      "vouchers": {
+        "view": "Voir les bons de recharge",
+        "create": "Créer des bons de recharge",
+        "redeem": "Utiliser des bons de recharge",
+        "revoke": "Révoquer les bons de recharge non utilisés",
+        "manage": "Gérer les bons de recharge"
+      },
+      "resellers": {
+        "view": "Voir les revendeurs",
+        "create": "Créer des revendeurs",
+        "manage": "Gérer les revendeurs"
+      },
+      "reseller": {
+        "manage": "Gérer les revendeurs"
+      },
+      "analytics": {
+        "view": "Voir les statistiques",
+        "read": "Lire les indicateurs du tableau de bord"
+      },
+      "rbac": {
+        "manage": "Gérer les habilitations"
+      },
+      "settings": {
+        "manage": "Gérer les paramètres"
+      },
+      "config": {
+        "view": "Voir les configurations système"
+      },
+      "audit": {
+        "view": "Voir le journal d'audit"
+      },
+      "ssh": {
+        "view": "Voir les comptes SSH",
+        "manage": "Gérer les comptes SSH"
+      },
+      "payload": {
+        "view": "Voir les payloads SSH",
+        "manage": "Gérer les payloads SSH"
+      },
+      "xray": {
+        "view": "Voir les comptes Xray",
+        "manage": "Gérer les comptes Xray"
+      },
+      "singbox": {
+        "view": "Voir les comptes Sing-box",
+        "manage": "Gérer les comptes Sing-box"
+      }
     }
   },
   "services": {

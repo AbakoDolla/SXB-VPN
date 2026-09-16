@@ -41,6 +41,16 @@ export const JOUR_MS = 86_400_000;
  */
 export const MAX_BULK_APPLY = 200;
 
+/**
+ * Configurations attribuables en une seule opération de déploiement.
+ *
+ * Un appareil reçoit rarement plus d'une poignée de forfaits — un par
+ * opérateur, plus un de secours. La borne existe pour que le produit
+ * « appareils × configurations » reste lisible et borné : à 200 appareils,
+ * vingt configurations écriraient déjà 4 000 forfaits en un geste.
+ */
+export const MAX_BULK_PROFILES = 20;
+
 /** `set` remplace la valeur ; `add` s'ajoute à l'existant. */
 export type ModeQuota = "set" | "add";
 export type ModeDuree = "set" | "add";

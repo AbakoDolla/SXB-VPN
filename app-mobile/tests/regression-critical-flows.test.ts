@@ -1789,8 +1789,11 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(subscriptionRoutes.includes('new Date(sub.expireAt) > new Date() ? new Date(sub.expireAt) : new Date()'));
     assert.ok(subscriptionRoutes.includes("if (sub.status === 'expired') data.status = 'active'"));
     // Un échec isolé ne doit pas interrompre le lot, et l'opérateur veut savoir
-    // quels clients ont échoué et pourquoi.
-    assert.ok(subscriptionRoutes.includes('selected: targetIds.length'));
+    // quels clients ont échoué et pourquoi. Le nombre annoncé est celui des
+    // FORFAITS visés : un déploiement de trois configurations sur deux
+    // appareils en crée six, et annoncer « 2 » serait incompréhensible.
+    assert.ok(subscriptionRoutes.includes('targetIds.length * profileTargets.length'));
+    assert.ok(subscriptionRoutes.includes('return res.json({ success: true, action, selected,'));
     assert.ok(subscriptionRoutes.includes('details'));
   });
 

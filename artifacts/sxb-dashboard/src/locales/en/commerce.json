@@ -399,7 +399,16 @@
       "summaryDurationSet": "Duration replaced with {{count}} day(s)",
       "summaryDurationAdd": "Duration extended by {{count}} day(s)",
       "confirmApplyHint": "The fields filled in above will be applied to {{count}} plan(s). Everything else is kept. Suspensions and revocations are not lifted.",
-      "confirmDeployHint": "A new plan will be created for the client of each of the {{count}} selected row(s)."
+      "confirmDeployHint": "A new plan will be created for the client of each of the {{count}} selected row(s).",
+      "configurationsLabel": "Configurations to assign",
+      "configurationsHint": "One plan is created per ticked configuration, with the same data and expiry.",
+      "configurationsSelected": "{{count}} configuration(s) ticked",
+      "configurationsClear": "Clear all",
+      "configurationsSearch": "Search a configuration",
+      "configurationsEmpty": "No configuration matches",
+      "configurationsMax": "Maximum reached: {{count}} configurations per submission.",
+      "tooManyProfiles": "Too many configurations ticked for a single submission.",
+      "summaryProfiles": "Configurations: {{names}}"
     },
     "empty": "No plans found",
     "createFirst": "+ Assign the first plan",
@@ -577,35 +586,121 @@
     "grant": "Grant",
     "remove": "Remove",
     "categories": {
-      "users": "Users", "clients": "Clients", "vpn": "VPN", "servers": "Servers",
-      "server": "Server", "tokens": "Tokens", "vouchers": "Vouchers",
-      "resellers": "Resellers", "reseller": "Reseller", "analytics": "Analytics",
-      "rbac": "Permissions", "settings": "Settings", "subscription": "Plans",
-      "vpnprofile": "VPN profiles", "config": "Configurations", "audit": "Audit",
-      "maintenance": "Maintenance", "owner": "Owner", "general": "General",
-      "ssh": "SSH", "payload": "SSH payloads", "xray": "Xray", "singbox": "Sing-box"
+      "users": "Users",
+      "clients": "Clients",
+      "vpn": "VPN",
+      "servers": "Servers",
+      "server": "Server",
+      "tokens": "Tokens",
+      "vouchers": "Vouchers",
+      "resellers": "Resellers",
+      "reseller": "Reseller",
+      "analytics": "Analytics",
+      "rbac": "Permissions",
+      "settings": "Settings",
+      "subscription": "Plans",
+      "vpnprofile": "VPN profiles",
+      "config": "Configurations",
+      "audit": "Audit",
+      "maintenance": "Maintenance",
+      "owner": "Owner",
+      "general": "General",
+      "ssh": "SSH",
+      "payload": "SSH payloads",
+      "xray": "Xray",
+      "singbox": "Sing-box"
     },
     "permissions": {
-      "users": { "view": "View users", "create": "Create users", "edit": "Edit users", "delete": "Delete users", "manage": "Full user management" },
-      "clients": { "view": "View clients", "view_own": "View own clients", "create": "Create clients", "edit": "Edit clients", "delete": "Delete clients", "manage": "Suspend and reactivate clients" },
-      "subscription": { "view": "View data plans", "manage": "Create and manage data plans" },
-      "vpnprofile": { "view": "View VPN profiles", "manage": "Manage VPN profiles" },
-      "vpn": { "view": "View VPNs", "manage": "Manage VPNs" },
-      "servers": { "view": "View servers", "create": "Create servers", "edit": "Edit servers", "delete": "Delete servers" },
-      "server": { "config": "Access server configuration", "manage": "Manage VPN servers" },
-      "tokens": { "view": "View tokens", "create": "Create tokens", "revoke": "Revoke tokens", "manage": "Manage SXB tokens" },
-      "vouchers": { "view": "View vouchers", "create": "Create vouchers", "redeem": "Redeem vouchers", "revoke": "Revoke unused vouchers", "manage": "Manage vouchers" },
-      "resellers": { "view": "View resellers", "create": "Create resellers", "manage": "Manage resellers" },
-      "reseller": { "manage": "Manage resellers" },
-      "analytics": { "view": "View analytics", "read": "Read dashboard metrics" },
-      "rbac": { "manage": "Manage permissions" },
-      "settings": { "manage": "Manage settings" },
-      "config": { "view": "View system configurations" },
-      "audit": { "view": "View audit logs" },
-      "ssh": { "view": "View SSH accounts", "manage": "Manage SSH accounts" },
-      "payload": { "view": "View SSH payloads", "manage": "Manage SSH payloads" },
-      "xray": { "view": "View Xray accounts", "manage": "Manage Xray accounts" },
-      "singbox": { "view": "View Sing-box accounts", "manage": "Manage Sing-box accounts" }
+      "users": {
+        "view": "View users",
+        "create": "Create users",
+        "edit": "Edit users",
+        "delete": "Delete users",
+        "manage": "Full user management"
+      },
+      "clients": {
+        "view": "View clients",
+        "view_own": "View own clients",
+        "create": "Create clients",
+        "edit": "Edit clients",
+        "delete": "Delete clients",
+        "manage": "Suspend and reactivate clients"
+      },
+      "subscription": {
+        "view": "View data plans",
+        "manage": "Create and manage data plans"
+      },
+      "vpnprofile": {
+        "view": "View VPN profiles",
+        "manage": "Manage VPN profiles"
+      },
+      "vpn": {
+        "view": "View VPNs",
+        "manage": "Manage VPNs"
+      },
+      "servers": {
+        "view": "View servers",
+        "create": "Create servers",
+        "edit": "Edit servers",
+        "delete": "Delete servers"
+      },
+      "server": {
+        "config": "Access server configuration",
+        "manage": "Manage VPN servers"
+      },
+      "tokens": {
+        "view": "View tokens",
+        "create": "Create tokens",
+        "revoke": "Revoke tokens",
+        "manage": "Manage SXB tokens"
+      },
+      "vouchers": {
+        "view": "View vouchers",
+        "create": "Create vouchers",
+        "redeem": "Redeem vouchers",
+        "revoke": "Revoke unused vouchers",
+        "manage": "Manage vouchers"
+      },
+      "resellers": {
+        "view": "View resellers",
+        "create": "Create resellers",
+        "manage": "Manage resellers"
+      },
+      "reseller": {
+        "manage": "Manage resellers"
+      },
+      "analytics": {
+        "view": "View analytics",
+        "read": "Read dashboard metrics"
+      },
+      "rbac": {
+        "manage": "Manage permissions"
+      },
+      "settings": {
+        "manage": "Manage settings"
+      },
+      "config": {
+        "view": "View system configurations"
+      },
+      "audit": {
+        "view": "View audit logs"
+      },
+      "ssh": {
+        "view": "View SSH accounts",
+        "manage": "Manage SSH accounts"
+      },
+      "payload": {
+        "view": "View SSH payloads",
+        "manage": "Manage SSH payloads"
+      },
+      "xray": {
+        "view": "View Xray accounts",
+        "manage": "Manage Xray accounts"
+      },
+      "singbox": {
+        "view": "View Sing-box accounts",
+        "manage": "Manage Sing-box accounts"
+      }
     }
   },
   "services": {
