@@ -260,3 +260,52 @@ test('la section n’est proposée qu’aux deux rôles admis', () => {
   const routes = lireSource('server/routes/security.ts');
   assert.match(routes, /hasSecurityCenterRole/);
 });
+
+test('chaque code du journal se lit dans la langue choisie', () => {
+  // Le serveur n'écrit que des codes : `LOGIN_FAILED`, `critical`,
+  // `bad_password`. Affichés tels quels, ils ne disent rien à l'opérateur et
+  // restent en anglais quelle que soit la langue du panneau. Chaque code doit
+  // donc porter un libellé, et chaque type une explication de ce qu'il appelle.
+  const service = lireSource('server/services/security-events.ts');
+  const listeDe = (nom) => {
+    const debut = service.indexOf(`export const ${nom} = [`);
+    assert.notEqual(debut, -1, `${nom} doit rester une liste fermée`);
+    const bloc = service.slice(debut, service.indexOf('] as const', debut));
+    return [...bloc.matchAll(/'([A-Za-z_]+)'/g)].map(m => m[1]);
+  };
+  const gravites = listeDe('SECURITY_SEVERITIES');
+  const types = listeDe('SECURITY_EVENT_TYPES');
+  assert.ok(types.length >= 16, 'tous les types doivent être relus depuis la source');
+
+  for (const langue of ['fr', 'en']) {
+    const secu = JSON.parse(lireSource(`artifacts/sxb-dashboard/src/locales/${langue}/operations.json`)).security;
+    for (const gravite of gravites) {
+      assert.ok(secu.severityLabels?.[gravite], `${langue}: libellé manquant pour la gravité ${gravite}`);
+      assert.ok(secu.severityExplain?.[gravite], `${langue}: explication manquante pour la gravité ${gravite}`);
+    }
+    for (const type of types) {
+      assert.ok(secu.eventLabels?.[type], `${langue}: libellé manquant pour ${type}`);
+      assert.ok(secu.eventExplain?.[type]?.length > 30, `${langue}: explication trop courte pour ${type}`);
+    }
+    // Une explication qui répète le code n'explique rien.
+    for (const type of types) {
+      assert.ok(!secu.eventLabels[type].includes('_'), `${langue}: ${type} montre encore son code brut`);
+    }
+  }
+
+  // L'action enregistrée par le serveur est un code, jamais une phrase figée
+  // dans une seule langue.
+  const routes = lireSource('server/routes/security.ts');
+  assert.match(routes, /actionTaken: 'SESSIONS_CLOSED'/);
+  assert.doesNotMatch(routes, /actionTaken: '[^']*[éèêàùç]/, "aucune phrase française ne doit être stockée telle quelle");
+
+  // La vue ne rend plus aucun code brut.
+  const vue = lireSource('artifacts/sxb-dashboard/src/components/SecurityCenterView.tsx');
+  assert.doesNotMatch(vue, /\{event\.severity\}/, 'la gravité doit passer par le vocabulaire traduit');
+  assert.doesNotMatch(vue, /\{event\.eventType\}/, 'le type doit passer par le vocabulaire traduit');
+  assert.doesNotMatch(vue, /\{event\.actionTaken\}/, "l'action doit passer par le vocabulaire traduit");
+  assert.match(vue, /vocabulary\.eventExplain\(event\.eventType\)/);
+  // Un code inconnu d'une version plus récente du serveur reste affiché brut
+  // plutôt que de laisser une case vide.
+  assert.match(vue, /\?\? code/);
+});

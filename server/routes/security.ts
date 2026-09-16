@@ -143,7 +143,9 @@ router.post('/gate/password', ...securityUnlockLimiters, async (req: Authenticat
       severity: 'warning',
       userId: req.user!.userId,
       ipHash: hashIp(req.ip),
-      actionTaken: 'Toutes les ouvertures en cours ont été fermées',
+      // Code stable, traduit par le tableau de bord : une phrase figée ici
+      // s'afficherait en français à un opérateur anglophone.
+      actionTaken: 'SESSIONS_CLOSED',
       metadata: { role: req.user!.role },
     });
     return res.status(201).json({ configured: true, updatedAt: gate.updatedAt });

@@ -905,6 +905,84 @@
       "unacknowledged": "À traiter",
       "last24h": "Dernières 24 h"
     },
+    "severityLabels": {
+      "info": "Information",
+      "warning": "Avertissement",
+      "critical": "Critique"
+    },
+    "severityExplain": {
+      "info": "Trace normale d'exploitation, conservée pour l'historique. Aucune action attendue.",
+      "warning": "Anomalie à regarder quand vous en avez le temps. Rien n'est cassé, mais le motif mérite un œil.",
+      "critical": "Demande un examen immédiat : accès, jeton ou intégrité mis en cause."
+    },
+    "eventLabels": {
+      "LOGIN_FAILED": "Échec de connexion",
+      "LOGIN_ABUSE": "Connexions abusives",
+      "DEVICE_REGISTERED": "Nouvel appareil enregistré",
+      "DEVICE_BLOCKED": "Appareil bloqué",
+      "DEVICE_UNBLOCKED": "Appareil débloqué",
+      "SESSION_REVOKED": "Session révoquée",
+      "TOKEN_REUSE": "Jeton rejoué",
+      "CONFIG_ABUSE": "Abus sur les configurations",
+      "RATE_LIMIT_TRIGGERED": "Limite de débit atteinte",
+      "INTEGRITY_FAILED": "Contrôle d'intégrité en échec",
+      "SECURITY_GATE_REJECTED": "Ouverture du Centre refusée",
+      "SECURITY_GATE_OPENED": "Centre de sécurité ouvert",
+      "SECURITY_GATE_PASSWORD_ROTATED": "Mot de passe du Centre changé",
+      "SECURITY_PASSKEY_ENROLLED": "Empreinte enrôlée",
+      "SECURITY_PASSKEY_REMOVED": "Empreinte retirée",
+      "SECURITY_PASSKEY_REJECTED": "Empreinte refusée"
+    },
+    "eventExplain": {
+      "LOGIN_FAILED": "Un identifiant ou un mot de passe incorrect a été présenté au panneau. Isolé, c'est une faute de frappe ; répété depuis la même origine, c'est une tentative de devinette.",
+      "LOGIN_ABUSE": "Trop d'échecs de connexion en peu de temps depuis la même origine. L'accès est ralenti automatiquement ; vérifiez qu'un utilisateur légitime n'est pas resté dehors.",
+      "DEVICE_REGISTERED": "Un appareil s'est déclaré pour la première fois. Attendu après une installation ; suspect s'il se répète sans cesse pour un même client.",
+      "DEVICE_BLOCKED": "L'accès de cet appareil a été coupé. Le tunnel lui est refusé jusqu'au déblocage.",
+      "DEVICE_UNBLOCKED": "L'accès de cet appareil a été rétabli. Il peut de nouveau ouvrir le tunnel.",
+      "SESSION_REVOKED": "Une session ouverte a été fermée avant son terme. Les jetons qui en dépendaient ne valent plus rien.",
+      "TOKEN_REUSE": "Un jeton déjà consommé ou expiré a été représenté. C'est la signature d'un jeton volé ou d'une application copiée : à traiter en priorité.",
+      "CONFIG_ABUSE": "Un compte a demandé des configurations bien au-delà de son usage normal. Le plus souvent un partage de compte ou une revente.",
+      "RATE_LIMIT_TRIGGERED": "Une route a reçu plus de requêtes que le plafond autorisé et a commencé à refuser. Protection normale ; si elle revient sans cesse, un script est à l'œuvre.",
+      "INTEGRITY_FAILED": "Un fichier servi ne correspond plus au condensat annoncé. Une mise à jour dans cet état serait refusée à l'installation par l'application.",
+      "SECURITY_GATE_REJECTED": "Un mot de passe incorrect a été présenté à la porte du Centre. Seuls le propriétaire et les super-administrateurs peuvent même essayer.",
+      "SECURITY_GATE_OPENED": "La porte a été franchie avec succès. L'ouverture se referme d'elle-même au bout de dix minutes.",
+      "SECURITY_GATE_PASSWORD_ROTATED": "Le propriétaire a remplacé le mot de passe de la porte. Toutes les consoles encore ouvertes ont été fermées.",
+      "SECURITY_PASSKEY_ENROLLED": "Une nouvelle empreinte peut désormais ouvrir le Centre. Retirez-la si elle ne vous appartient pas.",
+      "SECURITY_PASSKEY_REMOVED": "Cette empreinte n'ouvre plus le Centre.",
+      "SECURITY_PASSKEY_REJECTED": "Une vérification d'empreinte a échoué. Un échec isolé vient souvent du capteur ; répété, il mérite un examen."
+    },
+    "metaLabels": {
+      "reason": "Motif",
+      "route": "Route appelée",
+      "method": "Méthode",
+      "attempts": "Tentatives",
+      "windowMinutes": "Fenêtre observée (minutes)",
+      "status": "Statut",
+      "role": "Rôle",
+      "target": "Cible",
+      "profileId": "Profil",
+      "subscriptionId": "Abonnement",
+      "count": "Nombre",
+      "label": "Libellé"
+    },
+    "metaValues": {
+      "bad_password": "Mot de passe incorrect",
+      "unknown_account": "Compte inconnu",
+      "not_configured": "Porte non configurée",
+      "passkey": "Empreinte",
+      "password": "Mot de passe",
+      "exhausted": "Quota épuisé",
+      "unavailable": "Service indisponible"
+    },
+    "actionLabels": {
+      "SESSIONS_CLOSED": "Toutes les ouvertures en cours ont été fermées"
+    },
+    "detailsTitle": "Ce que cela signifie",
+    "metaTitle": "Détails techniques",
+    "legendTitle": "Comment lire ces alertes",
+    "legendHint": "Chaque alerte porte une gravité et un type. Voici ce que chacun veut dire et ce qu'il appelle de votre part.",
+    "legendShow": "Afficher la légende",
+    "legendHide": "Masquer la légende",
     "errors": {
       "gate": "Impossible de lire l’état de la porte de sécurité.",
       "console": "Impossible de charger les données du centre de sécurité.",

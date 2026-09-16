@@ -4,6 +4,8 @@ import {
   RefreshCw, ShieldAlert, ShieldCheck, Trash2, UnlockKeyhole,
 } from "lucide-react";
 import { useTranslation } from "../contexts/I18nContext";
+import { resolveTranslation } from "../lib/i18n";
+import type { Language } from "../lib/language";
 import type { User, UserRole } from "../types";
 import {
   acknowledgeSecurityEvents,
@@ -67,6 +69,28 @@ function severityStyle(severity: string) {
   return "border-cyan-400/25 bg-cyan-500/10 text-cyan-200";
 }
 
+/**
+ * Traduit le vocabulaire brut du journal de sécurité.
+ *
+ * Chaque code venu du serveur — gravité, type d'événement, clé et valeur de
+ * métadonnée — est rendu dans la langue choisie. Un code inconnu, par exemple
+ * ajouté par une version plus récente du serveur, retombe sur sa forme brute
+ * plutôt que de laisser une case vide.
+ */
+function readableVocabulary(language: Language) {
+  const lookup = (namespace: string, code: string) =>
+    resolveTranslation(language, `operations.security.${namespace}.${code}`);
+  return {
+    severity: (code: string) => lookup("severityLabels", code) ?? code,
+    severityExplain: (code: string) => lookup("severityExplain", code) ?? "",
+    eventType: (code: string) => lookup("eventLabels", code) ?? code,
+    eventExplain: (code: string) => lookup("eventExplain", code) ?? "",
+    metaKey: (code: string) => lookup("metaLabels", code) ?? code,
+    metaValue: (value: string) => lookup("metaValues", value) ?? value,
+    action: (value: string) => lookup("actionLabels", value) ?? value,
+  };
+}
+
 function parseMetadata(metadata: string | null): Array<[string, string]> {
   if (!metadata) return [];
   try {
@@ -89,7 +113,8 @@ function ErrorNotice({ error }: { error: LocalError }) {
 }
 
 export default function SecurityCenterView({ currentUser, currentUserRole }: Props) {
-  const { t, formatDate, formatNumber } = useTranslation();
+  const { t, formatDate, formatNumber, language } = useTranslation();
+  const vocabulary = useMemo(() => readableVocabulary(language), [language]);
   const [gate, setGate] = useState<SecurityGateState | null>(null);
   const [loadingGate, setLoadingGate] = useState(true);
   const [gateError, setGateError] = useState<LocalError>(null);
@@ -477,11 +502,11 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
                   <div className="flex flex-wrap gap-2">
                     <select aria-label={t("operations.security.filterSeverity")} value={filters.severity} onChange={event => setFilters(prev => ({ ...prev, severity: event.target.value }))} className="rounded-xl border border-[#263149] bg-[#07090e] px-3 py-2 text-xs text-slate-200">
                       <option value="">{t("operations.security.filterSeverity")}</option>
-                      {(overview?.severities ?? []).map(severity => <option key={severity} value={severity}>{severity}</option>)}
+                      {(overview?.severities ?? []).map(severity => <option key={severity} value={severity}>{vocabulary.severity(severity)}</option>)}
                     </select>
                     <select aria-label={t("operations.security.filterType")} value={filters.eventType} onChange={event => setFilters(prev => ({ ...prev, eventType: event.target.value }))} className="rounded-xl border border-[#263149] bg-[#07090e] px-3 py-2 text-xs text-slate-200">
                       <option value="">{t("operations.security.filterType")}</option>
-                      {(overview?.eventTypes ?? []).map(type => <option key={type} value={type}>{type}</option>)}
+                      {(overview?.eventTypes ?? []).map(type => <option key={type} value={type}>{vocabulary.eventType(type)}</option>)}
                     </select>
                     <select aria-label={t("operations.security.filterAcknowledged")} value={filters.acknowledged} onChange={event => setFilters(prev => ({ ...prev, acknowledged: event.target.value as AcknowledgedFilter }))} className="rounded-xl border border-[#263149] bg-[#07090e] px-3 py-2 text-xs text-slate-200">
                       <option value="">{t("operations.security.filterAcknowledged")}</option>
@@ -510,23 +535,26 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
                       <input type="checkbox" aria-label={t("operations.security.selectEvent", { id: event.id })} checked={selected.includes(event.id)} disabled={event.acknowledged} onChange={change => setSelected(prev => change.target.checked ? [...prev, event.id] : prev.filter(id => id !== event.id))} className="mt-1 h-4 w-4 rounded border-[#263149] bg-[#07090e]" />
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className={`rounded-full border px-2 py-0.5 text-[11px] font-bold uppercase ${severityStyle(event.severity)}`}>{event.severity}</span>
-                          <h3 className="font-semibold text-white">{event.eventType}</h3>
+                          <span title={vocabulary.severityExplain(event.severity)} className={`rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${severityStyle(event.severity)}`}>{vocabulary.severity(event.severity)}</span>
+                          <h3 className="font-semibold text-white">{vocabulary.eventType(event.eventType)}</h3>
                           {event.acknowledged && <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-300">{t("operations.security.acknowledged")}</span>}
                         </div>
+                        {vocabulary.eventExplain(event.eventType) && (
+                          <p className="mt-1.5 text-xs leading-relaxed text-slate-400">{vocabulary.eventExplain(event.eventType)}</p>
+                        )}
                         <div className="mt-2 grid gap-1 text-xs text-slate-500 sm:grid-cols-2">
                           <span>{t("operations.security.eventUser", { value: event.userId || "—" })}</span>
                           <span>{t("operations.security.eventDevice", { value: event.deviceId || "—" })}</span>
                           <span>{t("operations.security.eventVersion", { value: event.appVersion || "—" })}</span>
                           <span>{t("operations.security.eventIp", { value: event.ipHash || "—" })}</span>
                         </div>
-                        {event.actionTaken && <p className="mt-2 text-xs text-slate-300">{event.actionTaken}</p>}
+                        {event.actionTaken && <p className="mt-2 text-xs text-slate-300">{vocabulary.action(event.actionTaken)}</p>}
                         {parseMetadata(event.metadata).length > 0 && (
                           <dl className="mt-3 grid gap-2 rounded-xl border border-[#263149] bg-[#07090e]/60 p-3 text-[11px] sm:grid-cols-2">
                             {parseMetadata(event.metadata).map(([key, value]) => (
                               <div key={key} className="min-w-0">
-                                <dt className="text-slate-500">{key}</dt>
-                                <dd className="truncate text-slate-300">{value}</dd>
+                                <dt className="text-slate-500">{vocabulary.metaKey(key)}</dt>
+                                <dd className="truncate text-slate-300" title={vocabulary.metaValue(value)}>{vocabulary.metaValue(value)}</dd>
                               </div>
                             ))}
                           </dl>

@@ -905,6 +905,84 @@
       "unacknowledged": "To handle",
       "last24h": "Last 24 h"
     },
+    "severityLabels": {
+      "info": "Information",
+      "warning": "Warning",
+      "critical": "Critical"
+    },
+    "severityExplain": {
+      "info": "Routine operational trace, kept for the record. No action expected.",
+      "warning": "Worth a look when you have time. Nothing is broken, but the pattern deserves attention.",
+      "critical": "Needs immediate review: access, token or integrity is in question."
+    },
+    "eventLabels": {
+      "LOGIN_FAILED": "Failed sign-in",
+      "LOGIN_ABUSE": "Sign-in abuse",
+      "DEVICE_REGISTERED": "New device registered",
+      "DEVICE_BLOCKED": "Device blocked",
+      "DEVICE_UNBLOCKED": "Device unblocked",
+      "SESSION_REVOKED": "Session revoked",
+      "TOKEN_REUSE": "Token replayed",
+      "CONFIG_ABUSE": "Configuration abuse",
+      "RATE_LIMIT_TRIGGERED": "Rate limit reached",
+      "INTEGRITY_FAILED": "Integrity check failed",
+      "SECURITY_GATE_REJECTED": "Security Center unlock refused",
+      "SECURITY_GATE_OPENED": "Security Center opened",
+      "SECURITY_GATE_PASSWORD_ROTATED": "Security Center password changed",
+      "SECURITY_PASSKEY_ENROLLED": "Fingerprint enrolled",
+      "SECURITY_PASSKEY_REMOVED": "Fingerprint removed",
+      "SECURITY_PASSKEY_REJECTED": "Fingerprint refused"
+    },
+    "eventExplain": {
+      "LOGIN_FAILED": "A wrong e-mail or password was presented to the panel. On its own it is a typo; repeated from one origin it is guessing.",
+      "LOGIN_ABUSE": "Too many failed sign-ins in a short window from the same origin. Access is throttled automatically; check that a legitimate user is not locked out.",
+      "DEVICE_REGISTERED": "A device announced itself for the first time. Expected after an install; suspicious if it repeats endlessly for one customer.",
+      "DEVICE_BLOCKED": "This device lost its access. The tunnel is refused until it is unblocked.",
+      "DEVICE_UNBLOCKED": "This device regained its access and can open the tunnel again.",
+      "SESSION_REVOKED": "An open session was closed before its term. The tokens behind it are now worthless.",
+      "TOKEN_REUSE": "An already spent or expired token was presented again. That is the signature of a stolen token or a cloned app: treat it first.",
+      "CONFIG_ABUSE": "An account requested far more configurations than its normal use. Usually account sharing or resale.",
+      "RATE_LIMIT_TRIGGERED": "A route received more requests than its ceiling and started refusing. Normal protection; if it keeps returning, a script is at work.",
+      "INTEGRITY_FAILED": "A served file no longer matches its announced digest. An update in that state would be refused at install time by the app.",
+      "SECURITY_GATE_REJECTED": "A wrong password was presented at the Center door. Only the owner and super admins may even try.",
+      "SECURITY_GATE_OPENED": "The door was opened successfully. The session closes by itself after ten minutes.",
+      "SECURITY_GATE_PASSWORD_ROTATED": "The owner replaced the door password. Every console still open was closed.",
+      "SECURITY_PASSKEY_ENROLLED": "A new fingerprint can now open the Center. Remove it if it is not yours.",
+      "SECURITY_PASSKEY_REMOVED": "This fingerprint no longer opens the Center.",
+      "SECURITY_PASSKEY_REJECTED": "A fingerprint check failed. A single failure is usually the sensor; repeated, it deserves a look."
+    },
+    "metaLabels": {
+      "reason": "Reason",
+      "route": "Route called",
+      "method": "Method",
+      "attempts": "Attempts",
+      "windowMinutes": "Window observed (minutes)",
+      "status": "Status",
+      "role": "Role",
+      "target": "Target",
+      "profileId": "Profile",
+      "subscriptionId": "Subscription",
+      "count": "Count",
+      "label": "Label"
+    },
+    "metaValues": {
+      "bad_password": "Wrong password",
+      "unknown_account": "Unknown account",
+      "not_configured": "Door not configured",
+      "passkey": "Fingerprint",
+      "password": "Password",
+      "exhausted": "Quota exhausted",
+      "unavailable": "Service unavailable"
+    },
+    "actionLabels": {
+      "SESSIONS_CLOSED": "Every open session was closed"
+    },
+    "detailsTitle": "What this means",
+    "metaTitle": "Technical details",
+    "legendTitle": "How to read these alerts",
+    "legendHint": "Every alert carries a severity and a type. Here is what each one means and what it asks of you.",
+    "legendShow": "Show legend",
+    "legendHide": "Hide legend",
     "errors": {
       "gate": "Unable to read the security gate state.",
       "console": "Unable to load Security Center data.",
