@@ -88,6 +88,10 @@ function readableVocabulary(language: Language) {
     metaKey: (code: string) => lookup("metaLabels", code) ?? code,
     metaValue: (value: string) => lookup("metaValues", value) ?? value,
     action: (value: string) => lookup("actionLabels", value) ?? value,
+    // Le journal de la porte partage le vocabulaire de niveau du reste du
+    // panneau, qui l'écrit en minuscules.
+    auditType: (code: string) =>
+      resolveTranslation(language, `operations.common.level.${String(code).toLowerCase()}`) ?? code,
   };
 }
 
@@ -625,7 +629,7 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
                   {audit.length ? audit.map(entry => (
                     <div key={entry.id} className="rounded-xl border border-[#263149] bg-[#07090e]/60 p-3">
                       <div className="flex items-center justify-between gap-3">
-                        <span className="text-xs font-semibold uppercase text-cyan-200">{entry.type}</span>
+                        <span className="text-xs font-semibold uppercase text-cyan-200">{vocabulary.auditType(entry.type)}</span>
                         <time className="text-[11px] text-slate-500">{formatDate(entry.timestamp, { dateStyle: "short", timeStyle: "short" })}</time>
                       </div>
                       <p className="mt-2 text-sm text-slate-200">{entry.action}</p>
