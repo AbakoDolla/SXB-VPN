@@ -35,6 +35,7 @@ import {
   SIGNAUX_MOBILES,
   type SignalMobile,
 } from '../services/mobile-risk';
+import { signalDepuisAttestation, verifierAttestation } from '../services/play-integrity';
 
 const router = Router();
 
@@ -44,6 +45,8 @@ const rapportSchema = z.object({
   appVersion: z.string().max(40).optional(),
   /** Renseigné quand l'application a touché une valeur appât. */
   decoy: z.string().max(120).optional(),
+  /** Jeton Play Integrity, quand l'application a pu en obtenir un. */
+  integrityToken: z.string().max(8000).optional(),
 }).strict();
 
 function lireIdAppareil(req: AuthenticatedRequest): string | null {
@@ -119,6 +122,19 @@ router.post('/report', requireAuth, async (req: AuthenticatedRequest, res: Respo
 
   const signaux: SignalMobile[] = normaliserSignaux(analyse.data.signals);
   if (analyse.data.decoy && !signaux.includes('decoyTouched')) signaux.push('decoyTouched');
+
+  // Attestation Google. Seul un REFUS produit un signal : une attestation
+  // absente, non configurée ou indisponible ne prouve rien, et la compter
+  // comme un échec allumerait tout le parc le jour du déploiement.
+  let attestation = 'absent';
+  if (analyse.data.integrityToken) {
+    const resultat = await verifierAttestation(analyse.data.integrityToken);
+    attestation = resultat.statut === 'refused' ? `refused:${resultat.raison}` : resultat.statut;
+    if (signalDepuisAttestation(resultat) && !signaux.includes('attestationFailed')) {
+      signaux.push('attestationFailed');
+    }
+  }
+
   const evaluation = evaluerRisque(signaux);
 
   // Un appareil sain n'a rien à raconter : le flux d'alertes doit rester lisible.
@@ -135,6 +151,7 @@ router.post('/report', requireAuth, async (req: AuthenticatedRequest, res: Respo
     signals: evaluation.signaux.join(','),
     riskScore: evaluation.score,
     action: evaluation.action,
+    status: attestation,
   };
 
   const typeAlerte = evaluation.signaux.includes('decoyTouched')

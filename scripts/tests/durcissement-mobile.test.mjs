@@ -193,3 +193,52 @@ test('seule une session mobile peut déclarer un incident', () => {
   // L'appareil est identifié par une en-tête au format contraint.
   assert.match(route, /\^SXB\[A-Z0-9\]\{6,80\}\$/);
 });
+
+test('une attestation non configurée n’accuse personne', async () => {
+  // C'est l'invariant le plus important de ce module. Le jour du déploiement,
+  // aucun appareil du parc n'a encore été attesté : si « pas d'attestation »
+  // valait « attestation refusée », tout le parc serait coupé d'un coup.
+  const sortieAttestation = path.join(racine, 'backend', '.sxb-attestation-test.cjs');
+  await build({
+    entryPoints: [path.join(racine, 'server', 'services', 'play-integrity.ts')],
+    outfile: sortieAttestation,
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    packages: 'external',
+    logLevel: 'silent',
+  });
+  const attestation = require(sortieAttestation);
+  try {
+    delete process.env.PLAY_INTEGRITY_PACKAGE;
+    delete process.env.PLAY_INTEGRITY_API_KEY;
+    assert.equal(attestation.attestationConfiguree(), false);
+    const resultat = await attestation.verifierAttestation('un-jeton-quelconque-assez-long');
+    assert.equal(resultat.statut, 'not_configured');
+    assert.equal(attestation.signalDepuisAttestation(resultat), false);
+    // Une panne de Google ne vaut pas davantage un refus.
+    assert.equal(attestation.signalDepuisAttestation({ statut: 'unavailable', raison: 'timeout' }), false);
+    assert.equal(attestation.signalDepuisAttestation({ statut: 'valid', verdicts: {} }), false);
+    assert.equal(attestation.signalDepuisAttestation({ statut: 'refused', raison: 'app_unrecognized' }), true);
+  } finally {
+    if (existsSync(sortieAttestation)) rmSync(sortieAttestation, { force: true });
+  }
+});
+
+test('un jeton d’attestation ne devient jamais une alerte à lui seul', () => {
+  const route = lireSource('server/routes/mobile-security.ts');
+  // Le jeton est soumis à Google, dont le verdict seul compte : le serveur ne
+  // fabrique pas de jugement local sur un jeton qu'il ne sait pas déchiffrer.
+  assert.match(route, /verifierAttestation\(analyse\.data\.integrityToken\)/);
+  assert.match(route, /signalDepuisAttestation\(resultat\)/);
+  const service = lireSource('server/services/play-integrity.ts');
+  // Une panne réseau rend « indisponible », jamais « refusé » : confondre les
+  // deux ferait d'une coupure chez Google une vague de blocages chez nous.
+  assert.match(service, /statut: 'unavailable', raison: erreur\?\.name === 'TimeoutError' \? 'timeout' : 'network'/);
+  assert.match(service, /statut: 'unavailable', raison: `http_\$\{reponse\.status\}`/);
+  // Le verdict doit concerner NOTRE paquet : un jeton valide émis pour une
+  // autre application resterait cryptographiquement correct.
+  assert.match(service, /package_mismatch/);
+  // Aucune clé d'API ne doit être journalisée.
+  assert.doesNotMatch(service, /console\.(log|warn|error)/);
+});

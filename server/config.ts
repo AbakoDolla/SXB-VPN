@@ -16,6 +16,11 @@ const configSchema = z.object({
   XPANEL_ADMIN_PASSWORD: z.string().optional(),
   ENCRYPTION_KEY: z.string().length(32, "Encryption key must be exactly 32 characters").default("sxb-vpn-32-byte-encryption-key-!"),
   MOBILE_HEALTH_PSEUDONYM_SECRET: z.string().min(32).optional(),
+  // Attestation Play Integrity. Les deux sont optionnels : sans eux le module
+  // reste inerte et ne produit aucun signal, ce qui évite une vague d'alertes
+  // sur un parc dont aucun appareil n'a encore été attesté.
+  PLAY_INTEGRITY_PACKAGE: z.string().min(3).optional(),
+  PLAY_INTEGRITY_API_KEY: z.string().min(10).optional(),
 });
 
 const parsed = configSchema.safeParse(process.env);
@@ -36,4 +41,6 @@ export const config = parsed.success ? parsed.data : configSchema.parse({
   XPANEL_ADMIN_PASSWORD: process.env.XPANEL_ADMIN_PASSWORD,
   ENCRYPTION_KEY: process.env.ENCRYPTION_KEY || "sxb-vpn-32-byte-encryption-key-!",
   MOBILE_HEALTH_PSEUDONYM_SECRET: process.env.MOBILE_HEALTH_PSEUDONYM_SECRET,
+  PLAY_INTEGRITY_PACKAGE: process.env.PLAY_INTEGRITY_PACKAGE,
+  PLAY_INTEGRITY_API_KEY: process.env.PLAY_INTEGRITY_API_KEY,
 });
