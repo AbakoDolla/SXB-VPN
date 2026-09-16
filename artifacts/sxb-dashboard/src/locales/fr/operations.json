@@ -917,7 +917,15 @@
       "passkey": "La vérification par empreinte a échoué.",
       "register": "Impossible d’enrôler cette empreinte.",
       "removePasskey": "Impossible de supprimer cette empreinte.",
-      "ack": "Impossible d’acquitter les alertes sélectionnées."
+      "ack": "Impossible d’acquitter les alertes sélectionnées.",
+      "gateUnconfigured": "La porte n’est pas encore configurée. Seul le propriétaire peut définir le mot de passe du centre.",
+      "gateLocked": "La console s’est refermée. Saisissez de nouveau le mot de passe pour continuer.",
+      "gateRateLimited": "Trop de tentatives. Patientez quelques minutes avant de réessayer.",
+      "challengeInvalid": "Ce défi a expiré ou a déjà servi. Recommencez depuis le mot de passe.",
+      "passkeyRequired": "Une empreinte est exigée pour ce compte. Terminez l’étape biométrique.",
+      "passkeyReplay": "Cet authentificateur a renvoyé une preuve déjà utilisée. Réessayez.",
+      "passkeyVerification": "L’authentificateur doit vérifier votre identité, pas seulement votre présence.",
+      "passkeyOrigin": "Cette empreinte a été enrôlée pour un autre domaine."
     }
   }
 }

@@ -37,8 +37,7 @@ const CODE_KEYS: Record<string, string> = {
   CONFIG_EXHAUSTED: "errors.configuration.exhausted",
   CONFIG_REVOKED: "errors.configuration.revoked",
   CONFIG_DELETED: "errors.configuration.deleted",
-  SESSION_INVALID: "errors.sessionExpired",
-  maintenance: "errors.maintenance",
+  SESSION_INVALID: "errors.sessionExpired",  maintenance: "errors.maintenance",
   PROFILE_LOCKED: "configurations.lock.errors.PROFILE_LOCKED",
   PROFILE_UNLOCK_FAILED: "configurations.lock.errors.PROFILE_UNLOCK_FAILED",
   PROFILE_LOCK_PASSWORD_INVALID: "configurations.lock.errors.PROFILE_LOCK_PASSWORD_INVALID",
@@ -51,6 +50,23 @@ const CODE_KEYS: Record<string, string> = {
   PROFILE_LOCK_UNAVAILABLE: "configurations.lock.errors.PROFILE_LOCK_UNAVAILABLE",
   PROFILE_ENGINE_NOT_FOUND: "configurations.lock.errors.PROFILE_ENGINE_NOT_FOUND",
   PROFILE_ENGINE_LINK_INVALID: "configurations.lock.errors.PROFILE_ENGINE_LINK_INVALID",
+  // Centre de sécurité — sans ces correspondances, un simple mot de passe
+  // erroné retombait sur le 403 générique « Vous n'avez pas l'autorisation
+  // d'effectuer cette action », ce qui est faux : l'opérateur EST autorisé, il
+  // s'est trompé de mot de passe. Chaque refus doit nommer sa vraie cause.
+  SECURITY_GATE_REJECTED: "operations.security.errors.unlock",
+  SECURITY_GATE_PASSWORD_INVALID: "operations.security.errors.passwordLength",
+  SECURITY_GATE_UNCONFIGURED: "operations.security.errors.gateUnconfigured",
+  SECURITY_GATE_LOCKED: "operations.security.errors.gateLocked",
+  SECURITY_GATE_RATE_LIMITED: "operations.security.errors.gateRateLimited",
+  SECURITY_CHALLENGE_INVALID: "operations.security.errors.challengeInvalid",
+  SECURITY_PASSKEY_REQUIRED: "operations.security.errors.passkeyRequired",
+  SECURITY_PASSKEY_REJECTED: "operations.security.errors.passkey",
+  SECURITY_PASSKEY_REPLAY_DETECTED: "operations.security.errors.passkeyReplay",
+  SECURITY_PASSKEY_VERIFICATION_REQUIRED: "operations.security.errors.passkeyVerification",
+  SECURITY_PASSKEY_PRESENCE_REQUIRED: "operations.security.errors.passkeyVerification",
+  SECURITY_PASSKEY_ORIGIN_INVALID: "operations.security.errors.passkeyOrigin",
+  SECURITY_PASSKEY_RPID_INVALID: "operations.security.errors.passkeyOrigin",
 };
 
 function record(value: unknown): Record<string, unknown> | undefined {

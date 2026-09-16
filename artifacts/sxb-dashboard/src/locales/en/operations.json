@@ -917,7 +917,15 @@
       "passkey": "Fingerprint verification failed.",
       "register": "Unable to enroll this fingerprint.",
       "removePasskey": "Unable to remove this fingerprint.",
-      "ack": "Unable to acknowledge the selected alerts."
+      "ack": "Unable to acknowledge the selected alerts.",
+      "gateUnconfigured": "The gate is not configured yet. Only the owner can define the center password.",
+      "gateLocked": "The console closed again. Enter the password once more to continue.",
+      "gateRateLimited": "Too many attempts. Wait a few minutes before trying again.",
+      "challengeInvalid": "That challenge expired or was already used. Start again from the password.",
+      "passkeyRequired": "A fingerprint is required for this account. Complete the biometric step.",
+      "passkeyReplay": "That authenticator returned a proof already used. Try again.",
+      "passkeyVerification": "The authenticator must verify your identity, not only your presence.",
+      "passkeyOrigin": "That fingerprint was enrolled for a different domain."
     }
   }
 }
