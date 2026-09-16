@@ -189,7 +189,8 @@
     "quotaLine": "{{used}} of {{granted}} · {{remaining}} remaining",
     "unlimited": "Unlimited data",
     "until": "until {{date}}",
-    "noExpiry": "no expiry"
+    "noExpiry": "no expiry",
+    "applyDeployCount": "Assign {{count}} plan(s)"
   },
   "clients": {
     "title": "Client management",

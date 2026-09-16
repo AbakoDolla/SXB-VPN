@@ -189,7 +189,8 @@
     "quotaLine": "{{used}} sur {{granted}} · {{remaining}} restant(s)",
     "unlimited": "Volume illimité",
     "until": "jusqu'au {{date}}",
-    "noExpiry": "sans échéance"
+    "noExpiry": "sans échéance",
+    "applyDeployCount": "Attribuer {{count}} forfait(s)"
   },
   "clients": {
     "title": "Gestion des Clients",

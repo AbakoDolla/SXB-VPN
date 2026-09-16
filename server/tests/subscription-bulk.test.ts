@@ -458,6 +458,19 @@ describe("attribuer plusieurs forfaits à un appareil en une fois", () => {
     // serait incompréhensible.
     assert.ok(route.includes("targetIds.length * profileTargets.length"));
     assert.ok(route.includes("details.push({ id: clientId, profileId: profileTarget, status: 'ok' })"));
+
+    // L'interface doit annoncer le MÊME nombre avant l'envoi : le bouton, la
+    // confirmation et l'avertissement comptaient les lignes cochées, donc « 1 »
+    // là où trois configurations écriront trois forfaits.
+    const vue = lire("../../artifacts/sxb-dashboard/src/components/SubscriptionsView.tsx");
+    assert.ok(vue.includes("return clients.size * bulkProfiles.length"));
+    assert.ok(!/bulk\.apply', \{ count: formatNumber\(selection\.size\)/.test(vue),
+      "le bouton ne doit plus compter les lignes cochées");
+    assert.equal((vue.match(/formatNumber\(bulkTargetCount\)/g) || []).length, 3,
+      "bouton, confirmation et avertissement comptent la même chose");
+
+    const panneau = lire("../../artifacts/sxb-dashboard/src/components/ClientBulkPlans.tsx");
+    assert.ok(panneau.includes("count: formatNumber(clientIds.length * profileIds.length)"));
   });
 
   it("n'accepte `profileIds` que pour un déploiement", () => {

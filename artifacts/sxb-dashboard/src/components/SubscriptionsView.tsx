@@ -454,6 +454,21 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
   }, [bulkScope, bulkQuota, bulkQuotaMode, bulkStart, bulkExpiryMode, bulkDays, bulkDurationMode, bulkExpire, bulkProfile, bulkProfiles, selection, subs, profiles, locale, t, formatNumber]);
 
   const toggleOne = bulkDelete.toggle;
+
+  /**
+   * Nombre de forfaits RÉELLEMENT visés par l'envoi.
+   *
+   * En mode « déployer », une ligne cochée désigne son CLIENT, et il est écrit
+   * un forfait par configuration cochée. Annoncer le nombre de lignes ferait
+   * donc attendre un forfait là où trois seront créés — le bouton, la
+   * confirmation et l'avertissement doivent compter la même chose que le
+   * serveur.
+   */
+  const bulkTargetCount = useMemo(() => {
+    if (bulkScope !== 'deploy') return selection.size;
+    const clients = new Set(subs.filter(s => selection.has(s.id)).map(s => s.clientId));
+    return clients.size * bulkProfiles.length;
+  }, [bulkScope, selection, subs, bulkProfiles]);
   // « Tout sélectionner » porte sur la sélection FILTRÉE, pas sur la page
   // courante : sinon l'opérateur croirait viser 150 forfaits et n'en toucherait
   // que les 20 affichés.
@@ -742,7 +757,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
             title={bulkAllowed ? undefined : t('commerce.common.unavailableAccess')}
             className="flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black transition-all disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed">
             {bulkRunning ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
-            {t('commerce.subscriptions.bulk.apply', { count: formatNumber(selection.size) })}
+            {t('commerce.subscriptions.bulk.apply', { count: formatNumber(bulkTargetCount) })}
           </button>
         </div>
       )}
@@ -780,7 +795,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
             </h3>
             <div className="text-sm text-gray-300 space-y-1">
               <p><span className="text-gray-500">{t('commerce.subscriptions.bulk.actionLabel')}</span> {t(bulkScope === 'apply' ? 'commerce.subscriptions.bulk.scopeApply' : 'commerce.subscriptions.bulk.scopeDeploy')}</p>
-              <p><span className="text-gray-500">{t('commerce.subscriptions.bulk.plansLabel')}</span> {formatNumber(selection.size)}</p>
+              <p><span className="text-gray-500">{t('commerce.subscriptions.bulk.plansLabel')}</span> {formatNumber(bulkTargetCount)}</p>
             </div>
             {/* Récapitulatif champ par champ : seuls les champs renseignés y
                 figurent, ce qui rend visible ce qui restera inchangé. */}
@@ -792,7 +807,7 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
             <p className="text-[11px] text-amber-300/80">
               {t(bulkScope === 'apply'
                 ? 'commerce.subscriptions.bulk.confirmApplyHint'
-                : 'commerce.subscriptions.bulk.confirmDeployHint', { count: formatNumber(selection.size) })}
+                : 'commerce.subscriptions.bulk.confirmDeployHint', { count: formatNumber(bulkTargetCount) })}
             </p>
             <div className="flex gap-2 justify-end pt-1">
               <button type="button" onClick={() => setBulkConfirm(false)} disabled={bulkRunning}

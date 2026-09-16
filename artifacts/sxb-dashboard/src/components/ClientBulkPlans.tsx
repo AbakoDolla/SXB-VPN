@@ -316,7 +316,14 @@ export default function ClientBulkPlans({ clientIds, subscriptions, profiles, bu
           className="inline-flex items-center gap-2 rounded-xl bg-cyan-400 px-4 py-2 text-sm font-semibold text-[#06101a] transition hover:bg-cyan-300 disabled:opacity-50"
         >
           {envoi && <Loader2 className="h-4 w-4 animate-spin" />}
-          {t(mode === 'deploy' ? 'commerce.clientPlans.applyDeploy' : 'commerce.clientPlans.applyEdit')}
+          {/* En attribution, il est créé un forfait par personne ET par
+              configuration : « Attribuer le forfait » au singulier ferait
+              attendre un seul écrit là où il y en aura six. */}
+          {mode === 'deploy'
+            ? t('commerce.clientPlans.applyDeployCount', {
+              count: formatNumber(clientIds.length * profileIds.length),
+            })
+            : t('commerce.clientPlans.applyEdit')}
         </button>
       </div>
 
