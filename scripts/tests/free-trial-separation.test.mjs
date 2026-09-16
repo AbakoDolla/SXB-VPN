@@ -1172,7 +1172,13 @@ test("on voit et on gère les forfaits d'un client DEPUIS la liste des clients",
   // ── 5. Attribuer et modifier ne se mélangent pas ────────────────────────
   // Créer exige serveur + volume + échéance ; modifier n'exige qu'un champ et
   // laisse intact tout ce qui est laissé vide.
-  assert.match(panneau, /if \(!profileId\) return refuse\('commerce\.subscriptions\.bulk\.profileRequired'\)/);
+  //
+  // « Serveur » est désormais une LISTE : un appareil reçoit souvent plusieurs
+  // forfaits d'un coup — un par opérateur, plus un de secours. L'exigence est
+  // la même, exprimée sur le lot, et la borne du serveur est reprise ici pour
+  // que l'envoi soit refusé avant l'appel plutôt qu'après.
+  assert.match(panneau, /if \(profileIds\.length === 0\) return refuse\('commerce\.subscriptions\.bulk\.profileRequired'\)/);
+  assert.match(panneau, /if \(profileIds\.length > MAX_BULK_PROFILES\) return refuse\('commerce\.subscriptions\.bulk\.tooManyProfiles'\)/);
   assert.match(panneau, /nothingToApply/);
   // `deploy` vise les CLIENTS, `apply` vise les FORFAITS : le serveur exige
   // l'un ou l'autre, jamais les deux.
