@@ -13,8 +13,24 @@
     "editMaxUsesHint": "Videz le champ pour lever le plafond. Il ne peut pas descendre sous le nombre d'inscriptions déjà prises.",
     "editExpiresAtHint": "Videz le champ pour retirer l'échéance du code d'invitation.",
     "save": "Enregistrer",
-    "presence": { "online": "Connecté", "offline": "Hors ligne", "unmeasured": "Présence non mesurée", "lastSeen": "Vu le {{date}}" },
-    "activity": { "open": "Voir l'activité", "title": "Activité de {{name}}", "window": "Derniers {{days}} jours", "truncated": "historique partiel", "sessions": "Sessions VPN", "sessionsEmpty": "Aucune session sur cette période.", "sessionsUnmeasured": "Sessions non mesurées : cet appareil n'a encore rien rapporté, ou la mesure n'est pas configurée.", "sessionDetail": "{{duration}} min · {{reconnects}} reconnexion(s)", "usage": "Consommation", "usageEmpty": "Aucune consommation remontée sur cette période." },
+    "presence": {
+      "online": "Connecté",
+      "offline": "Hors ligne",
+      "unmeasured": "Présence non mesurée",
+      "lastSeen": "Vu le {{date}}"
+    },
+    "activity": {
+      "open": "Voir l'activité",
+      "title": "Activité de {{name}}",
+      "window": "Derniers {{days}} jours",
+      "truncated": "historique partiel",
+      "sessions": "Sessions VPN",
+      "sessionsEmpty": "Aucune session sur cette période.",
+      "sessionsUnmeasured": "Sessions non mesurées : cet appareil n'a encore rien rapporté, ou la mesure n'est pas configurée.",
+      "sessionDetail": "{{duration}} min · {{reconnects}} reconnexion(s)",
+      "usage": "Consommation",
+      "usageEmpty": "Aucune consommation remontée sur cette période."
+    },
     "loadFailed": "Les inscriptions de ce jeton n'ont pas pu être lues. Elles ne sont pas perdues : seule la lecture a échoué.",
     "retry": "Réessayer",
     "searchTitle": "Résultats de la recherche",
@@ -713,7 +729,11 @@
     "columnOwner": "Propriétaire",
     "columnProtocol": "Protocole",
     "columnSince": "Connecté depuis",
-    "columnLastSeen": "Dernière activité"
+    "columnLastSeen": "Dernière activité",
+    "noVersion": "Version inconnue",
+    "sourceUsage": "Consommation remontée",
+    "sourceUsageHint": "Trafic mesuré reçu récemment ; cet appareil n'a pas déclaré l'état de son tunnel.",
+    "sourceHeartbeat": "Tunnel déclaré monté"
   },
   "mobileHealth": {
     "pseudonym": "Identifiant pseudonymisé",

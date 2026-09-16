@@ -244,6 +244,51 @@ explicitement attribuées, et sous leur seul nom commercial. La restriction est
 appliquée par l'API, pas seulement par l'affichage : un appel direct avec une
 configuration non attribuée reçoit un `403`.
 
+### Suivi des connectés
+
+La carte « Connectés » du tableau de bord et la vue de suivi comptent les mêmes
+appareils, à partir de **deux sources distinctes**, jamais confondues :
+
+| Source | Ce qu'elle prouve | Origine |
+| --- | --- | --- |
+| `heartbeat` | L'application a **déclaré son tunnel monté** récemment. | Battement de santé mobile, toutes les 5 min. |
+| `usage` | L'application a **remonté des octets mesurés** récemment. | Rapport de consommation, qui porte la facturation. |
+
+Le battement seul ne suffisait pas : il dépend du consentement aux diagnostics
+et de la version installée. La plateforme a affiché **0 connecté pendant cinq
+jours** alors que le trafic montait chaque jour, parce que plus aucun battement
+n'arrivait. La consommation, elle, est émise par toute application qui
+transporte du trafic.
+
+Un appareil expliqué par un battement n'est jamais recompté par sa
+consommation. Un retard accumulé hors ligne étant rejoué au retour du réseau,
+la source `usage` prouve un rapport reçu, pas un tunnel monté à la seconde
+près — c'est pourquoi chaque ligne indique la source qui l'explique.
+
+La fenêtre reste de 15 minutes, et l'absence de signal n'est jamais présentée
+comme une déconnexion. Le cloisonnement revendeur s'applique aux deux sources,
+avant tout rapprochement.
+
+### Comptes d'administration et tokens
+
+« Ajouter un administrateur » crée le compte, puis `SXB-ADMIN-XXXX-XXXX` lui
+ouvre sa première session : il choisit son mot de passe à l'activation. Le
+token est à usage unique et expire ; en régénérer un **révoque l'ancien et
+conserve intégralement les données du compte**, ce qui permet de le remplacer
+à la demande.
+
+Pour un partenaire qui doit disposer de **son propre tableau de bord, vierge et
+invisible des autres**, le rôle prévu est `RESELLER` : ses clients, ses
+forfaits, ses appareils, son quota et son activité lui sont propres, et l'API
+refuse toute donnée qui ne lui appartient pas. Les rôles `ADMIN` et
+`SUPER_ADMIN` sont, eux, des rôles de plateforme : ils voient l'exploitation
+entière. Cloisonner `ADMIN` par compte serait un changement de modèle de
+données, pas un réglage : tant qu'il n'est pas décidé, ne pas présenter un
+`ADMIN` comme un espace séparé.
+
+Le code étant déployé en un seul exemplaire, toute évolution du tableau de bord
+s'applique du même coup à tous les comptes.
+
 ### Remise à zéro des données applicatives
 
 La zone de réinitialisation des paramètres est réservée au **propriétaire

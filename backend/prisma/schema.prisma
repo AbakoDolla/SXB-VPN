@@ -396,6 +396,8 @@ model TrafficUsage {
   // restent acceptes tels quels.
   reportKey   String?  @unique
 
+  @@index([timestamp])
+
   @@map("traffic_usage")
 }
 

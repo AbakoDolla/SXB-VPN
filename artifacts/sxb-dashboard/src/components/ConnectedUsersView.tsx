@@ -95,7 +95,22 @@ function UserRow({ user, windowMinutes }: { user: ConnectedUser; windowMinutes: 
       </td>
       <td className="px-4 py-3 text-gray-300">
         <div>{sinceLabel()}</div>
-        <div className="mt-1 text-[11px] text-gray-500">{t('operations.presence.appVersion', { version: user.appVersion })}</div>
+        <div className="mt-1 text-[11px] text-gray-500">
+          {user.appVersion
+            ? t('operations.presence.appVersion', { version: user.appVersion })
+            : t('operations.presence.noVersion')}
+        </div>
+        {/* Ce qui PROUVE la présence. Un appareil vu par sa consommation a
+            remonté des octets mesurés sans déclarer l'état de son tunnel : les
+            présenter comme une même certitude serait une invention. */}
+        <div
+          className="mt-1 inline-flex rounded-md border border-slate-500/25 bg-slate-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-slate-300"
+          title={user.source === 'usage' ? t('operations.presence.sourceUsageHint') : undefined}
+        >
+          {user.source === 'usage'
+            ? t('operations.presence.sourceUsage')
+            : t('operations.presence.sourceHeartbeat')}
+        </div>
       </td>
       <td className="px-4 py-3">
         <div className="text-gray-300">{t('operations.presence.lastSeenAgo', { duration: formatElapsed(user.lastSeenSecondsAgo) })}</div>

@@ -9,11 +9,31 @@
  * de personnes dont le tunnel est monté. Un parc de 82 comptes actifs dont
  * personne ne se sert affichait « 82 connectés ».
  *
- * La seule mesure de présence dont dispose la plateforme est le signal de
+ * La PREMIÈRE mesure de présence est le signal de
  * santé mobile (`mobile_health_devices`) : l'appareil déclare son
  * `tunnelState`. La plateforme n'observe NI le trafic, NI la destination, NI
  * le contenu de ce que fait l'utilisateur — elle sait seulement que le tunnel
  * était monté au moment du dernier signal reçu.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * SECONDE SOURCE : LA CONSOMMATION REMONTÉE
+ *
+ * Ce seul signal ne suffit pas. En production, le tableau de bord a affiché
+ * « 0 connecté » pendant CINQ JOURS alors que le trafic montait chaque jour :
+ * plus aucun battement de santé n'arrivait. C'est un signal fragile — il
+ * dépend du consentement aux diagnostics et de la version installée, et rien
+ * ne le remplaçait quand il se taisait.
+ *
+ * La remontée de consommation, elle, porte la FACTURATION : toute application
+ * qui transporte du trafic l'émet, quelle que soit sa version et sans
+ * consentement optionnel. Un appareil qui a remis des octets mesurés dans la
+ * fenêtre est donc listé lui aussi, avec `source: 'usage'`.
+ *
+ * Ce que cette source prouve : l'application a joint l'API et remis des octets
+ * qu'elle a mesurés. Ce qu'elle ne prouve PAS : que le tunnel soit monté à la
+ * seconde près — un retard accumulé hors ligne est rejoué au retour du réseau.
+ * Les deux sources ne sont jamais confondues : chaque ligne porte celle qui
+ * l'explique, et l'interface la montre.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * DÉFINITION RETENUE POUR « CONNECTÉ MAINTENANT »
@@ -75,6 +95,20 @@ export const PRESENCE_RUN_MAX_ROWS = 2_000;
 /** Durée de validité de l'index pseudonyme → client tenu en mémoire. */
 export const PRESENCE_INDEX_TTL_MS = 60_000;
 
+/**
+ * Cadence à laquelle l'application remonte sa consommation pendant un tunnel.
+ *
+ * C'est le SECOND signal de présence, et le plus fiable en production : il ne
+ * dépend ni du consentement aux diagnostics, ni de la version installée — il
+ * porte la facturation, donc toute application qui transporte du trafic
+ * l'émet. La plateforme a mesuré 0 connecté pendant cinq jours alors que le
+ * trafic montait chaque jour : le battement de santé, lui, n'arrivait plus.
+ */
+export const PRESENCE_USAGE_INTERVAL_MINUTES = 5;
+
+/** Borne dure des rapports de consommation lus pour la présence. */
+export const PRESENCE_USAGE_MAX_ROWS = 5_000;
+
 /** Pagination : valeur par défaut et plafond de `limit`. */
 export const PRESENCE_PAGE_SIZE = 50;
 export const PRESENCE_MAX_PAGE_SIZE = 200;
@@ -116,6 +150,16 @@ export interface LignePresence {
   lastSeenSecondsAgo: number;
   connectedSinceAt: string | null;
   connectedSinceMeasured: boolean;
+  /**
+   * Ce qui prouve la présence de cet appareil.
+   *
+   * `heartbeat` : l'application a déclaré son tunnel monté.
+   * `usage` : elle a remonté de la consommation mesurée, sans avoir déclaré
+   * son état — c'est le cas d'une version ancienne ou d'un appareil dont les
+   * diagnostics sont refusés. L'interface ne doit pas présenter les deux comme
+   * la même chose : le second prouve du trafic remonté, pas un état annoncé.
+   */
+  source: 'heartbeat' | 'usage';
 }
 
 /** Regroupement par revendeur, avec le détail dépliable de ses connectés. */
@@ -243,6 +287,7 @@ export function rapprocherPresences(
       lastSeenSecondsAgo: Math.max(0, Math.round((now.getTime() - signal.lastSeenAt.getTime()) / 1000)),
       connectedSinceAt: session.debut ? session.debut.toISOString() : null,
       connectedSinceMeasured: session.mesure,
+      source: 'heartbeat',
     });
   }
 
@@ -438,6 +483,82 @@ export interface OptionsPresence {
 }
 
 /**
+ * Appareils ayant REMONTÉ DE LA CONSOMMATION dans la fenêtre.
+ *
+ * Ce que cela prouve : l'application a joint l'API et lui a remis des octets
+ * mesurés. Ce que cela ne prouve pas : que le tunnel soit monté à la seconde
+ * près — un retard accumulé hors ligne est rejoué au retour du réseau. C'est
+ * précisément pourquoi la ligne produite porte `source: 'usage'` et non l'état
+ * annoncé d'un tunnel.
+ *
+ * Sans cette source, la plateforme affichait 0 connecté pendant des jours :
+ * le battement de santé dépend du consentement aux diagnostics et de la
+ * version installée, alors que la remontée de consommation porte la
+ * facturation et existe donc sur tout appareil qui transporte du trafic.
+ */
+async function lireSignauxTrafic(db: any, now: Date): Promise<Map<string, Date>> {
+  if (!db?.trafficUsage?.findMany) return new Map();
+  const depuis = new Date(now.getTime() - PRESENCE_WINDOW_MINUTES * 60_000);
+  const lignes = await db.trafficUsage.findMany({
+    where: { timestamp: { gte: depuis }, deviceId: { not: null } },
+    orderBy: { timestamp: "desc" },
+    take: PRESENCE_USAGE_MAX_ROWS,
+    select: { deviceId: true, timestamp: true },
+  });
+  const parAppareil = new Map<string, Date>();
+  for (const ligne of lignes as any[]) {
+    const deviceId = typeof ligne.deviceId === "string" ? ligne.deviceId : null;
+    if (!deviceId) continue;
+    const vu = ligne.timestamp instanceof Date ? ligne.timestamp : new Date(ligne.timestamp);
+    if (!Number.isFinite(vu.getTime()) || vu < depuis) continue;
+    // La requête trie déjà du plus récent au plus ancien ; on garde malgré tout
+    // le maximum, pour que l'ordre de la source ne puisse pas changer le résultat.
+    const connu = parAppareil.get(deviceId);
+    if (!connu || vu > connu) parAppareil.set(deviceId, vu);
+  }
+  return parAppareil;
+}
+
+/**
+ * Ajoute les appareils vus par leur consommation, sans jamais doublonner ceux
+ * qu'un battement explique déjà — un même appareil ne doit compter qu'une fois.
+ */
+function completerParTrafic(
+  lignes: LignePresence[],
+  identites: IdentiteAppareil[],
+  trafic: Map<string, Date>,
+  now: Date,
+): LignePresence[] {
+  if (trafic.size === 0) return lignes;
+  const dejaPresents = new Set(lignes.map((ligne) => ligne.deviceId));
+  const complement: LignePresence[] = [];
+  for (const identite of identites) {
+    if (!identite.deviceId || dejaPresents.has(identite.deviceId)) continue;
+    const vu = trafic.get(identite.deviceId);
+    if (!vu) continue;
+    complement.push({
+      clientId: identite.clientId,
+      clientName: identite.clientName,
+      deviceId: identite.deviceId,
+      resellerId: identite.resellerId,
+      resellerName: identite.resellerName,
+      directClient: identite.resellerId === null,
+      // Ces champs viennent du signal de santé : sans battement, ils sont
+      // inconnus. Les inventer ferait passer une supposition pour une mesure.
+      protocol: null,
+      appVersion: "",
+      deviceModel: null,
+      lastSeenAt: vu.toISOString(),
+      lastSeenSecondsAgo: Math.max(0, Math.round((now.getTime() - vu.getTime()) / 1000)),
+      connectedSinceAt: null,
+      connectedSinceMeasured: false,
+      source: 'usage',
+    });
+  }
+  return [...lignes, ...complement].sort((a, b) => a.lastSeenSecondsAgo - b.lastSeenSecondsAgo);
+}
+
+/**
  * Liste complète des connectés visibles par le demandeur, AVANT pagination.
  * Le total est celui de cette liste : aucun second comptage divergent.
  */
@@ -473,11 +594,16 @@ export async function listerConnectes(
     : await lireDebutsSession(db, rapprochables, now);
 
   const { lignes, orphelins } = rapprocherPresences(presents, index, now, debuts);
+  // Second signal : la consommation remontée. Le cloisonnement est appliqué
+  // sur `visibles`, donc AVANT le rapprochement, exactement comme pour les
+  // battements — un revendeur ne peut pas recevoir l'appareil d'un autre.
+  const trafic = await lireSignauxTrafic(db, now);
+  const completes = completerParTrafic(lignes, visibles, trafic, now);
   return {
     generatedAt: now.toISOString(),
     presenceWindowMinutes: PRESENCE_WINDOW_MINUTES,
     heartbeatMinutes: PRESENCE_HEARTBEAT_MINUTES,
-    lignes,
+    lignes: completes,
     orphelins,
     devicesTruncated: signaux.length >= PRESENCE_MAX_DEVICES,
   };

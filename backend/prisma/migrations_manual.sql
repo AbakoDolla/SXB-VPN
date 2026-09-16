@@ -498,3 +498,9 @@ ALTER TABLE "subscriptions" ADD COLUMN IF NOT EXISTS "freeTrialRequestId" TEXT;
 CREATE INDEX IF NOT EXISTS "subscriptions_freeTrialRequestId_idx"
   ON "subscriptions" ("freeTrialRequestId");
 
+
+-- Presence: les appareils sont aussi vus par leur consommation remontee.
+-- Sans cet index, compter les rapports recus dans la derniere fenetre balaye
+-- toute la table de trafic a chaque rafraichissement du tableau de bord.
+CREATE INDEX IF NOT EXISTS "traffic_usage_timestamp_idx"
+  ON "traffic_usage" ("timestamp");

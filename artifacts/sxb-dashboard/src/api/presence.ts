@@ -22,6 +22,12 @@ export interface ConnectedUser {
   /** Début de la session en cours, ou null quand il n'a pas pu être daté. */
   connectedSinceAt: string | null;
   connectedSinceMeasured: boolean;
+  /**
+   * Ce qui prouve la présence : `heartbeat` = tunnel déclaré monté par
+   * l'application ; `usage` = consommation mesurée remontée, sans déclaration
+   * d'état. Les deux sont des faits, mais pas le même fait.
+   */
+  source: 'heartbeat' | 'usage';
 }
 
 export interface ConnectedUsersPage {

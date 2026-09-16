@@ -65,6 +65,7 @@ function baseSimulee(options: {
   rapports?: any[];
   revendeurs?: any[];
   compteurs?: any[];
+  trafic?: any[];
 }) {
   return {
     mobileHealthDevice: {
@@ -72,6 +73,9 @@ function baseSimulee(options: {
     },
     mobileHealthReport: {
       findMany: async () => options.rapports ?? [],
+    },
+    trafficUsage: {
+      findMany: async () => options.trafic ?? [],
     },
     vpnClient: {
       findMany: async () => options.clients ?? [],
@@ -263,6 +267,117 @@ describe("présence VPN — cloisonnement revendeur", () => {
     assert.match(routes, /PRESENCE_RESELLER_SCOPE/);
     // La route nominative reste, elle, cloisonnée plutôt que refusée.
     assert.match(routes, /porteeClientsRevendeur\(fiche\)/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("présence VPN — la consommation remontée est la seconde source", () => {
+  // Le cas de production : plus aucun battement de santé depuis cinq jours,
+  // alors que le trafic monte tous les jours. La plateforme affichait alors
+  // « 0 connecté », ce qui rendait le suivi inutilisable.
+  const clients = [
+    client({ id: "cli-a", userId: "user-a", deviceId: "SXBDEVA", resellerId: "res-1", reseller: { id: "res-1", user: { name: "Revendeur Un" } } }),
+    client({ id: "cli-b", userId: "user-b", deviceId: "SXBDEVB", resellerId: null, reseller: null }),
+  ];
+
+  it("liste un appareil vu par sa consommation, même sans aucun battement", async () => {
+    viderCachePresence();
+    const db = baseSimulee({
+      signaux: [],
+      clients,
+      trafic: [{ deviceId: "SXBDEVA", timestamp: ilYA(2) }],
+    });
+    const vue = await listerConnectes(db, SECRET, { now: MAINTENANT });
+
+    assert.deepEqual(vue.lignes.map((ligne) => ligne.clientId), ["cli-a"]);
+    const ligne = vue.lignes[0];
+    // La source est NOMMÉE : ces octets prouvent un rapport reçu, pas un état
+    // de tunnel annoncé. Les confondre serait inventer une mesure.
+    assert.equal(ligne.source, "usage");
+    assert.equal(ligne.protocol, null);
+    assert.equal(ligne.appVersion, "");
+    assert.equal(ligne.connectedSinceMeasured, false);
+    assert.equal(ligne.lastSeenSecondsAgo, 120);
+  });
+
+  it("ne compte jamais deux fois l'appareil que le battement explique déjà", async () => {
+    viderCachePresence();
+    const db = baseSimulee({
+      signaux: [signal({
+        id: "dev-a",
+        pseudonym: pseudonymizeMobileDevice("user-a", "SXBDEVA", SECRET),
+        lastSeenAt: ilYA(1),
+      })],
+      clients,
+      trafic: [{ deviceId: "SXBDEVA", timestamp: ilYA(3) }],
+    });
+    const vue = await listerConnectes(db, SECRET, { now: MAINTENANT });
+
+    assert.equal(vue.lignes.length, 1);
+    // Le battement fait autorité : il porte l'état déclaré et la version.
+    assert.equal(vue.lignes[0].source, "heartbeat");
+    viderCachePresence();
+    assert.equal(await compterConnectes(baseSimulee({
+      signaux: [signal({ id: "dev-a", pseudonym: pseudonymizeMobileDevice("user-a", "SXBDEVA", SECRET), lastSeenAt: ilYA(1) })],
+      clients,
+      trafic: [{ deviceId: "SXBDEVA", timestamp: ilYA(3) }],
+    }), SECRET, { now: MAINTENANT }), 1);
+  });
+
+  it("ignore un rapport trop ancien et un appareil inconnu", async () => {
+    viderCachePresence();
+    const db = baseSimulee({
+      signaux: [],
+      clients,
+      trafic: [
+        { deviceId: "SXBDEVA", timestamp: ilYA(PRESENCE_WINDOW_MINUTES + 1) },
+        { deviceId: "SXBINCONNU", timestamp: ilYA(1) },
+        { deviceId: null, timestamp: ilYA(1) },
+      ],
+    });
+    const vue = await listerConnectes(db, SECRET, { now: MAINTENANT });
+    assert.deepEqual(vue.lignes, []);
+  });
+
+  it("cloisonne cette source comme l'autre : un revendeur ne voit que ses appareils", async () => {
+    viderCachePresence();
+    const db = baseSimulee({
+      signaux: [],
+      clients,
+      trafic: [
+        { deviceId: "SXBDEVA", timestamp: ilYA(1) },
+        { deviceId: "SXBDEVB", timestamp: ilYA(1) },
+      ],
+    });
+    const vue = await listerConnectes(db, SECRET, {
+      porteeClients: { OR: [{ resellerId: "res-1" }, { resellerId: null, userId: "user-res-1" }] },
+      now: MAINTENANT,
+    });
+    assert.deepEqual(vue.lignes.map((ligne) => ligne.clientId), ["cli-a"]);
+  });
+
+  it("garde le compteur du tableau de bord égal à la liste", async () => {
+    const trafic = [
+      { deviceId: "SXBDEVA", timestamp: ilYA(1) },
+      { deviceId: "SXBDEVB", timestamp: ilYA(4) },
+    ];
+    viderCachePresence();
+    const vue = await listerConnectes(baseSimulee({ signaux: [], clients, trafic }), SECRET, { now: MAINTENANT });
+    viderCachePresence();
+    const compteur = await compterConnectes(baseSimulee({ signaux: [], clients, trafic }), SECRET, { now: MAINTENANT });
+    assert.equal(vue.lignes.length, 2);
+    assert.equal(compteur, 2);
+    // Le plus récemment vu reste en tête, quelle que soit la source.
+    assert.deepEqual(vue.lignes.map((ligne) => ligne.clientId), ["cli-a", "cli-b"]);
+  });
+
+  it("reste indexée en base : la fenêtre ne balaye pas toute la table de trafic", () => {
+    for (const chemin of ["prisma/schema.prisma", "backend/prisma/schema.prisma"]) {
+      const schema = source(chemin);
+      const modele = schema.slice(schema.indexOf("model TrafficUsage"), schema.indexOf('@@map("traffic_usage")'));
+      assert.match(modele, /@@index\(\[timestamp\]\)/, `${chemin} : index de présence manquant`);
+    }
+    assert.match(source("prisma/migrations_manual.sql"), /CREATE INDEX IF NOT EXISTS "traffic_usage_timestamp_idx"/);
   });
 });
 

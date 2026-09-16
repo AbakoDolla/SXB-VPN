@@ -13,8 +13,24 @@
     "editMaxUsesHint": "Clear the field to lift the cap. It cannot go below the enrolments already taken.",
     "editExpiresAtHint": "Clear the field to remove the invitation code's expiry.",
     "save": "Save",
-    "presence": { "online": "Connected", "offline": "Offline", "unmeasured": "Presence not measured", "lastSeen": "Last seen {{date}}" },
-    "activity": { "open": "View activity", "title": "Activity of {{name}}", "window": "Last {{days}} days", "truncated": "partial history", "sessions": "VPN sessions", "sessionsEmpty": "No session in this period.", "sessionsUnmeasured": "Sessions not measured: this device has reported nothing yet, or measurement is not configured.", "sessionDetail": "{{duration}} min · {{reconnects}} reconnection(s)", "usage": "Data usage", "usageEmpty": "No usage reported in this period." },
+    "presence": {
+      "online": "Connected",
+      "offline": "Offline",
+      "unmeasured": "Presence not measured",
+      "lastSeen": "Last seen {{date}}"
+    },
+    "activity": {
+      "open": "View activity",
+      "title": "Activity of {{name}}",
+      "window": "Last {{days}} days",
+      "truncated": "partial history",
+      "sessions": "VPN sessions",
+      "sessionsEmpty": "No session in this period.",
+      "sessionsUnmeasured": "Sessions not measured: this device has reported nothing yet, or measurement is not configured.",
+      "sessionDetail": "{{duration}} min · {{reconnects}} reconnection(s)",
+      "usage": "Data usage",
+      "usageEmpty": "No usage reported in this period."
+    },
     "loadFailed": "This token's enrolments could not be read. Nothing is lost -- only the read failed.",
     "retry": "Retry",
     "searchTitle": "Search results",
@@ -713,7 +729,11 @@
     "columnOwner": "Owner",
     "columnProtocol": "Protocol",
     "columnSince": "Connected for",
-    "columnLastSeen": "Last activity"
+    "columnLastSeen": "Last activity",
+    "noVersion": "Unknown version",
+    "sourceUsage": "Reported usage",
+    "sourceUsageHint": "Measured traffic received recently; this device did not declare its tunnel state.",
+    "sourceHeartbeat": "Tunnel declared up"
   },
   "mobileHealth": {
     "pseudonym": "Pseudonymized identifier",
