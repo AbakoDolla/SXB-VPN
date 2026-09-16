@@ -1021,6 +1021,9 @@
       "rooted": "Appareil rooté",
       "emulator": "Émulateur"
     },
+    "passkeyRecovery": "Retirer mes empreintes",
+    "passkeyRecoveryHint": "Empreinte inutilisable — capteur remplacé, machine perdue ? Saisissez votre mot de passe ci-contre, puis retirez toutes vos empreintes. La porte revient au mot de passe seul et vous pourrez en réenrôler une.",
+    "passkeyRecoveryConfirm": "Retirer toutes vos empreintes du Centre ? La porte ne demandera plus que le mot de passe, jusqu’à ce que vous en enrôliez une nouvelle.",
     "errors": {
       "gate": "Impossible de lire l’état de la porte de sécurité.",
       "console": "Impossible de charger les données du centre de sécurité.",
@@ -1041,7 +1044,8 @@
       "passkeyRequired": "Une empreinte est exigée pour ce compte. Terminez l’étape biométrique.",
       "passkeyReplay": "Cet authentificateur a renvoyé une preuve déjà utilisée. Réessayez.",
       "passkeyVerification": "L’authentificateur doit vérifier votre identité, pas seulement votre présence.",
-      "passkeyOrigin": "Cette empreinte a été enrôlée pour un autre domaine."
+      "passkeyOrigin": "Cette empreinte a été enrôlée pour un autre domaine.",
+      "passkeyRecovery": "Le retrait des empreintes a échoué. Vérifiez le mot de passe et réessayez."
     }
   }
 }

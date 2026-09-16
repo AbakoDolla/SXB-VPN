@@ -119,6 +119,18 @@ export async function credentialIdsFor(userId: string): Promise<string[]> {
   }
 }
 
+/**
+ * Retire TOUTES les empreintes d'un compte. Voie de secours du propriétaire.
+ *
+ * Renvoie le nombre d'empreintes retirées. Aucune autre donnée n'est touchée :
+ * le mot de passe de la porte, lui, reste en place.
+ */
+export async function deleteAllPasskeys(userId: string): Promise<number> {
+  if (!prisma) return 0;
+  const resultat = await (prisma as any).securityPasskey.deleteMany({ where: { userId } });
+  return Number(resultat?.count ?? 0);
+}
+
 /** Consomme un défi : un même défi ne peut jamais servir deux fois. */
 function consommerDefi(challengeId: unknown, userId: string, usage: 'register' | 'authenticate'): string {
   purger();

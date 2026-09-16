@@ -284,6 +284,33 @@ test('le défi d’empreinte porte les clés enrôlées', () => {
   assert.doesNotMatch(vue, /residentKey: "preferred"/);
 });
 
+test('le propriétaire garde une voie de sortie quand l’empreinte ne marche plus', () => {
+  // Sans elle, retirer une empreinte exigeait une console ouverte que seule
+  // cette empreinte permettait d'ouvrir : un capteur remplacé ou une machine
+  // perdue enfermait le propriétaire dehors DÉFINITIVEMENT.
+  const routes = lireSource('server/routes/security.ts');
+  assert.match(routes, /router\.post\('\/gate\/passkeys\/reset'/);
+
+  const secours = routes.slice(
+    routes.indexOf("router.post('/gate/passkeys/reset'"),
+    routes.indexOf("router.delete('/passkeys/:id'"),
+  );
+  // Réservée au propriétaire, et jamais franchissable sans le mot de passe.
+  assert.match(secours, /isOwnerRequest\(req\)/);
+  assert.match(secours, /verifyGatePassword\(req\.body\?\.password\)/);
+  // Elle n'ouvre AUCUNE console : elle ne rend aucune preuve de déverrouillage.
+  assert.doesNotMatch(secours, /issueSecurityUnlock/);
+  assert.doesNotMatch(secours, /unlockToken/);
+  // Et elle laisse une trace qu'on ne peut pas manquer.
+  assert.match(secours, /severity: 'critical'/);
+  assert.match(secours, /OWNER_RECOVERY/);
+
+  // Elle ne touche que les empreintes : le mot de passe de la porte reste.
+  const service = lireSource('server/services/security-passkey.ts');
+  assert.match(service, /export async function deleteAllPasskeys/);
+  assert.doesNotMatch(service, /securityGate\.deleteMany/);
+});
+
 test('la section n’est proposée qu’aux deux rôles admis', () => {
   const layout = lireSource('artifacts/sxb-dashboard/src/components/Layout.tsx');
   const entree = layout.slice(layout.indexOf("id: 'security'"), layout.indexOf("id: 'security'") + 320);

@@ -1021,6 +1021,9 @@
       "rooted": "Rooted device",
       "emulator": "Emulator"
     },
+    "passkeyRecovery": "Remove my fingerprints",
+    "passkeyRecoveryHint": "Fingerprint unusable — sensor replaced, machine lost? Enter your password opposite, then remove every fingerprint. The door falls back to the password alone and you can enrol a new one.",
+    "passkeyRecoveryConfirm": "Remove every fingerprint from the Center? The door will ask for the password only, until you enrol a new one.",
     "errors": {
       "gate": "Unable to read the security gate state.",
       "console": "Unable to load Security Center data.",
@@ -1041,7 +1044,8 @@
       "passkeyRequired": "A fingerprint is required for this account. Complete the biometric step.",
       "passkeyReplay": "That authenticator returned a proof already used. Try again.",
       "passkeyVerification": "The authenticator must verify your identity, not only your presence.",
-      "passkeyOrigin": "That fingerprint was enrolled for a different domain."
+      "passkeyOrigin": "That fingerprint was enrolled for a different domain.",
+      "passkeyRecovery": "Removing the fingerprints failed. Check the password and try again."
     }
   }
 }

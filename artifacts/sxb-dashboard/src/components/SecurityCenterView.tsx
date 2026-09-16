@@ -16,6 +16,7 @@ import {
   fetchSecurityEvents,
   fetchSecurityGate,
   fetchSecurityOverview,
+  resetSecurityPasskeys,
   setSecurityGatePassword,
   unlockSecurityGate,
   unlockSecurityGateWithPasskey,
@@ -248,6 +249,25 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
       }
     } catch (cause) {
       setActionError({ cause, fallback: "operations.security.errors.unlock" });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handlePasskeyRecovery = async () => {
+    // Le geste est irréversible et retire toutes les empreintes : il se confirme.
+    if (!window.confirm(t("operations.security.passkeyRecoveryConfirm"))) return;
+    setBusy("recovery");
+    setActionError(null);
+    try {
+      await resetSecurityPasskeys(password);
+      // La porte revient au mot de passe seul : on relit son état, et le
+      // propriétaire réenrôle ensuite l'empreinte de son choix.
+      setPendingChallenge(null);
+      setPassword("");
+      await loadGate();
+    } catch (cause) {
+      setActionError({ cause, fallback: "operations.security.errors.passkeyRecovery" });
     } finally {
       setBusy(null);
     }
@@ -495,6 +515,26 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
               {busy === "passkey" ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Fingerprint className="h-4 w-4" />}
               {t("operations.security.verifyFingerprint")}
             </button>
+
+            {/* Voie de secours. Une empreinte devenue inutilisable — capteur
+                remplacé, machine perdue — enfermait le propriétaire dehors
+                définitivement, puisque la retirer exigeait la console que seule
+                cette empreinte ouvrait. Elle exige le mot de passe, n'ouvre
+                rien, et laisse une trace critique. */}
+            {gate?.canConfigure && (gate?.passkeys?.length ?? 0) > 0 && (
+              <div className="mt-5 border-t border-[#1a1f2e] pt-5">
+                <p className="text-xs leading-5 text-slate-500">{t("operations.security.passkeyRecoveryHint")}</p>
+                <button
+                  type="button"
+                  onClick={() => void handlePasskeyRecovery()}
+                  disabled={busy === "recovery" || !password}
+                  className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-2.5 text-sm font-semibold text-amber-100 transition-colors hover:bg-amber-500/20 disabled:opacity-50"
+                >
+                  {busy === "recovery" ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                  {t("operations.security.passkeyRecovery")}
+                </button>
+              </div>
+            )}
           </div>
         </section>
       ) : (

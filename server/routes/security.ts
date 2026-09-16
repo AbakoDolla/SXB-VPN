@@ -35,6 +35,7 @@ import {
 } from '../services/security-gate';
 import {
   deletePasskey,
+  deleteAllPasskeys,
   hashIp,
   credentialIdsFor,
   issueChallenge,
@@ -250,6 +251,60 @@ router.post('/passkeys', exigerOuverture, async (req: AuthenticatedRequest, res:
       metadata: { role: req.user!.role, label: passkey.label || undefined },
     });
     return res.status(201).json({ passkey });
+  } catch (error) {
+    if (handleSecurityGateError(error, res)) return;
+    return res.status(503).json({ error: 'DB_UNAVAILABLE', code: 'DB_UNAVAILABLE' });
+  }
+});
+
+/**
+ * Voie de secours du PROPRIÉTAIRE — retirer ses empreintes au mot de passe.
+ *
+ * POURQUOI ELLE EXISTE. Retirer une empreinte exigeait une console ouverte, que
+ * seule l'empreinte permettait d'ouvrir. Une empreinte devenue inutilisable —
+ * capteur remplacé, machine perdue, clé non retrouvable — enfermait donc le
+ * propriétaire dehors DÉFINITIVEMENT, sans aucun recours. C'est arrivé.
+ *
+ * POURQUOI ELLE NE FAIT PAS SAUTER LA SÉCURITÉ. Elle exige le mot de passe
+ * courant du Centre, c'est-à-dire le secret racine dont dépend déjà toute la
+ * porte ; le même mot de passe permet d'ailleurs déjà d'en changer. Elle est
+ * réservée au seul propriétaire, n'ouvre AUCUNE console, ne rend AUCUNE preuve,
+ * et se contente de remettre la porte au mot de passe seul. Elle est enfin
+ * tracée en gravité critique : on ne peut pas s'en servir discrètement.
+ */
+router.post('/gate/passkeys/reset', ...securityUnlockLimiters, async (req: AuthenticatedRequest, res: Response) => {
+  if (!isOwnerRequest(req)) {
+    return res.status(403).json({ error: 'errors.auth.forbidden', code: 'OWNER_ONLY' });
+  }
+  try {
+    await verifyGatePassword(req.body?.password).catch(async (error) => {
+      await recordSecurityEvent({
+        eventType: 'SECURITY_GATE_REJECTED',
+        severity: 'warning',
+        userId: req.user!.userId,
+        ipHash: hashIp(req.ip),
+        metadata: { role: req.user!.role, reason: 'password' },
+      });
+      throw error;
+    });
+    const retirees = await deleteAllPasskeys(req.user!.userId);
+    await logDbActivity(
+      req.user!.userId,
+      'Empreintes du Centre de sécurité retirées par le propriétaire',
+      'warning',
+      req.ip || '',
+    );
+    await recordSecurityEvent({
+      eventType: 'SECURITY_PASSKEY_REMOVED',
+      severity: 'critical',
+      userId: req.user!.userId,
+      ipHash: hashIp(req.ip),
+      actionTaken: 'OWNER_RECOVERY',
+      metadata: { role: req.user!.role, count: retirees, reason: 'owner_recovery' },
+    });
+    // Aucune preuve n'est rendue : le propriétaire se reconnecte normalement,
+    // au mot de passe, puis réenrôle l'empreinte de son choix.
+    return res.json({ success: true, removed: retirees });
   } catch (error) {
     if (handleSecurityGateError(error, res)) return;
     return res.status(503).json({ error: 'DB_UNAVAILABLE', code: 'DB_UNAVAILABLE' });

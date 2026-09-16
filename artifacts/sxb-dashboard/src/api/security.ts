@@ -122,6 +122,16 @@ export const setSecurityGatePassword = (data: { currentPassword?: string; newPas
 export const unlockSecurityGate = (password: string): Promise<SecurityUnlockResponse> =>
   apiRequest<SecurityUnlockResponse>("/security/gate/unlock", { method: "POST", body: { password } });
 
+/**
+ * Voie de secours du propriétaire : retire ses empreintes au seul mot de passe.
+ *
+ * Elle existe parce que retirer une empreinte exigeait une console ouverte, que
+ * seule l'empreinte permettait d'ouvrir : une empreinte devenue inutilisable
+ * enfermait le propriétaire dehors définitivement.
+ */
+export const resetSecurityPasskeys = (password: string): Promise<{ success: boolean; removed: number }> =>
+  apiRequest<{ success: boolean; removed: number }>("/security/gate/passkeys/reset", { method: "POST", body: { password } });
+
 export const unlockSecurityGateWithPasskey = (data: {
   challengeId: string;
   credentialId: string;
