@@ -1093,7 +1093,11 @@ describe("MENTION « PÉRIODE D'ESSAI » — visible aussi côté revendeur", ()
   it("le REVENDEUR reste cloisonné, et les surfaces globales lui sont fermées", () => {
     const clients = readFileSync(new URL("../routes/clients.ts", import.meta.url), "utf8");
     const listeClients = clients.slice(clients.indexOf('// GET /api/clients'), clients.indexOf('// GET /api/clients/'));
-    assert.ok(listeClients.includes("porteeClientsRevendeur"), "cloisonnement revendeur attendu");
+    // Le cloisonnement passe par le point unique, qui sert les quatre rôles :
+    // le revendeur, l'administrateur, le super-administrateur et le
+    // propriétaire. Exiger ici le seul nom revendeur aurait figé la liste dans
+    // un cloisonnement partiel.
+    assert.ok(listeClients.includes("porteeClients(prisma, req.user)"), "cloisonnement par compartiment attendu");
     const marques = readFileSync(new URL("../services/free-trial-marks.ts", import.meta.url), "utf8");
     assert.equal(
       /reseller|revendeur/i.test(marques.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "")),

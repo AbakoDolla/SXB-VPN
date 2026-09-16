@@ -1943,13 +1943,18 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(layout, /id: 'reseller-services'[\s\S]{0,120}roles: \['RESELLER'\]/);
 
     // Les routes correspondantes doivent filtrer sur SES clients.
-    // La portée revendeur reste la PREMIÈRE condition de la requête ; le filtre
-    // « essai gratuit » ne peut que la restreindre, jamais l'élargir — d'où le
-    // ET explicite plutôt qu'une fusion d'objets qui écraserait une clé commune.
-    assert.ok(devicesRoutes.includes('isReseller ? (porteeClientsRevendeur(fiche) as any) : null'));
-    assert.match(devicesRoutes, /where: etFiltres\(\s*\n\s*isReseller \? \(porteeClientsRevendeur\(fiche\) as any\) : null,\s*\n\s*porteeEssai \? exclureIdentifiants\("id", porteeEssai\.clientsEssaiUniquement\) : null,/);
-    const portees = dashboardRoutes.match(/porteeClientsRevendeur\(/g) || [];
-    assert.ok(portees.length >= 3, `portée revendeur absente des indicateurs (${portees.length})`);
+    // La portée du compartiment reste la PREMIÈRE condition de la requête ; le
+    // filtre « essai gratuit » ne peut que la restreindre, jamais l'élargir —
+    // d'où le ET explicite plutôt qu'une fusion d'objets qui écraserait une clé
+    // commune.
+    //
+    // La règle vit désormais dans un point unique (`portee-donnees`) plutôt que
+    // réécrite route par route : c'est ce qui permet d'ajouter le compartiment
+    // d'un administrateur sans oublier un écran.
+    assert.ok(devicesRoutes.includes("from \"../services/portee-donnees\""));
+    assert.match(devicesRoutes, /where: etFiltres\(\s*\n\s*await porteeClients\(prisma, req\.user\),\s*\n\s*porteeEssai \? exclureIdentifiants\("id", porteeEssai\.clientsEssaiUniquement\) : null,/);
+    const portees = dashboardRoutes.match(/porteeClients\(prisma, req\.user\)/g) || [];
+    assert.ok(portees.length >= 3, `portée du compartiment absente des indicateurs (${portees.length})`);
     // Le compte de serveurs ne doit jamais lui être communiqué.
     assert.ok(dashboardRoutes.includes('isReseller ? Promise.resolve(0) : prisma.vPSServer.count'));
   });
@@ -2198,7 +2203,11 @@ describe('garde-fous contre les régressions Android', () => {
     // clients des autres revendeurs.
     const logs = source('../server/routes/audit-logs.ts');
     assert.match(logs, /const isReseller = req\.user\?\.role === "RESELLER"/);
-    assert.match(logs, /ownScope = isReseller \? \{ userId: req\.user\?\.userId \} : \{\}/);
+    // Le compartiment couvre désormais aussi l'administrateur : sans cela, son
+    // écran d'accueil racontait les connexions et les créations du
+    // super-administrateur.
+    assert.match(logs, /const cloisonne = isReseller \|\| req\.user\?\.role === "ADMIN"/);
+    assert.match(logs, /ownScope = cloisonne \? \{ userId: req\.user\?\.userId \} : \{\}/);
     assert.match(logs, /\.\.\.ownScope/);
 
     // La carte disparaît aussi du tableau de bord, et les journaux ne sont
@@ -2210,8 +2219,9 @@ describe('garde-fous contre les régressions Android', () => {
   it('cloisonne les graphiques et les compteurs du tableau de bord par revendeur', () => {
     const dash = source('../server/routes/dashboard.ts');
     // /traffic et /users portaient sur TOUS les clients de la plateforme : un
-    // revendeur sans aucun client y voyait malgré tout une courbe à 82.
-    const portees = dash.match(/porteeClientsRevendeur\(/g) || [];
+    // revendeur sans aucun client y voyait malgré tout une courbe à 82. La
+    // portée passe maintenant par le point unique, qui sert les quatre rôles.
+    const portees = dash.match(/porteeClients\(prisma, req\.user\)/g) || [];
     assert.ok(portees.length >= 2, `cloisonnement absent de /traffic ou /users (${portees.length})`);
     // Les bons de recharge étaient comptés à l'échelle de la plateforme.
     assert.match(dash, /isReseller \? Promise\.resolve\(0\) : prisma\.voucher\.count\(\)/);
