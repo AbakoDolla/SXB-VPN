@@ -267,7 +267,14 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
           rpId: challenge.rpId,
           userVerification: "required",
           timeout: challenge.timeoutMs,
-          allowCredentials: [],
+          // Les empreintes enrôlées, telles que le serveur les connaît. Une clé
+          // de plateforme n'est pas toujours « découvrable » : sans son
+          // identifiant, l'authentificateur ne la retrouve pas et la
+          // vérification échoue sans que rien ne soit cassé côté serveur.
+          allowCredentials: (challenge.allowCredentials ?? []).map(id => ({
+            type: "public-key" as const,
+            id: decodeBase64Url(id),
+          })),
         },
       });
       if (!(credential instanceof PublicKeyCredential) || !(credential.response instanceof AuthenticatorAssertionResponse)) {
@@ -309,7 +316,11 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
           authenticatorSelection: {
             authenticatorAttachment: "platform",
             userVerification: "required",
-            residentKey: "preferred",
+            // « required » et non « preferred » : avec « preferred », le capteur
+            // reste libre de créer une clé non découvrable, et c'est ce qu'ont
+            // fait Windows Hello puis plusieurs capteurs Android. La clé restait
+            // alors introuvable au moment de s'en servir.
+            residentKey: "required",
           },
           timeout: challenge.timeoutMs,
         },

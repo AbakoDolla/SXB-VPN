@@ -146,8 +146,16 @@ test('une console ouverte au seul mot de passe ne se réclame pas de l’emprein
   // Et la route l'exige explicitement quand une clé est enrôlée.
   const routes = lireSource('server/routes/security.ts');
   assert.match(routes, /cles\.length > 0 && !ouverture\.passkeyVerified[\s\S]{0,140}SECURITY_PASSKEY_REQUIRED/);
-  // Le mot de passe seul n'émet AUCUNE preuve quand une clé existe.
-  assert.match(routes, /step: 'passkey', \.\.\.issueChallenge/);
+  // Le mot de passe seul n'émet AUCUNE preuve quand une clé existe : la route
+  // rend un défi, jamais une ouverture.
+  assert.match(routes, /step: 'passkey',[\s\S]{0,200}issueChallenge\(req\.user!\.userId, 'authenticate'\)/);
+  const etapeMotDePasse = routes.slice(
+    routes.indexOf("router.post('/gate/unlock'"),
+    routes.indexOf("router.post('/gate/unlock/passkey'"),
+  );
+  const defi = etapeMotDePasse.indexOf("step: 'passkey'");
+  const ouvert = etapeMotDePasse.indexOf("step: 'unlocked'");
+  assert.ok(defi > -1 && ouvert > defi, 'le défi doit précéder toute ouverture');
 });
 
 test('le flux d’événements refuse tout ce qui n’est pas prévu', () => {
@@ -248,6 +256,32 @@ test('l’empreinte est exigée par le navigateur, pas seulement par le serveur'
   assert.match(vue, /authenticatorAttachment: "platform"/);
   // L'absence de WebAuthn est dite, pas subie par une exception.
   assert.match(vue, /"PublicKeyCredential" in window/);
+});
+
+test('le défi d’empreinte porte les clés enrôlées', () => {
+  // Sans ces identifiants, un capteur de plateforme ayant créé une clé NON
+  // découvrable ne retrouve rien : la vérification échoue toujours, et le
+  // propriétaire reste enfermé dehors sans aucun recours. C'est exactement ce
+  // qui s'est produit en production — une empreinte enrôlée, jamais utilisable.
+  const routes = lireSource('server/routes/security.ts');
+  assert.match(routes, /allowCredentials: await credentialIdsFor\(req\.user!\.userId\)/);
+  const service = lireSource('server/services/security-passkey.ts');
+  assert.match(service, /export async function credentialIdsFor/);
+
+  // Ces identifiants ne sortent qu'APRÈS un mot de passe valide : ils ne
+  // renseignent donc personne qui ne l'ait déjà franchi.
+  const avant = routes.indexOf('verifyGatePassword');
+  const apres = routes.indexOf('allowCredentials: await credentialIdsFor');
+  assert.ok(avant > -1 && apres > avant, 'les clés ne doivent sortir qu’après le mot de passe');
+
+  const vue = lireSource('artifacts/sxb-dashboard/src/components/SecurityCenterView.tsx');
+  // La vue doit s'en servir, et non repartir sur une liste vide.
+  assert.match(vue, /challenge\.allowCredentials \?\? \[\]/);
+  assert.doesNotMatch(vue, /allowCredentials: \[\],/);
+  // Les futurs enrôlements exigent une clé découvrable : « preferred » laissait
+  // le capteur libre d'en créer une qu'il ne saurait pas retrouver.
+  assert.match(vue, /residentKey: "required"/);
+  assert.doesNotMatch(vue, /residentKey: "preferred"/);
 });
 
 test('la section n’est proposée qu’aux deux rôles admis', () => {

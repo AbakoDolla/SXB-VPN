@@ -28,6 +28,13 @@ export interface SecurityChallenge {
   rpId: string;
   timeoutMs: number;
   algorithms: number[];
+  /**
+   * Empreintes enrôlées que le navigateur est autorisé à présenter.
+   *
+   * Servi uniquement à la vérification, après un mot de passe valide : une clé
+   * de plateforme non découvrable ne se retrouve que par son identifiant.
+   */
+  allowCredentials?: string[];
 }
 
 export interface SecurityUnlockPasskeyStep extends SecurityChallenge {

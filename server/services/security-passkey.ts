@@ -92,6 +92,33 @@ export function issueChallenge(userId: string, usage: 'register' | 'authenticate
   };
 }
 
+/**
+ * Identifiants des empreintes enrôlées par ce compte.
+ *
+ * Le navigateur en a BESOIN pour retrouver la bonne clé. Une empreinte de
+ * plateforme n'est pas forcément « découvrable » : Windows Hello et plusieurs
+ * capteurs Android créent une clé que l'authentificateur ne sait retrouver que
+ * si on lui présente son identifiant. Sans cette liste, la vérification ne
+ * trouve rien et le propriétaire reste dehors, sans aucun recours — c'est
+ * exactement ce qui est arrivé.
+ *
+ * La liste ne révèle rien d'exploitable : elle n'est servie qu'après un mot de
+ * passe valide, et un identifiant de clé publique ne permet aucune signature.
+ */
+export async function credentialIdsFor(userId: string): Promise<string[]> {
+  if (!prisma) return [];
+  try {
+    const lignes = await (prisma as any).securityPasskey.findMany({
+      where: { userId },
+      select: { credentialId: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    return lignes.map((ligne: any) => String(ligne.credentialId)).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 /** Consomme un défi : un même défi ne peut jamais servir deux fois. */
 function consommerDefi(challengeId: unknown, userId: string, usage: 'register' | 'authenticate'): string {
   purger();

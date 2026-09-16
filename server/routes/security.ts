@@ -36,6 +36,7 @@ import {
 import {
   deletePasskey,
   hashIp,
+  credentialIdsFor,
   issueChallenge,
   listPasskeys,
   registerPasskey,
@@ -174,7 +175,16 @@ router.post('/gate/unlock', ...securityUnlockLimiters, async (req: Authenticated
     const passkeys = await listPasskeys(req.user!.userId);
     if (passkeys.length > 0) {
       // Le mot de passe seul n'ouvre RIEN : aucune preuve n'est émise ici.
-      return res.json({ step: 'passkey', ...issueChallenge(req.user!.userId, 'authenticate') });
+      //
+      // Le défi porte les identifiants des empreintes enrôlées. Sans eux, un
+      // capteur de plateforme qui a créé une clé non découvrable — Windows
+      // Hello, plusieurs capteurs Android — ne retrouve rien, et le
+      // propriétaire reste enfermé dehors sans aucun recours.
+      return res.json({
+        step: 'passkey',
+        ...issueChallenge(req.user!.userId, 'authenticate'),
+        allowCredentials: await credentialIdsFor(req.user!.userId),
+      });
     }
     const ouverture = issueSecurityUnlock(gate, req.user!.userId, false);
     await recordSecurityEvent({
