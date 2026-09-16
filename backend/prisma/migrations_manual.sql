@@ -560,3 +560,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS "security_passkeys_credentialId_key"
   ON "security_passkeys" ("credentialId");
 CREATE INDEX IF NOT EXISTS "security_passkeys_userId_idx"
   ON "security_passkeys" ("userId");
+-- Gestionnaire d'un client : l'administrateur qui l'a cree, ou le proprietaire.
+-- ADDITIF ET NULLABLE. Les lignes historiques restent a NULL : elles
+-- n'appartiennent a aucun compartiment et demeurent visibles des roles qui
+-- voient tout. Aucune donnee n'est deplacee ni supprimee.
+ALTER TABLE "vpn_clients"
+  ADD COLUMN IF NOT EXISTS "managedById" TEXT;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'vpn_clients_managedById_fkey'
+  ) THEN
+    ALTER TABLE "vpn_clients"
+      ADD CONSTRAINT "vpn_clients_managedById_fkey"
+      FOREIGN KEY ("managedById") REFERENCES "users"("id") ON DELETE SET NULL;
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS "vpn_clients_managedById_idx"
+  ON "vpn_clients" ("managedById");

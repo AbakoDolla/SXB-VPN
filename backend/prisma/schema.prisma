@@ -21,6 +21,7 @@ model User {
   updatedAt    DateTime     @updatedAt
 
   vpnClients   VpnClient[]
+  managedClients VpnClient[] @relation("VpnClientManager")
   resellerInfo Reseller?
   auditLogs    AuditLog[]
   adminTokens     AdminToken[]
@@ -95,6 +96,13 @@ model VpnClient {
   // source explicite dès qu'un revendeur crée ou active un appareil.
   resellerId      String?
   reseller        Reseller?  @relation(fields: [resellerId], references: [id], onDelete: SetNull)
+  // Gestionnaire du client : l'administrateur qui l'a cree. ADDITIF ET
+  // NULLABLE, comme `resellerId` : les lignes historiques restent a NULL et
+  // demeurent visibles des roles qui voient tout. Un ADMIN ne lit que les
+  // lignes portant son identifiant, ce qui lui donne son propre parc et le
+  // laisse partir d'un ecran vide.
+  managedById     String?
+  managedBy       User?      @relation("VpnClientManager", fields: [managedById], references: [id], onDelete: SetNull)
   createdAt       DateTime   @default(now())
   updatedAt       DateTime   @updatedAt
 
@@ -108,6 +116,7 @@ model VpnClient {
   redeemedVouchers   Voucher[]           @relation("VoucherRedeemedClient")
 
   @@index([resellerId])
+  @@index([managedById])
   @@map("vpn_clients")
 }
 

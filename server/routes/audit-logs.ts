@@ -28,7 +28,12 @@ router.get("/", requireAuth, async (req: AuthenticatedRequest, res: Response) =>
     const type = req.query.type as string | undefined;
     const requesterIsOwner = isOwnerRequest(req);
     const isReseller = req.user?.role === "RESELLER";
-    const ownScope = isReseller ? { userId: req.user?.userId } : {};
+    // Compartiment : un revendeur ne lit que sa propre activité, et un
+    // administrateur la sienne. Sans cela, l'écran d'accueil d'un
+    // administrateur racontait les connexions et les créations du
+    // super-administrateur.
+    const cloisonne = isReseller || req.user?.role === "ADMIN";
+    const ownScope = cloisonne ? { userId: req.user?.userId } : {};
 
     let logs: any[] = [];
 
@@ -49,7 +54,7 @@ router.get("/", requireAuth, async (req: AuthenticatedRequest, res: Response) =>
     } else {
       logs = inMemoryDb.auditLogs
         .filter((log) => requesterIsOwner || !log.visibleOwnerOnly)
-        .filter((log) => !isReseller || log.userId === req.user?.userId)
+        .filter((log) => !cloisonne || log.userId === req.user?.userId)
         .filter((log) => !type || log.type === type)
         .slice(0, limit);
     }

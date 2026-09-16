@@ -31,6 +31,8 @@ export interface DashboardStats {
    */
   connectedNow?: number | null;
   connectedNowMeasured?: boolean;
+  /** Dernier battement reçu, tous appareils confondus. `null` si aucun. */
+  lastPresenceSignalAt?: string | null;
   /**
    * Vrai quand les essais gratuits ont été retranchés de ces indicateurs.
    *

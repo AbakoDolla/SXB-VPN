@@ -6,6 +6,7 @@ import { prisma, logDbActivity } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { sanitizeDevice, selectDeviceSubscription } from "../services/device-quota";
 import { marquesEssaiParClient, etFiltres, exclureIdentifiants, inclutEssaisGratuits, porteeEssaiDeploye } from "../services/free-trial-marks";
+import { porteeClients, possedeClientCloisonne } from "../services/portee-donnees";
 import { executerMutationQuota, PlafondQuotaDepasse } from "../services/reseller-quota";
 import { synchroniserEtatAccesClient } from "../services/client-access-state";
 import { makeUserToken, renewedDeviceExpiry } from "../services/device-token";
@@ -58,6 +59,9 @@ async function chargerAppareilPossede(req: AuthenticatedRequest, id: string) {
     include: { user: true, reseller: { include: { user: true } } },
   });
   if (!client) return { client: null as any, refus: null };
+  // Compartiment administrateur : un identifiant connu ne suffit pas à ouvrir
+  // l'appareil d'un pair.
+  if (!possedeClientCloisonne(req.user, client)) return { client, refus: refusPropriete() };
   if (req.user?.role === "RESELLER") {
     const fiche = (req as any).reseller ?? (await chargerFicheRevendeur(prisma, req.user.userId));
     if (!possedeClient(client, fiche)) return { client, refus: refusPropriete() };
@@ -83,7 +87,7 @@ router.get("/", requireAuth, requirePermission("clients.view"), async (req: Auth
     const porteeEssai = avecEssais ? null : await porteeEssaiDeploye(prisma);
     const clients = await prisma.vpnClient.findMany({
       where: etFiltres(
-        isReseller ? (porteeClientsRevendeur(fiche) as any) : null,
+        await porteeClients(prisma, req.user),
         porteeEssai ? exclureIdentifiants("id", porteeEssai.clientsEssaiUniquement) : null,
       ) as any,
       include: {

@@ -350,6 +350,11 @@ beforeEach(() => {
   db.state.VpnClient = [["c1","u1","res-r1"],["c2","u2","res-r2"],["direct","direct-user",null]].map(([id,userId,resellerId]) => ({
     id, userId, resellerId, status: "active", token: `SXB-USER-${id.toUpperCase().padEnd(4,"A")}-BBBB-CCCC`,
     quotaTotal: null, quotaUsed: 0n, expireAt: tomorrow(), deviceId: null, activatedAt: null, deviceLimit: 1,
+    // Ce parc est celui de l'administrateur du jeu d'essai. Depuis que chaque
+    // administrateur travaille dans son propre compartiment, un client sans
+    // gestionnaire n'appartient à personne et reste invisible pour lui — ce qui
+    // est le comportement voulu, mais pas la situation que ces tests décrivent.
+    managedById: "admin",
   }));
   db.state.VpnProfile = [{ id: "p1", name: "Service privé", status: "active", protocol: "ssh", host: "secret.invalid", password: "encrypted", port: 22, lockVersion: 0, lockPasswordHash: null }];
   db.state.VpnProfileReseller = [{ profileId: "p1", resellerId: "res-r1" }];

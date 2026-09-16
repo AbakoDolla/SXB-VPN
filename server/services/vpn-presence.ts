@@ -73,6 +73,7 @@
  * unique ; la table de santé reste anonyme même lue seule.
  */
 import { pseudonymizeMobileDevice } from "./mobile-pseudonym";
+import { FURTIVITE_OWNER } from "../middleware/rbac/owner";
 
 /** Cadence du battement émis par l'application tant que le tunnel est monté. */
 export const PRESENCE_HEARTBEAT_MINUTES = 5;
@@ -133,6 +134,10 @@ export interface IdentiteAppareil {
   resellerName: string | null;
   /** Rôle du compte porteur — sert au seul filtrage furtif des comptes OWNER. */
   ownerAccount?: boolean;
+  /** Administrateur gestionnaire — sert au cloisonnement par compartiment. */
+  managedById?: string | null;
+  /** Le gestionnaire est-il le OWNER ? Sert à la furtivité de son parc. */
+  managedByOwner?: boolean;
 }
 
 /** Ligne de présence exposée à l'interface. */
@@ -396,6 +401,8 @@ async function lireIdentites(db: any, now: Date): Promise<IdentiteAppareil[]> {
       userId: true,
       deviceId: true,
       resellerId: true,
+      managedById: true,
+      managedBy: { select: { role: { select: { name: true } } } },
       user: { select: { name: true, email: true, role: { select: { name: true } } } },
       reseller: { select: { id: true, user: { select: { name: true, email: true } } } },
     },
@@ -409,6 +416,8 @@ async function lireIdentites(db: any, now: Date): Promise<IdentiteAppareil[]> {
     resellerId: client.resellerId ?? null,
     resellerName: client.reseller?.user?.name || client.reseller?.user?.email || null,
     ownerAccount: client.user?.role?.name === "OWNER",
+    managedById: client.managedById ?? null,
+    managedByOwner: client.managedBy?.role?.name === "OWNER",
   }));
 
   cacheIdentites = { expireAt: now.getTime() + PRESENCE_INDEX_TTL_MS, identites };
@@ -618,26 +627,52 @@ export async function listerConnectes(
  * jamais recevoir une ligne qui ne lui appartient pas.
  */
 function filtrerIdentites(identites: IdentiteAppareil[], options: OptionsPresence): IdentiteAppareil[] {
-  // Furtivité : hors OWNER, les appareils portés par un compte OWNER n'existent
-  // pas — même règle qu'à la lecture des KPIs, appliquée au même endroit.
+  // Furtivité : hors OWNER, les appareils rattachés au OWNER n'existent pas —
+  // qu'il les porte sous son compte ou qu'il les gère. Même règle qu'à la
+  // lecture des KPIs, appliquée au même endroit.
   const visibles = options.masquerProprietaire
-    ? identites.filter((identite) => identite.ownerAccount !== true)
+    ? identites.filter((identite) => identite.ownerAccount !== true && identite.managedByOwner !== true)
     : identites;
   const portee = options.porteeClients;
   if (!portee) return visibles;
-  const conditions = Array.isArray((portee as any).OR) ? (portee as any).OR : [portee];
-  return visibles.filter((identite) =>
-    conditions.some((condition: any) => {
-      if (condition?.id === "__aucun__") return false;
-      if (condition?.resellerId !== undefined && condition.resellerId !== null) {
-        return identite.resellerId === condition.resellerId;
-      }
-      if (condition?.resellerId === null) {
-        return identite.resellerId === null && identite.userId === condition.userId;
-      }
-      return false;
-    }),
-  );
+  // Le filtre reçu peut être un `AND` (compartiment administrateur : furtivité
+  // OWNER + gestionnaire) ou un `OR` (revendeur : attribution explicite ou
+  // rattachement historique). Les deux formes sont traitées, car une forme non
+  // reconnue ne doit jamais se lire comme « aucune restriction ».
+  const evalue = (condition: any, identite: IdentiteAppareil): boolean => {
+    if (!condition || typeof condition !== "object") return false;
+    if (Array.isArray(condition.AND)) return condition.AND.every((c: any) => evalue(c, identite));
+    if (Array.isArray(condition.OR)) return condition.OR.some((c: any) => evalue(c, identite));
+    if (condition.id === "__aucun__") return false;
+    // Furtivité exprimée en filtre Prisma : ici elle est déjà appliquée
+    // au-dessus, la condition est donc satisfaite par construction.
+    if (condition.user?.role?.name?.not === "OWNER") return identite.ownerAccount !== true;
+    if (condition.managedBy?.role?.name?.not === "OWNER") return identite.managedByOwner !== true;
+    if (condition.managedById !== undefined) return identite.managedById === condition.managedById;
+    if (condition.resellerId !== undefined && condition.resellerId !== null) {
+      return identite.resellerId === condition.resellerId;
+    }
+    if (condition.resellerId === null) {
+      return identite.resellerId === null && identite.userId === condition.userId;
+    }
+    return false;
+  };
+  return visibles.filter((identite) => evalue(portee, identite));
+}
+
+/**
+ * Date du dernier signal reçu, toutes fenêtres confondues.
+ *
+ * « 0 connecté » ne dit pas si personne n'est en ligne ou si plus rien
+ * n'arrive. Cette date tranche : un exploitant qui lit « aucun signal depuis
+ * cinq jours » sait que le problème n'est pas dans le compteur.
+ */
+export async function dernierSignalPresence(db: any): Promise<Date | null> {
+  const ligne = await db.mobileHealthDevice.findFirst({
+    orderBy: { lastSeenAt: "desc" },
+    select: { lastSeenAt: true },
+  });
+  return ligne?.lastSeenAt ?? null;
 }
 
 /**
@@ -676,10 +711,14 @@ export async function listerRevendeursConnectes(
   devicesTruncated: boolean;
 }> {
   const presence = await listerConnectes(db, secret, options);
-  const stealth = options.masquerProprietaire ? { user: { role: { name: { not: "OWNER" } } } } : {};
+  // Deux filtres, car ils portent sur deux modèles : une fiche revendeur n'a
+  // pas de gestionnaire, un client si. Les mélanger ferait échouer la requête
+  // sur un champ inconnu.
+  const stealthRevendeur = options.masquerProprietaire ? { user: { role: { name: { not: "OWNER" } } } } : {};
+  const stealth = options.masquerProprietaire ? FURTIVITE_OWNER : {};
   const [fiches, compteurs] = await Promise.all([
     db.reseller.findMany({
-      ...(Object.keys(stealth).length ? { where: stealth } : {}),
+      ...(Object.keys(stealthRevendeur).length ? { where: stealthRevendeur } : {}),
       select: { id: true, status: true, user: { select: { name: true, email: true } } },
     }),
     // Agrégat plutôt que chargement des parcs : le nombre de clients d'un

@@ -477,7 +477,9 @@
       "friday": "ven.",
       "saturday": "sam.",
       "sunday": "dim."
-    }
+    },
+    "connectedLastSignal": "aucun signal depuis le {{when}}",
+    "connectedNoSignal": "aucun appareil n’a encore signalé"
   },
   "monitoring": {
     "title": "Monitoring",

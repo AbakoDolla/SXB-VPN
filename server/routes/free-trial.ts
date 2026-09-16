@@ -35,6 +35,7 @@ import { prisma, logDbActivity } from '../database';
 import { accessStateHub } from '../services/access-state-events';
 import { requireAuth, requirePermission, AuthenticatedRequest } from '../middleware/auth';
 import { isOwnerRequest } from '../middleware/rbac/owner';
+import { gestionnaireAInscrire } from '../services/portee-donnees';
 import {
   interdireAccesRevendeur,
   interdireMutationSupport,
@@ -1544,6 +1545,10 @@ router.post(
                   deviceId: demande.deviceId,
                   expireAt,
                   status: 'active',
+                  // Compartiment de l'exploitant qui instruit la demande : un
+                  // essai déployé par un administrateur rejoint son parc, comme
+                  // n'importe quel client qu'il aurait créé lui-même.
+                  managedById: gestionnaireAInscrire(req.user),
                 },
               });
             } else if (compte.status !== 'active' || (compte.expireAt && compte.expireAt < expireAt)) {

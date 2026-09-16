@@ -12,6 +12,7 @@ import {
 } from "../services/client-access-state";
 import { makeUserToken, renewedDeviceExpiry } from "../services/device-token";
 import { marquesEssaiParClient, etFiltres, exclureIdentifiants, inclutEssaisGratuits, porteeEssaiDeploye } from "../services/free-trial-marks";
+import { gestionnaireAInscrire, porteeClients, possedeClientCloisonne } from "../services/portee-donnees";
 import { assertResumeAllowed, deviceAccessFailure, MobileAccessError } from "../services/access-lifecycle";
 import { accessStateHub } from "../services/access-state-events";
 import {
@@ -35,6 +36,9 @@ const router = Router();
  * Renvoie le refus à émettre, ou null si le demandeur est légitime.
  */
 async function refusSiClientNonPossede(req: AuthenticatedRequest, client: any) {
+  // Compartiment administrateur : un accès direct par identifiant contourne
+  // le filtre de liste, il doit donc être refusé ici aussi.
+  if (!possedeClientCloisonne(req.user, client)) return refusPropriete();
   if (req.user?.role !== "RESELLER") return null;
   const fiche = (req as any).reseller ?? (await chargerFicheRevendeur(prisma, req.user.userId));
   if (possedeClient(client, fiche)) return null;
@@ -121,10 +125,10 @@ router.get("/", requireAuth, requirePermission("clients.view"), async (req: Auth
       const fiche = isReseller ? await chargerFicheRevendeur(prisma, req.user?.userId) : null;
       const portee = avecEssais ? null : await porteeEssaiDeploye(prisma);
       clients = await prisma.vpnClient.findMany({
-        // Le cloisonnement revendeur reste la première condition et n'est
+        // Le cloisonnement du compartiment reste la première condition et n'est
         // jamais élargi : le filtre d'essai ne fait que retrancher.
         where: etFiltres(
-          isReseller ? (porteeClientsRevendeur(fiche) as any) : null,
+          await porteeClients(prisma, req.user),
           portee ? exclureIdentifiants("id", portee.clientsEssaiUniquement) : null,
         ) as any,
         include: {
@@ -143,6 +147,8 @@ router.get("/", requireAuth, requirePermission("clients.view"), async (req: Auth
         const fiche = await chargerFicheRevendeur(null, req.user?.userId);
         clients = clients.filter((c) => possedeClient(c, fiche));
       }
+      // Même compartiment qu'en base : un administrateur ne lit que son parc.
+      clients = clients.filter((c) => possedeClientCloisonne(req.user, c));
     }
 
     // Stealth : les clients rattachés à un compte OWNER sont invisibles
@@ -366,6 +372,11 @@ router.post(
             deviceLimit: body.deviceLimit,
             deviceId: body.deviceId || undefined,
             resellerId: fiche?.id ?? null,
+            // Compartiment de l'administrateur créateur. Nul pour les rôles qui
+            // voient tout : un client créé par le super-administrateur doit
+            // rester lisible par ses pairs, pas devenir le parc privé de l'un
+            // d'eux.
+            managedById: gestionnaireAInscrire(req.user),
           },
           include: { user: true, reseller: { include: { user: true } } },
         });

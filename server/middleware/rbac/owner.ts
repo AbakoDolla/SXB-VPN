@@ -14,6 +14,29 @@ import { AuthenticatedRequest } from "../auth";
 
 export const OWNER_ROLE = "OWNER";
 
+/**
+ * Exclut ce qui appartient au OWNER, exprimé en filtre Prisma sur `VpnClient`.
+ *
+ * Deux rattachements, car un client du OWNER peut l'être de deux façons :
+ * porté par un compte OWNER, ou créé et géré par lui. Le second est le cas
+ * courant — un client créé depuis le panneau reçoit un compte de rôle CLIENT,
+ * et la seule trace du propriétaire est son gestionnaire.
+ *
+ * Défini ici, dans un module sans dépendance de service, pour rester l'unique
+ * définition sans créer de cycle d'imports.
+ */
+export const FURTIVITE_OWNER: Record<string, unknown> = {
+  AND: [
+    { user: { role: { name: { not: OWNER_ROLE } } } },
+    {
+      OR: [
+        { managedById: null },
+        { managedBy: { role: { name: { not: OWNER_ROLE } } } },
+      ],
+    },
+  ],
+};
+
 export function isOwnerRole(roleName?: string | null): boolean {
   return roleName === OWNER_ROLE;
 }

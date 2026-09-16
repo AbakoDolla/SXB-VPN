@@ -30,6 +30,7 @@ import {
   refusSiPlafondAtteint,
   reponsePlafondDepasse,
 } from '../services/reseller-access';
+import { porteeClientsForfait, possedeClientCloisonne } from '../services/portee-donnees';
 import {
   ChangementsGroupes,
   MAX_BULK_APPLY,
@@ -284,6 +285,21 @@ function canViewTechnicalProfile(req: AuthenticatedRequest): boolean {
 }
 
 async function assertResellerCanAssignQuota(req: AuthenticatedRequest, clientId: string, quotaBytes: bigint, previousQuotaBytes = BigInt(0), subscriptionId?: string) {
+  // Compartiment administrateur : un identifiant deviné ne doit pas permettre
+  // d'attacher un forfait au client d'un pair. Contrôlé AVANT le cas revendeur,
+  // qui a ses propres règles de quota.
+  if (req.user?.role === 'ADMIN') {
+    const cible = await prisma.vpnClient.findUnique({
+      where: { id: clientId },
+      select: { managedById: true, user: { select: { role: { select: { name: true } } } } },
+    });
+    if (!cible) {
+      return { status: 404, body: { error: 'errors.clients.not_found', message: 'Client VPN introuvable' } };
+    }
+    if (!possedeClientCloisonne(req.user, cible)) {
+      return { status: 404, body: { error: 'errors.clients.not_found', message: 'Client VPN introuvable' } };
+    }
+  }
   if (req.user?.role !== 'RESELLER') return null;
   const client = await prisma.vpnClient.findUnique({
     where: { id: clientId },
@@ -384,7 +400,7 @@ router.get('/', requireAuth, requirePermission('subscription.view'), async (req:
     }
     const portee = avecEssais ? null : await porteeEssaiDeploye(prisma);
     const where = etFiltres(
-      isReseller ? { client: porteeClientsRevendeur(await chargerFicheRevendeur(prisma, req.user?.userId)) } : null,
+      await porteeClientsForfait(prisma, req.user),
       // Le retranchement porte sur le FORFAIT, jamais sur le compte : un
       // essayeur devenu client payant garde son forfait ordinaire à l'écran,
       // seul son forfait d'essai disparaît.
@@ -423,7 +439,7 @@ router.get('/stats', requireAuth, requirePermission('subscription.view'), async 
     }
     const portee = avecEssais ? null : await porteeEssaiDeploye(prisma);
     const scope = etFiltres(
-      isReseller ? { client: porteeClientsRevendeur(await chargerFicheRevendeur(prisma, req.user?.userId)) } : null,
+      await porteeClientsForfait(prisma, req.user),
       portee ? exclureIdentifiants('id', portee.subscriptionIds) : null,
     );
     const total   = await (prisma as any).subscription.count({ where: scope });
@@ -450,9 +466,12 @@ router.get('/:id', requireAuth, requirePermission('subscription.view'), async (r
       include: INCLUDE_FORFAIT,
     });
     if (!sub) return res.status(404).json({ error: 'Subscription not found' });
-    // Un revendeur ne doit pas pouvoir consulter l'abonnement d'un autre en
-    // devinant son identifiant : la réponse est un 404, pas un 403, afin de ne
-    // pas confirmer l'existence de la ressource.
+    // Un requérant ne doit pas pouvoir consulter l'abonnement d'un autre
+    // compartiment en devinant son identifiant : la réponse est un 404, pas un
+    // 403, afin de ne pas confirmer l'existence de la ressource.
+    if (!possedeClientCloisonne(req.user, sub.client)) {
+      return res.status(404).json({ error: 'Subscription not found' });
+    }
     if (isReseller && !possedeClient(sub.client, await chargerFicheRevendeur(prisma, req.user?.userId))) {
       return res.status(404).json({ error: 'Subscription not found' });
     }

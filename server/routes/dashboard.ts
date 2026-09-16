@@ -11,6 +11,7 @@ import { isOwnerRequest } from "../middleware/rbac/owner";
 import { calculerAllocation, estIllimite } from "../services/reseller-quota";
 import {
   compterConnectes,
+  dernierSignalPresence,
   PRESENCE_HEARTBEAT_MINUTES,
   PRESENCE_WINDOW_MINUTES,
 } from "../services/vpn-presence";
@@ -24,6 +25,7 @@ import {
   exclureIdentifiants,
   porteeEssaiDeploye,
 } from "../services/free-trial-marks";
+import { porteeClients } from "../services/portee-donnees";
 
 const router = Router();
 const ROLES_QUOTA_REVENDEURS = new Set(["OWNER", "SUPER_ADMIN", "ADMIN"]);
@@ -131,9 +133,10 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
       ? exclureIdentifiants("id", porteeEssai.clientsEssaiUniquement)
       : null;
     if (prisma) {
+      // Compartiment du requérant : OWNER voit tout, SUPER_ADMIN tout sauf le
+      // OWNER, ADMIN son seul parc, RESELLER ses seuls clients.
       const clientStealthWhere = etFiltres(
-        stealthWhere(requesterIsOwner),
-        Object.keys(ownScope).length ? ownScope : null,
+        await porteeClients(prisma, req.user),
         exclusionEssais,
       ) ?? {};
       [activeAccounts, expiredAccounts, activeServers, activeResellers, totalVouchers, redeemedVouchers] = await Promise.all([
@@ -176,6 +179,7 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
     // pseudonymisation) : zéro affirmerait que personne n'est connecté, ce qui
     // serait une invention. L'interface affiche alors « non mesuré ».
     let connectedNow: number | null = null;
+    let dernierSignalAt: Date | null = null;
     const pseudonymSecret = config.MOBILE_HEALTH_PSEUDONYM_SECRET
       || (config.NODE_ENV !== "production" ? config.JWT_SECRET : null);
     if (prisma && pseudonymSecret) {
@@ -185,7 +189,7 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
           // n'est pas une connexion commerciale. Il est compté dans « Essais
           // gratuits », qui affiche ses propres connectés.
           porteeClients: etFiltres(
-            isReseller ? (ownScope as Record<string, unknown>) : null,
+            await porteeClients(prisma, req.user),
             exclusionEssais,
           ) ?? null,
           masquerProprietaire: !requesterIsOwner,
@@ -194,6 +198,14 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
         // Une présence indisponible ne doit pas priver l'exploitant de tous ses
         // autres indicateurs : on laisse `null` et on le dit dans la réponse.
         console.error("[dashboard] presence count failed:", presenceError?.message || presenceError);
+      }
+      // Date du dernier signal, tous appareils confondus. Elle distingue « zéro
+      // connecté » de « plus rien n'arrive » : sans elle, un parc muet depuis
+      // des jours se lit exactement comme un parc au repos.
+      try {
+        dernierSignalAt = await dernierSignalPresence(prisma as any);
+      } catch {
+        dernierSignalAt = null;
       }
     }
 
@@ -264,6 +276,9 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
       // connecté ». Le drapeau évite à l'interface d'avoir à deviner.
       connectedNow,
       connectedNowMeasured: connectedNow !== null,
+      // Âge du dernier battement reçu. Il permet à l'écran de distinguer un
+      // parc au repos d'un parc qui n'émet plus.
+      lastPresenceSignalAt: dernierSignalAt ? dernierSignalAt.toISOString() : null,
       // Ces indicateurs portent sur l'activité COMMERCIALE seule : les comptes
       // dont tout l'accès vient d'un essai gratuit en sont retranchés, et ont
       // leurs propres compteurs dans « Essais gratuits ». Le drapeau permet à
@@ -316,12 +331,10 @@ router.get("/traffic", requireAuth, requirePermission("analytics.read"), async (
 
     const requesterIsOwner = isOwnerRequest(req);
     // Le graphique portait sur TOUS les clients de la plateforme : un revendeur
-    // y lisait le trafic cumulé de ses concurrents. Il ne doit voir que le sien.
+    // y lisait le trafic cumulé de ses concurrents. Il ne doit voir que le sien,
+    // et un administrateur que celui de son propre parc.
     const isReseller = req.user?.role === "RESELLER";
-    const clientStealthWhere = {
-      ...stealthWhere(requesterIsOwner),
-      ...(isReseller ? (porteeClientsRevendeur(await chargerFicheRevendeur(prisma, req.user?.userId)) as any) : {}),
-    };
+    const clientStealthWhere = (await porteeClients(prisma, req.user)) ?? {};
     if (prisma) {
       const clientIds = (await prisma.vpnClient.findMany({
         select: { id: true },
@@ -387,10 +400,7 @@ router.get("/users", requireAuth, requirePermission("analytics.read"), async (re
     // comptes de la plateforme, si bien qu'un revendeur sans aucun client voyait
     // malgré tout une courbe à 82.
     const isReseller = req.user?.role === "RESELLER";
-    const clientStealthWhere = {
-      ...stealthWhere(requesterIsOwner),
-      ...(isReseller ? (porteeClientsRevendeur(await chargerFicheRevendeur(prisma, req.user?.userId)) as any) : {}),
-    };
+    const clientStealthWhere = (await porteeClients(prisma, req.user)) ?? {};
     if (prisma) {
       // Compter les clients VPN créés jusqu'à chaque jour (cumulatif)
       const data = await Promise.all(

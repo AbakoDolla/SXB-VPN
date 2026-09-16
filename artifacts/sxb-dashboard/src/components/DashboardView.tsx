@@ -122,7 +122,7 @@ export default function DashboardView({
   maintenanceEnabled = false,
   onMaintenanceToggle,
 }: DashboardViewProps) {
-  const { t, locale, formatNumber, formatBytes } = useTranslation();
+  const { t, locale, formatNumber, formatBytes, formatDate } = useTranslation();
   const [maintenanceBusy, setMaintenanceBusy] = useState(false);
   const isOwner = currentUserRole === UserRole.OWNER;
   // Le revendeur vend un service : l'infrastructure, les autres revendeurs et
@@ -280,6 +280,21 @@ export default function DashboardView({
   const connectedMeasured = stats?.connectedNowMeasured === true
     && stats?.connectedNow !== null && stats?.connectedNow !== undefined;
   const presenceWindowMinutes = stats?.presenceWindowMinutes ?? 15;
+  // Dernier battement reçu, tous appareils confondus. « 0 connecté » ne dit pas
+  // si le parc est au repos ou s'il ne remonte plus rien : quand le compteur est
+  // à zéro et que le dernier signal remonte à plus longtemps que la fenêtre, on
+  // l'écrit, au lieu de laisser soupçonner un compteur cassé.
+  const dernierSignal = stats?.lastPresenceSignalAt ?? null;
+  const signalSilencieux = connectedMeasured
+    && (stats?.connectedNow ?? 0) === 0
+    && (!dernierSignal || Date.now() - Date.parse(dernierSignal) > presenceWindowMinutes * 60_000);
+  const sousTitreConnectes = !connectedMeasured
+    ? t("operations.dashboard.connectedUnmeasuredSub")
+    : signalSilencieux
+      ? (dernierSignal
+        ? t("operations.dashboard.connectedLastSignal", { when: formatDate(dernierSignal, { dateStyle: "short", timeStyle: "short" }) })
+        : t("operations.dashboard.connectedNoSignal"))
+      : t("operations.dashboard.connectedSub", { minutes: formatNumber(presenceWindowMinutes) });
   // Comptes ouverts : ce que l'ancienne carte « CONNECTÉS » affichait en
   // réalité. `activeUsers` reste l'alias historique du même nombre.
   const activeAccounts = stats?.activeAccounts ?? stats?.activeUsers ?? 0;
@@ -426,9 +441,7 @@ export default function DashboardView({
           <StatCard
             label={t("operations.dashboard.connected")}
             value={connectedMeasured ? formatNumber(stats?.connectedNow ?? 0) : t("operations.dashboard.connectedUnmeasured")}
-            sub={connectedMeasured
-              ? t("operations.dashboard.connectedSub", { minutes: formatNumber(presenceWindowMinutes) })
-              : t("operations.dashboard.connectedUnmeasuredSub")}
+            sub={sousTitreConnectes}
             icon={Wifi}
             color="text-emerald-400"
             accent="bg-emerald-500/10"
