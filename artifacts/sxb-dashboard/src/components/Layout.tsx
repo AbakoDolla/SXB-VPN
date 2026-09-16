@@ -10,7 +10,7 @@ import {
   Menu, X, UserPlus, HeadphonesIcon, BadgePercent, Activity,
   ChevronDown, Radio, BarChart3,
   PackageOpen, GitBranch, ScrollText, BellRing, Download,
-  HeartPulse, Wifi,
+  HeartPulse, Wifi, ShieldAlert,
 } from 'lucide-react';
 import { TrialGlyph } from './TrialBadge';
 
@@ -83,7 +83,7 @@ export default function Layout({
       subscriptions: 'clients', 'free-trial': 'clients', 'connected-users': 'clients',
       announcements: 'admin',
       sessions: 'monitoring', analytics: 'monitoring', servers: 'monitoring',
-      accounts: 'admin', resellers: 'admin', rbac: 'admin', 'app-updates': 'admin', 'mobile-health': 'admin',
+      accounts: 'admin', resellers: 'admin', rbac: 'admin', 'app-updates': 'admin', 'mobile-health': 'admin', security: 'admin',
     };
     const group = groupMap[activeRoute];
     if (group) setOpenGroups(prev => ({ ...prev, [group]: true }));
@@ -187,6 +187,7 @@ export default function Layout({
         { kind: 'leaf', id: 'announcements', label: t('sidebar.annonces'), icon: BellRing, roles: STAFF },
         { kind: 'leaf', id: 'app-updates', label: t('sidebar.app_updates'), icon: Download, roles: STAFF },
         { kind: 'leaf', id: 'mobile-health', label: t('core.nav.mobileHealth'), icon: HeartPulse, roles: ADMINS },
+        { kind: 'leaf', id: 'security', label: t('operations.security.nav'), icon: ShieldAlert, roles: ['OWNER', 'SUPER_ADMIN'] },
       ],
     },
     {

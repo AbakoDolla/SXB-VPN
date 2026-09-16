@@ -40,6 +40,7 @@ import opsRouter, { resetRequestErrorHandler } from "./server/routes/ops";
 import xapiRouter from "./server/routes/xapi";
 import announcementsRouter from "./server/routes/announcements";
 import appUpdatesRouter from "./server/routes/app-updates";
+import securityRouter from "./server/routes/security";
 import mobileHealthRouter from "./server/routes/mobile-health";
 import presenceRouter from "./server/routes/presence";
 import freeTrialRouter from "./server/routes/free-trial";
@@ -146,6 +147,9 @@ async function startServer() {
   app.use("/api/support", supportRouter);
   app.use("/api/announcements", announcementsRouter);
   app.use("/api/app-updates", appUpdatesRouter);
+  // Centre de sécurité : rôle OWNER/SUPER_ADMIN puis verrou mot de passe +
+  // empreinte. Aucune autre route n'en dépend, l'application mobile non plus.
+  app.use("/api/security", securityRouter);
   app.use("/api/mobile-health", mobileHealthRouter);
   app.use("/api/presence", presenceRouter);
 app.use("/api/free-trial", freeTrialRouter);

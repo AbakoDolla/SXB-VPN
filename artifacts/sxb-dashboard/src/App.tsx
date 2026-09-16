@@ -22,6 +22,7 @@ import AppUpdatesView from "./components/AppUpdatesView";
 import MobileHealthView from "./components/MobileHealthView";
 import ConnectedUsersView from "./components/ConnectedUsersView";
 import FreeTrialView from "./components/FreeTrialView";
+import SecurityCenterView from "./components/SecurityCenterView";
 import MaintenancePage from "./components/MaintenancePage";
 import Layout from "./components/Layout";
 import LanguageSelector from "./components/LanguageSelector";
@@ -416,6 +417,11 @@ function MainApp() {
           return <DashboardView onNavigate={(route) => setActiveRoute(route)} currentUserRole={role} />;
         }
         return <MobileHealthView />;
+      case 'security':
+        if (role !== UserRole.OWNER && role !== UserRole.SUPER_ADMIN) {
+          return <DashboardView onNavigate={(route) => setActiveRoute(route)} currentUserRole={role} />;
+        }
+        return <SecurityCenterView currentUser={currentUser} currentUserRole={role} />;
       // Suivi des connectés : ouvert à TOUS les rôles, revendeurs compris. Le
       // serveur cloisonne — un revendeur n'y voit que ses propres clients et
       // n'obtient jamais la vue globale des revendeurs.

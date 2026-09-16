@@ -13,7 +13,7 @@ const src = path.join(root, "artifacts", "sxb-dashboard", "src");
 const names = [
   "DashboardView", "MonitoringView", "SessionsView", "SupportView", "SettingsView",
   "AnnouncementsView", "AppUpdatesView", "MobileHealthView", "ConnectedUsersView", "OwnerLogView",
-  "MaintenancePage", "ErrorBoundary",
+  "SecurityCenterView", "MaintenancePage", "ErrorBoundary",
 ];
 const sources = Object.fromEntries(names.map(name => [name, readFileSync(path.join(src, "components", `${name}.tsx`), "utf8")]));
 const asts = Object.fromEntries(names.map(name => [name, ts.createSourceFile(name, sources[name], ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)]));
@@ -245,6 +245,26 @@ const directUser = {
   resellerId: null, resellerName: null, directClient: true, protocol: null, deviceModel: null,
   lastSeenSecondsAgo: 45, connectedSinceAt: null, connectedSinceMeasured: false,
 };
+const securityGate = {
+  configured: true, canConfigure: true, unlocked: false, unlockExpiresAt: null,
+  passkeyVerified: false, passkeyRequired: true, rpId: "localhost",
+  unlockSeconds: 900, updatedAt: log.timestamp,
+  passkeys: [{ id: "pk", label: "MacBook Pro", createdAt: log.timestamp, lastUsedAt: null }],
+};
+const securityOverview = {
+  overview: { total: 1, critical: 1, warning: 0, info: 0, unacknowledged: 1, last24h: 1, latestAt: log.timestamp },
+  severities: ["critical", "warning", "info"],
+  eventTypes: ["OWNER_LOGIN_RISK"],
+};
+const securityEventsPage = {
+  total: 1, limit: 25, offset: 0,
+  events: [{
+    id: "evt-1", eventType: "OWNER_LOGIN_RISK", severity: "critical",
+    userId: "usr-1", deviceId: "dev-1", ipHash: "hash-1", appVersion: "1.9.0",
+    actionTaken: "Connexion bloquée", metadata: "{\"risk\":\"high\"}",
+    acknowledged: false, acknowledgedAt: null, createdAt: log.timestamp,
+  }],
+};
 const connectedPage = {
   generatedAt: log.timestamp, presenceWindowMinutes: 15, heartbeatMinutes: 5, measured: true,
   scope: "platform", total: 2, limit: 200, offset: 0, truncated: false, unmatched: 1,
@@ -263,7 +283,7 @@ const resellerPresence = {
   },
 };
 
-test("all twelve screens render in both languages, including dialogs, failures and loaded data", () => {
+test("all operations screens render in both languages, including dialogs, failures and loaded data", () => {
   const fixtures = [
     ["DashboardView", { currentUserRole: "OWNER" }, {
       loading: false, stats: { activeUsers: 1234, expiredAccounts: 1, resellerQuota: { assignedBytes: "9007199254740993", committedBytes: "1024", remainingBytes: "9007199254739969", resellerCount: 2 } },
@@ -282,6 +302,12 @@ test("all twelve screens render in both languages, including dialogs, failures a
     // doit jamais se confondre avec « personne n'est connecté ».
     ["ConnectedUsersView", { currentUserRole: "OWNER" }, { loading: false, page: connectedPage, resellers: resellerPresence, tab: "resellers", expanded: { "res-1": true } }, "Revendeur Un", "Connected users"],
     ["OwnerLogView", {}, { loading: false, logs: [log], maintenance: { enabled: true, loading: false } }, "Journal propriétaire", "Owner log"],
+    ["SecurityCenterView", { currentUserRole: "OWNER", currentUser: { id: "owner-1", name: "Élodie", email: "owner@example.test", role: "OWNER", permissions: [] } }, {
+      loadingGate: false, gate: securityGate, unlockToken: "memory-only", expiresAt: "2099-01-01T00:00:00Z",
+      overview: securityOverview, eventsPage: securityEventsPage,
+      audit: [{ id: "a", action: "Déverrouillage accepté", type: "unlock", timestamp: log.timestamp, user: { name: "Élodie", email: "owner@example.test" } }],
+      secondsLeft: 125,
+    }, "Critiques", "Security Center"],
     ["MaintenancePage", {}, { showOwnerAccess: true }, "Maintenance en cours", "Maintenance in progress"],
     ["ErrorBoundary", {}, { hasError: true }, "Une erreur est survenue", "An error occurred"],
   ];

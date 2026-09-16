@@ -504,3 +504,59 @@ CREATE INDEX IF NOT EXISTS "subscriptions_freeTrialRequestId_idx"
 -- toute la table de trafic a chaque rafraichissement du tableau de bord.
 CREATE INDEX IF NOT EXISTS "traffic_usage_timestamp_idx"
   ON "traffic_usage" ("timestamp");
+
+-- ── Centre de securite ──────────────────────────────────────────────────────
+--
+-- Strictement ADDITIF : deux tables NOUVELLES, aucune table existante touchee,
+-- aucune donnee deplacee. Une base qui n'applique pas ce bloc continue de
+-- fonctionner a l'identique, simplement sans Centre de securite.
+--
+-- La cle etrangere est declaree DANS la creation plutot que par un ALTER :
+-- "CREATE TABLE IF NOT EXISTS" saute entierement la table si elle existe deja,
+-- ce qui rend le bloc rejouable sans avoir a tester la contrainte a part.
+CREATE TABLE IF NOT EXISTS "security_events" (
+  "id"               TEXT PRIMARY KEY,
+  "eventType"        TEXT NOT NULL,
+  "severity"         TEXT NOT NULL DEFAULT 'info',
+  "userId"           TEXT,
+  "deviceId"         TEXT,
+  "ipHash"           TEXT,
+  "appVersion"       TEXT,
+  "actionTaken"      TEXT,
+  "metadata"         TEXT,
+  "acknowledged"     BOOLEAN NOT NULL DEFAULT false,
+  "acknowledgedAt"   TIMESTAMP(3),
+  "acknowledgedById" TEXT,
+  "createdAt"        TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Le flux est toujours lu par date decroissante, et filtre par gravite, par
+-- type ou sur les seules alertes non traitees. Sans ces index, chaque
+-- ouverture du Centre balaierait toute la table.
+CREATE INDEX IF NOT EXISTS "security_events_createdAt_idx"
+  ON "security_events" ("createdAt");
+CREATE INDEX IF NOT EXISTS "security_events_severity_createdAt_idx"
+  ON "security_events" ("severity", "createdAt");
+CREATE INDEX IF NOT EXISTS "security_events_eventType_createdAt_idx"
+  ON "security_events" ("eventType", "createdAt");
+CREATE INDEX IF NOT EXISTS "security_events_acknowledged_createdAt_idx"
+  ON "security_events" ("acknowledged", "createdAt");
+
+-- Cles d'acces WebAuthn. Seule la cle PUBLIQUE y figure : l'empreinte
+-- digitale ne quitte jamais l'appareil qui la lit.
+CREATE TABLE IF NOT EXISTS "security_passkeys" (
+  "id"           TEXT PRIMARY KEY,
+  "userId"       TEXT NOT NULL REFERENCES "users"("id") ON DELETE CASCADE,
+  "credentialId" TEXT NOT NULL,
+  "publicKey"    TEXT NOT NULL,
+  "algorithm"    INTEGER NOT NULL,
+  "signCount"    INTEGER NOT NULL DEFAULT 0,
+  "label"        TEXT,
+  "createdAt"    TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "lastUsedAt"   TIMESTAMP(3)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS "security_passkeys_credentialId_key"
+  ON "security_passkeys" ("credentialId");
+CREATE INDEX IF NOT EXISTS "security_passkeys_userId_idx"
+  ON "security_passkeys" ("userId");

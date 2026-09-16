@@ -28,6 +28,7 @@ model User {
   pushTokens     PushToken[]
 
   @@map("users")
+  securityPasskeys SecurityPasskey[]
 }
 
 model Role {
@@ -729,4 +730,66 @@ model FreeTrialRequest {
   /// Statistiques « d'où viennent nos clients » sans parcourir toute la table.
   @@index([country, status])
   @@map("free_trial_requests")
+}
+
+/// Événement de sécurité observé par la plateforme.
+///
+/// Table SÉPARÉE du journal d'audit : l'audit trace ce qu'un administrateur a
+/// FAIT, la sécurité trace ce que la plateforme a CONSTATÉ. Les mélanger
+/// obligerait à filtrer un flux de plusieurs milliers de lignes pour retrouver
+/// les quelques-unes qui demandent une décision.
+///
+/// Aucun secret n'y est écrit : ni identifiant VPN, ni jeton, ni mot de passe.
+model SecurityEvent {
+  id          String   @id @default(uuid())
+  /// LOGIN_FAILED, DEVICE_BLOCKED, RATE_LIMIT_TRIGGERED, ...
+  eventType   String
+  /// info | warning | critical
+  severity    String   @default("info")
+  userId      String?
+  /// Identifiant d'appareil, jamais une adresse IP en clair.
+  deviceId    String?
+  /// Empreinte non réversible de l'adresse source, pour regrouper sans exposer.
+  ipHash      String?
+  appVersion  String?
+  /// Ce que la plateforme a fait automatiquement, le cas échéant.
+  actionTaken String?
+  /// Contexte non sensible, sérialisé en JSON.
+  metadata    String?
+  /// Vrai une fois l'alerte traitée par un administrateur.
+  acknowledged     Boolean   @default(false)
+  acknowledgedAt   DateTime?
+  acknowledgedById String?
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([severity, createdAt])
+  @@index([eventType, createdAt])
+  @@index([acknowledged, createdAt])
+  @@map("security_events")
+}
+
+/// Clé d'accès (WebAuthn) enrôlée pour franchir le Centre de sécurité.
+///
+/// C'est l'« empreinte digitale » : l'authentificateur de plateforme du poste
+/// (Windows Hello, Touch ID, capteur Android) signe un défi. L'empreinte elle
+/// même ne quitte JAMAIS l'appareil — seule la clé publique est stockée ici.
+model SecurityPasskey {
+  id           String   @id @default(uuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Identifiant d'authentificateur, encodé en base64url.
+  credentialId String   @unique
+  /// Clé PUBLIQUE au format SPKI DER, encodée en base64. Jamais de clé privée.
+  publicKey    String
+  /// Algorithme COSE annoncé par le navigateur (-7 = ES256, -257 = RS256).
+  algorithm    Int
+  /// Compteur anti-rejeu de l'authentificateur.
+  signCount    Int      @default(0)
+  label        String?
+  createdAt    DateTime @default(now())
+  lastUsedAt   DateTime?
+
+  @@index([userId])
+  @@map("security_passkeys")
 }

@@ -8,6 +8,11 @@ import { config } from "../config";
 import { refreshMobileSession } from "../services/mobile-session-refresh";
 import { MobileAccessError, sessionInvalidFailure } from "../services/access-lifecycle";
 import { sessionUser } from "../services/session-user";
+// Le Centre de sécurité observe les tentatives échouées. L'enregistrement est
+// délibérément non attendu : journaliser ne doit jamais retarder ni faire
+// échouer une authentification.
+import { recordSecurityEvent } from "../services/security-events";
+import { hashIp } from "../services/security-passkey";
 
 const router = Router();
 
@@ -131,11 +136,27 @@ router.post("/login", async (req: AuthenticatedRequest, res: Response) => {
     }
 
     if (!userRecord) {
+      // Une tentative sur un compte inexistant reste un signal : c'est ainsi
+      // que se repère un balayage d'adresses. Aucun mot de passe n'est écrit,
+      // et l'adresse source n'est conservée que sous forme d'empreinte.
+      void recordSecurityEvent({
+        eventType: 'LOGIN_FAILED',
+        severity: 'warning',
+        ipHash: hashIp(req.ip),
+        metadata: { reason: 'unknown_account' },
+      });
       return res.status(401).json({ error: "errors.auth.invalid_credentials", message: "Invalid email or password" });
     }
 
     const isMatch = bcrypt.compareSync(body.password, userRecord.passwordHash);
     if (!isMatch) {
+      void recordSecurityEvent({
+        eventType: 'LOGIN_FAILED',
+        severity: 'warning',
+        userId: userRecord.id,
+        ipHash: hashIp(req.ip),
+        metadata: { reason: 'bad_password', role: userRecord.role?.name },
+      });
       return res.status(401).json({ error: "errors.auth.invalid_password", message: "Invalid email or password" });
     }
 
