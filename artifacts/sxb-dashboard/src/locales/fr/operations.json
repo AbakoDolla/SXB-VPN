@@ -679,7 +679,9 @@
     "publishError": "Publication impossible",
     "disableConfirm": "Désactiver la notification de mise à jour pour les appareils ciblés ?",
     "disableSuccess": "Notification de mise à jour désactivée",
-    "disableError": "Désactivation impossible"
+    "disableError": "Désactivation impossible",
+    "staleTitle": "Cette publication n’est distribuée à personne.",
+    "staleBody": "Le condensat publié ne correspond plus à l’APK servie par cette URL : une nouvelle construction a remplacé le fichier. Tout téléchargement serait supprimé par le contrôle d’intégrité, la mise à jour n’est donc plus annoncée. Reprenez la dernière build ci-dessus, puis republiez."
   },
   "presence": {
     "eyebrow": "Suivi temps réel",

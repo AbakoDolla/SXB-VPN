@@ -679,7 +679,9 @@
     "publishError": "Unable to publish",
     "disableConfirm": "Disable the update notification for targeted devices?",
     "disableSuccess": "Update notification disabled",
-    "disableError": "Unable to disable"
+    "disableError": "Unable to disable",
+    "staleTitle": "This release is being sent to nobody.",
+    "staleBody": "The published digest no longer matches the APK served at that URL: a newer build replaced the file. Any download would be deleted by the integrity check, so the update is no longer announced. Take the latest build above, then publish again."
   },
   "presence": {
     "eyebrow": "Live tracking",

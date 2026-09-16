@@ -24,6 +24,17 @@ export interface AppUpdateResponse {
   visibleToRole?: boolean;
   canPublish: boolean;
   eligibleDeviceCount: number;
+  /**
+   * La publication décrit-elle encore l'APK réellement servie ?
+   *
+   * L'URL publiée est un pointeur mobile : chaque construction remplace le
+   * fichier derrière elle, et le condensat publié devient faux. Le serveur
+   * cesse alors d'annoncer la mise à jour, car tout téléchargement échouerait
+   * au contrôle d'intégrité.
+   */
+  describesServedApk?: boolean;
+  /** Vrai quand la publication est réellement distribuée en ce moment. */
+  distributed?: boolean;
 }
 
 export type AppUpdateInput = Omit<AppUpdate, 'id' | 'publishedAt' | 'updatedAt'> & { active: boolean };

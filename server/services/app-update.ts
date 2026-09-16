@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { prisma } from "../database";
 import { normalizeApkSha256 } from "./apk-digest";
+import { readLatestBuildManifest } from "./app-build-manifest";
 
 // Ré-export : la règle vit dans `apk-digest` pour rester lisible sans la base
 // de données, mais ce module reste sa porte d'entrée historique.
@@ -116,6 +117,36 @@ export async function isActivatedDevice(deviceId: string): Promise<boolean> {
 }
 
 /**
+ * La publication décrit-elle encore le fichier réellement servi ?
+ *
+ * LE DÉFAUT OBSERVÉ EN PRODUCTION : l'URL publiée est un pointeur MOBILE
+ * (`/download/sxbvpn-latest.apk`). Chaque construction remplace le fichier
+ * derrière cette URL, tandis que la publication garde le condensat saisi le
+ * jour où elle a été faite. Les deux divergent en silence.
+ *
+ * Conséquence pour l'utilisateur : il touche « Télécharger », son appareil
+ * récupère 62 Mo, calcule l'empreinte, constate l'écart avec celle annoncée,
+ * SUPPRIME l'archive et affiche une erreur d'intégrité. La mise à jour est
+ * alors impossible à installer depuis l'application — pour tout le monde, et
+ * sans que rien ne l'explique.
+ *
+ * On refuse donc d'annoncer un téléchargement dont on sait déjà qu'il échouera.
+ * Le contrôle d'intégrité côté mobile reste évidemment en place : il protège
+ * contre une altération en transit, pas contre une publication périmée.
+ */
+export function publicationDecritLeFichierServi(update: PublishedAppUpdate): boolean {
+  const build = readLatestBuildManifest();
+  // Sans manifeste — poste de développement, déploiement ancien — on ne peut
+  // rien affirmer : la publication reste valable telle qu'elle a été saisie.
+  if (!build) return true;
+  if (build.apkUrl !== update.apkUrl) return true;
+  // Une publication sans condensat n'a jamais promis d'empreinte : elle ne
+  // peut pas être contredite par celle du fichier.
+  if (update.apkSha256 && update.apkSha256 !== build.apkSha256) return false;
+  return update.versionCode === build.versionCode;
+}
+
+/**
  * Mise à jour visible par CET appareil, ou `null`.
  *
  * `installedVersionCode` vient de l'en-tête que l'application envoie à chaque
@@ -136,6 +167,8 @@ export async function getMobileAppUpdate(
   if (!update || !deviceId) return null;
   if (update.targetDeviceIds.length > 0 && !update.targetDeviceIds.includes(deviceId.trim())) return null;
   if (Number.isSafeInteger(installedVersionCode) && installedVersionCode >= update.versionCode) return null;
+  // Ne jamais proposer un téléchargement voué à l'échec d'intégrité.
+  if (!publicationDecritLeFichierServi(update)) return null;
   return (await isActivatedDevice(deviceId)) ? update : null;
 }
 

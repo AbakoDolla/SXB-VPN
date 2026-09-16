@@ -6,6 +6,7 @@ import {
   DISTRIBUTABLE_ROLES,
   isActivatedDevice,
   isRoleTargeted,
+  publicationDecritLeFichierServi,
   readPublishedAppUpdate,
   toPublicAppUpdate,
   writePublishedAppUpdate,
@@ -52,11 +53,19 @@ router.get("/current", requireAuth, async (req: AuthenticatedRequest, res: Respo
   try {
     const update = await readPublishedAppUpdate();
     if (!update) return res.json({ update: null, canPublish: isSuperAdmin(req), eligibleDeviceCount: await countActivatedDevices() });
+    // Une publication qui ne décrit plus le fichier servi n'est PAS distribuée :
+    // l'annoncer enverrait chaque appareil vers un échec d'intégrité. L'écran
+    // doit donc le dire, sinon l'exploitant ne verrait qu'un silence inexpliqué.
+    const describesServedApk = publicationDecritLeFichierServi(update);
     return res.json({
       update: toPublicAppUpdate(update),
       visibleToRole: isRoleTargeted(update, req.user?.role),
       canPublish: isSuperAdmin(req),
       eligibleDeviceCount: await countActivatedDevices(),
+      describesServedApk,
+      // `distributed` répond à la seule question utile : est-ce que quelqu'un
+      // la reçoit en ce moment ?
+      distributed: update.active && describesServedApk,
     });
   } catch (err: any) {
     return res.status(503).json({ error: "DB_UNAVAILABLE", message: err.message || "Version indisponible" });

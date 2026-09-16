@@ -21,6 +21,14 @@ export default function AppUpdatesView({ currentUserRole }: AppUpdatesViewProps)
   const [latestBuild, setLatestBuild] = useState<AppBuild | null>(null);
   const [buildIsNewer, setBuildIsNewer] = useState(false);
   const [eligibleDeviceCount, setEligibleDeviceCount] = useState(0);
+  /**
+   * La publication décrit-elle encore l'APK réellement servie ?
+   *
+   * Sinon elle n'est distribuée à personne : chaque téléchargement échouerait
+   * au contrôle d'intégrité. Le dire explicitement évite de laisser croire à
+   * une mise à jour en cours de diffusion alors que rien ne part.
+   */
+  const [describesServedApk, setDescribesServedApk] = useState(true);
   const [devices, setDevices] = useState<Device[]>([]);
   const [targetRoles, setTargetRoles] = useState<AppRole[]>([...APP_ROLES]);
   const [targetDeviceIds, setTargetDeviceIds] = useState<string[]>([]);
@@ -36,6 +44,7 @@ export default function AppUpdatesView({ currentUserRole }: AppUpdatesViewProps)
       const [current, registeredDevices] = await Promise.all([fetchCurrentAppUpdate(), fetchDevices()]);
       setUpdate(current.update);
       setEligibleDeviceCount(current.eligibleDeviceCount || 0);
+      setDescribesServedApk(current.describesServedApk !== false);
       setDevices(registeredDevices);
       // La dernière build est une COMMODITÉ : son absence (poste de
       // développement, manifeste pas encore déposé) ne doit pas empêcher une
@@ -141,6 +150,20 @@ export default function AppUpdatesView({ currentUserRole }: AppUpdatesViewProps)
     </section>
 
     {!isSuperAdmin && <div className="flex items-start gap-3 rounded-2xl border border-amber-500/25 bg-amber-500/10 p-4 text-sm text-amber-200"><ShieldCheck className="w-5 h-5 shrink-0 mt-0.5" /><span>{t("operations.updates.readOnlyIntro")}{" "}<strong>{t('role_super_admin')}</strong> {t("operations.updates.readOnlyDetails")}</span></div>}
+
+    {/* PUBLICATION PÉRIMÉE — elle n'est distribuée à personne.
+        L'URL publiée est un pointeur mobile : chaque construction remplace le
+        fichier derrière elle et le condensat publié devient faux. Le serveur
+        cesse alors d'annoncer la mise à jour, car tout téléchargement serait
+        supprimé par le contrôle d'intégrité. Sans ce bandeau, l'exploitant ne
+        verrait qu'un silence : « publiée » à l'écran, reçue par personne. */}
+    {update && !describesServedApk && <div className="flex items-start gap-3 rounded-2xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-100">
+      <XCircle className="w-5 h-5 shrink-0 mt-0.5 text-rose-300" />
+      <span>
+        <strong>{t("operations.updates.staleTitle")}</strong>
+        <span className="block mt-1 text-rose-200/90">{t("operations.updates.staleBody")}</span>
+      </span>
+    </div>}
 
     {/* ── Dernière APK construite ───────────────────────────────────────────
         Elle est déjà sur le serveur ; seule la NOTIFICATION doit être publiée.
