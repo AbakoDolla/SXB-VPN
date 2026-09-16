@@ -1779,7 +1779,11 @@ describe('garde-fous contre les régressions Android', () => {
   it('conserve les fichiers expirés pour le mode zero-rated et les prolongations', () => {
     assert.doesNotMatch(configStore, /export async function purgeExpired/);
     assert.doesNotMatch(vpnContext, /configStore\.purgeExpired/);
-    assert.match(vpnContext, /await isConfigExpired\(\)/);
+    // L'expiration reste consultée à la connexion — désormais menée en même
+    // temps que le quota, car les deux lectures sont indépendantes et les
+    // enchaîner ajoutait une attente juste avant l'ouverture du tunnel.
+    assert.match(vpnContext, /isConfigExpired\(\)/);
+    assert.match(vpnContext, /Promise\.all\(\[isQuotaExhausted\(\), isConfigExpired\(\)\]\)/);
     assert.match(vpnContext, /Date d’expiration locale atteinte — tentative de connexion/);
     assert.match(accessSync, /expiryDate: remote\.expireAt/);
     assert.match(accessPolicy, /config_restored/);

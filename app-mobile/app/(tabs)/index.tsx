@@ -104,7 +104,7 @@ export default function HomeScreen() {
     hasValidConfig, activeConnection,
     connect, disconnect, trafficStats: traffic,
     refreshVpnConfig, syncFromConnection,
-    savedConfigs, activeConfigId, switchConfig, isSwitchingConfig, revokedStatus, perAppTraffic,
+    savedConfigs, activeConfigId, switchConfig, isSwitchingConfig, switchingToId, revokedStatus, perAppTraffic,
     deleteConfig, derivedQuota,
   } = useVpnContext();
   const { t } = useTranslation();
@@ -311,6 +311,10 @@ export default function HomeScreen() {
     : btnLabel;
 
   const activeConfig = savedConfigs.find((cfg) => cfg.id === activeConfigId) || savedConfigs[0] || null;
+  // Profil visé pendant un basculement : il s'affiche dès l'appui, pour que
+  // l'utilisateur voie que son choix a été pris avant même que la
+  // configuration soit prête.
+  const pendingConfig = switchingToId ? savedConfigs.find((cfg) => cfg.id === switchingToId) || null : null;
 
   // Le tunnel transporte-t-il vraiment ? Voir `relayProbe.ts` : la seule preuve
   // possible est une requête qui a réellement traversé.
@@ -523,10 +527,12 @@ export default function HomeScreen() {
               </View>
               <View style={{ flex: 1, gap: spacing.xs }}>
                 <Text style={[type.h3, { color: colors.textPrimary }]} numberOfLines={2}>
-                  {activeConfig?.name || t('config_switch')}
+                  {pendingConfig?.name || activeConfig?.name || t('config_switch')}
                 </Text>
-                <Text style={[type.caption, { color: colors.textSecondary }]}>
-                  {savedConfigs.length} {t(savedConfigs.length > 1 ? 'config_plural' : 'config_singular')}
+                <Text style={[type.caption, { color: pendingConfig ? colors.primary : colors.textSecondary }]}>
+                  {pendingConfig
+                    ? t('config_switching')
+                    : `${savedConfigs.length} ${t(savedConfigs.length > 1 ? 'config_plural' : 'config_singular')}`}
                 </Text>
               </View>
               <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />

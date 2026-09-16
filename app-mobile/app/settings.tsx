@@ -236,7 +236,7 @@ export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { user, accountState, logout, deviceAccess, deviceId: boundDeviceId } = useAuthContext();
   const {
-    logs, isConnected, selectedProtocol, availableProtocols, refreshVpnConfig,
+    isConnected, selectedProtocol, availableProtocols, refreshVpnConfig,
     killSwitch: ksCtx, autoReconnect: arCtx,
     setKillSwitch: setKsCtx, setAutoReconnect: setArCtx,
     traffic, derivedQuota, activeConnection,
@@ -684,6 +684,12 @@ export default function SettingsScreen() {
             icon="headset-outline" label={t('support_row')}
             onPress={() => router.push("/support")} color={colors.connected}
           />
+          <View style={styles.divider} />
+          {/* Journal explicatif : des étapes en clair, jamais de configuration
+              ni d'adresse de serveur. C'est l'endroit où l'on regarde quand une
+              connexion ne part pas. */}
+          <Row icon="list-outline" label={t("journal_open")}
+            onPress={() => router.push('/journal' as any)} />
           <View style={styles.divider} />
           <Row icon="document-text-outline" label={t("privacy_title")}
             onPress={() => router.push('/privacy')} />

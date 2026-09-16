@@ -161,6 +161,8 @@ interface VpnContextType {
   activeConfigId:     string | null;
   switchConfig:       (configId: string) => Promise<void>;
   isSwitchingConfig:  boolean;
+  /** Profil vers lequel on bascule, le temps que sa configuration soit prête. */
+  switchingToId:      string | null;
   // Quota
   quotaData:          QuotaData | null;
   derivedQuota:       DerivedQuota;
@@ -209,7 +211,7 @@ const VpnContext = createContext<VpnContextType>({
   trafficStats: DEFAULT_STATS, vpnLogs: [],
   hasVpnPermission: false, hasValidConfig: false, activeConnection: null,
   stepLogs: [],
-  savedConfigs: [], activeConfigId: null, switchConfig: async () => {}, isSwitchingConfig: false,
+  savedConfigs: [], activeConfigId: null, switchConfig: async () => {}, isSwitchingConfig: false, switchingToId: null,
   quotaData: null,
   derivedQuota: DEFAULT_DERIVED_QUOTA,
   currentDerivedQuota: DEFAULT_DERIVED_QUOTA,
@@ -273,6 +275,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     _setActiveConfigId(id);
   }, []);
   const [isSwitchingConfig,  setIsSwitchingConfig]     = useState<boolean>(false);
+  const [switchingToId,      setSwitchingToId]         = useState<string | null>(null);
   const [quotaData,          setQuotaData]             = useState<QuotaData | null>(null);
   const [revokedStatus,      setRevokedStatus]        = useState<'none' | 'revoked' | 'suspended' | 'expired' | 'disabled' | 'exhausted'>('none');
   const [perAppTraffic,      setPerAppTraffic]        = useState<AppTrafficStat[]>([]);
@@ -1335,14 +1338,32 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     setIsConnecting(true);
     setVpnState('connecting');
 
-    // Offline/429/legacy route absence never invalidates the last known rights.
-    try {
-      await refreshAccessState(false, undefined, 4000);
-      await reconcileAccess();
-    } catch (error) {
-      reportAccessSyncError(error);
-      addLog('ℹ️ Vérification réseau impossible — connexion hors-ligne sur dernier état connu');
-    }
+    // ⚡ La vérification des droits ne barre plus la route au tunnel.
+    //
+    // Ces deux appels réseau étaient attendus AVANT la moindre étape de
+    // connexion, avec un délai de garde de quatre secondes. Sur un lien lent —
+    // c'est-à-dire précisément quand l'utilisateur a besoin du VPN — le tunnel
+    // ne commençait donc qu'après plusieurs secondes de rien.
+    //
+    // Or leur échec était déjà toléré : le commentaire d'origine le disait,
+    // « hors-ligne, 429 ou route absente n'invalident jamais les derniers
+    // droits connus ». On attendait donc une réponse dont on avait décidé
+    // d'avance qu'elle ne changerait rien.
+    //
+    // Elle part maintenant en parallèle. Si elle revient et révoque l'accès,
+    // les gardes `requireDeviceAccess`/`requireProfileAccess` posés plus bas,
+    // puis la surveillance d'état, coupent la tentative — la protection est
+    // conservée, l'attente ne l'est plus.
+    const verificationDroits = (async () => {
+      try {
+        await refreshAccessState(false, undefined, 4000);
+        await reconcileAccess();
+      } catch (error) {
+        reportAccessSyncError(error);
+        addLog('ℹ️ Vérification réseau impossible — connexion hors-ligne sur dernier état connu');
+      }
+    })();
+    void verificationDroits;
 
     if (attemptId !== connectionAttemptRef.current || !currentIdentityRequest(identityStamp)) return;
     resetStepLogs();
@@ -1511,11 +1532,13 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         // En mode hors-ligne / zero-rated, si une configuration locale complète existe,
         // on autorise la tentative de connexion même si le quota enregistré localement semble épuisé,
         // car l'opérateur mobile zero-rated permet d'atteindre le serveur VPN sans data classique.
-        const exhausted = await isQuotaExhausted();
+        //
+        // ⚡ Les deux lectures sont indépendantes : les enchaîner ajoutait un
+        // aller-retour de stockage pour rien, juste avant l'ouverture du tunnel.
+        const [exhausted, expired] = await Promise.all([isQuotaExhausted(), isConfigExpired()]);
         if (exhausted) {
           addLog('ℹ️ Quota local estimé épuisé — tentative de connexion quand même (zéro-rated / hors-ligne)');
         }
-        const expired = await isConfigExpired();
         if (expired) {
           addLog('ℹ️ Date d’expiration locale atteinte — tentative de connexion quand même en mode de secours');
         }
@@ -1742,6 +1765,15 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     }
 
     setIsSwitchingConfig(true);
+    // ⚡ Retour visuel immédiat.
+    //
+    // La sélection ne changeait à l'écran qu'une fois TOUTE la chaîne finie —
+    // provisionnement réseau compris. L'utilisateur fermait la feuille, voyait
+    // l'ancien profil rester en place plusieurs secondes, et concluait que son
+    // appui n'avait pas été pris. On annonce donc la cible tout de suite, sans
+    // mentir pour autant : `activeConfigId` ne bouge que lorsque la
+    // configuration est réellement prête, et un échec efface la cible.
+    setSwitchingToId(configId);
     const previousId = activeConfigId;
     const wasConnected = isConnected;
     try {
@@ -1792,7 +1824,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         // A failed switch, including a concurrent revocation, never reconnects by itself.
       }
       addLog(`⚠️ Basculement annulé : ${err?.message || 'erreur réseau'}`);
-    } finally { setIsSwitchingConfig(false); }
+    } finally { setIsSwitchingConfig(false); setSwitchingToId(null); }
   }, [isSwitchingConfig, isConnected, isConnecting, activeConfigId, activeConnection, remoteConnections, deviceId, disconnect, addLog, reloadLocalConfigs, t]);
 
   const selectProtocol = useCallback(async (name: string) => {
@@ -1831,7 +1863,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     hasValidConfig,
     activeConnection,
     stepLogs,
-    savedConfigs, activeConfigId, switchConfig, isSwitchingConfig,
+    savedConfigs, activeConfigId, switchConfig, isSwitchingConfig, switchingToId,
     quotaData,
     derivedQuota: currentDerivedQuota,
     currentDerivedQuota,
@@ -1853,7 +1885,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     selectedProtocol, connectedProtocol, availableProtocols,
     trafficStats, vpnLogs, hasVpnPermission, hasValidConfig,
     activeConnection, stepLogs, savedConfigs, activeConfigId,
-    switchConfig, isSwitchingConfig, quotaData, currentDerivedQuota, quotaSession,
+    switchConfig, isSwitchingConfig, switchingToId, quotaData, currentDerivedQuota, quotaSession,
     revokedStatus, perAppTraffic, killSwitch, autoReconnect,
     syncFromConnection, connect, disconnect, selectProtocol,
     refreshVpnConfig, requestPermission, deleteConfig,

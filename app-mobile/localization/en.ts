@@ -453,6 +453,14 @@ export const en = {
   traffic_session: 'Session',
 
   // StepLogs — technical labels (kept for compat)
+  journal_title: "Activity journal",
+  journal_subtitle: "What the app is doing, step by step",
+  journal_privacy_note: "This journal holds steps only. No server address, no configuration and no credential appears here, nor can it.",
+  journal_empty_title: "Nothing to show",
+  journal_empty_subtitle: "Start a connection: the steps will appear here as they happen.",
+  journal_open: "Activity journal",
+  journal_open_hint: "Follow the connection steps",
+  config_switching: "Switching…",
   step_preparing: 'Preparing…',
   step_checking_security: 'Checking security…',
   step_security_ok: 'Secure environment',

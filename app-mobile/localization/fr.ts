@@ -477,6 +477,14 @@ export const fr = {
   traffic_session: 'Session',
 
   // StepLogs — Étapes techniques (labels bruts, gardés pour compat)
+  journal_title: "Journal d'activité",
+  journal_subtitle: "Ce que fait l’application, étape par étape",
+  journal_privacy_note: "Ce journal ne contient que des étapes. Aucune adresse de serveur, aucune configuration et aucun identifiant n’y figure, ni ne peut y figurer.",
+  journal_empty_title: "Rien à afficher",
+  journal_empty_subtitle: "Lancez une connexion : les étapes apparaîtront ici au fur et à mesure.",
+  journal_open: "Journal d'activité",
+  journal_open_hint: "Suivre les étapes de connexion",
+  config_switching: "Basculement en cours…",
   step_preparing: 'Préparation…',
   step_checking_security: 'Vérification de sécurité…',
   step_security_ok: 'Environnement sécurisé',
