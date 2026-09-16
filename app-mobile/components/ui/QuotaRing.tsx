@@ -19,7 +19,7 @@ import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 import { useColors } from '@/hooks/useColors';
 import { useMotionPreference } from '@/hooks/useMotionPreference';
-import { duration, type } from '@/constants/theme';
+import { duration, spacing, type } from '@/constants/theme';
 
 const CercleAnime = Animated.createAnimatedComponent(Circle);
 
@@ -31,7 +31,7 @@ interface QuotaRingProps {
   /** Teinte normale. Au-delà de 80 %, `warnTone` prend le relais. */
   tone?: string;
   warnTone?: string;
-  /** Libellé sous le pourcentage. */
+  /** Libellé placé SOUS l'anneau : à l'intérieur, « Consommé pendant l'essai » était rogné. */
   label?: string;
 }
 
@@ -76,9 +76,10 @@ export default function QuotaRing({
   });
 
   return (
-    <View style={[styles.wrap, { width: size, height: size }]}>
-      <Svg width={size} height={size}>
-        <Circle
+    <View style={styles.wrap}>
+      <View style={{ width: size, height: size }}>
+        <Svg width={size} height={size}>
+          <Circle
           cx={size / 2}
           cy={size / 2}
           r={rayon}
@@ -100,22 +101,29 @@ export default function QuotaRing({
           // remplissage démarrerait sur la droite au lieu du sommet.
           transform={`rotate(-90 ${size / 2} ${size / 2})`}
         />
-      </Svg>
-      <View style={styles.center} pointerEvents="none">
-        <Text style={[type.h3, { color: colors.textPrimary }]}>
-          {Math.round(part * 100)}%
-        </Text>
-        {label && (
-          <Text style={[type.micro, { color: colors.textMuted }]} numberOfLines={1}>
-            {label}
+        </Svg>
+        <View style={styles.center} pointerEvents="none">
+          <Text style={[type.h3, { color: colors.textPrimary }]}>
+            {Math.round(part * 100)}%
           </Text>
-        )}
+        </View>
       </View>
+      {/* Le libellé vit SOUS l'anneau : à l'intérieur, un intitulé traduit —
+          « Consommé pendant l'essai » — dépassait le diamètre et se faisait
+          rogner. Deux lignes suffisent, et rien n'est masqué. */}
+      {label && (
+        <Text
+          style={[type.micro, { color: colors.textMuted, maxWidth: size + 40, textAlign: 'center' }]}
+          numberOfLines={2}
+        >
+          {label}
+        </Text>
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  wrap: { alignItems: 'center', justifyContent: 'center' },
+  wrap: { alignItems: 'center', justifyContent: 'center', gap: spacing.xs },
   center: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
 });

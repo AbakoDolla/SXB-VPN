@@ -11,6 +11,7 @@ import * as Haptics from "expo-haptics";
 import * as Localization from "expo-localization";
 import { useAuthContext } from "@/contexts/AuthContext";
 import { useColors } from "@/hooks/useColors";
+import { useResponsive } from "@/hooks/useResponsive";
 import { useTranslation } from "@/localization";
 import {
   countryFlag, countryName, isCountryCode, normalizeCountryCode, sortedCountries, type Country,
@@ -18,7 +19,7 @@ import {
 import { lireEmpreinteAppareil } from "@/services/deviceFingerprint";
 import SupportTelegramButton from "@/components/SupportTelegramButton";
 import LanguageToggle from "@/components/ui/LanguageToggle";
-import { alpha } from "@/constants/theme";
+import { alpha, responsiveLayout } from "@/constants/theme";
 import {
   cleErreurEssai, effacerDemandeLocale, ecrireDemandeLocale, INTERVALLE_VERIFICATION_MS,
   inscrireEssaiGratuit, intervalleVerificationMs, lireDemandeLocale, normaliserJetonEssai,
@@ -48,7 +49,8 @@ import {
 export default function FreeTrialScreen() {
   const { t, language } = useTranslation();
   const colors = useColors();
-  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const responsive = useResponsive();
+  const styles = useMemo(() => makeStyles(colors, responsive), [colors, responsive]);
   const insets = useSafeAreaInsets();
   const { activateAccount, deviceId, hasSeenOnboarding } = useAuthContext();
 
@@ -559,14 +561,14 @@ export default function FreeTrialScreen() {
   );
 }
 
-function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useColors>) {
+function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useColors>, responsive: ReturnType<typeof useResponsive>) {
   return StyleSheet.create({
     container: { flex: 1 },
     centered: { flex: 1, alignItems: "center", justifyContent: "center" },
-    content: { paddingHorizontal: 20, gap: 16 },
+    content: { paddingHorizontal: responsive.screenPadding, gap: responsive.gap + 4, width: "100%", maxWidth: responsiveLayout.contentMaxWidth, alignSelf: "center" },
     topBar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
     topBarLabel: { color: colors.textMuted, fontSize: 12, fontFamily: "Inter_600SemiBold", letterSpacing: 1.4 },
-    iconButton: { width: 40, height: 40, borderRadius: 14, backgroundColor: colors.bgCard + "D9", borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
+    iconButton: { width: 44, height: 44, borderRadius: 14, backgroundColor: colors.bgCard + "D9", borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
     iconButtonPlaceholder: { width: 40 },
     pressed: { opacity: 0.68, transform: [{ scale: 0.97 }] },
     pressedLarge: { transform: [{ scale: 0.985 }] },
@@ -575,7 +577,7 @@ function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useCol
     eyebrow: { color: colors.primary, fontSize: 10, fontFamily: "Inter_700Bold", letterSpacing: 1.8, marginBottom: 8 },
     title: { color: colors.textPrimary, fontSize: 26, lineHeight: 32, fontFamily: "Inter_700Bold", textAlign: "center" },
     subtitle: { color: colors.textSecondary, fontSize: 14, lineHeight: 21, fontFamily: "Inter_400Regular", textAlign: "center", marginTop: 8, maxWidth: 340 },
-    formCard: { backgroundColor: colors.bgCard + "F2", borderWidth: 1, borderColor: colors.border, borderRadius: 24, padding: 18, gap: 14 },
+    formCard: { backgroundColor: colors.bgCard + "F2", borderWidth: 1, borderColor: colors.border, borderRadius: 24, padding: responsive.cardPadding, gap: 14 },
     formHeader: { flexDirection: "row", alignItems: "center", gap: 12 },
     formIcon: { width: 40, height: 40, borderRadius: 14, backgroundColor: colors.primaryDim, alignItems: "center", justifyContent: "center" },
     formHeaderCopy: { flex: 1, gap: 2 },
@@ -594,10 +596,10 @@ function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useCol
     inputIcon: { width: 20, textAlign: "center" },
     selectValue: { flex: 1, color: colors.textPrimary, fontSize: 14, fontFamily: "Inter_600SemiBold", paddingVertical: 16 },
     selectPlaceholder: { color: colors.textMuted, fontFamily: "Inter_400Regular" },
-    assuranceBar: { flexDirection: "row", alignItems: "flex-start", backgroundColor: colors.bgCard + "D9", borderWidth: 1, borderColor: colors.border, borderRadius: 20, paddingVertical: 16, paddingHorizontal: 8 },
-    assuranceCell: { flex: 1, alignItems: "center", gap: 6, paddingHorizontal: 6 },
+    assuranceBar: { flexDirection: responsive.isCompact ? "column" : "row", alignItems: "stretch", backgroundColor: colors.bgCard + "D9", borderWidth: 1, borderColor: colors.border, borderRadius: 20, paddingVertical: 16, paddingHorizontal: 8 },
+    assuranceCell: { flex: 1, alignItems: "center", gap: 6, paddingHorizontal: 6, paddingVertical: responsive.isCompact ? 8 : 0 },
     assuranceIcon: { width: 34, height: 34, borderRadius: 12, borderWidth: 1, alignItems: "center", justifyContent: "center", marginBottom: 2 },
-    assuranceDivider: { width: 1, alignSelf: "stretch", backgroundColor: colors.border },
+    assuranceDivider: responsive.isCompact ? { height: 1, alignSelf: "stretch", backgroundColor: colors.border, marginVertical: 8 } : { width: 1, alignSelf: "stretch", backgroundColor: colors.border },
     assuranceTitle: { color: colors.textPrimary, fontSize: 12, fontFamily: "Inter_700Bold", textAlign: "center" },
     assuranceDesc: { color: colors.textMuted, fontSize: 10, lineHeight: 14, fontFamily: "Inter_400Regular", textAlign: "center" },
     modalBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.62)", justifyContent: "flex-end" },
@@ -623,10 +625,10 @@ function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useCol
     statusTitle: { color: colors.textPrimary, fontSize: 20, lineHeight: 26, fontFamily: "Inter_700Bold", textAlign: "center" },
     statusSub: { color: colors.textSecondary, fontSize: 13, lineHeight: 20, fontFamily: "Inter_400Regular", textAlign: "center" },
     statusServer: { color: colors.primary, fontSize: 12, fontFamily: "Inter_500Medium", textAlign: "center" },
-    summaryRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", alignSelf: "stretch", gap: 12, paddingTop: 6 },
+    summaryRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", alignSelf: "stretch", gap: 12, paddingTop: 6 },
     summaryLabel: { color: colors.textMuted, fontSize: 11, fontFamily: "Inter_500Medium" },
     summaryValue: { color: colors.textPrimary, fontSize: 12, fontFamily: "Inter_600SemiBold", flex: 1, textAlign: "right" },
-    deviceCard: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.bgCard + "D9", borderWidth: 1, borderColor: colors.border, borderRadius: 20, padding: 14 },
+    deviceCard: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 12, backgroundColor: colors.bgCard + "D9", borderWidth: 1, borderColor: colors.border, borderRadius: 20, padding: 14 },
     deviceIcon: { width: 38, height: 38, borderRadius: 13, backgroundColor: colors.primaryDim, alignItems: "center", justifyContent: "center" },
     deviceCopy: { flex: 1, gap: 2 },
     deviceLabel: { color: colors.textMuted, fontSize: 10, fontFamily: "Inter_500Medium", letterSpacing: 1 },

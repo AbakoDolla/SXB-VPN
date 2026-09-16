@@ -83,7 +83,7 @@ export default function SupportTelegramButton({ compact = false }: { compact?: b
 }
 
 const styles = StyleSheet.create({
-  card: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, borderWidth: 1, borderRadius: radius.lg, padding: spacing.lg },
+  card: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: spacing.md, borderWidth: 1, borderRadius: radius.lg, padding: spacing.lg },
   icon: { width: 48, height: 48, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
   copy: { flex: 1, minWidth: 0, gap: spacing.xs },
   pressed: { opacity: 0.85 },

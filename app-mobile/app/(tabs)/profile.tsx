@@ -8,6 +8,7 @@ import Constants from "expo-constants";
 import { useAuthContext } from "@/contexts/AuthContext";
 import { useVpnContext } from "@/contexts/VpnContext";
 import { useColors } from "@/hooks/useColors";
+import { useResponsive } from "@/hooks/useResponsive";
 import { useTranslation } from "@/localization";
 import { alpha, layout, radius, spacing, type } from "@/constants/theme";
 import { IconButton, Pill, ProgressBar, SectionHeader, StatRow, StatTile, Surface } from "@/components/ui/Primitives";
@@ -15,6 +16,7 @@ import { IconButton, Pill, ProgressBar, SectionHeader, StatRow, StatTile, Surfac
 export default function ProfileScreen() {
   const { t, language } = useTranslation();
   const colors = useColors();
+  const responsive = useResponsive();
   const insets = useSafeAreaInsets();
   const { user, accountState, logout, deviceAccess } = useAuthContext();
   const { activeConnection, derivedQuota } = useVpnContext();
@@ -46,7 +48,14 @@ export default function ProfileScreen() {
       <ScrollView
         contentContainerStyle={[
           styles.content,
-          { paddingTop: insets.top + spacing.lg, paddingBottom: insets.bottom + layout.tabBarClearance },
+          {
+            paddingHorizontal: responsive.screenPadding,
+            paddingTop: insets.top + spacing.lg,
+            paddingBottom: insets.bottom + layout.tabBarClearance,
+            maxWidth: responsive.contentMaxWidth,
+            width: "100%",
+            alignSelf: "center",
+          },
         ]}
         showsVerticalScrollIndicator={false}
       >
@@ -115,7 +124,8 @@ export default function ProfileScreen() {
           )}
         </Surface>
 
-        <Surface padded={false} style={{ paddingVertical: spacing.xs }}>
+        <Surface padded={false} style={{ padding: spacing.xs }}>
+          <View style={[styles.menuGrid, { gap: responsive.gap }]}>
           {menu.map((item, index) => (
             <Pressable
               key={item.label}
@@ -124,7 +134,13 @@ export default function ProfileScreen() {
               accessibilityLabel={item.label}
               style={({ pressed }) => [
                 styles.menuItem,
-                index < menu.length - 1 && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+                {
+                  flexBasis: responsive.isLarge ? "48%" : "100%",
+                  borderWidth: responsive.isLarge ? 1 : 0,
+                  borderColor: colors.border,
+                  borderRadius: responsive.isLarge ? radius.md : 0,
+                },
+                !responsive.isLarge && index < menu.length - 1 && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
                 pressed && styles.pressed,
               ]}
             >
@@ -136,6 +152,7 @@ export default function ProfileScreen() {
               <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
             </Pressable>
           ))}
+          </View>
         </Surface>
 
         <Pressable
@@ -211,7 +228,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: spacing.md,
     paddingHorizontal: layout.cardPadding,
+    paddingVertical: spacing.sm,
   },
+  menuGrid: { flexDirection: "row", flexWrap: "wrap" },
   menuIcon: {
     width: 36,
     height: 36,

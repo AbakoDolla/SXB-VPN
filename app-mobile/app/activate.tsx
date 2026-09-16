@@ -10,17 +10,20 @@ import { router } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { useAuthContext } from "@/contexts/AuthContext";
 import { useColors } from "@/hooks/useColors";
+import { useResponsive } from "@/hooks/useResponsive";
 import { useTranslation } from "@/localization";
 import { activationErrorKey, normalizeActivationToken } from "@/services/activationError";
 import SupportTelegramButton from "@/components/SupportTelegramButton";
 import LanguageToggle from "@/components/ui/LanguageToggle";
+import { responsiveLayout } from "@/constants/theme";
 
 const LOGO = require("../assets/images/icon.png");
 
 export default function ActivateScreen() {
   const { t } = useTranslation();
   const colors = useColors();
-  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const responsive = useResponsive();
+  const styles = useMemo(() => makeStyles(colors, responsive), [colors, responsive]);
   const insets = useSafeAreaInsets();
   const { activateAccount, deviceId, hasSeenOnboarding } = useAuthContext();
 
@@ -209,13 +212,13 @@ export default function ActivateScreen() {
   );
 }
 
-function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useColors>) {
+function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useColors>, responsive: ReturnType<typeof useResponsive>) {
   return StyleSheet.create({
     container: { flex: 1 },
-    content: { paddingHorizontal: 20, gap: 16 },
+    content: { paddingHorizontal: responsive.screenPadding, gap: responsive.gap + 4, width: "100%", maxWidth: responsiveLayout.contentMaxWidth, alignSelf: "center" },
     topBar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
     topBarLabel: { color: colors.textMuted, fontSize: 12, fontFamily: "Inter_600SemiBold", letterSpacing: 1.4 },
-    iconButton: { width: 40, height: 40, borderRadius: 14, backgroundColor: colors.bgCard + "D9", borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
+    iconButton: { width: 44, height: 44, borderRadius: 14, backgroundColor: colors.bgCard + "D9", borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
     iconButtonPlaceholder: { width: 40 },
     pressed: { opacity: 0.68, transform: [{ scale: 0.97 }] },
     pressedLarge: { transform: [{ scale: 0.985 }] },
@@ -225,7 +228,7 @@ function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useCol
     eyebrow: { color: colors.primary, fontSize: 10, fontFamily: "Inter_700Bold", letterSpacing: 1.8, marginBottom: 8 },
     title: { color: colors.textPrimary, fontSize: 28, lineHeight: 34, fontFamily: "Inter_700Bold", textAlign: "center" },
     subtitle: { color: colors.textSecondary, fontSize: 14, lineHeight: 21, fontFamily: "Inter_400Regular", textAlign: "center", marginTop: 8, maxWidth: 340 },
-    formCard: { backgroundColor: colors.bgCard + "F2", borderWidth: 1, borderColor: colors.border, borderRadius: 24, padding: 18, gap: 14, shadowColor: "#000", shadowOpacity: 0.18, shadowRadius: 18, shadowOffset: { width: 0, height: 8 }, elevation: 7 },
+    formCard: { backgroundColor: colors.bgCard + "F2", borderWidth: 1, borderColor: colors.border, borderRadius: 24, padding: responsive.cardPadding, gap: 14, shadowColor: "#000", shadowOpacity: 0.18, shadowRadius: 18, shadowOffset: { width: 0, height: 8 }, elevation: 7 },
     formHeader: { flexDirection: "row", alignItems: "center", gap: 12 },
     formIcon: { width: 40, height: 40, borderRadius: 14, backgroundColor: colors.primaryDim, alignItems: "center", justifyContent: "center" },
     formHeaderCopy: { flex: 1, gap: 2 },
@@ -239,12 +242,12 @@ function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useCol
     primaryButtonInner: { minHeight: 53, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 9, paddingHorizontal: 15 },
     primaryButtonText: { fontSize: 15, fontFamily: "Inter_700Bold" },
     disabled: { opacity: 0.6 },
-    deviceCard: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.bgCard + "CC", borderWidth: 1, borderColor: colors.border, borderRadius: 18, padding: 13 },
+    deviceCard: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 10, backgroundColor: colors.bgCard + "CC", borderWidth: 1, borderColor: colors.border, borderRadius: 18, padding: 13 },
     deviceIcon: { width: 36, height: 36, borderRadius: 12, backgroundColor: colors.primaryDim, alignItems: "center", justifyContent: "center" },
     deviceCopy: { flex: 1, gap: 3 },
     deviceLabel: { color: colors.textMuted, fontSize: 10, fontFamily: "Inter_600SemiBold", textTransform: "uppercase", letterSpacing: 0.8 },
     deviceValue: { color: colors.textPrimary, fontSize: 12, fontFamily: "Inter_600SemiBold" },
-    copyButton: { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: colors.primaryDim, borderRadius: 11, paddingHorizontal: 10, paddingVertical: 8 },
+    copyButton: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: colors.primaryDim, borderRadius: 11, paddingHorizontal: 10, paddingVertical: 8 },
     copyText: { color: colors.primary, fontSize: 11, fontFamily: "Inter_700Bold" },
     trialCard: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.bgCard + "CC", borderWidth: 1, borderColor: colors.primary + "45", borderRadius: 18, padding: 13 },
     trialIcon: { width: 36, height: 36, borderRadius: 12, backgroundColor: colors.primaryDim, alignItems: "center", justifyContent: "center" },

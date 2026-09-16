@@ -12,6 +12,7 @@ import apiClient from "@/services/apiClient";
 import { useAuthContext } from "@/contexts/AuthContext";
 import { useVpnContext, formatBytes, formatSpeed } from "@/contexts/VpnContext";
 import { useColors } from "@/hooks/useColors";
+import { useResponsive } from "@/hooks/useResponsive";
 import UpdatePrompt from "@/components/UpdatePrompt";
 import AnnouncementModal from "@/components/AnnouncementModal";
 import { useTranslation } from "@/localization";
@@ -96,6 +97,7 @@ function getButtonState(
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const colors = useColors();
+  const responsive = useResponsive();
   const { user, accountState, refreshAccountState, deviceId, isAuthenticated, deviceAccess } = useAuthContext();
   const {
     isConnected, isConnecting, selectedProtocol, connectedProtocol,
@@ -367,10 +369,14 @@ export default function HomeScreen() {
         contentContainerStyle={[
           styles.content,
           {
+            paddingHorizontal: responsive.screenPadding,
             paddingTop: insets.top + spacing.sm,
             // La barre d'onglets flotte au-dessus du contenu : cette marge
             // garantit que la dernière carte reste entièrement atteignable.
             paddingBottom: insets.bottom + layout.tabBarClearance,
+            maxWidth: responsive.contentMaxWidth,
+            width: "100%",
+            alignSelf: "center",
           },
         ]}
         showsVerticalScrollIndicator={false}
@@ -438,12 +444,16 @@ export default function HomeScreen() {
                 disabled={isRefreshing}
                 accessibilityRole="button"
                 accessibilityLabel={t('new_connection_action')}
-                style={{
-                  paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
-                  borderRadius: radius.md, backgroundColor: colors.primary + alpha.f16,
-                  opacity: isRefreshing ? 0.5 : 1,
-                }}
-              >
+                  style={{
+                    minHeight: responsive.touchTarget,
+                    paddingHorizontal: spacing.md,
+                    paddingVertical: spacing.sm,
+                    borderRadius: radius.md,
+                    backgroundColor: colors.primary + alpha.f16,
+                    opacity: isRefreshing ? 0.5 : 1,
+                    justifyContent: "center",
+                  }}
+                >
                 <Text style={[type.caption, { color: colors.primary, fontWeight: '700' }]}>
                   {t('new_connection_action')}
                 </Text>
@@ -558,6 +568,7 @@ export default function HomeScreen() {
             accessibilityLabel={btnLabel}
             style={({ pressed }) => [
               styles.cta,
+              { maxWidth: Math.min(320, Math.max(220, responsive.width - responsive.screenPadding * 2)) },
               { backgroundColor: btnColor },
               pressed && { opacity: 0.85, transform: [{ scale: 0.985 }] },
             ]}
@@ -625,7 +636,13 @@ export default function HomeScreen() {
                 <View style={styles.quotaHero}>
                   <View style={styles.quotaHeroText}>
                     <Text
-                      style={[type.display, { color: colors.connected, fontVariant: ['tabular-nums'] }]}
+                      style={[
+                        // Un chiffre en très grand corps, agrandi encore par le
+                        // réglage système, déborde sur un écran de 320 dp.
+                        // `adjustsFontSizeToFit` ne rattrape que sur l'appareil.
+                        responsive.isCompact || responsive.fontScale >= 1.25 ? type.h1 : type.display,
+                        { color: colors.connected, fontVariant: ['tabular-nums'] },
+                      ]}
                       numberOfLines={1}
                       adjustsFontSizeToFit
                       minimumFontScale={0.6}
@@ -797,7 +814,7 @@ export default function HomeScreen() {
             permanent de la barre du bas, donc déjà à une seule touche depuis
             n'importe quel écran. Ne restent ici que les destinations qui n'ont
             pas d'onglet. */}
-        <View style={styles.quickRow}>
+        <View style={[styles.quickRow, { gap: responsive.gap }]}>
           {[
             { icon: "gift-outline", label: t('activate_plan'), action: () => router.push("/plan"), color: colors.accents.violet },
             { icon: "headset-outline", label: t('support'), action: () => router.push("/support"), color: colors.accents.turquoise },
@@ -809,6 +826,10 @@ export default function HomeScreen() {
               accessibilityLabel={item.label}
               style={({ pressed }) => [
                 styles.quickItem,
+                {
+                  minHeight: responsive.touchTarget + spacing['2xl'],
+                  flexBasis: responsive.isLarge ? "23%" : "46%",
+                },
                 { borderColor: item.color + alpha.f24, backgroundColor: item.color + alpha.f08 },
                 pressed && { opacity: 0.75, transform: [{ scale: 0.97 }] },
               ]}
@@ -895,7 +916,7 @@ const styles = StyleSheet.create({
   },
   quotaHeroText: { flex: 1, minWidth: 140, gap: spacing.xs },
 
-  bannerRow: { flexDirection: "row", alignItems: "center", gap: spacing.md },
+  bannerRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: spacing.md },
 
   // ── Zone héros ─────────────────────────────────────────────────────────────
   // Le rythme vertical y est plus généreux qu'ailleurs : cet espace vide est ce
@@ -968,7 +989,7 @@ const styles = StyleSheet.create({
   },
 
   // ── Accès rapides ──────────────────────────────────────────────────────────
-  quickRow: { flexDirection: "row", gap: spacing.md },
+  quickRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md },
   quickItem: {
     flex: 1,
     alignItems: "center",

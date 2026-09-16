@@ -4,7 +4,7 @@
  */
 import React, { useEffect, useState, useCallback, useMemo } from "react";
 import {
-  Alert, Linking, Pressable, ScrollView, StyleSheet,
+  Alert, AppState, Linking, Pressable, ScrollView, StyleSheet,
   Switch, Text, View, ActivityIndicator, TextInput, Modal,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
@@ -27,6 +27,7 @@ import {
 import { useAppLock } from "@/contexts/AppLockContext";
 import { DATA_DELETION_URL, isPlayDistribution } from "@/services/distribution";
 import { usePrivacy } from "@/contexts/PrivacyContext";
+import { openBackgroundSettings, readBackgroundMode, type BackgroundMode } from "@/services/backgroundReliability";
 
 // ── Row component ─────────────────────────────────────────────────────────────
 
@@ -271,6 +272,24 @@ export default function SettingsScreen() {
   const [clearing,         setClearing]         = useState(false);
   const [refreshingConfig, setRefreshingConfig] = useState(false);
   const [diagnosticLogging, setDiagnosticLoggingState] = useState(false);
+  const [backgroundMode, setBackgroundMode] = useState<BackgroundMode>('unknown');
+
+  // L'utilisateur quitte l'application pour lever la restriction puis revient :
+  // l'état est donc relu à chaque retour au premier plan, sinon l'écran
+  // continuerait d'annoncer une restriction qu'il vient de retirer.
+  useEffect(() => {
+    let vivant = true;
+    const lire = () => { void readBackgroundMode().then(mode => { if (vivant) setBackgroundMode(mode); }); };
+    lire();
+    const sub = AppState.addEventListener('change', etat => { if (etat === 'active') lire(); });
+    return () => { vivant = false; sub.remove(); };
+  }, []);
+
+  const handleBackgroundSettings = useCallback(() => {
+    void openBackgroundSettings().then(ouvert => {
+      if (!ouvert) Alert.alert(t('background_row'), t('background_settings_error'));
+    });
+  }, [t]);
 
   useEffect(() => {
     (async () => {
@@ -513,29 +532,26 @@ export default function SettingsScreen() {
         </Section>
 
         {/* VPN */}
-        <Section title="VPN">
+        <Section title={t('vpn_section')}>
+          {/* Le PROTOCOLE n'est plus affiché : il décrit la technique de
+              transport que l'exploitant vend, et une capture de cet écran
+              suffisait à la révéler. La règle vaut pour tous les écrans. */}
           <Row
-            icon="globe-outline" label="Protocole actif"
-            value={selectedProtocol || "AUTO"} color={colors.primary}
-          />
-          {/* V2Ray JSON editor removed — SXB VPN is a pure SaaS client; server config is managed by backend */}
-          <View style={styles.divider} />
-          <Row
-            icon="refresh-outline" label="Reconnexion automatique"
+            icon="refresh-outline" label={t('auto_reconnect_row')}
             toggle toggleValue={autoReconnect} onToggle={handleAutoReconnect}
             color={colors.primary}
           />
           <View style={styles.divider} />
           <Row
-            icon="shield-outline" label="Kill Switch"
+            icon="shield-outline" label={t('kill_switch_row')}
             toggle toggleValue={killSwitch} onToggle={handleKillSwitch}
             color={colors.warning}
-            badge={killSwitch ? "ON" : undefined} badgeColor={colors.warning}
+            badge={killSwitch ? t('on_value') : undefined} badgeColor={colors.warning}
           />
           <View style={styles.divider} />
           <Row
             icon="cloud-download-outline"
-            label={refreshingConfig ? "Synchronisation..." : "Actualiser la configuration"}
+            label={refreshingConfig ? t('refreshing_config') : t('refresh_config')}
             onPress={handleRefreshConfig}
             color={colors.primary}
             disabled={refreshingConfig}
@@ -547,6 +563,24 @@ export default function SettingsScreen() {
             onPress={() => router.push("/diagnostics")} color={colors.primary}
             badge={logs.length > 0 ? String(logs.length) : undefined}
           />
+        </Section>
+
+        {/* Arrière-plan — la cause n°1 d'un tunnel qui tombe écran éteint. */}
+        <Section title={t('background_section_uc')}>
+          <Row
+            icon="battery-charging-outline"
+            label={t('background_row')}
+            value={backgroundMode === 'unrestricted' ? t('background_state_unrestricted')
+              : backgroundMode === 'optimized' ? t('background_state_optimized')
+                : t('background_state_unknown')}
+            color={backgroundMode === 'optimized' ? colors.warning : colors.connected}
+            onPress={backgroundMode === 'optimized' ? handleBackgroundSettings : undefined}
+          />
+          <Text style={styles.sectionSubtitle}>
+            {backgroundMode === 'unrestricted' ? t('background_hint_unrestricted')
+              : backgroundMode === 'optimized' ? t('background_hint_optimized')
+                : t('background_hint_unknown')}
+          </Text>
         </Section>
 
         <Section title={t('diagnostic_section')} subtitle={t('diagnostic_subtitle')}>
@@ -566,7 +600,7 @@ export default function SettingsScreen() {
         </Section>
 
         {/* Security */}
-        <Section title="SÉCURITÉ">
+        <Section title={t('security_section_uc')}>
           <Row
             icon="lock-closed-outline" label={t("pin_lock_row")}
             toggle toggleValue={appLockPreferences.pinEnabled} onToggle={handlePinToggle}
@@ -584,14 +618,14 @@ export default function SettingsScreen() {
           />
           <View style={styles.divider} />
           <Row
-            icon="phone-portrait-outline" label="ID Appareil"
+            icon="phone-portrait-outline" label={t('device_id_row')}
             value={deviceId ? deviceId.slice(0,14) + "…" : "…"}
             color={colors.textMuted}
           />
         </Section>
 
         {/* Appearance */}
-        <Section title="APPARENCE & LANGUE">
+        <Section title={t('appearance_lang_section')}>
           {/* Aperçu réel des deux surfaces principales : le choix ne ressemble
               plus à trois boutons abstraits, l'utilisateur voit immédiatement
               la hiérarchie, le contraste et la couleur d'état. */}
@@ -641,7 +675,7 @@ export default function SettingsScreen() {
           </View>
           <View style={styles.divider} />
           <Row
-            icon="language-outline" label="Langue"
+            icon="language-outline" label={t('language_row')}
             value={currentLang.label}
             onPress={() => setLangModal(true)} color={colors.primary}
           />
@@ -656,7 +690,7 @@ export default function SettingsScreen() {
         </Section>
 
         {/* Notifications */}
-        <Section title="NOTIFICATIONS">
+        <Section title={t('notifications_section_uc')}>
           <Row
             icon="notifications-outline" label={t("notification_alerts")}
             toggle toggleValue={isPlayDistribution ? consent.notifications : notifPush} onToggle={handleNotifications}
@@ -664,29 +698,29 @@ export default function SettingsScreen() {
         </Section>
 
         {/* Data */}
-        <Section title="DONNÉES LOCALES">
+        <Section title={t('local_data_section')}>
           <Row
-            icon="folder-outline" label="Données stockées"
+            icon="folder-outline" label={t('stored_data')}
             value={storageSize} color={colors.textMuted}
           />
           <View style={styles.divider} />
           <Row
-            icon="trash-outline" label="Effacer les données locales"
+            icon="trash-outline" label={t('clear_local_data_btn')}
             onPress={handleClearData} destructive
           />
         </Section>
 
         {/* About */}
-        <Section title="À PROPOS">
+        <Section title={t('about_section_uc')}>
           {/* Version de l'application : c'est désormais le SEUL endroit
               complet, l'accueil ne la portant plus. Le libellé passe donc par
               les traductions, comme la valeur qu'il annonce. */}
           <Row icon="information-circle-outline" label={t('app_version')} value={`v${Constants.expoConfig?.version ?? "1.0.0"}`} />
           <View style={styles.divider} />
-          <Row icon="code-slash-outline" label="Build" value={Constants.expoConfig?.android?.versionCode?.toString() ?? "1"} />
+          <Row icon="code-slash-outline" label={t('build_row')} value={Constants.expoConfig?.android?.versionCode?.toString() ?? "1"} />
           <View style={styles.divider} />
           <Row
-            icon="headset-outline" label="Support"
+            icon="headset-outline" label={t('support_row')}
             onPress={() => router.push("/support")} color={colors.connected}
           />
           <View style={styles.divider} />
@@ -702,10 +736,10 @@ export default function SettingsScreen() {
 
         {/* Diagnostic VPN — accessible uniquement en mode développement */}
         {__DEV__ && (
-          <Section title="DIAGNOSTIC" subtitle="Outils de débogage tunnel VPN (dev only)">
+          <Section title={t('diagnostic_section')} subtitle={t('diagnostic_subtitle')}>
             <Row
               icon="bug-outline"
-              label="Diagnostic VPN"
+              label={t('diagnostic_row')}
               badge="DEV"
               badgeColor="#7C5FFF"
               onPress={() => router.push("/vpn-debug" as any)}

@@ -32,6 +32,7 @@ import * as Clipboard from 'expo-clipboard';
 import apiClient from '@/services/apiClient';
 import { useVpnContext, formatBytes, formatSpeed } from '@/contexts/VpnContext';
 import { useColors } from '@/hooks/useColors';
+import { useResponsive } from '@/hooks/useResponsive';
 import { useTranslation } from '@/localization';
 import { alpha, layout, radius, spacing, type } from '@/constants/theme';
 import { EmptyState, IconButton, Pill, SectionHeader, StatRow, StatTile, Surface } from '@/components/ui/Primitives';
@@ -41,6 +42,7 @@ type Filter = 'all' | 'errors' | 'engine';
 
 export default function DiagnosticsScreen() {
   const colors = useColors();
+  const responsive = useResponsive();
   const insets = useSafeAreaInsets();
   const { t } = useTranslation();
   const {
@@ -136,7 +138,14 @@ export default function DiagnosticsScreen() {
 
   return (
     <LinearGradient colors={colors.gradients.bg as [string, string, string]} style={styles.container}>
-      <View style={[styles.header, { paddingTop: insets.top + spacing.md, borderBottomColor: colors.border }]}>
+      <View style={[styles.header, {
+        paddingHorizontal: responsive.screenPadding,
+        paddingTop: insets.top + spacing.md,
+        borderBottomColor: colors.border,
+        maxWidth: responsive.contentMaxWidth,
+        width: "100%",
+        alignSelf: "center",
+      }]}>
         <IconButton icon="arrow-back" onPress={() => router.back()} accessibilityLabel={t('back')} />
         <View style={{ flex: 1 }}>
           <Text style={[type.overline, { color: colors.primary }]}>{t("app_name")}</Text>
@@ -146,7 +155,16 @@ export default function DiagnosticsScreen() {
       </View>
 
       <ScrollView
-        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + spacing['3xl'] }]}
+        contentContainerStyle={[
+          styles.content,
+          {
+            paddingHorizontal: responsive.screenPadding,
+            paddingBottom: insets.bottom + spacing['3xl'],
+            maxWidth: responsive.contentMaxWidth,
+            width: "100%",
+            alignSelf: "center",
+          },
+        ]}
         showsVerticalScrollIndicator={false}
       >
         {/* État vivant — les mesures que l'utilisateur veut vérifier en premier. */}
@@ -304,8 +322,10 @@ const styles = StyleSheet.create({
 
   stepRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingVertical: spacing.xs },
 
-  filterRow: { flexDirection: 'row', gap: spacing.sm },
+  filterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   filterChip: {
+    minHeight: 44,
+    justifyContent: 'center',
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     borderRadius: radius.full,

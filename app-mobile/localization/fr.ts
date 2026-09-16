@@ -342,6 +342,24 @@ export const fr = {
   security_section_uc: 'SÉCURITÉ',
   about_section_uc: 'À PROPOS',
   notifications_section_uc: 'NOTIFICATIONS',
+  build_row: 'Build',
+  support_row: 'Support',
+
+  // Settings — Arrière-plan
+  //
+  // Sur la plupart des surcouches Android, l'optimisation de batterie est
+  // ACTIVE par défaut : le système finit par suspendre l'application, et le
+  // tunnel tombe pendant la veille sans que rien ne l'explique. L'application
+  // n'ouvre que l'écran système ; elle ne réclame jamais l'exemption.
+  background_section_uc: 'ARRIÈRE-PLAN',
+  background_row: 'Maintien du tunnel en veille',
+  background_state_unrestricted: 'Sans restriction',
+  background_state_optimized: 'Restreint',
+  background_state_unknown: 'Inconnu',
+  background_hint_optimized: 'Le système peut suspendre l’application pendant la veille et couper le tunnel. Touchez cette ligne, puis autorisez SXB VPN à fonctionner sans restriction.',
+  background_hint_unrestricted: 'Le tunnel reste actif écran éteint. Sa notification doit rester affichée : c’est elle qui garde le service en vie.',
+  background_hint_unknown: 'Impossible de lire ce réglage sur cet appareil. En cas de coupure pendant la veille, retirez l’application de l’optimisation de batterie.',
+  background_settings_error: 'Réglage introuvable sur cet appareil. Ouvrez Paramètres › Batterie, puis autorisez SXB VPN.',
 
   // Settings — Compte
   account_section: 'Compte',

@@ -7,6 +7,7 @@ import { Ionicons } from "@expo/vector-icons";
 import apiClient from "@/services/apiClient";
 import type { Notification } from "@/types/api";
 import { useColors } from "@/hooks/useColors";
+import { useResponsive } from "@/hooks/useResponsive";
 import { useTranslation } from "@/localization";
 import { downloadAndInstallAppUpdate } from "@/services/appUpdate";
 import { isPlayDistribution } from "@/services/distribution";
@@ -33,6 +34,7 @@ function formatDuration(seconds: number): string {
 
 function NotifRow({ item, onMarkRead }: { item: Notification; onMarkRead: (id: string) => void }) {
   const colors = useColors();
+  const responsive = useResponsive();
   const { t } = useTranslation();
   const [downloading, setDownloading] = React.useState(false);
 
@@ -143,6 +145,7 @@ function NotifRow({ item, onMarkRead }: { item: Notification; onMarkRead: (id: s
 
 export default function NotificationsScreen() {
   const colors = useColors();
+  const responsive = useResponsive();
   const insets = useSafeAreaInsets();
   const { t } = useTranslation();
   const { isConnected, isConnecting, traffic } = useVpnContext();
@@ -192,7 +195,14 @@ export default function NotificationsScreen() {
 
   return (
     <LinearGradient colors={colors.gradients.bg as [string, string, string]} style={styles.container}>
-      <View style={[styles.header, { paddingTop: insets.top + spacing.lg, borderBottomColor: colors.border }]}>
+      <View style={[styles.header, {
+        paddingHorizontal: responsive.screenPadding,
+        paddingTop: insets.top + spacing.lg,
+        borderBottomColor: colors.border,
+        maxWidth: responsive.contentMaxWidth,
+        width: "100%",
+        alignSelf: "center",
+      }]}>
         <View style={[styles.headerIcon, { backgroundColor: colors.accents.ambre + alpha.f16, borderColor: colors.accents.ambre + alpha.f40 }]}>
           <Ionicons name="notifications" size={19} color={colors.accents.ambre} />
         </View>
@@ -229,6 +239,9 @@ export default function NotificationsScreen() {
         style={[
           styles.connectionCard,
           {
+            marginHorizontal: responsive.screenPadding,
+            maxWidth: responsive.contentMaxWidth ? responsive.contentMaxWidth - responsive.screenPadding * 2 : undefined,
+            alignSelf: "center",
             backgroundColor: connectionTone + alpha.f08,
             borderColor: connectionTone + alpha.f40,
           },
@@ -270,7 +283,16 @@ export default function NotificationsScreen() {
         <FlatList
           data={items}
           keyExtractor={(item) => item.id}
-          contentContainerStyle={[styles.list, { paddingBottom: insets.bottom + layout.tabBarClearance }]}
+          contentContainerStyle={[
+            styles.list,
+            {
+              paddingHorizontal: responsive.screenPadding,
+              paddingBottom: insets.bottom + layout.tabBarClearance,
+              maxWidth: responsive.contentMaxWidth,
+              width: "100%",
+              alignSelf: "center",
+            },
+          ]}
           renderItem={({ item }) => <NotifRow item={item} onMarkRead={markRead} />}
           showsVerticalScrollIndicator={false}
         />
@@ -307,6 +329,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   markAllBtn: {
+    minHeight: 44,
+    justifyContent: "center",
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     borderRadius: radius.md,
@@ -329,7 +353,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  connectionTitleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.sm },
+  connectionTitleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: spacing.sm },
   liveDot: { width: 7, height: 7, borderRadius: radius.full },
 
   list: { paddingHorizontal: layout.screenPadding, paddingTop: spacing.lg, gap: spacing.md },

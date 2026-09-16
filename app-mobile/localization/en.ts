@@ -330,6 +330,24 @@ export const en = {
   security_section_uc: 'SECURITY',
   about_section_uc: 'ABOUT',
   notifications_section_uc: 'NOTIFICATIONS',
+  build_row: 'Build',
+  support_row: 'Support',
+
+  // Settings — Background
+  //
+  // Battery optimisation is ON by default on most Android skins: the system
+  // eventually suspends the app and the tunnel drops during sleep, with
+  // nothing on screen explaining it. The app only opens the system screen; it
+  // never requests the exemption itself.
+  background_section_uc: 'BACKGROUND',
+  background_row: 'Keeping the tunnel alive while asleep',
+  background_state_unrestricted: 'Unrestricted',
+  background_state_optimized: 'Restricted',
+  background_state_unknown: 'Unknown',
+  background_hint_optimized: 'The system may suspend the app while the screen is off and drop the tunnel. Tap this row, then allow SXB VPN to run unrestricted.',
+  background_hint_unrestricted: 'The tunnel stays up with the screen off. Keep its notification visible: it is what keeps the service alive.',
+  background_hint_unknown: 'This setting cannot be read on this device. If the tunnel drops during sleep, remove the app from battery optimisation.',
+  background_settings_error: 'That screen is unavailable on this device. Open Settings › Battery, then allow SXB VPN.',
 
   account_section: 'Account',
   device_id: 'Device ID',

@@ -7,8 +7,10 @@ import { router } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { useAuthContext } from "@/contexts/AuthContext";
 import { useColors } from "@/hooks/useColors";
+import { useResponsive } from "@/hooks/useResponsive";
 import { useTranslation } from "@/localization";
 import { activationErrorKey } from "@/services/activationError";
+import { responsiveLayout } from "@/constants/theme";
 
 export default function PlanScreen() {
   const { t } = useTranslation();
@@ -18,7 +20,8 @@ export default function PlanScreen() {
   // quand l'utilisateur avait choisi le thème clair — le seul de l'application
   // à se comporter ainsi, et la règle est déjà épinglée par un test ailleurs.
   const colors = useColors();
-  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const responsive = useResponsive();
+  const styles = useMemo(() => makeStyles(colors, responsive), [colors, responsive]);
 
   const [token, setToken]       = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -137,17 +140,17 @@ export default function PlanScreen() {
   );
 }
 
-function makeStyles(colors: ReturnType<typeof useColors>) {
+function makeStyles(colors: ReturnType<typeof useColors>, responsive: ReturnType<typeof useResponsive>) {
   return StyleSheet.create({
   container: { flex: 1 },
-  content: { paddingHorizontal: 24, gap: 14 },
-  backBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.bgCard, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center", marginBottom: 8 },
+  content: { paddingHorizontal: responsive.screenPadding, gap: responsive.gap + 2, width: "100%", maxWidth: responsiveLayout.contentMaxWidth, alignSelf: "center" },
+  backBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.bgCard, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center", marginBottom: 8 },
   iconCircle: { width: 110, height: 110, borderRadius: 55, borderWidth: 1, alignItems: "center", justifyContent: "center" },
   title: { fontSize: 26, fontWeight: "700", color: colors.textPrimary, fontFamily: "Inter_700Bold", textAlign: "center" },
   subtitle: { fontSize: 14, color: colors.textSecondary, fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 22 },
   input: { backgroundColor: colors.bgInput, borderWidth: 1.5, borderColor: colors.border, borderRadius: 14, paddingHorizontal: 18, paddingVertical: 16, fontSize: 15, color: colors.textPrimary, fontFamily: "Inter_600SemiBold", letterSpacing: 1.5, textAlign: "center" },
   btn: { borderRadius: 16, overflow: "hidden" },
-  btnGrad: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 16 },
+  btnGrad: { minHeight: responsive.touchTarget, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 16 },
   // Blanc assumé : ce libellé est posé sur un dégradé violet saturé, identique
   // dans les deux thèmes, où seul un blanc garde un contraste suffisant.
   btnText: { fontSize: 16, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold" },  infoCard: { flexDirection: "row", alignItems: "flex-start", gap: 10, backgroundColor: colors.bgCard, borderRadius: 12, borderWidth: 1, borderColor: colors.border, padding: 14 },

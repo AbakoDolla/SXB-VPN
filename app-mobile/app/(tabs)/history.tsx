@@ -6,6 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import apiClient from "@/services/apiClient";
 import type { HistoryItem } from "@/types/api";
 import { useColors } from "@/hooks/useColors";
+import { useResponsive } from "@/hooks/useResponsive";
 import { useTranslation } from "@/localization";
 import { alpha, layout, radius, spacing, type } from "@/constants/theme";
 import { EmptyState, ScreenHeader } from "@/components/ui/Primitives";
@@ -16,6 +17,7 @@ import { EmptyState, ScreenHeader } from "@/components/ui/Primitives";
  */
 function HistoryRow({ item, isLast }: { item: HistoryItem; isLast: boolean }) {
   const colors = useColors();
+  const responsive = useResponsive();
 
   // Une teinte par type d'événement : la frise se parcourt alors en diagonale,
   // sans lire chaque libellé, pour retrouver « la dernière connexion » ou
@@ -63,6 +65,7 @@ function HistoryRow({ item, isLast }: { item: HistoryItem; isLast: boolean }) {
 
 export default function HistoryScreen() {
   const colors = useColors();
+  const responsive = useResponsive();
   const insets = useSafeAreaInsets();
   const { t } = useTranslation();
   const [items, setItems] = useState<HistoryItem[]>([]);
@@ -146,7 +149,13 @@ export default function HistoryScreen() {
           keyExtractor={(item) => item.id}
           contentContainerStyle={[
             styles.list,
-            { paddingBottom: insets.bottom + layout.tabBarClearance },
+            {
+              paddingHorizontal: responsive.screenPadding,
+              paddingBottom: insets.bottom + layout.tabBarClearance,
+              maxWidth: responsive.contentMaxWidth,
+              width: "100%",
+              alignSelf: "center",
+            },
           ]}
           renderItem={({ item, index }) => (
             <HistoryRow item={item} isLast={index === filteredItems.length - 1} />
@@ -165,8 +174,10 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.lg,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  filterRow: { flexDirection: "row", gap: spacing.sm },
+  filterRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
   filterButton: {
+    minHeight: 44,
+    justifyContent: "center",
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
     borderRadius: radius.full,

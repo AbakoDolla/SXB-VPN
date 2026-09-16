@@ -42,6 +42,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useColors } from '@/hooks/useColors';
+import { useResponsive } from '@/hooks/useResponsive';
 import { useTranslation } from '@/localization';
 import { alpha, elevation, glow, radius, spacing, type } from '@/constants/theme';
 import { formatBytes } from '@/services/quotaState';
@@ -72,6 +73,7 @@ export default function FreeTrialCard({
   endsAt,
 }: FreeTrialCardProps) {
   const colors = useColors();
+  const responsive = useResponsive();
   const { t, language } = useTranslation();
 
   // Le volume n'est PAS toujours mesuré : un essai peut être déployé sans
@@ -172,6 +174,7 @@ export default function FreeTrialCard({
       {...(mouvementReduit ? {} : gestes.panHandlers)}
       style={[
         styles.carte,
+        { padding: responsive.cardPadding },
         { borderColor: colors.accents.violet + alpha.f40, backgroundColor: colors.bgCard },
         elevation.md,
         glow(colors.accents.violet, 'sm'),
@@ -231,7 +234,12 @@ export default function FreeTrialCard({
         <View style={styles.quotaHero}>
           <View style={styles.quotaHeroText}>
             <Text
-              style={[type.display, { color: colors.accents.emeraude, fontVariant: ['tabular-nums'] }]}
+              style={[
+                // Même règle que la carte de quota : un très grand corps
+                // multiplié par le réglage système déborde en 320 dp.
+                responsive.isCompact || responsive.fontScale >= 1.25 ? type.h1 : type.display,
+                { color: colors.accents.emeraude, fontVariant: ['tabular-nums'] },
+              ]}
               numberOfLines={1}
               adjustsFontSizeToFit
               minimumFontScale={0.6}
@@ -303,6 +311,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    flexWrap: 'wrap',
     gap: spacing.md,
   },
   piedItem: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, flexShrink: 1 },

@@ -78,8 +78,17 @@ export function parseVlessUri(rawUri: string): ParsedVlessUri {
   }
 
   const q = parseQuery(queryPart);
-  const security = (q.get('security') || 'none').toLowerCase();
-  const network = (q.get('type') || q.get('network') || 'tcp').toLowerCase();
+  // `Map.get` rend `undefined`, jamais `null` : comparer à `null` laissait donc
+  // passer les paramètres ABSENTS. Un profil sans `sni=` recevait ainsi
+  // `sni: undefined` au lieu du repli prévu, et le moteur présentait alors
+  // l'adresse jointe — ce qui casse précisément les profils de façade, où le
+  // nom TLS et l'en-tête Host ne désignent pas le même service.
+  const lire = (key: string): string | undefined => {
+    const value = q.get(key);
+    return value === undefined || value === '' ? undefined : value;
+  };
+  const security = (lire('security') || 'none').toLowerCase();
+  const network = (lire('type') || lire('network') || 'tcp').toLowerCase();
   const config: Record<string, any> = {
     protocol: 'vless',
     uuid,
@@ -89,12 +98,12 @@ export function parseVlessUri(rawUri: string): ParsedVlessUri {
     tls: security === 'tls' || security === 'reality',
   };
 
-  const path = q.get('path');
-  if (path !== null && path !== '') config.path = path;
-  const wsHost = q.get('host');
-  if (wsHost !== null && wsHost !== '') config.wsHost = wsHost;
-  const sni = q.get('sni');
-  if (sni !== null && sni !== '') config.sni = sni;
+  const path = lire('path');
+  if (path !== undefined) config.path = path;
+  const wsHost = lire('host');
+  if (wsHost !== undefined) config.wsHost = wsHost;
+  const sni = lire('sni');
+  if (sni !== undefined) config.sni = sni;
   else if (config.tls) config.sni = wsHost || endpoint.host;
 
   // ── Noms CANONIQUES attendus par le moteur ────────────────────────────────
@@ -120,10 +129,10 @@ export function parseVlessUri(rawUri: string): ParsedVlessUri {
     servicename: 'grpcServiceName',
   };
   for (const key of ['encryption', 'flow', 'fp', 'alpn', 'pbk', 'sid', 'spx', 'headerType', 'serviceName']) {
-    const value = q.get(key.toLowerCase());
+    const value = lire(key.toLowerCase());
     // `parseQuery` a déjà décodé chaque valeur : re-décoder ici casserait toute
     // valeur contenant un « %25 » littéral.
-    if (value !== null && value !== '') config[ALIAS[key.toLowerCase()] ?? key] = value;
+    if (value !== undefined) config[ALIAS[key.toLowerCase()] ?? key] = value;
   }
   const insecure = q.get('allowinsecure') ?? q.get('insecure');
   if (insecure !== undefined) config.insecure = ['1', 'true', 'yes'].includes(insecure.toLowerCase());

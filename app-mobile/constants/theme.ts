@@ -133,3 +133,22 @@ export const layout = {
   /** Marge basse laissant respirer le contenu au-dessus de la barre d'onglets. */
   tabBarClearance: 108,
 } as const;
+
+/** Classes de largeur partagées par tous les écrans natifs. */
+export const breakpoints = {
+  compact: 360,
+  large: 700,
+} as const;
+
+/** Valeurs de mise en page dérivées de la classe de largeur courante. */
+export const responsiveLayout = {
+  contentMaxWidth: 720,
+  wideContentMaxWidth: 960,
+  compactPadding: spacing.lg,
+  regularPadding: spacing.xl,
+  largePadding: spacing['3xl'],
+  compactCardPadding: 14,
+  regularCardPadding: spacing.lg,
+  largeCardPadding: spacing.xl,
+  touchTarget: 48,
+} as const;
