@@ -19,7 +19,6 @@ import { useLanguageContext } from "@/contexts/LanguageContext";
 import { useTranslation } from "@/localization";
 import { useColors } from "@/hooks/useColors";
 import { useThemeContext } from "@/contexts/ThemeContext";
-import { getDiagnosticLogging, setDiagnosticLogging } from "@/modules/expo-sxb-vpn/src";
 import {
   areAnnouncementNotificationsEnabled,
   setAnnouncementNotificationsEnabled,
@@ -271,7 +270,6 @@ export default function SettingsScreen() {
   const [storageSize,      setStorageSize]      = useState<string>("…");
   const [clearing,         setClearing]         = useState(false);
   const [refreshingConfig, setRefreshingConfig] = useState(false);
-  const [diagnosticLogging, setDiagnosticLoggingState] = useState(false);
   const [backgroundMode, setBackgroundMode] = useState<BackgroundMode>('unknown');
 
   // L'utilisateur quitte l'application pour lever la restriction puis revient :
@@ -300,8 +298,6 @@ export default function SettingsScreen() {
       // auto reconnect + kill switch viennent du VpnContext (synchronisés avec le service natif)
       setAutoReconnect(arCtx);
       setKillSwitch(ksCtx);
-      const diagnosticEnabled = await getDiagnosticLogging().catch(() => false);
-      setDiagnosticLoggingState(diagnosticEnabled);
 
       // Estimate storage
       const keys = await AsyncStorage.getAllKeys();
@@ -405,18 +401,6 @@ export default function SettingsScreen() {
     await setKsCtx(v);
     if (v) {
       Alert.alert(t('kill_switch_enabled_title'), t('kill_switch_enabled_msg'));
-    }
-  };
-
-  const handleDiagnosticLogging = async (v: boolean) => {
-    if (isPlayDistribution && v && !consent.diagnostics) {
-      router.push('/privacy');
-      return;
-    }
-    const applied = await setDiagnosticLogging(v).catch(() => false);
-    setDiagnosticLoggingState(v && applied);
-    if (v && applied) {
-      Alert.alert(t('diagnostic_row'), t('diagnostic_warning'));
     }
   };
 
@@ -557,12 +541,6 @@ export default function SettingsScreen() {
             disabled={refreshingConfig}
             badge={refreshingConfig ? "…" : undefined}
           />
-          <View style={styles.divider} />
-          <Row
-            icon="pulse-outline" label={t('diagnostic_title')}
-            onPress={() => router.push("/diagnostics")} color={colors.primary}
-            badge={logs.length > 0 ? String(logs.length) : undefined}
-          />
         </Section>
 
         {/* Arrière-plan — la cause n°1 d'un tunnel qui tombe écran éteint. */}
@@ -581,22 +559,6 @@ export default function SettingsScreen() {
               : backgroundMode === 'optimized' ? t('background_hint_optimized')
                 : t('background_hint_unknown')}
           </Text>
-        </Section>
-
-        <Section title={t('diagnostic_section')} subtitle={t('diagnostic_subtitle')}>
-          <Row
-            icon="bug-outline"
-            label={t('diagnostic_row')}
-            toggle
-            toggleValue={diagnosticLogging}
-            onToggle={handleDiagnosticLogging}
-            color={colors.warning}
-            badge={diagnosticLogging ? t('dev_badge') : undefined}
-            badgeColor={colors.warning}
-          />
-          {diagnosticLogging && (
-            <Text style={styles.sectionSubtitle}>{t('diagnostic_warning')}</Text>
-          )}
         </Section>
 
         {/* Security */}
@@ -733,20 +695,6 @@ export default function SettingsScreen() {
                 .catch(() => Alert.alert(t('privacy_title'), t('privacy_link_error')));
             }} />
         </Section>
-
-        {/* Diagnostic VPN — accessible uniquement en mode développement */}
-        {__DEV__ && (
-          <Section title={t('diagnostic_section')} subtitle={t('diagnostic_subtitle')}>
-            <Row
-              icon="bug-outline"
-              label={t('diagnostic_row')}
-              badge="DEV"
-              badgeColor="#7C5FFF"
-              onPress={() => router.push("/vpn-debug" as any)}
-              color="#7C5FFF"
-            />
-          </Section>
-        )}
 
         {/* Logout */}
         {clearing ? (

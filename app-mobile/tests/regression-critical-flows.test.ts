@@ -409,15 +409,19 @@ describe('compatibilité URI VLESS / JSON complète', () => {
     // et serait annoncé comme une réussite si les échecs passaient après.
     assert.equal(traduireLigne('ws handshake failed').niveau, 'echec');
 
-    // L'écran ne doit plus proposer ni copie ni partage du journal : ce sont
-    // eux qui faisaient sortir le détail technique de l'appareil.
-    const ecran = source('app/diagnostics.tsx');
-    assert.match(ecran, /traduireJournal/, 'le journal doit passer par la traduction');
-    assert.doesNotMatch(ecran, /Clipboard\.setStringAsync\(vpnLogs/, 'copie du journal brut interdite');
-    assert.doesNotMatch(ecran, /Share\.share\(\{ message: vpnLogs/, 'partage du journal brut interdit');
+    // L'écran de diagnostic a été RETIRÉ : c'est lui qui rendait le journal
+    // brut consultable, copiable et partageable depuis l'appareil. Le seul
+    // moyen sûr de garantir qu'il n'en sort rien est qu'il n'existe plus.
+    assert.equal(existsSync('app/diagnostics.tsx'), false,
+      'l’écran de diagnostic ne doit pas réapparaître');
+    // Et aucun écran ne doit reprendre l'affichage du journal brut.
+    for (const ecranRestant of ['app/(tabs)/index.tsx', 'app/settings.tsx', 'app/(tabs)/notifications.tsx']) {
+      const contenu = source(ecranRestant);
+      assert.doesNotMatch(contenu, /vpnLogs/, `${ecranRestant} : journal brut réexposé`);
+      assert.doesNotMatch(contenu, /Clipboard\.setStringAsync\(/, `${ecranRestant} : copie du journal réintroduite`);
+    }
 
     // Le protocole ne s'affiche plus nulle part ; seul le ping demeure.
-    assert.doesNotMatch(ecran, /t\('info_protocol'\)/, 'diagnostics : protocole encore affiché');
     const accueil = source('app/(tabs)/index.tsx');
     assert.doesNotMatch(accueil, /t\('info_protocol'\)/, 'accueil : protocole encore affiché');
     assert.match(accueil, /t\('info_ping'\)/, 'le ping doit rester');
@@ -586,7 +590,6 @@ describe('garde-fous contre les régressions Android', () => {
   const activateScreen = source('app/activate.tsx');
   const planScreen = source('app/plan.tsx');
   const nativeModule = source('modules/android-native/SxbVpnModule.kt');
-  const diagnosticsScreen = source('app/diagnostics.tsx');
   const subscriptionRoutes = source('../server/routes/subscriptions.ts');
   const vpnProfileRoutes = source('../server/routes/vpn-profiles.ts');
   const prismaSchema = source('../prisma/schema.prisma');
@@ -994,13 +997,21 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(nativeService, /outbound Xray Shadowsocks/);
   });
 
-  it('garde le masquage par défaut et expose un diagnostic réseau explicite sans mots de passe', () => {
-    assert.match(nativeLogger, /diagnosticEnabled/);
-    assert.match(nativeLogger, /setDiagnosticEnabled/);
-    assert.match(nativeLogger, /DIAGNOSTIC_TTL_MS/);
-    assert.match(nativeLogger, /KEY_VERBOSE_UNTIL/);
-    assert.match(nativeModule, /setDiagnosticLogging/);
-    assert.match(nativeModule, /getDiagnosticLogging/);
+  it('masque toujours les journaux, sans interrupteur sur une version publiée', () => {
+    // LE DÉFAUT RETIRÉ : le réglage « Diagnostic VPN » déverrouillait les
+    // traces détaillées pendant trente minutes sur un appareil de production.
+    // Hôtes, adresses et SNI redevenaient alors lisibles dans le journal
+    // système, où toute application autorisée à le lire pouvait les relever.
+    // Le déverrouillage a disparu avec l'écran : en release, le masquage n'a
+    // plus d'interrupteur du tout.
+    assert.match(nativeLogger, /fun isDiagnosticEnabled\(\): Boolean = BuildConfig\.DEBUG && policyAllowsDiagnostics/);
+    for (const disparu of ['setDiagnosticEnabled', 'DIAGNOSTIC_TTL_MS', 'KEY_VERBOSE_UNTIL', 'KEY_VERBOSE']) {
+      assert.doesNotMatch(nativeLogger, new RegExp(disparu), `le déverrouillage ${disparu} doit avoir disparu`);
+    }
+    // Le pont JavaScript ne doit plus rien exposer qui le rallume.
+    assert.doesNotMatch(nativeModule, /setDiagnosticLogging|getDiagnosticLogging/);
+    assert.doesNotMatch(source('modules/expo-sxb-vpn/src/index.ts'), /DiagnosticLogging/);
+    // Le masquage lui-même reste en place, ainsi que la trace réseau explicite.
     assert.match(nativeService, /PAYLOAD_FULL_BEGIN/);
     assert.match(nativeService, /SERVER_RESPONSE_FULL_BEGIN/);
     assert.match(nativeService, /if \(SxbSecureLogger\.isDiagnosticEnabled\(\)\)/);
@@ -1756,9 +1767,9 @@ describe('garde-fous contre les régressions Android', () => {
     // La valeur traverse le pont natif puis le contexte jusqu'à l'écran.
     assert.ok(nativeModule.includes('putDouble("connectedSeconds"'));
     assert.ok(vpnContext.includes('connectedSeconds: stats.connectedSeconds || 0'));
-    assert.ok(diagnosticsScreen.includes('trafficStats.connectedSeconds'));
-    // L'ancien compteur local, qui repartait à l'ouverture de l'écran, a disparu.
-    assert.doesNotMatch(diagnosticsScreen, /startedAtRef/);
+    // La durée traverse le pont jusqu'aux écrans qui l'affichent encore.
+    assert.ok(source('app/(tabs)/index.tsx').includes('traffic.connectedSeconds'));
+    assert.ok(source('app/(tabs)/notifications.tsx').includes('traffic.connectedSeconds'));
     // La notification persistante laisse Android dessiner le chronomètre à
     // partir de la même ancre, sans thread réveillé chaque seconde.
     assert.ok(nativeService.includes('getConnectedSinceWallClockMs()'));
@@ -2817,12 +2828,12 @@ describe('garde-fous contre les régressions Android', () => {
     // EXCEPTION ASSUMÉE : `services/logTranslator.ts` cherche ✅/⚠️/❌ dans les
     // journaux du moteur natif, qui les émet lui-même (SxbVpnService.kt). Ce
     // sont des DONNÉES à reconnaître, pas une décoration à afficher — et c'est
-    // désormais le seul endroit qui les connaît, l'écran de diagnostic ne
-    // voyant plus que des phrases traduites.
+    // désormais le seul endroit qui les connaît, l'écran qui les montrait
+    // ayant été supprimé.
     assert.match(source('services/logTranslator.ts'), /❌/,
       'le traducteur doit continuer à reconnaître les marqueurs du moteur');
-    assert.doesNotMatch(source('app/diagnostics.tsx'), /❌/,
-      'l’écran ne doit plus manipuler les marqueurs bruts');
+    assert.equal(existsSync('app/diagnostics.tsx'), false,
+      'l’écran qui affichait ces marqueurs doit rester supprimé');
   });
 
   it('applique réellement les thèmes clair et sombre aux surfaces importantes', () => {

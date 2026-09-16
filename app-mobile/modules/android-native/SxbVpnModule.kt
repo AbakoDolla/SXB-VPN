@@ -37,8 +37,7 @@ import java.util.concurrent.Executors
  *  - setKillSwitch(bool)     → void
  *  - setAutoReconnect(bool)  → void
  *  - checkSecurity()         → Promise<object>
- *  - setDiagnosticLogging()  → Promise<boolean>
- *  - getDiagnosticLogging()  → Promise<boolean>
+ *  - getPrivacyConsent()     → Promise<string>
  */
 class SxbVpnModule(reactContext: ReactApplicationContext)
     : ReactContextBaseJavaModule(reactContext), ActivityEventListener {
@@ -127,7 +126,6 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             SxbPrivacyPolicy.syncPushComponents(reactApplicationContext)
             if (SxbPrivacyPolicy.isPlay(reactApplicationContext) && !SxbPrivacyPolicy.vpnAllowed(reactApplicationContext)) {
                 SxbPrivacyPolicy.stopVpnForPrivacy()
-                SxbSecureLogger.setDiagnosticEnabled(reactApplicationContext, false)
             }
             promise.resolve(SxbPrivacyPolicy.read(reactApplicationContext))
         } catch (e: Exception) { promise.reject("PRIVACY_READ_ERROR", "Privacy state unavailable", e) }
@@ -144,21 +142,6 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
 
     override fun initialize() { super.initialize(); SxbSecureLogger.initialize(reactApplicationContext); registerReceivers() }
 
-    @ReactMethod
-    fun setDiagnosticLogging(enabled: Boolean, promise: Promise) {
-        try {
-            check(!enabled || SxbPrivacyPolicy.diagnosticsAllowed(reactApplicationContext)) { "PRIVACY_DIAGNOSTICS_REQUIRED" }
-            SxbSecureLogger.setDiagnosticEnabled(reactApplicationContext, enabled)
-            promise.resolve(SxbSecureLogger.isDiagnosticEnabled())
-        } catch (e: Exception) {
-            promise.reject("DIAGNOSTIC_ERROR", e.message ?: "Impossible de modifier le diagnostic", e)
-        }
-    }
-
-    @ReactMethod
-    fun getDiagnosticLogging(promise: Promise) {
-        promise.resolve(SxbSecureLogger.isDiagnosticEnabled())
-    }
     override fun invalidate()  { super.invalidate(); unregisterReceivers(); accessExecutor.shutdown() }
 
     // ── JS EventEmitter boilerplate ───────────────────────────────────────────

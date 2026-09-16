@@ -104,16 +104,6 @@ export function isVpnPermissionGranted(): boolean {
   return SxbVpnNative.isVpnPermissionGranted() ?? false;
 }
 
-export async function setDiagnosticLogging(enabled: boolean): Promise<boolean> {
-  if (!SxbVpnNative?.setDiagnosticLogging) return false;
-  return Boolean(await SxbVpnNative.setDiagnosticLogging(enabled));
-}
-
-export async function getDiagnosticLogging(): Promise<boolean> {
-  if (!SxbVpnNative?.getDiagnosticLogging) return false;
-  return Boolean(await SxbVpnNative.getDiagnosticLogging());
-}
-
 export function addVpnStateListener(listener: (state: VpnState) => void) {
   if (!emitter) return NOOP_SUBSCRIPTION;
   return emitter.addListener(EVENT_STATE_CHANGE, listener);

@@ -77,7 +77,9 @@ object SxbPrivacyPolicy {
             .putBoolean("diagnostics", vpn && diagnostics)
             .putBoolean("notifications", vpn && notifications)
             .putBoolean("revoking", false).commit()) { "PRIVACY_STORAGE_ERROR" }
-        if (!vpn || !diagnostics) SxbSecureLogger.setDiagnosticEnabled(context, false)
+        // Le masquage des journaux n'a plus d'interrupteur : `initialize`
+        // relit la politique, et une version publiée masque en permanence.
+        SxbSecureLogger.initialize(context)
         syncPushComponents(context)
         return read(context)
     }

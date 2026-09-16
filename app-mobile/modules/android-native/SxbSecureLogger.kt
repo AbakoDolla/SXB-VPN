@@ -34,45 +34,26 @@ object SxbSecureLogger {
 
     // ── Tag logcat — court, non explicite en prod ─────────────────────────────
     private const val TAG = "SXB"
-    private const val PREFS = "sxb_diagnostics"
-    private const val KEY_VERBOSE = "verbose_logging"
-    private const val KEY_VERBOSE_UNTIL = "verbose_logging_until"
-    private const val DIAGNOSTIC_TTL_MS = 30 * 60 * 1000L
 
-    @Volatile private var diagnosticEnabled: Boolean = BuildConfig.DEBUG
-    @Volatile private var diagnosticUntilMs: Long = if (BuildConfig.DEBUG) Long.MAX_VALUE else 0L
+    /**
+     * Les traces détaillées n'existent plus que dans une version de
+     * développement.
+     *
+     * Le réglage « Diagnostic VPN » pouvait les déverrouiller pendant trente
+     * minutes sur un appareil publié : les hôtes, adresses et SNI redevenaient
+     * alors lisibles dans le journal système, où n'importe quelle application
+     * disposant du droit de lecture des journaux pouvait les relever. Le
+     * déverrouillage a été retiré avec l'écran qui le proposait : sur une
+     * version distribuée, le masquage n'a plus d'interrupteur.
+     */
     @Volatile private var policyAllowsDiagnostics = true
 
-    /** Recharge le mode local au démarrage du bridge et du service. */
+    /** Recharge la politique de confidentialité au démarrage du bridge et du service. */
     fun initialize(context: Context) {
         policyAllowsDiagnostics = SxbPrivacyPolicy.diagnosticsAllowed(context)
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val until = prefs.getLong(KEY_VERBOSE_UNTIL, 0L)
-        diagnosticUntilMs = until
-        diagnosticEnabled = BuildConfig.DEBUG || (prefs.getBoolean(KEY_VERBOSE, false) && until > System.currentTimeMillis())
     }
 
-    /** Active les traces détaillées pendant 30 minutes pour ce seul appareil. */
-    fun setDiagnosticEnabled(context: Context, enabled: Boolean) {
-        policyAllowsDiagnostics = SxbPrivacyPolicy.diagnosticsAllowed(context)
-        val until = if (enabled) System.currentTimeMillis() + DIAGNOSTIC_TTL_MS else 0L
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean(KEY_VERBOSE, enabled)
-            .putLong(KEY_VERBOSE_UNTIL, until)
-            .apply()
-        diagnosticUntilMs = until
-        diagnosticEnabled = BuildConfig.DEBUG || enabled
-    }
-
-    fun isDiagnosticEnabled(): Boolean {
-        if (!policyAllowsDiagnostics) return false
-        if (BuildConfig.DEBUG) return true
-        if (diagnosticEnabled && System.currentTimeMillis() >= diagnosticUntilMs) {
-            diagnosticEnabled = false
-        }
-        return diagnosticEnabled
-    }
+    fun isDiagnosticEnabled(): Boolean = BuildConfig.DEBUG && policyAllowsDiagnostics
 
     // ── Regex de masquage — appliquées au logger structuré ─────────────────────
     private val SENSITIVE_PATTERNS = listOf(

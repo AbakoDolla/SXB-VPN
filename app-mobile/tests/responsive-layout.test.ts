@@ -23,7 +23,6 @@ describe('responsive mobile layout', () => {
       'app-mobile/app/(tabs)/profile.tsx',
       'app-mobile/app/(tabs)/history.tsx',
       'app-mobile/app/(tabs)/notifications.tsx',
-      'app-mobile/app/diagnostics.tsx',
       'app-mobile/app/activate.tsx',
       'app-mobile/app/free-trial.tsx',
       'app-mobile/app/plan.tsx',
@@ -42,6 +41,5 @@ describe('responsive mobile layout', () => {
     assert.match(lire('app-mobile/app/(tabs)/index.tsx'), /flexWrap: "wrap"/);
     assert.match(lire('app-mobile/app/(tabs)/profile.tsx'), /flexBasis: responsive\.isLarge \? "48%" : "100%"/);
     assert.match(lire('app-mobile/app/(tabs)/notifications.tsx'), /flexWrap: "wrap"/);
-    assert.match(lire('app-mobile/app/diagnostics.tsx'), /filterRow: \{ flexDirection: 'row', flexWrap: 'wrap'/);
   });
 });

@@ -599,21 +599,6 @@ export default function HomeScreen() {
               />
             </StatRow>
           </Surface>
-
-          {/* Les étapes et le flux brut vivent désormais dans l'écran unique de
-              diagnostic : l'accueil ne conserve qu'un lien, ce qui l'allège et
-              supprime le troisième emplacement où les journaux apparaissaient. */}
-          <Pressable
-            onPress={() => router.push("/diagnostics")}
-            accessibilityRole="button"
-            accessibilityLabel={t('diagnostic_title')}
-            style={styles.logsLink}
-          >
-            <Ionicons name="pulse-outline" size={14} color={colors.primary} />
-            <Text style={[type.captionMedium, { color: colors.primary }]}>
-              {isConnecting ? t('logs_in_progress') : t('diagnostic_title')}
-            </Text>
-          </Pressable>
         </View>
 
         {/* ── QUOTA — Consomme deriveQuota (B1/B4) ──────────────────────────
