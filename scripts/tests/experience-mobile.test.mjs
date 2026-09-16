@@ -32,12 +32,27 @@ test('la vérification des droits ne barre plus la route au tunnel', () => {
   // de rien avant que le tunnel ne commence.
   assert.match(contexte, /const verificationDroits = \(async \(\) => \{/);
   assert.match(contexte, /void verificationDroits;/);
-  // La forme bloquante ne doit pas revenir.
-  assert.doesNotMatch(
-    contexte,
-    /\n\s*await refreshAccessState\(false, undefined, 4000\);\n\s*await reconcileAccess\(\);/,
-    'la vérification des droits ne doit plus être attendue avant la connexion',
+
+  // L'invariant réel : les deux appels existent toujours — ils protègent — mais
+  // à l'INTÉRIEUR de la fonction lancée en parallèle, jamais sur le chemin
+  // direct de `connect()`. On le vérifie par les positions plutôt que par une
+  // forme de texte, qui dépendrait des fins de ligne de la plateforme.
+  const debutParallele = contexte.indexOf('const verificationDroits = (async () => {');
+  const finParallele = contexte.indexOf('void verificationDroits;');
+  const rafraichir = contexte.indexOf('await refreshAccessState(false, undefined, 4000)');
+  const reconcilier = contexte.indexOf('await reconcileAccess()');
+  assert.ok(debutParallele > -1 && finParallele > debutParallele, 'la vérification doit être lancée en parallèle');
+  assert.ok(
+    rafraichir > debutParallele && rafraichir < finParallele,
+    'le rafraîchissement des droits doit rester dans la fonction parallèle',
   );
+  assert.ok(
+    reconcilier > debutParallele && reconcilier < finParallele,
+    'la réconciliation doit rester dans la fonction parallèle',
+  );
+  // Et il n'en existe qu'une occurrence : aucune copie n'est restée sur le
+  // chemin direct.
+  assert.equal((contexte.match(/await refreshAccessState\(false, undefined, 4000\)/g) || []).length, 1);
 });
 
 test('les lectures locales de la connexion sont menées ensemble', () => {
