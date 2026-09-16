@@ -1058,25 +1058,37 @@ test("ajouter et retirer le même serveur d'un seul geste est refusé", async ()
   assert.equal(refus.status, 400);
 });
 
-test("le quota ne se lit qu'UNE fois par écran", () => {
-  // Le propriétaire : « je ne veux pas autant d'écran pour voir le quota ».
-  // Sur l'accueil, les mêmes trois nombres apparaissaient deux fois — la carte
-  // « Quota du forfait » ET la carte de la connexion active — et trois fois
-  // pendant un essai, la carte d'essai les portant déjà.
+test("la liste des connexions détaille le quota, sans deux chiffres pour un même forfait", () => {
+  // Le propriétaire, après avoir vu la liste : « je ne veux pas ce type d'UI…
+  // allons sur des composants simples avec barre de progression et indication
+  // plus détaillée sur les quotas utilisés comme avant ».
   const accueil = source('app-mobile/app/(tabs)/index.tsx');
+  const carte = source('app-mobile/components/ui/ConnectionCard.tsx');
 
-  // 1. La carte de la connexion ACTIVE ne répète plus le volume : il est juste
-  //    au-dessus, tenu de `derivedQuota`, la source qui fait autorité.
-  const carte = accueil.slice(accueil.indexOf('function VpnConnectionCard'), accueil.indexOf('function VpnConnectionCard') + 4200);
-  assert.match(carte, /\{!isActive && totalBytes > 0 && \(/);
-  assert.ok(!/StatTile label=\{t\('quota_total'\)\}/.test(carte),
-    'la carte de connexion ne doit plus porter les trois tuiles de quota');
+  // 1. Le détail revient pour TOUTES les connexions : barre et trois volumes.
+  assert.match(carte, /<ProgressBar progress=\{usedRatio\}/);
+  for (const cle of ['quota_remaining', 'quota_used', 'quota_total']) {
+    assert.match(carte, new RegExp(`QuotaLine label=\\{t\\('${cle}'\\)\\}`), `volume manquant : ${cle}`);
+  }
+  // Une ligne par volume plutôt que trois colonnes : à 320 px, « 204.8 MB »
+  // était rogné dans une tuile large de 66 px.
+  assert.ok(!/StatTile|StatRow/.test(carte), 'les tuiles en colonnes tronquent les volumes sur petit écran');
 
-  // 2. Les AUTRES connexions gardent une ligne : leur volume leur est propre et
-  //    ne figure nulle part ailleurs.
-  assert.match(carte, /formatBytes\(remainingBytes\)\} \/ \{formatBytes\(totalBytes\)\}/);
+  // 2. La connexion ACTIVE lit `derivedQuota` — la source qui fait autorité —
+  //    au lieu d'un instantané distant plus ancien : deux chiffres différents
+  //    pour un même forfait sur un même écran se lisent comme une erreur.
+  assert.match(carte, /const courant = isActive \? activeQuota : undefined/);
+  assert.match(carte, /const totalBytes = courant\?\.totalBytes \?\? remoteTotal/);
+  assert.match(accueil, /activeQuota=\{derivedQuota\}/);
 
-  // 3. Pendant un essai, le bloc générique s'efface derrière la carte d'essai,
+  // 3. Composants SIMPLES : fond opaque, ni halo ni fond teinté translucide.
+  //    Sur Android l'ombre portée traversait le fond translucide et dessinait
+  //    un rectangle plus clair au milieu de chaque carte.
+  assert.match(carte, /backgroundColor: colors\.bgCard2/);
+  assert.ok(!/<Surface/.test(carte), 'la carte de connexion ne doit plus empiler une Surface teintée');
+  assert.ok(!/glow\(|elevation\./.test(carte), 'ni halo ni ombre sur une carte imbriquée');
+
+  // 4. Pendant un essai, le bloc générique s'efface derrière la carte d'essai,
   //    qui porte déjà consommé, restant, barre et échéance.
   assert.match(accueil, /\{derivedQuota\.totalBytes > 0 && !isTrialAccess && \(/);
 });

@@ -1,4 +1,4 @@
-﻿import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   AppState, Image, Modal, Pressable,
   ScrollView, Share, StyleSheet, Text, View, ActivityIndicator,
@@ -32,7 +32,7 @@ import {
   Surface,
 } from "@/components/ui/Primitives";
 import { useConnectionDuration } from "@/hooks/useConnectionDuration";
-import { protocolTone } from "@/constants/protocolTone";
+import ConnectionCard from "@/components/ui/ConnectionCard";
 import {
   SUIVI_INITIAL as SUIVI_RELAIS_INITIAL,
   echec as echecRelais,
@@ -90,76 +90,6 @@ function getButtonState(
   if (hasValidConfig) return "connect";
   if (activeConnection?.status === "suspended" || activeConnection?.status === 'revoked') return 'blocked';
   return "no_package";
-}
-
-// ── VPN Connection Card ───────────────────────────────────────────────────────
-function VpnConnectionCard({ conn, isActive }: { conn: VpnConnection; isActive: boolean }) {
-  const now = Date.now();
-  const isExpired  = conn.status === "expired" || (conn.expiresAt ? new Date(conn.expiresAt).getTime() < now : false);
-  const isExhausted = conn.status === "exhausted";
-  const isRevoked  = conn.status === "revoked";
-  const isSuspended = conn.status === "suspended";
-
-  const totalBytes = conn.quota.totalBytes || (conn.quota.totalGB * 1024 ** 3);
-  const usedBytes = conn.quota.usedBytes || (conn.quota.usedGB * 1024 ** 3);
-  const remainingBytes = conn.quota.totalBytes !== undefined ? Math.max(0, totalBytes - usedBytes) : (conn.quota.remainingGB * 1024 ** 3);
-
-  const pct = totalBytes > 0 ? Math.min((usedBytes / totalBytes) * 100, 100) : 0;
-
-  const { t } = useTranslation();
-  const colors = useColors();
-  const statusColor = isExpired || isExhausted || isRevoked || isSuspended
-    ? colors.accents.corail
-    : isActive
-    ? colors.accents.emeraude
-    : colors.accents.cyan;
-  const statusLabel = isExhausted ? t('friendly_quota_exhausted') : isExpired ? t('expired') : isRevoked ? t('connection_revoked') : isSuspended ? t('suspended_status') : isActive ? t('active') : t('active');
-  // Une teinte par protocole : la liste de connexions se parcourt alors par
-  // familles, sans relire le nom de chacune. La pastille du protocole porte
-  // déjà le texte — la couleur ne remplace jamais l'étiquette.
-  const protocoleTeinte = protocolTone(colors, conn.technicalProtocol);
-
-  return (
-    <Surface
-      tone={isActive ? colors.accents.emeraude : protocoleTeinte}
-      style={{ marginTop: spacing.md }}
-    >
-      <View style={styles.connHeader}>
-        <View style={{ flex: 1, gap: spacing.xs }}>
-          <Text style={[type.h3, { color: colors.textPrimary }]} numberOfLines={1}>{conn.name}</Text>
-          {/* Le protocole n'est PLUS affiché. Il désigne la technique de
-              transport, et l'exposer revient à décrire la configuration que
-              l'exploitant vend — une capture d'écran suffisait à la deviner.
-              La teinte de la carte continue de distinguer les familles entre
-              elles, sans jamais les nommer. */}
-        </View>
-        <Pill label={statusLabel} tone={statusColor} dot />
-      </View>
-
-      {/* Le VOLUME n'est plus répété ici pour la connexion ACTIVE.
-          La carte « Quota du forfait », juste au-dessus sur le même écran,
-          donne déjà total, consommé et restant avec sa barre de progression —
-          et elle les tient de `derivedQuota`, la source qui fait autorité. Les
-          répéter obligeait à lire les mêmes trois nombres deux fois en
-          descendant, trois fois pendant un essai.
-
-          Les AUTRES connexions gardent une ligne : leur volume leur est propre
-          et ne figure nulle part ailleurs. Une ligne, pas trois tuiles et une
-          barre : de quoi comparer, sans refaire la carte du dessus. */}
-      {!isActive && totalBytes > 0 && (
-        <Text style={[type.caption, { color: colors.textSecondary }]}>
-          {formatBytes(remainingBytes)} / {formatBytes(totalBytes)}
-        </Text>
-      )}
-
-
-      {conn.expiresAt && (
-        <Text style={[type.caption, { color: colors.textMuted }]}>
-          {t('expires_on')} {new Date(conn.expiresAt).toLocaleDateString("fr-FR", { dateStyle: "medium" })}
-        </Text>
-      )}
-    </Surface>
-  );
 }
 
 // ── Main Home Screen ──────────────────────────────────────────────────────────
@@ -853,10 +783,11 @@ export default function HomeScreen() {
             />
           ) : (
             connections.map((conn) => (
-              <VpnConnectionCard
+              <ConnectionCard
                 key={conn.id}
                 conn={conn}
                 isActive={conn.id === activeConfigId}
+                activeQuota={derivedQuota}
               />
             ))
           )}
@@ -1035,10 +966,6 @@ const styles = StyleSheet.create({
     letterSpacing: 1.2,
     opacity: 0.35,
   },
-
-  // ── Carte de connexion ─────────────────────────────────────────────────────
-  connHeader: { flexDirection: "row", alignItems: "flex-start", gap: spacing.md },
-  connProtoRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
 
   // ── Accès rapides ──────────────────────────────────────────────────────────
   quickRow: { flexDirection: "row", gap: spacing.md },
