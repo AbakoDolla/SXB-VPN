@@ -12,7 +12,7 @@ import { useTranslation } from "@/localization";
 import { downloadAndInstallAppUpdate } from "@/services/appUpdate";
 import { isPlayDistribution } from "@/services/distribution";
 import { alpha, layout, radius, spacing, type } from "@/constants/theme";
-import { EmptyState } from "@/components/ui/Primitives";
+import { EmptyState, ProgressBar } from "@/components/ui/Primitives";
 import { useVpnContext, formatSpeed } from "@/contexts/VpnContext";
 import { useConnectionDuration } from "@/hooks/useConnectionDuration";
 
@@ -37,6 +37,11 @@ function NotifRow({ item, onMarkRead }: { item: Notification; onMarkRead: (id: s
   const responsive = useResponsive();
   const { t } = useTranslation();
   const [downloading, setDownloading] = React.useState(false);
+  // Progression réelle du téléchargement : sans elle, un APK de 62 Mo laissait
+  // l'utilisateur devant un bouton « Téléchargement… » figé pendant plusieurs
+  // minutes, sans rien distinguer d'un blocage.
+  const [progress, setProgress] = React.useState(0);
+  const [installing, setInstalling] = React.useState(false);
 
   // Les alertes se distinguent d'abord par leur gravité : la teinte de la
   // famille d'accents rend cette gravité lisible avant le texte.
@@ -59,6 +64,8 @@ function NotifRow({ item, onMarkRead }: { item: Notification; onMarkRead: (id: s
   const handleDownload = async () => {
     onMarkRead(item.id);
     setDownloading(true);
+    setProgress(0);
+    setInstalling(false);
     try {
       await downloadAndInstallAppUpdate({
         versionCode: item.versionCode || 0,
@@ -71,7 +78,7 @@ function NotifRow({ item, onMarkRead }: { item: Notification; onMarkRead: (id: s
         notes: item.notes,
         minSupportedCode: item.minSupportedCode,
         forceUpdate: item.forceUpdate,
-      });
+      }, setProgress, () => setInstalling(true));
     } catch (e) {
       const code = e instanceof Error ? e.message : '';
       Alert.alert(
@@ -81,6 +88,7 @@ function NotifRow({ item, onMarkRead }: { item: Notification; onMarkRead: (id: s
       );
     } finally {
       setDownloading(false);
+      setInstalling(false);
     }
   };
 
@@ -121,22 +129,38 @@ function NotifRow({ item, onMarkRead }: { item: Notification; onMarkRead: (id: s
         <Text style={[type.micro, { color: colors.textMuted }]}>{timeAgo}</Text>
 
         {item.appUpdate && item.downloadUrl && (
-          <Pressable
-            disabled={downloading}
-            onPress={handleDownload}
-            accessibilityRole="button"
-            style={({ pressed }) => [
-              styles.updateButton,
-              { backgroundColor: colors.primary },
-              pressed && styles.pressed,
-              downloading && styles.disabled,
-            ]}
-          >
-            <Ionicons name="download-outline" size={15} color={colors.primaryForeground} />
-            <Text style={[type.captionMedium, { color: colors.primaryForeground }]}>
-              {isPlayDistribution ? t('update_play_store') : downloading ? t('update_downloading') : t('update_download')}
-            </Text>
-          </Pressable>
+          <>
+            {downloading && (
+              <View style={styles.updateProgress}>
+                <ProgressBar
+                  progress={progress}
+                  tone={colors.primary}
+                  warnTone={colors.primary}
+                />
+                <Text style={[type.micro, { color: colors.textMuted }]}>
+                  {installing
+                    ? t('update_install_prompt')
+                    : t('update_downloading_pct').replace('{pct}', String(Math.round(progress * 100)))}
+                </Text>
+              </View>
+            )}
+            <Pressable
+              disabled={downloading}
+              onPress={handleDownload}
+              accessibilityRole="button"
+              style={({ pressed }) => [
+                styles.updateButton,
+                { backgroundColor: colors.primary },
+                pressed && styles.pressed,
+                downloading && styles.disabled,
+              ]}
+            >
+              <Ionicons name="download-outline" size={15} color={colors.primaryForeground} />
+              <Text style={[type.captionMedium, { color: colors.primaryForeground }]}>
+                {isPlayDistribution ? t('update_play_store') : downloading ? t('update_downloading') : t('update_download')}
+              </Text>
+            </Pressable>
+          </>
         )}
       </View>
     </Pressable>
@@ -375,6 +399,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   copy: { flex: 1, gap: spacing.xs },
+  updateProgress: { marginTop: spacing.sm, gap: spacing.xs },
   updateButton: {
     alignSelf: "flex-start",
     marginTop: spacing.sm,

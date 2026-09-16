@@ -1,6 +1,7 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
+import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { getPrivacyConsent, getPrivacySignal, requireVpnConsent } from './privacyConsent';
 import { accessIssueFromError, isInvalidSession } from './accessPolicy';
@@ -34,6 +35,20 @@ function resolveApiBaseUrl(): string {
 
 export const API_BASE_URL = resolveApiBaseUrl();
 const TIMEOUT = 15000;
+
+/**
+ * Numéro de build réellement installé sur cet appareil.
+ *
+ * Lu une fois : il ne peut pas changer pendant l'exécution — une installation
+ * redémarre le processus. Zéro signifie « inconnu » ; l'en-tête est alors omis
+ * plutôt que d'affirmer une version fausse, et le serveur retombe sur son
+ * ancien comportement.
+ */
+export const INSTALLED_VERSION_CODE = (() => {
+  const raw = (Constants.expoConfig as any)?.android?.versionCode;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value > 0 ? value : 0;
+})();
 
 // ── Secure token storage ───────────────────────────────────────────────────────
 // Android : Android Keystore via expo-secure-store (chiffrement AES hardware)
@@ -132,6 +147,15 @@ apiClient.interceptors.request.use(
         config.headers['X-SXB-Device-ID'] = deviceId;
       }
     } catch {}
+    // VERSION INSTALLÉE — le serveur ne peut pas la deviner.
+    //
+    // Sans elle, une mise à jour publiée était annoncée à TOUS les appareils
+    // activés, y compris ceux qui l'avaient déjà installée : la notification
+    // « Nouvelle version disponible » restait affichée après la mise à jour.
+    // Le numéro de build suffit à décider, et il n'apprend rien sur l'usage.
+    if (config.headers && INSTALLED_VERSION_CODE > 0) {
+      config.headers['X-SXB-App-Version-Code'] = String(INSTALLED_VERSION_CODE);
+    }
     if (!removingPushToken) requireVpnConsent();
     return config;
   },

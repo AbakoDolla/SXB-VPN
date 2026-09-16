@@ -115,11 +115,35 @@ export async function isActivatedDevice(deviceId: string): Promise<boolean> {
   return registeredClient?.status === "active";
 }
 
-export async function getMobileAppUpdate(deviceId: string | null | undefined): Promise<PublishedAppUpdate | null> {
+/**
+ * Mise à jour visible par CET appareil, ou `null`.
+ *
+ * `installedVersionCode` vient de l'en-tête que l'application envoie à chaque
+ * requête. Sans lui, la publication était annoncée à tous les appareils
+ * activés, y compris ceux qui l'avaient déjà installée : la notification
+ * « Nouvelle version disponible » survivait à la mise à jour et n'avait plus
+ * aucun moyen de disparaître. Un appareil qui porte déjà la version publiée —
+ * ou une plus récente — ne reçoit donc plus rien.
+ *
+ * Une version inconnue (`0`) conserve l'ancien comportement : mieux vaut une
+ * notification de trop qu'un appareil resté en arrière sans jamais le savoir.
+ */
+export async function getMobileAppUpdate(
+  deviceId: string | null | undefined,
+  installedVersionCode: number = 0,
+): Promise<PublishedAppUpdate | null> {
   const update = await readPublishedAppUpdate();
   if (!update || !deviceId) return null;
   if (update.targetDeviceIds.length > 0 && !update.targetDeviceIds.includes(deviceId.trim())) return null;
+  if (Number.isSafeInteger(installedVersionCode) && installedVersionCode >= update.versionCode) return null;
   return (await isActivatedDevice(deviceId)) ? update : null;
+}
+
+/** Numéro de build déclaré par l'application, ou 0 quand il est absent/illisible. */
+export function installedVersionCodeFromHeaders(headers: Record<string, unknown>): number {
+  const raw = headers["x-sxb-app-version-code"];
+  const value = Number(Array.isArray(raw) ? raw[0] : raw);
+  return Number.isSafeInteger(value) && value > 0 ? value : 0;
 }
 
 export function toMobileAppVersion(update: PublishedAppUpdate) {

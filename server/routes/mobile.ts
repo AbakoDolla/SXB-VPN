@@ -15,7 +15,7 @@ import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { generateTokens, requireAuth, AuthenticatedRequest } from "../middleware/auth";
 import { configHashForProfile, configVersionForProfile } from "../services/config-hash";
 import { getActiveAnnouncements } from "./announcements";
-import { getMobileAppUpdate, toMobileAppVersion } from "../services/app-update";
+import { getMobileAppUpdate, installedVersionCodeFromHeaders, toMobileAppVersion } from "../services/app-update";
 import { PlafondQuotaDepasse } from "../services/reseller-quota";
 import { CODES_ACTIVATION, evaluerActivation } from "../services/device-activation";
 import {
@@ -1121,7 +1121,7 @@ router.get('/notifications', async (req: AuthenticatedRequest, res: Response) =>
     // Mise à jour applicative : seulement pour une app enregistrée, activée et ciblée.
     try {
       const deviceId = String(req.headers['x-sxb-device-id'] || req.query.deviceId || '').trim();
-      const appUpdate = await getMobileAppUpdate(deviceId);
+      const appUpdate = await getMobileAppUpdate(deviceId, installedVersionCodeFromHeaders(req.headers as any));
       if (appUpdate) {
         const version = toMobileAppVersion(appUpdate);
         notifications.push({
@@ -1200,7 +1200,7 @@ router.get('/notifications', async (req: AuthenticatedRequest, res: Response) =>
 // GET /api/mobile/version & /api/mobile/app-version — vérification de version et lien de téléchargement APK
 router.get(['/version', '/app-version'], async (req: Request, res: Response) => {
   const deviceId = String(req.headers['x-sxb-device-id'] || req.query.deviceId || '').trim();
-  const published = await getMobileAppUpdate(deviceId).catch(() => null);
+  const published = await getMobileAppUpdate(deviceId, installedVersionCodeFromHeaders(req.headers as any)).catch(() => null);
   if (published) return res.json(toMobileAppVersion(published));
   return res.json({
     versionCode: 0,

@@ -144,9 +144,8 @@ function LangModal({ visible, current, onSelect, onClose }: {
 }
 
 // ── Logs modal ────────────────────────────────────────────────────────────────
-// Supprimée : les journaux sont désormais réunis dans l'écran unique
-// `app/diagnostics.tsx`. Ils apparaissaient auparavant ici, sur l'accueil, et en
-// ligne pendant la connexion — trois vues partielles sans source de vérité.
+// Supprimée avec l'écran de diagnostic : plus aucun écran n'expose le journal
+// du moteur, dont les lignes révélaient hôtes, adresses et SNI.
 
 // ── PIN modal ─────────────────────────────────────────────────────────────────
 

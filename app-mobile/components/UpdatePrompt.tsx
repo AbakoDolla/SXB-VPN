@@ -67,6 +67,18 @@ export default function UpdatePrompt() {
   const installedVc = useMemo(() => currentVersionCode(), []);
   const installedVn = useMemo(() => currentVersionName(), []);
 
+  /**
+   * Mise à jour IMPOSÉE : l'application n'est plus utilisable tant qu'elle
+   * n'est pas installée.
+   *
+   * CE QUE CE BLOCAGE NE FAIT PAS : couper le tunnel. Le VPN vit dans le
+   * service natif de premier plan, que cette fenêtre ne touche jamais. Une
+   * personne dont la connexion est en cours reste protégée pendant qu'elle met
+   * à jour — couper l'accès pour forcer une mise à jour serait précisément le
+   * moment où elle en a le plus besoin.
+   */
+  const blocking = remote?.forceUpdate === true && remote.versionCode > installedVc;
+
   // Vérification à l'ouverture + toutes les 24 h.
   const checkForUpdate = useCallback(async (force = false) => {
     try {
@@ -80,10 +92,10 @@ export default function UpdatePrompt() {
       if (!latest) return;
       if (latest.versionCode <= installedVc) return;
 
-      // Respecter un « Plus tard » récent : ne pas re-proposer la même version
-      // avant le prochain cycle de 24 h.
+      // Une mise à jour OBLIGATOIRE ignore le « Plus tard » précédent : elle
+      // doit reparaître à chaque ouverture tant qu'elle n'est pas installée.
       const dismissed = Number((await AsyncStorage.getItem(DISMISS_KEY)) || 0);
-      if (dismissed === latest.versionCode && !force) return;
+      if (dismissed === latest.versionCode && !force && latest.forceUpdate !== true) return;
 
       setRemote(latest);
       setVisible(true);
@@ -103,11 +115,13 @@ export default function UpdatePrompt() {
   }, [checkForUpdate]);
 
   const onDismiss = useCallback(async () => {
+    // Une mise à jour OBLIGATOIRE ne se referme pas : c'est tout son objet.
+    if (blocking) return;
     if (remote) {
       try { await AsyncStorage.setItem(DISMISS_KEY, String(remote.versionCode)); } catch {}
     }
     setVisible(false);
-  }, [remote]);
+  }, [remote, blocking]);
 
   const onDownload = useCallback(async () => {
     if (!remote || downloading) return;
@@ -151,15 +165,15 @@ export default function UpdatePrompt() {
       visible={visible}
       transparent
       animationType="fade"
-      onRequestClose={() => { if (!downloading) onDismiss(); }}
+      onRequestClose={() => { if (!downloading && !blocking) onDismiss(); }}
     >
       <View style={styles.overlay}>
         <View style={styles.card} accessibilityLabel={t('update_available_title')}>
           <View style={styles.iconWrap}>
-            <Ionicons name="cloud-download-outline" size={28} color={Colors.primary} />
+            <Ionicons name={blocking ? 'lock-closed-outline' : 'cloud-download-outline'} size={28} color={Colors.primary} />
           </View>
-          <Text style={styles.title}>{t('update_available_title')}</Text>
-          <Text style={styles.body}>{remote.notes || t('update_available_body')}</Text>
+          <Text style={styles.title}>{blocking ? t('update_required_title') : t('update_available_title')}</Text>
+          <Text style={styles.body}>{remote.notes || (blocking ? t('update_required_body') : t('update_available_body'))}</Text>
 
           <View style={styles.metaRow}>
             <View style={styles.metaCol}>
@@ -183,13 +197,18 @@ export default function UpdatePrompt() {
           {errorMsg && <Text style={styles.error}>{errorMsg}</Text>}
 
           <View style={styles.actions}>
-            <Pressable
-              onPress={onDismiss}
-              disabled={downloading}
-              style={[styles.btn, styles.btnSecondary, downloading && styles.btnDisabled]}
-            >
-              <Text style={styles.btnSecondaryText}>{t('update_later')}</Text>
-            </Pressable>
+            {/* Une mise à jour imposée n'offre pas de sortie : proposer
+                « Plus tard » puis le refuser serait pire que ne rien
+                proposer. La note rappelle que le tunnel, lui, continue. */}
+            {!blocking && (
+              <Pressable
+                onPress={onDismiss}
+                disabled={downloading}
+                style={[styles.btn, styles.btnSecondary, downloading && styles.btnDisabled]}
+              >
+                <Text style={styles.btnSecondaryText}>{t('update_later')}</Text>
+              </Pressable>
+            )}
             <Pressable
               onPress={onDownload}
               disabled={downloading}
@@ -203,6 +222,10 @@ export default function UpdatePrompt() {
               <Text style={styles.btnPrimaryText} numberOfLines={1}>{label}</Text>
             </Pressable>
           </View>
+
+          {blocking && (
+            <Text style={styles.blockingNote}>{t('update_required_vpn_note')}</Text>
+          )}
         </View>
       </View>
     </Modal>
@@ -262,6 +285,10 @@ const styles = StyleSheet.create({
   },
   error: {
     marginTop: 10, fontSize: 12, color: Colors.disconnected, fontFamily: 'Inter_500Medium',
+  },
+  blockingNote: {
+    marginTop: 12, fontSize: 11, lineHeight: 15,
+    color: Colors.textMuted, fontFamily: 'Inter_400Regular', textAlign: 'center',
   },
   actions: {
     flexDirection: 'row', gap: 10, marginTop: 18,
