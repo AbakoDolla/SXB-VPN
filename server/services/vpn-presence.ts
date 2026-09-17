@@ -73,7 +73,7 @@
  * unique ; la table de santé reste anonyme même lue seule.
  */
 import { pseudonymizeMobileDevice } from "./mobile-pseudonym";
-import { FURTIVITE_OWNER } from "../middleware/rbac/owner";
+import { FURTIVITE_OWNER, FURTIVITE_OWNER_PORTEUR } from "../middleware/rbac/owner";
 
 /** Cadence du battement émis par l'application tant que le tunnel est monté. */
 export const PRESENCE_HEARTBEAT_MINUTES = 5;
@@ -742,7 +742,7 @@ export async function listerRevendeursConnectes(
   // Deux filtres, car ils portent sur deux modèles : une fiche revendeur n'a
   // pas de gestionnaire, un client si. Les mélanger ferait échouer la requête
   // sur un champ inconnu.
-  const stealthRevendeur = options.masquerProprietaire ? { user: { role: { name: { not: "OWNER" } } } } : {};
+  const stealthRevendeur = options.masquerProprietaire ? FURTIVITE_OWNER_PORTEUR : {};
   const stealth = options.masquerProprietaire ? FURTIVITE_OWNER : {};
   const [fiches, compteurs] = await Promise.all([
     db.reseller.findMany({

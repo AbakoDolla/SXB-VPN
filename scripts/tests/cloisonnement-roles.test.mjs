@@ -191,25 +191,26 @@ test('aucune surface du tableau de bord ne réécrit sa propre furtivité', () =
   // routes s'étaient fabriqué ce filtre — statistiques, sessions, jetons — et
   // le trafic du propriétaire entrait donc dans les chiffres de tout le monde.
   //
-  // Le motif reste licite sur le modèle `Reseller`, qui n'a PAS de
-  // gestionnaire : on l'y autorise nommément plutôt que d'interdire en bloc.
-  const autorises = new Set(['dashboard.ts', 'vpn-presence.ts']);
-  const dossiers = [
-    ['server/routes', 'routes'],
-    ['server/services', 'services'],
-  ];
+  // Le motif reste licite sur un modèle qui n'a QUE un compte porteur, comme
+  // `Reseller`. Il est alors nommé une seule fois, dans `owner.ts`, et réutilisé
+  // — ce qui permet d'interdire sa réécriture partout ailleurs sans se tromper
+  // de cible.
   const fautifs = [];
-  for (const [dossier] of dossiers) {
+  for (const dossier of ['server/routes', 'server/services']) {
     for (const fichier of readdirSync(path.join(racine, dossier))) {
       if (!fichier.endsWith('.ts')) continue;
-      if (autorises.has(fichier)) continue;
       const source = lireSource(`${dossier}/${fichier}`);
-      if (/user: \{ role: \{ name: \{ not: "OWNER" \} \} \}/.test(source)) {
+      if (/\{ user: \{ role: \{ name: \{ not: "OWNER" \} \} \} \}/.test(source)) {
         fautifs.push(`${dossier}/${fichier}`);
       }
     }
   }
   assert.deepEqual(fautifs, [], `furtivité partielle réécrite dans : ${fautifs.join(', ')}`);
+
+  // Et la définition unique existe bien, sous les deux formes utiles.
+  const owner = lireSource('server/middleware/rbac/owner.ts');
+  assert.match(owner, /export const FURTIVITE_OWNER: Record<string, unknown>/);
+  assert.match(owner, /export const FURTIVITE_OWNER_PORTEUR: Record<string, unknown>/);
 });
 
 test('chaque table rattachée à un client passe par le point unique', () => {
@@ -238,4 +239,19 @@ test('un bon ne nomme pas un bénéficiaire que l’appelant ne peut pas voir', 
   // Le rôle du porteur ET celui du gestionnaire doivent être chargés, sinon la
   // décision se prend sur des données absentes — donc toujours « visible ».
   assert.match(source, /redeemedClient: \{[\s\S]{0,200}managedBy: \{ include: \{ role: true \} \}/);
+});
+
+test('la furtivité vise le bon champ selon le modèle interrogé', () => {
+  // Une fiche revendeur n'a pas de champ `role` : elle atteint le rôle par son
+  // compte `user`. Le filtre des utilisateurs lui était appliqué tel quel, et
+  // Prisma rejetait la requête — deux routes d'analyse répondaient 500 depuis
+  // leur écriture, masquées par un écran qui affichait des zéros.
+  const source = lireSource('server/routes/analytics.ts');
+  assert.match(source, /function stealthResellerWhere/);
+  assert.match(source, /prisma\.reseller\.count\(\{ where: stealthResellerWhere\(requesterIsOwner\) \}\)/);
+  assert.doesNotMatch(
+    source,
+    /prisma\.reseller\.count\(\{ where: userStealthWhere \}\)/,
+    'le filtre des utilisateurs ne s’applique pas au modèle revendeur',
+  );
 });

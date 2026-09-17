@@ -37,6 +37,22 @@ export const FURTIVITE_OWNER: Record<string, unknown> = {
   ],
 };
 
+/**
+ * Même furtivité, pour un modèle qui atteint le rôle par son compte `user`.
+ *
+ * Une fiche revendeur n'a ni champ `role`, ni gestionnaire : elle n'a qu'un
+ * compte porteur. Lui appliquer le filtre des utilisateurs faisait rejeter la
+ * requête par Prisma ; lui appliquer celui des clients échouerait sur
+ * `managedById`, qui n'existe pas davantage.
+ *
+ * Défini ICI plutôt que réécrit sur place : c'est la seule façon qu'un garde
+ * puisse interdire partout ailleurs un filtre à moitié, sans se tromper de
+ * cible.
+ */
+export const FURTIVITE_OWNER_PORTEUR: Record<string, unknown> = {
+  user: { role: { name: { not: OWNER_ROLE } } },
+};
+
 export function isOwnerRole(roleName?: string | null): boolean {
   return roleName === OWNER_ROLE;
 }

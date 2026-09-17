@@ -7,7 +7,7 @@ import { Router, Response } from "express";
 import { prisma, inMemoryDb } from "../database";
 import { config } from "../config";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
-import { isOwnerRequest } from "../middleware/rbac/owner";
+import { FURTIVITE_OWNER_PORTEUR, isOwnerRequest } from "../middleware/rbac/owner";
 import { calculerAllocation, estIllimite } from "../services/reseller-quota";
 import {
   compterConnectes,
@@ -81,7 +81,7 @@ function creerStatistiquesQuotaRevendeurs(
 // clients/revendeurs. Filtrage à la lecture uniquement — aucune suppression.
 function stealthWhere(requesterIsOwner: boolean): any {
   if (requesterIsOwner) return undefined;
-  return { user: { role: { name: { not: "OWNER" } } } };
+  return FURTIVITE_OWNER_PORTEUR;
 }
 
 // GET /api/dashboard/stats — KPIs principaux

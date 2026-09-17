@@ -6,7 +6,7 @@
 import { Router, Response } from "express";
 import { prisma, inMemoryDb } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
-import { isOwnerRequest } from "../middleware/rbac/owner";
+import { FURTIVITE_OWNER_PORTEUR, isOwnerRequest } from "../middleware/rbac/owner";
 import { porteeClients } from "../services/portee-donnees";
 
 const router = Router();
@@ -16,6 +16,20 @@ const router = Router();
 function stealthUserWhere(requesterIsOwner: boolean): any {
   if (requesterIsOwner) return undefined;
   return { role: { name: { not: "OWNER" } } };
+}
+
+/**
+ * Même furtivité, exprimée pour le modèle `Reseller`.
+ *
+ * Une fiche revendeur n'a PAS de champ `role` : elle atteint le rôle par son
+ * compte `user`. Le filtre des utilisateurs lui était appliqué tel quel, et
+ * Prisma rejetait la requête — `/api/analytics/users` et `/api/analytics/overview`
+ * répondaient donc 500 depuis leur écriture, sans que personne ne le voie
+ * puisque l'écran se contentait d'afficher des zéros.
+ */
+function stealthResellerWhere(requesterIsOwner: boolean): any {
+  if (requesterIsOwner) return undefined;
+  return FURTIVITE_OWNER_PORTEUR;
 }
 
 /**
@@ -49,7 +63,7 @@ router.get("/users", requireAuth, requirePermission("analytics.read"), async (re
       [totalUsers, activeClientsCount, resellersCount] = await Promise.all([
         prisma.user.count({ where: userStealthWhere }),
         prisma.vpnClient.count({ where: { status: "active", ...clientStealthWhere } }),
-        prisma.reseller.count({ where: userStealthWhere }),
+        prisma.reseller.count({ where: stealthResellerWhere(requesterIsOwner) }),
       ]);
       const supportRole = await prisma.role.findFirst({ where: { name: "SUPPORT" } });
       if (supportRole) {
@@ -229,7 +243,7 @@ router.get("/overview", requireAuth, requirePermission("analytics.read"), async 
       ] = await Promise.all([
         prisma.user.count({ where: userStealthWhere }),
         prisma.vpnClient.count({ where: { status: "active", ...clientStealthWhere } }),
-        prisma.reseller.count({ where: userStealthWhere }),
+        prisma.reseller.count({ where: stealthResellerWhere(requesterIsOwner) }),
         prisma.vPSServer.count(),
         prisma.vPSServer.count({ where: { status: "online" } }),
         prisma.tokenSXB.count(),
