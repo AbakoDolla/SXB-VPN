@@ -776,15 +776,37 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       }
       try {
         const stats = await SxbVpnNative.getTrafficStats();
-        setTrafficStats({
-          uploadBytes:   stats.uploadBytes   || 0,
-          downloadBytes: stats.downloadBytes || 0,
-          uploadSpeed:   stats.uploadSpeed   || 0,
-          downloadSpeed: stats.downloadSpeed || 0,
-          tunAttached:   stats.tunAttached === true || stats.tunAttached === 1,
-          connectedSeconds: stats.connectedSeconds || 0,
-          lifetimeUploadBytes: stats.lifetimeUploadBytes,
-          lifetimeDownloadBytes: stats.lifetimeDownloadBytes,
+        // ⚡ On ne redessine que si un compteur a VRAIMENT bougé.
+        //
+        // Cet objet était reconstruit toutes les deux secondes, y compris
+        // quand aucune valeur n'avait changé — pendant une poignée de main, ou
+        // sur un tunnel au repos. Sa référence changeait donc, celle du
+        // contexte aussi, et TOUS les écrans abonnés se redessinaient : deux
+        // fois par seconde de travail inutile, exactement pendant que
+        // l'utilisateur essaie d'appuyer sur quelque chose.
+        setTrafficStats(precedent => {
+          const suivant = {
+            uploadBytes:   stats.uploadBytes   || 0,
+            downloadBytes: stats.downloadBytes || 0,
+            uploadSpeed:   stats.uploadSpeed   || 0,
+            downloadSpeed: stats.downloadSpeed || 0,
+            tunAttached:   stats.tunAttached === true || stats.tunAttached === 1,
+            connectedSeconds: stats.connectedSeconds || 0,
+            lifetimeUploadBytes: stats.lifetimeUploadBytes,
+            lifetimeDownloadBytes: stats.lifetimeDownloadBytes,
+          };
+          const identique = precedent
+            && precedent.uploadBytes === suivant.uploadBytes
+            && precedent.downloadBytes === suivant.downloadBytes
+            && precedent.uploadSpeed === suivant.uploadSpeed
+            && precedent.downloadSpeed === suivant.downloadSpeed
+            && precedent.tunAttached === suivant.tunAttached
+            && precedent.connectedSeconds === suivant.connectedSeconds
+            && precedent.lifetimeUploadBytes === suivant.lifetimeUploadBytes
+            && precedent.lifetimeDownloadBytes === suivant.lifetimeDownloadBytes;
+          // Renvoyer la référence précédente dit à React qu'il n'y a rien à
+          // faire : aucun rendu n'est déclenché.
+          return identique ? precedent : suivant;
         });
 
         // FALLBACK HANDSHAKE — Si on est en "handshaking" et qu'on voit du trafic réel

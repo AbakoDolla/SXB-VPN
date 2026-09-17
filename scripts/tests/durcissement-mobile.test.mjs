@@ -245,6 +245,29 @@ test('le réarmement du chien de garde n’est pas un effet de bord de rendu', (
   assert.match(contexte, /useEffect\(\(\) => \{\s*\n\s*rearmerWatchdogRef\.current = \(etape: string\) => \{/);
 });
 
+test('un relevé de trafic identique ne redessine rien', () => {
+  // Le relevé tombe toutes les deux secondes. Reconstruire l'objet à chaque
+  // fois changeait sa référence, donc celle du contexte, donc TOUS les écrans
+  // abonnés se redessinaient — y compris quand aucun compteur n'avait bougé,
+  // et précisément pendant que l'utilisateur essaie d'appuyer sur quelque
+  // chose.
+  const contexte = lireSource('app-mobile/contexts/VpnContext.tsx');
+  assert.match(contexte, /setTrafficStats\(precedent => \{/);
+  assert.match(contexte, /return identique \? precedent : suivant;/);
+  // La comparaison porte sur TOUS les champs exposés : en oublier un ferait
+  // disparaître une mise à jour réelle.
+  for (const champ of [
+    'uploadBytes', 'downloadBytes', 'uploadSpeed', 'downloadSpeed',
+    'tunAttached', 'connectedSeconds', 'lifetimeUploadBytes', 'lifetimeDownloadBytes',
+  ]) {
+    assert.match(
+      contexte,
+      new RegExp(`precedent\\.${champ} === suivant\\.${champ}`),
+      `le champ ${champ} doit entrer dans la comparaison`,
+    );
+  }
+});
+
 test('seule une session mobile peut déclarer un incident', () => {
   const route = lireSource('server/routes/mobile-security.ts');
   // Un compte d'exploitation qui posterait ici fabriquerait des alertes contre
