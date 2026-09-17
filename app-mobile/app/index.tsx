@@ -93,6 +93,11 @@ export default function SplashScreen() {
         Animated.delay(900),
         Animated.timing(opaciteArc, { toValue: 0, duration: 420, useNativeDriver: true }),
       ]),
+      // La rotation est BORNÉE au nombre de tours réellement visibles. Une
+      // boucle infinie continue de faire travailler le moteur d'animation même
+      // après le démontage de l'écran si son arrêt est manqué ne serait-ce
+      // qu'une fois — et l'application entière devient poussive sans que rien
+      // ne le montre à l'écran.
       Animated.loop(
         Animated.timing(rotationArc, {
           toValue: 1,
@@ -100,6 +105,7 @@ export default function SplashScreen() {
           easing: Easing.linear,
           useNativeDriver: true,
         }),
+        { iterations: Math.ceil(DUREE_TOTALE_MS / 1400) },
       ),
 
       // 3. Le logo se pose. Le ressort donne l'impression d'un objet qui

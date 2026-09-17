@@ -19,7 +19,7 @@
  *  3. Rien n'est envoyé quand il n'y a rien à dire. Un appareil sain ne remplit
  *     pas le flux d'alertes de « rien à signaler ».
  */
-import { NativeModules, Platform } from 'react-native';
+import { InteractionManager, NativeModules, Platform } from 'react-native';
 import apiClient from './apiClient';
 
 interface RapportNatif {
@@ -38,6 +38,15 @@ interface ModuleNatif {
 
 /** Intervalle minimal entre deux remontées, pour ne pas bavarder. */
 const INTERVALLE_MS = 30 * 60 * 1000;
+
+/**
+ * Délai supplémentaire après le retour au repos.
+ *
+ * `runAfterInteractions` se déclenche dès la fin des animations en cours ; ce
+ * délai laisse en plus respirer le démarrage, où le pont natif est déjà
+ * sollicité par l'authentification, le stockage et la configuration.
+ */
+const DELAI_REPOS_MS = 1_500;
 
 let dernierEnvoi = 0;
 let derniereEmpreinte = '';
@@ -67,44 +76,60 @@ export function signauxDepuisRapport(rapport: RapportNatif | null | undefined): 
 /**
  * Collecte et remonte, au plus une fois par intervalle.
  *
+ * ELLE N'EST JAMAIS SUR LE CHEMIN D'UNE INTERACTION. Les sondes natives sont
+ * coûteuses — deux connexions de socket, la lecture de `/proc/self/maps` — et
+ * s'exécutent sur le thread des modules natifs, où chaque autre appel du pont
+ * fait la queue derrière. Appelée au démarrage, cette collecte rendait donc
+ * toute l'interface poussive pendant plusieurs secondes.
+ *
+ * Elle attend maintenant que l'application soit au repos, puis laisse encore
+ * passer un délai. L'utilisateur n'attend jamais après elle ; au pire, le
+ * constat arrive une seconde plus tard, ce dont personne ne dépend.
+ *
  * `force` sert aux moments qui comptent — l'ouverture du tunnel — où l'on veut
  * un constat frais même si le précédent est récent. Une observation identique à
  * la précédente n'est pas renvoyée : ce qui intéresse l'exploitant, c'est le
  * changement d'état, pas la répétition.
  */
 export async function remonterIntegrite(options: { force?: boolean; decoy?: string } = {}): Promise<void> {
+  const module = natif();
+  if (!module?.checkSecurity) return;
+
+  const maintenant = Date.now();
+  if (!options.force && maintenant - dernierEnvoi < INTERVALLE_MS) return;
+  // Le rythme est noté TOUT DE SUITE, avant la moindre sonde. Sans cela, une
+  // remontée qui échoue — réseau coupé, serveur muet — laissait le compteur à
+  // zéro et faisait relancer les sondes coûteuses à chaque déclenchement
+  // suivant, transformant une panne réseau en ralentissement général.
+  dernierEnvoi = maintenant;
+
+  // Le travail attend que l'interface ait fini ce qu'elle faisait.
+  await new Promise<void>((resoudre) => {
+    InteractionManager.runAfterInteractions(() => {
+      setTimeout(resoudre, DELAI_REPOS_MS);
+    });
+  });
+
   try {
-    const module = natif();
-    if (!module?.checkSecurity) return;
-
-    const maintenant = Date.now();
-    if (!options.force && maintenant - dernierEnvoi < INTERVALLE_MS) return;
-
     const rapport = await module.checkSecurity();
     const signaux = signauxDepuisRapport(rapport);
     if (options.decoy) signaux.decoyTouched = true;
 
     const noms = Object.keys(signaux).sort();
     if (noms.length === 0) {
-      // Rien à signaler : on note le passage pour ne pas re-sonder en boucle,
-      // et on laisse le flux d'alertes tranquille.
-      dernierEnvoi = maintenant;
+      // Rien à signaler : on laisse le flux d'alertes tranquille.
       derniereEmpreinte = '';
       return;
     }
 
     const empreinte = noms.join(',');
-    if (!options.force && empreinte === derniereEmpreinte) {
-      dernierEnvoi = maintenant;
-      return;
-    }
+    if (!options.force && empreinte === derniereEmpreinte) return;
 
     await apiClient.post('/mobile-security/report', {
       signals: signaux,
       ...(options.decoy ? { decoy: options.decoy } : {}),
     }, { timeout: 8_000 });
 
-    dernierEnvoi = maintenant;
     derniereEmpreinte = empreinte;
   } catch {
     // Silence délibéré : une remontée de sécurité qui échoue ne doit jamais

@@ -184,6 +184,67 @@ test('la remontée mobile ne peut jamais casser l’application', () => {
   assert.doesNotMatch(service, /signatureStatus !== 'VALID'/);
 });
 
+test('les sondes d’intégrité ne sont jamais sur le chemin d’une interaction', () => {
+  // Les sondes natives sont coûteuses — deux connexions de socket, la lecture
+  // de `/proc/self/maps` — et s'exécutent sur le thread des modules natifs, où
+  // CHAQUE autre appel du pont fait la queue derrière. Payées au démarrage,
+  // elles rendaient toute l'interface poussive.
+  const service = lireSource('app-mobile/services/securityReport.ts');
+  assert.match(service, /InteractionManager\.runAfterInteractions/);
+  assert.match(service, /const DELAI_REPOS_MS/);
+
+  // Le rythme est noté AVANT les sondes : sinon une remontée qui échoue laisse
+  // le compteur à zéro et fait relancer les sondes à chaque déclenchement,
+  // transformant une panne réseau en ralentissement général.
+  const corps = service.slice(service.indexOf('export async function remonterIntegrite'));
+  const marque = corps.indexOf('dernierEnvoi = maintenant;');
+  const sonde = corps.indexOf('await module.checkSecurity()');
+  assert.ok(marque > -1 && sonde > marque, 'le rythme doit être noté avant la sonde');
+  assert.equal(
+    (corps.match(/dernierEnvoi = maintenant/g) || []).length,
+    1,
+    'le rythme ne se note qu’une fois, quel que soit le chemin',
+  );
+});
+
+test('l’audit du pont ne lance pas de processus et mémorise l’immuable', () => {
+  const natif = lireSource('app-mobile/modules/android-native/SecurityModule.kt');
+  // `deep` lance `getprop`, donc un PROCESSUS, à chaque appel. Le pont ne doit
+  // jamais l'emprunter.
+  assert.match(natif, /fun auditPourPont\(ctx: Context\): SecurityReport/);
+  const module = lireSource('app-mobile/modules/android-native/SxbVpnModule.kt');
+  assert.match(module, /SecurityModule\.auditPourPont\(reactApplicationContext\)/);
+  assert.doesNotMatch(module, /audit\(reactApplicationContext, deep = true\)/);
+
+  // Ce qui ne peut pas changer pendant la vie du processus est calculé une
+  // fois : la signature de l'APK et la nature de l'appareil.
+  assert.match(natif, /signatureCache\?\.let \{ return it \}/);
+  assert.match(natif, /emulatorCache \?: isEmulator\(\)\.also/);
+  // Ce qui traduit une attaque EN COURS reste mesuré à chaque appel.
+  const pont = natif.slice(natif.indexOf('fun auditPourPont'), natif.indexOf('@Volatile private var signatureCache'));
+  assert.match(pont, /hasFrida = hasFrida\(\)/);
+  assert.match(pont, /isHooked = isHooked\(\)/);
+});
+
+test('aucune animation de lancement ne survit à l’écran', () => {
+  const lancement = lireSource('app-mobile/app/index.tsx');
+  // Une boucle infinie continue de faire travailler le moteur d'animation
+  // après le démontage si son arrêt est manqué une seule fois — et
+  // l'application devient poussive sans que rien ne le montre à l'écran.
+  const boucles = [...lancement.matchAll(/Animated\.loop\(/g)];
+  const iterations = [...lancement.matchAll(/\{ iterations: /g)];
+  assert.equal(boucles.length, iterations.length, 'chaque boucle doit être bornée');
+  assert.ok(boucles.length >= 2, 'les boucles doivent être relues depuis la source');
+});
+
+test('le réarmement du chien de garde n’est pas un effet de bord de rendu', () => {
+  // Écrire une référence pendant le rendu fabrique une fermeture neuve à
+  // chaque dessin de l'arbre — sur un écran redessiné à chaque relevé de
+  // trafic, cela s'additionne.
+  const contexte = lireSource('app-mobile/contexts/VpnContext.tsx');
+  assert.match(contexte, /useEffect\(\(\) => \{\s*\n\s*rearmerWatchdogRef\.current = \(etape: string\) => \{/);
+});
+
 test('seule une session mobile peut déclarer un incident', () => {
   const route = lireSource('server/routes/mobile-security.ts');
   // Un compte d'exploitation qui posterait ici fabriquerait des alertes contre

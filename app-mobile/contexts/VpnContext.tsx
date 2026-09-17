@@ -607,12 +607,19 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
    *
    * Passe par une référence pour que les écouteurs natifs, montés une fois pour
    * toutes, atteignent toujours la tentative courante sans être reconstruits.
+   *
+   * L'affectation vit dans un effet, jamais dans le corps du composant : écrire
+   * une référence pendant le rendu est un effet de bord, et fabriquait ici une
+   * fermeture neuve à CHAQUE dessin de l'arbre — sur un écran qui se redessine
+   * à chaque relevé de trafic, cela s'additionne.
    */
   const rearmerWatchdogRef = useRef<((etape: string) => void) | null>(null);
-  rearmerWatchdogRef.current = (etape: string) => {
-    if (!watchdogRef.current) return;
-    startWatchdog(etape, connectionAttemptRef.current);
-  };
+  useEffect(() => {
+    rearmerWatchdogRef.current = (etape: string) => {
+      if (!watchdogRef.current) return;
+      startWatchdog(etape, connectionAttemptRef.current);
+    };
+  }, [startWatchdog]);
 
   const stopWatchdog = useCallback(() => {
     if (watchdogRef.current) {

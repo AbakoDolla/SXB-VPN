@@ -521,7 +521,11 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
     @ReactMethod
     fun checkSecurity(promise: Promise) {
         try {
-            val report = SecurityModule.audit(reactApplicationContext, deep = true)
+            // `auditPourPont` plutôt que `audit(deep = true)` : le mode profond
+            // lance un processus `getprop` à chaque appel, sur le thread des
+            // modules natifs où tout le reste du pont attend son tour. Le
+            // résultat, lui, ne change pas pendant la vie du processus.
+            val report = SecurityModule.auditPourPont(reactApplicationContext)
             val signature = SecurityModule.checkSignature(reactApplicationContext)
             val map = Arguments.createMap().apply {
                 putBoolean("isRooted",   report.isRooted)

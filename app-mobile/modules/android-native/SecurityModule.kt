@@ -117,14 +117,51 @@ object SecurityModule {
     } catch (_: Exception) { "" }
 
     fun checkSignature(ctx: Context): SignatureStatus {
+        // La signature d'un APK ne peut pas changer pendant que le processus
+        // tourne : la recalculer à chaque appel impose une IPC vers
+        // PackageManager et un SHA-256 pour un résultat connu d'avance.
+        signatureCache?.let { return it }
         val expected = expectedSignatureHash(ctx)
-        if (expected.isEmpty()) return SignatureStatus.NOT_CONFIGURED
-        return try {
-            if (verifySignature(ctx, expected)) SignatureStatus.VALID else SignatureStatus.INVALID
-        } catch (_: Exception) {
-            SignatureStatus.UNAVAILABLE
+        val resultat = if (expected.isEmpty()) {
+            SignatureStatus.NOT_CONFIGURED
+        } else {
+            try {
+                if (verifySignature(ctx, expected)) SignatureStatus.VALID else SignatureStatus.INVALID
+            } catch (_: Exception) {
+                SignatureStatus.UNAVAILABLE
+            }
         }
+        signatureCache = resultat
+        return resultat
     }
+
+    /**
+     * Audit destiné au PONT JS, pensé pour ne bloquer personne.
+     *
+     * L'audit complet est délibérément coûteux : deux connexions de socket pour
+     * les ports Frida, la lecture intégrale de `/proc/self/maps`, et — en mode
+     * `deep` — le lancement d'un processus `getprop`. Tout cela s'exécute sur le
+     * thread des modules natifs, où CHAQUE autre appel du pont fait la queue
+     * derrière. Payé au démarrage, le prix se voit sur toute l'interface.
+     *
+     * Ce qui est immuable pendant la vie du processus — l'émulateur, la
+     * signature — est donc calculé UNE FOIS puis mémorisé. Ce qui traduit une
+     * attaque en cours — Frida, Xposed, fonctions détournées — reste mesuré à
+     * chaque appel : c'est précisément ce qu'on veut surprendre.
+     */
+    fun auditPourPont(ctx: Context): SecurityReport {
+        val emulateur = emulatorCache ?: isEmulator().also { emulatorCache = it }
+        return SecurityReport(
+            isRooted = isRooted(ctx),
+            hasFrida = hasFrida(),
+            hasXposed = hasXposed(),
+            isEmulator = emulateur,
+            isHooked = isHooked(),
+        )
+    }
+
+    @Volatile private var signatureCache: SignatureStatus? = null
+    @Volatile private var emulatorCache: Boolean? = null
 
     fun verifySignature(ctx: Context, expectedSignatureHash: String): Boolean {
         // Une empreinte vide ne peut pas valider quoi que ce soit : ne jamais
