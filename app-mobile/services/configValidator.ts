@@ -12,6 +12,7 @@
 
 import { parseVpnUri } from './vlessUri';
 import { lireProfilSocksIp } from './socksIpProfile';
+import { lireProfilV2rayN } from './v2rayNProfile';
 
 export type SupportedProtocol =
   | 'ssh' | 'ssh+payload'
@@ -412,6 +413,18 @@ export function validateVpnConfig(raw: string | Record<string, any>): Validation
       'Mode déduit de la charge utile — les énumérations internes du format '
       + '(TypeTunnel, TypeSSHTransport) ne sont pas interprétées',
     );
+  }
+
+  // 3 ter. Déballer un profil au format de partage v2rayN.
+  //
+  // C'est le format le plus répandu : celui du bouton « exporter » de v2rayN
+  // et de la plupart des abonnements. Il ne nomme pas toujours son protocole
+  // et emploie des clés abrégées. Le tableau de bord savait déjà le lire ;
+  // sans cela le même fichier serait accepté d'un côté et refusé de l'autre.
+  const v2rayN = lireProfilV2rayN(obj);
+  if (v2rayN) {
+    obj = v2rayN;
+    warnings.push('v2rayN : profil de partage converti en canonique SXB');
   }
 
   // 4. Détecter protocole

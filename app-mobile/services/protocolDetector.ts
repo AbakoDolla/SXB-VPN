@@ -15,6 +15,7 @@
 
 import { parseVpnUri } from './vlessUri';
 import { lireProfilSocksIp } from './socksIpProfile';
+import { lireProfilV2rayN } from './v2rayNProfile';
 
 export type DetectableProtocol =
   | 'ssh' | 'ssh+payload'
@@ -97,6 +98,11 @@ export class ProtocolDetector {
     // de qui colle simplement ce qu'on lui a donné.
     const socksIp = lireProfilSocksIp(input);
     if (socksIp) input = socksIp;
+    // Même raison pour le format de partage v2rayN, le plus répandu de tous.
+    else {
+      const v2rayN = lireProfilV2rayN(input);
+      if (v2rayN) input = v2rayN;
+    }
 
     // 1. Champ "protocol" explicite → détection certaine
     const explicitRaw = (input.protocol ?? input.type ?? '').toString().toLowerCase().trim();

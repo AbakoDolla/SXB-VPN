@@ -392,14 +392,26 @@ function applyCommonTransport(q: URLSearchParams, out: Record<string, any>): voi
   if (spx) out.spiderX = decodeURIComponent(spx);
 }
 
+/**
+ * Retire les crochets d'une adresse IPv6 littérale.
+ *
+ * Les crochets appartiennent à la SYNTAXE de l'URI, pas à l'adresse. Les
+ * conserver ferait chercher un hôte nommé « [2001:db8::1] », qui n'existe pas,
+ * et l'échec ne ressemblerait pas à sa cause.
+ */
+function nettoyerHoteUri(valeur: string): string {
+  const v = valeur.trim();
+  return v.startsWith('[') && v.endsWith(']') ? v.slice(1, -1) : v;
+}
+
 function parseVlessUri(uri: string, errors: string[]): { cfg: Record<string, any>; name?: string } | null {
   // vless://uuid@host:port?params#name
-  const m = uri.match(/^vless:\/\/([^@]+)@([^:/?#]+):(\d+)(\?[^#]*)?(?:#(.*))?$/i);
+  const m = uri.match(/^vless:\/\/([^@]+)@(\[[^\]]+\]|[^:/?#]+):(\d+)(\?[^#]*)?(?:#(.*))?$/i);
   if (!m) { errors.push('URI vless malformée (attendu: vless://uuid@host:port?params#nom)'); return null; }
   const cfg: Record<string, any> = {
     protocol: 'vless',
     uuid: safeDecodeURIComponent(m[1]),
-    host: m[2],
+    host: nettoyerHoteUri(m[2]),
     port: Number(m[3]),
   };
   applyCommonTransport(parseQuery((m[4] || '').slice(1)), cfg);
@@ -408,12 +420,12 @@ function parseVlessUri(uri: string, errors: string[]): { cfg: Record<string, any
 }
 
 function parseTrojanUri(uri: string, errors: string[]): { cfg: Record<string, any>; name?: string } | null {
-  const m = uri.match(/^trojan:\/\/([^@]+)@([^:/?#]+):(\d+)(\?[^#]*)?(?:#(.*))?$/i);
+  const m = uri.match(/^trojan:\/\/([^@]+)@(\[[^\]]+\]|[^:/?#]+):(\d+)(\?[^#]*)?(?:#(.*))?$/i);
   if (!m) { errors.push('URI trojan malformée'); return null; }
   const cfg: Record<string, any> = {
     protocol: 'trojan',
     password: safeDecodeURIComponent(m[1]),
-    host: m[2],
+    host: nettoyerHoteUri(m[2]),
     port: Number(m[3]),
   };
   applyCommonTransport(parseQuery((m[4] || '').slice(1)), cfg);
@@ -498,12 +510,12 @@ function parseVmessShareObject(j: any, errors: string[]): { cfg: Record<string, 
 }
 
 function parseHysteria2Uri(uri: string, errors: string[]): { cfg: Record<string, any>; name?: string } | null {
-  const m = uri.match(/^(?:hysteria2|hy2):\/\/([^@]+)@([^:/?#]+):(\d+)(\?[^#]*)?(?:#(.*))?$/i);
+  const m = uri.match(/^(?:hysteria2|hy2):\/\/([^@]+)@(\[[^\]]+\]|[^:/?#]+):(\d+)(\?[^#]*)?(?:#(.*))?$/i);
   if (!m) { errors.push('URI hysteria2 malformée'); return null; }
   const cfg: Record<string, any> = {
     protocol: 'hysteria2',
     password: decodeURIComponent(m[1]),
-    host: m[2],
+    host: nettoyerHoteUri(m[2]),
     port: Number(m[3]),
   };
   const q = parseQuery((m[4] || '').slice(1));
@@ -516,13 +528,13 @@ function parseHysteria2Uri(uri: string, errors: string[]): { cfg: Record<string,
 }
 
 function parseTuicUri(uri: string, errors: string[]): { cfg: Record<string, any>; name?: string } | null {
-  const m = uri.match(/^tuic:\/\/([^:@]+):([^@]+)@([^:/?#]+):(\d+)(\?[^#]*)?(?:#(.*))?$/i);
+  const m = uri.match(/^tuic:\/\/([^:@]+):([^@]+)@(\[[^\]]+\]|[^:/?#]+):(\d+)(\?[^#]*)?(?:#(.*))?$/i);
   if (!m) { errors.push('URI tuic malformée (attendu tuic://uuid:password@host:port?params#nom)'); return null; }
   const cfg: Record<string, any> = {
     protocol: 'tuic',
     uuid: decodeURIComponent(m[1]),
     password: decodeURIComponent(m[2]),
-    host: m[3],
+    host: nettoyerHoteUri(m[3]),
     port: Number(m[4]),
   };
   const q = parseQuery((m[5] || '').slice(1));
