@@ -65,7 +65,7 @@ test('Xray private matchers, UDP blocking, full port range and structured DNS us
     final: 'dns-remote',
   });
   assert.equal(config.inbounds, undefined);
-  assert.ok(warnings.some(warning => /geosite.*base/i.test(warning)));
+  assert.ok(warnings.some(warning => /geosite.*non supportee/i.test(warning)));
   assert.ok(warnings.some(warning => /inboundTag/.test(warning)));
 });
 

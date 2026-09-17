@@ -80,6 +80,19 @@ object SxbEngineSchema {
     )
 
     /**
+     * Clés d'une règle qui ne sont PAS des critères de correspondance.
+     *
+     * Sert à reconnaître une règle dont on vient de retirer le dernier critère :
+     * laissée telle quelle, elle ne filtrerait plus rien et s'appliquerait donc
+     * à TOUT le trafic — l'inverse de ce qu'elle exprimait.
+     */
+    private val CLES_NON_CRITERES = setOf(
+        "outbound", "action", "invert", "server", "strategy", "client_subnet",
+        "disable_cache", "rewrite_ttl", "override_address", "override_port",
+        "sniffer", "timeout", "rcode", "answer", "ns", "extra",
+    )
+
+    /**
      * Champs d'inbound supprimés en 1.13 (`option.InboundOptions`).
      * Leur seule présence fait refuser la configuration entière.
      */
@@ -169,6 +182,33 @@ object SxbEngineSchema {
     // ── Route ────────────────────────────────────────────────────────────────
 
     /**
+     * Retire un critère `geosite`, et dit si la règle garde un sens.
+     *
+     * ═══════════════════════════════════════════════════════════════════════
+     * POURQUOI LE CRITÈRE DISPARAÎT
+     * ═══════════════════════════════════════════════════════════════════════
+     * `geosite` désignait une catégorie dans une base de domaines embarquée.
+     * sing-box l'a remplacée par les jeux de règles et l'a SUPPRIMÉE en 1.12 :
+     * une configuration qui en contient est refusée entière.
+     *
+     * On ne peut pas la traduire : il faudrait la liste des domaines de la
+     * catégorie, et l'inventer produirait un routage qui ressemble à celui
+     * demandé sans l'être — la pire des pannes, parce qu'elle a l'air de
+     * fonctionner. Le critère est donc retiré, et le trafic qu'il détournait
+     * suit la route par défaut, c'est-à-dire le tunnel. Pour un VPN, c'est le
+     * repli sûr : on protège plus que demandé, jamais moins.
+     *
+     * Rend `false` quand la règle n'avait QUE ce critère. La garder la rendrait
+     * universelle — elle s'appliquerait à tout le trafic, exactement l'inverse
+     * de ce qu'elle exprimait.
+     */
+    private fun retirerGeosite(regle: JSONObject): Boolean {
+        if (!regle.has("geosite")) return true
+        regle.remove("geosite")
+        return regle.keys().asSequence().any { it !in CLES_NON_CRITERES }
+    }
+
+    /**
      * Réécrit les règles qui visaient un outbound spécial, et rétablit
      * l'inspection du trafic sous forme d'action.
      */
@@ -188,6 +228,7 @@ object SxbEngineSchema {
 
         for (i in 0 until source.length()) {
             val regle = source.optJSONObject(i) ?: continue
+            if (!retirerGeosite(regle)) continue
             if (regle.has("action")) { rules.put(regle); continue }
             val cible = regle.optString("outbound", "")
             when {
@@ -380,6 +421,7 @@ object SxbEngineSchema {
         val rules = JSONArray()
         for (i in 0 until source.length()) {
             val regle = source.optJSONObject(i) ?: continue
+            if (!retirerGeosite(regle)) continue
             val cible = regle.optString("server", "")
             // Une règle qui désigne un serveur disparu est une référence
             // pendante : le moteur refuse la configuration entière.

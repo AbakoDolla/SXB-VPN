@@ -337,7 +337,11 @@ function translateDomainMatchers(values: any, rule: Record<string, any>, warning
     }
     appendMatcher(rule, fields[prefix], content);
     if (prefix === 'geosite') {
-      warnings.push('routing geosite : une base geosite.db equivalente a celle du fournisseur est requise par sing-box 1.11 ; aucune liste de domaines privee inventee');
+      // Le moteur a SUPPRIMÉ les catégories geosite : le critère sera retiré
+      // au démarrage (voir app-mobile/.../SxbEngineSchema.kt). Le traduire ici
+      // exigerait la liste des domaines de la catégorie, et l'inventer
+      // produirait un routage qui ressemble au demandé sans l'être.
+      warnings.push('routing geosite : categorie non supportee par le moteur - ce critere sera ignore et le trafic suivra la route par defaut, c-a-d le tunnel ; aucune liste de domaines inventee');
     }
   }
 }

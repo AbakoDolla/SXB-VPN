@@ -410,6 +410,40 @@ fun main() {
         check(!out.getJSONObject("route").has("final"))
     }
 
+    checkCase("un critère geosite, supprimé en 1.12, ne fait pas refuser la config") {
+        // On ne peut pas le traduire : il faudrait la liste des domaines de la
+        // catégorie, et l'inventer produirait un routage qui RESSEMBLE à celui
+        // demandé sans l'être — la pire des pannes, parce qu'elle a l'air de
+        // fonctionner.
+        val config = JSONObject("""{
+          "dns":{"servers":[{"tag":"d","address":"1.1.1.1"}],
+                 "rules":[{"geosite":["private"],"server":"d"},
+                          {"domain":["x.test"],"geosite":["cn"],"server":"d"}],
+                 "final":"d"},
+          "outbounds":[{"type":"vless","tag":"proxy","server":"a.example.test","server_port":443},
+                       {"type":"direct","tag":"direct"}],
+          "route":{"rules":[{"geosite":["private"],"outbound":"direct"},
+                            {"ip_is_private":true,"geosite":["cn"],"outbound":"direct"},
+                            {"ip_is_private":true,"outbound":"direct"}],
+                   "final":"proxy"}
+        }""")
+        val out = SxbEngineSchema.moderniser(config)
+        val rules = out.getJSONObject("route").getJSONArray("rules")
+        for (i in 0 until rules.length()) {
+            check(!rules.getJSONObject(i).has("geosite")) { "geosite doit disparaître" }
+        }
+        // La règle qui n'avait QUE geosite est retirée : la garder la rendrait
+        // universelle, donc l'inverse de ce qu'elle exprimait.
+        check(rules.length() == 2) { "vu ${rules.length()} règles de route" }
+        check(rules.getJSONObject(0).getBoolean("ip_is_private"))
+        check(rules.getJSONObject(0).getString("outbound") == "direct")
+
+        val reglesDns = out.getJSONObject("dns").getJSONArray("rules")
+        check(reglesDns.length() == 1) { "vu ${reglesDns.length()} règles DNS" }
+        check(!reglesDns.getJSONObject(0).has("geosite"))
+        check(reglesDns.getJSONObject(0).getJSONArray("domain").getString(0) == "x.test")
+    }
+
     checkCase("les six codes de réponse hérités prennent le vocabulaire du moteur") {
         // Piège trouvé par le moteur lui-même : les deux vocabulaires ne se
         // recouvrent pas. « success » n'existe pas côté DNS, où le code 0
