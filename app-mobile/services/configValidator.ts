@@ -11,6 +11,7 @@
  */
 
 import { parseVpnUri } from './vlessUri';
+import { lireProfilSocksIp } from './socksIpProfile';
 
 export type SupportedProtocol =
   | 'ssh' | 'ssh+payload'
@@ -394,6 +395,23 @@ export function validateVpnConfig(raw: string | Record<string, any>): Validation
     if (tweakProfile.sni) converted.sni = String(tweakProfile.sni);
     obj = converted;
     warnings.push('HTTP Tweak V2RAY : export converti en VLESS canonique SXB');
+  }
+
+  // 3 bis. Déballer l'export SocksIP collé directement dans l'application.
+  //
+  // Ce format ne nomme jamais son protocole : il le porte dans ses champs
+  // (SSHServer, SSHPayload, ProxyHostPort). Le tableau de bord sait déjà le
+  // lire ; sans cette traduction, le même fichier serait accepté d'un côté et
+  // refusé de l'autre — incohérence que rien n'explique du point de vue de qui
+  // colle simplement ce qu'on lui a donné.
+  const socksIp = lireProfilSocksIp(obj);
+  if (socksIp) {
+    obj = socksIp;
+    warnings.push('SocksIP : export converti en profil SSH canonique SXB');
+    warnings.push(
+      'Mode déduit de la charge utile — les énumérations internes du format '
+      + '(TypeTunnel, TypeSSHTransport) ne sont pas interprétées',
+    );
   }
 
   // 4. Détecter protocole

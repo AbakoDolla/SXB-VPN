@@ -14,6 +14,7 @@
  */
 
 import { parseVpnUri } from './vlessUri';
+import { lireProfilSocksIp } from './socksIpProfile';
 
 export type DetectableProtocol =
   | 'ssh' | 'ssh+payload'
@@ -86,6 +87,16 @@ export class ProtocolDetector {
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
       return { protocol: null, config: {}, certain: false, reason: 'Configuration nulle ou invalide' };
     }
+
+    // 0. Export SocksIP — traduit AVANT toute autre lecture.
+    //
+    // Ce format ne nomme jamais son protocole : il le porte dans ses champs
+    // (SSHServer, SSHPayload, ProxyHostPort). Le tableau de bord sait déjà le
+    // lire ; sans cette traduction, le même fichier serait accepté d'un côté
+    // et refusé de l'autre — incohérence que rien n'explique du point de vue
+    // de qui colle simplement ce qu'on lui a donné.
+    const socksIp = lireProfilSocksIp(input);
+    if (socksIp) input = socksIp;
 
     // 1. Champ "protocol" explicite → détection certaine
     const explicitRaw = (input.protocol ?? input.type ?? '').toString().toLowerCase().trim();
