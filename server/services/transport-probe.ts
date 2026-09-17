@@ -235,6 +235,149 @@ async function probeWebsocketUpgrade(
 }
 
 
+/**
+ * Point d'entrée réellement composé par l'appareil, pour une configuration
+ * sing-box (importée telle quelle, ou traduite depuis Xray).
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * POURQUOI CETTE FONCTION EXISTE
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Ces configurations ne portent pas `host`/`port` à leur racine : tout est dans
+ * `outbounds`, et la sonde les déclarait donc « non applicables ». L'exploitant
+ * n'avait aucun moyen de vérifier un profil AVANT de le distribuer — c'est-à-
+ * dire précisément la forme que prennent les profils de fournisseur, chaînés
+ * derrière un proxy d'opérateur.
+ *
+ * Ce qu'on sonde, c'est le PREMIER saut : quand la sortie principale possède un
+ * `detour`, l'appareil ouvre d'abord sa connexion vers CE maillon, pas vers le
+ * serveur final. Sonder le serveur final donnerait un verdict sur une adresse
+ * que l'appareil ne compose jamais directement — souvent injoignable depuis un
+ * VPS, et donc un faux négatif.
+ */
+export function pointEntreeSingbox(canonical: Record<string, any>): {
+  host: string; port: number; tls: boolean; sni: string;
+  network: string; path: string; wsHost: string; insecure: boolean; chaine: boolean;
+} | null {
+  const sorties = Array.isArray(canonical.outbounds) ? canonical.outbounds : null;
+  if (!sorties || sorties.length === 0) return null;
+  const parTag = new Map<string, any>();
+  for (const o of sorties) {
+    const tag = String(o?.tag ?? '').trim();
+    if (tag) parTag.set(tag, o);
+  }
+
+  const speciaux = new Set(['direct', 'block', 'dns']);
+  const principal = String(canonical.route?.final ?? '').trim();
+  let courant = parTag.get(principal)
+    ?? sorties.find((o: any) => !speciaux.has(String(o?.type ?? '')));
+  if (!courant) return null;
+
+  // On suit la chaîne jusqu'au maillon composé en premier. La borne empêche
+  // qu'un profil malformé — un détour circulaire — fasse tourner la sonde.
+  let chaine = false;
+  for (let saut = 0; saut < 8; saut++) {
+    const detour = String(courant.detour ?? '').trim();
+    if (!detour || !parTag.has(detour)) break;
+    courant = parTag.get(detour);
+    chaine = true;
+  }
+
+  const host = String(courant.server ?? '').trim();
+  const port = Number(courant.server_port ?? 0);
+  if (!host || !Number.isInteger(port) || port <= 0) return null;
+
+  const tlsObj = courant.tls && typeof courant.tls === 'object' ? courant.tls : null;
+  const transport = courant.transport && typeof courant.transport === 'object' ? courant.transport : null;
+  return {
+    host,
+    port,
+    tls: tlsObj?.enabled === true,
+    sni: String(tlsObj?.server_name ?? host),
+    network: String(transport?.type ?? 'tcp').toLowerCase(),
+    path: String(transport?.path ?? '/'),
+    wsHost: String(transport?.headers?.Host ?? tlsObj?.server_name ?? host),
+    insecure: tlsObj?.insecure === true,
+    chaine,
+  };
+}
+
+/**
+ * Sonde le point d'entrée d'une configuration sing-box.
+ *
+ * Trois étapes au plus, et chacune ne s'exécute que si elle a un sens :
+ *  • DNS et TCP toujours — c'est ce que l'appareil fait en premier ;
+ *  • TLS seulement si le premier saut en présente ;
+ *  • l'Upgrade WebSocket seulement si ce premier saut EST le WebSocket, donc
+ *    jamais derrière une chaîne : le maillon d'entrée est alors un proxy HTTP
+ *    ordinaire, qui ne répondrait pas 101 et dont un 400 ne prouverait rien.
+ */
+async function probeEntreeSingbox(
+  entree: NonNullable<ReturnType<typeof pointEntreeSingbox>>,
+  timeoutMs: number,
+  steps: ProbeStep[],
+  finish: (verdict: ProbeReport['verdict'], hint?: string) => ProbeReport,
+): Promise<ProbeReport> {
+  const resolved = await resolveAll(entree.host);
+  if (resolved.length === 0) {
+    steps.push({ event: 'DNS_RESOLVED', ok: false, detail: 'aucune adresse' });
+    return finish('unreachable_from_probe',
+      'DNS non résolu depuis la sonde — peut être géo/opérateur-restreint ; l\'import reste possible');
+  }
+  steps.push({ event: 'DNS_RESOLVED', ok: true, detail: `${resolved.length} adresse(s)` });
+
+  const conn = await tcpConnect(entree.host, entree.port, timeoutMs);
+  if (!conn) {
+    steps.push({ event: 'TCP_CONNECTED', ok: false, detail: `échec ${timeoutMs}ms` });
+    return finish('unreachable_from_probe',
+      'TCP inaccessible depuis la sonde — serveur éteint, filtré, ou joignable seulement depuis le réseau de l\'opérateur');
+  }
+  steps.push({ event: 'TCP_CONNECTED', ok: true, detail: `${conn.latencyMs}ms` });
+  steps.push({ event: 'LATENCY_MS', ok: true, detail: String(conn.latencyMs) });
+
+  let sock: net.Socket | tls.TLSSocket = conn.sock;
+  if (entree.tls) {
+    const up = await tlsUpgrade(conn.sock, entree.host, entree.sni, timeoutMs, entree.insecure);
+    if ('error' in up) {
+      steps.push({ event: 'TLS_FAILED', ok: false, detail: up.error.slice(0, 120) });
+      try { conn.sock.destroy(); } catch { /* ignore */ }
+      return finish('unreachable_from_probe',
+        'handshake TLS impossible — vérifiez que le serveur attend bien TLS sur ce port');
+    }
+    steps.push({ event: 'TLS_HANDSHAKE_OK', ok: true, detail: up.subject ? `CN=${up.subject}` : 'handshake OK' });
+    sock = up.sock;
+  }
+
+  // Derrière une chaîne, le premier saut est un proxy d'opérateur : il n'a
+  // aucune raison de répondre 101, et le sonder plus loin fabriquerait un
+  // échec là où le chemin fonctionne. Ce qu'on a établi — il est joignable —
+  // est déjà ce que l'appareil a besoin de savoir en premier.
+  if (entree.chaine || (entree.network !== 'ws' && entree.network !== 'websocket')) {
+    try { sock.destroy(); } catch { /* ignore */ }
+    steps.push({
+      event: 'CHAIN_ENTRY_REACHED', ok: true,
+      detail: entree.chaine ? 'premier saut de la chaîne joignable' : `transport ${entree.network}`,
+    });
+    return finish('transport_ok', entree.chaine
+      ? 'Premier saut de la chaîne joignable. Les maillons suivants passent par lui et ne sont pas sondables depuis le serveur : testez depuis l’application sur le réseau visé.'
+      : undefined);
+  }
+
+  const code = await probeWebsocketUpgrade(
+    sock, { path: entree.path, hostHeader: entree.wsHost }, timeoutMs, steps,
+  );
+  try { sock.destroy(); } catch { /* ignore */ }
+  if (code === 101) return finish('transport_ok');
+  // Jamais « invalid » : un fournisseur peut légitimement masquer son endpoint
+  // aux requêtes non authentifiées. On rapporte donc un doute, pas un rejet.
+  if (code === null) {
+    return finish('unreachable_from_probe',
+      'Aucune réponse HTTP à l\'Upgrade WebSocket — le port répond mais ne sert pas ce transport');
+  }
+  return finish('unreachable_from_probe',
+    `Le serveur répond ${code} sur « ${entree.path} » avec l'en-tête Host « ${entree.wsHost} » : ` +
+    'vérifiez le path et le host du fournisseur (le SNI et l\'adresse TCP, eux, ont bien répondu)');
+}
+
 export async function probeConfig(
   canonical: Record<string, any>,
   opts: { timeoutMs?: number } = {},
@@ -260,8 +403,24 @@ export async function probeConfig(
   const isWsProxy = ['vless', 'vmess', 'trojan'].includes(proto)
     && (network === 'ws' || network === 'websocket');
 
+  // ── sing-box : sonder le PREMIER SAUT, pas la racine du JSON ──────────────
+  //
+  // Ces configurations n'ont ni `host` ni `port` à la racine : tout vit dans
+  // `outbounds`. Elles étaient donc déclarées « non applicables », et
+  // l'exploitant n'avait aucun moyen de vérifier un profil avant de le
+  // distribuer — alors que c'est exactement la forme des profils de
+  // fournisseur, chaînés derrière un proxy d'opérateur.
+  if (proto === 'singbox') {
+    const entree = pointEntreeSingbox(canonical);
+    if (!entree) {
+      return finish('unsupported',
+        'aucun point d’entrée exploitable dans cette configuration sing-box — validation syntaxique stricte effectuée à l’import');
+    }
+    return probeEntreeSingbox(entree, timeoutMs, steps, finish);
+  }
+
   // Protocoles non sondables en v1 (validation syntaxique seule, hors transport)
-  if (!isWsProxy && ['wireguard', 'shadowsocks', 'vmess', 'vless', 'trojan', 'hysteria2', 'tuic', 'singbox'].includes(proto)) {
+  if (!isWsProxy && ['wireguard', 'shadowsocks', 'vmess', 'vless', 'trojan', 'hysteria2', 'tuic'].includes(proto)) {
     return finish('unsupported', `sonde transport v1 non applicable à ${proto} — validation syntaxique stricte effectuée à l'import`);
   }
   if (!isWsProxy && proto !== 'ssh' && proto !== 'ssh+payload') {
