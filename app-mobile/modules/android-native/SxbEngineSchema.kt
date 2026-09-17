@@ -111,14 +111,35 @@ object SxbEngineSchema {
     fun moderniser(source: JSONObject): JSONObject {
         val config = JSONObject(source.toString())
 
-        // L'ordre compte : les inbounds disent s'il faut une action `sniff`, et
-        // les outbounds disent quelles règles de route deviennent `hijack-dns`
-        // ou `reject`. Les deux sont donc lus AVANT de réécrire la route.
+        // L'ordre compte : les inbounds disent s'il faut une action `sniff`, les
+        // outbounds disent quelles règles de route deviennent `hijack-dns` ou
+        // `reject`, et le DNS fournit le résolveur d'amorçage que la route doit
+        // désigner. Les trois sont donc lus AVANT de réécrire la route.
         val sniffDemande = moderniserInbounds(config)
         val speciaux = moderniserOutbounds(config)
-        moderniserRoute(config, sniffDemande, speciaux)
-        config.optJSONObject("dns")?.let { config.put("dns", moderniserDns(it)) }
+        val dns = config.optJSONObject("dns")?.let { moderniserDns(it) }
+        if (dns != null) config.put("dns", dns)
+        moderniserRoute(config, sniffDemande, speciaux, resolveurDAmorcage(dns))
         return config
+    }
+
+    /**
+     * Étiquette du serveur DNS joignable SANS le tunnel, ou `null`.
+     *
+     * C'est lui qui doit résoudre le nom du serveur de sortie : le résoudre par
+     * le tunnel exigerait le tunnel, dont l'ouverture exige cette résolution.
+     * Le moteur appelle cela `default_domain_resolver`, et depuis 1.12 il
+     * avertit quand il manque — puis le refusera.
+     */
+    private fun resolveurDAmorcage(dns: JSONObject?): String? {
+        val serveurs = dns?.optJSONArray("servers") ?: return null
+        for (i in 0 until serveurs.length()) {
+            val serveur = serveurs.optJSONObject(i) ?: continue
+            if (serveur.optString("type") == "fakeip") continue
+            val tag = serveur.optString("tag", "")
+            if (tag.isNotEmpty() && serveur.optString("detour", "") == "direct") return tag
+        }
+        return null
     }
 
     // ── Inbounds ─────────────────────────────────────────────────────────────
@@ -212,12 +233,26 @@ object SxbEngineSchema {
      * Réécrit les règles qui visaient un outbound spécial, et rétablit
      * l'inspection du trafic sous forme d'action.
      */
-    private fun moderniserRoute(config: JSONObject, sniffDemande: Boolean, speciaux: Speciaux) {
+    private fun moderniserRoute(
+        config: JSONObject,
+        sniffDemande: Boolean,
+        speciaux: Speciaux,
+        resolveurAmorcage: String?,
+    ) {
         val routeExistante = config.optJSONObject("route")
         // Sans route ni inspection à rétablir, il n'y a rien à réécrire : en
         // fabriquer une vide ajouterait une section que le moteur n'attend pas.
         if (routeExistante == null && !sniffDemande) return
         val route = routeExistante ?: JSONObject()
+
+        // Le moteur veut savoir QUI résout le nom d'un serveur de sortie. Sans
+        // cette indication il avertit depuis 1.12, et refusera ensuite. La
+        // réponse est le résolveur d'amorçage : le seul joignable sans le
+        // tunnel que cette résolution doit précisément permettre d'ouvrir.
+        if (resolveurAmorcage != null && !route.has("default_domain_resolver")) {
+            route.put("default_domain_resolver", resolveurAmorcage)
+        }
+
         val source = route.optJSONArray("rules") ?: JSONArray()
         val rules = JSONArray()
 

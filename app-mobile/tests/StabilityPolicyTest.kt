@@ -410,6 +410,42 @@ fun main() {
         check(!out.getJSONObject("route").has("final"))
     }
 
+    checkCase("la route désigne le résolveur qui n’a pas besoin du tunnel") {
+        // Depuis 1.12 le moteur avertit quand il ignore QUI résout le nom d'un
+        // serveur de sortie, et il le refusera. La réponse ne peut être que le
+        // résolveur d'amorçage : le résoudre par le tunnel exigerait le tunnel,
+        // dont l'ouverture exige cette résolution.
+        val config = JSONObject("""{
+          "dns":{"servers":[{"tag":"dns-remote","address":"tcp://8.8.8.8","detour":"proxy"},
+                            {"tag":"dns-local","address":"192.0.2.1","detour":"direct"},
+                            {"tag":"dns-fake","address":"fakeip","detour":"direct"}],
+                 "final":"dns-remote"},
+          "outbounds":[{"type":"vless","tag":"proxy","server":"a.example.test","server_port":443},
+                       {"type":"direct","tag":"direct"}],
+          "route":{"rules":[{"ip_is_private":true,"outbound":"direct"}],"final":"proxy"}
+        }""")
+        val route = SxbEngineSchema.moderniser(config).getJSONObject("route")
+        check(route.getString("default_domain_resolver") == "dns-local") {
+            "vu ${route.optString("default_domain_resolver")}"
+        }
+
+        // Un serveur fakeip ne joint rien : il ne peut pas amorcer quoi que ce
+        // soit, même s'il porte le même `detour`.
+        val sansDirect = JSONObject("""{
+          "dns":{"servers":[{"tag":"r","address":"tcp://8.8.8.8","detour":"proxy"}],"final":"r"},
+          "route":{"rules":[{"ip_is_private":true,"outbound":"direct"}],"final":"proxy"}
+        }""")
+        check(!SxbEngineSchema.moderniser(sansDirect).getJSONObject("route").has("default_domain_resolver")) {
+            "sans résolveur direct, rien ne doit être inventé"
+        }
+
+        // Un choix déjà posé par l'exploitant n'est jamais écrasé.
+        val impose = JSONObject(config.toString())
+        impose.getJSONObject("route").put("default_domain_resolver", "dns-remote")
+        check(SxbEngineSchema.moderniser(impose).getJSONObject("route")
+            .getString("default_domain_resolver") == "dns-remote")
+    }
+
     checkCase("un critère geosite, supprimé en 1.12, ne fait pas refuser la config") {
         // On ne peut pas le traduire : il faudrait la liste des domaines de la
         // catégorie, et l'inventer produirait un routage qui RESSEMBLE à celui

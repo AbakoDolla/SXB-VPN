@@ -34,7 +34,16 @@ test('both build channels validate a synthetic graph using the real native build
   assert.match(gate, /singbox-engine-check run/);
   const check = read('scripts/tests/singbox-engine-check/main.go');
   assert.match(check, /libbox\.CheckConfig/);
-  assert.match(check, /dependency\.Version == "v1\.11\.15"/);
+  // La version n'est pas recopiée ici : elle est LUE du script de compilation,
+  // qui est la source de vérité. Deux épinglages indépendants finissent
+  // toujours par diverger, et la divergence ne se voit qu'à l'exécution.
+  const build = read('app-mobile/scripts/build-libbox.sh');
+  const version = (build.match(/SING_BOX_VERSION:-v(\d+\.\d+\.\d+)/) || [])[1];
+  assert.ok(version, 'la version du moteur doit être lisible dans build-libbox.sh');
+  assert.ok(
+    check.includes(`dependency.Version == "v${version}"`),
+    `le vérificateur doit exiger sing-box v${version}`,
+  );
   assert.match(check, /strings\.HasSuffix\(outbound\.Server, "\.example\.test"\)/);
   assert.doesNotMatch(check, /service\.Start\(/);
 });
