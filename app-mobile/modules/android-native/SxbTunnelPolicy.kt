@@ -42,6 +42,21 @@ object SxbTunnelPolicy {
     private val specialTypes = setOf("direct", "dns", "block")
     private val groupTypes = setOf("selector", "urltest")
 
+    /**
+     * Protocoles mandataires que sing-box transporte sur un FLUX.
+     *
+     * Ce qui empêche l'UDP de passer, c'est le transport — un WebSocket est un
+     * flux TCP, et un proxy HTTP en amont ne relaie rien d'autre. Le protocole
+     * porté par-dessus n'y change rien : Trojan, VMess ou Shadowsocks sont
+     * dans la même situation que VLESS. N'avoir listé que VLESS laissait donc
+     * les profils Trojan — très répandus chez les fournisseurs zéro-rated —
+     * demander un DNS en UDP qui ne pouvait pas aboutir.
+     */
+    private val streamProxyTypes = setOf("vless", "vmess", "trojan", "shadowsocks", "anytls")
+
+    /** Transports qui négocient par un Upgrade HTTP, donc sans UDP. */
+    private val upgradeTransports = setOf("ws", "httpupgrade")
+
     fun defaultProxyTag(outbounds: JSONArray, route: JSONObject?): String? {
         val items = (0 until outbounds.length()).mapNotNull { outbounds.optJSONObject(it) }
         val finalTag = route?.optString("final", "").orEmpty()
@@ -108,13 +123,22 @@ object SxbTunnelPolicy {
             return combine(references(outbound).map { hasHttpTransport(it, everyPath) }, everyPath)
         }
 
+        /**
+         * Le tag sort-il par un flux HTTP chaîné, donc sans UDP possible ?
+         *
+         * La condition ne porte PAS sur le protocole mandataire mais sur le
+         * transport : un WebSocket est un flux TCP, et un proxy HTTP en amont
+         * ne relaie rien d'autre. Restreindre à VLESS laissait les profils
+         * Trojan et VMess demander un DNS en UDP qui ne pouvait pas aboutir —
+         * un tunnel qui monte et ne résout rien.
+         */
         fun isHttpChainedVlessWs(tag: String, everyPath: Boolean = false): Boolean {
             val outbound = requireTag(tag)
             if (outbound.optString("type", "") in groupTypes) {
                 return combine(references(outbound).map { isHttpChainedVlessWs(it, everyPath) }, everyPath)
             }
-            if (outbound.optString("type", "") != "vless" ||
-                outbound.optJSONObject("transport")?.optString("type", "") != "ws") return false
+            if (outbound.optString("type", "") !in streamProxyTypes ||
+                outbound.optJSONObject("transport")?.optString("type", "") !in upgradeTransports) return false
             val detour = outbound.optString("detour", "")
             return detour.isNotBlank() && hasHttpTransport(detour, everyPath)
         }

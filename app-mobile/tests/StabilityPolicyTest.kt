@@ -410,6 +410,47 @@ fun main() {
         check(!out.getJSONObject("route").has("final"))
     }
 
+    checkCase("un Trojan/WS derrière un proxy HTTP obtient aussi son DNS en TCP") {
+        // Le cas réel : un profil zéro-rated Trojan chaîné derrière un proxy
+        // HTTP. Ce qui empêche l'UDP de passer, c'est le TRANSPORT — un
+        // WebSocket est un flux TCP, et un proxy HTTP en amont ne relaie rien
+        // d'autre. N'avoir couvert que VLESS laissait ces profils demander un
+        // DNS en UDP qui ne pouvait pas aboutir : un tunnel qui monte et ne
+        // résout rien.
+        val chaine = JSONArray("""[
+          {"type":"trojan","tag":"TROJAN","server":"srv.example.test","server_port":8443,
+           "password":"x","detour":"hunters",
+           "transport":{"type":"ws","path":"/s","headers":{"Host":"srv.example.test"}},
+           "tls":{"enabled":true,"insecure":true,"server_name":"srv.example.test"}},
+          {"type":"http","tag":"hunters","server":"gw.example.test","server_port":8080},
+          {"type":"direct","tag":"direct"}
+        ]""")
+        val graphe = SxbTunnelPolicy.OutboundGraph(chaine)
+        check(graphe.isHttpChainedVlessWs("TROJAN")) { "un Trojan/WS chaîné doit être reconnu" }
+
+        val dns = SxbTunnelPolicy.reliableDns(
+            JSONObject("""{"servers":[{"tag":"dns-remote","address":"8.8.8.8","detour":"TROJAN"}],"final":"dns-remote"}"""),
+            graphe, false,
+        )
+        val serveur = dns.getJSONArray("servers").getJSONObject(0)
+        check(serveur.getString("address") == "tcp://8.8.8.8") {
+            "le DNS doit passer en TCP, vu ${serveur.getString("address")}"
+        }
+
+        // Un VMess dans la même situation aussi, et un transport qui n'est PAS
+        // un Upgrade HTTP reste en dehors : gRPC porte son propre flux.
+        val vmess = JSONArray(chaine.toString())
+        vmess.getJSONObject(0).put("type", "vmess")
+        check(SxbTunnelPolicy.OutboundGraph(vmess).isHttpChainedVlessWs("TROJAN"))
+        val grpc = JSONArray(chaine.toString())
+        grpc.getJSONObject(0).getJSONObject("transport").put("type", "grpc")
+        check(!SxbTunnelPolicy.OutboundGraph(grpc).isHttpChainedVlessWs("TROJAN"))
+        // Sans amont HTTP, rien à contraindre.
+        val direct = JSONArray(chaine.toString())
+        direct.getJSONObject(0).remove("detour")
+        check(!SxbTunnelPolicy.OutboundGraph(direct).isHttpChainedVlessWs("TROJAN"))
+    }
+
     checkCase("la route désigne le résolveur qui n’a pas besoin du tunnel") {
         // Depuis 1.12 le moteur avertit quand il ignore QUI résout le nom d'un
         // serveur de sortie, et il le refusera. La réponse ne peut être que le
