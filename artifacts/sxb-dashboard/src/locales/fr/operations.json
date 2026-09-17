@@ -997,12 +997,14 @@
       "suspended": "Suspendu",
       "failed": "Coupure impossible",
       "absent": "Non fournie par l'application",
-      "valid": "Installation reconnue"
+      "valid": "Installation reconnue",
+      "owner_recovery": "Voie de secours du propriétaire"
     },
     "actionLabels": {
       "SESSIONS_CLOSED": "Toutes les ouvertures en cours ont été fermées",
       "ACCESS_SUSPENDED": "L'accès de cet appareil a été suspendu",
-      "SUSPEND_FAILED": "La suspension n'a pas pu être appliquée — à couper à la main"
+      "SUSPEND_FAILED": "La suspension n'a pas pu être appliquée — à couper à la main",
+      "OWNER_RECOVERY": "Retrait demandé par le propriétaire avec son mot de passe"
     },
     "detailsTitle": "Ce que cela signifie",
     "metaTitle": "Détails techniques",

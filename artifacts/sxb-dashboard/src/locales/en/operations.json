@@ -997,12 +997,14 @@
       "suspended": "Suspended",
       "failed": "Cut failed",
       "absent": "Not supplied by the app",
-      "valid": "Install recognised"
+      "valid": "Install recognised",
+      "owner_recovery": "Owner recovery path"
     },
     "actionLabels": {
       "SESSIONS_CLOSED": "Every open session was closed",
       "ACCESS_SUSPENDED": "This device was suspended",
-      "SUSPEND_FAILED": "The suspension could not be applied — cut it by hand"
+      "SUSPEND_FAILED": "The suspension could not be applied — cut it by hand",
+      "OWNER_RECOVERY": "Removal requested by the owner with their password"
     },
     "detailsTitle": "What this means",
     "metaTitle": "Technical details",

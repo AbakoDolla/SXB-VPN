@@ -360,6 +360,17 @@ test('chaque code du journal se lit dans la langue choisie', () => {
   assert.match(routes, /actionTaken: 'SESSIONS_CLOSED'/);
   assert.doesNotMatch(routes, /actionTaken: '[^']*[éèêàùç]/, "aucune phrase française ne doit être stockée telle quelle");
 
+  // Et chaque code d'action écrit par le serveur doit avoir son libellé, sans
+  // quoi il s'affiche brut dans la console — ce qui est arrivé deux fois.
+  const codesAction = [...routes.matchAll(/actionTaken: '([A-Z][A-Z0-9_]+)'/g)].map(m => m[1]);
+  assert.ok(codesAction.length >= 2, 'les codes d’action doivent être relus depuis la source');
+  for (const langue of ['fr', 'en']) {
+    const secu = JSON.parse(lireSource(`artifacts/sxb-dashboard/src/locales/${langue}/operations.json`)).security;
+    for (const code of codesAction) {
+      assert.ok(secu.actionLabels?.[code], `${langue}: action ${code} sans libellé`);
+    }
+  }
+
   // Les lignes écrites avant ce changement portent encore la phrase française :
   // elles sont relues sous leur code, sans réécrire la base.
   const service2 = lireSource('server/services/security-events.ts');
