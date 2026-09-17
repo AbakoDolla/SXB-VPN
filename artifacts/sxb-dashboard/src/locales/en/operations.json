@@ -235,7 +235,8 @@
       "updated": "Updated",
       "skipped": "Skipped",
       "failed": "Failed"
-    }
+    },
+    "deviceTrialCount": "{{count}} trials on this device"
   },
   "reset": {
     "tab": "Owner reset",

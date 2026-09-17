@@ -827,9 +827,11 @@ describe("UN SEUL ESSAI PAR APPAREIL — même après désinstallation", () => {
     assert.equal(empreinteExploitable(EMPREINTE), true);
   });
 
-  it("refuse une SECONDE demande depuis la même empreinte après un essai consommé", () => {
-    // Le scénario exact du propriétaire : l'utilisateur désinstalle, réinstalle
-    // (nouvel identifiant d'appareil), et présente un AUTRE jeton.
+  it("autorise une SECONDE demande depuis la même empreinte, en la comptant", () => {
+    // Le propriétaire a changé sa règle : l'essai est RÉPÉTABLE. Un même
+    // appareil peut revenir, et ce qui borne une campagne est le plafond du
+    // jeton d'invitation, qu'il maîtrise — pas une interdiction à vie gravée
+    // dans le téléphone.
     const consommee = demande({
       id: "ft-req-1",
       tokenId: "ft-token-1",
@@ -840,24 +842,29 @@ describe("UN SEUL ESSAI PAR APPAREIL — même après désinstallation", () => {
       clientId: "cli-1",
     });
     const decision = deciderInscriptionParEmpreinte([consommee]);
-    assert.equal(decision.type, "refuse");
-    assert.equal(decision.type === "refuse" && decision.refus.status, 409);
-    assert.equal(decision.type === "refuse" && decision.refus.body.code, CODES_ESSAI.DEVICE_ALREADY_USED);
-    // « quel que soit le jeton présenté et quel que soit le deviceId » : la
-    // décision ne prend NI l'un NI l'autre en paramètre.
+    assert.equal(decision.type, "autorise");
+    // Le passé n'interdit plus, il RENSEIGNE : l'exploitant voit combien de
+    // fois cet appareil a déjà été servi avant de décider.
+    assert.equal(decision.type === "autorise" && decision.essaisPrecedents, 1);
+    const deuxIdentiques = deciderInscriptionParEmpreinte([consommee, { ...consommee, id: "ft-req-2" }]);
+    assert.equal(deuxIdentiques.type === "autorise" && deuxIdentiques.essaisPrecedents, 2);
+    // La décision ne prend NI le jeton NI le deviceId en paramètre.
     assert.equal(deciderInscriptionParEmpreinte.length, 1, "signature inattendue");
   });
 
-  it("un essai TERMINÉ compte comme consommé, un refus non", () => {
+  it("un essai TERMINÉ se compte, un refus ne compte pas", () => {
     assert.deepEqual([...STATUTS_ESSAI_CONSOMME], [STATUT_DEMANDE.DEPLOYED]);
-    // Un essai déployé puis expiré reste « déployé » : il n'y a pas de
-    // deuxième fois, exactement comme demandé.
+    // Un essai déployé puis expiré reste « déployé » : il compte dans
+    // l'historique de l'appareil, sans lui fermer la porte.
     const expiree = demande({ status: STATUT_DEMANDE.DEPLOYED, deployedAt: HIER, clientId: "cli-1" });
-    assert.equal(deciderInscriptionParEmpreinte([expiree]).type, "refuse");
-    // Une demande REFUSÉE n'a jamais ouvert d'accès : fermer la porte à vie
-    // serait une punition, pas une protection.
+    const apresExpiration = deciderInscriptionParEmpreinte([expiree]);
+    assert.equal(apresExpiration.type, "autorise");
+    assert.equal(apresExpiration.type === "autorise" && apresExpiration.essaisPrecedents, 1);
+    // Une demande REFUSÉE n'a jamais ouvert d'accès : elle ne compte pas.
     const refusee = demande({ status: STATUT_DEMANDE.REJECTED, rejectedAt: HIER });
-    assert.equal(deciderInscriptionParEmpreinte([refusee]).type, "autorise");
+    const apresRefus = deciderInscriptionParEmpreinte([refusee]);
+    assert.equal(apresRefus.type, "autorise");
+    assert.equal(apresRefus.type === "autorise" && apresRefus.essaisPrecedents, 0);
   });
 
   it("une demande encore EN ATTENTE est retrouvée, pas refusée ni dupliquée", () => {

@@ -114,6 +114,14 @@ export interface FreeTrialRequest {
    * n'est pas la même chose que « hors ligne ».
    */
   presence?: { connected: boolean; lastSeenAt: string | null; measured: boolean } | null;
+  /**
+   * Nombre d'essais DÉJÀ accordés à cet appareil, celui-ci compris.
+   *
+   * L'essai est répétable : ce compteur dit à l'exploitant s'il regarde un
+   * premier passage ou un habitué. L'empreinte d'appareil, elle, n'est jamais
+   * exposée.
+   */
+  deviceTrialCount?: number;
 }
 
 /** Une ligne du récapitulatif « d'où viennent nos clients ». */

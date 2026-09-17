@@ -241,49 +241,60 @@ export function refusPaysInvalide(): { status: number; body: Record<string, unkn
 }
 
 /**
- * Statuts qui CONSOMMENT définitivement l'unique essai d'un appareil.
+ * Statuts qui comptent comme un essai RÉELLEMENT accordé.
  *
- * Seul « déployé » consomme : l'essai a réellement été accordé, qu'il soit
- * encore en cours ou déjà terminé — c'est exactement la règle du propriétaire
- * (« quand l'essai est fini, il n'y en a plus une deuxième fois »).
+ * Seul « déployé » compte : la personne a effectivement reçu un accès. Un
+ * « refusé » n'a jamais rien donné, un « en attente » pas encore.
  *
- * « refusé » ne consomme PAS : la personne n'a jamais reçu d'accès, lui fermer
- * la porte à vie serait une punition, pas une protection. « en attente » ne
- * consomme pas non plus — la demande est simplement retrouvée.
+ * Cette liste ne ferme plus la porte — elle sert à COMPTER. Le propriétaire a
+ * choisi de rendre l'essai répétable : ce qui limite désormais, c'est le
+ * plafond du jeton d'invitation, qu'il maîtrise campagne par campagne, et non
+ * une interdiction définitive gravée dans l'appareil.
  */
 export const STATUTS_ESSAI_CONSOMME: readonly string[] = [STATUT_DEMANDE.DEPLOYED];
 
 /** Issue du contrôle d'empreinte, avant toute écriture. */
 export type DecisionEmpreinte =
-  | { type: "autorise" }
+  | { type: "autorise"; essaisPrecedents: number }
   | { type: "refuse"; refus: { status: number; body: Record<string, unknown> } }
   | { type: "reprise"; demande: DemandeEssai };
 
 /**
- * LE contrôle « un seul essai par appareil, réinstallation comprise ».
+ * Décision d'inscription pour un appareil, d'après son historique.
  *
  * Entrée : toutes les demandes portant la MÊME empreinte, quel que soit leur
- * jeton et quel que soit leur identifiant d'appareil — c'est précisément ce
- * qui rend le contrôle insensible à une réinstallation, qui change l'un et
- * permet de présenter l'autre.
+ * jeton et quel que soit leur identifiant d'appareil.
  *
- * Fonction PURE : aucune base, aucune horloge, aucun aléa. La route se contente
- * de charger les lignes et d'appliquer la décision.
+ * L'ESSAI EST RÉPÉTABLE. Un appareil qui a déjà bénéficié d'un essai peut en
+ * demander un autre : le propriétaire veut pouvoir servir un même client
+ * plusieurs fois, et c'est le plafond du jeton d'invitation qui borne une
+ * campagne, pas une interdiction à vie inscrite dans le téléphone.
+ *
+ * Ce qui reste : une demande DÉJÀ EN ATTENTE est retrouvée plutôt que
+ * dupliquée. Sans cela, un appui répété fabriquerait une file de demandes
+ * identiques que l'exploitant devrait trier à la main.
+ *
+ * Le nombre d'essais déjà accordés est renvoyé — il n'interdit rien, il
+ * renseigne : l'exploitant voit dans sa console combien de fois cet appareil a
+ * été servi avant de décider.
+ *
+ * Fonction PURE : aucune base, aucune horloge, aucun aléa.
  */
 export function deciderInscriptionParEmpreinte(
   demandes: ReadonlyArray<DemandeEssai | null | undefined>,
 ): DecisionEmpreinte {
   const connues = demandes.filter((demande): demande is DemandeEssai => Boolean(demande));
-  if (connues.some((demande) => STATUTS_ESSAI_CONSOMME.includes(String(demande.status)))) {
-    return { type: "refuse", refus: refusEssaiDejaConsomme() };
-  }
-  // Plusieurs demandes en attente ne devraient pas coexister ; si cela arrive,
-  // on retient la plus récente plutôt que d'en créer une de plus.
+  // Une demande encore en attente sur cet appareil est REPRISE, jamais
+  // dupliquée. Priorité absolue : c'est ce qui protège la file de l'exploitant.
   const enAttente = connues
     .filter((demande) => demande.status === STATUT_DEMANDE.PENDING)
     .sort((a, b) => horodatage(b.createdAt) - horodatage(a.createdAt));
   if (enAttente.length) return { type: "reprise", demande: enAttente[0] };
-  return { type: "autorise" };
+
+  const essaisPrecedents = connues.filter(
+    (demande) => STATUTS_ESSAI_CONSOMME.includes(String(demande.status)),
+  ).length;
+  return { type: "autorise", essaisPrecedents };
 }
 
 function horodatage(valeur: Date | string | null | undefined): number {

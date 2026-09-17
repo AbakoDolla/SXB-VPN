@@ -1128,10 +1128,35 @@ router.get(
       // DIT (`measured: false`) au lieu de renvoyer « hors ligne » pour tout le
       // monde, ce qui affirmerait quelque chose de faux.
       const presence = await presenceParDemande(demandes as any[]);
+      // ── COMBIEN DE FOIS CET APPAREIL A-T-IL ÉTÉ SERVI ? ───────────────────
+      //
+      // L'essai est répétable : un même appareil peut revenir. L'exploitant a
+      // donc besoin de savoir, en un coup d'œil, s'il regarde un premier essai
+      // ou un cinquième — sans quoi « répétable » devient « incontrôlable ».
+      //
+      // Un seul agrégat pour toute la page, par empreinte : compter demande par
+      // demande produirait autant de requêtes que de lignes affichées.
+      const empreintes = [...new Set(
+        (demandes as any[]).map((d) => String(d.deviceFingerprint || '')).filter(Boolean),
+      )];
+      const essaisParEmpreinte = new Map<string, number>();
+      if (empreintes.length) {
+        const groupes = await (prisma as any).freeTrialRequest.groupBy({
+          by: ['deviceFingerprint'],
+          where: { deviceFingerprint: { in: empreintes }, status: STATUT_DEMANDE.DEPLOYED },
+          _count: { _all: true },
+        });
+        for (const groupe of groupes as any[]) {
+          essaisParEmpreinte.set(String(groupe.deviceFingerprint), Number(groupe._count?._all ?? 0));
+        }
+      }
       return res.json({
         requests: (demandes as any[]).map((demande) => ({
           ...vueDemandePourAdmin(demande),
           access: acces.get(String(demande.id)) ?? null,
+          // Nombre d'essais DÉJÀ accordés à cet appareil, celui-ci compris
+          // lorsqu'il est déployé. L'empreinte elle-même n'est jamais exposée.
+          deviceTrialCount: essaisParEmpreinte.get(String(demande.deviceFingerprint || '')) ?? 0,
           presence: presence.parClient.get(String(demande.clientId ?? '')) ?? {
             connected: false,
             lastSeenAt: null,

@@ -235,7 +235,8 @@
       "updated": "Modifié",
       "skipped": "Ignoré",
       "failed": "Échec"
-    }
+    },
+    "deviceTrialCount": "{{count}} essais sur cet appareil"
   },
   "reset": {
     "tab": "Réinitialisation propriétaire",

@@ -184,6 +184,10 @@ export default function FreeTrialView() {
   const can = usePermissions();
 
   const [tokens, setTokens] = useState<FreeTrialToken[]>([]);
+  // Liste des comptes en essai : repliée par défaut. Sur un téléphone, la
+  // dérouler d'office obligeait à faire défiler des dizaines de lignes avant
+  // d'atteindre le reste de l'écran.
+  const [comptesDeplies, setComptesDeplies] = useState(false);
   const [countryStats, setCountryStats] = useState<FreeTrialCountryStats | null>(null);
   // Indicateurs PROPRES aux essais. Ils ne partagent aucune source avec les
   // compteurs des comptes principaux : tout dérive des demandes d'essai.
@@ -933,7 +937,18 @@ export default function FreeTrialView() {
           <span className="text-gray-600">{t('operations.freeTrial.countryUnknown')}</span>
         )}
       </td>
-      <td className="px-4 py-3 font-mono text-[11px] text-gray-400">{demande.deviceId}</td>
+      <td className="px-4 py-3 font-mono text-[11px] text-gray-400">
+        {demande.deviceId}
+        {/* Combien de fois CET appareil a déjà été servi. L'essai est
+            répétable : sans ce compteur, l'exploitant ne saurait pas s'il
+            regarde un premier essai ou un cinquième. Affiché seulement au-delà
+            du premier, pour ne pas alourdir le cas ordinaire. */}
+        {(demande.deviceTrialCount ?? 0) > 1 && (
+          <span className="mt-1 inline-flex items-center rounded-md border border-amber-400/30 bg-amber-500/10 px-1.5 py-0.5 font-sans text-[10px] font-semibold text-amber-200">
+            {t('operations.freeTrial.deviceTrialCount', { count: formatNumber(demande.deviceTrialCount ?? 0) })}
+          </span>
+        )}
+      </td>
       <td className="px-4 py-3">
         <span className={`inline-flex rounded-md border px-2 py-0.5 text-[11px] font-semibold ${statusClasses(demande.status)}`}>
           {t(STATUS_LABELS[demande.status] ?? 'operations.common.unknown')}
@@ -1488,31 +1503,41 @@ export default function FreeTrialView() {
           l'un après l'autre. Et comme « Forfaits Data » ne montre plus rien
           d'un essai, ces comptes n'apparaissaient nulle part d'un seul tenant. */}
       <section className="overflow-hidden rounded-xl border border-fuchsia-400/20 bg-fuchsia-500/[0.03]">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
+        {/* Repliée par défaut. Sur un téléphone, une liste de plusieurs dizaines
+            de comptes obligeait à faire défiler tout l'écran avant d'atteindre
+            quoi que ce soit d'autre. L'en-tête reste un résumé ; on déplie quand
+            on veut les noms. */}
+        <button
+          type="button"
+          onClick={() => setComptesDeplies(ouvert => !ouvert)}
+          aria-expanded={comptesDeplies}
+          className="flex w-full flex-wrap items-center justify-between gap-3 border-b border-white/10 px-4 py-3 text-left transition-colors hover:bg-white/[0.03]"
+        >
           <div className="flex items-start gap-2.5">
-            <TrialGlyph className="mt-0.5 h-6 w-6" />
-            <div>
+            <TrialGlyph className="mt-0.5 h-6 w-6 shrink-0" />
+            <div className="min-w-0">
               <h2 className="text-sm font-semibold text-gray-200">{t('operations.freeTrial.activeAccounts.title')}</h2>
               <p className="mt-0.5 text-[11px] text-gray-500">{t('operations.freeTrial.activeAccounts.hint')}</p>
             </div>
           </div>
-          <span className="text-[11px] text-gray-500">
+          <span className="flex items-center gap-2 text-[11px] text-gray-500">
             {t('operations.freeTrial.activeAccounts.count', { count: formatNumber(comptesEssai?.length ?? 0) })}
+            <ChevronDown className={`h-4 w-4 transition-transform ${comptesDeplies ? 'rotate-180' : ''}`} />
           </span>
-        </div>
+        </button>
 
-        {comptesEssaiEnCours && (
+        {comptesDeplies && comptesEssaiEnCours && (
           <p className="flex items-center gap-2 px-4 py-6 text-sm text-gray-400">
             <Loader2 className="h-4 w-4 animate-spin" />
             {t('operations.freeTrial.loading')}
           </p>
         )}
-        {!comptesEssaiEnCours && (comptesEssai?.length ?? 0) === 0 && (
+        {comptesDeplies && !comptesEssaiEnCours && (comptesEssai?.length ?? 0) === 0 && (
           <p className="px-4 py-8 text-center text-sm text-gray-500">
             {t('operations.freeTrial.activeAccounts.empty')}
           </p>
         )}
-        {!comptesEssaiEnCours && (comptesEssai?.length ?? 0) > 0 && (
+        {comptesDeplies && !comptesEssaiEnCours && (comptesEssai?.length ?? 0) > 0 && (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               {enteteDemandes(false)}

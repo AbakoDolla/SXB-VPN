@@ -1127,8 +1127,13 @@ describe('garde-fous contre les régressions Android', () => {
   });
 
   it('invalide le watchdog et ignore un événement connected tardif après annulation', () => {
-    assert.ok(vpnContext.includes('90_000'));
-    assert.ok(vpnContext.includes('Délai dépassé (90s)'));
+    // Le délai ne mesure plus la durée TOTALE d'une connexion mais le silence
+    // du moteur : le chien de garde est réarmé à chaque progrès. C'est ce qui
+    // rend un délai plus court sûr — une connexion lente qui avance n'est
+    // jamais coupée, une connexion figée est abandonnée vite.
+    assert.ok(vpnContext.includes('DELAI_SANS_SIGNE_MS = 45_000'));
+    assert.match(vpnContext, /rearmerWatchdogRef\.current\?\.\('HANDSHAKE'\)/);
+    assert.ok(vpnContext.includes('Délai dépassé (${DELAI_SANS_SIGNE_MS / 1000}s)'));
     assert.match(vpnContext, /stopWatchdog\(\);[\s\S]{0,120}setVpnState\('disconnected'\)/);
     assert.match(vpnContext, /stopWatchdog\(\);[\s\S]{0,120}setVpnState\('error'\)/);
     assert.match(vpnContext, /acceptNativeConnectedRef/);

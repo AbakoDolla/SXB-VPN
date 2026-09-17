@@ -84,6 +84,18 @@ async function saveCompleteConfig(
 // ── Native bridge ─────────────────────────────────────────────────────────────
 
 const IS_ANDROID = Platform.OS === 'android';
+
+/**
+ * Délai sans AUCUN signe de vie du moteur avant d'abandonner la tentative.
+ *
+ * Il valait 90 s et n'était armé qu'une fois : l'utilisateur attendait donc une
+ * minute et demie avant la moindre erreur, même quand le moteur était figé dès
+ * la première seconde. Le chien de garde étant désormais réarmé à chaque
+ * progrès, ce délai ne mesure plus la durée totale d'une connexion mais le
+ * silence du moteur — 45 s de silence suffisent à conclure, et une connexion
+ * lente qui avance n'est jamais coupée.
+ */
+const DELAI_SANS_SIGNE_MS = 45_000;
 const SxbVpnNative = IS_ANDROID ? (NativeModules.SxbVpnNative as any) : null;
 const vpnEmitter   = SxbVpnNative ? new NativeEventEmitter(SxbVpnNative) : null;
 
@@ -578,8 +590,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       if (attemptId !== connectionAttemptRef.current) return;
       connectionAttemptRef.current++;
       acceptNativeConnectedRef.current = false;
-      legacyDebugLog(`WATCHDOG_TIMEOUT step=${stepName} — aucun événement natif depuis 90s`);
-      addLog(`⚠️ Délai dépassé (90s) lors de : ${stepName}. Arrêt du service...`);
+      legacyDebugLog(`WATCHDOG_TIMEOUT step=${stepName} — aucun événement natif depuis ${DELAI_SANS_SIGNE_MS / 1000}s`);
+      addLog(`⚠️ Délai dépassé (${DELAI_SANS_SIGNE_MS / 1000}s) lors de : ${stepName}. Arrêt du service...`);
       if (IS_ANDROID && SxbVpnNative) {
         try { SxbVpnNative.stopVpn(); } catch { /* ignore */ }
       }
@@ -587,8 +599,20 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       setIsConnecting(false);
       setVpnState('error');
       watchdogRef.current = null;
-    }, 90_000);
+    }, DELAI_SANS_SIGNE_MS);
     }, [addLog]);
+
+  /**
+   * Réarme le chien de garde sur un progrès du moteur.
+   *
+   * Passe par une référence pour que les écouteurs natifs, montés une fois pour
+   * toutes, atteignent toujours la tentative courante sans être reconstruits.
+   */
+  const rearmerWatchdogRef = useRef<((etape: string) => void) | null>(null);
+  rearmerWatchdogRef.current = (etape: string) => {
+    if (!watchdogRef.current) return;
+    startWatchdog(etape, connectionAttemptRef.current);
+  };
 
   const stopWatchdog = useCallback(() => {
     if (watchdogRef.current) {
@@ -629,6 +653,15 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         setVpnState('handshaking');
         addLog('⏳ Tunnel établi — Négociation du flux...');
         addStepLog('handshaking', 'step_handshake', 'pending');
+        // ⚡ Le chien de garde REPART à zéro à chaque progrès du moteur.
+        //
+        // Il était armé une seule fois, pour toute la connexion : l'utilisateur
+        // attendait donc son plein délai avant de voir la moindre erreur, même
+        // quand le moteur était bloqué depuis la première seconde. Réarmé sur
+        // chaque signe de vie, un délai plus court devient sûr : une connexion
+        // qui avance n'est jamais coupée, une connexion figée est abandonnée
+        // vite — et peut être relancée aussitôt.
+        rearmerWatchdogRef.current?.('HANDSHAKE');
         startTrafficPolling();
       } else if (s === 'connected') {
         // Le drapeau `acceptNativeConnectedRef` protège d'un « connected »
@@ -1563,17 +1596,20 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         connectedProtocolRef.current = engineProtocol;
         setConnectedProtocol(engineProtocol);
 
-        // Capturer le baseline initial natif
-        try {
-          const stats = await SxbVpnNative.getTrafficStats();
-          sessionBaselineRef.current = { up: stats?.uploadBytes || 0, down: stats?.downloadBytes || 0 };
-        } catch {
-          sessionBaselineRef.current = { up: 0, down: 0 };
-        }
+        // ⚡ Trois préparatifs indépendants, menés ENSEMBLE.
+        //
+        // Ils étaient enchaînés juste avant l'appel natif : relevé des
+        // compteurs, préparation de l'accès, relecture du profil. Chacun est
+        // court, mais leur somme retardait l'ouverture du tunnel de plusieurs
+        // centaines de millisecondes — parfois bien plus sur un téléphone lent
+        // ou un stockage occupé. Aucun ne dépend du résultat d'un autre.
+        const [stats, currentProfile] = await Promise.all([
+          SxbVpnNative.getTrafficStats().catch(() => null),
+          prepareNativeAccess().then(() => configStore.get(selectedId)).then(storeValue),
+        ]);
+        sessionBaselineRef.current = { up: stats?.uploadBytes || 0, down: stats?.downloadBytes || 0 };
 
-        await prepareNativeAccess();
         requireDeviceAccess();
-        const currentProfile = storeValue(await configStore.get(selectedId));
         if (!currentProfile) throw new Error('ACCESS_PROFILE_MISSING');
         requireProfileAccess(currentProfile.meta);
         runningProfileRef.current = currentProfile.meta;
