@@ -263,10 +263,11 @@ object SxbEngineSchema {
                 if (serveur.has("detour")) traduit.put("detour", serveur.get("detour"))
             }
             // `client_subnet` n'est plus une propriété du serveur : il se pose
-            // sur les règles qui le désignent, comme la stratégie.
-            if (tag.isNotEmpty() && serveur.has("client_subnet")) {
-                sousReseaux[tag] = serveur.getString("client_subnet")
-            }
+            // sur les règles qui le désignent, comme la stratégie. Lu sans
+            // supposer son type : une valeur inattendue ne doit pas faire
+            // échouer la traduction de TOUTE la configuration.
+            val sousReseau = serveur.optString("client_subnet", "").trim()
+            if (tag.isNotEmpty() && sousReseau.isNotEmpty()) sousReseaux[tag] = sousReseau
             traduits.put(traduit)
         }
         dns.put("servers", traduits)
