@@ -18,7 +18,7 @@
 import './register-hooks.mjs';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
@@ -182,4 +182,60 @@ test('la présence applique le compartiment avant tout rapprochement', () => {
   assert.match(source, /managedByOwner/);
   // Une forme de filtre non reconnue ne doit jamais valoir « tout voir ».
   assert.match(source, /return false;/);
+});
+
+test('aucune surface du tableau de bord ne réécrit sa propre furtivité', () => {
+  // Le filtre `user.role != OWNER` ne regarde que le compte PORTEUR d'un
+  // client. Or un client créé depuis le panneau reçoit un compte de rôle
+  // CLIENT : écrit ainsi, il laisse passer tout le parc du propriétaire. Trois
+  // routes s'étaient fabriqué ce filtre — statistiques, sessions, jetons — et
+  // le trafic du propriétaire entrait donc dans les chiffres de tout le monde.
+  //
+  // Le motif reste licite sur le modèle `Reseller`, qui n'a PAS de
+  // gestionnaire : on l'y autorise nommément plutôt que d'interdire en bloc.
+  const autorises = new Set(['dashboard.ts', 'vpn-presence.ts']);
+  const dossiers = [
+    ['server/routes', 'routes'],
+    ['server/services', 'services'],
+  ];
+  const fautifs = [];
+  for (const [dossier] of dossiers) {
+    for (const fichier of readdirSync(path.join(racine, dossier))) {
+      if (!fichier.endsWith('.ts')) continue;
+      if (autorises.has(fichier)) continue;
+      const source = lireSource(`${dossier}/${fichier}`);
+      if (/user: \{ role: \{ name: \{ not: "OWNER" \} \} \}/.test(source)) {
+        fautifs.push(`${dossier}/${fichier}`);
+      }
+    }
+  }
+  assert.deepEqual(fautifs, [], `furtivité partielle réécrite dans : ${fautifs.join(', ')}`);
+});
+
+test('chaque table rattachée à un client passe par le point unique', () => {
+  // Forfaits, sessions d'activation, jetons, essais : aucune de ces tables n'a
+  // de gestionnaire, elles héritent de celui de leur client. Sans ce passage
+  // par la relation, chacune rendait le parc du propriétaire.
+  const attendus = {
+    'server/routes/subscriptions.ts': /porteeClientsForfait\(prisma, req\.user\)/,
+    'server/routes/sessions.ts': /porteeSousClient\(prisma, req\.user\)/,
+    'server/routes/tokens.ts': /porteeSousClient\(prisma, req\.user\)/,
+    'server/routes/analytics.ts': /porteeClients\(prisma, req\.user\)/,
+    'server/routes/free-trial.ts': /porteeClients\(prisma, req\.user\)/,
+  };
+  for (const [fichier, motif] of Object.entries(attendus)) {
+    assert.match(lireSource(fichier), motif, `${fichier} doit lire le point unique`);
+  }
+});
+
+test('un bon ne nomme pas un bénéficiaire que l’appelant ne peut pas voir', () => {
+  // Le bon reste visible — c'est de l'inventaire que l'exploitant gère, et le
+  // faire disparaître fausserait ses comptes. Mais le NOM de qui l'a utilisé
+  // est une donnée de client.
+  const source = lireSource('server/routes/vouchers.ts');
+  assert.match(source, /voucher\.redeemedClient && peutVoirBeneficiaire/);
+  assert.match(source, /possedeClientCloisonne\(req\.user, voucher\.redeemedClient\)/);
+  // Le rôle du porteur ET celui du gestionnaire doivent être chargés, sinon la
+  // décision se prend sur des données absentes — donc toujours « visible ».
+  assert.match(source, /redeemedClient: \{[\s\S]{0,200}managedBy: \{ include: \{ role: true \} \}/);
 });

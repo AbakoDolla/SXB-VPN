@@ -16,6 +16,7 @@ import {
   reponsePlafondDepasse,
   resumerAccesRevendeur,
 } from "../services/reseller-access";
+import { porteeSousClient } from "../services/portee-donnees";
 import {
   executerMutationQuota,
   PlafondQuotaDepasse,
@@ -165,13 +166,16 @@ function isRouteRefusal(result: TokenTarget | RouteRefusal): result is RouteRefu
   return "status" in result && "body" in result;
 }
 
-/** Portée de lecture des jetons pour un revendeur (propriété du client). */
+/**
+ * Portée de lecture des jetons.
+ *
+ * Elle ne couvrait que le revendeur : un jeton émis pour un client du
+ * propriétaire apparaissait donc dans la liste que lit un super-administrateur.
+ * Le point unique couvre le compartiment de l'administrateur ET la furtivité du
+ * propriétaire, par les deux rattachements possibles d'un client.
+ */
 async function porteeTokens(req: AuthenticatedRequest) {
-  if (req.user?.role !== "RESELLER") return undefined;
-  const fiche =
-    (req as any).reseller ??
-    (await chargerFicheRevendeur(prisma, req.user.userId));
-  return { client: porteeClientsRevendeur(fiche) } as any;
+  return (await porteeSousClient(prisma, req.user)) ?? undefined;
 }
 
 async function creerToken(req: AuthenticatedRequest, res: Response) {

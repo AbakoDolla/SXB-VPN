@@ -7,6 +7,7 @@ import { Router, Response } from "express";
 import { prisma, inMemoryDb } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { isOwnerRequest } from "../middleware/rbac/owner";
+import { porteeClients } from "../services/portee-donnees";
 
 const router = Router();
 
@@ -17,9 +18,20 @@ function stealthUserWhere(requesterIsOwner: boolean): any {
   return { role: { name: { not: "OWNER" } } };
 }
 
-function stealthClientWhere(requesterIsOwner: boolean): any {
-  if (requesterIsOwner) return undefined;
-  return { user: { role: { name: { not: "OWNER" } } } };
+/**
+ * Clients invisibles pour les autres rôles.
+ *
+ * Ce filtre ne regardait que le compte PORTEUR (`user.role`). Or un client créé
+ * depuis le panneau reçoit un compte de rôle CLIENT : le parc du propriétaire,
+ * ses quotas et son trafic entraient donc dans toutes les statistiques que lit
+ * un super-administrateur. C'est la même faille que celle corrigée ailleurs,
+ * restée ici parce que cette route s'était écrit son propre filtre.
+ *
+ * Elle lit désormais le point unique, qui couvre les DEUX rattachements et, au
+ * passage, le compartiment de l'administrateur.
+ */
+async function porteeAnalytique(req: AuthenticatedRequest) {
+  return (await porteeClients(prisma, req.user)) ?? undefined;
 }
 
 // GET /api/analytics/users — statistiques réelles des utilisateurs
@@ -32,7 +44,7 @@ router.get("/users", requireAuth, requirePermission("analytics.read"), async (re
 
     const requesterIsOwner = isOwnerRequest(req);
     const userStealthWhere = stealthUserWhere(requesterIsOwner);
-    const clientStealthWhere = stealthClientWhere(requesterIsOwner);
+    const clientStealthWhere = await porteeAnalytique(req);
     if (prisma) {
       [totalUsers, activeClientsCount, resellersCount] = await Promise.all([
         prisma.user.count({ where: userStealthWhere }),
@@ -75,7 +87,7 @@ router.get("/traffic", requireAuth, requirePermission("analytics.read"), async (
     let totalUsedBytes = BigInt(0);
 
     const requesterIsOwner = isOwnerRequest(req);
-    const clientStealthWhere = stealthClientWhere(requesterIsOwner);
+    const clientStealthWhere = await porteeAnalytique(req);
     if (prisma) {
       const clients = await prisma.vpnClient.findMany({
         select: { quotaTotal: true, quotaUsed: true, updatedAt: true },
@@ -150,7 +162,7 @@ router.get("/servers", requireAuth, requirePermission("analytics.read"), async (
     const locationsSet = new Set<string>();
 
     const requesterIsOwner = isOwnerRequest(req);
-    const clientStealthWhere = stealthClientWhere(requesterIsOwner);
+    const clientStealthWhere = await porteeAnalytique(req);
     if (prisma) {
       [servers, activeClientCount] = await Promise.all([
         prisma.vPSServer.findMany({ orderBy: { createdAt: "asc" } }),
@@ -201,7 +213,7 @@ router.get("/overview", requireAuth, requirePermission("analytics.read"), async 
   try {
     const requesterIsOwner = isOwnerRequest(req);
     const userStealthWhere = stealthUserWhere(requesterIsOwner);
-    const clientStealthWhere = stealthClientWhere(requesterIsOwner);
+    const clientStealthWhere = await porteeAnalytique(req);
     if (prisma) {
       const [
         totalUsers,

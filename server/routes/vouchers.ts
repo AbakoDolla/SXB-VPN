@@ -4,6 +4,7 @@ import { z } from "zod";
 import { inMemoryDb, logDbActivity, prisma } from "../database";
 import { AuthenticatedRequest, requireAuth, requirePermission } from "../middleware/auth";
 import { canSeeUser } from "../middleware/rbac/owner";
+import { possedeClientCloisonne } from "../services/portee-donnees";
 import {
   chargerFicheProprietaireClient,
   chargerFicheRevendeur,
@@ -71,7 +72,7 @@ function effectiveStatus(voucher: any): "active" | "used" | "revoked" | "expired
   return "active";
 }
 
-function sanitizeVoucher(voucher: any) {
+function sanitizeVoucher(voucher: any, peutVoirBeneficiaire = true) {
   if (!voucher) return null;
   const reseller = voucher.reseller
     ? {
@@ -80,7 +81,11 @@ function sanitizeVoucher(voucher: any) {
         email: voucher.reseller.user?.email ?? null,
       }
     : null;
-  const redeemedClient = voucher.redeemedClient
+  // Le bon reste visible — c'est de l'inventaire que l'exploitant gère, et le
+  // faire disparaître fausserait ses comptes. Mais le NOM de qui l'a utilisé
+  // est une donnée de client : quand ce client appartient à un compartiment
+  // que l'appelant ne voit pas, il n'apprend pas qui c'est.
+  const redeemedClient = voucher.redeemedClient && peutVoirBeneficiaire
     ? {
         id: voucher.redeemedClient.id,
         name: voucher.redeemedClient.user?.name ?? null,
@@ -173,7 +178,14 @@ router.get(
           where: await resellerScope(req),
           include: {
             reseller: { include: { user: true } },
-            redeemedClient: { include: { user: true } },
+            // Le rôle du compte porteur ET celui du gestionnaire : ce sont les
+            // deux rattachements qui décident si le bénéficiaire est visible.
+            redeemedClient: {
+              include: {
+                user: { include: { role: true } },
+                managedBy: { include: { role: true } },
+              },
+            },
           },
           orderBy: { createdAt: "desc" },
         });
@@ -184,7 +196,11 @@ router.get(
           vouchers = vouchers.filter((voucher: any) => voucher.resellerId === fiche?.id);
         }
       }
-      return res.json({ vouchers: vouchers.map(sanitizeVoucher) });
+      return res.json({
+        vouchers: vouchers.map((voucher: any) =>
+          sanitizeVoucher(voucher, possedeClientCloisonne(req.user, voucher.redeemedClient)),
+        ),
+      });
     } catch (error) {
       console.error("Fetch vouchers error:", error);
       return res.status(500).json({

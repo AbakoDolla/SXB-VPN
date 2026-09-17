@@ -7,18 +7,19 @@ import {
   interdireMutationSupport,
 } from "../services/reseller-access";
 import { executerMutationQuota } from "../services/reseller-quota";
+import { porteeSousClient } from "../services/portee-donnees";
 import { dissocierAccesClient, synchroniserEtatAccesClient } from "../services/client-access-state";
 
 const router = Router();
 
 async function porteeSessions(req: AuthenticatedRequest) {
-  const ownership = req.user?.role === "RESELLER"
-    ? porteeClientsRevendeur(await chargerFicheRevendeur(prisma, req.user.userId))
-    : {};
-  return { client: {
-    ...ownership,
-    ...(req.user?.role === "OWNER" ? {} : { user: { role: { name: { not: "OWNER" } } } }),
-  } };
+  // Le filtre etait ecrit ici, et ne regardait que le compte PORTEUR du client.
+  // Un client cree depuis le panneau recoit un compte de role CLIENT : les
+  // sessions d'activation du proprietaire etaient donc visibles de tous.
+  //
+  // Le point unique couvre les deux rattachements — compte porteur ET
+  // gestionnaire — et applique au passage le compartiment de l'administrateur.
+  return (await porteeSousClient(prisma, req.user)) ?? {};
 }
 
 // GET /api/sessions — liste toutes les sessions d'activation

@@ -82,16 +82,30 @@ export async function porteeClients(
 /**
  * Même portée, exprimée depuis un modèle qui pointe vers le client.
  *
- * Un forfait n'a pas de gestionnaire : il hérite de celui de son client. Sans
- * ce passage par la relation, la liste des forfaits rendait tout le parc à un
- * administrateur dont la liste de clients était pourtant vide.
+ * Un forfait, une session d'activation, un jeton ou un bon n'ont pas de
+ * gestionnaire : ils héritent de celui de leur client. Sans ce passage par la
+ * relation, chacune de ces listes rendait tout le parc à un administrateur dont
+ * la liste de clients était pourtant vide — et laissait voir le parc du
+ * propriétaire à tout le monde.
+ *
+ * `relation` nomme le champ qui mène au client. Il vaut `client` presque
+ * partout, mais certaines tables l'appellent autrement.
  */
+export async function porteeSousClient(
+  prisma: any,
+  requerant: Requerant | null | undefined,
+  relation = 'client',
+): Promise<Record<string, unknown> | null> {
+  const portee = await porteeClients(prisma, requerant);
+  return portee ? { [relation]: portee } : null;
+}
+
+/** Alias historique : la portée d'un forfait passe par son client. */
 export async function porteeClientsForfait(
   prisma: any,
   requerant: Requerant | null | undefined,
 ): Promise<Record<string, unknown> | null> {
-  const portee = await porteeClients(prisma, requerant);
-  return portee ? { client: portee } : null;
+  return porteeSousClient(prisma, requerant);
 }
 
 /**

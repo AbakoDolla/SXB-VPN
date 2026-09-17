@@ -35,7 +35,7 @@ import { prisma, logDbActivity } from '../database';
 import { accessStateHub } from '../services/access-state-events';
 import { requireAuth, requirePermission, AuthenticatedRequest } from '../middleware/auth';
 import { isOwnerRequest } from '../middleware/rbac/owner';
-import { gestionnaireAInscrire } from '../services/portee-donnees';
+import { gestionnaireAInscrire, porteeClients } from '../services/portee-donnees';
 import {
   interdireAccesRevendeur,
   interdireMutationSupport,
@@ -1096,6 +1096,33 @@ router.get(
       const filtre: Record<string, unknown> = {};
       if (query.status) filtre.status = query.status;
       if (query.tokenId) filtre.tokenId = query.tokenId;
+      // ── Le parc du propriétaire n'existe pas ici non plus ─────────────────
+      //
+      // Un essai déployé par le propriétaire crée un client qui lui est
+      // rattaché, donc invisible partout ailleurs. La DEMANDE, elle, restait
+      // affichée : son nom, son pays et son appareil trahissaient exactement ce
+      // que la furtivité protège ailleurs.
+      //
+      // `clientId` est une clé NUE, sans relation Prisma — la table garde
+      // l'historique même quand le client est supprimé. On résout donc les
+      // clients invisibles, puis on écarte les demandes qui les désignent.
+      //
+      // Une demande encore EN ATTENTE n'a pas de client : elle reste visible,
+      // sans quoi la file de travail de l'exploitant se viderait toute seule.
+      const porteeCompartiment = await porteeClients(prisma, req.user);
+      if (porteeCompartiment) {
+        const invisibles = await (prisma as any).vpnClient.findMany({
+          where: { NOT: porteeCompartiment },
+          select: { id: true },
+          take: 5_000,
+        });
+        if (invisibles.length) {
+          filtre.OR = [
+            { clientId: null },
+            { clientId: { notIn: invisibles.map((c: any) => String(c.id)) } },
+          ];
+        }
+      }
       const limite = query.limit ?? 100;
       const decalage = query.offset ?? 0;
       const [total, demandes] = await Promise.all([
