@@ -117,7 +117,7 @@ object SxbEngineSchema {
         // désigner. Les trois sont donc lus AVANT de réécrire la route.
         val sniffDemande = moderniserInbounds(config)
         val speciaux = moderniserOutbounds(config)
-        val dns = config.optJSONObject("dns")?.let { moderniserDns(it) }
+        val dns = config.optJSONObject("dns")?.let { moderniserDns(it, speciaux) }
         if (dns != null) config.put("dns", dns)
         moderniserRoute(config, sniffDemande, speciaux, resolveurDAmorcage(dns))
         return config
@@ -130,6 +130,10 @@ object SxbEngineSchema {
      * le tunnel exigerait le tunnel, dont l'ouverture exige cette résolution.
      * Le moteur appelle cela `default_domain_resolver`, et depuis 1.12 il
      * avertit quand il manque — puis le refusera.
+     *
+     * Un serveur est hors tunnel quand il ne porte AUCUN détour : après
+     * traduction, un détour vers un `direct` nu a été retiré, et il ne reste
+     * donc de détour que sur ce qui passe réellement par le tunnel.
      */
     private fun resolveurDAmorcage(dns: JSONObject?): String? {
         val serveurs = dns?.optJSONArray("servers") ?: return null
@@ -137,7 +141,7 @@ object SxbEngineSchema {
             val serveur = serveurs.optJSONObject(i) ?: continue
             if (serveur.optString("type") == "fakeip") continue
             val tag = serveur.optString("tag", "")
-            if (tag.isNotEmpty() && serveur.optString("detour", "") == "direct") return tag
+            if (tag.isNotEmpty() && !serveur.has("detour")) return tag
         }
         return null
     }
@@ -167,7 +171,19 @@ object SxbEngineSchema {
     // ── Outbounds ────────────────────────────────────────────────────────────
 
     /** Étiquettes des outbounds spéciaux retirés, par nature. */
-    private data class Speciaux(val dns: MutableSet<String>, val block: MutableSet<String>)
+    private data class Speciaux(
+        val dns: MutableSet<String>,
+        val block: MutableSet<String>,
+        /**
+         * Outbounds `direct` sans aucune option.
+         *
+         * Un serveur DNS qui les désigne en `detour` est REFUSÉ depuis 1.12 :
+         * « detour to an empty direct outbound makes no sense ». Et c'est
+         * exact — sans détour, le dialer par défaut est déjà celui-là. Le
+         * champ disait donc quelque chose que le moteur fait de lui-même.
+         */
+        val directsNus: MutableSet<String>,
+    )
 
     /**
      * Retire les outbounds spéciaux devenus des actions de route.
@@ -178,7 +194,7 @@ object SxbEngineSchema {
      * version suivante.
      */
     private fun moderniserOutbounds(config: JSONObject): Speciaux {
-        val speciaux = Speciaux(mutableSetOf(), mutableSetOf())
+        val speciaux = Speciaux(mutableSetOf(), mutableSetOf(), mutableSetOf())
         val outbounds = config.optJSONArray("outbounds") ?: return speciaux
         val conserves = JSONArray()
         for (i in 0 until outbounds.length()) {
@@ -194,6 +210,10 @@ object SxbEngineSchema {
             // `domain_strategy` sur un outbound demande au moteur de résoudre le
             // saut suivant lui-même ; remplacé par `domain_resolver` en 1.12.
             outbound.remove("domain_strategy")
+            if (type == "direct" && tag.isNotEmpty() &&
+                outbound.keys().asSequence().all { it == "type" || it == "tag" }) {
+                speciaux.directsNus.add(tag)
+            }
             conserves.put(outbound)
         }
         config.put("outbounds", conserves)
@@ -300,7 +320,7 @@ object SxbEngineSchema {
      * URL mélangeait : le TRANSPORT d'un côté (`type`), l'ADRESSE de l'autre
      * (`server`, `server_port`).
      */
-    private fun moderniserDns(source: JSONObject): JSONObject {
+    private fun moderniserDns(source: JSONObject, speciaux: Speciaux): JSONObject {
         val dns = JSONObject(source.toString())
         // La mémoire est désormais indexée par transport : le champ ne veut
         // plus rien dire, et le moteur refuse ce qu'il ne connaît pas.
@@ -324,8 +344,12 @@ object SxbEngineSchema {
             val serveur = serveurs.optJSONObject(i) ?: continue
             val tag = serveur.optString("tag", "")
 
-            // Déjà au format courant : on n'y touche pas.
-            if (serveur.has("type") && !serveur.has("address")) { traduits.put(serveur); continue }
+            // Déjà au format courant : seule la question du détour se pose.
+            if (serveur.has("type") && !serveur.has("address")) {
+                if (serveur.optString("detour", "") in speciaux.directsNus) serveur.remove("detour")
+                traduits.put(serveur)
+                continue
+            }
 
             val adresse = serveur.optString("address", "").trim()
             val strategie = serveur.optString("strategy", "").trim().lowercase()
@@ -360,7 +384,13 @@ object SxbEngineSchema {
                 // NOM de celui-ci. Renommé, pour dire ce qu'il fait.
                 val resolveur = serveur.optString("address_resolver", "").trim()
                 if (resolveur.isNotEmpty()) traduit.put("domain_resolver", resolveur)
-                if (serveur.has("detour")) traduit.put("detour", serveur.get("detour"))
+                // Un détour vers un `direct` NU est refusé depuis 1.12 : sans
+                // détour, le dialer par défaut est déjà celui-là. Le champ
+                // disait donc quelque chose que le moteur fait de lui-même.
+                val detour = serveur.optString("detour", "")
+                if (detour.isNotEmpty() && detour !in speciaux.directsNus) {
+                    traduit.put("detour", detour)
+                }
             }
             // `client_subnet` n'est plus une propriété du serveur : il se pose
             // sur les règles qui le désignent, comme la stratégie. Lu sans

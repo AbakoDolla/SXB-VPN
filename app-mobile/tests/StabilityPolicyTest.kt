@@ -429,6 +429,17 @@ fun main() {
             "vu ${route.optString("default_domain_resolver")}"
         }
 
+        // Et le détour vers un `direct` NU a disparu : le moteur le refuse
+        // depuis 1.12 — sans détour, le dialer par défaut est déjà celui-là.
+        val serveurs = SxbEngineSchema.moderniser(config).getJSONObject("dns").getJSONArray("servers")
+        val local = (0 until serveurs.length()).map { serveurs.getJSONObject(it) }
+            .first { it.optString("tag") == "dns-local" }
+        check(!local.has("detour")) { "un détour vers un direct nu doit être retiré" }
+        // Celui qui passe RÉELLEMENT par le tunnel garde le sien.
+        val distant = (0 until serveurs.length()).map { serveurs.getJSONObject(it) }
+            .first { it.optString("tag") == "dns-remote" }
+        check(distant.getString("detour") == "proxy")
+
         // Un serveur fakeip ne joint rien : il ne peut pas amorcer quoi que ce
         // soit, même s'il porte le même `detour`.
         val sansDirect = JSONObject("""{
