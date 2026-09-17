@@ -33,7 +33,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import Colors from '@/constants/colors';
 import { downloadAndInstallAppUpdate, fetchLatestAppUpdate, type AppUpdateInfo } from '@/services/appUpdate';
 import { useTranslation } from '@/localization';
-import { isPlayDistribution } from '@/services/distribution';
+import { isPlayDistribution } from '@/services/distribution';
+import { radius, spacing } from "@/constants/theme";
 
 // Intervalle de re-vérification : 24 h (mission).
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -244,13 +245,13 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 420,
     backgroundColor: '#0A0F1C',
-    borderRadius: 20,
+    borderRadius: radius.lg,
     padding: 20,
     borderWidth: 1,
     borderColor: Colors.border,
   },
   iconWrap: {
-    width: 48, height: 48, borderRadius: 24,
+    width: 48, height: 48, borderRadius: radius.xl,
     alignItems: 'center', justifyContent: 'center',
     backgroundColor: Colors.primaryDim,
     marginBottom: 12,
@@ -262,11 +263,11 @@ const styles = StyleSheet.create({
     fontSize: 13, fontFamily: 'Inter_400Regular', color: Colors.textSecondary, lineHeight: 18,
   },
   metaRow: {
-    flexDirection: 'row', gap: 12, marginTop: 14,
+    flexDirection: 'row', gap: spacing.md, marginTop: 14,
   },
   metaCol: {
     flex: 1, paddingVertical: 8, paddingHorizontal: 10,
-    borderRadius: 10, backgroundColor: Colors.bgCard,
+    borderRadius: radius.sm, backgroundColor: Colors.bgCard,
     borderWidth: 1, borderColor: Colors.border,
   },
   metaLbl: {
@@ -291,11 +292,11 @@ const styles = StyleSheet.create({
     color: Colors.textMuted, fontFamily: 'Inter_400Regular', textAlign: 'center',
   },
   actions: {
-    flexDirection: 'row', gap: 10, marginTop: 18,
+    flexDirection: 'row', gap: spacing.md, marginTop: 18,
   },
   btn: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 6, paddingVertical: 12, borderRadius: 12,
+    gap: spacing.sm, paddingVertical: 12, borderRadius: radius.sm,
   },
   btnPrimary: { backgroundColor: Colors.primary },
   btnPrimaryText: { color: '#000', fontFamily: 'Inter_700Bold', fontSize: 14 },

@@ -2,7 +2,8 @@ import React from "react";
 import { Modal, StyleSheet, Text, View, Pressable, ScrollView } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import Colors from "@/constants/colors";
+import Colors from "@/constants/colors";
+import { radius, spacing } from "@/constants/theme";
 
 interface Announcement {
   id: string;
@@ -56,13 +57,13 @@ export default function AnnouncementModal({ announcement, onClose }: Props) {
 
 const styles = StyleSheet.create({
   overlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.85)", justifyContent: "center", alignItems: "center", padding: 24 },
-  modal: { width: "100%", maxWidth: 400, borderRadius: 24, overflow: "hidden", borderWidth: 1, borderColor: Colors.border },
-  content: { padding: 24, gap: 20 },
-  header: { alignItems: "center", gap: 12 },
-  iconWrap: { width: 64, height: 64, borderRadius: 32, alignItems: "center", justifyContent: "center" },
+  modal: { width: "100%", maxWidth: 400, borderRadius: radius.xl, overflow: "hidden", borderWidth: 1, borderColor: Colors.border },
+  content: { padding: 24, gap: spacing.xl },
+  header: { alignItems: "center", gap: spacing.md },
+  iconWrap: { width: 64, height: 64, borderRadius: radius["2xl"], alignItems: "center", justifyContent: "center" },
   title: { fontSize: 20, fontWeight: "700", color: "#FFF", textAlign: "center", fontFamily: "Inter_700Bold" },
   scroll: { maxHeight: 300 },
   message: { fontSize: 14, color: Colors.textSecondary, textAlign: "center", lineHeight: 22, fontFamily: "Inter_400Regular" },
-  closeBtn: { paddingVertical: 14, borderRadius: 16, alignItems: "center", justifyContent: "center" },
+  closeBtn: { paddingVertical: 14, borderRadius: radius.md, alignItems: "center", justifyContent: "center" },
   closeBtnText: { color: "#000", fontWeight: "700", fontSize: 15, fontFamily: "Inter_700Bold" },
 });

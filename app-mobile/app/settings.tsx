@@ -26,7 +26,8 @@ import {
 import { useAppLock } from "@/contexts/AppLockContext";
 import { DATA_DELETION_URL, isPlayDistribution } from "@/services/distribution";
 import { usePrivacy } from "@/contexts/PrivacyContext";
-import { openBackgroundSettings, readBackgroundMode, type BackgroundMode } from "@/services/backgroundReliability";
+import { openBackgroundSettings, readBackgroundMode, type BackgroundMode } from "@/services/backgroundReliability";
+import { radius, spacing } from "@/constants/theme";
 
 // ── Row component ─────────────────────────────────────────────────────────────
 
@@ -486,7 +487,7 @@ export default function SettingsScreen() {
               {(user?.name || "?").split(" ").map((w: string) => w[0]).join("").toUpperCase().slice(0, 2)}
             </Text>
           </View>
-          <View style={{ flex: 1, gap: 2 }}>
+          <View style={{ flex: 1, gap: spacing.xs }}>
             <Text style={styles.accountName}>{user?.name || "Utilisateur"}</Text>
             <Text style={styles.accountEmail}>{user?.email || ""}</Text>
             <View style={[styles.badge, { backgroundColor: acctBadge.color + "20", borderColor: acctBadge.color + "40", alignSelf: "flex-start", marginTop: 4 }]}>
@@ -598,14 +599,14 @@ export default function SettingsScreen() {
             <View style={styles.themePreviewCards}>
               <View style={[styles.themeMiniCard, { backgroundColor: "#FFFFFF", borderColor: "#D7E2EE" }]}>
                 <View style={{ width: 13, height: 13, borderRadius: 5, backgroundColor: "#1769E8" }} />
-                <View style={{ flex: 1, gap: 4 }}>
+                <View style={{ flex: 1, gap: spacing.xs }}>
                   <View style={{ width: "72%", height: 5, borderRadius: 4, backgroundColor: "#102033" }} />
                   <View style={{ width: "50%", height: 4, borderRadius: 4, backgroundColor: "#71869D" }} />
                 </View>
               </View>
               <View style={[styles.themeMiniCard, { backgroundColor: "#0C1526", borderColor: "#294059" }]}>
                 <View style={{ width: 13, height: 13, borderRadius: 5, backgroundColor: "#41D8FF" }} />
-                <View style={{ flex: 1, gap: 4 }}>
+                <View style={{ flex: 1, gap: spacing.xs }}>
                   <View style={{ width: "72%", height: 5, borderRadius: 4, backgroundColor: "#F6FAFF" }} />
                   <View style={{ width: "50%", height: 4, borderRadius: 4, backgroundColor: "#6B819F" }} />
                 </View>
@@ -734,59 +735,59 @@ export default function SettingsScreen() {
 function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useColors>) {
  return StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
-  content: { paddingHorizontal: 20, gap: 20 },
+  content: { paddingHorizontal: 20, gap: spacing.xl },
   pageHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 4 },
-  backBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.bgCard, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
+  backBtn: { width: 36, height: 36, borderRadius: radius.lg, backgroundColor: colors.bgCard, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
   pageTitle: { fontSize: 18, fontWeight: "700", color: colors.textPrimary, fontFamily: "Inter_700Bold" },
-  accountCard: { flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: colors.bgCard, borderRadius: 20, borderWidth: 1, borderColor: colors.border, padding: 16, shadowColor: "#000", shadowOpacity: 0.12, shadowRadius: 16, shadowOffset: { width: 0, height: 6 }, elevation: 4 },
-  accountAvatar: { width: 52, height: 52, borderRadius: 26, backgroundColor: colors.primaryDim, borderWidth: 1.5, borderColor: colors.primary + "50", alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  accountCard: { flexDirection: "row", alignItems: "center", gap: spacing.lg, backgroundColor: colors.bgCard, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, padding: 16, shadowColor: "#000", shadowOpacity: 0.12, shadowRadius: 16, shadowOffset: { width: 0, height: 6 }, elevation: 4 },
+  accountAvatar: { width: 52, height: 52, borderRadius: radius.xl, backgroundColor: colors.primaryDim, borderWidth: 1.5, borderColor: colors.primary + "50", alignItems: "center", justifyContent: "center", flexShrink: 0 },
   accountInitials: { fontSize: 20, fontWeight: "700", color: colors.primary, fontFamily: "Inter_700Bold" },
   accountName: { fontSize: 16, fontWeight: "700", color: colors.textPrimary, fontFamily: "Inter_700Bold" },
   accountEmail: { fontSize: 12, color: colors.textMuted, fontFamily: "Inter_400Regular" },
   accountDotWrap: { alignItems: "center", justifyContent: "center" },
   accountDot: { width: 10, height: 10, borderRadius: 5 },
-  section: { gap: 6 },
+  section: { gap: spacing.sm },
   sectionHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingLeft: 4 },
   sectionLabel: { fontSize: 10, fontWeight: "700", color: colors.textMuted, letterSpacing: 1.5, fontFamily: "Inter_700Bold" },
   sectionSubtitle: { fontSize: 10, color: colors.textMuted, fontFamily: "Inter_400Regular" },
-  sectionCard: { backgroundColor: colors.bgCard, borderRadius: 18, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14 },
-  row: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 13 },
-  rowIcon: { width: 36, height: 36, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  sectionCard: { backgroundColor: colors.bgCard, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14 },
+  row: { flexDirection: "row", alignItems: "center", gap: spacing.md, paddingVertical: 13 },
+  rowIcon: { width: 36, height: 36, borderRadius: radius.sm, alignItems: "center", justifyContent: "center" },
   rowLabel: { flex: 1, fontSize: 14, color: colors.textPrimary, fontFamily: "Inter_500Medium" },
   rowValue: { fontSize: 12, color: colors.textMuted, fontFamily: "Inter_400Regular", maxWidth: 140 },
   badge: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, borderWidth: 1 },
   badgeText: { fontSize: 10, fontWeight: "700", fontFamily: "Inter_700Bold" },
   divider: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border },
-  themePreview: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 14 },
-  themePreviewCopy: { flex: 1, gap: 3 },
+  themePreview: { flexDirection: "row", alignItems: "center", gap: spacing.md, paddingVertical: 14 },
+  themePreviewCopy: { flex: 1, gap: spacing.xs },
   themePreviewTitle: { color: colors.textPrimary, fontSize: 13, fontFamily: "Inter_600SemiBold" },
   themePreviewText: { color: colors.textMuted, fontSize: 10, fontFamily: "Inter_400Regular" },
   themePreviewCards: { width: 108, gap: 5 },
-  themeMiniCard: { height: 31, borderRadius: 9, borderWidth: 1, paddingHorizontal: 7, flexDirection: "row", alignItems: "center", gap: 6 },
-  themePicker: { flexDirection: "row", gap: 8, paddingVertical: 13 },
-  themeChoice: { flex: 1, minHeight: 54, borderRadius: 13, borderWidth: 1, alignItems: "center", justifyContent: "center", gap: 5 },
+  themeMiniCard: { height: 31, borderRadius: radius.sm, borderWidth: 1, paddingHorizontal: 7, flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  themePicker: { flexDirection: "row", gap: spacing.sm, paddingVertical: 13 },
+  themeChoice: { flex: 1, minHeight: 54, borderRadius: radius.md, borderWidth: 1, alignItems: "center", justifyContent: "center", gap: 5 },
   themeChoiceText: { fontSize: 10, fontFamily: "Inter_600SemiBold" },
-  logoutBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 14, borderRadius: 14, borderWidth: 1, borderColor: colors.disconnected + "40", backgroundColor: colors.disconnectedDim },
+  logoutBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, paddingVertical: 14, borderRadius: radius.md, borderWidth: 1, borderColor: colors.disconnected + "40", backgroundColor: colors.disconnectedDim },
   logoutText: { fontSize: 15, fontWeight: "600", color: colors.disconnected, fontFamily: "Inter_600SemiBold" },
   footer: { textAlign: "center", fontSize: 10, color: colors.textMuted, fontFamily: "Inter_400Regular", letterSpacing: 2 },
   // Lang modal
   modalOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: "center", padding: 20 },
-  langSheet: { backgroundColor: colors.bgCard, borderRadius: 20, padding: 20, borderWidth: 1, borderColor: colors.border },
+  langSheet: { backgroundColor: colors.bgCard, borderRadius: radius.lg, padding: 20, borderWidth: 1, borderColor: colors.border },
   langSheetTitle: { fontSize: 16, fontWeight: "700", color: colors.textPrimary, fontFamily: "Inter_700Bold", marginBottom: 14, textAlign: "center" },
-  langRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 12, paddingHorizontal: 10, borderRadius: 12 },
+  langRow: { flexDirection: "row", alignItems: "center", gap: spacing.md, paddingVertical: 12, paddingHorizontal: 10, borderRadius: radius.sm },
   langRowActive: { backgroundColor: colors.primaryDim },
   langFlag: { fontSize: 24 },
   langLabel: { flex: 1, fontSize: 15, color: colors.textPrimary, fontFamily: "Inter_500Medium" },
   // PIN modal
-  pinSheet: { backgroundColor: colors.bgCard, borderRadius: 20, padding: 24, borderWidth: 1, borderColor: colors.border, gap: 14 },
+  pinSheet: { backgroundColor: colors.bgCard, borderRadius: radius.lg, padding: 24, borderWidth: 1, borderColor: colors.border, gap: spacing.lg },
   pinTitle: { fontSize: 16, fontWeight: "700", color: colors.textPrimary, fontFamily: "Inter_700Bold", textAlign: "center" },
   pinHint: { color: colors.textSecondary, fontSize: 12, lineHeight: 17, fontFamily: "Inter_400Regular", textAlign: "center" },
   pinErr: { color: colors.disconnected, fontSize: 12, fontFamily: "Inter_400Regular", textAlign: "center" },
-  pinInput: { backgroundColor: colors.bgInput, borderWidth: 1, borderColor: colors.border, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 16, color: colors.textPrimary, fontSize: 20, fontFamily: "Inter_700Bold", textAlign: "center", letterSpacing: 8 },
-  pinBtns: { flexDirection: "row", gap: 10, marginTop: 4 },
-  pinBtnCancel: { flex: 1, paddingVertical: 12, borderRadius: 12, borderWidth: 1, borderColor: colors.border, alignItems: "center" },
+  pinInput: { backgroundColor: colors.bgInput, borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm, paddingVertical: 12, paddingHorizontal: 16, color: colors.textPrimary, fontSize: 20, fontFamily: "Inter_700Bold", textAlign: "center", letterSpacing: 8 },
+  pinBtns: { flexDirection: "row", gap: spacing.md, marginTop: 4 },
+  pinBtnCancel: { flex: 1, paddingVertical: 12, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.border, alignItems: "center" },
   pinBtnCancelText: { color: colors.textMuted, fontFamily: "Inter_500Medium", fontSize: 14 },
-  pinBtnOk: { flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: colors.primaryDim, borderWidth: 1, borderColor: colors.primary + "40", alignItems: "center" },
+  pinBtnOk: { flex: 1, paddingVertical: 12, borderRadius: radius.sm, backgroundColor: colors.primaryDim, borderWidth: 1, borderColor: colors.primary + "40", alignItems: "center" },
   pinBtnOkText: { color: colors.primary, fontFamily: "Inter_600SemiBold", fontSize: 14 },
  });
 }

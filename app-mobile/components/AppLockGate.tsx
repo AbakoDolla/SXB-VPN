@@ -16,7 +16,8 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppLock } from "@/contexts/AppLockContext";
 import { useColors } from "@/hooks/useColors";
-import { useTranslation } from "@/localization";
+import { useTranslation } from "@/localization";
+import { radius, spacing } from "@/constants/theme";
 
 export function AppLockGate({ children }: { children: React.ReactNode }) {
   const colors = useColors();
@@ -207,7 +208,7 @@ function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useCol
     iconWrap: {
       width: 82,
       height: 82,
-      borderRadius: 28,
+      borderRadius: radius.xl,
       alignItems: "center",
       justifyContent: "center",
       backgroundColor: colors.primaryDim,
@@ -233,11 +234,11 @@ function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useCol
     card: {
       width: "100%",
       padding: 20,
-      borderRadius: 20,
+      borderRadius: radius.lg,
       borderWidth: 1,
       borderColor: colors.border,
       backgroundColor: colors.bgCard,
-      gap: 12,
+      gap: spacing.md,
     },
     error: {
       color: colors.disconnected,
@@ -253,7 +254,7 @@ function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useCol
     },
     input: {
       minHeight: 54,
-      borderRadius: 14,
+      borderRadius: radius.md,
       borderWidth: 1,
       borderColor: colors.border2,
       backgroundColor: colors.bgInput,
@@ -266,7 +267,7 @@ function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useCol
     },
     primaryButton: {
       minHeight: 52,
-      borderRadius: 14,
+      borderRadius: radius.md,
       alignItems: "center",
       justifyContent: "center",
       backgroundColor: colors.primary,
@@ -278,7 +279,7 @@ function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useCol
     },
     biometricButton: {
       minHeight: 50,
-      borderRadius: 14,
+      borderRadius: radius.md,
       borderWidth: 1,
       borderColor: colors.primary + "55",
       backgroundColor: colors.primaryDim,

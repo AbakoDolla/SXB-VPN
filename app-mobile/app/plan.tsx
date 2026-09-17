@@ -10,7 +10,7 @@ import { useColors } from "@/hooks/useColors";
 import { useResponsive } from "@/hooks/useResponsive";
 import { useTranslation } from "@/localization";
 import { activationErrorKey } from "@/services/activationError";
-import { responsiveLayout } from "@/constants/theme";
+import { radius, responsiveLayout, spacing } from "@/constants/theme";
 
 export default function PlanScreen() {
   const { t } = useTranslation();
@@ -61,7 +61,7 @@ export default function PlanScreen() {
   if (success) {
     return (
       <LinearGradient colors={colors.gradients.bg as [string, string, string]} style={[styles.container, { justifyContent: "center", alignItems: "center" }]}>
-        <Animated.View style={[{ alignItems: "center", gap: 16 }, { transform: [{ scale: successScale }] }]}>
+        <Animated.View style={[{ alignItems: "center", gap: spacing.lg }, { transform: [{ scale: successScale }] }]}>
           <View style={[styles.iconCircle, { backgroundColor: colors.connectedDim, borderColor: colors.connected + "40" }]}>
             <Ionicons name="checkmark-circle" size={72} color={colors.connected} />
           </View>
@@ -109,7 +109,7 @@ export default function PlanScreen() {
         </Animated.View>
 
         {error ? (
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
             <Ionicons name="alert-circle" size={14} color={colors.disconnected} />
             <Text style={{ fontSize: 13, color: colors.disconnected, fontFamily: "Inter_500Medium" }}>{error}</Text>
           </View>
@@ -144,16 +144,16 @@ function makeStyles(colors: ReturnType<typeof useColors>, responsive: ReturnType
   return StyleSheet.create({
   container: { flex: 1 },
   content: { paddingHorizontal: responsive.screenPadding, gap: responsive.gap + 2, width: "100%", maxWidth: responsiveLayout.contentMaxWidth, alignSelf: "center" },
-  backBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.bgCard, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center", marginBottom: 8 },
+  backBtn: { width: 44, height: 44, borderRadius: radius.lg, backgroundColor: colors.bgCard, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center", marginBottom: 8 },
   iconCircle: { width: 110, height: 110, borderRadius: 55, borderWidth: 1, alignItems: "center", justifyContent: "center" },
   title: { fontSize: 26, fontWeight: "700", color: colors.textPrimary, fontFamily: "Inter_700Bold", textAlign: "center" },
   subtitle: { fontSize: 14, color: colors.textSecondary, fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 22 },
-  input: { backgroundColor: colors.bgInput, borderWidth: 1.5, borderColor: colors.border, borderRadius: 14, paddingHorizontal: 18, paddingVertical: 16, fontSize: 15, color: colors.textPrimary, fontFamily: "Inter_600SemiBold", letterSpacing: 1.5, textAlign: "center" },
-  btn: { borderRadius: 16, overflow: "hidden" },
-  btnGrad: { minHeight: responsive.touchTarget, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 16 },
+  input: { backgroundColor: colors.bgInput, borderWidth: 1.5, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: 18, paddingVertical: 16, fontSize: 15, color: colors.textPrimary, fontFamily: "Inter_600SemiBold", letterSpacing: 1.5, textAlign: "center" },
+  btn: { borderRadius: radius.md, overflow: "hidden" },
+  btnGrad: { minHeight: responsive.touchTarget, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, paddingVertical: 16 },
   // Blanc assumé : ce libellé est posé sur un dégradé violet saturé, identique
   // dans les deux thèmes, où seul un blanc garde un contraste suffisant.
-  btnText: { fontSize: 16, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold" },  infoCard: { flexDirection: "row", alignItems: "flex-start", gap: 10, backgroundColor: colors.bgCard, borderRadius: 12, borderWidth: 1, borderColor: colors.border, padding: 14 },
+  btnText: { fontSize: 16, fontWeight: "700", color: "#FFF", fontFamily: "Inter_700Bold" },  infoCard: { flexDirection: "row", alignItems: "flex-start", gap: spacing.md, backgroundColor: colors.bgCard, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.border, padding: 14 },
   infoText: { flex: 1, fontSize: 12, color: colors.textSecondary, fontFamily: "Inter_400Regular", lineHeight: 18 },
   });
 }

@@ -105,3 +105,36 @@ test('les préparatifs de connexion sont menés ensemble', () => {
   // Le relevé de compteurs ne doit pas pouvoir faire échouer une connexion.
   assert.match(contexte, /sessionBaselineRef\.current = \{ up: stats\?\.uploadBytes \|\| 0/);
 });
+
+test('les écrans partagent l’échelle du système de design', () => {
+  // L'application mêlait des rayons de 8 à 32 px et des espacements libres
+  // selon l'écran : les coins et le rythme vertical ne correspondaient pas
+  // d'un écran à l'autre. Chaque écran refait ici doit passer par l'échelle.
+  const ecrans = [
+    'app-mobile/app/settings.tsx',
+    'app-mobile/app/free-trial.tsx',
+    'app-mobile/app/support.tsx',
+    'app-mobile/app/plan.tsx',
+    'app-mobile/app/access-blocked.tsx',
+    'app-mobile/components/UpdatePrompt.tsx',
+    'app-mobile/components/AppLockGate.tsx',
+    'app-mobile/components/AnnouncementModal.tsx',
+    'app-mobile/components/HistoryCard.tsx',
+    'app-mobile/components/PrivacyDisclosure.tsx',
+    'app-mobile/components/ErrorFallback.tsx',
+    'app-mobile/components/AccessNotices.tsx',
+  ];
+  for (const ecran of ecrans) {
+    const source = lireSource(ecran);
+    assert.match(source, /from ["']@\/constants\/theme["']/, `${ecran} doit lire les jetons`);
+    assert.match(source, /radius\.|spacing\./, `${ecran} doit utiliser l'échelle`);
+    // Aucun rayon brut de carte ou de bouton. Le seuil bas exclut les rayons
+    // décoratifs — un point de 8 px, une barre de progression — dont la forme
+    // ne relève pas de l'échelle ; le seuil haut exclut les cercles, dont le
+    // rayon vaut la moitié du côté.
+    const bruts = [...source.matchAll(/borderRadius: (\d+)\b/g)]
+      .map((m) => Number(m[1]))
+      .filter((valeur) => valeur >= 8 && valeur < 40);
+    assert.deepEqual(bruts, [], `${ecran} garde des rayons bruts : ${bruts.join(', ')}`);
+  }
+});

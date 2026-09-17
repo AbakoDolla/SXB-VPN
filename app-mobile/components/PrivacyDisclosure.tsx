@@ -6,7 +6,8 @@ import { useLanguageContext } from '@/contexts/LanguageContext';
 import { useTranslation } from '@/localization';
 import { useColors } from '@/hooks/useColors';
 import { DATA_DELETION_URL, isPlayDistribution, PRIVACY_URL } from '@/services/distribution';
-import { NO_CONSENT, PRIVACY_CONSENT_VERSION } from '@/services/privacyPolicy';
+import { NO_CONSENT, PRIVACY_CONSENT_VERSION } from '@/services/privacyPolicy';
+import { radius, spacing } from "@/constants/theme";
 
 export default function PrivacyDisclosure() {
   const { consent, loading, error, reload, save } = usePrivacy();
@@ -99,11 +100,11 @@ export default function PrivacyDisclosure() {
 }
 
 const styles = StyleSheet.create({
-  content: { paddingHorizontal: 24, gap: 18 },
-  languages: { flexDirection: 'row', gap: 12 },
+  content: { paddingHorizontal: 24, gap: spacing.xl },
+  languages: { flexDirection: 'row', gap: spacing.md },
   title: { fontSize: 24, fontWeight: '700' },
   body: { fontSize: 16, lineHeight: 24 },
-  option: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  option: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   optionText: { flex: 1, fontSize: 15, lineHeight: 22 },
-  button: { padding: 16, borderWidth: 1, borderRadius: 12, alignItems: 'center' },
+  button: { padding: 16, borderWidth: 1, borderRadius: radius.sm, alignItems: 'center' },
 });

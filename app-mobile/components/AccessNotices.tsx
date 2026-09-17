@@ -4,7 +4,8 @@ import { useAuthContext } from '@/contexts/AuthContext';
 import { useColors } from '@/hooks/useColors';
 import { useTranslation } from '@/localization';
 import { dismissAccessNotices } from '@/services/accessState';
-import { reportAccessSyncError } from '@/services/accessSync';
+import { reportAccessSyncError } from '@/services/accessSync';
+import { radius, spacing } from "@/constants/theme";
 
 export default function AccessNotices() {
   const { accessNotices } = useAuthContext();
@@ -12,7 +13,7 @@ export default function AccessNotices() {
   const colors = useColors();
   if (!accessNotices.length) return null;
   return (
-    <View style={{ padding: 16, gap: 8, borderRadius: 16, backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: 1 }}>
+    <View style={{ padding: 16, gap: spacing.sm, borderRadius: radius.md, backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: 1 }}>
       {accessNotices.map(notice => (
         <Text key={notice.id} accessibilityRole="alert" style={{ color: colors.textSecondary, fontSize: 13 }}>
           {t(`access_${notice.kind}`).replace('{name}', notice.name || 'VPN')}

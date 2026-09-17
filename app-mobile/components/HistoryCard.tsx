@@ -2,7 +2,8 @@ import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useColors } from '@/hooks/useColors';
-import type { HistoryItem } from '@/types/api';
+import type { HistoryItem } from '@/types/api';
+import { radius, spacing } from "@/constants/theme";
 
 interface HistoryCardProps {
   item: HistoryItem;
@@ -68,7 +69,7 @@ export default function HistoryCard({ item, isLast = false }: HistoryCardProps) 
 const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
-    gap: 14,
+    gap: spacing.lg,
     paddingBottom: 4,
   },
   timelineColumn: {
@@ -88,21 +89,21 @@ const styles = StyleSheet.create({
   },
   card: {
     flex: 1,
-    borderRadius: 14,
+    borderRadius: radius.md,
     borderWidth: 1,
     padding: 14,
     marginBottom: 10,
-    gap: 10,
+    gap: spacing.md,
   },
   iconRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: spacing.md,
   },
   iconBg: {
     width: 32,
     height: 32,
-    borderRadius: 10,
+    borderRadius: radius.sm,
     alignItems: 'center',
     justifyContent: 'center',
   },

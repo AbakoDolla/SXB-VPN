@@ -12,7 +12,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useColors } from '@/hooks/useColors';
 import { Feather } from '@expo/vector-icons';
 import { reloadAppAsync } from 'expo';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { radius, spacing } from "@/constants/theme";
 
 const CRASH_LOG_KEY = 'sxb_last_crash';
 
@@ -187,7 +188,7 @@ const styles = StyleSheet.create({
   content: {
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 16,
+    gap: spacing.lg,
     width: '100%',
     maxWidth: 600,
   },
@@ -207,7 +208,7 @@ const styles = StyleSheet.create({
     right: 16,
     width: 44,
     height: 44,
-    borderRadius: 8,
+    borderRadius: radius.sm,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -215,7 +216,7 @@ const styles = StyleSheet.create({
   },
   button: {
     paddingVertical: 16,
-    borderRadius: 8,
+    borderRadius: radius.sm,
     paddingHorizontal: 24,
     minWidth: 200,
     elevation: 3,
@@ -272,7 +273,7 @@ const styles = StyleSheet.create({
   },
   errorContainer: {
     width: '100%',
-    borderRadius: 8,
+    borderRadius: radius.sm,
     overflow: 'hidden',
     padding: 16,
   },
