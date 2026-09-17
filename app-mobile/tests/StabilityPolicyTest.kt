@@ -228,6 +228,190 @@ private class ReconnectSim(var connected: Boolean = true) {
 }
 
 fun main() {
+    // ══ Montée du moteur : sing-box 1.11 → 1.14 ═══════════════════════════════
+    //
+    // Entre ces deux versions, sing-box n'a pas seulement déprécié des options :
+    // il en a SUPPRIMÉ. Une configuration qui en contient une seule est refusée
+    // en bloc. Or SXB en écrit trois dans chaque configuration qu'il produit, et
+    // les profils déjà provisionnés sur les téléphones les portent aussi — ceux
+    // que personne ne peut plus corriger. D'où cette traduction, et ces preuves.
+
+    checkCase("l'outbound dns, supprimé en 1.13, devient une action de route") {
+        val config = JSONObject("""{
+          "inbounds":[{"type":"tun","tag":"tun-in","sniff":true,"sniff_override_destination":false}],
+          "outbounds":[{"type":"vless","tag":"proxy","server":"a.example.test","server_port":443},
+                       {"type":"direct","tag":"direct"},
+                       {"type":"dns","tag":"dns-out"},
+                       {"type":"block","tag":"block"}],
+          "route":{"rules":[{"protocol":"dns","outbound":"dns-out"},
+                            {"network":["udp"],"outbound":"block"},
+                            {"ip_is_private":true,"outbound":"direct"}],
+                   "final":"proxy","auto_detect_interface":true}
+        }""")
+        val out = SxbEngineSchema.moderniser(config)
+
+        // Plus aucun outbound spécial : leur simple déclaration est un refus.
+        val types = (0 until out.getJSONArray("outbounds").length())
+            .map { out.getJSONArray("outbounds").getJSONObject(it).getString("type") }
+        check(!types.contains("dns")) { "l'outbound dns doit disparaître" }
+        check(!types.contains("block")) { "l'outbound block doit disparaître" }
+        check(types.contains("vless") && types.contains("direct")) { "les vrais outbounds restent" }
+
+        val rules = out.getJSONObject("route").getJSONArray("rules")
+        // L'inspection précède tout : une règle par domaine évaluée avant elle
+        // ne verrait qu'une adresse IP.
+        check(rules.getJSONObject(0).getString("action") == "sniff")
+        val parProtocole = rules.getJSONObject(1)
+        check(parProtocole.getString("action") == "hijack-dns")
+        check(!parProtocole.has("outbound")) { "la référence pendante doit partir" }
+        check(parProtocole.getString("protocol") == "dns") { "le filtre d'origine est conservé" }
+        check(rules.getJSONObject(2).getString("action") == "reject")
+        // Une règle ordinaire n'est jamais touchée.
+        check(rules.getJSONObject(3).getString("outbound") == "direct")
+        check(out.getJSONObject("route").getString("final") == "proxy")
+
+        // Les champs d'inbound supprimés en 1.13 ne subsistent nulle part.
+        val tun = out.getJSONArray("inbounds").getJSONObject(0)
+        check(!tun.has("sniff") && !tun.has("sniff_override_destination"))
+        check(tun.getString("tag") == "tun-in" && tun.getBoolean("auto_route").not().not())
+    }
+
+    checkCase("le format de serveur DNS supprimé en 1.14 devient sa forme typée") {
+        val config = JSONObject("""{
+          "dns":{"servers":[
+                   {"tag":"dns-remote","address":"tcp://8.8.8.8","strategy":"ipv4_only","detour":"proxy"},
+                   {"tag":"dns-local","address":"192.0.2.1","strategy":"prefer_ipv4","detour":"direct"},
+                   {"tag":"dns-doh","address":"https://dns.google/dns-query","address_resolver":"dns-local"},
+                   {"tag":"dns-fake","address":"fakeip","detour":"direct"}],
+                 "fakeip":{"enabled":true,"inet4_range":"198.18.0.0/15"},
+                 "rules":[{"query_type":["A","AAAA"],"server":"dns-fake"}],
+                 "final":"dns-remote","independent_cache":true},
+          "outbounds":[{"type":"vless","tag":"proxy","server":"a.example.test","server_port":443}]
+        }""")
+        val dns = SxbEngineSchema.moderniser(config).getJSONObject("dns")
+        val serveurs = dns.getJSONArray("servers")
+
+        // Le transport et l'adresse étaient mélangés dans une URL ; ils sont
+        // désormais deux champs distincts.
+        val distant = serveurs.getJSONObject(0)
+        check(distant.getString("type") == "tcp") { "tcp:// devient type tcp" }
+        check(distant.getString("server") == "8.8.8.8") { "l'adresse perd son schéma" }
+        check(distant.getString("detour") == "proxy") { "le detour est conservé" }
+        check(!distant.has("address") && !distant.has("strategy"))
+
+        // Une adresse sans schéma désignait un serveur ordinaire, donc UDP.
+        check(serveurs.getJSONObject(1).getString("type") == "udp")
+        check(serveurs.getJSONObject(1).getString("server") == "192.0.2.1")
+
+        // DoH : le chemin par défaut n'est plus recopié, et le résolveur du nom
+        // change seulement de nom de champ.
+        val doh = serveurs.getJSONObject(2)
+        check(doh.getString("type") == "https" && doh.getString("server") == "dns.google")
+        check(doh.getString("domain_resolver") == "dns-local")
+        check(!doh.has("path")) { "le chemin par défaut de DoH n'est pas recopié" }
+
+        // Les plages de fakeip vivaient à part ; elles appartiennent au serveur.
+        val faux = serveurs.getJSONObject(3)
+        check(faux.getString("type") == "fakeip")
+        check(faux.getString("inet4_range") == "198.18.0.0/15")
+        check(!dns.has("fakeip")) { "le bloc fakeip séparé est supprimé en 1.14" }
+
+        // La stratégie par serveur n'existe plus : celle du serveur de dernier
+        // recours devient globale, sans rien inventer.
+        check(dns.getString("strategy") == "ipv4_only")
+        check(!dns.has("independent_cache")) { "la mémoire s'indexe désormais seule" }
+    }
+
+    checkCase("la stratégie d'un serveur non final suit les règles qui le désignent") {
+        val config = JSONObject("""{
+          "dns":{"servers":[
+                   {"tag":"a","address":"1.1.1.1","strategy":"ipv4_only"},
+                   {"tag":"b","address":"8.8.8.8","strategy":"prefer_ipv6"}],
+                 "rules":[{"domain":["exemple.test"],"server":"b"}],
+                 "final":"a"}
+        }""")
+        val dns = SxbEngineSchema.moderniser(config).getJSONObject("dns")
+        check(dns.getString("strategy") == "ipv4_only") { "celle du final devient globale" }
+        // Perdre celle de « b » changerait la résolution des domaines visés.
+        check(dns.getJSONArray("rules").getJSONObject(0).getString("strategy") == "prefer_ipv6")
+    }
+
+    checkCase("une configuration déjà au format courant ressort inchangée") {
+        val moderne = JSONObject("""{
+          "dns":{"servers":[{"type":"udp","tag":"d","server":"1.1.1.1"}],"final":"d"},
+          "inbounds":[{"type":"tun","tag":"tun-in","auto_route":true}],
+          "outbounds":[{"type":"vless","tag":"proxy","server":"a.example.test","server_port":443},
+                       {"type":"direct","tag":"direct"}],
+          "route":{"rules":[{"action":"sniff"},{"protocol":"dns","action":"hijack-dns"}],"final":"proxy"}
+        }""")
+        val avant = moderne.toString()
+        val apres = SxbEngineSchema.moderniser(moderne)
+        // L'objet reçu n'est jamais modifié : une configuration est relue à
+        // chaque reprise, la traduire en place ferait dépendre le résultat du
+        // nombre de tentatives déjà faites.
+        check(moderne.toString() == avant) { "la source ne doit jamais bouger" }
+        check(apres.getJSONObject("dns").getJSONArray("servers").getJSONObject(0).getString("type") == "udp")
+        // Aucune action `sniff` en double.
+        val rules = apres.getJSONObject("route").getJSONArray("rules")
+        check((0 until rules.length()).count { rules.getJSONObject(it).optString("action") == "sniff" } == 1)
+    }
+
+    checkCase("rien de ce qui fait joindre le serveur n'est touché") {
+        // La traduction ne porte que sur la FORME. Une adresse, un nom TLS, un
+        // en-tête Host ou un identifiant modifié ici casserait silencieusement
+        // un profil qui fonctionne.
+        val config = JSONObject("""{
+          "outbounds":[{"type":"vless","tag":"proxy","server":"cdn.example.test","server_port":8443,
+            "uuid":"00000000-0000-4000-8000-000000000001","flow":"","packet_encoding":"xudp",
+            "transport":{"type":"ws","path":"/@x","headers":{"Host":"vrai.example.test"}},
+            "tls":{"enabled":true,"server_name":"cdn.example.test","insecure":false,
+                   "utls":{"enabled":true,"fingerprint":"chrome"},"alpn":["http/1.1"]}},
+            {"type":"dns","tag":"dns-out"}]
+        }""")
+        val avant = config.getJSONArray("outbounds").getJSONObject(0).toString()
+        val proxy = SxbEngineSchema.moderniser(config).getJSONArray("outbounds").getJSONObject(0)
+        check(proxy.toString() == avant) { "l'outbound proxy doit sortir à l'identique" }
+    }
+
+    checkCase("les références pendantes sont supprimées, jamais laissées derrière") {
+        // Le moteur refuse une configuration entière pour une seule référence
+        // vers un serveur ou un outbound qui n'existe plus.
+        val config = JSONObject("""{
+          "dns":{"servers":[{"tag":"ok","address":"1.1.1.1"},
+                            {"tag":"refus","address":"rcode://refused"},
+                            {"tag":"faux","address":"fakeip"}],
+                 "fakeip":{"enabled":false},
+                 "rules":[{"domain":["bloque.test"],"server":"refus"},
+                          {"query_type":["A"],"server":"faux"},
+                          {"domain":["ok.test"],"server":"ok"}],
+                 "final":"ok"},
+          "outbounds":[{"type":"direct","tag":"direct"},{"type":"block","tag":"block"}],
+          "route":{"rules":[{"domain":["x.test"],"outbound":"block"}],"final":"block"}
+        }""")
+        val out = SxbEngineSchema.moderniser(config)
+        val dns = out.getJSONObject("dns")
+        val tags = (0 until dns.getJSONArray("servers").length())
+            .map { dns.getJSONArray("servers").getJSONObject(it).optString("tag") }
+        check(tags == listOf("ok")) { "les serveurs disparus ne laissent pas de trace" }
+
+        val regles = dns.getJSONArray("rules")
+        // `rcode://` fabriquait une réponse sur place : c'est devenu une action.
+        check(regles.getJSONObject(0).getString("action") == "predefined")
+        check(regles.getJSONObject(0).getString("rcode") == "REFUSED")
+        check(!regles.getJSONObject(0).has("server"))
+        // fakeip désactivé : la règle qui le désignait n'a plus d'objet.
+        check(regles.length() == 2) { "la règle vers un serveur supprimé est retirée" }
+        check(regles.getJSONObject(1).getString("server") == "ok")
+
+        // Un `final` de route qui visait un outbound retiré laisserait la route
+        // sans sortie : le moteur refuserait pour référence pendante.
+        check(!out.getJSONObject("route").has("final"))
+    }
+
+    checkCase("le moteur visé est le même partout, sans version en dur ailleurs") {
+        check(SxbEngineSchema.ENGINE_VERSION == "1.14.1")
+    }
+
     checkCase("only the selected HTTP-chained VLESS/WS path gets a non-jumbo MTU") {
         val outbounds = chain()
         val before = outbounds.toString()

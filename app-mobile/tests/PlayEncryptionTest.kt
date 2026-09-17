@@ -90,5 +90,44 @@ fun main() {
     val duplicate = graph(JSONObject("""{"type":"vless","tls":{"enabled":true}}"""))
     duplicate.getJSONArray("outbounds").put(JSONObject("""{"type":"direct","tag":"proxy"}"""))
     rejects("Duplicate tag ambiguity", duplicate)
+
+    // ══ Actions de route — sing-box 1.13+ ═════════════════════════════════════
+    //
+    // Les outbounds spéciaux `dns` et `block` sont supprimés : ce qu'ils
+    // exprimaient se dit désormais par une action. La porte doit les
+    // comprendre — sinon aucune version Play ne se construit plus — SANS rien
+    // relâcher : une action n'est admise que sous la forme exacte que SXB
+    // produit, et jamais accompagnée d'une destination.
+    fun grapheModerne(regles: String): JSONObject = JSONObject().apply {
+        put("outbounds", JSONArray()
+            .put(JSONObject("""{"type":"vless","tag":"proxy","tls":{"enabled":true}}"""))
+            .put(JSONObject("""{"type":"direct","tag":"direct"}""")))
+        put("route", JSONObject("""{"final":"proxy","rules":[$regles]}"""))
+    }
+    accepts("Modern actions: sniff, hijack-dns, reject, LAN bypass", grapheModerne("""
+        {"action":"sniff"},
+        {"protocol":"dns","action":"hijack-dns"},
+        {"network":["udp"],"port":[443],"action":"reject"},
+        {"ip_is_private":true,"outbound":"direct"}
+    """))
+    accepts("Sniff may name its sniffers", grapheModerne("""{"action":"sniff","sniffer":["tls","http"]}"""))
+    // Un détournement DNS posé sur autre chose que le DNS ferait sortir du
+    // trafic quelconque par un chemin que la porte ne contrôle pas.
+    rejects("hijack-dns cannot carry arbitrary traffic",
+        grapheModerne("""{"domain":["exemple.test"],"action":"hijack-dns"}"""))
+    rejects("hijack-dns cannot also name an outbound",
+        grapheModerne("""{"protocol":"dns","action":"hijack-dns","outbound":"direct"}"""))
+    // Une inspection n'est jamais une destination.
+    rejects("sniff cannot name an outbound",
+        grapheModerne("""{"action":"sniff","outbound":"direct"}"""))
+    rejects("reject cannot name an outbound",
+        grapheModerne("""{"action":"reject","outbound":"direct"}"""))
+    // Une action inconnue est refusée : le format évolue, la porte ne devine pas.
+    rejects("Unknown action is refused", grapheModerne("""{"action":"resolve","server":"dns"}"""))
+    // Et le reste de la porte tient : un `final` en clair reste refusé.
+    val finalEnClair = grapheModerne("""{"action":"sniff"}""")
+    finalEnClair.getJSONObject("route").put("final", "direct")
+    rejects("Modern graph still requires an encrypted final", finalEnClair)
+
     println("$passed Play encryption cases passed")
 }

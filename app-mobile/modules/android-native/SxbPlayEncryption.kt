@@ -63,16 +63,35 @@ object SxbPlayEncryption {
         val rules = route.optJSONArray("rules")
         if (rules != null) for (i in 0 until rules.length()) {
             val rule = rules.optJSONObject(i) ?: reject()
-            if (rule.has("rules") || rule.optString("action", "route") != "route") reject()
+            if (rule.has("rules")) reject()
+            val keys = rule.keys().asSequence().toSet()
+            // ── Actions de route (sing-box 1.13+) ─────────────────────────────
+            //
+            // Ce que le format précédent exprimait par un outbound spécial se
+            // dit désormais par une action. La porte reste AUSSI stricte : une
+            // action n'est admise que sous la forme exacte que SXB produit, et
+            // jamais accompagnée d'une destination.
+            when (rule.optString("action", "route")) {
+                "route" -> { /* vérifié ci-dessous, comme auparavant */ }
+                // Inspection du trafic : elle ne route rien et ne peut donc pas
+                // faire sortir un octet en clair.
+                "sniff" -> { if (keys.any { it !in setOf("action", "sniffer", "timeout") }) reject(); continue }
+                // Détournement DNS : remplace l'outbound `dns`, et n'est admis
+                // que sur le protocole DNS — jamais sur du trafic quelconque.
+                "hijack-dns" -> { if (rule.opt("protocol") != "dns" || keys != setOf("protocol", "action")) reject(); continue }
+                // Refus : remplace l'outbound `block`. Rien ne sort.
+                "reject" -> { if (keys.any { it == "outbound" }) reject(); continue }
+                else -> reject()
+            }
             val target = rule.optString("outbound")
             val type = byTag[target]?.optString("type") ?: reject()
             if (type == "direct") {
                 // Only app-local LAN bypass, never arbitrary public IP/domain rules.
                 if (rule.opt("ip_is_private") != true ||
-                    rule.keys().asSequence().any { it !in setOf("outbound", "ip_is_private") }) reject()
+                    keys.any { it !in setOf("outbound", "ip_is_private") }) reject()
             } else if (type == "dns") {
                 if (rule.opt("protocol") != "dns" ||
-                    rule.keys().asSequence().any { it !in setOf("outbound", "protocol") }) reject()
+                    keys.any { it !in setOf("outbound", "protocol") }) reject()
             } else if (type != "block" && !encrypted(target)) reject()
         }
     }

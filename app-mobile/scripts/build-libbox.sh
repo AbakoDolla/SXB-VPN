@@ -22,18 +22,18 @@
 # ═══════════════════════════════════════════════════════════════════════════
 # PRÉREQUIS
 # ═══════════════════════════════════════════════════════════════════════════
-#   • Go >= 1.23
+#   • Go >= 1.25
 #   • JDK 17
 #   • Android SDK + NDK (ANDROID_HOME / ANDROID_NDK_HOME)
 #
 # USAGE
 #   ./scripts/build-libbox.sh                 # version par défaut
-#   SING_BOX_VERSION=v1.11.15 ./scripts/build-libbox.sh
+#   SING_BOX_VERSION=v1.14.1 ./scripts/build-libbox.sh
 #
 set -euo pipefail
 
 # Version de sing-box à compiler. Épinglée pour des builds reproductibles.
-SING_BOX_VERSION="${SING_BOX_VERSION:-v1.11.15}"
+SING_BOX_VERSION="${SING_BOX_VERSION:-v1.14.1}"
 GOMOBILE_VERSION="${GOMOBILE_VERSION:-v0.1.4}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -64,7 +64,7 @@ if ! command -v go >/dev/null 2>&1 && [ -x /usr/local/go/bin/go ]; then
 fi
 
 command -v go >/dev/null 2>&1 || {
-  echo "❌ Go introuvable. Installez Go >= 1.20 (sing-box $SING_BOX_VERSION exige go 1.20+)"
+  echo "❌ Go introuvable. Installez Go >= 1.25 (sing-box $SING_BOX_VERSION exige go 1.25+)"
   echo "   En CI, ajoutez : - uses: actions/setup-go@v5"
   exit 1
 }

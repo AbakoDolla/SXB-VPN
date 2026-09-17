@@ -7,7 +7,7 @@ import { xrayHttpChainFixture } from './fixtures/xray-http-chain.mjs';
 
 const { parseImportedConfig, engineConfigFromCanonical } = await import('../../server/services/canonical-config.ts');
 const root = fileURLToPath(new URL('../../', import.meta.url));
-export const SING_BOX_VERSION = '1.11.15';
+export const SING_BOX_VERSION = '1.14.1';
 
 export function nativeCompatibilityHarnessSource() {
   const service = readFileSync(path.join(root, 'app-mobile', 'modules', 'android-native', 'SxbVpnService.kt'), 'utf8');
@@ -25,13 +25,20 @@ import org.json.JSONObject
 import java.io.File
 import java.util.Locale
 import com.sxbvpn.vpnmodule.SxbTunnelPolicy
+import com.sxbvpn.vpnmodule.SxbEngineSchema
 
 private object SxbSecureLogger {
     fun warn(message: String) {}
 }
 
 private class XrayRuntimeHarness {
-    fun build(config: JSONObject): String = buildRawSingBoxConfig(config)
+    // Le harnais reproduit le chemin de production EXACT : le générateur écrit
+    // la configuration, puis SxbEngineSchema l'adapte au moteur — comme le fait
+    // startLibboxService(), qui est la frontière unique du moteur. Vérifier la
+    // sortie du seul générateur prouverait quelque chose que l'application
+    // n'exécute jamais.
+    fun build(config: JSONObject): String =
+        SxbEngineSchema.moderniser(JSONObject(buildRawSingBoxConfig(config))).toString(2)
     private fun broadcastLog(message: String) {}
     private fun bootstrapDnsAddress(): String = "192.0.2.1"
     private fun dnsStrategy(): String = "ipv4_only"

@@ -106,21 +106,37 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
   assert.equal(new Set(upstreams.map(upstream => upstream.tag)).size, upstreams.length,
     'Each branch must use a distinct declared upstream');
   const remote = runtime.dns.servers.find(server => server.tag === runtime.dns.final);
-  assert.match(remote.address, /^tcp:\/\//, 'The source-derived native builder must select reliable DNS TCP for the HTTP chain');
+  // Schéma sing-box 1.14 : le transport et l'adresse ne sont plus mélangés
+  // dans une URL, ce sont deux champs distincts.
+  assert.equal(remote.type, 'tcp', 'The source-derived native builder must select reliable DNS TCP for the HTTP chain');
+  assert.ok(remote.server && !remote.server.includes('://'), 'The typed server must carry a bare address');
+  assert.equal(remote.address, undefined, 'The legacy address form is removed in sing-box 1.14');
   assert.ok([runtime.route.final, ...heads.map(head => head.tag)].includes(remote.detour),
     'DNS must enter the encrypted VLESS head, never the raw HTTP proxy');
-  assert.equal(remote.strategy, 'ipv4_only',
+  // La stratégie par serveur n'existe plus : celle du serveur de dernier
+  // recours est devenue la stratégie globale.
+  assert.equal(remote.strategy, undefined, 'Per-server strategy is removed in sing-box 1.14');
+  assert.equal(runtime.dns.strategy, 'ipv4_only',
     'This TUN carries no IPv6, so AAAA must be answered locally instead of crossing the chain');
-  assert.equal(runtime.dns.strategy, undefined,
-    'The AAAA policy must stay per-server: a global strategy would also bind the direct bootstrap');
-  assert.ok(runtime.dns.servers.every(server => server.detour || server.strategy === undefined),
-    'A server resolved outside the tunnel must keep the imported policy');
+  assert.ok(runtime.dns.servers.every(server => server.strategy === undefined),
+    'No server may keep a per-server strategy the engine no longer reads');
+  assert.equal(runtime.dns.independent_cache, undefined,
+    'The DNS cache keys by transport on its own since 1.14');
+  assert.equal(runtime.dns.fakeip, undefined,
+    'The separate fakeip block is removed in 1.14; its ranges belong to the server');
   assert.equal(runtime.inbounds[0].inet6_address, undefined,
     'The ipv4_only DNS policy is only justified while the TUN itself carries no IPv6');
   assert.equal(runtime.inbounds[0].mtu, 1400, 'The chained mobile TUN must not use a jumbo MTU');
-  const blockTags = new Set(runtime.outbounds.filter(outbound => outbound.type === 'block').map(outbound => outbound.tag));
+  assert.equal(runtime.inbounds[0].sniff, undefined,
+    'Legacy inbound sniff fields are removed in 1.13 and are now a route action');
+  assert.ok(runtime.route.rules.some(rule => rule.action === 'sniff'),
+    'Traffic inspection must survive the migration, or domain rules stop matching');
+  assert.ok(!runtime.outbounds.some(outbound => outbound.type === 'dns'),
+    'The dns outbound is removed in sing-box 1.13');
+  assert.ok(runtime.route.rules.some(rule => rule.action === 'hijack-dns' && rule.protocol === 'dns'),
+    'DNS interception must survive as a rule action');
   assert.ok(runtime.route.rules.some(rule =>
-    blockTags.has(rule.outbound) &&
+    rule.action === 'reject' &&
     (rule.network === 'udp' || (Array.isArray(rule.network) && rule.network.includes('udp'))) &&
     (rule.port === 443 || (Array.isArray(rule.port) && rule.port.includes(443)))),
   'The provider-requested UDP/443 block must remain in the actual native graph');
@@ -248,15 +264,19 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
     }],
     outbounds: [
       { type: 'direct', tag: 'direct' },
-      { type: 'direct', tag: 'probe', override_address: '127.0.0.1', override_port: probePort },
-      { type: 'block', tag: 'refuse-external' },
+      { type: 'direct', tag: 'probe' },
+      { type: 'direct', tag: 'refuse-external' },
     ],
     route: {
       rules: [
-        { domain: [probeUrl.hostname], outbound: 'probe' },
+        // `override_address`/`override_port` ont quitté l'outbound `direct` en
+        // 1.13 : ils vivent désormais sur la règle qui route.
+        { domain: [probeUrl.hostname], outbound: 'probe', override_address: '127.0.0.1', override_port: probePort },
         { ip_is_private: true, outbound: 'direct' },
+        // Rien d'autre ne quitte ce banc d'essai vers un vrai réseau. La règle
+        // porte un critère : le moteur refuse une règle sans condition.
+        { network: ['tcp', 'udp'], action: 'reject' },
       ],
-      // Nothing else may leave this fixture towards a real network.
       final: 'refuse-external',
     },
   };
@@ -266,11 +286,13 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
     type: 'direct', tag: 'fixture-dns', listen: '127.0.0.1', listen_port: ingressPort,
     override_address: '192.0.2.53', override_port: 53,
   }, {
+    // La redirection reste sur l'inbound `direct`, où elle est toujours
+    // valide ; seul l'outbound l'a perdue en 1.13.
     type: 'direct', tag: 'fixture-data', listen: '127.0.0.1', listen_port: dataIngressPort, network: 'tcp',
     override_address: '127.0.0.1', override_port: dataPort,
   }];
   delete clientConfig.route.auto_detect_interface; // No Android platform or TUN in this loopback-only test.
-  clientConfig.route.rules.unshift({ inbound: ['fixture-dns'], outbound: 'dns-out' });
+  clientConfig.route.rules.unshift({ inbound: ['fixture-dns'], action: 'hijack-dns' });
   clientConfig.route.rules.unshift({ inbound: ['fixture-data'], outbound: runtime.route.final });
   for (const outbound of clientConfig.outbounds) {
     if (outbound.type === 'http' && upstreamPorts.has(outbound.tag)) {
@@ -283,10 +305,12 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
     }
   }
   for (const server of clientConfig.dns.servers) {
-    if (server.tag === remote.tag) server.address = `tcp://127.0.0.1:${dnsPort}`;
-    else if (server.detour === 'direct' && !['fakeip', 'rcode://success'].includes(server.address)) {
-      server.address = `tcp://127.0.0.1:${dnsPort}`;
-    }
+    // Forme typée : le transport et l'adresse sont deux champs distincts.
+    const redirigeable = server.tag === remote.tag || (server.detour === 'direct' && server.type !== 'fakeip');
+    if (!redirigeable) continue;
+    server.type = 'tcp';
+    server.server = '127.0.0.1';
+    server.server_port = dnsPort;
   }
   async function start(config, name, port, extraEnv = {}) {
     const file = path.join(temporary, `${name}.json`);

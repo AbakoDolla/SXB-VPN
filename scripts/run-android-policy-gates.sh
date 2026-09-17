@@ -24,7 +24,8 @@ node tests/run-access-policy.cjs
 node tests/run-stability-policy.cjs
 node scripts/prepare-geosite.cjs
 node --experimental-strip-types ../scripts/tests/xray-runtime-fixture.mjs "$HARNESS/xray"
-"$KOTLINC" "$HARNESS/xray/XrayRuntimeHarness.kt" modules/android-native/SxbTunnelPolicy.kt -classpath "$SXB_JSON_JAR" \
+"$KOTLINC" "$HARNESS/xray/XrayRuntimeHarness.kt" modules/android-native/SxbTunnelPolicy.kt \
+  modules/android-native/SxbEngineSchema.kt -classpath "$SXB_JSON_JAR" \
   -include-runtime -d "$HARNESS/xray/harness.jar"
 java -cp "$HARNESS/xray/harness.jar:$SXB_JSON_JAR" XrayRuntimeHarnessKt \
   "$HARNESS/xray/canonical.json" "$HARNESS/xray/runtime.json"

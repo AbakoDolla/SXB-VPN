@@ -34,6 +34,9 @@ try {
     // Vitalite du tunnel SSH : le transport SSH ne passe pas par sing-box, donc
     // rien d'autre ne constate sa mort. La decision est pure, donc prouvable ici.
     path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbSshKeepAlive.kt'),
+    // Traduction de schéma du moteur : sing-box 1.13 et 1.14 ont SUPPRIMÉ des
+    // options que chaque configuration SXB porte. Pure, donc prouvable ici.
+    path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbEngineSchema.kt'),
     path.resolve(__dirname, 'StabilityPolicyTest.kt'),
     maskHarness,
     '-classpath', jsonJar, '-include-runtime', '-d', jar,

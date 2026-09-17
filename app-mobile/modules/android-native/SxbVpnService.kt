@@ -2282,9 +2282,34 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private fun startLibboxService(configJson: String, label: String) {
         check(SxbPrivacyPolicy.vpnAllowed(this)) { "PRIVACY_CONSENT_REQUIRED" }
         SxbAccessControl.checkStart(this, JSONObject(this.configJson))
+
+        // ── Frontière unique du moteur ────────────────────────────────────────
+        //
+        // Toute configuration entre ici, quelle que soit son origine : produite
+        // par SXB, importée en sing-box natif, traduite depuis Xray, ou
+        // provisionnée il y a des semaines sur un téléphone que personne ne
+        // peut mettre à jour. sing-box 1.13 et 1.14 ont SUPPRIMÉ — et non
+        // simplement déprécié — des options que toutes ces configurations
+        // portent. Une seule suffit à faire refuser l'ensemble.
+        //
+        // La traduction est donc appliquée ici, et non dans les générateurs :
+        // eux ne couvriraient que ce que nous écrivons aujourd'hui, jamais ce
+        // qui dort déjà sur les appareils. Voir SxbEngineSchema.
+        val configModerne = runCatching {
+            SxbEngineSchema.moderniser(JSONObject(configJson)).toString()
+        }.getOrElse {
+            // Une configuration illisible ici le serait tout autant plus bas :
+            // on laisse le moteur produire le diagnostic, qui est le sien.
+            SxbSecureLogger.warn("ENGINE_SCHEMA_PASSTHROUGH reason=${it.javaClass.simpleName}")
+            configJson
+        }
+        if (configModerne != configJson) {
+            broadcastLog("[SXB] Configuration adaptée au moteur ${SxbEngineSchema.ENGINE_VERSION}")
+        }
+
         if (SxbPrivacyPolicy.isPlay(this)) {
             SxbPlayEncryption.validate(
-                JSONObject(configJson),
+                JSONObject(configModerne),
                 trustedSshRelay = isSshRelay && sshSession?.isConnected == true,
                 sshPort = SOCKS5_PORT,
             )
@@ -2296,7 +2321,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         broadcastLog("[SXB] Moteur VPN : sing-box ${Libbox.version()}")
 
         val service = try {
-            Libbox.newService(configJson, this)
+            Libbox.newService(configModerne, this)
         } catch (e: Exception) {
             throw Exception("Configuration refusée par le moteur : ${e.message}")
         }
