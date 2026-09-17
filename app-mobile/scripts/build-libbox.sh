@@ -149,6 +149,11 @@ gomobile init
 TAGS="with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api,with_conntrack"
 
 echo "→ gomobile bind (tags: $TAGS)..."
+# `-checklinkname=0` : sing-box atteint des symboles internes de la
+# bibliothèque standard par `go:linkname` (par ex. `os.checkPidfdOnce` sur
+# Android). Go 1.23+ refuse ces références au lien, et le build s'arrête sur
+# « invalid reference to os.checkPidfdOnce ». sing-box neutralise exactement
+# de cette façon dans son propre build (`cmd/internal/build_libbox`).
 gomobile bind -v \
   -target "${SXB_LIBBOX_TARGETS:-android}" \
   -androidapi 21 \
@@ -156,7 +161,7 @@ gomobile bind -v \
   -libname=box \
   -trimpath \
   -buildvcs=false \
-  -ldflags "-X github.com/sagernet/sing-box/constant.Version=${SING_BOX_VERSION#v} -s -w -buildid= -linkmode external -extldflags '-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384'" \
+  -ldflags "-X github.com/sagernet/sing-box/constant.Version=${SING_BOX_VERSION#v} -s -w -buildid= -checklinkname=0 -linkmode external -extldflags '-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384'" \
   -tags "$TAGS" \
   ./experimental/libbox
 

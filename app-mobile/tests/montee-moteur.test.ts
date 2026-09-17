@@ -118,6 +118,13 @@ describe('montée du moteur — version épinglée', () => {
     // gomobile est déclaré par le go.mod de sing-box lui-même : une autre
     // version fait échouer la liaison, ou produit un AAR inutilisable.
     assert.match(build, /GOMOBILE_VERSION:-v0\.1\.8/, 'gomobile doit suivre le moteur');
+
+    // sing-box atteint des symboles internes de la bibliothèque standard par
+    // `go:linkname` (`os.checkPidfdOnce` sur Android). Go 1.23+ refuse ces
+    // références AU LIEN : sans cette échappatoire, le build s'arrête sur
+    // « invalid reference to os.checkPidfdOnce ». sing-box fait exactement
+    // pareil dans son propre build.
+    assert.match(build, /-checklinkname=0/, 'le lien échoue sans cette échappatoire');
   });
 });
 
