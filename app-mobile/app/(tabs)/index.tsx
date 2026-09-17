@@ -583,6 +583,25 @@ export default function HomeScreen() {
             <Text style={[type.h3, { color: colors.primaryForeground }]}>{btnLabel}</Text>
           </Pressable>
 
+          {/* Journal d'activité — sous le bouton, là où on le cherche quand une
+              connexion ne part pas. Il ne montre que des ÉTAPES en clair :
+              aucune adresse de serveur, aucune configuration, aucun identifiant
+              ne peut y figurer, même en cas de débogage. */}
+          <Pressable
+            onPress={() => router.push('/journal' as any)}
+            accessibilityRole="button"
+            accessibilityLabel={t('journal_open')}
+            style={({ pressed }) => [
+              styles.logsButton,
+              { borderColor: colors.border, backgroundColor: colors.bgCard },
+              pressed && { opacity: 0.75, transform: [{ scale: 0.985 }] },
+            ]}
+          >
+            <Ionicons name="list-outline" size={16} color={colors.textSecondary} />
+            <Text style={[type.captionMedium, { color: colors.textSecondary }]}>{t('journal_open')}</Text>
+            <Ionicons name="chevron-forward" size={14} color={colors.textMuted} />
+          </Pressable>
+
           {/* Bandeau vif : le PING, et lui seul.
 
               Le protocole a été retiré — il désigne la technique de transport,
@@ -931,6 +950,17 @@ const styles = StyleSheet.create({
   },
   liveStrip: { width: "100%", paddingVertical: spacing.lg, paddingHorizontal: spacing.md },
   logsLink: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  logsButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    minHeight: 44,
+  },
 
   // ── Profils ────────────────────────────────────────────────────────────────
   configCurrent: {

@@ -105,6 +105,54 @@ test('le journal est atteignable depuis les paramètres', () => {
   assert.doesNotMatch(reglages, /\n\s*logs, isConnected,/);
 });
 
+test('le journal est atteignable depuis le bouton de connexion', () => {
+  // C'est là qu'on le cherche quand une connexion ne part pas : sous le bouton
+  // qu'on vient d'appuyer, pas au fond des réglages.
+  const accueil = lireSource('app-mobile/app/(tabs)/index.tsx');
+  assert.match(accueil, /router\.push\('\/journal' as any\)/);
+  assert.match(accueil, /accessibilityLabel=\{t\('journal_open'\)\}/);
+  // Le bouton reste sous le bouton de connexion, jamais au-dessus : l'action
+  // principale doit garder la première place.
+  const appel = accueil.indexOf("router.push('/journal' as any)");
+  const principal = accueil.indexOf('<PowerButton');
+  assert.ok(principal > -1 && appel > principal, 'le journal doit venir après le bouton de connexion');
+  // Et il respecte la cible tactile minimale.
+  assert.match(accueil, /logsButton: \{[\s\S]{0,260}minHeight: 44/);
+});
+
+test('l’écran de lancement raconte quelque chose, et se termine', () => {
+  const lancement = lireSource('app-mobile/app/index.tsx');
+  // Les quatre temps de la séquence.
+  assert.match(lancement, /const ondeUne = useRef/);
+  assert.match(lancement, /const rotationArc = useRef/);
+  assert.match(lancement, /const eclat = useRef/);
+  assert.match(lancement, /const progression = useRef/);
+  // Elle se TERMINE : les ondes sont bornées, la barre va au bout. Une boucle
+  // infinie donnerait un écran qui attend au lieu de préparer.
+  assert.match(lancement, /\{ iterations: 2 \}/);
+  assert.match(lancement, /const DUREE_TOTALE_MS = 2100/);
+  // La redirection est calée sur la séquence : elle n'est jamais coupée.
+  assert.match(lancement, /setTimeout\(\(\) => router\.replace\(destination as any\), DUREE_TOTALE_MS\)/);
+});
+
+test('l’animation de lancement ne dépend pas du fil JavaScript', () => {
+  const lancement = lireSource('app-mobile/app/index.tsx');
+  // Une animation de lancement qui saccade donne le ton de toute
+  // l'application, et c'est précisément l'instant où le fil JavaScript est le
+  // plus occupé : polices, authentification, stockage.
+  const pilotes = lancement.match(/useNativeDriver: (true|false)/g) || [];
+  assert.ok(pilotes.length >= 8, 'chaque animation doit déclarer son pilote');
+  assert.deepEqual(
+    [...new Set(pilotes)],
+    ['useNativeDriver: true'],
+    'aucune animation ne doit repasser par le fil JavaScript',
+  );
+  // La barre s'anime en `scaleX`, jamais en `width` : la largeur animée n'est
+  // pas confiable au pilote natif.
+  assert.match(lancement, /scaleX: progression/);
+  assert.doesNotMatch(lancement, /Animated\.timing\(\s*largeur/);
+});
+
 test('un basculement de profil se voit dès l’appui', () => {
   const contexte = lireSource('app-mobile/contexts/VpnContext.tsx');
   // La sélection ne changeait à l'écran qu'une fois toute la chaîne finie,
