@@ -1,7 +1,7 @@
 module sxb-vpn/singbox-engine-check
 
-// sing-box 1.14 exige Go 1.25 : une version plus basse ici ferait échouer la
-// résolution des modules avant même la vérification du moteur.
-go 1.25.5
+// Aligne sur le go.mod de sing-box 1.12 : une version plus basse ferait echouer
+// la resolution des modules avant meme la verification du moteur.
+go 1.23.1
 
-require github.com/sagernet/sing-box v1.14.1
+require github.com/sagernet/sing-box v1.12.9

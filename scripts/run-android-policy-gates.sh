@@ -30,10 +30,10 @@ node --experimental-strip-types ../scripts/tests/xray-runtime-fixture.mjs "$HARN
 java -cp "$HARNESS/xray/harness.jar:$SXB_JSON_JAR" XrayRuntimeHarnessKt \
   "$HARNESS/xray/canonical.json" "$HARNESS/xray/runtime.json"
 go -C ../scripts/tests/singbox-engine-check run -mod=mod \
-  -tags with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0 \
+  -tags with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api,with_conntrack \
   . "$HARNESS/xray/runtime.json" "$ROOT/app-mobile/build/engine-data"
 go -C ../scripts/tests/singbox-engine-check build -mod=mod \
-  -tags with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0 \
+  -tags with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api,with_conntrack \
   -o "$HARNESS/sing-box" github.com/sagernet/sing-box/cmd/sing-box
 SXB_SINGBOX_TEST_BIN="$HARNESS/sing-box" \
   SXB_ENGINE_RUNTIME="$HARNESS/xray/runtime.json" \

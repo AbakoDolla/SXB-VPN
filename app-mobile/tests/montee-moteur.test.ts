@@ -36,7 +36,7 @@ import { describe, it } from 'node:test';
 const racine = path.resolve(__dirname, '..', '..');
 const lire = (relatif: string) => readFileSync(path.join(racine, relatif), 'utf8');
 
-const VERSION = '1.14.1';
+const VERSION = '1.12.9';
 
 describe('montée du moteur — version épinglée', () => {
   it('vise la même version partout', () => {
@@ -68,22 +68,42 @@ describe('montée du moteur — version épinglée', () => {
     }
   });
 
+  it('ne dépasse pas la dernière version compatible avec notre couche native', () => {
+    // sing-box 1.13 a SUPPRIMÉ `libbox.NewService()`, l'API sur laquelle repose
+    // tout notre service Android, au profit d'un modèle daemon/gRPC. Monter
+    // au-delà de 1.12 n'est plus une montée de version : c'est une réécriture
+    // du service natif, qu'aucun test de configuration ne couvrirait.
+    const service = lire('app-mobile/modules/android-native/SxbVpnService.kt');
+    assert.match(service, /Libbox\.newService\(/, 'la couche native dépend de cette API');
+    const majeure = Number(VERSION.split('.')[1]);
+    assert.ok(majeure <= 12, `sing-box 1.${majeure} n’expose plus newService()`);
+  });
+
+  it('implémente ce que cette version exige de la plateforme', () => {
+    // `PlatformInterface` est une interface Go liée à Kotlin : elle doit être
+    // implémentée ENTIÈREMENT, sinon la classe ne compile pas. 1.12 en ajoute
+    // deux méthodes par rapport à 1.11.
+    const service = lire('app-mobile/modules/android-native/SxbVpnService.kt');
+    assert.match(service, /override fun localDNSTransport\(\): LocalDNSTransport\? = null/);
+    assert.match(service, /override fun systemCertificates\(\): StringIterator\? = null/);
+    assert.match(service, /^import io\.nekohasekai\.libbox\.LocalDNSTransport$/m);
+    assert.match(service, /^import io\.nekohasekai\.libbox\.StringIterator$/m);
+  });
+
   it('fournit le Go qu’exige ce moteur', () => {
-    // sing-box 1.14 déclare `go 1.25`. Un runner en 1.24 échoue à la
+    // sing-box 1.12 déclare `go 1.23.1`. Un runner plus ancien échoue à la
     // résolution des modules, avant même de compiler quoi que ce soit.
     for (const flux of ['.github/workflows/build-android.yml', '.github/workflows/build-google-play.yml']) {
-      const source = lire(flux);
-      assert.match(source, /go-version: "1\.25\.x"/, `Go trop ancien dans ${flux}`);
-      assert.ok(!source.includes('go-version: "1.24.x"'), `Go 1.24 subsiste dans ${flux}`);
+      assert.match(lire(flux), /go-version: "1\.2[4-9]\.x"/, `Go trop ancien dans ${flux}`);
     }
-    assert.match(lire('scripts/tests/singbox-engine-check/go.mod'), /^go 1\.25/m);
+    assert.match(lire('scripts/tests/singbox-engine-check/go.mod'), /^go 1\.23/m);
   });
 
   it('compile avec les tags que CE moteur accepte', () => {
     const build = lire('app-mobile/scripts/build-libbox.sh');
     const portes = lire('scripts/run-android-policy-gates.sh');
 
-    // `with_ech` déclenche une erreur de compilation VOLONTAIRE depuis 1.14 :
+    // `with_ech` déclenche une erreur de compilation VOLONTAIRE depuis 1.12 :
     // la fonction est passée dans la bibliothèque standard. Le transmettre
     // casse le build entier, pas seulement la fonction concernée.
     for (const [nom, source] of [['build-libbox.sh', build], ['run-android-policy-gates.sh', portes]] as const) {
@@ -93,15 +113,11 @@ describe('montée du moteur — version épinglée', () => {
       // se construit même pas.
       assert.ok(code.includes('with_utls'), `with_utls est indispensable (${nom})`);
       assert.ok(code.includes('with_gvisor'), `with_gvisor fournit la pile du TUN (${nom})`);
-      // Go 1.25 refuse par défaut les accès de sing-box aux symboles internes
-      // de la bibliothèque standard ; la compilation s'arrête sans ces tags.
-      assert.ok(code.includes('badlinkname'), `badlinkname est requis par Go 1.25 (${nom})`);
-      assert.ok(code.includes('tfogo_checklinkname0'), `tfogo_checklinkname0 est requis (${nom})`);
     }
 
     // gomobile est déclaré par le go.mod de sing-box lui-même : une autre
     // version fait échouer la liaison, ou produit un AAR inutilisable.
-    assert.match(build, /GOMOBILE_VERSION:-v0\.1\.12/, 'gomobile doit suivre le moteur');
+    assert.match(build, /GOMOBILE_VERSION:-v0\.1\.8/, 'gomobile doit suivre le moteur');
   });
 });
 

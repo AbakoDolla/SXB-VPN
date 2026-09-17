@@ -22,22 +22,22 @@
 # ═══════════════════════════════════════════════════════════════════════════
 # PRÉREQUIS
 # ═══════════════════════════════════════════════════════════════════════════
-#   • Go >= 1.25
+#   • Go >= 1.23
 #   • JDK 17
 #   • Android SDK + NDK (ANDROID_HOME / ANDROID_NDK_HOME)
 #
 # USAGE
 #   ./scripts/build-libbox.sh                 # version par défaut
-#   SING_BOX_VERSION=v1.14.1 ./scripts/build-libbox.sh
+#   SING_BOX_VERSION=v1.12.9 ./scripts/build-libbox.sh
 #
 set -euo pipefail
 
 # Version de sing-box à compiler. Épinglée pour des builds reproductibles.
-SING_BOX_VERSION="${SING_BOX_VERSION:-v1.14.1}"
+SING_BOX_VERSION="${SING_BOX_VERSION:-v1.12.9}"
 # Version de gomobile EXIGÉE par ce sing-box : elle est déclarée dans son
 # propre go.mod. En prendre une autre fait échouer la liaison, ou produit un
 # AAR que l'application charge sans pouvoir s'en servir.
-GOMOBILE_VERSION="${GOMOBILE_VERSION:-v0.1.12}"
+GOMOBILE_VERSION="${GOMOBILE_VERSION:-v0.1.8}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_MOBILE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -67,7 +67,7 @@ if ! command -v go >/dev/null 2>&1 && [ -x /usr/local/go/bin/go ]; then
 fi
 
 command -v go >/dev/null 2>&1 || {
-  echo "❌ Go introuvable. Installez Go >= 1.25 (sing-box $SING_BOX_VERSION exige go 1.25+)"
+  echo "❌ Go introuvable. Installez Go >= 1.23 (sing-box $SING_BOX_VERSION exige go 1.23+)"
   echo "   En CI, ajoutez : - uses: actions/setup-go@v5"
   exit 1
 }
@@ -146,7 +146,7 @@ gomobile init
 # `with_ech` a DISPARU : la fonction est passée dans la bibliothèque standard,
 # et le tag déclenche désormais une erreur de compilation volontaire. Le
 # transmettre casserait le build entier.
-TAGS="with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0"
+TAGS="with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api,with_conntrack"
 
 echo "→ gomobile bind (tags: $TAGS)..."
 gomobile bind -v \

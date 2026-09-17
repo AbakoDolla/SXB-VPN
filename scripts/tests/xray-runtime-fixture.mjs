@@ -7,7 +7,7 @@ import { xrayHttpChainFixture } from './fixtures/xray-http-chain.mjs';
 
 const { parseImportedConfig, engineConfigFromCanonical } = await import('../../server/services/canonical-config.ts');
 const root = fileURLToPath(new URL('../../', import.meta.url));
-export const SING_BOX_VERSION = '1.14.1';
+export const SING_BOX_VERSION = '1.12.9';
 
 export function nativeCompatibilityHarnessSource() {
   const service = readFileSync(path.join(root, 'app-mobile', 'modules', 'android-native', 'SxbVpnService.kt'), 'utf8');

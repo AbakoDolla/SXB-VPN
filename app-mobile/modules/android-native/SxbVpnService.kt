@@ -80,9 +80,13 @@ import com.jcraft.jsch.SocketFactory
 import io.nekohasekai.libbox.BoxService
 import io.nekohasekai.libbox.InterfaceUpdateListener
 import io.nekohasekai.libbox.Libbox
+// Deux types apparus avec le moteur DNS de sing-box 1.12, exigés par
+// `PlatformInterface` : voir localDNSTransport() et systemCertificates().
+import io.nekohasekai.libbox.LocalDNSTransport
 import io.nekohasekai.libbox.NetworkInterfaceIterator
 import io.nekohasekai.libbox.PlatformInterface
 import io.nekohasekai.libbox.SetupOptions
+import io.nekohasekai.libbox.StringIterator
 import io.nekohasekai.libbox.TunOptions
 import io.nekohasekai.libbox.WIFIState
 import org.json.JSONArray
@@ -2889,6 +2893,34 @@ class SxbVpnService : VpnService(), PlatformInterface {
     override fun includeAllNetworks(): Boolean = false
 
     override fun readWIFIState(): WIFIState? = null
+
+    // ── Deux méthodes exigées par sing-box 1.12 ───────────────────────────────
+    //
+    // `PlatformInterface` est une interface Go liée à Kotlin : elle doit être
+    // implémentée ENTIÈREMENT, sinon la classe ne compile pas. Ces deux
+    // méthodes sont apparues avec le nouveau moteur DNS.
+
+    /**
+     * Résolveur fourni par la plateforme, ou `null` pour laisser le moteur
+     * utiliser le sien.
+     *
+     * Nous rendons `null` délibérément. Le résolveur d'Android passerait par
+     * `getaddrinfo`, donc hors du tunnel et sous la surveillance de
+     * l'opérateur — exactement ce que le tunnel existe pour éviter. La
+     * résolution reste donc décrite par la configuration (voir
+     * `RESOLVEUR_TUNNEL` et `applyDnsLoopGuard`), où l'on maîtrise ce qui sort
+     * par le tunnel et ce qui l'amorce.
+     */
+    override fun localDNSTransport(): LocalDNSTransport? = null
+
+    /**
+     * Certificats système à ajouter à ceux du moteur.
+     *
+     * `null` : le magasin de confiance d'Android est déjà celui que la pile TLS
+     * emploie. En publier une copie ici n'ajouterait rien et ouvrirait la porte
+     * à un magasin divergent de celui du système.
+     */
+    override fun systemCertificates(): StringIterator? = null
 
     override fun clearDNSCache() { /* géré par Android */ }
 

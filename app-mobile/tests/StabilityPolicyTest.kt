@@ -409,7 +409,7 @@ fun main() {
     }
 
     checkCase("le moteur visé est le même partout, sans version en dur ailleurs") {
-        check(SxbEngineSchema.ENGINE_VERSION == "1.14.1")
+        check(SxbEngineSchema.ENGINE_VERSION == "1.12.9")
     }
 
     checkCase("only the selected HTTP-chained VLESS/WS path gets a non-jumbo MTU") {

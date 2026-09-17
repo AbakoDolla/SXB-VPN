@@ -55,7 +55,7 @@ import org.json.JSONObject
 object SxbEngineSchema {
 
     /** Version du moteur embarqué, alignée sur `scripts/build-libbox.sh`. */
-    const val ENGINE_VERSION = "1.14.1"
+    const val ENGINE_VERSION = "1.12.9"
 
     /** Stratégies de résolution acceptées par le moteur. */
     private val STRATEGIES = setOf("prefer_ipv4", "prefer_ipv6", "ipv4_only", "ipv6_only")

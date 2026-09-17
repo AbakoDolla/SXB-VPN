@@ -20,7 +20,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	fmt.Println("sing-box 1.14.1 libbox.CheckConfig accepted the synthetic native runtime graph (not a connection test)")
+	fmt.Println("sing-box 1.12.9 libbox.CheckConfig accepted the synthetic native runtime graph (not a connection test)")
 }
 
 func check() error {
@@ -34,11 +34,11 @@ func check() error {
 	pinned := false
 	for _, dependency := range build.Deps {
 		if dependency.Path == "github.com/sagernet/sing-box" {
-			pinned = dependency.Version == "v1.14.1" && dependency.Replace == nil
+			pinned = dependency.Version == "v1.12.9" && dependency.Replace == nil
 		}
 	}
 	if !pinned {
-		return fmt.Errorf("the engine checker requires unmodified sing-box v1.14.1")
+		return fmt.Errorf("the engine checker requires unmodified sing-box v1.12.9")
 	}
 	content, err := os.ReadFile(os.Args[1])
 	if err != nil {

@@ -8,7 +8,7 @@ index 13b2b94..99c6d81 100644
  
 +env:
 +  # Version de sing-box compilée en libbox.aar (moteur VPN embarqué).
-+  SING_BOX_VERSION: v1.14.1
++  SING_BOX_VERSION: v1.12.9
 +
  jobs:
    build-android:
