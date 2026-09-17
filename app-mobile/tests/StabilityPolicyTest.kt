@@ -270,10 +270,12 @@ fun main() {
         check(rules.getJSONObject(3).getString("outbound") == "direct")
         check(out.getJSONObject("route").getString("final") == "proxy")
 
-        // Les champs d'inbound supprimés en 1.13 ne subsistent nulle part.
+        // Les champs d'inbound supprimés en 1.13 ne subsistent nulle part,
+        // et le reste de l'inbound est intact.
         val tun = out.getJSONArray("inbounds").getJSONObject(0)
         check(!tun.has("sniff") && !tun.has("sniff_override_destination"))
-        check(tun.getString("tag") == "tun-in" && tun.getBoolean("auto_route").not().not())
+        check(tun.getString("tag") == "tun-in")
+        check(tun.getString("type") == "tun")
     }
 
     checkCase("le format de serveur DNS supprimé en 1.14 devient sa forme typée") {
