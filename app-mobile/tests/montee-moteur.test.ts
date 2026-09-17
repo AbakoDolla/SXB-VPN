@@ -78,6 +78,31 @@ describe('montée du moteur — version épinglée', () => {
     }
     assert.match(lire('scripts/tests/singbox-engine-check/go.mod'), /^go 1\.25/m);
   });
+
+  it('compile avec les tags que CE moteur accepte', () => {
+    const build = lire('app-mobile/scripts/build-libbox.sh');
+    const portes = lire('scripts/run-android-policy-gates.sh');
+
+    // `with_ech` déclenche une erreur de compilation VOLONTAIRE depuis 1.14 :
+    // la fonction est passée dans la bibliothèque standard. Le transmettre
+    // casse le build entier, pas seulement la fonction concernée.
+    for (const [nom, source] of [['build-libbox.sh', build], ['run-android-policy-gates.sh', portes]] as const) {
+      const code = source.replace(/^\s*#.*$/gm, '');
+      assert.ok(!code.includes('with_ech'), `with_ech casse la compilation (${nom})`);
+      // uTLS porte l'empreinte du ClientHello ET Reality : sans lui, Reality ne
+      // se construit même pas.
+      assert.ok(code.includes('with_utls'), `with_utls est indispensable (${nom})`);
+      assert.ok(code.includes('with_gvisor'), `with_gvisor fournit la pile du TUN (${nom})`);
+      // Go 1.25 refuse par défaut les accès de sing-box aux symboles internes
+      // de la bibliothèque standard ; la compilation s'arrête sans ces tags.
+      assert.ok(code.includes('badlinkname'), `badlinkname est requis par Go 1.25 (${nom})`);
+      assert.ok(code.includes('tfogo_checklinkname0'), `tfogo_checklinkname0 est requis (${nom})`);
+    }
+
+    // gomobile est déclaré par le go.mod de sing-box lui-même : une autre
+    // version fait échouer la liaison, ou produit un AAR inutilisable.
+    assert.match(build, /GOMOBILE_VERSION:-v0\.1\.12/, 'gomobile doit suivre le moteur');
+  });
 });
 
 describe('la traduction est branchée là où TOUT passe', () => {

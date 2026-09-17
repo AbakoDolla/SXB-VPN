@@ -34,7 +34,10 @@ set -euo pipefail
 
 # Version de sing-box à compiler. Épinglée pour des builds reproductibles.
 SING_BOX_VERSION="${SING_BOX_VERSION:-v1.14.1}"
-GOMOBILE_VERSION="${GOMOBILE_VERSION:-v0.1.4}"
+# Version de gomobile EXIGÉE par ce sing-box : elle est déclarée dans son
+# propre go.mod. En prendre une autre fait échouer la liaison, ou produit un
+# AAR que l'application charge sans pouvoir s'en servir.
+GOMOBILE_VERSION="${GOMOBILE_VERSION:-v0.1.12}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_MOBILE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -130,9 +133,20 @@ export PATH="$(go env GOPATH)/bin:$PATH"
 echo "→ gomobile init..."
 gomobile init
 
-# Tags alignés sur le build officiel du client Android sing-box.
-# with_gvisor est indispensable : il fournit la pile TCP/IP du TUN.
-TAGS="with_gvisor,with_quic,with_wireguard,with_ech,with_utls,with_clash_api"
+# Tags alignés sur le build officiel du client Android sing-box
+# (`cmd/internal/build_libbox`, variante « legacy » API 21).
+#
+#  • with_gvisor est indispensable : il fournit la pile TCP/IP du TUN ;
+#  • with_utls porte l'empreinte du ClientHello ET Reality — sans lui, Reality
+#    ne se construit même pas ;
+#  • badlinkname et tfogo_checklinkname0 autorisent les accès que sing-box fait
+#    à des symboles internes de la bibliothèque standard : Go 1.25 les refuse
+#    par défaut, et la compilation s'arrête sans eux.
+#
+# `with_ech` a DISPARU : la fonction est passée dans la bibliothèque standard,
+# et le tag déclenche désormais une erreur de compilation volontaire. Le
+# transmettre casserait le build entier.
+TAGS="with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0"
 
 echo "→ gomobile bind (tags: $TAGS)..."
 gomobile bind -v \
