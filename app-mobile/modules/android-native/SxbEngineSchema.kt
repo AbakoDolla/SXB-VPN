@@ -61,6 +61,25 @@ object SxbEngineSchema {
     private val STRATEGIES = setOf("prefer_ipv4", "prefer_ipv6", "ipv4_only", "ipv6_only")
 
     /**
+     * Noms de code de réponse DNS, du format hérité vers celui du moteur.
+     *
+     * Le format hérité employait des noms lisibles (`rcode://success`) ; le
+     * format courant attend les mnémoniques du protocole DNS lui-même. Les
+     * deux vocabulaires ne se recouvrent PAS : « success » n'existe pas côté
+     * DNS, où le code 0 s'appelle NOERROR. Traduire mot pour mot produit donc
+     * une configuration que le moteur refuse — et il refuse l'ensemble, pas
+     * seulement la règle fautive.
+     */
+    private val RCODES = mapOf(
+        "success" to "NOERROR",
+        "format_error" to "FORMERR",
+        "server_failure" to "SERVFAIL",
+        "name_error" to "NXDOMAIN",
+        "not_implemented" to "NOTIMP",
+        "refused" to "REFUSED",
+    )
+
+    /**
      * Champs d'inbound supprimés en 1.13 (`option.InboundOptions`).
      * Leur seule présence fait refuser la configuration entière.
      */
@@ -237,9 +256,14 @@ object SxbEngineSchema {
             if (tag.isNotEmpty() && strategie in STRATEGIES) strategies[tag] = strategie
 
             // `rcode://` ne désignait aucun serveur : la réponse était fabriquée
-            // sur place. C'est devenu une action de règle.
+            // sur place. C'est devenu une action de règle, et le vocabulaire a
+            // changé avec elle — voir RCODES.
             if (adresse.startsWith("rcode://", ignoreCase = true)) {
-                if (tag.isNotEmpty()) rcodes[tag] = adresse.substringAfter("://").uppercase()
+                val nom = adresse.substringAfter("://").trim().lowercase()
+                // Un nom hors de la table est laissé tel quel, en majuscules :
+                // le moteur rendra alors la même erreur qu'avant, plutôt que de
+                // recevoir une valeur que nous aurions inventée.
+                if (tag.isNotEmpty()) rcodes[tag] = RCODES[nom] ?: nom.uppercase()
                 continue
             }
             if (adresse.equals("fakeip", ignoreCase = true) && !fakeipActif) {

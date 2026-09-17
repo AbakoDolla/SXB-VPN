@@ -410,6 +410,32 @@ fun main() {
         check(!out.getJSONObject("route").has("final"))
     }
 
+    checkCase("les six codes de réponse hérités prennent le vocabulaire du moteur") {
+        // Piège trouvé par le moteur lui-même : les deux vocabulaires ne se
+        // recouvrent pas. « success » n'existe pas côté DNS, où le code 0
+        // s'appelle NOERROR — et une seule valeur inconnue fait refuser la
+        // configuration ENTIÈRE, pas seulement la règle fautive.
+        val attendus = mapOf(
+            "success" to "NOERROR", "format_error" to "FORMERR",
+            "server_failure" to "SERVFAIL", "name_error" to "NXDOMAIN",
+            "not_implemented" to "NOTIMP", "refused" to "REFUSED",
+        )
+        for ((herite, moderne) in attendus) {
+            val config = JSONObject("""{
+              "dns":{"servers":[{"tag":"ok","address":"1.1.1.1"},
+                                {"tag":"fab","address":"rcode://$herite"}],
+                     "rules":[{"domain":["x.test"],"server":"fab"}],
+                     "final":"ok"}
+            }""")
+            val regle = SxbEngineSchema.moderniser(config)
+                .getJSONObject("dns").getJSONArray("rules").getJSONObject(0)
+            check(regle.getString("action") == "predefined")
+            check(regle.getString("rcode") == moderne) {
+                "rcode://$herite doit devenir $moderne, pas ${regle.getString("rcode")}"
+            }
+        }
+    }
+
     checkCase("le moteur visé est le même partout, sans version en dur ailleurs") {
         check(SxbEngineSchema.ENGINE_VERSION == "1.12.9")
     }
