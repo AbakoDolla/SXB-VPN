@@ -1135,7 +1135,16 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(vpnContext, /rearmerWatchdogRef\.current\?\.\('HANDSHAKE'\)/);
     assert.ok(vpnContext.includes('Délai dépassé (${DELAI_SANS_SIGNE_MS / 1000}s)'));
     assert.match(vpnContext, /stopWatchdog\(\);[\s\S]{0,120}setVpnState\('disconnected'\)/);
-    assert.match(vpnContext, /stopWatchdog\(\);[\s\S]{0,120}setVpnState\('error'\)/);
+    // Sur une erreur, le chien de garde est désarmé AVANT toute suite. Ce qui
+    // s'intercale ensuite est l'échelle de présentation : elle tente une autre
+    // poignée de main plutôt que d'annoncer un échec que l'utilisateur ne peut
+    // pas corriger. L'invariant porte donc sur l'ORDRE, pas sur la distance.
+    assert.match(vpnContext, /stopWatchdog\(\);[\s\S]{0,400}setVpnState\('error'\)/);
+    const surErreur = vpnContext.slice(vpnContext.indexOf("} else if (s === 'error') {"));
+    assert.ok(
+      surErreur.indexOf('stopWatchdog();') < surErreur.indexOf("setVpnState('error')"),
+      'le chien de garde est désarmé avant de déclarer l’erreur',
+    );
     assert.match(vpnContext, /acceptNativeConnectedRef/);
     assert.ok(vpnContext.includes('attemptId !== connectionAttemptRef.current'));
     assert.ok(vpnContext.includes('Événement connecté tardif ignoré'));
@@ -1637,8 +1646,10 @@ describe('garde-fous contre les régressions Android', () => {
     // « chrome » par défaut sur le même profil, d'où sa stabilité.
     assert.ok(nativeService.includes('enabled -> "chrome"'));
     assert.ok(nativeService.includes('put("utls", JSONObject().apply {'));
-    // Une empreinte demandée par le profil reste prioritaire.
-    assert.ok(nativeService.includes('fingerprint.isNotBlank() -> fingerprint'));
+    // Une empreinte demandée par le profil reste prioritaire — sauf le refus
+    // explicite « none », que seule l'échelle de présentation pose, après
+    // qu'un réseau a rejeté la poignée de main précédente.
+    assert.ok(nativeService.includes('fingerprint.isNotBlank() && !refuseEmpreinte -> fingerprint'));
     // TLS désactivé : aucun bloc uTLS, sinon la configuration est incohérente.
     assert.ok(nativeService.includes('else -> ""'));
   });

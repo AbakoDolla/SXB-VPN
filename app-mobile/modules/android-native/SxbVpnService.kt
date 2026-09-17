@@ -4320,8 +4320,18 @@ class SxbVpnService : VpnService(), PlatformInterface {
             // On aligne ce comportement : « chrome » dès que TLS est actif, sauf
             // empreinte explicitement demandée par le profil. uTLS reste par
             // ailleurs obligatoire pour Reality.
+            //
+            // « none » est le REFUS EXPLICITE d'usurper une empreinte. Il n'est
+            // jamais écrit par un exploitant : c'est l'échelle de présentation
+            // (voir services/tlsPresentation.ts) qui le pose après qu'un réseau
+            // a refusé la poignée de main précédente. Le moteur présente alors
+            // son propre ClientHello — le comportement d'un client ordinaire,
+            // qui passe précisément là où l'usurpation est repérée. Reality
+            // l'ignore : son empreinte fait partie du protocole.
+            val refuseEmpreinte = fingerprint.equals("none", ignoreCase = true)
             val effectiveFingerprint = when {
-                fingerprint.isNotBlank() -> fingerprint
+                refuseEmpreinte && realityPublicKey.isBlank() -> ""
+                fingerprint.isNotBlank() && !refuseEmpreinte -> fingerprint
                 realityPublicKey.isNotBlank() -> "chrome"
                 enabled -> "chrome"
                 else -> ""

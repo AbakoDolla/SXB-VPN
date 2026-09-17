@@ -40,6 +40,9 @@ import * as configStore from '@/services/configStore';
 import { choisirProfilActif } from '@/services/activeProfile';
 import { estLeurre } from '@/services/decoy';
 import {
+  appliquerPresentationTls, echelleApplicable, essaiSuivant, presentationPourEssai, refusDePresentation,
+} from '@/services/tlsPresentation';
+import {
   isCompleteOfflineConfig,
   mergeConnectionMetadata,
   mergeProvisionedConfig,
@@ -96,6 +99,26 @@ const IS_ANDROID = Platform.OS === 'android';
  * lente qui avance n'est jamais coupée.
  */
 const DELAI_SANS_SIGNE_MS = 45_000;
+
+/**
+ * Délai au bout duquel une PRÉSENTATION TLS est tenue pour refusée.
+ *
+ * À ne pas confondre avec le chien de garde ci-dessus, qui mesure le silence du
+ * moteur. Celui-ci mesure autre chose : le temps qu'il faut pour savoir si le
+ * RÉSEAU accepte la poignée de main que nous lui montrons.
+ *
+ * Douze secondes, parce qu'un refus est immédiat par nature — le réseau coupe
+ * ou laisse mourir la connexion dès le premier paquet — alors qu'une acceptation
+ * se manifeste dès que le moteur annonce « handshaking ». Attendre davantage ne
+ * changerait pas la réponse, cela ne ferait que retarder l'essai suivant.
+ *
+ * Ce délai n'a d'effet QUE tant que le moteur n'a donné aucun signe de progrès :
+ * une liaison lente mais qui avance n'est jamais interrompue pour autant.
+ */
+const DELAI_PRESENTATION_MS = 12_000;
+
+/** Présentation retenue pour un profil, par identifiant de configuration. */
+const CLE_PRESENTATION = '@sxb_presentation_tls:';
 const SxbVpnNative = IS_ANDROID ? (NativeModules.SxbVpnNative as any) : null;
 const vpnEmitter   = SxbVpnNative ? new NativeEventEmitter(SxbVpnNative) : null;
 
@@ -471,6 +494,33 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const watchdogRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastStepRef  = useRef<string>('INIT');
 
+  // ── Échelle de présentation TLS ───────────────────────────────────────────
+  //
+  // Voir services/tlsPresentation.ts pour le POURQUOI. Ici ne vit que le
+  // séquencement : quel échelon est en cours, a-t-on vu un progrès du moteur,
+  // et à quel moment conclure que le réseau a refusé cette présentation.
+  /** Échelon en cours pour la tentative courante. */
+  const presentationEssaiRef = useRef(0);
+  /** Présentations déjà essayées dans ce cycle — borne l'exploration. */
+  const echelonsTentesRef = useRef(0);
+  /** Le moteur a-t-il progressé depuis le départ de cette tentative ? */
+  const progresMoteurRef = useRef(false);
+  /** Minuterie qui conclut au refus d'une présentation. */
+  const echelonTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Relance interne demandée par l'échelle, pour ne pas repartir de zéro. */
+  const echelonRelanceRef = useRef(false);
+  /** Configuration remise au moteur pour la tentative courante. */
+  const configMoteurRef = useRef<Record<string, any> | null>(null);
+  /**
+   * Un changement d'échelon est en cours.
+   *
+   * L'arrêt que nous demandons nous-mêmes fait remonter un « disconnected »
+   * du moteur. Sans ce marqueur, cet écho éteindrait l'interface au moment
+   * précis où la tentative suivante démarre — l'utilisateur verrait la
+   * connexion retomber alors qu'elle progresse.
+   */
+  const basculeEnCoursRef = useRef(false);
+
   const quotaProfile = runningProfileRef.current?.configId === activeConfigId
     ? runningProfileRef.current
     : usageLedger?.context?.configId === activeConfigId
@@ -628,6 +678,93 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // ── Échelle de présentation TLS — séquencement ────────────────────────────
+
+  /** Désarme la minuterie d'échelon. Appelée dès qu'un progrès est constaté. */
+  const stopEchelon = useCallback(() => {
+    if (echelonTimerRef.current) {
+      clearTimeout(echelonTimerRef.current);
+      echelonTimerRef.current = null;
+    }
+  }, []);
+
+  /**
+   * Note un progrès du moteur pour la tentative courante.
+   *
+   * Un progrès prouve que le réseau a ACCEPTÉ la présentation : il n'y a donc
+   * plus rien à explorer, et l'échelle doit se retirer immédiatement pour
+   * laisser le chien de garde faire son travail habituel.
+   */
+  const noterProgresMoteur = useCallback(() => {
+    progresMoteurRef.current = true;
+    stopEchelon();
+  }, [stopEchelon]);
+
+  /**
+   * Passe à l'échelon suivant, ou rend `false` s'il n'y en a plus.
+   *
+   * Un seul chemin pour les deux façons d'apprendre un refus : le moteur qui
+   * signale une erreur — immédiat, c'est le cas ordinaire d'une connexion
+   * coupée par le réseau — et le silence prolongé, qui couvre le cas où rien
+   * ne revient du tout.
+   */
+  const avancerEchelon = useCallback((attemptId: number, codeErreur?: string | null): boolean => {
+    if (attemptId !== connectionAttemptRef.current) return false;
+    if (progresMoteurRef.current) return false;
+    // Un échec que la présentation n'explique pas doit rester VISIBLE : le
+    // masquer derrière des tentatives silencieuses priverait l'utilisateur de
+    // la seule information qui lui permette d'agir.
+    if (codeErreur !== undefined && !refusDePresentation(codeErreur)) return false;
+    const config = configMoteurRef.current;
+    const suivant = essaiSuivant(config, presentationEssaiRef.current, echelonsTentesRef.current);
+    if (suivant === null) {
+      // Toutes les présentations ont été refusées. La mémoire est effacée pour
+      // que la prochaine tentative reparte du profil, et non d'un rang retenu
+      // sur un réseau qui n'est plus celui-là.
+      if (runningProfileRef.current?.configId) {
+        void AsyncStorage.removeItem(`${CLE_PRESENTATION}${runningProfileRef.current.configId}`).catch(() => {});
+      }
+      return false;
+    }
+    stopEchelon();
+    echelonsTentesRef.current += 1;
+    presentationEssaiRef.current = suivant;
+    echelonRelanceRef.current = true;
+    basculeEnCoursRef.current = true;
+    // Filet : si la relance échoue avant d'atteindre le moteur, ce marqueur ne
+    // doit pas rendre l'application sourde aux états du tunnel.
+    setTimeout(() => { basculeEnCoursRef.current = false; }, 5_000);
+    connectionAttemptRef.current++;
+    acceptNativeConnectedRef.current = false;
+    stopWatchdog();
+    const libelle = presentationPourEssai(suivant).libelle;
+    addLog(`🔁 ${t(libelle)}`);
+    addStepLog('presentation', libelle, 'active');
+    if (IS_ANDROID && SxbVpnNative) {
+      void SxbVpnNative.stopVpn().catch(() => {});
+    }
+    // Relance immédiate : attendre n'apprendrait rien de plus, puisque ce n'est
+    // pas la même chose que l'on s'apprête à montrer au réseau.
+    void connectRef.current?.();
+    return true;
+  }, [addLog, addStepLog, stopEchelon, stopWatchdog, t]);
+
+  /**
+   * Arme la conclusion « cette présentation a été refusée sans un mot ».
+   *
+   * Ne fait rien quand l'échelle est épuisée : insister avec la même
+   * présentation n'apprendrait rien, et couper une tentative qui pourrait
+   * encore aboutir serait une régression pure.
+   */
+  const startEchelon = useCallback((config: Record<string, any>, attemptId: number) => {
+    stopEchelon();
+    if (essaiSuivant(config, presentationEssaiRef.current, echelonsTentesRef.current) === null) return;
+    echelonTimerRef.current = setTimeout(() => {
+      echelonTimerRef.current = null;
+      avancerEchelon(attemptId);
+    }, DELAI_PRESENTATION_MS);
+  }, [avancerEchelon, stopEchelon]);
+
   const requestPermission = useCallback(async (): Promise<boolean> => {
     requireVpnConsent();
     if (!IS_ANDROID || !SxbVpnNative) return true;
@@ -649,6 +786,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       const authority = getAccessState().authority;
       if (e?.accessSession && e.accessSession !== authority?.session) return;
       if (e?.configId && runningProfileRef.current && e.configId !== runningProfileRef.current.configId) return;
+      // L'arrêt que l'échelle vient de demander fait remonter son propre écho.
+      // Le laisser passer éteindrait l'interface au moment où la tentative
+      // suivante démarre.
+      if (basculeEnCoursRef.current && (s === 'disconnected' || s === 'error')) return;
       if ((s === 'connected' || s === 'handshaking') &&
           (blocksDevice(selectDeviceAccess(authority)) ||
             (runningProfileRef.current && profileRestriction(authority, runningProfileRef.current)))) {
@@ -660,6 +801,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         setVpnState('handshaking');
         addLog('⏳ Tunnel établi — Négociation du flux...');
         addStepLog('handshaking', 'step_handshake', 'pending');
+        // Le réseau a ACCEPTÉ notre poignée de main : l'échelle de présentation
+        // n'a plus rien à explorer et se retire.
+        noterProgresMoteur();
         // ⚡ Le chien de garde REPART à zéro à chaque progrès du moteur.
         //
         // Il était armé une seule fois, pour toute la connexion : l'utilisateur
@@ -682,6 +826,17 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           return;
         }
         setVpnState('connected');
+        // La présentation qui vient d'aboutir est CELLE QUI PASSE SUR CE
+        // RÉSEAU : la retenir évite de refaire toute l'échelle au prochain
+        // départ. Une mémoire erronée ne coûte rien — si elle cesse de
+        // convenir, l'échelle repart d'elle-même.
+        noterProgresMoteur();
+        if (runningProfileRef.current?.configId) {
+          void AsyncStorage.setItem(
+            `${CLE_PRESENTATION}${runningProfileRef.current.configId}`,
+            String(presentationEssaiRef.current),
+          ).catch(() => {});
+        }
         // Le drapeau reste ARMÉ tant que la reconnexion automatique l'est.
         //
         // Il était désarmé ici, à la première connexion réussie. Or une reprise
@@ -731,6 +886,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         startTrafficPolling(); // S'assurer que le polling tourne
       } else if (s === 'disconnected') {
         stopWatchdog();
+        stopEchelon();
         setVpnState('disconnected');
         setIsConnected(false);
         setIsConnecting(false);
@@ -744,6 +900,11 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         void flushUsageRef.current({ final: true });
       } else if (s === 'error') {
         stopWatchdog();
+        // Le moteur a été refusé avant tout progrès : essayer une autre
+        // présentation AVANT d'annoncer l'échec. C'est le chemin rapide —
+        // une connexion coupée par le réseau revient en moins d'une seconde.
+        if (avancerEchelon(connectionAttemptRef.current, e?.errorCode)) return;
+        stopEchelon();
         setVpnState('error');
         acceptNativeConnectedRef.current = false;
         addStepLog('error', e.errorCode === 'PLAY_ENCRYPTION_REQUIRED' ? 'privacy_encryption_error' : 'step_error', 'error');
@@ -759,7 +920,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     });
 
     return () => { stateSub.remove(); logSub.remove(); };
-  }, [addLog, refreshAccountState, stopWatchdog, privacyEncryptionMessage]);
+  }, [addLog, refreshAccountState, stopWatchdog, stopEchelon, avancerEchelon, noterProgresMoteur, privacyEncryptionMessage]);
 
   const startTrafficPolling = useCallback(() => {
     if (!IS_ANDROID || !SxbVpnNative) return;
@@ -917,6 +1078,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     acceptNativeConnectedRef.current = false;
     disconnectInFlightRef.current = true;
     stopWatchdog();
+    stopEchelon();
+    basculeEnCoursRef.current = false;
     stopTrafficPolling();
     if (reportTimerRef.current) { clearInterval(reportTimerRef.current); reportTimerRef.current = null; }
     try {
@@ -929,7 +1092,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     } finally {
       disconnectInFlightRef.current = false;
     }
-  }, [stopTrafficPolling, stopWatchdog, setVpnState]);
+  }, [stopTrafficPolling, stopWatchdog, stopEchelon, setVpnState]);
 
   const stopForAccessRef = useRef<(() => Promise<void>) | null>(null);
   useEffect(() => { stopForAccessRef.current = stopForAccess; });
@@ -1396,6 +1559,26 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       }
     }
     const attemptId = ++connectionAttemptRef.current;
+    // ── Échelon de présentation pour cette tentative ──────────────────────
+    //
+    // Une relance décidée par l'échelle conserve l'échelon qu'elle vient de
+    // choisir ; tout autre départ repart de la présentation retenue la dernière
+    // fois que ce profil a abouti sur ce téléphone — à défaut, du profil tel
+    // qu'il est écrit.
+    progresMoteurRef.current = false;
+    stopEchelon();
+    if (echelonRelanceRef.current) {
+      echelonRelanceRef.current = false;
+    } else {
+      // Un départ voulu par l'utilisateur rouvre le budget d'exploration.
+      echelonsTentesRef.current = 0;
+      // Lecture locale, jamais réseau : quelques millisecondes, et elle doit
+      // être faite AVANT de construire ce que le moteur recevra.
+      const memoire = await AsyncStorage.getItem(`${CLE_PRESENTATION}${selectedId}`).catch(() => null);
+      if (attemptId !== connectionAttemptRef.current) return;
+      const rang = Number(memoire);
+      presentationEssaiRef.current = Number.isFinite(rang) && rang > 0 ? rang : 0;
+    }
     // Retour UI immédiat : le bouton et l’animation changent avant toute E/S réseau.
     setIsConnecting(true);
     setVpnState('connecting');
@@ -1645,8 +1828,20 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         // Une ancre durable existe AVANT les premiers paquets du nouveau
         // tunnel, même si ses deux compteurs valent encore zéro.
         await flushUsageRef.current({ beforeConnect: true });
+        // ── Ce que le réseau va voir ──────────────────────────────────────
+        //
+        // Jusqu'ici, l'application n'avait qu'UNE façon de se présenter. Quand
+        // un réseau la refusait, la répéter ne pouvait rien changer : c'est le
+        // cas « la même configuration marche dans une autre application, pas
+        // dans la nôtre ». L'échelon choisi ici est celui qui n'a pas encore
+        // été refusé.
+        const configPresentee = appliquerPresentationTls(configToUse, presentationEssaiRef.current);
+        configMoteurRef.current = configToUse;
+        if (echelleApplicable(configToUse) && presentationEssaiRef.current > 0) {
+          addStepLog('presentation', presentationPourEssai(presentationEssaiRef.current).libelle, 'done');
+        }
         const optionsJson = JSON.stringify(sanitizeEngineConfig({
-          ...configToUse,
+          ...configPresentee,
           configId: selectedId,
           subscriptionId: currentProfile.meta.subscriptionId,
           configHash: currentProfile.meta.configHash,
@@ -1665,7 +1860,11 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
         acceptNativeConnectedRef.current = true;
         startWatchdog(`STEP_3_NATIVE_CALLED proto=${engineProtocol}`, attemptId);
+        startEchelon(configToUse, attemptId);
         await SxbVpnNative.startVpn(optionsJson);
+        // La bascule est consommée : les états du moteur redeviennent
+        // significatifs pour cette tentative.
+        basculeEnCoursRef.current = false;
         if (attemptId !== connectionAttemptRef.current) return;
         addStepLog('handshake', 'step_handshake', 'active');
         addLog('⏳ Connexion en cours...');
@@ -1683,11 +1882,16 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       }
     } catch (err: any) {
       if (attemptId !== connectionAttemptRef.current) return;
+      // Un départ qui échoue ici n'a jamais atteint le réseau : l'échelle n'a
+      // rien à conclure, et la laisser armée relancerait douze secondes plus
+      // tard une tentative que rien ne justifie.
+      stopEchelon();
+      basculeEnCoursRef.current = false;
       addLog(`❌ Erreur : ${err?.message || 'Connexion échouée'}`);
       setVpnState('error');
       setIsConnecting(false);
     }
-  }, [isAuthenticated, accessReady, isConnecting, isConnected, vpnConfig, activeConnection, killSwitch, autoReconnect, deviceId, addLog, startWatchdog, resetStepLogs, addStepLog, updateStepStatus, t]);
+  }, [isAuthenticated, accessReady, isConnecting, isConnected, vpnConfig, activeConnection, killSwitch, autoReconnect, deviceId, addLog, startWatchdog, startEchelon, stopEchelon, resetStepLogs, addStepLog, updateStepStatus, t]);
 
   useEffect(() => { connectRef.current = connect; });
 
@@ -1710,6 +1914,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     disconnectInFlightRef.current = true;
     acceptNativeConnectedRef.current = false;
     stopWatchdog();
+    // Une déconnexion voulue clôt l'exploration : la présentation en cours ne
+    // doit pas être jugée refusée, ni déclencher une relance.
+    stopEchelon();
+    basculeEnCoursRef.current = false;
     setIsConnecting(false);
     setIsConnected(false);
     setVpnState('disconnected');
@@ -1747,7 +1955,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       disconnectInFlightRef.current = false;
       runningProfileRef.current = null;
     }
-  }, [isConnecting, isConnected, addLog, addStepLog]);
+  }, [isConnecting, isConnected, addLog, addStepLog, stopEchelon]);
 
   /**
    * Suppression d'un profil local.

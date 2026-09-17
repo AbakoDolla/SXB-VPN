@@ -71,8 +71,19 @@ describe('profils VLESS partagés — compatibilité', () => {
         assert.equal(config.port, 8443);
         assert.equal(config.wsHost, 'service.example.run.app');
         assert.equal(config.path, '/ws');
-        // Sans `sni` explicite, l'en-tête Host fait foi : c'est ce que présente
-        // un client ordinaire devant la même façade.
+        // Sans `sni` explicite, c'est l'ADRESSE JOINTE qui est présentée — la
+        // règle du moteur de référence, et la seule qui préserve une façade.
+        // Présenter l'en-tête Host écrirait le vrai service en clair dans le
+        // premier paquet, ce qui revient à ne plus avoir de façade du tout.
+        assert.equal(config.sni, 'front.example.com');
+      }],
+      // Adresse littérale : aucune IP ne peut être présentée en SNI, un serveur
+      // strict refuse la poignée de main. L'en-tête Host redevient alors le
+      // seul nom disponible.
+      ['vless://ae446a7b-9988-4353-80c7-050a915e1a1e@203.0.113.7:443'
+        + '?type=ws&host=service.example.run.app&path=%2Fws&security=tls',
+      config => {
+        assert.equal(config.host, '203.0.113.7');
         assert.equal(config.sni, 'service.example.run.app');
       }],
       // `network=` au lieu de `type=`, majuscules, et chemin avec paramètres.

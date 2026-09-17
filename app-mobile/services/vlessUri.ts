@@ -38,6 +38,17 @@ function parseQuery(raw: string): Map<string, string> {
   return result;
 }
 
+/**
+ * Vrai pour une adresse IP littérale, v4 ou v6.
+ *
+ * Une telle adresse ne peut pas servir de nom TLS : l'extension SNI porte un
+ * nom d'hôte, et les serveurs stricts refusent la poignée de main quand elle
+ * contient une IP.
+ */
+function estAdresseLitterale(valeur: string): boolean {
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(valeur) || valeur.includes(':');
+}
+
 function parseAuthority(authority: string): { host: string; port: number } | null {
   // VLESS peut cibler une IPv6 entre crochets : [2001:db8::1]:443.
   if (authority.startsWith('[')) {
@@ -102,9 +113,30 @@ export function parseVlessUri(rawUri: string): ParsedVlessUri {
   if (path !== undefined) config.path = path;
   const wsHost = lire('host');
   if (wsHost !== undefined) config.wsHost = wsHost;
+  // ── REPLI DU NOM TLS — la règle était INVERSÉE ────────────────────────────
+  //
+  // Sans `sni=`, l'application présentait l'EN-TÊTE HOST du WebSocket. C'est
+  // l'exact contraire de ce que fait un client ordinaire, et cela détruit la
+  // seule chose qui fasse tenir un profil de façade.
+  //
+  // Un profil de façade se compose ainsi : on joint un domaine BANAL, on
+  // présente SON nom pendant TLS, et seul l'en-tête Host — chiffré, donc
+  // invisible du réseau — désigne le vrai service. Présenter le vrai service en
+  // SNI l'écrit en clair dans le premier paquet : le réseau ne voit plus un
+  // domaine anodin mais la destination réelle, et il la traite comme telle.
+  //
+  // Conséquence observée : le profil fonctionne sur un réseau ordinaire — qui
+  // laisse tout passer — et échoue sur celui-là même pour lequel la façade
+  // existe. D'où « ça marche chez moi, pas chez lui, alors que son autre
+  // application y arrive ».
+  //
+  // La règle correcte est celle du moteur de référence : `serverName` vaut
+  // l'ADRESSE JOINTE. L'unique exception est une adresse littérale — une IP ne
+  // peut pas être présentée en SNI, un serveur strict rejette la poignée de
+  // main —, auquel cas l'en-tête Host reste le seul nom disponible.
   const sni = lire('sni');
   if (sni !== undefined) config.sni = sni;
-  else if (config.tls) config.sni = wsHost || endpoint.host;
+  else if (config.tls) config.sni = estAdresseLitterale(endpoint.host) ? (wsHost || endpoint.host) : endpoint.host;
 
   // ── Noms CANONIQUES attendus par le moteur ────────────────────────────────
   //
