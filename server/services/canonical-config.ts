@@ -53,7 +53,7 @@ export type SourceFormat =
   | 'vless-uri' | 'vmess-uri' | 'trojan-uri' | 'ss-uri'
   | 'wireguard-conf' | 'hysteria2-uri' | 'tuic-uri'
   | 'uri-list' | 'v2ray-subscription'
-  | 'singbox-json' | 'xray-json' | 'v2rayn-json' | 'http-tweak-json' | 'sxb-canonical';
+  | 'singbox-json' | 'xray-json' | 'v2rayn-json' | 'http-tweak-json' | 'socksip-json' | 'sxb-canonical';
 
 export interface ParseResult {
   ok: boolean;
@@ -735,6 +735,159 @@ function httpCustomEntries(obj: any): Record<string, any>[] {
   return address && username && marker !== undefined ? [obj] : [];
 }
 
+/**
+ * Export SocksIP — profils SSH à charge utile.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * POURQUOI CE PARSEUR EXISTE
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Ces profils circulent entre exploitants sous la forme exportée par SocksIP,
+ * et l'importateur les refusait tout net : « champ protocol requis ». Autrement
+ * dit, un profil parfaitement valide, qui fonctionne chez son auteur, était
+ * impossible à faire entrer dans le tableau de bord — il fallait le retranscrire
+ * champ par champ, à la main, en devinant les correspondances.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * CE QUI SE DÉDUIT, ET CE QUI NE SE DEVINE PAS
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Le format porte des énumérations opaques — `TypeTunnel`, `TypeSSHTransport`,
+ * `DNSTType` — dont la signification n'est documentée nulle part. Les
+ * interpréter au jugé produirait un profil silencieusement faux, bien pire
+ * qu'un refus. Elles sont donc IGNORÉES : le mode se déduit de ce qui est
+ * VÉRIFIABLE — une charge utile présente signifie un tunnel à charge utile, un
+ * proxy distinct du serveur signifie un CONNECT vers ce proxy.
+ */
+function parseSocksIpProfile(
+  obj: Record<string, any>,
+  warnings: string[],
+): { cfg: Record<string, any>; name?: string } | null {
+  // Un canonique SXB porte déjà `protocol` : ne jamais le reclassifier.
+  if (typeof obj.protocol === 'string') return null;
+  const fields = externalFields(obj);
+
+  const serveur = String(externalValue(fields, 'SSHSERVER') ?? '').trim();
+  const proxyBrut = String(externalValue(fields, 'PROXYHOSTPORT') ?? '').trim();
+  const resolution = String(externalValue(fields, 'SSHSERVERRESOLUTION') ?? '').trim();
+  if (!serveur && !proxyBrut && !resolution) return null;
+
+  const principal = decomposerPointSocksIp(serveur)
+    ?? decomposerPointSocksIp(proxyBrut)
+    ?? decomposerPointSocksIp(resolution);
+  if (!principal) return null;
+
+  // Les identifiants ne sont pas toujours dans les champs qui leur sont dédiés :
+  // SocksIP les accroche aussi aux points d'accès, sous la forme
+  // `hote:port@utilisateur:motdepasse`. On les cherche partout où ils peuvent
+  // être, sans quoi un export parfaitement complet passerait pour incomplet.
+  const porteurs = [
+    principal,
+    decomposerPointSocksIp(proxyBrut),
+    decomposerPointSocksIp(String(externalValue(fields, 'SSHPROXYSERVERRESOLUTION') ?? '')),
+    decomposerPointSocksIp(resolution),
+  ].filter((p): p is NonNullable<typeof p> => p !== null);
+  const username = String(externalValue(fields, 'SSHUSERNAME') ?? '').trim()
+    || (porteurs.find(p => p.username !== '')?.username ?? '');
+  const password = String(externalValue(fields, 'SSHPASSWORD') ?? '')
+    || (porteurs.find(p => p.password !== '')?.password ?? '');
+  if (!username) return null;
+
+  const charge = normaliserChargeUtileSocksIp(String(externalValue(fields, 'SSHPAYLOAD') ?? ''));
+  const usePayload = charge !== '';
+
+  // Le proxy n'est retenu que s'il DIFFÈRE du serveur : SocksIP y recopie
+  // souvent le serveur lui-même, et le déclarer comme proxy distinct ferait
+  // basculer le moteur sur un CONNECT en deux temps qui n'a pas lieu d'être.
+  const proxy = decomposerPointSocksIp(proxyBrut);
+  const proxyDistinct = proxy !== null
+    && (proxy.host !== principal.host || proxy.port !== principal.port);
+
+  const cfg: Record<string, any> = {
+    protocol: usePayload ? 'ssh+payload' : 'ssh',
+    sshTransport: usePayload ? (proxyDistinct ? 'http-connect' : 'payload') : 'direct',
+    host: principal.host,
+    port: principal.port,
+    username,
+    password,
+    tls: false,
+    usePayload,
+    proxyEnabled: proxyDistinct,
+    localPort: 1080,
+    timeoutMs: 30_000,
+    compressionLevel: 0,
+  };
+  if (usePayload) cfg.payload = charge;
+  if (proxyDistinct && proxy) {
+    cfg.proxyHost = proxy.host;
+    cfg.proxyPort = proxy.port;
+  }
+
+  // Le nom de résolution est conservé À TITRE INDICATIF quand l'adresse jointe
+  // est littérale : il documente le serveur sans imposer une résolution DNS que
+  // le réseau restreint visé par ces profils bloque justement souvent.
+  const resolutionPoint = decomposerPointSocksIp(resolution);
+  if (resolutionPoint && resolutionPoint.host !== principal.host) {
+    warnings.push(
+      `Nom de résolution « ${resolutionPoint.host} » conservé pour mémoire : `
+      + "la connexion vise l'adresse littérale, aucune résolution DNS n'est requise",
+    );
+  }
+  warnings.push(
+    'Profil SocksIP importé : le mode a été déduit de la charge utile, '
+    + 'les énumérations internes du format (TypeTunnel, TypeSSHTransport) étant ignorées',
+  );
+
+  return {
+    cfg,
+    name: String(externalValue(fields, 'CONFIGNAME', 'NAME', 'REMARKS') ?? '').trim() || undefined,
+  };
+}
+
+/** `hote:port` ou `hote:port@utilisateur:motdepasse` → ses quatre parties. */
+function decomposerPointSocksIp(
+  brut: string,
+): { host: string; port: number; username: string; password: string } | null {
+  const valeur = String(brut ?? '').trim();
+  if (!valeur) return null;
+  const arobase = valeur.indexOf('@');
+  const pointPart = arobase >= 0 ? valeur.slice(0, arobase) : valeur;
+  const identifiants = arobase >= 0 ? valeur.slice(arobase + 1) : '';
+  const colon = pointPart.lastIndexOf(':');
+  if (colon <= 0) return null;
+  const host = pointPart.slice(0, colon).trim();
+  const port = Number(pointPart.slice(colon + 1).trim());
+  if (!host || !Number.isInteger(port) || port < 1 || port > 65535) return null;
+  const separateur = identifiants.indexOf(':');
+  return {
+    host,
+    port,
+    username: separateur >= 0 ? identifiants.slice(0, separateur) : identifiants,
+    password: separateur >= 0 ? identifiants.slice(separateur + 1) : '',
+  };
+}
+
+/**
+ * Charge utile SocksIP → charge utile SXB.
+ *
+ * LE PIÈGE : l'export intercale des séquences `\n` de DEUX CARACTÈRES — une
+ * barre oblique inverse suivie d'un « n » — entre ses lignes, en plus des
+ * jetons `[crlf]` qui portent déjà la vraie fin de ligne. Transmises telles
+ * quelles, ces deux lettres partent SUR LE FIL au milieu des en-têtes HTTP :
+ * la requête devient malformée et le frontal la rejette, sans que rien
+ * n'explique pourquoi une charge utile « identique » échoue chez nous.
+ *
+ * Quand les jetons `[crlf]` sont présents, ces séquences ne sont donc que du
+ * décor d'affichage : on les retire. En leur absence, elles portent réellement
+ * la fin de ligne, et deviennent alors le jeton correspondant.
+ */
+function normaliserChargeUtileSocksIp(brut: string): string {
+  const valeur = String(brut ?? '').trim();
+  if (!valeur) return '';
+  const porteDesJetons = /\[(?:crlf|lfcr|lf|cr)\]/i.test(valeur);
+  return porteDesJetons
+    ? valeur.replace(/\\r\\n|\\n|\\r/g, '')
+    : valeur.replace(/\\r\\n|\\n|\\r/g, '[crlf]');
+}
+
 function parseHttpCustomProfile(
   obj: Record<string, any>,
   warnings: string[],
@@ -968,6 +1121,15 @@ function parseImportedConfigSingle(raw: string): ParseResult {
       sourceFormat = 'http-custom-json';
     }
     else {
+    // SocksIP : évalué avant les formats plus larges, car ses champs lui sont
+    // propres (SSHServer, SSHPayload, ProxyHostPort) et ne ressemblent à ceux
+    // d'aucun autre export.
+    const socksIp = parseSocksIpProfile(obj, warnings);
+    if (socksIp) {
+      parsed = socksIp;
+      sourceFormat = 'socksip-json';
+    }
+    else {
     const httpTweak = parseHttpTweakV2ray(obj, warnings, errors);
     if (httpTweak) {
       parsed = httpTweak;
@@ -1034,8 +1196,9 @@ function parseImportedConfigSingle(raw: string): ParseResult {
       }
     }
     if (!parsed) {
-      errors.push('JSON non reconnu : ni HTTP Custom, sing-box ni Xray — champ "protocol" requis (ssh, ssh+payload, vless, vmess, trojan, shadowsocks, wireguard, hysteria2, tuic) pour le format canonique SXB');
+      errors.push('JSON non reconnu : ni HTTP Custom, SocksIP, sing-box ni Xray — champ "protocol" requis (ssh, ssh+payload, vless, vmess, trojan, shadowsocks, wireguard, hysteria2, tuic) pour le format canonique SXB');
       return { ok: false, errors, warnings };
+    }
     }
     }
     }
