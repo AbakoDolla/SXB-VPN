@@ -661,18 +661,46 @@ function filtrerIdentites(identites: IdentiteAppareil[], options: OptionsPresenc
 }
 
 /**
- * Date du dernier signal reçu, toutes fenêtres confondues.
+ * Date du dernier signal reçu, toutes sources confondues.
  *
  * « 0 connecté » ne dit pas si personne n'est en ligne ou si plus rien
  * n'arrive. Cette date tranche : un exploitant qui lit « aucun signal depuis
  * cinq jours » sait que le problème n'est pas dans le compteur.
+ *
+ * Elle interroge les DEUX sources qui alimentent la présence — le battement de
+ * santé et la consommation remontée. N'en lire qu'une faisait annoncer « aucun
+ * signal depuis six jours » à un parc qui avait consommé le jour même : le
+ * compteur comptait le trafic, la date l'ignorait.
  */
 export async function dernierSignalPresence(db: any): Promise<Date | null> {
-  const ligne = await db.mobileHealthDevice.findFirst({
-    orderBy: { lastSeenAt: "desc" },
-    select: { lastSeenAt: true },
-  });
-  return ligne?.lastSeenAt ?? null;
+  const dates: Date[] = [];
+
+  try {
+    const battement = await db.mobileHealthDevice.findFirst({
+      orderBy: { lastSeenAt: "desc" },
+      select: { lastSeenAt: true },
+    });
+    if (battement?.lastSeenAt) dates.push(new Date(battement.lastSeenAt));
+  } catch {
+    // Une source muette ne doit pas effacer l'autre.
+  }
+
+  try {
+    if (db?.trafficUsage?.findFirst) {
+      const trafic = await db.trafficUsage.findFirst({
+        where: { deviceId: { not: null } },
+        orderBy: { timestamp: "desc" },
+        select: { timestamp: true },
+      });
+      if (trafic?.timestamp) dates.push(new Date(trafic.timestamp));
+    }
+  } catch {
+    // Idem : le battement seul reste exploitable.
+  }
+
+  const valides = dates.filter((date) => Number.isFinite(date.getTime()));
+  if (valides.length === 0) return null;
+  return valides.reduce((recent, date) => (date > recent ? date : recent));
 }
 
 /**

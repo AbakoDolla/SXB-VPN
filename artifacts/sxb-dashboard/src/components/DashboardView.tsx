@@ -37,14 +37,17 @@ const TRAFFIC_DAY_LABELS: Record<string, string> = {
 };
 
 function StatCard({
-  label, value, sub, icon: Icon, color, accent, onClick,
+  label, value, sub, icon: Icon, color, accent, onClick, help,
 }: {
   label: string; value: string | number; sub?: string;
   icon: any; color: string; accent: string; onClick?: () => void;
+  /** Explication au survol, pour un compteur dont le nom seul peut tromper. */
+  help?: string;
 }) {
   return (
     <div
       onClick={onClick}
+      title={help}
       className={`relative overflow-hidden rounded-xl border bg-[#0a0d14] dashboard-card sxb-animated-card p-4 flex flex-col gap-3 transition-all duration-200 ${onClick ? 'cursor-pointer hover:border-opacity-60 hover:scale-[1.01]' : ''} border-[#1a1f2e]`}
     >
       <div className="flex items-start justify-between">
@@ -434,14 +437,20 @@ export default function DashboardView({
         )}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           <StatCard label={isReseller ? t("operations.common.myClients") : t("operations.dashboard.totalClients")} value={formatNumber(totalClients)} sub={t("operations.dashboard.registered")} icon={Users} color="text-cyan-400" accent="bg-cyan-500/10" onClick={() => onNavigate('clients')} />
-          {/* CONNECTÉS — connexions RÉELLEMENT observées, plus le nombre de
-              comptes ouverts. `connectedNow` vaut null quand la plateforme n'a
-              rien pu mesurer : on l'écrit, on ne le remplace pas par zéro, qui
-              affirmerait que personne n'utilise le VPN. */}
+          {/* CLIENTS CONNECTÉS — tunnels VPN réellement ouverts par
+              l'application mobile. La carte s'appelait « Connectés », ce qui se
+              lisait comme « qui est connecté à ce panneau » : un exploitant qui
+              venait de s'authentifier y voyait zéro et concluait à un compteur
+              cassé. Le libellé dit désormais de qui il parle, et l'explication
+              au survol lève le doute.
+              `connectedNow` vaut null quand la plateforme n'a rien pu mesurer :
+              on l'écrit, on ne le remplace pas par zéro, qui affirmerait que
+              personne n'utilise le VPN. */}
           <StatCard
             label={t("operations.dashboard.connected")}
             value={connectedMeasured ? formatNumber(stats?.connectedNow ?? 0) : t("operations.dashboard.connectedUnmeasured")}
             sub={sousTitreConnectes}
+            help={t("operations.dashboard.connectedHelp")}
             icon={Wifi}
             color="text-emerald-400"
             accent="bg-emerald-500/10"

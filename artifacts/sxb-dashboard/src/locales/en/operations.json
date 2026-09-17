@@ -415,12 +415,12 @@
     "network": "Clients & network",
     "totalClients": "Total clients",
     "registered": "registered",
-    "connected": "Connected",
+    "connected": "Connected clients",
     "activeSessionsSub": "active sessions",
     "activeAccountsSub": "open accounts, not connections",
     "activeAccounts": "Active accounts",
-    "connectedUnmeasuredSub": "presence cannot be measured",
-    "connectedSub": "seen within the last {{minutes}} min",
+    "connectedUnmeasuredSub": "presence cannot be measured on this install",
+    "connectedSub": "tunnel active within {{minutes}} min",
     "connectedUnmeasured": "Not measured",
     "devices": "Devices",
     "plans": "Plans",
@@ -478,8 +478,9 @@
       "saturday": "Sat",
       "sunday": "Sun"
     },
-    "connectedLastSignal": "no signal since {{when}}",
-    "connectedNoSignal": "no device has reported yet"
+    "connectedLastSignal": "no tunnel reported since {{when}}",
+    "connectedNoSignal": "no app has reported a tunnel yet",
+    "connectedHelp": "This counter follows the VPN tunnels opened by your customers’ mobile app. Your own dashboard session is not in it: it is not a VPN connection."
   },
   "monitoring": {
     "title": "Monitoring",

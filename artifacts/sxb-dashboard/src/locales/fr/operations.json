@@ -415,12 +415,12 @@
     "network": "Clients & Réseau",
     "totalClients": "Total Clients",
     "registered": "enregistrés",
-    "connected": "Connectés",
+    "connected": "Clients connectés",
     "activeSessionsSub": "sessions actives",
     "activeAccountsSub": "comptes ouverts, pas des connexions",
     "activeAccounts": "Comptes actifs",
-    "connectedUnmeasuredSub": "présence non mesurable",
-    "connectedSub": "vus depuis moins de {{minutes}} min",
+    "connectedUnmeasuredSub": "présence non mesurable sur cette installation",
+    "connectedSub": "tunnel actif depuis moins de {{minutes}} min",
     "connectedUnmeasured": "Non mesuré",
     "devices": "Appareils",
     "plans": "Forfaits",
@@ -478,8 +478,9 @@
       "saturday": "sam.",
       "sunday": "dim."
     },
-    "connectedLastSignal": "aucun signal depuis le {{when}}",
-    "connectedNoSignal": "aucun appareil n’a encore signalé"
+    "connectedLastSignal": "aucun tunnel signalé depuis le {{when}}",
+    "connectedNoSignal": "aucune application n’a encore signalé de tunnel",
+    "connectedHelp": "Ce compteur suit les tunnels VPN ouverts par l’application mobile de vos clients. Votre session sur ce tableau de bord n’y figure pas : ce n’est pas une connexion VPN."
   },
   "monitoring": {
     "title": "Monitoring",
