@@ -104,18 +104,23 @@ const DELAI_SANS_SIGNE_MS = 45_000;
  * Délai au bout duquel une PRÉSENTATION TLS est tenue pour refusée.
  *
  * À ne pas confondre avec le chien de garde ci-dessus, qui mesure le silence du
- * moteur. Celui-ci mesure autre chose : le temps qu'il faut pour savoir si le
- * RÉSEAU accepte la poignée de main que nous lui montrons.
+ * moteur. Celui-ci mesure autre chose : le temps au bout duquel un tunnel
+ * DEBOUT mais qui ne transporte rien doit être considéré comme refusé.
  *
- * Douze secondes, parce qu'un refus est immédiat par nature — le réseau coupe
- * ou laisse mourir la connexion dès le premier paquet — alors qu'une acceptation
- * se manifeste dès que le moteur annonce « handshaking ». Attendre davantage ne
- * changerait pas la réponse, cela ne ferait que retarder l'essai suivant.
+ * La distinction est essentielle, parce que le moteur annonce « handshaking »
+ * dès que l'interface TUN existe — c'est-à-dire même quand le réseau a rejeté
+ * la connexion sortante. Seul « connected », qui exige la preuve d'un flux réel
+ * par le proxy, atteste d'une réussite.
  *
- * Ce délai n'a d'effet QUE tant que le moteur n'a donné aucun signe de progrès :
- * une liaison lente mais qui avance n'est jamais interrompue pour autant.
+ * Vingt secondes. Le point de comparaison est mesuré : un client ordinaire, sur
+ * le réseau qui nous pose problème, joint son serveur en une seconde et navigue
+ * en quatre. Vingt secondes sans le moindre flux ne sont donc pas une lenteur,
+ * c'est un refus. Le risque assumé est symétrique : une liaison réellement
+ * poussive peut se voir proposer une autre présentation alors que la sienne
+ * aurait fini par passer — elle aboutira simplement à l'échelon suivant, et
+ * l'exploration reste bornée à trois essais.
  */
-const DELAI_PRESENTATION_MS = 12_000;
+const DELAI_PRESENTATION_MS = 20_000;
 
 /** Présentation retenue pour un profil, par identifiant de configuration. */
 const CLE_PRESENTATION = '@sxb_presentation_tls:';
@@ -801,9 +806,11 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         setVpnState('handshaking');
         addLog('⏳ Tunnel établi — Négociation du flux...');
         addStepLog('handshaking', 'step_handshake', 'pending');
-        // Le réseau a ACCEPTÉ notre poignée de main : l'échelle de présentation
-        // n'a plus rien à explorer et se retire.
-        noterProgresMoteur();
+        // `handshaking` signifie « interface TUN créée », rien de plus : le
+        // moteur l'annonce même quand le réseau a refusé la connexion sortante.
+        // Le prendre pour une réussite désarmait l'échelle AVANT qu'elle ait pu
+        // servir. Seul `connected` — qui exige la preuve d'un flux réel par le
+        // proxy — atteste que le réseau nous a acceptés.
         // ⚡ Le chien de garde REPART à zéro à chaque progrès du moteur.
         //
         // Il était armé une seule fois, pour toute la connexion : l'utilisateur

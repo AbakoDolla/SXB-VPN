@@ -833,6 +833,40 @@ class SxbVpnService : VpnService(), PlatformInterface {
          */
         private val PERMANENT_ERROR_CODES = setOf("CONFIG_INVALID", "CONFIG_UNSUPPORTED", "USAGE_CHECKPOINT_UNAVAILABLE")
 
+        /**
+         * Résolveur employé À TRAVERS le tunnel, quand le profil n'en impose pas.
+         *
+         * ═══════════════════════════════════════════════════════════════════
+         * POURQUOI PAS DoH — le défaut corrigé
+         * ═══════════════════════════════════════════════════════════════════
+         * C'était `https://1.1.1.1/dns-query`. Conséquence : avant de résoudre
+         * LE PREMIER NOM, le moteur devait mener une négociation TLS complète
+         * vers Cloudflare À L'INTÉRIEUR du tunnel — plusieurs allers-retours,
+         * validation de certificat comprise, sur un lien mobile qui est
+         * justement le plus mauvais moment pour en demander autant. Tant que
+         * cette négociation n'aboutissait pas, aucun nom ne se résolvait, donc
+         * aucune connexion ne traversait le proxy, donc l'application restait
+         * indéfiniment sur « négociation en cours » — le « still loading » que
+         * les utilisateurs rapportent, tunnel pourtant debout.
+         *
+         * Ce chiffrement était de surcroît REDONDANT : la requête voyage déjà
+         * dans le tunnel. DoH ne protégeait rien que le tunnel ne protège, et
+         * coûtait le prix fort.
+         *
+         * ═══════════════════════════════════════════════════════════════════
+         * POURQUOI TCP PLUTÔT QU'UDP
+         * ═══════════════════════════════════════════════════════════════════
+         * Un tunnel WebSocket derrière un frontal ne relaie presque jamais
+         * l'UDP, et une sortie de type Cloud Run n'en émet pas du tout. Une
+         * requête DNS en UDP se perdrait donc en silence. TCP passe partout où
+         * le tunnel lui-même passe — c'est le même raisonnement que
+         * `SxbTunnelPolicy.reliableDns`, appliqué ici au chemin canonique.
+         *
+         * Le profil garde le dernier mot : un `dns` renseigné sur le tableau de
+         * bord remplace entièrement cette valeur.
+         */
+        private const val RESOLVEUR_TUNNEL = "tcp://8.8.8.8"
+
         /** ⚡ Plafond de diffusion des journaux vers l'interface (voir broadcastLog). */
         private const val LOG_RATE_WINDOW_MS = 1_000L
         private const val LOG_RATE_MAX_PER_WINDOW = 12
@@ -3180,9 +3214,14 @@ class SxbVpnService : VpnService(), PlatformInterface {
         if (value.isEmpty()) return null
         val address = when {
             value.equals("local", ignoreCase = true) -> "local"
+            // Un schéma explicite est un choix de transport de l'exploitant :
+            // il est respecté tel quel.
             value.contains("://") -> value
-            // Une IP nue est utilisée telle quelle par sing-box (DNS classique).
-            else -> value
+            // Une IP nue serait interrogée en UDP — que le tunnel WebSocket ne
+            // relaie presque jamais, et qu'une sortie Cloud Run n'émet pas du
+            // tout. La requête se perdrait en silence : même serveur, mais en
+            // TCP, qui passe partout où le tunnel passe.
+            else -> "tcp://$value"
         }
         return JSONObject().apply {
             put("servers", JSONArray()
@@ -3204,8 +3243,15 @@ class SxbVpnService : VpnService(), PlatformInterface {
     }
 
     private fun defaultDnsObject(detourTag: String = "proxy"): JSONObject = JSONObject().apply {
+        // Un `final` qui sort en direct n'a pas de tunnel à traverser : le
+        // résolveur du réseau est alors le bon choix, et le seul joignable sur
+        // un forfait qui ne décompte qu'un domaine.
+        val dansLeTunnel = detourTag != "direct"
         put("servers", JSONArray()
-            .put(JSONObject().put("tag", "dns-remote").put("address", "https://1.1.1.1/dns-query").put("strategy", if (detourTag == "direct") dnsStrategy() else tunnelDnsStrategy()).put("detour", detourTag))
+            .put(JSONObject().put("tag", "dns-remote")
+                .put("address", if (dansLeTunnel) RESOLVEUR_TUNNEL else bootstrapDnsAddress())
+                .put("strategy", if (dansLeTunnel) tunnelDnsStrategy() else dnsStrategy())
+                .put("detour", detourTag))
             // Résolveur du réseau plutôt que `local` : voir systemDnsServers().
             .put(JSONObject().put("tag", "dns-local").put("address", bootstrapDnsAddress())
                 .put("strategy", dnsStrategy()).put("detour", "direct"))
@@ -4459,10 +4505,17 @@ class SxbVpnService : VpnService(), PlatformInterface {
             put("log", JSONObject().put("level", "warn").put("timestamp", true))
             put("dns", applyDnsLoopGuard(JSONObject().apply {
                 put("servers", JSONArray()
-                    // Le DoH sort par `proxy` (le SOCKS local alimenté par SSH) ;
-                    // `dns-l` utilisait `local`, inopérant sous Android — même
-                    // panne que sur le chemin sing-box (voir systemDnsServers()).
-                    .put(JSONObject().put("tag", "dns-r").put("address", "https://1.1.1.1/dns-query").put("strategy", tunnelDnsStrategy()))
+                    // Le résolveur du tunnel sort par `proxy` (le SOCKS local
+                    // alimenté par SSH) ; `dns-l` utilisait `local`, inopérant
+                    // sous Android — même panne que sur le chemin sing-box
+                    // (voir systemDnsServers()).
+                    //
+                    // TCP et non DoH : un SOCKS alimenté par SSH ne relaie pas
+                    // l'UDP, et une négociation TLS vers Cloudflare à travers
+                    // SSH retarderait la résolution du PREMIER nom de plusieurs
+                    // allers-retours — pour un chiffrement que le tunnel assure
+                    // déjà. Voir RESOLVEUR_TUNNEL.
+                    .put(JSONObject().put("tag", "dns-r").put("address", RESOLVEUR_TUNNEL).put("strategy", tunnelDnsStrategy()))
                     .put(JSONObject().put("tag", "dns-l").put("address", bootstrapDnsAddress())
                         .put("strategy", dnsStrategy()).put("detour", "direct"))
                 )

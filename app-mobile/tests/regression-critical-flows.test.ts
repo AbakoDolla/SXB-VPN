@@ -1703,7 +1703,11 @@ describe('garde-fous contre les régressions Android', () => {
     // Le résolveur joint à travers le tunnel suit le tunnel…
     assert.match(nativeService, /put\("tag", "dns-remote"\).*"proxy"|put\("strategy", tunnelDnsStrategy\(\)\)/s);
     assert.match(nativeService, /put\("tag", "dns-r"\).*put\("strategy", tunnelDnsStrategy\(\)\)/);
-    assert.match(nativeService, /if \(detourTag == "direct"\) dnsStrategy\(\) else tunnelDnsStrategy\(\)/);
+    // …et un `final` qui sort en direct n'a aucun tunnel à suivre : il reprend
+    // la stratégie du réseau. La condition porte désormais un nom, parce
+    // qu'elle décide aussi du RÉSOLVEUR et plus seulement de la stratégie.
+    assert.match(nativeService, /val dansLeTunnel = detourTag != "direct"/);
+    assert.match(nativeService, /if \(dansLeTunnel\) tunnelDnsStrategy\(\) else dnsStrategy\(\)/);
     // … et l'amorçage hors tunnel garde la pile réellement disponible.
     assert.match(nativeService, /put\("tag", "dns-local"\)[\s\S]{0,200}put\("strategy", dnsStrategy\(\)\)/);
     assert.match(nativeService, /fun dnsStrategy\(\): String = if \(networkHasIpv6\(\)\) "prefer_ipv4" else "ipv4_only"/);

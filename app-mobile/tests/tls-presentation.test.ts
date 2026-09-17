@@ -202,20 +202,32 @@ describe('le moteur natif honore le refus d’empreinte', () => {
 describe('le séquencement de l’échelle, dans le contexte VPN', () => {
   const contexte = lire('contexts/VpnContext.tsx');
 
-  it('n’explore que tant que le moteur n’a donné AUCUN signe de vie', () => {
-    // Un « handshaking » prouve que le réseau a accepté la poignée de main :
-    // l'échelle doit se retirer, sans quoi elle couperait une connexion lente
-    // mais valide.
+  it('n’explore que tant que le moteur n’a donné AUCUNE preuve de flux', () => {
+    // Piège corrigé : le moteur annonce « handshaking » dès que l'interface TUN
+    // existe — même quand le réseau a refusé la connexion sortante. Le prendre
+    // pour une réussite désarmait l'échelle avant qu'elle ait pu servir.
+    const surHandshaking = contexte.slice(
+      contexte.indexOf("if (s === 'handshaking') {"),
+      contexte.indexOf("} else if (s === 'connected') {"),
+    );
+    assert.ok(surHandshaking.length > 0, 'les deux branches existent');
+    assert.ok(
+      !surHandshaking.includes('noterProgresMoteur()'),
+      '« handshaking » ne prouve rien : il ne doit pas désarmer l’échelle',
+    );
+    // Seul « connected » l'atteste, et le natif ne l'émet que sur preuve d'un
+    // flux réel par l'outbound proxy.
+    const surConnected = contexte.slice(contexte.indexOf("} else if (s === 'connected') {"));
+    assert.ok(surConnected.includes('noterProgresMoteur();'));
     assert.match(contexte, /progresMoteurRef\.current = true;\s*\n\s*stopEchelon\(\);/);
     assert.match(contexte, /if \(progresMoteurRef\.current\) return false;/);
-    assert.ok(contexte.includes('noterProgresMoteur();'));
   });
 
   it('apprend le refus par l’erreur du moteur, pas seulement par le silence', () => {
     // Un refus réseau revient en moins d'une seconde : attendre le délai
     // complet ajouterait une minute d'attente pour rien.
     assert.ok(contexte.includes('if (avancerEchelon(connectionAttemptRef.current, e?.errorCode)) return;'));
-    assert.match(contexte, /const DELAI_PRESENTATION_MS = 12_000;/);
+    assert.match(contexte, /const DELAI_PRESENTATION_MS = 20_000;/);
   });
 
   it('n’avale JAMAIS un échec que la présentation n’explique pas', () => {
