@@ -1,5 +1,8 @@
 {
   "free_trial": {
+    "update_failed": "Plan could not be updated — see the server log.",
+    "assign_failed": "Server could not be added — see the server log.",
+    "remove_failed": "Server could not be removed — see the server log.",
     "batch_empty": "Select at least one enrollee.",
     "batch_too_large": "This batch exceeds the allowed limit. Narrow the selection.",
     "profile_not_found": "Server (VPN profile) not found.",

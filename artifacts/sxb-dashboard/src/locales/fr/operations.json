@@ -233,6 +233,7 @@
       "done": "Gestion terminée",
       "summary": "{{selected}} sélectionné(s) · {{succeeded}} traité(s) · {{updated}} forfait(s) modifié(s) · {{created}} forfait(s) créé(s) · {{failed}} échoué(s)",
       "updated": "Modifié",
+      "partial": "Partiellement appliqué",
       "skipped": "Ignoré",
       "failed": "Échec"
     },

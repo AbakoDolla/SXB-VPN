@@ -1,5 +1,8 @@
 {
   "free_trial": {
+    "update_failed": "Forfait non modifié — voir le journal du serveur.",
+    "assign_failed": "Serveur non ajouté — voir le journal du serveur.",
+    "remove_failed": "Serveur non retiré — voir le journal du serveur.",
     "batch_empty": "Sélectionnez au moins un inscrit.",
     "batch_too_large": "Ce lot dépasse la limite autorisée. Réduisez la sélection.",
     "profile_not_found": "Serveur (profil VPN) introuvable.",

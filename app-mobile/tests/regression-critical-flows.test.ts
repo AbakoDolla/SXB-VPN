@@ -1151,6 +1151,36 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(vpnContext.includes('startWatchdog(`STEP_3_NATIVE_CALLED proto=${engineProtocol}`, attemptId)'));
   });
 
+  it('n’arrête le service que si aucun démarrage plus récent n’est arrivé', () => {
+    // LE DÉFAUT : `stopSelf()` sans argument détruit le service MÊME quand une
+    // nouvelle commande de démarrage vient d'arriver. C'est exactement la
+    // séquence d'un changement de configuration — arrêter le tunnel courant,
+    // en redemander un aussitôt. Quand la destruction gagnait la course, le
+    // nouveau tunnel montait dans un service que le système détruisait juste
+    // après : l'écran affichait « connecté » et plus rien ne passait. Il
+    // fallait éteindre puis rallumer les données mobiles pour s'en sortir.
+    const natif = source('modules/android-native/SxbVpnService.kt');
+    assert.match(natif, /@Volatile private var derniereCommandeStartId: Int = -1/);
+    // Le numéro est retenu AVANT tout traitement : un arrêt demandé dans la
+    // foulée doit porter le bon numéro.
+    assert.match(
+      natif,
+      /override fun onStartCommand\(intent: Intent\?, flags: Int, startId: Int\): Int \{\s*\n(?:\s*\/\/[^\n]*\n)*\s*derniereCommandeStartId = startId/,
+    );
+    assert.match(natif, /if \(commande >= 0\) stopSelf\(commande\) else stopSelf\(\)/);
+    // Et c'est bien le chemin de NETTOYAGE qui en bénéficie : c'est lui qui
+    // s'exécute à chaque bascule de configuration. Contrôle par POSITION, non
+    // par forme de texte : le disque est en CRLF ici et en LF en intégration,
+    // et un motif multi-ligne passerait d'un côté pour échouer de l'autre.
+    const arretForeground = natif.indexOf('stopForeground(android.app.Service.STOP_FOREGROUND_REMOVE)');
+    const arretConditionnel = natif.indexOf('if (commande >= 0) stopSelf(commande)');
+    assert.ok(arretForeground > 0, 'le chemin de nettoyage doit exister');
+    assert.ok(
+      arretConditionnel > arretForeground,
+      'l’arrêt conditionnel doit clore le nettoyage, après stopForeground',
+    );
+  });
+
   it('expose une trace séquencée du transport avec diagnostic opt-in et secrets protégés', () => {
     assert.ok(nativeService.includes('[SXB_TRACE]'));
     assert.ok(nativeService.includes('stage=SOCKET_PROTECT'));

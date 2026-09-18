@@ -233,6 +233,7 @@
       "done": "Management complete",
       "summary": "{{selected}} selected · {{succeeded}} processed · {{updated}} plan(s) updated · {{created}} plan(s) created · {{failed}} failed",
       "updated": "Updated",
+      "partial": "Partly applied",
       "skipped": "Skipped",
       "failed": "Failed"
     },

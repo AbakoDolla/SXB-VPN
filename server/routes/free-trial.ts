@@ -102,6 +102,30 @@ const router = Router();
 const GIB = 1024 ** 3;
 
 /**
+ * Motif d'échec SÛR à renvoyer au tableau de bord.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * POURQUOI UN CODE, JAMAIS LE MESSAGE
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Un message d'exception porte ce qui a échoué : une adresse, un port, parfois
+ * la requête entière. Le recopier dans une réponse que le tableau de bord
+ * affiche ferait sortir de la configuration technique par une porte dérobée —
+ * précisément ce que le cloisonnement des rôles interdit.
+ *
+ * Un code déjà normalisé (`errors.…`, ou un code en capitales) est une valeur
+ * que le serveur a lui-même choisie : il passe tel quel, et le tableau de bord
+ * le traduit. Tout le reste devient le code de repli, et le détail reste au
+ * journal du serveur, où il sert au diagnostic sans être exposé.
+ */
+function motifSurEssai(erreur: any, repli: string): string {
+  const message = String(erreur?.message ?? '').trim();
+  if (!message) return repli;
+  if (/^errors\.[a-z0-9_.]+$/i.test(message)) return message;
+  if (/^[A-Z][A-Z0-9_]{2,}$/.test(message)) return message;
+  return repli;
+}
+
+/**
  * Secret de pseudonymisation de la présence — strictement celui de
  * `/api/presence`, sinon aucun rapprochement ne pourrait aboutir. Sa lecture
  * est volontairement recopiée telle quelle : un second secret, ou un repli
@@ -2024,7 +2048,7 @@ router.post(
                 retires += 1;
               }
             } catch (erreurRetrait: any) {
-              echec = erreurRetrait?.message || 'errors.server';
+              echec = motifSurEssai(erreurRetrait, 'errors.free_trial.remove_failed');
               console.error('free-trial remove error:', erreurRetrait);
             }
           }
@@ -2075,7 +2099,11 @@ router.post(
             accessStateHub.invalidate({ clientId: forfait.clientId });
             touches += 1;
           } catch (erreurForfait: any) {
-            echec = erreurForfait?.message || 'errors.server';
+            // Le message BRUT reste au journal du serveur ; le client ne reçoit
+            // qu'un code. Un message d'exception porte l'hôte, le port ou la
+            // requête qui a échoué — rien de tout cela n'a sa place dans une
+            // réponse que le tableau de bord affiche.
+            echec = motifSurEssai(erreurForfait, 'errors.free_trial.update_failed');
             console.error('free-trial manage error:', erreurForfait);
           }
         }
@@ -2133,7 +2161,7 @@ router.post(
                   accessStateHub.invalidate({ clientId: demande.clientId });
                   crees += 1;
                 } catch (erreurAjout: any) {
-                  echec = erreurAjout?.message || 'errors.server';
+                  echec = motifSurEssai(erreurAjout, 'errors.free_trial.assign_failed');
                   console.error('free-trial assign error:', erreurAjout);
                 }
               }
@@ -2146,7 +2174,21 @@ router.post(
         forfaitsRetires += retires;
         if (touches + crees + retires > 0) {
           reussies += 1;
-          resultats.push({ id: requestId, status: 'ok', updated: touches, created: crees, removed: retires });
+          // ── UN ÉCHEC PARTIEL RESTE VISIBLE ────────────────────────────────
+          //
+          // Le motif d'échec était jeté dès qu'une autre partie de la demande
+          // avait abouti. Concrètement : l'exploitant modifiait le volume ET
+          // ajoutait un serveur, la modification passait, l'ajout échouait —
+          // et l'écran annonçait « ok ». Il voyait « 0 forfait créé » sans une
+          // ligne pour dire pourquoi, donc sans rien à corriger.
+          resultats.push({
+            id: requestId,
+            status: echec ? 'partial' : 'ok',
+            ...(echec ? { reason: echec } : {}),
+            updated: touches,
+            created: crees,
+            removed: retires,
+          });
         } else {
           resultats.push({
             id: requestId,

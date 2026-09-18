@@ -117,8 +117,18 @@ const RESULT_LABELS: Record<string, string> = {
   failed: 'operations.freeTrial.result.failed',
 };
 
-/** Issue d'une gestion unitaire → clé i18n. */
+/**
+ * Issue d'une gestion unitaire → clé i18n.
+ *
+ * Les clés suivent les états que le SERVEUR émet — `ok`, `partial`, `skipped`,
+ * `failed`. Elles ont un jour porté d'autres noms, et le tableau affichait
+ * alors chaque réussite comme un échec : le filtre ne reconnaissait pas `ok`,
+ * et le libellé de repli était « Failed ». Une opération dont vingt-deux
+ * dossiers sur vingt-cinq avaient abouti se lisait comme un désastre complet.
+ */
 const MANAGE_RESULT_LABELS: Record<string, string> = {
+  ok: 'operations.freeTrial.manageResult.updated',
+  partial: 'operations.freeTrial.manageResult.partial',
   updated: 'operations.freeTrial.manageResult.updated',
   skipped: 'operations.freeTrial.manageResult.skipped',
   failed: 'operations.freeTrial.manageResult.failed',
@@ -2245,11 +2255,22 @@ export default function FreeTrialView() {
                                 failed: formatNumber(resultatGestion.results.filter(item => item.status === 'failed').length),
                               })}
                             </p>
-                            {resultatGestion.results.filter(item => item.status !== 'updated').map(item => (
+                            {/* `ok` = tout ce qui était demandé a abouti : rien à
+                                signaler. Tout le reste — partiel, ignoré, échoué —
+                                mérite sa ligne et son motif. */}
+                            {resultatGestion.results.filter(item => item.status !== 'ok').map(item => (
                               <p key={item.id} className="mt-0.5 text-rose-300/90">
                                 {t('operations.freeTrial.batch.failedItem', {
                                   id: item.id,
-                                  reason: t(MANAGE_RESULT_LABELS[item.status] ?? 'operations.freeTrial.manageResult.failed'),
+                                  // Le MOTIF prime sur le statut. Afficher « Failed »
+                                  // seul laissait l'exploitant sans rien à corriger :
+                                  // le serveur dit pourquoi, il faut le montrer.
+                                  // Un motif est tantôt une clé i18n, tantôt le
+                                  // message brut du moteur ; `t()` rend la clé si
+                                  // elle existe et la chaîne telle quelle sinon.
+                                  reason: item.reason
+                                    ? t(item.reason, { defaultValue: item.reason })
+                                    : t(MANAGE_RESULT_LABELS[item.status] ?? 'operations.freeTrial.manageResult.failed'),
                                 })}
                               </p>
                             ))}

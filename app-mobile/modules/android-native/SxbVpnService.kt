@@ -966,6 +966,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
     @Volatile private var killSwitchPfd: ParcelFileDescriptor? = null
     @Volatile private var killSwitchThread: Thread? = null
     private var configJson      = ""
+    /**
+     * Numéro de la dernière commande reçue par `onStartCommand`.
+     *
+     * Sert à n'arrêter le service que si aucun démarrage plus récent n'est
+     * arrivé — voir `cleanup()`. `-1` signifie « aucune commande reçue ».
+     */
+    @Volatile private var derniereCommandeStartId: Int = -1
     /** Nom de notre interface TUN — exclue de l'énumération pour éviter les boucles. */
     @Volatile private var tunInterfaceName: String? = null
     private var isSshRelay: Boolean = false
@@ -1238,6 +1245,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Retenu AVANT tout traitement : `cleanup()` s'en sert pour ne s'arrêter
+        // que si aucune commande plus récente n'est arrivée. Voir le commentaire
+        // au pied de `cleanup()`.
+        derniereCommandeStartId = startId
         if (intent?.action == ACTION_STOP) {
             // Arrêt volontaire : on désarme AVANT le nettoyage pour qu'aucun
             // événement réseau ne puisse relancer un tunnel que l'utilisateur
@@ -5233,7 +5244,25 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 @Suppress("DEPRECATION")
                 stopForeground(true)
             }
-            stopSelf()
+            // ── L'ARRÊT PORTE SON NUMÉRO DE COMMANDE ──────────────────────────
+            //
+            // `stopSelf()` sans argument détruit le service MÊME si un nouveau
+            // démarrage est déjà arrivé. C'est exactement ce que fait un
+            // changement de configuration : l'application arrête le tunnel
+            // courant puis en redemande un aussitôt.
+            //
+            // Quand la destruction gagnait la course, le nouveau tunnel montait
+            // dans un service que le système détruisait juste après :
+            // l'interface affichait « connecté » et plus rien ne passait. Il
+            // fallait éteindre puis rallumer les données pour qu'un événement
+            // réseau relance un démarrage propre — le symptôme rapporté.
+            //
+            // `stopSelf(startId)` demande au système de N'ARRÊTER QUE si aucune
+            // commande plus récente n'est arrivée. Une bascule ne peut donc plus
+            // emporter le tunnel qu'elle vient d'ouvrir. `-1` (aucune commande
+            // reçue) conserve l'arrêt inconditionnel d'origine.
+            val commande = derniereCommandeStartId
+            if (commande >= 0) stopSelf(commande) else stopSelf()
         }
     }
 
