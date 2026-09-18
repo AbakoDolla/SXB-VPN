@@ -409,6 +409,7 @@
     "inactive": "Inactive"
   },
   "dashboard": {
+    "connectedSplit": "{{clients}} client(s) · {{trials}} free trial(s) online now",
     "title": "Dashboard",
     "overview": "SXB VPN network overview",
     "updated": " · Updated {{time}}",

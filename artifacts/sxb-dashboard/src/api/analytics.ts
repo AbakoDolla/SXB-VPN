@@ -30,6 +30,14 @@ export interface DashboardStats {
    * distinguables à l'écran.
    */
   connectedNow?: number | null;
+  /**
+   * Connectés issus d'un essai gratuit, comptés à part.
+   *
+   * `connectedNow` ne compte que les connexions COMMERCIALES. Sur un parc
+   * surtout composé d'essais, ce seul nombre laissait un « 0 » à l'écran
+   * pendant que des dizaines de personnes étaient en ligne.
+   */
+  connectedTrials?: number | null;
   connectedNowMeasured?: boolean;
   /** Dernier battement reçu, tous appareils confondus. `null` si aucun. */
   lastPresenceSignalAt?: string | null;

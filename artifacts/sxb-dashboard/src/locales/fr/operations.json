@@ -409,6 +409,7 @@
     "inactive": "Inactif"
   },
   "dashboard": {
+    "connectedSplit": "{{clients}} client(s) · {{trials}} essai(s) gratuit(s) en ligne",
     "title": "Tableau de bord",
     "overview": "Vue d'ensemble du réseau SXB VPN",
     "updated": " · Mise à jour {{time}}",

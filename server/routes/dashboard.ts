@@ -179,21 +179,36 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
     // pseudonymisation) : zéro affirmerait que personne n'est connecté, ce qui
     // serait une invention. L'interface affiche alors « non mesuré ».
     let connectedNow: number | null = null;
+    let connectedTrials: number | null = null;
     let dernierSignalAt: Date | null = null;
     const pseudonymSecret = config.MOBILE_HEALTH_PSEUDONYM_SECRET
       || (config.NODE_ENV !== "production" ? config.JWT_SECRET : null);
     if (prisma && pseudonymSecret) {
       try {
+        const porteeCommune = await porteeClients(prisma, req.user);
         connectedNow = await compterConnectes(prisma as any, pseudonymSecret, {
           // Même règle que les compteurs ci-dessus : un essai gratuit connecté
           // n'est pas une connexion commerciale. Il est compté dans « Essais
           // gratuits », qui affiche ses propres connectés.
-          porteeClients: etFiltres(
-            await porteeClients(prisma, req.user),
-            exclusionEssais,
-          ) ?? null,
+          porteeClients: etFiltres(porteeCommune, exclusionEssais) ?? null,
           masquerProprietaire: !requesterIsOwner,
         });
+        // ── LES ESSAIS COMPTENT AUSSI, À CÔTÉ ─────────────────────────────
+        //
+        // Séparer les deux est juste : un essayeur n'est pas un client payant.
+        // Mais n'afficher QUE le compte commercial rendait la carte muette sur
+        // un parc surtout composé d'essais — trente-deux personnes connectées,
+        // et un grand « 0 » à l'écran. L'exploitant devait ouvrir une autre
+        // section pour découvrir qu'il avait du monde.
+        //
+        // Les deux nombres partent donc ensemble : la carte montre le total,
+        // et dit ce qui est commercial et ce qui est essai. Rien n'est confondu,
+        // et rien n'est caché.
+        const total = await compterConnectes(prisma as any, pseudonymSecret, {
+          porteeClients: porteeCommune ?? null,
+          masquerProprietaire: !requesterIsOwner,
+        });
+        connectedTrials = Math.max(0, total - connectedNow);
       } catch (presenceError: any) {
         // Une présence indisponible ne doit pas priver l'exploitant de tous ses
         // autres indicateurs : on laisse `null` et on le dit dans la réponse.
@@ -275,6 +290,7 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
       // Connexions réellement observées. `null` = non mesuré, jamais « zéro
       // connecté ». Le drapeau évite à l'interface d'avoir à deviner.
       connectedNow,
+      connectedTrials,
       connectedNowMeasured: connectedNow !== null,
       // Âge du dernier battement reçu. Il permet à l'écran de distinguer un
       // parc au repos d'un parc qui n'émet plus.

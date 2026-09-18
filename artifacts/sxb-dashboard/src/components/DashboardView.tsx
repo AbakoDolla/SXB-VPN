@@ -283,13 +283,19 @@ export default function DashboardView({
   const connectedMeasured = stats?.connectedNowMeasured === true
     && stats?.connectedNow !== null && stats?.connectedNow !== undefined;
   const presenceWindowMinutes = stats?.presenceWindowMinutes ?? 15;
+  // Le parc peut être surtout composé d'essais : n'afficher que le commercial
+  // laissait un grand « 0 » alors que des dizaines de personnes étaient en
+  // ligne. La carte montre le TOTAL, et dit ce qui est commercial et ce qui
+  // est essai — rien n'est confondu, rien n'est caché.
+  const connectedTrials = stats?.connectedTrials ?? 0;
+  const connectedTotal = (stats?.connectedNow ?? 0) + connectedTrials;
   // Dernier battement reçu, tous appareils confondus. « 0 connecté » ne dit pas
   // si le parc est au repos ou s'il ne remonte plus rien : quand le compteur est
   // à zéro et que le dernier signal remonte à plus longtemps que la fenêtre, on
   // l'écrit, au lieu de laisser soupçonner un compteur cassé.
   const dernierSignal = stats?.lastPresenceSignalAt ?? null;
   const signalSilencieux = connectedMeasured
-    && (stats?.connectedNow ?? 0) === 0
+    && connectedTotal === 0
     && (!dernierSignal || Date.now() - Date.parse(dernierSignal) > presenceWindowMinutes * 60_000);
   const sousTitreConnectes = !connectedMeasured
     ? t("operations.dashboard.connectedUnmeasuredSub")
@@ -297,7 +303,12 @@ export default function DashboardView({
       ? (dernierSignal
         ? t("operations.dashboard.connectedLastSignal", { when: formatDate(dernierSignal, { dateStyle: "short", timeStyle: "short" }) })
         : t("operations.dashboard.connectedNoSignal"))
-      : t("operations.dashboard.connectedSub", { minutes: formatNumber(presenceWindowMinutes) });
+      : connectedTrials > 0
+        ? t("operations.dashboard.connectedSplit", {
+          clients: formatNumber(stats?.connectedNow ?? 0),
+          trials: formatNumber(connectedTrials),
+        })
+        : t("operations.dashboard.connectedSub", { minutes: formatNumber(presenceWindowMinutes) });
   // Comptes ouverts : ce que l'ancienne carte « CONNECTÉS » affichait en
   // réalité. `activeUsers` reste l'alias historique du même nombre.
   const activeAccounts = stats?.activeAccounts ?? stats?.activeUsers ?? 0;
@@ -448,7 +459,7 @@ export default function DashboardView({
               personne n'utilise le VPN. */}
           <StatCard
             label={t("operations.dashboard.connected")}
-            value={connectedMeasured ? formatNumber(stats?.connectedNow ?? 0) : t("operations.dashboard.connectedUnmeasured")}
+            value={connectedMeasured ? formatNumber(connectedTotal) : t("operations.dashboard.connectedUnmeasured")}
             sub={sousTitreConnectes}
             help={t("operations.dashboard.connectedHelp")}
             icon={Wifi}
