@@ -1,5 +1,9 @@
 {
   "freeTrial": {
+    "selectAcross": "Select all {{count}}",
+    "selectingAcross": "Selecting…",
+    "selectedAcross": "{{count}} sign-up(s) selected across every page (limit {{max}} per batch).",
+    "selectAllFailed": "Could not load every page — selection unchanged.",
     "groupedHint": "Every token carries its own enrollments: expand it to see them and act on them. Requests are never mixed between two tokens.",
     "noToken": "No invitation token yet. Create one to get started.",
     "counters": "{{pending}} pending · {{deployed}} deployed",

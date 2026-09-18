@@ -108,4 +108,43 @@ describe('compte rendu de gestion des essais', () => {
       assert.notEqual(bloc.partial, bloc.failed, 'un succès partiel ne se lit pas comme un échec');
     }
   });
+
+  it('déploie un serveur à TOUT le jeton, pas seulement aux inscrits en attente', () => {
+    // Le déploiement ne visait que les demandes en attente : sur un jeton mûr,
+    // où presque tout est déjà servi, la quasi-totalité du lot ressortait
+    // « déjà déployé », donc en échec. L'exploitant qui voulait simplement
+    // pousser un nouveau serveur à tout le monde n'avait aucun chemin direct.
+    const VUE = lire('artifacts/sxb-dashboard/src/components/FreeTrialView.tsx');
+    const geste = VUE.slice(VUE.indexOf('const deployer = async'), VUE.indexOf('const gerer = async'));
+    assert.ok(geste.length > 0, 'le geste de déploiement doit exister');
+    // Les deux groupes partent ensemble : déployer ce qui attend, ajouter la
+    // même configuration à ce qui tourne déjà.
+    assert.match(geste, /selectionEnAttente\.length > 0/);
+    assert.match(geste, /selectionDeployee\.length > 0/);
+    assert.match(geste, /manageFreeTrialRequests\(\{[\s\S]{0,200}requestIds: selectionDeployee/);
+    // Et le bouton s'ouvre pour l'un OU l'autre, sinon le chemin resterait
+    // fermé à celui qui n'a que des essais déjà servis.
+    assert.match(
+      VUE,
+      /disabled=\{busy \|\| lotTropGrand \|\| \(selectionEnAttente\.length === 0 && selectionDeployee\.length === 0\)\}/,
+    );
+  });
+
+  it('sait sélectionner tout le jeton, pas seulement la page affichée', () => {
+    const VUE = lire('artifacts/sxb-dashboard/src/components/FreeTrialView.tsx');
+    // La case d'en-tête ne coche que les lignes visibles — c'est la page. Sans
+    // un geste qui couvre le jeton, il fallait le répéter page après page.
+    assert.match(VUE, /const selectionnerTravers = async/);
+    assert.match(VUE, /fetchFreeTrialRequestPage\(\{[\s\S]{0,160}offset: \(page - 1\) \* TAILLE_PAGE/);
+    // La borne du serveur est respectée, et ANNONCÉE : une sélection
+    // silencieusement tronquée ferait croire à un déploiement complet.
+    assert.match(VUE, /trouves\.slice\(0, MAX_FREE_TRIAL_BATCH\)/);
+    assert.match(VUE, /operations\.freeTrial\.selectedAcross/);
+    for (const langue of ['en', 'fr']) {
+      const libelles = JSON.parse(lire(`artifacts/sxb-dashboard/src/locales/${langue}/operations.json`));
+      for (const cle of ['selectAcross', 'selectingAcross', 'selectedAcross', 'selectAllFailed']) {
+        assert.ok(libelles.freeTrial[cle], `libellé « ${cle} » manquant en ${langue}`);
+      }
+    }
+  });
 });

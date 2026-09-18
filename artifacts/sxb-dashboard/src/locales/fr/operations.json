@@ -1,5 +1,9 @@
 {
   "freeTrial": {
+    "selectAcross": "Tout sélectionner ({{count}})",
+    "selectingAcross": "Sélection…",
+    "selectedAcross": "{{count}} inscrit(s) sélectionné(s) sur toutes les pages (limite {{max}} par lot).",
+    "selectAllFailed": "Chargement des pages impossible — sélection inchangée.",
     "groupedHint": "Chaque jeton porte ses propres inscriptions : dépliez-le pour les voir et agir dessus. Les demandes ne sont jamais mélangées entre deux jetons.",
     "noToken": "Aucun jeton d'invitation pour l'instant. Créez-en un pour commencer.",
     "counters": "{{pending}} en attente · {{deployed}} déployée(s)",

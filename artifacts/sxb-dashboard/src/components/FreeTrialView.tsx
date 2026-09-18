@@ -221,6 +221,8 @@ export default function FreeTrialView() {
    */
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [copied, setCopied] = useState<string | null>(null);
+  /** Une sélection sur tout le jeton est en cours : elle parcourt les pages. */
+  const [chargementTotal, setChargementTotal] = useState(false);
 
   // ── Volets par jeton : ouverture, contenu, sélection ───────────────────────
   const [jetonOuvert, setJetonOuvert] = useState<string | null>(null);
@@ -535,7 +537,7 @@ export default function FreeTrialView() {
   // Sans elle, cocher 200 inscrits et 10 serveurs fabriquerait 2 000 forfaits
   // d'un clic. L'interface ANNONCE la limite et affiche le total AVANT de
   // confirmer, plutôt que de laisser le serveur refuser après coup.
-  const forfaitsAcreer = selectionEnAttente.length * profileIds.length;
+  const forfaitsAcreer = (selectionEnAttente.length + selectionDeployee.length) * profileIds.length;
   const tropDeConfigs = profileIds.length > MAX_FREE_TRIAL_PROFILES;
   const tropDeForfaits = forfaitsAcreer > MAX_FREE_TRIAL_SUBSCRIPTIONS;
   const deploiementBorne = lotTropGrand || tropDeConfigs || tropDeForfaits;
@@ -602,6 +604,52 @@ export default function FreeTrialView() {
       ...prev,
       [jetonOuvert]: toutSelectionne ? [] : selectionnables.map(demande => demande.id),
     }));
+  };
+
+  /**
+   * Sélectionne TOUT le jeton, pas seulement la page affichée.
+   *
+   * La case d'en-tête ne coche que les vingt-cinq lignes visibles : c'est la
+   * page. Pour changer de serveur sur deux cents inscrits, il fallait donc
+   * répéter le geste page après page, et rien ne le disait.
+   *
+   * On parcourt ici les pages jusqu'à la borne du serveur. Le lot reste borné —
+   * une requête qui écrirait des milliers de forfaits tiendrait la base ouverte
+   * trop longtemps — mais la borne est ANNONCÉE, jamais une troncature muette.
+   */
+  const selectionnerTravers = async () => {
+    if (!jetonOuvert || chargementTotal) return;
+    setChargementTotal(true);
+    try {
+      const trouves: string[] = [];
+      const pages = Math.ceil(Math.min(volet?.total ?? 0, MAX_FREE_TRIAL_BATCH) / TAILLE_PAGE);
+      for (let page = 1; page <= Math.max(1, pages); page++) {
+        const lot = await fetchFreeTrialRequestPage({
+          tokenId: jetonOuvert,
+          status: statusFilter || undefined,
+          limit: TAILLE_PAGE,
+          offset: (page - 1) * TAILLE_PAGE,
+        });
+        for (const demande of lot.requests) {
+          if (demande.status === FREE_TRIAL_STATUS.PENDING || demande.status === FREE_TRIAL_STATUS.DEPLOYED) {
+            trouves.push(demande.id);
+          }
+        }
+        if (trouves.length >= MAX_FREE_TRIAL_BATCH) break;
+      }
+      const retenus = trouves.slice(0, MAX_FREE_TRIAL_BATCH);
+      setSelectionParJeton(prev => ({ ...prev, [jetonOuvert]: retenus }));
+      // Dire ce qui a été retenu ET ce qui a été laissé : une sélection
+      // silencieusement tronquée ferait croire à un déploiement complet.
+      setNotice(t('operations.freeTrial.selectedAcross', {
+        count: formatNumber(retenus.length),
+        max: formatNumber(MAX_FREE_TRIAL_BATCH),
+      }));
+    } catch {
+      setError(errorMessage('operations.freeTrial.selectAllFailed'));
+    } finally {
+      setChargementTotal(false);
+    }
   };
 
   const copier = async (valeur: string) => {
@@ -722,7 +770,19 @@ export default function FreeTrialView() {
 
   const deployer = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!jetonOuvert || selectionEnAttente.length === 0) return;
+    // ── UN SEUL GESTE POUR TOUT LE JETON ──────────────────────────────────
+    //
+    // Le déploiement ne concernait que les demandes EN ATTENTE. Un essai déjà
+    // servi revenait « déjà déployé » — et sur un jeton mûr, où presque tout
+    // est déployé, la quasi-totalité du lot ressortait en échec. L'exploitant
+    // qui voulait simplement pousser un nouveau serveur à tout le monde
+    // n'avait aucun chemin : il fallait déployer les uns, puis gérer les
+    // autres, en deux sélections distinctes.
+    //
+    // Les deux gestes partent donc ensemble : déployer ce qui attend, ajouter
+    // la même configuration à ce qui tourne déjà. C'est la même intention —
+    // « que tout le monde ait ce serveur » — et elle s'exprime en un clic.
+    if (!jetonOuvert || (selectionEnAttente.length === 0 && selectionDeployee.length === 0)) return;
     if (lotTropGrand) {
       setError(t('operations.freeTrial.batch.tooMany', { max: formatNumber(MAX_FREE_TRIAL_BATCH) }));
       return;
@@ -748,23 +808,44 @@ export default function FreeTrialView() {
     setResultatLot(null);
     setResultatGestion(null);
     try {
-      const reponse = await deployFreeTrialRequests({
-        requestIds: selectionEnAttente,
-        // Le jeton du contexte accompagne le lot : le serveur revérifie que
-        // chaque demande en relève, plutôt que de croire la liste reçue.
-        tokenId: jetonOuvert,
-        profileIds,
-        quotaGB: Number(quotaGB),
-        startAt: startAt ? new Date(startAt).toISOString() : undefined,
-        expireAt: new Date(expireAt).toISOString(),
-        deviceLimit: deviceLimit.trim() ? Number(deviceLimit) : undefined,
-        note: deployNote.trim() || undefined,
-      });
-      setResultatLot(reponse);
+      // Les inscrits qui ATTENDENT reçoivent leur premier accès.
+      const reponse = selectionEnAttente.length > 0
+        ? await deployFreeTrialRequests({
+          requestIds: selectionEnAttente,
+          // Le jeton du contexte accompagne le lot : le serveur revérifie que
+          // chaque demande en relève, plutôt que de croire la liste reçue.
+          tokenId: jetonOuvert,
+          profileIds,
+          quotaGB: Number(quotaGB),
+          startAt: startAt ? new Date(startAt).toISOString() : undefined,
+          expireAt: new Date(expireAt).toISOString(),
+          deviceLimit: deviceLimit.trim() ? Number(deviceLimit) : undefined,
+          note: deployNote.trim() || undefined,
+        })
+        : null;
+
+      // Ceux qui TOURNENT DÉJÀ reçoivent la même configuration en plus. Le
+      // volume et l'échéance suivent ceux du formulaire : un serveur ajouté
+      // doit courir jusqu'à la même date que les autres.
+      const ajout = selectionDeployee.length > 0
+        ? await manageFreeTrialRequests({
+          requestIds: selectionDeployee,
+          tokenId: jetonOuvert,
+          profileIds,
+          quotaGB: Number(quotaGB),
+          startAt: startAt ? new Date(startAt).toISOString() : undefined,
+          expireAt: new Date(expireAt).toISOString(),
+        })
+        : null;
+
+      if (reponse) setResultatLot(reponse);
+      if (ajout) setResultatGestion(ajout);
       setNotice(t('operations.freeTrial.notice.deployed', {
-        deployed: formatNumber(reponse.deployed),
-        total: formatNumber(reponse.total),
-        subscriptions: formatNumber(reponse.subscriptionsCreated ?? reponse.deployed),
+        deployed: formatNumber((reponse?.deployed ?? 0) + (ajout?.succeeded ?? 0)),
+        total: formatNumber(selectionEnAttente.length + selectionDeployee.length),
+        subscriptions: formatNumber(
+          (reponse?.subscriptionsCreated ?? reponse?.deployed ?? 0) + (ajout?.created ?? 0),
+        ),
       }));
       setSelectionParJeton(prev => ({ ...prev, [jetonOuvert]: [] }));
       setShowDeployForm(false);
@@ -1741,6 +1822,23 @@ export default function FreeTrialView() {
                               </p>
                             </div>
                             <div className="flex flex-wrap items-center gap-2">
+                              {/* La case d'en-tête ne coche que la page. Ce
+                                  bouton couvre le jeton entier : sans lui, il
+                                  fallait répéter le geste page après page pour
+                                  changer de serveur sur tout un parc. */}
+                              <button
+                                type="button"
+                                onClick={() => void selectionnerTravers()}
+                                disabled={busy || chargementTotal || (volet?.total ?? 0) <= selectionnables.length}
+                                className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 px-3 py-1.5 text-xs text-gray-200 transition hover:bg-white/5 disabled:opacity-50"
+                              >
+                                <CheckCircle2 className="h-3.5 w-3.5" />
+                                {chargementTotal
+                                  ? t('operations.freeTrial.selectingAcross')
+                                  : t('operations.freeTrial.selectAcross', {
+                                      count: formatNumber(Math.min(volet?.total ?? 0, MAX_FREE_TRIAL_BATCH)),
+                                    })}
+                              </button>
                               <button
                                 type="button"
                                 onClick={refuser}
@@ -1753,7 +1851,7 @@ export default function FreeTrialView() {
                               <button
                                 type="button"
                                 onClick={ouvrirDeploiement}
-                                disabled={busy || lotTropGrand || selectionEnAttente.length === 0}
+                                disabled={busy || lotTropGrand || (selectionEnAttente.length === 0 && selectionDeployee.length === 0)}
                                 className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500/90 px-3 py-1.5 text-xs font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:opacity-50"
                               >
                                 <Rocket className="h-3.5 w-3.5" />
