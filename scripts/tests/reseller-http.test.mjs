@@ -356,7 +356,7 @@ beforeEach(() => {
     // est le comportement voulu, mais pas la situation que ces tests décrivent.
     managedById: "admin",
   }));
-  db.state.VpnProfile = [{ id: "p1", name: "Service privé", status: "active", protocol: "ssh", host: "secret.invalid", password: "encrypted", port: 22, lockVersion: 0, lockPasswordHash: null }];
+  db.state.VpnProfile = [{ id: "p1", name: "Service privé", status: "active", protocol: "ssh", host: "secret.invalid", password: "encrypted", port: 22, lockVersion: 0, lockPasswordHash: null, createdBy: "admin" }];
   db.state.VpnProfileReseller = [{ profileId: "p1", resellerId: "res-r1" }];
 });
 
