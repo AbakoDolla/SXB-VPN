@@ -1151,6 +1151,33 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(vpnContext.includes('startWatchdog(`STEP_3_NATIVE_CALLED proto=${engineProtocol}`, attemptId)'));
   });
 
+  it('pose l’intention de reconnexion AVANT le rendu qui doit la lire', () => {
+    // LE DÉFAUT : l'intention était posée après un `await`. Cet `await` rend la
+    // main, React affiche le nouveau profil, l'effet de reconnexion s'exécute,
+    // ne trouve aucune intention et repart. La ligne suivante la posait enfin —
+    // mais plus rien ne changeait dans les dépendances de l'effet, donc il ne
+    // se rejouait jamais. Après une bascule alors que le tunnel était debout,
+    // le tunnel restait à terre : un VPN « choisi » mais muet.
+    const bascule = vpnContext.slice(
+      vpnContext.indexOf('const switchConfig = useCallback'),
+      vpnContext.indexOf('const selectProtocol = useCallback'),
+    );
+    assert.ok(bascule.length > 0, 'switchConfig doit exister');
+    const intention = bascule.indexOf('pendingAutoConnectRef.current = configId');
+    const rendu = bascule.indexOf('setActiveConfigId(configId)');
+    assert.ok(intention > 0 && rendu > 0, 'les deux points de repère doivent exister');
+    assert.ok(
+      intention < rendu,
+      'l’intention doit précéder setActiveConfigId, sinon l’effet ne la voit jamais',
+    );
+    // Et l'effet reste conditionné au profil réellement actif : une intention
+    // pour un autre profil ne doit pas déclencher de connexion.
+    assert.match(vpnContext, /pendingAutoConnectRef\.current !== activeConfigId\) return;/);
+    // La référence de profil est écrite en SYNCHRONE dans le setter : sans
+    // cela, connect() relirait l'ancien profil au moment où l'effet tire.
+    assert.match(vpnContext, /const setActiveConfigId = useCallback\(\(id: string \| null\) => \{\s*\n\s*activeConfigIdRef\.current = id;/);
+  });
+
   it('n’arrête le service que si aucun démarrage plus récent n’est arrivé', () => {
     // LE DÉFAUT : `stopSelf()` sans argument détruit le service MÊME quand une
     // nouvelle commande de démarrage vient d'arriver. C'est exactement la

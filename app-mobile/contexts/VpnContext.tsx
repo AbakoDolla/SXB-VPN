@@ -2082,12 +2082,28 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       requireDeviceAccess();
       requireProfileAccess(target.value.meta);
       await configStore.setActive(configId);
+      // ── L'INTENTION DE RECONNEXION SE POSE AVANT LE RENDU ─────────────────
+      //
+      // Elle était posée sept lignes plus bas, APRÈS un `await`. Or cet
+      // `await` rend la main : React affiche le nouvel `activeConfigId`, l'effet
+      // de reconnexion s'exécute, ne trouve aucune intention et repart. Quand
+      // la ligne suivante la posait enfin, plus rien ne changeait dans les
+      // dépendances de l'effet — donc il ne se rejouait jamais.
+      //
+      // Résultat : après une bascule alors que le tunnel était debout, le
+      // tunnel restait à terre. L'écran montrait bien le nouveau profil, ce qui
+      // donnait un VPN « choisi » mais muet, jusqu'à ce que l'utilisateur
+      // coupe et rallume ses données ou rappuie sur le bouton.
+      //
+      // Posée ICI, l'intention est déjà là au premier rendu que déclenche
+      // `setActiveConfigId` : l'effet la voit et reconnecte. En cas d'échec, le
+      // bloc `catch` l'efface, comme auparavant.
+      if (wasConnected) pendingAutoConnectRef.current = configId;
       setActiveConfigId(configId);
       setActiveConnection(remoteTarget);
       setRevokedStatus('none');
       setQuotaData(await loadQuotaData(configId));
       setVpnConfig({ ...target.value.config, configId, displayProtocol: target.value.meta.displayProtocol || remoteTarget?.displayProtocol, dataToken: (target.value.config as any).dataToken || remoteTarget?.dataToken });
-      if (wasConnected) pendingAutoConnectRef.current = configId;
       await reloadLocalConfigs();
     } catch (err: any) {
       pendingAutoConnectRef.current = null;
