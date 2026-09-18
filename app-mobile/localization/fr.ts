@@ -489,6 +489,7 @@ export const fr = {
   online_loading: "Comptage…",
   online_count: "{{count}} personnes en ligne",
   online_unavailable: "Comptage indisponible pour le moment",
+  journal_share: "Partager ce journal",
   journal_open: "Journal d'activité",
   journal_open_hint: "Suivre les étapes de connexion",
   config_switching: "Basculement en cours…",

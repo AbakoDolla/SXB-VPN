@@ -1,5 +1,5 @@
-import React, { useMemo } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import React, { useCallback, useMemo } from "react";
+import { Pressable, ScrollView, Share, StyleSheet, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -8,6 +8,7 @@ import { useColors } from "@/hooks/useColors";
 import { useResponsive } from "@/hooks/useResponsive";
 import { useTranslation } from "@/localization";
 import { useVpnContext, type StepLogItem } from "@/contexts/VpnContext";
+import { chronometrer } from "@/services/journalChronologie";
 import { alpha, radius, responsiveLayout, spacing, type } from "@/constants/theme";
 import { EmptyState, ScreenHeader } from "@/components/ui/Primitives";
 
@@ -47,7 +48,13 @@ function apparence(statut: StepLogItem["status"], colors: ReturnType<typeof useC
   }
 }
 
-function LigneEtape({ item, dernier }: { item: StepLogItem; dernier: boolean }) {
+function LigneEtape({ item, dernier, duree, heure }: {
+  item: StepLogItem;
+  dernier: boolean;
+  /** Temps passé DANS cette étape — la colonne qui désigne le goulot. */
+  duree: string | null;
+  heure: string | null;
+}) {
   const colors = useColors();
   const { t } = useTranslation();
   const style = apparence(item.status, colors);
@@ -66,7 +73,12 @@ function LigneEtape({ item, dernier }: { item: StepLogItem; dernier: boolean }) 
         <Text style={[type.bodyMedium, { color: colors.textPrimary }]}>{t(item.translationKey as any)}</Text>
         <View style={styles.meta}>
           {item.timestamp ? (
-            <Text style={[type.micro, { color: colors.textMuted }]}>{item.timestamp}</Text>
+            <Text style={[type.micro, { color: colors.textMuted }]}>{heure}</Text>
+          ) : null}
+          {duree ? (
+            <View style={[styles.codePill, { backgroundColor: colors.bgInput, borderColor: colors.border2 }]}>
+              <Text style={[type.micro, { color: colors.textSecondary }]}>{duree}</Text>
+            </View>
           ) : null}
           {code ? (
             <View style={[styles.codePill, { backgroundColor: colors.bgInput, borderColor: colors.border2 }]}>
@@ -87,8 +99,30 @@ export default function JournalScreen() {
   const { stepLogs } = useVpnContext();
 
   // Le plus récent en haut : c'est ce qu'on vient chercher quand une connexion
-  // ne part pas.
-  const etapes = useMemo(() => [...stepLogs].reverse(), [stepLogs]);
+  // ne part pas. `chronometrer` donne à chaque étape le temps qu'elle a coûté.
+  const etapes = useMemo(() => chronometrer([...stepLogs].reverse()), [stepLogs]);
+
+  /**
+   * Met le journal AFFICHÉ dans le presse-papiers du système de partage.
+   *
+   * Reconstruit depuis les mêmes clés de traduction que l'écran : le texte
+   * partagé ne peut donc contenir ni plus ni autre chose que ce que
+   * l'utilisateur voit. Aucune adresse, aucune configuration, aucun secret —
+   * la garantie tient par construction, pas par vigilance.
+   */
+  const partager = useCallback(async () => {
+    // Remis dans l'ordre chronologique : une chronologie se lit du début.
+    const lignes = [...etapes].reverse().map(({ etape, duree, heure }) =>
+      [heure, t(etape.translationKey as any), duree, detailAffichable(etape.detail)]
+        .filter(Boolean)
+        .join('  '),
+    );
+    try {
+      await Share.share({ message: [t("journal_title"), ...lignes].join('\n') });
+    } catch {
+      // Un partage refusé ou annulé n'est pas une erreur à signaler.
+    }
+  }, [etapes, t]);
 
   return (
     <LinearGradient colors={colors.gradients.bg as [string, string, string]} style={styles.fond}>
@@ -122,12 +156,43 @@ export default function JournalScreen() {
           <Text style={[type.caption, { color: colors.textSecondary, flex: 1 }]}>{t("journal_privacy_note")}</Text>
         </View>
 
+        {/* Partage du journal.
+            Sans lui, l'utilisateur qui constate une connexion lente devait
+            recopier l'écran à la main ou photographier son téléphone : le
+            diagnostic n'arrivait jamais jusqu'au développeur.
+            Ce qui part est EXACTEMENT ce qui est affiché — des libellés
+            traduits, des heures et des durées. Le texte est reconstruit depuis
+            les mêmes clés de traduction, donc il ne peut rien contenir de plus
+            que l'écran : aucune adresse, aucune configuration, aucun secret. */}
+        {etapes.length > 0 ? (
+          <Pressable
+            onPress={() => void partager()}
+            accessibilityRole="button"
+            accessibilityLabel={t("journal_share")}
+            style={({ pressed }) => [
+              styles.note,
+              { backgroundColor: colors.bgCard, borderColor: colors.border },
+              pressed && styles.presse,
+            ]}
+          >
+            <Ionicons name="share-outline" size={15} color={colors.textSecondary} />
+            <Text style={[type.captionMedium, { color: colors.textSecondary, flex: 1 }]}>{t("journal_share")}</Text>
+            <Ionicons name="chevron-forward" size={14} color={colors.textMuted} />
+          </Pressable>
+        ) : null}
+
         {etapes.length === 0 ? (
           <EmptyState icon="list-outline" title={t("journal_empty_title")} description={t("journal_empty_subtitle")} />
         ) : (
           <View style={styles.liste}>
-            {etapes.map((item, index) => (
-              <LigneEtape key={`${item.key}-${index}`} item={item} dernier={index === etapes.length - 1} />
+            {etapes.map(({ etape, duree, heure }, index) => (
+              <LigneEtape
+                key={`${etape.key}-${index}`}
+                item={etape}
+                dernier={index === etapes.length - 1}
+                duree={duree}
+                heure={heure}
+              />
             ))}
           </View>
         )}

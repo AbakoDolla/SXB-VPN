@@ -465,6 +465,7 @@ export const en = {
   online_loading: "Counting…",
   online_count: "{{count}} people online",
   online_unavailable: "Count unavailable right now",
+  journal_share: "Share this log",
   journal_open: "Activity journal",
   journal_open_hint: "Follow the connection steps",
   config_switching: "Switching…",
