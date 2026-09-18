@@ -235,9 +235,20 @@ describe('accueil mobile — période d’essai', () => {
     // La carte « Quota du forfait » lit la MÊME dérivation : un seul chiffre.
     assert.match(accueil, /deleteConfig, derivedQuota/);
     assert.doesNotMatch(accueil, /deriveQuota\(/);
-    // Trois appels réseau sur cet écran, comme avant : santé, notifications,
-    // connexions. La carte d'essai n'en ajoute aucun.
-    assert.equal((accueil.match(/apiClient\.get\(/g) || []).length, 3);
+    // Trois appels réseau AUTOMATIQUES sur cet écran, comme avant : santé,
+    // notifications, connexions. La carte d'essai n'en ajoute aucun.
+    //
+    // Ce qui compte ici est le coût du SIMPLE AFFICHAGE : un écran d'accueil ne
+    // doit pas interroger le serveur davantage parce qu'on l'a ouvert. Un appel
+    // déclenché par un geste explicite — le compteur de personnes en ligne — ne
+    // relève pas de cette règle : il ne part que si l'utilisateur le demande.
+    const appels = accueil.match(/apiClient\.get\(/g) || [];
+    const surDemande = accueil.match(/apiClient\.get\('\/mobile\/online'\)/g) || [];
+    assert.equal(appels.length - surDemande.length, 3);
+    assert.ok(
+      !/useEffect\([^)]*\n?[^}]*apiClient\.get\('\/mobile\/online'\)/.test(accueil),
+      'le compteur ne doit jamais partir tout seul',
+    );
     // La carte elle-même ne connaît ni le réseau ni le stockage.
     const carte = lire('app-mobile/components/FreeTrialCard.tsx');
     assert.doesNotMatch(carte, /apiClient|AsyncStorage|fetch\(/);

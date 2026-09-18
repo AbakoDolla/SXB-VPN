@@ -14,6 +14,7 @@ import {
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { generateTokens, requireAuth, AuthenticatedRequest } from "../middleware/auth";
 import { configHashForProfile, configVersionForProfile } from "../services/config-hash";
+import { compterConnectes, PRESENCE_WINDOW_MINUTES } from "../services/vpn-presence";
 import { getActiveAnnouncements } from "./announcements";
 import { getMobileAppUpdate, installedVersionCodeFromHeaders, toMobileAppVersion } from "../services/app-update";
 import { PlafondQuotaDepasse } from "../services/reseller-quota";
@@ -1210,6 +1211,47 @@ router.get(['/version', '/app-version'], async (req: Request, res: Response) => 
     notes: "",
     forceUpdate: false,
   });
+});
+
+/**
+ * GET /api/mobile/online — combien de personnes utilisent le service.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * POURQUOI ELLE EXISTE
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Un utilisateur qui ouvre l'application ne voit rien de la vie du service : ni
+ * combien de gens s'en servent, ni s'il est encore vivant. Demandé par
+ * l'exploitant, ce compteur répond à cette seule question.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * CE QU'ELLE NE DIT JAMAIS
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Un NOMBRE, et rien d'autre. Pas de noms, pas d'appareils, pas de pays, pas de
+ * répartition par configuration : un utilisateur n'a aucune raison d'apprendre
+ * qui sont les autres, et la présence est déjà pseudonymisée en base.
+ *
+ * `measured: false` quand la plateforme ne peut rien mesurer. Renvoyer zéro
+ * affirmerait que personne n'utilise le service — une contre-vérité qui ferait
+ * douter de l'application elle-même.
+ */
+router.get('/online', async (_req: Request, res: Response) => {
+  const secret = config.MOBILE_HEALTH_PSEUDONYM_SECRET
+    || (config.NODE_ENV !== 'production' ? config.JWT_SECRET : null);
+  if (!prisma || !secret) {
+    return res.json({ measured: false, online: null, windowMinutes: PRESENCE_WINDOW_MINUTES });
+  }
+  try {
+    // Aucune portée : c'est le service ENTIER que l'on compte, pas le parc d'un
+    // exploitant. Le cloisonnement du tableau de bord n'a pas de sens ici.
+    const online = await compterConnectes(prisma as any, secret, {});
+    // Cache court : l'écran peut être ouvert par des milliers d'appareils, et
+    // la valeur ne change pas d'une seconde à l'autre.
+    res.set('Cache-Control', 'public, max-age=30');
+    return res.json({ measured: true, online, windowMinutes: PRESENCE_WINDOW_MINUTES });
+  } catch {
+    // Une présence indisponible n'est pas « personne en ligne ».
+    return res.json({ measured: false, online: null, windowMinutes: PRESENCE_WINDOW_MINUTES });
+  }
 });
 
 // GET /api/mobile/history — historique des sessions VPN
