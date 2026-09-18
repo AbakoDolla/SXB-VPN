@@ -149,3 +149,49 @@ export function gestionnaireAInscrire(requerant: Requerant | null | undefined): 
   if (role !== ROLE_ADMIN && role !== OWNER_ROLE) return null;
   return requerant?.userId ?? null;
 }
+
+/**
+ * Portée des CONFIGURATIONS VPN, exprimée sur `VpnProfile`.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * POURQUOI ELLE MANQUAIT
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Le cloisonnement s'était arrêté aux clients et à ce qui pointe vers eux.
+ * Les configurations, elles, n'ont pas de client : elles étaient donc rendues
+ * ENTIÈREMENT à quiconque détient `vpnprofile.view`. Un administrateur créé
+ * pour revendre l'accès voyait ainsi toutes les configurations de la maison —
+ * hôtes, ports, noms commerciaux — dès sa première connexion.
+ *
+ * Un profil n'a pas de gestionnaire, mais il porte son AUTEUR (`createdBy`).
+ * C'est la même idée que `managedById` sur un client, sous un autre nom : un
+ * administrateur ne voit que ce qu'il a lui-même importé.
+ *
+ * Le super-administrateur voit tout sauf les créations du propriétaire, comme
+ * partout ailleurs. Le propriétaire voit tout.
+ */
+export async function porteeProfils(
+  prisma: any,
+  requerant: Requerant | null | undefined,
+): Promise<Record<string, unknown> | null> {
+  const role = requerant?.role ?? null;
+  if (voitTout(role)) return null;
+
+  if (role === ROLE_ADMIN) {
+    // Sans identité exploitable, on refuse plutôt que d'ouvrir le catalogue.
+    if (!requerant?.userId) return { id: { in: [] } };
+    return { createdBy: requerant.userId };
+  }
+
+  // Les autres rôles autorisés à lister — super-administrateur et assimilés —
+  // voient tout sauf ce que le propriétaire a créé lui-même.
+  const proprietaires = await prisma.user.findMany({
+    where: { role: { name: OWNER_ROLE } },
+    select: { id: true },
+  }).catch(() => [] as Array<{ id: string }>);
+  const identifiants = proprietaires.map((u: { id: string }) => u.id);
+  if (identifiants.length === 0) return null;
+  // `createdBy` peut être nul sur les profils anciens : les exclure les ferait
+  // disparaître de toutes les listes. Un profil sans auteur n'appartient à
+  // personne en particulier, donc il reste visible.
+  return { OR: [{ createdBy: null }, { createdBy: { notIn: identifiants } }] };
+}

@@ -19,6 +19,27 @@ import {
   ProfileLockError,
 } from '../services/profile-lock';
 import { prepareProfileEngineLock } from '../services/profile-engines';
+import { porteeProfils } from '../services/portee-donnees';
+
+/**
+ * Ce profil regarde-t-il ce requérant ?
+ *
+ * Contrôle UNITAIRE, pour les routes qui chargent une configuration par son
+ * identifiant. Un filtre de liste ne protège pas un accès direct : sans lui,
+ * un administrateur lisait n'importe quelle configuration en devinant son
+ * identifiant. La règle est celle de `porteeProfils`, appliquée à une ligne.
+ */
+async function profilVisible(profil: any, req: AuthenticatedRequest): Promise<boolean> {
+  const portee = await porteeProfils(prisma, req.user);
+  if (!portee) return true;
+  if (typeof portee.createdBy === 'string') return profil?.createdBy === portee.createdBy;
+  if (Array.isArray((portee as any).OR)) {
+    const exclus = (portee as any).OR.find((c: any) => c?.createdBy?.notIn)?.createdBy?.notIn ?? [];
+    return !profil?.createdBy || !exclus.includes(profil.createdBy);
+  }
+  // Portée vide (« aucun profil ») : rien n'est visible.
+  return false;
+}
 
 const router = Router();
 
@@ -174,8 +195,14 @@ router.get('/', requireAuth, requirePermission('vpnprofile.view'), async (req: A
     // après coup : tant que le schéma n'est pas poussé en base, l'`include`
     // échoue. Sans ce repli, c'est TOUTE la page Configurations qui tombe en
     // 500 — une fonctionnalité secondaire ne doit jamais emporter l'essentiel.
+    // Les configurations n'ont pas de client, donc rien ne les cloisonnait :
+    // elles étaient rendues ENTIÈREMENT à quiconque détient `vpnprofile.view`.
+    // Un administrateur créé pour revendre l'accès voyait ainsi tout le
+    // catalogue de la maison dès sa première connexion.
+    const portee = await porteeProfils(prisma, req.user);
     try {
       const profiles = await (prisma as any).vpnProfile.findMany({
+        ...(portee ? { where: portee } : {}),
         orderBy: { createdAt: 'desc' },
         include: {
           _count: { select: { subscriptions: true } },
@@ -187,6 +214,7 @@ router.get('/', requireAuth, requirePermission('vpnprofile.view'), async (req: A
       return res.json({ success: true, profiles: profiles.map((p: any) => withResellers(p)) });
     } catch {
       const profiles = await (prisma as any).vpnProfile.findMany({
+        ...(portee ? { where: portee } : {}),
         orderBy: { createdAt: 'desc' },
         include: { _count: { select: { subscriptions: true } } },
       });
@@ -306,6 +334,11 @@ router.get('/:id', requireAuth, requirePermission('vpnprofile.view'), async (req
       include: { _count: { select: { subscriptions: true } } },
     });
     if (!p) return res.status(404).json({ error: 'Profile not found' });
+    // Un filtre de liste ne protège pas un accès direct par identifiant : sans
+    // ce contrôle, un administrateur lisait n'importe quelle configuration en
+    // devinant son identifiant. 404 et non 403, convention du dépôt : ne pas
+    // confirmer l'existence d'une ressource qui ne le regarde pas.
+    if (!(await profilVisible(p, req))) return res.status(404).json({ error: 'Profile not found' });
     if (req.get('X-VPN-Profile-Unlock')) assertProfileUnlocked(p, req);
     res.set('Cache-Control', 'no-store');
     return res.json({ success: true, profile: maskProfile(p, req) });
@@ -497,6 +530,9 @@ router.post('/import-batch', requireAuth, requirePermission('vpnprofile.manage')
           displayProtocol,
           offlineValidDays,
           status,
+          // Même règle qu'à l'unité : l'auteur est inscrit, c'est lui qui rend
+          // à un administrateur son propre catalogue. Voir `porteeProfils`.
+          createdBy: req.user?.userId ?? null,
           ...data,
           ...lock,
         },
@@ -583,6 +619,7 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
 
       const profile = await (prisma as any).vpnProfile.create({
         data: {
+          createdBy: req.user?.userId ?? null,
           name, description,
           displayProtocol: displayProtocol || null,
           dns: dns || null,
@@ -610,6 +647,7 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
 
     const profile = await (prisma as any).vpnProfile.create({
       data: {
+        createdBy: req.user?.userId ?? null,
         name, description, protocol,
         displayProtocol: displayProtocol || null,
         host, port: Number(port),
