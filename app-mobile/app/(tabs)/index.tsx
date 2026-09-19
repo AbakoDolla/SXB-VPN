@@ -118,35 +118,6 @@ export default function HomeScreen() {
   }, []));
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [ping, setPing] = useState<number | null>(null);
-  /**
-   * Combien de personnes utilisent le service, sur demande.
-   *
-   * `null` = jamais demandé. L'état distingue le chargement d'une plateforme
-   * qui ne sait rien mesurer : afficher « 0 » dans ce dernier cas dirait que
-   * personne ne se sert du service, ce qui est faux et décourageant.
-   */
-  const [enLigne, setEnLigne] = useState<number | null>(null);
-  const [enLigneEtat, setEnLigneEtat] = useState<'repos' | 'chargement' | 'indisponible'>('repos');
-
-  const demanderEnLigne = useCallback(async () => {
-    if (enLigneEtat === 'chargement') return;
-    setEnLigneEtat('chargement');
-    try {
-      const reponse = await apiClient.get('/mobile/online');
-      const data = (reponse as any)?.data ?? reponse;
-      if (data?.measured === true && typeof data.online === 'number') {
-        setEnLigne(data.online);
-        setEnLigneEtat('repos');
-      } else {
-        // Non mesuré n'est pas zéro : on le dit, plutôt que d'inventer.
-        setEnLigne(null);
-        setEnLigneEtat('indisponible');
-      }
-    } catch {
-      setEnLigne(null);
-      setEnLigneEtat('indisponible');
-    }
-  }, [enLigneEtat]);
   const [suiviRelais, setSuiviRelais] = useState(SUIVI_RELAIS_INITIAL);
   const [connections, setConnections] = useState<VpnConnection[]>([]);
   const [connectionsLoading, setConnectionsLoading] = useState(false);
@@ -629,42 +600,6 @@ export default function HomeScreen() {
             <Ionicons name="list-outline" size={16} color={colors.textSecondary} />
             <Text style={[type.captionMedium, { color: colors.textSecondary }]}>{t('journal_open')}</Text>
             <Ionicons name="chevron-forward" size={14} color={colors.textMuted} />
-          </Pressable>
-
-          {/* Combien de monde utilise le service, à la demande.
-
-              Volontairement REPLIÉ : afficher un nombre en permanence en ferait
-              une donnée à surveiller, et un « 3 » un soir creux donnerait
-              l'impression d'un service à l'abandon. On le montre quand
-              l'utilisateur le demande, et seulement alors.
-
-              Un NOMBRE, rien d'autre : ni noms, ni appareils, ni pays. Qui sont
-              les autres ne le regarde pas. */}
-          <Pressable
-            onPress={() => void demanderEnLigne()}
-            accessibilityRole="button"
-            accessibilityLabel={t('online_tap')}
-            style={({ pressed }) => [
-              styles.logsButton,
-              { borderColor: colors.border, backgroundColor: colors.bgCard },
-              pressed && { opacity: 0.75, transform: [{ scale: 0.985 }] },
-            ]}
-          >
-            <Ionicons name="people-outline" size={16} color={colors.textSecondary} />
-            <Text style={[type.captionMedium, { color: colors.textSecondary }]}>
-              {enLigneEtat === 'chargement'
-                ? t('online_loading')
-                : enLigneEtat === 'indisponible'
-                  ? t('online_unavailable')
-                  : enLigne === null
-                    ? t('online_tap')
-                    : t('online_count').replace('{{count}}', String(enLigne))}
-            </Text>
-            <Ionicons
-              name={enLigne === null ? 'chevron-forward' : 'refresh-outline'}
-              size={14}
-              color={colors.textMuted}
-            />
           </Pressable>
 
           {/* Bandeau vif : le PING, et lui seul.

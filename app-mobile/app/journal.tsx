@@ -90,6 +90,18 @@ function LigneEtape({ item, dernier, duree, heure, lent }: {
               <Text style={[type.micro, { color: lent ? colors.warning : colors.textSecondary }]}>{duree}</Text>
             </View>
           ) : null}
+          {/* Faits rapportés par le MOTEUR : « HTTP/1.1 200 », « TLSv1.3 ».
+              C'est ce détail qui dit où une connexion casse. Il est teinté
+              différemment du reste pour qu'on distingue d'un coup d'œil ce que
+              l'application a fait de ce que le serveur a répondu. */}
+          {(item.technique ?? []).map((valeur) => (
+            <View
+              key={valeur}
+              style={[styles.codePill, { backgroundColor: colors.primaryDim, borderColor: colors.primary + alpha.f24 }]}
+            >
+              <Text style={[type.micro, { color: colors.primary }]}>{valeur}</Text>
+            </View>
+          ))}
           {code ? (
             <View style={[styles.codePill, { backgroundColor: colors.bgInput, borderColor: colors.border2 }]}>
               <Text style={[type.micro, { color: colors.textSecondary }]}>{code}</Text>
@@ -123,7 +135,7 @@ export default function JournalScreen() {
   const partager = useCallback(async () => {
     // Remis dans l'ordre chronologique : une chronologie se lit du début.
     const lignes = [...etapes].reverse().map(({ etape, duree, heure }) =>
-      [heure, t(etape.translationKey as any), duree, detailAffichable(etape.detail)]
+      [heure, t(etape.translationKey as any), ...(etape.technique ?? []), duree, detailAffichable(etape.detail)]
         .filter(Boolean)
         .join('  '),
     );

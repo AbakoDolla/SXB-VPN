@@ -42,6 +42,7 @@ import { estLeurre } from '@/services/decoy';
 import {
   appliquerPresentationTls, echelleApplicable, essaiSuivant, presentationPourEssai, refusDePresentation,
 } from '@/services/tlsPresentation';
+import { analyserTrace } from '@/services/journalTechnique';
 import {
   isCompleteOfflineConfig,
   mergeConnectionMetadata,
@@ -179,6 +180,15 @@ export interface StepLogItem {
   status: 'pending' | 'active' | 'done' | 'error' | 'warning';
   timestamp?: string;
   detail?: string;
+  /**
+   * Faits techniques sûrs, déjà mis en forme : « HTTP/1.1 200 », « TLSv1.3 ».
+   *
+   * Ils viennent EXCLUSIVEMENT de `analyserTrace`, qui n'admet qu'une liste
+   * fermée d'étapes et n'en retient que des valeurs de forme imposée. Rien de
+   * libre n'entre ici : un nom d'hôte ne peut pas y figurer, faute d'étape et
+   * de forme qui l'accepteraient.
+   */
+  technique?: string[];
 }
 
 // ── Context type ─────────────────────────────────────────────────────────────
@@ -560,17 +570,48 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     setStepLogs([]);
   }, []);
 
-  const addStepLog = useCallback((key: string, translationKey: string, status: StepLogItem['status'], detail?: string) => {
+  const addStepLog = useCallback((key: string, translationKey: string, status: StepLogItem['status'], detail?: string, technique?: string[]) => {
     const now = new Date().toISOString();
     setStepLogs(prev => {
       const existing = prev.findIndex(s => s.key === key);
-      const newStep: StepLogItem = { key, translationKey, status, timestamp: now, detail };
+      const newStep: StepLogItem = { key, translationKey, status, timestamp: now, detail, technique };
       if (existing >= 0) {
         const updated = [...prev];
         updated[existing] = newStep;
         return updated;
       }
       return [...prev, newStep];
+    });
+  }, []);
+
+  /**
+   * Inscrit au journal ce que le MOTEUR vient de faire, en clair.
+   *
+   * ═══════════════════════════════════════════════════════════════════════
+   * POURQUOI CETTE VOIE EST SÉPARÉE
+   * ═══════════════════════════════════════════════════════════════════════
+   * Les autres étapes sont écrites par l'application : elle sait ce qu'elle
+   * fait, et choisit la phrase. Celles-ci viennent du moteur, dont le texte
+   * ne doit JAMAIS être affiché tel quel — il porte l'hôte, le compte, le
+   * chemin. `analyserTrace` ne rend donc qu'une clé de traduction choisie
+   * dans le code et des valeurs de forme imposée.
+   *
+   * Une étape ne s'inscrit qu'UNE fois : le moteur répète ses traces à
+   * chaque tentative, et les empiler noierait le journal.
+   */
+  const inscrireFaitMoteur = useCallback((ligne: string) => {
+    const fait = analyserTrace(ligne);
+    if (!fait) return;
+    setStepLogs(prev => {
+      const cle = `moteur:${fait.etape}`;
+      if (prev.some(s => s.key === cle)) return prev;
+      return [...prev, {
+        key: cle,
+        translationKey: fait.cle,
+        status: fait.niveau === 'echec' ? 'error' : fait.niveau === 'attention' ? 'warning' : 'done',
+        timestamp: new Date().toISOString(),
+        technique: fait.valeurs,
+      }];
     });
   }, []);
 
@@ -923,11 +964,12 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
     const logSub = vpnEmitter.addListener('onVpnLog', (e: { message: string }) => {
       if (e.message?.includes('AUTO_RECONNECT_TRIGGERED')) noteMobileHealthReconnect();
+      inscrireFaitMoteur(e.message);
       addLog(e.message?.includes('PLAY_ENCRYPTION_REQUIRED') ? privacyEncryptionMessage : e.message);
     });
 
     return () => { stateSub.remove(); logSub.remove(); };
-  }, [addLog, refreshAccountState, stopWatchdog, stopEchelon, avancerEchelon, noterProgresMoteur, privacyEncryptionMessage]);
+  }, [addLog, inscrireFaitMoteur, refreshAccountState, stopWatchdog, stopEchelon, avancerEchelon, noterProgresMoteur, privacyEncryptionMessage]);
 
   const startTrafficPolling = useCallback(() => {
     if (!IS_ANDROID || !SxbVpnNative) return;

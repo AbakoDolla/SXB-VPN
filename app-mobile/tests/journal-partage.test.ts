@@ -145,10 +145,10 @@ describe('partage — sortir le diagnostic du téléphone sans rien divulguer', 
     // Le texte vient des CLÉS de traduction, pas d'une source libre : c'est ce
     // qui rend la fuite impossible plutôt qu'improbable.
     assert.match(partage, /t\(etape\.translationKey as any\)/);
-    // Et des seuls champs déjà rendus : heure, durée, code de diagnostic.
+    // Et des seuls champs déjà rendus : heure, faits du moteur, durée, code.
     assert.match(
       partage,
-      /\[heure, t\(etape\.translationKey as any\), duree, detailAffichable\(etape\.detail\)\]/,
+      /\[heure, t\(etape\.translationKey as any\), \.\.\.\(etape\.technique \?\? \[\]\), duree, detailAffichable\(etape\.detail\)\]/,
     );
 
     for (const interdit of ['config', 'host', 'server', 'uuid', 'password', 'token', 'payload', 'sni']) {
