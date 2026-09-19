@@ -10,12 +10,51 @@ export const ANNOUNCEMENT_NOTIFICATIONS_ENABLED_KEY = '@sxb_announcement_notific
 const MAX_REMEMBERED_IDS = 100;
 
 interface SxbAnnouncementNativeModule {
-  postAnnouncementNotification?: (id: string, title: string, message: string) => Promise<boolean>;
+  postAnnouncementNotification?: (
+    id: string,
+    title: string,
+    message: string,
+    /** Gravité, pour que la teinte du bandeau dise l'urgence avant le texte. */
+    level: string,
+  ) => Promise<boolean>;
 }
 
+/**
+ * Cette nouvelle doit-elle apparaître sur l'écran de l'appareil ?
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * CE QUI ÉTAIT ÉCARTÉ EN SILENCE
+ * ═══════════════════════════════════════════════════════════════════════════
+ * La règle ne retenait que deux préfixes : `announcement-` et `app-update-`.
+ * Or le serveur en produit un troisième — `ticket-`, quand une demande de
+ * support est résolue ou clôturée — et toute nouvelle catégorie future aurait
+ * subi le même sort. L'utilisateur ne l'apprenait qu'en ouvrant l'application
+ * de lui-même, c'est-à-dire rarement.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * LA RÈGLE EST DONC INVERSÉE : ON EXCLUT, ON N'ÉNUMÈRE PLUS
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Tout ce qui vient du tableau de bord passe, SAUF deux cas :
+ *
+ *   - `log-…` : l'écho de l'activité de l'utilisateur lui-même — ses propres
+ *     connexions et déconnexions VPN. Les annoncer serait lui apprendre ce
+ *     qu'il vient de faire, plusieurs fois par jour. Une alerte qu'on apprend
+ *     à ignorer est pire que pas d'alerte du tout.
+ *
+ *   - ce que le serveur marque DÉJÀ LU : il a lui-même jugé qu'il n'y avait
+ *     rien à signaler.
+ *
+ * Une catégorie nouvelle atteint ainsi l'appareil sans qu'on ait à y penser,
+ * ce qui est précisément ce qu'on attend d'un centre de notifications.
+ */
 function isDeliverableNotification(notification: MobileNotification): boolean {
   if (isPlayDistribution && (notification.appUpdate || notification.id.startsWith('app-update-'))) return false;
-  return notification.id.startsWith('announcement-') || notification.id.startsWith('app-update-');
+  // L'activité propre de l'utilisateur n'est pas une nouvelle du tableau de bord.
+  if (notification.id.startsWith('log-')) return false;
+  // Le serveur écrit `read`, le type de l'application `isRead` : les deux sont
+  // lus, faute de quoi la distinction se perdrait selon la version du serveur.
+  const vue = (notification as { read?: boolean }).read ?? notification.isRead;
+  return vue !== true;
 }
 
 async function readDeliveredIds(): Promise<string[]> {
@@ -76,6 +115,7 @@ export async function syncAnnouncementNotifications(): Promise<void> {
         announcement.id,
         announcement.title,
         announcement.message,
+        announcement.type ?? 'info',
       );
       if (posted) newlyDelivered.push(announcement.id);
     } catch {

@@ -44,9 +44,6 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
 
     companion object {
         private const val VPN_REQUEST_CODE = 0x0F4C
-        // V2 : l’identifiant versionné permet de recréer un canal sonore après
-        // une ancienne release qui avait pu enregistrer le canal sans son.
-        private const val ANNOUNCEMENT_CHANNEL_ID = "SXB_ANNOUNCEMENTS_V2"
     }
 
     private var vpnPermissionPromise: Promise? = null
@@ -377,72 +374,44 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
 
     // ── postAnnouncementNotification ─────────────────────────────────────────
     /**
-     * Notification locale d’une annonce déjà reçue par l’API authentifiée.
-     * Android garde le contrôle final du son et de la vibration du canal.
+     * Notification locale d'une nouvelle déjà reçue par l'API authentifiée.
+     *
+     * ═══════════════════════════════════════════════════════════════════════
+     * POURQUOI ELLE S'AFFICHE PAR-DESSUS L'ÉCRAN
+     * ═══════════════════════════════════════════════════════════════════════
+     * Le canal était créé en `IMPORTANCE_DEFAULT`. Android fait alors sonner
+     * la notification et la range dans le volet — mais ne la présente JAMAIS
+     * par-dessus l'écran. L'utilisateur ne la découvrait qu'en déroulant le
+     * volet, c'est-à-dire seulement s'il pensait à le faire.
+     *
+     * `IMPORTANCE_HIGH` déclenche le bandeau flottant (« heads-up ») : le
+     * message apparaît sur l'écran, et se balaie pour être écarté. Avant
+     * Oreo, où les canaux n'existent pas, c'est `PRIORITY_HIGH` qui joue ce
+     * rôle — les deux sont nécessaires pour couvrir tout le parc.
+     *
+     * ═══════════════════════════════════════════════════════════════════════
+     * POURQUOI UN NOUVEL IDENTIFIANT DE CANAL
+     * ═══════════════════════════════════════════════════════════════════════
+     * Android REFUSE de relever l'importance d'un canal déjà créé : c'est un
+     * réglage qui appartient à l'utilisateur, et `createNotificationChannel`
+     * sur un identifiant existant n'a aucun effet sur ce point.
+     *
+     * Garder l'ancien identifiant aurait donc corrigé le code sans rien
+     * changer pour QUICONQUE a déjà l'application — exactement le genre de
+     * correctif qui paraît juste et ne sert à rien. L'ancien canal est
+     * supprimé pour ne pas laisser deux entrées dans les réglages système.
      */
     @ReactMethod
-    fun postAnnouncementNotification(id: String, title: String, message: String, promise: Promise) {
+    fun postAnnouncementNotification(id: String, title: String, message: String, level: String, promise: Promise) {
         try {
-            val ctx = reactApplicationContext
-            val manager = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val audioAttributes = AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_NOTIFICATION)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build()
-                val channel = NotificationChannel(
-                    ANNOUNCEMENT_CHANNEL_ID,
-                    "SXB VPN Alerts",
-                    NotificationManager.IMPORTANCE_DEFAULT,
-                ).apply {
-                    description = "SXB VPN announcements and important account updates"
-                    enableVibration(true)
-                    setSound(soundUri, audioAttributes)
-                }
-                manager.createNotificationChannel(channel)
-            }
-
-            val intent = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)?.apply {
-                data = Uri.parse("sxbvpn://notifications")
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            } ?: Intent(Intent.ACTION_VIEW, Uri.parse("sxbvpn://notifications")).apply {
-                setPackage(ctx.packageName)
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            }
-            val pendingIntent = PendingIntent.getActivity(
-                ctx,
-                id.hashCode(),
-                intent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            // Un SEUL chemin d'envoi pour les deux origines — poussée serveur
+            // et relevé au premier plan. Les deux copies avaient déjà divergé :
+            // l'une plafonnait à `IMPORTANCE_DEFAULT` pendant que l'autre était
+            // corrigée, et les nouvelles n'apparaissaient par-dessus l'écran
+            // que sur la moitié des chemins.
+            promise.resolve(
+                SxbPushNotifications.post(reactApplicationContext, id, title, message, level),
             )
-            val safeTitle = SecurityModule.maskSensitive(title).take(120)
-            val safeMessage = SecurityModule.maskSensitive(message)
-            val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                Notification.Builder(ctx, ANNOUNCEMENT_CHANNEL_ID)
-            } else {
-                Notification.Builder(ctx)
-            }
-            val notification = builder
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setContentTitle("SXB VPN • $safeTitle")
-                .setContentText(safeMessage.take(240))
-                .setStyle(Notification.BigTextStyle().bigText(safeMessage.take(1000)))
-                .setSubText("Centre de notifications")
-                .setColor(0xFF1769E8L.toInt())
-                .setVisibility(Notification.VISIBILITY_PRIVATE)
-                .setAutoCancel(true)
-                .setContentIntent(pendingIntent)
-                .setCategory(Notification.CATEGORY_MESSAGE)
-                .apply {
-                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-                        setSound(soundUri)
-                        setDefaults(Notification.DEFAULT_ALL)
-                    }
-                }
-                .build()
-            manager.notify("sxb_announcement", id.hashCode(), notification)
-            promise.resolve(true)
         } catch (_: Exception) {
             // Une notification est une amélioration non bloquante : ne jamais empêcher le VPN ou la synchronisation.
             promise.resolve(false)

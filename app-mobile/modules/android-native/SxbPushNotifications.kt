@@ -14,7 +14,34 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
 
 object SxbPushNotifications {
-    const val CHANNEL_ID = "SXB_ANNOUNCEMENTS_V2"
+    /**
+     * Canal des nouvelles du tableau de bord.
+     *
+     * ═══════════════════════════════════════════════════════════════════════
+     * POURQUOI L'IDENTIFIANT EST VERSIONNÉ
+     * ═══════════════════════════════════════════════════════════════════════
+     * Android REFUSE de relever l'importance d'un canal déjà créé : c'est un
+     * réglage qui appartient à l'utilisateur, et `createNotificationChannel`
+     * sur un identifiant existant n'a aucun effet sur ce point.
+     *
+     * Le canal V2 était en `IMPORTANCE_DEFAULT` : la notification sonnait et
+     * se rangeait dans le volet, mais ne s'affichait JAMAIS par-dessus
+     * l'écran. Se contenter de changer l'importance dans le code aurait donc
+     * corrigé la prochaine installation — et personne d'autre.
+     */
+    const val CHANNEL_ID = "SXB_ANNOUNCEMENTS_V3"
+
+    /** Supprimé au premier envoi : sinon il resterait dans les réglages, vide. */
+    private const val LEGACY_CHANNEL_ID = "SXB_ANNOUNCEMENTS_V2"
+
+    /**
+     * Étiquette commune aux deux chemins de livraison.
+     *
+     * Une nouvelle peut arriver poussée par le serveur, ou relevée par
+     * l'application au premier plan. Avec deux étiquettes distinctes, la même
+     * nouvelle apportée par les deux apparaissait EN DOUBLE dans le volet.
+     */
+    private const val NOTIFICATION_TAG = "sxb_alerte"
 
     fun ensureFirebaseInitialized(context: Context): FirebaseApp? {
         if (!SxbPrivacyPolicy.notificationsAllowed(context)) return null
@@ -67,13 +94,19 @@ object SxbPushNotifications {
                 NotificationChannel(
                     CHANNEL_ID,
                     "SXB VPN Alerts",
-                    NotificationManager.IMPORTANCE_DEFAULT,
+                    // `IMPORTANCE_HIGH` déclenche le bandeau flottant : le
+                    // message s'affiche PAR-DESSUS l'écran et se balaie pour
+                    // être écarté. En `DEFAULT`, il n'apparaissait que dans le
+                    // volet — donc seulement si l'utilisateur pensait à le
+                    // dérouler.
+                    NotificationManager.IMPORTANCE_HIGH,
                 ).apply {
                     description = "SXB VPN announcements and important account updates"
                     enableVibration(true)
                     setSound(soundUri, audioAttributes)
                 },
             )
+            runCatching { manager.deleteNotificationChannel(LEGACY_CHANNEL_ID) }
         }
 
         val deepLink = Uri.parse("sxbvpn://notifications")
@@ -111,12 +144,19 @@ object SxbPushNotifications {
             .setCategory(Notification.CATEGORY_MESSAGE)
             .apply {
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                    // Avant Oreo, les canaux n'existent pas : c'est la priorité
+                    // de la notification elle-même qui décide du bandeau.
+                    setPriority(Notification.PRIORITY_HIGH)
                     setSound(soundUri)
                     setDefaults(Notification.DEFAULT_ALL)
                 }
             }
             .build()
-        manager.notify("sxb_push", id.hashCode(), notification)
+        // Étiquette COMMUNE aux deux chemins de livraison — poussée par le
+        // serveur, ou relevée par l'application au premier plan. Avec deux
+        // étiquettes distinctes, une même nouvelle apportée par les deux
+        // apparaissait EN DOUBLE dans le volet.
+        manager.notify(NOTIFICATION_TAG, id.hashCode(), notification)
         return true
     }
 

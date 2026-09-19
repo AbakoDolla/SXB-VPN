@@ -1055,9 +1055,14 @@ describe('garde-fous contre les régressions Android', () => {
   });
 
   it('synchronise les annonces vers un canal Android dédié et dédupliqué', () => {
-    assert.match(nativeModule, /SXB_ANNOUNCEMENTS/);
+    // Le canal et le masquage vivent désormais dans SxbPushNotifications : les
+    // deux chemins de livraison — poussée serveur et relevé au premier plan —
+    // partagent un seul envoi, après qu'ils eurent divergé (l'un plafonnait à
+    // IMPORTANCE_DEFAULT, donc sans bandeau flottant).
+    const envoiNatif = source('modules/android-native/SxbPushNotifications.kt');
+    assert.match(envoiNatif, /SXB_ANNOUNCEMENTS/);
+    assert.match(envoiNatif, /SecurityModule\.maskSensitive\(message\)/);
     assert.match(nativeModule, /postAnnouncementNotification/);
-    assert.match(nativeModule, /SecurityModule\.maskSensitive\(message\)/);
     assert.match(rootLayout, /syncAnnouncementNotifications/);
     assert.match(notificationsScreen, /READ_NOTIFICATION_IDS_KEY/);
     assert.doesNotMatch(notificationsScreen, /apiClient\.patch\(.*notifications/);
