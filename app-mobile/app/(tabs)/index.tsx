@@ -44,7 +44,8 @@ import {
 import AccessNotices from "@/components/AccessNotices";
 import FreeTrialCard from "@/components/FreeTrialCard";
 import { blocksDevice } from "@/services/accessPolicy";
-import { connexionsNouvelles, memoriser } from "@/services/newConnectionWatch";
+import { connexionsNouvelles, memoriser, oublier } from "@/services/newConnectionWatch";
+import { avecDelai, estLenteur } from "@/services/attenteBornee";
 
 /**
  * Cadence de relecture des connexions pendant que l'écran est ouvert.
@@ -81,6 +82,25 @@ const GREETING_EMOJI = "👋";
  * l'inventaire du serveur alors que l'appareil en garde la trace.
  */
 const ETATS_BLOQUANTS = new Set(['deleted', 'revoked', 'suspended', 'expired', 'exhausted']);
+
+/**
+ * Au-delà, le rafraîchissement cesse d'être ANNONCÉ — jamais interrompu.
+ *
+ * Vingt secondes : au-delà, l'utilisateur ne croit plus que quelque chose
+ * avance. En deçà, couper l'annonce priverait d'un retour légitime une
+ * liaison simplement lente.
+ */
+const DELAI_RAFRAICHISSEMENT_MS = 20_000;
+
+/**
+ * Issue d'un rafraîchissement demandé par l'utilisateur.
+ *
+ * « lent » n'est PAS un échec : le travail se poursuit, seule son annonce
+ * s'arrête. Les confondre ferait ressusciter une annonce déjà traitée au
+ * seul motif que le réseau a pris son temps — exactement la boucle dont
+ * l'exploitant se plaint.
+ */
+type IssueRafraichissement = 'ok' | 'lent' | 'echec';
 
 // ── VPN Button States ─────────────────────────────────────────────────────────
 type BtnState = "no_account" | "no_package" | "connect" | "connecting" | "connected" | "exhausted" | "expired" | "blocked";
@@ -127,6 +147,13 @@ export default function HomeScreen() {
     return () => setScreenFocused(false);
   }, []));
   const [isRefreshing, setIsRefreshing] = useState(false);
+  /**
+   * Un rafraîchissement est-il en cours ?
+   *
+   * Tenu par RÉFÉRENCE et non par état : deux appuis rapprochés lisent la même
+   * valeur d'état et passeraient tous les deux la garde.
+   */
+  const rafraichissementRef = useRef(false);
   const [ping, setPing] = useState<number | null>(null);
   const [suiviRelais, setSuiviRelais] = useState(SUIVI_RELAIS_INITIAL);
   const [connections, setConnections] = useState<VpnConnection[]>([]);
@@ -228,27 +255,85 @@ export default function HomeScreen() {
     return () => clearInterval(timer);
   }, [fetchConnections]);
 
-  /** L'utilisateur charge la nouveauté : on recharge, PUIS on mémorise. */
-  const chargerNouvellesConnexions = async () => {
-    const aMemoriser = nouvellesConnexions;
-    setNouvellesConnexions([]);
-    await handleRefresh();
-    // Mémorisé seulement après le rafraîchissement : si celui-ci échoue, la
-    // nouveauté reste annoncée au lieu de disparaître sans avoir été chargée.
-    await memoriser(aMemoriser).catch(() => {});
-  };
-
-  const handleRefresh = async () => {
-    if (isRefreshing) return;
+  /**
+   * Recharge tout ce que l'accueil affiche, en bornant l'ATTENTE VISIBLE.
+   *
+   * ═══════════════════════════════════════════════════════════════════════
+   * POURQUOI UNE BORNE
+   * ═══════════════════════════════════════════════════════════════════════
+   * Cette chaîne n'était bornée par rien. En mesurant les délais qu'elle
+   * traverse : l'état d'accès tolère 35 s, la liste des connexions 15 s, et
+   * chaque configuration à provisionner rejoue trois tentatives de 15 s
+   * séparées de pauses — près de 46 s par configuration. Avec deux
+   * configurations neuves, le bouton restait désactivé et le tournis tournait
+   * plus de deux minutes, sans un mot.
+   *
+   * Un tournis sans fin est pire qu'une réponse tardive : il ne dit rien et
+   * n'offre aucune issue. Passé le délai, on cesse donc de l'ANNONCER — sans
+   * jamais interrompre le travail, qui se poursuit et dont les résultats
+   * arriveront d'eux-mêmes.
+   */
+  const handleRefresh = useCallback(async (): Promise<IssueRafraichissement> => {
+    // Garde par RÉFÉRENCE, et non par état : deux appuis rapprochés lisent la
+    // même valeur d'état, passeraient tous les deux, et le premier à finir
+    // éteindrait le tournis du second.
+    if (rafraichissementRef.current) return 'lent';
+    rafraichissementRef.current = true;
     setIsRefreshing(true);
-    try {
+
+    const travail = (async () => {
       await refreshVpnConfig();
       await Promise.all([refreshAccountState(activeConfigId), fetchConnections()]);
-    } catch (_) {
+    })();
+    // Le travail survit au délai : sans ce récepteur, un échec tardif
+    // remonterait comme rejet non traité.
+    void travail.catch(() => {});
+
+    try {
+      await avecDelai(travail, DELAI_RAFRAICHISSEMENT_MS);
+      return 'ok';
+    } catch (erreur) {
+      return estLenteur(erreur) ? 'lent' : 'echec';
     } finally {
+      rafraichissementRef.current = false;
       setIsRefreshing(false);
     }
-  };
+  }, [refreshVpnConfig, refreshAccountState, activeConfigId, fetchConnections]);
+
+  /**
+   * L'utilisateur charge la nouveauté : on MÉMORISE, puis on recharge.
+   *
+   * ═══════════════════════════════════════════════════════════════════════
+   * L'ORDRE EST LE CORRECTIF
+   * ═══════════════════════════════════════════════════════════════════════
+   * La mémorisation venait APRÈS le rafraîchissement. Or c'est ce même
+   * rafraîchissement qui relance la détection : elle relisait une mémoire ne
+   * contenant pas encore ces identifiants, les redonnait, et l'annonce que
+   * l'utilisateur venait de traiter réapparaissait — à tous les coups, jamais
+   * par intermittence. D'où « j'appuie sur Charger, ça charge, et ça
+   * s'affiche une deuxième fois ».
+   *
+   * Le risque symétrique — oublier une nouveauté que le chargement n'a pas su
+   * récupérer — se traite sur le chemin d'échec, avec `oublier()`.
+   */
+  const chargerNouvellesConnexions = useCallback(async () => {
+    const aTraiter = nouvellesConnexions;
+    if (aTraiter.length === 0) return;
+    setNouvellesConnexions([]);
+    await memoriser(aTraiter).catch(() => {});
+
+    const issue = await handleRefresh();
+    if (issue === 'echec') {
+      // Une nouveauté qu'on n'a pas su charger doit RESTER annoncée : sinon
+      // elle disparaîtrait sans avoir jamais servi, et plus rien ne la
+      // signalerait.
+      await oublier(aTraiter).catch(() => {});
+      setNouvellesConnexions(aTraiter);
+    }
+    // Sur « lent », l'annonce reste éteinte à dessein : le travail se poursuit
+    // et les connexions arriveront. La rallumer renverrait l'utilisateur dans
+    // la boucle qu'il décrit — appuyer, attendre, revoir le bandeau.
+  }, [nouvellesConnexions, handleRefresh]);
 
   /**
    * Une autre configuration, réellement utilisable, vers laquelle basculer.
@@ -436,7 +521,7 @@ export default function HomeScreen() {
           <View style={styles.headerActions}>
             <IconButton
               icon="refresh"
-              onPress={handleRefresh}
+              onPress={() => { void handleRefresh(); }}
               disabled={isRefreshing}
               accessibilityLabel={t('refresh_config')}
             >

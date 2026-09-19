@@ -118,3 +118,105 @@ describe('nouvelle connexion déployée', () => {
     assert.equal(stockage.has('@sxb_seen_connections_v1'), false);
   });
 });
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * « J'APPUIE SUR CHARGER ET ÇA S'AFFICHE UNE DEUXIÈME FOIS »
+ * ═══════════════════════════════════════════════════════════════════════════
+ * L'écran d'accueil enchaînait, à l'appui sur « Charger » :
+ *
+ *     setNouvellesConnexions([])   → l'annonce disparaît
+ *     await handleRefresh()        → relit /mobile/connections
+ *                                    ET RELANCE la détection
+ *     await memoriser(nouvelles)   → trop tard
+ *
+ * La détection relisait une mémoire qui ne contenait pas encore ces
+ * identifiants : elle les redonnait, et l'annonce revenait. À TOUS LES COUPS,
+ * jamais par intermittence — ce qui explique que l'exploitant l'ait constaté
+ * du premier essai.
+ *
+ * Ces contrôles rejouent les DEUX ordres sur le module réel, et montrent que
+ * seul l'ordre corrigé éteint l'annonce.
+ */
+describe('appui sur « Charger » — l’ordre des opérations', () => {
+  /**
+   * Rejoue le geste de l'utilisateur.
+   *
+   * `memoriseAvant` choisit l'ordre : `false` reproduit le code fautif, `true`
+   * celui qui est en production depuis la correction. La « détection » est
+   * l'appel que `fetchConnections` fait pendant le rafraîchissement.
+   */
+  async function appuyerSurCharger(
+    module: Veille,
+    ids: string[],
+    { memoriseAvant }: { memoriseAvant: boolean },
+  ): Promise<string[]> {
+    const annonce = await module.connexionsNouvelles(ids);
+    if (memoriseAvant) await module.memoriser(annonce);
+    // Ce que le rafraîchissement relance, et qui rallumait l'annonce.
+    const redetecte = await module.connexionsNouvelles(ids);
+    if (!memoriseAvant) await module.memoriser(annonce);
+    return Array.from(redetecte);
+  }
+
+  it('l’ancien ordre ressuscitait l’annonce — la preuve du défaut', async () => {
+    const { module } = await veille();
+    await module.connexionsNouvelles(['a']);          // premier lancement : adopté
+
+    const revenu = await appuyerSurCharger(module, ['a', 'neuve'], { memoriseAvant: false });
+    assert.deepEqual(revenu, ['neuve'], 'l’ancien ordre DOIT ressusciter l’annonce');
+  });
+
+  it('l’ordre corrigé éteint l’annonce du premier appui', async () => {
+    const { module } = await veille();
+    await module.connexionsNouvelles(['a']);
+
+    const revenu = await appuyerSurCharger(module, ['a', 'neuve'], { memoriseAvant: true });
+    assert.deepEqual(revenu, [], 'l’annonce ne doit plus revenir');
+
+    // Et elle ne revient pas non plus aux relectures suivantes — le minuteur
+    // de l'accueil relit toutes les soixante secondes.
+    assert.deepEqual(Array.from(await module.connexionsNouvelles(['a', 'neuve'])), []);
+  });
+
+  it('un chargement en échec laisse la nouveauté annoncée', async () => {
+    // Le risque symétrique de la correction : mémoriser d'abord pourrait faire
+    // disparaître une nouveauté que le chargement n'a pas su récupérer. Le
+    // chemin d'échec la remet donc en mémoire vive.
+    const { module } = await veille();
+    await module.connexionsNouvelles(['a']);
+
+    const annonce = await module.connexionsNouvelles(['a', 'neuve']);
+    assert.deepEqual(Array.from(annonce), ['neuve']);
+    await module.memoriser(annonce);
+    // … le rafraîchissement échoue : on défait la mémorisation.
+    await module.oublier(annonce);
+
+    assert.deepEqual(
+      Array.from(await module.connexionsNouvelles(['a', 'neuve'])),
+      ['neuve'],
+      'une nouveauté non chargée doit rester annoncée',
+    );
+  });
+
+  it('oublier ne touche QUE ce qu’on lui nomme', async () => {
+    const { module } = await veille();
+    await module.connexionsNouvelles(['a', 'b']);
+    await module.memoriser(['c', 'd']);
+
+    await module.oublier(['c']);
+
+    // `c` redevient une nouveauté ; `a`, `b` et `d` restent connus.
+    assert.deepEqual(Array.from(await module.connexionsNouvelles(['a', 'b', 'c', 'd'])), ['c']);
+  });
+
+  it('oublier une liste vide ne réécrit rien', async () => {
+    const { module, stockage } = await veille();
+    await module.connexionsNouvelles(['a', 'b']);
+    const avant = stockage.get('@sxb_seen_connections_v1');
+
+    await module.oublier([]);
+
+    assert.equal(stockage.get('@sxb_seen_connections_v1'), avant);
+  });
+});

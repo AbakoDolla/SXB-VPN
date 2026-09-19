@@ -82,15 +82,38 @@ export async function connexionsNouvelles(identifiants: ReadonlyArray<string>): 
 /**
  * Range ces identifiants parmi les connexions déjà vues.
  *
- * Appelé APRÈS que l'utilisateur a été informé — jamais avant : mémoriser au
- * moment de la détection ferait disparaître l'annonce si l'écran se recompose
- * entre-temps, et la nouveauté ne serait jamais montrée.
+ * ═══════════════════════════════════════════════════════════════════════════
+ * QUAND APPELER — ET POURQUOI L'ORDRE COMPTE
+ * ═══════════════════════════════════════════════════════════════════════════
+ * À appeler AVANT le rafraîchissement que l'utilisateur vient de demander, et
+ * non après. C'est ce même rafraîchissement qui relance la détection : si la
+ * mémoire ne contient pas encore ces identifiants au moment où il relit, la
+ * détection les redonne et l'annonce que l'utilisateur vient de traiter
+ * réapparaît aussitôt.
+ *
+ * Le risque symétrique — mémoriser une nouveauté que le chargement n'a pas
+ * réussi à récupérer — se traite avec `oublier()` sur le chemin d'échec,
+ * plutôt qu'en retardant la mémorisation.
  */
 export async function memoriser(identifiants: ReadonlyArray<string>): Promise<void> {
   const vues = await lireVues();
   // Les nouveaux en tête : la troncature ci-dessous sacrifie les plus anciens.
   const fusion = [...new Set([...identifiants.filter(Boolean), ...vues])].slice(0, MAX_SEEN);
   await AsyncStorage.setItem(SEEN_CONNECTIONS_KEY, JSON.stringify(fusion)).catch(() => {});
+}
+
+/**
+ * Retire ces identifiants de la mémoire — ils redeviennent des nouveautés.
+ *
+ * Contrepartie de `memoriser()` : quand le chargement demandé par
+ * l'utilisateur a échoué, la nouveauté doit rester annoncée. Sans cela elle
+ * disparaîtrait sans avoir jamais été chargée, et rien ne la signalerait plus.
+ */
+export async function oublier(identifiants: ReadonlyArray<string>): Promise<void> {
+  const aRetirer = new Set(identifiants.filter(Boolean));
+  if (aRetirer.size === 0) return;
+  const restants = (await lireVues()).filter(id => !aRetirer.has(id));
+  await AsyncStorage.setItem(SEEN_CONNECTIONS_KEY, JSON.stringify(restants)).catch(() => {});
 }
 
 /** Repart de zéro — utilisé à la désactivation d'un appareil. */
