@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AppState, Image, Modal, Pressable,
   ScrollView, Share, StyleSheet, Text, View, ActivityIndicator,
@@ -71,6 +71,16 @@ const LOGO = require("../../assets/images/icon.png");
  * mot « Bonjour » n'ajoute rien.
  */
 const GREETING_EMOJI = "👋";
+
+/**
+ * États qui rendent une configuration inutilisable.
+ *
+ * Servent à ne proposer un changement que s'il MÈNE quelque part : suggérer
+ * une configuration elle aussi retirée ferait recommencer l'utilisateur pour
+ * rien. `deleted` est le cas le plus courant — le forfait a disparu de
+ * l'inventaire du serveur alors que l'appareil en garde la trace.
+ */
+const ETATS_BLOQUANTS = new Set(['deleted', 'revoked', 'suspended', 'expired', 'exhausted']);
 
 // ── VPN Button States ─────────────────────────────────────────────────────────
 type BtnState = "no_account" | "no_package" | "connect" | "connecting" | "connected" | "exhausted" | "expired" | "blocked";
@@ -239,6 +249,20 @@ export default function HomeScreen() {
       setIsRefreshing(false);
     }
   };
+
+  /**
+   * Une autre configuration, réellement utilisable, vers laquelle basculer.
+   *
+   * Ne proposer un changement que s'il MÈNE quelque part : suggérer une
+   * configuration elle aussi retirée ou suspendue ferait recommencer
+   * l'utilisateur pour rien, et lui donnerait le sentiment que l'application
+   * le promène. `undefined` quand aucune ne convient — le bandeau disparaît
+   * alors, plutôt que de mentir.
+   */
+  const configDeSecours = useMemo(
+    () => savedConfigs.find((c) => !c.isActive && !ETATS_BLOQUANTS.has(String(c.status ?? 'active'))),
+    [savedConfigs],
+  );
 
   // Les animations du bouton (anneaux, respiration, appui) sont désormais
   // encapsulées dans `PowerButton`. L'écran ne conserve que l'état métier.
@@ -537,6 +561,46 @@ export default function HomeScreen() {
               </View>
               <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
             </Pressable>
+
+            {/* ── Sortie de secours ────────────────────────────────────────
+                Quand la configuration en cours ne vaut plus — retirée,
+                suspendue, expirée — l'application se contentait de couper le
+                tunnel. L'utilisateur appuyait, voyait la connexion retomber,
+                et n'avait pour tout recours qu'une liste de profils sans
+                indication de celui qui marche.
+
+                Ce bandeau ne s'affiche que s'il existe VRAIMENT une autre
+                configuration utilisable, et bascule dessus en un geste. */}
+            {revokedStatus !== 'none' && configDeSecours && (
+              <Pressable
+                onPress={() => void switchConfig(configDeSecours.id)}
+                disabled={isSwitchingConfig}
+                accessibilityRole="button"
+                accessibilityLabel={t('switch_action')}
+                style={({ pressed }) => [
+                  styles.configCurrent,
+                  {
+                    marginTop: spacing.sm,
+                    borderColor: colors.primary + alpha.f24,
+                    backgroundColor: colors.primaryDim,
+                  },
+                  pressed && { opacity: 0.75 },
+                ]}
+              >
+                <View style={[styles.configIcon, { backgroundColor: colors.primaryDim }]}>
+                  <Ionicons name="swap-horizontal" size={19} color={colors.primary} />
+                </View>
+                <View style={{ flex: 1, gap: spacing.xs }}>
+                  <Text style={[type.captionMedium, { color: colors.primary }]}>{t('switch_suggestion')}</Text>
+                  <Text style={[type.h3, { color: colors.textPrimary }]} numberOfLines={1}>
+                    {configDeSecours.name}
+                  </Text>
+                </View>
+                {isSwitchingConfig
+                  ? <ActivityIndicator size="small" color={colors.primary} />
+                  : <Ionicons name="arrow-forward" size={18} color={colors.primary} />}
+              </Pressable>
+            )}
           </Surface>
         )}
 

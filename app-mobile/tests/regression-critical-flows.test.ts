@@ -3147,7 +3147,9 @@ describe('comptage de la consommation data', () => {
 
   it('coupe réellement le tunnel quand le serveur déclare le quota épuisé', () => {
     assert.match(vpnContext, /if \(result\.data\?\.quotaExhausted === true && !exhaustedHandled\)/);
-    assert.match(vpnContext, /await stopForAccessRef\.current\?\.\(\)/);
+    // L'arrêt NOMME sa cause. Auparavant il était muet, et l'utilisateur voyait
+    // son tunnel retomber sans la moindre explication.
+    assert.match(vpnContext, /await stopForAccessRef\.current\?\.\('quota_epuise'\)/);
     assert.match(vpnContext, /setRevokedStatus\('exhausted'\)/);
     // Côté serveur, l'épuisement est déduit du quota réellement consommé et
     // ferme l'accès au forfait, pas seulement son affichage.

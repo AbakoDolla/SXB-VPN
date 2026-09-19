@@ -125,6 +125,43 @@ const DELAI_PRESENTATION_MS = 20_000;
 
 /** Présentation retenue pour un profil, par identifiant de configuration. */
 const CLE_PRESENTATION = '@sxb_presentation_tls:';
+
+/**
+ * Pourquoi l'accès a coupé le tunnel — une liste fermée, jamais du texte libre.
+ *
+ * Un tunnel qui retombe sans explication est la plainte la plus fréquente :
+ * l'utilisateur appuie, la connexion s'établit, puis disparaît. Nommer la
+ * cause est la moitié de la réparation.
+ */
+type MotifArretAcces =
+  | 'profil_retire'
+  | 'profil_suspendu'
+  | 'profil_expire'
+  | 'profil_revoque'
+  | 'appareil_bloque'
+  | 'quota_epuise';
+
+const CLE_MOTIF_ARRET: Record<MotifArretAcces, string> = {
+  profil_retire: 'stop_profil_retire',
+  profil_suspendu: 'stop_profil_suspendu',
+  profil_expire: 'stop_profil_expire',
+  profil_revoque: 'stop_profil_revoque',
+  appareil_bloque: 'stop_appareil_bloque',
+  quota_epuise: 'stop_quota_epuise',
+};
+
+/** Traduit l'état d'une restriction en motif compréhensible. */
+function motifPourRestriction(statut: string | undefined): MotifArretAcces {
+  switch (statut) {
+    case 'suspended': return 'profil_suspendu';
+    case 'expired':   return 'profil_expire';
+    case 'revoked':   return 'profil_revoque';
+    case 'exhausted': return 'quota_epuise';
+    // `deleted` est le cas le plus courant et le plus déroutant : le forfait
+    // a disparu de l'inventaire du serveur, mais l'appareil en garde la trace.
+    default:          return 'profil_retire';
+  }
+}
 const SxbVpnNative = IS_ANDROID ? (NativeModules.SxbVpnNative as any) : null;
 const vpnEmitter   = SxbVpnNative ? new NativeEventEmitter(SxbVpnNative) : null;
 
@@ -839,7 +876,15 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       if ((s === 'connected' || s === 'handshaking') &&
           (blocksDevice(selectDeviceAccess(authority)) ||
             (runningProfileRef.current && profileRestriction(authority, runningProfileRef.current)))) {
-        void stopForAccess().catch(reportAccessSyncError);
+        // Dire LAQUELLE des deux causes coupe : sans cela, l'utilisateur voit
+        // seulement son tunnel retomber une seconde après s'être établi.
+        const restriction = runningProfileRef.current
+          ? profileRestriction(authority, runningProfileRef.current)
+          : null;
+        const motif = blocksDevice(selectDeviceAccess(authority))
+          ? 'appareil_bloque'
+          : motifPourRestriction(restriction?.status);
+        void stopForAccess(motif).catch(reportAccessSyncError);
         return;
       }
 
@@ -1068,7 +1113,14 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       const authority = getAccessState().authority;
       if (blocksDevice(selectDeviceAccess(authority)) ||
           (runningProfileRef.current && profileRestriction(authority, runningProfileRef.current))) {
-        await stopForAccess();
+        const restriction = runningProfileRef.current
+          ? profileRestriction(authority, runningProfileRef.current)
+          : null;
+        await stopForAccess(
+          blocksDevice(selectDeviceAccess(authority))
+            ? 'appareil_bloque'
+            : motifPourRestriction(restriction?.status),
+        );
         return;
       }
       // Le dialogue d'autorisation Android place brièvement l'activité en
@@ -1121,7 +1173,22 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     return () => foregroundSub.remove();
   }, [stopTrafficPolling, syncNativeRuntime]);
 
-  const stopForAccess = useCallback(async () => {
+  /**
+   * Arrête le tunnel parce que l'ACCÈS ne le permet plus, en disant pourquoi.
+   *
+   * ═══════════════════════════════════════════════════════════════════════
+   * LE DÉFAUT QUE CE MOTIF CORRIGE
+   * ═══════════════════════════════════════════════════════════════════════
+   * Cette fonction coupait le tunnel SANS UN MOT. Du point de vue de
+   * l'utilisateur : il appuie pour se connecter, le tunnel s'établit, puis
+   * retombe aussitôt — sans erreur, sans message, sans trace au journal. Il
+   * n'a aucun moyen de comprendre, et le bouton se contente ensuite d'ouvrir
+   * le sélecteur de configuration, ce qui ressemble à un caprice.
+   *
+   * Le motif est un mot d'une liste fermée, traduit ici en phrase. Il ne
+   * transporte rien du profil : ni nom, ni adresse, ni identifiant.
+   */
+  const stopForAccess = useCallback(async (motif?: MotifArretAcces) => {
     ++connectionAttemptRef.current;
     pendingAutoConnectRef.current = null;
     acceptNativeConnectedRef.current = false;
@@ -1131,6 +1198,11 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     basculeEnCoursRef.current = false;
     stopTrafficPolling();
     if (reportTimerRef.current) { clearInterval(reportTimerRef.current); reportTimerRef.current = null; }
+    if (motif) {
+      const cle = CLE_MOTIF_ARRET[motif];
+      addLog(`⛔ ${t(cle as any)}`);
+      addStepLog('acces', cle, 'error');
+    }
     try {
       if (IS_ANDROID && SxbVpnNative) await SxbVpnNative.stopVpn();
       setIsConnected(false);
@@ -1141,9 +1213,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     } finally {
       disconnectInFlightRef.current = false;
     }
-  }, [stopTrafficPolling, stopWatchdog, stopEchelon, setVpnState]);
+  }, [addLog, addStepLog, stopTrafficPolling, stopWatchdog, stopEchelon, setVpnState, t]);
 
-  const stopForAccessRef = useRef<(() => Promise<void>) | null>(null);
+  const stopForAccessRef = useRef<((motif?: MotifArretAcces) => Promise<void>) | null>(null);
   useEffect(() => { stopForAccessRef.current = stopForAccess; });
 
   useEffect(() => {
@@ -1348,8 +1420,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           if (concerned) {
             exhaustedHandled = true;
             setRevokedStatus('exhausted');
-            addLog('⛔ Quota épuisé — arrêt du tunnel');
-            await stopForAccessRef.current?.();
+            await stopForAccessRef.current?.('quota_epuise');
           }
           wakeAccessObservation();
           // On ne s'arrête PAS là : les entrées restantes doivent quand même
