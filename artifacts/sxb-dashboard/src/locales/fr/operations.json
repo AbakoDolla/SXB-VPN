@@ -643,7 +643,11 @@
     "saveError": "Enregistrement impossible.",
     "updateError": "Mise à jour impossible.",
     "deleteError": "Suppression impossible.",
-    "deleteConfirm": "Supprimer l’annonce « {{title}} » ?"
+    "deleteConfirm": "Supprimer l’annonce « {{title}} » ?",
+    "pushNotDelivered": "Publiée, mais pas envoyée sur les téléphones",
+    "pushNotConfigured": "Les notifications poussées ne sont pas configurées : l'annonce n'apparaîtra que lorsque l'utilisateur ouvrira l'application. Renseignez les identifiants Firebase du serveur pour qu'elle s'affiche immédiatement, application fermée.",
+    "pushFailed": "L'envoi a échoué ({{reason}}). L'annonce reste visible à l'ouverture de l'application.",
+    "pushDelivered": "Envoyée sur {{count}} appareil(s)."
   },
   "updates": {
     "distribution": "Distribution applicative",

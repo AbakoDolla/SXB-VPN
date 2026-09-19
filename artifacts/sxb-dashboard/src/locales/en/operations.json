@@ -643,7 +643,11 @@
     "saveError": "Unable to save.",
     "updateError": "Unable to update.",
     "deleteError": "Unable to delete.",
-    "deleteConfirm": "Delete the announcement \"{{title}}\"?"
+    "deleteConfirm": "Delete the announcement \"{{title}}\"?",
+    "pushNotDelivered": "Published, but not pushed to phones",
+    "pushNotConfigured": "Push notifications are not configured: the announcement will only appear when the user opens the app. Add the server's Firebase credentials so it shows up immediately, app closed.",
+    "pushFailed": "Push failed ({{reason}}). The announcement is still shown when the app is opened.",
+    "pushDelivered": "Pushed to {{count}} device(s)."
   },
   "updates": {
     "distribution": "App distribution",

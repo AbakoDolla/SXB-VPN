@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { BellRing, Megaphone, Plus, RefreshCw, Send, Trash2, ToggleLeft, ToggleRight, X } from 'lucide-react';
-import { Announcement, AnnouncementInput, AnnouncementLevel, createAnnouncement, deleteAnnouncement, fetchAnnouncements, updateAnnouncement } from '../api/announcements';
+import { Announcement, AnnouncementInput, AnnouncementLevel, createAnnouncement, deleteAnnouncement, fetchAnnouncements, motifPoussee, updateAnnouncement, type ResultatPoussee } from '../api/announcements';
 import { Device, fetchDevices } from '../api/devices';
 import { useTranslation } from '../contexts/I18nContext';
 
@@ -33,6 +33,14 @@ export default function AnnouncementsView() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<{ cause: unknown; key: string } | null>(null);
+  /**
+   * Ce que la dernière publication a réellement donné côté envoi.
+   *
+   * `null` tant qu'on ne sait rien. Le compte rendu du serveur était jeté :
+   * l'exploitant publiait, ne voyait aucune erreur, et croyait son annonce
+   * arrivée sur tous les téléphones.
+   */
+  const [avisPoussee, setAvisPoussee] = useState<ResultatPoussee | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Announcement | null>(null);
   const [form, setForm] = useState<AnnouncementInput>(EMPTY_FORM);
@@ -59,9 +67,21 @@ export default function AnnouncementsView() {
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault(); setSaving(true); setError(null);
+    setAvisPoussee(null);
     try {
       const payload: AnnouncementInput = { ...form, startsAt: form.startsAt ? new Date(form.startsAt).toISOString() : undefined, expiresAt: form.expiresAt ? new Date(form.expiresAt).toISOString() : null };
-      if (editing) await updateAnnouncement(editing.id, payload); else await createAnnouncement(payload);
+      if (editing) {
+        await updateAnnouncement(editing.id, payload);
+      } else {
+        // ── CE QUE L'ENVOI A VRAIMENT DONNÉ ────────────────────────────────
+        // Ce compte rendu était jeté. L'annonce s'enregistrait, aucune erreur
+        // ne s'affichait, et on en concluait qu'elle était partie sur tous les
+        // téléphones. Mesuré en production : zéro destinataire sur
+        // trente-huit appareils, faute d'identifiants Firebase — et rien ne
+        // le disait.
+        const { push } = await createAnnouncement(payload);
+        setAvisPoussee(push ?? null);
+      }
       setFormOpen(false); await load();
     } catch (err) { setError({ cause: err, key: 'operations.announcements.saveError' }); }
     finally { setSaving(false); }
@@ -98,6 +118,34 @@ export default function AnnouncementsView() {
       </section>
 
       {error && <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">{errorMessage(error.cause, error.key)}</div>}
+
+      {/* ── CE QUE L'ENVOI A VRAIMENT DONNÉ ──────────────────────────────────
+          Le serveur renvoyait déjà ce compte rendu, et le tableau de bord le
+          jetait : l'annonce s'enregistrait, aucune erreur ne s'affichait, et
+          on en concluait qu'elle était partie sur tous les téléphones.
+
+          Mesuré en production : zéro destinataire sur trente-huit appareils,
+          faute d'identifiants Firebase — et rien ne le disait. */}
+      {avisPoussee && avisPoussee.status !== 'sent' && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 flex items-start gap-3">
+          <BellRing className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-amber-200">
+              {t('operations.announcements.pushNotDelivered')}
+            </p>
+            <p className="text-sm text-amber-100/80 mt-1">
+              {motifPoussee(avisPoussee) === 'FCM_NOT_CONFIGURED'
+                ? t('operations.announcements.pushNotConfigured')
+                : t('operations.announcements.pushFailed', { reason: motifPoussee(avisPoussee) ?? avisPoussee.status })}
+            </p>
+          </div>
+        </div>
+      )}
+      {avisPoussee && avisPoussee.status === 'sent' && (
+        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
+          {t('operations.announcements.pushDelivered', { count: String(avisPoussee.sent ?? 0) })}
+        </div>
+      )}
 
       <section className="rounded-2xl border border-[#1a1f2e] bg-[#0b101b] overflow-hidden">
         {loading ? <div className="p-12 text-center text-gray-500">{t("operations.announcements.loading")}</div> : announcements.length === 0 ? (
