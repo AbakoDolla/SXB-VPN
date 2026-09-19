@@ -247,6 +247,9 @@
     "reuseSni": "Laissez vide pour réutiliser le SNI",
     "path": "Chemin",
     "tlsUnchecked": "Certificat TLS non vérifié",
-    "tlsCheck": "Vérifier le certificat TLS"
+    "tlsCheck": "Vérifier le certificat TLS",
+    "modifyConfig": "Modifier cette configuration",
+    "reimportSecretsMissing": "La configuration en place a été préchargée, mais {{fields}} ne peut pas être relu : il est chiffré et le serveur ne le renvoie jamais. Remplacez le marqueur avant d’enregistrer.",
+    "reimportSecretsPending": "Le brouillon contient encore un marqueur « à ressaisir ». Renseignez la valeur réelle : l’enregistrer tel quel casserait la configuration."
   }
 }

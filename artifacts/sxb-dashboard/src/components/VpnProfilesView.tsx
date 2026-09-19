@@ -1,4 +1,5 @@
 import { isAdmin as isAdminRole } from '../lib/roles';
+import { brouillonDepuisProfil, MARQUEUR_SECRET } from '../lib/brouillonReimport';
 import React, { useEffect, useRef, useState } from "react";
 import { useTranslation } from '../contexts/I18nContext';
 import { usePermissions } from '../contexts/PermissionsContext';
@@ -435,6 +436,12 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
   const [importConfig, setImportConfig]   = useState('');
   const [reimportConfig, setReimportConfig] = useState('');
   const [showReimport, setShowReimport]   = useState(false);
+  /**
+   * Champs que le brouillon ne pouvait pas remplir — le serveur ne les
+   * divulgue jamais. Sans cet avertissement, un brouillon enregistré tel quel
+   * enverrait le marqueur au serveur comme s'il s'agissait du mot de passe.
+   */
+  const [champsARessaisir, setChampsARessaisir] = useState<string[]>([]);
   const [saving, setSaving]     = useState(false);
   const [testing, setTesting]   = useState(false);
   /** Profil en cours de test depuis la LISTE — distinct de `testing`, qui
@@ -566,6 +573,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
     setLockPassword(''); setLockConfirmation('');
     setError(''); setFieldErrors([]); setTestResult(null);
     setImportConfig(''); setReimportConfig(''); setShowReimport(false);
+    setChampsARessaisir([]);
   };
 
   const openCreate = () => {
@@ -595,6 +603,32 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
       method: p.method || 'aes-256-gcm', payloadId: (p as any).payloadId || '', payload: '',
     });
     resetModalState(); setShowForm(true);
+  };
+
+  /**
+   * Ouvre le réimport en PRÉCHARGEANT la configuration en place.
+   *
+   * ═══════════════════════════════════════════════════════════════════════
+   * POURQUOI PRÉCHARGER CHANGE TOUT
+   * ═══════════════════════════════════════════════════════════════════════
+   * Le champ s'ouvrait vide. Or le réimport est la seule voie de modification
+   * technique : pour changer un port ou un chemin, il fallait retrouver la
+   * configuration d'origine ailleurs et la recoller en entier. Sans elle, la
+   * configuration devenait de fait non modifiable — le mot de passe déjà
+   * saisi ne servait à rien.
+   *
+   * Le brouillon ne peut PAS contenir les identifiants : le serveur ne les
+   * renvoie jamais, et les extraire pour remplir un champ échangerait la
+   * confidentialité contre du confort. Les champs manquants sont donc
+   * signalés explicitement à l'exploitant.
+   */
+  const ouvrirReimport = () => {
+    setShowReimport(true);
+    if (reimportConfig.trim()) return;
+    const brouillon = brouillonDepuisProfil(editingProfile);
+    if (!brouillon) return;
+    setReimportConfig(brouillon.texte);
+    setChampsARessaisir(brouillon.aCompleter);
   };
 
   /** Extrait les erreurs détaillées d'un 422 backend (IMPORT_INVALID). */
@@ -677,6 +711,14 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
       if (editId) {
         const isImported = !!editingProfile?.hasCanonicalConfig;
         if (reimportConfig.trim()) {
+          // Un brouillon préchargé porte des marqueurs à la place des
+          // identifiants que le serveur ne divulgue jamais. Les laisser partir
+          // enregistrerait « à ressaisir » comme mot de passe : la
+          // configuration serait cassée sans que rien ne le dise.
+          if (reimportConfig.includes(MARQUEUR_SECRET)) {
+            setError(message('configurations.ui.reimportSecretsPending'));
+            return;
+          }
           // Réimport EXPLICITE — seule voie de modification technique (§6.1)
           savedProfile = await updateVpnProfile(editId, {
             importConfig: reimportConfig,
@@ -1279,6 +1321,21 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
                       <Lock className="w-3.5 h-3.5" /> {t('configurations.ui.importedConfigVersion')} {editingProfile.configVersion ?? 1}
                       {editingProfile.sourceFormat ? ` (${editingProfile.sourceFormat})` : ''} {t('configurations.ui.immutableSuffix')} </p>
                     <p className="text-sky-400/80"> {t('configurations.ui.immutableHint')} <strong> {t('configurations.ui.explicitReimport')} </strong> {t('configurations.ui.reimportVersion')} </p>
+                    {/* ── COMMENT MODIFIER, ET PAS SEULEMENT CE QUI EST FIGÉ ──
+                        Le bandeau n'annonçait que l'immuabilité, et la seule
+                        voie de modification était un lien discret plus bas.
+                        On croyait la configuration bloquée alors qu'elle est
+                        modifiable : le mot de passe déjà saisi ne semblait
+                        servir à rien. */}
+                    {!showReimport && (
+                      <button
+                        type="button"
+                        onClick={ouvrirReimport}
+                        className="mt-1 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-sky-500/15 border border-sky-500/30 text-sky-200 font-medium hover:bg-sky-500/25"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" /> {t('configurations.ui.modifyConfig')}
+                      </button>
+                    )}
                     {editingProfile.canonicalConfigHash && (
                       <p className="font-mono text-[10px] text-sky-500/70 break-all">
                         sha256: {editingProfile.canonicalConfigHash}
@@ -1340,6 +1397,15 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
                           placeholder={t('configurations.ui.reimportPlaceholder')}
                           className="w-full px-3 py-2.5 bg-[#07090e] border border-amber-500/30 rounded-xl text-amber-300 text-xs font-mono focus:outline-none focus:border-amber-500/60 resize-y"
                         />
+                        {/* Le brouillon ne peut pas porter les identifiants :
+                            le serveur ne les renvoie jamais. Le taire ferait
+                            enregistrer le marqueur comme s'il s'agissait du
+                            mot de passe — une configuration cassée en silence. */}
+                        {champsARessaisir.length > 0 && (
+                          <p className="text-[11px] text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-lg px-2.5 py-2">
+                            {t('configurations.ui.reimportSecretsMissing', { fields: champsARessaisir.join(', ') })}
+                          </p>
+                        )}
                         {reimportConfig.trim() && (
                           <div className="flex items-center gap-2">
                             <button type="button" onClick={() => handleTestImport(reimportConfig)} disabled={testing}

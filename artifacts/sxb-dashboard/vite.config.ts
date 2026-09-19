@@ -74,8 +74,11 @@ export default defineConfig({
       // /xapi/* → https://vpnsxb.afrihall.com/api/*
       // On évite /api/* car l'artifact api-server Replit l'intercepte
       // avant que Vite puisse le proxifier.
+      // La cible se surcharge pour le travail local : sur un poste dont le DNS
+      // est détourné (VPN qui répond en fakeip), on la pointe sur un relais.
+      // Sans surcharge, rien ne change.
       '/xapi': {
-        target: 'https://vpnsxb.afrihall.com',
+        target: process.env.SXB_API_PROXY_TARGET || 'https://vpnsxb.afrihall.com',
         changeOrigin: true,
         secure: true,
         rewrite: (path) => path.replace(/^\/xapi/, '/api'),

@@ -247,6 +247,9 @@
     "reuseSni": "Leave empty to reuse SNI",
     "path": "Path",
     "tlsUnchecked": "TLS certificate not verified",
-    "tlsCheck": "Verify TLS certificate"
+    "tlsCheck": "Verify TLS certificate",
+    "modifyConfig": "Edit this configuration",
+    "reimportSecretsMissing": "The current configuration was preloaded, but {{fields}} cannot be read back: it is encrypted and the server never returns it. Replace the placeholder before saving.",
+    "reimportSecretsPending": "The draft still contains a “to re-enter” placeholder. Fill in the real value: saving it as-is would break the configuration."
   }
 }
