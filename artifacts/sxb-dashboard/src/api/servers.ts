@@ -1,10 +1,12 @@
 import { VPSServer } from "../types";
 import { apiRequest } from "./client";
+import { listeDepuis } from "./liste";
 
 export async function fetchServers(): Promise<VPSServer[]> {
   try {
-    const data = await apiRequest<{ servers: VPSServer[] }>("/servers");
-    return data.servers || [];
+    // `/api/servers` renvoie un tableau NU, pas `{ servers: [...] }` : lire la
+    // seule forme enveloppée rendait les quatre nœuds existants invisibles.
+    return listeDepuis<VPSServer>(await apiRequest<unknown>("/servers"), "servers");
   } catch (error) {
     console.error("Error fetching servers:", error);
     return [];

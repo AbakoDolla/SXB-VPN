@@ -1,10 +1,12 @@
 import { User } from "../types";
 import { apiRequest } from "./client";
+import { listeDepuis } from "./liste";
 
 export async function fetchUsers(): Promise<User[]> {
   try {
-    const data = await apiRequest<{ users: User[] }>("/users");
-    return data.users || [];
+    // `/api/users` renvoie un tableau NU, pas `{ users: [...] }` : lire la
+    // seule forme enveloppée rendait 475 comptes invisibles en production.
+    return listeDepuis<User>(await apiRequest<unknown>("/users"), "users");
   } catch (error) {
     console.error("Error fetching users:", error);
     return [];
