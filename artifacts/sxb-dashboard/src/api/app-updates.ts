@@ -1,4 +1,5 @@
 import { apiRequest } from './client';
+import type { ResultatPoussee } from './announcements';
 
 export const APP_ROLES = ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'RESELLER'] as const;
 export type AppRole = typeof APP_ROLES[number];
@@ -24,6 +25,15 @@ export interface AppUpdateResponse {
   visibleToRole?: boolean;
   canPublish: boolean;
   eligibleDeviceCount: number;
+  /**
+   * Ce que le serveur a fait de l'ENVOI vers les téléphones.
+   *
+   * Présent à la publication. Il était jeté, exactement comme pour les
+   * annonces : on publiait une mise à jour, rien ne s'affichait, et on en
+   * concluait que tous les appareils avaient été prévenus. Mesuré en
+   * production : zéro destinataire, faute d'identifiants Firebase.
+   */
+  push?: ResultatPoussee;
   /**
    * La publication décrit-elle encore l'APK réellement servie ?
    *

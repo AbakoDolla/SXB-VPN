@@ -27,13 +27,20 @@ const RACINE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..
 const lire = (p) => readFileSync(path.join(RACINE, p), 'utf8');
 
 const API = lire('artifacts/sxb-dashboard/src/api/announcements.ts');
+const API_MAJ = lire('artifacts/sxb-dashboard/src/api/app-updates.ts');
+const AVIS = lire('artifacts/sxb-dashboard/src/lib/avisPoussee.ts');
 const VUE = lire('artifacts/sxb-dashboard/src/components/AnnouncementsView.tsx');
+const VUE_MAJ = lire('artifacts/sxb-dashboard/src/components/AppUpdatesView.tsx');
 const ROUTE = lire('server/routes/announcements.ts');
 
 describe('le serveur rend compte de l’envoi', () => {
   it('la publication renvoie ce qu’elle a fait de la poussée', () => {
     // Sans ce champ, le tableau de bord n'a rien à afficher et devrait deviner.
     assert.match(ROUTE, /push/);
+  });
+
+  it('les mises à jour de l’app aussi', () => {
+    assert.match(lire('server/routes/app-updates.ts'), /const push = await sendAppUpdatePush\(update\)/);
   });
 });
 
@@ -78,20 +85,46 @@ describe('le tableau de bord ne jette plus ce compte rendu', () => {
 describe('ce que l’exploitant voit après avoir publié', () => {
   it('un envoi qui n’a pas eu lieu est ANNONCÉ, pas tu', () => {
     assert.match(VUE, /const \{ push \} = await createAnnouncement\(payload\);/);
-    assert.match(VUE, /setAvisPoussee\(push \?\? null\)/);
-    assert.match(VUE, /avisPoussee && avisPoussee\.status !== 'sent'/);
+    assert.match(VUE, /signalerPoussee\(push, t\)/);
+    assert.match(AVIS, /if \(push\.status === 'sent'\)/);
+    assert.match(AVIS, /toast\.warning\(t\('operations\.announcements\.pushNotDelivered'\)/);
+  });
+
+  it('les DEUX écrans qui publient disent la même chose', () => {
+    // Écrire deux fois le même avis les ferait diverger — l'un finirait
+    // corrigé et l'autre pas, comme cela s'est déjà produit côté Android avec
+    // le canal de notification.
+    assert.match(VUE, /import \{ signalerPoussee \} from '\.\.\/lib\/avisPoussee'/);
+    assert.match(VUE_MAJ, /import \{ signalerPoussee \} from '\.\.\/lib\/avisPoussee'/);
+    assert.match(VUE_MAJ, /signalerPoussee\(result\.push, t\)/);
+    assert.match(API_MAJ, /push\?: ResultatPoussee;/);
+  });
+
+  it('l’avis est FUGACE, et non un bandeau qui reste', () => {
+    // Une information juste devient un reproche si elle ne s'en va jamais :
+    // le bandeau restait à l'écran jusqu'à la publication suivante, sans
+    // moyen de l'écarter.
+    assert.ok(!/avisPoussee &&/.test(VUE), 'plus aucun bandeau persistant');
+    assert.ok(!/setAvisPoussee/.test(VUE), 'plus d’état retenu pour l’afficher');
+    assert.match(AVIS, /toast\./);
+  });
+
+  it('ne rien affirmer quand le serveur ne dit rien', () => {
+    // Un serveur antérieur à ce compte rendu n'en envoie pas : supposer une
+    // réussite serait revenir au mensonge qu'on vient de corriger.
+    assert.match(AVIS, /if \(!push\) return;/);
   });
 
   it('le cas « non configuré » est nommé, pas réduit à un code', () => {
     // « FCM_NOT_CONFIGURED » ne dit rien à un exploitant : il lui faut savoir
     // quoi faire, pas quel symbole le serveur a produit.
-    assert.match(VUE, /motifPoussee\(avisPoussee\) === 'FCM_NOT_CONFIGURED'/);
-    assert.match(VUE, /operations\.announcements\.pushNotConfigured/);
+    assert.match(AVIS, /motif === 'FCM_NOT_CONFIGURED'/);
+    assert.match(AVIS, /operations\.announcements\.pushNotConfigured/);
   });
 
   it('un envoi réussi dit COMBIEN d’appareils ont été touchés', () => {
-    assert.match(VUE, /operations\.announcements\.pushDelivered/);
-    assert.match(VUE, /count: String\(avisPoussee\.sent \?\? 0\)/);
+    assert.match(AVIS, /operations\.announcements\.pushDelivered/);
+    assert.match(AVIS, /count: String\(push\.sent \?\? 0\)/);
   });
 
   it('les libellés existent dans les deux langues', () => {
@@ -112,13 +145,5 @@ describe('ce que l’exploitant voit après avoir publié', () => {
     assert.match(fr.announcements.pushNotConfigured, /Firebase/);
     const en = JSON.parse(lire('artifacts/sxb-dashboard/src/locales/en/operations.json'));
     assert.match(en.announcements.pushNotConfigured, /Firebase/);
-  });
-
-  it('l’avertissement ne repose pas sur du gris sur fond coloré', () => {
-    // Un texte gris sur un fond ambre se délave : l'avertissement le plus
-    // important de cet écran serait le moins lisible.
-    const bandeau = VUE.slice(VUE.indexOf('avisPoussee && avisPoussee.status !==', 0), VUE.indexOf('avisPoussee && avisPoussee.status === '));
-    assert.ok(bandeau.length > 0);
-    assert.ok(!/text-gray-/.test(bandeau), 'l’avertissement doit rester lisible');
   });
 });

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Download, PackageCheck, RefreshCw, ShieldCheck, Smartphone, Users, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { fetchCurrentAppUpdate, publishAppUpdate, disableAppUpdate, fetchLatestBuild, APP_ROLES, type AppRole, type AppUpdate, type AppBuild } from '../api/app-updates';
+import { signalerPoussee } from '../lib/avisPoussee';
 import { fetchDevices, type Device } from '../api/devices';
 import { useTranslation } from '../contexts/I18nContext';
 
@@ -124,6 +125,12 @@ export default function AppUpdatesView({ currentUserRole }: AppUpdatesViewProps)
       setUpdate(result.update);
       setEligibleDeviceCount(result.eligibleDeviceCount || 0);
       toast.success(message("operations.updates.publishSuccess"));
+      // « Publiée » ne veut pas dire « reçue ». Ce compte rendu était jeté ici
+      // comme il l'était pour les annonces : on publiait une mise à jour, le
+      // message de réussite s'affichait, et on en concluait que tous les
+      // appareils avaient été prévenus. Mesuré en production : zéro
+      // destinataire, faute d'identifiants Firebase.
+      signalerPoussee(result.push, t);
     } catch (error) {
       toast.error(errorText(error, "operations.updates.publishError"));
     } finally { setSaving(false); }
