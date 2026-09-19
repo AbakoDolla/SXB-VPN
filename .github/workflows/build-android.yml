@@ -91,7 +91,13 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version: "1.24.x"
-          cache: false
+          # Les barrières de politique compilent sing-box avec six étiquettes,
+          # deux fois. Sans ce cache, tout est recompilé à chaque build : c'est
+          # l'essentiel des 95 s mesurées sur cette étape. Le cache de Go ne
+          # peut pas altérer le binaire produit — il ne conserve que des
+          # résultats de compilation identifiés par leurs entrées.
+          cache: true
+          cache-dependency-path: scripts/tests/singbox-engine-check/go.mod
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
@@ -141,6 +147,18 @@ jobs:
           echo "SXB_ANDROID_VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
           echo "[version] Shared UTC versionCode: $VERSION_CODE"
 
+      # ── Outils épinglés des barrières de politique ────────────────────────────
+      # Le compilateur Kotlin (~80 Mo) et la bibliothèque JSON sont figés par
+      # version ET vérifiés par empreinte SHA-256 dans le script. Les garder
+      # entre deux builds ne peut donc rien changer au résultat : un fichier
+      # restauré subit exactement le même contrôle qu'un fichier téléchargé, et
+      # un contenu altéré est refusé de la même manière.
+      - name: Cache des outils épinglés (Kotlin, JSON)
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/sxb-outils
+          key: sxb-outils-kotlin2.1.20-json20240303
+
       # ── Barrière qualité — bloque la release avant toute génération native ────
       - name: Tests de non-régression mobile
         run: |
@@ -148,6 +166,8 @@ jobs:
           npm run test:regression
 
       - name: Execute native access and encryption policies on the JVM
+        env:
+          SXB_OUTILS_CACHE: ${{ runner.temp }}/sxb-outils
         run: bash ../scripts/run-android-policy-gates.sh
 
       # FIX #1 : patch Kotlin metadata compat — après npm install (node_modules/ doit exister)
