@@ -36,10 +36,40 @@ export type EtapeChronometree<T extends EtapeHorodatee> = {
   duree: string | null;
   /** Heure locale lisible, ou `null` si l'étape n'est pas horodatée. */
   heure: string | null;
+  /**
+   * L'étape a coûté assez pour être LA cause de l'attente.
+   *
+   * Le journal sert à repérer la marche lente. Sans distinction visuelle, la
+   * durée se noie parmi les codes de diagnostic, tous rendus pareillement —
+   * l'information la plus utile de l'écran devenait la plus difficile à voir.
+   */
+  lent: boolean;
 };
 
 /** En dessous, l'étape est perçue comme instantanée et la durée n'apprend rien. */
 const SEUIL_BRUIT_MS = 100;
+
+/**
+ * Au-delà, l'étape pèse sur le ressenti et doit sauter aux yeux.
+ *
+ * Trois secondes : en deçà, une connexion reste vive ; au-delà, l'utilisateur
+ * attend. C'est le seuil qui sépare « normal » de « à expliquer ».
+ */
+const SEUIL_LENTEUR_MS = 3_000;
+
+/**
+ * Écart brut en millisecondes, ou `0` quand la mesure manque.
+ *
+ * Séparé de `ecart` parce que la mise en forme et la comparaison n'ont pas les
+ * mêmes besoins : l'une veut un texte lisible, l'autre un nombre à comparer.
+ */
+function ecartMs(courant: string | undefined, precedent: string | undefined): number {
+  if (!courant || !precedent) return 0;
+  const fin = Date.parse(courant);
+  const debut = Date.parse(precedent);
+  if (!Number.isFinite(fin) || !Number.isFinite(debut)) return 0;
+  return Math.max(0, fin - debut);
+}
 
 /**
  * Écart entre deux horodatages, en clair.
@@ -79,10 +109,14 @@ export function heure(horodatage: string | undefined): string | null {
  * chronologique (le partage).
  */
 export function chronometrer<T extends EtapeHorodatee>(recenteEnTete: T[]): EtapeChronometree<T>[] {
-  return recenteEnTete.map((etape, index) => ({
-    etape,
+  return recenteEnTete.map((etape, index) => {
     // L'étape précédente dans le temps est la SUIVANTE dans cette liste.
-    duree: ecart(etape.timestamp, recenteEnTete[index + 1]?.timestamp),
-    heure: heure(etape.timestamp),
-  }));
+    const precedent = recenteEnTete[index + 1]?.timestamp;
+    return {
+      etape,
+      duree: ecart(etape.timestamp, precedent),
+      heure: heure(etape.timestamp),
+      lent: ecartMs(etape.timestamp, precedent) >= SEUIL_LENTEUR_MS,
+    };
+  });
 }

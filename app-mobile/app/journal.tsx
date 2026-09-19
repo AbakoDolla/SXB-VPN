@@ -48,12 +48,14 @@ function apparence(statut: StepLogItem["status"], colors: ReturnType<typeof useC
   }
 }
 
-function LigneEtape({ item, dernier, duree, heure }: {
+function LigneEtape({ item, dernier, duree, heure, lent }: {
   item: StepLogItem;
   dernier: boolean;
   /** Temps passé DANS cette étape — la colonne qui désigne le goulot. */
   duree: string | null;
   heure: string | null;
+  /** L'étape a coûté assez pour expliquer l'attente : elle doit sauter aux yeux. */
+  lent: boolean;
 }) {
   const colors = useColors();
   const { t } = useTranslation();
@@ -76,8 +78,16 @@ function LigneEtape({ item, dernier, duree, heure }: {
             <Text style={[type.micro, { color: colors.textMuted }]}>{heure}</Text>
           ) : null}
           {duree ? (
-            <View style={[styles.codePill, { backgroundColor: colors.bgInput, borderColor: colors.border2 }]}>
-              <Text style={[type.micro, { color: colors.textSecondary }]}>{duree}</Text>
+            <View
+              style={[
+                styles.codePill,
+                lent
+                  ? { backgroundColor: colors.warningDim, borderColor: colors.warning + alpha.f24 }
+                  : { backgroundColor: colors.bgInput, borderColor: colors.border2 },
+              ]}
+            >
+              {lent ? <Ionicons name="hourglass-outline" size={11} color={colors.warning} /> : null}
+              <Text style={[type.micro, { color: lent ? colors.warning : colors.textSecondary }]}>{duree}</Text>
             </View>
           ) : null}
           {code ? (
@@ -185,13 +195,14 @@ export default function JournalScreen() {
           <EmptyState icon="list-outline" title={t("journal_empty_title")} description={t("journal_empty_subtitle")} />
         ) : (
           <View style={styles.liste}>
-            {etapes.map(({ etape, duree, heure }, index) => (
+            {etapes.map(({ etape, duree, heure, lent }, index) => (
               <LigneEtape
                 key={`${etape.key}-${index}`}
                 item={etape}
                 dernier={index === etapes.length - 1}
                 duree={duree}
                 heure={heure}
+                lent={lent}
               />
             ))}
           </View>
@@ -215,5 +226,13 @@ const styles = StyleSheet.create({
   trait: { width: 2, flex: 1, marginTop: spacing.xs, borderRadius: radius.full },
   carte: { flex: 1, borderWidth: 1, borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.sm, gap: spacing.xs },
   meta: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  codePill: { borderWidth: 1, borderRadius: radius.sm, paddingHorizontal: spacing.sm, paddingVertical: 2 },
+  codePill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    borderWidth: 1,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+  },
 });

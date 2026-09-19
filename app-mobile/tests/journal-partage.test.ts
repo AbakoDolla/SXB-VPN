@@ -69,6 +69,30 @@ describe('chronométrage — désigner l’étape coûteuse', () => {
     );
   });
 
+  it('signale l’étape qui explique l’attente, et elle seule', () => {
+    const resultat = chronometrer(AFFICHEE);
+    // 47 s : c'est celle-là qu'on cherche.
+    assert.equal(resultat[0].lent, true, 'la poignée de main de 47 s doit ressortir');
+    // 400 ms : normale, elle ne doit pas crier.
+    assert.equal(resultat[1].lent, false, '400 ms ne sont pas une lenteur');
+    // Sans mesure, aucune alarme.
+    assert.equal(resultat[2].lent, false, 'une étape sans précédent ne peut pas être lente');
+  });
+
+  it('place le seuil de lenteur à trois secondes', () => {
+    const presque = chronometrer([
+      { key: 'b', timestamp: '2026-01-05T10:00:02.900Z' },
+      { key: 'a', timestamp: '2026-01-05T10:00:00.000Z' },
+    ]);
+    assert.equal(presque[0].lent, false, '2,9 s reste acceptable');
+
+    const franchi = chronometrer([
+      { key: 'b', timestamp: '2026-01-05T10:00:03.000Z' },
+      { key: 'a', timestamp: '2026-01-05T10:00:00.000Z' },
+    ]);
+    assert.equal(franchi[0].lent, true, '3 s doivent alerter');
+  });
+
   it('tait les étapes instantanées plutôt que d’encombrer chaque ligne', () => {
     assert.equal(ecart('2026-01-05T10:00:00.050Z', '2026-01-05T10:00:00.000Z'), null);
     assert.equal(ecart('2026-01-05T10:00:00.150Z', '2026-01-05T10:00:00.000Z'), '+150 ms');
@@ -96,6 +120,16 @@ describe('chronométrage — désigner l’étape coûteuse', () => {
       !/function ecart\(/.test(JOURNAL),
       'l’écran ne doit pas garder sa propre copie du calcul',
     );
+  });
+
+  it('donne à l’étape lente un traitement visuel distinct', () => {
+    // Sans cela, la durée se noie parmi les codes de diagnostic, tous rendus
+    // dans la même pastille grise — l'information la plus utile de l'écran
+    // devient la plus difficile à repérer.
+    assert.match(JOURNAL, /lent\s*\n?\s*\? \{ backgroundColor: colors\.warningDim/);
+    assert.match(JOURNAL, /color=\{colors\.warning\}/);
+    // Une pastille avec icône ET texte doit être disposée en ligne.
+    assert.match(JOURNAL, /codePill: \{\s*\n\s*flexDirection: "row"/);
   });
 });
 
