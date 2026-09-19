@@ -50,6 +50,7 @@ import {
   refusJetonEssai,
   refusLotEssai,
   resumerEssais,
+  planifierConversion,
   secretCorrespond,
   statistiquesParPays,
   totauxParPays,
@@ -62,6 +63,7 @@ import {
 import {
   etFiltres,
   exclureIdentifiants,
+  forfaitsEssaiDuClient,
   inclutEssaisGratuits,
   porteeEssaiDeploye,
 } from "../services/free-trial-marks";
@@ -569,15 +571,17 @@ describe("contrat de la route — la décision reste dans le service", () => {
     // en premier, pas celui qu'il oubliait.
     const adminRoutes = source.split(/router\.(?:get|post|put|patch|delete)\(/).slice(1)
       .filter((bloc) => !bloc.startsWith("'/enroll'") && !bloc.startsWith("'/status'"));
-    // 13 routes internes : 4 jetons (liste, création, modification,
+    // 14 routes internes : 4 jetons (liste, création, modification,
     // suppression) + révocation, 4 demandes (liste, activité d'un inscrit, et
-    // deux récapitulatifs) et 4 actions d'instruction (déploiement, gestion des
-    // essais déployés, refus, suppression d'inscrits). La gestion est la
-    // contrepartie de la séparation totale : les écrans d'exploitation n'ayant
-    // plus aucune prise sur un essai, elle doit exister ICI — et rester aussi
-    // fermée que les autres. La suppression l'est tout autant : elle efface un
-    // inscrit ET les forfaits nés de son essai.
-    assert.equal(adminRoutes.length, 13, "nombre de routes admin inattendu");
+    // deux récapitulatifs) et 5 actions d'instruction (déploiement, gestion des
+    // essais déployés, refus, conversion en forfait, suppression d'inscrits).
+    // La gestion est la contrepartie de la séparation totale : les écrans
+    // d'exploitation n'ayant plus aucune prise sur un essai, elle doit exister
+    // ICI — et rester aussi fermée que les autres. La suppression l'est tout
+    // autant : elle efface un inscrit ET les forfaits nés de son essai. La
+    // conversion aussi : elle promeut un forfait en accès payant, donc elle
+    // engage la facturation.
+    assert.equal(adminRoutes.length, 14, "nombre de routes admin inattendu");
     for (const bloc of adminRoutes) {
       const entete = bloc.slice(0, 600);
       assert.ok(entete.includes("requireAuth"), `route admin sans requireAuth : ${entete.slice(0, 40)}`);
@@ -682,7 +686,13 @@ describe("non-régression — le modèle de données reste ADDITIF", () => {
     for (const [, alteration] of bloc.matchAll(/ALTER\s+TABLE\s+"[^"]+"\s+([\s\S]*?);/gi)) {
       assert.match(
         alteration,
-        /^ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+"[^"]+"\s+\w+$/i,
+        // La précision entre parenthèses est TOLÉRÉE — `TIMESTAMP(3)` est
+        // exactement ce que Prisma génère pour un `DateTime?`, et l'écrire
+        // sans elle ferait diverger la colonne de ce que `db push` attend.
+        // L'exigence ne faiblit pas pour autant : ce qui est interdit reste
+        // interdit, et l'assertion suivante continue de refuser NOT NULL,
+        // DEFAULT et USING — les trois seules façons de réécrire des lignes.
+        /^ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+"[^"]+"\s+\w+(?:\(\d+(?:,\s*\d+)?\))?$/i,
         `altération non additive : ${alteration.trim().slice(0, 80)}`,
       );
       assert.doesNotMatch(alteration, /NOT\s+NULL|DEFAULT|USING/i,
@@ -1344,8 +1354,167 @@ describe("séparation — les essais ne se mélangent plus aux clients principau
     assert.deepEqual(portee.clientsEssaiUniquement, ["cli-pur"]);
   });
 
-  it("sans fonctionnalité d'essai déployée, AUCUNE ligne n'est masquée", async () => {
-    const { db } = baseFictive({ sansEssai: true });
+  // ══════════════════════════════════════════════════════════════════════════
+  // CONVERSION — un essai qui devient un client ordinaire
+  // ══════════════════════════════════════════════════════════════════════════
+  //
+  // La conversion ne déplace rien à la main dans six écrans : elle retire le
+  // marqueur du forfait et sort la demande de `deployed`. Ces trois tests
+  // vérifient que ce SEUL geste produit bien la bascule complète, parce que
+  // c'est exactement ce que l'exploitant constatera — ou pas — à l'écran.
+
+  it("converti, l'essai quitte les Essais ET cesse de masquer son forfait", async () => {
+    // AVANT : le compte est un essayeur pur, son forfait est masqué de
+    // Forfaits Data. C'est l'état que la conversion doit défaire.
+    const avant = baseFictive({
+      demandes: [{ status: STATUT_DEMANDE.DEPLOYED, clientId: "cli-vip", subscriptionId: "sub-vip" }],
+      forfaits: [{ id: "sub-vip", clientId: "cli-vip" }],
+      comptes: [{ id: "cli-vip", quotaTotal: BigInt(0) }],
+    });
+    const porteeAvant = await porteeEssaiDeploye(avant.db);
+    assert.deepEqual(porteeAvant.subscriptionIds, ["sub-vip"]);
+    assert.deepEqual(porteeAvant.clientsEssaiUniquement, ["cli-vip"]);
+
+    // APRÈS : ce que la route écrit, et rien de plus — la demande passe en
+    // `converted` avec `subscriptionId` effacé, le forfait perd son marqueur.
+    const apres = baseFictive({
+      demandes: [{ status: STATUT_DEMANDE.CONVERTED, clientId: "cli-vip", subscriptionId: null }],
+      forfaits: [],
+      comptes: [{ id: "cli-vip", quotaTotal: BigInt(0) }],
+    });
+    const porteeApres = await porteeEssaiDeploye(apres.db);
+    // Le forfait n'est plus retranché : il entre dans Forfaits Data.
+    assert.deepEqual(porteeApres.subscriptionIds, []);
+    // Le compte n'est plus « essai uniquement » : il réapparaît en Comptes VPN
+    // et en Appareils sans la mention d'essai.
+    assert.deepEqual(porteeApres.clientsEssaiUniquement, []);
+  });
+
+  it("une NOUVELLE invitation ramène un converti en essai, sans rien défaire", async () => {
+    // Le propriétaire veut pouvoir redonner un essai à un converti. La
+    // contrainte d'unicité portant sur le COUPLE (jeton, appareil), une autre
+    // invitation crée une seconde demande : les deux coexistent, et c'est la
+    // nouvelle — déployée — qui redonne le statut d'essai.
+    const { db } = baseFictive({
+      demandes: [
+        { status: STATUT_DEMANDE.CONVERTED, clientId: "cli-retour", subscriptionId: null },
+        { status: STATUT_DEMANDE.DEPLOYED, clientId: "cli-retour", subscriptionId: "sub-essai-2" },
+      ],
+      forfaits: [{ id: "sub-essai-2", clientId: "cli-retour" }],
+      comptes: [{ id: "cli-retour", quotaTotal: BigInt(0) }],
+    });
+    const portee = await porteeEssaiDeploye(db);
+    assert.deepEqual(portee.subscriptionIds, ["sub-essai-2"]);
+    assert.deepEqual(portee.clientsEssaiUniquement, ["cli-retour"]);
+  });
+
+  it("un converti sort des compteurs d'essai au lieu de les gonfler", () => {
+    const resume = resumerEssais({
+      demandes: [
+        { status: STATUT_DEMANDE.DEPLOYED, clientId: "cli-a", subscriptionId: "sub-a" },
+        { status: STATUT_DEMANDE.CONVERTED, clientId: "cli-b", subscriptionId: null },
+        { status: STATUT_DEMANDE.PENDING, clientId: null, subscriptionId: null },
+      ],
+      // Le forfait du converti n'est plus un forfait d'essai : il ne figure
+      // pas dans cette table, donc son volume ne pèse plus sur les essais.
+      forfaits: new Map([["sub-a", { status: "active", expireAt: null, quotaBytes: 1024n, quotaUsed: 0n }]]),
+      presence: { measured: false, reason: "indisponible" } as any,
+    });
+    assert.equal(resume.deployed, 1, "un converti ne doit plus compter comme déployé");
+    assert.equal(resume.converted, 1);
+    assert.equal(resume.pending, 1);
+    // Le volume d'essai ne retient que l'essai encore en cours.
+    assert.equal(resume.trafficGrantedBytes, "1024");
+  });
+
+  it("PLANIFICATEUR — convertir sans rien remplir ne touche QUE la nature de l'accès", () => {
+    const quand = new Date("2026-03-01T10:00:00Z");
+    const plan = planifierConversion({ id: "req", status: STATUT_DEMANDE.DEPLOYED }, {}, quand, "admin-1");
+    assert.equal(plan.statut, "ok");
+    if (plan.statut !== "ok") return;
+    // Le forfait ne reçoit QUE l'effacement du marqueur. Aucun quota, aucune
+    // échéance, aucun nom : un champ vide n'est pas un zéro, et écrire un zéro
+    // couperait l'accès de celui qu'on vient de promouvoir.
+    assert.deepEqual(Object.keys(plan.forfait), ["freeTrialRequestId"]);
+    assert.equal(plan.forfait.freeTrialRequestId, null);
+    // La demande sort des essais, et l'audit dit qui et quand.
+    assert.equal(plan.demande.status, STATUT_DEMANDE.CONVERTED);
+    assert.equal(plan.demande.subscriptionId, null);
+    assert.equal(plan.demande.convertedBy, "admin-1");
+    assert.deepEqual(plan.demande.convertedAt, quand);
+  });
+
+  it("PLANIFICATEUR — quota et durée font le « VIP », et l'échéance repart d'aujourd'hui", () => {
+    const quand = new Date("2026-03-01T10:00:00Z");
+    const plan = planifierConversion(
+      { id: "req", status: STATUT_DEMANDE.DEPLOYED },
+      { quotaGB: 100, durationDays: 30, planName: "VIP 100 Go" },
+      quand,
+    );
+    assert.equal(plan.statut, "ok");
+    if (plan.statut !== "ok") return;
+    // Gigaoctets BINAIRES, comme partout ailleurs dans ce produit.
+    assert.equal(plan.forfait.quotaBytes, BigInt(100) * BigInt(1024) ** BigInt(3));
+    assert.equal(plan.forfait.name, "VIP 100 Go");
+    // Trente jours accordés aujourd'hui valent trente jours À PARTIR
+    // d'aujourd'hui — pas depuis le début de l'essai, qui est déjà consommé.
+    assert.deepEqual(plan.forfait.startAt, quand);
+    assert.deepEqual(plan.forfait.expireAt, new Date("2026-03-31T10:00:00Z"));
+  });
+
+  it("PLANIFICATEUR — refuse tout ce qui n'est pas un essai DÉPLOYÉ", () => {
+    // Une demande en attente n'a ouvert aucun accès ; une refusée non plus.
+    // Et re-convertir un CONVERTI réécrirait un forfait devenu ordinaire,
+    // c'est-à-dire un vrai client payant — c'est le refus qui compte le plus.
+    for (const statut of [STATUT_DEMANDE.PENDING, STATUT_DEMANDE.REJECTED, STATUT_DEMANDE.CONVERTED]) {
+      const plan = planifierConversion({ id: "req", status: statut }, { quotaGB: 500 });
+      assert.equal(plan.statut, "skipped", `${statut} ne doit pas être convertible`);
+    }
+    assert.equal(planifierConversion(null).statut, "skipped");
+    assert.equal(planifierConversion(undefined).statut, "skipped");
+  });
+
+  it("côté TÉLÉPHONE, le converti cesse d'être marqué « essai »", async () => {
+    // C'est ce que l'utilisateur voit en premier : la carte d'essai de l'écran
+    // d'accueil cède la place à la carte de quota ordinaire. Tout tient à
+    // `isFreeTrial`, que l'app lit de cette seule fonction.
+    const baseMobile = (demandes: any[], marques: any[]) => ({
+      freeTrialRequest: {
+        findMany: async (args: any) =>
+          demandes.filter(d => d.clientId === args.where.clientId && d.status === args.where.status),
+      },
+      subscription: {
+        // Reproduit `freeTrialRequestId: { not: null }` : seuls les forfaits
+        // portant ENCORE le marqueur remontent.
+        findMany: async (args: any) =>
+          marques.filter(s => s.clientId === args.where.clientId && s.freeTrialRequestId != null),
+      },
+    });
+
+    // Avant : le forfait est marqué des DEUX façons possibles.
+    const avant = await forfaitsEssaiDuClient(
+      baseMobile(
+        [{ clientId: "cli", status: STATUT_DEMANDE.DEPLOYED, subscriptionId: "sub" }],
+        [{ id: "sub", clientId: "cli", freeTrialRequestId: "req" }],
+      ),
+      "cli",
+    );
+    assert.deepEqual([...avant], ["sub"], "un essai déployé doit être marqué");
+
+    // Après : la demande n'est plus `deployed` ET le forfait a perdu son
+    // marqueur. Les DEUX voies doivent se refermer — il suffirait que l'une
+    // reste ouverte pour que le téléphone continue d'afficher « essai ».
+    const apres = await forfaitsEssaiDuClient(
+      baseMobile(
+        [{ clientId: "cli", status: STATUT_DEMANDE.CONVERTED, subscriptionId: null }],
+        [{ id: "sub", clientId: "cli", freeTrialRequestId: null }],
+      ),
+      "cli",
+    );
+    assert.equal(apres.size, 0, "un converti ne doit plus être marqué « essai »");
+  });
+
+  it("sans fonctionnalité d'essai déployée, AUCUNE ligne n'est masquée", async () => {    const { db } = baseFictive({ sansEssai: true });
     const portee = await porteeEssaiDeploye(db);
     assert.equal(portee.exploitable, false);
     assert.deepEqual(portee.clientsEssaiUniquement, []);

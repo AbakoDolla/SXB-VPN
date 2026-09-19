@@ -100,6 +100,20 @@
     "revoke": "Révoquer",
     "reject": "Refuser",
     "deleteRequests": "Supprimer",
+    "convert": "Convertir en forfait",
+    "convertHint": "Fait sortir les essais cochés de cette section : leur forfait devient un forfait ordinaire et apparaît dans Forfaits Data. L'accès de l'appareil n'est pas interrompu.",
+    "convertConfirm": "Convertir {{count}} essai(s) en forfait(s) ordinaire(s) ? Ils quitteront cette section pour Forfaits Data et ne seront plus comptés comme essais. L'accès de l'appareil continue sans interruption, et une nouvelle invitation d'essai pourra toujours les ramener ici.",
+    "convertForm": {
+      "title": "Convertir en forfait normal ou VIP",
+      "hint": "{{count}} essai(s) sélectionné(s). Laissez les champs vides pour conserver l'accès tel qu'il est : seule sa nature change.",
+      "plan": "Nom du forfait",
+      "planPlaceholder": "Ex. VIP 100 Go",
+      "quota": "Quota (Go)",
+      "duration": "Durée (jours)",
+      "unchanged": "Inchangé",
+      "reversible": "Réversible : redonner une invitation d'essai à ce compte le ramènera dans cette section, sans rien défaire.",
+      "submit": "Convertir"
+    },
     "deleteRequestsHint": "Efface les inscrits cochés et les forfaits nés de leur essai. L'accès quitte l'appareil immédiatement.",
     "deleteRequestsConfirm": "Supprimer définitivement {{count}} inscrit(s) ? Les forfaits nés de leur essai partent avec eux, et l'accès quitte leur appareil immédiatement. Les forfaits payants du même compte ne sont pas touchés. Cette action est irréversible.",
     "deploy": "DÉPLOYER",
@@ -132,6 +146,7 @@
       "pending": "En attente de vérification",
       "deployed": "Déployé",
       "rejected": "Refusé",
+      "converted": "Converti en forfait",
       "all": "Tous les statuts"
     },
     "tokenState": {
@@ -178,7 +193,8 @@
       "partial": "Demandes non déployées : {{items}}",
       "rejected": "{{count}} demande(s) refusée(s).",
       "managed": "{{succeeded}} essai(s) mis à jour sur {{total}}.",
-      "deletedRequests": "{{count}} inscrit(s) supprimé(s) · {{plans}} forfait(s) retiré(s) — l'accès a quitté les appareils."
+      "deletedRequests": "{{count}} inscrit(s) supprimé(s) · {{plans}} forfait(s) retiré(s) — l'accès a quitté les appareils.",
+      "converted": "{{count}} essai(s) converti(s) · {{plans}} forfait(s) promu(s) — ils figurent désormais dans Forfaits Data."
     },
     "marker": "Essai gratuit",
     "manage": "Gérer les essais déployés",

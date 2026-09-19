@@ -100,6 +100,20 @@
     "revoke": "Revoke",
     "reject": "Reject",
     "deleteRequests": "Delete",
+    "convert": "Convert to plan",
+    "convertHint": "Moves the selected trials out of this section: their plan becomes an ordinary plan and appears in Data Plans. Device access is never interrupted.",
+    "convertConfirm": "Convert {{count}} trial(s) into ordinary plan(s)? They will leave this section for Data Plans and stop counting as trials. Device access continues uninterrupted, and a new trial invitation can always bring them back here.",
+    "convertForm": {
+      "title": "Convert to a normal or VIP plan",
+      "hint": "{{count}} trial(s) selected. Leave the fields empty to keep access exactly as it is — only its nature changes.",
+      "plan": "Plan name",
+      "planPlaceholder": "e.g. VIP 100 GB",
+      "quota": "Quota (GB)",
+      "duration": "Duration (days)",
+      "unchanged": "Unchanged",
+      "reversible": "Reversible: giving this account a new trial invitation brings it back to this section, with nothing to undo.",
+      "submit": "Convert"
+    },
     "deleteRequestsHint": "Erases the selected sign-ups and the plans born of their trial. Access leaves the device immediately.",
     "deleteRequestsConfirm": "Permanently delete {{count}} sign-up(s)? The plans born of their trial go with them, and access leaves their device immediately. Paid plans on the same account are untouched. This cannot be undone.",
     "deploy": "DEPLOY",
@@ -132,6 +146,7 @@
       "pending": "Pending verification",
       "deployed": "Deployed",
       "rejected": "Rejected",
+      "converted": "Converted to plan",
       "all": "All statuses"
     },
     "tokenState": {
@@ -178,7 +193,8 @@
       "partial": "Requests not deployed: {{items}}",
       "rejected": "{{count}} request(s) rejected.",
       "managed": "{{succeeded}} trial(s) updated out of {{total}}.",
-      "deletedRequests": "{{count}} sign-up(s) deleted · {{plans}} plan(s) removed — access has left the devices."
+      "deletedRequests": "{{count}} sign-up(s) deleted · {{plans}} plan(s) removed — access has left the devices.",
+      "converted": "{{count}} trial(s) converted · {{plans}} plan(s) promoted — they now appear in Data Plans."
     },
     "marker": "Free trial",
     "manage": "Manage deployed trials",

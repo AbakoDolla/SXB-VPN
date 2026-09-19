@@ -458,6 +458,22 @@ CREATE INDEX IF NOT EXISTS "free_trial_requests_deviceFingerprint_status_idx"
 CREATE INDEX IF NOT EXISTS "free_trial_requests_country_status_idx"
   ON "free_trial_requests" ("country", "status");
 
+-- ── Conversion d'un essai en client ordinaire ───────────────────────────────
+-- STRICTEMENT ADDITIF : deux colonnes NULLABLES d'audit. Aucune ligne
+-- existante n'est reecrite, aucune colonne existante n'est modifiee.
+--
+-- Le statut "converted" n'est PAS une valeur contrainte en base : la colonne
+-- "status" est un TEXT libre, donc aucune migration de type n'est necessaire.
+-- Une base qui n'applique pas ce bloc continue de fonctionner a l'identique
+-- tant que personne ne convertit.
+--
+-- Ce que la conversion fait, et que ces colonnes tracent : le forfait issu de
+-- l'essai perd son marqueur "freeTrialRequestId" et devient un forfait
+-- ordinaire, pendant que la demande passe en "converted". L'appareil garde son
+-- acces sans interruption ; seule la NATURE de cet acces change.
+ALTER TABLE "free_trial_requests" ADD COLUMN IF NOT EXISTS "convertedAt" TIMESTAMP(3);
+ALTER TABLE "free_trial_requests" ADD COLUMN IF NOT EXISTS "convertedBy" TEXT;
+
 -- ── Comptage de consommation : idempotence durable des rapports ──────────────
 -- STRICTEMENT ADDITIF : une colonne NULLABLE sur une table existante, plus son
 -- index unique. Aucune ligne existante n'est reecrite, aucune colonne existante

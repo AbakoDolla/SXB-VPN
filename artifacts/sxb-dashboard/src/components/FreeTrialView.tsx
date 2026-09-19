@@ -23,6 +23,7 @@ import {
   ShieldOff,
   SlidersHorizontal,
   Trash2,
+  ArrowUpRight,
   X,
 } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
@@ -37,6 +38,7 @@ import {
   manageFreeTrialRequests,
   rejectFreeTrialRequests,
   deleteFreeTrialRequests,
+  convertFreeTrialRequests,
   revokeFreeTrialToken,
   updateFreeTrialToken,
   deleteFreeTrialToken,
@@ -155,6 +157,10 @@ const RAFRAICHISSEMENT_PRESENCE_MS = 60_000;
 function statusClasses(status: string): string {
   if (status === FREE_TRIAL_STATUS.DEPLOYED) return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300';
   if (status === FREE_TRIAL_STATUS.REJECTED) return 'border-rose-500/25 bg-rose-500/10 text-rose-300';
+  // Converti : ni vert d'essai en cours, ni rouge de refus. Le violet dit une
+  // TROISIÈME nature — l'essai a réussi et la ligne n'est plus un essai. Le
+  // confondre avec « déployé » masquerait la seule information qui compte ici.
+  if (status === FREE_TRIAL_STATUS.CONVERTED) return 'border-violet-500/25 bg-violet-500/10 text-violet-300';
   return 'border-amber-500/25 bg-amber-500/10 text-amber-300';
 }
 
@@ -232,6 +238,18 @@ export default function FreeTrialView() {
   const [selectionParJeton, setSelectionParJeton] = useState<Record<string, string[]>>({});
   const [resultatLot, setResultatLot] = useState<FreeTrialDeployResponse | null>(null);
   const [resultatGestion, setResultatGestion] = useState<FreeTrialManageResponse | null>(null);
+
+  // ── Conversion d'un essai en client ordinaire ──────────────────────────────
+  //
+  // Le formulaire n'a que trois champs, TOUS facultatifs. C'est délibéré :
+  // convertir sans rien remplir garde l'accès tel quel et ne change que sa
+  // nature, ce qui est le geste le plus courant. Remplir quota et durée fait
+  // du converti un client mieux servi — c'est là toute la différence entre un
+  // forfait « normal » et un « VIP », et elle ne mérite pas un second écran.
+  const [showConvertForm, setShowConvertForm] = useState(false);
+  const [convertQuota, setConvertQuota] = useState('');
+  const [convertDuree, setConvertDuree] = useState('');
+  const [convertNom, setConvertNom] = useState('');
 
   // ── Recherche transversale, en lecture seule ───────────────────────────────
   const [search, setSearch] = useState('');
@@ -925,6 +943,56 @@ export default function FreeTrialView() {
       setNotice(t('operations.freeTrial.notice.rejected', { count: formatNumber(reponse.rejected) }));
       setSelectionParJeton(prev => ({ ...prev, [jetonOuvert]: [] }));
       await Promise.all([charger(), chargerVolet(jetonOuvert, volet?.page ?? 1)]);
+    } catch (err) {
+      setError(errorMessage(err, 'operations.freeTrial.genericError'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * Convertit les essais déployés cochés en accès ordinaires.
+   *
+   * Distinct de « Gérer » : gérer ajuste un essai qui RESTE un essai ;
+   * convertir le fait SORTIR des essais pour entrer dans Forfaits Data. La
+   * confirmation le dit dans ces termes, parce que l'exploitant verra la ligne
+   * quitter cet écran et doit savoir où elle va.
+   *
+   * Réversible : redonner une invitation d'essai à ce compte le ramène ici,
+   * sans rien avoir à défaire.
+   */
+  const convertir = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!jetonOuvert || selectionDeployee.length === 0) return;
+    if (!window.confirm(t('operations.freeTrial.convertConfirm', {
+      count: formatNumber(selectionDeployee.length),
+    }))) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const quota = convertQuota.trim();
+      const duree = convertDuree.trim();
+      const nom = convertNom.trim();
+      const reponse = await convertFreeTrialRequests({
+        requestIds: selectionDeployee,
+        tokenId: jetonOuvert,
+        // Un champ vide n'est PAS un zéro : il signifie « ne touche pas à
+        // cette valeur ». L'envoyer quand même remettrait le quota à néant et
+        // couperait l'accès de celui qu'on vient de promouvoir.
+        ...(quota ? { quotaGB: Number(quota) } : {}),
+        ...(duree ? { durationDays: Number(duree) } : {}),
+        ...(nom ? { planName: nom } : {}),
+      });
+      setNotice(t('operations.freeTrial.notice.converted', {
+        count: formatNumber(reponse.converted),
+        plans: formatNumber(reponse.subscriptionsPromoted),
+      }));
+      setSelectionParJeton(prev => ({ ...prev, [jetonOuvert]: [] }));
+      setShowConvertForm(false);
+      setConvertQuota('');
+      setConvertDuree('');
+      setConvertNom('');
+      await Promise.all([charger(), chargerVolet(jetonOuvert, volet?.page ?? 1), chargerComptesEssai()]);
     } catch (err) {
       setError(errorMessage(err, 'operations.freeTrial.genericError'));
     } finally {
@@ -1671,6 +1739,7 @@ export default function FreeTrialView() {
               <option value={FREE_TRIAL_STATUS.PENDING}>{t('operations.freeTrial.status.pending')}</option>
               <option value={FREE_TRIAL_STATUS.DEPLOYED}>{t('operations.freeTrial.status.deployed')}</option>
               <option value={FREE_TRIAL_STATUS.REJECTED}>{t('operations.freeTrial.status.rejected')}</option>
+              <option value={FREE_TRIAL_STATUS.CONVERTED}>{t('operations.freeTrial.status.converted')}</option>
             </select>
           </div>
         </div>
@@ -1871,6 +1940,23 @@ export default function FreeTrialView() {
                                 <SlidersHorizontal className="h-3.5 w-3.5" />
                                 {t('operations.freeTrial.manage')}
                               </button>
+                              {/* CONVERTIR — le geste qui fait SORTIR l'essai.
+                                  Distinct de « Gérer », qui ajuste un essai
+                                  restant un essai : ici la ligne quitte cet
+                                  écran et son forfait entre dans Forfaits Data.
+                                  Placé après « Gérer » parce qu'il vient plus
+                                  tard dans la vie d'un essai, et avant le
+                                  filet parce qu'il est réversible. */}
+                              <button
+                                type="button"
+                                onClick={() => setShowConvertForm(v => !v)}
+                                disabled={busy || lotTropGrand || selectionDeployee.length === 0}
+                                title={t('operations.freeTrial.convertHint')}
+                                className="inline-flex items-center gap-1.5 rounded-lg bg-violet-500/90 px-3 py-1.5 text-xs font-semibold text-slate-950 transition hover:bg-violet-400 disabled:opacity-50"
+                              >
+                                <ArrowUpRight className="h-3.5 w-3.5" />
+                                {t('operations.freeTrial.convert')}
+                              </button>
                               {/* SUPPRIMER — distinct de « Refuser ».
                                   Refuser laisse la ligne, marquée refusée ;
                                   supprimer efface l'inscrit ET les forfaits nés
@@ -1897,6 +1983,74 @@ export default function FreeTrialView() {
                           <p className="border-b border-white/10 bg-rose-500/10 px-4 py-2 text-xs text-rose-200">
                             {t('operations.freeTrial.batch.tooMany', { max: formatNumber(MAX_FREE_TRIAL_BATCH) })}
                           </p>
+                        )}
+
+                        {/* Formulaire de conversion : trois champs FACULTATIFS.
+                            Les laisser vides convertit sans rien changer à
+                            l'accès — le cas le plus courant. Les remplir
+                            distingue un « VIP » d'un « normal ». */}
+                        {showConvertForm && canDeploy && selectionDeployee.length > 0 && (
+                          <form onSubmit={convertir} className="space-y-4 border-b border-white/10 bg-violet-500/[0.04] px-4 py-5">
+                            <div>
+                              <h3 className="text-sm font-semibold text-gray-200">{t('operations.freeTrial.convertForm.title')}</h3>
+                              <p className="mt-1 text-xs text-gray-500">
+                                {t('operations.freeTrial.convertForm.hint', { count: formatNumber(selectionDeployee.length) })}
+                              </p>
+                            </div>
+                            <div className="grid gap-3 sm:grid-cols-3">
+                              <label className="block">
+                                <span className="text-xs text-gray-400">{t('operations.freeTrial.convertForm.plan')}</span>
+                                <input
+                                  type="text"
+                                  value={convertNom}
+                                  onChange={e => setConvertNom(e.target.value)}
+                                  placeholder={t('operations.freeTrial.convertForm.planPlaceholder')}
+                                  className="mt-1 w-full rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-gray-100 outline-none focus:border-violet-500/50"
+                                />
+                              </label>
+                              <label className="block">
+                                <span className="text-xs text-gray-400">{t('operations.freeTrial.convertForm.quota')}</span>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step="any"
+                                  value={convertQuota}
+                                  onChange={e => setConvertQuota(e.target.value)}
+                                  placeholder={t('operations.freeTrial.convertForm.unchanged')}
+                                  className="mt-1 w-full rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-gray-100 outline-none focus:border-violet-500/50"
+                                />
+                              </label>
+                              <label className="block">
+                                <span className="text-xs text-gray-400">{t('operations.freeTrial.convertForm.duration')}</span>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  value={convertDuree}
+                                  onChange={e => setConvertDuree(e.target.value)}
+                                  placeholder={t('operations.freeTrial.convertForm.unchanged')}
+                                  className="mt-1 w-full rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-gray-100 outline-none focus:border-violet-500/50"
+                                />
+                              </label>
+                            </div>
+                            <p className="text-xs text-gray-500">{t('operations.freeTrial.convertForm.reversible')}</p>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="submit"
+                                disabled={busy}
+                                className="inline-flex items-center gap-1.5 rounded-lg bg-violet-500/90 px-4 py-2 text-xs font-semibold text-slate-950 transition hover:bg-violet-400 disabled:opacity-50"
+                              >
+                                {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUpRight className="h-3.5 w-3.5" />}
+                                {t('operations.freeTrial.convertForm.submit')}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setShowConvertForm(false)}
+                                className="rounded-lg border border-white/15 px-4 py-2 text-xs text-gray-300 transition hover:bg-white/5"
+                              >
+                                {t('common.cancel')}
+                              </button>
+                            </div>
+                          </form>
                         )}
 
                         {/* Le formulaire n'apparaît qu'APRÈS sélection : c'est

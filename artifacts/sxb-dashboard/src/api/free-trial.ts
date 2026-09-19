@@ -198,6 +198,14 @@ export const FREE_TRIAL_STATUS = {
   PENDING: 'pending',
   DEPLOYED: 'deployed',
   REJECTED: 'rejected',
+  /**
+   * Essai devenu un accès ordinaire — forfait normal ou VIP.
+   *
+   * Ce n'est pas une fin d'essai mais une RÉUSSITE : la ligne quitte les
+   * essais parce que son forfait est entré dans Forfaits Data. L'appareil
+   * garde son accès sans interruption ; seule la nature de cet accès change.
+   */
+  CONVERTED: 'converted',
 } as const;
 
 export async function fetchFreeTrialTokens(): Promise<FreeTrialToken[]> {
@@ -360,6 +368,8 @@ export interface FreeTrialOverview {
   pending: number;
   deployed: number;
   rejected: number;
+  /** Essais devenus des clients ordinaires — la mesure de ce qu'ils rapportent. */
+  converted: number;
   /** Essais déployés dont l'accès est encore ouvert aujourd'hui. */
   active: number;
   /** `null` quand la présence n'a pas pu être mesurée — jamais un zéro trompeur. */
@@ -517,6 +527,30 @@ export async function rejectFreeTrialRequests(input: {
  * L'appareil perd son accès dans la seconde : le serveur réveille son long-poll
  * au lieu d'attendre la prochaine synchronisation.
  */
+/**
+ * Convertit des essais déployés en accès ordinaires — forfaits normaux ou VIP.
+ *
+ * `quotaGB`, `durationDays` et `planName` sont facultatifs : les omettre
+ * conserve l'accès tel qu'il est et ne change QUE sa nature. Les renseigner
+ * fait du converti un client mieux servi — c'est là toute la différence entre
+ * « normal » et « VIP », et elle ne demande pas un second geste.
+ */
+export async function convertFreeTrialRequests(input: {
+  requestIds: string[];
+  tokenId?: string;
+  quotaGB?: number;
+  durationDays?: number;
+  planName?: string;
+}): Promise<{
+  success: boolean;
+  converted: number;
+  subscriptionsPromoted: number;
+  total: number;
+  results: Array<{ id: string; status: string; promoted?: number; reason?: string }>;
+}> {
+  return apiRequest('/free-trial/requests/convert', { method: 'POST', body: input });
+}
+
 export async function deleteFreeTrialRequests(input: {
   requestIds: string[];
   tokenId?: string;

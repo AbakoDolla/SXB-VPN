@@ -68,6 +68,7 @@ import {
   normaliserConfigsEssai,
   normaliserJetonEssai,
   normaliserLotEssai,
+  planifierConversion,
   refusConfigsEssai,
   refusDeploiement,
   refusEmpreinteManquante,
@@ -339,6 +340,26 @@ const refuserSchema = z.object({
  * Suppression d'inscrits. Pas de `note` : rien ne subsiste pour la porter —
  * l'accepter laisserait croire qu'elle est conservée quelque part.
  */
+/**
+ * Conversion d'un essai en accès ordinaire — forfait normal ou VIP.
+ *
+ * Quota et durée sont FACULTATIFS : convertir sans les renseigner conserve
+ * l'accès tel qu'il est et ne fait que changer sa nature. Les renseigner
+ * transforme l'essai en forfait plus généreux — c'est ce qui distingue un
+ * « VIP » d'un « normal », et le tableau de bord n'a pas besoin d'un second
+ * geste pour cela.
+ */
+const convertirSchema = z.object({
+  requestIds: z.array(identifiantSchema).min(1).max(MAX_LOT_ESSAI),
+  tokenId: identifiantSchema.optional(),
+  /** Nouveau volume, en gigaoctets. Absent = volume inchangé. */
+  quotaGB: z.coerce.number().min(0).max(100_000).optional(),
+  /** Nouvelle durée, en jours, comptée depuis la conversion. Absent = échéance inchangée. */
+  durationDays: z.coerce.number().int().min(1).max(3650).optional(),
+  /** Nom commercial du forfait obtenu. Absent = nom inchangé. */
+  planName: z.string().trim().min(1).max(120).optional(),
+}).strict();
+
 const supprimerSchema = z.object({
   requestIds: z.array(identifiantSchema).min(1).max(MAX_LOT_ESSAI),
   tokenId: identifiantSchema.optional(),
@@ -346,7 +367,12 @@ const supprimerSchema = z.object({
 
 /** Filtres de lecture des demandes : par statut, par jeton, page par page. */
 const listeDemandesSchema = z.object({
-  status: z.enum([STATUT_DEMANDE.PENDING, STATUT_DEMANDE.DEPLOYED, STATUT_DEMANDE.REJECTED]).optional(),
+  status: z.enum([
+    STATUT_DEMANDE.PENDING,
+    STATUT_DEMANDE.DEPLOYED,
+    STATUT_DEMANDE.REJECTED,
+    STATUT_DEMANDE.CONVERTED,
+  ]).optional(),
   tokenId: identifiantSchema.optional(),
   limit: z.coerce.number().int().min(1).max(200).optional(),
   offset: z.coerce.number().int().min(0).max(1_000_000).optional(),
@@ -1890,6 +1916,158 @@ router.post(
       if (err instanceof z.ZodError) return erreurValidation(res, err);
       console.error('free-trial delete error:', err);
       return res.status(500).json({ error: 'errors.server', message: 'Suppression impossible' });
+    }
+  },
+);
+
+// ─── POST /api/free-trial/requests/convert ───────────────────────────────────
+//
+// FAIRE PASSER UN ESSAI EN CLIENT ORDINAIRE — forfait normal ou VIP.
+//
+// ═══════════════════════════════════════════════════════════════════════════
+// CE QUE CETTE ROUTE DÉPLACE, ET POURQUOI UN SEUL GESTE SUFFIT
+// ═══════════════════════════════════════════════════════════════════════════
+// Toute la séparation essai/forfait repose sur UNE question, posée par
+// `porteeEssaiDeploye`, `marquesEssaiParClient` et `forfaitsEssaiDuClient` :
+// « existe-t-il une demande DÉPLOYÉE pour ce compte, et ce forfait
+// porte-t-il `freeTrialRequestId` ? »
+//
+// Six écrans en découlent. Retirer le marqueur du forfait et sortir la demande
+// de `deployed` les fait donc TOUS basculer, sans qu'aucun ait à être modifié :
+//
+//   • Essais gratuits ......... la ligne quitte la liste
+//   • Forfaits Data ........... le forfait y entre, avec son quota et sa durée
+//   • Comptes VPN ............. le compte cesse d'être « essai uniquement »
+//   • Appareils ............... la mention « période d'essai » disparaît
+//   • App mobile — accueil .... la carte d'essai cède la place à la carte quota
+//   • App mobile — connexions . `isFreeTrial` retombe à false
+//
+// ═══════════════════════════════════════════════════════════════════════════
+// RÉVERSIBLE SANS RIEN DÉFAIRE
+// ═══════════════════════════════════════════════════════════════════════════
+// Une nouvelle invitation crée une NOUVELLE demande — la contrainte d'unicité
+// porte sur le couple `(tokenId, deviceId)`, pas sur l'appareil seul. Un
+// compte converti redevient donc un essayeur en recevant simplement une autre
+// invitation, exactement comme l'exploitant l'a demandé.
+//
+// L'ESSAI CONSOMMÉ RESTE CONSOMMÉ : `deviceFingerprint` est inchangé, donc la
+// règle « un seul essai par appareil » continue de s'appliquer à une
+// inscription spontanée. Seule une invitation explicite rouvre un essai.
+router.post(
+  '/requests/convert',
+  requireAuth,
+  interdireAccesRevendeur(),
+  interdireMutationSupport(),
+  requirePermission('subscription.manage'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!prisma) return baseIndisponible(res);
+      const body = convertirSchema.parse(req.body);
+      const lot = normaliserLotEssai(body.requestIds);
+      if (!lot.ok) {
+        const refusLot = refusLotEssai(lot.raison, lot.limite);
+        return res.status(refusLot.status).json(refusLot.body);
+      }
+
+      const demandes = await (prisma as any).freeTrialRequest.findMany({
+        where: {
+          id: { in: lot.ids },
+          ...(body.tokenId ? { tokenId: body.tokenId } : {}),
+        },
+      });
+
+      let converties = 0;
+      let forfaitsPromus = 0;
+      const clientsTouches = new Set<string>();
+      const resultats: Array<{ id: string; status: string; promoted?: number; reason?: string }> = [];
+
+      for (const demande of demandes) {
+        try {
+          // La règle métier vit dans le service, et elle est vérifiée sans
+          // base de données. La route ne fait qu'appliquer ce qu'il décide.
+          const plan = planifierConversion(
+            demande,
+            { quotaGB: body.quotaGB, durationDays: body.durationDays, planName: body.planName },
+            new Date(),
+            req.user?.userId || null,
+          );
+          if (plan.statut === 'skipped') {
+            resultats.push({ id: demande.id, status: 'skipped', reason: plan.raison });
+            continue;
+          }
+
+          // Les forfaits nés de CET essai, et eux seuls. Deux façons d'en être
+          // issu — le marqueur porté par le forfait, ou la désignation par la
+          // demande pour les déploiements antérieurs à ce marqueur.
+          const conditions: any[] = [{ freeTrialRequestId: demande.id }];
+          if (demande.subscriptionId) conditions.push({ id: demande.subscriptionId });
+          const forfaits = await (prisma as any).subscription.findMany({
+            where: { OR: conditions },
+            select: { id: true, clientId: true, name: true },
+          });
+
+          if (forfaits.length === 0) {
+            resultats.push({ id: demande.id, status: 'skipped', reason: CODES_ESSAI.REQUEST_NOT_FOUND });
+            continue;
+          }
+
+          // ── LES DEUX ÉCRITURES SONT INDISSOCIABLES ─────────────────────
+          //
+          // Un essai à moitié converti est pire que pas de conversion du
+          // tout, et les deux moitiés échouent différemment :
+          //
+          //   • forfait promu SEUL : il apparaît dans Forfaits Data ET le
+          //     compte reste marqué « essai » — la même chose comptée deux
+          //     fois, dans deux écrans qui se contredisent.
+          //
+          //   • demande convertie SEULE : le forfait garde son marqueur, donc
+          //     reste exclu de Forfaits Data, pendant que la demande a quitté
+          //     les Essais. L'accès devient INVISIBLE des deux côtés — un
+          //     client qui paie et que plus aucun écran ne montre.
+          //
+          // La transaction interdit ces deux états.
+          const promus = await (prisma as any).$transaction(async (tx: any) => {
+            const avance = await tx.subscription.updateMany({
+              where: { id: { in: forfaits.map((f: any) => String(f.id)) } },
+              data: plan.forfait,
+            });
+            await tx.freeTrialRequest.update({ where: { id: demande.id }, data: plan.demande });
+            return avance.count;
+          });
+
+          forfaitsPromus += promus;
+          for (const f of forfaits) if (f.clientId) clientsTouches.add(String(f.clientId));
+
+          converties += 1;
+          resultats.push({ id: demande.id, status: 'ok', promoted: forfaits.length });
+        } catch (erreur: any) {
+          console.error('free-trial convert error:', erreur);
+          resultats.push({ id: demande.id, status: 'failed', reason: erreur?.message || 'errors.server' });
+        }
+      }
+
+      // L'invalidation vient APRÈS les écritures : réveiller un appareil avant
+      // que la base ne soit à jour lui ferait relire son ancien état, et son
+      // écran resterait celui d'un essai.
+      for (const clientId of clientsTouches) accessStateHub.invalidate({ clientId });
+
+      await logDbActivity(
+        req.user?.userId || null,
+        `${converties} essai(s) converti(s) en forfait — ${forfaitsPromus} forfait(s) promu(s)`,
+        'success',
+        req.ip || '',
+      );
+      return res.json({
+        success: true,
+        converted: converties,
+        subscriptionsPromoted: forfaitsPromus,
+        total: lot.ids.length,
+        results: resultats,
+      });
+    } catch (err: any) {
+      if (err instanceof z.ZodError) return erreurValidation(res, err);
+      console.error('free-trial convert error:', err);
+      return res.status(500).json({ error: 'errors.server', message: 'Conversion impossible' });
     }
   },
 );

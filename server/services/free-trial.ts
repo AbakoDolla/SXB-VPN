@@ -47,6 +47,29 @@ export const STATUT_DEMANDE = {
   PENDING: "pending",
   DEPLOYED: "deployed",
   REJECTED: "rejected",
+  /**
+   * L'essai a été transformé en accès ordinaire — forfait normal ou VIP.
+   *
+   * ═══════════════════════════════════════════════════════════════════════
+   * POURQUOI UN STATUT, ET NON UN SECOND MARQUEUR
+   * ═══════════════════════════════════════════════════════════════════════
+   * Toute la séparation essai/forfait repose sur UNE question : « existe-t-il
+   * une demande DÉPLOYÉE pour ce compte ? ». `porteeEssaiDeploye`,
+   * `marquesEssaiParClient` et `forfaitsEssaiDuClient` la posent tous les
+   * trois, et six écrans en découlent — Essais, Forfaits Data, Comptes VPN,
+   * Appareils, plus les deux cartes de l'application mobile.
+   *
+   * Faire sortir ce statut de `DEPLOYED` suffit donc à faire basculer les six
+   * d'un seul geste. Introduire un second marqueur aurait exigé de modifier
+   * chaque écran, et surtout créé deux vérités qui finissent toujours par
+   * diverger — c'est exactement le défaut qu'on a corrigé cette semaine sur
+   * le canal de notification Android, écrit en double.
+   *
+   * RÉVERSIBLE PAR CONSTRUCTION : une nouvelle invitation crée une NOUVELLE
+   * demande (`@@unique([tokenId, deviceId])` porte sur le couple), donc un
+   * compte converti redevient un essayeur sans qu'on ait rien à défaire.
+   */
+  CONVERTED: "converted",
 } as const;
 
 export const STATUT_JETON = {
@@ -797,6 +820,16 @@ export interface ResumeEssais {
   pending: number;
   deployed: number;
   rejected: number;
+  /**
+   * Essais transformés en clients ordinaires — forfait normal ou VIP.
+   *
+   * C'est la mesure de ce que les essais RAPPORTENT : un essai converti n'est
+   * plus un coût, c'est un client. Il quitte les autres compteurs de cette
+   * section, puisqu'il ne consomme plus de volume d'essai ; le garder dans
+   * `deployed` mêlerait les essais en cours aux essais réussis, et gonflerait
+   * durablement une section censée décrire le vivier du moment.
+   */
+  converted: number;
   /** Essais déployés dont l'accès est encore ouvert aujourd'hui. */
   active: number;
   /**
@@ -853,12 +886,14 @@ export function resumerEssais(params: {
   let pending = 0;
   let deployed = 0;
   let rejected = 0;
+  let converted = 0;
   let active = 0;
   const comptesEnEssai = new Set<string>();
 
   for (const demande of params.demandes) {
     if (demande?.status === STATUT_DEMANDE.PENDING) pending += 1;
     else if (demande?.status === STATUT_DEMANDE.REJECTED) rejected += 1;
+    else if (demande?.status === STATUT_DEMANDE.CONVERTED) converted += 1;
     else if (demande?.status === STATUT_DEMANDE.DEPLOYED) {
       deployed += 1;
       if (demande.subscriptionId && estEssaiActif(forfaits.get(String(demande.subscriptionId)), maintenant)) {
@@ -901,6 +936,7 @@ export function resumerEssais(params: {
     pending,
     deployed,
     rejected,
+    converted,
     active,
     connectedNow,
     presence: params.presence,
@@ -940,6 +976,97 @@ export function marqueEssaiPourClient(params: {
     country: normaliserCodePays(params.demande.country) || null,
     trialEndsAt: isoOuNull(params.expireAt ?? null),
     trialStartedAt: isoOuNull(params.demande.deployedAt ?? null),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Conversion d'un essai en accès ordinaire — forfait normal ou VIP
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Ce que la conversion demande de changer. Tout est FACULTATIF. */
+export interface ChangementsConversion {
+  /** Nouveau volume, en gigaoctets. Absent = volume inchangé. */
+  quotaGB?: number;
+  /** Nouvelle durée, en jours, comptée depuis la conversion. Absent = échéance inchangée. */
+  durationDays?: number;
+  /** Nom commercial du forfait obtenu. Absent = nom inchangé. */
+  planName?: string;
+}
+
+/** Décision de conversion pour UNE demande. */
+export type PlanConversion =
+  | { statut: "skipped"; raison: string }
+  | { statut: "ok"; forfait: Record<string, unknown>; demande: Record<string, unknown> };
+
+/**
+ * Décide — SANS RIEN ÉCRIRE — ce que convertir une demande implique.
+ *
+ * Fonction PURE, comme `planifierApplication` pour les forfaits groupés : la
+ * route ne fait qu'appliquer ce qu'elle rend. C'est ce qui permet de vérifier
+ * la règle métier sans base de données, et c'est là qu'elle doit être lue.
+ *
+ * ── CE QUE LA CONVERSION CHANGE, ET CE QU'ELLE NE CHANGE PAS ───────────────
+ *
+ * Toute la séparation essai/forfait tient à DEUX marqueurs, et à eux seuls :
+ * `subscription.freeTrialRequestId` et `freeTrialRequest.status = deployed`.
+ * Les effacer fait basculer d'un coup les six écrans qui en dérivent — Essais,
+ * Forfaits Data, Comptes VPN, Appareils, et les deux cartes de l'application.
+ *
+ * L'ACCÈS LUI-MÊME N'EST PAS TOUCHÉ : ni le compte, ni l'appareil, ni la
+ * configuration VPN, ni le jeton du téléphone. L'utilisateur ne voit aucune
+ * coupure ; seule la NATURE de son accès change. C'est la différence entre
+ * convertir et re-déployer, et c'est pourquoi la conversion est sûre.
+ *
+ * @param demande L'essai à convertir, tel qu'il est en base.
+ * @param changements Quota, durée et nom — chacun facultatif.
+ * @param maintenant Injecté pour rendre le calcul d'échéance vérifiable.
+ */
+export function planifierConversion(
+  demande: { id?: string; status?: string | null } | null | undefined,
+  changements: ChangementsConversion = {},
+  maintenant: Date = new Date(),
+  auteur: string | null = null,
+): PlanConversion {
+  // Seul un essai DÉPLOYÉ a ouvert un accès. Convertir une demande en attente,
+  // refusée ou DÉJÀ convertie promouvrait un forfait qui n'existe pas — ou
+  // réécrirait un forfait devenu ordinaire, donc un vrai client payant.
+  if (!demande || demande.status !== STATUT_DEMANDE.DEPLOYED) {
+    return { statut: "skipped", raison: CODES_ESSAI.NOT_PENDING };
+  }
+
+  const forfait: Record<string, unknown> = {
+    // LE GESTE CENTRAL : sans ce marqueur, le forfait est ordinaire et entre
+    // dans Forfaits Data. Tout le reste de cette fonction est facultatif.
+    freeTrialRequestId: null,
+  };
+
+  // Un champ absent signifie « ne touche pas à cette valeur ». L'écrire quand
+  // même remettrait le quota à zéro et couperait l'accès de celui qu'on vient
+  // justement de promouvoir.
+  if (changements.quotaGB !== undefined) {
+    forfait.quotaBytes = BigInt(Math.round(changements.quotaGB * 1024 ** 3));
+  }
+  if (changements.durationDays !== undefined) {
+    // L'échéance repart de la CONVERSION, pas du début de l'essai : « 30 jours »
+    // accordés aujourd'hui doivent valoir trente jours à partir d'aujourd'hui.
+    forfait.durationDays = changements.durationDays;
+    forfait.startAt = maintenant;
+    forfait.expireAt = new Date(maintenant.getTime() + changements.durationDays * 86_400_000);
+  }
+  if (changements.planName !== undefined) forfait.name = changements.planName;
+
+  return {
+    statut: "ok",
+    forfait,
+    demande: {
+      status: STATUT_DEMANDE.CONVERTED,
+      // Effacé parce qu'il désigne un forfait qui n'est PLUS un essai : le
+      // laisser ferait recompter ce forfait comme tel par les lectures qui
+      // s'appuient dessus, et le converti resterait invisible de Forfaits Data.
+      subscriptionId: null,
+      convertedAt: maintenant,
+      convertedBy: auteur,
+    },
   };
 }
 

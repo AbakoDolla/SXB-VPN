@@ -710,7 +710,7 @@ model FreeTrialRequest {
   deviceFingerprint String?
   /// SHA-256 du secret de réclamation. Le secret en clair n'est jamais stocké.
   claimSecretHash String
-  status     String         @default("pending") // pending | deployed | rejected
+  status     String         @default("pending") // pending | deployed | rejected | converted
 
   // ── Renseignés UNIQUEMENT au déploiement admin (étape 4) ─────────────────
   // Instantanés sans clé étrangère, comme reseller_quota_movements : la
@@ -722,6 +722,14 @@ model FreeTrialRequest {
   deployedBy     String?
   rejectedAt     DateTime?
   rejectedBy     String?
+  /// Quand l'essai a été transformé en accès ordinaire, et par qui.
+  ///
+  /// Colonnes NULLABLES et purement additives : les essais antérieurs à la
+  /// conversion restent lisibles sans reprise de données, et une base qui
+  /// n'a pas encore reçu ces colonnes continue de fonctionner — la
+  /// conversion est alors simplement indisponible, jamais bloquante.
+  convertedAt    DateTime?
+  convertedBy    String?
   /// Note interne d'instruction. Jamais renvoyée à l'application mobile.
   reviewNote     String?
 
