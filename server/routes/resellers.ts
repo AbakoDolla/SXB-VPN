@@ -120,6 +120,56 @@ const resellerCreateClientSchema = z.object({
   deviceLimit: z.coerce.number().int().min(1).max(100).default(1),
 });
 
+/**
+ * Résolution d'un revendeur désigné par l'URL, DANS le compartiment du requérant.
+ *
+ * `findUnique({ where: { id } })` n'accepte aucun filtre composé : il ne peut
+ * donc PAS joindre l'identifiant et le périmètre. Les quatre routes qui
+ * manipulaient un revendeur par son identifiant le chargeaient ainsi, puis
+ * vérifiaient seulement que l'appelant était administrateur — jamais qu'il
+ * était l'administrateur DE CE revendeur.
+ *
+ * Mesuré en production avant correction, avec deux administrateurs créés pour
+ * l'occasion : le second lisait la liste des clients du revendeur du premier,
+ * jeton d'accès compris, et pouvait suspendre cet agrément. La liste des
+ * clients était pourtant, elle, correctement restreinte au revendeur : c'est
+ * le revendeur lui-même qui n'était rattaché à personne. Une liste protégée
+ * donne l'illusion du cloisonnement ; il faut cloisonner le point d'entrée.
+ *
+ * Renvoie `null` quand le revendeur n'existe pas OU n'appartient pas au
+ * requérant — les deux cas donnent le même 404, afin de ne pas révéler par la
+ * différence des réponses qu'un identifiant existe ailleurs.
+ *
+ * ── LA FICHE D'UN REVENDEUR LUI RESTE TOUJOURS ACCESSIBLE ──────────────────
+ * `porteeRevendeurs` s'exprime sur `createdBy`. Pour un revendeur, elle rend
+ * la règle de furtivité — qui écarte précisément les fiches créées par le
+ * propriétaire. Or c'est le cas le PLUS courant : un revendeur est presque
+ * toujours ouvert par le propriétaire. Appliquer la portée seule lui aurait
+ * donc retiré l'accès à ses propres clients, en production, pour la majorité
+ * des revendeurs existants. Sa propre fiche est donc jointe explicitement à
+ * la portée : il n'y accède pas parce qu'il l'a créée, mais parce qu'elle est
+ * la sienne. Ce que ce rôle a ensuite le droit d'y faire reste décidé par les
+ * contrôles propres à chaque route.
+ */
+async function chercherRevendeurDuRequerant(
+  requerant: AuthenticatedRequest["user"],
+  id: string,
+  include?: Record<string, unknown>,
+): Promise<any | null> {
+  if (!prisma) return inMemoryDb.resellers.find((r) => r.id === id) ?? null;
+  const portee = await porteeRevendeurs(prisma, requerant);
+  const appartenances: Record<string, unknown>[] = [];
+  if (portee) appartenances.push(portee);
+  if (requerant?.userId) appartenances.push({ userId: requerant.userId });
+  const conditions = portee
+    ? [{ id }, appartenances.length > 1 ? { OR: appartenances } : appartenances[0]]
+    : [{ id }];
+  return prisma.reseller.findFirst({
+    where: { AND: conditions } as any,
+    ...(include ? { include } : {}),
+  });
+}
+
 // GET /api/resellers — retourne { resellers: [...] } (frontend attend ce format)
 router.get("/", requireAuth, gestionRevendeurs, requirePermission("reseller.manage"), async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -462,8 +512,14 @@ router.get("/:id/clients", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN", "RE
     if (req.user?.role === "RESELLER") {
       let authorized = false;
       if (prisma) {
-        const reseller = await prisma.reseller.findUnique({ where: { id } });
-        if (reseller && reseller.userId === req.user.userId) authorized = true;
+        // La condition d'appartenance est PORTÉE PAR LA REQUÊTE, et non
+        // vérifiée après coup sur une fiche chargée sans restriction : la
+        // ligne ne remonte que si elle est bien celle de l'appelant.
+        const reseller = await prisma.reseller.findFirst({
+          where: { AND: [{ id }, { userId: req.user.userId }] } as any,
+          select: { id: true },
+        });
+        if (reseller) authorized = true;
       } else {
         const reseller = inMemoryDb.resellers.find((r) => r.id === id);
         if (reseller && reseller.userId === req.user.userId) authorized = true;
@@ -483,7 +539,7 @@ router.get("/:id/clients", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN", "RE
 
     let fiche: any = null;
     if (prisma) {
-      fiche = await prisma.reseller.findUnique({ where: { id }, include: { user: true } });
+      fiche = await chercherRevendeurDuRequerant(req.user, id, { user: true });
     } else {
       fiche = inMemoryDb.resellers.find((r) => r.id === id);
     }
@@ -538,7 +594,7 @@ router.post(
 
     let fiche: any = null;
     if (prisma) {
-      fiche = await prisma.reseller.findUnique({ where: { id }, include: { user: true } });
+      fiche = await chercherRevendeurDuRequerant(req.user, id, { user: true });
     } else {
       fiche = inMemoryDb.resellers.find((r) => r.id === id);
     }
@@ -725,7 +781,7 @@ router.patch(
     if (body.accessExpiresAt !== undefined) updateData.accessExpiresAt = body.accessExpiresAt;
 
     if (prisma) {
-      const exists = await prisma.reseller.findUnique({ where: { id }, include: { user: { include: { role: true } } } });
+      const exists = await chercherRevendeurDuRequerant(req.user, id, { user: { include: { role: true } } });
       if (!exists) return res.status(404).json({ error: "errors.resellers.not_found", message: "Reseller not found" });
       // Garde hiérarchique : un non-OWNER ne modifie jamais une fiche adossée
       // à un compte OWNER.
@@ -810,7 +866,7 @@ router.delete(
   try {
     const { id } = req.params;
     if (prisma) {
-      const fiche = await prisma.reseller.findUnique({ where: { id }, include: { user: { include: { role: true } } } });
+      const fiche = await chercherRevendeurDuRequerant(req.user, id, { user: { include: { role: true } } });
       if (!fiche) return res.status(404).json({ error: "errors.resellers.not_found", message: "Reseller not found" });
       if (!canSeeUser(req, (fiche as any).user)) {
         return res.status(404).json({ error: "errors.resellers.not_found", message: "Reseller not found" });

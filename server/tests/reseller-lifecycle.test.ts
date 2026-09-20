@@ -775,6 +775,68 @@ describe("gardes posées sur les routes", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+describe("un revendeur désigné par l'URL reste dans le compartiment du requérant", () => {
+  const source = readFileSync(new URL("../routes/resellers.ts", import.meta.url), "utf8")
+    .replace(/\r\n/g, "\n");
+
+  it("ne charge plus aucun revendeur par findUnique sur un identifiant d'URL", () => {
+    // `findUnique({ where: { id } })` n'accepte aucun filtre composé : il ne
+    // peut donc pas joindre l'identifiant ET le périmètre. Quatre routes le
+    // faisaient. Mesuré en production avec deux administrateurs créés pour
+    // l'occasion, le second lisait les clients du revendeur du premier —
+    // jeton d'accès compris — et pouvait suspendre cet agrément.
+    const parId = source.match(/reseller\.findUnique\(\{\s*where:\s*\{\s*id\b/g) ?? [];
+    assert.equal(
+      parId.length, 0,
+      "un revendeur désigné par l'URL doit passer par chercherRevendeurDuRequerant",
+    );
+  });
+
+  it("fait passer les quatre routes par le point unique de résolution", () => {
+    const appels = source.match(/chercherRevendeurDuRequerant\(req\.user, id/g) ?? [];
+    assert.ok(
+      appels.length >= 4,
+      `lecture, création de client, modification et suppression doivent être cloisonnées (${appels.length} trouvée(s))`,
+    );
+  });
+
+  it("joint l'identifiant à la portée, et ne se contente jamais de l'identifiant", () => {
+    const corps = source.slice(source.indexOf("async function chercherRevendeurDuRequerant"));
+    const definition = corps.slice(0, corps.indexOf("\n}\n") + 3);
+    assert.match(definition, /porteeRevendeurs\(prisma, requerant\)/);
+    assert.match(definition, /findFirst/);
+    assert.ok(
+      !/findUnique/.test(definition),
+      "la résolution cloisonnée ne peut pas s'appuyer sur findUnique",
+    );
+  });
+
+  it("laisse un revendeur atteindre sa propre fiche même ouverte par le propriétaire", () => {
+    // Régression évitée de justesse : `porteeRevendeurs` s'exprime sur
+    // `createdBy` et écarte les fiches créées par le propriétaire. Or c'est
+    // le cas le plus courant. La portée seule aurait retiré à la majorité
+    // des revendeurs l'accès à leurs propres clients.
+    const corps = source.slice(source.indexOf("async function chercherRevendeurDuRequerant"));
+    const definition = corps.slice(0, corps.indexOf("\n}\n") + 3);
+    assert.match(
+      definition, /\{ userId: requerant\.userId \}/,
+      "la fiche d'un revendeur doit lui rester accessible en propre",
+    );
+    assert.match(definition, /OR: appartenances/);
+  });
+
+  it("ne restreint rien pour les rôles qui voient toute la plateforme", () => {
+    // `porteeRevendeurs` rend `null` pour OWNER, SUPER_ADMIN et SUPPORT :
+    // la requête doit alors porter le seul identifiant, sans condition
+    // supplémentaire qui rétrécirait leur vue.
+    const corps = source.slice(source.indexOf("async function chercherRevendeurDuRequerant"));
+    const definition = corps.slice(0, corps.indexOf("\n}\n") + 3);
+    assert.match(definition, /portee\s*\n?\s*\?\s*\[\{ id \}/);
+    assert.match(definition, /:\s*\[\{ id \}\]/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 describe("schéma et migration", () => {
   const racine = new URL("../../", import.meta.url);
 
