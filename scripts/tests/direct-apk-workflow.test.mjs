@@ -98,7 +98,11 @@ test('both Android channels run the same production Kotlin policy harnesses befo
   assert.ok(nativeGate);
   const script = readFileSync(new URL('../run-android-policy-gates.sh', import.meta.url), 'utf8');
   execFileSync('bash', ['-n'], { input: script, encoding: 'utf8' });
-  assert.match(script, /node tests\/run-play-encryption\.cjs/);
+  // On vise l'INVOCATION, pas le nom : le script explique en commentaire
+  // pourquoi cette porte a disparu, et une recherche sur le seul nom se
+  // déclencherait sur cette phrase.
+  assert.doesNotMatch(script, /^\s*node tests\/run-play-encryption\.cjs/m,
+    'la porte de chiffrement Play a été retirée avec sa chaîne');
   assert.match(script, /node tests\/run-access-policy\.cjs/);
   assert.doesNotMatch(script, /KEYSTORE|KEY_PASSWORD|android\.jar/);
 });

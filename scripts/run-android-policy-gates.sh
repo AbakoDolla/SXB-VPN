@@ -57,7 +57,8 @@ export SXB_JSON_JAR="$JSON_JAR"
 chmod +x "$KOTLINC"
 
 cd "$ROOT/app-mobile"
-node tests/run-play-encryption.cjs
+# `run-play-encryption.cjs` a disparu avec la chaîne Google Play : la porte de
+# chiffrement qu'il vérifiait n'existe plus.
 node tests/run-access-policy.cjs
 node tests/run-stability-policy.cjs
 node scripts/prepare-geosite.cjs
