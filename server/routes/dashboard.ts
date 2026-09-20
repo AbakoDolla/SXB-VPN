@@ -96,6 +96,7 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
     let consumedTrafficBytes = BigInt(0);
     let provisionedTrafficBytes = BigInt(0);
     let activeServers = 0;
+    let essaisRetranchesVisibles = 0;
     let activeResellers = 0;
     let totalVouchers = 0;
     let redeemedVouchers = 0;
@@ -148,6 +149,17 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
       const porteeServeursRequerant = await porteeServeurs(prisma, req.user);
       const porteeRevendeursRequerant = await porteeRevendeurs(prisma, req.user);
       const porteeBonsRequerant = await porteeBons(prisma, req.user);
+      // Combien des comptes d'essai retranchés étaient VISIBLES du requérant ?
+      // C'est ce nombre, et lui seul, que l'écran peut annoncer sans trahir
+      // l'ampleur du parc voisin.
+      essaisRetranchesVisibles = porteeEssai?.exploitable && porteeEssai.clientsEssaiUniquement.length
+        ? await prisma.vpnClient.count({
+            where: {
+              id: { in: porteeEssai.clientsEssaiUniquement },
+              ...((await porteeClients(prisma, req.user)) ?? {}),
+            },
+          })
+        : 0;
       [activeAccounts, expiredAccounts, activeServers, activeResellers, totalVouchers, redeemedVouchers] = await Promise.all([
         prisma.vpnClient.count({ where: { status: "active", ...clientStealthWhere } }),
         prisma.vpnClient.count({ where: { status: "expired", ...clientStealthWhere } }),
@@ -323,9 +335,12 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
       // leurs propres compteurs dans « Essais gratuits ». Le drapeau permet à
       // l'écran de l'annoncer plutôt que de laisser croire à un total.
       freeTrialExcluded: Boolean(porteeEssai?.exploitable),
-      freeTrialAccountsExcluded: porteeEssai?.exploitable
-        ? porteeEssai.clientsEssaiUniquement.length
-        : 0,
+      // Le NOMBRE de comptes retranchés doit lui aussi rester dans le
+      // compartiment du requérant : il annonçait 460 comptes d'essai à un
+      // administrateur qui n'en gère aucun, ce qui lui apprenait l'ampleur du
+      // parc qu'on lui cache. On ne compte donc que ceux qui étaient VISIBLES
+      // pour lui avant le retranchement.
+      freeTrialAccountsExcluded: essaisRetranchesVisibles,
       presenceWindowMinutes: PRESENCE_WINDOW_MINUTES,
       presenceHeartbeatMinutes: PRESENCE_HEARTBEAT_MINUTES,
       expiredAccounts,
