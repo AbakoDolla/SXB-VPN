@@ -429,7 +429,16 @@ test("authenticated registration only updates the already bound mobile client", 
   ok(status);
   assert.equal(status.body.subscription.dataToken, created.body.subscription.dataToken);
   ok(await api("r1", "GET", "/app/pending"), 403);
-  ok(await api("admin", "GET", "/app/pending"));
+  // FILE D'ATTENTE RÉSERVÉE AU SOMMET. Un appareil « pending » n'est rattaché à
+  // aucun client, donc à aucun propriétaire : aucune portée ne peut l'attribuer
+  // à un admin plutôt qu'à un autre. Mesuré en production : un admin créé dix
+  // secondes plus tôt, tableau de bord à 0 client / 0 compte / 0 appareil, lisait
+  // l'appareil en attente d'un tout autre exploitant. OWNER, SUPER_ADMIN et
+  // SUPPORT voient la plateforme entière par nature ; ADMIN non.
+  ok(await api("admin", "GET", "/app/pending"), 403);
+  ok(await api("super", "GET", "/app/pending"));
+  ok(await api("root", "GET", "/app/pending"));
+  ok(await api("support", "GET", "/app/pending"));
   ok(await api("admin", "POST", "/app", { deviceId: "MOBILE-DEVICE-ONE" }), 403);
 });
 

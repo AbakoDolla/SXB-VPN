@@ -1082,3 +1082,52 @@ describe("santé mobile — l'observabilité du parc reste au sommet", () => {
     assert.match(route, /req\.user\?\.role !== "CLIENT"/, "la publication reste réservée aux clients");
   });
 });
+// FILE D'ATTENTE DES APPAREILS — RÉSERVÉE AU SOMMET.
+//
+// `AppRegistration.status === "pending"` décrit un appareil qui s'est présenté
+// sans jeton : il n'est rattaché à aucun client, donc à aucun propriétaire, et
+// aucune portée ne peut l'attribuer à un admin plutôt qu'à un autre. Le
+// propriétaire a tranché la même question pour les clients orphelins
+// (« gestionnaire : AUCUN ») : visibles owner/superadmin uniquement, et ils ne
+// bloquent aucune création.
+//
+// Mesuré en production : un admin créé dix secondes plus tôt, dont le tableau de
+// bord affichait 0 client / 0 compte / 0 appareil, recevait l'appareil en
+// attente enregistré par un tout autre exploitant. Aucun écran du tableau de
+// bord ne consomme cet endpoint, le fermer ne retire donc aucune fonction.
+describe("file d'attente des appareils — aucun admin ne lit la file d'un autre", () => {
+  const route = readFileSync(new URL("../routes/app-register.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+
+  it("ferme /pending aux administrateurs de locataire", () => {
+    assert.match(
+      route,
+      /router\.get\("\/pending",\s*requireAuth,\s*requireRole\(\["SUPER_ADMIN", "SUPPORT"\]\)/,
+      "/pending doit être réservé au sommet ; OWNER traverse par le contournement central de requireRole",
+    );
+  });
+
+  it("n'admet plus ADMIN sur cette file", () => {
+    const extrait = route.slice(route.indexOf('router.get("/pending"'), route.indexOf('router.get("/pending"') + 220);
+    assert.equal(
+      /"ADMIN"/.test(extrait),
+      false,
+      "ADMIN ne doit plus figurer parmi les rôles admis sur la file d'attente",
+    );
+  });
+
+  it("garde la permission métier en plus du plafond de rôle", () => {
+    assert.match(
+      route,
+      /router\.get\("\/pending",[\s\S]{0,140}requirePermission\("clients\.view"\)/,
+      "le plafond de rôle ne remplace pas la permission : les deux doivent rester",
+    );
+  });
+
+  it("laisse l'enregistrement d'un appareil ouvert et sans jeton", () => {
+    assert.match(
+      route,
+      /router\.post\("\/", optionalAuth,/,
+      "un appareil neuf doit pouvoir se présenter sans jeton : seule la LECTURE de la file est fermée",
+    );
+  });
+});

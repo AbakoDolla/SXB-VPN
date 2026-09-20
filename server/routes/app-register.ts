@@ -139,7 +139,18 @@ router.get("/status/:deviceId", requireAuth, requireMobileClient, async (req: Au
   }
 });
 
-router.get("/pending", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN", "SUPPORT"]), requirePermission("clients.view"), async (_req: AuthenticatedRequest, res: Response) => {
+// FILE D'ATTENTE RÉSERVÉE AU SOMMET. Un enregistrement `pending` est par
+// définition un appareil qui n'est rattaché à AUCUN client, donc à aucun
+// propriétaire : il n'existe pas de portée qui puisse l'attribuer à un admin
+// plutôt qu'à un autre. Le propriétaire a tranché la même question pour les
+// clients orphelins (« gestionnaire : AUCUN ») : ils restent visibles
+// owner/superadmin uniquement et ne bloquent aucune création.
+//
+// Mesuré en production : un admin créé dix secondes plus tôt, dont le tableau
+// de bord affichait 0 client / 0 compte / 0 appareil, voyait l'appareil en
+// attente enregistré par un tout autre exploitant. SUPPORT reste admis, ce rôle
+// voit la plateforme entière par nature (voir `voitTout` dans portee-donnees).
+router.get("/pending", requireAuth, requireRole(["SUPER_ADMIN", "SUPPORT"]), requirePermission("clients.view"), async (_req: AuthenticatedRequest, res: Response) => {
   res.set("Cache-Control", "no-store");
   try {
     if (!prisma) return res.status(503).json({ error: "errors.db.unavailable" });
