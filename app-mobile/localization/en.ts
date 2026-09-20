@@ -136,6 +136,8 @@ export const en = {
   logs_copy_hint: 'One tap "Copy" = full history (share or clipboard), ready to paste.',
   logs_waiting: 'Waiting for connection...',
   card_quota_plan: 'PLAN QUOTA',
+  /** Gold plate marking paid access. Tells a customer apart from a free trial. */
+  badge_vip: 'VIP',
   card_traffic_realtime: 'REAL-TIME TRAFFIC',
   card_traffic_per_app: 'PER-APP TRAFFIC',
   no_app_data: 'No per-app data available',

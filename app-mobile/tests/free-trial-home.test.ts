@@ -227,6 +227,45 @@ describe('accueil mobile — période d’essai', () => {
     assert.doesNotMatch(route, /isFreeTrial:.*sub\.name/);
   });
 
+  it('marque l’accès PAYANT d’un badge, exactement à l’inverse de l’essai', () => {
+    // LA DISTINCTION DEMANDÉE : un essai monte la carte violette, un accès
+    // payant porte la plaque dorée. Les deux conditions doivent être
+    // rigoureusement opposées, sinon un appareil afficherait les deux ou
+    // aucune des deux.
+    const accueil = lire('app-mobile/app/(tabs)/index.tsx');
+
+    assert.match(accueil, /\{isTrialAccess && \(\s*<FreeTrialCard/,
+      'la carte d’essai reste conditionnée à l’essai');
+    assert.match(accueil, /!isTrialAccess && \(/,
+      'la carte de quota doit rester réservée au NON-essai');
+    assert.match(accueil, /trailing=\{<VipBadge label=\{t\('badge_vip'\)\} compact \/>\}/,
+      'le badge doit être posé dans l’en-tête de la carte de quota');
+    // Un seul point de montage : le badge ne peut pas apparaître par une
+    // autre voie, donc jamais sur un écran d’essai.
+    assert.equal((accueil.match(/<VipBadge/g) || []).length, 1);
+
+    // JAMAIS DÉDUIT D’UN NOM. C’est le défaut déjà corrigé côté serveur pour
+    // l’essai ; le badge ne doit pas le réintroduire par l’autre bout.
+    const badge = lire('app-mobile/components/ui/VipBadge.tsx');
+    assert.doesNotMatch(badge, /includes\(['"`]VIP|startsWith\(['"`]VIP|name\s*===/,
+      'le rang serait déduit du nom du forfait');
+
+    // Le mouvement doit s’arrêter : cet écran porte déjà le geste animé de la
+    // carte d’essai, et une boucle permanente réveillerait le fil JavaScript
+    // en continu sur un écran que l’utilisateur laisse ouvert.
+    //
+    // On vise l’APPEL, parenthèse comprise : la documentation du composant
+    // nomme ces deux mécanismes pour dire qu’elle ne les emploie pas, et une
+    // recherche sur le seul nom se déclencherait sur cette phrase.
+    assert.doesNotMatch(badge, /Animated\.loop\(|setInterval\(/,
+      'aucune animation permanente sur cet écran');
+    assert.match(badge, /AccessibilityInfo\.isReduceMotionEnabled/,
+      'le mouvement doit être désactivable');
+    // Le texte reste plein : un dégradé sur les lettres ferait chuter le
+    // contraste sur un fond lui-même dégradé.
+    assert.match(badge, /color: OR\.encre/);
+  });
+
   it('réutilise le quota déjà affiché, sans seconde interrogation du serveur', () => {
     const accueil = lire('app-mobile/app/(tabs)/index.tsx');
     for (const champ of ['usedBytes', 'remainingBytes', 'totalBytes', 'usedRatio']) {

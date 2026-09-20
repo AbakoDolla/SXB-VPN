@@ -20,6 +20,7 @@ import type { VpnConnection } from "@/types/api";
 import { alpha, elevation, layout, radius, spacing, type } from "@/constants/theme";
 import PowerButton from "@/components/ui/PowerButton";
 import QuotaRing from "@/components/ui/QuotaRing";
+import VipBadge from "@/components/ui/VipBadge";
 import ConfigPicker from "@/components/ui/ConfigPicker";
 import AmbientGlow from "@/components/ui/AmbientGlow";
 import {
@@ -783,7 +784,17 @@ export default function HomeScreen() {
             écran. */}
         {derivedQuota.totalBytes > 0 && !isTrialAccess && (
           <Surface>
-            <SectionHeader title={t('card_quota_plan')} icon="cellular-outline" />
+            <SectionHeader
+              title={t('card_quota_plan')}
+              icon="cellular-outline"
+              // LA DISTINCTION DEMANDÉE : un accès d'essai monte la carte
+              // violette au-dessus ; un accès PAYANT porte cette plaque dorée.
+              // Le marqueur est STRUCTUREL — il dépend de `isTrialAccess`, donc
+              // du marqueur d'essai établi par le serveur, jamais du NOM du
+              // forfait. Déduire un rang d'un nom fut précisément le défaut
+              // corrigé côté serveur, et le test l'interdit depuis.
+              trailing={<VipBadge label={t('badge_vip')} compact />}
+            />
             {derivedQuota.isExhausted ? (
               <EmptyState icon="warning-outline" title={t('quota_exhausted')} description={t('quota_reload')} />
             ) : (

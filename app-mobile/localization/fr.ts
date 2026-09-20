@@ -141,6 +141,8 @@ export const fr = {
   logs_copy_hint: 'Une touche « Copier » = tout l\'historique (partage ou presse-papiers), prêt à coller.',
   logs_waiting: 'En attente de connexion...',
   card_quota_plan: 'QUOTA DU FORFAIT',
+  /** Plaque dorée d'un accès payant. Distingue un client d'un essai gratuit. */
+  badge_vip: 'VIP',
   card_traffic_realtime: 'TRAFIC EN TEMPS RÉEL',
   card_traffic_per_app: 'CONSOMMATION PAR APPLICATION',
   no_app_data: 'Aucune donnée applicative disponible',
