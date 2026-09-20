@@ -27,6 +27,24 @@ test("public privacy routing precedes body parsing and maintenance on the produc
 });
 const publicBase = "/api/public";
 
+// Évalue un filtre Prisma contre un ticket du bac public.
+//
+// Les routes de support sont désormais cloisonnées : elles composent leur
+// filtre avec `AND`/`OR` et peuvent viser la RELATION `user`. Le comparateur
+// scalaire d'origine ne connaissait aucune de ces formes — il rendait donc
+// « pas de correspondance » là où la route en attendait une, et l'absence de
+// `findFirst` faisait carrément tomber la route en 500.
+//
+// Les tickets de l'accueil public sont anonymes par construction (`create`
+// vérifie `userId === null`) : aucun ne se rattache à un compte, donc tout
+// filtre de relation est faux.
+const correspond = (ticket, where = {}) => Object.entries(where).every(([champ, valeur]) => {
+  if (champ === "AND") return valeur.every(sous => correspond(ticket, sous));
+  if (champ === "OR") return valeur.some(sous => correspond(ticket, sous));
+  if (valeur && typeof valeur === "object") return ticket[`${champ}Id`] != null;
+  return ticket[champ] === valeur;
+});
+
 async function fixture(t, settings = {}, { rootAlias = false } = {}) {
   const tickets = [];
   const roles = ["OWNER", "SUPER_ADMIN", "ADMIN", "SUPPORT", "RESELLER", "CLIENT"];
@@ -56,8 +74,9 @@ async function fixture(t, settings = {}, { rootAlias = false } = {}) {
         return ticket;
       },
       async findMany({ where = {}, take }) {
-        return tickets.filter(ticket => Object.entries(where).every(([key, value]) => ticket[key] === value)).slice(0, take);
+        return tickets.filter(ticket => correspond(ticket, where)).slice(0, take);
       },
+      async findFirst({ where = {} }) { return tickets.find(ticket => correspond(ticket, where)) ?? null; },
       async findUnique({ where }) { return tickets.find(ticket => ticket.id === where.id) ?? null; },
     },
   };
@@ -192,16 +211,25 @@ test("submission persists a null-owner ticket without echoing personal data or c
   assert.equal("ipAddress" in details, false);
 });
 
-test("all staff roles can read public tickets; clients/resellers and anonymous visitors cannot", async t => {
+test("platform staff read the public intake; tenants, clients, resellers and anonymous visitors cannot", async t => {
   const f = await fixture(t);
   assert.equal((await f.post(await f.form())).status, 202);
-  for (const role of ["OWNER", "SUPER_ADMIN", "ADMIN", "SUPPORT"]) {
+  // Le bac public est PLATEFORME : les demandes y arrivent sans compte, depuis
+  // le site, avec l'adresse et l'appareil d'un inconnu. Seuls les rôles qui
+  // exploitent la plateforme entière y ont affaire.
+  for (const role of ["OWNER", "SUPER_ADMIN", "SUPPORT"]) {
     const list = await f.staff("/api/support", role);
     assert.equal(list.status, 200);
     assert.equal((await list.json()).tickets.length, 1);
     assert.equal((await f.staff("/api/support/ticket-1", role)).status, 200);
   }
-  for (const role of ["CLIENT", "RESELLER"]) {
+  // L'ADMIN n'est PAS du personnel de plateforme : c'est un locataire, qui
+  // revend l'accès depuis son propre espace. Il garde les tickets de SES
+  // clients — ceux-ci portent un compte qu'il gère — mais une demande déposée
+  // anonymement par un visiteur ne le regarde pas. Mesuré en production : un
+  // administrateur créé à l'instant lisait les 9 tickets de la plateforme, nom,
+  // adresse et panne compris, et pouvait les SUPPRIMER.
+  for (const role of ["ADMIN", "CLIENT", "RESELLER"]) {
     for (const route of ["/api/support", "/api/support?status=open", "/api/support?userId=null"]) {
       const list = await f.staff(route, role);
       assert.equal(list.status, 200);
