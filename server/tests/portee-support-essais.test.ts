@@ -43,18 +43,65 @@ describe("le volume d'essai suit la portée de son lecteur", () => {
     // l'appelant, elle sélectionnait tout forfait né d'un essai. Les
     // compteurs voisins, eux, étaient bien cloisonnés — d'où un espace
     // vierge surmonté de 17,6 To.
-    assert.doesNotMatch(
+    //
+    // Elle reste légitime dans la branche SANS portée — c'est ce que lit le
+    // propriétaire. Le garde vérifie donc qu'il n'en existe qu'une seule, et
+    // qu'elle est bien gardée par le `else`.
+    const occurrences = source.match(/conditions\.push\(\{ freeTrialRequestId: \{ not: null \} \}\);/g) ?? [];
+    assert.equal(
+      occurrences.length,
+      1,
+      "Un seul `push` global est admis : celui de la branche sans portée",
+    );
+    assert.match(
       source,
-      /conditions\.push\(\{ freeTrialRequestId: \{ not: null \} \}\);/,
+      /\} else \{\n\s*conditions\.push\(\{ freeTrialRequestId: \{ not: null \} \}\);/,
       "Ce `push` nu additionnait le trafic d'essai de toute la plateforme",
     );
   });
 
-  it("passe la portée par la demande dont le forfait est né", () => {
+  it("n'interroge AUCUNE relation `freeTrialRequest`, qui n'existe pas", () => {
+    // ═════════════════════════════════════════════════════════════════════
+    // LA RÉGRESSION QUE CE GARDE EXISTE POUR EMPÊCHER
+    // ═════════════════════════════════════════════════════════════════════
+    // Le premier correctif a filtré via `freeTrialRequest: porteeCampagne`,
+    // en supposant une relation. Il n'y en a pas : le schéma décrit
+    // `freeTrialRequestId` comme un « instantané sans clé étrangère », pour
+    // que la suppression d'une demande ne réécrive pas l'historique.
+    //
+    // Prisma rejette l'argument inconnu, et l'écran des essais est tombé en
+    // 500 EN PRODUCTION pour tout rôle cloisonné. Rien ne l'a arrêté :
+    // `server/` n'est pas typé à la compilation, et le garde écrit alors se
+    // contentait de relire le TEXTE de la condition — il attestait la forme
+    // du correctif, jamais son existence côté base.
+    const schema = lire("prisma/schema.prisma");
+    const modele = schema.slice(schema.indexOf("model Subscription {"));
+    const corps = modele.slice(0, modele.indexOf("\n}"));
+    assert.doesNotMatch(
+      corps,
+      /^\s*freeTrialRequest\s+\w/m,
+      "Si cette relation est un jour ajoutée, ce garde doit être revu",
+    );
+    assert.doesNotMatch(
+      source,
+      /freeTrialRequest\s*:/,
+      "`Subscription` n'a pas de relation `freeTrialRequest` : filtrer dessus rend 500",
+    );
+  });
+
+  it("restreint le volume aux demandes que l'appelant vient de lire", () => {
+    // Les demandes visibles sont chargées juste au-dessus, sous la même
+    // portée. Leurs identifiants sont le seul rattachement disponible entre
+    // un forfait d'essai et son propriétaire.
     assert.match(
       source,
-      /conditions\.push\(porteeCampagne[\s\S]{0,200}?freeTrialRequest: porteeCampagne/,
+      /if \(porteeCampagne\) \{\s*\n\s*if \(demandeIds\.length\) conditions\.push\(\{ freeTrialRequestId: \{ in: demandeIds \} \}\);/,
       "Le volume doit se restreindre aux demandes visibles par l'appelant",
+    );
+    assert.match(
+      source,
+      /select: \{ id: true, status: true, clientId: true, subscriptionId: true \}/,
+      "Sans `id`, les identifiants de demandes ne sont pas lisibles",
     );
   });
 
@@ -64,7 +111,7 @@ describe("le volume d'essai suit la portée de son lecteur", () => {
     // qu'ils lisaient. Un correctif qui change leurs chiffres est un bug.
     assert.match(
       source,
-      /: \{ freeTrialRequestId: \{ not: null \} \}\);/,
+      /\} else \{\s*\n\s*conditions\.push\(\{ freeTrialRequestId: \{ not: null \} \}\);/,
       "Sans portée, la sélection d'origine doit être préservée",
     );
   });

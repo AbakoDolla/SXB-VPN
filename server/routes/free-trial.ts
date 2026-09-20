@@ -1460,7 +1460,7 @@ router.get(
       // Projection minimale : trois colonnes suffisent à compter.
       const demandes = await (prisma as any).freeTrialRequest.findMany({
         ...(porteeCampagne ? { where: porteeCampagne } : {}),
-        select: { status: true, clientId: true, subscriptionId: true },
+        select: { id: true, status: true, clientId: true, subscriptionId: true },
       });
 
       // Échéances lues sur les forfaits d'essai : « actif » se décide sur
@@ -1482,11 +1482,26 @@ router.get(
       // l'appelant. Les compteurs voisins étaient pourtant bien cloisonnés —
       // d'où un administrateur qui lisait « 0 essai » au-dessus de
       // « 294,9 Go utilisés sur 17,6 To ». C'est la capture d'écran envoyée
-      // par le client. La portée passe par la demande dont le forfait est né.
-      conditions.push(porteeCampagne
-        ? { freeTrialRequestId: { not: null }, freeTrialRequest: porteeCampagne }
-        : { freeTrialRequestId: { not: null } });
-      {
+      // par le client.
+      //
+      // La portée ne peut PAS passer par une relation : `freeTrialRequestId`
+      // est un instantané sans clé étrangère — le schéma le dit, et il n'y a
+      // donc aucun champ `freeTrialRequest` sur `Subscription`. Le premier
+      // correctif l'a supposé et a fait tomber cet écran en 500 pour tout rôle
+      // cloisonné, propriétaire excepté. Rien ne l'a arrêté : `server/` n'est
+      // pas typé à la compilation, et le garde écrit alors ne relisait que le
+      // TEXTE de la condition.
+      //
+      // Les demandes visibles viennent d'être lues au-dessus, sous la même
+      // portée : leurs identifiants disent exactement quels forfaits d'essai
+      // appartiennent au lecteur.
+      const demandeIds = (demandes as any[]).map((d) => String(d.id)).filter(Boolean);
+      if (porteeCampagne) {
+        if (demandeIds.length) conditions.push({ freeTrialRequestId: { in: demandeIds } });
+      } else {
+        conditions.push({ freeTrialRequestId: { not: null } });
+      }
+      if (conditions.length) {
         const lignes = await (prisma as any).subscription.findMany({
           where: { OR: conditions },
           select: { id: true, status: true, expireAt: true, quotaBytes: true, quotaUsed: true },
