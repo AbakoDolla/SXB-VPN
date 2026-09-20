@@ -12,7 +12,12 @@ describe('mobile health wiring and privacy', () => {
     assert.match(server, /app\.use\("\/api\/mobile-health", mobileHealthRouter\)/);
     assert.match(route, /router\.post\("\/report", requireAuth/);
     assert.match(route, /req\.user\?\.role !== "CLIENT"/);
-    assert.match(route, /router\.get\([\s\S]{0,80}"\/summary"[\s\S]{0,120}requireAuth[\s\S]{0,80}requireRole\(\["SUPER_ADMIN", "ADMIN"\]\)/);
+    // RÉSERVÉ AU SOMMET. Mesuré à l'écran : un admin ne possédant qu'UN appareil
+    // lisait les 9 appareils de la plateforme et 713 rapports. `MobileHealthDevice`
+    // est indexé par un pseudonyme sans propriétaire, donc le résumé est
+    // incloisonnable sans défaire la pseudonymisation. OWNER traverse par le
+    // contournement central de `requireRole`.
+    assert.match(route, /router\.get\([\s\S]{0,80}"\/summary"[\s\S]{0,120}requireAuth[\s\S]{0,80}requireRole\(\["SUPER_ADMIN"\]\)/);
   });
 
   it('stores only pseudonymous allowlisted fields', () => {
@@ -96,8 +101,16 @@ describe('mobile health wiring and privacy', () => {
     const view = source('artifacts/sxb-dashboard/src/components/MobileHealthView.tsx');
 
     assert.match(app, /case 'mobile-health'/);
-    assert.match(app, /UserRole\.OWNER[\s\S]{0,100}UserRole\.SUPER_ADMIN[\s\S]{0,100}UserRole\.ADMIN/);
-    assert.match(layout, /id: 'mobile-health'[\s\S]{0,120}roles: ADMINS/);
+    // LES TROIS BARRIÈRES. La route ferme l'API, `App.tsx` ferme la vue même
+    // atteinte par navigation directe, `Layout.tsx` retire l'entrée du menu.
+    // Retirer l'entrée sans fermer la vue laisserait l'écran accessible.
+    assert.match(app, /case 'mobile-health'[\s\S]{0,400}role !== UserRole\.OWNER && role !== UserRole\.SUPER_ADMIN\)/);
+    assert.equal(
+      /case 'mobile-health'[\s\S]{0,400}UserRole\.ADMIN/.test(app),
+      false,
+      'ADMIN ne doit plus atteindre la vue de santé mobile par navigation directe',
+    );
+    assert.match(layout, /id: 'mobile-health'[\s\S]{0,120}roles: \['OWNER', 'SUPER_ADMIN'\]/);
     const labels = JSON.parse(source('artifacts/sxb-dashboard/src/locales/fr/operations.json')).mobileHealth;
     for (const [key, text] of [
       ['installedVersions', /Versions installées/], ['activity', /Actifs \/ inactifs/],

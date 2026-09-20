@@ -414,7 +414,10 @@ function MainApp() {
       case 'app-updates':
         return <AppUpdatesView currentUserRole={role} />;
       case 'mobile-health':
-        if (role !== UserRole.OWNER && role !== UserRole.SUPER_ADMIN && role !== UserRole.ADMIN) {
+        // Même réserve que « Sécurité » : le résumé agrège le parc Android
+        // entier sur des pseudonymes sans propriétaire, donc incloisonnable
+        // par admin sans défaire la pseudonymisation. Voir routes/mobile-health.ts.
+        if (role !== UserRole.OWNER && role !== UserRole.SUPER_ADMIN) {
           return <DashboardView onNavigate={(route) => setActiveRoute(route)} currentUserRole={role} />;
         }
         return <MobileHealthView />;

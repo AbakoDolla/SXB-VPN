@@ -111,9 +111,25 @@ const baseState = {
 assert.deepEqual(porteeHistoriqueQuota("RESELLER", "user-1", "reseller-2"), {
   resellerUserId: "user-1",
 });
-assert.deepEqual(porteeHistoriqueQuota("ADMIN", "admin-1", "reseller-2"), {
+// L'ADMIN NE PASSE PLUS PAR ICI. Cette fonction rendait autrefois
+// `{resellerId: "reseller-2"}` pour un admin : l'identifiant d'un revendeur
+// tiers, injecté dans l'URL, était repris tel quel sans aucune vérification de
+// périmètre — et sans identifiant, elle rendait `{}`, soit la plateforme
+// entière. C'est la fuite vue à l'écran : le panneau « Historique auditable des
+// quotas » d'un admin de recette affichait « Moust 1,9 Po », « Leroy 105 Go » et
+// les adresses des autres exploitants. L'admin est désormais routé vers
+// `porteeHistoriqueQuotaAdmin`, qui résout ses revendeurs visibles puis
+// restreint `resellerId: { in: [...] }`.
+assert.throws(
+  () => porteeHistoriqueQuota("ADMIN", "admin-1", "reseller-2"),
+  /refuse/i,
+  "un admin doit être refusé par la portée non filtrée et passer par porteeHistoriqueQuotaAdmin",
+);
+assert.throws(() => porteeHistoriqueQuota("ADMIN", "admin-1"));
+assert.deepEqual(porteeHistoriqueQuota("OWNER", "owner-1", "reseller-2"), {
   resellerId: "reseller-2",
 });
+assert.deepEqual(porteeHistoriqueQuota("SUPER_ADMIN", "sa-1"), {});
 assert.throws(() => porteeHistoriqueQuota("SUPPORT", "support-1"));
 
 // BigInt: aucune conversion Number ne doit alterer les octets exposes en JSON.
