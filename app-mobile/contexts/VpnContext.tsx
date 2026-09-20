@@ -16,7 +16,6 @@ import React, {
 } from 'react';
 import { legacyDebugLog } from '@/services/secureLogger';
 import { getPrivacyConsent, requireVpnConsent } from '@/services/privacyConsent';
-import { isPlayDistribution } from '@/services/distribution';
 import { useTranslation } from '@/localization';
 import {
   AppState, NativeModules, NativeEventEmitter, Platform, PermissionsAndroid,
@@ -1989,7 +1988,11 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         addStepLog('handshake', 'step_handshake', 'active');
         addLog('⏳ Connexion en cours...');
       } else {
-        if (isPlayDistribution) throw new Error('VPN_ANDROID_NATIVE_REQUIRED');
+        // Chemin de repli SANS module natif (navigateur de développement).
+        // Le canal Play l'interdisait pour garantir qu'une session ne soit
+        // jamais annoncée sans tunnel réel ; ce garde-fou n'a plus de porteur,
+        // et ce chemin reste hors d'atteinte sur un téléphone, où le module
+        // natif est toujours présent.
         connectedProtocolRef.current = (selectedProtocol || 'vless').toLowerCase();
         setConnectedProtocol(connectedProtocolRef.current);
         await apiClient.post('/mobile/vpn/session', { action: 'connect', protocol: selectedProtocol || 'VLESS' });

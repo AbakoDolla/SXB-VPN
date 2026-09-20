@@ -53,7 +53,6 @@ export const en = {
   access_config_restored: 'Configuration “{name}” is available again. No automatic VPN connection was started.',
   access_config_extended: 'The duration of “{name}” was extended without changing your device code.',
   access_config_quota_updated: 'The quota for “{name}” was updated without deactivating or interrupting other profiles.',
-  update_play_store: 'Open Google Play',
   privacy_title: 'VPN and privacy',
   privacy_vpn_disclosure: 'SXB VPN uses the Android VPN service to route network traffic from your device to the VPN server in your profile, including while the app is in the background. That server processes traffic to forward it to its destination. Local connections and initial server name resolution may remain outside the tunnel. The Google Play version rejects profiles whose encryption to the VPN server cannot be established.',
   privacy_required_data: 'To activate and provide the service, SXB sends your activation code, a persistent device identifier linked to your account, profile/session identifiers and traffic volumes to its API to manage access and quota. The API also receives your IP address and keeps technical request logs (times, routes, status codes). Identifiers, profiles and counters are stored locally for offline use. This is not a no-logs service. An access code supplied by your operator is required; this screen does not sell codes.',

@@ -53,7 +53,6 @@ export const fr = {
   access_config_restored: 'Configuration « {name} » de nouveau disponible. Aucune connexion VPN automatique n’a été lancée.',
   access_config_extended: 'La durée de « {name} » a été prolongée, sans changer le code de votre appareil.',
   access_config_quota_updated: 'Le quota de « {name} » a été mis à jour, sans désactivation ni interruption des autres profils.',
-  update_play_store: 'Ouvrir Google Play',
   privacy_title: 'VPN et confidentialité',
   privacy_vpn_disclosure: 'SXB VPN utilise le service VPN Android pour acheminer le trafic réseau de votre appareil vers le serveur VPN de votre profil, y compris lorsque l’application est en arrière-plan. Ce serveur traite le trafic pour le transmettre à sa destination. Les connexions locales et la résolution initiale du serveur peuvent rester hors tunnel. Dans la version Google Play, les profils dont le chiffrement vers le serveur VPN ne peut pas être établi sont refusés.',
   privacy_required_data: 'Pour activer et fournir le service, SXB transmet à son API votre code d’activation, un identifiant persistant d’appareil lié au compte, les identifiants de profil/session et les volumes consommés pour gérer l’accès et le quota. L’API reçoit aussi l’adresse IP et conserve des journaux techniques de requêtes (dates, routes, statuts). Les identifiants, profils et compteurs sont conservés localement pour fonctionner hors ligne. Il ne s’agit pas d’un service sans journaux. Un code d’accès fourni par votre opérateur est nécessaire ; cet écran ne permet pas d’en acheter.',

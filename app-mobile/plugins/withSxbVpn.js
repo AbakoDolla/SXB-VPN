@@ -16,23 +16,29 @@ const fs   = require('fs');
 const { execFileSync } = require('child_process');
 
 // ── 1. Permissions + déclaration service dans AndroidManifest.xml ─────────────
+//
+// LE CANAL GOOGLE PLAY A ÉTÉ RETIRÉ. Ce greffon produisait deux manifestes
+// selon `extra.distribution` : l'un pour l'APK direct, l'autre pour une
+// publication Play. Cette seconde variante retirait la permission d'installer
+// un APK — donc toute possibilité de mise à jour hors boutique — et posait un
+// marqueur qui activait dans l'application une porte de chiffrement refusant
+// les configurations V2Ray sans TLS.
+//
+// SXB ne publie plus sur Play : il n'y a plus qu'un manifeste.
 function withVpnManifest(config) {
-  const isPlay = config.extra?.distribution === 'play';
   return withAndroidManifest(config, (mod) => {
     const manifest = mod.modResults.manifest;
-    const wasPlay = manifest.application?.[0]?.['meta-data']?.some(entry =>
-      entry.$?.['android:name'] === 'com.sxbvpn.distribution' && entry.$?.['android:value'] === 'play');
     manifest.$ = manifest.$ || {};
     manifest.$['xmlns:tools'] = manifest.$['xmlns:tools'] || 'http://schemas.android.com/tools';
 
     // Permissions
     if (!manifest['uses-permission']) manifest['uses-permission'] = [];
     const perms = manifest['uses-permission'];
-    if (wasPlay && !isPlay) {
-      for (const permission of perms) {
-        if (['android.permission.REQUEST_INSTALL_PACKAGES', 'android.permission.BIND_VPN_SERVICE']
-          .includes(permission.$?.['android:name'])) delete permission.$['tools:node'];
-      }
+    // Un manifeste hérité d'un build Play marquait ces permissions à retirer.
+    // On lève ces marques : elles priveraient l'application de la mise à jour.
+    for (const permission of perms) {
+      if (['android.permission.REQUEST_INSTALL_PACKAGES', 'android.permission.BIND_VPN_SERVICE']
+        .includes(permission.$?.['android:name'])) delete permission.$['tools:node'];
     }
     const vpnPerms = [
       'android.permission.INTERNET',
@@ -40,7 +46,7 @@ function withVpnManifest(config) {
       // pour lancer un installer d'APK via IntentLauncher. La demande
       // « Installer » reste affichée à l'utilisateur (nous ne l'installons pas
       // silencieusement, la signature stable évite juste la désinstallation).
-      ...(!isPlay ? ['android.permission.REQUEST_INSTALL_PACKAGES'] : []),
+      'android.permission.REQUEST_INSTALL_PACKAGES',
       'android.permission.FOREGROUND_SERVICE',
       // FIX — WAKE_LOCK : empêche Android de tuer le service VPN quand l'écran est éteint.
       // Sans ce verrou, le foreground service peut être suspendu par Doze mode, causant
@@ -71,25 +77,6 @@ function withVpnManifest(config) {
       'android.permission.CAMERA',
       'android.permission.RECEIVE_BOOT_COMPLETED',
       'android.permission.SYSTEM_ALERT_WINDOW',
-      ...(isPlay ? [
-        'android.permission.REQUEST_INSTALL_PACKAGES',
-        'android.permission.BIND_VPN_SERVICE',
-        'android.permission.READ_EXTERNAL_STORAGE',
-        'android.permission.WRITE_EXTERNAL_STORAGE',
-        'android.permission.READ_MEDIA_IMAGES',
-        'android.permission.READ_MEDIA_VIDEO',
-        'android.permission.READ_MEDIA_AUDIO',
-        'android.permission.RECORD_AUDIO',
-        'android.permission.ACCESS_COARSE_LOCATION',
-        'android.permission.ACCESS_FINE_LOCATION',
-        'android.permission.ACCESS_BACKGROUND_LOCATION',
-        'android.permission.READ_PHONE_STATE',
-        'android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS',
-        'com.google.android.gms.permission.AD_ID',
-        'android.permission.ACCESS_ADSERVICES_AD_ID',
-        'android.permission.ACCESS_ADSERVICES_ATTRIBUTION',
-        'android.permission.ACCESS_ADSERVICES_TOPICS',
-      ] : []),
     ]) {
       const existing = perms.find(p => p.$?.['android:name'] === name);
       if (existing) existing.$['tools:node'] = 'remove';
@@ -111,7 +98,7 @@ function withVpnManifest(config) {
         'android:name': name, 'android:value': value, 'tools:replace': 'android:value',
       } });
     };
-    setMetadata('com.sxbvpn.distribution', isPlay ? 'play' : 'direct');
+    setMetadata('com.sxbvpn.distribution', 'direct');
     const apiBase = (process.env.EXPO_PUBLIC_API_URL || 'https://vpnsxb.afrihall.com/api').trim().replace(/\/+$/, '');
     const api = new URL(apiBase);
     if (api.protocol !== 'https:' || api.username || api.password || api.search || api.hash) {
@@ -123,11 +110,10 @@ function withVpnManifest(config) {
       'firebase_analytics_collection_enabled',
       'firebase_data_collection_default_enabled',
     ];
-    if (isPlay) {
-      for (const name of firebaseMetadata) setMetadata(name, 'false');
-    } else if (wasPlay) {
-      app['meta-data'] = app['meta-data'].filter(entry => !firebaseMetadata.includes(entry.$?.['android:name']));
-    }
+    // Firebase s'initialise normalement : les verrous d'auto-initialisation
+    // n'existaient que pour Play, où rien ne devait démarrer avant le
+    // consentement. Un manifeste hérité d'un tel build est nettoyé.
+    app['meta-data'] = app['meta-data'].filter(entry => !firebaseMetadata.includes(entry.$?.['android:name']));
 
     // Déclarer le VpnService
     if (!app.service) app.service = [];
@@ -171,46 +157,33 @@ function withVpnManifest(config) {
       });
     }
 
-    // An existing direct-install FCM token may still receive messages after an
-    // upgrade. Native consent code explicitly enables these components only
-    // after notifications consent; auto-init metadata alone cannot block them.
+    // Les composants de messagerie restent déclarés tels quels. Ils étaient
+    // DÉSACTIVÉS dans un build Play, où rien ne devait s'initialiser avant le
+    // consentement ; un manifeste hérité d'un tel build est remis d'aplomb.
     for (const [type, name] of [
       ['service', messagingServiceName],
       ['service', 'com.google.firebase.messaging.FirebaseMessagingService'],
       ['receiver', 'com.google.firebase.iid.FirebaseInstanceIdReceiver'],
     ]) {
       app[type] = app[type] || [];
-      if (isPlay) {
-        let component = app[type].find(entry => entry.$?.['android:name'] === name);
-        if (!component) {
-          component = { $: { 'android:name': name } };
-          app[type].push(component);
-        }
-        component.$['android:enabled'] = 'false';
-        component.$['tools:replace'] = 'android:enabled';
-      } else if (wasPlay) {
-        if (name === messagingServiceName) {
-          const component = app[type].find(entry => entry.$?.['android:name'] === name);
+      if (name === messagingServiceName) {
+        const component = app[type].find(entry => entry.$?.['android:name'] === name);
+        if (component) {
           delete component.$['android:enabled'];
           delete component.$['tools:replace'];
-        } else {
-          app[type] = app[type].filter(entry => entry.$?.['android:name'] !== name);
         }
+      } else {
+        app[type] = app[type].filter(entry => entry.$?.['android:name'] !== name);
       }
     }
 
     if (!app.provider) app.provider = [];
     const firebaseProviderName = 'com.sxbvpn.vpnmodule.SxbFirebaseInitProvider';
-    if (wasPlay && !isPlay) {
-      app.provider = app.provider.filter(p => !(p.$?.['tools:node'] === 'remove' &&
-        [firebaseProviderName, 'com.google.firebase.provider.FirebaseInitProvider'].includes(p.$?.['android:name'])));
-    }
-    if (isPlay) {
-      for (const name of [firebaseProviderName, 'com.google.firebase.provider.FirebaseInitProvider']) {
-        app.provider = app.provider.filter(p => p.$?.['android:name'] !== name);
-        app.provider.push({ $: { 'android:name': name, 'tools:node': 'remove' } });
-      }
-    } else if (!app.provider.find(p => p.$?.['android:name'] === firebaseProviderName)) {
+    // Un build Play marquait ces fournisseurs « à retirer » pour empêcher
+    // Firebase de démarrer. On lève ces marques avant de reposer le nôtre.
+    app.provider = app.provider.filter(p => !(p.$?.['tools:node'] === 'remove' &&
+      [firebaseProviderName, 'com.google.firebase.provider.FirebaseInitProvider'].includes(p.$?.['android:name'])));
+    if (!app.provider.find(p => p.$?.['android:name'] === firebaseProviderName)) {
       app.provider.push({
         $: {
           'android:name': firebaseProviderName,

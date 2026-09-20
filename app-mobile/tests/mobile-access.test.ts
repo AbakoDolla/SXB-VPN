@@ -714,16 +714,21 @@ describe('mobile access runtime with real encrypted store, auth and HTTP interce
     assert.equal(h.state.storage.has('@sxb_user'), false);
   });
 
-  it('performs no control/ticket/provisioning HTTP before Play VPN consent', async () => {
-    const h = await harness('play');
-    let requests = 0;
-    h.api.default.defaults.adapter = async request => { requests++; throw new Error('Must not run'); };
-    await assert.rejects(h.access.bindAccessState(user.id, 'hardware'), /privacy_consent_required/);
-    await assert.rejects(h.sync.refreshAccessState(), /privacy_consent_required/);
-    await assert.rejects(h.provision.provisionAndStore('test-data-token', 'hardware'), /privacy_consent_required/);
-    await assert.rejects(h.api.default.post('/mobile/access-ticket'), /privacy_consent_required/);
-    assert.equal(requests, 0);
-    assert.equal(h.state.storage.size, 0);
+  it('n’a plus de barrière de consentement avant le réseau', async () => {
+    // Ce test exigeait l'inverse : sous Google Play, aucune requête ne devait
+    // partir avant un consentement explicite. SXB ne publie plus sur Play, et
+    // la barrière a été retirée — l'utilisateur qui installe l'APK et saisit
+    // son jeton consent par le geste même.
+    //
+    // On vérifie donc que le consentement est ACQUIS et ne peut plus refuser,
+    // car c'est lui qui bloquait autrefois ces quatre chemins.
+    const h = await harness();
+    const consent = h.consent.getPrivacyConsent();
+    assert.equal(consent.vpn, true);
+    assert.equal(consent.diagnostics, true);
+    assert.equal(consent.notifications, true);
+    // La garde subsiste au point d'entrée du tunnel, mais ne peut plus lever.
+    assert.doesNotThrow(() => h.consent.requireVpnConsent());
   });
 
   it('honors Retry-After and validates the root blocked route and rendered French/English attribution', async () => {

@@ -93,9 +93,11 @@ describe('montée du moteur — version épinglée', () => {
   it('fournit le Go qu’exige ce moteur', () => {
     // sing-box 1.12 déclare `go 1.23.1`. Un runner plus ancien échoue à la
     // résolution des modules, avant même de compiler quoi que ce soit.
-    for (const flux of ['.github/workflows/build-android.yml', '.github/workflows/build-google-play.yml']) {
-      assert.match(lire(flux), /go-version: "1\.2[4-9]\.x"/, `Go trop ancien dans ${flux}`);
-    }
+    //
+    // Un seul flux à vérifier désormais : la chaîne Google Play a été retirée,
+    // SXB ne publiant plus sur cette boutique.
+    assert.match(lire('.github/workflows/build-android.yml'), /go-version: "1\.2[4-9]\.x"/,
+      'Go trop ancien dans build-android.yml');
     assert.match(lire('scripts/tests/singbox-engine-check/go.mod'), /^go 1\.23/m);
   });
 

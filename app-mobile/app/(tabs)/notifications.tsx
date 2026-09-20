@@ -10,7 +10,6 @@ import { useColors } from "@/hooks/useColors";
 import { useResponsive } from "@/hooks/useResponsive";
 import { useTranslation } from "@/localization";
 import { downloadAndInstallAppUpdate } from "@/services/appUpdate";
-import { isPlayDistribution } from "@/services/distribution";
 import { alpha, layout, radius, spacing, type } from "@/constants/theme";
 import { EmptyState, ProgressBar } from "@/components/ui/Primitives";
 import { useVpnContext, formatSpeed } from "@/contexts/VpnContext";
@@ -157,7 +156,7 @@ function NotifRow({ item, onMarkRead }: { item: Notification; onMarkRead: (id: s
             >
               <Ionicons name="download-outline" size={15} color={colors.primaryForeground} />
               <Text style={[type.captionMedium, { color: colors.primaryForeground }]}>
-                {isPlayDistribution ? t('update_play_store') : downloading ? t('update_downloading') : t('update_download')}
+                {downloading ? t('update_downloading') : t('update_download')}
               </Text>
             </Pressable>
           </>

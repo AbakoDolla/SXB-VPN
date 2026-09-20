@@ -153,8 +153,9 @@ function RootLayoutNav() {
 
 function ThemedAppShell() {
   const colors = useColors();
-  const { consent, loading } = usePrivacy();
-  if (loading || !consent.vpn) return <PrivacyDisclosure />;
+  // Plus aucune barrière de consentement avant l'application : elle existait
+  // pour Google Play. La page de confidentialité reste accessible par
+  // `/privacy`, depuis l'activation et les réglages.
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.bg }}>
       <VpnProvider>

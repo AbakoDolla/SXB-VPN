@@ -82,7 +82,9 @@ object SxbPushNotifications {
         level: String = "info",
     ): Boolean {
         if (!SxbPrivacyPolicy.notificationsAllowed(context)) return false
-        if (SxbPrivacyPolicy.isPlay(context) && id.startsWith("app-update-")) return false
+        // Les avis de MISE À JOUR passent désormais : le canal Play les
+        // taisait, la boutique s'en chargeant. Sans elle, c'est le seul
+        // message qui apprend à l'appareil qu'une version existe.
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

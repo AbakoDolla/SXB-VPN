@@ -1,33 +1,24 @@
-import { NativeModules, Platform } from 'react-native';
-import { isPlayDistribution } from './distribution';
-import { NO_CONSENT, parsePrivacyConsent, type PrivacyConsent } from './privacyPolicy';
+import { NO_CONSENT, type PrivacyConsent } from './privacyPolicy';
 
-interface PrivacyNativeModule {
-  distribution: string;
-  getPrivacyConsent(): Promise<string>;
-  setPrivacyConsent(vpn: boolean, diagnostics: boolean, notifications: boolean): Promise<string>;
-}
-
-let consent: PrivacyConsent = isPlayDistribution
-  ? { ...NO_CONSENT }
-  : { ...NO_CONSENT, vpn: true, diagnostics: true, notifications: true };
+/**
+ * Consentement de confidentialité — accordé d'office.
+ *
+ * Ce mécanisme existait pour la publication Google Play, qui exige un écran de
+ * divulgation bloquant avant toute connexion VPN. SXB n'y publie plus, et le
+ * canal direct n'a jamais posé cette barrière : l'utilisateur qui installe
+ * l'APK et saisit son jeton consent par le geste même.
+ *
+ * La forme est conservée — les écrans lisent toujours `getPrivacyConsent()` —
+ * mais elle ne peut plus REFUSER. Le retrait du canal Play supprime donc la
+ * barrière sans toucher aux appelants.
+ *
+ * `savePrivacyConsent` reste présent et refuse explicitement : un écran qui
+ * tenterait encore de retirer le consentement échouerait bruyamment plutôt que
+ * de laisser croire à un retrait qui n'aurait aucun effet.
+ */
+const consent: PrivacyConsent = { ...NO_CONSENT, vpn: true, diagnostics: true, notifications: true };
 let generation = new AbortController();
 const listeners = new Set<() => void>();
-
-function nativePrivacy(): PrivacyNativeModule {
-  const module = NativeModules.SxbVpnNative as PrivacyNativeModule | undefined;
-  if (Platform.OS !== 'android' || module?.distribution !== 'play' || !module?.getPrivacyConsent || !module?.setPrivacyConsent) {
-    throw new Error('privacy_native_unavailable');
-  }
-  return module;
-}
-
-function publish(next: PrivacyConsent) {
-  generation.abort();
-  generation = new AbortController();
-  consent = next;
-  listeners.forEach(listener => listener());
-}
 
 export const getPrivacyConsent = () => consent;
 export const getPrivacySignal = () => generation.signal;
@@ -35,20 +26,26 @@ export const subscribePrivacyConsent = (listener: () => void) => {
   listeners.add(listener);
   return () => { listeners.delete(listener); };
 };
+
+/**
+ * Garde conservée aux points d'entrée du tunnel.
+ *
+ * Elle ne peut plus échouer, et c'est délibéré : la laisser en place évite
+ * qu'un futur retour de la notion de consentement doive retrouver tous les
+ * endroits où elle devait être posée.
+ */
 export function requireVpnConsent(): void {
   if (!consent.vpn) throw new Error('privacy_consent_required');
 }
 
+/** Sans canal Play, il n'y a rien à charger : le consentement est acquis. */
 export async function loadPrivacyConsent(): Promise<void> {
-  if (!isPlayDistribution) return;
-  publish({ ...NO_CONSENT });
-  publish(parsePrivacyConsent(JSON.parse(await nativePrivacy().getPrivacyConsent())));
+  generation.abort();
+  generation = new AbortController();
+  listeners.forEach(listener => listener());
 }
 
-export async function savePrivacyConsent(next: PrivacyConsent): Promise<void> {
-  if (!isPlayDistribution) throw new Error('privacy_play_only');
-  // The native transaction first stops and joins the tunnel on withdrawal.
-  // No JS state claims a successful withdrawal before that has completed.
-  const result = await nativePrivacy().setPrivacyConsent(next.vpn, next.diagnostics, next.notifications);
-  publish(parsePrivacyConsent(JSON.parse(result)));
+/** Plus aucun écran ne retire le consentement : l'appeler est une erreur. */
+export async function savePrivacyConsent(_next: PrivacyConsent): Promise<void> {
+  throw new Error('privacy_consent_immutable');
 }

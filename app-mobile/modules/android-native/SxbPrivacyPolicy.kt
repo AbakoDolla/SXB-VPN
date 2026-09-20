@@ -5,82 +5,90 @@ import android.content.ComponentName
 import android.content.pm.PackageManager
 import org.json.JSONObject
 
+/**
+ * SxbPrivacyPolicy — autorisations de l'application, canal direct uniquement.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * CE QUI A ÉTÉ RETIRÉ, ET POURQUOI
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Ce module distinguait auparavant deux canaux de distribution, lus dans un
+ * marqueur du manifeste : « direct » et « play ». Le second imposait un
+ * consentement explicite avant toute connexion, et surtout il commandait une
+ * PORTE DE CHIFFREMENT (`SxbPlayEncryption`) qui refusait en bloc toute
+ * configuration VLESS, Trojan, Hysteria2 ou TUIC sans TLS vérifié, VMess sans
+ * chiffrement reconnu, Shadowsocks sans AEAD, et toute configuration chaînée.
+ *
+ * C'est précisément ce qui faisait qu'une même configuration V2Ray marchait
+ * chez un utilisateur et pas chez un autre : non pas la personne, mais le
+ * BUILD qu'elle avait installé.
+ *
+ * SXB ne publie plus sur Google Play. Le canal a donc été retiré plutôt que
+ * désactivé : laisser un interrupteur aurait laissé la possibilité qu'un build
+ * le réactive par accident, et le défaut reviendrait sans prévenir.
+ *
+ * Les trois fonctions d'autorisation subsistent, et rendent toujours `true`.
+ * C'est délibéré : leurs appelants — service VPN, notifications, journaux —
+ * gardent ainsi leur point de contrôle en place, prêt à porter une règle
+ * future, sans qu'il faille les retrouver un par un.
+ */
 object SxbPrivacyPolicy {
     const val VERSION = 1
-    private const val PREFS = "sxb_privacy_consent"
-    private var stoppingService: SxbVpnService? = null
-    private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    fun distribution(context: Context): String {
-        val marker = context.packageManager.getApplicationInfo(
-            context.packageName, PackageManager.GET_META_DATA,
-        ).metaData?.getString("com.sxbvpn.distribution") ?: "direct"
-        return if (marker == "direct") "direct" else "play"
-    }
+    /** Canal unique. Le marqueur de manifeste n'est plus lu. */
+    fun distribution(context: Context): String = "direct"
 
-    fun isPlay(context: Context) = distribution(context) == "play"
-    fun vpnAllowed(context: Context): Boolean = !isPlay(context) || prefs(context).let {
-        it.getInt("version", 0) == VERSION && it.getBoolean("vpn", false) && !it.getBoolean("revoking", false)
-    }
-    fun diagnosticsAllowed(context: Context) = !isPlay(context) ||
-        (vpnAllowed(context) && prefs(context).getBoolean("diagnostics", false))
-    fun notificationsAllowed(context: Context) = !isPlay(context) ||
-        (vpnAllowed(context) && prefs(context).getBoolean("notifications", false))
+    fun vpnAllowed(context: Context): Boolean = true
+    fun diagnosticsAllowed(context: Context): Boolean = true
+    fun notificationsAllowed(context: Context): Boolean = true
+
+    /**
+     * Rétablit les composants de notification dans leur état par défaut.
+     *
+     * Le manifeste les déclare désactivés — héritage de Play, où rien ne
+     * devait s'initialiser avant le consentement. Sans consentement à
+     * attendre, ils sont remis à l'état que le manifeste prévoit, ce que le
+     * canal direct faisait déjà.
+     */
     fun syncPushComponents(context: Context) {
-        val play = isPlay(context)
-        val enabled = notificationsAllowed(context)
         val components = listOf(
             "com.sxbvpn.vpnmodule.SxbFirebaseMessagingService",
             "com.google.firebase.messaging.FirebaseMessagingService",
             "com.google.firebase.iid.FirebaseInstanceIdReceiver",
         )
-        // Open the receiver last; close it first. The manifest starts disabled.
-        for (name in if (enabled) components else components.reversed()) {
+        for (name in components) {
             context.packageManager.setComponentEnabledSetting(
                 ComponentName(context.packageName, name),
-                if (!play) PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
-                else if (enabled) PackageManager.COMPONENT_ENABLED_STATE_ENABLED
-                else PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                PackageManager.COMPONENT_ENABLED_STATE_DEFAULT,
                 PackageManager.DONT_KILL_APP,
             )
         }
     }
+
     fun read(context: Context): String = JSONObject().apply {
         put("version", VERSION)
-        put("vpn", vpnAllowed(context))
-        put("diagnostics", diagnosticsAllowed(context))
-        put("notifications", notificationsAllowed(context))
+        put("vpn", true)
+        put("diagnostics", true)
+        put("notifications", true)
     }.toString()
 
+    /**
+     * Le tunnel ne s'arrête plus pour un retrait de consentement — il n'y a
+     * plus de consentement à retirer. Conservée pour les appelants existants.
+     */
     @Synchronized
     fun stopVpnForPrivacy() {
-        val service = stoppingService ?: SxbVpnService.instance ?: return
-        // Retain the service across retries even if Android calls onDestroy.
-        stoppingService = service
-        service.stopForPrivacy()
-        stoppingService = null
+        SxbVpnService.instance?.stopForPrivacy()
     }
 
+    /**
+     * Enregistrer un consentement n'a plus de sens : il est acquis.
+     *
+     * L'appel ÉCHOUE au lieu de ne rien faire — un écran qui tenterait encore
+     * de retirer l'accord doit le découvrir bruyamment, plutôt que de laisser
+     * croire à un retrait sans effet.
+     */
     @Synchronized
     fun save(context: Context, vpn: Boolean, diagnostics: Boolean, notifications: Boolean): String {
-        check(isPlay(context)) { "PRIVACY_PLAY_ONLY" }
-        val storage = prefs(context)
-        // Durable start barrier survives process death during withdrawal.
-        // The recorded consent is changed only after the tunnel really stops.
-        if (!vpn || storage.getBoolean("revoking", false) || stoppingService != null) {
-            check(storage.edit().putBoolean("revoking", true).commit()) { "PRIVACY_STORAGE_ERROR" }
-            stopVpnForPrivacy()
-            SxbAccessControl.withdraw(context)
-        }
-        check(storage.edit()
-            .putInt("version", VERSION).putBoolean("vpn", vpn)
-            .putBoolean("diagnostics", vpn && diagnostics)
-            .putBoolean("notifications", vpn && notifications)
-            .putBoolean("revoking", false).commit()) { "PRIVACY_STORAGE_ERROR" }
-        // Le masquage des journaux n'a plus d'interrupteur : `initialize`
-        // relit la politique, et une version publiée masque en permanence.
-        SxbSecureLogger.initialize(context)
-        syncPushComponents(context)
-        return read(context)
+        throw IllegalStateException("PRIVACY_CONSENT_IMMUTABLE")
     }
 }

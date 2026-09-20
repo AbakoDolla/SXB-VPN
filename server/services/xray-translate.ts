@@ -159,16 +159,37 @@ function translateStreamSettings(
     if (Array.isArray(http.host) && http.host.length > 0) transport.host = http.host.map((value: any) => String(value));
     else if (typeof http.host === 'string' && http.host.trim()) transport.host = [http.host.trim()];
     out.transport = transport;
-  } else if (network === 'kcp') {
-    const kcp = ss.kcpSettings ?? {};
-    const transport: Record<string, any> = { type: 'kcp' };
-    for (const [from, to] of [['mtu', 'mtu'], ['tti', 'tti'], ['uplinkCapacity', 'uplink_capacity'], ['downlinkCapacity', 'downlink_capacity'], ['readBufferSize', 'read_buffer_size'], ['writeBufferSize', 'write_buffer_size']] as const) {
-      if (kcp[from] !== undefined) transport[to] = Number(kcp[from]);
+  } else if (network === 'httpupgrade') {
+    // Le moteur embarqué SAIT faire ce transport : `buildTransportObj` le
+    // construit dans `SxbVpnService.kt`, et le chemin d'import par URI
+    // l'accepte déjà. Seul ce traducteur JSON le refusait — une configuration
+    // parfaitement exécutable était donc rejetée à l'import selon la FORME
+    // sous laquelle on la fournissait.
+    //
+    // `host` est une CHAÎNE ici, là où le transport `http` attend un tableau :
+    // les deux formes ne sont pas interchangeables côté moteur.
+    const upgrade = ss.httpupgradeSettings ?? {};
+    const transport: Record<string, any> = { type: 'httpupgrade', path: upgrade.path || '/' };
+    const host = typeof upgrade.host === 'string' ? upgrade.host.trim()
+      : Array.isArray(upgrade.host) && upgrade.host.length ? String(upgrade.host[0]).trim() : '';
+    if (host) transport.host = host;
+    if (upgrade.headers && typeof upgrade.headers === 'object' && Object.keys(upgrade.headers).length > 0) {
+      transport.headers = upgrade.headers;
     }
-    if (kcp.congestion !== undefined) transport.congestion = kcp.congestion === true;
-    if (kcp.seed) transport.seed = String(kcp.seed);
-    if (kcp.header?.type) transport.header = { type: String(kcp.header.type) };
     out.transport = transport;
+  } else if (network === 'kcp') {
+    // REFUS ASSUMÉ, et c'est un DURCISSEMENT.
+    //
+    // mKCP est un transport propre à Xray ; sing-box n'en a aucun équivalent —
+    // `buildTransportObj` n'a pas de branche `kcp`, et le moteur rejette un
+    // `transport.type` qu'il ne connaît pas.
+    //
+    // Ce traducteur le traduisait pourtant en `{"type":"kcp"}`. L'import
+    // RÉUSSISSAIT donc, le profil s'attribuait normalement, et l'échec
+    // n'apparaissait qu'au moment de la connexion, sur le téléphone de
+    // l'utilisateur. Refuser ici déplace la découverte du problème à l'endroit
+    // où quelqu'un peut encore agir.
+    errors.push('Xray : réseau "kcp" (mKCP) non supporté par sing-box — import refusé');
   } else if (network === 'quic') {
     const quic = ss.quicSettings ?? {};
     const transport: Record<string, any> = { type: 'quic' };

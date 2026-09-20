@@ -2322,13 +2322,17 @@ class SxbVpnService : VpnService(), PlatformInterface {
             broadcastLog("[SXB] Configuration adaptée au moteur ${SxbEngineSchema.ENGINE_VERSION}")
         }
 
-        if (SxbPrivacyPolicy.isPlay(this)) {
-            SxbPlayEncryption.validate(
-                JSONObject(configModerne),
-                trustedSshRelay = isSshRelay && sshSession?.isConnected == true,
-                sshPort = SOCKS5_PORT,
-            )
-        }
+        // ── LA PORTE QUI REFUSAIT LES CONFIGURATIONS V2RAY A ÉTÉ RETIRÉE ──
+        //
+        // `SxbPlayEncryption.validate()` s'exécutait ici quand le build se
+        // réclamait de Google Play, et refusait en bloc toute configuration
+        // VLESS / Trojan / Hysteria2 / TUIC sans TLS vérifié, VMess sans
+        // chiffrement reconnu, Shadowsocks sans AEAD, et toute configuration
+        // chaînée. Une même configuration passait donc chez l'un et échouait
+        // chez l'autre, selon le build installé — jamais selon la personne.
+        //
+        // SXB ne publie plus sur Play : la règle n'a plus de destinataire, et
+        // le moteur reste seul juge de ce qu'il sait établir.
         ensureLibboxSetup()
         SxbDefaultNetworkMonitor.start(this)
 
@@ -2397,7 +2401,6 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private fun classifyVpnError(message: String): String {
         val lower = message.lowercase(Locale.ROOT)
         return when {
-            lower.contains("play_encryption_required") -> SxbPlayEncryption.ERROR
             lower.contains("privacy_consent_required") -> "PRIVACY_CONSENT_REQUIRED"
             lower.contains("ssh_mode_unknown") -> "SSH_MODE_UNKNOWN"
             // §30 — Le profil est valide mais demande une capacité que le moteur
@@ -2446,7 +2449,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
     }
 
     private fun failVpn(code: String, displayMessage: String) {
-        if (code == SxbPlayEncryption.ERROR || code == "PRIVACY_CONSENT_REQUIRED") disableAutoReconnect()
+        if (code == "PRIVACY_CONSENT_REQUIRED") disableAutoReconnect()
         if (code == "AUTH_FAILED" && ::autoReconnect.isInitialized) autoReconnect.markStopped(code)
         Log.e("SXB_DEBUG", "[SXB_DEBUG] VPN_FAILED code=$code")
         trace("VPN_FAILED", "code=$code state=$currentState")
@@ -4535,9 +4538,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
      * le tunnel qu'elles alimentent, donc reboucler dès la bascule.
      */
     private fun carrierExclusionRule(servers: Collection<String>): JSONObject? {
-        // Play uses protected native sockets for bootstrap, not a public-IP
-        // TUN bypass that would also let application data avoid encryption.
-        if (SxbPrivacyPolicy.isPlay(this)) return null
+        // La règle d'exclusion de l'opérateur s'applique désormais toujours :
+        // elle était retirée sous Play, où le contournement d'un TUN par IP
+        // publique était proscrit. Seul le canal direct subsiste, et il en a
+        // besoin pour joindre le serveur sans reboucler dans son propre tunnel.
         val ips = LinkedHashSet<String>()
         for (host in servers) {
             if (host.isBlank()) continue

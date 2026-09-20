@@ -430,7 +430,6 @@ Workflows GitHub Actions :
 | --- | --- | --- |
 | `deploy-vps.yml` | push sur `main` (chemins surveillés) | Construit puis déploie l'API et le tableau de bord |
 | `build-android.yml` | push sur `main` | Construit l'APK signé et publie une release |
-| `build-google-play.yml` | manuel | Construit un candidat AAB signé, sans publication sur Google Play |
 | `vps-audit.yml` | manuel | Contrôle l'état du serveur |
 
 Le déploiement ne se déclenche que sur certains chemins : un changement dans
@@ -439,9 +438,9 @@ Le déploiement ne se déclenche que sur certains chemins : un changement dans
 
 Le numéro de publication de l'APK est **distinct** du `versionCode` Android : ce
 dernier doit rester strictement croissant, sans quoi Android refuse d'installer
-la mise à jour sur les appareils déjà équipés. Les canaux direct et Google Play
-utilisent la même horloge UTC de versionnement et le même groupe de construction
-sérialisée. Le code exact figure dans les rapports de release ; ne pas utiliser
+la mise à jour sur les appareils déjà équipés. Le versionnement suit une horloge
+UTC partagée et un groupe de construction sérialisé. Le code exact figure dans
+les rapports de release ; ne pas utiliser
 le numéro `apk-*` à sa place dans le dashboard.
 
 Un lancement manuel de `build-android.yml` avec `distribution=direct` sur une
@@ -451,42 +450,27 @@ pas les anciennes publications. Le candidat conserve le certificat de l'APK
 publique actuelle. Les mentions d'auteur visibles `AbakoDollar$` ne changent
 ni cette clé cryptographique ni l'identifiant Android.
 
-### Préparation Google Play
+### Distribution
 
-Le canal **direct** reste la valeur par défaut. Le canal **play** est choisi à la
-construction avec `EXPO_PUBLIC_DISTRIBUTION=play`, sans changement du package
-`com.sxbvpn.mobile`. Il ne doit pas installer de mises à jour APK externes.
+SXB se distribue **uniquement par APK direct**. Il n'y a plus qu'un seul canal :
+la publication Google Play a été retirée, avec sa chaîne de construction, son
+dossier de boutique et les comportements qu'elle imposait à l'application.
 
-Le workflow manuel `build-google-play.yml` produit un **candidat AAB signé** et
-un rapport de validation ; il ne publie rien sur Google Play. Le paramètre
-`previous_play_version_code` correspond au plus grand code déjà envoyé à Play.
-Une valeur `0` avec `play_history_verified=false` permet de construire un candidat
-quand cet historique est encore inconnu ; elle ne déclare pas qu'une première
-publication a été confirmée. L'éditeur doit vérifier l'historique avant tout
-envoi à Google. La signature,
-l'identité du package, l'API cible 36, les permissions et l'alignement des
-bibliothèques natives sont contrôlés avant de fournir le candidat.
+Ce retrait n'était pas cosmétique. Le canal Play portait trois règles qui
+gênaient les utilisateurs réels :
 
-Pour valider une branche avant toute mise en production, le workflow existant
-`build-android.yml` accepte aussi un déclenchement manuel avec
-`distribution=play` : il appelle le workflow AAB sans lancer son job de
-publication APK. Garder `play_history_verified=false` tant que le propriétaire
-du compte Play Console n'a pas confirmé l'historique.
+- une **porte de chiffrement** qui refusait en bloc toute configuration
+  VLESS / Trojan / Hysteria2 / TUIC sans TLS vérifié, VMess sans chiffrement
+  reconnu, Shadowsocks sans AEAD, et toute configuration chaînée. C'est ce qui
+  faisait qu'une même configuration V2Ray fonctionnait chez l'un et pas chez
+  l'autre — selon le build installé, jamais selon la personne ;
+- la **mise à jour renvoyée vers la boutique** au lieu de télécharger l'APK,
+  ce qui, sur une fiche qui n'existe plus, priverait l'appareil de toute
+  possibilité de se mettre à jour ;
+- un **consentement bloquant** avant la première connexion.
 
-Le dossier [`store/google-play/`](store/google-play/) contient les textes FR/EN,
-les visuels de marque, les déclarations préparatoires et les opérations à
-effectuer dans Play Console. Sa validation simple vérifie les fichiers ; son
-mode `--submission` doit aussi valider les confirmations de l'éditeur. Un
-dossier techniquement correct n'est **pas** une publication approuvée.
-
-Avant toute soumission, l'éditeur doit notamment confirmer son compte développeur
-et son identité, l'historique de signature/version, les pratiques de traitement
-des données, les coordonnées publiques et les informations d'accès pour l'équipe
-de vérification. Les captures et vidéos doivent montrer la véritable application,
-pas une connexion VPN simulée. Google reste responsable de l'examen et de
-l'acceptation de la publication.
-
-Les ressources publiques prévues sont :
+Les pages publiques restent en service, car elles ne dépendaient pas de la
+boutique :
 
 - `https://vpnsxb.afrihall.com/api/public/privacy`
 - `https://vpnsxb.afrihall.com/api/public/data-deletion`
@@ -496,14 +480,6 @@ pendant une maintenance. Le formulaire crée une demande privée pour l'équipe
 d'assistance ; il ne supprime aucun compte sur la seule déclaration d'un visiteur.
 L'identité du demandeur doit être vérifiée avant suppression, en particulier
 pour les comptes historiques partagés avec un revendeur.
-
-Les informations juridiques et les pratiques effectives sont à renseigner via
-les variables `SXB_PRIVACY_*` décrites dans
-[`PUBLIC-ROUTES.md`](store/google-play/PUBLIC-ROUTES.md). Tant que l'éditeur ne les
-a pas validées, les pages sont explicitement signalées comme **prépublication**
-et la soumission doit rester bloquée. `SXB_PRIVACY_REVIEWED=true` n'est pas une
-valeur à activer pour contourner cette étape : elle exige toutes les informations
-obligatoires. Le déploiement les contrôle avant de remplacer le serveur en cours.
 
 ### Compte propriétaire
 

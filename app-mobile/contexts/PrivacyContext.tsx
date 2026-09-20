@@ -1,7 +1,6 @@
-import React, { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import React, { createContext, useContext, useRef, useState, useSyncExternalStore } from 'react';
 import { getPrivacyConsent, loadPrivacyConsent, savePrivacyConsent, subscribePrivacyConsent } from '@/services/privacyConsent';
 import { type PrivacyConsent } from '@/services/privacyPolicy';
-import { isPlayDistribution } from '@/services/distribution';
 import { clearMobileHealth } from '@/services/mobileHealth';
 import { unregisterPushToken } from '@/services/pushNotifications';
 
@@ -15,7 +14,9 @@ const PrivacyContext = createContext({
 
 export function PrivacyProvider({ children }: { children: React.ReactNode }) {
   const consent = useSyncExternalStore(subscribePrivacyConsent, getPrivacyConsent, getPrivacyConsent);
-  const [loading, setLoading] = useState(isPlayDistribution);
+  // Le consentement est acquis d'office : plus rien à charger au démarrage,
+  // donc aucun écran d'attente avant que l'application ne soit utilisable.
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
   const pendingChange = useRef<PrivacyConsent | null>(null);
   const save = async (next: PrivacyConsent) => {
@@ -41,7 +42,6 @@ export function PrivacyProvider({ children }: { children: React.ReactNode }) {
     } catch { setError(true); }
     finally { setLoading(false); }
   };
-  useEffect(() => { if (isPlayDistribution) void reload(); }, []);
   return <PrivacyContext.Provider value={{ consent, loading, error, reload, save }}>{children}</PrivacyContext.Provider>;
 }
 

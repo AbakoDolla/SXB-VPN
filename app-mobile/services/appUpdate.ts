@@ -1,5 +1,4 @@
 import { Linking, Platform } from 'react-native';
-import { isPlayDistribution, PLAY_STORE_URL } from './distribution';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
 import apiClient from '@/services/apiClient';
@@ -25,7 +24,6 @@ function normalizeSha256(value: unknown): string | undefined {
 }
 
 export async function fetchLatestAppUpdate(): Promise<AppUpdateInfo | null> {
-  if (isPlayDistribution) return null;
   if (Platform.OS !== 'android') return null;
   try {
     // Le mobile activé dispose déjà d’une session authentifiée et de son Device ID.
@@ -57,10 +55,10 @@ export async function downloadAndInstallAppUpdate(
   onProgress?: (progress: number) => void,
   onInstallStart?: () => void,
 ): Promise<void> {
-  if (isPlayDistribution) {
-    await Linking.openURL(PLAY_STORE_URL);
-    return;
-  }
+  // La mise à jour se TÉLÉCHARGE, toujours. Elle renvoyait auparavant vers la
+  // fiche Google Play quand le build s'en réclamait ; sur une fiche qui
+  // n'existe plus, l'appareil n'aurait aucun moyen de se mettre à jour et
+  // resterait indéfiniment sur son moteur embarqué.
   if (Platform.OS !== 'android') throw new Error('android_only');
   if (!update.apkUrl.startsWith('https://')) throw new Error('invalid_update_url');
 

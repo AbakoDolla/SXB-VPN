@@ -3,7 +3,6 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient from '@/services/apiClient';
 import type { Notification as MobileNotification } from '@/types/api';
 import { getPrivacyConsent } from './privacyConsent';
-import { isPlayDistribution } from './distribution';
 
 const DELIVERED_ANNOUNCEMENTS_KEY = '@sxb_delivered_announcement_ids_v1';
 export const ANNOUNCEMENT_NOTIFICATIONS_ENABLED_KEY = '@sxb_announcement_notifications_enabled_v1';
@@ -48,7 +47,10 @@ interface SxbAnnouncementNativeModule {
  * ce qui est précisément ce qu'on attend d'un centre de notifications.
  */
 function isDeliverableNotification(notification: MobileNotification): boolean {
-  if (isPlayDistribution && (notification.appUpdate || notification.id.startsWith('app-update-'))) return false;
+  // Les annonces de MISE À JOUR sont désormais délivrées à tout le monde : le
+  // canal Play les masquait, puisque la boutique s'en chargeait elle-même.
+  // Sans ce canal, les masquer priverait l'appareil du seul avis qui lui dit
+  // qu'une nouvelle version existe.
   // L'activité propre de l'utilisateur n'est pas une nouvelle du tableau de bord.
   if (notification.id.startsWith('log-')) return false;
   // Le serveur écrit `read`, le type de l'application `isRead` : les deux sont
@@ -69,7 +71,6 @@ async function readDeliveredIds(): Promise<string[]> {
 
 export async function areAnnouncementNotificationsEnabled(): Promise<boolean> {
   if (!getPrivacyConsent().vpn || !getPrivacyConsent().notifications) return false;
-  if (isPlayDistribution) return true;
   const stored = await AsyncStorage.getItem(ANNOUNCEMENT_NOTIFICATIONS_ENABLED_KEY).catch(() => null);
   return stored !== 'false';
 }

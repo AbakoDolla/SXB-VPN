@@ -3,7 +3,6 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { NativeModules, Platform } from 'react-native';
 import apiClient from '@/services/apiClient';
 import { getPrivacyConsent, getPrivacySignal } from './privacyConsent';
-import { isPlayDistribution } from './distribution';
 
 interface SxbPushNativeModule {
   getPushToken?: () => Promise<string | null>;
@@ -65,7 +64,10 @@ export async function unregisterPushToken(deviceId: string): Promise<boolean> {
     }
   }
 
-  if (nativeModule?.deletePushToken && (token || isPlayDistribution)) {
+  // Le jeton natif est effacé dès qu'il en existe un. La condition portait
+  // aussi le canal Play, qui effaçait même sans jeton connu — un cas propre à
+  // la révocation de consentement, laquelle n'existe plus.
+  if (nativeModule?.deletePushToken && token) {
     await nativeModule.deletePushToken();
   }
   if (serverError) throw serverError;

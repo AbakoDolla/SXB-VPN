@@ -17,6 +17,40 @@ function translate(input) {
   return result;
 }
 
+test('httpupgrade est TRADUIT — le moteur sait l’exécuter, le refuser était une lacune', () => {
+  // PREUVE QUE LE MOTEUR SAIT FAIRE : `SxbVpnService.buildTransportObj` a une
+  // branche « httpupgrade », et le chemin d'import par URI l'accepte déjà.
+  // Seule cette traduction JSON le rejetait, si bien qu'une même configuration
+  // passait ou non selon la FORME sous laquelle on la fournissait.
+  const input = xrayHttpChainFixture();
+  input.outbounds[1].streamSettings = {
+    network: 'httpupgrade',
+    security: 'tls',
+    tlsSettings: { serverName: 'up.example.test' },
+    httpupgradeSettings: { path: '/tunnel', host: 'front.example.test' },
+  };
+  const { singboxJson: config } = translate(input);
+  const sortie = config.outbounds.find(o => o.tag === input.outbounds[1].tag);
+  assert.deepEqual(sortie.transport, {
+    type: 'httpupgrade', path: '/tunnel', host: 'front.example.test',
+  });
+  // `host` doit rester une CHAÎNE : le transport `http` attend un tableau, et
+  // les deux formes ne sont pas interchangeables côté moteur.
+  assert.equal(typeof sortie.transport.host, 'string');
+});
+
+test('kcp est REFUSÉ — sing-box n’a aucun mKCP, l’accepter fabriquait un profil mort', () => {
+  // DURCISSEMENT. La traduction produisait `{"type":"kcp"}` : l'import
+  // réussissait, le profil s'attribuait, et l'échec n'apparaissait qu'à la
+  // connexion, sur le téléphone de l'utilisateur. Le moteur n'a pas de branche
+  // `kcp` — refuser à l'import déplace la découverte là où quelqu'un peut agir.
+  const input = xrayHttpChainFixture();
+  input.outbounds[1].streamSettings = { network: 'kcp', security: 'none', kcpSettings: { mtu: 1350 } };
+  const result = translateXrayToSingbox(input);
+  assert.equal(result.ok, false, 'kcp doit être refusé');
+  assert.ok(result.errors.some(e => e.includes('"kcp"')), 'le refus doit nommer kcp');
+});
+
 test('the two VLESS chains preserve all eleven HTTP definitions without inventing failover', () => {
   const input = xrayHttpChainFixture();
   const { singboxJson: config, warnings } = translate(input);

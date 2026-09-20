@@ -2546,14 +2546,6 @@ describe('garde-fous contre les régressions Android', () => {
       assert.ok(bloc > 0, `${fichier} doit déclarer un groupe de concurrence`);
       const concurrence = flux.slice(bloc, flux.indexOf('\njobs:', bloc));
       assert.match(concurrence, new RegExp(`group:.*${groupe}`), `groupe attendu : ${groupe}`);
-      if (groupe === 'publication-apk') {
-        // L'appelant Play ne doit pas tenir le verrou qu'attend son workflow
-        // réutilisable. Seul ce dernier partage le verrou APK de production.
-        const play = source('../.github/workflows/build-google-play.yml');
-        assert.match(play, /group: publication-apk/);
-        assert.match(concurrence, /inputs\.distribution == 'play'/);
-        assert.match(play, /cancel-in-progress: false/);
-      }
 
       // Annuler en cours de route est pire que d'attendre : l'interruption
       // peut tomber entre la migration et le redémarrage, ou pendant le

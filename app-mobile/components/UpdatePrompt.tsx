@@ -33,7 +33,6 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import Colors from '@/constants/colors';
 import { downloadAndInstallAppUpdate, fetchLatestAppUpdate, type AppUpdateInfo } from '@/services/appUpdate';
 import { useTranslation } from '@/localization';
-import { isPlayDistribution } from '@/services/distribution';
 import { radius, spacing } from "@/constants/theme";
 
 // Intervalle de re-vérification : 24 h (mission).
@@ -107,7 +106,7 @@ export default function UpdatePrompt() {
 
   useEffect(() => {
     // Ne pas lancer sur web (pas d'installateur APK).
-    if (isPlayDistribution || Platform.OS !== 'android') return;
+    if (Platform.OS !== 'android') return;
     // Léger différé pour laisser l'UI s'installer.
     const timer = setTimeout(() => { checkForUpdate(false); }, 1500);
     // Re-check périodique tant que l'app tourne (toutes les 24 h).
@@ -154,7 +153,7 @@ export default function UpdatePrompt() {
     }
   }, [remote, downloading, installing, t]);
 
-  if (isPlayDistribution || !remote) return null;
+  if (!remote) return null;
 
   const pct = Math.round(progress * 100);
   const label = downloading

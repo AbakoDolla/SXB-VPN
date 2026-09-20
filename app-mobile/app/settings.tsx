@@ -24,7 +24,7 @@ import {
   setAnnouncementNotificationsEnabled,
 } from "@/services/announcementNotifications";
 import { useAppLock } from "@/contexts/AppLockContext";
-import { DATA_DELETION_URL, isPlayDistribution } from "@/services/distribution";
+import { DATA_DELETION_URL } from "@/services/distribution";
 import { usePrivacy } from "@/contexts/PrivacyContext";
 import { openBackgroundSettings, readBackgroundMode, type BackgroundMode } from "@/services/backgroundReliability";
 import { radius, spacing } from "@/constants/theme";
@@ -310,10 +310,6 @@ export default function SettingsScreen() {
   }, []);
 
   const handleNotifications = async (enabled: boolean) => {
-    if (isPlayDistribution) {
-      router.push('/privacy');
-      return;
-    }
     setNotifPush(enabled);
     try {
       await setAnnouncementNotificationsEnabled(enabled);
@@ -655,7 +651,7 @@ export default function SettingsScreen() {
         <Section title={t('notifications_section_uc')}>
           <Row
             icon="notifications-outline" label={t("notification_alerts")}
-            toggle toggleValue={isPlayDistribution ? consent.notifications : notifPush} onToggle={handleNotifications}
+            toggle toggleValue={notifPush} onToggle={handleNotifications}
           />
         </Section>
 

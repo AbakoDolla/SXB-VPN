@@ -109,7 +109,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
     init {
         reactContext.addActivityEventListener(this)
         SxbSecureLogger.initialize(reactContext)
-        if (!SxbPrivacyPolicy.isPlay(reactContext)) SxbPrivacyPolicy.syncPushComponents(reactContext)
+        SxbPrivacyPolicy.syncPushComponents(reactContext)
     }
 
     override fun getName() = "SxbVpnNative"
@@ -121,9 +121,6 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
     fun getPrivacyConsent(promise: Promise) {
         try {
             SxbPrivacyPolicy.syncPushComponents(reactApplicationContext)
-            if (SxbPrivacyPolicy.isPlay(reactApplicationContext) && !SxbPrivacyPolicy.vpnAllowed(reactApplicationContext)) {
-                SxbPrivacyPolicy.stopVpnForPrivacy()
-            }
             promise.resolve(SxbPrivacyPolicy.read(reactApplicationContext))
         } catch (e: Exception) { promise.reject("PRIVACY_READ_ERROR", "Privacy state unavailable", e) }
     }
@@ -425,7 +422,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             return
         }
         val messaging = FirebaseMessaging.getInstance()
-        if (!SxbPrivacyPolicy.isPlay(reactApplicationContext)) messaging.isAutoInitEnabled = true
+        messaging.isAutoInitEnabled = true
         messaging.token.addOnCompleteListener { task ->
             if (!SxbPrivacyPolicy.notificationsAllowed(reactApplicationContext)) {
                 FirebaseMessaging.getInstance().deleteToken().addOnCompleteListener { deletion ->
@@ -449,15 +446,11 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             promise.resolve(false)
             return
         }
-        if (SxbPrivacyPolicy.isPlay(reactApplicationContext)) FirebaseMessaging.getInstance().isAutoInitEnabled = false
+        // La suppression de l'installation Firebase n'était exigée que par les
+        // règles de Play, au retrait du consentement. Effacer le jeton suffit.
         FirebaseMessaging.getInstance().deleteToken().addOnCompleteListener { task ->
             if (task.isSuccessful) {
-                if (SxbPrivacyPolicy.isPlay(reactApplicationContext)) {
-                    FirebaseInstallations.getInstance().delete().addOnCompleteListener { deletion ->
-                        if (deletion.isSuccessful) promise.resolve(true)
-                        else promise.reject("FCM_DELETE_FAILED", "Unable to remove Firebase installation", deletion.exception)
-                    }
-                } else promise.resolve(true)
+                promise.resolve(true)
             } else {
                 promise.reject("FCM_DELETE_FAILED", "Impossible de supprimer le jeton FCM", task.exception)
             }

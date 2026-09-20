@@ -11,7 +11,13 @@ const workflow = YAML.parse(source);
 const job = workflow.jobs['build-android'];
 
 test('direct branch builds produce an artifact without touching public distribution', () => {
-  assert.match(job.if, /inputs\.distribution != 'play'/);
+  // Le job n'a PLUS de condition : la chaîne Google Play a été retirée, donc
+  // il n'existe plus qu'un seul canal et rien à départager.
+  assert.equal(job.if, undefined, 'le job ne doit plus dépendre d’un canal de distribution');
+  assert.doesNotMatch(source, /inputs\.distribution/,
+    'aucune entrée « distribution » ne doit subsister dans le flux');
+  assert.doesNotMatch(source, /build-google-play/,
+    'le flux ne doit plus appeler la chaîne Play, qui n’existe plus');
   const publishing = job.steps.filter(step =>
     /softprops\/action-gh-release|appleboy\/(?:scp|ssh)-action/.test(step.uses || '') ||
     /gh release (?:create|upload|delete)/.test(step.run || ''));

@@ -169,15 +169,17 @@ describe('ce qui atteint le volet de l’appareil', () => {
     assert.equal(state.envoyees.length, premier, 'la seconde relève ne doit rien renvoyer');
   });
 
-  it('sur Play, la mise à jour par APK reste écartée', async () => {
-    // Google interdit l'installation hors magasin : l'annoncer ferait
-    // retirer l'application.
-    const { notifs, state } = await banc(TOUT, { play: true });
-    await notifs.syncAnnouncementNotifications();
-
-    const ids = state.envoyees.map((n: any) => n.id);
-    assert.ok(!ids.includes('app-update-77'), 'la mise à jour APK ne doit pas sortir sur Play');
-    assert.ok(ids.includes('ticket-42-resolved'), 'le reste doit continuer de passer');
+  it('la mise à jour par APK atteint désormais l’appareil', () => {
+    // Elle était ÉCARTÉE sous Google Play, qui interdit l'installation hors
+    // magasin. SXB n'y publie plus, et cet avis est devenu le SEUL moyen
+    // d'apprendre à un appareil qu'une nouvelle version existe : sans lui, le
+    // parc resterait indéfiniment sur son moteur embarqué.
+    const source = requireMobile('node:fs').readFileSync(
+      path.join(mobile, 'services/announcementNotifications.ts'), 'utf8') as string;
+    assert.doesNotMatch(source, /isPlayDistribution/,
+      'aucun canal de distribution ne doit plus filtrer les annonces');
+    assert.doesNotMatch(source, /appUpdate\s*\|\|\s*notification\.id\.startsWith\('app-update-'\)/,
+      'les avis de mise à jour ne doivent plus être écartés');
   });
 });
 
