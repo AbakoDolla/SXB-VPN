@@ -227,6 +227,17 @@
     "subtitle": "Device validity and activation codes. Creating a device does not assign a plan.",
     "idRequired": "The device ID is required",
     "existingToken": "This device already has an active token — here is the existing token.",
+    "trialConverted": "Trial converted to a paid plan — the device now appears in the list, with nothing to reinstall.",
+    "trialBlocking": {
+      "title": "This device is already on a free trial",
+      "body": "There is no need to create a new one, and no need to have the app reinstalled: the account, token and configuration for \"{{name}}\" already exist. Simply convert its trial into a paid plan — access continues uninterrupted, and the device will reappear in this list.",
+      "plan": "Plan name",
+      "planPlaceholder": "e.g. 30-day plan",
+      "quota": "Quota (GB)",
+      "duration": "Duration (days)",
+      "unchanged": "Unchanged",
+      "submit": "Convert to paid plan"
+    },
     "confirmDisable": "Disable the “{{name}}” device? VPN access will be temporarily blocked. The account, session and configurations are preserved. Reactivation remains possible while device access has not expired.",
     "disabled": "Device disabled — VPN blocked, account and configurations preserved",
     "confirmSuspend": "Temporarily suspend the “{{name}}” device? VPN access will stop. The session, activation code and configurations are preserved without extending validity.",

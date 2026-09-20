@@ -227,6 +227,17 @@
     "subtitle": "Validité et codes d'activation des appareils. La création n'attribue aucun forfait.",
     "idRequired": "L'identifiant de l'appareil est requis",
     "existingToken": "Cet appareil a déjà un jeton actif — voici le jeton existant.",
+    "trialConverted": "Essai converti en forfait payant — l'appareil apparaît maintenant dans la liste, sans rien réinstaller.",
+    "trialBlocking": {
+      "title": "Cet appareil est déjà en période d'essai gratuit",
+      "body": "Inutile d'en créer un nouveau, et inutile de faire réinstaller l'application : le compte, le jeton et la configuration de « {{name}} » existent déjà. Convertissez simplement son essai en forfait payant — son accès continue sans interruption, et l'appareil réapparaîtra dans cette liste.",
+      "plan": "Nom du forfait",
+      "planPlaceholder": "Ex. Forfait 30 jours",
+      "quota": "Quota (Go)",
+      "duration": "Durée (jours)",
+      "unchanged": "Inchangé",
+      "submit": "Convertir en forfait payant"
+    },
     "confirmDisable": "Désactiver l'appareil « {{name}} » ? Le VPN sera bloqué temporairement. Le compte, la session et les configurations sont conservés. Une réactivation reste possible tant que l'accès appareil n'a pas expiré.",
     "disabled": "Appareil désactivé — VPN bloqué, compte et configurations conservés",
     "confirmSuspend": "Suspendre temporairement l'appareil « {{name}} » ? Le VPN sera arrêté. La session, le code d'activation et les configurations sont conservés, sans prolongation de durée.",

@@ -247,6 +247,61 @@ router.post(
         const peutVoirJeton =
           estRoleSuperieur(req.user?.role) ||
           (req.user?.role === "RESELLER" && possedeClient(existing, fiche));
+
+        // ── LE CAS QUI ENVOYAIT LES CLIENTS RÉINSTALLER L'APPLICATION ──────
+        //
+        // Un appareil qui a pris un essai gratuit a DÉJÀ un compte. Quand son
+        // utilisateur revient pour payer, cette route refusait « cet appareil
+        // a déjà un token actif » — un mur, car le compte d'essai est par
+        // ailleurs MASQUÉ de « Appareils » et de « Comptes VPN » par le
+        // cloisonnement des essais. Invisible, donc introuvable ; bloquant,
+        // donc infranchissable. La seule issue apparente était de désinstaller
+        // l'application pour obtenir un nouvel identifiant — ce que quatre
+        // clients ont réellement dû faire.
+        //
+        // Il n'y a pourtant rien à recréer : le compte, le jeton et la
+        // configuration existent. Ce qu'il faut, c'est CONVERTIR l'essai en
+        // forfait payant, ce qui n'interrompt rien. Ce refus le dit donc
+        // maintenant, et transporte de quoi le faire en un geste.
+        //
+        // Réservé à l'exploitation interne, comme la conversion elle-même :
+        // un revendeur garde exactement la réponse qu'il avait.
+        let essai: any = null;
+        if (estRoleSuperieur(req.user?.role)) {
+          try {
+            const demande = await (prisma as any).freeTrialRequest.findFirst({
+              where: { clientId: existing.id, status: "deployed" },
+              select: { id: true, tokenId: true, name: true, deployedAt: true },
+              orderBy: { deployedAt: "desc" },
+            });
+            if (demande) {
+              essai = {
+                requestId: demande.id,
+                tokenId: demande.tokenId,
+                name: demande.name ?? null,
+                startedAt: demande.deployedAt ?? null,
+              };
+            }
+          } catch (erreur) {
+            // Une lecture d'essai qui échoue ne doit pas changer le refus en
+            // erreur serveur : l'appelant garde le message qu'il avait.
+            console.error("device trial hint error:", erreur);
+          }
+        }
+
+        if (essai) {
+          return res.status(409).json({
+            error: "DEVICE_ON_FREE_TRIAL",
+            code: "DEVICE_ON_FREE_TRIAL",
+            message:
+              "Cet appareil est en période d'essai gratuit. Inutile d'en créer un nouveau : " +
+              "convertissez son essai en forfait payant depuis « Essais gratuits ». " +
+              "Son accès, son jeton et sa configuration sont conservés.",
+            freeTrial: essai,
+            ...(peutVoirJeton ? { device: sanitizeDevice(existing) } : {}),
+          });
+        }
+
         return res.status(409).json({
           error: "DEVICE_ALREADY_REGISTERED",
           code: "DEVICE_ALREADY_REGISTERED",

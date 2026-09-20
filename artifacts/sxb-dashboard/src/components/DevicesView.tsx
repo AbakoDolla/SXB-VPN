@@ -2,6 +2,7 @@ import { useTranslation } from '../contexts/I18nContext';
 
 import React, { useEffect, useState, useMemo } from "react";
 import { fetchDevices, generateDeviceToken, revokeDevice, suspendDevice, resumeDevice, renewDevice, Device } from "../api/devices";
+import { convertFreeTrialRequests } from "../api/free-trial";
 import { ApiError } from "../api/client";
 import { fetchResellers } from "../api/resellers";
 import { Reseller, UserRole } from "../types";
@@ -56,6 +57,23 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
   const [generatedToken, setGeneratedToken] = useState<string | null>(null);
   const [tokenIsExisting, setTokenIsExisting] = useState(false);
 
+  /**
+   * L'essai qui empêche la création, quand l'appareil en a déjà un.
+   *
+   * `null` tant que rien ne bloque. Renseigné, il transforme le refus en
+   * action : convertir cet essai en forfait payant, plutôt que de renvoyer
+   * l'utilisateur désinstaller son application pour changer d'identifiant.
+   */
+  const [essaiBloquant, setEssaiBloquant] = useState<{
+    requestId: string;
+    tokenId?: string;
+    name: string | null;
+    token: string | null;
+  } | null>(null);
+  const [convQuota, setConvQuota] = useState("");
+  const [convDuree, setConvDuree] = useState("");
+  const [convNom, setConvNom] = useState("");
+
   const isSupport = currentUserRole === UserRole.SUPPORT;
   const isReseller = currentUserRole === UserRole.RESELLER;
   const showsOwnerColumn = isUpperRole(currentUserRole);
@@ -93,6 +111,7 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
       await run("generate", async () => {
         setGeneratedToken(null);
         setTokenIsExisting(false);
+        setEssaiBloquant(null);
         resetCopy();
         const result = await generateDeviceToken({
           deviceId: deviceId.trim(),
@@ -105,6 +124,21 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
         await Promise.all([load(), refreshAccess()]);
       });
     } catch (err) {
+      // L'appareil est en ESSAI : il n'y a rien à recréer, et c'est ce refus
+      // qui envoyait les clients réinstaller l'application. On propose donc
+      // ici la seule action utile — convertir l'essai en forfait payant.
+      if (err instanceof ApiError && err.status === 409
+        && err.responseData?.code === 'DEVICE_ON_FREE_TRIAL'
+        && err.responseData?.freeTrial?.requestId) {
+        setEssaiBloquant({
+          requestId: String(err.responseData.freeTrial.requestId),
+          tokenId: err.responseData.freeTrial.tokenId ? String(err.responseData.freeTrial.tokenId) : undefined,
+          name: err.responseData.freeTrial.name ? String(err.responseData.freeTrial.name) : null,
+          token: typeof err.responseData?.device?.token === 'string' ? err.responseData.device.token : null,
+        });
+        setFormError(null);
+        return;
+      }
       if (err instanceof ApiError && err.status === 409 && typeof err.responseData?.device?.token === "string") {
         setGeneratedToken(err.responseData.device.token);
         setTokenIsExisting(true);
@@ -112,6 +146,42 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
       } else {
         setFormError(err);
       }
+    }
+  };
+
+  /**
+   * Convertit sur place l'essai qui bloquait la création.
+   *
+   * Le client garde son compte, son jeton et sa configuration : seule la
+   * NATURE de son accès change. L'appareil cesse donc d'être masqué et
+   * réapparaît dans cette liste avec son forfait payant — c'est ce qui
+   * remplace la désinstallation / réinstallation.
+   */
+  const convertirEssaiBloquant = async () => {
+    if (!essaiBloquant) return;
+    setFormError("");
+    try {
+      await run("convertir-essai", async () => {
+        const quota = convQuota.trim();
+        const duree = convDuree.trim();
+        const nom = convNom.trim();
+        await convertFreeTrialRequests({
+          requestIds: [essaiBloquant.requestId],
+          ...(essaiBloquant.tokenId ? { tokenId: essaiBloquant.tokenId } : {}),
+          // Un champ vide veut dire « ne touche pas à cette valeur ».
+          ...(quota ? { quotaGB: Number(quota) } : {}),
+          ...(duree ? { durationDays: Number(duree) } : {}),
+          ...(nom ? { planName: nom } : {}),
+        });
+        toast.success(message('commerce.devices.trialConverted'));
+        setGeneratedToken(essaiBloquant.token);
+        setTokenIsExisting(true);
+        setEssaiBloquant(null);
+        setConvQuota(""); setConvDuree(""); setConvNom("");
+        await Promise.all([load(), refreshAccess()]);
+      });
+    } catch (err) {
+      setFormError(err);
     }
   };
 
@@ -435,7 +505,76 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
               </button>
             </div>
 
-            {generatedToken ? (
+            {essaiBloquant ? (
+              /* L'appareil a déjà un essai. Plutôt qu'un mur, la sortie :
+                 convertir. Rien n'est recréé, donc rien n'est interrompu. */
+              <div className="space-y-4">
+                <div className="rounded-xl border border-violet-500/30 bg-violet-500/10 p-4">
+                  <p className="text-sm font-semibold text-violet-200">
+                    {t('commerce.devices.trialBlocking.title')}
+                  </p>
+                  <p className="mt-2 text-xs leading-relaxed text-violet-100/80">
+                    {t('commerce.devices.trialBlocking.body', {
+                      name: essaiBloquant.name || deviceId.trim(),
+                    })}
+                  </p>
+                </div>
+                {!!formError && (
+                  <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3">
+                    <p className="text-sm text-rose-400">{errorMessage(formError, 'commerce.common.errorGenerate')}</p>
+                  </div>
+                )}
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <label className="block">
+                    <span className="text-xs text-gray-400">{t('commerce.devices.trialBlocking.plan')}</span>
+                    <input
+                      type="text"
+                      value={convNom}
+                      onChange={e => setConvNom(e.target.value)}
+                      placeholder={t('commerce.devices.trialBlocking.planPlaceholder')}
+                      className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-gray-100 outline-none focus:border-violet-500/50"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-xs text-gray-400">{t('commerce.devices.trialBlocking.quota')}</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step="any"
+                      value={convQuota}
+                      onChange={e => setConvQuota(e.target.value)}
+                      placeholder={t('commerce.devices.trialBlocking.unchanged')}
+                      className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-gray-100 outline-none focus:border-violet-500/50"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-xs text-gray-400">{t('commerce.devices.trialBlocking.duration')}</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={convDuree}
+                      onChange={e => setConvDuree(e.target.value)}
+                      placeholder={t('commerce.devices.trialBlocking.unchanged')}
+                      className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-gray-100 outline-none focus:border-violet-500/50"
+                    />
+                  </label>
+                </div>
+                <button
+                  onClick={convertirEssaiBloquant}
+                  disabled={submitting}
+                  className="w-full rounded-xl bg-violet-500/90 py-3 text-sm font-semibold text-slate-950 transition hover:bg-violet-400 disabled:opacity-50"
+                >
+                  {t('commerce.devices.trialBlocking.submit')}
+                </button>
+                <button
+                  onClick={() => { setEssaiBloquant(null); setFormError(""); }}
+                  disabled={submitting}
+                  className="w-full rounded-xl border border-white/15 py-2.5 text-sm text-gray-300 transition hover:bg-white/5"
+                >
+                  {t('commerce.common.cancel')}
+                </button>
+              </div>
+            ) : generatedToken ? (
               <div className="space-y-4">
                 <div className="p-4 bg-emerald-500/5 border border-emerald-500/20 rounded-xl text-center">
                   <p className="text-emerald-400 text-sm font-medium mb-3">{t(tokenIsExisting ? 'commerce.devices.existingToken' : 'commerce.devices.generated')}</p>

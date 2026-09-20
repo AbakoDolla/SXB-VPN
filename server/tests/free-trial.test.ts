@@ -662,6 +662,35 @@ describe("non-régression — le modèle de données reste ADDITIF", () => {
     assert.ok(bloc.includes("@@unique([tokenId, deviceId])"), "contrainte d'unicité attendue");
   });
 
+  it("un appareil DEJA en essai ne renvoie plus un mur, mais la sortie", () => {
+    // LE DEFAUT RAPPORTE : quatre clients ont du DESINSTALLER l'application
+    // pour pouvoir payer. Leur appareil avait deja un compte — celui de
+    // l'essai —, masque de « Appareils » et de « Comptes VPN » par le
+    // cloisonnement, donc introuvable, mais bloquant a la creation.
+    const source = readFileSync(new URL("../routes/devices.ts", import.meta.url), "utf8");
+    const debut = source.indexOf('"/generate-token"');
+    assert.ok(debut > 0, "route generate-token introuvable");
+    const bloc = source.slice(debut);
+    const refus = bloc.slice(0, bloc.indexOf("Generate unique token"));
+
+    assert.ok(refus.includes("DEVICE_ON_FREE_TRIAL"), "le refus doit nommer l'essai comme cause");
+    // Il doit transporter de quoi AGIR : sans l'identifiant de la demande,
+    // l'interface ne peut pas proposer la conversion et le mur reste un mur.
+    assert.ok(/requestId:\s*demande\.id/.test(refus), "le refus doit porter l'identifiant de la demande");
+    assert.ok(/tokenId:\s*demande\.tokenId/.test(refus), "le refus doit porter le jeton d'invitation");
+    // Seul un essai DEPLOYE a ouvert un acces : une demande en attente ne
+    // bloque rien et ne doit donc pas etre proposee a la conversion.
+    assert.ok(/status:\s*"deployed"/.test(refus), "seul un essai deploye doit etre propose");
+    // Le cloisonnement ne bouge pas : un revendeur garde la reponse qu'il
+    // avait, l'essai relevant de l'exploitation interne.
+    assert.ok(/estRoleSuperieur\(req\.user\?\.role\)/.test(refus),
+      "la mention d'essai doit rester reservee a l'exploitation interne");
+    // L'ancien refus survit pour un appareil qui n'est PAS en essai.
+    assert.ok(refus.includes("DEVICE_ALREADY_REGISTERED"), "le refus ordinaire doit subsister");
+    // Une lecture d'essai qui echoue ne doit pas transformer un 409 en 500.
+    assert.ok(/catch\s*\(erreur\)/.test(refus), "l'indice d'essai doit etre tolerant a l'echec");
+  });
+
   it("le SQL manuel est purement additif (aucun DROP ni NOT NULL rétroactif)", () => {
     const sql = readFileSync(new URL("../../prisma/migrations_manual.sql", import.meta.url), "utf8");
     // L'assertion porte sur les sections de l'ESSAI GRATUIT, pas sur tout ce
