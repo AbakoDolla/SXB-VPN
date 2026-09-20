@@ -346,10 +346,63 @@ export function porteeHistoriqueQuota(
   resellerId?: string
 ): Record<string, unknown> {
   if (role === "RESELLER" && userId) return { resellerUserId: userId };
-  if (["OWNER", "SUPER_ADMIN", "ADMIN"].includes(role || "")) {
+  if (["OWNER", "SUPER_ADMIN"].includes(role || "")) {
     return resellerId ? { resellerId } : {};
   }
   throw new AccesHistoriqueQuotaRefuse("Acces a l'historique des quotas refuse.");
+}
+
+/**
+ * Portée de l'historique des quotas pour un ADMINISTRATEUR.
+ *
+ * ⚠ FUITE MESURÉE DANS LE NAVIGATEUR, pas déduite du code. L'ADMIN figurait
+ * dans la même liste que OWNER et SUPER_ADMIN et recevait donc `{}` — soit
+ * AUCUN filtre. Sur l'écran « Comptes et accès › Revendeurs », un administrateur
+ * fraîchement créé, dont la liste de revendeurs était pourtant correctement
+ * cloisonnée à un seul nom, lisait juste en dessous l'historique de TOUTE la
+ * plateforme : les noms commerciaux des revendeurs des autres exploitants,
+ * leurs volumes (jusqu'à 1,9 Po), l'intitulé de leurs forfaits et l'adresse
+ * électronique de leurs gestionnaires.
+ *
+ * C'est la même leçon que pour les revendeurs : une LISTE protégée donne
+ * l'illusion du cloisonnement, pendant qu'un panneau voisin déverse tout.
+ *
+ * `ResellerQuotaMovement.resellerId` est une colonne NUE — aucune relation
+ * Prisma ne permet de filtrer par l'auteur du revendeur. On résout donc
+ * d'abord les revendeurs visibles, puis on restreint les mouvements à eux.
+ *
+ * Un `resellerId` explicite est VÉRIFIÉ contre ce périmètre : sans cela, un
+ * administrateur pourrait viser nommément le revendeur d'un autre et obtenir
+ * son historique complet.
+ */
+export async function porteeHistoriqueQuotaAdmin(
+  prisma: any,
+  requerant: { userId?: string; role?: string } | null | undefined,
+  porteeDesRevendeurs: Record<string, unknown> | null,
+  resellerId?: string
+): Promise<Record<string, unknown>> {
+  if (!requerant?.userId) {
+    throw new AccesHistoriqueQuotaRefuse("Acces a l'historique des quotas refuse.");
+  }
+  // La fiche propre de l'administrateur compte aussi : un exploitant peut être
+  // à la fois administrateur et titulaire d'un agrément revendeur.
+  const filtre = porteeDesRevendeurs
+    ? { OR: [porteeDesRevendeurs, { userId: requerant.userId }] }
+    : {};
+  const fiches = await prisma.reseller
+    .findMany({ where: filtre, select: { id: true } })
+    .catch(() => [] as Array<{ id: string }>);
+  const autorises = fiches.map((f: { id: string }) => f.id);
+
+  if (resellerId) {
+    if (!autorises.includes(resellerId)) {
+      throw new AccesHistoriqueQuotaRefuse("Acces a l'historique des quotas refuse.");
+    }
+    return { resellerId };
+  }
+  // Liste vide : `in: []` ne rend rien, ce qui est exactement l'espace vierge
+  // attendu d'un administrateur qui n'a encore agréé aucun revendeur.
+  return { resellerId: { in: autorises } };
 }
 
 /** Tous les BigInt restent des chaines afin de preserver leur precision JSON. */

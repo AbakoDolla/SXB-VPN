@@ -186,7 +186,14 @@ export default function Layout({
         { kind: 'leaf', id: 'accounts', label: t('sidebar.accounts'), icon: UserPlus, roles: ADMINS, permission: 'users.view' },
         { kind: 'leaf', id: 'announcements', label: t('sidebar.annonces'), icon: BellRing, roles: STAFF },
         { kind: 'leaf', id: 'app-updates', label: t('sidebar.app_updates'), icon: Download, roles: STAFF },
-        { kind: 'leaf', id: 'mobile-health', label: t('core.nav.mobileHealth'), icon: HeartPulse, roles: ADMINS },
+        // Santé mobile est une observabilité du parc Android ENTIER, agrégée sur
+        // des pseudonymes (`MobileHealthDevice.pseudonym`) qui ne portent aucun
+        // propriétaire. Mesuré à l'écran : un admin ne possédant qu'UN appareil y
+        // lisait les 9 appareils de la plateforme, 713 rapports, les modèles et le
+        // taux d'échec global. Impossible à cloisonner sans rattacher un
+        // propriétaire au pseudonyme, ce qui détruirait la pseudonymisation
+        // voulue. La section rejoint donc « Sécurité », hors du périmètre admin.
+        { kind: 'leaf', id: 'mobile-health', label: t('core.nav.mobileHealth'), icon: HeartPulse, roles: ['OWNER', 'SUPER_ADMIN'] },
         { kind: 'leaf', id: 'security', label: t('operations.security.nav'), icon: ShieldAlert, roles: ['OWNER', 'SUPER_ADMIN'] },
       ],
     },

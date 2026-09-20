@@ -14,6 +14,7 @@ import {
   modifierPlafondQuota,
   PlafondQuotaDepasse,
   porteeHistoriqueQuota,
+  porteeHistoriqueQuotaAdmin,
   porteUnQuotaInterdit,
   serialiserMouvementQuota,
 } from "../services/reseller-quota";
@@ -246,7 +247,16 @@ const historyQuerySchema = z.object({
 router.get("/quota-history", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const query = historyQuerySchema.parse(req.query);
-    const where = porteeHistoriqueQuota(req.user?.role, req.user?.userId, query.resellerId);
+    // L'ADMINISTRATEUR est cloisonné à ses propres revendeurs : il recevait
+    // auparavant l'historique de toute la plateforme (fuite mesurée à l'écran).
+    const where = req.user?.role === "ADMIN"
+      ? await porteeHistoriqueQuotaAdmin(
+          prisma,
+          req.user,
+          await porteeRevendeurs(prisma, req.user),
+          query.resellerId,
+        )
+      : porteeHistoriqueQuota(req.user?.role, req.user?.userId, query.resellerId);
     if (!prisma) return res.json({ movements: [] });
     const movements = await (prisma as any).resellerQuotaMovement.findMany({
       where,

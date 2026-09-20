@@ -18,6 +18,11 @@ import { CODES_ACTIVATION, evaluerActivation } from "../services/device-activati
 import { sanitizeDevice } from "../services/device-quota";
 import { calculerAllocation } from "../services/reseller-quota";
 import {
+  AccesHistoriqueQuotaRefuse,
+  porteeHistoriqueQuota,
+  porteeHistoriqueQuotaAdmin,
+} from "../services/reseller-quota";
+import {
   chercherConflitDeviceClient,
   estContrainteUniqueDeviceClient,
   reponseConflitDeviceClient,
@@ -543,6 +548,88 @@ describe("unicité cloisonnée des configurations VPN", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+describe("historique des quotas — un admin ne lit que ses propres revendeurs", () => {
+  // Fuite MESURÉE dans le navigateur : la liste des revendeurs était bien
+  // cloisonnée, mais le panneau « Historique auditable des quotas » juste en
+  // dessous rendait toute la plateforme — noms commerciaux, volumes jusqu'à
+  // 1,9 Po, et adresses électroniques des gestionnaires d'autres exploitants.
+  const baseAvec = (ids: string[]) => ({
+    reseller: { findMany: async () => ids.map((id) => ({ id })) },
+  });
+
+  it("ne rend plus l'historique entier de la plateforme a un ADMIN", () => {
+    // L'ADMIN ne doit plus être admis par la portée non filtrée.
+    assert.throws(() => porteeHistoriqueQuota("ADMIN", "admin-a"), AccesHistoriqueQuotaRefuse);
+  });
+
+  it("laisse OWNER et SUPER_ADMIN voir toute la plateforme", () => {
+    assert.deepEqual(porteeHistoriqueQuota("OWNER", "o1"), {});
+    assert.deepEqual(porteeHistoriqueQuota("SUPER_ADMIN", "s1"), {});
+  });
+
+  it("restreint l'ADMIN aux identifiants de SES revendeurs", async () => {
+    const where = await porteeHistoriqueQuotaAdmin(
+      baseAvec(["rev-1", "rev-2"]),
+      { userId: "admin-a", role: "ADMIN" },
+      { createdBy: "admin-a" },
+    );
+    assert.deepEqual(where, { resellerId: { in: ["rev-1", "rev-2"] } });
+  });
+
+  it("rend un espace vierge a l'admin qui n'a agree aucun revendeur", async () => {
+    const where = await porteeHistoriqueQuotaAdmin(
+      baseAvec([]),
+      { userId: "admin-neuf", role: "ADMIN" },
+      { createdBy: "admin-neuf" },
+    );
+    assert.deepEqual(where, { resellerId: { in: [] } });
+  });
+
+  it("refuse un resellerId vise nommement hors du perimetre", async () => {
+    await assert.rejects(
+      () => porteeHistoriqueQuotaAdmin(
+        baseAvec(["rev-a"]),
+        { userId: "admin-a", role: "ADMIN" },
+        { createdBy: "admin-a" },
+        "rev-de-quelquun-dautre",
+      ),
+      AccesHistoriqueQuotaRefuse,
+    );
+  });
+
+  it("accepte un resellerId qui appartient bien au perimetre", async () => {
+    const where = await porteeHistoriqueQuotaAdmin(
+      baseAvec(["rev-a"]),
+      { userId: "admin-a", role: "ADMIN" },
+      { createdBy: "admin-a" },
+      "rev-a",
+    );
+    assert.deepEqual(where, { resellerId: "rev-a" });
+  });
+
+  it("joint la fiche propre de l'admin a sa portee de revendeurs", async () => {
+    let filtreVu: unknown = null;
+    await porteeHistoriqueQuotaAdmin(
+      { reseller: { findMany: async ({ where }: any) => { filtreVu = where; return []; } } },
+      { userId: "admin-a", role: "ADMIN" },
+      { createdBy: "admin-a" },
+    );
+    assert.deepEqual(filtreVu, { OR: [{ createdBy: "admin-a" }, { userId: "admin-a" }] });
+  });
+
+  it("branche la route sur la portee cloisonnee pour le role ADMIN", () => {
+    const route = readFileSync(new URL("../routes/resellers.ts", import.meta.url), "utf8");
+    assert.ok(route.includes("porteeHistoriqueQuotaAdmin("));
+    assert.ok(route.includes('req.user?.role === "ADMIN"'));
+    assert.ok(route.includes("await porteeRevendeurs(prisma, req.user)"));
+
+    const service = readFileSync(new URL("../services/reseller-quota.ts", import.meta.url), "utf8");
+    // L'ADMIN ne doit plus figurer dans la liste qui rend `{}`.
+    assert.doesNotMatch(service, /\["OWNER",\s*"SUPER_ADMIN",\s*"ADMIN"\]\.includes/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 describe("gardes posées sur les routes", () => {
   const lire = (chemin: string) => readFileSync(new URL(chemin, import.meta.url), "utf8");
 
@@ -942,5 +1029,56 @@ describe("schéma et migration", () => {
     assert.ok(permissionJeton.includes("migration.token_revoke_permission.v1"));
     assert.ok(permissionJeton.includes("ON CONFLICT"));
     assert.equal(permissionJeton.toUpperCase().includes("DELETE FROM"), false);
+  });
+});
+
+// OBSERVABILITÉ DU PARC — HORS PÉRIMÈTRE ADMIN.
+//
+// `MobileHealthDevice` est indexé par un pseudonyme dérivé de (userId, deviceId,
+// secret) et ne porte AUCUN propriétaire : aucune requête ne peut restreindre le
+// résumé au périmètre d'un admin sans défaire la pseudonymisation qui protège
+// les clients. Mesuré à l'écran sur un admin de recette ne possédant qu'UN
+// appareil : la page affichait les 9 appareils de la plateforme, « 713 rapports
+// retenus », les modèles et le taux d'échec global. La section rejoint donc
+// « Sécurité », réservée au sommet — côté route ET côté menu, car retirer
+// l'entrée du menu sans fermer la route laisserait l'URL directe ouverte.
+describe("santé mobile — l'observabilité du parc reste au sommet", () => {
+  const route = readFileSync(new URL("../routes/mobile-health.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  const layout = readFileSync(
+    new URL("../../artifacts/sxb-dashboard/src/components/Layout.tsx", import.meta.url),
+    "utf8",
+  ).replace(/\r\n/g, "\n");
+
+  it("ferme le résumé agrégé aux administrateurs de locataire", () => {
+    assert.match(
+      route,
+      /router\.get\(\s*"\/summary",\s*requireAuth,\s*requireRole\(\["SUPER_ADMIN"\]\)/,
+      "GET /summary doit être réservé au sommet : OWNER passe par le contournement central de requireRole",
+    );
+    const resume = route.slice(route.indexOf('"/summary"'));
+    assert.equal(
+      /requireRole\(\[[^\]]*"ADMIN"[^\]]*\]\)/.test(resume.slice(0, 200)),
+      false,
+      "ADMIN ne doit plus figurer parmi les rôles admis sur le résumé de santé mobile",
+    );
+  });
+
+  it("retire aussi l'entrée du menu pour que l'URL directe ne soit pas la seule barrière", () => {
+    const entree = layout.split("\n").find((ligne) => ligne.includes("id: 'mobile-health'"));
+    assert.ok(entree, "l'entrée de menu « mobile-health » doit rester présente pour le sommet");
+    assert.match(
+      entree!,
+      /roles:\s*\['OWNER',\s*'SUPER_ADMIN'\]/,
+      "« Santé mobile » doit être réservée comme « Sécurité » : ni ADMINS, ni STAFF, ni ALL_ROLES",
+    );
+  });
+
+  it("laisse la remontée des rapports ouverte aux clients", () => {
+    assert.match(
+      route,
+      /router\.post\("\/report", requireAuth,/,
+      "les appareils doivent continuer à publier leurs rapports : seule la LECTURE agrégée est fermée",
+    );
+    assert.match(route, /req\.user\?\.role !== "CLIENT"/, "la publication reste réservée aux clients");
   });
 });

@@ -64,10 +64,24 @@ router.post("/report", requireAuth, async (req: AuthenticatedRequest, res: Respo
   }
 });
 
+// LECTURE RÉSERVÉE AU SOMMET. Le résumé agrège le parc Android ENTIER : les
+// lignes de `MobileHealthDevice` sont indexées par un pseudonyme dérivé
+// (`pseudonymizeMobileDevice(userId, deviceId, secret)`) qui, par construction,
+// ne porte AUCUN propriétaire. Il n'existe donc aucun moyen de restreindre ce
+// résumé au périmètre d'un admin sans rattacher une identité au pseudonyme,
+// c'est-à-dire sans défaire la pseudonymisation qui protège les clients.
+//
+// Mesuré à l'écran le 20/09/2026 sur un admin de recette ne possédant qu'UN
+// appareil : la page affichait les 9 appareils de la plateforme, « 713 rapports
+// retenus », les modèles (TECNO KI5k, moto g24, SM-A175F…), les versions
+// Android et le taux d'échec global — de quoi déduire la taille d'activité des
+// autres exploitants. L'observabilité du parc rejoint donc « Sécurité » : hors
+// du périmètre admin, réservée au sommet. OWNER traverse par le contournement
+// central de `requireRole`.
 router.get(
   "/summary",
   requireAuth,
-  requireRole(["SUPER_ADMIN", "ADMIN"]),
+  requireRole(["SUPER_ADMIN"]),
   async (_req: AuthenticatedRequest, res: Response) => {
     try {
       const summary = await getMobileHealthSummary();
