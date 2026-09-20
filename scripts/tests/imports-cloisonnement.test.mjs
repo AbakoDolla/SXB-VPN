@@ -105,6 +105,7 @@ test('le module de cloisonnement expose bien les surfaces attendues', () => {
   for (const attendue of [
     'porteeClients', 'porteeSousClient', 'porteeProfils', 'porteeJetonsEssai',
     'porteeDemandesEssai', 'porteeRevendeurs', 'porteeServeurs', 'porteeBons',
+    'porteeComptes',
     'auteurAInscrire', 'gestionnaireAInscrire',
   ]) {
     assert.ok(exportees.has(attendue), `${attendue} doit rester exportée`);

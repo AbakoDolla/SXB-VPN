@@ -8,6 +8,7 @@ import crypto from "crypto";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { requireAuth, requirePermission, requireRole, AuthenticatedRequest } from "../middleware/auth";
 import { canSeeUser, isOwnerRequest, OWNER_ROLE } from "../middleware/rbac/owner";
+import { porteeComptes } from "../services/portee-donnees";
 import { sessionUser } from "../services/session-user";
 
 const router = Router();
@@ -126,12 +127,32 @@ function refusPlafondRole(
   return null;
 }
 
+/**
+ * `where` visant UN compte, restreint à la portée du demandeur.
+ *
+ * Employé par lecture, modification et suppression : hors de portée, la
+ * requête ne ramène rien et la route retombe sur son « introuvable »
+ * existant. Le cloisonnement tient donc en base, jamais sur un filtre rendu
+ * après coup — c'est ce qui retire à un administrateur le pouvoir de
+ * supprimer le parc d'autrui.
+ */
+async function ciblerCompte(req: AuthenticatedRequest, id: string): Promise<Record<string, unknown>> {
+  const portee = await porteeComptes(prisma, req.user);
+  return portee ? { AND: [{ id }, portee] } : { id };
+}
+
 // GET /api/users
 router.get("/", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN", "SUPPORT"]), requirePermission("users.view"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     let users: any[] = [];
     if (prisma) {
+      // Cloisonnement EN BASE : un administrateur ne reçoit que les comptes
+      // qui lui sont rattachés. Sans ce `where`, la requête rendait l'annuaire
+      // entier — 768 comptes mesurés en production pour un administrateur
+      // propriétaire d'un seul client.
+      const portee = await porteeComptes(prisma, req.user);
       users = await prisma.user.findMany({
+        ...(portee ? { where: portee } : {}),
         include: { role: true },
         orderBy: { createdAt: "desc" },
       });
@@ -240,7 +261,7 @@ router.get("/:id", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN", "SUPPORT"])
     const { id } = req.params;
     let userRecord: any = null;
     if (prisma) {
-      userRecord = await prisma.user.findUnique({ where: { id }, include: { role: true } });
+      userRecord = await prisma.user.findFirst({ where: await ciblerCompte(req, id), include: { role: true } });
     } else {
       const u = inMemoryDb.users.find((user) => user.id === id);
       if (u) {
@@ -381,7 +402,7 @@ router.patch("/:id", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN"]), require
 
     let targetRecord: any = null;
     if (prisma) {
-      targetRecord = await prisma.user.findUnique({ where: { id }, include: { role: true } });
+      targetRecord = await prisma.user.findFirst({ where: await ciblerCompte(req, id), include: { role: true } });
     } else {
       const u = inMemoryDb.users.find((user) => user.id === id);
       if (u) {
@@ -509,7 +530,12 @@ router.delete("/:id", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN"]), requir
     const actorIsOwner = isOwnerRequest(req);
 
     if (prisma) {
-      const u = await prisma.user.findUnique({ where: { id }, include: { role: true } });
+      const u = await prisma.user.findFirst({ where: await ciblerCompte(req, id), include: { role: true } });
+
+      // Hors de portée : on répond « introuvable » sans rien supprimer.
+      if (!u) {
+        return res.status(404).json({ error: "errors.users.not_found", message: "User not found" });
+      }
 
       // Garde hiérarchique : un non-OWNER ne peut jamais supprimer un compte OWNER.
       if (u && !canSeeUser(req, u)) {

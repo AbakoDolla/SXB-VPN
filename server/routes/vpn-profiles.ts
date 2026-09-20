@@ -310,9 +310,14 @@ router.get('/stats/all', requireAuth, requirePermission('vpnprofile.view'), asyn
       const active = profiles.filter(p => p.status === 'active').length;
       return res.json({ success: true, total, active, byProtocol: [] });
     }
-    const total      = await (prisma as any).vpnProfile.count();
-    const active     = await (prisma as any).vpnProfile.count({ where: { status: 'active' } });
-    const byProtocol = await (prisma as any).vpnProfile.groupBy({ where: { lockPasswordHash: null }, by: ['protocol'], _count: { id: true } });
+    // Un compteur non cloisonné trahit tout le parc : la liste ci-dessus filtre
+    // bien par `porteeProfils`, mais ces agrégats comptaient la plateforme
+    // entière, si bien qu'un administrateur sans aucune configuration lisait
+    // quand même le total général. Même portée que la liste, sans exception.
+    const portee = await porteeProfils(prisma, _req.user);
+    const total      = await (prisma as any).vpnProfile.count(portee ? { where: portee } : {});
+    const active     = await (prisma as any).vpnProfile.count({ where: { ...(portee ?? {}), status: 'active' } });
+    const byProtocol = await (prisma as any).vpnProfile.groupBy({ where: { ...(portee ?? {}), lockPasswordHash: null }, by: ['protocol'], _count: { id: true } });
     return res.json({ success: true, total, active, byProtocol });
   } catch (err) {
     return res.status(500).json({ error: 'Failed to get stats' });
@@ -799,10 +804,12 @@ router.get('/:id/stats', requireAuth, requirePermission('vpnprofile.view'), asyn
   try {
     const profile = await prisma.vpnProfile.findUnique({ where: { id: req.params.id } });
     if (!profile) return res.status(404).json({ error: 'Profile not found' });
+    if (!(await profilVisible(profile, req))) return res.status(404).json({ error: 'Profile not found' });
     assertProfileUnlocked(profile, req);
-    const total     = await (prisma as any).vpnProfile.count();
-    const active    = await (prisma as any).vpnProfile.count({ where: { status: 'active' } });
-    const byProtocol = await (prisma as any).vpnProfile.groupBy({ where: { id: req.params.id }, by: ['protocol'], _count: { id: true } });
+    const portee = await porteeProfils(prisma, req.user);
+    const total     = await (prisma as any).vpnProfile.count(portee ? { where: portee } : {});
+    const active    = await (prisma as any).vpnProfile.count({ where: { ...(portee ?? {}), status: 'active' } });
+    const byProtocol = await (prisma as any).vpnProfile.groupBy({ where: { ...(portee ?? {}), id: req.params.id }, by: ['protocol'], _count: { id: true } });
     return res.json({ success: true, total, active, byProtocol });
   } catch (err) {
     if (handleProfileLockError(err, res)) return;

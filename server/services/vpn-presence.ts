@@ -480,6 +480,14 @@ async function lireDebutsSession(
 export interface OptionsPresence {
   /** Filtre Prisma restreignant le parc visible (cloisonnement revendeur). */
   porteeClients?: Record<string, unknown> | null;
+  /**
+   * Filtre Prisma restreignant les FICHES revendeur listées.
+   *
+   * Porté à part car une fiche revendeur n'a pas de gestionnaire : elle porte
+   * son auteur. Sans lui, un administrateur voyait nommément les revendeurs
+   * des autres comptes alors que son parc n'en contenait qu'un.
+   */
+  porteeFichesRevendeur?: Record<string, unknown> | null;
   /** Masque les comptes OWNER pour les rôles qui ne doivent pas les voir. */
   masquerProprietaire?: boolean;
   /**
@@ -744,16 +752,25 @@ export async function listerRevendeursConnectes(
   // sur un champ inconnu.
   const stealthRevendeur = options.masquerProprietaire ? FURTIVITE_OWNER_PORTEUR : {};
   const stealth = options.masquerProprietaire ? FURTIVITE_OWNER : {};
+  // Le cloisonnement s'ajoute à la furtivité au lieu de la remplacer : les deux
+  // conditions doivent tenir ensemble, sans quoi l'une annule l'autre.
+  const etAvec = (base: Record<string, unknown>, portee?: Record<string, unknown> | null) => {
+    const conditions = [base, portee ?? {}].filter((c) => c && Object.keys(c).length > 0);
+    if (conditions.length === 0) return undefined;
+    return conditions.length === 1 ? conditions[0] : { AND: conditions };
+  };
+  const filtreFiches = etAvec(stealthRevendeur, options.porteeFichesRevendeur);
+  const filtreParcs = etAvec({ resellerId: { not: null }, ...stealth }, options.porteeClients);
   const [fiches, compteurs] = await Promise.all([
     db.reseller.findMany({
-      ...(Object.keys(stealthRevendeur).length ? { where: stealthRevendeur } : {}),
+      ...(filtreFiches ? { where: filtreFiches } : {}),
       select: { id: true, status: true, user: { select: { name: true, email: true } } },
     }),
     // Agrégat plutôt que chargement des parcs : le nombre de clients d'un
     // revendeur se compte en base, il ne se rapatrie pas ligne à ligne.
     db.vpnClient.groupBy({
       by: ["resellerId", "status"],
-      where: { resellerId: { not: null }, ...stealth },
+      where: filtreParcs,
       _count: { _all: true },
     }),
   ]);

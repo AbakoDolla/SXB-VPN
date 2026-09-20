@@ -254,6 +254,48 @@ export async function porteeBons(
 }
 
 /**
+ * Portée des COMPTES DE CONNEXION, exprimée sur `User`.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * LA FUITE LA PLUS GRAVE MESURÉE SUR CETTE PLATEFORME
+ * ═══════════════════════════════════════════════════════════════════════════
+ * `GET /api/users` rendait `user.findMany()` SANS AUCUNE RESTRICTION : seule
+ * la furtivité OWNER s'appliquait à la lecture. Mesuré en production avec un
+ * administrateur créé à l'instant, propriétaire d'un seul client : 768 comptes
+ * rendus — les clients de tous les revendeurs avec leurs adresses, et jusqu'aux
+ * autres comptes ADMIN. L'écran « Comptes et accès » lui proposait alors
+ * « Tout sélectionner dans le filtre (754) » puis « Supprimer la sélection » :
+ * ce n'était donc plus seulement une divulgation, mais un pouvoir de
+ * destruction sur le parc d'autrui.
+ *
+ * Un compte n'a ni gestionnaire ni auteur : il ne peut donc pas passer par
+ * `porteeClients` ni par `porteeParAuteur`. Son rattachement s'exprime par ses
+ * RELATIONS — le client VPN qu'il incarne, ou la fiche revendeur qu'il porte.
+ *
+ * Renvoie `null` pour tout rôle autre qu'ADMIN, afin de ne rien changer à ce
+ * que voient le propriétaire, le super-administrateur et le support.
+ */
+export async function porteeComptes(
+  _prisma: any,
+  requerant: Requerant | null | undefined,
+): Promise<Record<string, unknown> | null> {
+  if ((requerant?.role ?? null) !== ROLE_ADMIN) return null;
+  // Sans identité exploitable, on refuse plutôt que d'ouvrir l'annuaire.
+  if (!requerant?.userId) return { id: { in: [] } };
+  const moi = requerant.userId;
+  return {
+    OR: [
+      // Son propre compte : il doit toujours se voir lui-même.
+      { id: moi },
+      // Les comptes des clients VPN qu'il gère.
+      { vpnClients: { some: { managedById: moi } } },
+      // Les comptes des revendeurs qu'il a créés.
+      { resellerInfo: { createdBy: moi } },
+    ],
+  };
+}
+
+/**
  * Identifiant de l'auteur à inscrire sur un objet que l'on crée.
  *
  * Distinct de `gestionnaireAInscrire`, qui ne vaut que pour un client : ici

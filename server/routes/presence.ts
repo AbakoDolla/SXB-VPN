@@ -15,9 +15,10 @@
  * y a X ».
  *
  * CLOISONNEMENT
- *   • RESELLER : ne voit QUE ses propres clients connectés, et reçoit 403 sur
- *     la vue globale des revendeurs. Le filtre est appliqué sur l'index des
- *     identités, donc AVANT tout rapprochement.
+ *   • Tout rôle sauf OWNER : ne voit QUE les clients de sa propre portée. Le
+ *     filtre est appliqué sur l'index des identités, donc AVANT tout
+ *     rapprochement. Un ADMIN recevait auparavant la plateforme entière.
+ *   • RESELLER : reçoit en outre 403 sur la vue globale des revendeurs.
  *   • SUPPORT : lecture seule — ces routes le sont toutes.
  *   • Hors OWNER : les comptes OWNER restent invisibles (furtivité).
  */
@@ -26,7 +27,7 @@ import { config } from "../config";
 import { prisma } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { isOwnerRequest } from "../middleware/rbac/owner";
-import { chargerFicheRevendeur, porteeClientsRevendeur } from "../services/reseller-access";
+import { porteeClients, porteeRevendeurs } from "../services/portee-donnees";
 import {
   listerConnectes,
   listerRevendeursConnectes,
@@ -49,12 +50,23 @@ function secretPseudonyme(): string | null {
     || (config.NODE_ENV !== "production" ? config.JWT_SECRET : null);
 }
 
-/** Portée de lecture du demandeur : parc propre pour un revendeur, sinon tout. */
+/**
+ * Portée de lecture du demandeur.
+ *
+ * Seul le REVENDEUR était cloisonné ici ; tout autre rôle recevait `null`,
+ * c'est-à-dire la plateforme entière. Un administrateur neuf, propriétaire
+ * d'un seul client, lisait donc la liste nominative de tous les connectés —
+ * nom du client, identifiant d'appareil et revendeur propriétaire. Mesuré en
+ * production : 1 client possédé, 27 lignes rendues.
+ *
+ * `porteeClients` porte déjà la règle pour tous les rôles, revendeur compris ;
+ * on s'en remet à elle plutôt que de la réécrire, et le OWNER continue de
+ * recevoir `null`, donc la plateforme entière.
+ */
 async function porteeDemandeur(req: AuthenticatedRequest): Promise<OptionsPresence> {
-  const isReseller = req.user?.role === "RESELLER";
-  const fiche = isReseller ? await chargerFicheRevendeur(prisma, req.user?.userId) : null;
   return {
-    porteeClients: isReseller ? (porteeClientsRevendeur(fiche) as Record<string, unknown>) : null,
+    porteeClients: (await porteeClients(prisma, req.user)) as Record<string, unknown> | null,
+    porteeFichesRevendeur: (await porteeRevendeurs(prisma, req.user)) as Record<string, unknown> | null,
     masquerProprietaire: !isOwnerRequest(req),
   };
 }
@@ -103,7 +115,10 @@ router.get("/connected", requireAuth, requirePermission("analytics.read"), async
       presenceWindowMinutes: presence.presenceWindowMinutes,
       heartbeatMinutes: presence.heartbeatMinutes,
       measured: true,
-      scope: req.user?.role === "RESELLER" ? "own" : "platform",
+      // Libellé tiré de la PORTÉE RÉELLEMENT APPLIQUÉE, et non du rôle : un
+      // administrateur est désormais cloisonné lui aussi, lui annoncer
+      // « platform » serait faux. `null` ne subsiste que pour le propriétaire.
+      scope: portee.porteeClients ? "own" : "platform",
       total: presence.lignes.length,
       limit,
       offset,
@@ -145,9 +160,7 @@ router.get("/resellers", requireAuth, requirePermission("analytics.read"), async
     const secret = secretPseudonyme();
     if (!secret) return nonMesurable(res, "not_configured");
 
-    const vue = await listerRevendeursConnectes(prisma as any, secret, {
-      masquerProprietaire: !isOwnerRequest(req),
-    });
+    const vue = await listerRevendeursConnectes(prisma as any, secret, await porteeDemandeur(req));
 
     return res.json({
       generatedAt: vue.generatedAt,
