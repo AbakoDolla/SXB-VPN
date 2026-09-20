@@ -5,6 +5,7 @@ import crypto from "crypto";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { requireAuth, requirePermission, requireRole, AuthenticatedRequest } from "../middleware/auth";
 import { canSeeUser } from "../middleware/rbac/owner";
+import { auteurAInscrire, porteeRevendeurs } from "../services/portee-donnees";
 import {
   AccesHistoriqueQuotaRefuse,
   calculerAllocation,
@@ -124,7 +125,14 @@ router.get("/", requireAuth, gestionRevendeurs, requirePermission("reseller.mana
   try {
     let resellers: any[] = [];
     if (prisma) {
-      const raw = await prisma.reseller.findMany({ include: { user: { include: { role: true } } } });
+      // Un administrateur ne voit que les revendeurs QU'IL A CRÉÉS. Sans ce
+      // filtre, un compte créé à l'instant recevait les cinq revendeurs de la
+      // maison — mesuré en production avant correction.
+      const portee = await porteeRevendeurs(prisma, req.user);
+      const raw = await prisma.reseller.findMany({
+        ...(portee ? { where: portee as any } : {}),
+        include: { user: { include: { role: true } } },
+      });
       resellers = await Promise.all(
         raw
           // Stealth : revendeur lié à un compte OWNER invisible pour les non-OWNER.
@@ -306,6 +314,9 @@ router.post(
             quotaUsedBytes: BigInt(0),
             status: body.status,
             accessExpiresAt,
+            // Estampille d'auteur : c'est elle qui rendra cette fiche à son
+            // créateur, et à lui seul, dans un tableau de bord cloisonné.
+            createdBy: auteurAInscrire(req.user),
           },
           include: { user: true },
         });

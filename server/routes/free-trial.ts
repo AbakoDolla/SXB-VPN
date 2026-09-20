@@ -35,7 +35,7 @@ import { prisma, logDbActivity } from '../database';
 import { accessStateHub } from '../services/access-state-events';
 import { requireAuth, requirePermission, AuthenticatedRequest } from '../middleware/auth';
 import { isOwnerRequest } from '../middleware/rbac/owner';
-import { gestionnaireAInscrire, porteeClients } from '../services/portee-donnees';
+import { gestionnaireAInscrire, porteeClients, porteeDemandesEssai, porteeJetonsEssai } from '../services/portee-donnees';
 import {
   interdireAccesRevendeur,
   interdireMutationSupport,
@@ -618,10 +618,15 @@ router.get(
   requireAuth,
   interdireAccesRevendeur(),
   requirePermission('tokens.view'),
-  async (_req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response) => {
     try {
       if (!prisma) return baseIndisponible(res);
+      // Un administrateur ne voit que SES campagnes. Sans ce filtre, un compte
+      // créé à l'instant recevait les dix campagnes de la maison — mesuré en
+      // production avant correction.
+      const portee = await porteeJetonsEssai(prisma, req.user);
       const jetons = await (prisma as any).freeTrialToken.findMany({
+        ...(portee ? { where: portee } : {}),
         orderBy: { createdAt: 'desc' },
         take: 500,
         include: { _count: { select: { requests: true } } },
@@ -629,8 +634,13 @@ router.get(
       // Compteurs par statut : deux colonnes seulement, jamais les demandes
       // elles-mêmes. C'est ce qui permet d'annoncer « 12 en attente ·
       // 3 déployées » sur chaque ligne sans charger 200 inscriptions par jeton.
+      //
+      // Les projections sont bornées aux jetons rendus : compter sur tout le
+      // vivier apprendrait à un administrateur combien d'inscriptions existent
+      // ailleurs, par la seule arithmétique des totaux.
       const repartition = new Map<string, { pending: number; deployed: number; rejected: number }>();
       const projections = await (prisma as any).freeTrialRequest.findMany({
+        where: { tokenId: { in: (jetons as any[]).map(j => String(j.id)) } },
         select: { tokenId: true, status: true },
         take: 20_000,
       });
@@ -1146,6 +1156,17 @@ router.get(
       const filtre: Record<string, unknown> = {};
       if (query.status) filtre.status = query.status;
       if (query.tokenId) filtre.tokenId = query.tokenId;
+      // ── LE VIVIER N'EST PLUS GLOBAL ───────────────────────────────────────
+      //
+      // Une inscription appartient à la CAMPAGNE qui l'a rendue possible. Sans
+      // ce filtre, un administrateur créé à l'instant recevait les deux cents
+      // inscriptions de la maison — nom, pays et appareil compris. Mesuré en
+      // production avant correction.
+      //
+      // Le contrôle par client ci-dessous ne suffisait pas : une demande EN
+      // ATTENTE n'a pas encore de client, et passait donc entière.
+      const porteeCampagne = await porteeDemandesEssai(prisma, req.user);
+      if (porteeCampagne) Object.assign(filtre, porteeCampagne);
       // ── Le parc du propriétaire n'existe pas ici non plus ─────────────────
       //
       // Un essai déployé par le propriétaire crée un client qui lui est
@@ -1387,12 +1408,16 @@ router.get(
   requireAuth,
   interdireAccesRevendeur(),
   requirePermission('clients.view'),
-  async (_req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response) => {
     try {
       if (!prisma) return baseIndisponible(res);
+      // Même portée que la liste : la répartition par pays de TOUT le vivier
+      // apprendrait à un administrateur d'où viennent les clients des autres.
+      const porteeCampagne = await porteeDemandesEssai(prisma, req.user);
       // Projection minimale : trois colonnes suffisent à compter, et rien de
       // nominatif ne remonte donc en mémoire pour produire un total.
       const demandes = await (prisma as any).freeTrialRequest.findMany({
+        ...(porteeCampagne ? { where: porteeCampagne } : {}),
         select: { country: true, status: true, clientId: true },
       });
       const countries = statistiquesParPays(demandes);
@@ -1428,8 +1453,13 @@ router.get(
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       if (!prisma) return baseIndisponible(res);
+      // Les compteurs suivent la MÊME portée que la liste. Sans cela, un
+      // administrateur lirait « 594 essais » au-dessus d'un tableau vide :
+      // l'arithmétique des totaux trahirait ce que la liste protège.
+      const porteeCampagne = await porteeDemandesEssai(prisma, req.user);
       // Projection minimale : trois colonnes suffisent à compter.
       const demandes = await (prisma as any).freeTrialRequest.findMany({
+        ...(porteeCampagne ? { where: porteeCampagne } : {}),
         select: { status: true, clientId: true, subscriptionId: true },
       });
 

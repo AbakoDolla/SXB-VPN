@@ -474,6 +474,23 @@ CREATE INDEX IF NOT EXISTS "free_trial_requests_country_status_idx"
 ALTER TABLE "free_trial_requests" ADD COLUMN IF NOT EXISTS "convertedAt" TIMESTAMP(3);
 ALTER TABLE "free_trial_requests" ADD COLUMN IF NOT EXISTS "convertedBy" TEXT;
 
+-- ── Cloisonnement par administrateur : l'auteur de chaque objet ─────────────
+-- STRICTEMENT ADDITIF : trois colonnes NULLABLES sur des tables existantes.
+-- Aucune ligne n'est reecrite, aucune colonne existante n'est modifiee.
+--
+-- CE QUE CES COLONNES REPARENT, mesure en production : un administrateur cree
+-- a l'instant voyait les 5 revendeurs, les 3 serveurs et les bons de la
+-- maison. Le cloisonnement s'etait arrete aux clients et aux objets qui
+-- pointent vers eux ; ces trois-la n'ont pas de client, donc rien ne les
+-- rattachait a personne.
+--
+-- Une ligne SANS auteur reste visible des roles non cloisonnes : les objets
+-- anterieurs a ces colonnes n'appartiennent a personne en particulier, et les
+-- faire disparaitre priverait l'exploitation de son parc existant.
+ALTER TABLE "resellers" ADD COLUMN IF NOT EXISTS "createdBy" TEXT;
+ALTER TABLE "servers" ADD COLUMN IF NOT EXISTS "createdBy" TEXT;
+ALTER TABLE "vouchers" ADD COLUMN IF NOT EXISTS "createdBy" TEXT;
+
 -- ── Comptage de consommation : idempotence durable des rapports ──────────────
 -- STRICTEMENT ADDITIF : une colonne NULLABLE sur une table existante, plus son
 -- index unique. Aucune ligne existante n'est reecrite, aucune colonne existante

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { encrypt, decrypt } from "../utils/crypto";
+import { auteurAInscrire, porteeServeurs } from "../services/portee-donnees";
 
 const router = Router();
 
@@ -30,7 +31,12 @@ router.get("/", requireAuth, requirePermission("server.manage"), async (req: Aut
   try {
     let servers: any[] = [];
     if (prisma) {
+      // Un administrateur ne voit que les serveurs QU'IL A CRÉÉS. Sans ce
+      // filtre, un compte créé à l'instant recevait l'infrastructure entière —
+      // noms et adresses IP comprises. Mesuré en production avant correction.
+      const portee = await porteeServeurs(prisma, req.user);
       servers = await prisma.vPSServer.findMany({
+        ...(portee ? { where: portee as any } : {}),
         orderBy: { createdAt: "desc" },
       });
     } else {
@@ -51,7 +57,9 @@ router.post("/", requireAuth, requirePermission("server.manage"), async (req: Au
     let newServer: any = null;
     if (prisma) {
       newServer = await prisma.vPSServer.create({
-        data: body,
+        // Estampille d'auteur : c'est elle qui rendra ce serveur à son
+        // créateur, et à lui seul, dans un tableau de bord cloisonné.
+        data: { ...body, createdBy: auteurAInscrire(req.user) },
       });
     } else {
       newServer = {

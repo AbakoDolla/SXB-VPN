@@ -4,7 +4,7 @@ import { z } from "zod";
 import { inMemoryDb, logDbActivity, prisma } from "../database";
 import { AuthenticatedRequest, requireAuth, requirePermission } from "../middleware/auth";
 import { canSeeUser } from "../middleware/rbac/owner";
-import { possedeClientCloisonne } from "../services/portee-donnees";
+import { possedeClientCloisonne, auteurAInscrire, porteeBons } from "../services/portee-donnees";
 import {
   chargerFicheProprietaireClient,
   chargerFicheRevendeur,
@@ -158,12 +158,25 @@ async function chargerProprietaireCreation(
   return accessError ?? fiche;
 }
 
+/**
+ * Portée de lecture des bons.
+ *
+ * Deux cloisonnements se superposent, et aucun ne remplace l'autre :
+ *
+ *   • le REVENDEUR ne voit que les bons de sa fiche (règle préexistante) ;
+ *   • l'ADMINISTRATEUR ne voit que les bons QU'IL A ÉMIS. Sans cette seconde
+ *     règle, un compte créé à l'instant recevait les bons de la maison —
+ *     mesuré en production avant correction.
+ */
 async function resellerScope(req: AuthenticatedRequest) {
-  if (req.user?.role !== "RESELLER") return undefined;
-  const fiche =
-    (req as any).reseller ??
-    (await chargerFicheRevendeur(prisma, req.user.userId));
-  return { resellerId: fiche?.id ?? "__missing_reseller__" };
+  if (req.user?.role === "RESELLER") {
+    const fiche =
+      (req as any).reseller ??
+      (await chargerFicheRevendeur(prisma, req.user.userId));
+    return { resellerId: fiche?.id ?? "__missing_reseller__" };
+  }
+  const portee = await porteeBons(prisma, req.user);
+  return portee ?? undefined;
 }
 
 router.get(
@@ -263,6 +276,9 @@ router.post(
                         resellerId: fiche.id,
                         isRedeemed: false,
                         status: "active",
+                        // Estampille d'auteur : elle rend le bon à celui qui
+                        // l'a émis, indépendamment du revendeur bénéficiaire.
+                        createdBy: auteurAInscrire(req.user),
                       },
                     })
                   );

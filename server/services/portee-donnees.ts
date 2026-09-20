@@ -151,27 +151,33 @@ export function gestionnaireAInscrire(requerant: Requerant | null | undefined): 
 }
 
 /**
- * Portée des CONFIGURATIONS VPN, exprimée sur `VpnProfile`.
+ * Portée d'un objet qui porte son AUTEUR, et non un client.
  *
  * ═══════════════════════════════════════════════════════════════════════════
- * POURQUOI ELLE MANQUAIT
+ * LE MOTIF, ÉCRIT UNE SEULE FOIS
  * ═══════════════════════════════════════════════════════════════════════════
- * Le cloisonnement s'était arrêté aux clients et à ce qui pointe vers eux.
- * Les configurations, elles, n'ont pas de client : elles étaient donc rendues
- * ENTIÈREMENT à quiconque détient `vpnprofile.view`. Un administrateur créé
- * pour revendre l'accès voyait ainsi toutes les configurations de la maison —
- * hôtes, ports, noms commerciaux — dès sa première connexion.
+ * Configurations VPN, campagnes d'essai, revendeurs, serveurs, bons : aucun de
+ * ces objets n'appartient à un client, donc aucun n'entrait dans le
+ * cloisonnement bâti autour de `managedById`. Tous portent en revanche leur
+ * auteur, et la règle est identique pour les cinq :
  *
- * Un profil n'a pas de gestionnaire, mais il porte son AUTEUR (`createdBy`).
- * C'est la même idée que `managedById` sur un client, sous un autre nom : un
- * administrateur ne voit que ce qu'il a lui-même importé.
+ *   • un ADMIN ne voit que ce qu'il a lui-même créé ;
+ *   • les autres rôles non cloisonnés voient tout sauf les créations du
+ *     propriétaire ;
+ *   • le propriétaire voit tout.
  *
- * Le super-administrateur voit tout sauf les créations du propriétaire, comme
- * partout ailleurs. Le propriétaire voit tout.
+ * L'écrire cinq fois garantissait qu'une des cinq copies finirait par
+ * diverger — c'est d'ailleurs ainsi que ce cloisonnement s'était arrêté aux
+ * clients. Elle vit donc ici, et chaque surface la nomme.
+ *
+ * Un objet SANS auteur reste visible des rôles non cloisonnés : les lignes
+ * antérieures à ces colonnes n'appartiennent à personne en particulier, et les
+ * faire disparaître priverait l'exploitation de son parc existant.
  */
-export async function porteeProfils(
+async function porteeParAuteur(
   prisma: any,
   requerant: Requerant | null | undefined,
+  champ = 'createdBy',
 ): Promise<Record<string, unknown> | null> {
   const role = requerant?.role ?? null;
   if (voitTout(role)) return null;
@@ -179,19 +185,103 @@ export async function porteeProfils(
   if (role === ROLE_ADMIN) {
     // Sans identité exploitable, on refuse plutôt que d'ouvrir le catalogue.
     if (!requerant?.userId) return { id: { in: [] } };
-    return { createdBy: requerant.userId };
+    return { [champ]: requerant.userId };
   }
 
-  // Les autres rôles autorisés à lister — super-administrateur et assimilés —
-  // voient tout sauf ce que le propriétaire a créé lui-même.
   const proprietaires = await prisma.user.findMany({
     where: { role: { name: OWNER_ROLE } },
     select: { id: true },
   }).catch(() => [] as Array<{ id: string }>);
   const identifiants = proprietaires.map((u: { id: string }) => u.id);
   if (identifiants.length === 0) return null;
-  // `createdBy` peut être nul sur les profils anciens : les exclure les ferait
-  // disparaître de toutes les listes. Un profil sans auteur n'appartient à
-  // personne en particulier, donc il reste visible.
-  return { OR: [{ createdBy: null }, { createdBy: { notIn: identifiants } }] };
+  return { OR: [{ [champ]: null }, { [champ]: { notIn: identifiants } }] };
+}
+
+/**
+ * Portée des CONFIGURATIONS VPN, exprimée sur `VpnProfile`.
+ *
+ * Le cloisonnement s'était arrêté aux clients et à ce qui pointe vers eux.
+ * Les configurations, elles, n'ont pas de client : elles étaient donc rendues
+ * ENTIÈREMENT à quiconque détient `vpnprofile.view`. Un administrateur créé
+ * pour revendre l'accès voyait ainsi toutes les configurations de la maison —
+ * hôtes, ports, noms commerciaux — dès sa première connexion.
+ */
+export async function porteeProfils(
+  prisma: any,
+  requerant: Requerant | null | undefined,
+): Promise<Record<string, unknown> | null> {
+  return porteeParAuteur(prisma, requerant);
+}
+
+/**
+ * Portée des JETONS D'INVITATION d'essai, exprimée sur `FreeTrialToken`.
+ *
+ * Toute la surface des essais était traitée comme une exploitation INTERNE
+ * indivisible : elle se fermait aux revendeurs, et s'ouvrait entièrement à
+ * tous les autres. Mesuré en production, un administrateur créé à l'instant
+ * voyait les dix campagnes du super-administrateur et les deux cents
+ * inscriptions qu'elles avaient produites — noms et pays compris.
+ */
+export async function porteeJetonsEssai(
+  prisma: any,
+  requerant: Requerant | null | undefined,
+): Promise<Record<string, unknown> | null> {
+  return porteeParAuteur(prisma, requerant);
+}
+
+/** Portée des REVENDEURS, exprimée sur `Reseller`. */
+export async function porteeRevendeurs(
+  prisma: any,
+  requerant: Requerant | null | undefined,
+): Promise<Record<string, unknown> | null> {
+  return porteeParAuteur(prisma, requerant);
+}
+
+/** Portée des SERVEURS, exprimée sur `VPSServer`. */
+export async function porteeServeurs(
+  prisma: any,
+  requerant: Requerant | null | undefined,
+): Promise<Record<string, unknown> | null> {
+  return porteeParAuteur(prisma, requerant);
+}
+
+/** Portée des BONS, exprimée sur `Voucher`. */
+export async function porteeBons(
+  prisma: any,
+  requerant: Requerant | null | undefined,
+): Promise<Record<string, unknown> | null> {
+  return porteeParAuteur(prisma, requerant);
+}
+
+/**
+ * Identifiant de l'auteur à inscrire sur un objet que l'on crée.
+ *
+ * Distinct de `gestionnaireAInscrire`, qui ne vaut que pour un client : ici
+ * TOUT rôle estampille sa création, y compris le super-administrateur. Sans
+ * cela, ses créations seraient dépourvues d'auteur et resteraient visibles
+ * d'un administrateur — exactement ce que le cloisonnement doit empêcher.
+ */
+export function auteurAInscrire(requerant: Requerant | null | undefined): string | null {
+  return requerant?.userId ?? null;
+}
+
+/**
+ * Portée des INSCRIPTIONS d'essai, exprimée sur `FreeTrialRequest`.
+ *
+ * Une inscription n'a pas d'auteur : personne ne la crée depuis le tableau de
+ * bord, c'est l'utilisateur qui la dépose avec un code d'invitation. Elle
+ * hérite donc de la campagne qui l'a rendue possible — le jeton.
+ *
+ * C'est la même mécanique que `porteeSousClient` pour un forfait : l'objet
+ * sans propriétaire emprunte celui de l'objet dont il dépend.
+ */
+export async function porteeDemandesEssai(
+  prisma: any,
+  requerant: Requerant | null | undefined,
+): Promise<Record<string, unknown> | null> {
+  const portee = await porteeJetonsEssai(prisma, requerant);
+  // La relation porte le nom `trialToken` dans le schéma : `token` y désigne
+  // le CODE d'invitation, une chaîne, et filtrer dessus ne lèverait aucune
+  // erreur — il ne rendrait simplement jamais rien.
+  return portee ? { trialToken: portee } : null;
 }

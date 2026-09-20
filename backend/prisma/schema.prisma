@@ -132,6 +132,12 @@ model Reseller {
   // avant cette colonne valent « illimité hérité » (null) et continuent de
   // fonctionner. Toute création par l'API exige désormais une date future.
   accessExpiresAt DateTime?
+  /// Auteur de la fiche — ce qui rend son compartiment à un administrateur.
+  ///
+  /// ADDITIVE ET NULLABLE : les fiches créées avant cette colonne n'ont pas
+  /// d'auteur et restent visibles de tous les rôles non cloisonnés. Les faire
+  /// disparaître priverait l'exploitation de son parc existant.
+  createdBy      String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -211,6 +217,8 @@ model VPSServer {
   ip            String
   location      String
   status        String         @default("online") // online, offline
+  /// Auteur du serveur. ADDITIVE ET NULLABLE, même raison que sur `Reseller`.
+  createdBy     String?
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
   serverConfigs ServerConfig[]
@@ -242,6 +250,8 @@ model Voucher {
   redeemedClient   VpnClient? @relation("VoucherRedeemedClient", fields: [redeemedClientId], references: [id], onDelete: SetNull)
   resellerId       String?
   reseller         Reseller?  @relation(fields: [resellerId], references: [id], onDelete: SetNull)
+  /// Auteur du bon. ADDITIVE ET NULLABLE, même raison que sur `Reseller`.
+  createdBy        String?
   createdAt        DateTime   @default(now())
   updatedAt        DateTime   @updatedAt
 
