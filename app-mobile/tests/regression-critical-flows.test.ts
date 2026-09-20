@@ -2310,7 +2310,23 @@ describe('garde-fous contre les régressions Android', () => {
     const portees = dash.match(/porteeClients\(prisma, req\.user\)/g) || [];
     assert.ok(portees.length >= 2, `cloisonnement absent de /traffic ou /users (${portees.length})`);
     // Les bons de recharge étaient comptés à l'échelle de la plateforme.
-    assert.match(dash, /isReseller \? Promise\.resolve\(0\) : prisma\.voucher\.count\(\)/);
+    //
+    // DURCISSEMENT : l'exclusion du revendeur ne suffisait pas. Mesuré en
+    // production, un ADMINISTRATEUR créé à l'instant lisait le nombre de bons,
+    // de serveurs et de revendeurs de toute la maison — un total est une fuite
+    // aussi sûrement qu'une liste. Chaque comptage porte donc maintenant, EN
+    // PLUS, le compartiment du requérant.
+    assert.match(dash, /isReseller \? Promise\.resolve\(0\) : prisma\.voucher\.count\(\{/);
+    for (const [portee, quoi] of [
+      ['porteeBonsRequerant', 'bons'],
+      ['porteeServeursRequerant', 'serveurs'],
+      ['porteeRevendeursRequerant', 'revendeurs'],
+    ] as const) {
+      assert.match(dash, new RegExp(`\\.\\.\\.\\(${portee} \\?\\? \\{\\}\\)`),
+        `le comptage des ${quoi} doit porter le compartiment du requérant`);
+    }
+    // Et l'enveloppe de quota revendeur, qui exposait 1,1 To attribués.
+    assert.match(dash, /porteeRevendeursQuota/);
   });
 
   it('limite le revendeur aux configurations qui lui sont attribuées', () => {

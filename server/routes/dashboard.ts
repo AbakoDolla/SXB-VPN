@@ -25,7 +25,7 @@ import {
   exclureIdentifiants,
   porteeEssaiDeploye,
 } from "../services/free-trial-marks";
-import { porteeClients } from "../services/portee-donnees";
+import { porteeBons, porteeClients, porteeRevendeurs, porteeServeurs } from "../services/portee-donnees";
 
 const router = Router();
 const ROLES_QUOTA_REVENDEURS = new Set(["OWNER", "SUPER_ADMIN", "ADMIN"]);
@@ -139,17 +139,35 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
         await porteeClients(prisma, req.user),
         exclusionEssais,
       ) ?? {};
+      // Compartiment du requérant, POUR CHAQUE FAMILLE D'OBJETS.
+      //
+      // Les comptages qui suivent excluaient le revendeur et personne d'autre :
+      // un administrateur neuf lisait donc le nombre de serveurs, de revendeurs
+      // et de bons de toute la maison. Un total est une fuite aussi sûrement
+      // qu'une liste — il apprend l'existence et l'ampleur de ce qu'on cache.
+      const porteeServeursRequerant = await porteeServeurs(prisma, req.user);
+      const porteeRevendeursRequerant = await porteeRevendeurs(prisma, req.user);
+      const porteeBonsRequerant = await porteeBons(prisma, req.user);
       [activeAccounts, expiredAccounts, activeServers, activeResellers, totalVouchers, redeemedVouchers] = await Promise.all([
         prisma.vpnClient.count({ where: { status: "active", ...clientStealthWhere } }),
         prisma.vpnClient.count({ where: { status: "expired", ...clientStealthWhere } }),
         // Le revendeur ne pilote aucun serveur : la valeur reste à zéro et la
         // carte correspondante est remplacée côté interface.
-        isReseller ? Promise.resolve(0) : prisma.vPSServer.count({ where: { status: "online" } }),
-        isReseller ? Promise.resolve(0) : prisma.reseller.count({ where: { status: "active", ...resellerStealthWhere } }),
-        // Les bons de recharge sont comptés à l'échelle de la plateforme : un
-        // revendeur n'a pas à connaître le volume émis par les autres.
-        isReseller ? Promise.resolve(0) : prisma.voucher.count(),
-        isReseller ? Promise.resolve(0) : prisma.voucher.count({ where: { isRedeemed: true } }),
+        isReseller ? Promise.resolve(0) : prisma.vPSServer.count({
+          where: { status: "online", ...(porteeServeursRequerant ?? {}) },
+        }),
+        isReseller ? Promise.resolve(0) : prisma.reseller.count({
+          where: { status: "active", ...resellerStealthWhere, ...(porteeRevendeursRequerant ?? {}) },
+        }),
+        // Les bons restent comptés dans le compartiment du requérant : un
+        // revendeur n'a pas à connaître le volume émis par les autres, et un
+        // administrateur pas davantage.
+        isReseller ? Promise.resolve(0) : prisma.voucher.count({
+          where: { ...(porteeBonsRequerant ?? {}) },
+        }),
+        isReseller ? Promise.resolve(0) : prisma.voucher.count({
+          where: { isRedeemed: true, ...(porteeBonsRequerant ?? {}) },
+        }),
       ]);
 
       const clients = await prisma.vpnClient.findMany({
@@ -255,8 +273,13 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
       // L'administration voit les enveloppes attribuées aux REVENDEURS. Les
       // quotas des clients ne sont jamais additionnés ni présentés comme une
       // capacité de la plateforme ou du compte administrateur.
+      const porteeRevendeursQuota = await porteeRevendeurs(prisma, req.user);
       const fiches = await (prisma as any).reseller.findMany({
-        ...(resellerStealthWhere ? { where: resellerStealthWhere } : {}),
+        // Le compartiment du requérant s'ajoute à la furtivité : un
+        // administrateur ne cumule QUE les enveloppes des revendeurs qu'il a
+        // lui-même créés. Sans cela, il lisait 1,1 To attribués et 1,9 Po
+        // engagés par la maison — mesuré en production avant correction.
+        where: { ...(resellerStealthWhere ?? {}), ...(porteeRevendeursQuota ?? {}) },
         include: { user: true },
       });
       const lignes = await Promise.all(

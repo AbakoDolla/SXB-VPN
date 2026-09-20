@@ -7,7 +7,7 @@ import { Router, Response } from "express";
 import { prisma, inMemoryDb } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { FURTIVITE_OWNER_PORTEUR, isOwnerRequest } from "../middleware/rbac/owner";
-import { porteeClients } from "../services/portee-donnees";
+import { porteeBons, porteeClients, porteeRevendeurs, porteeServeurs, porteeSousClient } from "../services/portee-donnees";
 
 const router = Router();
 
@@ -179,7 +179,12 @@ router.get("/servers", requireAuth, requirePermission("analytics.read"), async (
     const clientStealthWhere = await porteeAnalytique(req);
     if (prisma) {
       [servers, activeClientCount] = await Promise.all([
-        prisma.vPSServer.findMany({ orderBy: { createdAt: "asc" } }),
+        // Même compartiment que partout ailleurs : un administrateur ne voit
+        // que ses serveurs, y compris dans la ventilation par serveur.
+        prisma.vPSServer.findMany({
+          where: { ...(await porteeServeurs(prisma, req.user) ?? {}) },
+          orderBy: { createdAt: "asc" },
+        }),
         prisma.vpnClient.count({ where: { status: "active", ...clientStealthWhere } }),
       ]);
       servers.forEach((s) => locationsSet.add(s.location));
@@ -229,6 +234,17 @@ router.get("/overview", requireAuth, requirePermission("analytics.read"), async 
     const userStealthWhere = stealthUserWhere(requesterIsOwner);
     const clientStealthWhere = await porteeAnalytique(req);
     if (prisma) {
+      // Compartiment du requérant, famille par famille. Ces comptages ne
+      // connaissaient que la furtivité du propriétaire : un administrateur
+      // neuf lisait 770 utilisateurs, 5 revendeurs, 3 serveurs et les jetons
+      // de la maison — mesuré en production avant correction.
+      const porteeServeursRequerant = await porteeServeurs(prisma, req.user);
+      const porteeRevendeursRequerant = await porteeRevendeurs(prisma, req.user);
+      const porteeBonsRequerant = await porteeBons(prisma, req.user);
+      // Un administrateur ne compte que LES COMPTES qu'il gère. Passer par la
+      // portée des clients rattache le décompte à son parc, là où `user.count`
+      // embrassait toute la plateforme.
+      const porteeComptes = await porteeClients(prisma, req.user);
       const [
         totalUsers,
         activeClients,
@@ -241,15 +257,21 @@ router.get("/overview", requireAuth, requirePermission("analytics.read"), async 
         usedVouchers,
         totalTraffic,
       ] = await Promise.all([
-        prisma.user.count({ where: userStealthWhere }),
+        porteeComptes
+          ? prisma.vpnClient.count({ where: porteeComptes as any })
+          : prisma.user.count({ where: userStealthWhere }),
         prisma.vpnClient.count({ where: { status: "active", ...clientStealthWhere } }),
-        prisma.reseller.count({ where: stealthResellerWhere(requesterIsOwner) }),
-        prisma.vPSServer.count(),
-        prisma.vPSServer.count({ where: { status: "online" } }),
-        prisma.tokenSXB.count(),
-        prisma.tokenSXB.count({ where: { status: "used" } }),
-        prisma.voucher.count(),
-        prisma.voucher.count({ where: { status: "used" } }),
+        prisma.reseller.count({
+          where: { ...stealthResellerWhere(requesterIsOwner), ...(porteeRevendeursRequerant ?? {}) },
+        }),
+        prisma.vPSServer.count({ where: { ...(porteeServeursRequerant ?? {}) } }),
+        prisma.vPSServer.count({ where: { status: "online", ...(porteeServeursRequerant ?? {}) } }),
+        // Les jetons d'activation appartiennent au client qu'ils ouvrent :
+        // leur portée est donc celle des clients, pas un décompte global.
+        prisma.tokenSXB.count({ where: { ...(await porteeSousClient(prisma, req.user) ?? {}) } }),
+        prisma.tokenSXB.count({ where: { status: "used", ...(await porteeSousClient(prisma, req.user) ?? {}) } }),
+        prisma.voucher.count({ where: { ...(porteeBonsRequerant ?? {}) } }),
+        prisma.voucher.count({ where: { status: "used", ...(porteeBonsRequerant ?? {}) } }),
         prisma.vpnClient.aggregate({ _sum: { quotaUsed: true }, ...(clientStealthWhere ? { where: clientStealthWhere } : {}) }),
       ]);
       return res.json({

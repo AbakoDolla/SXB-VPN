@@ -883,7 +883,18 @@ test("quota dashboard is based on reseller envelopes, not direct client capacity
   assert.equal(own.body.resellerQuota.assignedBytes,String(10n * GO));
   const admin = await api("admin","GET","/dashboard/stats");
   ok(admin);
-  assert.equal(admin.body.resellerQuota.assignedBytes,String(20n * GO));
+  // CHANGEMENT DE RÈGLE, demandé par le propriétaire : un ADMIN ne voit que
+  // les enveloppes des revendeurs QU'IL A CRÉÉS. Il n'en a créé aucun ici,
+  // donc il ne cumule rien — là où il lisait auparavant la somme des deux.
+  //
+  // Mesuré en production avant correction : un administrateur créé à l'instant
+  // lisait 1,1 To attribués et 1,9 Po engagés par la maison.
+  assert.equal(admin.body.resellerQuota.assignedBytes,String(0n));
+  // Le SUPER_ADMIN, lui, continue de voir la plateforme : le cloisonnement
+  // ferme le compartiment de l'administrateur, il n'aveugle pas l'exploitation.
+  const super_ = await api("super","GET","/dashboard/stats");
+  ok(super_);
+  assert.equal(super_.body.resellerQuota.assignedBytes,String(20n * GO));
 });
 
 test("bulk additions are cumulative, duplicate targets are ignored, and quota cannot overspend", async () => {
