@@ -6,6 +6,10 @@ import { canSeeUser, isOwnerRequest } from "../middleware/rbac/owner";
 
 const router = Router();
 
+function gestionnaireAInscrire(requerant: { userId?: string | null; role?: string | null } | null | undefined): string | null {
+  return requerant?.role === "ADMIN" || requerant?.role === "OWNER" ? requerant.userId ?? null : null;
+}
+
 async function syncClientAccessState(clientId: string, state: 'active' | 'suspended' | 'revoked' | 'deleted') {
   if (!prisma) return;
   await (prisma as any).activationSession.updateMany({
@@ -183,6 +187,21 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
     if (!targetUserId) {
       return res.status(400).json({ error: "errors.validation", message: "userId required for RESELLER role" });
     }
+    const deviceIdCreation = typeof body.deviceId === "string" && body.deviceId.trim() ? body.deviceId.trim() : null;
+    const managedById = gestionnaireAInscrire(req.user);
+    if (deviceIdCreation && prisma) {
+      const existingDevice = await (prisma as any).vpnClient.findFirst({
+        where: { deviceId: deviceIdCreation, managedById },
+        select: { id: true },
+      });
+      if (existingDevice) {
+        return res.status(409).json({
+          error: "errors.clients.device_already_registered",
+          code: "CLIENT_DEVICE_ALREADY_REGISTERED",
+          message: "Cet appareil est déjà enregistré dans ce tableau de bord.",
+        });
+      }
+    }
 
     // Generate SXB Secure Client Token (Sing-box/V2Ray standard)
     // FIX-001: Format SXB-USER-XXXX-XXXX-XXXX standard
@@ -200,7 +219,8 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
           quotaUsed: BigInt(0),
           expireAt: body.durationDays ? new Date(Date.now() + body.durationDays * 24 * 60 * 60 * 1000) : null,
           status: "active",
-          deviceId: body.deviceId || undefined,
+          deviceId: deviceIdCreation || undefined,
+          managedById,
         },
         include: { user: true },
       });
@@ -213,6 +233,8 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
         quotaUsed: BigInt(0),
         expireAt: body.durationDays ? new Date(Date.now() + body.durationDays * 24 * 60 * 60 * 1000) : null,
         status: "active",
+        deviceId: deviceIdCreation,
+        managedById,
         createdAt: new Date(),
         updatedAt: new Date(),
       };
@@ -227,6 +249,13 @@ router.post("/", requireAuth, requirePermission("clients.create"), async (req: A
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: "errors.validation", message: err.issues });
+    }
+    if ((err as any)?.code === "P2002" && String((err as any)?.meta?.target ?? "").includes("deviceId")) {
+      return res.status(409).json({
+        error: "errors.clients.device_already_registered",
+        code: "CLIENT_DEVICE_ALREADY_REGISTERED",
+        message: "Cet appareil est déjà enregistré dans ce tableau de bord.",
+      });
     }
     console.error("Create VPN client error:", err);
     return res.status(500).json({ error: "errors.server", message: "Failed to create VPN client" });

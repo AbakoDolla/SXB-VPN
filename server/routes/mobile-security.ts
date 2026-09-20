@@ -68,11 +68,15 @@ function adresseSource(req: AuthenticatedRequest): string | null {
 }
 
 /** Nom enregistré du client porteur de l'appareil, pour que l'alerte ait un visage. */
-async function attribuerAppareil(deviceId: string) {
+async function attribuerAppareil(deviceId: string, req: AuthenticatedRequest) {
   if (!prisma) return null;
   try {
-    return await (prisma as any).vpnClient.findUnique({
-      where: { deviceId },
+    return await (prisma as any).vpnClient.findFirst({
+      where: {
+        deviceId,
+        userId: req.user?.userId,
+        ...(req.user?.clientId ? { id: req.user.clientId } : {}),
+      },
       select: {
         id: true,
         status: true,
@@ -142,7 +146,7 @@ router.post('/report', requireAuth, async (req: AuthenticatedRequest, res: Respo
     return res.status(202).json({ accepted: true });
   }
 
-  const fiche = await attribuerAppareil(deviceId);
+  const fiche = await attribuerAppareil(deviceId, req);
   const contexte = {
     ip: adresseSource(req),
     clientName: fiche?.user?.name || fiche?.user?.email || null,

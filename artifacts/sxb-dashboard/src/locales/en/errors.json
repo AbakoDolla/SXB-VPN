@@ -108,7 +108,7 @@
     "unavailable": "Authentication is temporarily unavailable.",
     "user_not_found": "User account not found."
   },
-  "clients": { "not_found": "VPN client not found.", "shared_user": "This user account is shared and cannot be deleted.", "user_unavailable": "This client's account is no longer available." },
+  "clients": { "device_already_registered": "This device is already registered in this dashboard.", "not_found": "VPN client not found.", "shared_user": "This user account is shared and cannot be deleted.", "user_unavailable": "This client's account is no longer available." },
   "db": { "unavailable": "The database is temporarily unavailable. Please retry." },
   "resellers": {
     "access_expired": "Access expired — please renew",

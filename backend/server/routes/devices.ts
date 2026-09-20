@@ -6,6 +6,10 @@ import { requireAuth, requirePermission, AuthenticatedRequest } from "../middlew
 
 const router = Router();
 
+function gestionnaireAInscrire(requerant: { userId?: string | null; role?: string | null } | null | undefined): string | null {
+  return requerant?.role === "ADMIN" || requerant?.role === "OWNER" ? requerant.userId ?? null : null;
+}
+
 function makeUserToken(): string {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
   const part = () => Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
@@ -78,10 +82,11 @@ router.post("/generate-token", requireAuth, requirePermission("clients.manage"),
   try {
     if (!prisma) return res.status(503).json({ error: "Database unavailable" });
     const body = generateSchema.parse(req.body);
+    const managedById = gestionnaireAInscrire(req.user);
 
     // Check if device already has a token
     const existing = await (prisma as any).vpnClient.findFirst({ 
-      where: { deviceId: body.deviceId },
+      where: { deviceId: body.deviceId, managedById },
       include: { user: true }
     });
     if (existing) {
@@ -134,6 +139,7 @@ router.post("/generate-token", requireAuth, requirePermission("clients.manage"),
         deviceId: body.deviceId,
         expireAt,
         status: "active",
+        managedById,
       },
       include: { user: true },
     });
@@ -148,6 +154,9 @@ router.post("/generate-token", requireAuth, requirePermission("clients.manage"),
     return res.status(201).json(sanitize(client));
   } catch (err) {
     if (err instanceof z.ZodError) return res.status(400).json({ error: "Validation", details: err.issues });
+    if ((err as any)?.code === "P2002" && String((err as any)?.meta?.target ?? "").includes("deviceId")) {
+      return res.status(409).json({ error: "DEVICE_ALREADY_REGISTERED", message: "Cet appareil a déjà un token actif" });
+    }
     console.error("Generate device token error:", err);
     return res.status(500).json({ error: "Server error" });
   }

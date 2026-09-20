@@ -86,7 +86,7 @@ model VpnClient {
   avatarUrl       String?
   xpanelUserId    String?    // External xPanel user ID
   deviceLimit     Int        @default(1)
-  deviceId        String?    @unique
+  deviceId        String?
   activatedAt     DateTime?
   lastSeenAt      DateTime?
   appRegisteredAt DateTime?
@@ -117,6 +117,7 @@ model VpnClient {
 
   @@index([resellerId])
   @@index([managedById])
+  @@unique([managedById, deviceId])
   @@map("vpn_clients")
 }
 

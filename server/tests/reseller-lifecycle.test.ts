@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { describe, it } from "node:test";
 import {
   CODES_REVENDEUR,
@@ -17,6 +17,11 @@ import {
 import { CODES_ACTIVATION, evaluerActivation } from "../services/device-activation";
 import { sanitizeDevice } from "../services/device-quota";
 import { calculerAllocation } from "../services/reseller-quota";
+import {
+  chercherConflitDeviceClient,
+  estContrainteUniqueDeviceClient,
+  reponseConflitDeviceClient,
+} from "../services/vpn-client-device-scope";
 
 const GO = BigInt(1024) ** BigInt(3);
 const DEMAIN = new Date(Date.now() + 24 * 3600 * 1000);
@@ -391,6 +396,94 @@ describe("validité et plafond du revendeur", () => {
 
     assert.equal(refusPourQuotaAtteint(resumerAccesRevendeur(fiche(), 10n * GO)), null);
     assert.equal(refusPourQuotaAtteint(resumerAccesRevendeur(fiche({ quotaBytes: BigInt(-1) }), 10n * GO)), null);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("unicité cloisonnée des appareils VPN", () => {
+  it("laisse deux administrateurs enregistrer le même deviceId dans deux compartiments", async () => {
+    const requetes: unknown[] = [];
+    const db = {
+      vpnClient: {
+        findFirst: async ({ where }: { where: unknown }) => {
+          requetes.push(where);
+          return JSON.stringify(where).includes('"managedById":"admin-a"') ? { id: "client-a" } : null;
+        },
+      },
+    };
+
+    const memeAdmin = await chercherConflitDeviceClient(db, { managedById: "admin-a" }, "SXB-SAME-DEVICE");
+    const autreAdmin = await chercherConflitDeviceClient(db, { managedById: "admin-b" }, "SXB-SAME-DEVICE");
+
+    assert.deepEqual(memeAdmin, { id: "client-a" });
+    assert.equal(autreAdmin, null);
+    assert.match(JSON.stringify(requetes[0]), /"managedById":"admin-a"/);
+    assert.match(JSON.stringify(requetes[1]), /"managedById":"admin-b"/);
+  });
+
+  it("transforme le doublon du même compartiment en 409 exploitable", () => {
+    const reponse = reponseConflitDeviceClient();
+    assert.equal(reponse.error, "errors.clients.device_already_registered");
+    assert.equal(reponse.code, "CLIENT_DEVICE_ALREADY_REGISTERED");
+    assert.equal(estContrainteUniqueDeviceClient({ code: "P2002", meta: { target: ["managedById", "deviceId"] } }), true);
+
+    const route = readFileSync(new URL("../routes/clients.ts", import.meta.url), "utf8");
+    assert.ok(route.includes("chercherConflitDeviceClient("));
+    assert.ok(route.includes("await porteeClients(prisma, req.user)"));
+    assert.ok(route.includes("return res.status(409).json(reponseConflitDeviceClient())"));
+    assert.ok(route.includes("estContrainteUniqueDeviceClient(err)"));
+  });
+
+  it("garde le schéma Prisma cloisonné et les deux copies strictement identiques", () => {
+    const racine = readFileSync(new URL("../../prisma/schema.prisma", import.meta.url), "utf8");
+    const backend = readFileSync(new URL("../../backend/prisma/schema.prisma", import.meta.url), "utf8");
+    assert.equal(racine, backend);
+
+    const modele = racine.slice(racine.indexOf("model VpnClient "), racine.indexOf("model Reseller "));
+    assert.ok(modele.includes("deviceId        String?"));
+    assert.ok(modele.includes("@@unique([managedById, deviceId])"));
+    assert.doesNotMatch(modele, /deviceId\s+String\?\s+@unique/);
+  });
+
+  it("ne laisse aucun accès unique VpnClient par deviceId seul dans server/ ni backend/", () => {
+    const racine = new URL("../../", import.meta.url);
+    const fichiers = (dossier: URL): URL[] => readdirSync(dossier, { withFileTypes: true }).flatMap((entree) => {
+      const chemin = new URL(`${entree.name}${entree.isDirectory() ? "/" : ""}`, dossier);
+      if (entree.isDirectory()) return fichiers(chemin);
+      return entree.isFile() && entree.name.endsWith(".ts") ? [chemin] : [];
+    });
+    const sansCommentaires = (source: string) => source
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .split(/\r?\n/)
+      .filter((ligne) => !ligne.trim().startsWith("//"))
+      .join("\n");
+    const whereVpnClientContientDeviceId = (source: string): boolean => {
+      const operation = /vpnClient\.(findUnique|update|delete|upsert|connect)\s*\(/g;
+      let match: RegExpExecArray | null;
+      while ((match = operation.exec(source))) {
+        const where = source.indexOf("where", match.index);
+        if (where < 0 || where - match.index > 800) continue;
+        const debut = source.indexOf("{", where);
+        if (debut < 0 || debut - where > 80) continue;
+        let profondeur = 0;
+        for (let i = debut; i < source.length; i += 1) {
+          const caractere = source[i];
+          if (caractere === "{") profondeur += 1;
+          if (caractere === "}") profondeur -= 1;
+          if (profondeur === 0) {
+            if (/\bdeviceId\b/.test(source.slice(debut + 1, i))) return true;
+            break;
+          }
+        }
+      }
+      return false;
+    };
+    const violations = [new URL("server/", racine), new URL("backend/server/", racine)]
+      .flatMap(fichiers)
+      .filter((fichier) => statSync(fichier).isFile())
+      .filter((fichier) => whereVpnClientContientDeviceId(sansCommentaires(readFileSync(fichier, "utf8"))))
+      .map((fichier) => fichier.pathname);
+    assert.deepEqual(violations, []);
   });
 });
 

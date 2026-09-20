@@ -462,10 +462,16 @@ router.post("/auth/activate", async (req, res: Response) => {
         decision.action === "rebind" ||
         (decision.action === "already_bound" && !client.activatedAt));
     if (doitConfirmerAppareil) {
+      const porteeConflit = client.managedById
+        ? { managedById: client.managedById }
+        : client.resellerId
+          ? { managedById: null, resellerId: client.resellerId }
+          : { managedById: null, resellerId: null, userId: client.userId };
       const conflit = await (prisma as any).vpnClient.findFirst({
         where: {
           deviceId: decision.deviceId,
           id: { not: client.id },
+          ...porteeConflit,
         },
         select: { id: true },
       });

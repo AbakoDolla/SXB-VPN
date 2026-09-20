@@ -108,7 +108,7 @@
     "unavailable": "L'authentification est temporairement indisponible.",
     "user_not_found": "Compte utilisateur introuvable."
   },
-  "clients": { "not_found": "Client VPN introuvable.", "shared_user": "Ce compte utilisateur est partagé ; sa suppression est interdite.", "user_unavailable": "Le compte de ce client n'est plus disponible." },
+  "clients": { "device_already_registered": "Cet appareil est déjà enregistré dans ce tableau de bord.", "not_found": "Client VPN introuvable.", "shared_user": "Ce compte utilisateur est partagé ; sa suppression est interdite.", "user_unavailable": "Le compte de ce client n'est plus disponible." },
   "db": { "unavailable": "La base de données est temporairement indisponible. Réessayez." },
   "resellers": {
     "access_expired": "Accès expiré — veuillez renouveler",

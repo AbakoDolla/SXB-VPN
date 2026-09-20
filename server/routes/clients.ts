@@ -16,6 +16,12 @@ import { gestionnaireAInscrire, porteeClients, possedeClientCloisonne } from "..
 import { assertResumeAllowed, deviceAccessFailure, MobileAccessError } from "../services/access-lifecycle";
 import { accessStateHub } from "../services/access-state-events";
 import {
+  chercherConflitDeviceClient,
+  estContrainteUniqueDeviceClient,
+  normaliserDeviceIdClient,
+  reponseConflitDeviceClient,
+} from "../services/vpn-client-device-scope";
+import {
   chargerFicheRevendeur,
   estRoleSuperieur,
   exigerAccesRevendeur,
@@ -278,6 +284,19 @@ router.post(
       if (plafond) return res.status(plafond.status).json(plafond.body);
     }
 
+    const deviceIdCreation = normaliserDeviceIdClient(body.deviceId);
+    const gestionnaireCreation = gestionnaireAInscrire(req.user);
+    if (deviceIdCreation && prisma) {
+      const conflitDevice = await chercherConflitDeviceClient(
+        prisma,
+        await porteeClients(prisma, req.user),
+        deviceIdCreation,
+      );
+      if (conflitDevice) {
+        return res.status(409).json(reponseConflitDeviceClient());
+      }
+    }
+
     if (targetUserId && prisma) {
       const cible = await prisma.user.findUnique({
         where: { id: targetUserId },
@@ -370,13 +389,13 @@ router.post(
             expireAt: body.durationDays ? new Date(Date.now() + body.durationDays * 24 * 60 * 60 * 1000) : null,
             status: "active",
             deviceLimit: body.deviceLimit,
-            deviceId: body.deviceId || undefined,
+            deviceId: deviceIdCreation || undefined,
             resellerId: fiche?.id ?? null,
             // Compartiment de l'administrateur créateur. Nul pour les rôles qui
             // voient tout : un client créé par le super-administrateur doit
             // rester lisible par ses pairs, pas devenir le parc privé de l'un
             // d'eux.
-            managedById: gestionnaireAInscrire(req.user),
+            managedById: gestionnaireCreation,
           },
           include: { user: true, reseller: { include: { user: true } } },
         });
@@ -392,7 +411,8 @@ router.post(
         status: "active",
         deviceLimit: body.deviceLimit,
         resellerId: fiche?.id ?? null,
-        deviceId: body.deviceId || null,
+        deviceId: deviceIdCreation,
+        managedById: gestionnaireCreation,
         createdAt: new Date(),
         updatedAt: new Date(),
       };
@@ -411,6 +431,9 @@ router.post(
     }
     if (err instanceof PlafondQuotaDepasse) {
       return res.status(409).json(reponsePlafondDepasse(err.alloue, err.plafond));
+    }
+    if (estContrainteUniqueDeviceClient(err)) {
+      return res.status(409).json(reponseConflitDeviceClient());
     }
     console.error("Create VPN client error:", err);
     return res.status(500).json({ error: "errors.server", message: "Failed to create VPN client" });

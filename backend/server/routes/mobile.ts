@@ -985,7 +985,10 @@ router.post("/vpn/usage", async (req: AuthenticatedRequest, res: Response) => {
 
     let client: any = await findClientByUserId(req.user!.userId);
     if (!client && deviceId && prisma) {
-      client = await (prisma as any).vpnClient.findUnique({ where: { deviceId } });
+      client = await (prisma as any).vpnClient.findFirst({
+        where: { deviceId, userId: req.user!.userId },
+        orderBy: [{ lastSeenAt: "desc" }, { activatedAt: "desc" }, { createdAt: "desc" }],
+      });
     }
 
     if (!client) {

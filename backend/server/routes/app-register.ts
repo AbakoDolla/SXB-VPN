@@ -17,8 +17,9 @@ router.post("/", async (req: Request, res: Response) => {
     if (!prisma)  return res.status(503).json({ error: "Database unavailable" });
 
     // 1. Find client by deviceId
-    let client: any = await (prisma as any).vpnClient.findUnique({
+    let client: any = await (prisma as any).vpnClient.findFirst({
       where: { deviceId },
+      orderBy: [{ lastSeenAt: "desc" }, { appRegisteredAt: "desc" }, { activatedAt: "desc" }, { createdAt: "desc" }],
       include: {
         user: { select: { name: true, email: true, phone: true } },
         subscriptions: {
@@ -117,8 +118,9 @@ router.post("/", async (req: Request, res: Response) => {
 router.get("/status/:deviceId", async (req: Request, res: Response) => {
   try {
     if (!prisma) return res.status(503).json({ error: "Database unavailable" });
-    const client = await (prisma as any).vpnClient.findUnique({
+    const client = await (prisma as any).vpnClient.findFirst({
       where: { deviceId: req.params.deviceId },
+      orderBy: [{ lastSeenAt: "desc" }, { appRegisteredAt: "desc" }, { activatedAt: "desc" }, { createdAt: "desc" }],
       include: { subscriptions: { where: { status: "active" }, include: { profile: true }, take: 1 } },
     });
     if (!client) return res.json({ active: false, matched: false });

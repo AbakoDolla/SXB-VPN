@@ -6,12 +6,13 @@ import { prisma, logDbActivity } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { sanitizeDevice, selectDeviceSubscription } from "../services/device-quota";
 import { marquesEssaiParClient, etFiltres, exclureIdentifiants, inclutEssaisGratuits, porteeEssaiDeploye } from "../services/free-trial-marks";
-import { porteeClients, possedeClientCloisonne } from "../services/portee-donnees";
+import { gestionnaireAInscrire, porteeClients, possedeClientCloisonne } from "../services/portee-donnees";
 import { executerMutationQuota, PlafondQuotaDepasse } from "../services/reseller-quota";
 import { synchroniserEtatAccesClient } from "../services/client-access-state";
 import { makeUserToken, renewedDeviceExpiry } from "../services/device-token";
 import { assertResumeAllowed, deviceAccessFailure, MobileAccessError } from "../services/access-lifecycle";
 import { accessStateHub } from "../services/access-state-events";
+import { estContrainteUniqueDeviceClient, normaliserDeviceIdClient } from "../services/vpn-client-device-scope";
 import {
   chargerFicheRevendeur,
   estRoleSuperieur,
@@ -238,9 +239,12 @@ router.post(
         if (plafond) return res.status(plafond.status).json(plafond.body);
       }
 
-      // Check if device already has a token
+      const deviceIdCreation = normaliserDeviceIdClient(body.deviceId)!;
+      const gestionnaireCreation = gestionnaireAInscrire(req.user);
+
+      // Check if device already has a token in the requester-visible scope.
       const existing = await (prisma as any).vpnClient.findFirst({
-        where: { deviceId: body.deviceId },
+        where: etFiltres(await porteeClients(prisma, req.user), { deviceId: deviceIdCreation }),
         include: { user: true, reseller: { include: { user: true } } },
       });
       if (existing) {
@@ -354,10 +358,10 @@ router.post(
       if (!clientRole) return res.status(500).json({ error: "Role CLIENT introuvable" });
 
       const passwordHash = await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 12);
-      const labelName = body.label || `Appareil ${body.deviceId.slice(0, 12)}`;
+      const labelName = body.label || `Appareil ${deviceIdCreation.slice(0, 12)}`;
       const deviceFingerprint = crypto
         .createHash("sha256")
-        .update(body.deviceId)
+        .update(deviceIdCreation)
         .digest("hex")
         .slice(0, 32);
       const email = `device.${deviceFingerprint}@sxbvpn.local`;
@@ -388,12 +392,13 @@ router.post(
           data: {
             userId: deviceUser.id,
             token: tokenStr,
-            deviceId: body.deviceId,
+            deviceId: deviceIdCreation,
             expireAt,
             status: "active",
             // Propriété commerciale explicite. Aucun quota, aucun forfait : le
             // plafond du revendeur n'est engagé qu'à l'attribution d'un plan.
             resellerId: fiche?.id ?? null,
+            managedById: gestionnaireCreation,
           },
           include: { user: true, reseller: { include: { user: true } } },
         });
@@ -409,6 +414,13 @@ router.post(
       return res.status(201).json(sanitizeDevice(client));
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ error: "Validation", details: err.issues });
+      if (estContrainteUniqueDeviceClient(err)) {
+        return res.status(409).json({
+          error: "DEVICE_ALREADY_REGISTERED",
+          code: "DEVICE_ALREADY_REGISTERED",
+          message: "Cet appareil a déjà un token actif",
+        });
+      }
       console.error("Generate device token error:", err);
       return res.status(500).json({ error: "Server error" });
     }

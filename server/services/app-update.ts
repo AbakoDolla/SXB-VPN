@@ -103,8 +103,16 @@ export async function isActivatedDevice(deviceId: string): Promise<boolean> {
 
   // Source de vérité principale : un client VPN actif avec un Device ID lié.
   // Les anciennes installations peuvent ne pas encore avoir de ligne AppRegistration.
-  const client = await (prisma as any).vpnClient.findUnique({
-    where: { deviceId: normalized },
+  //
+  // L'appareil n'est plus globalement unique : le même identifiant peut vivre
+  // dans deux tableaux de bord cloisonnés. La question posée ici est « cet
+  // appareil est-il activé QUELQUE PART », donc l'état actif appartient au
+  // filtre. Le chercher hors du filtre reviendrait à élire le client le plus
+  // récemment vu puis à répondre « non » s'il se trouve suspendu, alors qu'un
+  // autre tableau de bord le sert toujours.
+  const client = await (prisma as any).vpnClient.findFirst({
+    where: { deviceId: normalized, status: "active" },
+    orderBy: [{ lastSeenAt: "desc" }, { appRegisteredAt: "desc" }, { activatedAt: "desc" }, { createdAt: "desc" }],
     select: { id: true, status: true, activatedAt: true, appRegisteredAt: true },
   });
   if (client?.status === "active" && (client.activatedAt || client.appRegisteredAt || client.id)) return true;

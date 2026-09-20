@@ -9,6 +9,7 @@ on:
       - 'server/**'
       - 'server.ts'
       - 'prisma/**'
+      - 'scripts/**'
       - '.github/workflows/deploy-vps.yml'
       - 'ecosystem.config.cjs'
   workflow_dispatch:
@@ -351,6 +352,17 @@ jobs:
               fi
               psql "${DB_URL%%\?*}" -v ON_ERROR_STOP=1 -f "$MANUAL_SQL" >/tmp/sxb-manual-migration.log
               echo "✅ Migrations additives appliquées"
+            fi
+
+            VPN_CLIENT_DEVICE_SCOPE_SQL="backend/prisma/migrations/20260920185000_vpn_client_device_scope/migration.sql"
+            if [ -f "$VPN_CLIENT_DEVICE_SCOPE_SQL" ]; then
+              if ! command -v psql >/dev/null 2>&1; then
+                echo "::error::psql introuvable — cloisonnement deviceId non installable"
+                exit 1
+              fi
+              psql "${DB_URL%%\?*}" -1 -v ON_ERROR_STOP=1 -f "$VPN_CLIENT_DEVICE_SCOPE_SQL" \
+                >/tmp/sxb-vpn-client-device-scope-migration.log
+              echo "✅ Unicité des appareils VPN cloisonnée"
             fi
 
             echo "🗄️ Push Prisma schema..."
