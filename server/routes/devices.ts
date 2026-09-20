@@ -291,11 +291,17 @@ router.post(
 
         if (essai) {
           return res.status(409).json({
-            error: "DEVICE_ON_FREE_TRIAL",
-            code: "DEVICE_ON_FREE_TRIAL",
+            // LE CODE NE CHANGE PAS. Un contrat existant s'appuie dessus :
+            // l'exploitant reçoit le jeton EXISTANT, et peut attacher un
+            // forfait payant à ce même compte — l'application sert alors les
+            // deux configurations. Ajouter un second code aurait casse ce
+            // chemin pour en ouvrir un autre. `freeTrial` est donc un
+            // SUPPLÉMENT, pas un remplacement.
+            error: "DEVICE_ALREADY_REGISTERED",
+            code: "DEVICE_ALREADY_REGISTERED",
             message:
               "Cet appareil est en période d'essai gratuit. Inutile d'en créer un nouveau : " +
-              "convertissez son essai en forfait payant depuis « Essais gratuits ». " +
+              "convertissez son essai en forfait payant, ou attachez un forfait à ce même compte. " +
               "Son accès, son jeton et sa configuration sont conservés.",
             freeTrial: essai,
             ...(peutVoirJeton ? { device: sanitizeDevice(existing) } : {}),

@@ -127,8 +127,10 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
       // L'appareil est en ESSAI : il n'y a rien à recréer, et c'est ce refus
       // qui envoyait les clients réinstaller l'application. On propose donc
       // ici la seule action utile — convertir l'essai en forfait payant.
+      // On se fie à la PRÉSENCE de l'essai, pas au code : le code reste
+      // volontairement `DEVICE_ALREADY_REGISTERED` pour ne pas rompre le
+      // chemin existant, qui attache un forfait au même compte.
       if (err instanceof ApiError && err.status === 409
-        && err.responseData?.code === 'DEVICE_ON_FREE_TRIAL'
         && err.responseData?.freeTrial?.requestId) {
         setEssaiBloquant({
           requestId: String(err.responseData.freeTrial.requestId),

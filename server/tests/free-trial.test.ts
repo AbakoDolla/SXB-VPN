@@ -673,7 +673,12 @@ describe("non-régression — le modèle de données reste ADDITIF", () => {
     const bloc = source.slice(debut);
     const refus = bloc.slice(0, bloc.indexOf("Generate unique token"));
 
-    assert.ok(refus.includes("DEVICE_ON_FREE_TRIAL"), "le refus doit nommer l'essai comme cause");
+    assert.ok(/freeTrial:\s*essai/.test(refus), "le refus doit porter la mention d'essai");
+    // LE CODE NE DOIT PAS CHANGER : un contrat existant s'en sert pour rendre
+    // le jeton EXISTANT, puis attacher un forfait payant au meme compte.
+    // L'indice d'essai est un SUPPLEMENT, jamais un remplacement.
+    assert.equal(/DEVICE_ON_FREE_TRIAL/.test(refus), false,
+      "le code de refus ne doit pas changer : un chemin existant en depend");
     // Il doit transporter de quoi AGIR : sans l'identifiant de la demande,
     // l'interface ne peut pas proposer la conversion et le mur reste un mur.
     assert.ok(/requestId:\s*demande\.id/.test(refus), "le refus doit porter l'identifiant de la demande");
