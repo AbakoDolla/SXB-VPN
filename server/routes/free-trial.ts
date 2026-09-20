@@ -1477,7 +1477,15 @@ router.get(
       // trois et le tableau annoncerait un tiers du trafic réel.
       const conditions: any[] = [];
       if (forfaitIds.length) conditions.push({ id: { in: forfaitIds } });
-      conditions.push({ freeTrialRequestId: { not: null } });
+      // ⚠️ Cette seconde condition était GLOBALE et inconditionnelle : elle
+      // ramassait TOUS les forfaits d'essai de la plateforme, quel que soit
+      // l'appelant. Les compteurs voisins étaient pourtant bien cloisonnés —
+      // d'où un administrateur qui lisait « 0 essai » au-dessus de
+      // « 294,9 Go utilisés sur 17,6 To ». C'est la capture d'écran envoyée
+      // par le client. La portée passe par la demande dont le forfait est né.
+      conditions.push(porteeCampagne
+        ? { freeTrialRequestId: { not: null }, freeTrialRequest: porteeCampagne }
+        : { freeTrialRequestId: { not: null } });
       {
         const lignes = await (prisma as any).subscription.findMany({
           where: { OR: conditions },

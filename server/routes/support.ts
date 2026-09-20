@@ -7,6 +7,7 @@ import { Router, Response } from "express";
 import { z } from "zod";
 import { prisma, logDbActivity } from "../database";
 import { requireAuth, AuthenticatedRequest } from "../middleware/auth";
+import { porteeComptes } from "../services/portee-donnees";
 
 const router = Router();
 const SUPPORT_STAFF_ROLES = new Set(['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT']);
@@ -26,6 +27,23 @@ const updateTicketSchema = z.object({
   description: z.string().optional(),
 });
 
+// Vise UN ticket à travers la portée de l'appelant.
+//
+// `findUnique({ where: { id } })` n'accepte aucun filtre composé : la portée
+// y est donc structurellement impossible. Seul `findFirst` sait joindre
+// l'identifiant ET le périmètre — c'est ce qui retire à un administrateur le
+// pouvoir de lire, modifier et surtout SUPPRIMER le ticket d'un autre.
+async function cibler(req: AuthenticatedRequest, id: string): Promise<any> {
+  const portee = await porteeComptes(prisma, req.user);
+  const conditions: any[] = [{ id }];
+  if (isSupportStaff(req)) {
+    if (portee) conditions.push({ user: portee });
+  } else {
+    conditions.push({ userId: req.user?.userId || '__no_user__' });
+  }
+  return { AND: conditions };
+}
+
 // GET /api/support — liste tous les tickets (filtrable par status)
 router.get("/", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -33,8 +51,15 @@ router.get("/", requireAuth, async (req: AuthenticatedRequest, res: Response) =>
       return res.status(503).json({ error: "DB_UNAVAILABLE", message: "Base de données indisponible" });
     }
     const { status, limit = "100" } = req.query;
+    // ═══════════════════════════════════════════════════════════════════════
+    // `isSupportStaff` rendait `{}` — soit AUCUN filtre. Un administrateur
+    // compte comme personnel de support : il lisait donc les 9 tickets de
+    // toute la plateforme, avec le nom du client, son adresse et sa panne.
+    // Mesuré en production sur un administrateur créé à l'instant.
+    // ═══════════════════════════════════════════════════════════════════════
+    const portee = await porteeComptes(prisma, req.user);
     const baseWhere = isSupportStaff(req)
-      ? {}
+      ? (portee ? { user: portee } : {})
       : { userId: req.user?.userId || '__no_user__' };
     const where = status ? { ...baseWhere, status: String(status) } : baseWhere;
 
@@ -58,8 +83,8 @@ router.get("/:id", requireAuth, async (req: AuthenticatedRequest, res: Response)
     if (!prisma) {
       return res.status(503).json({ error: "DB_UNAVAILABLE", message: "Base de données indisponible" });
     }
-    const ticket = await prisma.supportTicket.findUnique({
-      where: { id: req.params.id },
+    const ticket = await prisma.supportTicket.findFirst({
+      where: await cibler(req, req.params.id),
       include: { user: { select: { id: true, name: true, email: true } } },
     });
     if (!ticket || (!isSupportStaff(req) && ticket.userId !== req.user?.userId)) {
@@ -123,7 +148,7 @@ router.patch("/:id", requireAuth, async (req: AuthenticatedRequest, res: Respons
     }
     const body = updateTicketSchema.parse(req.body);
 
-    const existing = await prisma.supportTicket.findUnique({ where: { id: req.params.id } });
+    const existing = await prisma.supportTicket.findFirst({ where: await cibler(req, req.params.id) });
     if (!existing) {
       return res.status(404).json({ error: "NOT_FOUND", message: "Ticket introuvable" });
     }
@@ -165,6 +190,13 @@ router.delete("/:id", requireAuth, async (req: AuthenticatedRequest, res: Respon
     const role = req.user?.role;
     if (!["ADMIN", "SUPER_ADMIN"].includes(role || "")) {
       return res.status(403).json({ error: "FORBIDDEN", message: "Accès refusé" });
+    }
+
+    // Sans ce contrôle, la suppression partait sur l'identifiant NU : un
+    // administrateur effaçait n'importe quel ticket de la plateforme.
+    const cible = await prisma.supportTicket.findFirst({ where: await cibler(req, req.params.id) });
+    if (!cible) {
+      return res.status(404).json({ error: "NOT_FOUND", message: "Ticket introuvable" });
     }
 
     await prisma.supportTicket.delete({ where: { id: req.params.id } });

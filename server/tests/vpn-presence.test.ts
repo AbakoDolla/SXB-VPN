@@ -266,7 +266,15 @@ describe("présence VPN — cloisonnement revendeur", () => {
     assert.match(routes, /req\.user\?\.role === "RESELLER"[\s\S]{0,200}status\(403\)/);
     assert.match(routes, /PRESENCE_RESELLER_SCOPE/);
     // La route nominative reste, elle, cloisonnée plutôt que refusée.
-    assert.match(routes, /porteeClientsRevendeur\(fiche\)/);
+    //
+    // La règle vivait autrefois ici, sous la forme d'un
+    // `porteeClientsRevendeur(fiche)` propre à la route — et elle ne couvrait
+    // QUE le revendeur : tout autre rôle recevait `null`, c'est-à-dire la
+    // plateforme entière. Elle s'en remet désormais au point unique
+    // `porteeClients`, qui porte la règle pour TOUS les rôles, revendeur
+    // compris. Le garde suit ce déplacement au lieu de figer l'ancien nom.
+    assert.match(routes, /porteeClients: \(await porteeClients\(prisma, req\.user\)\)/);
+    assert.match(routes, /const portee = await porteeDemandeur\(req\);[\s\S]{0,200}listerConnectes\(prisma as any, secret, portee\)/);
   });
 });
 
