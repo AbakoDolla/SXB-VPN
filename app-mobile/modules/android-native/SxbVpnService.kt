@@ -4641,7 +4641,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             while (!server.isClosed && session.isConnected && running.get()) {
                 try {
                     val client = server.accept()
-                    broadcastLog("[SXB_TRACE] stage=SOCKS5_CLIENT_ACCEPT local_port=${client.localPort} remote_port=${client.port}")
+                    traceConnexion("[SXB_TRACE] stage=SOCKS5_CLIENT_ACCEPT local_port=${client.localPort} remote_port=${client.port}")
                     Thread({
                         handleSocks5Client(session, client, udpMode, udpGatewayHost, udpGatewayPort)
                     }, "Socks5Client")
@@ -4677,7 +4677,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             // Requête CONNECT (1=Connect, 2=Bind, 3=UDP Associate)
             val cmd = ByteArray(4); din.readFully(cmd)
             val command = cmd[1].toInt()
-            broadcastLog("[SXB_TRACE] stage=SOCKS5_REQUEST command=$command address_type=${cmd[3].toInt()}")
+            traceConnexion("[SXB_TRACE] stage=SOCKS5_REQUEST command=$command address_type=${cmd[3].toInt()}")
             if (command == 3) {
                 if (udpMode != "udpgw") {
                     // REP=7 : Command not supported. Ne jamais annoncer un
@@ -4714,7 +4714,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             }
             val pHigh = din.read(); val pLow = din.read()
             destPort = (pHigh shl 8) or pLow
-            broadcastLog("[SXB_TRACE] stage=SOCKS5_TARGET_RESOLVED port=$destPort host_present=${destHost.isNotBlank()}")
+            traceConnexion("[SXB_TRACE] stage=SOCKS5_TARGET_RESOLVED port=$destPort host_present=${destHost.isNotBlank()}")
 
             // Ouvrir canal SSH direct-tcpip
             val channel = session.openChannel("direct-tcpip") as ChannelDirectTCPIP
@@ -4725,21 +4725,40 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
             dout.write(byteArrayOf(5, 0, 0, 1, 0, 0, 0, 0, 0, 0)); dout.flush()
             channel.connect(15_000)
-            broadcastLog("[SXB_TRACE] stage=SSH_DIRECT_TCPIP_CONNECTED port=$destPort")
+            traceConnexion("[SXB_TRACE] stage=SSH_DIRECT_TCPIP_CONNECTED port=$destPort")
 
-            // Relay bidirectionnel
-            val threadA = Thread({
-                try {
-                    val buf = ByteArray(8192); val chOut = channel.outputStream; var n: Int
-                    while (channel.isConnected && !client.isClosed) {
-                        n = client.inputStream.read(buf); if (n == -1) break
-                        chOut.write(buf, 0, n); chOut.flush()
-                        uploadBytes.addAndGet(n.toLong())
-                    }
-                } catch (_: Exception) {}
-                runCatching { channel.disconnect() }
-            }, "Socks5-Up").apply { isDaemon = true; start() }
+            // ═════════════════════════════════════════════════════════════════
+            // LE DÉLAI DE LECTURE NE VAUT QUE POUR LA POIGNÉE DE MAIN
+            // ═════════════════════════════════════════════════════════════════
+            // `soTimeout = 30_000` protège la négociation SOCKS : un client qui
+            // se tait ne doit pas immobiliser un fil. Mais il restait armé
+            // PENDANT LE RELAIS, et c'est ce qui rendait le SSH si lent.
+            //
+            // Un téléchargement n'envoie presque rien : le client émet sa
+            // requête, puis ne fait plus qu'écouter. Le sens MONTANT devient
+            // donc inactif, sa lecture expire au bout de 30 s, l'exception est
+            // avalée par le `catch` vide — et la ligne suivante ferme le canal
+            // SSH. Tout transfert durant plus de 30 secondes était coupé net,
+            // de même que toute connexion maintenue ouverte (keep-alive HTTP,
+            // websocket, longue attente). L'application réessayait, et
+            // l'utilisateur voyait « lent ».
+            //
+            // La branche UDP juste au-dessus remet déjà `soTimeout = 0` pour
+            // cette raison exacte ; la branche TCP, le chemin de données
+            // principal, avait été oubliée.
+            client.soTimeout = 0
+            // Sans cela, l'algorithme de Nagle retient les petits envois
+            // jusqu'à ~40 ms pour les regrouper. Sur un tunnel déjà soumis à
+            // la latence SSH, la navigation — faite de multitudes de petites
+            // requêtes — en devient perceptiblement poussive.
+            runCatching { client.tcpNoDelay = true }
 
+            // Relay bidirectionnel.
+            //
+            // Le sens DESCENDANT occupe un fil dédié ; le sens MONTANT tourne
+            // sur CE fil, qui ne servait qu'à attendre. Une connexion coûte
+            // donc deux fils au lieu de trois — une page web en ouvre des
+            // dizaines à la fois.
             val threadB = Thread({
                 try {
                     val buf = ByteArray(8192); val chIn = channel.inputStream; var n: Int
@@ -4752,8 +4771,25 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 runCatching { client.close() }
             }, "Socks5-Down").apply { isDaemon = true; start() }
 
-            threadA.join(300_000); threadB.join(5_000)
-            channel.disconnect()
+            try {
+                val buf = ByteArray(8192); val chOut = channel.outputStream; var n: Int
+                while (channel.isConnected && !client.isClosed) {
+                    n = client.inputStream.read(buf); if (n == -1) break
+                    chOut.write(buf, 0, n); chOut.flush()
+                    uploadBytes.addAndGet(n.toLong())
+                }
+            } catch (_: Exception) {}
+
+            // Fermer le canal débloque la lecture du sens descendant : c'est ce
+            // qui met fin au fil, sans plafond de durée arbitraire. L'ancien
+            // `join(300_000)` coupait en prime toute connexion vivant plus de
+            // cinq minutes.
+            runCatching { channel.disconnect() }
+            threadB.join(5_000)
+            // Celle-ci reste inconditionnelle : c'est la SEULE des cinq que le
+            // journal technique affiche (`tech_relay_closed`). Les quatre
+            // autres sont ignorées par le journal — les taire ne retire donc
+            // rien à ce que vous voyez, et les retire du chemin des données.
             broadcastLog("[SXB_TRACE] stage=SOCKS5_RELAY_CLOSED upload_bytes=${uploadBytes.get()} download_bytes=${downloadBytes.get()}")
         } catch (e: Exception) {
             broadcastLog("[SXB_TRACE] stage=SOCKS5_ERROR type=${e.javaClass.simpleName}")
@@ -5047,6 +5083,25 @@ class SxbVpnService : VpnService(), PlatformInterface {
         val elapsed = SystemClock.elapsedRealtime()
         val suffix = if (detail.isBlank()) "" else " $detail"
         broadcastLog("[SXB_TRACE] seq=$seq elapsed_ms=$elapsed stage=$stage$suffix")
+    }
+
+    /**
+     * Trace liée à UNE connexion relayée, et non au tunnel lui-même.
+     *
+     * `broadcastLog` masque les données sensibles par une série d'expressions
+     * régulières, écrit dans logcat, puis prend un VERROU GLOBAL sur le tampon
+     * de journal. Le tunnel n'émet ces lignes que quelques fois ; le relais
+     * SOCKS, lui, en émettait cinq PAR CONNEXION. Une seule page web en ouvre
+     * des dizaines à la fois : tous ces fils se sérialisaient sur le même
+     * verrou, et chacun payait six passes d'expressions régulières.
+     *
+     * Ces traces gardent toute leur valeur pour diagnostiquer, et aucune en
+     * fonctionnement normal : elles ne sont donc émises que lorsque le
+     * diagnostic est actif. Le format ne change pas — le journal technique les
+     * relit à l'identique.
+     */
+    private fun traceConnexion(message: String) {
+        if (SxbSecureLogger.isDiagnosticEnabled()) broadcastLog(message)
     }
 
     private fun broadcastLog(message: String, priority: Boolean = false) {
