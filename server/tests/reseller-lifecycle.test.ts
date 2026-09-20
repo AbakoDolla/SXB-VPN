@@ -445,9 +445,48 @@ describe("gardes posées sur les routes", () => {
       "../routes/subscriptions.ts",
       "../routes/resellers.ts",
       "../routes/tokens.ts",
+      // Ce domaine manquait à l'appel, et l'omission était exploitable :
+      // un compte SUPPORT réel a CRÉÉ, MODIFIÉ puis SUPPRIMÉ un serveur en
+      // production, parce que tout y reposait sur la seule permission
+      // `server.manage` — que SUPPORT porte. Supprimer un serveur coupe le
+      // service de tous ses clients.
+      "../routes/servers.ts",
     ]) {
       assert.ok(lire(chemin).includes("interdireMutationSupport()"), `${chemin} doit poser le plafond SUPPORT`);
     }
+  });
+
+  it("protège CHAQUE mutation du domaine serveurs, pas seulement la première", () => {
+    const serveurs = lire("../routes/servers.ts");
+    // Une route ajoutée sans le plafond rouvrirait le trou en silence : on
+    // exige la garde sur chaque verbe d'écriture, y compris le dépôt
+    // d'identifiants.
+    for (const mutation of [
+      'router.post("/", requireAuth, interdireMutationSupport()',
+      'router.patch("/:id", requireAuth, interdireMutationSupport()',
+      'router.post("/:id/config", requireAuth, interdireMutationSupport()',
+      'router.delete("/:id", requireAuth, interdireMutationSupport()',
+    ]) {
+      assert.ok(serveurs.includes(mutation), `mutation non protégée : ${mutation}`);
+    }
+    // La lecture reste ouverte : le support doit pouvoir consulter le parc.
+    assert.ok(serveurs.includes('router.get("/", requireAuth, requirePermission("server.manage")'),
+      "la consultation du parc ne doit pas être fermée au support");
+  });
+
+  it("rend au propriétaire l’accès à SES identifiants de serveur", () => {
+    const serveurs = lire("../routes/servers.ts");
+    // Le test était `role !== "ADMIN"` : il fermait la porte à SUPER_ADMIN et
+    // à OWNER, c'est-à-dire au propriétaire lui-même, alors qu'un rôle
+    // inférieur y accédait. Mesuré en production : un SUPER_ADMIN recevait
+    // 403 sur ses propres serveurs.
+    assert.ok(serveurs.includes('const ROLES_IDENTIFIANTS = ["OWNER", "SUPER_ADMIN", "ADMIN"]'),
+      "les trois rôles d'exploitation doivent pouvoir lire les identifiants");
+    assert.ok(!/if \(req\.user\?\.role !== "ADMIN"\)/.test(serveurs),
+      "le test trop étroit ne doit pas revenir");
+    // Et surtout : SUPPORT reste dehors.
+    assert.ok(!serveurs.includes('ROLES_IDENTIFIANTS = ["OWNER", "SUPER_ADMIN", "ADMIN", "SUPPORT"]'),
+      "SUPPORT ne doit jamais lire les clés de déchiffrement");
   });
 
   it("lie chaque session mobile à son client exact sans hériter du rôle porteur", () => {

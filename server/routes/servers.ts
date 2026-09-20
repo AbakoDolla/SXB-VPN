@@ -4,6 +4,7 @@ import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { encrypt, decrypt } from "../utils/crypto";
 import { auteurAInscrire, porteeServeurs } from "../services/portee-donnees";
+import { interdireMutationSupport } from "../services/reseller-access";
 
 const router = Router();
 
@@ -50,7 +51,20 @@ router.get("/", requireAuth, requirePermission("server.manage"), async (req: Aut
 });
 
 // POST /api/servers
-router.post("/", requireAuth, requirePermission("server.manage"), async (req: AuthenticatedRequest, res: Response) => {
+//
+// ═══════════════════════════════════════════════════════════════════════════
+// PLAFOND DE RÔLE — MESURÉ EN PRODUCTION, PAS SUPPOSÉ
+// ═══════════════════════════════════════════════════════════════════════════
+// Ce domaine ne dépendait que de la permission `server.manage`. Or le rôle
+// SUPPORT la porte en production, comme `servers.create` et `servers.delete`.
+// Un compte SUPPORT de test a donc réellement CRÉÉ, MODIFIÉ puis SUPPRIMÉ un
+// serveur — supprimer un serveur coupe le service de tous ses clients.
+//
+// Les autres domaines (revendeurs, bons, essais, comptes) posaient déjà ce
+// plafond ; celui-ci avait été oublié. La règle est la même, écrite une seule
+// fois dans `reseller-access` : une permission mal cochée ne doit jamais
+// suffire à rouvrir une surface fermée par le rôle.
+router.post("/", requireAuth, interdireMutationSupport(), requirePermission("server.manage"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const body = createServerSchema.parse(req.body);
 
@@ -83,7 +97,7 @@ router.post("/", requireAuth, requirePermission("server.manage"), async (req: Au
 });
 
 // PATCH /api/servers/:id
-router.patch("/:id", requireAuth, requirePermission("server.manage"), async (req: AuthenticatedRequest, res: Response) => {
+router.patch("/:id", requireAuth, interdireMutationSupport(), requirePermission("server.manage"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     const body = updateServerSchema.parse(req.body);
@@ -125,7 +139,7 @@ router.patch("/:id", requireAuth, requirePermission("server.manage"), async (req
 
 // POST /api/servers/:id/config
 // Securely store encrypted server configuration credentials
-router.post("/:id/config", requireAuth, requirePermission("server.manage"), async (req: AuthenticatedRequest, res: Response) => {
+router.post("/:id/config", requireAuth, interdireMutationSupport(), requirePermission("server.manage"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     const body = saveConfigSchema.parse(req.body);
@@ -176,8 +190,16 @@ router.get("/:id/config", requireAuth, requirePermission("server.manage"), async
   try {
     const { id } = req.params;
     
-    // Extra security layer: verify client is full ADMIN, not just general permission holders
-    if (req.user?.role !== "ADMIN") {
+    // Couche supplémentaire : les clés de déchiffrement ne sortent que pour
+    // l'exploitation. La permission ne suffit pas — SUPPORT porte
+    // `server.manage` en production et n'a rien à faire ici.
+    //
+    // Le test portait `role !== "ADMIN"`, ce qui fermait aussi la porte à
+    // SUPER_ADMIN et à OWNER : le propriétaire était exclu de SES PROPRES
+    // identifiants, alors qu'un rôle inférieur y accédait. Vérifié en
+    // production — un SUPER_ADMIN recevait 403 sur ses propres serveurs.
+    const ROLES_IDENTIFIANTS = ["OWNER", "SUPER_ADMIN", "ADMIN"];
+    if (!ROLES_IDENTIFIANTS.includes(String(req.user?.role))) {
       return res.status(403).json({ error: "errors.auth.forbidden_credentials", message: "Decryption keys can only be retrieved by Admin accounts" });
     }
 
@@ -209,7 +231,7 @@ router.get("/:id/config", requireAuth, requirePermission("server.manage"), async
 });
 
 // DELETE /api/servers/:id
-router.delete("/:id", requireAuth, requirePermission("server.manage"), async (req: AuthenticatedRequest, res: Response) => {
+router.delete("/:id", requireAuth, interdireMutationSupport(), requirePermission("server.manage"), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     let exists = false;
