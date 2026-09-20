@@ -8,7 +8,7 @@ import { z } from 'zod';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { prisma, logDbActivity } from '../database';
-import { requireAuth, requirePermission, AuthenticatedRequest } from '../middleware/auth';
+import { requireAuth, requirePermission, requireRole, AuthenticatedRequest } from '../middleware/auth';
 import { config } from '../config';
 import { generateTokens } from '../middleware/auth';
 
@@ -24,6 +24,29 @@ function makeAdminToken(): string {
   return `SXB-ADMIN-${part()}-${part()}`;
 }
 
+// ── PLAFOND DE RÔLE : le même que pour la création de compte ────────────────
+//
+// Émettre un jeton d'administration REVIENT À DONNER UN COMPTE. Le porteur
+// s'en sert pour ouvrir une session au nom de l'utilisateur visé, avec tous
+// ses droits.
+//
+// `users.ts` ferme déjà création, modification et suppression de compte par
+// `requireRole(["SUPER_ADMIN", "ADMIN"])`. Ce fichier ne portait que la
+// permission `users.create`, sans plafond — or en production le rôle SUPPORT
+// PORTE cette permission (vérifié sur la base réelle : 25 permissions de
+// mutation, dont `users.create`, `users.delete` et `rbac.manage`).
+//
+// Un compte de support pouvait donc s'émettre un jeton pour un compte ADMIN,
+// ouvrir une session avec ses droits, et faire tout ce qu'un ADMIN fait — y
+// compris créer des revendeurs, que le propriétaire veut précisément réserver
+// à OWNER, SUPER_ADMIN et ADMIN. La restriction posée sur `/api/resellers`
+// était contournable par ce chemin.
+//
+// Deux écritures de la même règle finissent toujours par diverger : celle-ci
+// est désormais identique à celle de `users.ts`, et le rôle racine la
+// traverse par le contournement central de `requireRole`.
+const gestionComptes = requireRole(['SUPER_ADMIN', 'ADMIN']);
+
 // POST /api/admin-tokens/generate
 // Génère un token d'accès pour un compte dashboard (première connexion)
 const generateSchema = z.object({
@@ -34,6 +57,7 @@ const generateSchema = z.object({
 router.post(
   '/generate',
   requireAuth,
+  gestionComptes,
   requirePermission('users.create'),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
@@ -257,6 +281,7 @@ router.get(
 router.post(
   '/:id/revoke',
   requireAuth,
+  gestionComptes,
   requirePermission('users.create'),
   async (req: AuthenticatedRequest, res: Response) => {
     try {

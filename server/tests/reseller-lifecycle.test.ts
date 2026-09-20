@@ -465,6 +465,71 @@ describe("gardes posées sur les routes", () => {
     assert.ok(mobile.includes("deviceIdFromRequest(req)"));
   });
 
+  it("ferme la voie de contournement : un jeton d'administration vaut un compte", () => {
+    // Émettre un jeton d'administration revient à DONNER un compte : le
+    // porteur ouvre une session au nom de l'utilisateur visé, avec ses droits.
+    //
+    // En production, le rôle SUPPORT porte `users.create` (vérifié sur la base
+    // réelle). Sans plafond de rôle, un compte de support pouvait donc
+    // s'émettre un jeton pour un compte ADMIN et créer des revendeurs — ce que
+    // la restriction posée sur /api/resellers vise justement à empêcher.
+    const jetons = lire("../routes/admin-tokens.ts");
+    const comptes = lire("../routes/users.ts");
+
+    // La règle est écrite une fois et réutilisée par les deux mutations.
+    assert.match(jetons, /const gestionComptes = requireRole\(\['SUPER_ADMIN', 'ADMIN'\]\)/,
+      "le plafond de rôle doit être déclaré une seule fois");
+    assert.match(jetons, /'\/generate',\s*requireAuth,\s*gestionComptes,\s*requirePermission\('users\.create'\)/,
+      "l'émission d'un jeton doit porter le plafond de rôle");
+    assert.match(jetons, /'\/:id\/revoke',\s*requireAuth,\s*gestionComptes,\s*requirePermission\('users\.create'\)/,
+      "la révocation doit porter le même plafond");
+
+    // Et ce plafond est EXACTEMENT celui de la gestion de compte : deux
+    // écritures d'une même règle finissent toujours par diverger.
+    assert.match(comptes, /requireRole\(\["SUPER_ADMIN", "ADMIN"\]\),\s*requirePermission\("users\.create"\)/,
+      "la référence dans users.ts doit rester la même règle");
+  });
+
+  it("réserve la GESTION d'un revendeur au propriétaire et aux administrateurs", () => {
+    // EXIGENCE DU PROPRIÉTAIRE : créer un compte revendeur revient à ouvrir un
+    // canal de vente et à engager du volume. Ce geste appartient à OWNER,
+    // SUPER_ADMIN et ADMIN — à personne d'autre.
+    const src = lire("../routes/resellers.ts");
+
+    // Le plafond est déclaré UNE fois et réutilisé : une route qui oublierait
+    // la garde serait visible ici, pas dispersée dans le fichier.
+    assert.match(src, /const gestionRevendeurs = requireRole\(\["SUPER_ADMIN", "ADMIN"\]\)/,
+      "le plafond de rôle doit rester déclaré en un seul endroit");
+
+    // OWNER n'est PAS listé, et c'est correct : `requireRole` le laisse passer
+    // par le point unique de contournement du rôle racine. L'écrire ici
+    // donnerait une seconde vérité à maintenir.
+    const roles = lire("../middleware/auth.ts");
+    assert.match(roles, /export function requireRole[\s\S]{0,400}req\.user\.role === "OWNER"[\s\S]{0,60}return next\(\)/,
+      "le rôle racine doit traverser requireRole par le contournement central");
+
+    // CHAQUE geste qui crée, modifie ou supprime un revendeur porte les trois
+    // gardes : le plafond de rôle, le refus de mutation SUPPORT, la permission.
+    for (const geste of [
+      /router\.post\(\s*"\/",\s*requireAuth,\s*gestionRevendeurs,\s*interdireMutationSupport\(\),\s*requirePermission\("reseller\.manage"\)/,
+      /router\.patch\(\s*"\/:id",\s*requireAuth,\s*gestionRevendeurs,\s*interdireMutationSupport\(\),\s*requirePermission\("reseller\.manage"\)/,
+      /router\.delete\(\s*"\/:id",\s*requireAuth,\s*gestionRevendeurs,\s*interdireMutationSupport\(\),\s*requirePermission\("reseller\.manage"\)/,
+    ]) {
+      assert.match(src, geste, `mutation de revendeur insuffisamment gardée : ${geste}`);
+    }
+
+    // SUPPORT PORTE « reseller.manage » EN PRODUCTION — vérifié sur la base
+    // réelle. La permission seule ne suffit donc pas : sans
+    // `interdireMutationSupport`, un compte de support pourrait ouvrir un
+    // canal de vente. C'est cette garde qui l'en empêche, et elle doit rester
+    // sur les trois mutations ci-dessus.
+    assert.equal(
+      (src.match(/interdireMutationSupport\(\)/g) || []).length >= 4,
+      true,
+      "les mutations doivent toutes refuser SUPPORT",
+    );
+  });
+
   it("rend la matrice RBAC effective et prévient le verrouillage administratif", () => {
     const rbac = lire("../routes/rbac.ts");
     const auth = lire("../middleware/auth.ts");
