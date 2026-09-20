@@ -453,7 +453,7 @@ model VpnProfile {
   port             Int
   username         String?
   password         String?        // AES-256-CBC encrypted
-  uuid             String?        @unique @default(uuid())
+  uuid             String?        @default(uuid())
   path             String?
   network          String?        @default("ws")
   tls              Boolean        @default(false)
@@ -485,6 +485,10 @@ model VpnProfile {
   assignedResellers VpnProfileReseller[]
 
   @@index([engineType, engineAccountId])
+  // L'unicité de `uuid` était GLOBALE : deux exploitants important la même
+  // configuration fournisseur se bloquaient sans rien voir l'un de l'autre.
+  // La portée d'unicité suit la portée de visibilité, ici l'auteur.
+  @@unique([createdBy, uuid])
   @@map("vpn_profiles")
 }
 

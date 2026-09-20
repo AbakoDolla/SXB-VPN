@@ -137,7 +137,7 @@
     }
   },
   "profiles": { "invalid_resellers": "La liste des revendeurs attribués est invalide." },
-  "vpnprofile": { "archived": "Cette configuration est archivée.", "not_assigned": "Cette configuration ne vous est pas attribuée.", "not_found": "Configuration VPN introuvable." },
+  "vpnprofile": { "archived": "Cette configuration est archivée.", "not_assigned": "Cette configuration ne vous est pas attribuée.", "not_found": "Configuration VPN introuvable.", "uuid_already_used": "Cet identifiant technique est déjà utilisé par l'une de vos configurations." },
   "servers": { "not_found": "Serveur introuvable." },
   "users": { "email_exists": "Cette adresse e-mail est déjà utilisée.", "not_found": "Utilisateur introuvable." },
   "rbac": { "lockout": "Cette modification vous retirerait les permissions nécessaires à la gestion des accès.", "owner_locked": "Les permissions du propriétaire ne peuvent pas être modifiées.", "role_not_found": "Rôle introuvable.", "unknown_permission": "Permission inconnue." },

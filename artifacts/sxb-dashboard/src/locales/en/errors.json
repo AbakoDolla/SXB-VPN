@@ -137,7 +137,7 @@
     }
   },
   "profiles": { "invalid_resellers": "The list of assigned resellers is invalid." },
-  "vpnprofile": { "archived": "This configuration is archived.", "not_assigned": "This configuration is not assigned to you.", "not_found": "VPN configuration not found." },
+  "vpnprofile": { "archived": "This configuration is archived.", "not_assigned": "This configuration is not assigned to you.", "not_found": "VPN configuration not found.", "uuid_already_used": "This technical identifier is already used by one of your configurations." },
   "servers": { "not_found": "Server not found." },
   "users": { "email_exists": "This email address is already in use.", "not_found": "User not found." },
   "rbac": { "lockout": "This change would remove the permissions you need to manage access.", "owner_locked": "The owner's permissions cannot be changed.", "role_not_found": "Role not found.", "unknown_permission": "Unknown permission." },

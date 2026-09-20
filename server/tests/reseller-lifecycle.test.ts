@@ -488,6 +488,61 @@ describe("unicité cloisonnée des appareils VPN", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+describe("unicité cloisonnée des configurations VPN", () => {
+  // Mesuré en production : un second exploitant important la même configuration
+  // fournisseur recevait « HTTP 500 Failed to create VPN profile ». L'unicité de
+  // `uuid` était GLOBALE alors que la visibilité, elle, s'exprime sur l'auteur.
+  it("cloisonne l'unicité de uuid sur l'auteur, dans les deux copies du schéma", () => {
+    const racine = readFileSync(new URL("../../prisma/schema.prisma", import.meta.url), "utf8");
+    const backend = readFileSync(new URL("../../backend/prisma/schema.prisma", import.meta.url), "utf8");
+    assert.equal(racine, backend);
+
+    const debut = racine.indexOf("model VpnProfile ");
+    assert.ok(debut > 0);
+    const modele = racine.slice(debut, racine.indexOf("\nmodel ", debut + 1));
+    assert.ok(modele.includes("@@unique([createdBy, uuid])"));
+    assert.doesNotMatch(modele, /uuid\s+String\?\s+@unique/);
+  });
+
+  it("installe la migration de resserrement, idempotente et transactionnelle", () => {
+    const sql = readFileSync(
+      new URL("../../backend/prisma/migrations/20260920220000_vpn_profile_uuid_scope/migration.sql", import.meta.url),
+      "utf8",
+    );
+    assert.ok(sql.includes("BEGIN;"));
+    assert.ok(sql.includes("COMMIT;"));
+    assert.ok(sql.includes('DROP CONSTRAINT "vpn_profiles_uuid_key"'));
+    assert.ok(sql.includes('UNIQUE ("createdBy", "uuid")'));
+    // Idempotence : chaque opération est conditionnée à l'état réel du schéma.
+    assert.ok(sql.includes("IF EXISTS ("));
+    assert.ok(sql.includes("IF NOT EXISTS ("));
+  });
+
+  it("applique la migration au déploiement, avant db push", () => {
+    const workflow = readFileSync(new URL("../../.github/workflows/deploy-vps.yml", import.meta.url), "utf8");
+    const etape = workflow.indexOf("20260920220000_vpn_profile_uuid_scope");
+    assert.ok(etape > 0);
+    assert.ok(etape < workflow.indexOf("prisma/build/index.js db push"));
+  });
+
+  it("rend la collision d'identifiant explicite au lieu d'un 500 opaque", () => {
+    const route = readFileSync(new URL("../routes/vpn-profiles.ts", import.meta.url), "utf8");
+    assert.ok(route.includes("PROFILE_UUID_ALREADY_USED"));
+    assert.ok(route.includes("errors.vpnprofile.uuid_already_used"));
+    const conflit = route.indexOf("PROFILE_UUID_ALREADY_USED");
+    assert.ok(route.lastIndexOf("res.status(409)", conflit) > conflit - 400);
+
+    for (const langue of ["fr", "en"]) {
+      const libelles = JSON.parse(
+        readFileSync(new URL(`../../artifacts/sxb-dashboard/src/locales/${langue}/errors.json`, import.meta.url), "utf8"),
+      );
+      assert.equal(typeof libelles.vpnprofile.uuid_already_used, "string");
+      assert.ok(libelles.vpnprofile.uuid_already_used.length > 0);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 describe("gardes posées sur les routes", () => {
   const lire = (chemin: string) => readFileSync(new URL(chemin, import.meta.url), "utf8");
 

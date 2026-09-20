@@ -365,6 +365,23 @@ jobs:
               echo "✅ Unicité des appareils VPN cloisonnée"
             fi
 
+            # Même défaut, transposé aux configurations VPN : `uuid` portait une
+            # unicité GLOBALE, si bien que deux exploitants important la même
+            # configuration fournisseur se bloquaient mutuellement sans rien
+            # voir l'un de l'autre. Le SQL est idempotent et ne peut pas échouer
+            # sur les données en place : l'unicité globale qu'il remplace
+            # implique déjà l'unicité du couple ("createdBy", "uuid").
+            VPN_PROFILE_UUID_SCOPE_SQL="backend/prisma/migrations/20260920220000_vpn_profile_uuid_scope/migration.sql"
+            if [ -f "$VPN_PROFILE_UUID_SCOPE_SQL" ]; then
+              if ! command -v psql >/dev/null 2>&1; then
+                echo "::error::psql introuvable — cloisonnement uuid des configurations non installable"
+                exit 1
+              fi
+              psql "${DB_URL%%\?*}" -1 -v ON_ERROR_STOP=1 -f "$VPN_PROFILE_UUID_SCOPE_SQL" \
+                >/tmp/sxb-vpn-profile-uuid-scope-migration.log
+              echo "✅ Unicité des configurations VPN cloisonnée"
+            fi
+
             echo "🗄️ Push Prisma schema..."
             set -o pipefail
             NODE_PATH=/var/www/sxb-vpn/backend/node_modules \

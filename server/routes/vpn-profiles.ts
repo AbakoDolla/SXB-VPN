@@ -677,6 +677,16 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
     return res.status(201).json({ success: true, profile: maskProfile(profile) });
   } catch (err: any) {
     if (handleProfileLockError(err, res)) return;
+    // Collision d'identifiant technique DANS l'espace de l'auteur. Elle se
+    // rendait en « 500 Failed to create VPN profile » : l'exploitant ne
+    // pouvait ni comprendre ni corriger. Elle porte désormais son nom.
+    if (err?.code === 'P2002' && (err?.meta?.target as string[] | undefined)?.includes?.('uuid')) {
+      return res.status(409).json({
+        error: 'errors.vpnprofile.uuid_already_used',
+        code: 'PROFILE_UUID_ALREADY_USED',
+        message: "Cet identifiant technique est déjà utilisé par l'une de vos configurations.",
+      });
+    }
     console.error('vpn-profile create failed');
     return res.status(500).json({ error: 'Failed to create VPN profile' });
   }
