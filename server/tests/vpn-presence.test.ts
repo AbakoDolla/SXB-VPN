@@ -505,3 +505,76 @@ describe("présence VPN — le tableau de bord ne présente plus un compte pour 
     assert.match(serveur, /app\.use\("\/api\/presence", presenceRouter\)/);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("présence VPN — le retranchement des essais ne doit pas vider le compteur", () => {
+  /**
+   * Le défaut mesuré en production : `exclureIdentifiants()` produit un filtre
+   * de la forme `{ id: { notIn: [...] } }`. `filtrerIdentites` ne savait pas la
+   * lire et écartait TOUS les appareils par prudence. Conséquences observées sur
+   * le compte propriétaire : quatre clients réellement connectés, carte
+   * « CONNECTÉS » à zéro, et les quatre reversés dans « essais gratuits » parce
+   * que le tableau de bord compte les essais par différence.
+   *
+   * Ces trois cas verrouillent la lecture de la forme. Le premier échoue si l'on
+   * revient au refus silencieux.
+   */
+  const baseTrafic = () => baseSimulee({
+    signaux: [],
+    clients: [client({ id: "cli-1", deviceId: "DEV-TRAFIC-1" })],
+    trafic: [{ deviceId: "DEV-TRAFIC-1", timestamp: ilYA(2) }],
+  });
+
+  it("compte le client dont l'identifiant n'est PAS dans la liste retranchée", async () => {
+    viderCachePresence();
+    const total = await compterConnectes(baseTrafic(), SECRET, {
+      porteeClients: { id: { notIn: ["cli-essai-uniquement"] } },
+      now: MAINTENANT,
+    });
+    assert.equal(total, 1);
+  });
+
+  it("retranche bel et bien le client cité dans la liste", async () => {
+    viderCachePresence();
+    const total = await compterConnectes(baseTrafic(), SECRET, {
+      porteeClients: { id: { notIn: ["cli-1"] } },
+      now: MAINTENANT,
+    });
+    assert.equal(total, 0);
+  });
+
+  it("traite la forme combinée AND, telle que le tableau de bord la construit", async () => {
+    viderCachePresence();
+    // `etFiltres(porteeClients, exclusionEssais)` — la forme exacte servie par
+    // `server/routes/dashboard.ts` au compteur « connectés ».
+    const total = await compterConnectes(baseTrafic(), SECRET, {
+      porteeClients: { AND: [{ managedById: "user-admin" }, { id: { notIn: ["cli-essai"] } }] },
+      now: MAINTENANT,
+    });
+    // Le client n'est pas géré par cet administrateur : il reste écarté par le
+    // cloisonnement, et non par l'incompréhension du filtre.
+    assert.equal(total, 0);
+
+    viderCachePresence();
+    const sien = await compterConnectes(
+      baseSimulee({
+        signaux: [],
+        clients: [client({ id: "cli-1", deviceId: "DEV-TRAFIC-1", managedById: "user-admin" })],
+        trafic: [{ deviceId: "DEV-TRAFIC-1", timestamp: ilYA(2) }],
+      }),
+      SECRET,
+      {
+        porteeClients: { AND: [{ managedById: "user-admin" }, { id: { notIn: ["cli-essai"] } }] },
+        now: MAINTENANT,
+      },
+    );
+    assert.equal(sien, 1);
+  });
+
+  it("ne refuse plus jamais en silence : la forme incomprise est tracée", () => {
+    const service = source("server/services/vpn-presence.ts");
+    assert.match(service, /Array\.isArray\(liste\.notIn\)/);
+    assert.match(service, /Array\.isArray\(liste\.in\)/);
+    assert.match(service, /console\.error\([\s\S]{0,80}condition de portée non reconnue/);
+  });
+});

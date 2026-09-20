@@ -652,6 +652,24 @@ function filtrerIdentites(identites: IdentiteAppareil[], options: OptionsPresenc
     if (Array.isArray(condition.AND)) return condition.AND.every((c: any) => evalue(c, identite));
     if (Array.isArray(condition.OR)) return condition.OR.some((c: any) => evalue(c, identite));
     if (condition.id === "__aucun__") return false;
+    // ── Listes d'identifiants — `{ id: { in: [...] } }` / `{ notIn: [...] }` ──
+    //
+    // C'est la forme que produit `exclureIdentifiants()` pour retrancher les
+    // comptes d'essai. Faute d'être traitée ici, elle tombait dans le `return
+    // false` final : la carte « CONNECTÉS » du tableau de bord affichait donc
+    // ZÉRO en permanence — y compris pour le propriétaire, et alors même que
+    // des clients étaient bel et bien connectés. Pire, comme les essais sont
+    // comptés par différence (`total - connectedNow`), TOUS les connectés
+    // basculaient dans « essais gratuits » : quatre clients commerciaux réels
+    // étaient présentés comme quatre essayeurs.
+    //
+    // Mesuré en production avant correction : présence réelle 4, carte 0, et
+    // `connectedTrials` 4 sur un parc qui n'avait aucun essai connecté.
+    if (condition.id && typeof condition.id === "object") {
+      const liste = condition.id as { in?: unknown; notIn?: unknown };
+      if (Array.isArray(liste.notIn)) return !liste.notIn.map(String).includes(String(identite.clientId));
+      if (Array.isArray(liste.in)) return liste.in.map(String).includes(String(identite.clientId));
+    }
     // Furtivité exprimée en filtre Prisma : ici elle est déjà appliquée
     // au-dessus, la condition est donc satisfaite par construction.
     if (condition.user?.role?.name?.not === "OWNER") return identite.ownerAccount !== true;
@@ -663,6 +681,18 @@ function filtrerIdentites(identites: IdentiteAppareil[], options: OptionsPresenc
     if (condition.resellerId === null) {
       return identite.resellerId === null && identite.userId === condition.userId;
     }
+    // ── Un refus, mais JAMAIS un refus muet ──────────────────────────────────
+    //
+    // Refuser reste le choix sûr : une forme non reconnue ne doit pas se lire
+    // comme « aucune restriction », sous peine de fuite entre exploitants.
+    // Mais refuser EN SILENCE est ce qui a permis au défaut ci-dessus de vivre
+    // sans être vu : le compteur affichait zéro, et rien nulle part ne disait
+    // pourquoi. On trace donc la forme incomprise — le prochain filtre ajouté
+    // en amont se signalera dans les journaux au lieu de vider un compteur.
+    console.error(
+      "[presence] condition de portée non reconnue, appareils écartés par prudence:",
+      JSON.stringify(condition)?.slice(0, 200),
+    );
     return false;
   };
   return visibles.filter((identite) => evalue(portee, identite));
