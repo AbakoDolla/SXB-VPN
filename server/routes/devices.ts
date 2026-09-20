@@ -261,20 +261,30 @@ router.post(
         //
         // Il n'y a pourtant rien à recréer : le compte, le jeton et la
         // configuration existent. Ce qu'il faut, c'est CONVERTIR l'essai en
-        // forfait payant, ce qui n'interrompt rien. Ce refus le dit donc
-        // maintenant, et transporte de quoi le faire en un geste.
+        // forfait payant, ce qui n'interrompt rien.
         //
-        // Réservé à l'exploitation interne, comme la conversion elle-même :
-        // un revendeur garde exactement la réponse qu'il avait.
+        // DEUX RÉPONSES, PARCE QUE DEUX POUVOIRS DIFFÉRENTS :
+        //
+        //   • Exploitation interne — reçoit les identifiants, donc peut
+        //     convertir en un geste depuis cet écran.
+        //
+        //   • Revendeur — ne PEUT PAS convertir : un essai relève de
+        //     l'exploitation interne, et le laisser convertir reviendrait à
+        //     lui laisser s'attribuer un client qui n'est pas le sien. Il
+        //     reçoit donc la CONSIGNE sans les identifiants. C'est le
+        //     minimum qui supprime la réinstallation : sans elle, il ne sait
+        //     pas pourquoi il est bloqué et renvoie son client désinstaller.
         let essai: any = null;
-        if (estRoleSuperieur(req.user?.role)) {
-          try {
-            const demande = await (prisma as any).freeTrialRequest.findFirst({
-              where: { clientId: existing.id, status: "deployed" },
-              select: { id: true, tokenId: true, name: true, deployedAt: true },
-              orderBy: { deployedAt: "desc" },
-            });
-            if (demande) {
+        let essaiExiste = false;
+        try {
+          const demande = await (prisma as any).freeTrialRequest.findFirst({
+            where: { clientId: existing.id, status: "deployed" },
+            select: { id: true, tokenId: true, name: true, deployedAt: true },
+            orderBy: { deployedAt: "desc" },
+          });
+          if (demande) {
+            essaiExiste = true;
+            if (estRoleSuperieur(req.user?.role)) {
               essai = {
                 requestId: demande.id,
                 tokenId: demande.tokenId,
@@ -282,14 +292,14 @@ router.post(
                 startedAt: demande.deployedAt ?? null,
               };
             }
-          } catch (erreur) {
-            // Une lecture d'essai qui échoue ne doit pas changer le refus en
-            // erreur serveur : l'appelant garde le message qu'il avait.
-            console.error("device trial hint error:", erreur);
           }
+        } catch (erreur) {
+          // Une lecture d'essai qui échoue ne doit pas changer le refus en
+          // erreur serveur : l'appelant garde le message qu'il avait.
+          console.error("device trial hint error:", erreur);
         }
 
-        if (essai) {
+        if (essaiExiste) {
           return res.status(409).json({
             // LE CODE NE CHANGE PAS. Un contrat existant s'appuie dessus :
             // l'exploitant reçoit le jeton EXISTANT, et peut attacher un
@@ -299,11 +309,14 @@ router.post(
             // SUPPLÉMENT, pas un remplacement.
             error: "DEVICE_ALREADY_REGISTERED",
             code: "DEVICE_ALREADY_REGISTERED",
-            message:
-              "Cet appareil est en période d'essai gratuit. Inutile d'en créer un nouveau : " +
-              "convertissez son essai en forfait payant, ou attachez un forfait à ce même compte. " +
-              "Son accès, son jeton et sa configuration sont conservés.",
-            freeTrial: essai,
+            message: essai
+              ? "Cet appareil est en période d'essai gratuit. Inutile d'en créer un nouveau : " +
+                "convertissez son essai en forfait payant, ou attachez un forfait à ce même compte. " +
+                "Son accès, son jeton et sa configuration sont conservés."
+              : "Cet appareil est en période d'essai gratuit. NE FAITES PAS RÉINSTALLER " +
+                "l'application : son accès existe déjà et serait perdu. Demandez à l'exploitation " +
+                "interne de convertir cet essai en forfait payant — le client garde son jeton.",
+            ...(essai ? { freeTrial: essai } : {}),
             ...(peutVoirJeton ? { device: sanitizeDevice(existing) } : {}),
           });
         }

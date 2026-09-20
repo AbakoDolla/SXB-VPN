@@ -683,6 +683,15 @@ describe("non-régression — le modèle de données reste ADDITIF", () => {
     // l'interface ne peut pas proposer la conversion et le mur reste un mur.
     assert.ok(/requestId:\s*demande\.id/.test(refus), "le refus doit porter l'identifiant de la demande");
     assert.ok(/tokenId:\s*demande\.tokenId/.test(refus), "le refus doit porter le jeton d'invitation");
+    // UN REVENDEUR AUSSI doit savoir qu'il ne faut pas faire reinstaller : il
+    // est celui qui parle au client. Sans consigne, il renvoie desinstaller,
+    // et le defaut rapporte se reproduit malgre la correction.
+    assert.ok(/NE FAITES PAS R\u00c9INSTALLER/.test(refus),
+      "un revendeur doit recevoir la consigne de ne pas faire reinstaller");
+    // Mais il ne recoit PAS les identifiants : convertir un essai reviendrait
+    // a s'attribuer un client qui n'est pas le sien.
+    assert.ok(/\.\.\.\(essai \? \{ freeTrial: essai \} : \{\}\)/.test(refus),
+      "les identifiants d'action doivent rester reserves a l'exploitation interne");
     // Seul un essai DEPLOYE a ouvert un acces : une demande en attente ne
     // bloque rien et ne doit donc pas etre proposee a la conversion.
     assert.ok(/status:\s*"deployed"/.test(refus), "seul un essai deploye doit etre propose");
