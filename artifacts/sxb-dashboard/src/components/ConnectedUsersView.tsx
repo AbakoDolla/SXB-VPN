@@ -379,7 +379,10 @@ export default function ConnectedUsersView({ currentUserRole }: ConnectedUsersVi
           </div>
           <div className="mt-3 text-2xl font-bold text-emerald-300">{formatNumber(page.total)}</div>
           <div className="mt-1 text-xs text-gray-500">
-            {isReseller ? t('operations.presence.scopeOwn') : t('operations.presence.scopePlatform')}
+            {/* Le serveur annonce la portée qu'il a RÉELLEMENT appliquée. Se
+                fier au rôle affichait « toute la plateforme » à un
+                administrateur qui ne reçoit que ses propres clients. */}
+            {page.scope === 'own' ? t('operations.presence.scopeOwn') : t('operations.presence.scopePlatform')}
           </div>
         </div>
         <div className="rounded-2xl border border-[#1a1f2e] bg-[#0f1218] p-4">

@@ -33,10 +33,12 @@ const racine = new URL("../../", import.meta.url);
 
 /** Isole le corps d'une route, commentaires retirés. */
 function corpsDeRoute(source: string, amorce: string): string {
-  const debut = source.indexOf(amorce);
+  // Le dépôt est en CRLF : une ancre écrite avec « \n » ne matcherait jamais.
+  const texte = source.replace(/\r\n/g, "\n");
+  const debut = texte.indexOf(amorce);
   assert.notEqual(debut, -1, `La route ${amorce} doit exister`);
-  const suite = source.indexOf("\nrouter.", debut + 1);
-  const bloc = source.slice(debut, suite === -1 ? source.length : suite);
+  const suite = texte.indexOf("\nrouter.", debut + 1);
+  const bloc = texte.slice(debut, suite === -1 ? texte.length : suite);
   return bloc
     .split("\n")
     .filter((l) => {
@@ -126,6 +128,36 @@ describe("cloisonnement de /api/users", () => {
       "La suppression doit chercher le compte à travers la portée");
     assert.match(corps, /if \(!u\) \{[\s\S]*?404/,
       "Hors de portée, la route doit répondre « introuvable » sans supprimer");
+  });
+});
+
+describe("cloisonnement de /api/admin-tokens", () => {
+  // Ces jetons sont rendus EN CLAIR et rejouables sur /api/auth/token-login :
+  // les laisser fuiter n'est pas une divulgation, c'est une prise de contrôle
+  // de compte. Mesuré en production : 15 jetons d'autrui — dont
+  // superadmin@sxbvpn.com — affichés à un administrateur créé à l'instant,
+  // chacun assorti d'un bouton « Révoquer ».
+  const source = readFileSync(new URL("server/routes/admin-tokens.ts", racine), "utf8");
+
+  it("importe la portée qu'il emploie", () => {
+    assert.match(source, /import \{ porteeComptes \} from '\.\.\/services\/portee-donnees'/,
+      "Un appel sans import ne tomberait qu'à l'exécution, en production");
+  });
+
+  it("filtre la liste par le compte porteur", () => {
+    const corps = corpsDeRoute(source, "router.get(\n  '/',");
+    assert.match(corps, /porteeComptes\(\s*prisma\s*,\s*req\.user\s*\)/,
+      "Sans portée, les 100 derniers jetons de la plateforme sont rendus");
+    assert.match(corps, /where: \{ user: portee \}/,
+      "Un jeton se rattache par le compte qu'il ouvre");
+  });
+
+  it("ne révoque jamais le jeton d'un autre", () => {
+    const corps = corpsDeRoute(source, "router.post(\n  '/:id/revoke'");
+    assert.doesNotMatch(corps, /adminToken\.findUnique\(\{ where: \{ id: req\.params\.id \} \}\)/,
+      "Ce `findUnique` nu laissait révoquer le jeton du propriétaire");
+    assert.match(corps, /findFirst\(\{\s*where: portee \?/,
+      "La révocation doit viser à travers la portée");
   });
 });
 

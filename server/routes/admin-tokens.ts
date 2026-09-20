@@ -10,6 +10,7 @@ import jwt from 'jsonwebtoken';
 import { prisma, logDbActivity } from '../database';
 import { requireAuth, requirePermission, requireRole, AuthenticatedRequest } from '../middleware/auth';
 import { config } from '../config';
+import { porteeComptes } from '../services/portee-donnees';
 import { generateTokens } from '../middleware/auth';
 
 const router = Router();
@@ -248,7 +249,18 @@ router.get(
     try {
       if (!prisma) return res.json({ tokens: [] });
 
+      // ═══════════════════════════════════════════════════════════════════
+      // Ces jetons sont des IDENTIFIANTS DE PREMIÈRE CONNEXION, rendus EN
+      // CLAIR juste en dessous. Sans portée, un administrateur lisait les
+      // 100 derniers jetons de la plateforme — dont ceux du propriétaire et
+      // du super-administrateur — et pouvait les rejouer sur
+      // /api/auth/token-login. Ce n'était donc pas une divulgation, mais une
+      // PRISE DE CONTRÔLE de compte. Mesuré en production : 15 jetons
+      // d'autrui affichés à un administrateur créé à l'instant.
+      // ═══════════════════════════════════════════════════════════════════
+      const portee = await porteeComptes(prisma, req.user);
       const tokens = await prisma.adminToken.findMany({
+        ...(portee ? { where: { user: portee } } : {}),
         include: { user: { include: { role: true } } },
         orderBy: { createdAt: 'desc' },
         take: 100,
@@ -287,7 +299,13 @@ router.post(
     try {
       if (!prisma) return res.status(503).json({ error: 'DB_UNAVAILABLE' });
 
-      const token = await prisma.adminToken.findUnique({ where: { id: req.params.id } });
+      // Même portée qu'à la lecture : hors de son périmètre, un administrateur
+      // ne doit pas pouvoir révoquer le jeton d'un autre — a fortiori celui du
+      // propriétaire, ce qui reviendrait à lui barrer sa première connexion.
+      const portee = await porteeComptes(prisma, req.user);
+      const token = await prisma.adminToken.findFirst({
+        where: portee ? { AND: [{ id: req.params.id }, { user: portee }] } : { id: req.params.id },
+      });
       if (!token) return res.status(404).json({ error: 'NOT_FOUND' });
 
       await prisma.adminToken.update({
