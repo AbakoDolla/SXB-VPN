@@ -90,6 +90,33 @@ describe('montée du moteur — version épinglée', () => {
     assert.match(service, /^import io\.nekohasekai\.libbox\.StringIterator$/m);
   });
 
+  it('n’annonce jamais un protocole que le moteur ne sait pas lancer', () => {
+    // L'INVARIANT : tout protocole que le serveur accepte à l'import doit
+    // avoir une branche d'aiguillage côté application. Sans cela, l'import
+    // réussit, le profil s'attribue, et l'échec n'apparaît qu'à la connexion —
+    // sur le téléphone de l'utilisateur, là où plus personne ne peut agir.
+    //
+    // C'est exactement le mécanisme qui faisait qu'une configuration marchait
+    // chez l'un et pas chez l'autre. Rien ne protégeait cette correspondance.
+    const importateur = lire('server/services/canonical-config.ts');
+    const refus = /champ "protocol" requis \(([^)]+)\)/.exec(importateur);
+    assert.ok(refus, 'la liste des protocoles acceptés doit rester lisible dans le refus d’import');
+    const acceptes = refus[1].split(',').map(p => p.trim()).filter(Boolean);
+    assert.ok(acceptes.length >= 9, `liste trop courte : ${acceptes.join(', ')}`);
+
+    const service = lire('app-mobile/modules/android-native/SxbVpnService.kt');
+    const debut = service.indexOf('when (proto) {');
+    assert.ok(debut > 0, 'l’aiguillage par protocole doit exister');
+    const aiguillage = service.slice(debut, service.indexOf('failVpn("CONFIG_UNSUPPORTED"', debut));
+
+    for (const protocole of acceptes) {
+      assert.ok(
+        aiguillage.includes(`"${protocole}"`),
+        `le serveur accepte « ${protocole} » mais l’application ne sait pas l’aiguiller`,
+      );
+    }
+  });
+
   it('fournit le Go qu’exige ce moteur', () => {
     // sing-box 1.12 déclare `go 1.23.1`. Un runner plus ancien échoue à la
     // résolution des modules, avant même de compiler quoi que ce soit.
