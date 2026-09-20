@@ -1,0 +1,36 @@
+{
+  "titre": "Ce qui a changé",
+  "exemple": "Exemple",
+  "passer": "Passer",
+  "precedent": "Précédent",
+  "suivant": "Suivant",
+  "terminer": "J'ai compris",
+  "etapes": {
+    "telechargement": {
+      "titre": "L'application se met à jour directement",
+      "texte": "La mise à jour de l'application Android se télécharge désormais depuis nos serveurs, sans passer par aucune boutique. Une page publique sert toujours la dernière version, et vérifie le fichier avant de le remettre.",
+      "exemple": "Un client vous écrit « je n'ai pas la dernière version ». Envoyez-lui le lien ci-dessous. La page recalcule l'empreinte du fichier reçu : un téléchargement interrompu est rejeté au lieu de s'installer à moitié, ce qui évite le message « le package semble ne pas être valide ».",
+      "lien": "Ouvrir la page de téléchargement"
+    },
+    "conversion": {
+      "titre": "Faire passer un essai en client payant",
+      "texte": "Dans « Essais gratuits », cochez un inscrit puis « Convertir en forfait ». Le nom, le quota et la durée sont facultatifs : les laisser vides conserve l'accès tel quel et ne change que sa nature.",
+      "exemple": "Un essayeur satisfait veut payer 30 jours. Cochez sa ligne, cliquez « Convertir en forfait », saisissez 50 Go et 30 jours. Il garde son compte, son jeton et sa configuration — son accès n'est jamais coupé. Sa ligne quitte les Essais et son forfait apparaît dans Forfaits Data."
+    },
+    "appareilEnEssai": {
+      "titre": "Ne faites plus réinstaller l'application",
+      "texte": "Un appareil qui a pris un essai possède déjà un compte. Quand vous saisissez son identifiant pour lui créer un accès payant, l'écran vous le dit maintenant et vous propose la conversion sur place.",
+      "exemple": "Dans « Appareils », vous entrez l'identifiant du client et lisez « cet appareil est déjà en période d'essai ». Convertissez depuis ce panneau : il garde exactement le même jeton. Lui faire désinstaller puis réinstaller l'application lui ferait perdre son accès pour rien."
+    },
+    "badgeVip": {
+      "titre": "Le client voit qu'il est devenu VIP",
+      "texte": "Sur le téléphone, un accès payant se distingue maintenant d'un essai au premier regard : une plaque dorée « VIP » accompagne la carte de quota.",
+      "exemple": "Juste après la conversion, l'écran d'accueil du client remplace la carte violette « période d'essai » par sa carte de quota, portant la plaque dorée. Rien à faire de votre côté : l'application suit le changement toute seule."
+    },
+    "configsV2ray": {
+      "titre": "Import des configurations V2Ray",
+      "texte": "Deux corrections à l'import : un transport qui était refusé à tort est désormais accepté, et un autre qui passait sans fonctionner est refusé tout de suite.",
+      "exemple": "Une configuration en « httpupgrade » s'importe désormais — le moteur savait l'exécuter depuis le début. À l'inverse, une configuration en « kcp » est refusée à l'import : le moteur ne sait pas la lancer, et l'apprendre maintenant évite un profil qui n'aurait échoué qu'au moment de la connexion, sur le téléphone du client."
+    }
+  }
+}

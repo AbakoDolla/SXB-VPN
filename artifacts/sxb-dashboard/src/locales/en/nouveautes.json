@@ -1,0 +1,36 @@
+{
+  "titre": "What's changed",
+  "exemple": "Example",
+  "passer": "Skip",
+  "precedent": "Back",
+  "suivant": "Next",
+  "terminer": "Got it",
+  "etapes": {
+    "telechargement": {
+      "titre": "The app now updates directly",
+      "texte": "Android app updates are downloaded straight from our servers, with no store involved. A public page always serves the latest version and verifies the file before handing it over.",
+      "exemple": "A customer writes to say they don't have the latest version. Send them the link below. The page recalculates the checksum of the file received: an interrupted download is rejected instead of installing halfway, which avoids the dreaded \"package appears to be invalid\" message.",
+      "lien": "Open the download page"
+    },
+    "conversion": {
+      "titre": "Turn a trial into a paying customer",
+      "texte": "In \"Free trials\", tick a sign-up then choose \"Convert to plan\". Name, quota and duration are optional: leaving them empty keeps access exactly as it is and only changes its nature.",
+      "exemple": "A happy trial user wants to pay for 30 days. Tick their row, click \"Convert to plan\", enter 50 GB and 30 days. They keep their account, their token and their configuration — access is never interrupted. Their row leaves Trials and the plan appears in Data Plans."
+    },
+    "appareilEnEssai": {
+      "titre": "Stop asking people to reinstall the app",
+      "texte": "A device that took a trial already has an account. When you enter its ID to create paid access, the screen now tells you so and offers to convert it on the spot.",
+      "exemple": "In \"Devices\", you enter the customer's ID and read \"this device is already on a free trial\". Convert from that panel: they keep exactly the same token. Having them uninstall and reinstall the app would cost them their access for nothing."
+    },
+    "badgeVip": {
+      "titre": "Customers can see they went VIP",
+      "texte": "On the phone, paid access is now told apart from a trial at a glance: a gold \"VIP\" plate sits alongside the quota card.",
+      "exemple": "Right after conversion, the customer's home screen swaps the purple \"free trial\" card for their quota card, carrying the gold plate. Nothing to do on your side: the app follows the change on its own."
+    },
+    "configsV2ray": {
+      "titre": "Importing V2Ray configurations",
+      "texte": "Two import fixes: a transport that was wrongly refused is now accepted, and another that passed without working is refused up front.",
+      "exemple": "An \"httpupgrade\" configuration now imports — the engine could run it all along. Conversely, a \"kcp\" configuration is refused at import: the engine cannot run it, and learning that now avoids a profile that would only have failed at connection time, on the customer's phone."
+    }
+  }
+}

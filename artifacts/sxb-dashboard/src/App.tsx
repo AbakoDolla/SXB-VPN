@@ -1,6 +1,7 @@
 import React from "react";
 import { Toaster } from "sonner";
 import ErrorBoundary from "./components/ErrorBoundary";
+import GuideNouveautes from "./components/GuideNouveautes";
 import DashboardView from "./components/DashboardView";
 import ClientsView from "./components/ClientsView";
 import ServersView from "./components/ServersView";
@@ -487,6 +488,10 @@ function MainApp() {
         <ErrorBoundary resetKey={activeRoute}>
           {renderView()}
         </ErrorBoundary>
+        {/* Ce qui a changé, raconté UNE FOIS par livraison. Monté ici, dans
+            le tableau de bord authentifié : il s'adresse à quelqu'un qui
+            travaille, pas à un visiteur de l'écran de connexion. */}
+        <GuideNouveautes />
       </Layout>
     </ResellerAccessProvider>
     </PermissionsProvider>
