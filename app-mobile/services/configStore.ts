@@ -48,7 +48,38 @@ function randomBytes(length: number): Uint8Array {
   return out;
 }
 function encode(s: string) { return utf8Encode(s); }
-async function masterKey(): Promise<Uint8Array> {
+/**
+ * Clé de chiffrement du stockage local, retenue pour la durée de la session.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * POURQUOI ELLE EST MÉMORISÉE
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Elle était relue à CHAQUE lecture et CHAQUE écriture de configuration. Sur
+ * Android, `SecureStore` traverse le pont natif et interroge le coffre de clés
+ * du système — quelques dizaines de millisecondes à chaque fois, et la lecture
+ * est en plus enveloppée dans trois tentatives.
+ *
+ * Une simple bascule de configuration déclenchait trois lectures de
+ * configuration, donc trois passages par le coffre ; l'import en ajoutait
+ * d'autres. C'est ce qui rendait le changement de profil poussif quand
+ * plusieurs configurations coexistent.
+ *
+ * La mémoriser ne l'expose pas davantage : les configurations DÉCHIFFRÉES
+ * vivent déjà dans l'état de l'application pendant toute la session. La clé
+ * reste dans le coffre ; seule sa relecture est évitée.
+ *
+ * La mémoire est effacée par `oublierCleMaitresse()`, que `clearAll` appelle :
+ * une remise à zéro génère une nouvelle clé, et servir l'ancienne rendrait
+ * illisible tout ce qui serait écrit ensuite.
+ */
+let cleMemorisee: Promise<Uint8Array> | null = null;
+
+/** Oublie la clé retenue. À appeler dès que le stockage est réinitialisé. */
+export function oublierCleMaitresse(): void {
+  cleMemorisee = null;
+}
+
+async function lireCleMaitresse(): Promise<Uint8Array> {
   const read = async () => Platform.OS === 'web' ? AsyncStorage.getItem(`@secure_${MASTER_KEY}`) : SecureStore.getItemAsync(MASTER_KEY);
   let key = await retry(read);
   if (!key) {
@@ -57,6 +88,19 @@ async function masterKey(): Promise<Uint8Array> {
   }
   if (!/^[0-9a-f]{64}$/i.test(key)) throw new Error('Clé de stockage invalide');
   return hexToBytes(key);
+}
+
+async function masterKey(): Promise<Uint8Array> {
+  // Un échec n'est JAMAIS retenu : le mémoriser condamnerait la session
+  // entière à l'erreur, là où la tentative suivante peut réussir — c'est
+  // précisément ce que les trois essais de `retry` cherchent à obtenir.
+  if (!cleMemorisee) {
+    cleMemorisee = lireCleMaitresse().catch(erreur => {
+      cleMemorisee = null;
+      throw erreur;
+    });
+  }
+  return cleMemorisee;
 }
 function encrypt(value: Record<string, any>, key: Uint8Array) {
   const iv = randomBytes(12); const result = encryptAes256Gcm(key, iv, encode(JSON.stringify(value)));
@@ -224,6 +268,10 @@ export async function clearAll(): Promise<StoreResult<void>> {
       Platform.OS === 'web' ? AsyncStorage.removeItem(`@secure_${LEGACY_CONFIG}`) : SecureStore.deleteItemAsync(LEGACY_CONFIG),
       Platform.OS === 'web' ? AsyncStorage.removeItem(`@secure_${LEGACY_PROV}`) : SecureStore.deleteItemAsync(LEGACY_PROV),
     ]);
+    // La clé retenue en mémoire ne vaut plus pour ce qui sera écrit ensuite :
+    // une remise à zéro peut en faire naître une autre, et servir l'ancienne
+    // rendrait illisible la première configuration provisionnée après coup.
+    oublierCleMaitresse();
     return { status: 'ok' as const };
   });
   } catch (error: any) { return { status: 'error', error }; }

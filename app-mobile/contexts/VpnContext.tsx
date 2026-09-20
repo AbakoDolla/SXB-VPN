@@ -2150,10 +2150,15 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const switchConfig = useCallback(async (configId: string) => {
     if (isSwitchingConfig || configId === activeConfigId) return;
     const remoteTarget = remoteConnections.find(c => c.id === configId) || null;
+    // Cette lecture sert AUSSI de contrôle d'accès, et elle est réutilisée
+    // plus bas. Elle était refaite à l'identique quelques lignes après : sur
+    // Android, chaque lecture traverse le pont natif et déchiffre le profil,
+    // si bien qu'une bascule en payait trois. C'est l'une des deux raisons
+    // pour lesquelles changer de configuration traînait.
+    const lecture = storeValue(await configStore.get(configId));
     try {
       requireDeviceAccess();
-      const target = storeValue(await configStore.get(configId));
-      requireProfileAccess(target?.meta ?? { configId, configHash: remoteTarget?.configHash });
+      requireProfileAccess(lecture?.meta ?? { configId, configHash: remoteTarget?.configHash });
     } catch (error) {
       reportAccessSyncError(error);
       addLog(t('access_profile_blocked'));
@@ -2173,7 +2178,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     const previousId = activeConfigId;
     const wasConnected = isConnected;
     try {
-      let target = await configStore.get(configId);
+      // Réutilise la lecture faite au contrôle d'accès plutôt que d'en
+      // refaire une : c'est le même profil, il n'a pas pu changer entre-temps.
+      let target: Awaited<ReturnType<typeof configStore.get>> =
+        lecture ? { status: 'ok', value: lecture } : await configStore.get(configId);
       if ((target.status !== 'ok' || !target.value) && remoteTarget) {
         if (!deviceId) throw new Error('Identifiant appareil indisponible — reconnectez-vous puis réessayez');
         addLog(`🔒 Provisionnement de « ${remoteTarget.name} »...`);
