@@ -242,6 +242,8 @@ interface VpnContextType {
   hasValidConfig:     boolean;
   activeConnection:   VpnConnection | null;
   stepLogs:           StepLogItem[];
+  /** Vide la chronologie affichée. La connexion en cours n'est pas touchée. */
+  resetStepLogs:      () => void;
   // Multi-config
   savedConfigs:       Array<{ id: string; name: string; protocol: string; isActive: boolean; status?: ProfileStatus; isFreeTrial?: boolean }>;
   activeConfigId:     string | null;
@@ -297,6 +299,7 @@ const VpnContext = createContext<VpnContextType>({
   trafficStats: DEFAULT_STATS, vpnLogs: [],
   hasVpnPermission: false, hasValidConfig: false, activeConnection: null,
   stepLogs: [],
+  resetStepLogs: () => {},
   savedConfigs: [], activeConfigId: null, switchConfig: async () => {}, isSwitchingConfig: false, switchingToId: null,
   quotaData: null,
   derivedQuota: DEFAULT_DERIVED_QUOTA,
@@ -2283,6 +2286,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     hasValidConfig,
     activeConnection,
     stepLogs,
+    resetStepLogs,
     savedConfigs, activeConfigId, switchConfig, isSwitchingConfig, switchingToId,
     quotaData,
     derivedQuota: currentDerivedQuota,
@@ -2304,7 +2308,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     isConnected, isConnecting, vpnState,
     selectedProtocol, connectedProtocol, availableProtocols,
     trafficStats, vpnLogs, hasVpnPermission, hasValidConfig,
-    activeConnection, stepLogs, savedConfigs, activeConfigId,
+    activeConnection, stepLogs, resetStepLogs, savedConfigs, activeConfigId,
     switchConfig, isSwitchingConfig, switchingToId, quotaData, currentDerivedQuota, quotaSession,
     revokedStatus, perAppTraffic, killSwitch, autoReconnect,
     syncFromConnection, connect, disconnect, selectProtocol,

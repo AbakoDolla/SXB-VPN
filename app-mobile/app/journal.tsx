@@ -1,5 +1,5 @@
-import React, { useCallback, useMemo } from "react";
-import { Pressable, ScrollView, Share, StyleSheet, Text, View } from "react-native";
+import React, { useCallback, useMemo, useState } from "react";
+import { Alert, Pressable, ScrollView, Share, StyleSheet, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -9,6 +9,7 @@ import { useResponsive } from "@/hooks/useResponsive";
 import { useTranslation } from "@/localization";
 import { useVpnContext, type StepLogItem } from "@/contexts/VpnContext";
 import { chronometrer } from "@/services/journalChronologie";
+import { retenue, type Niveau, type Source } from "@/services/journalFiltres";
 import { alpha, radius, responsiveLayout, spacing, type } from "@/constants/theme";
 import { EmptyState, ScreenHeader } from "@/components/ui/Primitives";
 
@@ -36,6 +37,76 @@ const CODE_SUR = /^[A-Z][A-Z0-9_]{2,31}$/;
 function detailAffichable(detail: string | undefined): string | null {
   if (!detail) return null;
   return CODE_SUR.test(detail) ? detail : null;
+}
+
+/**
+ * Un choix parmi quelques-uns, sur une seule ligne.
+ *
+ * Les libellés sont traduits par l'appelant : ce composant ne connaît que des
+ * textes déjà prêts, jamais une clé ni une valeur venue d'ailleurs.
+ */
+function Choix<T extends string>({ valeurs, actif, surChoix, legende }: {
+  valeurs: Array<{ id: T; libelle: string }>;
+  actif: T;
+  surChoix: (id: T) => void;
+  legende: string;
+}) {
+  const colors = useColors();
+  return (
+    <View style={styles.rangeeFiltre}>
+      <Text style={[type.micro, { color: colors.textMuted, width: 58 }]}>{legende}</Text>
+      <View style={styles.choix}>
+        {valeurs.map(({ id, libelle }) => {
+          const choisi = id === actif;
+          return (
+            <Pressable
+              key={id}
+              onPress={() => surChoix(id)}
+              accessibilityRole="radio"
+              accessibilityState={{ selected: choisi }}
+              accessibilityLabel={`${legende} : ${libelle}`}
+              hitSlop={8}
+              style={({ pressed }) => [
+                styles.puce,
+                choisi
+                  ? { backgroundColor: colors.primaryDim, borderColor: colors.primary + alpha.f24 }
+                  : { backgroundColor: colors.bgInput, borderColor: colors.border2 },
+                pressed && styles.presse,
+              ]}
+            >
+              <Text style={[type.micro, { color: choisi ? colors.primary : colors.textSecondary }]}>{libelle}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+/** Une action de la barre : icône, mot, surface tactile pleine. */
+function Action({ icone, libelle, surAppui, teinte }: {
+  icone: string;
+  libelle: string;
+  surAppui: () => void;
+  teinte?: string;
+}) {
+  const colors = useColors();
+  const couleur = teinte ?? colors.textSecondary;
+  return (
+    <Pressable
+      onPress={surAppui}
+      accessibilityRole="button"
+      accessibilityLabel={libelle}
+      style={({ pressed }) => [
+        styles.action,
+        { backgroundColor: colors.bgCard, borderColor: colors.border },
+        pressed && styles.presse,
+      ]}
+    >
+      <Ionicons name={icone as any} size={15} color={couleur} />
+      <Text style={[type.captionMedium, { color: couleur }]} numberOfLines={1}>{libelle}</Text>
+    </Pressable>
+  );
 }
 
 function apparence(statut: StepLogItem["status"], colors: ReturnType<typeof useColors>) {
@@ -118,11 +189,40 @@ export default function JournalScreen() {
   const responsive = useResponsive();
   const insets = useSafeAreaInsets();
   const { t } = useTranslation();
-  const { stepLogs } = useVpnContext();
+  const { stepLogs, resetStepLogs } = useVpnContext();
+
+  /**
+   * Filtres du journal.
+   *
+   * `niveau` répond à « qu'est-ce qui a cassé ? » ; `source` répond à « est-ce
+   * l'application ou le moteur ? ». Le tri lui-même vit dans `journalFiltres`,
+   * pour pouvoir être mis à l'épreuve sans lancer l'application.
+   */
+  const [niveau, setNiveau] = useState<Niveau>("tout");
+  const [source, setSource] = useState<Source>("tout");
 
   // Le plus récent en haut : c'est ce qu'on vient chercher quand une connexion
   // ne part pas. `chronometrer` donne à chaque étape le temps qu'elle a coûté.
-  const etapes = useMemo(() => chronometrer([...stepLogs].reverse()), [stepLogs]);
+  const toutes = useMemo(() => chronometrer([...stepLogs].reverse()), [stepLogs]);
+
+  /**
+   * Chronologie figée pendant qu'on la lit.
+   *
+   * Pendant une connexion, les étapes s'inscrivent sans prévenir : la ligne
+   * qu'on examinait glisse sous le doigt. Geler garde une copie de l'instant
+   * choisi — le moteur, lui, continue son travail sans rien savoir de cet
+   * écran.
+   */
+  const [gelee, setGelee] = useState<typeof toutes | null>(null);
+  const fige = gelee !== null;
+
+  const etapes = useMemo(
+    () => (gelee ?? toutes).filter(({ etape }) => retenue(etape, niveau, source)),
+    [gelee, toutes, niveau, source],
+  );
+
+  /** Nombre d'étapes écartées par les filtres — jamais un chiffre inventé. */
+  const masquees = (gelee ?? toutes).length - etapes.length;
 
   /**
    * Met le journal AFFICHÉ dans le presse-papiers du système de partage.
@@ -131,6 +231,9 @@ export default function JournalScreen() {
    * partagé ne peut donc contenir ni plus ni autre chose que ce que
    * l'utilisateur voit. Aucune adresse, aucune configuration, aucun secret —
    * la garantie tient par construction, pas par vigilance.
+   *
+   * Il suit les filtres : partager « les problèmes » n'envoie que ceux-là,
+   * ce qui évite de noyer le destinataire sous une chronologie entière.
    */
   const partager = useCallback(async () => {
     // Remis dans l'ordre chronologique : une chronologie se lit du début.
@@ -145,6 +248,31 @@ export default function JournalScreen() {
       // Un partage refusé ou annulé n'est pas une erreur à signaler.
     }
   }, [etapes, t]);
+
+  const basculerGel = useCallback(() => {
+    setGelee((precedent) => (precedent === null ? toutes : null));
+  }, [toutes]);
+
+  /**
+   * Efface la chronologie, après confirmation.
+   *
+   * Un journal effacé ne se récupère pas, et c'est précisément la trace qu'on
+   * cherchait quand la connexion a échoué. La connexion en cours, elle, n'est
+   * pas touchée : seul l'affichage repart de zéro.
+   */
+  const effacer = useCallback(() => {
+    Alert.alert(t("journal_clear"), t("journal_clear_confirm"), [
+      { text: t("cancel"), style: "cancel" },
+      {
+        text: t("journal_clear"),
+        style: "destructive",
+        onPress: () => {
+          setGelee(null);
+          resetStepLogs();
+        },
+      },
+    ]);
+  }, [resetStepLogs, t]);
 
   return (
     <LinearGradient colors={colors.gradients.bg as [string, string, string]} style={styles.fond}>
@@ -178,33 +306,62 @@ export default function JournalScreen() {
           <Text style={[type.caption, { color: colors.textSecondary, flex: 1 }]}>{t("journal_privacy_note")}</Text>
         </View>
 
-        {/* Partage du journal.
-            Sans lui, l'utilisateur qui constate une connexion lente devait
-            recopier l'écran à la main ou photographier son téléphone : le
-            diagnostic n'arrivait jamais jusqu'au développeur.
-            Ce qui part est EXACTEMENT ce qui est affiché — des libellés
-            traduits, des heures et des durées. Le texte est reconstruit depuis
-            les mêmes clés de traduction, donc il ne peut rien contenir de plus
-            que l'écran : aucune adresse, aucune configuration, aucun secret. */}
-        {etapes.length > 0 ? (
-          <Pressable
-            onPress={() => void partager()}
-            accessibilityRole="button"
-            accessibilityLabel={t("journal_share")}
-            style={({ pressed }) => [
-              styles.note,
-              { backgroundColor: colors.bgCard, borderColor: colors.border },
-              pressed && styles.presse,
-            ]}
-          >
-            <Ionicons name="share-outline" size={15} color={colors.textSecondary} />
-            <Text style={[type.captionMedium, { color: colors.textSecondary, flex: 1 }]}>{t("journal_share")}</Text>
-            <Ionicons name="chevron-forward" size={14} color={colors.textMuted} />
-          </Pressable>
+        {/* Barre de contrôle.
+            Le journal s'écrit pendant qu'on le lit : sans gel, la ligne
+            qu'on examine glisse sous le doigt. Sans filtre, il faut faire
+            défiler quarante étapes pour retrouver le seul échec. */}
+        {toutes.length > 0 ? (
+          <View style={[styles.barre, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
+            <Choix
+              legende={t("journal_filter_level")}
+              actif={niveau}
+              surChoix={setNiveau}
+              valeurs={[
+                { id: "tout", libelle: t("journal_filter_all") },
+                { id: "probleme", libelle: t("journal_filter_problems") },
+                { id: "reussite", libelle: t("journal_filter_success") },
+              ]}
+            />
+            <Choix
+              legende={t("journal_filter_source")}
+              actif={source}
+              surChoix={setSource}
+              valeurs={[
+                { id: "tout", libelle: t("journal_filter_all") },
+                { id: "application", libelle: t("journal_filter_app") },
+                { id: "moteur", libelle: t("journal_filter_engine") },
+              ]}
+            />
+            <View style={styles.actions}>
+              <Action
+                icone={fige ? "play-outline" : "pause-outline"}
+                libelle={fige ? t("journal_resume") : t("journal_pause")}
+                surAppui={basculerGel}
+                teinte={fige ? colors.warning : undefined}
+              />
+              {etapes.length > 0 ? (
+                <Action icone="share-outline" libelle={t("journal_share")} surAppui={() => void partager()} />
+              ) : null}
+              <Action icone="trash-outline" libelle={t("journal_clear")} surAppui={effacer} />
+            </View>
+            {fige ? (
+              <Text style={[type.micro, { color: colors.warning }]}>{t("journal_paused_note")}</Text>
+            ) : null}
+          </View>
         ) : null}
 
-        {etapes.length === 0 ? (
+        {toutes.length === 0 ? (
           <EmptyState icon="list-outline" title={t("journal_empty_title")} description={t("journal_empty_subtitle")} />
+        ) : etapes.length === 0 ? (
+          // Un journal vide et un filtre trop étroit ne se disent pas de la
+          // même façon : l'un demande de patienter, l'autre de relâcher le
+          // filtre. Les confondre enverrait l'utilisateur chercher une panne
+          // qui n'existe pas.
+          <EmptyState
+            icon="funnel-outline"
+            title={t("journal_filtered_title")}
+            description={t("journal_filtered_subtitle")}
+          />
         ) : (
           <View style={styles.liste}>
             {etapes.map(({ etape, duree, heure, lent }, index) => (
@@ -217,6 +374,11 @@ export default function JournalScreen() {
                 lent={lent}
               />
             ))}
+            {masquees > 0 ? (
+              <Text style={[type.micro, { color: colors.textMuted, paddingLeft: 30 + spacing.md }]}>
+                {t("journal_hidden_count").replace("{n}", String(masquees))}
+              </Text>
+            ) : null}
           </View>
         )}
       </ScrollView>
@@ -231,6 +393,29 @@ const styles = StyleSheet.create({
   retour: { width: 44, height: 44, borderRadius: radius.md, borderWidth: 1, alignItems: "center", justifyContent: "center" },
   presse: { opacity: 0.68, transform: [{ scale: 0.97 }] },
   note: { flexDirection: "row", alignItems: "center", gap: spacing.sm, borderWidth: 1, borderRadius: radius.md, padding: spacing.md },
+  barre: { borderWidth: 1, borderRadius: radius.md, padding: spacing.md, gap: spacing.sm },
+  rangeeFiltre: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  choix: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs, flex: 1 },
+  puce: {
+    minHeight: 32,
+    justifyContent: "center",
+    borderWidth: 1,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+  },
+  actions: { flexDirection: "row", gap: spacing.xs, marginTop: spacing.xs },
+  action: {
+    flex: 1,
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.xs,
+    borderWidth: 1,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.sm,
+  },
   liste: { gap: spacing.xs },
   ligne: { flexDirection: "row", gap: spacing.md },
   frise: { alignItems: "center", width: 30 },
