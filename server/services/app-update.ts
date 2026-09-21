@@ -205,7 +205,25 @@ export function isRoleTargeted(update: PublishedAppUpdate, role: string | undefi
   return !!role && update.targetRoles.includes(role);
 }
 
-export function toPublicAppUpdate(update: PublishedAppUpdate) {
+/**
+ * Charge utile publique d'une publication.
+ *
+ * `targetDeviceIds` est SÛR PAR DÉFAUT : il faut le demander explicitement.
+ *
+ * Mesuré en production : un ADMIN neuf, à zéro appareil, lisait ici 256
+ * identifiants d'appareils appartenant à d'autres exploitants. Le compteur
+ * voisin (`eligibleDeviceCount`) était pourtant correctement cloisonné — la
+ * liste servie dans la MÊME réponse ne l'était pas.
+ *
+ * L'inversion par défaut est volontaire : un futur appelant qui oublie l'option
+ * ne divulgue rien, au lieu de tout divulguer. Le champ reste un tableau, car
+ * l'écran de publication fait `.includes()` et `.length` dessus sans garde —
+ * l'omettre casserait l'interface au lieu de la protéger.
+ */
+export function toPublicAppUpdate(
+  update: PublishedAppUpdate,
+  options?: { inclureCiblageAppareils?: boolean },
+) {
   return {
     id: update.id,
     versionCode: update.versionCode,
@@ -216,7 +234,7 @@ export function toPublicAppUpdate(update: PublishedAppUpdate) {
     minSupportedCode: update.minSupportedCode,
     forceUpdate: update.forceUpdate,
     targetRoles: update.targetRoles,
-    targetDeviceIds: update.targetDeviceIds,
+    targetDeviceIds: options?.inclureCiblageAppareils ? update.targetDeviceIds : [],
     publishedAt: update.publishedAt,
     updatedAt: update.updatedAt,
   };
