@@ -4,7 +4,8 @@ import { z } from "zod";
 import { inMemoryDb, logDbActivity, prisma } from "../database";
 import { AuthenticatedRequest, requireAuth, requirePermission } from "../middleware/auth";
 import { canSeeUser } from "../middleware/rbac/owner";
-import { possedeClientCloisonne, auteurAInscrire, porteeBons } from "../services/portee-donnees";
+import { possedeClientCloisonne, auteurAInscrire, porteeBons, porteeRevendeurs, estCloisonne } from "../services/portee-donnees";
+import { etFiltres } from "../services/free-trial-marks";
 import {
   chargerFicheProprietaireClient,
   chargerFicheRevendeur,
@@ -142,9 +143,28 @@ async function chargerProprietaireCreation(
       },
     };
   }
+  // ── Qui PAIE le bon n'est pas qui l'émet ─────────────────────────────────
+  //
+  // MESURÉ EN PRODUCTION : l'administrateur B, en passant l'identifiant du
+  // revendeur de l'administrateur A, obtenait 201 — le bon était créé et
+  // `executerMutationQuota` ponctionnait l'enveloppe de A. B dépensait donc le
+  // quota d'un autre exploitant, sans jamais voir le bon ensuite (la lecture,
+  // elle, était déjà cloisonnée). Une fuite invisible à l'écran, et pourtant
+  // financière.
+  //
+  // `canSeeUser` ne suffisait pas : il statue sur la visibilité d'un COMPTE,
+  // pas sur la propriété d'une FICHE revendeur.
+  //
+  // ⚠ On ne restreint QUE les rôles cloisonnés. `porteeRevendeurs` ferme aussi
+  // les fiches du propriétaire au SUPER_ADMIN — c'est la règle générale, mais
+  // l'appliquer ici retirerait au super-administrateur un pouvoir qu'il exerce
+  // aujourd'hui en production. On ferme la fuite mesurée, rien de plus.
+  const porteeDesRevendeurs = estCloisonne(req.user?.role)
+    ? await porteeRevendeurs(prisma, req.user)
+    : null;
   const fiche = prisma
-    ? await prisma.reseller.findUnique({
-        where: { id: requestedResellerId },
+    ? await prisma.reseller.findFirst({
+        where: etFiltres({ id: requestedResellerId }, porteeDesRevendeurs) as any,
         include: { user: { include: { role: true } } },
       })
     : inMemoryDb.resellers.find((candidate: any) => candidate.id === requestedResellerId);
