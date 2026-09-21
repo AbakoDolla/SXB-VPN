@@ -59,7 +59,7 @@ export default function ActivateScreen() {
       // de configuration, quota et connexion. Il est donc la première étape
       // post-activation, et non un écran promotionnel avant le token.
       setTimeout(
-        () => router.replace((hasSeenOnboarding ? "/(tabs)" : "/onboarding") as any),
+        () => router.replace((hasSeenOnboarding ? "/(tabs)/" : "/onboarding") as any),
         1100,
       );
     } catch (err: any) {

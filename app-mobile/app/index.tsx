@@ -176,7 +176,7 @@ export default function SplashScreen() {
     const destination = !isAuthenticated
       ? "/activate"
       : hasSeenOnboarding
-        ? "/(tabs)"
+        ? "/(tabs)/"
         : "/onboarding";
     const timer = setTimeout(() => router.replace(destination as any), DUREE_TOTALE_MS);
     return () => clearTimeout(timer);
