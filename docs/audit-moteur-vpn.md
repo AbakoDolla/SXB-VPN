@@ -471,3 +471,334 @@ Par honnêteté, et parce que le client a été trompé par le passé :
 
 *Rapport produit en phase 1 (lecture seule). Aucun fichier du dépôt n'a été modifié
 pendant l'audit.*
+
+---
+---
+
+# Rapport de livraison — PHASES 2 à 6
+
+*Ce second rapport rend compte de ce qui a été fait après l'audit. Il est écrit
+pour être opposable : chaque affirmation y est soit accompagnée de la commande
+qui la prouve, soit explicitement marquée comme non vérifiée.*
+
+---
+
+## 12. Ce qui a changé, et pourquoi si peu
+
+L'audit a établi un fait qui a déterminé toute la suite : **l'essentiel de ce que
+la mission demandait existait déjà**. Dix-neuf protocoles dispatchés, une famille SSH
+complète avec ses transports, sing-box intégré et compilé depuis les sources officielles,
+un moteur qui émet une centaine de types de traces.
+
+Le problème n'était donc pas l'absence de moteur, mais **l'écart entre ce que le moteur
+sait et ce que l'application en montre** — et, plus grave, **deux endroits où l'application
+affirmait quelque chose de faux**.
+
+La stratégie retenue a été d'étendre et de corriger, jamais de reconstruire. Aucune
+réécriture, aucune migration, aucun changement de navigation, de design ou de logo.
+`plugins/withSxbVpn.js` n'a pas été touché. Le système d'authentification, les rôles,
+les abonnements, les quotas et les règles d'accès n'ont pas été touchés.
+
+**Aucun fichier de `server/`, `prisma/` ou `backend/` n'a été modifié.** Aucune
+modification backend ne s'est révélée nécessaire ; il n'y a donc rien à remonter
+sur ce point.
+
+---
+
+## 13. Les trois corrections de fond
+
+### 13.1 `connected` annoncé sans preuve — corrigé
+
+C'était le défaut 6.1, et la priorité absolue.
+
+**Ce qui se passait.** Trois endroits décidaient de l'état. Deux garde-fous avaient été
+posés par le passé, chacun correct isolément. Mais `startLibboxService()` contenait un
+repli — `if (currentState != "connected") { setCurrentState("connected") }` — qui les
+annulait tous les deux. **Deux correctifs successifs s'étaient neutralisés l'un l'autre**,
+ce qui explique qu'un défaut apparemment traité ait survécu.
+
+**Ce qui a été fait.** Une porte unique, `promoteToConnected()`, qui exige que le service
+tourne *et* que l'état soit `handshaking`. La preuve retenue est la progression des
+**octets reçus** (`rx_bytes`) de l'interface TUN.
+
+> **Pourquoi les octets *reçus*, et pas les octets émis.** `tx_bytes` progresse dès qu'une
+> application *tente* d'émettre — même vers un tunnel mort. S'en servir comme preuve
+> reviendrait à confirmer une connexion parce que le téléphone a parlé dans le vide.
+> Seul `rx_bytes` atteste qu'un correspondant a répondu. C'est le cœur du raisonnement.
+
+**Le cas du délai.** Ne jamais annoncer `connected` sans preuve ne doit pas conduire à
+laisser l'utilisateur devant un écran figé. L'attente est donc bornée à 60 s, au-delà du
+chien de garde applicatif (45 s). À l'échéance, deux situations distinctes :
+
+| Situation | Décision | Ce que voit l'utilisateur |
+|---|---|---|
+| Compteurs lisibles, rien reçu | `failVpn("TUNNEL_STALLED")` | Un échec franc, avec son motif |
+| Compteurs illisibles | État **présumé**, journalisé comme tel | Un état honnête, pas un mensonge |
+
+Le second cas est le compromis : plutôt qu'un `connected` mensonger ou qu'un blocage
+indéfini, l'application dit ce qu'elle sait et ce qu'elle ignore.
+
+**Vérification structurelle.** Il ne subsiste **qu'un seul** `setCurrentState("connected")`
+dans tout le code natif. C'est ce qui empêche un troisième correctif de neutraliser
+celui-ci comme les précédents se sont neutralisés.
+
+### 13.2 Deux traces muettes — corrigées
+
+Ces deux défauts n'avaient pas été repérés pendant l'audit. Ils sont apparus en
+confrontant la liste blanche des étapes aux **formats réellement émis** par le code natif,
+relevés un à un.
+
+**Premier défaut — le préfixe.** Le motif de reconnaissance exigeait `stage=` collé au
+marqueur `[SXB_TRACE]`. Or l'aide `trace()` intercale un compteur et une durée :
+`[SXB_TRACE] seq=N elapsed_ms=M stage=X`. **Toutes** les étapes passant par cette aide
+étaient donc invisibles — dont `LIBBOX_STARTED`, c'est-à-dire « Tunnel établi »,
+l'étape la plus attendue de tout le journal.
+
+**Second défaut — la valeur tronquée.** L'extraction d'un champ s'arrêtait à la clé
+suivante, reconnue par `[a-z_]+=`. Cette expression ne reconnaît pas `connect200=`, qui
+contient des chiffres. La valeur du champ précédent débordait dessus et se faisait
+rejeter par son validateur. Conséquence : `MODE_CLASSIFIED` n'affichait jamais rien.
+
+**Un piège évité au passage.** En admettant le préfixe, un champ `elapsed_ms` aurait pu
+capter celui du préfixe — c'est-à-dire la durée depuis l'allumage de l'appareil, affichée
+comme durée d'étape. L'extraction est donc restreinte au corps de la trace, après le nom
+de l'étape.
+
+> Ces deux défauts sont la meilleure preuve que la vérification a réellement eu lieu :
+> ils ne se déduisent pas de la lecture du code, seulement de la confrontation entre
+> ce que le journal attend et ce que le moteur émet.
+
+### 13.3 Le Kill Switch ne tenait pas sa promesse — corrigé
+
+Quand l'utilisateur active le Kill Switch, l'application affiche :
+*« Toute connexion internet sera bloquée si le VPN se déconnecte. »*
+
+C'est une promesse de sécurité, pas un réglage de confort.
+
+**Ce qui se passait.** Les deux valeurs (Kill Switch, reconnexion automatique) voyagent
+bien dans les options de `startVpn` : régler **avant** de connecter a toujours fonctionné.
+Mais le contexte exposait `setKillSwitchState`, un simple `useState`. Changer d'avis
+**pendant** une session ne prévenait personne — le service natif, qui tourne dans son
+propre processus, gardait la valeur figée au moment de la connexion.
+
+Deux conséquences opposées, toutes deux fâcheuses :
+
+- **activer** en cours de session laissait le tunnel sans protection, alors que
+  l'interface affirmait le contraire ;
+- **désactiver** en cours de session laissait le « trou noir » en place, et l'utilisateur
+  se retrouvait sans internet sans comprendre pourquoi.
+
+**Ce qui a été fait.** `SxbVpnModule` exposait déjà `setKillSwitch` et `setAutoReconnect`,
+qui agissent sur `SxbVpnService.instance` — la session vivante. **Personne ne les
+appelait.** C'est désormais fait, sans rien retirer du chemin existant.
+
+---
+
+## 14. Le journal — ce qui a été ajouté
+
+Le moteur émet une centaine de types de traces ; le journal en exposait dix.
+
+**Liste blanche portée de 10 à 18 étapes.** Chaque format a été relevé par lecture du
+code natif, jamais deviné. Les vocabulaires fermés (`mode=`, `reason=`) ont été relevés
+de la même façon — on y découvre par exemple que `TRANSPORT_SELECTED mode=` possède
+**deux** vocabulaires distincts selon l'endroit qui l'émet.
+
+**Une étape a été retirée après analyse.** Un garde-fou existant a rejeté
+`SSH_DIRECT_TCPIP_CONNECTED`. Examen fait, le garde-fou avait raison : cette étape se
+rouvre à chaque destination visitée. Le rythme des lignes aurait trahi l'activité de
+navigation de l'utilisateur, et le journal aurait été noyé. **Elle a été retirée plutôt
+que le garde-fou contourné.**
+
+**L'écran.** Filtres par niveau (problèmes / réussites) et par source (application /
+moteur), gel de l'affichage, effacement avec confirmation, partage suivant les filtres.
+
+Deux points méritent d'être signalés :
+
+- La distinction application / moteur n'est pas une catégorie inventée : elle s'appuie
+  sur le préfixe `moteur:` que `inscrireFaitMoteur` est seul à poser. Un contrôle vérifie
+  que les deux restent d'accord, faute de quoi le filtre « Moteur » se viderait en silence.
+- Un journal vidé **par un filtre trop étroit** ne se dit pas comme un journal
+  **réellement vide**. L'un demande de relâcher le filtre, l'autre de patienter. Les
+  confondre enverrait l'utilisateur chercher une panne qui n'existe pas.
+
+**Protection contre les fuites — inchangée.** L'écran ne lit que des clés de traduction
+choisies dans le code ; le champ de détail n'est affiché que s'il ressemble à un code
+(majuscules, chiffres, tirets bas). Un texte libre est ignoré plutôt que rendu. Le double
+verrou existant a été conservé intégralement.
+
+**Mémoire.** Vérification faite, la rotation était déjà en place (journaux plafonnés à 300,
+file d'attente 400→200, étapes dédupliquées par clé). **Aucun code redondant n'a été ajouté.**
+
+---
+
+## 15. Protocoles — état à la livraison
+
+### 15.1 Intégrés et dispatchés par le moteur
+
+| Famille | Valeurs acceptées |
+|---|---|
+| SSH | `ssh`, `ssh+payload`, `ssh+tls`, `ssh+ssl`, `ssh+payload+tls`, `ssh+payload+ssl`, `ssh+http`, `ssh+proxy`, `ssh+http-connect`, `ssh+slowdns`, `slowdns`, `ssh+udp` |
+| sing-box | `vless`, `vmess`, `trojan`, `shadowsocks`, `wireguard`, `hysteria2`, `tuic` |
+| Brut | `singbox` (configuration sing-box native transmise telle quelle) |
+
+**Une correction de type.** `singbox` était reconnu par le validateur et dispatché par le
+moteur, mais absent de `VpnProtocolType` : un profil valide était refusé par le typage.
+Corrigé.
+
+**Ce qui reste volontairement absent des types.** Les variantes de saisie (`ssh+tls`,
+`ssh+slowdns`…) ne figurent dans aucun des deux types TypeScript, et c'est correct :
+`configValidator` les ramène à `ssh` ou `ssh+payload` avant l'envoi, en reportant le
+détail dans des champs dédiés (`tls`, `slowDns`, `udpMode`). Les faire figurer serait
+réclamer une redondance que le code a justement supprimée.
+
+> **Correction d'une note d'audit.** Une note intermédiaire signalait `dnstt` et
+> `ssh+websocket` comme manquants dans les types. Vérification faite dans le répartiteur
+> natif, **ces deux valeurs n'y existent pas** : les ajouter aurait inventé une capacité.
+> Seul `singbox` manquait réellement.
+
+**Un garde-fou a été ajouté** pour comparer les trois vocabulaires — validateur, pont et
+répartiteur natif. Ils vivent dans trois fichiers, deux langages et deux processus, et rien
+ne les obligeait jusqu'ici à rester d'accord.
+
+### 15.2 Non intégré — Xray-core, et pourquoi
+
+**Xray-core n'a pas été ajouté, délibérément.** Cet arbitrage a été validé par le
+coordinateur.
+
+Xray-core apporterait VLESS, VMess, Trojan et Shadowsocks. **Ces quatre protocoles sont
+déjà dispatchés par sing-box**, compilé depuis les sources officielles et déjà lié dans
+l'APK. L'ajouter reviendrait à :
+
+- embarquer un second moteur Go complet (plusieurs dizaines de Mo par architecture) ;
+- maintenir deux convertisseurs de configuration là où un seul suffit ;
+- faire coexister deux moteurs susceptibles de revendiquer l'interface TUN, alors que la
+  règle est **une seule session VPN système active à la fois** ;
+- doubler la surface de mise à jour et de sécurité.
+
+Pour un gain fonctionnel nul. La seule différence pratique serait le support de REALITY
+dans certaines variantes — que sing-box 1.12.9 prend également en charge.
+
+### 15.3 Non intégré — AmneziaWG
+
+Non intégré. `wireguard` est dispatché via sing-box, mais les extensions anti-DPI
+d'AmneziaWG (`Jc`, `Jmin`, `Jmax`, `S1`, `S2`, `H1`–`H4`) ne sont pas reconnues.
+Les intégrer supposerait un second moteur ou un fork de sing-box — le même raisonnement
+qu'en 15.2 s'applique.
+
+---
+
+## 16. Licences — obligation à traiter
+
+Le tableau de la section 10.1 reste valable. Un point demandait vérification ; elle a été faite.
+
+**`app-mobile/assets/engine/NOTICE.txt` ne couvre pas sing-box.** Ce fichier documente
+correctement la base de domaines `geosite.db` (données MIT de v2fly, converties par un
+outil GPL non embarqué). Il ne dit **rien de sing-box lui-même**.
+
+Or sing-box v1.12.9 est cloné depuis le dépôt officiel `SagerNet/sing-box`, compilé par
+`gomobile bind` et lié dans l'APK sous forme de `libbox.aar`. **sing-box est sous
+GPL-3.0-or-later.**
+
+| Point | État constaté |
+|---|---|
+| Origine du moteur | Dépôt officiel, version épinglée `v1.12.9` — vérifiable |
+| Mention de la licence GPL-3.0 dans l'app | **Absente** |
+| Texte de la GPL-3.0 distribué | **Absent** |
+| Offre de mise à disposition des sources | **Absente** |
+
+**Ce n'est pas un problème introduit par cette mission** — c'est l'état du produit depuis
+l'intégration de sing-box. Mais il serait malhonnête de ne pas le signaler maintenant que
+la vérification a été faite.
+
+**Aucune décision juridique n'a été prise ni engagée ici.** Le constat est transmis tel quel.
+
+---
+
+## 17. Tests — ce qui a été exécuté, et ce qui ne l'a pas été
+
+Cette section est écrite en réponse directe au reproche du client : *les livraisons
+précédentes n'auraient pas été testées.* La distinction demandée est donc faite
+explicitement.
+
+### 17.1 Tests réellement exécutés
+
+| Vérification | Commande | Résultat |
+|---|---|---|
+| Suite complète | `npm run test:regression` | **749 / 749**, 0 échec |
+| Typage | `npm run typecheck` | **exit 0** |
+| Politique de preuve (Kotlin, sur JVM) | `node tests/run-handshake-proof.cjs` | **11 / 11** |
+| Syntaxe Kotlin du code ajouté | `kotlinc` | **0 erreur de syntaxe, 0 erreur citant un symbole ajouté** |
+
+Point de départ avant toute modification : **692 tests**. À la livraison : **749**.
+**57 contrôles ajoutés.**
+
+La politique de preuve du `connected` a été extraite dans une classe Kotlin pure
+(`SxbHandshakeProofPolicy`) précisément pour pouvoir être **exécutée** sur JVM, sans
+appareil ni SDK Android. Ce n'est pas une relecture : c'est une exécution.
+
+### 17.2 Un garde-fou dont la capacité à échouer a été prouvée
+
+Un contrôle qui ne peut pas échouer ne vaut rien. Le garde-fou de concordance des
+protocoles a donc été mis à l'épreuve : en retirant `singbox` du type du pont, il produit
+**2 échecs**, comme attendu. Le fichier a ensuite été restauré et la suite rejouée.
+
+### 17.3 Nature des tests — sans ambiguïté
+
+| Nature | Présent ? | Détail |
+|---|---|---|
+| **Tests unitaires** | Oui | Logique pure : filtres, analyse de traces, politique de preuve |
+| **Tests structurels** | Oui | Lecture du code source (JS et Kotlin) pour vérifier un câblage que l'on ne peut pas exécuter hors appareil |
+| **Tests simulés** | Partiels | Pont natif simulé dans quelques contrôles existants |
+| **Tests réseau réels** | **NON — aucun** | Voir 17.4 |
+
+### 17.4 Ce qui n'a pas été vérifié — à lire avant toute mise en production
+
+**Aucun tunnel réel n'a été établi.** Ni appareil Android, ni serveur de test, ni SDK
+Android n'étaient disponibles dans cet environnement.
+
+En conséquence, **je n'affirme pas** :
+
+- que l'APK compile (`SxbVpnService.kt` ne compile pas hors Gradle, faute de SDK) ;
+- qu'un tunnel s'établit réellement vers un serveur ;
+- que la preuve par `rx_bytes` se déclenche comme prévu sur un vrai tunnel ;
+- que les nouvelles étapes apparaissent réellement à l'écran pendant une connexion ;
+- que le Kill Switch bloque effectivement le trafic sur un appareil.
+
+Les correctifs sont établis par lecture documentée du code et par exécution de la logique
+extractible. **Leur manifestation sur appareil reste à observer.**
+
+### 17.5 Comment vérifier sur appareil réel
+
+Dans l'ordre, sur un appareil de test et **jamais sur des données de production** :
+
+1. `cd app-mobile && npx expo prebuild --platform android`
+   *(construit `libbox.aar` si absent — compter ~10 min, Go ≥ 1.23 et NDK requis)*
+2. `npx expo run:android --variant release`
+3. Connecter un profil SSH, puis un profil VLESS. Ouvrir le journal.
+4. **Vérifier que « Tunnel établi » apparaît** — c'est la trace qui était muette (§13.2).
+5. **Vérifier qu'aucun `connected` n'est annoncé avant un octet reçu.** Le cas le plus
+   parlant : un serveur joignable mais dont les identifiants sont faux. L'application doit
+   signaler un échec, jamais une réussite.
+6. Couper le réseau en cours de session : vérifier `TUNNEL_STALLED` plutôt qu'un état figé.
+7. Connecter, puis **activer** le Kill Switch pendant la session. Couper le VPN.
+   Vérifier qu'aucun trafic ne passe (§13.3).
+8. Refaire l'opération en **désactivant** le Kill Switch pendant une session blackholée :
+   vérifier que l'internet revient.
+9. Filtrer le journal sur « Problèmes », partager : vérifier que le texte partagé ne
+   contient **aucune adresse de serveur ni identifiant**.
+
+---
+
+## 18. Ce qui reste ouvert
+
+| Point | Nature | Qui décide |
+|---|---|---|
+| Obligation GPL-3.0 de sing-box (§16) | Juridique | Le client |
+| Validation sur appareil réel (§17.5) | Technique | À planifier |
+| AmneziaWG (§15.3) | Fonctionnel | Le client, si le besoin se confirme |
+| `isProxyHandshakeProof()` | Code mort en pratique | Sans effet — le moteur tourne en niveau `warn` et n'émet jamais la trace attendue |
+
+---
+
+*Rapport de livraison. Les chiffres cités proviennent d'exécutions réelles, dont les
+commandes sont indiquées. Les points non vérifiés sont signalés comme tels en §17.4.*
