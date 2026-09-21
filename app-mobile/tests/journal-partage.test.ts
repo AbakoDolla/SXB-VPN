@@ -115,10 +115,63 @@ describe('chronométrage — désigner l’étape coûteuse', () => {
 
   it('est bien ce que l’écran utilise — pas une copie qui divergera', () => {
     assert.match(JOURNAL, /import \{ chronometrer \} from "@\/services\/journalChronologie"/);
-    assert.match(JOURNAL, /chronometrer\(\[\.\.\.stepLogs\]\.reverse\(\)\)/);
+    assert.match(JOURNAL, /chronometrer\(\[\.\.\.retenues\]\.reverse\(\)\)/);
     assert.ok(
       !/function ecart\(/.test(JOURNAL),
       'l’écran ne doit pas garder sa propre copie du calcul',
+    );
+  });
+
+  /**
+   * L'écran filtre désormais ce qu'il affiche. Le contrôle précédent lisait
+   * `chronometrer([...stepLogs]…)` et prouvait donc, en une ligne, à la fois
+   * l'usage du service partagé ET l'origine des données.
+   *
+   * Le filtre intercale un maillon. Plutôt que d'accepter une garantie plus
+   * faible, on suit la chaîne entière : `stepLogs` est la SEULE entrée, et
+   * chaque maillon ne fait que restreindre. Un filtre ne peut ni inventer une
+   * étape, ni en réécrire le libellé — il n'en laisse passer qu'une partie.
+   */
+  it('n’affiche jamais rien d’autre qu’un sous-ensemble de stepLogs', () => {
+    assert.match(JOURNAL, /const \{ stepLogs \} = useVpnContext\(\);/);
+    // Le gel retient une COPIE de stepLogs, pas une source parallèle.
+    assert.match(JOURNAL, /geleRef\.current = stepLogs;/);
+    assert.match(JOURNAL, /const source = gele \? geleRef\.current : stepLogs;/);
+    // `retenues` ne fait que filtrer : aucun `map`, donc aucune réécriture.
+    assert.match(JOURNAL, /const retenues = useMemo\(\s*\n?\s*\(\) => source\.filter\(/);
+    assert.ok(
+      !/retenues = [^;]*\.map\(/.test(JOURNAL),
+      'le filtrage ne doit jamais transformer une étape, seulement en écarter',
+    );
+  });
+
+  it('le filtre ne décide que sur des champs internes, jamais sur du texte', () => {
+    // `correspond` trie sur le statut et sur le préfixe de clé — deux valeurs
+    // posées par le code. S'il lisait un libellé traduit ou un champ technique,
+    // le tri dépendrait de données venues du moteur.
+    const correspond = JOURNAL.slice(
+      JOURNAL.indexOf('function correspond('),
+      JOURNAL.indexOf('function estApres('),
+    );
+    assert.ok(correspond.length > 0, 'la fonction de tri doit exister');
+    assert.match(correspond, /etape\.status ===/);
+    assert.match(correspond, /etape\.key\.startsWith\('moteur:'\)/);
+    for (const interdit of ['translationKey', 'technique', 'detail']) {
+      assert.ok(
+        !correspond.includes(interdit),
+        `le tri ne doit pas dépendre de « ${interdit} »`,
+      );
+    }
+  });
+
+  it('effacer l’affichage ne supprime aucune étape', () => {
+    // Le geste pose une borne de temps et masque ce qui la précède. Si l'écran
+    // appelait un vidage du contexte, une fausse manœuvre en pleine panne
+    // détruirait la trace de la panne.
+    assert.match(JOURNAL, /setMasqueAvant\(new Date\(\)\.toISOString\(\)\)/);
+    assert.ok(
+      !/resetStepLogs|setStepLogs/.test(JOURNAL),
+      'l’écran ne doit jamais vider le journal du contexte',
     );
   });
 

@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Share, StyleSheet, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -36,6 +36,46 @@ const CODE_SUR = /^[A-Z][A-Z0-9_]{2,31}$/;
 function detailAffichable(detail: string | undefined): string | null {
   if (!detail) return null;
   return CODE_SUR.test(detail) ? detail : null;
+}
+
+/**
+ * Les quatre lectures du journal.
+ *
+ * « Problèmes » d'abord, parce que c'est la raison pour laquelle on ouvre cet
+ * écran. La séparation « Moteur » / « Application » n'est pas décorative : elle
+ * répond à la seule question qui compte quand rien ne marche — est-ce nous, ou
+ * est-ce le serveur ? Une étape venue du moteur porte le préfixe `moteur:`,
+ * posé à l'inscription ; aucune heuristique n'est nécessaire pour les départager.
+ */
+type Filtre = 'tout' | 'problemes' | 'moteur' | 'app';
+
+const FILTRES: { id: Filtre; cle: string; icone: string }[] = [
+  { id: 'tout',      cle: 'journal_filter_all',    icone: 'apps-outline' },
+  { id: 'problemes', cle: 'journal_filter_issues', icone: 'warning-outline' },
+  { id: 'moteur',    cle: 'journal_filter_engine', icone: 'hardware-chip-outline' },
+  { id: 'app',       cle: 'journal_filter_app',    icone: 'phone-portrait-outline' },
+];
+
+function correspond(etape: StepLogItem, filtre: Filtre): boolean {
+  switch (filtre) {
+    case 'problemes': return etape.status === 'error' || etape.status === 'warning';
+    case 'moteur':    return etape.key.startsWith('moteur:');
+    case 'app':       return !etape.key.startsWith('moteur:');
+    default:          return true;
+  }
+}
+
+/**
+ * L'étape est-elle postérieure à un effacement d'affichage ?
+ *
+ * `timestamp` est facultatif dans le modèle. Une étape sans heure ne peut pas
+ * être située : on la traite comme antérieure, donc masquée. C'est le choix
+ * prudent — effacer l'affichage doit vider l'écran de façon prévisible, pas
+ * y laisser des restes que l'utilisateur croira récents.
+ */
+function estApres(etape: StepLogItem, borne: string | null): boolean {
+  if (!borne) return true;
+  return typeof etape.timestamp === 'string' && etape.timestamp > borne;
 }
 
 function apparence(statut: StepLogItem["status"], colors: ReturnType<typeof useColors>) {
@@ -120,9 +160,54 @@ export default function JournalScreen() {
   const { t } = useTranslation();
   const { stepLogs } = useVpnContext();
 
+  /**
+   * ═══════════════════════════════════════════════════════════════════════
+   * COMMANDES DE LECTURE — pourquoi elles n'altèrent jamais le journal
+   * ═══════════════════════════════════════════════════════════════════════
+   * Un journal se consulte au pire moment : la connexion ne part pas, les
+   * étapes défilent, et celle qu'on cherche est déjà remontée. Trois gestes
+   * manquaient — trier, arrêter, repartir de zéro.
+   *
+   * Tous trois agissent sur l'AFFICHAGE seulement. `stepLogs` n'est jamais
+   * vidé ni figé : le diagnostic reste entier pour le partage, et une
+   * fausse manœuvre en pleine panne ne peut pas détruire la trace de la
+   * panne. C'est la différence entre masquer et effacer, et elle compte
+   * précisément quand l'utilisateur est pressé.
+   */
+  const [filtre, setFiltre] = useState<Filtre>('tout');
+  const [gele, setGele] = useState(false);
+  /** Étapes antérieures à cette heure : masquées, jamais supprimées. */
+  const [masqueAvant, setMasqueAvant] = useState<string | null>(null);
+
+  /**
+   * Copie retenue pendant le gel.
+   *
+   * `stepLogs` continue d'avancer — c'est voulu, rien ne doit se perdre.
+   * L'écran, lui, garde la vue qu'on était en train de lire.
+   */
+  const geleRef = useRef<StepLogItem[]>([]);
+  if (!gele) geleRef.current = stepLogs;
+  const source = gele ? geleRef.current : stepLogs;
+
+  const retenues = useMemo(
+    () => source.filter((e) => correspond(e, filtre) && estApres(e, masqueAvant)),
+    [source, filtre, masqueAvant],
+  );
+
+  /** Compteurs par onglet — un filtre sans volume ne se choisit pas à l'aveugle. */
+  const volumes = useMemo(() => {
+    const visible = source.filter((e) => estApres(e, masqueAvant));
+    return {
+      tout: visible.length,
+      problemes: visible.filter((e) => correspond(e, 'problemes')).length,
+      moteur: visible.filter((e) => correspond(e, 'moteur')).length,
+      app: visible.filter((e) => correspond(e, 'app')).length,
+    } as Record<Filtre, number>;
+  }, [source, masqueAvant]);
+
   // Le plus récent en haut : c'est ce qu'on vient chercher quand une connexion
   // ne part pas. `chronometrer` donne à chaque étape le temps qu'elle a coûté.
-  const etapes = useMemo(() => chronometrer([...stepLogs].reverse()), [stepLogs]);
+  const etapes = useMemo(() => chronometrer([...retenues].reverse()), [retenues]);
 
   /**
    * Met le journal AFFICHÉ dans le presse-papiers du système de partage.
@@ -203,8 +288,109 @@ export default function JournalScreen() {
           </Pressable>
         ) : null}
 
-        {etapes.length === 0 ? (
+        {/* Barre de lecture — trier, arrêter, repartir.
+            Les compteurs sont portés par les onglets : sans eux, choisir un
+            filtre revient à parier sur ce qu'il contient. « Problèmes » à 0
+            est une information, pas un onglet vide. */}
+        {stepLogs.length > 0 ? (
+          <View style={styles.commandes}>
+            <View style={styles.onglets}>
+              {FILTRES.map(({ id, cle, icone }) => {
+                const actif = filtre === id;
+                const n = volumes[id];
+                return (
+                  <Pressable
+                    key={id}
+                    onPress={() => setFiltre(id)}
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected: actif }}
+                    accessibilityLabel={`${t(cle as any)} — ${n}`}
+                    style={({ pressed }) => [
+                      styles.onglet,
+                      actif
+                        ? { backgroundColor: colors.primaryDim, borderColor: colors.primary + alpha.f24 }
+                        : { backgroundColor: colors.bgCard, borderColor: colors.border },
+                      pressed && styles.presse,
+                    ]}
+                  >
+                    <Ionicons name={icone as any} size={13} color={actif ? colors.primary : colors.textMuted} />
+                    <Text style={[type.micro, { color: actif ? colors.primary : colors.textSecondary }]}>
+                      {t(cle as any)}
+                    </Text>
+                    <Text style={[type.micro, { color: actif ? colors.primary : colors.textMuted }]}>{n}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            <View style={styles.actions}>
+              <Pressable
+                onPress={() => setGele((v) => !v)}
+                accessibilityRole="button"
+                accessibilityState={{ selected: gele }}
+                accessibilityLabel={gele ? t("journal_resume") : t("journal_freeze")}
+                style={({ pressed }) => [
+                  styles.action,
+                  gele
+                    ? { backgroundColor: colors.warningDim, borderColor: colors.warning + alpha.f24 }
+                    : { backgroundColor: colors.bgCard, borderColor: colors.border },
+                  pressed && styles.presse,
+                ]}
+              >
+                <Ionicons
+                  name={gele ? "play-outline" : "pause-outline"}
+                  size={14}
+                  color={gele ? colors.warning : colors.textSecondary}
+                />
+                <Text style={[type.micro, { color: gele ? colors.warning : colors.textSecondary }]}>
+                  {gele ? t("journal_resume") : t("journal_freeze")}
+                </Text>
+              </Pressable>
+
+              <Pressable
+                onPress={() => setMasqueAvant(new Date().toISOString())}
+                accessibilityRole="button"
+                accessibilityLabel={t("journal_clear")}
+                style={({ pressed }) => [
+                  styles.action,
+                  { backgroundColor: colors.bgCard, borderColor: colors.border },
+                  pressed && styles.presse,
+                ]}
+              >
+                <Ionicons name="eye-off-outline" size={14} color={colors.textSecondary} />
+                <Text style={[type.micro, { color: colors.textSecondary }]}>{t("journal_clear")}</Text>
+              </Pressable>
+            </View>
+
+            {/* Un état inhabituel doit se dire, sinon il passe pour une panne :
+                un journal figé ressemble trait pour trait à un journal mort. */}
+            {gele ? (
+              <View style={[styles.note, { backgroundColor: colors.warningDim, borderColor: colors.warning + alpha.f24 }]}>
+                <Ionicons name="pause-circle-outline" size={15} color={colors.warning} />
+                <Text style={[type.caption, { color: colors.textSecondary, flex: 1 }]}>{t("journal_frozen_notice")}</Text>
+              </View>
+            ) : null}
+            {masqueAvant ? (
+              <View style={[styles.note, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
+                <Ionicons name="eye-off-outline" size={15} color={colors.textMuted} />
+                <Text style={[type.caption, { color: colors.textSecondary, flex: 1 }]}>{t("journal_cleared_notice")}</Text>
+                <Pressable
+                  onPress={() => setMasqueAvant(null)}
+                  accessibilityRole="button"
+                  accessibilityLabel={t("journal_filter_all")}
+                  hitSlop={8}
+                >
+                  <Ionicons name="refresh-outline" size={15} color={colors.primary} />
+                </Pressable>
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+
+        {stepLogs.length === 0 ? (
           <EmptyState icon="list-outline" title={t("journal_empty_title")} description={t("journal_empty_subtitle")} />
+        ) : etapes.length === 0 ? (
+          <EmptyState icon="funnel-outline" title={t("journal_filtered_empty")} description={t("journal_empty_subtitle")} />
         ) : (
           <View style={styles.liste}>
             {etapes.map(({ etape, duree, heure, lent }, index) => (
@@ -231,6 +417,28 @@ const styles = StyleSheet.create({
   retour: { width: 44, height: 44, borderRadius: radius.md, borderWidth: 1, alignItems: "center", justifyContent: "center" },
   presse: { opacity: 0.68, transform: [{ scale: 0.97 }] },
   note: { flexDirection: "row", alignItems: "center", gap: spacing.sm, borderWidth: 1, borderRadius: radius.md, padding: spacing.md },
+  commandes: { gap: spacing.sm },
+  onglets: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs },
+  onglet: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    borderWidth: 1,
+    borderRadius: radius.full,
+    paddingHorizontal: spacing.md,
+    // 34 px de haut : la cible tactile reste confortable sans écraser la frise.
+    paddingVertical: 8,
+  },
+  actions: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs },
+  action: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 8,
+  },
   liste: { gap: spacing.xs },
   ligne: { flexDirection: "row", gap: spacing.md },
   frise: { alignItems: "center", width: 30 },
