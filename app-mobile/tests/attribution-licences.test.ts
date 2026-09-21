@@ -64,9 +64,15 @@ function commitDnsttCompile(): string {
 describe('NOTICE.txt — sing-box est déclaré', () => {
   it('le composant, sa source et sa licence sont nommés', () => {
     assert.ok(notice.includes('SagerNet/sing-box'), 'le composant n’est pas nommé');
-    assert.ok(
-      notice.includes('https://github.com/SagerNet/sing-box'),
-      'la source amont n’est pas indiquée',
+    // Ancré sur la ligne entière plutôt que cherché comme fragment : la source
+    // doit être le champ déclaré, pas une URL croisée au hasard du fichier.
+    // Un simple `includes` d'URL est par ailleurs signalé, à raison, comme un
+    // contrôle d'URL incomplet — il accepterait n'importe quel domaine qui
+    // contiendrait celui-ci.
+    assert.match(
+      notice,
+      /^Source: https:\/\/github\.com\/SagerNet\/sing-box$/m,
+      'la source amont n’est pas déclarée',
     );
     assert.ok(notice.includes('GPL-3.0-or-later'), 'la licence n’est pas indiquée');
   });
