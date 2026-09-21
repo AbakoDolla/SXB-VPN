@@ -184,7 +184,7 @@ export default function Layout({
       roles: STAFF,
       items: [
         { kind: 'leaf', id: 'accounts', label: t('sidebar.accounts'), icon: UserPlus, roles: ADMINS, permission: 'users.view' },
-        { kind: 'leaf', id: 'announcements', label: t('sidebar.annonces'), icon: BellRing, roles: STAFF },
+        { kind: 'leaf', id: 'announcements', label: t('sidebar.annonces'), icon: BellRing, roles: ['OWNER', 'SUPER_ADMIN', 'SUPPORT'] },
         { kind: 'leaf', id: 'app-updates', label: t('sidebar.app_updates'), icon: Download, roles: STAFF },
         // Santé mobile est une observabilité du parc Android ENTIER, agrégée sur
         // des pseudonymes (`MobileHealthDevice.pseudonym`) qui ne portent aucun

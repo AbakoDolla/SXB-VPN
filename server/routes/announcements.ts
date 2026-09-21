@@ -7,7 +7,26 @@ import { sendAnnouncementPush } from '../services/fcm';
 
 const router = Router();
 const SETTINGS_KEY = 'sxb.announcements.v1';
-const PUBLISHER_ROLES = new Set(['OWNER', 'SUPER_ADMIN', 'ADMIN', 'SUPPORT']);
+// ── Publier est un acte de PLATEFORME, pas un acte d'exploitant ──────────────
+//
+// Une annonce n'a pas de propriétaire : la liste est un réglage global unique,
+// et `sendAnnouncementPush` sans appareil cible touche TOUS les jetons actifs
+// de la plateforme. Tant que ce modèle reste global, y admettre les ADMIN leur
+// donnait trois pouvoirs qu'ils ne doivent pas avoir :
+//
+//   1. notifier les clients de TOUS les autres exploitants ;
+//   2. lire, réécrire ou supprimer l'annonce d'un autre — `PATCH` et `DELETE`
+//      ne vérifient aucune propriété, faute de propriété à vérifier ;
+//   3. effacer l'annonce du propriétaire en production.
+//
+// Mesuré en production avant correction : un administrateur au parc vide a
+// publié (201) et a franchi le contrôle sur l'annonce du propriétaire (422 —
+// seule la validation du titre l'a arrêté, pas un refus d'accès).
+//
+// La LECTURE reste ouverte à tous : une annonce de plateforme est exactement
+// l'information que le propriétaire a demandé de diffuser globalement, et les
+// applications mobiles la consomment.
+const PUBLISHER_ROLES = new Set(['OWNER', 'SUPER_ADMIN', 'SUPPORT']);
 
 export type Announcement = {
   id: string;

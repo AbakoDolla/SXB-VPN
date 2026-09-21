@@ -410,6 +410,13 @@ function MainApp() {
       case 'support':
         return <SupportView />;
       case 'announcements':
+        // Publier une annonce touche TOUS les appareils de la plateforme, et la
+        // liste est un réglage global sans propriétaire : ni cloisonnable, ni
+        // attribuable. C'est donc une fonction de plateforme, au même titre que
+        // « Sécurité ». Voir routes/announcements.ts (PUBLISHER_ROLES).
+        if (role !== UserRole.OWNER && role !== UserRole.SUPER_ADMIN && role !== UserRole.SUPPORT) {
+          return <DashboardView onNavigate={(route) => setActiveRoute(route)} currentUserRole={role} />;
+        }
         return <AnnouncementsView />;
       case 'app-updates':
         return <AppUpdatesView currentUserRole={role} />;
