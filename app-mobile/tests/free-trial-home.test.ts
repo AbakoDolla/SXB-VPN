@@ -359,7 +359,7 @@ describe('accueil mobile — période d’essai', () => {
       'la signature doit rester en pied de page');
     assert.doesNotMatch(accueil, /styles\.brandRow/, 'la ligne de marque en en-tête doit rester retirée');
     for (const langue of ['fr', 'en']) {
-      assert.match(lire(`app-mobile/localization/${langue}.ts`), /created_by: 'StuffxBillal'/);
+      assert.match(lire(`app-mobile/localization/${langue}.ts`), /created_by: 'StuffxBilal'/);
     }
 
     // 4. « Consommation par application » est RETIRÉE de l'accueil sur demande

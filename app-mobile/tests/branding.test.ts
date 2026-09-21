@@ -50,13 +50,13 @@ describe('identité de marque', () => {
     }
   });
 
-  it('signe « StuffxBillal » dans les deux langues, sans perdre l’attribution', () => {
-    // La signature est passée de « Powered by AbakoDollar$ » à « StuffxBillal »
+  it('signe « StuffxBilal » dans les deux langues, sans perdre l’attribution', () => {
+    // La signature est passée de « Powered by AbakoDollar$ » à « StuffxBilal »
     // sur décision du propriétaire. Ce qui est épinglé ici n'est donc pas une
     // formule figée, mais le fait que l'attribution EXISTE et reste RENDUE :
     // une clé traduite mais jamais affichée équivaut à l'avoir supprimée.
     for (const langue of ['fr', 'en']) {
-      assert.match(lire(`app-mobile/localization/${langue}.ts`), /created_by: 'StuffxBillal'/);
+      assert.match(lire(`app-mobile/localization/${langue}.ts`), /created_by: 'StuffxBilal'/);
     }
     for (const ecran of ['app-mobile/app/settings.tsx', 'app-mobile/app/activate.tsx',
       'app-mobile/app/index.tsx', 'app-mobile/app/(tabs)/profile.tsx']) {

@@ -1,5 +1,5 @@
 export const en = {
-  created_by: 'StuffxBillal',
+  created_by: 'StuffxBilal',
   relay_broken_title: 'Connected, but nothing is getting through',
   relay_broken_hint: 'The tunnel is up, yet nothing crosses it. Try another connection, or reconnect.',
   relay_checking: 'Checking',
@@ -636,6 +636,7 @@ export const en = {
   config_max_reached: 'Maximum 2 configurations reached',
   config_switch: 'Switch configuration',
   config_pending_device: 'To download',
+  config_download_failed_title: 'Download failed',
   config_saved: 'Configuration saved',
   config_removed: 'Configuration removed',
 
