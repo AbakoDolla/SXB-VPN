@@ -10,6 +10,15 @@ import { requireAuth, requirePermission, AuthenticatedRequest } from "../middlew
 import { FURTIVITE_OWNER_PORTEUR, isOwnerRequest } from "../middleware/rbac/owner";
 import { calculerAllocation, estIllimite } from "../services/reseller-quota";
 import {
+  agregerQuotaClients,
+  provenanceQuota,
+  tauxUtilisation,
+  SEUIL_FORFAIT_HORS_NORME,
+  type LigneQuotaClient,
+  type ProvenanceQuota,
+  type TraficAgrege,
+} from "../services/trafic-agrege";
+import {
   compterConnectes,
   dernierSignalPresence,
   PRESENCE_HEARTBEAT_MINUTES,
@@ -95,6 +104,18 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
     let expiredAccounts = 0;
     let consumedTrafficBytes = BigInt(0);
     let provisionedTrafficBytes = BigInt(0);
+    // Le tableau de bord annonçait consumedTraffic 1479,48 Gio pour
+    // provisionedTraffic 280 Gio. 100 % du consommé venait de fiches dont
+    // `quotaTotal` vaut zéro, parce que le quota réellement vendu vit sur
+    // `Subscription` et n'était pas lu : deux populations quasi disjointes.
+    //
+    // La sélection de la source ET l'agrégation vivent dans
+    // services/trafic-agrege.ts, au même endroit que celle de
+    // /api/analytics/traffic. Les réécrire ici laisserait les deux écrans
+    // libres de diverger — c'est cette duplication qui avait rendu le premier
+    // défaut possible.
+    let agregatQuota: TraficAgrege | null = null;
+    let provenance: ProvenanceQuota | null = null;
     let activeServers = 0;
     let essaisRetranchesVisibles = 0;
     let activeResellers = 0;
@@ -183,16 +204,32 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
       ]);
 
       const clients = await prisma.vpnClient.findMany({
-        select: { quotaTotal: true, quotaUsed: true },
+        select: {
+          status: true,
+          expireAt: true,
+          quotaTotal: true,
+          quotaUsed: true,
+          // Sans cette lecture, le provisionné ignore la quasi-totalité du
+          // volume réellement vendu : 2 015 419 Gio vivent ici, pas sur la fiche.
+          subscriptions: {
+            select: { quotaBytes: true, quotaUsed: true, status: true, expireAt: true },
+          },
+        },
         ...(Object.keys(clientStealthWhere).length ? { where: clientStealthWhere } : {}),
       });
-      provisionedTrafficBytes = clients.reduce((acc, c) => acc + (c.quotaTotal || BigInt(0)), BigInt(0));
-      consumedTrafficBytes = clients.reduce((acc, c) => acc + c.quotaUsed, BigInt(0));
+      const lignesQuota = clients as LigneQuotaClient[];
+      agregatQuota = agregerQuotaClients(lignesQuota);
+      provenance = provenanceQuota(lignesQuota);
+      provisionedTrafficBytes = agregatQuota.provisionedBytes;
+      consumedTrafficBytes = agregatQuota.consumedBytes;
     } else {
       activeAccounts = inMemoryDb.vpnClients.filter((c) => c.status === "active").length;
       expiredAccounts = inMemoryDb.vpnClients.filter((c) => c.status === "expired").length;
-      provisionedTrafficBytes = inMemoryDb.vpnClients.reduce((acc, c) => acc + (c.quotaTotal || BigInt(0)), BigInt(0));
-      consumedTrafficBytes = inMemoryDb.vpnClients.reduce((acc, c) => acc + c.quotaUsed, BigInt(0));
+      const lignesQuota = inMemoryDb.vpnClients as unknown as LigneQuotaClient[];
+      agregatQuota = agregerQuotaClients(lignesQuota);
+      provenance = provenanceQuota(lignesQuota);
+      provisionedTrafficBytes = agregatQuota.provisionedBytes;
+      consumedTrafficBytes = agregatQuota.consumedBytes;
       activeServers = inMemoryDb.vpsServers.filter((s) => s.status === "online").length;
       activeResellers = inMemoryDb.resellers.filter((r) => r.status === "active").length;
     }
@@ -346,9 +383,63 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
       expiredAccounts,
       consumedTraffic: Math.round(consumedTrafficGb * 100) / 100,
       provisionedTraffic: Math.round(provisionedTrafficGb * 100) / 100,
-      remainingTraffic: Math.max(0, Math.round((provisionedTrafficGb - consumedTrafficGb) * 100) / 100),
+      // `consumedTraffic` reste la consommation de TOUT le parc visible : rien
+      // n'est escamoté. Mais on ne peut la retrancher du provisionné sans
+      // retomber dans le défaut d'origine — elle inclut les accès sans plafond.
+      // Le reste et le dépassement portent donc sur la part MESURÉE, seule
+      // population que les deux grandeurs aient réellement en commun.
+      meteredConsumedTraffic: agregatQuota
+        ? Math.round((Number(agregatQuota.meteredConsumedBytes) / GB) * 100) / 100
+        : 0,
+      meteredClients: agregatQuota ? agregatQuota.meteredClients : 0,
+      // Même fonction que /api/analytics/traffic : les deux écrans ne peuvent
+      // plus annoncer deux taux différents sur les mêmes données.
+      utilizationPercentage: agregatQuota ? tauxUtilisation(agregatQuota) : 0,
+      // La borne à zéro reste : un reste négatif n'a pas de sens à l'affichage.
+      // Mais elle ne doit plus être MUETTE — c'est son silence qui a permis à
+      // l'incohérence de vivre sans être vue. Le dépassement est donc publié à
+      // côté, et vaut zéro quand il n'y en a pas.
+      remainingTraffic: agregatQuota
+        ? Math.max(
+            0,
+            Math.round(
+              (provisionedTrafficGb - Number(agregatQuota.meteredConsumedBytes) / GB) * 100,
+            ) / 100,
+          )
+        : 0,
+      trafficOverage: agregatQuota
+        ? agregatQuota.meteredConsumedBytes > agregatQuota.provisionedBytes
+        : false,
+      trafficOverageBytes: (agregatQuota
+        && agregatQuota.meteredConsumedBytes > agregatQuota.provisionedBytes
+        ? agregatQuota.meteredConsumedBytes - agregatQuota.provisionedBytes
+        : BigInt(0)
+      ).toString(),
       consumedTrafficBytes: consumedTrafficBytes.toString(),
       provisionedTrafficBytes: provisionedTrafficBytes.toString(),
+      meteredConsumedTrafficBytes: agregatQuota
+        ? agregatQuota.meteredConsumedBytes.toString()
+        : "0",
+      // Provenance des deux grandeurs. Publiée pour qu'une dérive redevienne
+      // visible : si `fromClientRecord` enflait alors que le parc est vendu par
+      // forfaits, le rapport recommencerait à perdre son sens, en silence.
+      quotaSource: provenance
+        ? {
+            fromSubscriptions: provenance.fromSubscriptions,
+            fromClientRecord: provenance.fromClientRecord,
+            // Forfaits hors norme : 39 forfaits « VIP » pèsent 2 010 000 Gio sur
+            // 2 015 419 en production. Ils ne sont PAS retranchés du chiffre
+            // principal — les écarter d'office remplacerait un chiffre absurde
+            // par un chiffre flatteur. Ils sont exposés pour que l'exploitant
+            // décide lui-même d'isoler ou non cette part à l'affichage.
+            outsizedPlans: provenance.outsizedPlans,
+            outsizedBytes: provenance.outsizedBytes.toString(),
+            outsizedThresholdBytes: SEUIL_FORFAIT_HORS_NORME.toString(),
+            ordinaryProvisionedBytes: (
+              provisionedTrafficBytes - provenance.outsizedBytes
+            ).toString(),
+          }
+        : null,
       // Portée des chiffres ci-dessus : « own » pour un revendeur (ses clients
       // seulement), « platform » pour l'administration (toute la plateforme).
       quotaScope: isReseller ? "own" : "platform",
