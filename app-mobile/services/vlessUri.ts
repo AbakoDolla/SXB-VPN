@@ -45,7 +45,7 @@ function parseQuery(raw: string): Map<string, string> {
  * nom d'hôte, et les serveurs stricts refusent la poignée de main quand elle
  * contient une IP.
  */
-function estAdresseLitterale(valeur: string): boolean {
+export function estAdresseLitterale(valeur: string): boolean {
   return /^\d{1,3}(\.\d{1,3}){3}$/.test(valeur) || valeur.includes(':');
 }
 
