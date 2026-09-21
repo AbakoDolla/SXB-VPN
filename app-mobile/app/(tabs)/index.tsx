@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AppState, Image, Modal, Pressable,
+  Alert, AppState, Image, Modal, Pressable,
   ScrollView, Share, StyleSheet, Text, View, ActivityIndicator,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
@@ -135,7 +135,7 @@ export default function HomeScreen() {
     hasValidConfig, activeConnection,
     connect, disconnect, trafficStats: traffic,
     refreshVpnConfig, syncFromConnection,
-    savedConfigs, activeConfigId, switchConfig, isSwitchingConfig, switchingToId, revokedStatus, perAppTraffic,
+    savedConfigs, activeConfigId, switchConfig, isSwitchingConfig, switchingToId, switchError, clearSwitchError, revokedStatus, perAppTraffic,
     deleteConfig, derivedQuota,
   } = useVpnContext();
   const { t } = useTranslation();
@@ -424,7 +424,34 @@ export default function HomeScreen() {
   // Profil visé pendant un basculement : il s'affiche dès l'appui, pour que
   // l'utilisateur voie que son choix a été pris avant même que la
   // configuration soit prête.
-  const pendingConfig = switchingToId ? savedConfigs.find((cfg) => cfg.id === switchingToId) || null : null;
+  // Une entrée « À télécharger » n'existe, par définition, dans AUCUN coffre
+  // local : elle n'y arrive qu'APRÈS un provisionnement réussi. En ne
+  // cherchant que dans `savedConfigs`, ce repli restait systématiquement nul
+  // pour ce cas précis, et le bandeau affichait alors le nom de l'ANCIENNE
+  // configuration active — silence total sur la bascule en cours, qui a fait
+  // croire à un appui sans effet. Le repli sur `connections` (liste serveur)
+  // couvre exactement ce trou.
+  const pendingConfig = switchingToId
+    ? savedConfigs.find((cfg) => cfg.id === switchingToId)
+      || (() => {
+        const remote = connections.find((c) => c.id === switchingToId);
+        return remote ? { id: remote.id, name: remote.name } : null;
+      })()
+    : null;
+
+  // Le sélecteur se ferme dès l'appui, avant que la bascule ne se termine :
+  // un échec de téléchargement (config assignée par l'admin, pas encore
+  // provisionnée) passait donc totalement inaperçu, l'utilisateur restant
+  // devant un écran inchangé sans le moindre message. `switchError` porte
+  // l'échec jusqu'ici ; on l'affiche une seule fois puis on l'efface.
+  useEffect(() => {
+    if (!switchError) return;
+    const nom = savedConfigs.find((cfg) => cfg.id === switchError.configId)?.name
+      || connections.find((c) => c.id === switchError.configId)?.name
+      || t('config_switch');
+    Alert.alert(t('config_download_failed_title'), `${nom} : ${switchError.message}`);
+    clearSwitchError();
+  }, [switchError, savedConfigs, connections, clearSwitchError, t]);
 
   // Le tunnel transporte-t-il vraiment ? Voir `relayProbe.ts` : la seule preuve
   // possible est une requête qui a réellement traversé.

@@ -1,5 +1,5 @@
 export const fr = {
-  created_by: 'StuffxBillal',
+  created_by: 'StuffxBilal',
   relay_broken_title: 'Connecté, mais aucune donnée ne passe',
   relay_broken_hint: 'Le tunnel est monté, pourtant rien ne le traverse. Essayez une autre connexion, ou reconnectez-vous.',
   relay_checking: 'Vérification',
@@ -660,6 +660,7 @@ export const fr = {
   config_max_reached: 'Maximum 2 configurations atteint',
   config_switch: 'Changer de configuration',
   config_pending_device: 'À télécharger',
+  config_download_failed_title: 'Téléchargement impossible',
   config_saved: 'Configuration sauvegardée',
   config_removed: 'Configuration supprimée',
 

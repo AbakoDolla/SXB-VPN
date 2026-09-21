@@ -249,6 +249,19 @@ interface VpnContextType {
   isSwitchingConfig:  boolean;
   /** Profil vers lequel on bascule, le temps que sa configuration soit prête. */
   switchingToId:      string | null;
+  /**
+   * Dernier échec de bascule, sous une forme prête à afficher.
+   *
+   * Jusqu'ici, un échec de `switchConfig` n'était écrit que dans `addLog` —
+   * un tampon interne, jamais montré à l'écran. Pour une entrée « à
+   * télécharger » (config assignée par l'admin, pas encore dans le coffre
+   * local), le sélecteur se referme AVANT que la bascule ne se termine :
+   * si elle échouait, l'utilisateur ne voyait strictement rien, ce qui a été
+   * signalé comme « je ne peux pas télécharger, rien ne se passe ». Ce champ
+   * porte l'échec jusqu'à l'écran ; il est effacé au début de chaque essai.
+   */
+  switchError:        { configId: string; message: string } | null;
+  clearSwitchError:   () => void;
   // Quota
   quotaData:          QuotaData | null;
   derivedQuota:       DerivedQuota;
@@ -298,6 +311,7 @@ const VpnContext = createContext<VpnContextType>({
   hasVpnPermission: false, hasValidConfig: false, activeConnection: null,
   stepLogs: [],
   savedConfigs: [], activeConfigId: null, switchConfig: async () => {}, isSwitchingConfig: false, switchingToId: null,
+  switchError: null, clearSwitchError: () => {},
   quotaData: null,
   derivedQuota: DEFAULT_DERIVED_QUOTA,
   currentDerivedQuota: DEFAULT_DERIVED_QUOTA,
@@ -362,6 +376,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   }, []);
   const [isSwitchingConfig,  setIsSwitchingConfig]     = useState<boolean>(false);
   const [switchingToId,      setSwitchingToId]         = useState<string | null>(null);
+  const [switchError,        setSwitchError]           = useState<{ configId: string; message: string } | null>(null);
+  const clearSwitchError = useCallback(() => setSwitchError(null), []);
   const [quotaData,          setQuotaData]             = useState<QuotaData | null>(null);
   const [revokedStatus,      setRevokedStatus]        = useState<'none' | 'revoked' | 'suspended' | 'expired' | 'disabled' | 'exhausted'>('none');
   const [perAppTraffic,      setPerAppTraffic]        = useState<AppTrafficStat[]>([]);
@@ -2149,6 +2165,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
   const switchConfig = useCallback(async (configId: string) => {
     if (isSwitchingConfig || configId === activeConfigId) return;
+    setSwitchError(null);
     const remoteTarget = remoteConnections.find(c => c.id === configId) || null;
     // Cette lecture sert AUSSI de contrôle d'accès, et elle est réutilisée
     // plus bas. Elle était refaite à l'identique quelques lignes après : sur
@@ -2244,6 +2261,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         // A failed switch, including a concurrent revocation, never reconnects by itself.
       }
       addLog(`⚠️ Basculement annulé : ${err?.message || 'erreur réseau'}`);
+      setSwitchError({ configId, message: err?.message || 'erreur réseau' });
     } finally { setIsSwitchingConfig(false); setSwitchingToId(null); }
   }, [isSwitchingConfig, isConnected, isConnecting, activeConfigId, activeConnection, remoteConnections, deviceId, disconnect, addLog, reloadLocalConfigs, t]);
 
@@ -2284,6 +2302,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     activeConnection,
     stepLogs,
     savedConfigs, activeConfigId, switchConfig, isSwitchingConfig, switchingToId,
+    switchError, clearSwitchError,
     quotaData,
     derivedQuota: currentDerivedQuota,
     currentDerivedQuota,
@@ -2305,7 +2324,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     selectedProtocol, connectedProtocol, availableProtocols,
     trafficStats, vpnLogs, hasVpnPermission, hasValidConfig,
     activeConnection, stepLogs, savedConfigs, activeConfigId,
-    switchConfig, isSwitchingConfig, switchingToId, quotaData, currentDerivedQuota, quotaSession,
+    switchConfig, isSwitchingConfig, switchingToId, switchError, clearSwitchError, quotaData, currentDerivedQuota, quotaSession,
     revokedStatus, perAppTraffic, killSwitch, autoReconnect,
     syncFromConnection, connect, disconnect, selectProtocol,
     refreshVpnConfig, requestPermission, deleteConfig,
