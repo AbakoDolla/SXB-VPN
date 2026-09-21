@@ -28,7 +28,14 @@ export function inspectEngineData(archive, prefix) {
   const sha256 = createHash('sha256').update(archiveRead(archive, `${location}/geosite.db`)).digest('hex');
   assert.equal(sha256, geositeSha256, 'Packaged geosite database differs from the pinned offline data');
   assert.equal(archiveRead(archive, `${location}/geosite.sha256`).toString().trim(), sha256);
-  assert.match(archiveRead(archive, `${location}/NOTICE.txt`).toString(), /Copyright \(c\) 2018-2019 V2Ray/);
+  const notice = archiveRead(archive, `${location}/NOTICE.txt`).toString();
+  assert.match(notice, /Copyright \(c\) 2018-2019 V2Ray/);
+  // libbox.so ships inside this same archive, so the GPL-3.0 attribution that
+  // covers it has to ship with it. Checking the source file is not enough:
+  // only what is packaged reaches the user.
+  assert.match(notice, /SagerNet\/sing-box/, 'Packaged NOTICE.txt does not declare sing-box');
+  assert.match(notice, /GPL-3\.0-or-later/, 'Packaged NOTICE.txt does not state the sing-box licence');
+  assert.match(notice, / {20}GNU GENERAL PUBLIC LICENSE/, 'Packaged NOTICE.txt omits the GPL-3.0 text');
   return { version: geositeVersion, sha256, bundled: true };
 }
 

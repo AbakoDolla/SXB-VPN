@@ -242,6 +242,8 @@ interface VpnContextType {
   hasValidConfig:     boolean;
   activeConnection:   VpnConnection | null;
   stepLogs:           StepLogItem[];
+  /** Vide la chronologie affichée. La connexion en cours n'est pas touchée. */
+  resetStepLogs:      () => void;
   // Multi-config
   savedConfigs:       Array<{ id: string; name: string; protocol: string; isActive: boolean; status?: ProfileStatus; isFreeTrial?: boolean }>;
   activeConfigId:     string | null;
@@ -297,6 +299,7 @@ const VpnContext = createContext<VpnContextType>({
   trafficStats: DEFAULT_STATS, vpnLogs: [],
   hasVpnPermission: false, hasValidConfig: false, activeConnection: null,
   stepLogs: [],
+  resetStepLogs: () => {},
   savedConfigs: [], activeConfigId: null, switchConfig: async () => {}, isSwitchingConfig: false, switchingToId: null,
   quotaData: null,
   derivedQuota: DEFAULT_DERIVED_QUOTA,
@@ -713,6 +716,44 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => { autoReconnectRef.current = autoReconnect; }, [autoReconnect]);
+
+  /**
+   * Répercute un réglage de protection sur le service natif DÉJÀ en cours.
+   *
+   * Les deux valeurs sont transmises à `startVpn` au moment de la connexion :
+   * changer de réglage avant de connecter a donc toujours fonctionné. Mais le
+   * service tourne dans son propre processus, et rien ne le prévenait d'un
+   * changement survenu PENDANT une session. L'interrupteur passait au vert,
+   * l'application annonçait « Toute connexion internet sera bloquée si le VPN
+   * se déconnecte », et le tunnel actif ignorait tout de cette promesse.
+   *
+   * Un réglage de sécurité affiché comme actif doit l'être. `SxbVpnModule`
+   * expose précisément `setKillSwitch` et `setAutoReconnect` pour cela ; ils
+   * agissent sur `SxbVpnService.instance`, c'est-à-dire sur la session vivante.
+   *
+   * L'appel est sans effet si aucun service ne tourne — côté natif, `instance`
+   * vaut alors `null`. Rien à protéger ici : la valeur repartira de toute façon
+   * dans les options du prochain `startVpn`.
+   */
+  const appliquerAuServiceNatif = useCallback((methode: 'setKillSwitch' | 'setAutoReconnect', valeur: boolean) => {
+    if (!IS_ANDROID || typeof SxbVpnNative?.[methode] !== 'function') return;
+    try {
+      SxbVpnNative[methode](valeur);
+    } catch {
+      // Un service absent ou un pont indisponible ne doit pas empêcher
+      // l'utilisateur de régler son application.
+    }
+  }, []);
+
+  const setKillSwitch = useCallback((v: boolean) => {
+    setKillSwitchState(v);
+    appliquerAuServiceNatif('setKillSwitch', v);
+  }, [appliquerAuServiceNatif]);
+
+  const setAutoReconnect = useCallback((v: boolean) => {
+    setAutoReconnectState(v);
+    appliquerAuServiceNatif('setAutoReconnect', v);
+  }, [appliquerAuServiceNatif]);
 
   const startWatchdog = useCallback((stepName: string, attemptId: number) => {
     if (watchdogRef.current) clearTimeout(watchdogRef.current);
@@ -2283,6 +2324,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     hasValidConfig,
     activeConnection,
     stepLogs,
+    resetStepLogs,
     savedConfigs, activeConfigId, switchConfig, isSwitchingConfig, switchingToId,
     quotaData,
     derivedQuota: currentDerivedQuota,
@@ -2294,8 +2336,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     traffic:       trafficStats,
     killSwitch,
     autoReconnect,
-    setKillSwitch: setKillSwitchState,
-    setAutoReconnect: setAutoReconnectState,
+    setKillSwitch,
+    setAutoReconnect,
     syncFromConnection,
     connect, disconnect, selectProtocol,
     refreshVpnConfig, requestPermission,
@@ -2304,9 +2346,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     isConnected, isConnecting, vpnState,
     selectedProtocol, connectedProtocol, availableProtocols,
     trafficStats, vpnLogs, hasVpnPermission, hasValidConfig,
-    activeConnection, stepLogs, savedConfigs, activeConfigId,
+    activeConnection, stepLogs, resetStepLogs, savedConfigs, activeConfigId,
     switchConfig, isSwitchingConfig, switchingToId, quotaData, currentDerivedQuota, quotaSession,
     revokedStatus, perAppTraffic, killSwitch, autoReconnect,
+    setKillSwitch, setAutoReconnect,
     syncFromConnection, connect, disconnect, selectProtocol,
     refreshVpnConfig, requestPermission, deleteConfig,
   ]);
