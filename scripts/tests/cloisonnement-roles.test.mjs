@@ -248,7 +248,20 @@ test('la furtivité vise le bon champ selon le modèle interrogé', () => {
   // leur écriture, masquées par un écran qui affichait des zéros.
   const source = lireSource('server/routes/analytics.ts');
   assert.match(source, /function stealthResellerWhere/);
-  assert.match(source, /prisma\.reseller\.count\(\{ where: stealthResellerWhere\(requesterIsOwner\) \}\)/);
+  // On vérifie l'INTENTION — que le compte des revendeurs soit bien alimenté
+  // par la furtivité du modèle revendeur — et non une forme littérale.
+  // L'assertion précédente épinglait `prisma.reseller.count({ where:
+  // stealthResellerWhere(requesterIsOwner) })` mot pour mot ; elle a fini par
+  // FIGER UNE FUITE : ce compte n'avait aucune portée par propriétaire, et tout
+  // administrateur lisait les 18 partenaires de la plateforme (mesuré en
+  // production). Corriger la fuite faisait tomber le garde. Un garde doit
+  // interdire le défaut, pas interdire sa correction.
+  assert.match(source, /stealthResellerWhere\(requesterIsOwner\)/);
+  assert.match(
+    source,
+    /prisma\.reseller\.count\(\{\s*where: (filtreRevendeurs as any|\{ \.\.\.stealthResellerWhere)/,
+    'le compte des revendeurs doit partir de la furtivité revendeur',
+  );
   assert.doesNotMatch(
     source,
     /prisma\.reseller\.count\(\{ where: userStealthWhere \}\)/,

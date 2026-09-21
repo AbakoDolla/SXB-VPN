@@ -7,7 +7,8 @@ import { Router, Response } from "express";
 import { prisma, inMemoryDb } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { FURTIVITE_OWNER_PORTEUR, isOwnerRequest } from "../middleware/rbac/owner";
-import { porteeBons, porteeClients, porteeRevendeurs, porteeServeurs, porteeSousClient } from "../services/portee-donnees";
+import { porteeBons, porteeClients, porteeComptes as porteeAnnuaireComptes, porteeRevendeurs, porteeServeurs, porteeSousClient } from "../services/portee-donnees";
+import { etFiltres } from "../services/free-trial-marks";
 
 const router = Router();
 
@@ -59,15 +60,36 @@ router.get("/users", requireAuth, requirePermission("analytics.read"), async (re
     const requesterIsOwner = isOwnerRequest(req);
     const userStealthWhere = stealthUserWhere(requesterIsOwner);
     const clientStealthWhere = await porteeAnalytique(req);
+    // ── Un TOTAL est une fuite aussi sûrement qu'une liste ───────────────────
+    //
+    // Mesuré en production : un administrateur dont le parc est VIDE lisait
+    // `totalUsers: 829` et `activePartners: 18` — exactement les chiffres du
+    // propriétaire. Il apprenait ainsi l'ampleur du parc qu'on lui cache, alors
+    // que le compteur voisin (`activeVpnClients`) était, lui, bien cloisonné.
+    //
+    // La furtivité OWNER ne suffit pas : elle retire le propriétaire, pas les
+    // autres exploitants. On ajoute donc la portée du requérant, par un `AND`
+    // explicite — un `{...a, ...b}` écraserait silencieusement une clé commune.
+    // `porteeComptes` est importée sous alias : le handler `/overview`, plus
+    // bas, déclare une const locale du même nom qui masquerait l'import.
+    const porteeComptesRequerant = await porteeAnnuaireComptes(prisma, req.user);
+    const porteeRevendeursRequerant = await porteeRevendeurs(prisma, req.user);
+    const filtreComptes = etFiltres(userStealthWhere, porteeComptesRequerant);
+    const filtreRevendeurs = etFiltres(stealthResellerWhere(requesterIsOwner), porteeRevendeursRequerant);
     if (prisma) {
       [totalUsers, activeClientsCount, resellersCount] = await Promise.all([
-        prisma.user.count({ where: userStealthWhere }),
+        prisma.user.count({ where: filtreComptes as any }),
         prisma.vpnClient.count({ where: { status: "active", ...clientStealthWhere } }),
-        prisma.reseller.count({ where: stealthResellerWhere(requesterIsOwner) }),
+        prisma.reseller.count({ where: filtreRevendeurs as any }),
       ]);
       const supportRole = await prisma.role.findFirst({ where: { name: "SUPPORT" } });
       if (supportRole) {
-        supportCount = await prisma.user.count({ where: { roleId: supportRole.id } });
+        // Même raison : le nombre d'agents de support est un chiffre de
+        // plateforme. Un administrateur n'en gère aucun, il doit donc lire zéro
+        // plutôt que l'effectif de la maison.
+        supportCount = await prisma.user.count({
+          where: etFiltres({ roleId: supportRole.id }, porteeComptesRequerant) as any,
+        });
       }
     } else {
       const ownerRole = inMemoryDb.roles.find((r) => r.name === "OWNER");
