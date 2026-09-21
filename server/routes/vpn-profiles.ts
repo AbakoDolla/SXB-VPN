@@ -41,6 +41,41 @@ async function profilVisible(profil: any, req: AuthenticatedRequest): Promise<bo
   return false;
 }
 
+/**
+ * Charge un profil par identifiant en refusant ceux que l'appelant ne voit pas.
+ *
+ * Un filtre de LISTE ne protège pas un accès direct par identifiant, et le
+ * verrou par mot de passe n'est pas un contrôle de propriété : il protège la
+ * configuration technique, pas la frontière entre exploitants. Mesuré en
+ * production avant correction, avec deux administrateurs de test : connaissant
+ * l'identifiant d'une configuration appartenant à un AUTRE administrateur,
+ * l'intrus obtenait 200 sur `/unlock` (preuve de déverrouillage délivrée et
+ * hôte du serveur en clair), puis enchaînait avec cette preuve — lecture et
+ * réattribution des revendeurs, renommage de la fiche, et rotation du mot de
+ * passe du verrou. Le propriétaire légitime se retrouvait alors enfermé dehors
+ * (403 sur son propre déverrouillage, 423 sur sa propre modification) : sa
+ * configuration lui était purement et simplement confisquée.
+ *
+ * Rend `null` quand le profil n'existe pas OU qu'il ne regarde pas l'appelant.
+ * Les deux cas doivent rester indiscernables — répondre autre chose que 404
+ * sur un profil d'autrui confirmerait son existence et permettrait d'énumérer
+ * le parc de la plateforme.
+ */
+async function chargerProfilVisible(
+  req: AuthenticatedRequest,
+  args: { select?: any; include?: any } = {},
+): Promise<any | null> {
+  // `createdBy` porte la propriété : il doit être chargé même quand l'appelant
+  // n'a demandé que quelques colonnes, sinon le contrôle s'évalue à vide.
+  const profil = await (prisma as any).vpnProfile.findUnique({
+    where: { id: req.params.id },
+    ...(args.select ? { select: { ...args.select, id: true, createdBy: true } } : {}),
+    ...(args.include ? { include: args.include } : {}),
+  });
+  if (!profil) return null;
+  return (await profilVisible(profil, req)) ? profil : null;
+}
+
 const router = Router();
 
 // ── Import canonique : champs d'identification dérivés, technique immuable ────
@@ -360,7 +395,7 @@ router.post('/:id/unlock', requireAuth, requirePermission('vpnprofile.view'), ..
     if (!req.body || Object.keys(req.body).some(key => key !== 'password')) {
       throw new ProfileLockError(400, 'PROFILE_LOCK_PASSWORD_INVALID');
     }
-    const profile = await prisma.vpnProfile.findUnique({ where: { id: req.params.id } });
+    const profile = await chargerProfilVisible(req);
     if (!profile) return res.status(404).json({ error: 'Profile not found' });
     if (!profile.lockPasswordHash) throw new ProfileLockError(409, 'PROFILE_NOT_LOCKED');
     await verifyProfilePassword(profile, req.body.password);
@@ -385,7 +420,7 @@ router.put('/:id/lock', requireAuth, requirePermission('vpnprofile.manage'), ...
     if (!req.body || Object.keys(req.body).some(key => key !== 'password')) {
       throw new ProfileLockError(400, 'PROFILE_LOCK_PASSWORD_INVALID');
     }
-    const existing = await prisma.vpnProfile.findUnique({ where: { id: req.params.id } });
+    const existing = await chargerProfilVisible(req);
     if (!existing) return res.status(404).json({ error: 'Profile not found' });
     assertProfileUnlocked(existing, req);
     const lock = await createProfileLock(req.body.password);
@@ -416,6 +451,9 @@ router.put('/:id/lock', requireAuth, requirePermission('vpnprofile.manage'), ...
 router.get('/:id/resellers', requireAuth, requirePermission('vpnprofile.manage'), async (req: AuthenticatedRequest, res: Response) => {
   try {
     if (!prisma) return res.json({ success: true, resellers: [], unrestricted: true });
+    if (!(await chargerProfilVisible(req, { select: { id: true } }))) {
+      return res.status(404).json({ error: 'Profil VPN introuvable' });
+    }
     const links = await (prisma as any).vpnProfileReseller.findMany({
       where: { profileId: req.params.id },
       include: { reseller: { include: { user: { select: { id: true, name: true, email: true } } } } },
@@ -450,7 +488,7 @@ router.put('/:id/resellers', requireAuth, requirePermission('vpnprofile.manage')
       return res.status(400).json({ error: 'errors.profiles.invalid_resellers', message: 'resellerIds doit être un tableau' });
     }
 
-    const profile = await (prisma as any).vpnProfile.findUnique({ where: { id: req.params.id }, select: { id: true, name: true } });
+    const profile = await chargerProfilVisible(req, { select: { id: true, name: true } });
     if (!profile) return res.status(404).json({ error: 'Profil VPN introuvable' });
 
     // Écarter les identifiants inconnus plutôt que d'échouer : l'interface
@@ -701,7 +739,7 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
 router.put('/:id', requireAuth, requirePermission('vpnprofile.manage'), async (req: AuthenticatedRequest, res: Response) => {
   try {
     res.set('Cache-Control', 'no-store');
-    const existing = await (prisma as any).vpnProfile.findUnique({ where: { id: req.params.id } });
+    const existing = await chargerProfilVisible(req);
     if (!existing) return res.status(404).json({ error: 'Profile not found' });
     assertProfileUnlocked(existing, req);
     await prisma.$transaction(tx => prepareProfileEngineLock(tx, existing));
@@ -786,8 +824,7 @@ router.put('/:id', requireAuth, requirePermission('vpnprofile.manage'), async (r
 // ─── DELETE /api/vpn-profiles/:id ────────────────────────────────────────────
 router.delete('/:id', requireAuth, requirePermission('vpnprofile.manage'), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const existing = await (prisma as any).vpnProfile.findUnique({
-      where: { id: req.params.id },
+    const existing = await chargerProfilVisible(req, {
       include: { _count: { select: { subscriptions: true } } },
     });
     if (!existing) return res.status(404).json({ error: 'Profile not found' });
