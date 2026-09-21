@@ -2,6 +2,8 @@ import { Router, Response } from "express";
 import { XPanelService } from "../services/xpanel";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { logDbActivity, inMemoryDb, prisma } from "../database";
+import { porteeClients, porteeServeurs } from "../services/portee-donnees";
+import { etFiltres } from "../services/free-trial-marks";
 
 const router = Router();
 
@@ -23,9 +25,20 @@ router.get("/status", requireAuth, requirePermission("xpanel.view"), async (req:
     let configCount = 0;
 
     if (prisma) {
-      clientCount = await prisma.vpnClient.count({ where: { status: "active" } });
-      // Count configs from inbounds/nodes - simplified
-      configCount = await prisma.vPSServer.count();
+      // ── Un écran « moteur » reste un écran de données ──────────────────────
+      //
+      // Mesuré en production : un administrateur sans aucun client ni serveur
+      // lisait ici « 753 utilisateurs synchronisés, 3 serveurs, 6 configs » —
+      // les chiffres exacts du propriétaire. L'habillage technique de la page
+      // avait fait oublier que ces compteurs portent sur le parc réel.
+      const porteeClientsRequerant = await porteeClients(prisma, req.user);
+      const porteeServeursRequerant = await porteeServeurs(prisma, req.user);
+      clientCount = await prisma.vpnClient.count({
+        where: etFiltres({ status: "active" }, porteeClientsRequerant) as any,
+      });
+      configCount = await prisma.vPSServer.count({
+        where: (porteeServeursRequerant ?? undefined) as any,
+      });
     } else {
       clientCount = inMemoryDb.vpnClients.filter((c) => c.status === "active").length;
       configCount = inMemoryDb.vpsServers.length;

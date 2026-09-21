@@ -3,6 +3,8 @@ import { prisma } from '../database';
 import type { AuthenticatedRequest } from '../middleware/auth';
 import { encryptCanonical } from './canonical-config';
 import { assertProfileUnlocked, createProfileLock, ProfileLockError, profileUnlockExpiry } from './profile-lock';
+import { porteeComptesMoteur, porteeComptesSsh } from './portee-donnees';
+import { etFiltres } from './free-trial-marks';
 
 export type ProfileEngine = 'ssh' | 'xray' | 'singbox';
 type Db = Prisma.TransactionClient;
@@ -98,6 +100,35 @@ export async function createLockedEngineAccount<T extends Account>(
   });
 }
 
+/**
+ * Le requérant a-t-il le droit de toucher ce compte de moteur ?
+ *
+ * Tous les accès par identifiant — lecture, modification, suspension,
+ * suppression, génération de configuration — passent par `withUnlockedEngine`,
+ * qui ne s'appuyait que sur l'identifiant. Un administrateur connaissant
+ * l'identifiant d'un compte appartenant à un autre propriétaire pouvait donc le
+ * lire ET le supprimer. Un filtre de liste ne protège pas un accès direct.
+ *
+ * Hors périmètre, on renvoie le MÊME 404 que pour un compte inexistant, afin de
+ * ne pas révéler que la ressource existe.
+ */
+async function assertCompteMoteurAccessible(
+  db: Db, engine: ProfileEngine, id: string, req: AuthenticatedRequest,
+): Promise<void> {
+  const requerant = (req as any)?.user;
+  const portee = engine === 'ssh'
+    ? await porteeComptesSsh(db, requerant)
+    : await porteeComptesMoteur(db, requerant);
+  if (!portee) return;
+  const where = etFiltres({ id }, portee) as any;
+  const trouve = engine === 'ssh'
+    ? await db.sshAccount.count({ where })
+    : engine === 'xray'
+      ? await db.xrayAccount.count({ where })
+      : await db.singboxAccount.count({ where });
+  if (trouve === 0) throw new ProfileLockError(404, 'PROFILE_ENGINE_NOT_FOUND');
+}
+
 export async function withUnlockedEngine<T>(
   engine: ProfileEngine, id: string, req: AuthenticatedRequest,
   action: (db: Db, account: Account) => Promise<T>,
@@ -106,6 +137,7 @@ export async function withUnlockedEngine<T>(
     await lockAccount(db, engine, id);
     const account = await findAccount(db, engine, id);
     if (!account) throw new ProfileLockError(404, 'PROFILE_ENGINE_NOT_FOUND');
+    await assertCompteMoteurAccessible(db, engine, id, req);
     const profiles = await engineProfiles(db, engine, account);
     for (const profile of profiles) {
       if (!profile.engineAccountId) await prepareProfileEngineLock(db, profile);

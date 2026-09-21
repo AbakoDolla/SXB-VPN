@@ -9,6 +9,8 @@ import { requireAuth, requirePermission, AuthenticatedRequest } from "../middlew
 import { logDbActivity } from "../database";
 import { createLockedEngineAccount, serializeEngineAccount, withUnlockedEngine } from '../services/profile-engines';
 import { handleProfileLockError } from '../services/profile-lock';
+import { porteeComptesMoteur } from '../services/portee-donnees';
+import { etFiltres } from '../services/free-trial-marks';
 
 const router = Router();
 
@@ -44,7 +46,9 @@ function buildLink(acc: any): string {
 // GET /api/xray/accounts
 router.get("/accounts", requireAuth, requirePermission("xray.view"), async (req: AuthenticatedRequest, res: Response) => {
   try {
+    const portee = await porteeComptesMoteur(prisma, req.user);
     const accounts = await (prisma as any).xrayAccount.findMany({
+      where: (portee ?? undefined) as any,
       orderBy: { createdAt: "desc" },
       include: { client: { include: { user: { select: { name: true, email: true } } } } },
     });
@@ -60,10 +64,13 @@ router.get("/accounts", requireAuth, requirePermission("xray.view"), async (req:
 });
 
 // GET /api/xray/stats
-router.get("/stats", requireAuth, requirePermission("xray.view"), async (_req: AuthenticatedRequest, res: Response) => {
+router.get("/stats", requireAuth, requirePermission("xray.view"), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const total  = await (prisma as any).xrayAccount.count();
-    const active = await (prisma as any).xrayAccount.count({ where: { status: "active" } });
+    // Ces compteurs portaient sur toute la table. Voir porteeComptesMoteur :
+    // un compte de moteur se rattache au client VPN qu'il sert.
+    const portee = await porteeComptesMoteur(prisma, req.user);
+    const total  = await (prisma as any).xrayAccount.count({ where: (portee ?? undefined) as any });
+    const active = await (prisma as any).xrayAccount.count({ where: etFiltres({ status: "active" }, portee) as any });
     const byProtocol: unknown[] = [];
     return res.json({ success: true, total, active, byProtocol });
   } catch (err: any) {
@@ -95,6 +102,7 @@ router.post("/accounts", requireAuth, requirePermission("xray.manage"), async (r
         password: password || null,
         method: method || null,
         clientId: clientId || null,
+        createdBy: req.user?.userId ?? null,
         status: "active",
       },
     }));

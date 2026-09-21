@@ -613,3 +613,27 @@ END $$;
 
 CREATE INDEX IF NOT EXISTS "vpn_clients_managedById_idx"
   ON "vpn_clients" ("managedById");
+
+-- ---------------------------------------------------------------------------
+-- Auteur d'un compte de moteur (xray, sing-box).
+--
+-- Ces deux tables n'avaient AUCUN rattachement a un proprietaire : leur seul
+-- lien etait clientId, optionnel. Un administrateur qui creait une offre
+-- avant de l'attribuer a un client ne pouvait donc plus etre reconnu comme son
+-- proprietaire -- et cloisonner sur le seul client l'aurait prive de son
+-- propre compte. SshAccount portait deja createdBy : on aligne.
+--
+-- ADDITIF ET NULLABLE. Les lignes historiques restent a NULL : elles
+-- n'appartiennent a aucun compartiment et demeurent visibles des roles qui
+-- voient tout. Aucune donnee n'est deplacee ni supprimee.
+ALTER TABLE "xray_accounts"
+  ADD COLUMN IF NOT EXISTS "createdBy" TEXT;
+
+ALTER TABLE "singbox_accounts"
+  ADD COLUMN IF NOT EXISTS "createdBy" TEXT;
+
+CREATE INDEX IF NOT EXISTS "xray_accounts_createdBy_idx"
+  ON "xray_accounts" ("createdBy");
+
+CREATE INDEX IF NOT EXISTS "singbox_accounts_createdBy_idx"
+  ON "singbox_accounts" ("createdBy");

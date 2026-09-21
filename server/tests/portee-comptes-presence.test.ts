@@ -54,7 +54,10 @@ describe("portée des comptes de connexion", () => {
   // garde-fous voisins, `server/` n'étant couvert par aucun typage.
   const source = readFileSync(new URL("server/services/portee-donnees.ts", racine), "utf8");
   const corps = (() => {
-    const debut = source.indexOf("export async function porteeComptes");
+    // L'ancre porte la parenthèse ouvrante : sans elle, `porteeComptesSsh` et
+    // `porteeComptesMoteur`, qui la précèdent dans le fichier, seraient
+    // découpés à sa place et ce garde-fou vérifierait la mauvaise fonction.
+    const debut = source.indexOf("export async function porteeComptes(");
     assert.notEqual(debut, -1, "porteeComptes doit exister");
     const suite = source.indexOf("\nexport ", debut + 1);
     return source.slice(debut, suite === -1 ? source.length : suite);
@@ -83,7 +86,7 @@ describe("portée des comptes de connexion", () => {
   });
 
   it("reste exportée depuis le point unique de cloisonnement", () => {
-    assert.match(source, /export async function porteeComptes/,
+    assert.match(source, /export async function porteeComptes\(/,
       "La règle doit vivre avec les autres portées, pas dans la route");
   });
 });

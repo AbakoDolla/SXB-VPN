@@ -366,6 +366,7 @@ model XrayAccount {
   serverId   String?
   clientId   String?
   client     VpnClient? @relation(fields: [clientId], references: [id])
+  createdBy  String?
   createdAt  DateTime   @default(now())
   updatedAt  DateTime   @updatedAt
 
@@ -393,6 +394,7 @@ model SingboxAccount {
   serverId   String?
   clientId   String?
   client     VpnClient? @relation(fields: [clientId], references: [id])
+  createdBy  String?
   createdAt  DateTime   @default(now())
   updatedAt  DateTime   @updatedAt
 

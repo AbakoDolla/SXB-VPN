@@ -9,6 +9,8 @@ import { logDbActivity } from '../database';
 import crypto from 'crypto';
 import { createLockedEngineAccount, serializeEngineAccount, serializePayload, withUnlockedEngine } from '../services/profile-engines';
 import { handleProfileLockError } from '../services/profile-lock';
+import { porteeComptesSsh } from '../services/portee-donnees';
+import { etFiltres } from '../services/free-trial-marks';
 
 const router = Router();
 
@@ -57,7 +59,9 @@ function decrypt(encrypted: string, key: string): string {
 // ─── GET /api/ssh/accounts ───────────────────────────────────────────────────
 router.get('/accounts', requireAuth, requirePermission('ssh.view'), async (req: AuthenticatedRequest, res: Response) => {
   try {
+    const portee = await porteeComptesSsh(prisma, req.user);
     const accounts = await prisma.sshAccount.findMany({
+      where: (portee ?? undefined) as any,
       orderBy: { createdAt: 'desc' },
     });
     // Fetch payloads separately (Prisma client missing payload relation in generated client)
@@ -80,8 +84,13 @@ router.get('/accounts', requireAuth, requirePermission('ssh.view'), async (req: 
 // ─── GET /api/ssh/accounts/:id ───────────────────────────────────────────────
 router.get('/accounts/:id', requireAuth, requirePermission('ssh.view'), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const acc = await prisma.sshAccount.findUnique({
-      where: { id: req.params.id },
+    // `findUnique` sur l'identifiant seul rendait le compte SSH de n'importe
+    // quel propriétaire à qui connaissait son identifiant. La portée entre dans
+    // la requête : hors de son périmètre, le compte est introuvable et le 404
+    // déjà en place répond.
+    const portee = await porteeComptesSsh(prisma, req.user);
+    const acc = await prisma.sshAccount.findFirst({
+      where: etFiltres({ id: req.params.id }, portee) as any,
     });
     // Fetch payload separately
     let accPayload = null;
@@ -193,7 +202,12 @@ router.put('/accounts/:id', requireAuth, requirePermission('ssh.manage'), async 
 // ─── DELETE /api/ssh/accounts/:id ────────────────────────────────────────────
 router.delete('/accounts/:id', requireAuth, requirePermission('ssh.manage'), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const acc = await prisma.sshAccount.findUnique({ where: { id: req.params.id } });
+    // Même raison qu'en lecture : charger la ligne par son seul identifiant
+    // confirmerait son existence à qui n'a pas le droit de la voir.
+    const porteeSuppression = await porteeComptesSsh(prisma, req.user);
+    const acc = await prisma.sshAccount.findFirst({
+      where: etFiltres({ id: req.params.id }, porteeSuppression) as any,
+    });
     if (!acc) return res.status(404).json({ error: 'SSH account not found' });
     await withUnlockedEngine('ssh', req.params.id, req, db => db.sshAccount.delete({ where: { id: req.params.id } }));
     await logDbActivity(req.user?.userId || null, `SSH account "${acc.name}" deleted`, 'danger', req.ip);
@@ -207,7 +221,10 @@ router.delete('/accounts/:id', requireAuth, requirePermission('ssh.manage'), asy
 // ─── PATCH /api/ssh/accounts/:id/suspend ─────────────────────────────────────
 router.patch('/accounts/:id/suspend', requireAuth, requirePermission('ssh.manage'), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const acc = await prisma.sshAccount.findUnique({ where: { id: req.params.id } });
+    const porteeBascule = await porteeComptesSsh(prisma, req.user);
+    const acc = await prisma.sshAccount.findFirst({
+      where: etFiltres({ id: req.params.id }, porteeBascule) as any,
+    });
     if (!acc) return res.status(404).json({ error: 'SSH account not found' });
     const newStatus = acc.status === 'suspended' ? 'active' : 'suspended';
     await withUnlockedEngine('ssh', req.params.id, req, db => db.sshAccount.update({ where: { id: req.params.id }, data: { status: newStatus } }));
@@ -239,13 +256,17 @@ router.post('/accounts/:id/test', requireAuth, requirePermission('ssh.view'), as
 });
 
 // ─── GET /api/ssh/stats ───────────────────────────────────────────────────────
-router.get('/stats', requireAuth, async (_req: AuthenticatedRequest, res: Response) => {
+router.get('/stats', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
+    // Ces quatre compteurs portaient sur toute la table `SshAccount`. Elle est
+    // vide aujourd'hui, donc rien ne se voyait — la fuite serait apparue au
+    // premier compte créé.
+    const portee = await porteeComptesSsh(prisma, req.user);
     const [total, active, suspended, expired] = await Promise.all([
-      prisma.sshAccount.count(),
-      prisma.sshAccount.count({ where: { status: 'active' } }),
-      prisma.sshAccount.count({ where: { status: 'suspended' } }),
-      prisma.sshAccount.count({ where: { status: 'expired' } }),
+      prisma.sshAccount.count({ where: (portee ?? undefined) as any }),
+      prisma.sshAccount.count({ where: etFiltres({ status: 'active' }, portee) as any }),
+      prisma.sshAccount.count({ where: etFiltres({ status: 'suspended' }, portee) as any }),
+      prisma.sshAccount.count({ where: etFiltres({ status: 'expired' }, portee) as any }),
     ]);
     return res.json({ success: true, stats: { total, active, suspended, expired } });
   } catch (err) {

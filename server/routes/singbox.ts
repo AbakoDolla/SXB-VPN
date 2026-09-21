@@ -8,6 +8,8 @@ import { requireAuth, requirePermission, AuthenticatedRequest } from "../middlew
 import { logDbActivity } from "../database";
 import { createLockedEngineAccount, serializeEngineAccount, withUnlockedEngine } from '../services/profile-engines';
 import { handleProfileLockError } from '../services/profile-lock';
+import { porteeComptesMoteur } from '../services/portee-donnees';
+import { etFiltres } from '../services/free-trial-marks';
 
 const router = Router();
 
@@ -40,7 +42,9 @@ function buildSingboxLink(acc: any): string {
 // GET /api/singbox/accounts
 router.get("/accounts", requireAuth, requirePermission("singbox.view"), async (req: AuthenticatedRequest, res: Response) => {
   try {
+    const portee = await porteeComptesMoteur(prisma, req.user);
     const accounts = await (prisma as any).singboxAccount.findMany({
+      where: (portee ?? undefined) as any,
       orderBy: { createdAt: "desc" },
       include: { client: { include: { user: { select: { name: true, email: true } } } } },
     });
@@ -56,10 +60,12 @@ router.get("/accounts", requireAuth, requirePermission("singbox.view"), async (r
 });
 
 // GET /api/singbox/stats
-router.get("/stats", requireAuth, requirePermission("singbox.view"), async (_req: AuthenticatedRequest, res: Response) => {
+router.get("/stats", requireAuth, requirePermission("singbox.view"), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const total  = await (prisma as any).singboxAccount.count();
-    const active = await (prisma as any).singboxAccount.count({ where: { status: "active" } });
+    // Même raison que pour xray : ces compteurs portaient sur toute la table.
+    const portee = await porteeComptesMoteur(prisma, req.user);
+    const total  = await (prisma as any).singboxAccount.count({ where: (portee ?? undefined) as any });
+    const active = await (prisma as any).singboxAccount.count({ where: etFiltres({ status: "active" }, portee) as any });
     return res.json({ success: true, total, active });
   } catch (err: any) {
     return res.status(500).json({ error: "Failed to get stats" });
@@ -90,6 +96,7 @@ router.post("/accounts", requireAuth, requirePermission("singbox.manage"), async
         password: password || null,
         method: method || null,
         clientId: clientId || null,
+        createdBy: req.user?.userId ?? null,
         status: "active",
       },
     }));

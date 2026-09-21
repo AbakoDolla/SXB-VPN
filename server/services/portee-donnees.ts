@@ -254,6 +254,56 @@ export async function porteeBons(
 }
 
 /**
+ * Portée des COMPTES SSH, exprimée sur `SshAccount` (champ `createdBy`).
+ *
+ * Les compteurs de `/api/ssh/stats` ne portaient aucune restriction. La table
+ * est vide aujourd'hui, donc la fuite ne se voit pas encore — elle apparaîtra
+ * au premier compte créé. On ferme avant, pas après.
+ */
+export async function porteeComptesSsh(
+  prisma: any,
+  requerant: Requerant | null | undefined,
+): Promise<Record<string, unknown> | null> {
+  return porteeParAuteur(prisma, requerant);
+}
+
+/**
+ * Portée des comptes de MOTEUR (`XrayAccount`, `SingboxAccount`).
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * POURQUOI LE SEUL `clientId` NE SUFFIT PAS
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Première tentative : cloisonner par le client servi, seul rattachement que
+ * ces tables portaient. Le banc l'a immédiatement refusée — et il avait raison.
+ * Le flux normal est de créer l'offre PUIS de l'attribuer : entre les deux, le
+ * compte n'a pas de client. Son auteur perdait donc l'accès à ce qu'il venait
+ * de créer, et ne pouvait plus ni le modifier ni le supprimer.
+ *
+ * `createdBy` a été ajouté à ces deux tables (additif, nullable) pour les
+ * aligner sur `SshAccount`, qui le portait déjà. Un compte appartient donc à
+ * son auteur OU au compartiment du client qu'il sert.
+ *
+ * On ne restreint QUE les rôles cloisonnés : le propriétaire, le
+ * super-administrateur et le support continuent de voir exactement ce qu'ils
+ * voyaient, y compris les comptes historiques dont l'auteur est resté nul.
+ */
+export async function porteeComptesMoteur(
+  prisma: any,
+  requerant: Requerant | null | undefined,
+): Promise<Record<string, unknown> | null> {
+  if (!estCloisonne(requerant?.role ?? null)) return null;
+  // Sans identité exploitable, on refuse plutôt que d'ouvrir le catalogue.
+  if (!requerant?.userId) return { id: { in: [] } };
+  const porteeDesClients = await porteeClients(prisma, requerant);
+  return {
+    OR: [
+      { createdBy: requerant.userId },
+      ...(porteeDesClients ? [{ client: porteeDesClients }] : []),
+    ],
+  };
+}
+
+/**
  * Portée des COMPTES DE CONNEXION, exprimée sur `User`.
  *
  * ═══════════════════════════════════════════════════════════════════════════
