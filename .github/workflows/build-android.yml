@@ -125,7 +125,7 @@ jobs:
       # restauré subit exactement le même contrôle qu'un fichier téléchargé, et
       # un contenu altéré est refusé de la même manière.
       - name: Cache des outils épinglés (Kotlin, JSON)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/sxb-outils
           key: sxb-outils-kotlin2.1.20-json20240303
