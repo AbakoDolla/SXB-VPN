@@ -213,22 +213,86 @@ test('la provenance distingue les deux sources', () => {
   assert.equal(p.fromClientRecord, 2);
 });
 
-test('les forfaits hors norme sont dénombrés SANS être retranchés', () => {
-  // 39 forfaits « VIP » pèsent 2 010 000 Gio sur 2 015 419 en production. Les
-  // écarter d'office remplacerait un chiffre absurde par un chiffre flatteur :
-  // le choix est exposé à l'exploitant, il n'est pas pris ici.
+test('les forfaits hors norme sont retranchés du total ET dénombrés à part', () => {
+  // NON-RÉGRESSION — ce test échoue sur 6a9446c, et c'est voulu.
+  //
+  // La version précédente de ce test verrouillait la décision inverse : « le
+  // hors norme doit RESTER dans le total ». Déployée le 21/09 à 08:42, elle a
+  // produit onze minutes plus tard `remainingTraffic = 2 015 158,96 Gio` —
+  // 2 pétaoctets présentés comme restants à un exploitant dont le parc réel
+  // en provisionne 4 251. Le raisonnement qui la fondait (« retrancher
+  // remplacerait un chiffre absurde par un chiffre flatteur ») était inversé :
+  // c'est l'inclusion qui flatte, parce qu'elle efface l'épuisement du quota.
   const vip = SEUIL_FORFAIT_HORS_NORME * BigInt(100);
+  const ordinaire = GO * BigInt(5);
   const parc = [
-    { status: 'active', subscriptions: [{ quotaBytes: vip, quotaUsed: BigInt(0), status: 'active' }] },
-    { status: 'active', quotaTotal: GO * BigInt(5), quotaUsed: BigInt(0) },
+    { status: 'active', subscriptions: [{ quotaBytes: vip, quotaUsed: GO, status: 'active' }] },
+    { status: 'active', quotaTotal: ordinaire, quotaUsed: GO * BigInt(2) },
   ];
   const p = provenanceQuota(parc);
   const a = agregerQuotaClients(parc);
 
+  // L'anomalie reste VISIBLE.
   assert.equal(p.outsizedPlans, 1);
   assert.equal(p.outsizedBytes, vip);
-  assert.equal(a.provisionedBytes, vip + GO * BigInt(5), 'le hors norme doit RESTER dans le total');
-  assert.equal(a.provisionedBytes - p.outsizedBytes, GO * BigInt(5), 'la part ordinaire reste calculable');
+  assert.equal(a.outsizedPlans, 1, "l'agrégat dénombre lui aussi la part écartée");
+  assert.equal(a.outsizedBytes, vip);
+  assert.equal(a.provisionedBytesBrut, vip + ordinaire, 'le total brut reste consultable');
+
+  // Elle cesse d'être SOMMÉE.
+  assert.equal(a.provisionedBytes, ordinaire, 'le hors norme ne doit plus gonfler le total');
+
+  // Un plafond hors norme ne plafonne rien : il sort du numérateur comme du
+  // dénominateur, au même titre qu'un quota absent.
+  assert.equal(a.meteredClients, 1, 'la fiche hors norme n’est pas une fiche plafonnée');
+  assert.equal(a.meteredConsumedBytes, GO * BigInt(2), 'son usage sort du numérateur');
+
+  // Mais sa consommation n'est jamais perdue du total consommé.
+  assert.equal(a.consumedBytes, GO * BigInt(3), 'rien ne disparaît de la consommation');
+});
+
+test('le reste affiché ne peut plus dépasser la réalité du parc', () => {
+  // Reproduction à l'échelle des chiffres de production : 40 forfaits à ~49 Tio
+  // contre une part ordinaire modeste. C'est le calcul exact qui produisait le
+  // « 2 Po restants » du tableau de bord.
+  const horsNorme = SEUIL_FORFAIT_HORS_NORME * BigInt(49);
+  const parc = [];
+  for (let i = 0; i < 40; i++) {
+    parc.push({
+      status: 'active',
+      subscriptions: [{ quotaBytes: horsNorme, quotaUsed: BigInt(0), status: 'active' }],
+    });
+  }
+  parc.push({ status: 'active', quotaTotal: GO * BigInt(100), quotaUsed: GO * BigInt(80) });
+
+  const a = agregerQuotaClients(parc);
+  const resteGo = Number(a.provisionedBytes - a.meteredConsumedBytes) / Number(GO);
+
+  assert.equal(a.outsizedPlans, 40);
+  assert.equal(a.provisionedBytes, GO * BigInt(100), 'seule la part ordinaire fait le plafond');
+  assert.equal(resteGo, 20, 'le reste est celui du parc réel, pas un pétaoctet');
+  assert.ok(resteGo < 1000, `reste aberrant : ${resteGo} Gio`);
+});
+
+test('un dépassement de quota redevient détectable', () => {
+  // Tant que les 2 Po hors norme entraient dans la comparaison, aucun
+  // dépassement ne pouvait se déclencher : le signal était mort sans être
+  // absent — une panne silencieuse, pas une valeur fausse.
+  const parc = [
+    {
+      status: 'active',
+      subscriptions: [
+        { quotaBytes: SEUIL_FORFAIT_HORS_NORME * BigInt(50), quotaUsed: BigInt(0), status: 'active' },
+      ],
+    },
+    { status: 'active', quotaTotal: GO * BigInt(10), quotaUsed: GO * BigInt(12) },
+  ];
+  const a = agregerQuotaClients(parc);
+
+  assert.ok(
+    a.meteredConsumedBytes > a.provisionedBytes,
+    'la consommation dépasse le plafond ordinaire : le dépassement doit se voir',
+  );
 });
 
 // ──────────────── La règle ne doit exister qu'en un exemplaire ──────────────
