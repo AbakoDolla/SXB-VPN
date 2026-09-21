@@ -659,6 +659,7 @@ export const fr = {
   config_inactive: 'Inactive',
   config_max_reached: 'Maximum 2 configurations atteint',
   config_switch: 'Changer de configuration',
+  config_pending_device: 'À télécharger',
   config_saved: 'Configuration sauvegardée',
   config_removed: 'Configuration supprimée',
 

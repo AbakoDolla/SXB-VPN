@@ -635,6 +635,7 @@ export const en = {
   config_inactive: 'Inactive',
   config_max_reached: 'Maximum 2 configurations reached',
   config_switch: 'Switch configuration',
+  config_pending_device: 'To download',
   config_saved: 'Configuration saved',
   config_removed: 'Configuration removed',
 

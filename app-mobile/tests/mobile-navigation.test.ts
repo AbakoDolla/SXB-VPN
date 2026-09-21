@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { describe, it } from 'node:test';
-import { visibleConfigs } from '../components/ui/configPickerItems';
+import { accesSansConfigLocale, visibleConfigs } from '../components/ui/configPickerItems';
 import { getThemeColors } from '../constants/colors';
 
 const mobile = path.resolve(__dirname, '..');
@@ -162,6 +163,93 @@ describe('connection picker', () => {
     assert.equal(visibleConfigs(configs, 'a', 'ssh', 'en').length, 0);
     assert.equal(visibleConfigs(configs, 'a', 'unknown', 'en').length, 0);
     assert.deepEqual(visibleConfigs([], null, '', 'en'), []);
+  });
+
+  // ── Un accès accordé par le serveur ne doit jamais DISPARAÎTRE d'ici ──────
+  //
+  // Le sélecteur lisait le coffre local, l'accueil lit `/mobile/connections`.
+  // Quand un provisionnement échouait — il n'est journalisé qu'en console —,
+  // l'accès gardait sa barre de quota sur l'accueil et s'évaporait du
+  // sélecteur : l'utilisateur voyait son forfait sans pouvoir le choisir, et
+  // rien n'expliquait l'écart.
+  describe('accès annoncés par le serveur mais absents du coffre', () => {
+    const distant = (id: string, name: string, status = 'active') => ({
+      id, name, status, displayProtocol: 'VLESS', technicalProtocol: 'vless',
+    });
+
+    it('fait réapparaître un accès dont l’appareil n’a pas la configuration', () => {
+      const manquants = accesSansConfigLocale(configs, [distant('e', 'Nouveau forfait')]);
+      assert.deepEqual(manquants.map(m => m.id), ['e']);
+      assert.equal(manquants[0].enAttente, true);
+      assert.equal(manquants[0].isActive, false);
+      // Il rejoint la liste et se trie comme les autres.
+      const tous = visibleConfigs([...configs, ...manquants], 'a', '', 'fr');
+      assert.ok(tous.some(entry => entry.id === 'e'), 'l’accès doit être atteignable');
+      assert.equal(tous.length, configs.length + 1);
+    });
+
+    it('ne duplique JAMAIS un accès déjà détenu localement', () => {
+      // Le doublon serait pire que l’absence : deux lignes pour un seul
+      // forfait, dont une seule bascule réellement.
+      const manquants = accesSansConfigLocale(configs, [
+        distant('a', 'Zone 2'), distant('b', 'Zone 10'), distant('e', 'Nouveau'),
+      ]);
+      assert.deepEqual(manquants.map(m => m.id), ['e']);
+    });
+
+    it('conserve un accès NON actif, avec son état, plutôt que de le taire', () => {
+      // L’écarter ici recréerait exactement le trou que cette fonction comble :
+      // le sélecteur sait déjà présenter une ligne inutilisable.
+      const manquants = accesSansConfigLocale(configs, [distant('f', 'Expirée', 'expired')]);
+      assert.deepEqual(manquants.map(m => m.id), ['f']);
+      assert.equal(manquants[0].status, 'expired');
+    });
+
+    it('ne fabrique rien quand le serveur n’annonce rien de plus', () => {
+      assert.deepEqual(accesSansConfigLocale(configs, []), []);
+      assert.deepEqual(accesSansConfigLocale([], []), []);
+      // Et sans coffre du tout, tout ce que le serveur annonce est proposé.
+      assert.equal(accesSansConfigLocale([], [distant('e', 'Seule')]).length, 1);
+    });
+
+    it('reprend le nom du serveur, jamais un identifiant technique', () => {
+      const [entree] = accesSansConfigLocale([], [distant('e', 'Forfait 50 Go')]);
+      assert.equal(entree.name, 'Forfait 50 Go');
+      assert.notEqual(entree.name, 'e');
+      // Le protocole affichable suit la même règle que les lignes ordinaires.
+      assert.equal(entree.protocol, 'VLESS');
+    });
+
+    it('RÉTRÉCIT l’état au lieu de l’affirmer : un état inconnu reste sans pastille', () => {
+      // `VpnConnection.status` est un `string` nu. Recopier n’importe quelle
+      // valeur donnerait une pastille fausse — « révoqué » par défaut — sur un
+      // accès parfaitement sain.
+      const [inconnu] = accesSansConfigLocale([], [distant('e', 'Bizarre', 'pas-un-etat')]);
+      assert.equal('status' in inconnu, false, 'un état inconnu ne doit pas être recopié');
+      const [connu] = accesSansConfigLocale([], [distant('f', 'Suspendue', 'suspended')]);
+      assert.equal(connu.status, 'suspended');
+    });
+
+    it('la liste des états reste celle d’`accessPolicy` — sinon la pastille ment', () => {
+      // Jumeau volontaire : `configPickerItems` ne dépend d’aucun service pour
+      // rester testable seul. Ce test est le prix de cette indépendance.
+      const source = readFileSync(
+        path.join(mobile, 'services', 'accessPolicy.ts'), 'utf8',
+      );
+      const declaration = source.match(/export type ProfileStatus\s*=\s*([^;]+);/);
+      assert.ok(declaration, 'ProfileStatus doit rester déclaré');
+      const attendus = [...declaration![1].matchAll(/'([a-z]+)'/g)].map(m => m[1]).sort();
+      const obtenus = ['active', 'suspended', 'revoked', 'deleted', 'expired', 'exhausted'].sort();
+      assert.deepEqual(
+        obtenus, attendus,
+        'ETATS_PROFIL de configPickerItems a divergé de ProfileStatus',
+      );
+      // Et la liste locale accepte bien chacun d’eux.
+      for (const etat of attendus) {
+        const [ligne] = accesSansConfigLocale([], [distant('x', 'X', etat)]);
+        assert.equal(ligne.status, etat, `état « ${etat} » non reconnu`);
+      }
+    });
   });
 
   it('keeps selection and deletion distinct and does not reveal protocols', async () => {
