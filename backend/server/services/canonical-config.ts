@@ -196,6 +196,38 @@ export function validateTransportCoherence(cfg: Record<string, any>): { errors: 
   return { errors, warnings };
 }
 
+// ── ALPN des transports WebSocket ────────────────────────────────────────────
+//
+// JUMEAU VOLONTAIRE de `server/services/canonical-config.ts` (racine) et de
+// `app-mobile/services/alpnPolicy.ts`, qui portent l'explication complète.
+//
+// En deux phrases : uTLS « chrome » annonce `h2` avant `http/1.1`, un frontal
+// moderne choisit donc h2, et le WebSocket de sing-box — qui parle HTTP/1.1
+// Upgrade — ne peut plus établir sa liaison. Le TLS aboutit malgré tout, d'où
+// un tunnel « connecté » qui ne transporte rien.
+const TRANSPORTS_UPGRADE = new Set(['ws', 'websocket', 'httpupgrade', 'http-upgrade']);
+export const ALPN_UPGRADE = 'http/1.1';
+
+export function alpnPourTransport(
+  network: string | null | undefined,
+  tls: boolean,
+  alpnDeja?: string | null,
+): string | null {
+  if (typeof alpnDeja === 'string' && alpnDeja.trim() !== '') return null;
+  if (!tls) return null;
+  const clef = String(network ?? '').trim().toLowerCase();
+  return TRANSPORTS_UPGRADE.has(clef) ? ALPN_UPGRADE : null;
+}
+
+// ── Nom présenté en TLS, par défaut ──────────────────────────────────────────
+//
+// Une adresse littérale ne peut pas être présentée en SNI — un serveur strict
+// rejette la poignée de main. L'en-tête Host redevient alors le seul nom
+// disponible.
+function estAdresseLitterale(valeur: string): boolean {
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(valeur) || valeur.includes(':');
+}
+
 // ── Parseurs URI ─────────────────────────────────────────────────────────────
 
 function parseQuery(raw: string): URLSearchParams {
@@ -212,7 +244,13 @@ function applyCommonTransport(q: URLSearchParams, out: Record<string, any>): voi
   if (security) out.tls = security === 'tls' || security === 'reality';
   const sni = q.get('sni');
   if (sni) out.sni = sni;
-  const type = (q.get('type') || '').toLowerCase();
+  // `type=` est la forme majoritaire, mais `network=` circule tout autant, et
+  // l'analyseur de l'application accepte les deux. N'en lire qu'une produisait
+  // ici un canonique SANS transport : le moteur retombait alors sur TCP, le
+  // WebSocket n'était jamais négocié, et l'ALPN déduit au point de sortie ne
+  // se déclenchait pas davantage. L'import restait « valide », sans erreur ni
+  // avertissement — et le tunnel montait sans rien transporter.
+  const type = (q.get('type') || q.get('network') || '').toLowerCase();
   if (type) out.network = type;
   const path = q.get('path');
   if (path) out.path = decodeURIComponent(path);
@@ -481,6 +519,26 @@ export function parseImportedConfig(raw: string): ParseResult {
   const cfg = parsed.cfg;
   if (cfg.port !== undefined) cfg.port = Number(cfg.port);
   if (cfg.tls !== undefined) cfg.tls = cfg.tls === true;
+
+  // ── ALPN DÉDUIT — au point de sortie commun ───────────────────────────────
+  //
+  // Placé ICI plutôt que dans un seul analyseur : toutes les formes d'import
+  // reçoivent la même règle. La poser dans un seul parseur laisserait les
+  // autres produire des profils muets.
+  const alpnDeduit = alpnPourTransport(cfg.network, cfg.tls === true, cfg.alpn);
+  if (alpnDeduit) cfg.alpn = alpnDeduit;
+
+  // ── NOM TLS PAR DÉFAUT — même argument, même emplacement ──────────────────
+  //
+  // Sans `sni=`, le canonique n'en portait aucun. Le moteur retombait alors
+  // sur l'ADRESSE JOINTE, ce qui est la bonne valeur dans le cas ordinaire —
+  // mais pas quand cette adresse est littérale : une IP ne peut pas être
+  // présentée en SNI, et un serveur strict rejette la poignée de main.
+  //
+  // N'écrase JAMAIS un `sni` explicite, et ne touche pas aux profils sans TLS.
+  if (cfg.tls === true && !cfg.sni && typeof cfg.host === 'string' && cfg.host) {
+    cfg.sni = estAdresseLitterale(cfg.host) ? (cfg.wsHost || cfg.host) : cfg.host;
+  }
 
   // Cohérence transport — règles moteur
   const coherence = validateTransportCoherence(cfg);

@@ -92,6 +92,109 @@ describe("champs vides — ce qui n'est pas renseigné n'est pas réécrit", () 
   });
 });
 
+describe("forfait né d'un essai — la configuration ne se change pas par un lot", () => {
+  // Tout l'affichage « période d'essai » tient à `freeTrialRequestId`, que
+  // l'application groupée ne touche pas. Sans cette garde, donner un profil
+  // VIP à un forfait d'essai laissait un client payant étiqueté « essai » —
+  // et l'effacer d'office aurait promu sans `convertedBy` ni `convertedAt`.
+  const essai = () => forfait({ freeTrialRequestId: "req-essai-1" });
+
+  it("refuse de changer la configuration d'un forfait d'essai depuis « Forfaits Data »", () => {
+    const plan = planifierApplication(essai(), { profileId: "prof-vip" }, MAINTENANT);
+    assert.equal(plan.statut, "failed");
+    assert.equal(plan.statut === "failed" && plan.raison, RAISONS_GROUPEES.ESSAI_CONFIG_INTERDITE);
+  });
+
+  it("MAIS la section Essais garde ce geste — c'est sa fonction", () => {
+    // Contre-épreuve indispensable : une garde qui ferme aussi le bon chemin
+    // ne protège rien, elle casse. Ce cas a été trouvé par la suite, qui a
+    // signalé que « chaque capacité retirée des trois écrans est disponible
+    // dans la section Essais » tombait — c'est lui qui a imposé `origine`.
+    const plan = planifierApplication(essai(), { profileId: "prof-2" }, MAINTENANT, "essais");
+    assert.equal(plan.statut, "ok");
+    assert.equal(plan.statut === "ok" && plan.data.profileId, "prof-2");
+  });
+
+  it("le défaut est le REFUS : un appelant qui ne se déclare pas est bloqué", () => {
+    // Fermé par défaut. Si l'ordre des paramètres changeait, ou qu'un nouvel
+    // appelant oubliait de se nommer, il obtiendrait le refus — jamais
+    // l'autorisation.
+    assert.equal(planifierApplication(essai(), { profileId: "prof-x" }).statut, "failed");
+    assert.equal(
+      planifierApplication(essai(), { profileId: "prof-x" }, MAINTENANT, "forfaits").statut,
+      "failed",
+    );
+  });
+
+  it("le refus tient même quand d'autres champs accompagnent le changement", () => {
+    // Le volume ne doit pas servir de cheval de Troie : un lot qui recharge ET
+    // change de serveur est refusé en bloc, pas appliqué à moitié.
+    const plan = planifierApplication(
+      essai(),
+      { profileId: "prof-vip", quotaGB: 100, durationDays: 30 },
+      MAINTENANT,
+    );
+    assert.equal(plan.statut, "failed");
+    assert.equal(plan.statut === "failed" && plan.raison, RAISONS_GROUPEES.ESSAI_CONFIG_INTERDITE);
+  });
+
+  it("la garde est ÉTROITE : recharger ou prolonger un essai reste possible", () => {
+    // Ajouter du volume ne change pas la NATURE de l'accès. Refuser ici aurait
+    // fermé un geste commercial ordinaire au lieu de fermer une faille.
+    const plan = planifierApplication(essai(), { quotaGB: 50, durationDays: 14 }, MAINTENANT);
+    assert.equal(plan.statut, "ok");
+    if (plan.statut !== "ok") return;
+    assert.equal(plan.data.quotaBytes, 50n * GO);
+    assert.equal("profileId" in plan.data, false);
+  });
+
+  it("demander le profil DÉJÀ en place reste « aucun changement », pas un refus", () => {
+    // L'ordre compte : la garde ne se déclenche que sur un changement réel,
+    // sinon un lot large signalerait des échecs là où rien n'était demandé.
+    const plan = planifierApplication(essai(), { profileId: "prof-1" }, MAINTENANT);
+    assert.equal(plan.statut, "skipped");
+    assert.equal(plan.statut === "skipped" && plan.raison, RAISONS_GROUPEES.AUCUN_CHANGEMENT);
+  });
+
+  it("un forfait ORDINAIRE change de configuration comme avant", () => {
+    // Contre-épreuve : la garde ne doit rien coûter au cas courant.
+    const plan = planifierApplication(forfait({ freeTrialRequestId: null }), { profileId: "prof-2" }, MAINTENANT);
+    assert.equal(plan.statut, "ok");
+    assert.equal(plan.statut === "ok" && plan.data.profileId, "prof-2");
+  });
+
+  it("LA GARDE EST ATTEIGNABLE : la route transmet la ligne entière au planificateur", () => {
+    // Une garde qui ne reçoit jamais le champ qu'elle teste ne garde rien. La
+    // route lit le forfait SANS `select`, donc `freeTrialRequestId` arrive
+    // jusqu'ici. Un `select` posé plus tard la désarmerait en silence : ce test
+    // est là pour que cela ne puisse pas passer inaperçu.
+    const route = lire("../routes/subscriptions.ts");
+    const bloc = route.slice(
+      route.indexOf("if (action === 'apply') {"),
+      route.indexOf("} else if (action === 'deploy') {"),
+    );
+    assert.ok(bloc.includes("planifierApplication(sub, changements)"));
+    assert.ok(bloc.includes("planifierApplication(courant, changements)"));
+    // Et la route des essais, elle, se déclare — sans quoi elle perdrait le
+    // remplacement de serveur qui est sa raison d'être.
+    const essais = lire("../routes/free-trial.ts");
+    assert.ok(essais.includes('planifierApplication(forfait, changements, new Date(), "essais")'));
+    // Aucune des deux lectures ne restreint les COLONNES du forfait. Le
+    // `select` de la première porte sur la relation `client` : il est imbriqué
+    // dans `include`, et ne retire donc rien au forfait lui-même. On écarte
+    // cette partie avant de chercher, faute de quoi le test échouerait sur du
+    // code sain — il l'a fait à sa première exécution, et c'est ce qui a
+    // imposé cette formulation.
+    const lectures = bloc.match(/subscription\.findUnique\(\{[\s\S]*?\n\s*\}\);/g) ?? [];
+    assert.equal(lectures.length, 2, "les deux lectures du forfait doivent être vues");
+    for (const lecture of lectures) {
+      const niveauRacine = lecture.split(/\binclude\s*:/)[0];
+      assert.equal(/\bselect\s*:/.test(niveauRacine), false,
+        "un `select` sur le forfait priverait la garde de `freeTrialRequestId`");
+    }
+  });
+});
+
 describe("plusieurs attributs en une seule opération", () => {
   it("applique serveur, volume, début et durée d'un seul coup", () => {
     const changements: ChangementsGroupes = {

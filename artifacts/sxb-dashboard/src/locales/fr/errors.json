@@ -133,7 +133,8 @@
       "expiry_conflict": "Une échéance et une durée ne peuvent pas être appliquées ensemble.",
       "no_change": "Ce forfait a déjà ces valeurs.",
       "no_field": "Aucun champ à appliquer.",
-      "too_many": "Un lot ne peut pas dépasser {{max}} forfaits."
+      "too_many": "Un lot ne peut pas dépasser {{max}} forfaits.",
+      "trial_profile_locked": "Ce forfait provient d'un essai gratuit : sa configuration ne se change pas ici. Convertissez-le en forfait ordinaire, ou modifiez les serveurs depuis l'essai lui-même."
     }
   },
   "profiles": { "invalid_resellers": "La liste des revendeurs attribués est invalide." },

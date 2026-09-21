@@ -81,6 +81,13 @@ export interface ForfaitCible {
   startAt?: Date | string | null;
   expireAt?: Date | string | null;
   status?: string | null;
+  /**
+   * Marqueur d'origine : non nul si ce forfait est né d'un essai gratuit.
+   *
+   * Lu ici et nulle part ailleurs dans ce module — uniquement pour refuser de
+   * changer la CONFIGURATION d'un accès d'essai par une opération groupée.
+   */
+  freeTrialRequestId?: string | null;
 }
 
 /**
@@ -97,7 +104,25 @@ export const RAISONS_GROUPEES = {
   ECHEANCE_ET_DUREE: "errors.subscriptions.bulk.expiry_conflict",
   LOT_TROP_GRAND: "errors.subscriptions.bulk.too_many",
   LOT_VIDE: "errors.subscriptions.bulk.empty",
+  ESSAI_CONFIG_INTERDITE: "errors.subscriptions.bulk.trial_profile_locked",
 } as const;
+
+/**
+ * D'où vient la demande, et donc quelle autorité elle porte.
+ *
+ * `forfaits` — l'écran « Forfaits Data ». Il ne liste pas les accès d'essai et
+ *   n'a pas à pouvoir changer leur configuration : le faire laisserait un
+ *   client payant étiqueté « essai », ou le promouvrait sans trace.
+ * `essais`   — la section « Essais ». Remplacer le serveur d'un essai EST sa
+ *   fonction ; elle garde donc cette capacité.
+ *
+ * Le défaut est `forfaits`, donc le refus. Un appelant qui oublie de se
+ * déclarer obtient le comportement sûr, jamais l'inverse — et cette
+ * distinction vit ici, dans la fonction pure, plutôt que dans l'écran qui
+ * n'affiche pas les essais : ne pas lister un forfait n'empêche personne
+ * d'en donner l'identifiant à la route.
+ */
+export type OrigineApplication = "forfaits" | "essais";
 
 export type PlanForfait =
   | {
@@ -203,6 +228,7 @@ export function planifierApplication(
   forfait: ForfaitCible,
   changements: ChangementsGroupes,
   maintenant: Date = new Date(),
+  origine: OrigineApplication = "forfaits",
 ): PlanForfait {
   if (aucunChampRenseigne(changements)) {
     return { statut: "skipped", raison: RAISONS_GROUPEES.AUCUN_CHAMP };
@@ -220,7 +246,30 @@ export function planifierApplication(
   const data: Record<string, unknown> = {};
 
   // ── Configuration VPN / serveur ─────────────────────────────────────────
+  //
+  // GARDE : depuis « Forfaits Data », un accès né d'un essai ne change pas de
+  // configuration.
+  //
+  // Tout l'affichage « période d'essai » tient à `freeTrialRequestId`, que
+  // cette opération ne touche pas. Lui donner un profil VIP laisserait donc
+  // un client payant étiqueté « essai » sur les six écrans qui en dérivent,
+  // et dans l'application. L'effacer d'office serait pire : la conversion
+  // serait faite sans passer par `planifierConversion`, donc sans le statut
+  // `converted`, sans `convertedBy` ni `convertedAt` — une promotion sans
+  // trace.
+  //
+  // Aucune capacité n'est perdue : la section Essais garde le remplacement de
+  // serveur (c'est sa fonction, d'où `origine === "essais"`), et la promotion
+  // vers un forfait ordinaire a sa route dédiée, la CONVERSION.
+  //
+  // La garde est posée ICI plutôt que dans l'écran : « Forfaits Data » ne
+  // liste pas les essais, mais ne pas lister un forfait n'empêche personne
+  // d'en donner l'identifiant à la route. Vérifier que le bon chemin existe
+  // ne prouve jamais qu'aucun autre n'existe.
   if (changements.profileId !== undefined && changements.profileId !== forfait.profileId) {
+    if (origine !== "essais" && forfait.freeTrialRequestId) {
+      return { statut: "failed", raison: RAISONS_GROUPEES.ESSAI_CONFIG_INTERDITE };
+    }
     data.profileId = changements.profileId;
   }
 
@@ -311,10 +360,11 @@ export function deltaAllocationGroupee(
   forfaits: readonly ForfaitCible[],
   changements: ChangementsGroupes,
   maintenant: Date = new Date(),
+  origine: OrigineApplication = "forfaits",
 ): bigint {
   let delta = BigInt(0);
   for (const forfait of forfaits) {
-    const plan = planifierApplication(forfait, changements, maintenant);
+    const plan = planifierApplication(forfait, changements, maintenant, origine);
     if (plan.statut !== "ok") continue;
     const avant = plan.engageAvant ? plan.quotaAvant : BigInt(0);
     const apres = plan.engageApres ? plan.quotaApres : BigInt(0);

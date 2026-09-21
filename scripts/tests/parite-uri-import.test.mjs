@@ -202,3 +202,69 @@ describe('une liste d’URI — un abonnement en porte plusieurs', () => {
     }
   });
 });
+
+describe("miroir `backend/` — les trois règles de transport ne doivent pas re-diverger", () => {
+  // ── PORTÉE DE CE BLOC, explicitement ────────────────────────────────────
+  //
+  // `backend/server/services/canonical-config.ts` accuse plusieurs centaines
+  // de lignes de retard sur la racine. Ce bloc NE PRÉTEND PAS à la parité
+  // générale — l'affirmer serait faux, et un test qui ment est pire qu'un
+  // test absent.
+  //
+  // Il épingle exactement les TROIS règles dont l'absence rend un tunnel muet
+  // sans le moindre message : l'alias `network=`, l'ALPN déduit, et le nom TLS
+  // par défaut. Le miroir est atteignable — `cd backend && npm run dev` sert
+  // `backend/server.ts`, qui monte ces routes-là.
+  const CHEMIN_MIROIR = path.join(ROOT, 'backend/server/services/canonical-config.ts');
+  const BASE = 'vless://11111111-2222-3333-4444-555555555555@';
+
+  it("lit `network=` comme `type=`, et en déduit l'ALPN, exactement comme la racine", async () => {
+    const miroir = await import(pathToFileURL(CHEMIN_MIROIR).href);
+    const uri = `${BASE}exemple.test:443?security=tls&network=ws&host=facade.test&path=%2Fws&fp=chrome#miroir`;
+
+    const racine = parseImportedConfig(uri);
+    const copie = miroir.parseImportedConfig(uri);
+
+    assert.equal(racine.ok, true, racine.errors.join(' | '));
+    assert.equal(copie.ok, true, copie.errors.join(' | '));
+    // Le défaut se lisait ICI : `network=undefined` avec `ok=true, errors=[]`.
+    assert.equal(copie.canonical.network, 'ws');
+    for (const champ of ['network', 'alpn', 'sni', 'wsHost', 'path', 'tls']) {
+      assert.deepEqual(
+        copie.canonical[champ], racine.canonical[champ],
+        `champ « ${champ} » divergent entre la racine et le miroir`,
+      );
+    }
+  });
+
+  it("déduit le même nom TLS qu'à la racine, y compris sur une adresse littérale", async () => {
+    const miroir = await import(pathToFileURL(CHEMIN_MIROIR).href);
+    for (const [etiquette, uri] of [
+      ['domaine sans sni', `${BASE}exemple.test:443?security=tls&type=ws&host=facade.test&path=%2Fws#a`],
+      ['IP littérale', `${BASE}203.0.113.7:443?security=tls&type=ws&host=facade.test&path=%2Fws#b`],
+      ['sni explicite', `${BASE}203.0.113.7:443?security=tls&type=ws&host=facade.test&sni=choisi.test&path=%2Fws#c`],
+    ]) {
+      const racine = parseImportedConfig(uri);
+      const copie = miroir.parseImportedConfig(uri);
+      assert.equal(copie.ok, true, `${etiquette} : ${copie.errors.join(' | ')}`);
+      assert.equal(
+        copie.canonical.sni, racine.canonical.sni,
+        `nom TLS divergent entre la racine et le miroir — ${etiquette}`,
+      );
+    }
+  });
+
+  it("CE QUE CE BLOC NE DIT PAS — le retard du miroir est mesuré, pas masqué", () => {
+    // Si cet écart se referme un jour, c'est que quelqu'un a réellement
+    // réaligné les deux arbres ; il faudra alors remplacer ce bloc par une
+    // vraie parité. Tant qu'il est grand, personne ne peut lire les tests
+    // ci-dessus comme une garantie générale.
+    const racine = readFileSync(path.join(ROOT, 'server/services/canonical-config.ts'), 'utf8').split('\n').length;
+    const copie = readFileSync(CHEMIN_MIROIR, 'utf8').split('\n').length;
+    assert.ok(racine > copie, 'le miroir est censé être en retard, pas en avance');
+    assert.ok(
+      racine - copie > 100,
+      `retard mesuré de ${racine - copie} lignes : si l'écart s'est refermé, remplacer ce bloc par une vraie parité`,
+    );
+  });
+});
