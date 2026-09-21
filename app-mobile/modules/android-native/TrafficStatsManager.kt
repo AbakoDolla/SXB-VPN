@@ -113,6 +113,21 @@ class TrafficStatsManager {
     private var lastTunTx = 0L
     private var lastTunRx = 0L
 
+    // Octets REÇUS par les applications depuis que le TUN est attaché.
+    //
+    // `totalDownload` ne convient pas pour prouver qu'un tunnel achemine : il
+    // cumule aussi les octets mesurés sur le UID du service avant l'attache du
+    // TUN (négociation, contrôle), et il n'est volontairement pas remis à zéro
+    // lors de l'attache afin de préserver le cumul de session.
+    //
+    // Ce compteur-ci ne retient que `rx_bytes` de l'interface TUN, c'est-à-dire
+    // les octets que le moteur a REÉCRITS vers les applications. Il ne peut
+    // progresser que si des données de retour ont réellement traversé le
+    // tunnel de bout en bout : c'est la preuve recherchée, et non une
+    // intention d'émission (`tx_bytes` progresse dès qu'une application tente
+    // d'émettre, même vers un tunnel mort).
+    private val tunReturnBytes = AtomicLong(0L)
+
     private val running = AtomicBoolean(false)
     private var pollThread: Thread? = null
 
@@ -265,6 +280,7 @@ class TrafficStatsManager {
             val deltaTx = SxbUsageOdometer.step(lastTunTx, tun.first)
             val deltaRx = SxbUsageOdometer.step(lastTunRx, tun.second)
             accumulate(deltaTx, deltaRx)
+            if (deltaRx > 0L) tunReturnBytes.addAndGet(deltaRx)
             speedUpload.set(deltaTx * 1000L / deltaMs)
             speedDownload.set(deltaRx * 1000L / deltaMs)
             lastTunTx = tun.first
@@ -315,6 +331,7 @@ class TrafficStatsManager {
         tunInterface = clean
         lastTunTx = baseline.first
         lastTunRx = baseline.second
+        tunReturnBytes.set(0L)
         // totalUpload.set(0L) // Ne plus réinitialiser lors du rattachement TUN
         // totalDownload.set(0L) // Conserver le cumul de la session globale
         speedUpload.set(0L)
@@ -340,6 +357,16 @@ class TrafficStatsManager {
 
     @Synchronized
     fun hasTunCounters(): Boolean = tunAttached && tunCountersReadable
+
+    /**
+     * Octets de RETOUR réellement remis aux applications depuis l'attache du TUN.
+     *
+     * Sert de preuve d'acheminement : tant que cette valeur vaut zéro, aucune
+     * donnée n'est revenue par le tunnel et l'état « connecté » ne doit pas
+     * être annoncé. La valeur est volontairement brute — c'est à l'appelant de
+     * décider du seuil et du délai d'attente.
+     */
+    fun returnBytesSinceTunAttach(): Long = tunReturnBytes.get()
 
     @Synchronized
     fun getSessionStats(): SessionSnapshot = SessionSnapshot(

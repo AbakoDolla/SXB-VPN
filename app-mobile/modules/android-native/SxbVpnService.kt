@@ -1001,6 +1001,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
     // Timer notification trafic
     private var notifThread: Thread? = null
     private var connectionWatchdog: Thread? = null
+    private var handshakeProver: Thread? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     /** Libération asynchrone d'un tunnel périmé — unique, et rejointe avant toute tentative. */
     @Volatile private var tunnelReleaseThread: Thread? = null
@@ -2371,15 +2372,29 @@ class SxbVpnService : VpnService(), PlatformInterface {
         broadcastLog("[SXB] Tunnel sécurisé prêt")
         broadcastLog("[SXB] ✅ Moteur $label démarré")
         connectionWatchdog?.interrupt()
-        
-        // On s'assure que l'état est bien "connected" (déjà fait normalement dans openTun)
-        if (currentState != "connected") {
-            broadcastStatus("connected"); setCurrentState("connected")
-            tunnelEverUp = true
-            autoReconnect.onConnected()
-            updateNotification("SXB VPN — $label connecté")
-            startNotificationUpdater()
+
+        // LE MOTEUR EST DÉMARRÉ — CE N'EST PAS UNE CONNEXION.
+        //
+        // Ce bloc publiait auparavant « connected » dès que `service.start()`
+        // rendait la main, sous le commentaire « déjà fait normalement dans
+        // openTun ». Ce commentaire était devenu faux : openTun() ne publie plus
+        // « connected » mais « handshaking », précisément pour attendre une
+        // preuve de flux réel. Les deux correctifs se neutralisaient, et le
+        // repli ci-dessous annonçait une réussite alors qu'aucun octet n'avait
+        // traversé le tunnel — la garde de writeLog(), qui exige
+        // `currentState == "handshaking"`, devenait de surcroît inatteignable.
+        //
+        // `service.start()` prouve seulement que le moteur a chargé sa
+        // configuration et ouvert le TUN. Il ne prouve ni que le serveur
+        // distant répond, ni que la session est authentifiée, ni qu'une donnée
+        // est acheminée (§9, §12). La promotion est donc confiée à
+        // `promoteToConnected()`, qui n'accepte que des preuves réelles.
+        if (currentState == "connecting") {
+            setCurrentState("handshaking")
+            broadcastStatus("handshaking")
         }
+        updateNotification("SXB VPN — $label : négociation du flux…")
+        startHandshakeProver(label)
     }
 
     /**
@@ -2494,6 +2509,118 @@ class SxbVpnService : VpnService(), PlatformInterface {
             autoReconnect.onDisconnected()
         }
         // Pas de cleanup() ici : géré exclusivement dans le bloc finally du tunnel.
+    }
+
+    /**
+     * PREUVE D'ACHEMINEMENT — seule porte d'entrée vers l'état « connected ».
+     *
+     * Le document de mission interdit d'annoncer une connexion tant que les
+     * critères réels ne sont pas satisfaits (§9, §12). Un moteur démarré, un
+     * TUN ouvert ou une session SSH authentifiée ne prouvent aucun des trois :
+     * ils prouvent qu'un transport est prêt, pas qu'une donnée circule.
+     *
+     * Trois preuves sont acceptées, par ordre d'apparition :
+     *
+     *  1. `rx_bytes` de l'interface TUN — octets que le moteur a REÉCRITS vers
+     *     les applications. Ils ne peuvent progresser que si des données de
+     *     retour ont traversé le tunnel de bout en bout. `tx_bytes` est
+     *     volontairement ignoré : il progresse dès qu'une application tente
+     *     d'émettre, même vers un tunnel mort.
+     *  2. Les octets descendants du relais SOCKS5/SSH, mesurés par le service
+     *     lui-même et donc lisibles même si /sys/class/net est restreint.
+     *  3. Une preuve de poignée de main de l'outbound proxy dans le journal du
+     *     moteur (`isProxyHandshakeProof`). En pratique rare : le moteur est
+     *     configuré en niveau `warn` et n'émet alors pas « connection
+     *     established ». Cette voie est conservée sans être présumée.
+     */
+    @Synchronized
+    private fun promoteToConnected(reason: String, label: String) {
+        if (!running.get()) return
+        // Seul `handshaking` peut être promu : jamais `error`, `disconnected`
+        // ni un `connecting` dont le TUN n'est pas encore ouvert.
+        if (currentState != "handshaking") return
+        handshakeProver?.let { if (it !== Thread.currentThread()) it.interrupt() }
+        handshakeProver = null
+        trace("TUNNEL_TRAFFIC_CONFIRMED", "proof=$reason")
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] HANDSHAKE_VERIFIED proof=$reason")
+        broadcastLog("[SXB] ✅ Données en transit — tunnel opérationnel")
+        setCurrentState("connected")
+        broadcastStatus("connected")
+        tunnelEverUp = true
+        updateNotification(if (label.isBlank()) "SXB VPN — Connecté" else "SXB VPN — $label connecté")
+        startNotificationUpdater()
+        if (::autoReconnect.isInitialized) autoReconnect.onConnected()
+    }
+
+    /**
+     * Attend une preuve d'acheminement, pendant un délai borné et explicite.
+     *
+     * Sans borne, un tunnel monté mais muet laisserait le service en
+     * « négociation » indéfiniment. Avec une borne trop stricte, un appareil
+     * dont les compteurs noyau sont illisibles verrait échouer un tunnel
+     * pourtant fonctionnel. Les deux cas sont donc distingués à l'échéance.
+     */
+    private fun startHandshakeProver(label: String) {
+        handshakeProver?.interrupt()
+        handshakeProver = Thread({
+            val startedAt = System.currentTimeMillis()
+            try {
+                while (running.get() && currentState == "handshaking") {
+                    val evidence = SxbHandshakeProofPolicy.Evidence(
+                        tunReturnBytes = trafficManager.returnBytesSinceTunAttach(),
+                        sshRelayReturnBytes = downloadBytes.get(),
+                        isSshRelay = isSshRelay,
+                        hasTunCounters = trafficManager.hasTunCounters(),
+                        elapsedMs = System.currentTimeMillis() - startedAt,
+                        timeoutMs = SxbHandshakeProofPolicy.DEFAULT_TIMEOUT_MS,
+                    )
+                    when (SxbHandshakeProofPolicy.evaluate(evidence)) {
+                        SxbHandshakeProofPolicy.Verdict.WAIT -> {
+                            Thread.sleep(SxbHandshakeProofPolicy.POLL_INTERVAL_MS)
+                        }
+
+                        SxbHandshakeProofPolicy.Verdict.PROMOTE_MEASURED -> {
+                            promoteToConnected(
+                                "tun_rx=${evidence.tunReturnBytes} ssh_rx=${evidence.sshRelayReturnBytes}",
+                                label,
+                            )
+                            return@Thread
+                        }
+
+                        SxbHandshakeProofPolicy.Verdict.PROMOTE_PRESUMED -> {
+                            // Compteurs illisibles : l'absence de trafic n'est PAS
+                            // démontrée. Refuser casserait un tunnel peut-être sain.
+                            // L'état est présumé — et annoncé comme tel (§8.A).
+                            trace("TUNNEL_PROOF_UNMEASURABLE", "timeout_ms=${evidence.timeoutMs}")
+                            broadcastLog(
+                                "[SXB] ⚠️ ÉTAT PRÉSUMÉ — compteurs de trafic illisibles sur cet " +
+                                "appareil : l'acheminement n'a pas pu être vérifié.",
+                            )
+                            promoteToConnected("presume_unmeasurable", label)
+                            return@Thread
+                        }
+
+                        SxbHandshakeProofPolicy.Verdict.FAIL_NO_TRAFFIC -> {
+                            // La mesure était possible et n'a rien vu : diagnostic ferme.
+                            trace("TUNNEL_NO_TRAFFIC_PROOF", "measurable=true timeout_ms=${evidence.timeoutMs}")
+                            broadcastLog(
+                                "[SXB] ❌ TUNNEL_SANS_TRAFIC — transport établi, mais aucun octet " +
+                                "n'est revenu en ${evidence.timeoutMs / 1000} s.",
+                            )
+                            running.set(false)
+                            failVpn("TUNNEL_STALLED", "Tunnel monté mais aucune donnée acheminée")
+                            cleanup()
+                            return@Thread
+                        }
+                    }
+                }
+            } catch (_: InterruptedException) {
+                // Session terminée ou promotion déjà prononcée ailleurs.
+            }
+        }, "SXB-HandshakeProver").apply {
+            isDaemon = true
+            start()
+        }
     }
 
     private fun startConnectionWatchdog() {
@@ -2801,10 +2928,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
         broadcastLog("[SXB_DEBUG] STEP_7_TUN_CREATED fd=${pfd.fd}")
         broadcastLog("[SXB] Interface TUN créée")
 
-        // FIX — Pour V2Ray/Xray, on passe en état "handshaking" au lieu de "connected".
-        // On attendra que le moteur sing-box confirme le flux réel dans writeLog()
-        // ou que les compteurs de trafic décollent.
-        if (currentState == "connecting" && !isSshRelay) {
+        // Le TUN est ouvert : le transport est prêt, rien ne prouve encore qu'il
+        // achemine. L'état « handshaking » vaut pour TOUS les chemins, y compris
+        // le relais SSH — qui en était exclu et restait donc en « connecting »
+        // jusqu'à ce qu'un repli l'annonce connecté sans preuve.
+        // La promotion est décidée par startHandshakeProver() / writeLog().
+        if (currentState == "connecting") {
             setCurrentState("handshaking")
             broadcastStatus("handshaking")
             broadcastLog("[SXB] ⏳ Tunnel établi — Négociation du flux en cours...")
@@ -2976,14 +3105,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // On exige désormais une preuve provenant de l'outbound proxy lui-même et
         // on écarte explicitement les outbounds locaux.
         if (currentState == "handshaking" && isProxyHandshakeProof(lower)) {
-            Log.i("SXB_DEBUG", "[SXB_DEBUG] HANDSHAKE_VERIFIED via log")
-            broadcastLog("[SXB] ✅ Handshake réussi — Données en transit")
-            setCurrentState("connected")
-            broadcastStatus("connected")
-            tunnelEverUp = true
-            updateNotification("SXB VPN — Connecté")
-            startNotificationUpdater()
-            autoReconnect.onConnected()
+            promoteToConnected("engine_log_handshake", "")
         }
 
         noteOutboundFailure(lower)
@@ -5238,6 +5360,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
         notifThread?.interrupt()
         connectionWatchdog?.interrupt()
         connectionWatchdog = null
+        // Sans cela, un fil de preuve survivrait à la session et pourrait
+        // publier « connected » sur la session suivante.
+        handshakeProver?.interrupt()
+        handshakeProver = null
 
         if (stopService) {
             SxbAccessControl.stopped(this)
