@@ -24,12 +24,35 @@ export interface FicheTrafic {
   quotaUsed: bigint;
 }
 
+/**
+ * Seuil de forfait hors norme (1 Tio).
+ *
+ * Mesuré en production le 21/09 : 40 forfaits portent chacun ~49 Tio — soit un
+ * facteur 1024 sur une donnée de forfait — et pèsent 2 011 625 Gio sur les
+ * 2 015 876 agrégés, pour un parc dont la part ordinaire ne provisionne que
+ * 4 251 Gio. Tant qu'ils entraient dans la somme, le tableau de bord annonçait
+ * « 2 015 158,96 Gio restants » et aucun dépassement ne pouvait se déclencher.
+ *
+ * Un commentaire antérieur, de moi, soutenait l'inverse : « les retrancher
+ * remplacerait un chiffre absurde par un chiffre flatteur. » La mesure l'a
+ * réfuté — c'est l'INCLUSION qui flatte, parce qu'elle efface l'épuisement.
+ * Ils sont donc retranchés du total ET dénombrés à part : l'anomalie cesse
+ * d'être sommée sans cesser d'être visible.
+ */
+export const SEUIL_FORFAIT_HORS_NORME = BigInt(1024) ** BigInt(4);
+
 export interface TraficAgrege {
-  /** Somme des quotas, sur les seules fiches qui en portent un. */
+  /** Somme des quotas ORDINAIRES, hors forfaits hors norme. */
   provisionedBytes: bigint;
+  /** Somme des quotas AVANT retranchement — publiée, jamais escamotée. */
+  provisionedBytesBrut: bigint;
+  /** Nombre de fiches écartées du plafond par le seuil. */
+  outsizedPlans: number;
+  /** Volume écarté du plafond par le seuil. */
+  outsizedBytes: bigint;
   /** Consommation de TOUT le parc visible — rien ne disparaît du total. */
   consumedBytes: bigint;
-  /** Consommation des seules fiches à quota : le numérateur du taux. */
+  /** Consommation des seules fiches à quota ordinaire : numérateur du taux. */
   meteredConsumedBytes: bigint;
   /** Nombre de fiches effectivement plafonnées. */
   meteredClients: number;
@@ -37,6 +60,9 @@ export interface TraficAgrege {
 
 export function agregerTrafic(fiches: readonly FicheTrafic[]): TraficAgrege {
   let provisionedBytes = BigInt(0);
+  let provisionedBytesBrut = BigInt(0);
+  let outsizedPlans = 0;
+  let outsizedBytes = BigInt(0);
   let consumedBytes = BigInt(0);
   let meteredConsumedBytes = BigInt(0);
   let meteredClients = 0;
@@ -47,13 +73,30 @@ export function agregerTrafic(fiches: readonly FicheTrafic[]): TraficAgrege {
     // Un quota absent, nul ou négatif ne plafonne rien : la fiche n'entre ni
     // au numérateur ni au dénominateur, sinon le taux redevient incomparable.
     if (fiche.quotaTotal && fiche.quotaTotal > BigInt(0)) {
+      provisionedBytesBrut += fiche.quotaTotal;
+      // Un plafond hors norme ne plafonne rien de réel : il sort du
+      // dénominateur COMME du numérateur, exactement au même titre qu'un
+      // quota absent. Sa consommation reste dans `consumedBytes`.
+      if (fiche.quotaTotal >= SEUIL_FORFAIT_HORS_NORME) {
+        outsizedPlans++;
+        outsizedBytes += fiche.quotaTotal;
+        continue;
+      }
       provisionedBytes += fiche.quotaTotal;
       meteredConsumedBytes += utilise;
       meteredClients++;
     }
   }
 
-  return { provisionedBytes, consumedBytes, meteredConsumedBytes, meteredClients };
+  return {
+    provisionedBytes,
+    provisionedBytesBrut,
+    outsizedPlans,
+    outsizedBytes,
+    consumedBytes,
+    meteredConsumedBytes,
+    meteredClients,
+  };
 }
 
 const OCTETS_PAR_GO = 1024 * 1024 * 1024;
@@ -108,16 +151,9 @@ function estIllimite(quota: bigint): boolean {
   return quota < BigInt(0);
 }
 
-/**
- * Seuil PUREMENT INFORMATIF (1 Tio).
- *
- * En production, 39 forfaits « VIP » de 100 To à 1 Po pèsent 2 010 000 Gio sur
- * 2 015 419. Les retrancher d'office remplacerait un chiffre absurde par un
- * chiffre flatteur : ils restent donc dans le total, et sont seulement
- * dénombrés à part pour que l'exploitant puisse décider en connaissance de
- * cause d'isoler ou non cette part à l'affichage.
- */
-export const SEUIL_FORFAIT_HORS_NORME = BigInt(1024) ** BigInt(4);
+/* Le seuil de forfait hors norme est déclaré en tête de ce fichier, avec
+ * l'agrégat qui l'applique : un seuil et son usage ne doivent pas pouvoir
+ * dériver l'un de l'autre. */
 
 export interface LigneQuotaClient {
   status?: string | null;

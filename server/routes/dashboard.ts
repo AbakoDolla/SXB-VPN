@@ -234,6 +234,13 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
       activeResellers = inMemoryDb.resellers.filter((r) => r.status === "active").length;
     }
 
+    // `agregatQuota.provisionedBytes` est déjà NET des forfaits hors norme :
+    // le retranchement vit dans `agregerTrafic`, point unique partagé avec
+    // /api/analytics/traffic. Le refaire ici le compterait deux fois.
+    const provisionedTrafficBytesBrut = agregatQuota
+      ? agregatQuota.provisionedBytesBrut
+      : provisionedTrafficBytes;
+
     const GB = 1024 * 1024 * 1024;
     const consumedTrafficGb = Number(consumedTrafficBytes) / GB;
     const provisionedTrafficGb = Number(provisionedTrafficBytes) / GB;
@@ -407,12 +414,15 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
             ) / 100,
           )
         : 0,
+      // Comparé à la part ORDINAIRE, pas au total brut : tant que les 2 Po des
+      // forfaits hors norme entraient dans la comparaison, aucun dépassement ne
+      // pouvait se déclencher — le signal était mort sans être absent.
       trafficOverage: agregatQuota
-        ? agregatQuota.meteredConsumedBytes > agregatQuota.provisionedBytes
+        ? agregatQuota.meteredConsumedBytes > provisionedTrafficBytes
         : false,
       trafficOverageBytes: (agregatQuota
-        && agregatQuota.meteredConsumedBytes > agregatQuota.provisionedBytes
-        ? agregatQuota.meteredConsumedBytes - agregatQuota.provisionedBytes
+        && agregatQuota.meteredConsumedBytes > provisionedTrafficBytes
+        ? agregatQuota.meteredConsumedBytes - provisionedTrafficBytes
         : BigInt(0)
       ).toString(),
       consumedTrafficBytes: consumedTrafficBytes.toString(),
@@ -427,17 +437,26 @@ router.get("/stats", requireAuth, requirePermission("analytics.read"), async (re
         ? {
             fromSubscriptions: provenance.fromSubscriptions,
             fromClientRecord: provenance.fromClientRecord,
-            // Forfaits hors norme : 39 forfaits « VIP » pèsent 2 010 000 Gio sur
-            // 2 015 419 en production. Ils ne sont PAS retranchés du chiffre
-            // principal — les écarter d'office remplacerait un chiffre absurde
-            // par un chiffre flatteur. Ils sont exposés pour que l'exploitant
-            // décide lui-même d'isoler ou non cette part à l'affichage.
+            // Forfaits hors norme (≥ 1 Tio) : RETRANCHÉS du chiffre principal
+            // depuis la mesure du 21/09 — 40 forfaits portant chacun ~49 Tio
+            // faisaient afficher « 2 015 158,96 Gio restants » pour un parc qui
+            // en provisionne 4 251. Rien n'est escamoté : leur nombre, leur
+            // volume, le seuil et le total brut sont publiés ici.
+            //
+            // `outsizedExcluded` existe pour que l'écran l'ANNONCE, sur le même
+            // modèle que `freeTrialExcluded`. Sans lui, un revendeur dont
+            // l'unique forfait est hors norme lirait « 0 provisionné » sans
+            // savoir pourquoi — un chiffre muet à la place d'un chiffre faux,
+            // c'est le même défaut un cran plus bas.
+            outsizedExcluded: provenance.outsizedPlans > 0,
             outsizedPlans: provenance.outsizedPlans,
             outsizedBytes: provenance.outsizedBytes.toString(),
             outsizedThresholdBytes: SEUIL_FORFAIT_HORS_NORME.toString(),
-            ordinaryProvisionedBytes: (
-              provisionedTrafficBytes - provenance.outsizedBytes
-            ).toString(),
+            // Déjà net du retranchement : `provisionedTrafficBytes` EST la part
+            // ordinaire. Le soustraire une seconde fois compterait deux fois.
+            ordinaryProvisionedBytes: provisionedTrafficBytes.toString(),
+            // Le total d'origine, pour que le chiffre retiré reste consultable.
+            totalWithOutsizedBytes: provisionedTrafficBytesBrut.toString(),
           }
         : null,
       // Portée des chiffres ci-dessus : « own » pour un revendeur (ses clients
