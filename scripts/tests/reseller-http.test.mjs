@@ -557,7 +557,12 @@ test("profile lock: rate limiting is dedicated and legacy profiles can explicitl
 
 test("profile lock: assignment, subscriptions and authorized encrypted provisioning need no proof", async () => {
   const profile = await lockedProfile();
-  ok(await api("admin", "PUT", `/vpn-profiles/${profile.id}/resellers`, { resellerIds: ["res-r1"] }));
+  // Acteur `root` : ce test porte sur la PREUVE DE DÉVERROUILLAGE, pas sur la
+  // propriété. Les revendeurs du jeu d'essai sont délibérément orphelins (voir
+  // « quota dashboard… », qui exige que l'administrateur n'en cumule aucun), et
+  // l'attribution est désormais bornée à la portée de l'appelant. Garder
+  // `admin` ici mesurerait le cloisonnement au lieu du verrou.
+  ok(await api("root", "PUT", `/vpn-profiles/${profile.id}/resellers`, { resellerIds: ["res-r1"] }));
   const assigned = await api("r1", "GET", "/vpn-profiles/assigned");
   ok(assigned);
   assert.ok(assigned.body.profiles.some(p => p.id === profile.id));
@@ -576,6 +581,38 @@ test("profile lock: assignment, subscriptions and authorized encrypted provision
   assert.ok(!JSON.stringify(provisioned.body).includes("technical-password"));
   assert.ok(!JSON.stringify(provisioned.body).includes(lockPassword));
   assert.ok(JSON.stringify(provisioned.body).includes("gcm:"));
+});
+
+test("l'attribution d'une configuration reste dans le compartiment de l'appelant", async () => {
+  // Les identifiants de revendeurs arrivent par le CORPS de la requête. Le
+  // profil visé, lui, vient de l'URL et était déjà cloisonné — c'est
+  // exactement l'angle mort : la portée existait dans le fichier, elle ne
+  // couvrait pas la référence du corps. Un administrateur pouvait donc
+  // distribuer sa configuration au revendeur d'un autre exploitant, en
+  // devinant un identifiant qu'il n'avait aucun moyen de voir.
+  db.state.Reseller.push({
+    id: "res-sien", userId: "r2", status: "active", quotaBytes: 10n * GO,
+    quotaUsedBytes: 0n, accessExpiresAt: tomorrow(), createdBy: "admin",
+  });
+
+  // `res-r1` est orphelin : invisible de l'administrateur dans `GET /resellers`,
+  // qui applique la même portée. Il doit être écarté comme le serait un
+  // revendeur supprimé — sans erreur distincte, sinon le compte rendu
+  // révélerait son existence.
+  const reponse = await api("admin", "PUT", "/vpn-profiles/p1/resellers", {
+    resellerIds: ["res-sien", "res-r1"],
+  });
+  ok(reponse);
+  assert.equal(reponse.body.assigned, 1);
+  assert.deepEqual(
+    db.state.VpnProfileReseller.filter(l => l.profileId === "p1").map(l => l.resellerId),
+    ["res-sien"],
+  );
+
+  // Le propriétaire, lui, n'est pas cloisonné : la règle ferme le compartiment
+  // de l'administrateur, elle n'aveugle pas l'exploitation.
+  ok(await api("root", "PUT", "/vpn-profiles/p1/resellers", { resellerIds: ["res-r1", "res-r2"] }));
+  assert.equal(db.state.VpnProfileReseller.filter(l => l.profileId === "p1").length, 2);
 });
 
 for (const engine of ["ssh", "xray", "singbox"]) {

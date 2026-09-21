@@ -9,10 +9,32 @@ import { logDbActivity } from '../database';
 import crypto from 'crypto';
 import { createLockedEngineAccount, serializeEngineAccount, serializePayload, withUnlockedEngine } from '../services/profile-engines';
 import { handleProfileLockError } from '../services/profile-lock';
-import { porteeComptesSsh } from '../services/portee-donnees';
+import { porteeCharges, porteeComptesSsh } from '../services/portee-donnees';
 import { etFiltres } from '../services/free-trial-marks';
 
 const router = Router();
+
+/**
+ * Une CHARGE désignée dans le CORPS doit appartenir à l'appelant.
+ *
+ * Les charges SSH sont cloisonnées par auteur depuis #51, mais ce cloisonnement
+ * s'exerçait sur `/api/payload/:id` — là où l'identifiant vient de l'URL. Ici il
+ * vient de `req.body.payloadId`, et il était écrit tel quel dans la ligne du
+ * compte : un administrateur pouvait rattacher à son propre compte SSH la
+ * charge d'un autre locataire, dont il n'avait pourtant aucune vue.
+ *
+ * Rend `false` quand la charge n'existe pas OU qu'elle ne regarde pas
+ * l'appelant : les deux cas doivent rester indiscernables, sans quoi l'écart
+ * de réponse énumère les charges de la plateforme.
+ */
+async function chargeAttribuable(req: AuthenticatedRequest, payloadId: string): Promise<boolean> {
+  const portee = await porteeCharges(prisma, req.user);
+  const charge = await (prisma as any).sshPayload.findFirst({
+    where: portee ? ({ AND: [{ id: payloadId }, portee] } as any) : { id: payloadId },
+    select: { id: true },
+  });
+  return !!charge;
+}
 
 // ── Chiffrement AES-256-GCM (Phase 2) ─────────────────────────────────────────
 const ENC_KEY = (() => {
@@ -126,6 +148,10 @@ router.post('/accounts', requireAuth, requirePermission('ssh.manage'), async (re
       return res.status(400).json({ error: 'name, host, username, password are required' });
     }
 
+    if (payloadId && !(await chargeAttribuable(req, String(payloadId)))) {
+      return res.status(404).json({ error: 'Payload not found' });
+    }
+
     const encPwd = encrypt(password, ENC_KEY);
     const quotaTotal = quotaGB ? BigInt(Math.round(quotaGB * 1024 * 1024 * 1024)) : null;
 
@@ -168,6 +194,14 @@ router.put('/accounts/:id', requireAuth, requirePermission('ssh.manage'), async 
       compression, tcpNodelay, slowDns,
       payloadId, dns, sni, status,
     } = req.body;
+
+    // Le compte lui-même est cloisonné par `withUnlockedEngine`
+    // (assertCompteMoteurAccessible). La charge, elle, vient du corps : sans ce
+    // contrôle, rattacher la charge d'un tiers restait possible sur son propre
+    // compte. Une valeur vide ou nulle est un détachement, pas une référence.
+    if (payloadId && !(await chargeAttribuable(req, String(payloadId)))) {
+      return res.status(404).json({ error: 'Payload not found' });
+    }
 
     const updateData: any = {};
     if (name !== undefined) updateData.name = name;

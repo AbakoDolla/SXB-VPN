@@ -19,7 +19,7 @@ import {
   ProfileLockError,
 } from '../services/profile-lock';
 import { prepareProfileEngineLock } from '../services/profile-engines';
-import { porteeProfils } from '../services/portee-donnees';
+import { porteeProfils, porteeRevendeurs } from '../services/portee-donnees';
 
 /**
  * Ce profil regarde-t-il ce requérant ?
@@ -491,10 +491,21 @@ router.put('/:id/resellers', requireAuth, requirePermission('vpnprofile.manage')
     const profile = await chargerProfilVisible(req, { select: { id: true, name: true } });
     if (!profile) return res.status(404).json({ error: 'Profil VPN introuvable' });
 
-    // Écarter les identifiants inconnus plutôt que d'échouer : l'interface
-    // pourrait référencer un revendeur supprimé entre-temps.
+    // Écarter les identifiants hors de portée plutôt que d'échouer : l'interface
+    // pourrait référencer un revendeur supprimé entre-temps. Mais « inconnu »
+    // doit signifier « inconnu DE L'APPELANT » : la requête portait sur toute la
+    // table, si bien qu'un administrateur pouvait attribuer sa configuration au
+    // revendeur d'un autre locataire — donc la lui distribuer — en devinant un
+    // identifiant qu'il n'avait aucun moyen de voir.
+    //
+    // Un revendeur d'autrui est désormais écarté exactement comme un revendeur
+    // supprimé : le compte rendu (`assigned`) ne distingue pas les deux cas, et
+    // ne dit donc rien de l'existence de ceux qu'on ne peut pas voir.
+    const porteeRev = await porteeRevendeurs(prisma, req.user);
     const known = await (prisma as any).reseller.findMany({
-      where: { id: { in: resellerIds } },
+      where: porteeRev
+        ? ({ AND: [{ id: { in: resellerIds } }, porteeRev] } as any)
+        : { id: { in: resellerIds } },
       select: { id: true },
     });
     const validIds: string[] = known.map((r: any) => r.id);
