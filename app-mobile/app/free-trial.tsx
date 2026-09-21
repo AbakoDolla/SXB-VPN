@@ -12,7 +12,7 @@ import * as Localization from "expo-localization";
 import { useAuthContext } from "@/contexts/AuthContext";
 import { useColors } from "@/hooks/useColors";
 import { useResponsive } from "@/hooks/useResponsive";
-import { useTranslation } from "@/localization";
+import { useTranslation, type TranslationKey } from "@/localization";
 import {
   countryFlag, countryName, isCountryCode, normalizeCountryCode, sortedCountries, type Country,
 } from "@/services/countries";
@@ -66,7 +66,7 @@ export default function FreeTrialScreen() {
   const [chargement, setChargement] = useState(false);
   const [verification, setVerification] = useState(false);
   const [reprise, setReprise] = useState(true);
-  const [erreur, setErreur] = useState("");
+  const [erreur, setErreur] = useState<TranslationKey | "">("");
   const shakeAnim = useRef(new Animated.Value(0)).current;
   const basculeEnCours = useRef(false);
 
@@ -156,7 +156,7 @@ export default function FreeTrialScreen() {
     } catch (err) {
       // Une vérification silencieuse qui échoue reste invisible : c'est le cas
       // normal hors connexion, ce n'est pas une erreur utilisateur.
-      if (!silencieux) setErreur(t(cleErreurEssai(err)));
+      if (!silencieux) setErreur(cleErreurEssai(err));
     } finally {
       if (!silencieux) setVerification(false);
     }
@@ -175,12 +175,12 @@ export default function FreeTrialScreen() {
     const nom = name.trim();
     const codePays = normalizeCountryCode(country);
     if (!jeton) {
-      setErreur(t("free_trial_error_token"));
+      setErreur("free_trial_error_token");
       shake();
       return;
     }
     if (nom.length < 2) {
-      setErreur(t("free_trial_error_name"));
+      setErreur("free_trial_error_name");
       shake();
       return;
     }
@@ -188,7 +188,7 @@ export default function FreeTrialScreen() {
     // de savoir d'où viennent les inscrits, ce qui est justement la raison
     // d'être du champ.
     if (!isCountryCode(codePays)) {
-      setErreur(t("free_trial_error_country"));
+      setErreur("free_trial_error_country");
       shake();
       return;
     }
@@ -218,7 +218,7 @@ export default function FreeTrialScreen() {
     } catch (err) {
       if (Platform.OS !== "web") await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       shake();
-      setErreur(t(cleErreurEssai(err)));
+      setErreur(cleErreurEssai(err));
     } finally {
       setChargement(false);
     }
@@ -308,7 +308,7 @@ export default function FreeTrialScreen() {
             {erreur ? (
               <View style={styles.errorWrap}>
                 <Ionicons name="alert-circle" size={16} color={colors.disconnected} />
-                <Text style={styles.errorText}>{erreur}</Text>
+                <Text style={styles.errorText}>{t(erreur as TranslationKey)}</Text>
               </View>
             ) : null}
 
@@ -440,7 +440,7 @@ export default function FreeTrialScreen() {
             {erreur ? (
               <View style={styles.errorWrap}>
                 <Ionicons name="alert-circle" size={16} color={colors.disconnected} />
-                <Text style={styles.errorText}>{erreur}</Text>
+                <Text style={styles.errorText}>{t(erreur as TranslationKey)}</Text>
               </View>
             ) : (
               <Text style={styles.secureHint}>{t("free_trial_name_required")}</Text>

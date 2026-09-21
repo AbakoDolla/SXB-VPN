@@ -193,6 +193,7 @@ export const fr = {
   logs_jitter: 'Gigue',
   logs_copy: 'Copier',
   logs_copied: 'Copié',
+  device_id_copied_body: 'L’identifiant de cet appareil est maintenant dans le presse-papiers.',
   logs_share: 'Partager',
   session_duration: 'Durée',
   engine_state: 'Moteur',

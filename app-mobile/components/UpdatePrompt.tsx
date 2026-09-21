@@ -32,7 +32,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // ouvrir l'APK via un content:// URI compatible FileProvider.
 import Colors from '@/constants/colors';
 import { downloadAndInstallAppUpdate, fetchLatestAppUpdate, type AppUpdateInfo } from '@/services/appUpdate';
-import { useTranslation } from '@/localization';
+import { useTranslation, type TranslationKey } from '@/localization';
 import { radius, spacing } from "@/constants/theme";
 
 // Intervalle de re-vérification : 24 h (mission).
@@ -63,7 +63,7 @@ export default function UpdatePrompt() {
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [installing, setInstalling] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorKey, setErrorKey] = useState<TranslationKey | null>(null);
   const installedVc = useMemo(() => currentVersionCode(), []);
   const installedVn = useMemo(() => currentVersionName(), []);
 
@@ -126,7 +126,7 @@ export default function UpdatePrompt() {
   const onDownload = useCallback(async () => {
     if (!remote || downloading) return;
     setDownloading(true);
-    setErrorMsg(null);
+    setErrorKey(null);
     setProgress(0);
     let installStarted = false;
     try {
@@ -143,9 +143,9 @@ export default function UpdatePrompt() {
       if (code === 'integrity_mismatch' || code === 'integrity_unavailable') {
         // C6 — Le condensat SHA-256 publié ne correspond pas au fichier reçu :
         // l'APK a été supprimé sans être installé.
-        setErrorMsg(t('update_integrity_error'));
+        setErrorKey('update_integrity_error');
       } else {
-        setErrorMsg(installStarted ? t('update_install_error') : t('update_download_error'));
+        setErrorKey(installStarted ? 'update_install_error' : 'update_download_error');
       }
     } finally {
       setDownloading(false);
@@ -194,7 +194,7 @@ export default function UpdatePrompt() {
             </View>
           )}
 
-          {errorMsg && <Text style={styles.error}>{errorMsg}</Text>}
+          {errorKey && <Text style={styles.error}>{t(errorKey)}</Text>}
 
           <View style={styles.actions}>
             {/* Une mise à jour imposée n'offre pas de sortie : proposer
