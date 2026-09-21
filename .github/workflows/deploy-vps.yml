@@ -168,7 +168,13 @@ jobs:
           # valeurs restent des secrets : elles ne transitent jamais par le dépôt.
           envs: OWNER_EMAIL,OWNER_PASSWORD,FIREBASE_SERVICE_ACCOUNT_JSON,FIREBASE_PROJECT_ID,FIREBASE_CLIENT_EMAIL,FIREBASE_PRIVATE_KEY,MOBILE_HEALTH_PSEUDONYM_SECRET
           script: |
-            set -e
+            set -eo pipefail
+            # `set -e` seul laissait passer l'échec d'une commande suivie d'un
+            # pipe : `npm install ... | tail -3` rapportait le succès de `tail`,
+            # jamais celui de l'installation. `pipefail` propage l'échec du
+            # premier maillon, comme les blocs du runner (`set -euo pipefail`).
+            # `-u` reste exclu : MOBILE_HEALTH_PSEUDONYM_SECRET est légitimement
+            # vide au premier passage et testé explicitement plus bas.
             cd /var/www/sxb-vpn
 
             echo "📥 Fix permissions git + Pull latest code..."
@@ -215,7 +221,11 @@ jobs:
             fi
             TMP_ENV=$(mktemp)
             if [ -f "$ENV_FILE" ]; then
-              grep -v '^MOBILE_HEALTH_PSEUDONYM_SECRET=' "$ENV_FILE" > "$TMP_ENV" || true
+              # `|| true` absorbait aussi le code 2 (fichier illisible), et le
+              # `mv` plus bas écrasait alors le .env de production avec un
+              # fichier tronqué. Seul le code 1 (aucune ligne conservée) est
+              # bénin ; toute autre erreur doit interrompre le déploiement.
+              grep -v '^MOBILE_HEALTH_PSEUDONYM_SECRET=' "$ENV_FILE" > "$TMP_ENV" || [ $? -eq 1 ]
             fi
             printf 'MOBILE_HEALTH_PSEUDONYM_SECRET=%s\n' "$MOBILE_HEALTH_PSEUDONYM_SECRET" >> "$TMP_ENV"
             mv "$TMP_ENV" "$ENV_FILE"
@@ -259,8 +269,23 @@ jobs:
 
             echo "⚙️ Build Backend..."
             mkdir -p .sxb-release
-            ESBUILD=$(find backend/node_modules/.bin -name "esbuild" -executable | head -1)
-            if [ -z "$ESBUILD" ]; then ESBUILD="npx --yes esbuild@0.27.3"; fi
+            # `|| true` : sous `pipefail`, un `find` dont le répertoire est
+            # absent sort en code 1 et interromprait le déploiement AVANT le
+            # test ci-dessous — c'est-à-dire précisément dans le cas que ce
+            # test existe pour traiter. Le `|| true` est ici correct parce
+            # qu'il est immédiatement suivi d'une vérification du résultat.
+            ESBUILD=$(find backend/node_modules/.bin -name "esbuild" -executable 2>/dev/null | head -1 || true)
+            if [ -z "$ESBUILD" ]; then
+              # Même décision qu'au build du runner : pas de repli via npx.
+              # "npx --yes esbuild" résout le nom sur le PATH au lieu d'installer
+              # le paquet, et échoue avec "esbuild: not found". Surtout, un repli
+              # silencieux compilerait la production — dont `seed-owner`, qui
+              # touche la base — avec un binaire non déclaré et non épinglé,
+              # sans qu'aucune trace ne distingue ce cas du cas nominal.
+              echo "❌ esbuild introuvable dans backend/node_modules/.bin — déploiement interrompu." >&2
+              exit 1
+            fi
+            echo "esbuild: $ESBUILD"
             $ESBUILD server.ts \
               --bundle \
               --platform=node \
