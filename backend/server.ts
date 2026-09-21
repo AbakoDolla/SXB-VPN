@@ -43,6 +43,36 @@ import xapiRouter from "./server/routes/xapi";
 import { maintenanceGuard, MAINTENANCE_PAGE_HTML } from "./server/middleware/maintenance";
 import { getMaintenanceMode } from "./server/services/maintenance";
 
+// ── Garde de cloisonnement : ce point d'entrée ne doit pas servir ──────────────
+// Les routeurs importés ci-dessus viennent de backend/server/routes/, un arbre
+// miroir dont 14 fichiers (clients, subscriptions, vouchers, resellers, devices,
+// mobile, xpanel…) ne portent AUCUN filtrage par revendeur, là où leurs jumeaux
+// de server/routes/ en portent. Voir scripts/tests/cloisonnement-arbre-miroir.test.mjs.
+//
+// La production sert dist/server.cjs, compilé depuis le server.ts de la RACINE
+// (ecosystem.config.cjs → script: /var/www/sxb-vpn/dist/server.cjs). Ce fichier
+// est compilé par `pnpm run build` mais n'est jamais exécuté.
+//
+// Le risque n'est donc pas le déploiement, c'est le geste manuel : un
+// `cd backend && npm run dev` pendant un incident relit config.PORT et écoute
+// sur le même port. Le service repartirait — sans cloisonnement, et sans que
+// rien ne le signale. D'où cet arrêt explicite.
+//
+// process.exit(1) et non throw : mesuré, un throw à cet endroit sort en code 0
+// dès qu'un module importé plus haut a installé un handler uncaughtException.
+// Le serveur ne démarre pas, mais `npm run dev` rapporte alors un succès —
+// exactement l'issue silencieuse que ce garde existe pour éviter.
+if (process.env.SXB_AUTORISER_SERVEUR_MIROIR !== "1") {
+  console.error(
+    "\n⛔ backend/server.ts est désactivé : ses routeurs n'appliquent pas le cloisonnement multi-locataires.\n" +
+      "   Démarrez le serveur depuis la racine du dépôt :  npx tsx server.ts\n" +
+      "   (la production utilise dist/server.cjs, compilé depuis ce même fichier racine)\n\n" +
+      "   Si vous savez ce que vous faites et acceptez un serveur SANS cloisonnement,\n" +
+      "   forcez explicitement :  SXB_AUTORISER_SERVEUR_MIROIR=1\n",
+  );
+  process.exit(1);
+}
+
 async function startServer() {
   const app = express();
   app.set("trust proxy", 1);
