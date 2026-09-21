@@ -337,6 +337,11 @@ model SshPayload {
   headers     Json?
   content     String?
   status      String       @default("active")
+  // Propriétaire de la charge utile. Aligne `SshPayload` sur les autres
+  // modèles du domaine moteur (`SshAccount`, `XrayAccount`, `SingboxAccount`,
+  // `VpnProfile`, `VPSServer`), seuls à le porter jusqu'ici. Nullable et
+  // additif : la table est vide en production, aucune reprise n'est requise.
+  createdBy   String?
   sshAccounts SshAccount[]
   vpnProfiles VpnProfile[]
   createdAt   DateTime     @default(now())

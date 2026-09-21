@@ -268,6 +268,30 @@ export async function porteeComptesSsh(
 }
 
 /**
+ * Portée des CHARGES UTILES SSH, exprimée sur `SshPayload` (champ `createdBy`).
+ *
+ * `SshPayload` était le SEUL modèle du domaine moteur sans propriétaire :
+ * `VPSServer`, `SshAccount`, `XrayAccount`, `SingboxAccount` et `VpnProfile`
+ * portent tous `createdBy`. Un oubli, donc, et non un choix de conception.
+ *
+ * Une charge utile est l'en-tête d'injection qui fait passer le tunnel chez un
+ * opérateur donné : c'est le savoir-faire commercial de l'exploitant, pas un
+ * réglage de plateforme. Mesuré en production avec un administrateur neuf :
+ * `GET /api/payload` répondait 200 sans aucune restriction.
+ *
+ * La table est VIDE aujourd'hui (0 charge, y compris pour le haut privilège).
+ * C'est précisément pour cela que la colonne est posée maintenant : aucune
+ * ligne à rattacher, donc aucun risque de faire disparaître un réglage en
+ * service. On ferme avant que la fuite n'ait de quoi s'exprimer.
+ */
+export async function porteeCharges(
+  prisma: any,
+  requerant: Requerant | null | undefined,
+): Promise<Record<string, unknown> | null> {
+  return porteeParAuteur(prisma, requerant);
+}
+
+/**
  * Portée des comptes de MOTEUR (`XrayAccount`, `SingboxAccount`).
  *
  * ═══════════════════════════════════════════════════════════════════════════
