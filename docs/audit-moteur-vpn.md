@@ -822,6 +822,34 @@ Dans l'ordre, sur un appareil de test et **jamais sur des données de production
 9. Filtrer le journal sur « Problèmes », partager : vérifier que le texte partagé ne
    contient **aucune adresse de serveur ni identifiant**.
 
+#### Harnais de mesure
+
+Les points 4 à 9 ne s'apprécient pas à l'œil. Un opérateur qui « voit Connecté » ne
+peut pas dire si l'application **avait le droit** de l'afficher — c'est précisément le
+défaut corrigé, et l'écran est convaincant. Un harnais confronte donc la trace réelle du
+service natif et ce que l'opérateur déclare avoir vu :
+
+```bash
+cd app-mobile
+npm run valider:appareil preparer
+npm run valider:appareil capturer -- --sortie point5.log
+npm run valider:appareil analyser -- --capture point5.log --point 5 --affiche-connecte oui
+```
+
+Trois verdicts : `ÉTABLI`, `CONTREDIT`, `NON OBSERVÉ`. **« Non observé » n'est pas une
+réussite** — le code de sortie le reflète. Les critères dont le journal ne peut rien dire
+(l'effet réseau du Kill Switch) sont marqués `À MESURER HORS JOURNAL` et ne passent jamais
+au vert sans déclaration explicite.
+
+- Script : `app-mobile/scripts/valider-sur-appareil.mjs`
+- Grille à remplir : [`docs/validation-appareil.md`](validation-appareil.md)
+- Garde-fous : `app-mobile/tests/validation-appareil.test.ts` — vérifie notamment que
+  chaque marqueur guetté est **réellement émis** par `SxbVpnService.kt`, et que la
+  détection du faux `connected` échoue bien quand elle doit échouer.
+
+Le harnais ne remplace pas la validation : **il ne prouve toujours aucun tunnel.** Il la
+rend mesurable et reproductible.
+
 ---
 
 ## 18. Ce qui reste ouvert
