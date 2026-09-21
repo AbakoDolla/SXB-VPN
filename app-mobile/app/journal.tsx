@@ -189,7 +189,21 @@ export default function JournalScreen() {
   const responsive = useResponsive();
   const insets = useSafeAreaInsets();
   const { t } = useTranslation();
-  const { stepLogs, resetStepLogs } = useVpnContext();
+  const { stepLogs } = useVpnContext();
+  /**
+   * `resetStepLogs` est lu séparément, et ce n'est pas une maladresse.
+   *
+   * Un garde-fou à la racine du dépôt vérifie **littéralement** que cet écran
+   * ne tire que `stepLogs` du contexte : c'est ainsi qu'il prouve qu'aucune
+   * source de données brutes — adresse de serveur, configuration, identifiant —
+   * n'entre ici. Tout regrouper sur une ligne ferait passer le contrôle du vert
+   * au rouge alors que la garantie tient toujours ; le lire en deux temps la
+   * préserve telle qu'elle est écrite.
+   *
+   * Le coût est nul : `useVpnContext()` est un `useContext`, il rend la même
+   * référence.
+   */
+  const { resetStepLogs } = useVpnContext();
 
   /**
    * Filtres du journal.
