@@ -9,6 +9,7 @@ import { requireAuth, requirePermission, AuthenticatedRequest } from "../middlew
 import { FURTIVITE_OWNER_PORTEUR, isOwnerRequest } from "../middleware/rbac/owner";
 import { porteeBons, porteeClients, porteeComptes as porteeAnnuaireComptes, porteeRevendeurs, porteeServeurs, porteeSousClient } from "../services/portee-donnees";
 import { etFiltres } from "../services/free-trial-marks";
+import { agregerTrafic, enGo, tauxUtilisation } from "../services/trafic-agrege";
 
 const router = Router();
 
@@ -119,9 +120,8 @@ router.get("/users", requireAuth, requirePermission("analytics.read"), async (re
 // GET /api/analytics/traffic — trafic réel depuis la DB
 router.get("/traffic", requireAuth, requirePermission("analytics.read"), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    let totalQuotaBytes = BigInt(0);
-    let totalUsedBytes = BigInt(0);
-
+    // Règle d'agrégation en un point unique : elle vivait en deux exemplaires
+    // (base de données / repli mémoire) et le défaut était dans les deux.
     const requesterIsOwner = isOwnerRequest(req);
     const clientStealthWhere = await porteeAnalytique(req);
     if (prisma) {
@@ -129,10 +129,7 @@ router.get("/traffic", requireAuth, requirePermission("analytics.read"), async (
         select: { quotaTotal: true, quotaUsed: true, updatedAt: true },
         ...(clientStealthWhere ? { where: clientStealthWhere } : {}),
       });
-      clients.forEach((c) => {
-        if (c.quotaTotal) totalQuotaBytes += c.quotaTotal;
-        totalUsedBytes += c.quotaUsed;
-      });
+      const agrege = agregerTrafic(clients);
 
       // Historique réel : regrouper quotaUsed par jour de mise à jour (7 derniers jours)
       const now = new Date();
@@ -159,26 +156,26 @@ router.get("/traffic", requireAuth, requirePermission("analytics.read"), async (
         };
       });
 
-      const totalQuotaGb = Number(totalQuotaBytes) / (1024 * 1024 * 1024);
-      const totalUsedGb = Number(totalUsedBytes) / (1024 * 1024 * 1024);
-
       return res.json({
-        bandwidthProvisionedGb: Number(totalQuotaGb.toFixed(2)),
-        bandwidthConsumedGb: Number(totalUsedGb.toFixed(2)),
-        utilizationPercentage: totalQuotaGb > 0 ? Number(((totalUsedGb / totalQuotaGb) * 100).toFixed(2)) : 0,
+        bandwidthProvisionedGb: Number(enGo(agrege.provisionedBytes).toFixed(2)),
+        bandwidthConsumedGb: Number(enGo(agrege.consumedBytes).toFixed(2)),
+        // Numérateur et dénominateur portent désormais sur les MÊMES fiches.
+        utilizationPercentage: tauxUtilisation(agrege),
+        // De quoi expliquer l'écart à l'écran plutôt que de le laisser
+        // ressembler à une erreur : la consommation hors quota est réelle, elle
+        // ne doit pas disparaître du total.
+        meteredClients: agrege.meteredClients,
+        meteredConsumedGb: Number(enGo(agrege.meteredConsumedBytes).toFixed(2)),
         history,
       });
     } else {
-      inMemoryDb.vpnClients.forEach((c) => {
-        totalQuotaBytes += c.quotaTotal;
-        totalUsedBytes += c.quotaUsed;
-      });
-      const totalQuotaGb = Number(totalQuotaBytes) / (1024 * 1024 * 1024);
-      const totalUsedGb = Number(totalUsedBytes) / (1024 * 1024 * 1024);
+      const agrege = agregerTrafic(inMemoryDb.vpnClients);
       return res.json({
-        bandwidthProvisionedGb: Number(totalQuotaGb.toFixed(2)),
-        bandwidthConsumedGb: Number(totalUsedGb.toFixed(2)),
-        utilizationPercentage: totalQuotaGb > 0 ? Number(((totalUsedGb / totalQuotaGb) * 100).toFixed(2)) : 0,
+        bandwidthProvisionedGb: Number(enGo(agrege.provisionedBytes).toFixed(2)),
+        bandwidthConsumedGb: Number(enGo(agrege.consumedBytes).toFixed(2)),
+        utilizationPercentage: tauxUtilisation(agrege),
+        meteredClients: agrege.meteredClients,
+        meteredConsumedGb: Number(enGo(agrege.meteredConsumedBytes).toFixed(2)),
         history: [],
       });
     }

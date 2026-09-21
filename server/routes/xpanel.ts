@@ -1,11 +1,36 @@
-import { Router, Response } from "express";
+import { Router, Response, NextFunction } from "express";
 import { XPanelService } from "../services/xpanel";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { logDbActivity, inMemoryDb, prisma } from "../database";
-import { porteeClients, porteeServeurs } from "../services/portee-donnees";
+import { porteeClients, porteeServeurs, estCloisonne } from "../services/portee-donnees";
 import { etFiltres } from "../services/free-trial-marks";
 
 const router = Router();
+
+// ── Infrastructure partagée : hors du périmètre d'un compte cloisonné ───────
+//
+// Mesuré en production avec un ADMIN neuf : `GET /users`, `GET /configs`,
+// `POST /configs`, `POST /sync` et `DELETE /configs/:id` répondaient tous 200.
+// L'habilitation ne le bloquait pas, car le rôle ADMIN porte `xpanel.manage`.
+//
+// Ces routes ne lisent ni n'écrivent des données de locataire : elles parlent
+// au panneau distant (`/api/subscribers`, `/api/inbounds`), dont les objets
+// n'ont aucun propriétaire. On ne peut donc pas les filtrer par compartiment —
+// il n'y a rien sur quoi filtrer. Un admin y lirait le parc complet de la
+// plateforme et pourrait supprimer l'entrée d'un autre exploitant.
+//
+// C'est un paramètre global, exclu du périmètre admin par contrat. D'où un
+// refus franc plutôt qu'un 404 indifférencié : il n'y a ici aucun identifiant
+// à énumérer, seulement une capacité qui n'appartient pas à ce rôle.
+function refuserCloisonne(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  if (estCloisonne(req.user?.role)) {
+    return res.status(403).json({
+      error: "errors.auth.forbidden_permission",
+      message: "XPanel engine administration is reserved for platform operators",
+    });
+  }
+  return next();
+}
 
 // GET /api/xpanel/status
 router.get("/status", requireAuth, requirePermission("xpanel.view"), async (req: AuthenticatedRequest, res: Response) => {
@@ -58,7 +83,7 @@ router.get("/status", requireAuth, requirePermission("xpanel.view"), async (req:
 });
 
 // POST /api/xpanel/sync
-router.post("/sync", requireAuth, requirePermission("xpanel.manage"), async (req: AuthenticatedRequest, res: Response) => {
+router.post("/sync", requireAuth, requirePermission("xpanel.manage"), refuserCloisonne, async (req: AuthenticatedRequest, res: Response) => {
   try {
     console.log("Triggering manual XPanel database sync...");
     const result = await XPanelService.sync();
@@ -75,7 +100,7 @@ router.post("/sync", requireAuth, requirePermission("xpanel.manage"), async (req
 });
 
 // GET /api/xpanel/users
-router.get("/users", requireAuth, requirePermission("xpanel.view"), async (req: AuthenticatedRequest, res: Response) => {
+router.get("/users", requireAuth, requirePermission("xpanel.view"), refuserCloisonne, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const xpanelUsers = await XPanelService.getUsers();
     return res.json({ users: xpanelUsers });
@@ -86,7 +111,7 @@ router.get("/users", requireAuth, requirePermission("xpanel.view"), async (req: 
 });
 
 // GET /api/xpanel/configs
-router.get("/configs", requireAuth, requirePermission("xpanel.view"), async (req: AuthenticatedRequest, res: Response) => {
+router.get("/configs", requireAuth, requirePermission("xpanel.view"), refuserCloisonne, async (req: AuthenticatedRequest, res: Response) => {
   try {
     // Return VPN configurations stored locally (inbound configs)
     const configs = await XPanelService.getConfigs();
@@ -98,7 +123,7 @@ router.get("/configs", requireAuth, requirePermission("xpanel.view"), async (req
 });
 
 // POST /api/xpanel/configs - Create new config on XPanel
-router.post("/configs", requireAuth, requirePermission("xpanel.manage"), async (req: AuthenticatedRequest, res: Response) => {
+router.post("/configs", requireAuth, requirePermission("xpanel.manage"), refuserCloisonne, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { name, protocol, port, settings } = req.body;
     const config = await XPanelService.createConfig(name, protocol, port, settings);
@@ -111,7 +136,7 @@ router.post("/configs", requireAuth, requirePermission("xpanel.manage"), async (
 });
 
 // DELETE /api/xpanel/configs/:id
-router.delete("/configs/:id", requireAuth, requirePermission("xpanel.manage"), async (req: AuthenticatedRequest, res: Response) => {
+router.delete("/configs/:id", requireAuth, requirePermission("xpanel.manage"), refuserCloisonne, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     await XPanelService.deleteConfig(id);

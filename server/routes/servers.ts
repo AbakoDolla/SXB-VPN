@@ -3,10 +3,54 @@ import { z } from "zod";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { requireAuth, requirePermission, AuthenticatedRequest } from "../middleware/auth";
 import { encrypt, decrypt } from "../utils/crypto";
-import { auteurAInscrire, porteeServeurs } from "../services/portee-donnees";
+import { auteurAInscrire, porteeServeurs, voitTout } from "../services/portee-donnees";
 import { interdireMutationSupport } from "../services/reseller-access";
 
 const router = Router();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PORTÉE SUR LES ROUTES À IDENTIFIANT — MESURÉ EN PRODUCTION
+// ═══════════════════════════════════════════════════════════════════════════
+// `GET /api/servers` était bien cloisonné, mais AUCUNE route prenant un
+// identifiant ne rejouait ce filtre : elles ne vérifiaient que le rôle, et
+// ADMIN y est admis. Mesure en production avec un administrateur créé à
+// l'instant, sur un serveur absent de SA liste :
+//
+//   GET    /api/servers/:id/config  → 200  (configuration déchiffrée)
+//   PATCH  /api/servers/:id         → 200  (modification effective)
+//
+// La lecture de configuration n'a rien rendu ce jour-là — aucun serveur ne
+// stocke encore d'identifiants. La fuite était donc LATENTE ; la modification,
+// elle, était bien réelle : un administrateur modifiait l'infrastructure d'un
+// autre. On ferme les deux, car le jour où une configuration est enregistrée,
+// ce sont des identifiants SSH en clair qui sortent.
+//
+// 404 et non 403 : répondre « interdit » confirmerait l'existence du serveur
+// et permettrait d'énumérer le parc identifiant par identifiant. Hors de son
+// compartiment, un serveur n'existe pas.
+async function chargerServeurVisible(
+  req: AuthenticatedRequest,
+  id: string,
+): Promise<any | null> {
+  if (prisma) {
+    const portee = await porteeServeurs(prisma, req.user);
+    return prisma.vPSServer.findFirst({
+      where: portee ? ({ AND: [{ id }, portee] } as any) : { id },
+    });
+  }
+
+  // Base en mémoire (secours de développement) : on rejoue la même règle que
+  // `porteeParAuteur`, sans quoi les deux branches divergeraient.
+  const serveur = inMemoryDb.vpsServers.find((s) => s.id === id);
+  if (!serveur) return null;
+  if (voitTout(req.user?.role)) return serveur;
+  if (String(req.user?.role) === "ADMIN") {
+    return serveur.createdBy === (req.user?.userId ?? null) ? serveur : null;
+  }
+  return serveur;
+}
+
+const SERVEUR_INTROUVABLE = { error: "errors.servers.not_found", message: "Server node not found" };
 
 const createServerSchema = z.object({
   name: z.string().min(2),
@@ -102,15 +146,9 @@ router.patch("/:id", requireAuth, interdireMutationSupport(), requirePermission(
     const { id } = req.params;
     const body = updateServerSchema.parse(req.body);
 
-    let exists = false;
-    if (prisma) {
-      exists = !!(await prisma.vPSServer.findUnique({ where: { id } }));
-    } else {
-      exists = inMemoryDb.vpsServers.some((s) => s.id === id);
-    }
-
-    if (!exists) {
-      return res.status(404).json({ error: "errors.servers.not_found", message: "Server node not found" });
+    // Hors de son compartiment, le serveur n'existe pas : 404 indifférencié.
+    if (!(await chargerServeurVisible(req, id))) {
+      return res.status(404).json(SERVEUR_INTROUVABLE);
     }
 
     let updated: any = null;
@@ -143,6 +181,12 @@ router.post("/:id/config", requireAuth, interdireMutationSupport(), requirePermi
   try {
     const { id } = req.params;
     const body = saveConfigSchema.parse(req.body);
+
+    // Écrire des identifiants sur le serveur d'autrui était possible : la
+    // route n'exigeait même pas que le serveur existe.
+    if (!(await chargerServeurVisible(req, id))) {
+      return res.status(404).json(SERVEUR_INTROUVABLE);
+    }
 
     // Chiffrer les configurations (encrypt raw configurations)
     const configurationEncrypted = encrypt(body.configurationRaw);
@@ -203,6 +247,12 @@ router.get("/:id/config", requireAuth, requirePermission("server.manage"), async
       return res.status(403).json({ error: "errors.auth.forbidden_credentials", message: "Decryption keys can only be retrieved by Admin accounts" });
     }
 
+    // Le rôle ne suffit pas : ADMIN y est admis, et il ne doit lire que les
+    // identifiants de SES serveurs. 404 pour ne pas confirmer l'existence.
+    if (!(await chargerServeurVisible(req, id))) {
+      return res.status(404).json(SERVEUR_INTROUVABLE);
+    }
+
     let configRecords: any[] = [];
     if (prisma) {
       configRecords = await prisma.serverConfig.findMany({ where: { serverId: id } });
@@ -236,13 +286,17 @@ router.delete("/:id", requireAuth, interdireMutationSupport(), requirePermission
     const { id } = req.params;
     let exists = false;
     let serverName = "";
+    // Supprimer un serveur coupe le service de tous ses clients : cette route
+    // ne rejouait aucune portée. Un administrateur pouvait détruire le nœud
+    // d'un autre. NON MESURÉE EN PRODUCTION — on ne joue pas une suppression
+    // réelle pour la démontrer ; l'absence de filtre suffit à la corriger.
+    const serveur = await chargerServeurVisible(req, id);
     if (prisma) {
-      const srv = await prisma.vPSServer.findUnique({ where: { id } });
-      exists = !!srv;
-      serverName = srv?.name || "";
+      exists = !!serveur;
+      serverName = serveur?.name || "";
       if (exists) await prisma.vPSServer.delete({ where: { id } });
     } else {
-      const index = inMemoryDb.vpsServers.findIndex((s) => s.id === id);
+      const index = serveur ? inMemoryDb.vpsServers.findIndex((s) => s.id === id) : -1;
       exists = index !== -1;
       if (exists) {
         serverName = inMemoryDb.vpsServers[index].name;
@@ -250,7 +304,7 @@ router.delete("/:id", requireAuth, interdireMutationSupport(), requirePermission
       }
     }
     if (!exists) {
-      return res.status(404).json({ error: "errors.servers.not_found", message: "Server node not found" });
+      return res.status(404).json(SERVEUR_INTROUVABLE);
     }
     await logDbActivity(req.user?.userId || null, `Removed VPN node: ${serverName} (ID: ${id})`, "danger", req.ip);
     return res.json({ message: "Server node removed successfully" });

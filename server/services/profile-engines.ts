@@ -88,6 +88,13 @@ export async function createLockedEngineAccount<T extends Account>(
   return prisma.$transaction(async db => {
     const account = await create(db);
     await db.vpnProfile.create({ data: {
+      // Le profil miroir hérite de l'auteur du compte de moteur. Sans cette
+      // ligne il naissait orphelin (`createdBy: null`) : il échappait alors au
+      // cloisonnement — invisible dans la liste de son propre créateur, et
+      // impossible à déverrouiller ou modifier dès lors que l'accès direct par
+      // identifiant contrôle la propriété. Les quatre moteurs posent déjà
+      // `createdBy` sur le compte ; on ne fait que le refléter.
+      createdBy: (account as any).createdBy ?? null,
       name: profileName(engine, account), protocol: engine === 'ssh' ? 'ssh' : account.protocol!,
       host: account.host, port: account.port, username: account.username || null,
       password: account.password ? (engine === 'ssh' ? account.password : encryptCanonical(account.password)) : null,

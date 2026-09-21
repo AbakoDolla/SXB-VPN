@@ -74,7 +74,7 @@ router.get("/current", requireAuth, async (req: AuthenticatedRequest, res: Respo
     // doit donc le dire, sinon l'exploitant ne verrait qu'un silence inexpliqué.
     const describesServedApk = publicationDecritLeFichierServi(update);
     return res.json({
-      update: toPublicAppUpdate(update),
+      update: toPublicAppUpdate(update, { inclureCiblageAppareils: isSuperAdmin(req) }),
       visibleToRole: isRoleTargeted(update, req.user?.role),
       canPublish: isSuperAdmin(req),
       eligibleDeviceCount: await countActivatedDevices(req),
@@ -129,7 +129,9 @@ router.post("/publish", requireAuth, async (req: AuthenticatedRequest, res: Resp
     await logDbActivity(req.user.userId, `Mise à jour publiée: ${update.versionName} (${update.versionCode})`, "success", req.ip || "");
     const push = await sendAppUpdatePush(update);
     return res.status(201).json({
-      update: toPublicAppUpdate(update),
+      // Réservé au SUPER_ADMIN par le garde en tête de route : le ciblage
+      // qu'il vient lui-même de définir lui est renvoyé intact.
+      update: toPublicAppUpdate(update, { inclureCiblageAppareils: true }),
       eligibleDeviceCount: await countActivatedDevices(req),
       push,
     });
