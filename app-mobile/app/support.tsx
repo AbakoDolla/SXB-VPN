@@ -33,22 +33,22 @@ export default function SupportScreen() {
   const [tickets, setTickets] = useState<SupportTicket[]>([]);
   const [loadingTickets, setLoadingTickets] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [errorKey, setErrorKey] = useState<TranslationKey | null>(null);
   const faq = ["faq_q1", "faq_q2", "faq_q3", "faq_q4"].map((key, index) => ({ q: t(key as TranslationKey), a: t(`faq_a${index + 1}` as TranslationKey) }));
 
   const loadTickets = useCallback(async (manual = false) => {
     if (manual) setRefreshing(true); else setLoadingTickets(true);
-    try { const response = await apiClient.get("/mobile/support/tickets"); setTickets(Array.isArray(response.data?.tickets) ? response.data.tickets : []); setError(null); }
-    catch { setError(t("ticket_load_failed")); }
+    try { const response = await apiClient.get("/mobile/support/tickets"); setTickets(Array.isArray(response.data?.tickets) ? response.data.tickets : []); setErrorKey(null); }
+    catch { setErrorKey("ticket_load_failed"); }
     finally { setLoadingTickets(false); setRefreshing(false); }
   }, [language]);
   useEffect(() => { void loadTickets(); }, [loadTickets]);
 
   const handleSend = async () => {
     if (!subject.trim() || !message.trim() || sending) return;
-    setSending(true); setError(null);
+    setSending(true); setErrorKey(null);
     try { const response = await apiClient.post("/mobile/support/ticket", { subject: subject.trim(), message: message.trim() }); const ticket = response.data?.ticket as SupportTicket | undefined; if (!ticket) throw new Error("Ticket response missing"); setTickets((previous) => [ticket, ...previous.filter((item) => item.id !== ticket.id)]); setSent(true); setSubject(""); setMessage(""); setTimeout(() => setSent(false), 3000); }
-    catch { setError(t("ticket_send_failed")); }
+    catch { setErrorKey("ticket_send_failed"); }
     finally { setSending(false); }
   };
   const statusColor = (status: TicketStatus) => status === "resolved" || status === "closed" ? colors.accents.emeraude : status === "in_progress" ? colors.accents.ambre : colors.accents.cyan;
@@ -56,7 +56,7 @@ export default function SupportScreen() {
 
   return <LinearGradient colors={colors.gradients.bg as [string, string, string]} style={styles.container}><ScrollView contentContainerStyle={[styles.content, { paddingHorizontal: responsive.screenPadding, gap: responsive.gap, paddingTop: insets.top + spacing.lg, paddingBottom: insets.bottom + layout.tabBarClearance, maxWidth: responsive.contentMaxWidth, width: "100%", alignSelf: "center" }]} showsVerticalScrollIndicator={false} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void loadTickets(true)} tintColor={colors.primary} />}>
     <View style={[styles.hero, { backgroundColor: colors.bgCard, borderColor: colors.accents.turquoise + "3D" }]}><View style={[styles.heroIcon, { backgroundColor: colors.accents.turquoise + "1F", borderColor: colors.accents.turquoise + "45" }]}><Ionicons name="headset-outline" size={38} color={colors.accents.turquoise} /></View><Text style={[styles.eyebrow, { color: colors.accents.turquoise }]}>{t("app_name")}</Text><Text style={[styles.heroTitle, { color: colors.textPrimary }]}>{t("support")}</Text><Text style={[styles.heroSub, { color: colors.textSecondary }]}>{t("hero_sub")}</Text><Pressable onPress={() => subjectRef.current?.focus()} style={({ pressed }) => [styles.heroButton, { backgroundColor: colors.accents.turquoise }, pressed && styles.pressed]}><Ionicons name="create-outline" size={16} color={colors.primaryForeground} /><Text style={[styles.heroButtonText, { color: colors.primaryForeground }]}>{t("create_ticket")}</Text></Pressable></View>
-    {error && <View style={[styles.errorCard, { backgroundColor: colors.disconnectedDim, borderColor: colors.disconnected + "45" }]}><Ionicons name="alert-circle-outline" size={18} color={colors.disconnected} /><Text style={[styles.errorText, { color: colors.disconnected }]}>{error}</Text></View>}
+    {errorKey && <View style={[styles.errorCard, { backgroundColor: colors.disconnectedDim, borderColor: colors.disconnected + "45" }]}><Ionicons name="alert-circle-outline" size={18} color={colors.disconnected} /><Text style={[styles.errorText, { color: colors.disconnected }]}>{t(errorKey)}</Text></View>}
     {/* Telegram = contact immédiat. Il s'ajoute au formulaire de ticket
         ci-dessous, qui reste la trace écrite et suivie des demandes. */}
     <SupportTelegramButton />

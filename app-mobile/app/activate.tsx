@@ -11,7 +11,7 @@ import * as Haptics from "expo-haptics";
 import { useAuthContext } from "@/contexts/AuthContext";
 import { useColors } from "@/hooks/useColors";
 import { useResponsive } from "@/hooks/useResponsive";
-import { useTranslation } from "@/localization";
+import { useTranslation, type TranslationKey } from "@/localization";
 import { activationErrorKey, normalizeActivationToken } from "@/services/activationError";
 import SupportTelegramButton from "@/components/SupportTelegramButton";
 import LanguageToggle from "@/components/ui/LanguageToggle";
@@ -29,7 +29,7 @@ export default function ActivateScreen() {
 
   const [token, setToken] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [errorKey, setErrorKey] = useState<TranslationKey | "">("");
   const [success, setSuccess] = useState(false);
   const successScale = useRef(new Animated.Value(0.86)).current;
   const shakeAnim = useRef(new Animated.Value(0)).current;
@@ -44,11 +44,11 @@ export default function ActivateScreen() {
   const handleActivate = async () => {
     const normalized = normalizeActivationToken(token);
     if (!normalized) {
-      setError(t("error_invalid_token"));
+      setErrorKey("error_invalid_token");
       shake();
       return;
     }
-    setError("");
+    setErrorKey("");
     setIsLoading(true);
     try {
       await activateAccount(normalized);
@@ -65,7 +65,7 @@ export default function ActivateScreen() {
     } catch (err: any) {
       if (Platform.OS !== "web") await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       shake();
-      setError(t(activationErrorKey(err)));
+      setErrorKey(activationErrorKey(err));
     } finally {
       setIsLoading(false);
     }
@@ -76,7 +76,7 @@ export default function ActivateScreen() {
     const { setStringAsync } = await import("expo-clipboard");
     await setStringAsync(deviceId);
     if (Platform.OS !== "web") await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    Alert.alert("Copié", "L’identifiant de cet appareil est maintenant dans le presse-papiers.");
+    Alert.alert(t("logs_copied"), t("device_id_copied_body"));
   };
 
   if (success) {
@@ -136,11 +136,11 @@ export default function ActivateScreen() {
 
             <Animated.View style={{ transform: [{ translateX: shakeAnim }] }}>
               <TextInput
-                style={[styles.input, error && { borderColor: colors.disconnected }]}
+                style={[styles.input, errorKey && { borderColor: colors.disconnected }]}
                 placeholder={t("token_user_placeholder")}
                 placeholderTextColor={colors.textMuted}
                 value={token}
-                onChangeText={(value) => { setToken(value.toUpperCase()); setError(""); }}
+                onChangeText={(value) => { setToken(value.toUpperCase()); setErrorKey(""); }}
                 autoCapitalize="characters"
                 autoCorrect={false}
                 returnKeyType="done"
@@ -149,10 +149,10 @@ export default function ActivateScreen() {
               />
             </Animated.View>
 
-            {error ? (
+            {errorKey ? (
               <View style={styles.errorWrap}>
                 <Ionicons name="alert-circle" size={16} color={colors.disconnected} />
-                <Text style={styles.errorText}>{error}</Text>
+                <Text style={styles.errorText}>{t(errorKey)}</Text>
               </View>
             ) : (
               <Text style={styles.secureHint}><Ionicons name="lock-closed-outline" size={12} color={colors.textMuted} />  {t("activate_token_secure")}</Text>

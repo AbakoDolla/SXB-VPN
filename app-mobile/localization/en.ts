@@ -184,6 +184,7 @@ export const en = {
   logs_jitter: 'Jitter',
   logs_copy: 'Copy',
   logs_copied: 'Copied',
+  device_id_copied_body: 'This device identifier is now in your clipboard.',
   logs_share: 'Share',
   session_duration: 'Duration',
   engine_state: 'Engine',

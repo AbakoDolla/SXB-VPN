@@ -8,7 +8,7 @@ import * as Haptics from "expo-haptics";
 import { useAuthContext } from "@/contexts/AuthContext";
 import { useColors } from "@/hooks/useColors";
 import { useResponsive } from "@/hooks/useResponsive";
-import { useTranslation } from "@/localization";
+import { useTranslation, type TranslationKey } from "@/localization";
 import { activationErrorKey } from "@/services/activationError";
 import { radius, responsiveLayout, spacing } from "@/constants/theme";
 
@@ -25,7 +25,7 @@ export default function PlanScreen() {
 
   const [token, setToken]       = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError]       = useState("");
+  const [errorKey, setErrorKey]       = useState<TranslationKey | "">("");
   const [success, setSuccess]   = useState(false);
 
   const successScale = useRef(new Animated.Value(0)).current;
@@ -41,8 +41,8 @@ export default function PlanScreen() {
   };
 
   const handleActivate = async () => {
-    if (!token.trim()) { setError(t("token_data_placeholder")); shake(); return; }
-    setError(""); setIsLoading(true);
+    if (!token.trim()) { setErrorKey("token_data_placeholder"); shake(); return; }
+    setErrorKey(""); setIsLoading(true);
     try {
       await activatePlan(token.trim());
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -52,7 +52,7 @@ export default function PlanScreen() {
     } catch (err: any) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       shake();
-      setError(t(activationErrorKey(err)));
+      setErrorKey(activationErrorKey(err));
     } finally {
       setIsLoading(false);
     }
@@ -96,11 +96,11 @@ export default function PlanScreen() {
         {/* Input */}
         <Animated.View style={{ transform: [{ translateX: shakeAnim }] }}>
           <TextInput
-            style={[styles.input, error && { borderColor: colors.disconnected }]}
+            style={[styles.input, errorKey && { borderColor: colors.disconnected }]}
             placeholder="SXB-DATA-XXXX-XXXX-XXXX"
             placeholderTextColor={colors.textMuted}
             value={token}
-            onChangeText={(t) => { setToken(t.toUpperCase()); setError(""); }}
+            onChangeText={(t) => { setToken(t.toUpperCase()); setErrorKey(""); }}
             autoCapitalize="characters"
             autoCorrect={false}
             returnKeyType="done"
@@ -108,10 +108,10 @@ export default function PlanScreen() {
           />
         </Animated.View>
 
-        {error ? (
+        {errorKey ? (
           <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
             <Ionicons name="alert-circle" size={14} color={colors.disconnected} />
-            <Text style={{ fontSize: 13, color: colors.disconnected, fontFamily: "Inter_500Medium" }}>{error}</Text>
+            <Text style={{ fontSize: 13, color: colors.disconnected, fontFamily: "Inter_500Medium" }}>{t(errorKey)}</Text>
           </View>
         ) : null}
 
