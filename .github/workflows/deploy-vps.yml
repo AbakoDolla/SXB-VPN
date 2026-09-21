@@ -168,13 +168,13 @@ jobs:
           # valeurs restent des secrets : elles ne transitent jamais par le dépôt.
           envs: OWNER_EMAIL,OWNER_PASSWORD,FIREBASE_SERVICE_ACCOUNT_JSON,FIREBASE_PROJECT_ID,FIREBASE_CLIENT_EMAIL,FIREBASE_PRIVATE_KEY,MOBILE_HEALTH_PSEUDONYM_SECRET
           script: |
+            set -eo pipefail
             # `set -e` seul laissait passer l'échec d'une commande suivie d'un
             # pipe : `npm install ... | tail -3` rapportait le succès de `tail`,
             # jamais celui de l'installation. `pipefail` propage l'échec du
             # premier maillon, comme les blocs du runner (`set -euo pipefail`).
             # `-u` reste exclu : MOBILE_HEALTH_PSEUDONYM_SECRET est légitimement
             # vide au premier passage et testé explicitement plus bas.
-            set -eo pipefail
             cd /var/www/sxb-vpn
 
             echo "📥 Fix permissions git + Pull latest code..."
