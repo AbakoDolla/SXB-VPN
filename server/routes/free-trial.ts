@@ -2297,7 +2297,10 @@ router.post(
             let reduit = true;
 
             if (modifie) {
-              const plan = planifierApplication(forfait, changements);
+              // `"essais"` : remplacer le serveur d'un accès d'essai EST la
+              // fonction de cette section. Depuis « Forfaits Data », le même
+              // planificateur le refuse — voir `OrigineApplication`.
+              const plan = planifierApplication(forfait, changements, new Date(), "essais");
               if (plan.statut === 'failed') { echec = plan.raison; continue; }
               if (plan.statut === 'ok') {
                 Object.assign(data, plan.data);

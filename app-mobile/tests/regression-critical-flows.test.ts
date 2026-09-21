@@ -1257,11 +1257,62 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(nativeService.includes('candidate.connect(minOf(timeoutMs, 12_000))'));
   });
 
+  it('T-E1b chaque mode garde son budget ENTIER — le raccourcir perd un serveur lent', () => {
+    // Résultat NÉGATIF conservé, pour qu'il ne soit pas redécouvert à la main.
+    //
+    // Une variante « découverte courte (4 s) puis budget plein aux seuls modes
+    // expirés » a été écrite, compilée et simulée sur sept scénarios. Elle est
+    // plus rapide quand les mauvais modes sont muets (24,9 s -> 8,9 s), mais
+    // elle transforme deux cas qui MARCHAIENT en échecs :
+    //
+    //   bon mode lent (6 s)  en 3e position : 30 000 ms ok -> ECHEC
+    //   bon mode lent (11 s) en 4e position : 47 000 ms ok -> ECHEC
+    //
+    // Les modes muets consomment la seconde passe avant le bon. Borner
+    // seulement la durée totale produit le même défaut sur le second cas.
+    // Une échelle SÉQUENTIELLE ne peut donc pas être raccourcie sans rendre
+    // injoignable un serveur lent mais valide ; seules des tentatives menées
+    // en PARALLÈLE lèvent l'arbitrage, et cela demande une validation sur
+    // appareil.
+    assert.ok(nativeService.includes('candidate.connect(minOf(timeoutMs, 12_000))'),
+      'le budget par tentative ne doit pas être raccourci');
+    for (const trace of ['budgetDecouverteMs', 'budgetEffectif', 'passes@']) {
+      assert.ok(!nativeService.includes(trace),
+        `« ${trace} » : la variante à budget raccourci a été mesurée puis retirée — voir le commentaire du service`);
+    }
+    // Et la raison est écrite là où quelqu'un la lira avant de recommencer.
+    assert.ok(nativeService.includes('POURQUOI LE BUDGET PAR TENTATIVE N\'EST PAS RACCOURCI'));
+  });
+
   it('T-E2 persiste et relit le mode de transport gagnant par configuration', () => {
     assert.ok(nativeService.includes('@sxb_transport_mode_'));
     assert.ok(nativeService.includes('TRANSPORT_MODE_CACHED'));
     assert.ok(nativeService.includes('putString(cacheKey, strategy.mode)'));
-    assert.ok(nativeService.includes('if (cachedStrategy != null) listOf(cachedStrategy)'));
+    // Le mode mémorisé garde la TÊTE de la ladder : le cas courant reste une
+    // seule tentative, donc exactement la même vitesse qu'avant.
+    assert.ok(nativeService.includes('listOf(cachedStrategy) + allStrategies.filterNot'),
+      'le mode mémorisé doit rester essayé en premier');
+  });
+
+  it('T-E2b un mode mémorisé devenu faux n’est plus un cul-de-sac', () => {
+    // `listOf(cachedStrategy)` REMPLAÇAIT la liste : si le fournisseur changeait
+    // le mode attendu, la seule tentative échouait, l'entrée n'était jamais
+    // purgée, et chaque connexion suivante relançait le même mode faux. Aucune
+    // reprise n'était possible sans changement de configuration.
+    //
+    // Mesuré sur le scénario « cache périmé, un autre mode marche » :
+    //   avant : échec en 50 ms, définitif      après : connecté en 12 950 ms
+    // Plus lent à réussir qu'à échouer — mais il réussit.
+    assert.ok(!nativeService.includes('if (cachedStrategy != null) listOf(cachedStrategy)\n'),
+      'le cache ne doit plus remplacer la ladder');
+    const declaration = nativeService.slice(
+      nativeService.indexOf('val strategies = if (cachedStrategy != null)'),
+      nativeService.indexOf('val results = linkedMapOf<String, String>()'),
+    );
+    assert.ok(declaration.includes('allStrategies.filterNot'),
+      'les autres modes doivent rester disponibles après un cache périmé');
+    assert.ok(declaration.includes('cachedStrategy.mode'),
+      'le mode mémorisé ne doit pas être essayé deux fois');
   });
 
   it('T-E3 verrouille une bannière SSH réussie et ne poursuit pas la ladder', () => {

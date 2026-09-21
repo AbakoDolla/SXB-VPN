@@ -33,7 +33,7 @@ import { protocolTone } from '@/constants/protocolTone';
 import { formatBytes, type DerivedQuota } from '@/services/quotaState';
 import type { VpnConnection } from '@/types/api';
 import type { ProfileStatus } from '@/services/accessPolicy';
-import { visibleConfigs } from './configPickerItems';
+import { accesSansConfigLocale, visibleConfigs } from './configPickerItems';
 
 export interface ConfigEntry {
   id: string;
@@ -41,6 +41,8 @@ export interface ConfigEntry {
   protocol: string;
   isActive: boolean;
   status?: ProfileStatus;
+  /** Accès annoncé par le serveur dont l'appareil n'a pas encore la configuration. */
+  enAttente?: boolean;
 }
 
 interface ConfigPickerProps {
@@ -72,9 +74,17 @@ export default function ConfigPicker({
   const { reduceMotion } = useMotionPreference();
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
+  // Le sélecteur listait le COFFRE LOCAL, l'accueil liste le SERVEUR. Un accès
+  // dont le provisionnement a échoué disparaissait donc d'ici tout en gardant
+  // sa barre de quota là-bas, sans le moindre message. `switchConfig` sait
+  // provisionner à la demande : il suffisait de rendre l'entrée atteignable.
+  const tous = useMemo<ConfigEntry[]>(
+    () => [...configs, ...accesSansConfigLocale(configs, connections)],
+    [configs, connections],
+  );
   const entries = useMemo(
-    () => visibleConfigs(configs, activeConfigId, query, language),
-    [activeConfigId, configs, language, query],
+    () => visibleConfigs(tous, activeConfigId, query, language),
+    [activeConfigId, tous, language, query],
   );
 
   const confirmDelete = (entry: ConfigEntry) => {
@@ -122,7 +132,7 @@ export default function ConfigPicker({
             <View style={{ flex: 1 }}>
               <Text accessibilityRole="header" style={[type.h2, { color: colors.textPrimary }]}>{t('config_switch')}</Text>
               <Text style={[type.caption, { color: colors.textSecondary }]}>
-                {configs.length} {configs.length > 1 ? t('config_plural') : t('config_singular')}
+                {tous.length} {tous.length > 1 ? t('config_plural') : t('config_singular')}
               </Text>
             </View>
             <Pressable onPress={onClose} style={styles.closeButton} accessibilityRole="button" accessibilityLabel={t('close')}>
@@ -130,7 +140,7 @@ export default function ConfigPicker({
             </Pressable>
           </View>
 
-          {(configs.length > 4 || query.length > 0) && (
+          {(tous.length > 4 || query.length > 0) && (
             <View style={[styles.search, { backgroundColor: colors.bgInput, borderColor: colors.border2 }]}>
               <Ionicons name="search-outline" size={19} color={colors.textSecondary} />
               <TextInput
@@ -153,7 +163,7 @@ export default function ConfigPicker({
           )}
 
           <ScrollView style={styles.list} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
-            {configs.length === 0 ? (
+            {tous.length === 0 ? (
               <EmptyState icon="shield-outline" title={t('no_vpn_connections')} description={t('ask_admin_for_plan')} />
             ) : entries.length === 0 ? (
               <EmptyState icon="search-outline" title={t('config_search_empty')} description={t('config_search_hint')} />
@@ -223,6 +233,9 @@ export default function ConfigPicker({
                               l'exploitant vend. La teinte de la ligne continue
                               de distinguer les familles, sans les révéler. */}
                           {isActive && <Pill label={t('config_active')} tone={colors.accents.emeraude} dot />}
+                          {entry.enAttente && !hasNotice && (
+                            <Pill label={t('config_pending_device')} tone={colors.accents.ambre} />
+                          )}
                           {hasNotice && <Pill label={t(status === 'suspended' ? 'connection_suspended' :
                             status === 'expired' ? 'expired' : status === 'exhausted' ? 'quota_exhausted' : 'connection_revoked')} tone={colors.accents.corail} />}
                         </View>
@@ -258,6 +271,11 @@ export default function ConfigPicker({
                       </View>
                     </Pressable>
 
+                    {/* Rien à supprimer tant que l'appareil ne détient pas la
+                        configuration : proposer le geste donnerait un bouton
+                        qui échoue, ou effacerait côté appareil la trace d'un
+                        accès que le serveur accorde toujours. */}
+                    {!entry.enAttente && (
                     <Pressable
                       onPress={() => confirmDelete(entry)}
                       disabled={isDeleting || switching}
@@ -278,6 +296,7 @@ export default function ConfigPicker({
                         <Ionicons name="trash-outline" size={17} color={colors.disconnected} />
                       )}
                     </Pressable>
+                    )}
                   </View>
                 );
               })

@@ -45,6 +45,19 @@ export function alpnPourTransport(
   return TRANSPORTS_UPGRADE.has(clef) ? ALPN_UPGRADE : null;
 }
 
+// ── Nom présenté en TLS, par défaut ──────────────────────────────────────────
+//
+// JUMEAU VOLONTAIRE de la règle de `app-mobile/services/vlessUri.ts`, pour la
+// même raison que l'ALPN ci-dessus : un profil attribué depuis le tableau de
+// bord doit produire la configuration du même lien collé dans l'application.
+//
+// Une adresse littérale ne peut pas être présentée en SNI — un serveur strict
+// rejette la poignée de main. L'en-tête Host redevient alors le seul nom
+// disponible.
+function estAdresseLitterale(valeur: string): boolean {
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(valeur) || valeur.includes(':');
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export type SourceFormat =
@@ -360,7 +373,13 @@ function applyCommonTransport(q: URLSearchParams, out: Record<string, any>): voi
   if (security) out.tls = security === 'tls' || security === 'reality';
   const sni = q.get('sni');
   if (sni) out.sni = safeDecodeURIComponent(sni);
-  const type = (q.get('type') || '').toLowerCase();
+  // `type=` est la forme majoritaire, mais `network=` circule tout autant, et
+  // l'analyseur de l'application accepte les deux. N'en lire qu'une produisait
+  // ici un canonique SANS transport : le moteur retombait alors sur TCP, le
+  // WebSocket n'était jamais négocié, et l'ALPN déduit au point de sortie ne
+  // se déclenchait pas davantage. L'import restait « valide », sans erreur ni
+  // avertissement — et le tunnel montait sans rien transporter.
+  const type = (q.get('type') || q.get('network') || '').toLowerCase();
   if (type) out.network = type;
   const path = q.get('path');
   if (path) out.path = decodeURIComponent(path);
@@ -1246,6 +1265,24 @@ function parseImportedConfigSingle(raw: string): ParseResult {
   // Ne touche ni gRPC (qui EXIGE h2) ni les profils sans TLS.
   const alpnDeduit = alpnPourTransport(cfg.network, cfg.tls === true, cfg.alpn);
   if (alpnDeduit) cfg.alpn = alpnDeduit;
+
+  // ── NOM TLS PAR DÉFAUT — même argument, même emplacement ──────────────────
+  //
+  // Sans `sni=`, le canonique n'en portait aucun. Le moteur retombait alors
+  // sur l'ADRESSE JOINTE, ce qui est la bonne valeur dans le cas ordinaire —
+  // mais pas quand cette adresse est littérale : une IP ne peut pas être
+  // présentée en SNI, et un serveur strict rejette la poignée de main.
+  //
+  // L'application applique cette règle depuis son propre analyseur ; le
+  // serveur ne l'appliquait pas. Le même lien produisait donc deux
+  // configurations différentes selon qu'il était collé dans l'application ou
+  // attribué depuis le tableau de bord — précisément ce que ce modèle commun
+  // existe pour empêcher.
+  //
+  // N'écrase JAMAIS un `sni` explicite, et ne touche pas aux profils sans TLS.
+  if (cfg.tls === true && !cfg.sni && typeof cfg.host === 'string' && cfg.host) {
+    cfg.sni = estAdresseLitterale(cfg.host) ? (cfg.wsHost || cfg.host) : cfg.host;
+  }
 
   // Cohérence transport — règles moteur
   const coherence = validateTransportCoherence(cfg);

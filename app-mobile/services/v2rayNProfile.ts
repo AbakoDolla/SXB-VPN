@@ -17,6 +17,7 @@
  * Les deux côtés produisent volontairement le MÊME canonique, champ pour
  * champ, et un test de parité compare les deux lectures.
  */
+import { estAdresseLitterale } from './vlessUri';
 
 function decoder(valeur: string): string {
   try {
@@ -113,6 +114,20 @@ export function lireProfilV2rayN(obj: any): Record<string, any> | null {
   const enTeteHost = obj.requestHost ?? obj.wsHost ?? obj.host;
   if (enTeteHost) cfg.wsHost = decoder(String(enTeteHost));
   if (obj.sni) cfg.sni = decoder(String(obj.sni));
+  // ── NOM TLS PAR DÉFAUT — même règle que pour une URI ──────────────────────
+  //
+  // Sans `sni`, ce format n'en portait aucun et le moteur retombait sur
+  // l'ADRESSE JOINTE. C'est la bonne valeur dans le cas ordinaire, mais pas
+  // quand cette adresse est littérale : une IP ne peut pas être présentée en
+  // SNI, et un serveur strict rejette la poignée de main. L'en-tête Host
+  // redevient alors le seul nom disponible.
+  //
+  // La règle existait déjà dans l'analyseur d'URI et dans le serveur ; ce
+  // format-ci était le dernier à ne pas l'appliquer. N'écrase jamais un `sni`
+  // explicite, et ne touche pas aux profils sans TLS.
+  else if (cfg.tls === true && typeof cfg.host === 'string' && cfg.host) {
+    cfg.sni = estAdresseLitterale(cfg.host) ? (cfg.wsHost || cfg.host) : cfg.host;
+  }
 
   const typeEnTete = obj.headerType ?? (obj.type && String(obj.type).toLowerCase() !== reseau ? obj.type : undefined);
   if (typeEnTete && String(typeEnTete).toLowerCase() !== 'none') cfg.headerType = String(typeEnTete);

@@ -133,7 +133,8 @@
       "expiry_conflict": "An expiry date and a duration cannot be applied together.",
       "no_change": "This plan already has those values.",
       "no_field": "No field to apply.",
-      "too_many": "A batch cannot exceed {{max}} plans."
+      "too_many": "A batch cannot exceed {{max}} plans.",
+      "trial_profile_locked": "This plan comes from a free trial: its configuration cannot be changed here. Convert it to a regular plan, or change the servers from the trial itself."
     }
   },
   "profiles": { "invalid_resellers": "The list of assigned resellers is invalid." },

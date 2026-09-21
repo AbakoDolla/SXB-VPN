@@ -1925,10 +1925,49 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 if (cachedStrategy != null) {
                     broadcastLog("[SXB_TRACE] TRANSPORT_MODE_CACHED mode=${cachedStrategy.mode}")
                 }
-                val strategies = if (cachedStrategy != null) listOf(cachedStrategy) else allStrategies
+                // ── LE MODE MÉMORISÉ PASSE EN TÊTE, IL NE REMPLACE PLUS LA LISTE ──
+                //
+                // `listOf(cachedStrategy)` faisait du cache un CUL-DE-SAC : si le
+                // fournisseur changeait le mode attendu, la seule tentative
+                // échouait, l'entrée n'était jamais purgée, et chaque connexion
+                // suivante relançait le même mode faux. L'utilisateur restait
+                // bloqué jusqu'à un changement de configuration.
+                //
+                // Le mode mémorisé garde sa place de tête : le cas courant reste
+                // une seule tentative, donc exactement la même vitesse qu'avant.
+                // Seul l'échec cesse d'être définitif. L'écriture du cache en cas
+                // de succès écrase déjà l'entrée périmée.
+                val strategies = if (cachedStrategy != null) {
+                    listOf(cachedStrategy) + allStrategies.filterNot { it.mode == cachedStrategy.mode }
+                } else {
+                    allStrategies
+                }
                 val results = linkedMapOf<String, String>()
                 var selectedStrategy: SshTransportStrategy? = null
 
+                // ── POURQUOI LE BUDGET PAR TENTATIVE N'EST PAS RACCOURCI ─────
+                //
+                // Il est tentant de donner un budget COURT aux tentatives de
+                // découverte — un mode que le fournisseur ne parle pas répond
+                // vite — puis de rendre le budget plein aux seuls modes ayant
+                // expiré. Cette variante a été écrite, compilée et SIMULÉE sur
+                // sept scénarios avant d'être retirée :
+                //
+                //   froid, bon mode LENT (6 s) en 3e  : 30 000 ms ok -> ECHEC
+                //   froid, bon mode LENT (11 s) en 4e : 47 000 ms ok -> ECHEC
+                //
+                // Les modes muets consomment la seconde passe AVANT le bon, et
+                // le serveur lent mais parfaitement valide devient injoignable.
+                // Borner seulement la durée totale par `timeoutMs` produit le
+                // même défaut sur le second cas.
+                //
+                // Une échelle SÉQUENTIELLE ne peut donc pas être raccourcie
+                // sans perdre un serveur lent. Seules des tentatives menées en
+                // PARALLÈLE (premier arrivé, les autres annulées) lèvent
+                // l'arbitrage — et cela demande une validation sur appareil,
+                // pas une simulation. Tant que cette validation n'a pas eu
+                // lieu, le budget reste entier : mieux vaut une connexion lente
+                // qu'une connexion impossible.
                 for ((index, strategy) in strategies.withIndex()) {
                     if (!running.get()) throw InterruptedException("VPN arrêté")
                     val attemptNumber = index + 1
