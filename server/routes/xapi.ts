@@ -1,15 +1,36 @@
 /**
- * xapi — Endpoints publics légers pour l'application mobile.
+ * xapi — Endpoint public léger pour l'application mobile.
  *
- * Contient l'endpoint de mise à jour in-app et le statut de connexion :
- *   GET /xapi/mobile/app-version → { versionCode, versionName, apkUrl, notes? }
- *   GET /xapi/mobile/ip → { ip }
- *   POST /xapi/mobile/connections/:id/status → { disabledReason: 'exhausted' | 'expired' }
+ * Surface réelle de ce routeur, vérifiée ligne à ligne :
+ *   GET  /xapi/mobile/app-version → publication de mise à jour in-app
+ *   HEAD /xapi/mobile/app-version → sonde de disponibilité
+ *
+ * L'en-tête précédent annonçait aussi `GET /xapi/mobile/ip`, qui n'existe dans
+ * aucune des deux copies du dépôt, et `POST /mobile/connections/:id/status`,
+ * retiré : c'était un doublon dégradé et non authentifié de `mobile.ts`.
+ *
+ * ── Pourquoi cet endpoint est monté sous /xapi et non sous /api ─────────────
+ * Il doit répondre SANS jeton et rester joignable en mode maintenance (voir
+ * server.ts l.174-179 et l'exclusion `!pathname.startsWith("/xapi/")` l.234) :
+ * une application dont la session a expiré doit pouvoir apprendre qu'une mise
+ * à jour existe.
+ *
+ * ── Limite connue, mesurée, et NON corrigeable depuis ce dépôt ──────────────
+ * nginx réécrit `^/xapi(/.*)$ → /api$1` avant d'atteindre le processus. Depuis
+ * Internet, `/xapi/mobile/app-version` aboutit donc à `/api/mobile/app-version`
+ * et rend 401 ; sur le port applicatif (127.0.0.1:4000, nginx contourné), le
+ * même chemin rend bien 200. Ce routeur n'est donc pas du code mort : il est
+ * vivant et momentanément inatteignable de l'extérieur.
+ *
+ * Cette réécriture est PORTANTE, pas accidentelle : `deploy-vps.yml` l.591
+ * sonde `/xapi/auth/login` (chemin absent d'ici, qui ne résout que grâce à
+ * elle) et `artifacts/sxb-dashboard/vite.config.ts` reproduit la convention en
+ * développement. La retirer sans précaution casserait le déploiement.
+ * Correction hors dépôt, décision du propriétaire : ne pas traiter ici.
  */
 import { Router, Request, Response } from "express";
 import fs from "fs";
 import path from "path";
-import { prisma, inMemoryDb } from "../database";
 import { getMobileAppUpdate, readPublishedAppUpdate, toMobileAppVersion } from "../services/app-update";
 
 const router = Router();
@@ -88,31 +109,6 @@ router.get("/mobile/app-version", async (req: Request, res: Response) => {
 
 // ── HEAD /xapi/mobile/app-version — sonde de disponibilité ───────────────────
 router.head("/mobile/app-version", (_req, res) => res.status(200).end());
-
-// A4 — POST /xapi/mobile/connections/:id/status — marque un abonnement/connexion comme 'exhausted' ou 'expired'
-router.post("/mobile/connections/:id/status", async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-    const disabledReason = req.body?.disabledReason;
-    if (disabledReason !== 'exhausted' && disabledReason !== 'expired') {
-      return res.status(400).json({ error: "invalid_reason", message: "disabledReason doit être 'exhausted' ou 'expired'" });
-    }
-
-    if (prisma) {
-      await (prisma as any).subscription.update({
-        where: { id },
-        data: { status: disabledReason },
-      }).catch(() => null);
-    } else {
-      const sub = inMemoryDb.subscriptions?.find((s: any) => s.id === id);
-      if (sub) sub.status = disabledReason;
-    }
-
-    return res.json({ success: true, id, status: disabledReason });
-  } catch (err) {
-    return res.status(500).json({ error: "server_error" });
-  }
-});
 
 export default router;
 
