@@ -14,6 +14,8 @@ import {
 } from "../services/app-update";
 import { sendAppUpdatePush } from "../services/fcm";
 import { readLatestBuildManifest } from "../services/app-build-manifest";
+import { porteeClients } from "../services/portee-donnees";
+import { etFiltres } from "../services/free-trial-marks";
 
 const router = Router();
 const roleSchema = z.enum(DISTRIBUTABLE_ROLES);
@@ -42,17 +44,31 @@ function isSuperAdmin(req: AuthenticatedRequest): boolean {
   return req.user?.role === "SUPER_ADMIN";
 }
 
-async function countActivatedDevices(): Promise<number> {
+/**
+ * Nombre d'appareils activés QUE LE REQUÉRANT PEUT VOIR.
+ *
+ * Mesuré à l'écran en production : un administrateur possédant UN SEUL appareil
+ * lisait « APPAREILS ACTIVÉS : 749 » — le parc entier de la plateforme. La
+ * liste sélectionnable juste en dessous, elle, était correctement cloisonnée :
+ * seul le total échappait. C'est le même défaut que sur `/api/analytics/users`,
+ * et la même cause — la fonction ne recevait pas la requête, donc ne pouvait
+ * appliquer aucune portée.
+ *
+ * Un écran en lecture seule reste une fuite : il annonçait à chaque exploitant
+ * l'ampleur du parc qu'on lui cache.
+ */
+async function countActivatedDevices(req: AuthenticatedRequest): Promise<number> {
   if (!prisma) return 0;
+  const portee = await porteeClients(prisma, req.user);
   return (prisma as any).vpnClient.count({
-    where: { status: "active", deviceId: { not: null } },
+    where: etFiltres({ status: "active", deviceId: { not: null } }, portee),
   }).catch(() => 0);
 }
 
 router.get("/current", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const update = await readPublishedAppUpdate();
-    if (!update) return res.json({ update: null, canPublish: isSuperAdmin(req), eligibleDeviceCount: await countActivatedDevices() });
+    if (!update) return res.json({ update: null, canPublish: isSuperAdmin(req), eligibleDeviceCount: await countActivatedDevices(req) });
     // Une publication qui ne décrit plus le fichier servi n'est PAS distribuée :
     // l'annoncer enverrait chaque appareil vers un échec d'intégrité. L'écran
     // doit donc le dire, sinon l'exploitant ne verrait qu'un silence inexpliqué.
@@ -61,7 +77,7 @@ router.get("/current", requireAuth, async (req: AuthenticatedRequest, res: Respo
       update: toPublicAppUpdate(update),
       visibleToRole: isRoleTargeted(update, req.user?.role),
       canPublish: isSuperAdmin(req),
-      eligibleDeviceCount: await countActivatedDevices(),
+      eligibleDeviceCount: await countActivatedDevices(req),
       describesServedApk,
       // `distributed` répond à la seule question utile : est-ce que quelqu'un
       // la reçoit en ce moment ?
@@ -114,7 +130,7 @@ router.post("/publish", requireAuth, async (req: AuthenticatedRequest, res: Resp
     const push = await sendAppUpdatePush(update);
     return res.status(201).json({
       update: toPublicAppUpdate(update),
-      eligibleDeviceCount: await countActivatedDevices(),
+      eligibleDeviceCount: await countActivatedDevices(req),
       push,
     });
   } catch (err: any) {
