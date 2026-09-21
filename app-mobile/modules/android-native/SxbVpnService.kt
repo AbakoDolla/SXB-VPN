@@ -1951,7 +1951,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                             .putString(fingerprintKey, cacheFingerprint)
                             .apply()
                         broadcastLog("[SXB_TRACE] ATTEMPT_STRATEGY n=$attemptNumber transport=${strategy.mode} result=banner_ok")
-                        broadcastLog("[SXB_TRACE] TRANSPORT_SELECTED mode=${strategy.mode} reason=ssh_banner")
+                        trace("TRANSPORT_SELECTED", "mode=${strategy.mode} reason=ssh_banner")
                         break
                     } catch (attemptError: Throwable) {
                         if (attemptError is InterruptedException || !running.get()) throw attemptError
@@ -2534,15 +2534,17 @@ class SxbVpnService : VpnService(), PlatformInterface {
      *     established ». Cette voie est conservée sans être présumée.
      */
     @Synchronized
-    private fun promoteToConnected(reason: String, label: String) {
+    private fun promoteToConnected(proof: String, bytes: Long, label: String) {
         if (!running.get()) return
         // Seul `handshaking` peut être promu : jamais `error`, `disconnected`
         // ni un `connecting` dont le TUN n'est pas encore ouvert.
         if (currentState != "handshaking") return
         handshakeProver?.let { if (it !== Thread.currentThread()) it.interrupt() }
         handshakeProver = null
-        trace("TUNNEL_TRAFFIC_CONFIRMED", "proof=$reason")
-        Log.i("SXB_DEBUG", "[SXB_DEBUG] HANDSHAKE_VERIFIED proof=$reason")
+        // Vocabulaire fermé : le journal technique n'admet que ces quatre
+        // valeurs, et aucune chaîne libre ne peut donc remonter jusqu'à l'écran.
+        trace("TUNNEL_TRAFFIC_CONFIRMED", "proof=$proof bytes=$bytes")
+        Log.i("SXB_DEBUG", "[SXB_DEBUG] HANDSHAKE_VERIFIED proof=$proof")
         broadcastLog("[SXB] ✅ Données en transit — tunnel opérationnel")
         setCurrentState("connected")
         broadcastStatus("connected")
@@ -2580,10 +2582,19 @@ class SxbVpnService : VpnService(), PlatformInterface {
                         }
 
                         SxbHandshakeProofPolicy.Verdict.PROMOTE_MEASURED -> {
-                            promoteToConnected(
-                                "tun_rx=${evidence.tunReturnBytes} ssh_rx=${evidence.sshRelayReturnBytes}",
-                                label,
-                            )
+                            val parLeTun = evidence.tunReturnBytes > 0L
+                            val parLeRelais = !parLeTun && evidence.sshRelayReturnBytes > 0L
+                            val proof = when {
+                                parLeTun -> "TUN_RX"
+                                parLeRelais -> "SSH_RELAY_RX"
+                                else -> "ENGINE_LOG"
+                            }
+                            val bytes = when {
+                                parLeTun -> evidence.tunReturnBytes
+                                parLeRelais -> evidence.sshRelayReturnBytes
+                                else -> 0L
+                            }
+                            promoteToConnected(proof, bytes, label)
                             return@Thread
                         }
 
@@ -2596,7 +2607,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                                 "[SXB] ⚠️ ÉTAT PRÉSUMÉ — compteurs de trafic illisibles sur cet " +
                                 "appareil : l'acheminement n'a pas pu être vérifié.",
                             )
-                            promoteToConnected("presume_unmeasurable", label)
+                            promoteToConnected("PRESUMED_UNMEASURABLE", 0L, label)
                             return@Thread
                         }
 
@@ -3105,7 +3116,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // On exige désormais une preuve provenant de l'outbound proxy lui-même et
         // on écarte explicitement les outbounds locaux.
         if (currentState == "handshaking" && isProxyHandshakeProof(lower)) {
-            promoteToConnected("engine_log_handshake", "")
+            promoteToConnected("ENGINE_LOG", 0L, "")
         }
 
         noteOutboundFailure(lower)

@@ -12,7 +12,16 @@ const assert = require('node:assert/strict');
 
 const temp = mkdtempSync(path.join(tmpdir(), 'sxb-handshake-proof-'));
 function run(command, args) {
-  const result = spawnSync(command, args, { stdio: 'inherit', shell: false });
+  // Sous Windows, kotlinc est un .bat : Node refuse de l'exécuter sans passer
+  // par l'interpréteur de commandes. Les arguments restent des chemins que
+  // nous produisons nous-mêmes, jamais une saisie extérieure.
+  const parLeShell = /\.(bat|cmd)$/i.test(command);
+  const result = parLeShell
+    ? spawnSync(
+        [command, ...args].map((a) => `"${a}"`).join(' '),
+        { stdio: 'inherit', shell: true },
+      )
+    : spawnSync(command, args, { stdio: 'inherit', shell: false });
   if (result.error) throw result.error;
   assert.equal(result.status, 0, `${command} failed`);
 }
