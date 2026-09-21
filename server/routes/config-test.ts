@@ -4,7 +4,13 @@
  *
  * RÈGLES :
  *   - Ne crée/configure AUCUN serveur : sonde uniquement le serveur EXTERNE.
- *   - Aucune authentification (transport-only, aucun credential utilisé).
+ *   - La SONDE n'ouvre aucune session authentifiée : elle rejoue le transport
+ *     (DNS → TCP → TLS/SNI → Upgrade) sans employer les credentials du profil.
+ *     Vérifié dans transport-probe.ts, et non recopié depuis cet en-tête : seul
+ *     `canonical.payload` y est lu ; ni `uuid`, ni `password`, ni `username`.
+ *     La ROUTE, elle, exige une session ET la permission `vpnprofile.manage` —
+ *     l'ancienne rédaction « aucune authentification » mélangeait les deux et
+ *     se lisait comme si l'accès était public. Il ne l'est pas.
  *   - Jamais de canonicalConfig ni credential dans la réponse : uniquement le
  *     compte-rendu structuré (steps) + verdict + latence.
  *   - unreachable_from_probe ≠ invalid (géo/opérateur-restreinte possible).
@@ -20,6 +26,7 @@ import {
 } from '../services/canonical-config';
 import { probeConfig, statusFromProbe, ProbeReport } from '../services/transport-probe';
 import { assertProfileUnlocked, handleProfileLockError, profileLockWhere, ProfileLockError } from '../services/profile-lock';
+import { porteeProfils } from '../services/portee-donnees';
 
 const router = Router();
 
@@ -30,8 +37,36 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
     if (!importConfig && !profileId) {
       return res.status(400).json({ error: 'importConfig (URI/JSON) ou profileId requis' });
     }
+    // Le profil désigné par le CORPS doit être cloisonné exactement comme celui
+    // désigné par l'URL. Mesuré en production AVANT ce correctif : un
+    // administrateur créé à l'instant, dont la liste de profils était vide,
+    // obtenait 423 PROFILE_LOCKED sur le profil d'un autre locataire là où un
+    // identifiant inexistant rendait 404. La ligne d'autrui était donc bien
+    // chargée, et l'écart entre les deux réponses suffisait à énumérer le parc
+    // sans rien déverrouiller.
+    //
+    // `chargerProfilVisible` (vpn-profiles.ts) ne pouvait pas couvrir ce cas :
+    // il lit `req.params.id` en dur. La portée manquait ici parce que la
+    // référence vient du corps — c'est l'angle mort que le recensement a
+    // révélé, et dont la leçon tient en une phrase : un marqueur de portée
+    // dans un fichier prouve qu'une portée existe, jamais qu'elle couvre une
+    // référence venue de `req.body`.
+    //
+    // Le verrou ne remplaçait pas ce contrôle : `assertProfileUnlocked` est un
+    // mot de passe de profil, pas une preuve de propriété. Il n'a arrêté la
+    // chaîne que parce que les profils de production sont tous verrouillés ;
+    // un profil sans verrou allait jusqu'au déchiffrement, à la connexion
+    // sortante, puis à l'écriture de `validatedAt` dans la ligne de la victime.
+    //
+    // `findFirst` + portée rend un profil d'autrui indiscernable d'un profil
+    // absent : même statut, même corps, avant toute vérification de verrou.
+    const portee = await porteeProfils(prisma, req.user);
     const profile = profileId
-      ? await prisma.vpnProfile.findUnique({ where: { id: profileId } })
+      ? await (prisma as any).vpnProfile.findFirst({
+          where: portee
+            ? ({ AND: [{ id: String(profileId) }, portee] } as any)
+            : { id: String(profileId) },
+        })
       : null;
     if (profileId && !profile) return res.status(404).json({ error: 'Profile not found' });
     if (profile) assertProfileUnlocked(profile, req);

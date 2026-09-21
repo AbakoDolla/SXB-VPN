@@ -33,7 +33,20 @@ describe('mobile health wiring and privacy', () => {
     const pseudonym = source('server/services/mobile-pseudonym.ts');
     assert.match(pseudonym, /createHmac\("sha256", secret\)/);
     assert.match(pseudonym, /\.update\(`\$\{userId\}\\0\$\{deviceId\}`\)/);
-    assert.match(service, /export \{ pseudonymizeMobileDevice \} from "\.\/mobile-pseudonym"/);
+    // ⚠️ Cette assertion épinglait autrefois la forme `export { … } from
+    // "./mobile-pseudonym"`. Or cette construction réexporte SANS lier le nom
+    // localement, et `storeMobileHealthReport` l'appelle : tout rapport de
+    // santé d'un appareil activé levait `ReferenceError`, que la route
+    // traduisait en « 503 DB_UNAVAILABLE ». L'assertion exigeait donc très
+    // exactement la construction cassée — aucune écriture correcte ne pouvait
+    // la satisfaire. On vérifie désormais le FAIT visé par le commentaire
+    // ci-dessus (le calcul n'est pas dupliqué ici) plutôt qu'une syntaxe.
+    assert.doesNotMatch(service, /createHmac/);
+    // Le nom doit être LIÉ localement : c'est ce qui rend l'ancien défaut
+    // impossible à revenir.
+    assert.match(service, /import \{[^}]*pseudonymizeMobileDevice[^}]*\} from "\.\/mobile-pseudonym"/);
+    // … et rester exporté pour les appelants externes (vpn-presence, tests).
+    assert.match(service, /export \{[^}]*pseudonymizeMobileDevice[^}]*\}/);
     assert.doesNotMatch(pseudonym, /prisma|import .* from "\.\.\/database"/);
     assert.match(service, /\.strict\(\)/);
     assert.match(service, /reportId: z\.string\(\)\.uuid\(\)/);

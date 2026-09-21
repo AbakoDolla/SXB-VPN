@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { prisma } from "../database";
 import { readPublishedAppUpdate } from "./app-update";
+import { pseudonymizeMobileDevice } from "./mobile-pseudonym";
 
 export const MOBILE_HEALTH_REPORT_RETENTION_DAYS = 30;
 export const MOBILE_HEALTH_DEVICE_RETENTION_DAYS = 90;
@@ -76,9 +77,23 @@ export const mobileHealthReportSchema = z.object({
 export type MobileHealthReportInput = z.infer<typeof mobileHealthReportSchema>;
 
 // Le calcul vit dans `mobile-pseudonym` : il est pur, et le suivi de présence
-// n'a pas à embarquer la validation d'entrée ni la base pour l'appeler. La
-// réexportation garde intacts tous les appelants existants.
-export { pseudonymizeMobileDevice } from "./mobile-pseudonym";
+// n'a pas à embarquer la validation d'entrée ni la base pour l'appeler.
+//
+// ⚠️ `export { x } from "…"` ne crée AUCUNE liaison locale. Il réexporte sans
+// introduire `x` dans la portée du module. Ce fichier APPELLE pourtant
+// `pseudonymizeMobileDevice` dans `storeMobileHealthReport` : avec la seule
+// réexportation, cet appel levait `ReferenceError` à chaque rapport de santé
+// d'un appareil activé, et le `catch` de la route le traduisait en
+// « 503 DB_UNAVAILABLE » — un message qui accusait la base alors qu'elle
+// répondait normalement.
+//
+// Rien ne l'avait vu : `tsconfig.json` ne type-vérifie pas `server/`, esbuild
+// transpile sans résoudre les identifiants (il a bundlé l'appel vers un nom
+// qu'il ne déclare nulle part), et le test existant n'exerçait que la
+// réexportation, jamais l'appel interne.
+//
+// On importe donc — ce qui lie le nom — puis on réexporte pour les appelants.
+export { pseudonymizeMobileDevice };
 
 export interface MobileHealthDeviceSnapshot {
   pseudonym: string;
