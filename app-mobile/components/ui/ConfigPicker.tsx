@@ -41,6 +41,11 @@ export interface ConfigEntry {
   protocol: string;
   isActive: boolean;
   status?: ProfileStatus;
+  assignmentOrigin?: {
+    label: string;
+    tone: 'superadmin' | 'admin' | 'reseller' | 'support' | 'default';
+    role: string | null;
+  } | null;
   /** Accès annoncé par le serveur dont l'appareil n'a pas encore la configuration. */
   enAttente?: boolean;
 }
@@ -170,6 +175,8 @@ export default function ConfigPicker({
             ) : (
               entries.map((entry) => {
                 const remote = connections.find(c => c.id === entry.id);
+                const assignmentOrigin = entry.assignmentOrigin ?? remote?.assignmentOrigin ?? null;
+                const assignmentLabel = assignmentOrigin?.label || remote?.assignedByRole || entry.assignmentOrigin?.role || null;
                 const status = entry.status ?? remote?.status;
                 const isUnusable = status === 'revoked' || status === 'deleted' || status === 'suspended';
                 const hasNotice = isUnusable || status === 'expired' || status === 'exhausted';
@@ -177,6 +184,13 @@ export default function ConfigPicker({
                 const isDeleting = deletingId === entry.id;
                 const teinteProtocole = protocolTone(colors, entry.protocol || remote?.technicalProtocol);
                 const tone = isUnusable ? colors.accents.corail : isActive ? colors.accents.emeraude : teinteProtocole;
+                const assignmentTone = assignmentOrigin ? {
+                  superadmin: colors.accents.violet,
+                  admin: colors.accents.cyan,
+                  reseller: colors.accents.emeraude,
+                  support: colors.accents.ambre,
+                  default: colors.accents.indigo,
+                }[assignmentOrigin.tone] || colors.accents.indigo : undefined;
                 // Le profil actif partage exactement le quota de l'accueil,
                 // y compris les octets mesurés en attente de synchronisation.
                 const currentQuota = isActive ? activeQuota : undefined;
@@ -232,6 +246,9 @@ export default function ConfigPicker({
                               technique de transport, donc la configuration que
                               l'exploitant vend. La teinte de la ligne continue
                               de distinguer les familles, sans les révéler. */}
+                          {assignmentOrigin && assignmentLabel && (
+                            <Pill label={assignmentLabel} tone={assignmentTone ?? colors.accents.indigo} dot />
+                          )}
                           {isActive && <Pill label={t('config_active')} tone={colors.accents.emeraude} dot />}
                           {entry.enAttente && !hasNotice && (
                             <Pill label={t('config_pending_device')} tone={colors.accents.ambre} />

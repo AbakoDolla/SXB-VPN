@@ -1,12 +1,20 @@
 type NamedConfig = { id: string; name: string };
 
 /** Un accès tel que le serveur l'annonce — la forme que l'accueil affiche déjà. */
+type AssignmentOrigin = {
+  label: string;
+  tone: 'superadmin' | 'admin' | 'reseller' | 'support' | 'default';
+  role: string | null;
+};
+
 type AccesDistant = {
   id: string;
   name: string;
   status?: string;
   displayProtocol?: string;
   technicalProtocol?: string;
+  assignmentOrigin?: AssignmentOrigin | null;
+  assignedByRole?: string | null;
 };
 
 /**
@@ -26,6 +34,7 @@ export type AccesEnAttente = {
   protocol: string;
   isActive: false;
   status?: EtatProfil;
+  assignmentOrigin?: AssignmentOrigin | null;
   /** L'appareil ne détient pas encore la configuration de cet accès. */
   enAttente: true;
 };
@@ -73,6 +82,7 @@ export function accesSansConfigLocale(
         protocol: acces.displayProtocol || acces.technicalProtocol || '',
         isActive: false as const,
         ...(etat ? { status: etat } : {}),
+        ...(acces.assignmentOrigin ? { assignmentOrigin: acces.assignmentOrigin } : {}),
         enAttente: true as const,
       };
     });

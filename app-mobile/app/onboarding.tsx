@@ -335,7 +335,7 @@ export default function OnboardingScreen() {
         AsyncStorage.setItem(LEGACY_WALKTHROUGH_KEY, "true"),
       ]);
       if (isReplay && router.canGoBack()) router.back();
-      else router.replace("/(tabs)/" as any);
+      else router.replace("/(tabs)" as any);
     } finally {
       setFinishing(false);
     }

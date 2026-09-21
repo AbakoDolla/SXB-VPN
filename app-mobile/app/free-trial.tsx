@@ -129,7 +129,7 @@ export default function FreeTrialScreen() {
       await activateAccount(accountToken);
       await effacerDemandeLocale();
       if (Platform.OS !== "web") await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      router.replace((hasSeenOnboarding ? "/(tabs)/" : "/onboarding") as any);
+      router.replace((hasSeenOnboarding ? "/(tabs)" : "/onboarding") as any);
     } catch {
       // L'accès existe mais la session n'a pas pu s'ouvrir (réseau, par
       // exemple). On reste sur l'écran « approuvé » : l'utilisateur peut

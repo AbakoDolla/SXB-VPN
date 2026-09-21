@@ -188,14 +188,14 @@ export function deviceAccess(authority: AccessAuthority | null): DeviceAccess | 
 export function blocksDevice(device: DeviceAccess | null): boolean {
   return !!device && (device.status !== 'active' || device.activationRequired);
 }
-export function accessRedirect(authenticated: boolean, ready: boolean, device: DeviceAccess | null, segment?: string): '/access-blocked' | '/(tabs)/' | null {
+export function accessRedirect(authenticated: boolean, ready: boolean, device: DeviceAccess | null, segment?: string): '/access-blocked' | '/(tabs)' | null {
   if (!authenticated || !ready) return null;
   // `free-trial` reste joignable depuis un appareil bloqué : la demande d'essai
   // ne donne aucun accès par elle-même — elle crée une demande en attente que
   // l'exploitation doit approuver, et l'empreinte d'appareil interdit déjà un
   // second essai. L'en écarter enfermerait un appareil révoqué sans recours.
   if (blocksDevice(device)) return ['access-blocked', 'privacy', 'settings', 'activate', 'free-trial'].includes(segment || '') ? null : '/access-blocked';
-  return segment === 'access-blocked' ? '/(tabs)/' : null;
+  return segment === 'access-blocked' ? '/(tabs)' : null;
 }
 export function blocksProfile(status: string | undefined): boolean {
   return status === 'revoked' || status === 'deleted' || status === 'suspended';

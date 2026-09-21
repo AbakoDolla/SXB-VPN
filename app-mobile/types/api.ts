@@ -69,6 +69,13 @@ export interface VpnConnection {
   status: string;             // active | expired | revoked | suspended
   dataToken: string;
   createdAt: string;
+  createdBy?: string | null;
+  assignedByRole?: string | null;
+  assignmentOrigin?: {
+    label: string;
+    tone: 'superadmin' | 'admin' | 'reseller' | 'support' | 'default';
+    role: string | null;
+  } | null;
   /** §6.4 — métadonnées d'invalidation de cache (jamais de champs techniques) */
   configVersion: number;
   configHash: string | null;

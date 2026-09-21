@@ -886,10 +886,38 @@ router.get("/connections", async (req: AuthenticatedRequest, res: Response) => {
       include: { profile: true },
     });
 
+    const creatorIds = Array.from(new Set(
+      subscriptions
+        .map((sub: any) => sub.createdBy || sub.profile?.createdBy || null)
+        .filter((value: string | null): value is string => Boolean(value)),
+    ));
+
+    const creators = creatorIds.length
+      ? await (prisma as any).user.findMany({
+          where: { id: { in: creatorIds } },
+          select: { id: true, role: { select: { name: true } } },
+        })
+      : [];
+
+    const roleByUser = new Map((creators as any[]).map((user: any) => [user.id, user.role?.name || null]));
+    const toAssignmentBadge = (role: string | null) => {
+      if (!role) return null;
+      const normalized = role.toUpperCase();
+      const map: Record<string, { label: string; tone: string }> = {
+        SUPER_ADMIN: { label: 'Super admin', tone: 'superadmin' },
+        ADMIN: { label: 'Admin', tone: 'admin' },
+        RESELLER: { label: 'Reseller', tone: 'reseller' },
+        SUPPORT: { label: 'Support', tone: 'support' },
+      };
+      return map[normalized] || { label: normalized.replace(/_/g, ' ').replace(/\b\w/g, char => char.toUpperCase()), tone: 'default' };
+    };
+
     const now = Date.now();
 
     const connections = subscriptions.map((sub: any) => {
       const profile = sub?.profile || null;
+      const actorRole = roleByUser.get(sub.createdBy || profile?.createdBy || '') || null;
+      const assignmentOrigin = toAssignmentBadge(actorRole);
 
       // Protocol technique (SSH, VLESS, Trojan…)
       const technicalProtocol = profile?.protocol || "ssh";
@@ -930,6 +958,9 @@ router.get("/connections", async (req: AuthenticatedRequest, res: Response) => {
         status,
         dataToken:  sub.dataToken,
         createdAt:  sub.createdAt ? new Date(sub.createdAt).toISOString() : new Date().toISOString(),
+        createdBy:  sub.createdBy || profile?.createdBy || null,
+        assignedByRole: actorRole,
+        assignmentOrigin: assignmentOrigin,
         configVersion: configVersionForProfile(profile),
         configHash:    configHashForProfile(profile),
       };

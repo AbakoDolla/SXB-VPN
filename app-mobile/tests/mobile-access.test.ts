@@ -738,7 +738,7 @@ describe('mobile access runtime with real encrypted store, auth and HTTP interce
     const disabled = snapshot('disabled', 'disabled').device;
     assert.equal(h.policy.accessRedirect(true, true, disabled, '(tabs)'), '/access-blocked');
     assert.equal(h.policy.accessRedirect(true, true, disabled, 'settings'), null);
-    assert.equal(h.policy.accessRedirect(true, true, snapshot('active').device, 'access-blocked'), '/(tabs)/');
+    assert.equal(h.policy.accessRedirect(true, true, snapshot('active').device, 'access-blocked'), '/(tabs)');
     for (const [language, text, author] of [
       ['fr', 'temporairement désactivé', 'StuffxBilal'],
       ['en', 'temporarily disabled', 'StuffxBilal'],
