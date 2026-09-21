@@ -689,28 +689,63 @@ qu'en 15.2 s'applique.
 
 ## 16. Licences — obligation à traiter
 
-Le tableau de la section 10.1 reste valable. Un point demandait vérification ; elle a été faite.
+Le tableau de la section 10.1 reste valable. Un point demandait vérification ; elle a été
+faite, et la part qui relevait du code a été corrigée.
 
-**`app-mobile/assets/engine/NOTICE.txt` ne couvre pas sing-box.** Ce fichier documente
-correctement la base de domaines `geosite.db` (données MIT de v2fly, converties par un
-outil GPL non embarqué). Il ne dit **rien de sing-box lui-même**.
+**Le constat initial : `app-mobile/assets/engine/NOTICE.txt` ne couvrait pas sing-box.**
+Ce fichier documentait correctement la base de domaines `geosite.db` (données MIT de
+v2fly, converties par un outil GPL non embarqué). Il ne disait **rien de sing-box
+lui-même**.
 
 Or sing-box v1.12.9 est cloné depuis le dépôt officiel `SagerNet/sing-box`, compilé par
 `gomobile bind` et lié dans l'APK sous forme de `libbox.aar`. **sing-box est sous
 GPL-3.0-or-later.**
 
-| Point | État constaté |
+### 16.1 Ce qui a été corrigé
+
+L'attribution manquante a été ajoutée au fichier livré avec l'application : composant,
+version 1.12.9 — celle que `build-libbox.sh` compile réellement —, source amont, licence,
+notice amont reproduite telle quelle (clause de nom comprise) et texte intégral de la
+GPL-3.0. Une entrée a également été ajoutée pour `libdnstt.so` (`Mygod/dnstt`, CC0 1.0) :
+aucune obligation juridique ici, mais aucune bibliothèque native livrée ne reste désormais
+sans origine traçable.
+
+Les textes de licence ne sont pas retapés. Ils proviennent des sources officielles : la
+notice sing-box du `LICENSE` au tag `v1.12.9`, et le texte GPL-3.0 de gnu.org, recoupé
+octet pour octet avec le `COPYING` de GNU coreutils. Un texte de licence approximatif
+vaudrait moins que pas de licence du tout — il donnerait l'apparence de la conformité sans
+en avoir la substance. `tests/attribution-licences.test.ts` fige donc son empreinte
+SHA-256 ; **la capacité de ce contrôle à échouer a été prouvée** en modifiant une seule
+lettre du texte, ce qui l'a bien fait échouer, puis en restaurant le fichier.
+
+Le contrôle d'artefact `scripts/android-artifact.mjs` ne vérifiait l'attribution que pour
+geosite. Il vérifie désormais aussi celle de sing-box **sur l'APK construit** : seul ce
+qui est empaqueté atteint l'utilisateur.
+
+### 16.2 Ce qui reste ouvert — et n'appartient pas au code
+
+| Point | État |
 |---|---|
 | Origine du moteur | Dépôt officiel, version épinglée `v1.12.9` — vérifiable |
-| Mention de la licence GPL-3.0 dans l'app | **Absente** |
-| Texte de la GPL-3.0 distribué | **Absent** |
-| Offre de mise à disposition des sources | **Absente** |
+| Mention de la licence GPL-3.0 dans l'app | **Présente** depuis cette livraison |
+| Texte de la GPL-3.0 distribué | **Présent**, vérifié verbatim |
+| Attribution de dnstt (CC0) | **Présente** |
+| Mise à disposition des sources correspondantes | **Toujours absente** |
+
+L'attribution ne règle pas l'obligation de fond. L'article 6 de la GPL-3.0 demande que les
+sources correspondantes accompagnent le binaire distribué ; ce point demeure entier.
+
+**Aucune promesse n'a été inscrite dans le fichier** : ni offre de sources, ni engagement
+de publication, ni lien vers un dépôt. Déclarer une licence est un constat ; mettre le code
+à disposition est une décision commerciale, qui n'est pas celle du dépôt.
+
+Deux voies restent donc ouvertes, et **le choix appartient au client seul** : se conformer
+en publiant les sources correspondantes, ou remplacer le moteur par une brique sous licence
+permissive. Ce rapport ne tranche pas.
 
 **Ce n'est pas un problème introduit par cette mission** — c'est l'état du produit depuis
-l'intégration de sing-box. Mais il serait malhonnête de ne pas le signaler maintenant que
-la vérification a été faite.
-
-**Aucune décision juridique n'a été prise ni engagée ici.** Le constat est transmis tel quel.
+l'intégration de sing-box. Mais il aurait été malhonnête de ne pas le signaler une fois la
+vérification faite, et la part qui relevait du code a été traitée sans préjuger de la suite.
 
 ---
 
@@ -724,13 +759,13 @@ explicitement.
 
 | Vérification | Commande | Résultat |
 |---|---|---|
-| Suite complète | `npm run test:regression` | **749 / 749**, 0 échec |
+| Suite complète | `npm run test:regression` | **761 / 761**, 0 échec |
 | Typage | `npm run typecheck` | **exit 0** |
 | Politique de preuve (Kotlin, sur JVM) | `node tests/run-handshake-proof.cjs` | **11 / 11** |
 | Syntaxe Kotlin du code ajouté | `kotlinc` | **0 erreur de syntaxe, 0 erreur citant un symbole ajouté** |
 
-Point de départ avant toute modification : **692 tests**. À la livraison : **749**.
-**57 contrôles ajoutés.**
+Point de départ avant toute modification : **692 tests**. À la livraison : **761**.
+**69 contrôles ajoutés.**
 
 La politique de preuve du `connected` a été extraite dans une classe Kotlin pure
 (`SxbHandshakeProofPolicy`) précisément pour pouvoir être **exécutée** sur JVM, sans
@@ -793,7 +828,7 @@ Dans l'ordre, sur un appareil de test et **jamais sur des données de production
 
 | Point | Nature | Qui décide |
 |---|---|---|
-| Obligation GPL-3.0 de sing-box (§16) | Juridique | Le client |
+| Mise à disposition des sources de sing-box (§16.2) | Juridique | Le client |
 | Validation sur appareil réel (§17.5) | Technique | À planifier |
 | AmneziaWG (§15.3) | Fonctionnel | Le client, si le besoin se confirme |
 | `isProxyHandshakeProof()` | Code mort en pratique | Sans effet — le moteur tourne en niveau `warn` et n'émet jamais la trace attendue |
