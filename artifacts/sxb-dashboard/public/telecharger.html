@@ -104,6 +104,58 @@ const octets = n => n >= 1e6 ? (n / 1e6).toFixed(1) + ' Mo' : Math.round(n / 1e3
 const dire = (texte, classe) => { const e = $('etat'); e.textContent = texte; e.className = 'etat ' + (classe || ''); };
 
 let attendu = null;
+const TELECHARGEMENT_DB = 'sxb-vpn-downloads-v1';
+const TELECHARGEMENT_STORE = 'parts';
+const clefTelechargement = () => String(attendu?.apkSha256 || attendu?.versionName || 'latest').toLowerCase();
+
+function ouvrirTelechargementDb() {
+  return new Promise((resolve, reject) => {
+    if (!('indexedDB' in window)) return resolve(null);
+    const request = indexedDB.open(TELECHARGEMENT_DB, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(TELECHARGEMENT_STORE)) {
+        db.createObjectStore(TELECHARGEMENT_STORE, { keyPath: 'key' });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('IndexedDB indisponible'));
+  });
+}
+
+async function lireParts(clef) {
+  const db = await ouvrirTelechargementDb();
+  if (!db) return [];
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(TELECHARGEMENT_STORE).objectStore(TELECHARGEMENT_STORE).getAll();
+    request.onsuccess = () => resolve(request.result.filter(item => item.clef === clef).sort((a, b) => a.offset - b.offset));
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function enregistrerPart(clef, offset, bytes) {
+  const db = await ouvrirTelechargementDb();
+  if (!db) return;
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(TELECHARGEMENT_STORE, 'readwrite');
+    tx.objectStore(TELECHARGEMENT_STORE).put({ key: clef + ':' + offset, clef, offset, bytes });
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function effacerParts(clef) {
+  const db = await ouvrirTelechargementDb();
+  if (!db) return;
+  const parts = await lireParts(clef);
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(TELECHARGEMENT_STORE, 'readwrite');
+    const store = tx.objectStore(TELECHARGEMENT_STORE);
+    parts.forEach(part => store.delete(part.key));
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
 
 (async function chargerInfos() {
   try {
@@ -135,25 +187,53 @@ $('lancer').onclick = async () => {
   if (!attendu?.apkSha256) return;
   $('lancer').disabled = true;
   $('piste').style.display = 'block';
-  dire('Téléchargement en cours…');
+  const clef = clefTelechargement();
 
   try {
-    const r = await fetch(APK, { cache: 'no-store' });
+    let parts = await lireParts(clef);
+    let recu = parts.reduce((total, part) => total + part.bytes.byteLength, 0);
+    const headers = recu > 0 ? { Range: 'bytes=' + recu + '-' } : {};
+    let r = await fetch(APK, { cache: 'no-store', headers });
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const total = Number(r.headers.get('content-length')) || attendu.sizeBytes || 0;
+    const range = r.headers.get('content-range') || '';
+    const rangeStart = /^bytes\s+(\d+)-/i.exec(range);
+    if (recu > 0 && (r.status !== 206 || !rangeStart || Number(rangeStart[1]) !== recu)) {
+      // Le serveur ne sait pas reprendre : repartir proprement plutôt que
+      // concaténer un fichier complet avec un fragment déjà conservé.
+      await effacerParts(clef);
+      parts = [];
+      recu = 0;
+      r = await fetch(APK, { cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+    }
+    const rangeFinal = r.headers.get('content-range') || '';
+    const total = Number((/^bytes\s+\d+-\d+\/(\d+)$/i.exec(rangeFinal) || [])[1])
+      || (recu + (Number(r.headers.get('content-length')) || 0))
+      || attendu.sizeBytes || 0;
+    dire(recu ? 'Reprise du téléchargement… ' + octets(recu) + ' déjà reçus' : 'Téléchargement en cours…');
+    if (total) $('jauge').style.transform = 'scaleX(' + (recu / total).toFixed(4) + ')';
 
-    const morceaux = [];
-    let recu = 0;
     const lecteur = r.body.getReader();
     for (;;) {
       const { done, value } = await lecteur.read();
       if (done) break;
-      morceaux.push(value);
+      const bytes = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+      await enregistrerPart(clef, recu, bytes);
+      parts.push({ offset: recu, bytes });
       recu += value.length;
       if (total) $('jauge').style.transform = 'scaleX(' + (recu / total).toFixed(4) + ')';
       dire('Téléchargement… ' + octets(recu) + (total ? ' / ' + octets(total) : ''));
     }
 
+    if (total && recu !== total) throw new Error('transfert incomplet (' + recu + '/' + total + ' octets)');
+    parts.sort((a, b) => a.offset - b.offset);
+    const morceaux = [];
+    let attenduOffset = 0;
+    for (const part of parts) {
+      if (part.offset !== attenduOffset) throw new Error('fragment manquant');
+      morceaux.push(part.bytes);
+      attenduOffset += part.bytes.byteLength;
+    }
     const blob = new Blob(morceaux, { type: 'application/vnd.android.package-archive' });
 
     // Une taille correcte ne prouve rien : c'est l'empreinte qui tranche.
@@ -163,6 +243,7 @@ $('lancer').onclick = async () => {
 
     if (obtenu.toLowerCase() !== String(attendu.apkSha256).toLowerCase()) {
       dire("Le fichier reçu est incomplet ou altéré. Ne l’installez pas : retéléchargez-le.", 'ko');
+      await effacerParts(clef);
       $('lancer').disabled = false;
       $('lancer').textContent = 'Réessayer';
       return;
@@ -177,12 +258,13 @@ $('lancer').onclick = async () => {
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 120000);
+    await effacerParts(clef);
     $('lancer').textContent = 'Télécharger à nouveau';
     $('lancer').disabled = false;
   } catch (e) {
-    dire('Téléchargement interrompu : ' + (e?.message || e) + '. Réessayez.', 'ko');
+    dire('Téléchargement interrompu. Appuyez sur « Reprendre » : les octets déjà reçus sont conservés.', 'ko');
     $('lancer').disabled = false;
-    $('lancer').textContent = 'Réessayer';
+    $('lancer').textContent = 'Reprendre le téléchargement';
     $('direct').hidden = false;
   }
 };
