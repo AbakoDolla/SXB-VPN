@@ -3322,8 +3322,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private fun profileDnsObject(raw: String): JSONObject? {
         val value = raw.trim()
         if (value.isEmpty()) return null
+        val usesSystemDns = value.equals("local", ignoreCase = true)
         val address = when {
-            value.equals("local", ignoreCase = true) -> "local"
+            // `local` means the DNS supplied by the current network. Do not
+            // pass the literal through to sing-box: on Android its Go resolver
+            // has no dependable /etc/resolv.conf, and a proxy detour would
+            // make the bootstrap lookup circular.
+            usesSystemDns -> bootstrapDnsAddress()
             // Un schéma explicite est un choix de transport de l'exploitant :
             // il est respecté tel quel.
             value.contains("://") -> value
@@ -3336,9 +3341,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
         return JSONObject().apply {
             put("servers", JSONArray()
                 .put(JSONObject().put("tag", "dns-remote").put("address", address)
-                    .put("strategy", tunnelDnsStrategy()).put("detour", "proxy"))
-                // `local` déléguerait au résolveur Go, sans /etc/resolv.conf
-                // sous Android : ce serveur ne résolvait donc jamais rien.
+                    .put("strategy", if (usesSystemDns) dnsStrategy() else tunnelDnsStrategy())
+                    .put("detour", if (usesSystemDns) "direct" else "proxy"))
                 .put(JSONObject().put("tag", "dns-local").put("address", bootstrapDnsAddress())
                     .put("strategy", dnsStrategy()).put("detour", "direct"))
                 .put(JSONObject().put("tag", "dns-fake").put("address", "fakeip").put("detour", "direct"))

@@ -78,7 +78,14 @@ describe('résolveur du tunnel', () => {
     // serait interrogée en UDP — donc perdue. Même serveur, transport corrigé.
     assert.match(natif, /value\.contains\(":\/\/"\) -> value/);
     assert.match(natif, /else -> "tcp:\/\/\$value"/);
-    assert.match(natif, /value\.equals\("local", ignoreCase = true\) -> "local"/);
+  });
+
+  it('redirige le DNS local vers le résolveur réseau Android', () => {
+    // `local` ne doit jamais déléguer à /etc/resolv.conf du résolveur Go :
+    // Android expose ses DNS via ConnectivityManager.
+    assert.match(natif, /usesSystemDns = value\.equals\("local", ignoreCase = true\)/);
+    assert.match(natif, /usesSystemDns -> bootstrapDnsAddress\(\)/);
+    assert.match(natif, /if \(usesSystemDns\) "direct" else "proxy"/);
   });
 
   it('garde le résolveur d’amorçage hors du tunnel, sous peine de boucle', () => {
