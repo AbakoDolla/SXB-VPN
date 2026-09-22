@@ -16,6 +16,7 @@
  * indisponible. Toutes les écritures sont donc silencieusement absorbées.
  */
 import { prisma } from '../database';
+import { sendSecurityAlertPush } from './fcm';
 
 /** Gravités, de la plus faible à la plus forte. */
 export const SECURITY_SEVERITIES = ['info', 'warning', 'critical'] as const;
@@ -105,8 +106,10 @@ function nettoyerMetadata(metadata: Record<string, unknown> | null | undefined):
 export async function recordSecurityEvent(entree: SecurityEventInput): Promise<boolean> {
   if (!prisma) return false;
   try {
-    const severity = SECURITY_SEVERITIES.includes(entree.severity as any) ? entree.severity : 'info';
-    await (prisma as any).securityEvent.create({
+    const severity: SecuritySeverity = SECURITY_SEVERITIES.includes(entree.severity as any)
+      ? entree.severity as SecuritySeverity
+      : 'info';
+    const event = await (prisma as any).securityEvent.create({
       data: {
         eventType: entree.eventType,
         severity,
@@ -118,6 +121,15 @@ export async function recordSecurityEvent(entree: SecurityEventInput): Promise<b
         metadata: nettoyerMetadata(entree.metadata),
       },
     });
+    if (severity === 'critical' || severity === 'warning') {
+      void sendSecurityAlertPush({
+        eventId: event.id,
+        eventType: entree.eventType,
+        severity,
+      }).catch((error: unknown) => {
+        console.warn(`[security] alerte owner non envoyée: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
     return true;
   } catch (error: any) {
     // Observer ne doit pas casser ce qui est observé.

@@ -27,7 +27,7 @@ export type PushDeliveryResult = {
 };
 
 type PushPayload = {
-  type: "announcement" | "app_update";
+  type: "announcement" | "app_update" | "security_alert";
   notificationId: string;
   title: string;
   body: string;
@@ -197,6 +197,7 @@ async function sendToToken(
 async function deliver(
   data: PushPayload,
   targetDeviceIds: string[],
+  options: { targetUserIds?: string[]; requireActiveClient?: boolean } = {},
 ): Promise<PushDeliveryResult> {
   let config: FirebaseServiceAccount | null;
   try {
@@ -221,6 +222,11 @@ async function deliver(
   }
 
   const uniqueDeviceIds = [...new Set(targetDeviceIds.map((value) => value.trim()).filter(Boolean))];
+  const uniqueUserIds = [...new Set((options.targetUserIds || []).map((value) => value.trim()).filter(Boolean))];
+  const requireActiveClient = options.requireActiveClient !== false;
+  if (options.targetUserIds && uniqueUserIds.length === 0) {
+    return { status: "skipped", attempted: 0, sent: 0, failed: 0, removedInvalidTokens: 0, error: "NO_TARGET_USERS" };
+  }
   let tokens: Array<{ id: string; token: string; userId: string; deviceId: string }>;
   try {
     tokens = await (prisma as any).pushToken.findMany({
@@ -228,6 +234,7 @@ async function deliver(
         active: true,
         user: { status: "active" },
         ...(uniqueDeviceIds.length > 0 ? { deviceId: { in: uniqueDeviceIds } } : {}),
+        ...(uniqueUserIds.length > 0 ? { userId: { in: uniqueUserIds } } : {}),
       },
       select: { id: true, token: true, userId: true, deviceId: true },
     }) as Array<{ id: string; token: string; userId: string; deviceId: string }>;
@@ -236,7 +243,7 @@ async function deliver(
     // L'éligibilité doit porter sur LA paire du jeton, pas sur « au moins un
     // client actif » du même utilisateur, sinon un appareil révoqué continue à
     // recevoir les annonces tant qu'un autre appareil reste actif.
-    if (tokens.length > 0) {
+    if (requireActiveClient && tokens.length > 0) {
       const activeClients = await (prisma as any).vpnClient.findMany({
         where: {
           status: "active",
@@ -347,4 +354,43 @@ export async function sendAppUpdatePush(update: PublishedAppUpdate): Promise<Pus
     versionCode: String(update.versionCode),
     forceUpdate: String(update.forceUpdate),
   }, update.targetDeviceIds);
+}
+
+/**
+ * Alerte privée du Centre de sécurité.
+ *
+ * Les jetons sont ciblés par l'identité OWNER, jamais par un appareil ou un
+ * nom. Les propriétaires n'ont pas forcément de VpnClient actif : ce canal
+ * contourne donc volontairement le filtre des clients mobiles actifs.
+ */
+export async function sendSecurityAlertPush(input: {
+  eventType: string;
+  severity: "warning" | "critical";
+  eventId: string;
+}): Promise<PushDeliveryResult> {
+  const owners = await ownerIds();
+  if (owners.length === 0) {
+    return { status: "skipped", attempted: 0, sent: 0, failed: 0, removedInvalidTokens: 0, error: "NO_OWNER" };
+  }
+  return deliver({
+    type: "security_alert",
+    notificationId: `security-${input.eventId}`,
+    title: input.severity === "critical" ? "Alerte de sécurité critique" : "Activité suspecte détectée",
+    body: `Événement ${input.eventType}. Ouvrez le Centre de sécurité pour examiner les détails.`,
+    level: input.severity,
+    screen: "notifications",
+  }, [], { targetUserIds: owners, requireActiveClient: false });
+}
+
+async function ownerIds(): Promise<string[]> {
+  if (!prisma) return [];
+  try {
+    const owners = await (prisma as any).user.findMany({
+      where: { status: "active", role: { name: "OWNER" } },
+      select: { id: true },
+    }) as Array<{ id: string }>;
+    return owners.map((owner) => owner.id);
+  } catch {
+    return [];
+  }
 }
