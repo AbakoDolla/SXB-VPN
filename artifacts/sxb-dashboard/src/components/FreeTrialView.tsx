@@ -642,18 +642,29 @@ export default function FreeTrialView() {
       const trouves: string[] = [];
       const pages = Math.ceil(Math.min(volet?.total ?? 0, MAX_FREE_TRIAL_BATCH) / TAILLE_PAGE);
       for (let page = 1; page <= Math.max(1, pages); page++) {
-        const lot = await fetchFreeTrialRequestPage({
-          tokenId: jetonOuvert,
-          status: statusFilter || undefined,
-          limit: TAILLE_PAGE,
-          offset: (page - 1) * TAILLE_PAGE,
-        });
+        // A stalled page must not leave the bulk selector spinning forever.
+        // The next refresh can retry it, while the current action fails
+        // explicitly instead of looking like it is still selecting 25 rows.
+        const lot = await Promise.race([
+          fetchFreeTrialRequestPage({
+            tokenId: jetonOuvert,
+            status: statusFilter || undefined,
+            limit: TAILLE_PAGE,
+            offset: (page - 1) * TAILLE_PAGE,
+          }),
+          new Promise<never>((_, reject) => {
+            window.setTimeout(() => reject(new Error('FREE_TRIAL_SELECTION_TIMEOUT')), 15_000);
+          }),
+        ]);
+        const avant = trouves.length;
         for (const demande of lot.requests) {
-          if (demande.status === FREE_TRIAL_STATUS.PENDING || demande.status === FREE_TRIAL_STATUS.DEPLOYED) {
+          if ((demande.status === FREE_TRIAL_STATUS.PENDING || demande.status === FREE_TRIAL_STATUS.DEPLOYED)
+            && !trouves.includes(demande.id)) {
             trouves.push(demande.id);
           }
         }
         if (trouves.length >= MAX_FREE_TRIAL_BATCH) break;
+        if (lot.requests.length === 0 || trouves.length === avant) break;
       }
       const retenus = trouves.slice(0, MAX_FREE_TRIAL_BATCH);
       setSelectionParJeton(prev => ({ ...prev, [jetonOuvert]: retenus }));

@@ -224,7 +224,7 @@ export function refreshMobileConfigs(): Promise<VpnConnection[]> {
       const stored = storeValue(await configStore.get(entry.id));
       const changed = stored && (entry.configHash ? stored.meta.configHash !== entry.configHash : stored.meta.configVersion !== entry.configVersion);
       if (!stored || changed) {
-        try { await provisionAndStore(entry.dataToken, current.deviceId); }
+        try { await provisionAndStore(entry.dataToken, current.deviceId, entry.id); }
         catch (error) {
           if (error instanceof ProvisioningError) console.warn('[Access] Provisioning deferred:', error.diagnostic.code);
           else reportAccessSyncError(error);

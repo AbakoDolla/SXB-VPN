@@ -2202,7 +2202,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       if ((target.status !== 'ok' || !target.value) && remoteTarget) {
         if (!deviceId) throw new Error('Identifiant appareil indisponible — reconnectez-vous puis réessayez');
         addLog(`🔒 Provisionnement de « ${remoteTarget.name} »...`);
-        const fresh = await provisionAndStore(remoteTarget.dataToken, deviceId);
+        const fresh = await provisionAndStore(remoteTarget.dataToken, deviceId, configId);
         const provisioned = mergeConnectionMetadata(mergeProvisionedConfig(null, fresh.config), {
           configId,
           subscriptionId: fresh.meta.subscriptionId,

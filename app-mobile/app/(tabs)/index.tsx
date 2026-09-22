@@ -564,44 +564,10 @@ export default function HomeScreen() {
         </View>
 
         <AccessNotices />
-        {/* ── NOUVELLE CONNEXION DÉPLOYÉE ─────────────────────────────────
-            Jusqu'ici, une connexion ajoutée depuis le tableau de bord
-            n'apparaissait qu'au prochain démarrage, ou si l'utilisateur pensait
-            de lui-même à rafraîchir : rien ne le lui disait, il devait le
-            deviner. Placée juste sous les avis d'accès, l'annonce est vue sans
-            faire défiler, et le bouton fait le geste à sa place. */}
-        {nouvellesConnexions.length > 0 && (
-          <Surface tone={colors.primary}>
-            <View style={styles.bannerRow}>
-              <Ionicons name="notifications" size={22} color={colors.primary} />
-              <View style={{ flex: 1, gap: 2 }}>
-                <Text style={[type.h3, { color: colors.primary }]}>{t('new_connection_title')}</Text>
-                <Text style={[type.caption, { color: colors.textSecondary }]}>
-                  {t('new_connection_body')}
-                </Text>
-              </View>
-              <Pressable
-                onPress={() => { void chargerNouvellesConnexions(); }}
-                disabled={isRefreshing}
-                accessibilityRole="button"
-                accessibilityLabel={t('new_connection_action')}
-                  style={{
-                    minHeight: responsive.touchTarget,
-                    paddingHorizontal: spacing.md,
-                    paddingVertical: spacing.sm,
-                    borderRadius: radius.md,
-                    backgroundColor: colors.primary + alpha.f16,
-                    opacity: isRefreshing ? 0.5 : 1,
-                    justifyContent: "center",
-                  }}
-                >
-                <Text style={[type.caption, { color: colors.primary, fontWeight: '700' }]}>
-                  {t('new_connection_action')}
-                </Text>
-              </Pressable>
-            </View>
-          </Surface>
-        )}
+        {/* Les nouvelles connexions sont maintenant provisionnées par
+            refreshVpnConfig avant que la liste soit relue. Elles ne doivent
+            plus demander un second geste « Charger » : elles apparaissent
+            directement dans le sélecteur et sont prêtes à basculer. */}
         {/* Only the selected configuration is blocked here, never the identity. */}
         {revokedStatus !== 'none' && (
           <Surface tone={colors.disconnected}>

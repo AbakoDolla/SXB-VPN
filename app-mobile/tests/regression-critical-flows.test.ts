@@ -938,8 +938,8 @@ describe('garde-fous contre les régressions Android', () => {
   it('retire les profils révoqués et provisionne indépendamment le second profil', () => {
     assert.match(accessSync, /configStore\.remove\(entry\.configId\)/);
     assert.match(accessSync, /await reconcileAccess\(\)/);
-    assert.match(accessSync, /provisionAndStore\(entry\.dataToken, current\.deviceId\)/);
-    assert.match(vpnContext, /provisionAndStore\(remoteTarget\.dataToken, deviceId\)/);
+    assert.match(accessSync, /provisionAndStore\(entry\.dataToken, current\.deviceId, entry\.id\)/);
+    assert.match(vpnContext, /provisionAndStore\(remoteTarget\.dataToken, deviceId, configId\)/);
     assert.match(vpnContext, /pendingAutoConnectRef/);
   });
 
@@ -1668,7 +1668,7 @@ describe('garde-fous contre les régressions Android', () => {
     // Le filtre s'applique AVANT la boucle de provisionnement proactif.
     assert.ok(accessSync.includes('configStore.listDismissed()'));
     assert.ok(accessSync.includes('dismissed.has(entry.id)'));
-    assert.ok(accessSync.indexOf('const dismissed') < accessSync.indexOf('provisionAndStore(entry.dataToken, current.deviceId)'));
+    assert.ok(accessSync.indexOf('const dismissed') < accessSync.indexOf('provisionAndStore(entry.dataToken, current.deviceId, entry.id)'));
 
     // La suppression pose la pierre tombale et purge la liste distante en mémoire.
     assert.ok(vpnContext.includes('configStore.dismiss(configId)'));

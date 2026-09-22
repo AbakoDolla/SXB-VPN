@@ -206,6 +206,7 @@ export interface ProvisionResult {
 export async function provisionAndStore(
   dataToken: string,
   deviceId:  string,
+  storageId?: string,
 ): Promise<ProvisionResult> {
   const identity = accessRequestStamp();
   requireVpnConsent();
@@ -309,7 +310,11 @@ export async function provisionAndStore(
     configVersion:   typeof prov.configVersion === 'number' ? prov.configVersion : 1,
     configHash:      prov.configHash || null,
   };
-  const id = meta.subscriptionId || String(vpnConfig.configId || `provision_${Date.now()}`);
+  // The mobile connections endpoint is the authoritative key used by the
+  // picker. Keep that key when a provisioning response comes from an older
+  // backend or a mirrored subscription id, otherwise the profile is stored
+  // successfully but cannot be found when the user switches to it.
+  const id = storageId || meta.subscriptionId || String(vpnConfig.configId || `provision_${Date.now()}`);
   requireProfileAccess({ configId: id, subscriptionId: meta.subscriptionId, configHash: meta.configHash });
 
   // §28 — Une configuration invalide ne doit JAMAIS écraser la dernière
