@@ -74,6 +74,7 @@
     <div class="ligne"><span>Version</span><span id="i-version">…</span></div>
     <div class="ligne"><span>Taille</span><span id="i-taille">…</span></div>
     <div class="ligne"><span>Publiée le</span><span id="i-date">…</span></div>
+    <div class="ligne"><span>Heure de publication</span><span id="i-heure">…</span></div>
   </div>
 
   <button id="lancer">Télécharger et vérifier</button>
@@ -166,6 +167,8 @@ async function effacerParts(clef) {
     $('i-taille').textContent = attendu.sizeBytes ? octets(attendu.sizeBytes) : '—';
     $('i-date').textContent = attendu.builtAt
       ? new Date(attendu.builtAt).toLocaleDateString('fr-FR', { dateStyle: 'long' }) : '—';
+    $('i-heure').textContent = attendu.builtAt
+      ? new Date(attendu.builtAt).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : '—';
     if (attendu.apkSha256) {
       const p = document.createElement('div');
       p.className = 'empreinte';
