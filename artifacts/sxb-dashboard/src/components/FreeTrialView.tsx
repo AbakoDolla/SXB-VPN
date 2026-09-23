@@ -236,6 +236,7 @@ export default function FreeTrialView() {
   // La sélection est indexée PAR JETON : il n'existe structurellement aucune
   // sélection qui traverse deux campagnes.
   const [selectionParJeton, setSelectionParJeton] = useState<Record<string, string[]>>({});
+  const [selectionGlobaleParJeton, setSelectionGlobaleParJeton] = useState<Record<string, number>>({});
   const [resultatLot, setResultatLot] = useState<FreeTrialDeployResponse | null>(null);
   const [resultatGestion, setResultatGestion] = useState<FreeTrialManageResponse | null>(null);
 
@@ -549,6 +550,8 @@ export default function FreeTrialView() {
     [selectionValide, selectionnables],
   );
   const toutSelectionne = selectionnables.length > 0 && selectionValide.length === selectionnables.length;
+  const cibleSelectionGlobale = jetonOuvert ? selectionGlobaleParJeton[jetonOuvert] ?? 0 : 0;
+  const selectionGlobaleActive = cibleSelectionGlobale > 0 && selectionCourante.length === cibleSelectionGlobale;
   const lotTropGrand = selectionValide.length > MAX_FREE_TRIAL_BATCH;
 
   // ── Borne du produit « inscrits × configurations » ─────────────────────────
@@ -607,6 +610,7 @@ export default function FreeTrialView() {
 
   const basculer = (id: string) => {
     if (!jetonOuvert) return;
+    setSelectionGlobaleParJeton(prev => ({ ...prev, [jetonOuvert]: 0 }));
     setSelectionParJeton(prev => {
       const courante = prev[jetonOuvert] ?? [];
       return {
@@ -614,14 +618,6 @@ export default function FreeTrialView() {
         [jetonOuvert]: courante.includes(id) ? courante.filter(item => item !== id) : [...courante, id],
       };
     });
-  };
-
-  const basculerTout = () => {
-    if (!jetonOuvert) return;
-    setSelectionParJeton(prev => ({
-      ...prev,
-      [jetonOuvert]: toutSelectionne ? [] : selectionnables.map(demande => demande.id),
-    }));
   };
 
   /**
@@ -637,6 +633,11 @@ export default function FreeTrialView() {
    */
   const selectionnerTravers = async () => {
     if (!jetonOuvert || chargementTotal) return;
+    if (selectionGlobaleActive) {
+      setSelectionParJeton(prev => ({ ...prev, [jetonOuvert]: [] }));
+      setSelectionGlobaleParJeton(prev => ({ ...prev, [jetonOuvert]: 0 }));
+      return;
+    }
     setChargementTotal(true);
     try {
       const trouves: string[] = [];
@@ -656,7 +657,6 @@ export default function FreeTrialView() {
             window.setTimeout(() => reject(new Error('FREE_TRIAL_SELECTION_TIMEOUT')), 15_000);
           }),
         ]);
-        const avant = trouves.length;
         for (const demande of lot.requests) {
           if ((demande.status === FREE_TRIAL_STATUS.PENDING || demande.status === FREE_TRIAL_STATUS.DEPLOYED)
             && !trouves.includes(demande.id)) {
@@ -664,10 +664,11 @@ export default function FreeTrialView() {
           }
         }
         if (trouves.length >= MAX_FREE_TRIAL_BATCH) break;
-        if (lot.requests.length === 0 || trouves.length === avant) break;
+        if (lot.requests.length === 0) break;
       }
       const retenus = trouves.slice(0, MAX_FREE_TRIAL_BATCH);
       setSelectionParJeton(prev => ({ ...prev, [jetonOuvert]: retenus }));
+      setSelectionGlobaleParJeton(prev => ({ ...prev, [jetonOuvert]: retenus.length }));
       // Dire ce qui a été retenu ET ce qui a été laissé : une sélection
       // silencieusement tronquée ferait croire à un déploiement complet.
       setNotice(t('operations.freeTrial.selectedAcross', {
@@ -1242,8 +1243,8 @@ export default function FreeTrialView() {
           {avecSelection && canDeploy && selectionnables.length > 0 && (
             <input
               type="checkbox"
-              checked={toutSelectionne}
-              onChange={basculerTout}
+              checked={selectionGlobaleActive || toutSelectionne}
+              onChange={() => void selectionnerTravers()}
               aria-label={t('operations.freeTrial.selectAll')}
               className="h-4 w-4 rounded border-white/20 bg-slate-900"
             />
