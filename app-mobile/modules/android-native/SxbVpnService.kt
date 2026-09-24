@@ -3202,6 +3202,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // sondes DPI qui matchent sur la forme du ClientHello complet — c'est
         // ce que fait HTTP Custom/Injector par défaut sur ce type de profil.
         val fragment        = cfg.optBoolean("fragment", false)
+        // Dernier recours de l'échelle : quand `record_fragment` seul ne
+        // suffit toujours pas, on ajoute la segmentation TCP du ClientHello
+        // (`fragment` côté sing-box). La documentation officielle du moteur
+        // recommande explicitement cet ordre : essayer `record_fragment`
+        // d'abord (moins coûteux), puis `fragment` ensuite pour les réseaux
+        // qui filtrent encore — les deux pouvant être actifs ensemble.
+        val fragmentComplet = cfg.optBoolean("fragmentComplet", false)
 
         val transport = EngineTransport(
             sni = sni, wsHost = wsHost, network = network, path = path,
@@ -3212,6 +3219,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             realityPublicKey = if (protocol == "wireguard") "" else realityPubKey,
             realityShortId = realityShortId,
             fragment = fragment,
+            fragmentComplet = fragmentComplet,
         )
 
         broadcastLog(
@@ -4331,6 +4339,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         val realityPublicKey: String,
         val realityShortId: String,
         val fragment: Boolean = false,
+        val fragmentComplet: Boolean = false,
     )
 
     /** Applique la sécurité TLS et le transport d'un profil à un outbound. */
@@ -4339,7 +4348,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             "tls",
             buildTlsObj(
                 t.sni, t.tls, t.insecure, t.fingerprint, t.alpn,
-                t.realityPublicKey, t.realityShortId, t.fragment,
+                t.realityPublicKey, t.realityShortId, t.fragment, t.fragmentComplet,
             ),
         )
         buildTransportObj(t.network, t.path, t.wsHost, t.grpcServiceName, t.headerType)
@@ -4460,6 +4469,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         realityPublicKey: String = "",
         realityShortId: String = "",
         fragment: Boolean = false,
+        fragmentComplet: Boolean = false,
     ): JSONObject {
         return JSONObject().apply {
             put("enabled", enabled)
@@ -4475,6 +4485,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
             // paquets » sur Xray-core ; sing-box l'appelle `record_fragment`
             // (recommandé avant `fragment`, plus coûteux, par sa documentation).
             if (fragment && enabled) put("record_fragment", true)
+            // Échelon suivant, quand `record_fragment` seul ne suffit toujours
+            // pas : segmentation TCP du ClientHello lui-même (`fragment` côté
+            // sing-box). Plus coûteuse en latence — la documentation officielle
+            // du moteur la réserve aux réseaux qui filtrent encore après
+            // `record_fragment` — mais les deux peuvent être actives ensemble.
+            if (fragmentComplet && enabled) put("fragment", true)
             // L'ALPN provient du profil (`alpn=h2,http/1.1`). Il était ignoré :
             // un serveur qui impose h2 rejetait donc le handshake.
             csvToJsonArray(alpn)?.let { put("alpn", it) }

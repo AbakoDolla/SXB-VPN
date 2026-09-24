@@ -55,7 +55,15 @@
  *                          Injector exposent sous « Fragments de paquets », et
  *                          qui explique qu'un même profil y passe alors qu'il
  *                          reste bloqué chez nous après les trois premiers
- *                          échelons.
+ *                          échelons ;
+ *   4. `avec_fragment_fort` — quand `record_fragment` seul ne suffit toujours
+ *                          pas, on ajoute la segmentation TCP du ClientHello
+ *                          lui-même (`fragment` côté moteur). C'est plus coûteux
+ *                          en latence — la documentation officielle du moteur
+ *                          réserve ce niveau aux réseaux qui filtrent encore
+ *                          après `record_fragment` — mais les deux mécanismes
+ *                          restent actifs ensemble à cet échelon, exactement
+ *                          l'ordre que sing-box recommande.
  *
  * ═══════════════════════════════════════════════════════════════════════════
  * CE QUE CETTE ÉCHELLE NE FAIT JAMAIS
@@ -95,7 +103,8 @@ export type LibellePresentation =
   | 'log_presentation_profil'
   | 'log_presentation_sans_alpn'
   | 'log_presentation_sans_empreinte'
-  | 'log_presentation_fragment';
+  | 'log_presentation_fragment'
+  | 'log_presentation_fragment_fort';
 
 export interface PresentationTls {
   /** Identifiant stable, utilisé par les tests et les diagnostics. */
@@ -112,15 +121,18 @@ export interface PresentationTls {
   readonly alpnDeduit: boolean;
   /** Conserver l'empreinte uTLS ? */
   readonly empreinte: boolean;
-  /** Fragmenter l'enregistrement TLS du ClientHello ? */
+  /** Fragmenter l'enregistrement TLS du ClientHello (`record_fragment`) ? */
   readonly fragment: boolean;
+  /** Segmenter aussi le ClientHello au niveau TCP (`fragment`), en plus de `record_fragment` ? */
+  readonly fragmentFort: boolean;
 }
 
 export const ECHELLE_TLS: readonly PresentationTls[] = Object.freeze([
-  { cle: 'profil', libelle: 'log_presentation_profil', alpnDeduit: true, empreinte: true, fragment: false },
-  { cle: 'sans_alpn', libelle: 'log_presentation_sans_alpn', alpnDeduit: false, empreinte: true, fragment: false },
-  { cle: 'sans_empreinte', libelle: 'log_presentation_sans_empreinte', alpnDeduit: false, empreinte: false, fragment: false },
-  { cle: 'avec_fragment', libelle: 'log_presentation_fragment', alpnDeduit: false, empreinte: false, fragment: true },
+  { cle: 'profil', libelle: 'log_presentation_profil', alpnDeduit: true, empreinte: true, fragment: false, fragmentFort: false },
+  { cle: 'sans_alpn', libelle: 'log_presentation_sans_alpn', alpnDeduit: false, empreinte: true, fragment: false, fragmentFort: false },
+  { cle: 'sans_empreinte', libelle: 'log_presentation_sans_empreinte', alpnDeduit: false, empreinte: false, fragment: false, fragmentFort: false },
+  { cle: 'avec_fragment', libelle: 'log_presentation_fragment', alpnDeduit: false, empreinte: false, fragment: true, fragmentFort: false },
+  { cle: 'avec_fragment_fort', libelle: 'log_presentation_fragment_fort', alpnDeduit: false, empreinte: false, fragment: true, fragmentFort: true },
 ]);
 
 /** Dernier échelon atteignable. */
@@ -182,6 +194,7 @@ export function appliquerPresentationTls<T extends Record<string, any>>(config: 
   // quoi la garantie « premier essai STRICTEMENT identique au profil » serait
   // rompue par un simple `fragment: false` que le profil n'a jamais demandé.
   if (presentation.fragment) copie.fragment = true;
+  if (presentation.fragmentFort) copie.fragmentComplet = true;
 
   return copie as T;
 }
