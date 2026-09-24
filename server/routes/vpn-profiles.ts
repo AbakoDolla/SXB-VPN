@@ -21,6 +21,17 @@ import {
 import { prepareProfileEngineLock } from '../services/profile-engines';
 import { porteeProfils, porteeRevendeurs } from '../services/portee-donnees';
 
+// Plafond large plutôt qu'une contrainte métier réelle : il évite une valeur
+// aberrante (NaN, négative, des millions de jours) de produire une date
+// d'expiration absurde, sans brider les usages longue durée légitimes
+// (abonnements annuels) qui devaient auparavant passer par une modification
+// après coup pour dépasser 30 jours.
+const MAX_OFFLINE_VALID_DAYS = 365;
+function clampOfflineValidDays(value: unknown, fallback = 7): number {
+  const requested = Number(value);
+  return Number.isFinite(requested) ? Math.max(1, Math.min(MAX_OFFLINE_VALID_DAYS, Math.round(requested))) : fallback;
+}
+
 /**
  * Ce profil regarde-t-il ce requérant ?
  *
@@ -551,10 +562,7 @@ router.post('/import-batch', requireAuth, requirePermission('vpnprofile.manage')
     const namePrefix = String(req.body?.namePrefix ?? req.body?.name ?? '').trim().slice(0, 100) || 'SSH importé';
     const description = req.body?.description ? String(req.body.description).slice(0, 500) : null;
     const displayProtocol = req.body?.displayProtocol ? String(req.body.displayProtocol).slice(0, 100) : null;
-    const requestedOfflineDays = Number(req.body?.offlineValidDays ?? 7);
-    const offlineValidDays = Number.isFinite(requestedOfflineDays)
-      ? Math.max(1, Math.min(30, Math.round(requestedOfflineDays)))
-      : 7;
+    const offlineValidDays = clampOfflineValidDays(req.body?.offlineValidDays, 7);
     const status = req.body?.status === 'inactive' ? 'inactive' : 'active';
     if (!rawImport) return res.status(400).json({ error: 'importConfig est requis' });
 
@@ -677,7 +685,7 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
           name, description,
           displayProtocol: displayProtocol || null,
           dns: dns || null,
-          offlineValidDays: offlineValidDays ? Number(offlineValidDays) : 7,
+          offlineValidDays: clampOfflineValidDays(offlineValidDays, 7),
           status: status || 'active',
           ...data,
           ...lock,
@@ -714,7 +722,7 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
         sni: sni || null,
         dns: dns || null,
         payloadId: payloadId || null,
-        offlineValidDays: offlineValidDays ? Number(offlineValidDays) : 7,
+        offlineValidDays: clampOfflineValidDays(offlineValidDays, 7),
         method: method || null,
         jsonConfig: null, // plus jamais de clair — legacy jsonConfig a été redirigé vers l'import chiffré
         status: status || 'active',
@@ -788,7 +796,7 @@ router.put('/:id', requireAuth, requirePermission('vpnprofile.manage'), async (r
           ...(description !== undefined && { description }),
           ...(displayProtocol !== undefined && { displayProtocol: displayProtocol || null }),
           ...(dns !== undefined && { dns }),
-          ...(offlineValidDays !== undefined && { offlineValidDays: Number(offlineValidDays) }),
+          ...(offlineValidDays !== undefined && { offlineValidDays: clampOfflineValidDays(offlineValidDays) }),
           ...(status !== undefined && { status }),
         },
       });
@@ -818,7 +826,7 @@ router.put('/:id', requireAuth, requirePermission('vpnprofile.manage'), async (r
         ...(description !== undefined && { description }),
         ...(displayProtocol !== undefined && { displayProtocol: displayProtocol || null }),
         ...(dns !== undefined && { dns }),
-        ...(offlineValidDays !== undefined && { offlineValidDays: Number(offlineValidDays) }),
+        ...(offlineValidDays !== undefined && { offlineValidDays: clampOfflineValidDays(offlineValidDays) }),
         ...(status !== undefined && { status }),
       },
     });

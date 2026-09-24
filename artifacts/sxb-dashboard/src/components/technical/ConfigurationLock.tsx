@@ -4,7 +4,7 @@ import { useTranslation } from "../../contexts/I18nContext";
 import type { EngineAccountMetadata } from "../../api/engine-account";
 
 export function validateLockPassword(value: string, vpnPassword: string): string | null {
-  if (Array.from(value).length < 8 || new TextEncoder().encode(value).length > 72) {
+  if (Array.from(value).length < 6 || new TextEncoder().encode(value).length > 72) {
     return "technical.lock.invalidLength";
   }
   return value === vpnPassword ? "technical.lock.mustDiffer" : null;

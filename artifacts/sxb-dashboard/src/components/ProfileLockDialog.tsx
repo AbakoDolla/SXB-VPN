@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useTranslation } from '../contexts/I18nContext';
 
 export function validProfilePassword(password: string): boolean {
-  return [...password].length >= 8 && new TextEncoder().encode(password).length <= 72 &&
+  return [...password].length >= 6 && new TextEncoder().encode(password).length <= 72 &&
     !password.includes('\0') && !!password.trim();
 }
 

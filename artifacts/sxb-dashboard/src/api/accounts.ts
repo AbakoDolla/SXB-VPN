@@ -84,6 +84,14 @@ export async function updateAccount(id: string, updates: Partial<CreateAccountPa
   return apiRequest(`/users/${id}`, { method: 'PATCH', body: updates });
 }
 
+// Regenerate the account's password. Passwords are only ever stored hashed,
+// so once the one-time creation banner is dismissed there is no way to
+// re-display the original — this issues a fresh one, shown once, so a
+// forgotten reseller/admin login stays recoverable.
+export async function resetAccountPassword(id: string): Promise<{ email: string; generatedPassword: string }> {
+  return apiRequest(`/users/${id}/reset-password`, { method: 'POST' });
+}
+
 // Delete an account
 export async function deleteAccount(id: string): Promise<void> {
   await apiRequest(`/users/${id}`, { method: 'DELETE' });

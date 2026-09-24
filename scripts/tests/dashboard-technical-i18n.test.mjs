@@ -148,10 +148,10 @@ function harness(view, accounts = [], role = "ADMIN") {
 test("lock passwords enforce Unicode characters, the UTF-8 byte ceiling and separation from VPN passwords", () => {
   const h = harness("SSHManagerView");
   const { validateLockPassword } = h.load(path.join(dashboard, "components", "technical", "ConfigurationLock.tsx"));
-  for (const password of ["12345678", "a".repeat(72), "\u00e9".repeat(36), "\u{1f512}".repeat(18)]) {
+  for (const password of ["123456", "a".repeat(72), "\u00e9".repeat(36), "\u{1f512}".repeat(18)]) {
     assert.equal(validateLockPassword(password, "vpn-secret"), null);
   }
-  for (const password of ["1234567", "\u{1f512}".repeat(7), "a".repeat(73), "\u00e9".repeat(37), "\u{1f512}".repeat(19)]) {
+  for (const password of ["12345", "\u{1f512}".repeat(5), "a".repeat(73), "\u00e9".repeat(37), "\u{1f512}".repeat(19)]) {
     assert.equal(validateLockPassword(password, "vpn-secret"), "technical.lock.invalidLength");
   }
   assert.equal(validateLockPassword("same-password", "same-password"), "technical.lock.mustDiffer");

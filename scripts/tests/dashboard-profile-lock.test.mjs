@@ -218,8 +218,8 @@ test('a cancelled unlock cannot reveal late data; rotation immediately relocks',
 test('creation requires an independent password and clears passwords and import text after success', async () => {
   const h = await fixture();
   const { validProfilePassword } = h.load(path.join(src, 'components', 'ProfileLockDialog.tsx'));
-  for (const value of ['12345678', 'é'.repeat(36), '🔐'.repeat(18)]) assert.equal(validProfilePassword(value), true);
-  for (const value of ['1234567', 'é'.repeat(37), '🔐'.repeat(7), 'abcdefgh\0']) assert.equal(validProfilePassword(value), false);
+  for (const value of ['123456', 'é'.repeat(36), '🔐'.repeat(18)]) assert.equal(validProfilePassword(value), true);
+  for (const value of ['12345', 'é'.repeat(37), '🔐'.repeat(5), 'abcdefgh\0']) assert.equal(validProfilePassword(value), false);
   h.button('configurations.ui.import').props.onClick();
   const input = name => h.nodes(h.render()).find(n => n?.type === 'input' && n.props.name === name);
   input('lockPassword').props.onChange({ target: { value: 'configuration-password' } });

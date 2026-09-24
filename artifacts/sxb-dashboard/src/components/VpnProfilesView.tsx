@@ -1237,7 +1237,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
                 <div>
                   <label className="block text-sm text-gray-400 mb-1.5"> {t('configurations.ui.offlineDays')} </label>
                   <input type="number" value={adminForm.offlineValidDays} onChange={e => fa('offlineValidDays', Number(e.target.value))}
-                    min={1} max={30} className={inputCls} />
+                    min={1} max={365} className={inputCls} />
                 </div>
               </div>
 
