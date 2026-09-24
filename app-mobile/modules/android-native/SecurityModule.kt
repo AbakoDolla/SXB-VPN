@@ -325,27 +325,52 @@ object SecurityModule {
     // Couvre TOUS les champs listés dans la mission :
     //   IP, host, serveur, payload, password, username, token, UUID, URL, JWT,
     //   deviceId, SXB-USER-*, secrets
+    // ── Motifs compilés UNE SEULE FOIS ───────────────────────────────────────
+    //
+    // Ces expressions étaient construites À L'INTÉRIEUR de `maskSensitive` et
+    // de `maskCredentialsOnly` : chaque appel recompilait dix-huit automates.
+    // Or ces fonctions sont appelées depuis le rappel de journalisation du
+    // moteur, c'est-à-dire sur le chemin des données : sur un lien mobile qui
+    // perd des paquets, le moteur émet des rafales de lignes, et le temps passé
+    // à recompiler ces motifs s'exerçait en contre-pression directe sur le
+    // tunnel. Les compiler au chargement de la classe rend le masquage
+    // strictement identique, mais sans ce coût répété.
+    private val MOTIF_IPV4 = Regex("""(\d{1,3}\.){3}\d{1,3}(:\d+)?""")
+    private val MOTIF_IPV6 = Regex("""[0-9a-fA-F]{0,4}(:[0-9a-fA-F]{0,4}){2,7}""")
+    private val MOTIF_UUID = Regex("""[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}""")
+    private val MOTIF_JETON_SXB = Regex("""SXB-[A-Z]+-[A-Z0-9]+-[A-Z0-9]+-[A-Z0-9]+""", RegexOption.IGNORE_CASE)
+    private val MOTIF_BEARER = Regex("""Bearer\s+[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+""", RegexOption.IGNORE_CASE)
+    private val MOTIF_JWT = Regex("""eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}""")
+    private val MOTIF_URL = Regex("""https?://[^\s"']+""")
+    private val MOTIF_HOTE = Regex("""[a-zA-Z0-9-]{2,63}\.[a-zA-Z]{2,6}(:\d+)?""")
+    private val MOTIF_CLE_VALEUR = Regex("""(password|passwd|key|token|secret|uuid|user|username|deviceId|payload|host|server)[=:]\s*\S+""", RegexOption.IGNORE_CASE)
+    private val MOTIF_BASE64 = Regex("""[A-Za-z0-9+/]{20,}={0,2}""")
+
+    private val MOTIFS_IDENTIFIANTS: List<Regex> =
+        listOf("password", "passwd", "token", "secret", "authorization", "cookie", "api-key", "api_key")
+            .map { key -> Regex("(?i)(\\\"?$key\\\"?\\s*[:=]\\s*)(\\\"[^\\\"]*\\\"|'[^']*'|[^\\s,;}]+)") }
+
     fun maskSensitive(text: String): String {
         var result = text
         // IPv4 + port optionnel
-        result = result.replace(Regex("""(\d{1,3}\.){3}\d{1,3}(:\d+)?"""), "[ip:****]")
+        result = result.replace(MOTIF_IPV4, "[ip:****]")
         // IPv6
-        result = result.replace(Regex("""[0-9a-fA-F]{0,4}(:[0-9a-fA-F]{0,4}){2,7}"""), "[ipv6:****]")
+        result = result.replace(MOTIF_IPV6, "[ipv6:****]")
         // UUID (clé VLESS, etc.)
-        result = result.replace(Regex("""[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"""), "[uuid:****]")
+        result = result.replace(MOTIF_UUID, "[uuid:****]")
         // SXB-USER-XXXX-XXXX-XXXX tokens
-        result = result.replace(Regex("""SXB-[A-Z]+-[A-Z0-9]+-[A-Z0-9]+-[A-Z0-9]+""", RegexOption.IGNORE_CASE), "[token:****]")
+        result = result.replace(MOTIF_JETON_SXB, "[token:****]")
         // JWT (Bearer ou brut)
-        result = result.replace(Regex("""Bearer\s+[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+""", RegexOption.IGNORE_CASE), "Bearer [jwt:****]")
-        result = result.replace(Regex("""eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"""), "[jwt:****]")
+        result = result.replace(MOTIF_BEARER, "******")
+        result = result.replace(MOTIF_JWT, "[jwt:****]")
         // URL complète
-        result = result.replace(Regex("""https?://[^\s"']+"""), "[url:****]")
+        result = result.replace(MOTIF_URL, "[url:****]")
         // Domaines hostname.tld
-        result = result.replace(Regex("""[a-zA-Z0-9-]{2,63}\.[a-zA-Z]{2,6}(:\d+)?"""), "[host:****]")
+        result = result.replace(MOTIF_HOTE, "[host:****]")
         // password=, key=, token=, secret=, uuid=, username=, deviceId=, payload=
-        result = result.replace(Regex("""(password|passwd|key|token|secret|uuid|user|username|deviceId|payload|host|server)[=:]\s*\S+""", RegexOption.IGNORE_CASE), "$1=[****]")
+        result = result.replace(MOTIF_CLE_VALEUR, "$1=[****]")
         // Base64 longue (> 20 chars)
-        result = result.replace(Regex("""[A-Za-z0-9+/]{20,}={0,2}"""), "[b64:****]")
+        result = result.replace(MOTIF_BASE64, "[b64:****]")
         return result
     }
 
@@ -354,10 +379,8 @@ object SecurityModule {
      * diagnostic réseau, mais protège toujours les valeurs d’authentification.
      */
     fun maskCredentialsOnly(text: String): String {
-        val keys = listOf("password", "passwd", "token", "secret", "authorization", "cookie", "api-key", "api_key")
         var result = text
-        for (key in keys) {
-            val pattern = Regex("(?i)(\\\"?$key\\\"?\\s*[:=]\\s*)(\\\"[^\\\"]*\\\"|'[^']*'|[^\\s,;}]+)")
+        for (pattern in MOTIFS_IDENTIFIANTS) {
             result = pattern.replace(result) { match ->
                 "${match.groupValues[1]}[redacted]"
             }

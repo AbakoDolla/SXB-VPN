@@ -1024,7 +1024,10 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(engineDiagnostics, /HTTP_429_RATE_LIMIT/);
     assert.match(engineDiagnostics, /HTTP_404_UPSTREAM/);
     assert.match(engineDiagnostics, /origine non confirmée/);
-    assert.match(nativeService, /val safeMessage = SecurityModule\.maskSensitive\(SecurityModule\.maskCredentialsOnly\(cleanMessage\)\)/);
+    // Le masquage reste appliqué à toute ligne réellement publiée ; il est
+    // seulement devenu paresseux, pour ne plus s'exécuter sur les lignes
+    // aussitôt jetées (voir tests/debit-tunnel.test.ts).
+    assert.match(nativeService, /val safeMessage by lazy\(LazyThreadSafetyMode\.NONE\) \{\s*\r?\n\s*SecurityModule\.maskSensitive\(SecurityModule\.maskCredentialsOnly\(cleanMessage\)\)/);
   });
 
   it('applique la politique de stabilité au builder réel sans élargir les routes', () => {
