@@ -2,10 +2,10 @@
   "lock": {
     "unlock": "Déverrouiller « {{name}} »",
     "set": "Protéger « {{name}} »",
-    "help": "Mot de passe distinct des identifiants VPN : au moins 8 caractères et au plus 72 octets UTF-8. Le verrou est immédiat, sans exception de rôle. Le déverrouillage dure 10 minutes ; l'attribution et le mobile n'en ont pas besoin.",
+    "help": "Mot de passe distinct des identifiants VPN : au moins 6 caractères et au plus 72 octets UTF-8 (un code numérique comme « 123338 » convient). Le verrou est immédiat, sans exception de rôle. Le déverrouillage dure 10 minutes ; l'attribution et le mobile n'en ont pas besoin.",
     "password": "Mot de passe de la configuration",
     "confirm": "Confirmer le mot de passe",
-    "invalid": "Utilisez 8 caractères minimum, 72 octets UTF-8 maximum et deux mots de passe identiques.",
+    "invalid": "Utilisez 6 caractères minimum, 72 octets UTF-8 maximum et deux mots de passe identiques.",
     "mustDiffer": "Le mot de passe du verrou doit être différent du mot de passe VPN.",
     "cancel": "Annuler",
     "submit": "Confirmer",

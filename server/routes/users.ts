@@ -523,6 +523,67 @@ router.patch("/:id", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN"]), require
   }
 });
 
+// POST /api/users/:id/reset-password
+//
+// Un mot de passe n'est jamais stocké qu'en hash : une fois le bandeau de
+// création fermé (ou le compte créé avant cette fonctionnalité), personne —
+// pas même OWNER — ne peut le relire. Cette route régénère un mot de passe
+// aléatoire et le renvoie EN CLAIR une seule fois, comme à la création, pour
+// que l'accès à un compte revendeur/admin oublié reste récupérable.
+router.post("/:id/reset-password", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN"]), requirePermission("users.create"), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    let targetRecord: any = null;
+    if (prisma) {
+      targetRecord = await prisma.user.findFirst({ where: await ciblerCompte(req, id), include: { role: true } });
+    } else {
+      const u = inMemoryDb.users.find((user) => user.id === id);
+      if (u) {
+        const r = inMemoryDb.roles.find((role) => role.id === u.roleId);
+        targetRecord = { ...u, role: r };
+      }
+    }
+    if (!targetRecord) {
+      return res.status(404).json({ error: "errors.users.not_found", message: "User not found" });
+    }
+
+    // Mêmes garde-fous hiérarchiques que la modification : un non-OWNER ne
+    // touche jamais un compte OWNER, et SUPPORT / rôle inférieur ne réinitialise
+    // pas un compte SUPER_ADMIN ou OWNER.
+    if (!canSeeUser(req, targetRecord)) {
+      return res.status(403).json({ error: "errors.auth.forbidden", message: "Cannot modify an OWNER account" });
+    }
+    if (!isOwnerRequest(req)) {
+      const refus = refusPlafondRole(req, { roleCible: targetRecord.role?.name ?? null });
+      if (refus) return res.status(refus.status).json(refus.body);
+    }
+
+    const rawPassword = generatePassword();
+    const passwordHash = bcrypt.hashSync(rawPassword, 10);
+
+    if (prisma) {
+      await prisma.user.update({ where: { id }, data: { passwordHash } });
+    } else {
+      const index = inMemoryDb.users.findIndex((u) => u.id === id);
+      if (index >= 0) inMemoryDb.users[index] = { ...inMemoryDb.users[index], passwordHash, updatedAt: new Date() };
+    }
+
+    await logDbActivity(
+      req.user?.userId || null,
+      `Reset password for user account: ${targetRecord.email}`,
+      "warning",
+      req.ip,
+      { visibleOwnerOnly: isOwnerRequest(req) }
+    );
+
+    return res.json({ email: targetRecord.email, generatedPassword: rawPassword });
+  } catch (err) {
+    console.error("Reset user password error:", err);
+    return res.status(500).json({ error: "errors.server", message: "Failed to reset password" });
+  }
+});
+
 // DELETE /api/users/:id
 router.delete("/:id", requireAuth, requireRole(["SUPER_ADMIN", "ADMIN"]), requirePermission("users.delete"), async (req: AuthenticatedRequest, res: Response) => {
   try {

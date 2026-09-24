@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import Pagination from './ui/Pagination';
 import {
   fetchAccounts, createAccount, deleteAccount, generateAdminToken,
-  listAdminTokens, revokeAdminToken, fetchRolesForCreation,
+  listAdminTokens, revokeAdminToken, fetchRolesForCreation, resetAccountPassword,
   AdminTokenInfo, CreateAccountPayload, DashboardAccount,
 } from '../api/accounts';
 import { fetchResellerReconciliation } from '../api/resellers';
@@ -91,13 +91,14 @@ export default function AccountsView({
   // Résultat de création
   const [createdResult, setCreatedResult] = useState<{
     name: string; email: string; role: string;
-    generatedPassword?: string; adminToken?: string; expiresAt?: string;
+    generatedPassword?: string; adminToken?: string; expiresAt?: string; isReset?: boolean;
   } | null>(null);
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
   // Jetons d'accès
   const [generatingTokenFor, setGeneratingTokenFor] = useState<string | null>(null);
   const [tokenResult, setTokenResult] = useState<{ userId: string; token: string; expiresAt: string } | null>(null);
+  const [resettingPasswordFor, setResettingPasswordFor] = useState<string | null>(null);
 
   const isSuperAdmin = isSuperAdminRole(currentUserRole);
   const isAdmin = currentUserRole === UserRole.ADMIN || isSuperAdmin;
@@ -214,6 +215,27 @@ export default function AccountsView({
       });
     } catch (err) {
       toast.error(errorText(err, 'commerce.common.errorDelete'));
+    }
+  };
+
+  const handleResetPassword = async (id: string, name: string) => {
+    if (bulkDelete.isDeleting()) { toast.error(message('commerce.common.actionPending')); return; }
+    if (!window.confirm(t('commerce.accounts.confirmResetPassword', { name }))) return;
+    setResettingPasswordFor(id);
+    try {
+      await run(`reset-password:${id}`, async () => {
+        const data = await resetAccountPassword(id);
+        const target = accounts.find(account => account.id === id);
+        setCreatedResult({
+          name: target?.name || name, email: data.email, role: target?.role || '',
+          generatedPassword: data.generatedPassword, isReset: true,
+        });
+        toast.success(message('commerce.accounts.passwordReset'));
+      });
+    } catch (err) {
+      toast.error(errorText(err, 'commerce.common.error'));
+    } finally {
+      setResettingPasswordFor(null);
     }
   };
 
@@ -374,7 +396,9 @@ export default function AccountsView({
                 <div className="flex items-center gap-2">
                   <BadgeCheck className="h-5 w-5 shrink-0 text-emerald-400" />
                   <span className="font-semibold text-emerald-400">
-                    {t('commerce.accounts.created', { name: createdResult.name, role: createdResult.role })}
+                    {createdResult.isReset
+                      ? t('commerce.accounts.passwordResetBanner', { name: createdResult.name })
+                      : t('commerce.accounts.created', { name: createdResult.name, role: createdResult.role })}
                   </span>
                 </div>
                 <button onClick={() => setCreatedResult(null)} className="text-gray-500 hover:text-white">
@@ -553,6 +577,18 @@ export default function AccountsView({
                                       : <Key className="h-3.5 w-3.5" />}
                                     {t('commerce.common.token')}
                                   </button>
+                                  {roleName !== 'SUPER_ADMIN' && roleName !== 'OWNER' && (
+                                    <button
+                                      onClick={() => handleResetPassword(account.id, account.name)}
+                                      disabled={controlsBusy || resettingPasswordFor === account.id}
+                                      title={t('commerce.accounts.resetPassword')}
+                                      className="flex items-center gap-1.5 rounded-lg bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-400 transition-colors hover:bg-amber-500/20 disabled:opacity-50"
+                                    >
+                                      {resettingPasswordFor === account.id
+                                        ? <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                                        : <KeyRound className="h-3.5 w-3.5" />}
+                                    </button>
+                                  )}
                                   {roleName !== 'SUPER_ADMIN' && roleName !== 'OWNER' && (
                                     <button
                                       onClick={() => handleDelete(account.id, account.name)}

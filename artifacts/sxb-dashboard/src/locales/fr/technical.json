@@ -89,8 +89,8 @@
   },
   "lock": {
     "password": "Mot de passe de verrouillage de la configuration *",
-    "help": "Choisissez un mot de passe distinct du mot de passe VPN : au moins 8 caractères et au maximum 72 octets UTF-8. La configuration sera verrouillée après sa création, y compris pour les administrateurs.",
-    "invalidLength": "Le mot de passe de verrouillage doit contenir au moins 8 caractères et ne pas dépasser 72 octets UTF-8.",
+    "help": "Choisissez un mot de passe distinct du mot de passe VPN : au moins 6 caractères et au maximum 72 octets UTF-8 (un code numérique comme « 123338 » convient). La configuration sera verrouillée après sa création, y compris pour les administrateurs.",
+    "invalidLength": "Le mot de passe de verrouillage doit contenir au moins 6 caractères et ne pas dépasser 72 octets UTF-8.",
     "mustDiffer": "Le mot de passe de verrouillage doit être différent du mot de passe VPN.",
     "locked": "Configuration verrouillée",
     "openConfigurations": "Ouvrez « Configurations » et sélectionnez « {{name}} » pour déverrouiller ses paramètres techniques. L'attribution du service reste possible sans mot de passe.",

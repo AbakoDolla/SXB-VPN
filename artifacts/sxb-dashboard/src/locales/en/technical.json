@@ -89,8 +89,8 @@
   },
   "lock": {
     "password": "Configuration lock password *",
-    "help": "Choose a password different from the VPN password: at least 8 characters and no more than 72 UTF-8 bytes. The configuration will be locked after creation, including for administrators.",
-    "invalidLength": "The lock password must contain at least 8 characters and no more than 72 UTF-8 bytes.",
+    "help": "Choose a password different from the VPN password: at least 6 characters and no more than 72 UTF-8 bytes (a numeric code like \"123338\" works). The configuration will be locked after creation, including for administrators.",
+    "invalidLength": "The lock password must contain at least 6 characters and no more than 72 UTF-8 bytes.",
     "mustDiffer": "The lock password must be different from the VPN password.",
     "locked": "Configuration locked",
     "openConfigurations": "Open \"Configurations\" and select \"{{name}}\" to unlock its technical settings. Service assignment remains available without a password.",

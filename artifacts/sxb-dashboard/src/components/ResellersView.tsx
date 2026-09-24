@@ -9,6 +9,7 @@ import {
   renewResellerAccess,
   updateReseller,
 } from "../api/resellers";
+import { resetAccountPassword } from "../api/accounts";
 import { fetchVpnProfiles, VpnProfile } from "../api/vpn-profiles";
 import { isAdmin as isAdminRole } from "../lib/roles";
 import { Reseller, ResellerQuotaMovement, UserRole } from "../types";
@@ -25,7 +26,7 @@ import {
   toIsoExpiry,
 } from "../lib/resellerAccess";
 import {
-  CalendarClock, Coins, GitBranch, History, Landmark, RefreshCw, Search,
+  CalendarClock, Coins, GitBranch, History, KeyRound, Landmark, RefreshCw, Search,
   ShieldCheck, Trash2, UserCheck, UserPlus, X,
 } from "lucide-react";
 
@@ -70,7 +71,8 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
   });
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<unknown>(null);
-  const [createdCredentials, setCreatedCredentials] = useState<{ email: string; password?: string } | null>(null);
+  const [createdCredentials, setCreatedCredentials] = useState<{ email: string; password?: string; isReset?: boolean } | null>(null);
+  const [resettingPasswordFor, setResettingPasswordFor] = useState<string | null>(null);
 
   // Renouvellement de l'échéance.
   const [renewTarget, setRenewTarget] = useState<Reseller | null>(null);
@@ -223,6 +225,21 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
     }
   };
 
+  const handleResetPassword = async (r: Reseller) => {
+    if (!r.userId) { toast.error(message('commerce.common.error')); return; }
+    if (!window.confirm(t('commerce.accounts.confirmResetPassword', { name: r.name }))) return;
+    setResettingPasswordFor(r.id);
+    try {
+      const data = await resetAccountPassword(r.userId);
+      setCreatedCredentials({ email: data.email, password: data.generatedPassword, isReset: true });
+      toast.success(message('commerce.accounts.passwordReset'));
+    } catch (err: any) {
+      toast.error(errorText(err, 'commerce.common.error'));
+    } finally {
+      setResettingPasswordFor(null);
+    }
+  };
+
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
     if (!needle) return resellers;
@@ -328,7 +345,9 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
         <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className="text-sm font-semibold text-emerald-300">{t('commerce.resellers.credentials')}</p>
+              <p className="text-sm font-semibold text-emerald-300">
+                {createdCredentials.isReset ? t('commerce.accounts.passwordResetBanner', { name: createdCredentials.email }) : t('commerce.resellers.credentials')}
+              </p>
               <p className="mt-1 font-mono text-xs text-emerald-100">{createdCredentials.email}</p>
               {createdCredentials.password ? (
                 <p className="mt-1 font-mono text-xs text-amber-200">
@@ -499,6 +518,16 @@ export default function ResellersView({ currentUserRole, actorName }: ResellersV
                               className="flex items-center gap-1 rounded border border-amber-800/20 bg-amber-950 px-2.5 py-1 text-xs font-semibold text-amber-400 hover:bg-amber-900/50"
                             >
                               {r.status === "active" ? t('commerce.common.suspend') : t('commerce.common.reactivate')}
+                            </button>
+                            <button
+                              onClick={() => handleResetPassword(r)}
+                              disabled={resettingPasswordFor === r.id}
+                              title={t('commerce.accounts.resetPassword')}
+                              className="rounded border border-cyan-800/20 bg-cyan-950 p-1.5 text-cyan-400 hover:bg-cyan-900/40 disabled:opacity-50"
+                            >
+                              {resettingPasswordFor === r.id
+                                ? <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                                : <KeyRound className="h-3.5 w-3.5" />}
                             </button>
                             <button
                               onClick={() => handleDelete(r)}

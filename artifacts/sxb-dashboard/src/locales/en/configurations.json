@@ -2,10 +2,10 @@
   "lock": {
     "unlock": "Unlock \"{{name}}\"",
     "set": "Protect \"{{name}}\"",
-    "help": "Use a password separate from VPN credentials: at least 8 characters and at most 72 UTF-8 bytes. Locking is immediate, with no role exemptions. Unlocking lasts 10 minutes; assignment and mobile provisioning do not require it.",
+    "help": "Use a password separate from VPN credentials: at least 6 characters and at most 72 UTF-8 bytes (a numeric code like \"123338\" works). Locking is immediate, with no role exemptions. Unlocking lasts 10 minutes; assignment and mobile provisioning do not require it.",
     "password": "Configuration password",
     "confirm": "Confirm password",
-    "invalid": "Use at least 8 characters, at most 72 UTF-8 bytes and two matching passwords.",
+    "invalid": "Use at least 6 characters, at most 72 UTF-8 bytes and two matching passwords.",
     "mustDiffer": "The lock password must differ from the VPN password.",
     "cancel": "Cancel",
     "submit": "Confirm",

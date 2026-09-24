@@ -31,7 +31,7 @@ export function handleProfileLockError(error: unknown, res: Response): boolean {
 }
 
 export function validateLockPassword(value: unknown): string {
-  if (typeof value !== 'string' || value.length > 72 || [...value].length < 8 ||
+  if (typeof value !== 'string' || value.length > 72 || [...value].length < 6 ||
       Buffer.byteLength(value, 'utf8') > 72 || value.includes('\0') || !value.trim()) {
     throw new ProfileLockError(400, 'PROFILE_LOCK_PASSWORD_INVALID');
   }
