@@ -23,6 +23,7 @@ interface Options<T extends { id: string }> {
   canDelete: boolean;
   canSelect?: boolean;
   remove: (item: T) => Promise<void>;
+  removeMany?: (items: readonly T[]) => Promise<{ succeeded: readonly string[]; failed: ReadonlyArray<{ id: string; error: unknown }> }>;
   onDeleted: (ids: ReadonlySet<string>) => void;
   afterDelete?: () => Promise<void>;
   pending: string | null;
@@ -105,21 +106,36 @@ export function useBulkDelete<T extends { id: string }>(options: Options<T>) {
     try {
       await latest.current.run("bulk-delete", async () => {
         const outcome: BulkDeleteResult = { succeeded: [], failed: [], scopeKey: snapshot.scopeKey };
-        // Only the confirmed IDs are used; grants, permissions and ownership
-        // are rechecked from the current cache before each sequential DELETE.
-        for (const item of snapshot.items) {
-          try {
-            const live = latest.current;
-            const row = live.items.find(row => row.id === item.id);
-            if (live.scopeKey !== snapshot.scopeKey || !live.canDelete || !row || !live.eligible(row)) {
-              throw new Error("errors.bulkDelete.unavailable");
+        const live = latest.current;
+        const rows = snapshot.items.map((item) => live.items.find((row) => row.id === item.id));
+        if (live.scopeKey !== snapshot.scopeKey || !live.canDelete || rows.some((row) => !row || !live.eligible(row!))) {
+          throw new Error("errors.bulkDelete.unavailable");
+        }
+
+        if (live.removeMany) {
+          const response = await live.removeMany(rows as T[]);
+          const succeeded = new Set(response.succeeded);
+          for (const item of snapshot.items) {
+            if (succeeded.has(item.id)) {
+              outcome.succeeded.push(item);
+            } else {
+              const failure = response.failed.find((entry) => entry.id === item.id);
+              outcome.failed.push({ ...item, error: failure?.error ?? "errors.bulkDelete.failed" });
             }
-            await live.remove(row);
-            outcome.succeeded.push(item);
-          } catch (failure) {
-            outcome.failed.push({ ...item, error: failure });
+            setProgress(outcome.succeeded.length + outcome.failed.length);
           }
-          setProgress(outcome.succeeded.length + outcome.failed.length);
+        } else {
+          // Only confirmed IDs are used; permissions and ownership are
+          // rechecked from the current cache before each legacy DELETE.
+          for (const [index, item] of snapshot.items.entries()) {
+            try {
+              await live.remove(rows[index]!);
+              outcome.succeeded.push(item);
+            } catch (failure) {
+              outcome.failed.push({ ...item, error: failure });
+            }
+            setProgress(outcome.succeeded.length + outcome.failed.length);
+          }
         }
         confirmationRef.current = null;
         setConfirmation(null);
