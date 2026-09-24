@@ -20,6 +20,22 @@ export function nativeCompatibilityHarnessSource() {
     assert.ok(match, `Native method ${name} must be extracted, not replaced with a JS approximation`);
     return match[0];
   });
+  // Le refus de QUIC vit hors de ces méthodes : une constante, une fonction à
+  // corps d'expression et deux fonctions nommées, toutes appelées depuis
+  // buildRawSingBoxConfig. L'extraction par nom ci-dessus ne sait reprendre
+  // que des fonctions à corps de bloc, donc ce bloc contigu est repris tel
+  // quel — sinon le harnais compile des références orphelines.
+  const quicDebut = service.indexOf('    private val TRANSPORTS_SANS_UDP');
+  const quicApres = service.indexOf('    private fun tunInbound(', quicDebut);
+  assert.ok(
+    quicDebut >= 0 && quicApres > quicDebut,
+    'QUIC refusal block must be extracted: expected TRANSPORTS_SANS_UDP before tunInbound',
+  );
+  const quicBrut = service.slice(quicDebut, quicApres);
+  const quicBloc = quicBrut.slice(0, quicBrut.lastIndexOf('\n    }') + '\n    }'.length);
+  for (const membre of ['transportSansUdp', 'quicBlockRule', 'refusDeQuicDejaPresent', 'transportDeLaSortie']) {
+    assert.ok(quicBloc.includes(`fun ${membre}`), `QUIC refusal member missing from harness: ${membre}`);
+  }
   return `import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -61,6 +77,8 @@ private class XrayRuntimeHarness {
         }
         return JSONObject().put("ip_cidr", addresses).put("outbound", "direct")
     }
+
+${quicBloc}
 
 ${methods.join('\n\n')}
 }
