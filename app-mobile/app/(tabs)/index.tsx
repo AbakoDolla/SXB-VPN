@@ -337,6 +337,37 @@ export default function HomeScreen() {
   }, [nouvellesConnexions, handleRefresh]);
 
   /**
+   * Charge la nouveauté SANS geste de l'utilisateur.
+   *
+   * ═══════════════════════════════════════════════════════════════════════
+   * LE CHAÎNON QUI MANQUAIT
+   * ═══════════════════════════════════════════════════════════════════════
+   * `fetchConnections` détectait déjà une configuration tout juste assignée
+   * (`nouvellesConnexions`), mais rien n'appelait jamais
+   * `chargerNouvellesConnexions()` : la détection restait un état sans suite,
+   * et l'utilisateur voyait son forfait annoncé sur l'accueil tout en le
+   * retrouvant « À télécharger » dans le sélecteur — sans le moindre bouton
+   * pour en sortir. C'est précisément ce qu'exige le propriétaire : une
+   * configuration assignée doit être importée et stockée D'ELLE-MÊME, jamais
+   * sur demande.
+   *
+   * Un échec réarme l'annonce (voir `chargerNouvellesConnexions`) : sans
+   * temporisation, cet effet la relancerait aussitôt en boucle serrée sur une
+   * panne réseau persistante. La nouvelle tentative attend donc quinze
+   * secondes après la précédente plutôt que d'y revenir immédiatement.
+   */
+  const prochainEssaiAutoChargeRef = useRef(0);
+  useEffect(() => {
+    if (nouvellesConnexions.length === 0) return;
+    const patience = Math.max(0, prochainEssaiAutoChargeRef.current - Date.now());
+    const minuteur = setTimeout(() => {
+      prochainEssaiAutoChargeRef.current = Date.now() + 15_000;
+      void chargerNouvellesConnexions();
+    }, patience);
+    return () => clearTimeout(minuteur);
+  }, [nouvellesConnexions, chargerNouvellesConnexions]);
+
+  /**
    * Une autre configuration, réellement utilisable, vers laquelle basculer.
    *
    * Ne proposer un changement que s'il MÈNE quelque part : suggérer une
