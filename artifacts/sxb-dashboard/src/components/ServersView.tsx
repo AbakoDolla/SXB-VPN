@@ -138,10 +138,16 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filtered.map((s) => {
             const isOnline = s.status === "online";
-            
-            // Generate standard telemetry look
-            const cpuColor = s.cpuLoad > 85 ? "text-rose-500" : s.cpuLoad > 60 ? "text-amber-500" : "text-cyan-400";
-            const ramColor = s.ramLoad > 85 ? "text-rose-500" : s.ramLoad > 60 ? "text-amber-500" : "text-emerald-400";
+
+            // Aucune télémétrie n'est collectée côté backend (pas de colonnes
+            // en base) : cpuLoad/ramLoad/activeUsers sont absents des réponses
+            // réelles. On distingue « non mesuré » d'une vraie valeur plutôt
+            // qu'afficher NaN%.
+            const hasCpu = typeof s.cpuLoad === "number" && Number.isFinite(s.cpuLoad);
+            const hasRam = typeof s.ramLoad === "number" && Number.isFinite(s.ramLoad);
+            const hasActive = typeof s.activeUsers === "number" && Number.isFinite(s.activeUsers);
+            const cpuColor = !hasCpu ? "text-gray-500" : s.cpuLoad! > 85 ? "text-rose-500" : s.cpuLoad! > 60 ? "text-amber-500" : "text-cyan-400";
+            const ramColor = !hasRam ? "text-gray-500" : s.ramLoad! > 85 ? "text-rose-500" : s.ramLoad! > 60 ? "text-amber-500" : "text-emerald-400";
 
             return (
               <div 
@@ -182,12 +188,12 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
                     <div className="space-y-1.5">
                       <div className="flex justify-between text-gray-500">
                         <span className="flex items-center gap-1"><Cpu className="h-3 w-3" /> {t("technical.servers.cpu")}</span>
-                        <span className={cpuColor}>{formatNumber(s.cpuLoad / 100, { style: "percent" })}</span>
+                        <span className={cpuColor}>{hasCpu ? formatNumber(s.cpuLoad! / 100, { style: "percent" }) : "—"}</span>
                       </div>
                       <div className="h-1.5 w-full bg-gray-950 rounded-full overflow-hidden">
                         <div 
-                          className={`h-full rounded-full ${s.cpuLoad > 85 ? "bg-rose-500" : s.cpuLoad > 60 ? "bg-amber-500" : "bg-cyan-500"}`} 
-                          style={{ width: `${s.cpuLoad}%` }}
+                          className={`h-full rounded-full ${!hasCpu ? "bg-gray-700" : s.cpuLoad! > 85 ? "bg-rose-500" : s.cpuLoad! > 60 ? "bg-amber-500" : "bg-cyan-500"}`} 
+                          style={{ width: `${hasCpu ? s.cpuLoad : 0}%` }}
                         />
                       </div>
                     </div>
@@ -195,12 +201,12 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
                     <div className="space-y-1.5">
                       <div className="flex justify-between text-gray-500">
                         <span className="flex items-center gap-1"><HardDrive className="h-3 w-3" /> {t("technical.servers.ram")}</span>
-                        <span className={ramColor}>{formatNumber(s.ramLoad / 100, { style: "percent" })}</span>
+                        <span className={ramColor}>{hasRam ? formatNumber(s.ramLoad! / 100, { style: "percent" }) : "—"}</span>
                       </div>
                       <div className="h-1.5 w-full bg-gray-950 rounded-full overflow-hidden">
                         <div 
-                          className={`h-full rounded-full ${s.ramLoad > 85 ? "bg-rose-500" : s.ramLoad > 60 ? "bg-amber-500" : "bg-emerald-500"}`} 
-                          style={{ width: `${s.ramLoad}%` }}
+                          className={`h-full rounded-full ${!hasRam ? "bg-gray-700" : s.ramLoad! > 85 ? "bg-rose-500" : s.ramLoad! > 60 ? "bg-amber-500" : "bg-emerald-500"}`} 
+                          style={{ width: `${hasRam ? s.ramLoad : 0}%` }}
                         />
                       </div>
                     </div>
@@ -211,7 +217,7 @@ export default function ServersView({ currentUserRole }: ServersViewProps) {
                 <div className="mt-4 pt-3 border-t border-gray-900/60 flex items-center justify-between">
                   <div className="flex items-center gap-1.5 text-xs text-gray-500">
                     <Activity className="h-3.5 w-3.5 text-emerald-400" />
-                    <span>{t("technical.servers.connections")} <strong className="text-white">{formatNumber(s.activeUsers)}</strong></span>
+                    <span>{t("technical.servers.connections")} <strong className="text-white">{hasActive ? formatNumber(s.activeUsers!) : "—"}</strong></span>
                   </div>
 
                   {isAdmin && (
