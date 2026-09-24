@@ -22,8 +22,21 @@ try {
     assert.ok(start >= 0 && end > start, `Production masking method missing: ${name}`);
     return securitySource.slice(start, end + '\n    }'.length);
   });
+  // Les motifs vivent hors des deux fonctions : ils sont compilés une seule
+  // fois au chargement de la classe plutôt qu'à chaque ligne de journal. Le
+  // harnais doit donc les transporter avec les corps qu'il extrait, sinon il
+  // compile des références orphelines. Ils sont repris TELS QUELS, pour que ce
+  // test continue d'exercer les expressions réellement en production.
+  const motifsDebut = securitySource.indexOf('    private val MOTIF_IPV4');
+  const motifsFin = securitySource.indexOf('    fun maskSensitive(');
+  assert.ok(
+    motifsDebut >= 0 && motifsFin > motifsDebut,
+    'Production masking patterns missing: expected the hoisted MOTIF_* declarations before maskSensitive',
+  );
+  const motifs = securitySource.slice(motifsDebut, motifsFin);
+  assert.ok(motifs.includes('MOTIFS_IDENTIFIANTS'), 'Production credential patterns missing: MOTIFS_IDENTIFIANTS');
   const maskHarness = path.join(temp, 'SecurityMaskHarness.kt');
-  writeFileSync(maskHarness, `package com.sxbvpn.vpnmodule\nobject SecurityMaskHarness {\n${masks.join('\n')}\n}\n`);
+  writeFileSync(maskHarness, `package com.sxbvpn.vpnmodule\nobject SecurityMaskHarness {\n${motifs}${masks.join('\n')}\n}\n`);
   run(process.env.KOTLINC || 'kotlinc', [
     path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbTunnelPolicy.kt'),
     path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbEngineDiagnostics.kt'),
