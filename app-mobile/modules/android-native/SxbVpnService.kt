@@ -2986,8 +2986,21 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // Les clés de coalescence sont fixes : ni domaines ni identifiants de
         // connexion ne peuvent créer une entrée par requête dans le limiteur.
         if (operational == null || admission != null) {
-            val safeMessage = SecurityModule.maskSensitive(SecurityModule.maskCredentialsOnly(cleanMessage))
-            SxbSecureLogger.debug("LIBBOX_LOG: $safeMessage")
+            // Masquage À LA DEMANDE.
+            //
+            // Le masquage était calculé pour TOUTE ligne admise, alors que la
+            // branche `NORMAL` — de loin la plus fréquente sur un lien mobile :
+            // « context canceled », « broken pipe », « connection reset by
+            // peer » — la jette aussitôt, et que `SxbSecureLogger.debug` est un
+            // no-op en release. On payait donc dix-huit passes d'expression
+            // régulière sur le thread de journalisation du moteur pour un
+            // résultat immédiatement abandonné. Le délégué `lazy` ne change
+            // aucune sortie : il déplace seulement ce calcul au premier usage
+            // réel, et il n'y en a aucun dans le cas `NORMAL`.
+            val safeMessage by lazy(LazyThreadSafetyMode.NONE) {
+                SecurityModule.maskSensitive(SecurityModule.maskCredentialsOnly(cleanMessage))
+            }
+            if (SxbSecureLogger.isDiagnosticEnabled()) SxbSecureLogger.debug("LIBBOX_LOG: $safeMessage")
             if (operational != null) {
                 admission?.let(::broadcastEngineLogSummary)
                 val label = SxbEngineLogPolicy.operationalLabel(
@@ -3280,6 +3293,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
         routeRules
             .put(JSONObject().put("protocol", "dns").put("outbound", "dns-out"))
             .put(JSONObject().put("ip_is_private", true).put("outbound", "direct"))
+        // Avant les règles du profil : un refus QUIC doit précéder toute règle
+        // qui enverrait l'UDP/443 dans un tunnel incapable de le porter.
+        quicBlockRule(cfg, transportSansUdp(transport.network))?.let {
+            routeRules.put(it)
+            broadcastLog("[SXB] ⚡ QUIC (UDP/443) refusé — bascule immédiate en HTTP/2, sans délai d'attente.")
+        }
 
         val routeObj = JSONObject().apply {
             put("rules", routeRules)
@@ -3305,6 +3324,76 @@ class SxbVpnService : VpnService(), PlatformInterface {
             )
             put("route", routeObj)
         }.toString(2)
+    }
+
+    // ── QUIC (UDP/443) sur un tunnel qui ne transporte que du flux ───────────
+    //
+    // Symptôme corrigé ici : tunnel établi, mais navigation lente par à-coups —
+    // une page ou une vidéo se fige plusieurs secondes avant de finir par
+    // s'afficher.
+    //
+    // Cause : les navigateurs et les applications Google/Meta tentent HTTP/3,
+    // qui roule sur QUIC, c'est-à-dire sur UDP/443. Or une sortie dont le
+    // transport est un flux HTTP — WebSocket, HTTPUpgrade, HTTP/2, gRPC, et
+    // donc tout ce qui passe par un CDN ou un Cloud Run — ne peut PAS relayer
+    // d'UDP : le backend n'en émet aucun. Ces datagrammes partent dans le
+    // tunnel et n'obtiennent jamais de réponse. Le navigateur n'apprend donc
+    // rien : il ATTEND l'expiration de son délai QUIC avant de se rabattre sur
+    // HTTP/2 en TCP, qui, lui, fonctionne parfaitement. Chaque nouvel hôte
+    // paie ce délai mort.
+    //
+    // Correctif : refuser explicitement UDP/443. Un refus IMMÉDIAT est
+    // exactement le signal que le navigateur sait interpréter — il bascule sur
+    // TCP sans attendre, et le temps mort disparaît. Aucun trafic n'est perdu :
+    // ce qui passait par QUIC passe par HTTP/2, au-dessus du même tunnel.
+    //
+    // Portée délibérément étroite : les sorties NATIVEMENT UDP (Hysteria2,
+    // TUIC, WireGuard) et le TCP nu vers un vrai serveur relaient l'UDP
+    // correctement — pour elles, QUIC est un gain et n'est jamais touché.
+    private val TRANSPORTS_SANS_UDP = setOf("ws", "websocket", "httpupgrade", "http", "h2", "http2", "grpc")
+
+    /** Vrai si ce transport ne peut pas relayer d'UDP jusqu'au serveur. */
+    private fun transportSansUdp(network: String): Boolean =
+        network.trim().lowercase(Locale.ROOT) in TRANSPORTS_SANS_UDP
+
+    /**
+     * Règle de route « QUIC refusé », ou null quand la sortie sait relayer
+     * l'UDP — ou quand le profil demande explicitement de garder QUIC.
+     */
+    private fun quicBlockRule(cfg: JSONObject, sansUdp: Boolean): JSONObject? {
+        if (!sansUdp) return null
+        // Un exploitant qui sait que sa sortie relaie l'UDP garde la main.
+        if (cfg.optBoolean("autoriserQuic", false) || cfg.optBoolean("allowQuic", false)) return null
+        return JSONObject()
+            .put("network", "udp")
+            .put("port", JSONArray().put(443))
+            .put("outbound", "block")
+    }
+
+    /**
+     * Transport effectif de la sortie `tag`, en suivant les groupes
+     * (`selector`/`urltest`) et les chaînages `detour`.
+     */
+    private fun transportDeLaSortie(outbounds: JSONArray, tag: String, profondeur: Int = 0): String {
+        if (profondeur > 6 || tag.isEmpty()) return ""
+        for (i in 0 until outbounds.length()) {
+            val o = outbounds.optJSONObject(i) ?: continue
+            if (o.optString("tag", "") != tag) continue
+            o.optJSONObject("transport")?.optString("type", "")?.takeIf { it.isNotEmpty() }?.let { return it }
+            // Un groupe ne porte pas de transport : il faut regarder ses membres.
+            o.optJSONArray("outbounds")?.let { membres ->
+                for (j in 0 until membres.length()) {
+                    val t = transportDeLaSortie(outbounds, membres.optString(j, ""), profondeur + 1)
+                    if (t.isNotEmpty()) return t
+                }
+            }
+            // Sortie chaînée : le transport réel est celui du maillon suivant.
+            o.optString("detour", "").takeIf { it.isNotEmpty() }?.let {
+                return transportDeLaSortie(outbounds, it, profondeur + 1)
+            }
+            return ""
+        }
+        return ""
     }
 
     /**
@@ -4283,6 +4372,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
         routeRules
             .put(JSONObject().put("protocol", "dns").put("outbound", "dns-out"))
             .put(JSONObject().put("ip_is_private", true).put("outbound", "direct"))
+        // Même raison que dans buildSingBoxConfig : le transport réel est ici
+        // lu sur la sortie finale, en suivant les groupes et les chaînages.
+        quicBlockRule(cfg, transportSansUdp(transportDeLaSortie(outbounds, finalTag)))?.let {
+            routeRules.put(it)
+            broadcastLog("[SXB] ⚡ QUIC (UDP/443) refusé — bascule immédiate en HTTP/2, sans délai d'attente.")
+        }
         for (i in 0 until storedRules.length()) {
             val r = storedRules.optJSONObject(i) ?: continue
             routeRules.put(r)
