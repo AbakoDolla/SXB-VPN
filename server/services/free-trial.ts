@@ -1107,11 +1107,11 @@ export function vueJetonPourAdmin(jeton: JetonEssai & {
  * Taille maximale d'un lot de déploiement.
  *
  * Même borne que `MAX_BULK_APPLY` pour les forfaits : au-delà, une seule
- * requête tiendrait la base ouverte trop longtemps et un échec en milieu de
- * parcours deviendrait illisible. La borne est explicite côté utilisateur,
- * jamais une troncature silencieuse de la sélection.
+ * Les appels de masse sont validés demande par demande ; aucune demande
+ * admissible n'est écartée à cause d'un plafond arbitraire de lot.
  */
-export const MAX_LOT_ESSAI = 200;
+/** Les lots couvrent tout le jeton ; les identifiants restent validés et dédupliqués. */
+export const MAX_LOT_ESSAI = Number.POSITIVE_INFINITY;
 
 export const RAISONS_LOT_ESSAI = {
   LOT_VIDE: "errors.free_trial.batch_empty",
@@ -1121,8 +1121,7 @@ export const RAISONS_LOT_ESSAI = {
 } as const;
 
 /**
- * Normalise un lot d'identifiants : doublons retirés, ordre conservé, bornes
- * appliquées. Fonction PURE, donc testable sans base.
+ * Normalise un lot d'identifiants : doublons retirés et ordre conservé.
  *
  * Les doublons ne sont pas une coquetterie : deux fois le même identifiant
  * dans un lot signifierait deux déploiements sur la même demande.
@@ -1138,11 +1137,13 @@ export function normaliserLotEssai(
     if (propre && !uniques.includes(propre)) uniques.push(propre);
   }
   if (!uniques.length) return { ok: false, raison: RAISONS_LOT_ESSAI.LOT_VIDE, limite: maximum };
-  if (uniques.length > maximum) return { ok: false, raison: RAISONS_LOT_ESSAI.LOT_TROP_GRAND, limite: maximum };
+  if (Number.isFinite(maximum) && uniques.length > maximum) {
+    return { ok: false, raison: RAISONS_LOT_ESSAI.LOT_TROP_GRAND, limite: maximum };
+  }
   return { ok: true, ids: uniques };
 }
 
-/** Refus explicite d'un lot hors bornes — jamais une troncature muette. */
+/** Refus explicite d'un lot invalide — jamais une troncature muette. */
 export function refusLotEssai(raison: string, limite: number): { status: number; body: Record<string, unknown> } {
   return {
     status: 400,
@@ -1172,15 +1173,8 @@ export function refusLotEssai(raison: string, limite: number): { status: number;
 /** Nombre maximal de configurations VPN retenues pour un même déploiement. */
 export const MAX_CONFIGS_ESSAI = 10;
 
-/**
- * Nombre maximal de forfaits qu'UN déploiement peut créer.
- *
- * Le lot est écrit demande par demande, configuration par configuration,
- * chacune avec ses propres contrôles : sans cette borne, une sélection large
- * tiendrait la connexion ouverte assez longtemps pour être coupée, et
- * l'exploitant se retrouverait sans compte rendu.
- */
-export const MAX_FORFAITS_ESSAI = 400;
+/** Les actions globales couvrent toute la sélection ; chaque forfait reste écrit demande par demande. */
+export const MAX_FORFAITS_ESSAI = Number.POSITIVE_INFINITY;
 
 export const RAISONS_CONFIGS_ESSAI = {
   AUCUNE_CONFIG: "errors.free_trial.no_profile",
@@ -1211,9 +1205,9 @@ export function normaliserConfigsEssai(
 }
 
 /**
- * Combien de forfaits ce déploiement créerait — et le refus motivé si c'est
- * trop. Le chiffre est rendu tel quel pour que l'interface l'annonce AVANT la
- * confirmation : « 12 inscrits × 3 serveurs = 36 forfaits ».
+ * Combien de forfaits ce déploiement créerait. Un maximum fini peut encore
+ * être passé par test ou par appelant spécifique, mais l'action dashboard par
+ * défaut couvre tout le jeton demandé.
  */
 export function verifierProduitEssai(
   demandes: number,
@@ -1221,7 +1215,7 @@ export function verifierProduitEssai(
   maximum = MAX_FORFAITS_ESSAI,
 ): { ok: true; total: number } | { ok: false; total: number; refus: { status: number; body: Record<string, unknown> } } {
   const total = demandes * configurations;
-  if (total > maximum) {
+  if (Number.isFinite(maximum) && total > maximum) {
     return {
       ok: false,
       total,

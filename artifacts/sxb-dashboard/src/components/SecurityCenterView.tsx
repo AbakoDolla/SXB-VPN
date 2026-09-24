@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity, AlertTriangle, CheckCircle2, Clock3, Fingerprint, KeyRound, LockKeyhole,
   RefreshCw, ShieldAlert, ShieldCheck, Trash2, UnlockKeyhole,
@@ -148,6 +148,7 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
   const [selected, setSelected] = useState<string[]>([]);
   const [passkeyLabel, setPasskeyLabel] = useState("");
   const [secondsLeft, setSecondsLeft] = useState(0);
+  const notifiedSecurityEvents = useRef(new Set<string>());
 
   const isOwner = currentUserRole === "OWNER";
   const isUnlocked = !!unlockToken && remainingSeconds(expiresAt) > 0;
@@ -232,9 +233,34 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
     setExpiresAt(result.expiresAt);
     setPendingChallenge(null);
     setPassword("");
+    if ("Notification" in window && Notification.permission === "default") {
+      void Notification.requestPermission();
+    }
     await loadGate();
     await loadConsole(result.unlockToken);
   }, [loadConsole, loadGate]);
+
+  useEffect(() => {
+    if (!isUnlocked || !eventsPage?.events || !("Notification" in window)) return;
+    if (Notification.permission !== "granted") return;
+    for (const event of eventsPage.events) {
+      if (event.acknowledged || (event.severity !== "critical" && event.severity !== "warning")) continue;
+      if (notifiedSecurityEvents.current.has(event.id)) continue;
+      notifiedSecurityEvents.current.add(event.id);
+      new Notification(
+        event.severity === "critical" ? t("operations.security.notifications.critical") : t("operations.security.notifications.suspicious"),
+        { body: `${vocabulary.eventType(event.eventType)} — ${t("operations.security.notifications.openCenter")}` },
+      );
+    }
+  }, [eventsPage, isUnlocked, t, vocabulary]);
+
+  useEffect(() => {
+    if (!unlockToken || !isUnlocked) return;
+    const timer = window.setInterval(() => {
+      void loadConsole(unlockToken).catch(cause => setActionError({ cause, fallback: "operations.security.errors.console" }));
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [isUnlocked, loadConsole, unlockToken]);
 
   const handlePasswordUnlock = async (event: React.FormEvent) => {
     event.preventDefault();

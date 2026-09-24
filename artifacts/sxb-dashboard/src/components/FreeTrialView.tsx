@@ -45,9 +45,7 @@ import {
   fetchFreeTrialActivity,
   FREE_TRIAL_STATE,
   FREE_TRIAL_STATUS,
-  MAX_FREE_TRIAL_BATCH,
   MAX_FREE_TRIAL_PROFILES,
-  MAX_FREE_TRIAL_SUBSCRIPTIONS,
   type FreeTrialCountryStats,
   type FreeTrialDeployResponse,
   type FreeTrialManageResponse,
@@ -236,6 +234,8 @@ export default function FreeTrialView() {
   // La sélection est indexée PAR JETON : il n'existe structurellement aucune
   // sélection qui traverse deux campagnes.
   const [selectionParJeton, setSelectionParJeton] = useState<Record<string, string[]>>({});
+  const [selectionGlobaleParJeton, setSelectionGlobaleParJeton] = useState<Record<string, number>>({});
+  const [demandesGlobalesParJeton, setDemandesGlobalesParJeton] = useState<Record<string, FreeTrialRequest[]>>({});
   const [resultatLot, setResultatLot] = useState<FreeTrialDeployResponse | null>(null);
   const [resultatGestion, setResultatGestion] = useState<FreeTrialManageResponse | null>(null);
 
@@ -407,6 +407,8 @@ export default function FreeTrialView() {
   useEffect(() => {
     setVolets({});
     setSelectionParJeton({});
+    setSelectionGlobaleParJeton({});
+    setDemandesGlobalesParJeton({});
     setResultats(null);
     if (jetonOuvert) void chargerVolet(jetonOuvert, 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -526,10 +528,17 @@ export default function FreeTrialView() {
   // Une demande refusée n'est ni l'un ni l'autre, donc elle n'est pas cochable.
   // Chaque geste filtre ensuite la sélection sur ce qui le concerne, plutôt que
   // d'imposer à l'exploitant de vider ses cases entre deux actions.
+  const demandesDuJeton = useMemo(
+    () => jetonOuvert
+      ? [...(volet?.requests ?? []), ...(demandesGlobalesParJeton[jetonOuvert] ?? [])]
+        .filter((demande, index, toutes) => toutes.findIndex(item => item.id === demande.id) === index)
+      : [],
+    [demandesGlobalesParJeton, jetonOuvert, volet],
+  );
   const selectionnables = useMemo(
-    () => (volet?.requests ?? []).filter(demande =>
+    () => demandesDuJeton.filter(demande =>
       demande.status === FREE_TRIAL_STATUS.PENDING || demande.status === FREE_TRIAL_STATUS.DEPLOYED),
-    [volet],
+    [demandesDuJeton],
   );
   const selectionCourante = jetonOuvert ? selectionParJeton[jetonOuvert] ?? [] : [];
   const selectionValide = useMemo(
@@ -549,16 +558,15 @@ export default function FreeTrialView() {
     [selectionValide, selectionnables],
   );
   const toutSelectionne = selectionnables.length > 0 && selectionValide.length === selectionnables.length;
-  const lotTropGrand = selectionValide.length > MAX_FREE_TRIAL_BATCH;
+  const cibleSelectionGlobale = jetonOuvert ? selectionGlobaleParJeton[jetonOuvert] ?? 0 : 0;
+  const selectionGlobaleActive = cibleSelectionGlobale > 0 && selectionCourante.length === cibleSelectionGlobale;
 
-  // ── Borne du produit « inscrits × configurations » ─────────────────────────
-  // Sans elle, cocher 200 inscrits et 10 serveurs fabriquerait 2 000 forfaits
-  // d'un clic. L'interface ANNONCE la limite et affiche le total AVANT de
-  // confirmer, plutôt que de laisser le serveur refuser après coup.
+  // ── Récapitulatif du produit « inscrits × configurations » ────────────────
+  // L'interface affiche le total AVANT de confirmer : l'opérateur sait combien
+  // de forfaits seront créés pour les apps sélectionnées.
   const forfaitsAcreer = (selectionEnAttente.length + selectionDeployee.length) * profileIds.length;
   const tropDeConfigs = profileIds.length > MAX_FREE_TRIAL_PROFILES;
-  const tropDeForfaits = forfaitsAcreer > MAX_FREE_TRIAL_SUBSCRIPTIONS;
-  const deploiementBorne = lotTropGrand || tropDeConfigs || tropDeForfaits;
+  const deploiementBorne = tropDeConfigs;
 
   /** Au moins un champ renseigné : sinon la gestion ne ferait rien du tout. */
   const gestionRenseignee =
@@ -592,10 +600,7 @@ export default function FreeTrialView() {
     }
     return [...detenus.values()];
   }, [volet, selectionDeployee]);
-  const gestionBornee =
-    selectionDeployee.length > MAX_FREE_TRIAL_BATCH ||
-    serveursAjoutes.length > MAX_FREE_TRIAL_PROFILES ||
-    forfaitsAjoutes > MAX_FREE_TRIAL_SUBSCRIPTIONS;
+  const gestionBornee = serveursAjoutes.length > MAX_FREE_TRIAL_PROFILES;
 
   const basculerProfil = (id: string) => {
     setProfileIds(prev => (prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]));
@@ -607,6 +612,7 @@ export default function FreeTrialView() {
 
   const basculer = (id: string) => {
     if (!jetonOuvert) return;
+    setSelectionGlobaleParJeton(prev => ({ ...prev, [jetonOuvert]: 0 }));
     setSelectionParJeton(prev => {
       const courante = prev[jetonOuvert] ?? [];
       return {
@@ -616,14 +622,6 @@ export default function FreeTrialView() {
     });
   };
 
-  const basculerTout = () => {
-    if (!jetonOuvert) return;
-    setSelectionParJeton(prev => ({
-      ...prev,
-      [jetonOuvert]: toutSelectionne ? [] : selectionnables.map(demande => demande.id),
-    }));
-  };
-
   /**
    * Sélectionne TOUT le jeton, pas seulement la page affichée.
    *
@@ -631,16 +629,22 @@ export default function FreeTrialView() {
    * page. Pour changer de serveur sur deux cents inscrits, il fallait donc
    * répéter le geste page après page, et rien ne le disait.
    *
-   * On parcourt ici les pages jusqu'à la borne du serveur. Le lot reste borné —
-   * une requête qui écrirait des milliers de forfaits tiendrait la base ouverte
-   * trop longtemps — mais la borne est ANNONCÉE, jamais une troncature muette.
+   * On parcourt ici toutes les pages du jeton courant. Les identifiants sont
+   * dédupliqués avant l'envoi afin que chaque demande ne soit traitée qu'une fois.
    */
   const selectionnerTravers = async () => {
     if (!jetonOuvert || chargementTotal) return;
+    if (selectionGlobaleActive) {
+      setSelectionParJeton(prev => ({ ...prev, [jetonOuvert]: [] }));
+      setSelectionGlobaleParJeton(prev => ({ ...prev, [jetonOuvert]: 0 }));
+      setDemandesGlobalesParJeton(prev => ({ ...prev, [jetonOuvert]: [] }));
+      return;
+    }
     setChargementTotal(true);
     try {
       const trouves: string[] = [];
-      const pages = Math.ceil(Math.min(volet?.total ?? 0, MAX_FREE_TRIAL_BATCH) / TAILLE_PAGE);
+      const demandes: FreeTrialRequest[] = [];
+      const pages = Math.ceil((volet?.total ?? 0) / TAILLE_PAGE);
       for (let page = 1; page <= Math.max(1, pages); page++) {
         // A stalled page must not leave the bulk selector spinning forever.
         // The next refresh can retry it, while the current action fails
@@ -656,23 +660,23 @@ export default function FreeTrialView() {
             window.setTimeout(() => reject(new Error('FREE_TRIAL_SELECTION_TIMEOUT')), 15_000);
           }),
         ]);
-        const avant = trouves.length;
         for (const demande of lot.requests) {
           if ((demande.status === FREE_TRIAL_STATUS.PENDING || demande.status === FREE_TRIAL_STATUS.DEPLOYED)
             && !trouves.includes(demande.id)) {
             trouves.push(demande.id);
+            demandes.push(demande);
           }
         }
-        if (trouves.length >= MAX_FREE_TRIAL_BATCH) break;
-        if (lot.requests.length === 0 || trouves.length === avant) break;
+        if (lot.requests.length === 0) break;
       }
-      const retenus = trouves.slice(0, MAX_FREE_TRIAL_BATCH);
+      const retenus = trouves;
       setSelectionParJeton(prev => ({ ...prev, [jetonOuvert]: retenus }));
+      setSelectionGlobaleParJeton(prev => ({ ...prev, [jetonOuvert]: retenus.length }));
+      setDemandesGlobalesParJeton(prev => ({ ...prev, [jetonOuvert]: demandes }));
       // Dire ce qui a été retenu ET ce qui a été laissé : une sélection
       // silencieusement tronquée ferait croire à un déploiement complet.
       setNotice(t('operations.freeTrial.selectedAcross', {
         count: formatNumber(retenus.length),
-        max: formatNumber(MAX_FREE_TRIAL_BATCH),
       }));
     } catch {
       setError(errorMessage('operations.freeTrial.selectAllFailed'));
@@ -812,23 +816,12 @@ export default function FreeTrialView() {
     // la même configuration à ce qui tourne déjà. C'est la même intention —
     // « que tout le monde ait ce serveur » — et elle s'exprime en un clic.
     if (!jetonOuvert || (selectionEnAttente.length === 0 && selectionDeployee.length === 0)) return;
-    if (lotTropGrand) {
-      setError(t('operations.freeTrial.batch.tooMany', { max: formatNumber(MAX_FREE_TRIAL_BATCH) }));
-      return;
-    }
     if (profileIds.length === 0) {
       setError(t('operations.freeTrial.batch.noProfile'));
       return;
     }
     if (tropDeConfigs) {
       setError(t('operations.freeTrial.batch.tooManyProfiles', { max: formatNumber(MAX_FREE_TRIAL_PROFILES) }));
-      return;
-    }
-    if (tropDeForfaits) {
-      setError(t('operations.freeTrial.batch.tooManySubscriptions', {
-        count: formatNumber(forfaitsAcreer),
-        max: formatNumber(MAX_FREE_TRIAL_SUBSCRIPTIONS),
-      }));
       return;
     }
     setBusy(true);
@@ -902,10 +895,7 @@ export default function FreeTrialView() {
       return;
     }
     if (gestionBornee) {
-      setError(t('operations.freeTrial.batch.tooManySubscriptions', {
-        count: formatNumber(forfaitsAjoutes),
-        max: formatNumber(MAX_FREE_TRIAL_SUBSCRIPTIONS),
-      }));
+      setError(t('operations.freeTrial.batch.tooManyProfiles', { max: formatNumber(MAX_FREE_TRIAL_PROFILES) }));
       return;
     }
     setBusy(true);
@@ -1242,8 +1232,8 @@ export default function FreeTrialView() {
           {avecSelection && canDeploy && selectionnables.length > 0 && (
             <input
               type="checkbox"
-              checked={toutSelectionne}
-              onChange={basculerTout}
+              checked={selectionGlobaleActive || toutSelectionne}
+              onChange={() => void selectionnerTravers()}
               aria-label={t('operations.freeTrial.selectAll')}
               className="h-4 w-4 rounded border-white/20 bg-slate-900"
             />
@@ -1898,7 +1888,7 @@ export default function FreeTrialView() {
                                   « tout sélectionner » ne couvre que ce qui est
                                   affiché, jamais les pages non chargées. */}
                               <p className="mt-0.5 text-[11px] text-gray-400">
-                                {t('operations.freeTrial.batch.loadedOnly', { max: formatNumber(MAX_FREE_TRIAL_BATCH) })}
+                                {t('operations.freeTrial.batch.loadedOnly')}
                               </p>
                             </div>
                             <div className="flex flex-wrap items-center gap-2">
@@ -1916,7 +1906,7 @@ export default function FreeTrialView() {
                                 {chargementTotal
                                   ? t('operations.freeTrial.selectingAcross')
                                   : t('operations.freeTrial.selectAcross', {
-                                      count: formatNumber(Math.min(volet?.total ?? 0, MAX_FREE_TRIAL_BATCH)),
+                                      count: formatNumber(volet?.total ?? 0),
                                     })}
                               </button>
                               <button
@@ -1931,7 +1921,7 @@ export default function FreeTrialView() {
                               <button
                                 type="button"
                                 onClick={ouvrirDeploiement}
-                                disabled={busy || lotTropGrand || (selectionEnAttente.length === 0 && selectionDeployee.length === 0)}
+                                disabled={busy || (selectionEnAttente.length === 0 && selectionDeployee.length === 0)}
                                 className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500/90 px-3 py-1.5 text-xs font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:opacity-50"
                               >
                                 <Rocket className="h-3.5 w-3.5" />
@@ -1945,7 +1935,7 @@ export default function FreeTrialView() {
                               <button
                                 type="button"
                                 onClick={ouvrirGestion}
-                                disabled={busy || lotTropGrand || selectionDeployee.length === 0}
+                                disabled={busy || selectionDeployee.length === 0}
                                 className="inline-flex items-center gap-1.5 rounded-lg bg-fuchsia-500/90 px-3 py-1.5 text-xs font-semibold text-slate-950 transition hover:bg-fuchsia-400 disabled:opacity-50"
                               >
                                 <SlidersHorizontal className="h-3.5 w-3.5" />
@@ -1961,7 +1951,7 @@ export default function FreeTrialView() {
                               <button
                                 type="button"
                                 onClick={() => setShowConvertForm(v => !v)}
-                                disabled={busy || lotTropGrand || selectionDeployee.length === 0}
+                                disabled={busy || selectionDeployee.length === 0}
                                 title={t('operations.freeTrial.convertHint')}
                                 className="inline-flex items-center gap-1.5 rounded-lg bg-violet-500/90 px-3 py-1.5 text-xs font-semibold text-slate-950 transition hover:bg-violet-400 disabled:opacity-50"
                               >
@@ -1988,12 +1978,6 @@ export default function FreeTrialView() {
                               </button>
                             </div>
                           </div>
-                        )}
-
-                        {lotTropGrand && (
-                          <p className="border-b border-white/10 bg-rose-500/10 px-4 py-2 text-xs text-rose-200">
-                            {t('operations.freeTrial.batch.tooMany', { max: formatNumber(MAX_FREE_TRIAL_BATCH) })}
-                          </p>
                         )}
 
                         {/* Formulaire de conversion : trois champs FACULTATIFS.
@@ -2087,7 +2071,6 @@ export default function FreeTrialView() {
                               <p className="mb-2 text-[11px] text-gray-500">
                                 {t('operations.freeTrial.deployForm.serversHint', {
                                   maxProfiles: formatNumber(MAX_FREE_TRIAL_PROFILES),
-                                  maxSubscriptions: formatNumber(MAX_FREE_TRIAL_SUBSCRIPTIONS),
                                 })}
                               </p>
                               <div className="grid max-h-44 gap-1.5 overflow-y-auto sm:grid-cols-2 lg:grid-cols-3">
@@ -2181,14 +2164,6 @@ export default function FreeTrialView() {
                             {tropDeConfigs && (
                               <p className="rounded-lg border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200">
                                 {t('operations.freeTrial.batch.tooManyProfiles', { max: formatNumber(MAX_FREE_TRIAL_PROFILES) })}
-                              </p>
-                            )}
-                            {tropDeForfaits && (
-                              <p className="rounded-lg border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200">
-                                {t('operations.freeTrial.batch.tooManySubscriptions', {
-                                  max: formatNumber(MAX_FREE_TRIAL_SUBSCRIPTIONS),
-                                  count: formatNumber(forfaitsAcreer),
-                                })}
                               </p>
                             )}
                             <div className="flex justify-end gap-2">
@@ -2456,10 +2431,7 @@ export default function FreeTrialView() {
                             </p>
                             {gestionBornee && (
                               <p className="rounded-lg border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200">
-                                {t('operations.freeTrial.batch.tooManySubscriptions', {
-                                  max: formatNumber(MAX_FREE_TRIAL_SUBSCRIPTIONS),
-                                  count: formatNumber(forfaitsAjoutes),
-                                })}
+                                {t('operations.freeTrial.batch.tooManyProfiles', { max: formatNumber(MAX_FREE_TRIAL_PROFILES) })}
                               </p>
                             )}
                             <div className="flex justify-end gap-2">
@@ -2472,7 +2444,7 @@ export default function FreeTrialView() {
                               </button>
                               <button
                                 type="submit"
-                                disabled={busy || !gestionRenseignee || gestionBornee || lotTropGrand}
+                                disabled={busy || !gestionRenseignee || gestionBornee}
                                 className="inline-flex items-center gap-2 rounded-lg bg-fuchsia-500/90 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-fuchsia-400 disabled:opacity-50"
                               >
                                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <SlidersHorizontal className="h-4 w-4" />}

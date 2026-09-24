@@ -2,7 +2,7 @@
   "freeTrial": {
     "selectAcross": "Tout sélectionner ({{count}})",
     "selectingAcross": "Sélection…",
-    "selectedAcross": "{{count}} inscrit(s) sélectionné(s) sur toutes les pages (limite {{max}} par lot).",
+    "selectedAcross": "{{count}} inscrit(s) sélectionné(s) sur toutes les pages.",
     "selectAllFailed": "Chargement des pages impossible — sélection inchangée.",
     "groupedHint": "Chaque jeton porte ses propres inscriptions : dépliez-le pour les voir et agir dessus. Les demandes ne sont jamais mélangées entre deux jetons.",
     "noToken": "Aucun jeton d'invitation pour l'instant. Créez-en un pour commencer.",
@@ -47,8 +47,7 @@
     },
     "searchHint": "Recherche transversale, en lecture seule : pour agir, ouvrez le jeton concerné. Elle porte sur les inscriptions chargées pour le filtre courant.",
     "batch": {
-      "loadedOnly": "« Tout sélectionner » ne couvre que les inscriptions affichées de ce jeton, jamais celles d'un autre jeton ni les pages non chargées. Maximum {{max}} inscrits par déploiement.",
-      "tooMany": "Un lot ne peut pas dépasser {{max}} inscrits. Réduisez la sélection.",
+      "loadedOnly": "« Tout sélectionner » couvre toutes les inscriptions de ce jeton, jamais celles d'un autre jeton.",
       "recap": "{{count}} inscrit(s) du jeton {{token}} recevront exactement les valeurs ci-dessus.",
       "deployTo": "Déployer à {{count}} inscrit(s)",
       "done": "Opération terminée",
@@ -56,8 +55,7 @@
       "failedItem": "• {{id}} — {{reason}}",
       "noProfile": "Choisissez au moins une configuration VPN avant de déployer.",
       "preview": "Cela créera {{subscriptions}} forfait(s) : {{requests}} inscrit(s) × {{profiles}} configuration(s).",
-      "tooManyProfiles": "Un déploiement ne peut pas dépasser {{max}} configurations VPN. Réduisez la sélection de serveurs.",
-      "tooManySubscriptions": "Ce lot créerait {{count}} forfaits, au-delà de la limite de {{max}}. Réduisez le nombre d’inscrits ou de configurations."
+      "tooManyProfiles": "Un déploiement ne peut pas dépasser {{max}} configurations VPN. Réduisez la sélection de serveurs."
     },
     "countryUnknown": "Non renseigné",
     "metrics": {
@@ -181,7 +179,7 @@
       "expireAt": "Date et heure d'expiration",
       "note": "Note interne (facultative)",
       "servers": "Configurations VPN à attribuer",
-      "serversHint": "Chaque inscrit retenu reçoit un forfait par configuration cochée. Maximum {{maxProfiles}} configurations et {{maxSubscriptions}} forfaits par déploiement.",
+      "serversHint": "Chaque inscrit retenu reçoit un forfait par configuration cochée. Maximum {{maxProfiles}} configurations VPN par déploiement.",
       "noServer": "Aucune configuration VPN disponible."
     },
     "notice": {
@@ -873,6 +871,11 @@
     "identity": "Console protégée OWNER",
     "title": "Centre de sécurité",
     "description": "Les alertes sensibles, la porte de déverrouillage et les preuves biométriques restent isolées dans cette console dédiée.",
+    "notifications": {
+      "critical": "Alerte de sécurité critique",
+      "suspicious": "Activité suspecte détectée",
+      "openCenter": "ouvrez le Centre de sécurité pour examiner les détails."
+    },
     "gateStatus": "État de la porte",
     "passkeyStatus": "Empreinte",
     "unlocked": "Déverrouillé",

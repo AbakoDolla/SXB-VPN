@@ -51,7 +51,6 @@ import {
 } from '../services/vpn-presence';
 import {
   CODES_ESSAI,
-  MAX_LOT_ESSAI,
   MOTIF_JETON_ESSAI,
   RAISONS_LOT_ESSAI,
   STATUT_DEMANDE,
@@ -232,7 +231,7 @@ const statutSchema = z.object({
 const deployerSchema = z.object({
   // Sélection MULTIPLE : l'admin choisit un ou plusieurs inscrits, puis
   // seulement ensuite ce qu'ils reçoivent.
-  requestIds: z.array(identifiantSchema).min(1).max(MAX_LOT_ESSAI),
+  requestIds: z.array(identifiantSchema).min(1),
   // Jeton SOUS LEQUEL l'action est lancée. Le tableau de bord agit toujours
   // dans le contexte d'un jeton ; le serveur revérifie chaque demande plutôt
   // que de faire confiance à la liste reçue.
@@ -272,7 +271,7 @@ const deployerSchema = z.object({
  * geste, et que le mélanger aux valeurs rendrait le récapitulatif illisible.
  */
 const gererSchema = z.object({
-  requestIds: z.array(identifiantSchema).min(1).max(MAX_LOT_ESSAI),
+  requestIds: z.array(identifiantSchema).min(1),
   tokenId: identifiantSchema.optional(),
   profileId: identifiantSchema.optional(),
   // Même raison qu'au déploiement : la borne métier est appliquée par
@@ -331,7 +330,7 @@ const gererSchema = z.object({
 });
 
 const refuserSchema = z.object({
-  requestIds: z.array(identifiantSchema).min(1).max(MAX_LOT_ESSAI),
+  requestIds: z.array(identifiantSchema).min(1),
   tokenId: identifiantSchema.optional(),
   note: z.string().trim().max(500).optional(),
 }).strict();
@@ -350,7 +349,7 @@ const refuserSchema = z.object({
  * geste pour cela.
  */
 const convertirSchema = z.object({
-  requestIds: z.array(identifiantSchema).min(1).max(MAX_LOT_ESSAI),
+  requestIds: z.array(identifiantSchema).min(1),
   tokenId: identifiantSchema.optional(),
   /** Nouveau volume, en gigaoctets. Absent = volume inchangé. */
   quotaGB: z.coerce.number().min(0).max(100_000).optional(),
@@ -361,7 +360,7 @@ const convertirSchema = z.object({
 }).strict();
 
 const supprimerSchema = z.object({
-  requestIds: z.array(identifiantSchema).min(1).max(MAX_LOT_ESSAI),
+  requestIds: z.array(identifiantSchema).min(1),
   tokenId: identifiantSchema.optional(),
 }).strict();
 
@@ -1570,8 +1569,8 @@ router.get(
 // fois N configurations à M inscrits ; chaque inscrit retenu reçoit alors UN
 // forfait par configuration, comme un client principal peut détenir plusieurs
 // forfaits. Le quota et les dates s'appliquent à CHAQUE forfait créé. Le
-// produit M × N est borné (`MAX_FORFAITS_ESSAI`) et le refus est explicite :
-// une sélection large ne fabrique jamais des milliers de forfaits d'un clic.
+// produit M × N est rendu dans la réponse : une sélection large annonce combien
+// de forfaits ont été fabriqués.
 //
 // RÉTROCOMPATIBILITÉ : `profileId` seul continue de fonctionner à l'identique.
 //
@@ -1644,6 +1643,7 @@ router.post(
       const resultats: Array<{ id: string; status: string; reason?: string; subscriptions?: number }> = [];
       let deployees = 0;
       let forfaitsCrees = 0;
+      const clientsTouches = new Set<string>();
 
       for (const requestId of lot.ids) {
         const demande = await (prisma as any).freeTrialRequest.findUnique({ where: { id: requestId } });
@@ -1770,6 +1770,7 @@ router.post(
 
           deployees += 1;
           forfaitsCrees += profils.length;
+          if (deploiement.clientId) clientsTouches.add(String(deploiement.clientId));
           resultats.push({ id: requestId, status: 'deployed', subscriptions: profils.length });
           await logDbActivity(
             req.user?.userId || null,
@@ -1777,7 +1778,6 @@ router.post(
             'success',
             req.ip || '',
           );
-          void deploiement;
         } catch (erreurDemande: any) {
           const concurrent = erreurDemande?.message === 'FREE_TRIAL_CONCURRENT_DEPLOY';
           resultats.push({
@@ -1788,6 +1788,7 @@ router.post(
           if (!concurrent) console.error('free-trial deploy error:', erreurDemande);
         }
       }
+      for (const clientId of clientsTouches) accessStateHub.invalidate({ clientId });
 
       return res.json({
         success: true,

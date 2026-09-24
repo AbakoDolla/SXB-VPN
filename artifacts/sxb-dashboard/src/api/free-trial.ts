@@ -29,22 +29,11 @@ export interface FreeTrialToken {
   rejectedCount?: number;
 }
 
-/** Taille maximale d'un lot, alignée sur `MAX_LOT_ESSAI` côté serveur. */
-export const MAX_FREE_TRIAL_BATCH = 200;
-
 /**
  * Nombre maximal de configurations VPN retenues d'un même geste, aligné sur
  * `MAX_CONFIGS_ESSAI`. Annoncé à l'écran plutôt que découvert par un refus.
  */
 export const MAX_FREE_TRIAL_PROFILES = 10;
-
-/**
- * Plafond du PRODUIT « inscrits × configurations », aligné sur
- * `MAX_FORFAITS_ESSAI`. C'est lui qui empêche une sélection large de fabriquer
- * des milliers de forfaits d'un clic ; l'interface l'annonce et calcule le
- * total avant toute confirmation.
- */
-export const MAX_FREE_TRIAL_SUBSCRIPTIONS = 400;
 
 /** Un forfait d'essai tel que la section Essais l'affiche. */
 export interface FreeTrialSubscriptionView {
@@ -433,7 +422,7 @@ export async function fetchFreeTrialOverview(): Promise<FreeTrialOverview> {
  * `profileIds` accepte PLUSIEURS configurations : chaque inscrit retenu reçoit
  * alors un forfait par configuration, comme un client principal peut détenir
  * plusieurs forfaits. Le quota et les dates s'appliquent à chacun. Le produit
- * « inscrits × configurations » est borné par `MAX_FREE_TRIAL_SUBSCRIPTIONS`.
+ * « inscrits × configurations » est affiché avant confirmation.
  *
  * `profileId` reste accepté par le serveur pour les appelants historiques ;
  * le tableau de bord envoie toujours `profileIds`, même à une seule valeur.
