@@ -126,7 +126,7 @@ describe('compte rendu de gestion des essais', () => {
     // fermé à celui qui n'a que des essais déjà servis.
     assert.match(
       VUE,
-      /disabled=\{busy \|\| lotTropGrand \|\| \(selectionEnAttente\.length === 0 && selectionDeployee\.length === 0\)\}/,
+      /disabled=\{busy \|\| \(selectionEnAttente\.length === 0 && selectionDeployee\.length === 0\)\}/,
     );
   });
 
@@ -136,9 +136,11 @@ describe('compte rendu de gestion des essais', () => {
     // un geste qui couvre le jeton, il fallait le répéter page après page.
     assert.match(VUE, /const selectionnerTravers = async/);
     assert.match(VUE, /fetchFreeTrialRequestPage\(\{[\s\S]{0,160}offset: \(page - 1\) \* TAILLE_PAGE/);
-    // La borne du serveur est respectée, et ANNONCÉE : une sélection
-    // silencieusement tronquée ferait croire à un déploiement complet.
-    assert.match(VUE, /trouves\.slice\(0, MAX_FREE_TRIAL_BATCH\)/);
+    // Toutes les demandes retenues sont conservées, pas seulement leurs IDs :
+    // les actions suivantes peuvent distinguer les essais en attente de ceux
+    // déjà déployés même quand ils ne sont pas sur la page affichée.
+    assert.match(VUE, /setDemandesGlobalesParJeton\(prev => \(\{ \.\.\.prev, \[jetonOuvert\]: demandes \}\)\)/);
+    assert.doesNotMatch(VUE, /MAX_FREE_TRIAL_BATCH/);
     assert.match(VUE, /operations\.freeTrial\.selectedAcross/);
     for (const langue of ['en', 'fr']) {
       const libelles = JSON.parse(lire(`artifacts/sxb-dashboard/src/locales/${langue}/operations.json`));

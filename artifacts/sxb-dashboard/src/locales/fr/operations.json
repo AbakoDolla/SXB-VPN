@@ -871,6 +871,11 @@
     "identity": "Console protégée OWNER",
     "title": "Centre de sécurité",
     "description": "Les alertes sensibles, la porte de déverrouillage et les preuves biométriques restent isolées dans cette console dédiée.",
+    "notifications": {
+      "critical": "Alerte de sécurité critique",
+      "suspicious": "Activité suspecte détectée",
+      "openCenter": "ouvrez le Centre de sécurité pour examiner les détails."
+    },
     "gateStatus": "État de la porte",
     "passkeyStatus": "Empreinte",
     "unlocked": "Déverrouillé",

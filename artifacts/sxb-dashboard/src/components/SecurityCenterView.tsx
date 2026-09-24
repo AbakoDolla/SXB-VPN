@@ -248,11 +248,11 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
       if (notifiedSecurityEvents.current.has(event.id)) continue;
       notifiedSecurityEvents.current.add(event.id);
       new Notification(
-        event.severity === "critical" ? "Alerte de sécurité critique" : "Activité suspecte détectée",
-        { body: `${event.eventType} — ouvrez le Centre de sécurité pour examiner les détails.` },
+        event.severity === "critical" ? t("operations.security.notifications.critical") : t("operations.security.notifications.suspicious"),
+        { body: `${vocabulary.eventType(event.eventType)} — ${t("operations.security.notifications.openCenter")}` },
       );
     }
-  }, [eventsPage, isUnlocked]);
+  }, [eventsPage, isUnlocked, t, vocabulary]);
 
   useEffect(() => {
     if (!unlockToken || !isUnlocked) return;

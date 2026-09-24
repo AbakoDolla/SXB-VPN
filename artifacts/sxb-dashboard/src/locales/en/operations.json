@@ -871,6 +871,11 @@
     "identity": "Protected OWNER console",
     "title": "Security Center",
     "description": "Sensitive alerts, the unlock gate, and biometric proofs stay isolated inside this dedicated console.",
+    "notifications": {
+      "critical": "Critical security alert",
+      "suspicious": "Suspicious activity detected",
+      "openCenter": "open the Security Center to review the details."
+    },
     "gateStatus": "Gate status",
     "passkeyStatus": "Fingerprint",
     "unlocked": "Unlocked",
