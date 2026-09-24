@@ -128,6 +128,11 @@ export function fixture(view = "DevicesView", options = {}) {
     if (method === "resetClientAccess") return replace("clients", args[0], { token: NEW_CODE });
     if (method === "updateSubscription") return replace("subscriptions", args[0], args[1]);
     if (method === "revokeSubscription") return replace("subscriptions", args[0], { status: "revoked" });
+    if (method === "bulkDeleteSubscriptions") {
+      const ids = args[0];
+      data.subscriptions = data.subscriptions.filter(row => !ids.includes(row.id));
+      return { succeeded: ids, failed: [] };
+    }
     if (method === "deleteClient" || method === "deleteSubscription") {
       const kind = method === "deleteClient" ? "clients" : "subscriptions";
       data[kind] = data[kind].filter(row => row.id !== args[0]);

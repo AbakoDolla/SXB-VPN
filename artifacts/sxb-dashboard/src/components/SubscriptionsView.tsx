@@ -4,7 +4,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { UserRole } from '../types';
 import {
   fetchSubscriptions, fetchSubStats, createSubscription,
-  updateSubscription, deleteSubscription, revokeSubscription,
+  updateSubscription, deleteSubscription, bulkDeleteSubscriptions, revokeSubscription,
   bulkSubscriptions, BulkValueMode, BulkPayload, BulkResult, MAX_BULK_APPLY, MAX_BULK_PROFILES,
   Subscription,
 } from '../api/subscriptions';
@@ -220,6 +220,10 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
     items: subs, filtered, selected, setSelected, label: sub => sub.name || sub.id,
     eligible: ownsSubscription, canDelete: canReduce, canSelect: canAssign,
     remove: sub => deleteSubscription(sub.id),
+    removeMany: async subs => {
+      const result = await bulkDeleteSubscriptions(subs.map(sub => sub.id));
+      return result;
+    },
     onDeleted: ids => setSubs(current => current.filter(sub => !ids.has(sub.id))),
     afterDelete: async () => { await refreshAccess(); setStats(await fetchSubStats()); },
     pending, run, busy: loading || showModal || bulkConfirm || !!adjustment,

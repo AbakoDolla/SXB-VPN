@@ -66,14 +66,27 @@ for (const [view, kind, sample, apiMethod, searchKey, count] of variants) {
     assert.ok(text(dialog(f)).includes(f.t("operations.bulkDelete.confirmScope", { count, total: count })));
     assert.ok(text(dialog(f)).includes(targetRows.at(-1).name));
     const failedId = targetRows[2].id;
-    f.overrides[apiMethod] = async id => {
-      if (id === failedId) throw { status: 409, responseData: { error: "errors.conflict" } };
-      removeFixtureRow(f, kind, id);
-    };
+    if (view === "SubscriptionsView") {
+      f.overrides.bulkDeleteSubscriptions = async ids => {
+        const succeeded = ids.filter(id => id !== failedId);
+        succeeded.forEach(id => removeFixtureRow(f, kind, id));
+        return { succeeded, failed: [{ id: failedId, error: { status: 409, responseData: { error: "errors.conflict" } } }] };
+      };
+    } else {
+      f.overrides[apiMethod] = async id => {
+        if (id === failedId) throw { status: 409, responseData: { error: "errors.conflict" } };
+        removeFixtureRow(f, kind, id);
+      };
+    }
     await execute(f, count); await f.flush();
-    assert.equal(deletes(f).length, count);
-    assert.equal(new Set(deletes(f).map(call => call[1])).size, count);
-    assert.equal(deletes(f).some(call => call[1] === "ignored"), false);
+    if (view === "SubscriptionsView") {
+      const bulkCalls = f.calls.filter(([name]) => name === "bulkDeleteSubscriptions");
+      assert.deepEqual(bulkCalls.map(call => call[1]), [targetRows.map(row => row.id)]);
+    } else {
+      assert.equal(deletes(f).length, count);
+      assert.equal(new Set(deletes(f).map(call => call[1])).size, count);
+      assert.equal(deletes(f).some(call => call[1] === "ignored"), false);
+    }
     assert.equal(dialog(f), undefined);
     assert.ok(text(f.render()).includes(f.t("operations.bulkDelete.result", { succeeded: count - 1, failed: 1 })));
     assert.ok(text(f.render()).includes(f.t("errors.conflict")));
@@ -83,7 +96,11 @@ for (const [view, kind, sample, apiMethod, searchKey, count] of variants) {
     f.setLanguage("en"); await f.flush();
     assert.ok(text(f.render()).includes(f.t("operations.bulkDelete.failedRetained")));
     assert.ok(text(f.render()).includes(f.t("errors.conflict")));
-    assert.equal(deletes(f).length, count);
+    if (view === "SubscriptionsView") {
+      assert.equal(f.calls.filter(([name]) => name === "bulkDeleteSubscriptions").length, 1);
+    } else {
+      assert.equal(deletes(f).length, count);
+    }
   });
 }
 
@@ -220,7 +237,14 @@ test("reseller selection is restricted to its current tenant; quota ceiling stil
     selectAll(f, 1);
     assert.equal(rowCheckboxes(f).filter(node => node.props.checked).length, 1);
     confirmSelection(f, 1); await execute(f, 1); await f.flush();
-    assert.deepEqual(deletes(f).map(call => [call[0], call[1]]), [[method, "owned"]]);
+    if (view === "SubscriptionsView") {
+      assert.deepEqual(
+        f.calls.filter(([name]) => name === "bulkDeleteSubscriptions").map(call => [call[0], call[1]]),
+        [["bulkDeleteSubscriptions", ["owned"]]],
+      );
+    } else {
+      assert.deepEqual(deletes(f).map(call => [call[0], call[1]]), [[method, "owned"]]);
+    }
     f.setAccess({ ...access, accessState: "expired" }); await f.flush();
     assert.equal(f.button("operations.bulkDelete.deleteSelected", f.render(), { count: 0 }).props.disabled, true);
   }

@@ -103,6 +103,18 @@ export async function deleteSubscription(id: string): Promise<void> {
   await apiRequest(`/subscriptions/${id}`, { method: 'DELETE' });
 }
 
+export interface BulkDeleteSubscriptionsResult {
+  succeeded: string[];
+  failed: Array<{ id: string; error: string }>;
+}
+
+export async function bulkDeleteSubscriptions(ids: readonly string[]): Promise<BulkDeleteSubscriptionsResult> {
+  return apiRequest<BulkDeleteSubscriptionsResult>('/subscriptions/bulk-delete', {
+    method: 'POST',
+    body: { subscriptionIds: ids },
+  });
+}
+
 export async function revokeSubscription(id: string, reason?: string): Promise<void> {
   await apiRequest(`/subscriptions/${id}/revoke`, { method: 'POST', body: { reason } });
 }

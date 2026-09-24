@@ -190,6 +190,13 @@ const revokeSubscriptionSchema = z.object({
   reason: z.string().trim().min(1).max(500).optional(),
 }).strict();
 
+// La suppression groupée est volontairement bornée à la même taille que son
+// sélecteur dashboard. Un seul appel évite qu'une coupure réseau entre deux
+// DELETE laisse un lot dans un état impossible à comprendre.
+const bulkDeleteSubscriptionSchema = z.object({
+  subscriptionIds: z.array(identifiantSchema).min(1).max(100),
+}).strict();
+
 function gigabytesToBytes(gigabytes: number): bigint {
   return BigInt(Math.round(gigabytes * GIB));
 }
@@ -1058,6 +1065,72 @@ router.put(
     return res.status(500).json({ error: err.message || 'Failed to update subscription' });
   }
 });
+
+// ─── POST /api/subscriptions/bulk-delete ────────────────────────────────────
+//
+// Une suppression confirmée est exécutée sur UNE connexion HTTP. L'ancien
+// dashboard envoyait un DELETE par forfait : au moindre redémarrage réseau,
+// chaque requête encore en attente devenait « Failed to fetch » et la page ne
+// pouvait plus dire ce qui avait réellement été supprimé.
+router.post(
+  '/bulk-delete',
+  requireAuth,
+  interdireMutationSupport(),
+  requirePermission('subscription.manage'),
+  exigerAccesRevendeur({ autoriserReduction: true }),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { subscriptionIds } = bulkDeleteSubscriptionSchema.parse(req.body);
+      if (!prisma) {
+        return res.status(503).json({ error: 'errors.db.unavailable', message: 'Base de données indisponible' });
+      }
+
+      const ids = [...new Set(subscriptionIds)];
+      const reseller = req.user?.role === 'RESELLER'
+        ? ((req as any).reseller ?? await chargerFicheRevendeur(prisma, req.user!.userId))
+        : null;
+      const succeeded: string[] = [];
+      const failed: Array<{ id: string; error: string }> = [];
+
+      for (const id of ids) {
+        try {
+          const existing = await (prisma as any).subscription.findUnique({
+            where: { id },
+            include: { client: true },
+          });
+          if (!existing || (reseller && !possedeClient(existing.client, reseller))) {
+            failed.push({ id, error: 'errors.subscriptions.not_found' });
+            continue;
+          }
+
+          await executerMutationQuota(prisma, {
+            resellerUserId: existing.client.userId,
+            resellerId: existing.client.resellerId ?? null,
+            auteur: { userId: req.user?.userId, email: req.user?.email },
+            reason: `Suppression du forfait ${existing.name}`,
+            referenceType: 'subscription',
+            referenceId: id,
+            autoriserReductionAuDessusDuPlafond: true,
+          }, (tx) => (tx as any).subscription.delete({ where: { id } }));
+          accessStateHub.invalidate({ clientId: existing.clientId });
+          await logDbActivity(req.user!.userId, `Forfait supprimé : ${existing.name}`, 'warning', req.ip || '');
+          succeeded.push(id);
+        } catch (error: any) {
+          console.error(`bulk subscription delete error (${id}):`, error);
+          failed.push({ id, error: error?.message || 'Failed to delete subscription' });
+        }
+      }
+
+      return res.json({ success: true, succeeded, failed });
+    } catch (err: any) {
+      if (err instanceof z.ZodError) {
+        return res.status(400).json({ error: 'errors.validation', details: err.issues });
+      }
+      console.error('bulk subscription delete error:', err);
+      return res.status(500).json({ error: err.message || 'Failed to delete subscriptions' });
+    }
+  },
+);
 
 // ─── DELETE /api/subscriptions/:id ───────────────────────────────────────────
 // Action RÉDUCTRICE : elle libère du volume, donc elle reste ouverte quand le
