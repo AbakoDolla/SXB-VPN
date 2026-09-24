@@ -27,6 +27,7 @@ export const fr = {
   log_presentation_profil: 'Connexion selon les réglages du profil.',
   log_presentation_sans_alpn: 'Ce réseau a refusé la première approche — nouvelle tentative simplifiée.',
   log_presentation_sans_empreinte: 'Nouvelle tentative avec une approche standard, comme un navigateur ordinaire.',
+  log_presentation_fragment: 'Ce réseau filtre encore — nouvelle tentative avec une connexion fragmentée.',
   access_identity_required: 'La session et les droits de cet appareil doivent être chargés avant de connecter le VPN.',
   access_profile_blocked: 'Cette configuration est temporairement bloquée ou révoquée. Les autres configurations restent disponibles.',
   access_device_title: 'Accès de cet appareil',

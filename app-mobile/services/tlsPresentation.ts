@@ -46,7 +46,16 @@
  *   1. `sans_alpn`       — on cesse d'annoncer un ALPN que nous avons déduit ;
  *   2. `sans_empreinte`  — on cesse aussi d'usurper une empreinte : le moteur
  *                          présente alors son propre ClientHello, c'est-à-dire
- *                          exactement ce que font les clients qui passent.
+ *                          exactement ce que font les clients qui passent ;
+ *   3. `avec_fragment`   — le ClientHello passe toujours pour ce qu'il est,
+ *                          mais on le fragmente au niveau de l'enregistrement
+ *                          TLS (`record_fragment` côté moteur). Certaines
+ *                          sondes n'inspectent que le premier segment TCP :
+ *                          c'est le mécanisme que des clients comme HTTP
+ *                          Injector exposent sous « Fragments de paquets », et
+ *                          qui explique qu'un même profil y passe alors qu'il
+ *                          reste bloqué chez nous après les trois premiers
+ *                          échelons.
  *
  * ═══════════════════════════════════════════════════════════════════════════
  * CE QUE CETTE ÉCHELLE NE FAIT JAMAIS
@@ -85,7 +94,8 @@ export const EMPREINTE_AUCUNE = 'none';
 export type LibellePresentation =
   | 'log_presentation_profil'
   | 'log_presentation_sans_alpn'
-  | 'log_presentation_sans_empreinte';
+  | 'log_presentation_sans_empreinte'
+  | 'log_presentation_fragment';
 
 export interface PresentationTls {
   /** Identifiant stable, utilisé par les tests et les diagnostics. */
@@ -102,12 +112,15 @@ export interface PresentationTls {
   readonly alpnDeduit: boolean;
   /** Conserver l'empreinte uTLS ? */
   readonly empreinte: boolean;
+  /** Fragmenter l'enregistrement TLS du ClientHello ? */
+  readonly fragment: boolean;
 }
 
 export const ECHELLE_TLS: readonly PresentationTls[] = Object.freeze([
-  { cle: 'profil', libelle: 'log_presentation_profil', alpnDeduit: true, empreinte: true },
-  { cle: 'sans_alpn', libelle: 'log_presentation_sans_alpn', alpnDeduit: false, empreinte: true },
-  { cle: 'sans_empreinte', libelle: 'log_presentation_sans_empreinte', alpnDeduit: false, empreinte: false },
+  { cle: 'profil', libelle: 'log_presentation_profil', alpnDeduit: true, empreinte: true, fragment: false },
+  { cle: 'sans_alpn', libelle: 'log_presentation_sans_alpn', alpnDeduit: false, empreinte: true, fragment: false },
+  { cle: 'sans_empreinte', libelle: 'log_presentation_sans_empreinte', alpnDeduit: false, empreinte: false, fragment: false },
+  { cle: 'avec_fragment', libelle: 'log_presentation_fragment', alpnDeduit: false, empreinte: false, fragment: true },
 ]);
 
 /** Dernier échelon atteignable. */
@@ -165,6 +178,10 @@ export function appliquerPresentationTls<T extends Record<string, any>>(config: 
   // d'un client ordinaire.
   if (!presentation.alpnDeduit && alpnEstDeduit(copie)) delete copie.alpn;
   if (!presentation.empreinte) copie.fingerprint = EMPREINTE_AUCUNE;
+  // Additif uniquement : au premier échelon, ne rien poser du tout — sans
+  // quoi la garantie « premier essai STRICTEMENT identique au profil » serait
+  // rompue par un simple `fragment: false` que le profil n'a jamais demandé.
+  if (presentation.fragment) copie.fragment = true;
 
   return copie as T;
 }

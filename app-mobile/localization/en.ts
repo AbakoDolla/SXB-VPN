@@ -27,6 +27,7 @@ export const en = {
   log_presentation_profil: 'Connecting with the profile settings.',
   log_presentation_sans_alpn: 'This network refused the first approach — retrying in a simpler way.',
   log_presentation_sans_empreinte: 'Retrying with a standard approach, like an ordinary browser.',
+  log_presentation_fragment: 'This network still filters — retrying with a fragmented connection.',
   access_identity_required: 'Load this device’s session and access rights before connecting the VPN.',
   access_profile_blocked: 'This configuration is temporarily blocked or revoked. Other configurations remain available.',
   access_device_title: 'Device access',
