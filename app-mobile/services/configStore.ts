@@ -15,6 +15,7 @@ const payloadKey = (id: string) => `sxb_cfg_payload_${id}`;
 const LEGACY_CONFIG = 'sxb_offline_vpn_config_v2';
 const LEGACY_PROV = 'sxb_prov_config_v2';
 const LEGACY_META = 'sxb_prov_meta_v2';
+export const MAX_IMPORTED_BACKEND_CONFIGS = 4;
 export type StoreStatus = 'ok' | 'missing' | 'error';
 export type StoreResult<T> = { status: StoreStatus; value?: T; error?: Error };
 export interface ConfigMeta {
@@ -130,6 +131,26 @@ function decrypt(value: string, key: Uint8Array, graine = ''): Record<string, an
 }
 async function registry(): Promise<ConfigMeta[]> { const raw = await AsyncStorage.getItem(REGISTRY_KEY); return raw ? JSON.parse(raw) : []; }
 async function putRegistry(entries: ConfigMeta[]) { await AsyncStorage.setItem(REGISTRY_KEY, JSON.stringify(entries)); }
+function pruneBackendRegistry(entries: ConfigMeta[], keepIds: Set<string> = new Set()): ConfigMeta[] {
+  const working = [...entries];
+  const countBackend = () => working.filter(entry => entry.source === 'backend').length;
+  const backendCandidates = () => working
+    .map((entry, index) => ({ entry, index }))
+    .filter(({ entry }) => entry.source === 'backend' && !entry.isActive && !keepIds.has(entry.configId))
+    .sort((a, b) => {
+      const left = Date.parse(a.entry.savedAt || '') || 0;
+      const right = Date.parse(b.entry.savedAt || '') || 0;
+      if (left !== right) return left - right;
+      return a.index - b.index;
+    });
+
+  while (countBackend() > MAX_IMPORTED_BACKEND_CONFIGS) {
+    const candidate = backendCandidates()[0];
+    if (!candidate) break;
+    working.splice(candidate.index, 1);
+  }
+  return working;
+}
 let mutations: Promise<unknown> = Promise.resolve();
 function mutate<T>(action: () => Promise<T>): Promise<T> {
   const next = mutations.then(action);
@@ -217,7 +238,19 @@ export async function save(id: string, config: Record<string, any>, meta: Partia
     await AsyncStorage.setItem(payloadKey(id), encrypt(config, key));
     // Un seul profil actif à la fois : sans ce déclassement, `getActive()`
     // rendrait la première entrée marquée active, c'est-à-dire l'ancienne.
-    await putRegistry([...(finalMeta.isActive ? autres.map(x => ({ ...x, isActive: false })) : autres), finalMeta]);
+    const nextEntries = [...(finalMeta.isActive ? autres.map(x => ({ ...x, isActive: false })) : autres), finalMeta];
+    const keptEntries = pruneBackendRegistry(nextEntries, new Set([id]));
+    const keptIds = new Set(keptEntries.map(entry => entry.configId));
+    const removedIds = nextEntries
+      .filter(entry => !keptIds.has(entry.configId))
+      .map(entry => entry.configId);
+    await putRegistry(keptEntries);
+    if (removedIds.length > 0) {
+      await AsyncStorage.multiRemove(removedIds.flatMap(removedId => [
+        payloadKey(removedId),
+        `sxb_quota_${removedId}`,
+      ]));
+    }
     if (finalMeta.isActive) await AsyncStorage.setItem('@sxb_active_config_id', id);
     // Les appâts sont semés en même temps que la première vraie configuration :
     // un stockage qui ne contiendrait QUE des appâts se remarquerait.

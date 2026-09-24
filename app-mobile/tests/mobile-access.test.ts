@@ -679,6 +679,26 @@ describe('mobile access runtime with real encrypted store, auth and HTTP interce
     assert.equal(h.auth.getIdentitySession()?.user.id, user.id);
   });
 
+  it('garde au plus quatre configurations importées tout en conservant l’actif et les suppressions locales', async () => {
+    const h = await harness();
+    await setup(h);
+    for (const id of ['c', 'd', 'e']) {
+      assert.equal((await h.store.save(id, { ...config, configId: id }, {
+        name: `Profile ${id}`, source: 'backend', subscriptionId: id,
+        configHash: `hash-${id}`, configVersion: 1, isActive: false,
+      })).status, 'ok');
+    }
+
+    const entries = (await h.store.list()).value ?? [];
+    const backendIds = entries.filter(entry => entry.source === 'backend').map(entry => entry.configId);
+    assert.equal(backendIds.length, 4);
+    assert.equal(entries.some(entry => entry.configId === 'a' && entry.isActive), true);
+    assert.equal(entries.some(entry => entry.configId === 'manual'), true);
+    assert.equal(entries.some(entry => entry.configId === 'e'), true);
+    assert.equal(h.state.storage.has('sxb_cfg_payload_b'), false);
+    assert.equal(h.state.storage.has('sxb_quota_b'), false);
+  });
+
   it('drains a legacy native service before first binding and keeps reconnect denial inside dispatch', () => {
     const nativeModule = readFileSync(path.join(mobile, 'modules/android-native/SxbVpnModule.kt'), 'utf8');
     const bind = nativeModule.slice(nativeModule.indexOf('fun bindAccessSession('), nativeModule.indexOf('fun getAccessControlState('));

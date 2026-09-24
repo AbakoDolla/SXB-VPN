@@ -1,6 +1,7 @@
 import { AppState, NativeEventEmitter, NativeModules } from 'react-native';
 import apiClient, { API_BASE_URL } from './apiClient';
 import * as configStore from './configStore';
+import { MAX_IMPORTED_BACKEND_CONFIGS } from './configStore';
 import { saveQuotaData } from './offlineStorage';
 import { provisionAndStore, ProvisioningError } from './provisionClient';
 import {
@@ -204,7 +205,13 @@ export function refreshMobileConfigs(): Promise<VpnConnection[]> {
     // Une seule lecture du registre pour toute la boucle : elle sert à n'écrire
     // le marqueur d'essai QUE lorsqu'il change réellement, plutôt qu'à chaque
     // rafraîchissement (toutes les 30 s en mode hérité).
-    const connus = new Map((storeValue(await configStore.list()) ?? []).map(meta => [meta.configId, meta]));
+    const registres = storeValue(await configStore.list()) ?? [];
+    const connus = new Map(registres.map(meta => [meta.configId, meta]));
+    const importsConnus = new Set(
+      registres
+        .filter(meta => meta.source === 'backend')
+        .map(meta => meta.configId),
+    );
     for (const entry of connections) {
       if (epoch !== lifecycle || !currentIdentityRequest(identity)) return [];
       const current = getAccessState().authority;
@@ -223,8 +230,12 @@ export function refreshMobileConfigs(): Promise<VpnConnection[]> {
       if (restriction || entry.status !== 'active' || !entry.dataToken) continue;
       const stored = storeValue(await configStore.get(entry.id));
       const changed = stored && (entry.configHash ? stored.meta.configHash !== entry.configHash : stored.meta.configVersion !== entry.configVersion);
+      if (!stored && !importsConnus.has(entry.id) && importsConnus.size >= MAX_IMPORTED_BACKEND_CONFIGS) continue;
       if (!stored || changed) {
-        try { await provisionAndStore(entry.dataToken, current.deviceId, entry.id); }
+        try {
+          await provisionAndStore(entry.dataToken, current.deviceId, entry.id);
+          importsConnus.add(entry.id);
+        }
         catch (error) {
           if (error instanceof ProvisioningError) console.warn('[Access] Provisioning deferred:', error.diagnostic.code);
           else reportAccessSyncError(error);
