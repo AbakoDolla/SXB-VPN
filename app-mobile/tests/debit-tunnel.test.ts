@@ -60,6 +60,24 @@ describe('QUIC est refusé quand le tunnel ne peut pas porter d’UDP', () => {
     assert.match(natif, /quicBlockRule\(cfg, transportSansUdp\(transportDeLaSortie\(outbounds, finalTag\)\)\)/);
   });
 
+  it('ne pose pas de second refus quand la configuration en porte déjà un', () => {
+    // Les configurations émises par le serveur SXB refusent DÉJÀ l'UDP/443.
+    // Sans cette garde, la route produite portait deux règles identiques :
+    // inoffensif à l'exécution, mais trompeur pour qui relit la route pour
+    // diagnostiquer un profil.
+    assert.match(natif, /if \(!refusDeQuicDejaPresent\(storedRules\)\) \{/);
+    const fn = natif.slice(natif.indexOf('private fun refusDeQuicDejaPresent'));
+    // Le refus s'écrit « outbound: block » avant modernisation du schéma, et
+    // « action: reject » après : reconnaître une seule des deux formes
+    // laisserait le doublon revenir selon la provenance du profil.
+    assert.match(fn, /"block"/);
+    assert.match(fn, /"reject"/);
+    // Le port et le réseau s'écrivent indifféremment en scalaire ou en liste.
+    assert.match(fn, /optJSONArray\("port"\)/);
+    assert.match(fn, /optJSONArray\("network"\)/);
+    assert.match(fn, /443 !in ports/);
+  });
+
   it('suit les groupes et les chaînages pour trouver le transport réel', () => {
     // Avec une bascule d'amonts, `route.final` désigne un GROUPE, qui ne porte
     // aucun transport : sans cette descente, la règle ne se poserait jamais

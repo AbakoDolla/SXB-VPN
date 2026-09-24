@@ -3371,6 +3371,30 @@ class SxbVpnService : VpnService(), PlatformInterface {
     }
 
     /**
+     * Vrai si ces règles refusent DÉJÀ l'UDP/443. Les configurations émises
+     * par le serveur SXB portent ce refus nativement : sans cette garde,
+     * l'app en ajouterait un second exemplaire, inerte mais trompeur pour qui
+     * relit la route produite.
+     */
+    private fun refusDeQuicDejaPresent(rules: JSONArray): Boolean {
+        for (i in 0 until rules.length()) {
+            val r = rules.optJSONObject(i) ?: continue
+            val reseaux = r.optJSONArray("network")
+                ?.let { a -> (0 until a.length()).map { a.optString(it, "") } }
+                ?: listOf(r.optString("network", ""))
+            if (reseaux.none { it.equals("udp", ignoreCase = true) }) continue
+            val ports = r.optJSONArray("port")
+                ?.let { a -> (0 until a.length()).map { a.optInt(it, -1) } }
+                ?: listOf(r.optInt("port", -1))
+            if (443 !in ports) continue
+            val refuse = r.optString("outbound", "").equals("block", ignoreCase = true) ||
+                r.optString("action", "").equals("reject", ignoreCase = true)
+            if (refuse) return true
+        }
+        return false
+    }
+
+    /**
      * Transport effectif de la sortie `tag`, en suivant les groupes
      * (`selector`/`urltest`) et les chaînages `detour`.
      */
@@ -4374,9 +4398,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
             .put(JSONObject().put("ip_is_private", true).put("outbound", "direct"))
         // Même raison que dans buildSingBoxConfig : le transport réel est ici
         // lu sur la sortie finale, en suivant les groupes et les chaînages.
-        quicBlockRule(cfg, transportSansUdp(transportDeLaSortie(outbounds, finalTag)))?.let {
-            routeRules.put(it)
-            broadcastLog("[SXB] ⚡ QUIC (UDP/443) refusé — bascule immédiate en HTTP/2, sans délai d'attente.")
+        // Une configuration qui refuse déjà QUIC n'a pas besoin d'un doublon.
+        if (!refusDeQuicDejaPresent(storedRules)) {
+            quicBlockRule(cfg, transportSansUdp(transportDeLaSortie(outbounds, finalTag)))?.let {
+                routeRules.put(it)
+                broadcastLog("[SXB] ⚡ QUIC (UDP/443) refusé — bascule immédiate en HTTP/2, sans délai d'attente.")
+            }
         }
         for (i in 0 until storedRules.length()) {
             val r = storedRules.optJSONObject(i) ?: continue
