@@ -612,6 +612,23 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const echelonTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Relance interne demandée par l'échelle, pour ne pas repartir de zéro. */
   const echelonRelanceRef = useRef(false);
+  /**
+   * Le rang 0 (« profil », strictement inchangé) a-t-il déjà eu sa seconde
+   * chance dans ce cycle ?
+   *
+   * Un serveur fronté (Cloud Run derrière un frontal Google, CDN…) peut subir
+   * un aléa purement passager — instance qui démarre à froid, ralentissement
+   * d'une seconde du frontal — sans que la PRÉSENTATION soit en cause. Fait
+   * observé sur le terrain : un même profil, sur le même réseau, à quelques
+   * minutes d'écart, réussit dans un client tiers qui n'altère jamais sa
+   * poignée de main et échoue chez nous après avoir immédiatement dérivé vers
+   * une présentation différente. Retenter UNE fois le rang 0 à l'identique
+   * avant de commencer à le modifier évite de pénaliser inutilement les
+   * profils qui n'ont besoin d'aucune évasion anti-DPI — seul le rang 0 en
+   * bénéficie : les rangs suivants sont déjà des tentatives d'échappement, où
+   * doubler chaque palier allongerait l'attente sans bénéfice équivalent.
+   */
+  const rangZeroRetenteRef = useRef(false);
   /** Configuration remise au moteur pour la tentative courante. */
   const configMoteurRef = useRef<Record<string, any> | null>(null);
   /**
@@ -850,6 +867,33 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     // la seule information qui lui permette d'agir.
     if (codeErreur !== undefined && !refusDePresentation(codeErreur)) return false;
     const config = configMoteurRef.current;
+    // ── Seconde chance au rang 0, avant la moindre altération ──────────────
+    //
+    // Voir `rangZeroRetenteRef` : un échec au tout premier essai (présentation
+    // strictement inchangée) peut être un aléa réseau ponctuant plutôt qu'un
+    // vrai refus de la présentation — reconnecter à l'identique une seule
+    // fois avant de commencer à dévier du profil protège les configurations
+    // qui n'ont besoin d'aucune évasion anti-DPI.
+    if (
+      presentationEssaiRef.current === 0 &&
+      !rangZeroRetenteRef.current &&
+      echelleApplicable(config)
+    ) {
+      rangZeroRetenteRef.current = true;
+      stopEchelon();
+      echelonRelanceRef.current = true;
+      basculeEnCoursRef.current = true;
+      setTimeout(() => { basculeEnCoursRef.current = false; }, 5_000);
+      connectionAttemptRef.current++;
+      acceptNativeConnectedRef.current = false;
+      stopWatchdog();
+      addLog(`🔁 ${t('log_reconnecting')}`);
+      if (IS_ANDROID && SxbVpnNative) {
+        void SxbVpnNative.stopVpn().catch(() => {});
+      }
+      void connectRef.current?.();
+      return true;
+    }
     const suivant = essaiSuivant(config, presentationEssaiRef.current, echelonsTentesRef.current);
     if (suivant === null) {
       // Toutes les présentations ont été refusées. La mémoire est effacée pour
@@ -1743,6 +1787,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     } else {
       // Un départ voulu par l'utilisateur rouvre le budget d'exploration.
       echelonsTentesRef.current = 0;
+      rangZeroRetenteRef.current = false;
       // Lecture locale, jamais réseau : quelques millisecondes, et elle doit
       // être faite AVANT de construire ce que le moteur recevra.
       const memoire = await AsyncStorage.getItem(`${CLE_PRESENTATION}${selectedId}`).catch(() => null);
