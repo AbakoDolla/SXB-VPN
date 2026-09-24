@@ -3196,6 +3196,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
         val packetEncoding  = cfg.optStringOrNull("packetEncoding", "")
         val vmessSecurity   = cfg.optStringOrNull("security", "")
         val vmessAlterId    = cfg.optInt("alterId", 0)
+        // Posé par l'échelle de présentation (services/tlsPresentation.ts) une
+        // fois qu'un réseau a résisté même à un ClientHello sans empreinte
+        // usurpée : on fragmente alors l'enregistrement TLS pour dérouter les
+        // sondes DPI qui matchent sur la forme du ClientHello complet — c'est
+        // ce que fait HTTP Custom/Injector par défaut sur ce type de profil.
+        val fragment        = cfg.optBoolean("fragment", false)
 
         val transport = EngineTransport(
             sni = sni, wsHost = wsHost, network = network, path = path,
@@ -3205,6 +3211,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             // l'interpréter comme une clé Reality.
             realityPublicKey = if (protocol == "wireguard") "" else realityPubKey,
             realityShortId = realityShortId,
+            fragment = fragment,
         )
 
         broadcastLog(
@@ -4323,13 +4330,17 @@ class SxbVpnService : VpnService(), PlatformInterface {
         val headerType: String,
         val realityPublicKey: String,
         val realityShortId: String,
+        val fragment: Boolean = false,
     )
 
     /** Applique la sécurité TLS et le transport d'un profil à un outbound. */
     private fun applyTransport(outbound: JSONObject, t: EngineTransport): JSONObject {
         outbound.put(
             "tls",
-            buildTlsObj(t.sni, t.tls, t.insecure, t.fingerprint, t.alpn, t.realityPublicKey, t.realityShortId),
+            buildTlsObj(
+                t.sni, t.tls, t.insecure, t.fingerprint, t.alpn,
+                t.realityPublicKey, t.realityShortId, t.fragment,
+            ),
         )
         buildTransportObj(t.network, t.path, t.wsHost, t.grpcServiceName, t.headerType)
             ?.let { outbound.put("transport", it) }
@@ -4448,12 +4459,22 @@ class SxbVpnService : VpnService(), PlatformInterface {
         alpn: String = "",
         realityPublicKey: String = "",
         realityShortId: String = "",
+        fragment: Boolean = false,
     ): JSONObject {
         return JSONObject().apply {
             put("enabled", enabled)
             if (sni.isNotEmpty()) put("server_name", sni)
             put("insecure", insecure)
             put("disable_sni", false)
+            // Fragmentation TLS anti-DPI — posée par l'échelle de présentation
+            // (dernier échelon, après l'échec d'un ClientHello sans empreinte).
+            // `record_fragment` découpe l'enregistrement TLS du ClientHello en
+            // plusieurs segments TCP : les sondes DPI qui matchent sur la forme
+            // du ClientHello en un seul paquet ne reconnaissent plus le trafic.
+            // C'est le mécanisme que HTTP Injector expose sous « Fragments de
+            // paquets » sur Xray-core ; sing-box l'appelle `record_fragment`
+            // (recommandé avant `fragment`, plus coûteux, par sa documentation).
+            if (fragment && enabled) put("record_fragment", true)
             // L'ALPN provient du profil (`alpn=h2,http/1.1`). Il était ignoré :
             // un serveur qui impose h2 rejetait donc le handshake.
             csvToJsonArray(alpn)?.let { put("alpn", it) }

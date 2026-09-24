@@ -72,8 +72,26 @@ describe('échelle de présentation TLS', () => {
     const presente = appliquerPresentationTls(PROFIL, 2);
     assert.equal('alpn' in presente, false);
     assert.equal(presente.fingerprint, EMPREINTE_AUCUNE);
+    assert.equal('fragment' in presente, false, 'pas encore fragmenté à cet échelon');
     assert.equal(presentationPourEssai(2).cle, 'sans_empreinte');
-    assert.equal(DERNIER_ESSAI, 2);
+  });
+
+  it('fragmente enfin l’enregistrement TLS quand même l’empreinte ordinaire est refusée', () => {
+    // Dernier recours : le ClientHello reste celui d'un client ordinaire, mais
+    // on le découpe pour dérouter les sondes qui matchent sur sa forme brute —
+    // le mécanisme que HTTP Injector expose sous « Fragments de paquets ».
+    const presente = appliquerPresentationTls(PROFIL, 3);
+    assert.equal('alpn' in presente, false);
+    assert.equal(presente.fingerprint, EMPREINTE_AUCUNE);
+    assert.equal(presente.fragment, true);
+    assert.equal(presentationPourEssai(3).cle, 'avec_fragment');
+    assert.equal(DERNIER_ESSAI, 3);
+  });
+
+  it('ne pose `fragment` qu’au dernier échelon', () => {
+    for (let essai = 0; essai < DERNIER_ESSAI; essai++) {
+      assert.equal('fragment' in appliquerPresentationTls(PROFIL, essai), false, `essai ${essai}`);
+    }
   });
 
   it('boucle depuis n’importe quel rang, mais n’essaie chaque présentation qu’une fois', () => {
@@ -82,16 +100,17 @@ describe('échelle de présentation TLS', () => {
     // le jour où le téléphone change de réseau.
     assert.equal(essaiSuivant(PROFIL, 0, 0), 1);
     assert.equal(essaiSuivant(PROFIL, 1, 1), 2);
-    assert.equal(essaiSuivant(PROFIL, 2, 0), 0, 'depuis le dernier rang, on revient au profil');
+    assert.equal(essaiSuivant(PROFIL, 2, 2), 3);
+    assert.equal(essaiSuivant(PROFIL, 3, 0), 0, 'depuis le dernier rang, on revient au profil');
     assert.equal(essaiSuivant(PROFIL, 1, 0), 2);
 
-    // Et le budget borne le cycle : trois présentations au plus, jamais de
+    // Et le budget borne le cycle : quatre présentations au plus, jamais de
     // ronde sans fin sur un réseau qui refuse tout.
     assert.equal(essaiSuivant(PROFIL, 0, DERNIER_ESSAI), null);
     assert.equal(essaiSuivant(PROFIL, 2, 99), null);
 
-    // Un cycle complet parcourt bien les trois présentations, sans répétition.
-    let rang = 2;
+    // Un cycle complet parcourt bien les quatre présentations, sans répétition.
+    let rang = 3;
     const vus = new Set<number>([rang]);
     for (let tentes = 0; ; tentes++) {
       const suivant = essaiSuivant(PROFIL, rang, tentes);
@@ -155,7 +174,7 @@ describe('échelle de présentation TLS', () => {
     assert.equal(JSON.stringify(PROFIL), avant, 'le profil reste la référence');
 
     assert.equal(presentationPourEssai(-5).cle, 'profil');
-    assert.equal(presentationPourEssai(99).cle, 'sans_empreinte');
+    assert.equal(presentationPourEssai(99).cle, 'avec_fragment');
     assert.equal(presentationPourEssai(Number.NaN).cle, 'profil');
     assert.equal(essaiSuivant(PROFIL, 99, 0), 0);
     assert.equal(essaiSuivant(PROFIL, -3, 0), 1);
@@ -196,6 +215,15 @@ describe('le moteur natif honore le refus d’empreinte', () => {
     const ordre = natif.indexOf('refuseEmpreinte && realityPublicKey.isBlank()');
     const reality = natif.indexOf('realityPublicKey.isNotBlank() -> "chrome"');
     assert.ok(ordre > 0 && reality > ordre, 'le refus est évalué avant le repli Reality');
+  });
+
+  it('lit le champ `fragment` posé par l’échelle et fragmente l’enregistrement TLS', () => {
+    // Sans ce fil, le dernier échelon ne changerait STRICTEMENT rien côté
+    // moteur : l'application croirait avoir tout tenté alors que le
+    // ClientHello resterait identique au troisième essai.
+    assert.match(natif, /val fragment\s*=\s*cfg\.optBoolean\("fragment", false\)/);
+    assert.match(natif, /val fragment: Boolean = false,/);
+    assert.match(natif, /if \(fragment && enabled\) put\("record_fragment", true\)/);
   });
 });
 
