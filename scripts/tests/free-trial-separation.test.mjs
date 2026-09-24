@@ -936,7 +936,8 @@ test("un rafraîchissement de fond n'alarme pas et n'efface rien", () => {
 
   // 1. La relecture de fond est distinguée à l'appel.
   assert.match(vue, /chargerComptesEssai\(true\)/);
-  assert.match(vue, /chargerVolet\(jetonOuvert, volet\?\.page \?\? 1, true\)/);
+  assert.match(vue, /pageCouranteRef\.current/);
+  assert.match(vue, /chargerVolet\(jetonOuvert, pageCouranteRef\.current, true\)/);
 
   // 2. Elle ne lève AUCUNE bannière et n'efface RIEN. Vider la liste la ferait
   //    lire « aucun essai activé » — un mensonge, ces accès existent toujours.

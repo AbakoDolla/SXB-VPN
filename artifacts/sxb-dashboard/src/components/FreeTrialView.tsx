@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Ban,
@@ -367,7 +367,16 @@ export default function FreeTrialView() {
    * affiché, qui reste vrai, plutôt que d'alarmer sur un incident que
    * l'exploitant n'a pas provoqué et dont il n'a rien à faire.
    */
+  /**
+   * Page actuellement affichée dans le volet ouvert.
+   *
+   * Tenue à part de l'état pour que la relecture de fond, dont l'effet ne se
+   * rejoue pas à chaque tour de page, lise toujours la page réelle.
+   */
+  const pageCouranteRef = useRef(1);
+
   const chargerVolet = useCallback(async (tokenId: string, page: number, fond = false) => {
+    pageCouranteRef.current = page;
     if (!fond) {
       setVolets(prev => ({ ...prev, [tokenId]: { ...(prev[tokenId] ?? VOLET_VIDE), page, loading: true } }));
     }
@@ -455,7 +464,12 @@ export default function FreeTrialView() {
       // `true` : relecture de FOND. Elle ne montre aucun indicateur de
       // chargement et ne signale aucun échec — voir `chargerComptesEssai`.
       void chargerComptesEssai(true);
-      if (jetonOuvert) void chargerVolet(jetonOuvert, volet?.page ?? 1, true);
+      // La page est lue dans une référence, jamais dans la fermeture : cet
+      // effet ne se rejoue pas quand on tourne la page, donc `volet.page` y
+      // resterait figé sur la valeur du jour où le volet a été ouvert. La
+      // relecture de fond renvoyait alors l'exploitant en page 1 toutes les
+      // minutes, et parcourir les pages d'un jeton devenait impossible.
+      if (jetonOuvert) void chargerVolet(jetonOuvert, pageCouranteRef.current, true);
     }, RAFRAICHISSEMENT_PRESENCE_MS);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -587,7 +601,10 @@ export default function FreeTrialView() {
    */
   const serveursRetirables = useMemo(() => {
     const detenus = new Map<string, { id: string; name: string }>();
-    for (const demande of volet?.requests ?? []) {
+    // `demandesDuJeton`, pas la page affichée : après « tout sélectionner »,
+    // la sélection porte sur des inscrits que cette page ne contient pas, et
+    // leurs serveurs doivent rester retirables.
+    for (const demande of demandesDuJeton) {
       if (!selectionDeployee.includes(demande.id)) continue;
       for (const forfait of demande.access?.subscriptions ?? []) {
         if (forfait.profileId) {
@@ -599,7 +616,7 @@ export default function FreeTrialView() {
       }
     }
     return [...detenus.values()];
-  }, [volet, selectionDeployee]);
+  }, [demandesDuJeton, selectionDeployee]);
   const gestionBornee = serveursAjoutes.length > MAX_FREE_TRIAL_PROFILES;
 
   const basculerProfil = (id: string) => {
@@ -1899,7 +1916,8 @@ export default function FreeTrialView() {
                               <button
                                 type="button"
                                 onClick={() => void selectionnerTravers()}
-                                disabled={busy || chargementTotal || (volet?.total ?? 0) <= selectionnables.length}
+                                disabled={busy || chargementTotal
+                                  || (!selectionGlobaleActive && (volet?.total ?? 0) <= selectionnables.length)}
                                 className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 px-3 py-1.5 text-xs text-gray-200 transition hover:bg-white/5 disabled:opacity-50"
                               >
                                 <CheckCircle2 className="h-3.5 w-3.5" />
