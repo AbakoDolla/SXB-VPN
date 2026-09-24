@@ -126,6 +126,42 @@ const DELAI_PRESENTATION_MS = 20_000;
 const CLE_PRESENTATION = '@sxb_presentation_tls:';
 
 /**
+ * Plafond des préparatifs qui précèdent l'appel natif `startVpn`.
+ *
+ * Observé sur le terrain (réseau restreint, capture ADB) : `prepareNativeAccess()`
+ * et `flushUsage({ beforeConnect: true })` font chacun un aller-retour réseau
+ * (rafraîchissement du jeton d'accès natif, remontée des compteurs). Sur un
+ * réseau qui bloque ces requêtes en silence (aucune RST, aucun refus — le cas
+ * même où l'utilisateur a le plus besoin du VPN), l'annulation par
+ * AbortController peut elle-même ne jamais se résoudre côté pont React
+ * Native. Rien, avant cette limite, ne bornait alors la phase de préparation :
+ * l'IHM restait sur « Connexion en cours… » indéfiniment, sans le moindre
+ * appel au moteur, donc sans le moindre journal « Moteur » — le tunnel
+ * n'avait simplement jamais commencé à s'ouvrir.
+ *
+ * Ce plafond ne remplace pas la tolérance déjà voulue (droits/quota « en
+ * dernier état connu ») : il l'étend au cas où l'opération elle-même ne se
+ * termine jamais, en poursuivant avec ce qui est déjà en mémoire/sur disque.
+ */
+const DELAI_PREPARATION_MS = 8_000;
+
+/** Résout `valeurDeSecours` si `promesse` ne s'est pas réglée après `delaiMs`. */
+function avecDelai<T>(promesse: Promise<T>, delaiMs: number, valeurDeSecours: T): Promise<T> {
+  return new Promise<T>(resolve => {
+    let reglee = false;
+    const minuteur = setTimeout(() => {
+      if (reglee) return;
+      reglee = true;
+      resolve(valeurDeSecours);
+    }, delaiMs);
+    promesse.then(
+      valeur => { if (!reglee) { reglee = true; clearTimeout(minuteur); resolve(valeur); } },
+      () => { if (!reglee) { reglee = true; clearTimeout(minuteur); resolve(valeurDeSecours); } },
+    );
+  });
+}
+
+/**
  * Pourquoi l'accès a coupé le tunnel — une liste fermée, jamais du texte libre.
  *
  * Un tunnel qui retombe sans explication est la plainte la plus fréquente :
@@ -1952,7 +1988,16 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         // ou un stockage occupé. Aucun ne dépend du résultat d'un autre.
         const [stats, currentProfile] = await Promise.all([
           SxbVpnNative.getTrafficStats().catch(() => null),
-          prepareNativeAccess().then(() => configStore.get(selectedId)).then(storeValue),
+          // ⚡ `prepareNativeAccess()` peut ne jamais se régler (annulation
+          // d'une requête déjà en vol qui n'aboutit pas côté pont natif, sur
+          // un réseau qui bloque en silence). `avecDelai` borne l'attente :
+          // passé DELAI_PREPARATION_MS, on relit simplement le profil déjà
+          // en mémoire/sur disque et on poursuit — les vérifications
+          // synchrones juste en dessous (requireDeviceAccess/requireProfileAccess)
+          // referont autorité sur l'état d'accès réellement connu.
+          avecDelai(prepareNativeAccess(), DELAI_PREPARATION_MS, undefined)
+            .then(() => configStore.get(selectedId))
+            .then(storeValue),
         ]);
         sessionBaselineRef.current = { up: stats?.uploadBytes || 0, down: stats?.downloadBytes || 0 };
 
@@ -1961,8 +2006,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         requireProfileAccess(currentProfile.meta);
         runningProfileRef.current = currentProfile.meta;
         // Une ancre durable existe AVANT les premiers paquets du nouveau
-        // tunnel, même si ses deux compteurs valent encore zéro.
-        await flushUsageRef.current({ beforeConnect: true });
+        // tunnel, même si ses deux compteurs valent encore zéro. Même borne
+        // que ci-dessus : la remontée des compteurs ne doit jamais retarder
+        // indéfiniment l'ouverture du tunnel qu'elle est censée accompagner.
+        await avecDelai(flushUsageRef.current({ beforeConnect: true }), DELAI_PREPARATION_MS, undefined);
         // ── Ce que le réseau va voir ──────────────────────────────────────
         //
         // Jusqu'ici, l'application n'avait qu'UNE façon de se présenter. Quand
