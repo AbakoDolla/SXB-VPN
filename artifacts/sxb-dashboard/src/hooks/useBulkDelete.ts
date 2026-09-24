@@ -107,12 +107,11 @@ export function useBulkDelete<T extends { id: string }>(options: Options<T>) {
       await latest.current.run("bulk-delete", async () => {
         const outcome: BulkDeleteResult = { succeeded: [], failed: [], scopeKey: snapshot.scopeKey };
         const live = latest.current;
-        const rows = snapshot.items.map((item) => live.items.find((row) => row.id === item.id));
-        if (live.scopeKey !== snapshot.scopeKey || !live.canDelete || rows.some((row) => !row || !live.eligible(row!))) {
-          throw new Error("errors.bulkDelete.unavailable");
-        }
-
         if (live.removeMany) {
+          const rows = snapshot.items.map((item) => live.items.find((row) => row.id === item.id));
+          if (live.scopeKey !== snapshot.scopeKey || !live.canDelete || rows.some((row) => !row || !live.eligible(row!))) {
+            throw new Error("errors.bulkDelete.unavailable");
+          }
           const response = await live.removeMany(rows as T[]);
           const succeeded = new Set(response.succeeded);
           for (const item of snapshot.items) {
@@ -127,9 +126,14 @@ export function useBulkDelete<T extends { id: string }>(options: Options<T>) {
         } else {
           // Only confirmed IDs are used; permissions and ownership are
           // rechecked from the current cache before each legacy DELETE.
-          for (const [index, item] of snapshot.items.entries()) {
+          for (const item of snapshot.items) {
             try {
-              await live.remove(rows[index]!);
+              const current = latest.current;
+              const row = current.items.find((candidate) => candidate.id === item.id);
+              if (current.scopeKey !== snapshot.scopeKey || !current.canDelete || !row || !current.eligible(row)) {
+                throw new Error("errors.bulkDelete.unavailable");
+              }
+              await current.remove(row);
               outcome.succeeded.push(item);
             } catch (failure) {
               outcome.failed.push({ ...item, error: failure });
