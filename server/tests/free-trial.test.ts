@@ -25,7 +25,6 @@ import {
   CODES_ESSAI,
   INTERVALLE_VERIFICATION_MAX_S,
   INTERVALLE_VERIFICATION_MIN_S,
-  MAX_LOT_ESSAI,
   MOTIF_JETON_ESSAI,
   RAISONS_LOT_ESSAI,
   STATUT_DEMANDE,
@@ -1193,18 +1192,10 @@ describe("LOTS — les demandes vivent SOUS leur jeton, jamais mélangées", () 
     assert.equal(demandeAppartientAuJeton(etrangere, undefined), true);
   });
 
-  it("refuse un lot trop grand avec un message explicite, sans troncature", () => {
-    const trop = Array.from({ length: MAX_LOT_ESSAI + 1 }, (_, i) => `ft-req-${i}`);
-    const lot = normaliserLotEssai(trop);
-    assert.equal(lot.ok, false);
-    assert.equal(lot.ok === false && lot.raison, RAISONS_LOT_ESSAI.LOT_TROP_GRAND);
-    const refus = refusLotEssai(RAISONS_LOT_ESSAI.LOT_TROP_GRAND, MAX_LOT_ESSAI);
-    assert.equal(refus.status, 400);
-    assert.equal(refus.body.code, "FREE_TRIAL_BATCH_TOO_LARGE");
-    assert.equal(refus.body.limit, MAX_LOT_ESSAI);
-    assert.match(String(refus.body.message), new RegExp(String(MAX_LOT_ESSAI)));
-    // Un lot exactement à la limite passe : la borne est inclusive.
-    assert.equal(normaliserLotEssai(trop.slice(0, MAX_LOT_ESSAI)).ok, true);
+  it("accepte un lot supérieur à 200 sans troncature", () => {
+    const lot = normaliserLotEssai(Array.from({ length: 256 }, (_, i) => `ft-req-${i}`));
+    assert.equal(lot.ok, true);
+    assert.equal(lot.ok && lot.ids.length, 256);
   });
 
   it("retire les doublons : un identifiant deux fois ne déploie pas deux fois", () => {

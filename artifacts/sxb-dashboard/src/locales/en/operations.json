@@ -2,7 +2,7 @@
   "freeTrial": {
     "selectAcross": "Select all {{count}}",
     "selectingAcross": "Selecting…",
-    "selectedAcross": "{{count}} sign-up(s) selected across every page (limit {{max}} per batch).",
+    "selectedAcross": "{{count}} sign-up(s) selected across every page.",
     "selectAllFailed": "Could not load every page — selection unchanged.",
     "groupedHint": "Every token carries its own enrollments: expand it to see them and act on them. Requests are never mixed between two tokens.",
     "noToken": "No invitation token yet. Create one to get started.",
@@ -47,8 +47,7 @@
     },
     "searchHint": "Cross-token search, read-only: to act, open the relevant token. It covers the enrollments loaded for the current filter.",
     "batch": {
-      "loadedOnly": "\"Select all\" only covers the displayed enrollments of this token, never another token's or unloaded pages. At most {{max}} enrollees per deployment.",
-      "tooMany": "A batch cannot exceed {{max}} enrollees. Narrow the selection.",
+      "loadedOnly": "\"Select all\" covers every enrolment of this token, never another token's data.",
       "recap": "{{count}} enrollee(s) from token {{token}} will receive exactly the values above.",
       "deployTo": "Deploy to {{count}} enrollee(s)",
       "done": "Operation complete",
@@ -56,8 +55,7 @@
       "failedItem": "• {{id}} — {{reason}}",
       "noProfile": "Pick at least one VPN configuration before deploying.",
       "preview": "This will create {{subscriptions}} plan(s): {{requests}} enrollee(s) × {{profiles}} configuration(s).",
-      "tooManyProfiles": "A deployment cannot exceed {{max}} VPN configurations. Narrow the server selection.",
-      "tooManySubscriptions": "This batch would create {{count}} plans, beyond the limit of {{max}}. Reduce the number of enrollees or configurations."
+      "tooManyProfiles": "A deployment cannot exceed {{max}} VPN configurations. Narrow the server selection."
     },
     "countryUnknown": "Not provided",
     "metrics": {
@@ -181,7 +179,7 @@
       "expireAt": "Expiry date and time",
       "note": "Internal note (optional)",
       "servers": "VPN configurations to assign",
-      "serversHint": "Each selected enrollee receives one plan per ticked configuration. At most {{maxProfiles}} configurations and {{maxSubscriptions}} plans per deployment.",
+      "serversHint": "Each selected enrollee receives one plan per ticked configuration. At most {{maxProfiles}} VPN configurations per deployment.",
       "noServer": "No VPN configuration available."
     },
     "notice": {
