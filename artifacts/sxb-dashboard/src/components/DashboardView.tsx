@@ -65,10 +65,22 @@ function StatCard({
   );
 }
 
+/** Aucune télémétrie serveur (CPU/RAM/actifs) n'est collectée côté backend :
+ * ces champs sont absents de toute réponse API réelle. On distingue « non
+ * mesuré » (undefined/null/NaN) d'une vraie valeur, plutôt que d'afficher
+ * NaN% comme si une mesure avait échoué. */
+const NOT_MEASURED = '—';
+function hasMetric(v: number | null | undefined): v is number {
+  return typeof v === 'number' && Number.isFinite(v);
+}
+
 function ServerHealthCard({ server }: { server: VPSServer }) {
   const { t, formatNumber } = useTranslation();
-  const cpuColor = server.cpuLoad > 80 ? 'text-red-400' : server.cpuLoad > 60 ? 'text-amber-400' : 'text-emerald-400';
-  const ramColor = server.ramLoad > 80 ? 'text-red-400' : server.ramLoad > 60 ? 'text-amber-400' : 'text-emerald-400';
+  const cpu = hasMetric(server.cpuLoad) ? server.cpuLoad : null;
+  const ram = hasMetric(server.ramLoad) ? server.ramLoad : null;
+  const active = hasMetric(server.activeUsers) ? server.activeUsers : null;
+  const cpuColor = cpu === null ? 'text-gray-500' : cpu > 80 ? 'text-red-400' : cpu > 60 ? 'text-amber-400' : 'text-emerald-400';
+  const ramColor = ram === null ? 'text-gray-500' : ram > 80 ? 'text-red-400' : ram > 60 ? 'text-amber-400' : 'text-emerald-400';
   return (
     <div className="bg-[#0a0d14] dashboard-card sxb-animated-card border border-[#1a1f2e] rounded-xl p-4 space-y-3">
       <div className="flex items-center justify-between">
@@ -81,22 +93,22 @@ function ServerHealthCard({ server }: { server: VPSServer }) {
       <div className="space-y-2">
         <div className="flex items-center justify-between text-xs">
           <span className="text-gray-500 flex items-center gap-1"><Cpu className="w-3 h-3" />{t("operations.dashboard.cpu")}</span>
-          <span className={`font-bold ${cpuColor}`}>{formatNumber(server.cpuLoad / 100, { style: 'percent', maximumFractionDigits: 1 })}</span>
+          <span className={`font-bold ${cpuColor}`}>{cpu === null ? NOT_MEASURED : formatNumber(cpu / 100, { style: 'percent', maximumFractionDigits: 1 })}</span>
         </div>
         <div className="w-full bg-[#0f1218] rounded-full h-1.5">
-          <div className={`h-1.5 rounded-full transition-all ${server.cpuLoad > 80 ? 'bg-red-400' : server.cpuLoad > 60 ? 'bg-amber-400' : 'bg-emerald-400'}`} style={{ width: `${Math.min(server.cpuLoad, 100)}%` }} />
+          <div className={`h-1.5 rounded-full transition-all ${cpu === null ? 'bg-gray-700' : cpu > 80 ? 'bg-red-400' : cpu > 60 ? 'bg-amber-400' : 'bg-emerald-400'}`} style={{ width: `${Math.min(cpu ?? 0, 100)}%` }} />
         </div>
         <div className="flex items-center justify-between text-xs">
           <span className="text-gray-500 flex items-center gap-1"><HardDrive className="w-3 h-3" />{t("operations.dashboard.ram")}</span>
-          <span className={`font-bold ${ramColor}`}>{formatNumber(server.ramLoad / 100, { style: 'percent', maximumFractionDigits: 1 })}</span>
+          <span className={`font-bold ${ramColor}`}>{ram === null ? NOT_MEASURED : formatNumber(ram / 100, { style: 'percent', maximumFractionDigits: 1 })}</span>
         </div>
         <div className="w-full bg-[#0f1218] rounded-full h-1.5">
-          <div className={`h-1.5 rounded-full transition-all ${server.ramLoad > 80 ? 'bg-red-400' : server.ramLoad > 60 ? 'bg-amber-400' : 'bg-blue-400'}`} style={{ width: `${Math.min(server.ramLoad, 100)}%` }} />
+          <div className={`h-1.5 rounded-full transition-all ${ram === null ? 'bg-gray-700' : ram > 80 ? 'bg-red-400' : ram > 60 ? 'bg-amber-400' : 'bg-blue-400'}`} style={{ width: `${Math.min(ram ?? 0, 100)}%` }} />
         </div>
       </div>
       <div className="flex items-center justify-between text-xs pt-1 border-t border-[#1a1f2e]">
         <span className="text-gray-500 flex items-center gap-1"><Radio className="w-3 h-3" />{t("operations.common.activePlural")}</span>
-        <span className="text-cyan-400 font-bold">{formatNumber(server.activeUsers)}</span>
+        <span className="text-cyan-400 font-bold">{active === null ? NOT_MEASURED : formatNumber(active)}</span>
       </div>
     </div>
   );
@@ -345,7 +357,7 @@ export default function DashboardView({
     lowQuotaMessage ? { type: 'quota', msg: lowQuotaMessage } : null,
     stats?.expiredAccounts && stats.expiredAccounts > 0 ? { type: 'warning', msg: t('operations.dashboard.expiredAccounts', { count: formatNumber(stats.expiredAccounts) }) } : null,
     servers.some(s => s.status === 'offline') ? { type: 'danger', msg: t("operations.dashboard.offlineServers") } : null,
-    servers.some(s => s.cpuLoad > 80) ? { type: 'warning', msg: t("operations.dashboard.highCpu") } : null,
+    servers.some(s => typeof s.cpuLoad === 'number' && Number.isFinite(s.cpuLoad) && s.cpuLoad > 80) ? { type: 'warning', msg: t("operations.dashboard.highCpu") } : null,
   ].filter(Boolean) as { type: string; msg: string }[];
 
   if (loading) {

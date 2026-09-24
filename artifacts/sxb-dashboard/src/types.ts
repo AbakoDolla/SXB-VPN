@@ -179,9 +179,13 @@ export interface VPSServer {
   location: string;
   ip: string;
   status: "online" | "offline";
-  cpuLoad: number; // percentage
-  ramLoad: number; // percentage
-  activeUsers: number;
+  // Le backend ne collecte aucune télémétrie serveur (aucune colonne en base) :
+  // ces trois champs sont donc absents de toute réponse API réelle. Optionnels
+  // pour que l'UI affiche « non mesuré » plutôt que NaN%, sans prétendre à des
+  // données qui n'existent pas.
+  cpuLoad?: number | null; // percentage
+  ramLoad?: number | null; // percentage
+  activeUsers?: number | null;
 }
 
 export interface TokenSXB {
