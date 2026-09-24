@@ -2258,7 +2258,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const switchConfig = useCallback(async (configId: string) => {
     if (isSwitchingConfig || configId === activeConfigId) return;
     setSwitchError(null);
-    const remoteTarget = remoteConnections.find(c => c.id === configId) || null;
+    let remoteTarget = remoteConnections.find(c => c.id === configId) || null;
     // Cette lecture sert AUSSI de contrôle d'accès, et elle est réutilisée
     // plus bas. Elle était refaite à l'identique quelques lignes après : sur
     // Android, chaque lecture traverse le pont natif et déchiffre le profil,
@@ -2306,6 +2306,26 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         const stored = await saveCompleteConfig(provisioned, (provisioned.protocol || remoteTarget.technicalProtocol || 'vless').toLowerCase(), configId, fresh.meta.expireAt);
         if (!stored) throw new Error('La configuration reçue est incomplète');
         target = await configStore.get(configId);
+      }
+      if ((target.status !== 'ok' || !target.value) && !remoteTarget) {
+        await refreshMobileConfigs().catch(() => {});
+        remoteTarget = getRemoteConnections().find(c => c.id === configId) || remoteConnections.find(c => c.id === configId) || null;
+        if (remoteTarget && !deviceId) throw new Error('Identifiant appareil indisponible — reconnectez-vous puis réessayez');
+        if (remoteTarget) {
+          addLog(`🔒 Provisionnement de « ${remoteTarget.name} »...`);
+          const fresh = await provisionAndStore(remoteTarget.dataToken, deviceId, configId);
+          const provisioned = mergeConnectionMetadata(mergeProvisionedConfig(null, fresh.config), {
+            configId,
+            subscriptionId: fresh.meta.subscriptionId,
+            displayProtocol: remoteTarget.displayProtocol || fresh.meta.displayProtocol,
+            dataToken: remoteTarget.dataToken,
+            configVersion: fresh.meta.configVersion,
+            configHash: fresh.meta.configHash,
+          });
+          const stored = await saveCompleteConfig(provisioned, (provisioned.protocol || remoteTarget.technicalProtocol || 'vless').toLowerCase(), configId, fresh.meta.expireAt);
+          if (!stored) throw new Error('La configuration reçue est incomplète');
+          target = await configStore.get(configId);
+        }
       }
       if (target.status !== 'ok' || !target.value) {
         throw new Error(target.status === 'error' ? 'Stockage temporairement illisible — nouvelle tentative…' : 'Configuration absente');
