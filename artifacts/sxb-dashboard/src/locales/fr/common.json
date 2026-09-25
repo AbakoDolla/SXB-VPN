@@ -47,6 +47,7 @@
     "annonces": "Annonces",
     "app_updates": "Mises à jour de l’app",
     "rbac": "Contrôle RBAC",
-    "settings": "Paramètres"
+    "settings": "Paramètres",
+    "data_added": "Données ajoutées"
   }
 }

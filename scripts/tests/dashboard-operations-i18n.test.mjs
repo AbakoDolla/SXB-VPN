@@ -14,6 +14,7 @@ const names = [
   "DashboardView", "MonitoringView", "SessionsView", "SupportView", "SettingsView",
   "AnnouncementsView", "AppUpdatesView", "MobileHealthView", "ConnectedUsersView", "OwnerLogView",
   "SecurityCenterView", "MaintenancePage", "ErrorBoundary",
+  "DataAdditionsView", "DataAdditionsPanel", "DataAdditionRow",
 ];
 const sources = Object.fromEntries(names.map(name => [name, readFileSync(path.join(src, "components", `${name}.tsx`), "utf8")]));
 const asts = Object.fromEntries(names.map(name => [name, ts.createSourceFile(name, sources[name], ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)]));
@@ -37,7 +38,9 @@ test("operations dictionaries have identical nonempty keys and interpolation con
   for (const key of keys) {
     assert.ok(flat.fr[key].trim() && flat.en[key].trim(), key);
     assert.deepEqual(parameters(flat.fr[key]), parameters(flat.en[key]), key);
-    assert.doesNotMatch(flat.fr[key] + flat.en[key], /Ã|Â|â€|�/, key);
+    // `\p{L}\?\p{L}` : un accent remplacé par « ? » en route (console qui ne
+    // parle pas UTF-8). « Donn?es ajout?es » passait tous les autres contrôles.
+    assert.doesNotMatch(flat.fr[key] + flat.en[key], /Ã|Â|â€|�|\p{L}\?\p{L}/u, key);
   }
 });
 
@@ -233,6 +236,17 @@ const summary = {
   devices: [mobileDevice],
 };
 
+const dataAddition = {
+  id: "ajout-1", subscriptionId: "forfait-1", subscriptionName: "MTN Server — 30j", profileId: "mtn", profileName: "MTN Server",
+  clientId: "cli-1", clientName: "Élodie", actorName: "Evans Owner", kind: "ajout",
+  addedBytes: String(5 * 1024 ** 3), quotaBeforeBytes: String(30 * 1024 ** 3), quotaAfterBytes: String(35 * 1024 ** 3),
+  createdAt: log.timestamp,
+};
+const dataAdditionServer = {
+  profileId: "mtn", profileName: "MTN Server", additions: 1, addedBytes: dataAddition.addedBytes, lastAddedAt: log.timestamp,
+  subscriptions: 1, usedBytes: String(2 * 1024 ** 3), remainingBytes: String(33 * 1024 ** 3), unlimited: false,
+};
+
 const connectedUser = {
   clientId: "cli-1", clientName: "Client Un", deviceId: "SXBDEVICE0000001",
   resellerId: "res-1", resellerName: "Revendeur Un", directClient: false,
@@ -310,6 +324,14 @@ test("all operations screens render in both languages, including dialogs, failur
     }, "Critiques", "Security Center"],
     ["MaintenancePage", {}, { showOwnerAccess: true }, "Maintenance en cours", "Maintenance in progress"],
     ["ErrorBoundary", {}, { hasError: true }, "Une erreur est survenue", "An error occurred"],
+    // « Données ajoutées » : la carte du tableau de bord et la page, avec un
+    // ajout réel — montant, serveur, date, auteur — dans les deux langues.
+    ["DataAdditionsPanel", { additions: [dataAddition], totals: { count: 1, addedBytes: dataAddition.addedBytes }, onOpen: () => {} }, {},
+      "ajout à MTN Server", "added to MTN Server"],
+    ["DataAdditionsView", {}, {
+      loading: false, selected: "mtn", servers: [dataAdditionServer],
+      totals: { count: 1, addedBytes: dataAddition.addedBytes }, history: { additions: [dataAddition], next: null },
+    }, "Historique des ajouts", "Addition history"],
   ];
   for (const [name, props, seed, frText, enText] of fixtures) {
     const f = renderer(Object.fromEntries(Object.entries(seed).map(([key, value]) => [`${name}.${key}`, value])));

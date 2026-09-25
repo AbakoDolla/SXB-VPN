@@ -16,6 +16,7 @@ import SessionsView from "./components/SessionsView";
 import VpnEngineView from "./components/VpnEngineView";
 import MonitoringView from "./components/MonitoringView";
 import SubscriptionsView from "./components/SubscriptionsView";
+import DataAdditionsView from "./components/DataAdditionsView";
 import VpnProfilesView from "./components/VpnProfilesView";
 import OwnerLogView from "./components/OwnerLogView";
 import AnnouncementsView from "./components/AnnouncementsView";
@@ -347,9 +348,15 @@ function MainApp() {
   if (!currentUser) return <LoginForm onLogin={handleLogin} />;
 
   const role = currentUser.role;
+  // Une route peut porter une cible après « : » — `data-additions:<serveur>`
+  // ouvre l'historique directement sur ce serveur. Le menu, lui, ne connaît
+  // que la route de base.
+  const separateur = activeRoute.indexOf(':');
+  const routeBase = separateur === -1 ? activeRoute : activeRoute.slice(0, separateur);
+  const routeCible = separateur === -1 ? null : activeRoute.slice(separateur + 1) || null;
 
   const renderView = () => {
-    switch (activeRoute) {
+    switch (routeBase) {
       case 'dashboard':
         return (
           <DashboardView
@@ -363,6 +370,10 @@ function MainApp() {
         return <ClientsView currentUserRole={role} actorName={currentUser.name} />;
       case 'subscriptions':
         return <SubscriptionsView currentUserRole={role} />;
+      case 'data-additions':
+        // `key` : ouvrir un autre serveur depuis le tableau de bord remonte la
+        // vue sur lui, au lieu de garder la sélection précédente.
+        return <DataAdditionsView key={routeCible ?? 'all'} initialServerId={routeCible} onNavigate={(route) => setActiveRoute(route)} />;
       case 'vpn-profiles':
         return <VpnProfilesView currentUserRole={role} />;
       // ── Gestion des comptes : UNE seule surface ────────────────────────────
@@ -488,7 +499,7 @@ function MainApp() {
     <PermissionsProvider role={role} permissions={currentUser.permissions}>
     <ResellerAccessProvider role={role}>
       <Layout
-        activeRoute={activeRoute}
+        activeRoute={routeBase}
         onNavigate={(route) => setActiveRoute(route)}
         currentUser={currentUser}
         onUserChanged={handleUserChanged}
