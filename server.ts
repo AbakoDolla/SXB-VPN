@@ -30,6 +30,7 @@ import payloadRouter from "./server/routes/payload";
 import sessionsRouter from "./server/routes/sessions";
 import vpnProfilesRouter from "./server/routes/vpn-profiles";
 import subscriptionsRouter from "./server/routes/subscriptions";
+import dataAdditionsRouter from "./server/routes/data-additions";
 import appRegisterRouter  from "./server/routes/app-register";
 import provisionRouter from "./server/routes/provision";
 import configTestRouter from "./server/routes/config-test";
@@ -167,6 +168,8 @@ app.use("/api/free-trial", freeTrialRouter);
   app.use("/api/singbox", singboxRouter);
   app.use("/api/xpanel", xpanelRouter);
   app.use("/api/subscriptions", subscriptionsRouter);
+  // « Données ajoutées » : historique des Go ajoutés aux connexions, par serveur.
+  app.use("/api/data-additions", dataAdditionsRouter);
   app.use("/api/app",           appRegisterRouter);
   app.use("/api/provision", provisionRouter);
   app.use("/api/config-test", configTestRouter);

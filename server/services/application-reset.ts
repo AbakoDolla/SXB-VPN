@@ -28,8 +28,10 @@ export const RESET_WARNINGS = [
 
 // Drain both writers and SELECT FOR UPDATE row lockers, including OWNER calls.
 // EXCLUSIVE still permits pg_dump's ACCESS SHARE reads.
+// `data_additions` is locked but never purged: like the audit log and the quota
+// ledger, the history of GB added outlives the data it describes.
 export const RESET_TABLE_LOCK_SQL = `LOCK TABLE
-  "activation_sessions", "admin_tokens", "app_registrations", "audit_logs",
+  "activation_sessions", "admin_tokens", "app_registrations", "audit_logs", "data_additions",
   "free_trial_requests", "free_trial_tokens",
   "mobile_health_devices", "mobile_health_reports", "permissions", "push_tokens",
   "reseller_quota_movements", "resellers", "role_permissions", "roles",

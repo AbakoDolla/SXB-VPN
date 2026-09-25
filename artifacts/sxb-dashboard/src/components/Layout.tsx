@@ -10,7 +10,7 @@ import {
   Menu, X, UserPlus, HeadphonesIcon, BadgePercent, Activity,
   ChevronDown, Radio, BarChart3,
   PackageOpen, GitBranch, ScrollText, BellRing, Download,
-  HeartPulse, Wifi, ShieldAlert,
+  HeartPulse, Wifi, ShieldAlert, Database,
 } from 'lucide-react';
 import { TrialGlyph } from './TrialBadge';
 
@@ -80,7 +80,7 @@ export default function Layout({
   useEffect(() => {
     const groupMap: Record<string, string> = {
       clients: 'clients', devices: 'clients', vouchers: 'clients',
-      subscriptions: 'clients', 'free-trial': 'clients', 'connected-users': 'clients',
+      subscriptions: 'clients', 'data-additions': 'clients', 'free-trial': 'clients', 'connected-users': 'clients',
       announcements: 'admin',
       sessions: 'monitoring', analytics: 'monitoring', servers: 'monitoring',
       accounts: 'admin', resellers: 'admin', rbac: 'admin', 'app-updates': 'admin', 'mobile-health': 'admin', security: 'admin',
@@ -119,6 +119,9 @@ export default function Layout({
         // revendeur, et le propriétaire veut qu'il en bénéficie aussi.
         { kind: 'leaf', id: 'connected-users', label: t('core.nav.connectedUsers'), icon: Wifi, roles: ALL_ROLES, permission: 'clients.view' },
         { kind: 'leaf', id: 'subscriptions', label: t('sidebar.subscriptions'), icon: PackageOpen, roles: ALL_ROLES, permission: 'subscription.view' },
+        // Historique des Go ajoutés, par serveur : même droit et même portée
+        // que « Forfaits Data », dont il raconte les ajouts.
+        { kind: 'leaf', id: 'data-additions', label: t('sidebar.data_added'), icon: Database, roles: ALL_ROLES, permission: 'subscription.view' },
         // Le revendeur doit suivre les appareils de SES clients : c'est là
         // qu'il constate une activation ou une consommation anormale.
         { kind: 'leaf', id: 'devices', label: t('sidebar.devices'), icon: Smartphone, roles: ALL_ROLES, permission: 'clients.view' },

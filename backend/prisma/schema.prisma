@@ -176,6 +176,38 @@ model ResellerQuotaMovement {
   @@map("reseller_quota_movements")
 }
 
+// « Données ajoutées » : chaque Go ajouté à une connexion (forfait), rangé par
+// serveur (configuration VPN). Un ajout est TOUJOURS une ligne nouvelle — rien
+// n'est remplacé, l'historique s'allonge. Écrit dans la même transaction que la
+// hausse de quota qu'il décrit : pas d'ajout sans trace, pas de trace sans
+// ajout. Instantanés sans FK, comme le grand livre des quotas revendeur : une
+// suppression ultérieure ne peut ni réécrire ni effacer l'historique.
+model DataAddition {
+  id               String   @id @default(uuid())
+  subscriptionId   String
+  subscriptionName String
+  profileId        String
+  profileName      String
+  clientId         String
+  clientName       String
+  actorUserId      String?
+  actorName        String
+  /// `creation` : volume initial d'un forfait ; `ajout` : hausse d'un forfait existant.
+  kind             String
+  addedBytes       BigInt
+  quotaBeforeBytes BigInt
+  quotaAfterBytes  BigInt
+  /// Forfait né d'un essai gratuit : consigné, mais tenu hors des écrans commerciaux.
+  freeTrial        Boolean  @default(false)
+  createdAt        DateTime @default(now())
+
+  @@index([profileId, createdAt])
+  @@index([subscriptionId, createdAt])
+  @@index([clientId, createdAt])
+  @@index([createdAt])
+  @@map("data_additions")
+}
+
 // Attribution d'une configuration VPN à un revendeur.
 //
 // L'administrateur importe une configuration UNE FOIS puis coche les

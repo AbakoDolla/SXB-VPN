@@ -5,7 +5,9 @@ import { fetchClients } from "../api/clients";
 import { fetchDevices } from "../api/devices";
 import { fetchSessions } from "../api/sessions";
 import { fetchServers } from "../api/servers";
+import { fetchDataAdditions, type DataAddition } from "../api/data-additions";
 import { apiRequest } from "../api/client";
+import DataAdditionsPanel from "./DataAdditionsPanel";
 import { TrafficDataPoint, ActivityLog, VPSServer, UserRole } from "../types";
 import type { Device } from "../api/devices";
 import {
@@ -154,6 +156,12 @@ export default function DashboardView({
   const [devices, setDevices] = useState<Device[]>([]);
   const [activeSessions, setActiveSessions] = useState(0);
   const [servers, setServers] = useState<VPSServer[]>([]);
+  // `null` : historique indisponible pour ce compte (droit absent) — la section
+  // se retire plutôt que d'afficher un zéro trompeur.
+  const [dataAdditions, setDataAdditions] = useState<{
+    additions: DataAddition[];
+    totals: { count: number; addedBytes: string };
+  } | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollInFlightRef = useRef(false);
@@ -162,16 +170,23 @@ export default function DashboardView({
   type LoadMode = "full" | "live";
 
   const loadData = useCallback(async (mode: LoadMode = "full") => {
+    // Les derniers Go ajoutés suivent le même rythme que les compteurs : un
+    // ajout fait depuis « Forfaits Data » apparaît ici sans recharger la page.
+    // Un échec de cette lecture n'efface jamais la dernière liste valide.
+    const derniersAjouts = () => fetchDataAdditions({ limit: 5 })
+      .then(page => ({ additions: page.additions, totals: page.totals }))
+      .catch(() => undefined);
     try {
       if (mode === "live") {
         // Polling léger : uniquement les données volatiles nécessaires aux
         // cartes quota, appareils et sessions. Les clients, logs et serveurs
         // restent sur le chargement complet/Actualiser pour ne pas surcharger l'API.
-        const [s, tData, devices, sessions] = await Promise.all([
+        const [s, tData, devices, sessions, ajouts] = await Promise.all([
           fetchDashboardStats(),
           fetchTrafficAnalytics(),
           fetchDevices(),
           fetchSessions(),
+          derniersAjouts(),
         ]);
         if (disposedRef.current) return;
         setStats(s);
@@ -179,8 +194,9 @@ export default function DashboardView({
         setTotalDevices(devices.length);
         setDevices(devices);
         setActiveSessions(((sessions || []) as any[]).filter(session => session.status === 'active').length);
+        if (ajouts !== undefined) setDataAdditions(ajouts);
       } else {
-        const [s, tData, lLogs, clients, devices, sessions, srvs] = await Promise.all([
+        const [s, tData, lLogs, clients, devices, sessions, srvs, ajouts] = await Promise.all([
           fetchDashboardStats(),
           fetchTrafficAnalytics(),
           // Le journal d'activité relève de l'exploitation de la plateforme :
@@ -190,6 +206,7 @@ export default function DashboardView({
           fetchDevices().catch(() => []),
           fetchSessions().catch(() => []),
           fetchServers().catch(() => []),
+          derniersAjouts(),
         ]);
         if (disposedRef.current) return;
         setStats(s);
@@ -200,6 +217,7 @@ export default function DashboardView({
         setDevices(devices);
         setActiveSessions(((sessions || []) as any[]).filter(session => session.status === 'active').length);
         setServers(srvs);
+        if (ajouts !== undefined) setDataAdditions(ajouts);
       }
       setLastUpdatedAt(new Date());
     } catch (error) {
@@ -501,6 +519,17 @@ export default function DashboardView({
           <StatCard label={t("operations.dashboard.expired")} value={formatNumber(stats?.expiredAccounts || 0)} sub={t("operations.dashboard.renewal")} icon={AlertTriangle} color="text-rose-400" accent="bg-rose-500/10" onClick={() => onNavigate('clients')} />
         </div>
       </div>
+
+      {/* « Données ajoutées » : chaque Go ajouté à une connexion, avec son
+          serveur, sa date et son auteur. Une entrée ouvre l'historique complet
+          de son serveur. */}
+      {dataAdditions !== null && (
+        <DataAdditionsPanel
+          additions={dataAdditions.additions}
+          totals={dataAdditions.totals}
+          onOpen={(profileId) => onNavigate(profileId ? `data-additions:${profileId}` : 'data-additions')}
+        />
+      )}
 
       {/* Row 2 — Trafic réel et enveloppes REVENDEURS. Les forfaits clients
           ne sont jamais présentés comme le quota du compte connecté. */}

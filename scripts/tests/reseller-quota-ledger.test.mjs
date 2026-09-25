@@ -1,3 +1,7 @@
+// Le service importe désormais `./data-additions` à la manière d'un bundler
+// (sans extension) : les hooks de test ajoutent le repli `.ts`, comme pour les
+// autres services chargés directement par Node.
+import "./register-hooks.mjs";
 import { strict as assert } from "node:assert";
 import fs from "node:fs/promises";
 import path from "node:path";

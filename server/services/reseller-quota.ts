@@ -15,6 +15,8 @@
  *   - `quotaBytes < 0` → illimité, choix explicite de l'administrateur.
  */
 
+import { journaliserAjouts } from "./data-additions";
+
 export const QUOTA_ILLIMITE = BigInt(-1);
 
 export type Allocation = { alloue: bigint; consomme: bigint };
@@ -222,18 +224,26 @@ export async function executerMutationQuota<T>(
   mutation: (tx: any) => Promise<T>
 ): Promise<T> {
   return db.$transaction(async (tx: any) => {
+    // Chaque Go ajouté à un forfait dans cette transaction devient une ligne
+    // « Données ajoutées », écrite atomiquement avec la mutation elle-même.
+    const journal = journaliserAjouts(tx, { auteur: params.auteur });
+    const executerSansPlafond = async () => {
+      const resultatDirect = await mutation(journal.tx);
+      await journal.consigner();
+      return resultatDirect;
+    };
     const identite = params.resellerId
       ? { id: params.resellerId }
       : params.resellerUserId
         ? { userId: params.resellerUserId }
         : null;
-    if (!identite) return mutation(tx);
+    if (!identite) return executerSansPlafond();
 
     let fiche = await tx.reseller.findUnique({
       where: identite,
       include: { user: true },
     });
-    if (!fiche) return mutation(tx);
+    if (!fiche) return executerSansPlafond();
 
     await verrouillerRevendeur(tx, fiche.userId);
     fiche = await tx.reseller.findUnique({
@@ -242,7 +252,7 @@ export async function executerMutationQuota<T>(
     });
 
     const avant = await calculerAllocation(tx, fiche);
-    const resultat = await mutation(tx);
+    const resultat = await mutation(journal.tx);
     const apres = await calculerAllocation(tx, fiche);
     const plafond = BigInt(fiche.quotaBytes ?? 0);
     const reductionAutorisee =
@@ -273,6 +283,8 @@ export async function executerMutationQuota<T>(
         referenceId: params.referenceId,
       });
     }
+    // Après le contrôle du plafond : un ajout refusé ne laisse aucune trace.
+    await journal.consigner();
     return resultat;
   }, { isolationLevel: "Serializable" });
 }

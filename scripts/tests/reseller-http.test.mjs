@@ -248,9 +248,19 @@ class Database {
         const groups = new Map();
         for (const row of state[name].filter(r => this.matches(name, r, args.where, state))) {
           const key = JSON.stringify(args.by.map(k => row[k]));
-          const group = groups.get(key) ?? { ...Object.fromEntries(args.by.map(k => [k, row[k]])), _count: { id: 0 } };
+          let group = groups.get(key);
+          if (!group) {
+            group = { ...Object.fromEntries(args.by.map(k => [k, row[k]])), _count: { id: 0, _all: 0 } };
+            if (args._sum) group._sum = Object.fromEntries(Object.keys(args._sum).map(k => [k, null]));
+            if (args._max) group._max = Object.fromEntries(Object.keys(args._max).map(k => [k, null]));
+            groups.set(key, group);
+          }
           group._count.id++;
-          groups.set(key, group);
+          group._count._all++;
+          for (const k of Object.keys(args._sum ?? {})) group._sum[k] = (group._sum[k] ?? 0n) + BigInt(row[k] ?? 0);
+          for (const k of Object.keys(args._max ?? {})) {
+            if (row[k] != null && (group._max[k] == null || row[k] > group._max[k])) group._max[k] = row[k];
+          }
         }
         return [...groups.values()];
       }),
@@ -287,7 +297,7 @@ process.env.DATABASE_URL = "";
 const temporary = await mkdtemp(path.join(root, "backend", ".sxb-http-"));
 const bundlePath = path.join(temporary, "routes.cjs");
 const routeNames = ["devices", "clients", "subscriptions", "tokens", "vouchers", "mobile", "resellers", "users", "rbac", "auth", "sessions", "dashboard", "provision",
-  "vpn-profiles", "config-test", "ssh", "xray", "singbox", "payload", "app-register", "free-trial"];
+  "vpn-profiles", "config-test", "ssh", "xray", "singbox", "payload", "app-register", "free-trial", "data-additions"];
 const routeKey = name => name.replaceAll("-", "_");
 await build({
   stdin: {
