@@ -136,7 +136,7 @@ export default function HomeScreen() {
     connect, disconnect, trafficStats: traffic,
     refreshVpnConfig, syncFromConnection,
     savedConfigs, activeConfigId, switchConfig, isSwitchingConfig, switchingToId, switchError, clearSwitchError, revokedStatus, perAppTraffic,
-    deleteConfig, derivedQuota,
+    deleteConfig, derivedQuota, importNotes, dismissedConfigIds,
   } = useVpnContext();
   const { t } = useTranslation();
   const connectedSeconds = useConnectionDuration(isConnected, traffic.connectedSeconds);
@@ -380,6 +380,20 @@ export default function HomeScreen() {
     () => savedConfigs.find((c) => !c.isActive && !ETATS_BLOQUANTS.has(String(c.status ?? 'active'))),
     [savedConfigs],
   );
+
+  /**
+   * Accès proposés au sélecteur : ceux du serveur, MOINS ceux que
+   * l'utilisateur a retirés de cet appareil.
+   *
+   * Un forfait supprimé revenait « en attente » dans le sélecteur — la liste
+   * du serveur, elle, le contient toujours — et l'appui échouait sur
+   * « Configuration absente » : la bascule, fidèle à la suppression, refusait
+   * de le réimporter. Le sélecteur lit désormais la même vérité qu'elle.
+   */
+  const connectionsSelecteur = useMemo(() => {
+    const retires = new Set(dismissedConfigIds);
+    return retires.size === 0 ? connections : connections.filter((c) => !retires.has(c.id));
+  }, [connections, dismissedConfigIds]);
 
   // Les animations du bouton (anneaux, respiration, appui) sont désormais
   // encapsulées dans `PowerButton`. L'écran ne conserve que l'état métier.
@@ -979,8 +993,17 @@ export default function HomeScreen() {
             title={t('vpn_connections')}
             icon="server-outline"
             trailing={
-              <Pressable onPress={fetchConnections} disabled={connectionsLoading} hitSlop={10}>
-                {connectionsLoading
+              // Même geste que le bouton d'en-tête : relire la liste SANS
+              // importer laissait les forfaits neufs affichés ici mais absents
+              // du sélecteur. Le rafraîchissement importe, puis relit.
+              <Pressable
+                onPress={() => { void handleRefresh(); }}
+                disabled={connectionsLoading || isRefreshing}
+                hitSlop={10}
+                accessibilityRole="button"
+                accessibilityLabel={t('refresh_config')}
+              >
+                {connectionsLoading || isRefreshing
                   ? <ActivityIndicator size="small" color={colors.primary} />
                   : <Ionicons name="refresh" size={16} color={colors.primary} />}
               </Pressable>
@@ -1055,7 +1078,8 @@ export default function HomeScreen() {
         configs={savedConfigs}
         activeConfigId={activeConfigId}
         activeQuota={derivedQuota}
-        connections={connections}
+        connections={connectionsSelecteur}
+        importNotes={importNotes}
         switching={isSwitchingConfig}
         onSelect={(id) => { setConfigPickerVisible(false); void switchConfig(id); }}
         onDelete={deleteConfig}

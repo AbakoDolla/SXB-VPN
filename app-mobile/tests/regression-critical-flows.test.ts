@@ -3448,3 +3448,53 @@ describe('tableau de bord — comptes, revendeurs et habilitations', () => {
     assert.doesNotMatch(source('../artifacts/sxb-dashboard/src/locales/fr/commerce.json'), /Ã.|â€|Â«|Â»/);
   });
 });
+
+describe('configurations attribuées : import automatique, jamais de déconnexion', () => {
+  const accueil = source('app/(tabs)/index.tsx');
+  const accessSync = source('services/accessSync.ts');
+  const accessPolicy = source('services/accessPolicy.ts');
+  const provisionRoutes = source('../server/routes/provision.ts');
+  const picker = source('components/ui/ConfigPicker.tsx');
+  const fr = source('localization/fr.ts');
+
+  it('le bouton d’actualisation de la liste importe, il ne se contente pas de relire', () => {
+    // Il appelait `fetchConnections` : la liste montrait le forfait neuf,
+    // le sélecteur le laissait « à télécharger ».
+    assert.doesNotMatch(accueil, /onPress=\{fetchConnections\}/);
+    const section = accueil.slice(accueil.indexOf("title={t('vpn_connections')}"), accueil.indexOf('connections.length === 0 ?'));
+    assert.match(section, /onPress=\{\(\) => \{ void handleRefresh\(\); \}\}/);
+  });
+
+  it('le sélecteur ne repropose pas un forfait retiré de l’appareil', () => {
+    // Le réafficher « en attente » menait droit à « Configuration absente ».
+    assert.match(accueil, /connections=\{connectionsSelecteur\}/);
+    assert.match(accueil, /importNotes=\{importNotes\}/);
+  });
+
+  it('n’étiquette plus un import automatique comme une tâche de l’utilisateur', () => {
+    assert.doesNotMatch(fr, /config_pending_device: 'À télécharger'/);
+    assert.match(picker, /config_import_device_bound/);
+    assert.match(picker, /config_import_cap_hint/);
+  });
+
+  it('aucun refus de provisionnement ne porte une invalidation de session', () => {
+    // 403/409 + SESSION_INVALID : l'application coupait le tunnel, oubliait
+    // l'identité et effaçait toutes ses configurations, pour UN forfait.
+    const activate = provisionRoutes.slice(provisionRoutes.indexOf("router.post('/activate'"), provisionRoutes.indexOf("router.post('/sync'"));
+    const sync = provisionRoutes.slice(provisionRoutes.indexOf("router.post('/sync'"), provisionRoutes.indexOf("router.get('/status"));
+    for (const route of [activate, sync]) {
+      assert.ok(route.length > 0);
+      assert.doesNotMatch(route, /status\((403|409)\)\.json\(\{\s*\.\.\.sessionInvalidFailure\(\)/);
+    }
+    // Côté mobile, seul un 401 peut invalider la session.
+    assert.match(accessPolicy, /if \(status !== undefined && status !== 401\) return null;/);
+  });
+
+  it('importe dès l’attribution et retente de lui-même un import raté', () => {
+    assert.match(accessSync, /AUTO_IMPORT_RETRY_MS = \[5_000, 15_000, 30_000, 60_000, 120_000, 300_000\]/);
+    assert.match(accessSync, /if \(manquant\) scheduleAutoImport\(true\)/);
+    assert.match(accessSync, /libererPlaceInutilisable\(importsConnus, current\)/);
+    // Fin de session : aucune reprise ne survit à la déconnexion.
+    assert.match(accessSync, /stopAutoImport\(\); importNotes = new Map\(\);/);
+  });
+});

@@ -191,8 +191,11 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
     }
     const accessError = await refusProvision(req, sub);
     if (accessError) return res.status(accessError.status).json(accessError.body);
+    // Le COMPTE est lié à un autre appareil que celui qui appelle : c'est
+    // l'identité de l'appelant qui est en cause, d'où un 401 — le seul statut
+    // auquel l'application accorde le sens « session invalide ».
     if (sub.client.activatedAt && sub.client.deviceId !== deviceId) {
-      return res.status(403).json({ ...sessionInvalidFailure(), error: 'Appareil différent du compte activé' });
+      return res.status(401).json({ ...sessionInvalidFailure(), error: 'Appareil différent du compte activé' });
     }
 
     // 2. Charger le payload SSH séparément (relation non mappée dans le client Prisma généré)
@@ -208,27 +211,57 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
     const registeredDeviceId = sub.deviceId as string | null;
     const isExistingDevice   = registeredDeviceId === deviceId;
 
+    // ── UN FORFAIT SUIT SON COMPTE ────────────────────────────────────────
+    //
+    // `refusProvision` a établi que ce forfait appartient au compte appelant,
+    // et `requireAuth` que ce compte est lié à l'appareil qui appelle. Un
+    // forfait de CE compte encore attaché à un autre identifiant ne désigne
+    // donc qu'un appareil que le compte a quitté : réinitialisation de
+    // l'activation par l'exploitant, ou essai pré-affecté remplacé par le
+    // premier appareil réellement activé. L'ancien appareil ne peut plus
+    // s'authentifier pour ce compte ; refuser ici ne protégeait donc rien, et
+    // condamnait le téléphone actuel à ne jamais recevoir ses forfaits.
+    const compteSurCetAppareil = !!sub.client?.activatedAt && sub.client?.deviceId === deviceId;
+
     // deviceLimit > 1 non supporté par ce schéma (un seul deviceId par abonnement)
-    if (!isExistingDevice && registeredDeviceId) {
+    //
+    // Refus propre à CE forfait, jamais une invalidation de session : porter
+    // `SESSION_INVALID` ici faisait déconnecter l'application tout entière —
+    // tunnel coupé et toutes ses configurations effacées — pour un seul
+    // forfait mal lié, à chaque import automatique.
+    if (!isExistingDevice && registeredDeviceId && !compteSurCetAppareil) {
       return res.status(403).json({
-        ...sessionInvalidFailure(),
         error: 'Cet abonnement est déjà lié à un autre appareil',
+        code: 'SUBSCRIPTION_DEVICE_BOUND',
         deviceLimit: 1,
         registeredDevices: 1,
       });
     }
 
-    // 5. Enregistrer l'appareil si nouveau
+    // 5. Enregistrer l'appareil si nouveau (ou reprendre la place de l'ancien
+    //    appareil du même compte). La condition porte sur la valeur LUE : un
+    //    changement concurrent fait échouer la mise à jour au lieu de l'écraser.
     if (!isExistingDevice) {
       const claimed = await (prisma as any).subscription.updateMany({
-        where: { id: sub.id, deviceId: null },
+        where: { id: sub.id, deviceId: registeredDeviceId },
         data:  { deviceId },
       });
       if (claimed.count !== 1) {
         const current = await (prisma as any).subscription.findUnique({ where: { id: sub.id } });
         if (current?.deviceId !== deviceId) {
-          return res.status(409).json({ ...sessionInvalidFailure(), error: 'Cet abonnement vient d’être lié à un autre appareil' });
+          return res.status(409).json({
+            error: 'Cet abonnement vient d’être lié à un autre appareil',
+            code: 'SUBSCRIPTION_DEVICE_BOUND',
+          });
         }
+      }
+      if (registeredDeviceId) {
+        await logDbActivity(
+          req.user?.userId || null,
+          `Forfait ${sub.name || sub.id} relié au nouvel appareil du compte → ${deviceId}`,
+          'info',
+          req.ip,
+        ).catch(() => {});
       }
     }
 
@@ -415,7 +448,8 @@ router.post('/sync', requireAuth, async (req: AuthenticatedRequest, res: Respons
     const accessError = await refusProvision(req, sub);
     if (accessError) return res.status(accessError.status).json(accessError.body);
     if (deviceId && sub.deviceId && deviceId !== sub.deviceId) {
-      return res.status(403).json({ ...sessionInvalidFailure(), error: 'Appareil non lié à ce forfait' });
+      // Refus propre à ce forfait : jamais une invalidation de session.
+      return res.status(403).json({ error: 'Appareil non lié à ce forfait', code: 'SUBSCRIPTION_DEVICE_BOUND' });
     }
     if (deviceId && sub.client.activatedAt && sub.client.deviceId !== deviceId) return res.status(401).json(sessionInvalidFailure());
     const addedBytes = downloadBytes + uploadBytes;

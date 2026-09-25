@@ -35,6 +35,118 @@ let wakeObservation: (() => void) | null = null;
 let connections: VpnConnection[] = [];
 export const getRemoteConnections = () => connections;
 
+/**
+ * Pourquoi un forfait attribué n'est pas (encore) sur l'appareil.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * LE SILENCE QUE CE REGISTRE REMPLACE
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Un import raté n'était écrit qu'en console : le forfait restait « À
+ * télécharger » dans le sélecteur, sans un mot, et rien ne le retentait tant
+ * que l'utilisateur ne rappuyait pas quelque part. Chaque échec est désormais
+ * retenu ici — pour l'afficher, et pour qu'une reprise automatique s'en charge.
+ */
+export type ImportNote = {
+  /** `cap` : quatre configurations utilisables occupent déjà toutes les places. */
+  kind: 'failed' | 'cap';
+  code: string;
+  /** Faux pour un refus que seul l'exploitant peut lever (appareil, profil incomplet). */
+  retryable: boolean;
+};
+let importNotes = new Map<string, ImportNote>();
+export const getImportNotes = (): ReadonlyMap<string, ImportNote> => importNotes;
+
+/**
+ * Reprise automatique des imports.
+ *
+ * Un forfait tout juste attribué part tout de suite ; un import raté est
+ * retenté à intervalles croissants — pour ne jamais marteler un serveur en
+ * panne, sans jamais abandonner : un forfait attribué doit finir sur
+ * l'appareil sans que personne ait à le demander.
+ */
+const AUTO_IMPORT_RETRY_MS = [5_000, 15_000, 30_000, 60_000, 120_000, 300_000];
+let autoImportTimer: ReturnType<typeof setTimeout> | null = null;
+let autoImportAttempt = 0;
+
+function scheduleAutoImport(immediate = false): void {
+  if (!runtime) return;
+  if (autoImportTimer) {
+    // Une reprise lente déjà programmée ne doit pas retarder un forfait NEUF.
+    if (!immediate) return;
+    clearTimeout(autoImportTimer);
+    autoImportTimer = null;
+  }
+  const epoch = lifecycle;
+  const delay = immediate ? 0 : AUTO_IMPORT_RETRY_MS[Math.min(autoImportAttempt, AUTO_IMPORT_RETRY_MS.length - 1)];
+  autoImportTimer = setTimeout(() => {
+    autoImportTimer = null;
+    if (epoch !== lifecycle || !runtime || !getAccessState().authority) return;
+    // Un rafraîchissement déjà en vol traitera ces forfaits : on attend son
+    // verdict, puis on regarde s'il reste réellement quelque chose à importer,
+    // plutôt que d'empiler un second aller-retour.
+    if (refresh) {
+      void refresh.finally(() => { if (epoch === lifecycle) void reconcileAccess().catch(reportAccessSyncError); }).catch(() => {});
+      return;
+    }
+    if (!immediate) autoImportAttempt += 1;
+    void refreshMobileConfigs()
+      .then(() => runtime?.changed())
+      .catch(reportAccessSyncError);
+  }, delay);
+  // Sous Node (tests), une reprise en attente ne doit pas retenir le
+  // processus ; React Native rend un simple numéro, sans `unref`.
+  (autoImportTimer as { unref?: () => void }).unref?.();
+}
+
+/** Annule toute reprise d'import programmée (fin de session). */
+export function stopAutoImport(): void {
+  if (autoImportTimer) clearTimeout(autoImportTimer);
+  autoImportTimer = null;
+  autoImportAttempt = 0;
+}
+
+/** Diagnostic sans secret ni message serveur libre : un code d'une liste connue. */
+function importFailure(error: unknown): ImportNote {
+  if (error instanceof ProvisioningError) {
+    return {
+      kind: 'failed',
+      code: error.serverCode === 'SUBSCRIPTION_DEVICE_BOUND' ? error.serverCode : error.diagnostic.code,
+      retryable: error.diagnostic.retryable,
+    };
+  }
+  const status = responseInfo(error).status;
+  return { kind: 'failed', code: status ? `HTTP_${status}` : 'UNAVAILABLE', retryable: !status || status >= 500 || status === 429 };
+}
+
+/**
+ * Libère UNE place du plafond pour un forfait actif, en retirant de l'appareil
+ * une configuration importée qui ne peut plus servir.
+ *
+ * Jamais retirées : la configuration active, celle du tunnel en cours, une
+ * configuration encore utilisable, un profil ajouté à la main. La plus inutile
+ * part d'abord — forfait disparu de la liste du serveur, puis forfait bloqué,
+ * expiré ou épuisé —, la plus ancienne à égalité. Elle n'est pas « supprimée »
+ * au sens de l'utilisateur : si le forfait redevient utilisable, il revient.
+ */
+async function libererPlaceInutilisable(importsConnus: ReadonlySet<string>, authority: AccessAuthority): Promise<string | null> {
+  const entries = storeValue(await configStore.list()) ?? [];
+  const running = runtime?.activeProfile()?.configId ?? null;
+  const assigned = new Map(connections.map(entry => [entry.id, entry]));
+  const victim = entries
+    .filter(meta => meta.source === 'backend' && importsConnus.has(meta.configId) && !meta.isActive && meta.configId !== running)
+    .map(meta => {
+      const remote = assigned.get(meta.subscriptionId || meta.configId);
+      const unusable = !remote ? 0 : (profileRestriction(authority, meta) || remote.status !== 'active') ? 1 : 2;
+      return { meta, unusable };
+    })
+    .filter(candidate => candidate.unusable < 2)
+    .sort((a, b) => a.unusable - b.unusable ||
+      (Date.parse(a.meta.savedAt || '') || 0) - (Date.parse(b.meta.savedAt || '') || 0))[0]?.meta;
+  if (!victim) return null;
+  const removed = await configStore.remove(victim.configId);
+  return removed.status === 'ok' ? victim.configId : null;
+}
+
 export function storeValue<T>(result: configStore.StoreResult<T>): T | undefined {
   if (result.status === 'error') throw result.error ?? new Error('CONFIG_STORAGE_UNAVAILABLE');
   return result.value;
@@ -43,7 +155,15 @@ export function storeValue<T>(result: configStore.StoreResult<T>): T | undefined
 export function registerAccessRuntime(next: Runtime): () => void {
   runtime = next;
   void reconcileAccess().catch(reportAccessSyncError);
-  return () => { if (runtime === next) runtime = null; };
+  // Une reprise suspendue par un changement de runtime repart avec le nouveau.
+  if ([...importNotes.values()].some(note => note.kind === 'failed')) scheduleAutoImport();
+  return () => {
+    if (runtime !== next) return;
+    runtime = null;
+    // Sans runtime, plus personne ne peut recevoir une configuration importée.
+    if (autoImportTimer) clearTimeout(autoImportTimer);
+    autoImportTimer = null;
+  };
 }
 
 export function reportAccessSyncError(error: unknown): void {
@@ -81,6 +201,28 @@ export function reconcileAccess(): Promise<void> {
       } else if (restriction) {
         storeValue(await configStore.updateMetadata(entry.configId, { accessStatus: restriction.status }));
       }
+    }
+    // ── IMPORT DÈS L'ATTRIBUTION ─────────────────────────────────────────
+    // L'instantané d'accès — reçu par HTTP ou par le service natif — annonce
+    // un forfait actif que l'appareil n'a pas : l'import part tout de suite,
+    // sans attendre un geste ni la relecture périodique de l'accueil. Un
+    // rafraîchissement déjà en vol s'en charge lui-même, d'où la garde.
+    if (!refresh && authority.snapshot && !blocksDevice(deviceAccess(authority))) {
+      const detenus = new Set(entries.map(entry => entry.subscriptionId || entry.configId));
+      const dismissed = new Set(storeValue(await configStore.listDismissed()) ?? []);
+      const statut = new Map(authority.snapshot.subscriptions.map(item => [item.id, item.status]));
+      const running = currentRuntime?.activeProfile()?.configId ?? null;
+      // Une place tenue par une configuration inutilisable peut revenir à un
+      // forfait resté hors de l'appareil faute de place.
+      const placeLiberable = entries.some(entry => entry.source === 'backend' && !entry.isActive &&
+        entry.configId !== running && statut.get(entry.subscriptionId || entry.configId) !== 'active');
+      const manquant = authority.snapshot.subscriptions.some(item => {
+        if (item.status !== 'active' || detenus.has(item.id) || dismissed.has(item.id)) return false;
+        if (profileRestriction(authority, { configId: item.id, subscriptionId: item.id, source: 'backend', configHash: item.configHash })) return false;
+        const note = importNotes.get(item.id);
+        return !note || (note.kind === 'cap' && placeLiberable);
+      });
+      if (manquant) scheduleAutoImport(true);
     }
     await currentRuntime?.changed();
   });
@@ -212,6 +354,7 @@ export function refreshMobileConfigs(): Promise<VpnConnection[]> {
         .filter(meta => meta.source === 'backend')
         .map(meta => meta.configId),
     );
+    const notes = new Map<string, ImportNote>();
     for (const entry of connections) {
       if (epoch !== lifecycle || !currentIdentityRequest(identity)) return [];
       const current = getAccessState().authority;
@@ -227,10 +370,29 @@ export function refreshMobileConfigs(): Promise<VpnConnection[]> {
       if (connu && !!connu.isFreeTrial !== entry.isFreeTrial) {
         storeValue(await configStore.updateMetadata(entry.id, { isFreeTrial: entry.isFreeTrial }));
       }
-      if (restriction || entry.status !== 'active' || !entry.dataToken) continue;
-      const stored = storeValue(await configStore.get(entry.id));
+      if (restriction || entry.status !== 'active') continue;
+      // Une configuration illisible (payload perdu si le système a tué
+      // l'application au milieu d'une écriture) ne doit pas faire échouer tout
+      // le rafraîchissement — ce qui bloquait l'import de TOUS les forfaits :
+      // elle est simplement réimportée, ce qui la répare.
+      const lecture = await configStore.get(entry.id);
+      const stored = lecture.status === 'ok' ? lecture.value : undefined;
+      if (!entry.dataToken) {
+        // Rien à provisionner sans jeton : on le note, pour que cette absence
+        // ne relance pas un import à chaque instantané d'accès.
+        if (!stored) notes.set(entry.id, { kind: 'failed', code: 'PVN_TOKEN_MISSING', retryable: false });
+        continue;
+      }
       const changed = stored && (entry.configHash ? stored.meta.configHash !== entry.configHash : stored.meta.configVersion !== entry.configVersion);
-      if (!stored && !importsConnus.has(entry.id) && importsConnus.size >= MAX_IMPORTED_BACKEND_CONFIGS) continue;
+      if (!stored && !importsConnus.has(entry.id) && importsConnus.size >= MAX_IMPORTED_BACKEND_CONFIGS) {
+        // Plafond atteint : une place tenue par une configuration qui ne peut
+        // plus servir revient à ce forfait actif, au lieu de le laisser « à
+        // télécharger » indéfiniment. Seules quatre configurations UTILISABLES
+        // bloquent un import.
+        const liberee = await libererPlaceInutilisable(importsConnus, current);
+        if (!liberee) { notes.set(entry.id, { kind: 'cap', code: 'CONFIG_CAP_REACHED', retryable: false }); continue; }
+        importsConnus.delete(liberee);
+      }
       if (!stored || changed) {
         try {
           await provisionAndStore(entry.dataToken, current.deviceId, entry.id);
@@ -239,6 +401,9 @@ export function refreshMobileConfigs(): Promise<VpnConnection[]> {
         catch (error) {
           if (error instanceof ProvisioningError) console.warn('[Access] Provisioning deferred:', error.diagnostic.code);
           else reportAccessSyncError(error);
+          // Une mise à jour ratée laisse la version précédente en service :
+          // seul un forfait ABSENT de l'appareil attend un import.
+          if (!stored) notes.set(entry.id, importFailure(error));
         }
         // Le provisionnement construit sa fiche à partir de la réponse
         // `/provision/activate`, qui ne connaît pas les essais : le marqueur est
@@ -251,11 +416,20 @@ export function refreshMobileConfigs(): Promise<VpnConnection[]> {
           usedQuota: entry.quota.usedBytes, expiryDate: entry.expiresAt });
       }
     }
+    importNotes = notes;
+    // Tant qu'un forfait attribué manque à cause d'un échec, une reprise est
+    // programmée : l'utilisateur n'a jamais à relancer l'import lui-même.
+    if ([...notes.values()].some(note => note.kind === 'failed')) scheduleAutoImport();
+    else autoImportAttempt = 0;
     await reconcileAccess();
     return connections;
   })();
   refresh = operation;
   void operation.finally(() => { if (refresh === operation) refresh = null; }).catch(() => { /* Caller handles the error. */ });
+  // Un rafraîchissement qui échoue EN BLOC (réseau coupé avant même la liste)
+  // n'a rien pu noter : sans cette reprise, un forfait tout juste attribué
+  // attendrait le prochain geste de l'utilisateur.
+  void operation.catch(() => { if (epoch === lifecycle) scheduleAutoImport(); });
   return operation;
 }
 
@@ -361,7 +535,10 @@ export function startAccessObservation(): () => void {
   schedule(0);
   return () => {
     stopped = true;
-    if (epoch === lifecycle) { lifecycle++; connections = []; controlSupported = null; nativeHandoffUntil = 0; wakeObservation = null; }
+    if (epoch === lifecycle) {
+      lifecycle++; connections = []; controlSupported = null; nativeHandoffUntil = 0; wakeObservation = null;
+      stopAutoImport(); importNotes = new Map();
+    }
     controller.abort();
     controlRequest?.controller.abort();
     if (timer) clearTimeout(timer);

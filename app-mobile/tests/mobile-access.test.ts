@@ -699,6 +699,160 @@ describe('mobile access runtime with real encrypted store, auth and HTTP interce
     assert.equal(h.state.storage.has('sxb_quota_b'), false);
   });
 
+  // ── Import automatique : aucun forfait attribué ne doit rester en attente ──
+  //
+  // Ce que le propriétaire exige : une configuration assignée depuis le tableau
+  // de bord arrive d'elle-même sur le téléphone, jusqu'à quatre, et rien ne
+  // déconnecte l'application. Chaque scénario ci-dessous reproduit un chemin
+  // par lequel l'une de ces promesses était rompue.
+  function provisionResponse(h: Harness, id: string) {
+    const plaintext = { ...config, uuid: '00000000-0000-4000-8000-000000000001', configId: id, subscriptionId: id, deviceId: 'hardware' };
+    const key = new Uint8Array(32).fill(7), iv = new Uint8Array(12).fill(3);
+    const sealed = h.aes.encryptAes256Gcm(key, iv, Buffer.from(JSON.stringify(plaintext)));
+    const hex = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex');
+    return { deviceId: 'hardware', subscriptionId: id, profileName: `Profile ${id}`, protocol: 'vless',
+      configHash: `hash-${id}`, configVersion: 1, configKey: hex(key),
+      encryptedBlob: `gcm:${hex(iv)}:${hex(sealed.ciphertext)}:${hex(sealed.authTag)}` };
+  }
+  function withSubscriptions(revision: string, entries: Array<[string, ProfileStatus]>): AccessSnapshot {
+    return { ...snapshot(revision), subscriptions: entries.map(([id, status]) => ({
+      id, name: `Profile ${id}`, status, quotaTotalBytes: 100, quotaUsedBytes: 5, expireAt: null, configVersion: 1, configHash: `hash-${id}`,
+    })) };
+  }
+  function serve(h: Harness, s: AccessSnapshot, remote: ReturnType<typeof remoteConnections>, provision: (id: string) => unknown) {
+    h.api.default.defaults.adapter = async request => {
+      let data: unknown;
+      if (request.url === '/mobile/access-state') data = s;
+      else if (request.url === '/mobile/connections') data = remote;
+      else if (request.url === '/provision/activate') {
+        const token: string = JSON.parse(request.data).dataToken;
+        data = provision(token.slice('SXB-DATA-'.length, 'SXB-DATA-'.length + 1).toLowerCase());
+      } else throw new Error('Unexpected request');
+      return { status: 200, statusText: 'OK', config: request, headers: {}, data };
+    };
+  }
+
+  it('un refus de forfait (403 SESSION_INVALID d’un ancien serveur) ne déconnecte jamais l’application', async () => {
+    const h = await harness();
+    const { cleanup } = await setup(h);
+    // Même câblage que `AuthContext` : un échec de portée « session » efface
+    // l'identité, coupe le tunnel et purge TOUTES les configurations.
+    const publiees: string[] = [];
+    h.events.subscribeAccessFailures(({ issue }) => {
+      publiees.push(`${issue.scope}:${issue.code}`);
+      if (issue.scope === 'session') void h.auth.clearIdentitySession();
+    });
+    const s = withSubscriptions('bound-c', [['a', 'active'], ['b', 'active'], ['c', 'active']]);
+    const remote = remoteConnections(s);
+    remote.connections[2].dataToken = 'SXB-DATA-CCCC-CCCC-CCCC';
+    let tentatives = 0;
+    h.api.default.defaults.adapter = async request => {
+      if (request.url === '/provision/activate') {
+        tentatives++;
+        throw httpError(request, 403, { code: 'SESSION_INVALID', scope: 'session', temporary: false, error: 'Cet abonnement est déjà lié à un autre appareil' });
+      }
+      return { status: 200, statusText: 'OK', config: request, headers: {}, data: request.url === '/mobile/access-state' ? s : remote };
+    };
+    await h.sync.refreshMobileConfigs();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    cleanup();
+    assert.equal(tentatives, 1, 'un refus 403 ne se rejoue pas en rafale');
+    assert.equal(publiees.some(entry => entry.startsWith('session:')), false);
+    assert.equal(h.auth.getIdentitySession()?.user.id, user.id);
+    assert.equal((await h.store.get('a')).status, 'ok');
+    assert.equal((await h.store.get('b')).status, 'ok');
+    assert.equal(h.state.stopCount, 0);
+    assert.equal(h.sync.getImportNotes().get('c')?.kind, 'failed');
+    // La règle elle-même : seul un 401 porte une invalidation de session.
+    const refus = httpError({ url: '/provision/activate', headers: {} } as InternalAxiosRequestConfig, 403,
+      { code: 'SESSION_INVALID', scope: 'session', temporary: false });
+    assert.equal(h.policy.accessIssueFromError(refus), null);
+    assert.equal(h.policy.isInvalidSession(refus), false);
+    const expiree = httpError({ url: '/mobile/me', headers: {} } as InternalAxiosRequestConfig, 401,
+      { code: 'SESSION_INVALID', scope: 'session', temporary: false });
+    assert.equal(h.policy.accessIssueFromError(expiree)?.scope, 'session');
+    assert.equal(h.policy.isInvalidSession(expiree), true);
+  });
+
+  it('au plafond, une configuration expirée cède sa place à un forfait actif attribué', async () => {
+    const h = await harness();
+    const { cleanup } = await setup(h);
+    for (const id of ['c', 'd']) {
+      assert.equal((await h.store.save(id, { ...config, configId: id }, {
+        name: `Profile ${id}`, source: 'backend', subscriptionId: id, configHash: `hash-${id}`, configVersion: 1, isActive: false,
+      })).status, 'ok');
+    }
+    // a (active), b, c, d : quatre configurations importées, plafond atteint.
+    const s = withSubscriptions('cap', [['a', 'active'], ['b', 'expired'], ['c', 'active'], ['d', 'active'], ['e', 'active']]);
+    const remote = remoteConnections(s);
+    remote.connections[4].dataToken = 'SXB-DATA-EEEE-EEEE-EEEE';
+    const importes: string[] = [];
+    serve(h, s, remote, id => { importes.push(id); return provisionResponse(h, id); });
+    await h.sync.refreshMobileConfigs();
+    cleanup();
+    equal(importes, ['e']);
+    assert.equal((await h.store.get('e')).status, 'ok');
+    assert.equal((await h.store.get('b')).status, 'missing');
+    for (const id of ['a', 'c', 'd', 'manual']) assert.equal((await h.store.get(id)).status, 'ok', id);
+    assert.equal((await h.store.getActive()).value?.meta.configId, 'a');
+    assert.equal(h.sync.getImportNotes().size, 0);
+    assert.equal(h.state.stopCount, 0);
+  });
+
+  it('au plafond de quatre configurations UTILISABLES, le cinquième forfait attend sans rien évincer', async () => {
+    const h = await harness();
+    const { cleanup } = await setup(h);
+    for (const id of ['c', 'd']) {
+      assert.equal((await h.store.save(id, { ...config, configId: id }, {
+        name: `Profile ${id}`, source: 'backend', subscriptionId: id, configHash: `hash-${id}`, configVersion: 1, isActive: false,
+      })).status, 'ok');
+    }
+    const s = withSubscriptions('full', [['a', 'active'], ['b', 'active'], ['c', 'active'], ['d', 'active'], ['e', 'active']]);
+    const remote = remoteConnections(s);
+    remote.connections[4].dataToken = 'SXB-DATA-EEEE-EEEE-EEEE';
+    const importes: string[] = [];
+    serve(h, s, remote, id => { importes.push(id); return provisionResponse(h, id); });
+    await h.sync.refreshMobileConfigs();
+    cleanup();
+    equal(importes, []);
+    for (const id of ['a', 'b', 'c', 'd']) assert.equal((await h.store.get(id)).status, 'ok', id);
+    assert.equal(h.sync.getImportNotes().get('e')?.kind, 'cap');
+  });
+
+  it('réimporte une configuration au payload illisible au lieu de bloquer tout le rafraîchissement', async () => {
+    const h = await harness();
+    const { cleanup } = await setup(h);
+    // Le système a tué l'application entre deux écritures : le registre cite
+    // encore « b », son payload a disparu.
+    h.state.storage.delete('sxb_cfg_payload_b');
+    assert.equal((await h.store.get('b')).status, 'error');
+    const s = withSubscriptions('repair', [['a', 'active'], ['b', 'active']]);
+    const remote = remoteConnections(s);
+    remote.connections[1].dataToken = 'SXB-DATA-BBBB-BBBB-BBBB';
+    serve(h, s, remote, id => provisionResponse(h, id));
+    await h.sync.refreshMobileConfigs();
+    cleanup();
+    assert.equal((await h.store.get('b')).status, 'ok');
+    assert.equal((await h.store.get('a')).status, 'ok');
+  });
+
+  it('importe de lui-même un forfait que l’instantané d’accès annonce, sans aucun geste', async () => {
+    const h = await harness();
+    const { cleanup } = await setup(h);
+    const s = withSubscriptions('assigned-e', [['a', 'active'], ['b', 'active'], ['e', 'active']]);
+    const remote = remoteConnections(s);
+    remote.connections[2].dataToken = 'SXB-DATA-EEEE-EEEE-EEEE';
+    serve(h, s, remote, id => provisionResponse(h, id));
+    // L'instantané arrive (long-poll HTTP ou service natif) : personne ne
+    // touche l'écran, personne n'appuie sur « Actualiser ».
+    await apply(h, s);
+    const limite = Date.now() + 3000;
+    while ((await h.store.get('e')).status !== 'ok' && Date.now() < limite) await new Promise(resolve => setTimeout(resolve, 10));
+    cleanup();
+    assert.equal((await h.store.get('e')).status, 'ok');
+    assert.ok(h.state.events.includes('ui:changed'));
+  });
+
   it('drains a legacy native service before first binding and keeps reconnect denial inside dispatch', () => {
     const nativeModule = readFileSync(path.join(mobile, 'modules/android-native/SxbVpnModule.kt'), 'utf8');
     const bind = nativeModule.slice(nativeModule.indexOf('fun bindAccessSession('), nativeModule.indexOf('fun getAccessControlState('));

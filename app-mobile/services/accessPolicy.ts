@@ -151,8 +151,19 @@ export function responseInfo(error: unknown): { status?: number; data?: unknown;
 
 export function accessIssueFromError(error: unknown): AccessIssue | null {
   if (error instanceof AccessDeniedError) return error.issue;
-  if (isRecord(error) && error.accessIssue) return parseAccessIssue(error.accessIssue);
-  return parseAccessIssue(responseInfo(error).data);
+  const issue = isRecord(error) && error.accessIssue
+    ? parseAccessIssue(error.accessIssue)
+    : parseAccessIssue(responseInfo(error).data);
+  // Seul un refus d'AUTHENTIFICATION (401) peut invalider la session. Un
+  // 403/409 portant `SESSION_INVALID` concerne la ressource demandée — un
+  // serveur antérieur l'envoyait pour UN forfait lié à un autre appareil — et
+  // l'honorer déconnectait l'application entière, tunnel coupé et toutes les
+  // configurations effacées, à chaque import automatique de ce forfait.
+  if (issue?.scope === 'session') {
+    const status = responseInfo(error).status;
+    if (status !== undefined && status !== 401) return null;
+  }
+  return issue;
 }
 
 /** A generic 403/404, and a 401 carrying a device/config refusal, are not logout orders. */
