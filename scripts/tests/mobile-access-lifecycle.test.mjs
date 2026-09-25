@@ -75,6 +75,40 @@ test("lifecycle: config revocation/deletion removes only that subscription and n
   assert.deepEqual(row("VpnClient", "c1"), before);
 });
 
+test("lifecycle: a subscription left on the account's former device follows the account instead of logging it out", async () => {
+  bind();
+  const created = await createSub();
+  ok(created, 201);
+  const id = created.body.subscription.id;
+  // Activation réinitialisée par l'exploitant puis refaite sur CE téléphone :
+  // le compte l'a suivi, ses forfaits portent encore l'ancien identifiant. Le
+  // serveur répondait 403 SESSION_INVALID, et l'application — qui importe
+  // chaque forfait d'elle-même — se déconnectait en effaçant tout.
+  row("Subscription", id).deviceId = "FORMER-ANDROID";
+  const moved = await request("/provision/activate", accessToken(), {
+    method: "POST", body: { dataToken: row("Subscription", id).dataToken, deviceId },
+  });
+  ok(moved);
+  assert.equal(row("Subscription", id).deviceId, deviceId);
+  assert.ok(JSON.stringify(moved.body).includes("gcm:"));
+  // Un refus propre à un forfait ne prétend jamais que la session est invalide.
+  const traffic = await request("/provision/sync", accessToken(), {
+    method: "POST", body: { subscriptionId: id, deviceId: "ELSEWHERE-ANDROID", downloadBytes: 0 },
+  });
+  ok(traffic, 403);
+  assert.equal(traffic.body.code, "SUBSCRIPTION_DEVICE_BOUND");
+  assert.notEqual(traffic.body.scope, "session");
+  // Le forfait d'un AUTRE compte reste hors d'atteinte : la reliaison ne vaut
+  // que pour les forfaits du compte appelant.
+  const other = await createSub();
+  ok(other, 201);
+  Object.assign(row("Subscription", other.body.subscription.id), { clientId: "c2", deviceId: "FOREIGN-ANDROID" });
+  ok(await request("/provision/activate", accessToken(), {
+    method: "POST", body: { dataToken: row("Subscription", other.body.subscription.id).dataToken, deviceId },
+  }), 404);
+  assert.equal(row("Subscription", other.body.subscription.id).deviceId, "FOREIGN-ANDROID");
+});
+
 test("lifecycle: snapshots are minimal, complete and content-versioned without secret or timestamp noise", async () => {
   bind();
   const sub = await createSub();

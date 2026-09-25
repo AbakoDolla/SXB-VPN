@@ -32,8 +32,8 @@ import { accessIssueFromError, blocksDevice, deviceAccess as selectDeviceAccess,
 import { getAccessState, requireDeviceAccess, requireProfileAccess, syncNativeAccessState } from '@/services/accessState';
 import { accessRequestStamp, currentAccessRequest, currentIdentityRequest } from '@/services/accessEvents';
 import {
-  getRemoteConnections, prepareNativeAccess, reconcileAccess, refreshAccessState, refreshMobileConfigs,
-  registerAccessRuntime, reportAccessSyncError, storeValue, wakeAccessObservation,
+  getImportNotes, getRemoteConnections, prepareNativeAccess, reconcileAccess, refreshAccessState, refreshMobileConfigs,
+  registerAccessRuntime, reportAccessSyncError, storeValue, wakeAccessObservation, type ImportNote,
 } from '@/services/accessSync';
 import * as configStore from '@/services/configStore';
 import { choisirProfilActif } from '@/services/activeProfile';
@@ -298,6 +298,14 @@ interface VpnContextType {
    */
   switchError:        { configId: string; message: string } | null;
   clearSwitchError:   () => void;
+  /**
+   * Pourquoi un forfait attribué n'est pas encore sur l'appareil, par id.
+   * Seuls les forfaits ABSENTS du coffre y figurent : échec d'import (retenté
+   * de lui-même) ou plafond de quatre configurations utilisables atteint.
+   */
+  importNotes:        Record<string, ImportNote>;
+  /** Forfaits que l'utilisateur a retirés de CET appareil. */
+  dismissedConfigIds: string[];
   // Quota
   quotaData:          QuotaData | null;
   derivedQuota:       DerivedQuota;
@@ -348,6 +356,7 @@ const VpnContext = createContext<VpnContextType>({
   stepLogs: [],
   savedConfigs: [], activeConfigId: null, switchConfig: async () => {}, isSwitchingConfig: false, switchingToId: null,
   switchError: null, clearSwitchError: () => {},
+  importNotes: {}, dismissedConfigIds: [],
   quotaData: null,
   derivedQuota: DEFAULT_DERIVED_QUOTA,
   currentDerivedQuota: DEFAULT_DERIVED_QUOTA,
@@ -414,6 +423,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const [switchingToId,      setSwitchingToId]         = useState<string | null>(null);
   const [switchError,        setSwitchError]           = useState<{ configId: string; message: string } | null>(null);
   const clearSwitchError = useCallback(() => setSwitchError(null), []);
+  const [importNotes,        setImportNotes]           = useState<Record<string, ImportNote>>({});
+  const [dismissedConfigIds, setDismissedConfigIds]    = useState<string[]>([]);
   const [quotaData,          setQuotaData]             = useState<QuotaData | null>(null);
   const [revokedStatus,      setRevokedStatus]        = useState<'none' | 'revoked' | 'suspended' | 'expired' | 'disabled' | 'exhausted'>('none');
   const [perAppTraffic,      setPerAppTraffic]        = useState<AppTrafficStat[]>([]);
@@ -1685,11 +1696,18 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       restreint: entry => !!profileRestriction(authority, entry),
     });
     const id = selected?.configId ?? null;
-    const stored = id ? storeValue(await configStore.get(id)) : undefined;
+    // Payload illisible : l'écran doit tout de même se mettre à jour — la
+    // configuration sera réimportée par la synchronisation — plutôt que de
+    // rester figé parce que CETTE lecture a levé.
+    const lue = id ? await configStore.get(id) : null;
+    const stored = lue?.status === 'ok' ? lue.value : undefined;
     const quota = id ? await loadQuotaData(id) : null;
+    const dismissed = storeValue(await configStore.listDismissed()) ?? [];
     if (request !== localLoadRef.current || authority !== getAccessState().authority) return;
     const remote = getRemoteConnections();
     setRemoteConnections(remote);
+    setImportNotes(Object.fromEntries(getImportNotes()));
+    setDismissedConfigIds(dismissed);
     setActiveConnection(remote.find(entry => entry.id === (selected?.subscriptionId || id)) ?? null);
     setActiveConfigId(id);
     setVpnConfig(stored ? { ...stored.config, configId: id } : null);
@@ -2224,6 +2242,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     // Trace persistante : l'abonnement existe toujours côté dashboard, donc
     // sans elle le prochain /mobile/connections reprovisionnerait le profil.
     await configStore.dismiss(configId);
+    // Le sélecteur ne doit pas le réafficher « en attente » : il ne serait
+    // plus jamais importé, et l'appui échouait sur « Configuration absente ».
+    setDismissedConfigIds(prev => prev.includes(configId) ? prev : [...prev, configId]);
     await clearQuotaData(configId).catch(() => {});
 
     const remaining = await configStore.list();
@@ -2258,13 +2279,19 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const switchConfig = useCallback(async (configId: string) => {
     if (isSwitchingConfig || configId === activeConfigId) return;
     setSwitchError(null);
-    let remoteTarget = remoteConnections.find(c => c.id === configId) || null;
+    let remoteTarget = remoteConnections.find(c => c.id === configId)
+      || getRemoteConnections().find(c => c.id === configId) || null;
     // Cette lecture sert AUSSI de contrôle d'accès, et elle est réutilisée
     // plus bas. Elle était refaite à l'identique quelques lignes après : sur
     // Android, chaque lecture traverse le pont natif et déchiffre le profil,
     // si bien qu'une bascule en payait trois. C'est l'une des deux raisons
     // pour lesquelles changer de configuration traînait.
-    const lecture = storeValue(await configStore.get(configId));
+    //
+    // Un payload illisible ne doit plus faire avorter la bascule EN SILENCE
+    // (l'exception partait hors de tout `try`) : la lecture ratée est traitée
+    // comme une absence, et la configuration est réimportée plus bas.
+    const premiereLecture = await configStore.get(configId);
+    const lecture = premiereLecture.status === 'ok' ? premiereLecture.value : undefined;
     try {
       requireDeviceAccess();
       requireProfileAccess(lecture?.meta ?? { configId, configHash: remoteTarget?.configHash });
@@ -2290,8 +2317,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       // Réutilise la lecture faite au contrôle d'accès plutôt que d'en
       // refaire une : c'est le même profil, il n'a pas pu changer entre-temps.
       let target: Awaited<ReturnType<typeof configStore.get>> =
-        lecture ? { status: 'ok', value: lecture } : await configStore.get(configId);
-      if ((target.status !== 'ok' || !target.value) && remoteTarget) {
+        lecture ? { status: 'ok', value: lecture } : premiereLecture;
+      const absente = () => target.status !== 'ok' || !target.value;
+      const importerCible = async (remoteTarget: VpnConnection) => {
         if (!deviceId) throw new Error('Identifiant appareil indisponible — reconnectez-vous puis réessayez');
         addLog(`🔒 Provisionnement de « ${remoteTarget.name} »...`);
         const fresh = await provisionAndStore(remoteTarget.dataToken, deviceId, configId);
@@ -2306,29 +2334,21 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         const stored = await saveCompleteConfig(provisioned, (provisioned.protocol || remoteTarget.technicalProtocol || 'vless').toLowerCase(), configId, fresh.meta.expireAt);
         if (!stored) throw new Error('La configuration reçue est incomplète');
         target = await configStore.get(configId);
-      }
-      if ((target.status !== 'ok' || !target.value) && !remoteTarget) {
+      };
+      if (absente() && remoteTarget) await importerCible(remoteTarget);
+      if (absente() && !remoteTarget) {
         await refreshMobileConfigs().catch(() => {});
-        remoteTarget = getRemoteConnections().find(c => c.id === configId) || remoteConnections.find(c => c.id === configId) || null;
-        if (remoteTarget && !deviceId) throw new Error('Identifiant appareil indisponible — reconnectez-vous puis réessayez');
-        if (remoteTarget) {
-          addLog(`🔒 Provisionnement de « ${remoteTarget.name} »...`);
-          const fresh = await provisionAndStore(remoteTarget.dataToken, deviceId, configId);
-          const provisioned = mergeConnectionMetadata(mergeProvisionedConfig(null, fresh.config), {
-            configId,
-            subscriptionId: fresh.meta.subscriptionId,
-            displayProtocol: remoteTarget.displayProtocol || fresh.meta.displayProtocol,
-            dataToken: remoteTarget.dataToken,
-            configVersion: fresh.meta.configVersion,
-            configHash: fresh.meta.configHash,
-          });
-          const stored = await saveCompleteConfig(provisioned, (provisioned.protocol || remoteTarget.technicalProtocol || 'vless').toLowerCase(), configId, fresh.meta.expireAt);
-          if (!stored) throw new Error('La configuration reçue est incomplète');
-          target = await configStore.get(configId);
-        }
+        // Le rafraîchissement importe lui-même les forfaits manquants : on
+        // relit le coffre avant de payer un second aller-retour pour la cible.
+        target = await configStore.get(configId);
+        remoteTarget = getRemoteConnections().find(c => c.id === configId) || null;
+        if (absente() && remoteTarget) await importerCible(remoteTarget);
       }
       if (target.status !== 'ok' || !target.value) {
-        throw new Error(target.status === 'error' ? 'Stockage temporairement illisible — nouvelle tentative…' : 'Configuration absente');
+        // Plus attribuée à ce compte : on le dit en clair, et la liste est
+        // rechargée pour que l'entrée disparaisse au lieu d'échouer à nouveau.
+        if (target.status !== 'error') void reloadLocalConfigs().catch(reportAccessSyncError);
+        throw new Error(target.status === 'error' ? 'Stockage temporairement illisible — nouvelle tentative…' : t('config_no_longer_assigned'));
       }
 
       if (wasConnected || isConnecting) { addLog(`🔄 Basculement de configuration → ${configId}...`); await disconnect(); }
@@ -2415,6 +2435,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     stepLogs,
     savedConfigs, activeConfigId, switchConfig, isSwitchingConfig, switchingToId,
     switchError, clearSwitchError,
+    importNotes, dismissedConfigIds,
     quotaData,
     derivedQuota: currentDerivedQuota,
     currentDerivedQuota,
@@ -2436,7 +2457,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     selectedProtocol, connectedProtocol, availableProtocols,
     trafficStats, vpnLogs, hasVpnPermission, hasValidConfig,
     activeConnection, stepLogs, savedConfigs, activeConfigId,
-    switchConfig, isSwitchingConfig, switchingToId, switchError, clearSwitchError, quotaData, currentDerivedQuota, quotaSession,
+    switchConfig, isSwitchingConfig, switchingToId, switchError, clearSwitchError, importNotes, dismissedConfigIds, quotaData, currentDerivedQuota, quotaSession,
     revokedStatus, perAppTraffic, killSwitch, autoReconnect,
     syncFromConnection, connect, disconnect, selectProtocol,
     refreshVpnConfig, requestPermission, deleteConfig,

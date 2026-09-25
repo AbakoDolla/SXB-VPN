@@ -659,9 +659,15 @@ export const fr = {
   config_select: 'Sélectionner',
   config_active: 'Active',
   config_inactive: 'Inactive',
-  config_max_reached: 'Maximum 2 configurations atteint',
+  config_max_reached: 'Limite de 4 configurations atteinte',
   config_switch: 'Changer de configuration',
-  config_pending_device: 'À télécharger',
+  // L'import est automatique : l'étiquette ne doit plus sonner comme une
+  // consigne adressée à l'utilisateur.
+  config_pending_device: 'Import automatique…',
+  config_import_failed: 'Import échoué — nouvel essai automatique',
+  config_import_device_bound: 'Lié à un autre appareil — contactez votre revendeur',
+  config_import_cap_hint: 'Touchez pour l’importer — la plus ancienne inactive sera retirée',
+  config_no_longer_assigned: 'Cette configuration n’est plus attribuée à votre compte.',
   config_download_failed_title: 'Téléchargement impossible',
   config_saved: 'Configuration sauvegardée',
   config_removed: 'Configuration supprimée',

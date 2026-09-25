@@ -57,6 +57,8 @@ interface ConfigPickerProps {
   activeConfigId: string | null;
   activeQuota?: Pick<DerivedQuota, 'totalBytes' | 'usedBytes' | 'expiryDate'>;
   connections: VpnConnection[];
+  /** Pourquoi un forfait attribué n'est pas encore sur l'appareil, par id. */
+  importNotes?: Record<string, { kind: 'failed' | 'cap'; code: string }>;
   switching: boolean;
   onSelect: (configId: string) => void;
   onDelete: (configId: string) => Promise<boolean>;
@@ -69,6 +71,7 @@ export default function ConfigPicker({
   activeConfigId,
   activeQuota,
   connections,
+  importNotes,
   switching,
   onSelect,
   onDelete,
@@ -250,9 +253,17 @@ export default function ConfigPicker({
                             <Pill label={assignmentLabel} tone={assignmentTone ?? colors.accents.indigo} dot />
                           )}
                           {isActive && <Pill label={t('config_active')} tone={colors.accents.emeraude} dot />}
-                          {entry.enAttente && !hasNotice && (
-                            <Pill label={t('config_pending_device')} tone={colors.accents.ambre} />
-                          )}
+                          {entry.enAttente && !hasNotice && (() => {
+                            // L'import est automatique : l'étiquette dit où il
+                            // en est, jamais « faites-le vous-même ».
+                            const note = importNotes?.[entry.id];
+                            if (note?.kind === 'cap') return <Pill label={t('config_max_reached')} tone={colors.accents.ambre} />;
+                            if (note?.code === 'SUBSCRIPTION_DEVICE_BOUND') {
+                              return <Pill label={t('config_import_device_bound')} tone={colors.accents.corail} />;
+                            }
+                            if (note) return <Pill label={t('config_import_failed')} tone={colors.accents.ambre} />;
+                            return <Pill label={t('config_pending_device')} tone={colors.accents.ambre} />;
+                          })()}
                           {hasNotice && <Pill label={t(status === 'suspended' ? 'connection_suspended' :
                             status === 'expired' ? 'expired' : status === 'exhausted' ? 'quota_exhausted' : 'connection_revoked')} tone={colors.accents.corail} />}
                         </View>
@@ -283,6 +294,12 @@ export default function ConfigPicker({
                         {expiresAt && (
                           <Text style={[type.caption, { color: colors.textSecondary }]}>
                             {t('expires_on')} {new Date(expiresAt).toLocaleDateString(language === 'fr' ? 'fr-FR' : 'en-GB', { dateStyle: 'medium' })}
+                          </Text>
+                        )}
+
+                        {entry.enAttente && importNotes?.[entry.id]?.kind === 'cap' && (
+                          <Text style={[type.caption, { color: colors.textSecondary }]}>
+                            {t('config_import_cap_hint')}
                           </Text>
                         )}
                       </View>

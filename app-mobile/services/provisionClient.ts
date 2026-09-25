@@ -43,7 +43,13 @@ export interface ProvisionDiagnostic {
 export class ProvisioningError extends Error {
   readonly diagnostic: ProvisionDiagnostic;
 
-  constructor(message: string, diagnostic: ProvisionDiagnostic, readonly accessIssue: AccessIssue | null = null) {
+  constructor(
+    message: string,
+    diagnostic: ProvisionDiagnostic,
+    readonly accessIssue: AccessIssue | null = null,
+    /** Code MÉTIER renvoyé par le serveur (ex. `SUBSCRIPTION_DEVICE_BOUND`), jamais son texte libre. */
+    readonly serverCode: string | null = null,
+  ) {
     super(message);
     this.name = 'ProvisioningError';
     this.diagnostic = diagnostic;
@@ -65,19 +71,24 @@ function toProvisioningError(error: unknown, attempts: number): ProvisioningErro
     const httpStatus = error.response?.status;
     const requestId = headerValue(error.response?.headers, 'x-sxb-request-id');
     const retryable = !httpStatus || httpStatus >= 500 || httpStatus === 408 || httpStatus === 429;
+    const body = error.response?.data;
+    const rawCode = body && typeof body === 'object' ? (body as Record<string, unknown>).code : undefined;
+    const serverCode = typeof rawCode === 'string' && /^[A-Z][A-Z0-9_]{2,63}$/.test(rawCode) ? rawCode : null;
     const code = httpStatus
       ? `PVN_HTTP_${httpStatus}`
       : error.code === 'ECONNABORTED' || /timeout/i.test(error.message || '')
         ? 'PVN_TIMEOUT'
         : 'PVN_NETWORK';
-    const message = httpStatus
-      ? `Provisionnement refusé par le serveur (${httpStatus})`
-      : code === 'PVN_TIMEOUT'
-        ? 'Délai réseau dépassé pendant le provisionnement'
-        : 'La demande de provisionnement n’a pas atteint le serveur';
+    const message = serverCode === 'SUBSCRIPTION_DEVICE_BOUND'
+      ? 'Ce forfait est lié à un autre appareil — demandez à votre revendeur de le réattribuer'
+      : httpStatus
+        ? `Provisionnement refusé par le serveur (${httpStatus})`
+        : code === 'PVN_TIMEOUT'
+          ? 'Délai réseau dépassé pendant le provisionnement'
+          : 'La demande de provisionnement n’a pas atteint le serveur';
     return new ProvisioningError(message, {
       code, stage: 'request', attempts, retryable, httpStatus, requestId,
-    }, accessIssueFromError(error));
+    }, accessIssueFromError(error), serverCode);
   }
 
   return new ProvisioningError('Échec inattendu du provisionnement', {
