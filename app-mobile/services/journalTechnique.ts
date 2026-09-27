@@ -294,6 +294,13 @@ const ETAPES: Record<string, Etape> = {
   },
 };
 
+const ERREURS_SSH = new Map([
+  ['SSH_ACCOUNT_EXPIRED', 'log_ssh_account_expired'],
+  ['HTTP_ENDPOINT_MISSING', 'log_http_endpoint_missing'],
+  ['HTTP_BAD_REQUEST', 'log_http_bad_request'],
+  ['HTTP_PLAINTEXT_CLOSED_443', 'log_http_plaintext_443'],
+]);
+
 /**
  * `stage=NAME` dans une trace du moteur.
  *
@@ -344,6 +351,11 @@ export function analyserTrace(ligne: string): FaitTechnique | null {
    * reconnaître le cas.
    */
   const reste = ligne.slice(tete.index! + tete[0].length);
+  if (tete[1] === 'VPN_FAILED') {
+    const code = reste.match(/(?:^|\s)code=([A-Z][A-Z0-9_]{2,31})(?=\s|$)/)?.[1];
+    const cle = code ? ERREURS_SSH.get(code) : undefined;
+    if (cle) return { cle, valeurs: [], niveau: 'echec', etape: tete[1] };
+  }
 
   const valeurs: string[] = [];
   for (const [champ, valider] of Object.entries(etape.champs)) {

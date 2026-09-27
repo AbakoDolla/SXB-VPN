@@ -64,6 +64,17 @@ bibliothèque.
 **Protocoles pris en charge :** VLESS, VMess, Trojan, Shadowsocks, WireGuard,
 Hysteria2, TUIC, et SSH (avec payload).
 
+Le transport SSH+Payload reste dans le moteur JSch existant. Les charges
+acceptent `[rotate=a;b]` (ou une liste séparée par des virgules),
+`[split]`, `[instant_split]` et `[delay_split]` (pause de 1 s avant le
+morceau suivant). Les requêtes HTTP empilées conservent leur séparation ;
+un HTTP 101 peut ouvrir un tunnel SSH brut ou un vrai WebSocket, selon les
+trames reçues. Un `404/410` indique un endpoint indisponible, un `400` une
+requête refusée, et une fermeture en clair sur le port 443 invite à vérifier
+si **SSH+Payload TLS** est requis. Un compte SSH expiré doit être renouvelé
+sur le serveur : l'application ne peut ni restaurer un service fournisseur
+supprimé ni réactiver des identifiants expirés.
+
 Points notables du moteur :
 
 - **Résolution DNS d'amorçage** — joindre le serveur exige de résoudre son nom,

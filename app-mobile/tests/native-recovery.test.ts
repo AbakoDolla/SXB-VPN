@@ -81,7 +81,7 @@ describe('native recovery source contracts (JVM behavior has its own gate)', () 
     assert.match(dispatch, /SxbAccessControl\.checkStart\(this, JSONObject\(json\)\)/);
     assert.match(service, /autoReconnect\.markStopped\("user_stop"\)/);
     const fail = section(service, 'private fun failVpn(', 'private fun startConnectionWatchdog(');
-    assert.match(fail, /if \(code == "AUTH_FAILED" && ::autoReconnect\.isInitialized\) autoReconnect\.markStopped\(code\)/);
+    assert.match(fail, /if \(code in setOf\("AUTH_FAILED", "SSH_ACCOUNT_EXPIRED"\) && ::autoReconnect\.isInitialized\) \{\s*autoReconnect\.markStopped\(code\)/);
     assert.match(service, /fun interruptForAccess\(\) \{\s*disableAutoReconnect\(\)/);
   });
 

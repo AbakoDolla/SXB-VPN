@@ -55,6 +55,11 @@ export interface LigneJournal {
  */
 const REGLES: Array<{ motif: RegExp; cle: string; niveau: NiveauJournal }> = [
   // ── Échecs ────────────────────────────────────────────────────────────────
+  { motif: /SSH_ACCOUNT_EXPIRED/i, cle: 'log_ssh_account_expired', niveau: 'echec' },
+  { motif: /HTTP_ENDPOINT_MISSING/i, cle: 'log_http_endpoint_missing', niveau: 'echec' },
+  { motif: /HTTP_BAD_REQUEST/i, cle: 'log_http_bad_request', niveau: 'echec' },
+  { motif: /HTTP_PLAINTEXT_CLOSED_443/i, cle: 'log_http_plaintext_443', niveau: 'echec' },
+  { motif: /PAYLOAD_TOKEN_INVALID/i, cle: 'log_payload_token_invalid', niveau: 'echec' },
   { motif: /AUTH_FAILED|authentication failed|invalid user|permission denied/i,
     cle: 'log_auth_failed', niveau: 'echec' },
   { motif: /QUOTA_EXHAUSTED|quota.*exhaust|exhausted/i,
