@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useMemo } from "react";
+import { useQuotaPolling } from "../hooks/useQuotaPolling";
 import { useTranslation } from "../contexts/I18nContext";
 import { fetchClients, createClient, deleteClient, suspendClient, activateClient, renewClient, resetClientAccess } from "../api/clients";
 import { fetchResellers } from "../api/resellers";
@@ -117,6 +118,10 @@ export default function ClientsView({ currentUserRole, actorName }: ClientsViewP
   useEffect(() => {
     void loadClients();
   }, []);
+  useQuotaPolling(async () => {
+    const [clients, subscriptions] = await Promise.all([fetchClients(), fetchSubscriptions()]);
+    return () => { setClients(clients); setSubscriptions(subscriptions); };
+  }, !loading && !pending && !showAddModal && !renewTarget && !resetResult);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();

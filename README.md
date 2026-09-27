@@ -187,6 +187,11 @@ ne constitue pas une mesure du débit ou de la disponibilité du fournisseur.
 ### Consommation data et synchronisation des quotas
 
 La consommation est mesurée en **octets envoyés + reçus**, jamais en secondes.
+Sur Android, elle provient des totaux de connexions du moteur libbox 1.12.9,
+y compris pour SSH via son entrée TUN/SOCKS. Les compteurs UID (contrôle,
+handshake) et les octets du relais SSH ne sont pas additionnés. La lecture
+utilise uniquement le socket UNIX `command.sock` dans le stockage interne,
+mode `0600` : aucun contrôleur HTTP Clash ni port TCP n'est ouvert.
 Le livre mobile persiste l'ancre de l'odomètre avant un nouveau tunnel et fige
 chaque rapport `(sessionId, seq)` avant envoi. L'API accepte des **deltas**,
 pas des compteurs absolus ; sa clé `traffic_usage.reportKey` unique garantit
@@ -204,6 +209,8 @@ Une ancienne version ayant sauvegardé un cumul inférieur au dernier rapport
 ne provoque pas la refacturation de cet historique lors de la mise à jour.
 Un livre mobile illisible reste intact : sa relecture est retentée, et il
 n'est jamais remplacé silencieusement par une nouvelle ancre.
+Un échec ou dépassement du délai de préparation de cette ancre interdit le
+nouveau départ ; il n'est plus converti en succès par le délai de connexion.
 
 Les octets en attente restent visibles après déconnexion, puis sont rejoués
 tant que la file n'est pas vide. Le forfait d'essai et le forfait ordinaire
@@ -211,10 +218,26 @@ gardent leurs propres snapshots ; changer de configuration ne déplace jamais
 un ancien reçu sur le nouveau profil. Le consommé peut dépasser le volume du
 forfait au dernier relevé : seul le restant et la jauge sont bornés. Les
 métadonnées de provisionnement conservent aussi leur précision en octets.
+Elles amorcent l'affichage dès les premiers octets, même sans ancienne clé
+de cache quota. L'alias local d'une configuration ne remplace pas son identité
+de souscription. Avec plusieurs forfaits actifs, un rapport sans identité
+reçoit `409 USAGE_SUBSCRIPTION_REQUIRED` plutôt qu'un débit arbitraire.
+Un refus d'attribution reste au livre, différé cinq minutes sans bloquer les
+autres forfaits ; ni ses octets ni sa clé de rejeu ne sont réécrits.
 
 Le dashboard ne peut connaître un retard hors ligne avant réception. La
-cadence normale est de 20 secondes, sous réserve de disponibilité de l'API
-et du processus JavaScript. Les tests isolés
+cadence normale est de 20 secondes, déclenchée par le service Android via
+HeadlessJS pour fonctionner aussi avec l'activité en arrière-plan. Si le
+runtime JavaScript est détruit, l'odomètre natif reste durable et le rejeu
+reprend à sa reconstruction : aucune fraîcheur réseau n'est promise alors.
+Les vues Forfaits, Appareils et Clients relisent uniquement leurs données
+volatiles toutes les 15 secondes, onglet visible, sans chevauchement ; les
+cartes d'accueil gardent leur cycle de 30 secondes. En réseau disponible,
+cela représente normalement jusqu'à environ 35 secondes pour les listes,
+50 secondes pour les cartes, plus la latence des requêtes. Les erreurs
+réseau augmentent le recul ; `Retry-After` est respecté, y compris au retour
+au premier plan. Un refus d'accès du dashboard arrête son polling.
+Les tests isolés
 `app-mobile/tests/usage-accounting.test.ts` et
 `scripts/tests/usage-accounting.test.mjs` couvrent le rejeu, les basculements
 et les agrégats. Le contrôle JVM `NativeUsageTest.kt` exécute le vrai gestionnaire

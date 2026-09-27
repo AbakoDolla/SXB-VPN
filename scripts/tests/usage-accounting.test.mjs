@@ -92,7 +92,8 @@ function database() {
         findFirst: async ({ where }) => value.subscriptions
           .filter(sub => sub.clientId === where.clientId && (!where.status || sub.status === where.status))
           .sort((a, b) => +b.createdAt - +a.createdAt)[0] ?? null,
-        findMany: async () => value.subscriptions,
+        findMany: async ({ where } = {}) => value.subscriptions.filter(sub =>
+          (!where?.clientId || sub.clientId === where.clientId) && (!where?.status || sub.status === where.status)),
         findUnique: async ({ where }) => {
           const sub = value.subscriptions.find(item => item.id === where.id);
           return sub ? { ...sub, client: { ...value.client } } : null;
@@ -193,6 +194,7 @@ test("usage: a retry after a failed transaction applies once with both byte dire
 
 test("usage: durable replay names the original credited subscription after a server restart", async () => {
   const db = database();
+  db.state.subscriptions[0].status = "suspended";
   const first = await loadRoutes(db);
   const body = { bytesUp: 11, bytesDown: 26, sessionId: "restart", seq: 0, reportMode: "delta", deviceId };
   const receipt = await route(first.mobile, "post", "/vpn/traffic", body);
@@ -209,6 +211,7 @@ test("usage: durable replay names the original credited subscription after a ser
 
 test("usage: a cross-process unique-key race rolls back and returns the committed plan", async () => {
   const db = database();
+  db.state.subscriptions[0].status = "suspended";
   const first = await loadRoutes(db);
   await first.applyUsageDelta("client", null, 37n, "replicas", 0, 11n, deviceId);
   db.state.subscriptions.find(sub => sub.id === "trial").status = "expired";
@@ -224,6 +227,35 @@ test("usage: a cross-process unique-key race rolls back and returns the committe
   assert.equal(db.state.subscriptions[1].quotaUsed, 37n);
   assert.equal(db.state.client.quotaUsed, 37n);
   assert.equal(db.state.traffic.length, 1);
+});
+
+test("usage: an unidentified report cannot silently debit the newest of four subscriptions", async () => {
+  const db = database();
+  db.state.subscriptions.push(...["third", "fourth"].map(id => ({ ...db.state.subscriptions[0], id })));
+  const api = await loadRoutes(db);
+  const result = await route(api.mobile, "post", "/vpn/traffic", {
+    bytesUp: 11, bytesDown: 26, sessionId: "unidentified", seq: 0, deviceId,
+  });
+  assert.equal(result.status, 409);
+  assert.equal(result.body.code, "USAGE_SUBSCRIPTION_REQUIRED");
+  assert.equal(db.state.client.quotaUsed, 0n);
+  assert.equal(db.state.traffic.length, 0);
+});
+
+test("usage: four explicit subscriptions, retries and server restart keep exact independent totals", async () => {
+  const db = database();
+  db.state.subscriptions.push(...["third", "fourth"].map(id => ({ ...db.state.subscriptions[0], id })));
+  let api = await loadRoutes(db);
+  for (let index = 0; index < 12; index++) {
+    const subscriptionId = db.state.subscriptions[index % 4].id;
+    const body = { subscriptionId, bytesUp: 11, bytesDown: 26, sessionId: `switch-${index}`, seq: index, deviceId };
+    assert.equal((await route(api.mobile, "post", "/vpn/traffic", body)).body.ok, true);
+    api = await loadRoutes(db);
+    assert.equal((await route(api.mobile, "post", "/vpn/traffic", body)).body.duplicate, true);
+  }
+  assert.equal(db.state.client.quotaUsed, 444n);
+  assert.equal(db.state.traffic.length, 12);
+  for (const subscription of db.state.subscriptions) assert.equal(subscription.quotaUsed, 111n);
 });
 
 test("usage: an unrelated unique constraint is never mistaken for an accepted report", async () => {

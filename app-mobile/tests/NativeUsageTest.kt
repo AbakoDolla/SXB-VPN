@@ -228,5 +228,34 @@ fun main() {
         store.failWrites = false
         manager.stop()
     }
+    scenario("engine totals count first packets without sysfs or UID, across four restarts") {
+        val initialEngine = store.disk
+        repeat(4) {
+            var engine: Pair<Long, Long>? = null
+            val measured = TrafficStatsManager(engineCounters = { engine })
+            measured.start(context)
+            try {
+                TrafficStats.tx += 9999
+                TrafficStats.rx += 9999
+                measured.sampleBeforeStop()
+                check(measured.getStats(context).uploadBytes == 0L) { "UID control traffic is not tunnel usage" }
+                engine = 11L to 26L
+                measured.sampleBeforeStop()
+                measured.sampleBeforeStop()
+                check(measured.getStats(context).uploadBytes == 11L) { "First engine sample must not become an anchor" }
+                check(measured.getStats(context).downloadBytes == 26L)
+                engine = null
+                measured.sampleBeforeStop()
+                engine = 13L to 31L
+                measured.sampleBeforeStop()
+                check(measured.hasTunCounters())
+                // Closing the engine publishes its final tail before manager.stop.
+                engine = 17L to 37L
+            } finally {
+                measured.stop()
+            }
+            check(store.disk == initialEngine.first + (it + 1) * 17L to initialEngine.second + (it + 1) * 37L)
+        }
+    }
     println("$passed native usage scenarios passed")
 }

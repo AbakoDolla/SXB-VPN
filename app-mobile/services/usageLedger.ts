@@ -87,6 +87,7 @@ export interface UsageEntry {
   down: number;
   /** Tentée au moins une fois : montants et identifiants figés à jamais. */
   frozen: boolean;
+  retryAfter?: number;
 }
 
 export interface UsageLedger {
@@ -257,7 +258,8 @@ export function accumulate(
  * serveur l'accepte ou la reconnaisse comme déjà comptée.
  */
 export function nextReport(ledger: UsageLedger): { ledger: UsageLedger; report: UsageReport } | null {
-  const head = ledger.entries[0];
+  const index = ledger.entries.findIndex(entry => !entry.retryAfter || entry.retryAfter <= Date.now());
+  const head = ledger.entries[index];
   if (!head) return null;
   if (head.up + head.down <= 0) return null;
 
@@ -269,12 +271,12 @@ export function nextReport(ledger: UsageLedger): { ledger: UsageLedger; report: 
     bytesDown = Math.min(head.down, MAX_REPORT_BYTES - bytesUp);
   }
   const next: UsageLedger = { ...ledger, entries };
-  entries[0] = { ...head, up: bytesUp, down: bytesDown, frozen: true };
+  entries[index] = { ...head, up: bytesUp, down: bytesDown, frozen: true };
 
   const remainderUp = head.up - bytesUp;
   const remainderDown = head.down - bytesDown;
   if (remainderUp > 0 || remainderDown > 0) {
-    entries.splice(1, 0, {
+    entries.splice(index + 1, 0, {
       subscriptionId: head.subscriptionId,
       configId: head.configId,
       sessionId: head.sessionId,
@@ -301,9 +303,18 @@ export function nextReport(ledger: UsageLedger): { ledger: UsageLedger; report: 
 
 /** Retire l'entrée que le serveur a acceptée — ou reconnue comme déjà comptée. */
 export function settle(ledger: UsageLedger, report: UsageReport): UsageLedger {
-  const head = ledger.entries[0];
-  if (!head || head.sessionId !== report.sessionId || head.seq !== report.seq) return ledger;
-  return { ...ledger, entries: ledger.entries.slice(1) };
+  return { ...ledger, entries: ledger.entries.filter(entry =>
+    entry.sessionId !== report.sessionId || entry.seq !== report.seq) };
+}
+
+/** A refusal is not a receipt: preserve it without blocking other plans. */
+export function deferReport(ledger: UsageLedger, report: UsageReport, retryAfter: number): UsageLedger {
+  return { ...ledger, entries: ledger.entries.map(entry =>
+    entry.sessionId === report.sessionId && entry.seq === report.seq ? { ...entry, retryAfter } : entry) };
+}
+
+export function nextAttemptDelay(ledger: UsageLedger, now = Date.now()): number {
+  return ledger.entries.length ? Math.max(0, Math.min(...ledger.entries.map(entry => entry.retryAfter || 0)) - now) : 0;
 }
 
 function sanitize(value: unknown): UsageLedger {
@@ -330,6 +341,7 @@ function sanitize(value: unknown): UsageLedger {
     const up = candidate.up;
     const down = candidate.down;
     if (up + down <= 0) return corrupt();
+    if (candidate.retryAfter !== undefined && !isCount(candidate.retryAfter)) return corrupt();
     clean.push({
       subscriptionId: typeof candidate.subscriptionId === 'string' ? candidate.subscriptionId : null,
       configId: typeof candidate.configId === 'string' ? candidate.configId : undefined,
@@ -340,6 +352,7 @@ function sanitize(value: unknown): UsageLedger {
       // Une entrée relue après un redémarrage a pu être reçue par le serveur
       // sans que la réponse nous parvienne : elle est donc gelée d'office.
       frozen: true,
+      ...(candidate.retryAfter !== undefined ? { retryAfter: candidate.retryAfter } : {}),
     });
   }
   const highestSeq = clean.reduce((max, entry) => Math.max(max, entry.seq + 1), 0);

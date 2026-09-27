@@ -199,6 +199,7 @@ export async function applyUsageDelta(
   try {
   let resolvedSubscriptionId = subscriptionId;
   let duplicate = false;
+  let ambiguousSubscription = false;
   if (prisma) {
     await (prisma as any).$transaction(async (tx: any) => {
       if (durableKey) {
@@ -213,11 +214,16 @@ export async function applyUsageDelta(
       }
       let subId = resolvedSubscriptionId;
       if (!subId && clientId) {
-        const activeSub = await tx.subscription.findFirst({
+        const activeSubs = await tx.subscription.findMany({
           where: { clientId, status: "active" },
           orderBy: { createdAt: "desc" },
+          take: 2,
         });
-        subId = activeSub?.id;
+        if (activeSubs.length > 1) {
+          ambiguousSubscription = true;
+          return;
+        }
+        subId = activeSubs[0]?.id;
       }
 
       if (subId) {
@@ -264,14 +270,17 @@ export async function applyUsageDelta(
       }
     });
 
+    if (ambiguousSubscription) return { applied: false, reason: "subscription_required" };
     if (!duplicate && subscriptionId && !resolvedSubscriptionId) {
       return { applied: false, reason: "subscription_not_owned" };
     }
   } else {
     // In-memory fallback
     if (!resolvedSubscriptionId) {
+      const activeSubs = inMemoryDb.subscriptions?.filter((sub: any) => sub.clientId === clientId && sub.status === "active") || [];
+      if (activeSubs.length > 1) return { applied: false, reason: "subscription_required" };
       resolvedSubscriptionId = selectMobileSubscription({
-        subscriptions: inMemoryDb.subscriptions?.filter((sub: any) => sub.clientId === clientId),
+        subscriptions: activeSubs,
       })?.id ?? null;
     }
     if (resolvedSubscriptionId) {
@@ -1342,6 +1351,9 @@ router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => 
     let duplicate = false;
     if (totalBytes > 0n) {
       const applied = await applyUsageDelta(client.id, subscriptionId || null, totalBytes, sessionId, seq, BigInt(bytesUp), deviceId || null);
+      if (!applied.applied && applied.reason === "subscription_required") {
+        return res.status(409).json({ ok: false, error: "errors.validation", code: "USAGE_SUBSCRIPTION_REQUIRED" });
+      }
       if (!applied.applied && applied.reason === "subscription_not_owned") {
         return res.status(403).json({
           error: "errors.auth.forbidden",
@@ -1585,6 +1597,9 @@ router.post("/vpn/usage", async (req: AuthenticatedRequest, res: Response) => {
     let duplicate = false;
     if (totalBytes > 0n) {
       const applied = await applyUsageDelta(client.id, subscriptionId || null, totalBytes, sessionId, seq, BigInt(upload), deviceId || null);
+      if (!applied.applied && applied.reason === "subscription_required") {
+        return res.status(409).json({ success: false, error: "errors.validation", code: "USAGE_SUBSCRIPTION_REQUIRED" });
+      }
       if (!applied.applied && applied.reason === "subscription_not_owned") {
         return res.status(403).json({
           error: "errors.auth.forbidden",

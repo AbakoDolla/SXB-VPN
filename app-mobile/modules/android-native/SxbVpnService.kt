@@ -1054,7 +1054,11 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private var accessObserver: SxbAccessObserver? = null
 
     // Managers
-    private val trafficManager  = TrafficStatsManager()
+    @Volatile private var engineTraffic: SxbEngineTraffic? = null
+    private val trafficManager = TrafficStatsManager(
+        engineCounters = { engineTraffic?.snapshot() },
+        usageTick = { sendBroadcast(Intent("com.sxbvpn.USAGE_TICK").setPackage(packageName)) },
+    )
     private lateinit var autoReconnect: AutoReconnectManager
 
     // ── Public API pour SxbVpnModule ──────────────────────────────────────────
@@ -2536,6 +2540,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
         }
 
         boxService = service
+        engineTraffic = SxbEngineTraffic(service, filesDir)
+        engineTraffic!!.start()
         check(SxbPrivacyPolicy.vpnAllowed(this) && running.get()) { "PRIVACY_CONSENT_REQUIRED" }
         SxbAccessControl.checkStart(this, JSONObject(this.configJson))
         service.start()
@@ -5609,6 +5615,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
             runCatching { svc.close() }
                 .onFailure { Log.w(TAG, "libbox close: ${it.message}") }
         }
+        runCatching { engineTraffic?.captureFinal() }
+            .onFailure { Log.e(TAG, "ENGINE_USAGE_FINAL_UNAVAILABLE", it) }
         boxService = null
         engineLogThrottle.reset().forEach(::broadcastEngineLogSummary)
 
@@ -5616,6 +5624,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         runCatching { trafficManager.stop() }
             .onFailure { Log.e(TAG, "USAGE_CHECKPOINT_STOP_PENDING", it) }
+        runCatching { engineTraffic?.close() }
+            .onFailure { Log.e(TAG, "ENGINE_USAGE_CLOSE_FAILED", it) }
+        engineTraffic = null
         runCatching { tunPfd?.close() };  tunPfd = null
         tunInterfaceName = null
         // B10 — Fenêtre de reconnexion : sans interface de blocage le trafic

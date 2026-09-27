@@ -76,6 +76,7 @@ async function reporter() {
   const state: any = {
     stats: { lifetimeUploadBytes: 1, lifetimeDownloadBytes: 1, uploadBytes: 0, downloadBytes: 0 },
     posts: [], quota: null, stops: 0, epoch: 0, retries: new Map(), timerId: 0,
+    profiles: ['normal', 'trial'].map(configId => ({ configId, subscriptionId: configId })),
   };
   const env: any = {
     ...h.ledger,
@@ -88,6 +89,8 @@ async function reporter() {
     ledgerBusyRef: ref(false), ledgerFlushRef: ref(null),
     usageRetryTimerRef: ref(null), USAGE_REPORT_INTERVAL_MS: 20_000,
     usageMountedRef: ref(true),
+    usageRetryAtRef: ref(0), usageFailuresRef: ref(0),
+    usageRetryDelay: () => 20_000,
     setTimeout: (callback: () => void, delay: number) => {
       const id = ++state.timerId;
       state.retries.set(id, { callback, delay });
@@ -111,7 +114,7 @@ async function reporter() {
     SxbVpnNative: { getTrafficStats: async () => ({ ...state.stats }) },
     getAccessState: () => ({ authority: { userId: 'fixture-user', deviceId: 'fixture-device' } }),
     configStore: {
-      list: async () => ({ status: 'ok', value: ['normal', 'trial'].map(configId => ({ configId, subscriptionId: configId })) }),
+      list: async () => ({ status: 'ok', value: state.profiles }),
     },
     storeValue: (result: any) => result.value,
     apiClient: { post: async (_url: string, body: any) => {
@@ -310,6 +313,73 @@ describe('durable byte accounting', () => {
 });
 
 describe('provider traffic report lifecycle', () => {
+  it('seeds the first offline display from provisioned metadata without a legacy quota key', async () => {
+    const h = await reporter();
+    h.state.profiles[0] = { configId: 'normal', subscriptionId: 'normal', quotaTotal: 1000, quotaUsed: 7 };
+    await h.flushUsage({ beforeConnect: true });
+    h.state.stats = { lifetimeUploadBytes: 11, lifetimeDownloadBytes: 21 };
+    h.state.respond = async () => { throw new Error('OFFLINE'); };
+    await h.flushUsage();
+    const projection = h.ledger.quotaProjection(h.env.ledgerRef.current, { subscriptionId: 'normal' });
+    assert.equal(projection.accountedUsedBytes, 7);
+    assert.equal(projection.pendingBytes, 30, 'real first bytes must be visible before the first acknowledgement');
+  });
+
+  it('uses the managed subscription identity rather than the local storage alias', async () => {
+    const h = await reporter();
+    h.env.runningProfileRef.current = { configId: 'local-alias', source: 'backend' };
+    h.state.profiles = [{ configId: 'local-alias', subscriptionId: 'normal', source: 'backend' }];
+    h.state.stats = { lifetimeUploadBytes: 11, lifetimeDownloadBytes: 21 };
+    await h.flushUsage();
+    assert.equal(h.state.posts[0].subscriptionId, 'normal');
+    assert.equal(h.env.runningProfileRef.current.subscriptionId, 'normal');
+  });
+
+  it('does not turn failure to persist the pre-connect anchor into permission to start', () => {
+    const source = readFileSync(path.join(mobile, 'contexts', 'VpnContext.tsx'), 'utf8');
+    assert.doesNotMatch(source, /avecDelai\(flushUsageRef\.current\(\{ beforeConnect: true \}\)/);
+  });
+
+  it('does not erase rejected ownership evidence as a success-shaped receipt', async () => {
+    const h = await reporter();
+    h.state.stats = { lifetimeUploadBytes: 11, lifetimeDownloadBytes: 21 };
+    h.state.respond = async () => { throw { response: { status: 403, data: { code: 'OWNERSHIP_FORBIDDEN' } } }; };
+    await h.flushUsage();
+    assert.equal(h.ledger.pendingBytes(await h.ledger.loadLedger()), 30);
+  });
+
+  it('keeps refused reports durable without blocking another owned subscription', async () => {
+    const h = await reporter();
+    h.env.ledgerRef.current = h.ledger.accumulate(h.env.ledgerRef.current, { up: 11, down: 21 }, {
+      configId: 'trial', subscriptionId: 'trial', sessionId: 'removed-trial',
+    });
+    h.state.stats = { lifetimeUploadBytes: 13, lifetimeDownloadBytes: 24 };
+    h.state.respond = async (body: any) => {
+      if (body.subscriptionId === 'trial') throw { response: { status: 403, data: { code: 'OWNERSHIP_FORBIDDEN' } } };
+      return { data: { ok: true, subscriptionId: 'normal', quotaUsedBytes: 5, quotaTotalBytes: 1000 } };
+    };
+    await h.flushUsage();
+    const saved = await h.ledger.loadLedger();
+    assert.equal(h.state.posts.length, 2);
+    assert.equal(h.ledger.pendingBytes(saved), 30);
+    assert.equal(saved.entries[0].subscriptionId, 'trial');
+    assert.equal(saved.entries[0].frozen, true);
+    assert.equal(h.ledger.nextReport(saved), null);
+    assert.equal((await h.offline.loadQuotaData('normal'))?.usedQuota, 5);
+    assert.ok(h.ledger.nextAttemptDelay(saved) > 250_000);
+  });
+
+  it('does not bypass reporting backoff on a native or foreground wake', async () => {
+    const h = await reporter();
+    h.state.stats = { lifetimeUploadBytes: 11, lifetimeDownloadBytes: 21 };
+    h.state.respond = async () => { throw { response: { status: 429 } }; };
+    await h.flushUsage();
+    h.state.stats = { lifetimeUploadBytes: 13, lifetimeDownloadBytes: 24 };
+    await h.flushUsage({ final: true });
+    assert.equal(h.state.posts.length, 1);
+    assert.equal(h.ledger.pendingBytes(await h.ledger.loadLedger()), 35);
+  });
+
   it('saves a replayed trial receipt to the trial, not the newly selected normal plan', async () => {
     const h = await reporter();
     await h.offline.saveQuotaData({ configId: 'normal', totalQuota: 1000, usedQuota: 7, expiryDate: null });
