@@ -294,6 +294,8 @@ describe('le séquencement de l’échelle, dans le contexte VPN', () => {
       'AUTH_FAILED', 'CONFIG_INVALID', 'CONFIG_UNSUPPORTED', 'ACCESS_START_BLOCKED',
       'PLAY_ENCRYPTION_REQUIRED', 'PRIVACY_CONSENT_REQUIRED', 'USAGE_CHECKPOINT_UNAVAILABLE',
       'CAPTIVE_PORTAL', 'DNS_FAILED', 'SSH_MODE_UNKNOWN', 'VPN_TUN_FAILED',
+      'SSH_ACCOUNT_EXPIRED', 'HTTP_ENDPOINT_MISSING', 'HTTP_BAD_REQUEST',
+      'HTTP_PLAINTEXT_CLOSED_443',
     ]) {
       assert.equal(refusDePresentation(permanent), false, `${permanent} ne doit pas relancer l’échelle`);
     }

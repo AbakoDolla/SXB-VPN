@@ -1035,8 +1035,7 @@ describe('garde-fous contre les régressions Android', () => {
     assert.doesNotMatch(nativeModule, /setDiagnosticLogging|getDiagnosticLogging/);
     assert.doesNotMatch(source('modules/expo-sxb-vpn/src/index.ts'), /DiagnosticLogging/);
     // Le masquage lui-même reste en place, ainsi que la trace réseau explicite.
-    assert.match(nativeService, /PAYLOAD_FULL_BEGIN/);
-    assert.match(nativeService, /SERVER_RESPONSE_FULL_BEGIN/);
+    assert.doesNotMatch(nativeService, /PAYLOAD_FULL_BEGIN|SERVER_RESPONSE_FULL_BEGIN/);
     assert.match(nativeService, /if \(SxbSecureLogger\.isDiagnosticEnabled\(\)\)/);
     assert.match(nativeService, /maskCredentialsOnly/);
     assert.match(securityModule, /password/);
@@ -1109,16 +1108,39 @@ describe('garde-fous contre les régressions Android', () => {
 
   it('détecte de manière robuste le mode WebSocket vs SSH brut via peeking d’octet après 101', () => {
     assert.match(nativeService, /val firstByte = if \(peekLen > 0\) peekBuf\[0\]\.toInt\(\) and 0xFF else -1/);
-    assert.match(nativeService, /if \(firstByte == 'S'\.code\)/);
+    assert.match(nativeService, /if \(firstByte == 'S'\.code \|\| firstByte == 'H'\.code\)/);
     assert.match(nativeService, /COSMETIC_101_DETECTED/);
     assert.match(nativeService, /WEBSOCKET_MODE_ACTIVATED/);
     assert.match(nativeService, /WsInputStream\(baseIn, rawOut, onEvent\)/);
+    assert.match(nativeService, /val cosmetic101 = statusCode == 101 && !portal/);
+    assert.match(nativeService, /&& !cosmetic101\s+&& !\(isConnectPayload && httpTunnelCompatible\)/);
+    assert.match(nativeService, /reason=http_101_cosmetic/);
+    assert.match(nativeService, /reason=http_101_frame/);
   });
 
   it('ne court-circuite pas un CONNECT compatible avec HTTP 101', () => {
-    assert.ok(nativeService.includes('val httpTunnelCompatible = response.contains("101") || isConnect'));
+    assert.ok(nativeService.includes('val httpTunnelCompatible = statusCode == 101 || isConnect'));
     assert.ok(nativeService.includes('!(isConnectPayload && httpTunnelCompatible)'));
     assert.ok(nativeService.includes('reason=connect_payload'));
+  });
+
+  it('respecte les marqueurs du payload et préserve les requêtes HTTP empilées', () => {
+    assert.match(nativeService, /sshRotateDirective\.replace\(raw\)/);
+    assert.match(nativeService, /random\.nextInt\(choices\.size\)/);
+    assert.match(nativeService, /sendSshPayload\(payload, rawOut, onEvent\)/);
+    assert.match(nativeService, /if \(delayed\) Thread\.sleep\(1_000\)/);
+    assert.match(nativeService, /sshSplitDirective\.findAll\(payload\)/);
+    assert.match(nativeService, /sshRequestLine\.matches\(line\.trim\(\)\)/);
+    assert.match(nativeService, /cfg\.optStringOrNull\("userAgent", "SXB-VPN\/Android"\),\s+configuredSni/);
+    assert.match(nativeService, /payload_token_invalid/);
+  });
+
+  it('ne renvoie jamais une trame WebSocket tronquée, pong ou surdimensionnée comme SSH', () => {
+    assert.match(nativeService, /payloadLen < 0L \|\| payloadLen > 16_777_216L/);
+    assert.match(nativeService, /if \(n == -1\) throw java\.io\.EOFException/);
+    assert.match(nativeService, /0x0A -> onEvent\("\[SXB_TRACE\] stage=WS_PONG_RECEIVED/);
+    assert.match(nativeService, /0x00, 0x01, 0x02 -> \{/);
+    assert.doesNotMatch(nativeService, /return readNextFrame\(\)/);
   });
 
   it('réserve WebSocket aux vrais handshakes et donne priorité au CONNECT brut', () => {
@@ -1252,18 +1274,23 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(nativeService.includes('trace("TUN_CREATE_START"'));
     assert.ok(nativeService.includes('trace("TUN_CREATED"'));
     assert.ok(nativeService.includes('trace("CLEANUP_COMPLETE"'));
-    assert.match(nativeService, /PAYLOAD_FULL_BEGIN/);
+    assert.doesNotMatch(nativeService, /PAYLOAD_FULL_BEGIN|SERVER_RESPONSE_FULL_BEGIN/);
     assert.match(nativeService, /SxbSecureLogger\.isDiagnosticEnabled\(\)/);
     assert.match(nativeService, /maskCredentialsOnly/);
   });
 
   it('mappe honnêtement les réponses HTTP sans accuser le forfait sans preuve', () => {
-    assert.ok(nativeService.includes('val errorCode = if (portal) "CAPTIVE_PORTAL" else "TUNNEL_REFUSED"'));
-    assert.ok(nativeService.includes('throw java.io.IOException("$errorCode'));
+    assert.ok(nativeService.includes('portal -> "CAPTIVE_PORTAL"'));
+    assert.ok(nativeService.includes('statusCode == 404 || statusCode == 410 -> "HTTP_ENDPOINT_MISSING"'));
+    assert.ok(nativeService.includes('statusCode == 400 -> "HTTP_BAD_REQUEST"'));
+    assert.ok(nativeService.includes('throw java.io.IOException("$errorCode HTTP'));
     assert.ok(nativeService.includes('lower.contains("captive_portal")'));
     assert.ok(nativeService.includes('lower.contains("tunnel_refused")'));
     assert.ok(nativeService.includes("Le serveur n'a pas ouvert de tunnel"));
     assert.ok(nativeService.includes('proof=$portal'));
+    assert.ok(nativeService.includes('HTTP_PLAINTEXT_CLOSED_443'));
+    assert.ok(nativeService.includes('HTTP_ENDPOINT_MISSING'));
+    assert.ok(nativeService.includes('SSH_ACCOUNT_EXPIRED'));
   });
 
   it('propage les timeouts de lecture WebSocket vers JSch', () => {

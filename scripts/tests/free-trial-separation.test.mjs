@@ -1130,7 +1130,13 @@ test("un « 200 OK » simple est un tunnel ouvert, pas un refus", () => {
   // page de connexion. La PREUVE décide, jamais le code de statut seul — le
   // `!portal` ci-dessus est ce qui distingue les deux.
   assert.match(natif, /bodyLooksPortal = body\.contains\("<html", true\)/);
-  assert.match(natif, /val errorCode = if \(portal\) "CAPTIVE_PORTAL" else "TUNNEL_REFUSED"/);
+  const decisions = natif.slice(
+    natif.indexOf('val errorCode = when {'),
+    natif.indexOf('onEvent("[SXB_DEBUG] NON_TUNNEL_HTTP'),
+  );
+  assert.ok(decisions.includes('portal -> "CAPTIVE_PORTAL"'));
+  assert.ok(decisions.includes('else -> "TUNNEL_REFUSED"'));
+  assert.ok(decisions.indexOf('portal -> "CAPTIVE_PORTAL"') < decisions.indexOf('else -> "TUNNEL_REFUSED"'));
 
   // Le payload lui-même n'a PAS d'en-tête Upgrade : il ne doit surtout pas
   // être traité comme du WebSocket, qui attend une trame binaire 0x82.

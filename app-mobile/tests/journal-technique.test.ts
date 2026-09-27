@@ -69,6 +69,24 @@ describe('faits techniques — ce que le journal doit enfin montrer', () => {
     assert.deepEqual(f?.valeurs, ['WEBSOCKET_RFC6455']);
   });
 
+  it('nomme la couche en échec sans exposer le message du serveur', () => {
+    for (const [code, cle] of [
+      ['SSH_ACCOUNT_EXPIRED', 'log_ssh_account_expired'],
+      ['HTTP_ENDPOINT_MISSING', 'log_http_endpoint_missing'],
+      ['HTTP_BAD_REQUEST', 'log_http_bad_request'],
+      ['HTTP_PLAINTEXT_CLOSED_443', 'log_http_plaintext_443'],
+    ]) {
+      const f = analyserTrace(`[SXB_TRACE] stage=VPN_FAILED code=${code} state=error host=private.example`);
+      assert.equal(f?.cle, cle, code);
+      assert.deepEqual(f?.valeurs, [], code);
+      neDivulgueRien(JSON.stringify(f), code);
+    }
+    assert.equal(
+      analyserTrace('[SXB_TRACE] stage=VPN_FAILED code=CONFIG_INVALID state=error')?.cle,
+      'tech_vpn_failed',
+    );
+  });
+
   it('met les durées et les volumes en unités lisibles', () => {
     assert.deepEqual(analyserTrace('[SXB_TRACE] stage=TCP_CONNECTED elapsed_ms=412')?.valeurs, ['412 ms']);
     assert.deepEqual(analyserTrace('[SXB_TRACE] stage=TCP_CONNECTED elapsed_ms=47300')?.valeurs, ['47.3 s']);

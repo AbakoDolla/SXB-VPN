@@ -63,7 +63,7 @@ describe('Android SSH native transports', () => {
       '[sni]', '%HOST%', '%IP%', '%PORT%', '%RAND%', '%SNI%',
     ]) assert.ok(service.includes(`"${token}"`), `missing payload token ${token}`);
     assert.match(service, /isConnectPayload/);
-    assert.match(service, /response\.contains\("101"\)/);
+    assert.match(service, /statusCode == 101/);
     assert.match(service, /WEBSOCKET_RFC6455/);
     assert.match(service, /endpointIdentificationAlgorithm = "HTTPS"/);
     assert.match(service, /tlsInsecure/);
