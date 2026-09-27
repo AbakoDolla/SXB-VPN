@@ -506,6 +506,56 @@ describe('mobile access runtime with real encrypted store, auth and HTTP interce
     });
   }
 
+  it('prepares a cached native ticket without waiting for a cancelled access poll', async () => {
+    const h = await harness();
+    await setup(h);
+    const native: NativeAccessRuntime = {
+      authority: h.access.getAccessState().authority, observing: false, activeProfile: null,
+      ticketStatus: 'ready', ticketExpiresAt: new Date(Date.now() + 2 * 3600_000).toISOString(),
+    };
+    let applied = 0;
+    Object.assign(h.state.native, {
+      bindAccessSession: async () => JSON.stringify(native),
+      getAccessControlState: async () => JSON.stringify(native),
+      applyAccessSnapshot: async () => { applied++; return JSON.stringify(native); },
+    });
+    let entered!: (request: InternalAxiosRequestConfig) => void;
+    const received = new Promise<InternalAxiosRequestConfig>(resolve => { entered = resolve; });
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    let requests = 0;
+    h.api.default.defaults.adapter = async request => {
+      requests++;
+      entered(request);
+      await blocked;
+      return { config: request, status: 200, statusText: 'OK', headers: {},
+        data: snapshot('cancelled-response', 'suspended') };
+    };
+    const pending = h.sync.refreshAccessState(true).catch(() => false);
+    const request = await received;
+    const revision = h.access.getAccessState().authority?.snapshot?.revision;
+    const preparing = h.sync.prepareNativeAccess();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const ready = await Promise.race([
+        preparing.then(() => true),
+        new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), 250); }),
+      ]);
+      assert.equal(ready, true, 'a cancelled 25-second poll must not delay native startup');
+      assert.equal(request.signal?.aborted, true);
+      assert.equal(requests, 1, 'a valid cached ticket requires no new network request');
+      release();
+      await pending;
+      assert.equal(applied, 0, 'the cancelled poll must never apply its late response');
+      assert.equal(h.access.getAccessState().authority?.snapshot?.revision, revision);
+      h.access.requireDeviceAccess();
+    } finally {
+      if (timer) clearTimeout(timer);
+      release();
+      await Promise.allSettled([pending, preparing]);
+    }
+  });
+
   it('hands observation to native and rejects late JS snapshots after a native restriction', async () => {
     const h = await harness();
     const native: NativeAccessRuntime = {

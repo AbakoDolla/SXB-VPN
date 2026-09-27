@@ -657,6 +657,37 @@ describe('provider traffic report lifecycle', () => {
       });
     }
 
+    it('preserves thirty successive connection generations across delayed stop completions', async () => {
+      const h = await stoppingProvider();
+      const phases = ['report', 'persist', 'stop'] as const;
+      for (let cycle = 0; cycle < 30; cycle++) {
+        const phase = phases[cycle % phases.length];
+        const entered = deferred();
+        const release = deferred();
+        h.state[phase] = async () => { entered.resolve(); await release.promise; };
+        const stopping = phase === 'stop' ? h.stopForAccess() : h.disconnect();
+        await entered.promise;
+        h.startNext();
+        const sessionId = `session-${cycle}`;
+        const configId = `vless-${cycle}`;
+        h.env.sessionIdRef.current = sessionId;
+        h.env.runningProfileRef.current = { configId };
+        release.resolve();
+        await stopping;
+        assert.equal(h.state.vpnState, 'connecting', `cycle ${cycle}: ${phase}`);
+        assert.equal(h.state.connecting, true);
+        assert.equal(h.env.sessionIdRef.current, sessionId);
+        assert.equal(h.env.runningProfileRef.current?.configId, configId);
+        assert.equal(h.env.disconnectInFlightRef.current, false);
+        h.state[phase] = async () => {};
+      }
+      await h.disconnect();
+      assert.equal(h.state.vpnState, 'disconnected');
+      assert.equal(h.env.sessionIdRef.current, null);
+      assert.equal(h.env.runningProfileRef.current, null);
+      assert.equal(h.env.disconnectInFlightRef.current, false);
+    });
+
     it('keeps a newer stop guarded when an older stop completes', async () => {
       const h = await stoppingProvider();
       const firstEntered = deferred();

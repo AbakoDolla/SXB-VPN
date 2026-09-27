@@ -524,9 +524,13 @@ export async function prepareNativeAccess(): Promise<void> {
     nativeHandoffUntil = Date.now() + 15_000;
     const pending = controlRequest;
     if (pending) {
+      // Native observation takes over. Some Android HTTP adapters do not
+      // settle on abort; the cancelled response is already rejected upstream.
+      void pending.promise.catch(error => {
+        if (responseInfo(error).status) reportAccessSyncError(error);
+      });
       pending.controller.abort();
-      try { await pending.promise; }
-      catch (error) { if (responseInfo(error).status) reportAccessSyncError(error); }
+      if (controlRequest === pending) controlRequest = null;
     }
   }
   await refreshNativeTicket();

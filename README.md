@@ -229,6 +229,11 @@ clé, même si le serveur l'avait reçu avant l'annulation. Une réponse tardive
 à cet envoi annulé ne modifie pas la nouvelle session.
 De même, la fin asynchrone d'un ancien arrêt ne remet plus à zéro l'état,
 le profil ou les références de consommation d'une connexion plus récente.
+Au démarrage du tunnel, le relais vers l'observation native n'attend plus
+qu'une ancienne lecture HTTP des droits termine son annulation. Avec un
+ticket natif encore valide, cette attente réseau disparaît aussi du départ
+VLESS. Les réponses annulées restent ignorées et les contrôles d'accès
+locaux et natifs restent obligatoires.
 
 Les octets en attente restent visibles après déconnexion, puis sont rejoués
 tant que la file n'est pas vide. Le forfait d'essai et le forfait ordinaire
