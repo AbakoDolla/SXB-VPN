@@ -12,7 +12,8 @@ import { usePrivacy } from './PrivacyContext';
 import { requireVpnConsent } from '@/services/privacyConsent';
 import { deviceAccess as selectDeviceAccess, type AccessNotice, type DeviceAccess } from '@/services/accessPolicy';
 import { getAccessState, requireDeviceAccess, subscribeAccessState } from '@/services/accessState';
-import { subscribeAccessFailures } from '@/services/accessEvents';
+import { accessRequestStamp, subscribeAccessFailures } from '@/services/accessEvents';
+import { assertIdentityRequest } from '@/services/identityPersistence';
 import { refreshAccessState, reportAccessSyncError, startAccessObservation, storeValue, wakeAccessObservation } from '@/services/accessSync';
 import {
   acceptActivatedIdentity, clearIdentitySession, getIdentitySession, restoreIdentitySession,
@@ -111,14 +112,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const activateAccount = useCallback(async (token: string) => {
     requireVpnConsent();
+    const stamp = accessRequestStamp();
     const id = await getOrCreateDeviceId();
     setDeviceId(id);
     const { activationSecurity } = await import('../services/deviceSecurity');
     const normalized = normalizeActivationToken(token);
+    const security = await activationSecurity(normalized);
+    assertIdentityRequest(stamp);
     const response = await apiClient.post('/mobile/auth/activate', {
-      token: normalized, deviceId: id, ...await activationSecurity(normalized),
+      token: normalized, deviceId: id, ...security,
     });
-    await acceptActivatedIdentity(response.data, id);
+    await acceptActivatedIdentity(response.data, id, { stamp, activationRequestId: security.activationRequestId });
     // Only a server snapshot lifts a known device block, never a UI route change.
     try { await refreshAccessState(); } catch (error) { reportAccessSyncError(error); }
     wakeAccessObservation();
@@ -127,6 +131,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const activatePlan = useCallback(async (code: string) => {
     requireVpnConsent();
     requireDeviceAccess();
+    const stamp = accessRequestStamp();
     const normalized = normalizeActivationToken(code);
     if (normalized.startsWith('SXB-DATA-')) {
       const id = await getOrCreateDeviceId();
@@ -135,7 +140,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await validateIdentitySession(id, provisioned.meta.subscriptionId);
     } else {
       const response = await apiClient.post('/mobile/packages/activate', { code: normalized });
-      await updateIdentityAccountState(response.data.accountState ?? response.data);
+      await updateIdentityAccountState(response.data.accountState ?? response.data, stamp);
     }
     try { await refreshAccessState(); } catch (error) { reportAccessSyncError(error); }
     wakeAccessObservation();

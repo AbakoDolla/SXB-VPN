@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { NativeModules, Platform } from 'react-native';
 import { randomUUID, digestStringAsync, CryptoDigestAlgorithm } from 'expo-crypto';
 import { loadLedger, isFreshLedger } from './usageLedger';
+import { serializeIdentityPersistence } from './identityPersistence';
 
 interface SecurityBridge {
   deviceSecurityIdentity?: () => Promise<string>;
@@ -15,7 +16,7 @@ const ENROLLED = '@sxb_device_proof_enrolled';
 const ACTIVATION = '@sxb_security_activation_request';
 const bridge = () => NativeModules.SxbVpnNative as SecurityBridge | undefined;
 
-export async function activationSecurity(accountToken: string) {
+export async function activationSecurity(accountToken: string): Promise<{ publicKey?: string; activationRequestId?: string }> {
   const module = bridge();
   if (Platform.OS !== 'android' || !module?.deviceSecurityIdentity) {
     if (await AsyncStorage.getItem(ENROLLED)) throw new Error('DEVICE_PROOF_UNAVAILABLE');
@@ -33,14 +34,23 @@ export async function activationSecurity(accountToken: string) {
   }
   const identity = JSON.parse(await module.deviceSecurityIdentity()) as { publicKey: string; keyId: string };
   const accountHash = await digestStringAsync(CryptoDigestAlgorithm.SHA256, accountToken);
-  const stored = await AsyncStorage.getItem(ACTIVATION);
-  const previous = stored ? JSON.parse(stored) as { accountHash: string; requestId: string } : null;
-  const requestId = previous?.accountHash === accountHash ? previous.requestId : randomUUID();
-  await AsyncStorage.setItem(ACTIVATION, JSON.stringify({ accountHash, requestId }));
-  return { publicKey: identity.publicKey, activationRequestId: requestId };
+  return serializeIdentityPersistence(async () => {
+    const stored = await AsyncStorage.getItem(ACTIVATION);
+    const previous = stored ? JSON.parse(stored) as { accountHash: string; requestId: string } : null;
+    const requestId = previous?.accountHash === accountHash ? previous.requestId : randomUUID();
+    await AsyncStorage.setItem(ACTIVATION, JSON.stringify({ accountHash, requestId }));
+    return { publicKey: identity.publicKey, activationRequestId: requestId };
+  });
 }
 
-export const completeActivationSecurity = () => AsyncStorage.removeItem(ACTIVATION);
+// Called under the identity persistence barrier; never delete a different activation's retry ID.
+export async function completeActivationSecurity(requestId?: string): Promise<void> {
+  if (!requestId) return;
+  const stored = await AsyncStorage.getItem(ACTIVATION);
+  if (stored && (JSON.parse(stored) as { requestId: string }).requestId === requestId) {
+    await AsyncStorage.removeItem(ACTIVATION);
+  }
+}
 export const clearSessionSecurity = () => AsyncStorage.removeItem(KEY);
 export async function deviceKeyFingerprint(): Promise<string> {
   const module = bridge();
