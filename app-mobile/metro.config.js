@@ -1,4 +1,5 @@
 const fs = require('fs');
+const path = require('path');
 const { getDefaultConfig } = require('expo/metro-config');
 
 const config = getDefaultConfig(__dirname);
@@ -23,5 +24,10 @@ const config = getDefaultConfig(__dirname);
 // conservé) ; la résolution devient purement projet-locale quand il est
 // absent (app-mobile est auto-suffisant après `npm install`).
 config.watchFolders = (config.watchFolders || []).filter((dir) => fs.existsSync(dir));
+// Les parseurs purs sont partagés avec le serveur, sans importer ses dépendances Node.
+config.watchFolders = [...new Set([
+  ...config.watchFolders,
+  path.resolve(__dirname, '..', 'server', 'services'),
+])];
 
 module.exports = config;

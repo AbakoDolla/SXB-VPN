@@ -555,9 +555,10 @@ describe('compatibilité URI VLESS / JSON complète', () => {
     const validation = validateVpnConfig(XRAY_VLESS_D2L);
     assert.equal(validation.valid, true, validation.errors.join(' | '));
     assert.equal(validation.protocol, 'singbox');
-    assert.equal(validation.config?.outbounds?.[0]?.streamSettings?.wsSettings?.headers?.Host, 'ss.alphaeconet.co.zw');
-    assert.equal(validation.config?.outbounds?.[0]?.streamSettings?.tlsSettings?.serverName, 'ss.alphaeconet.co.zw');
-    assert.equal(validation.config?.outbounds?.[0]?.mux?.concurrency, 8);
+    assert.equal(validation.config?.outbounds?.[0]?.transport?.headers?.Host, 'ss.alphaeconet.co.zw');
+    assert.equal(validation.config?.outbounds?.[0]?.tls?.server_name, 'ss.alphaeconet.co.zw');
+    assert.ok(validation.warnings.some(message => message.includes('mux')));
+    assert.ok(validation.warnings.some(message => message.includes('dns.hosts')));
     assert.equal(isCompleteOfflineConfig(validation.config).complete, true);
   });
 
@@ -3152,7 +3153,7 @@ describe('garde-fous contre les régressions Android', () => {
     assert.doesNotMatch(nativeModule, /REQUEST_IGNORE_BATTERY_OPTIMIZATIONS/);
   });
 
-  it('le SSH se saisit à la main ; le serveur sait toujours lire la gamme HTTP Custom', () => {
+  it('le SSH ambigu reste manuel ; seuls les Settings reconnus peuvent être importés', () => {
     const canonical = source('../server/services/canonical-config.ts');
     const routes = source('../server/routes/vpn-profiles.ts');
     const api = source('../artifacts/sxb-dashboard/src/api/vpn-profiles.ts');
@@ -3170,11 +3171,11 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(api, /export const importVpnProfiles/);
     assertDashboardLabel(vue, 'configurations.editor.httpCustom', /HTTP Custom.*\{\{count\}\} profil/);
 
-    // DEMANDE : « import manuel uniquement » pour le SSH. Le collage d'un SSH
-    // (JSON, HTTP Custom, SocksIP) renvoie vers le formulaire, qui couvre tous
-    // les modes — SlowDNS et UDPGW compris.
+    // L'exception Settings est explicite et validée, pas une levée générale du refus SSH.
+    assert.match(vue, /const bundle = readProtocolBundle\(parsed\)/);
+    assert.match(vue, /if \(bundle\) \{ validateProtocolOptions\(bundle\.config\); return false; \}/);
     assert.match(vue, /if \(looksLikeSshImport\(importConfig\)\) \{ setError\(message\('configurations\.ssh\.importRefused'\)\); return; \}/);
-    assertDashboardLabel(vue, 'configurations.ssh.detected', /SSH détectée.*uniquement à la main/);
+    assertDashboardLabel(vue, 'configurations.ssh.detected', /SSH ambigu.*Settings reconnu/);
     assertDashboardLabel(vue, 'configurations.ui.sshDnstt', /SlowDNS \(DNSTT\)/);
     assertDashboardLabel(vue, 'configurations.ui.udpGw', /BadVPN UDPGW/);
     assert.doesNotMatch(vue, /SSH_IMPORT_TEMPLATES/);

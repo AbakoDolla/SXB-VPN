@@ -16,11 +16,13 @@
 import { parseVpnUri } from './vlessUri';
 import { lireProfilSocksIp } from './socksIpProfile';
 import { lireProfilV2rayN } from './v2rayNProfile';
+import { readProtocolBundle, hasWireguardEndpoints } from '../../server/services/protocol-bundle';
+import { hasXrayMarkers, translateXrayToSingbox } from '../../server/services/xray-translate';
 
 export type DetectableProtocol =
   | 'ssh' | 'ssh+payload'
   | 'vless' | 'vmess' | 'trojan' | 'shadowsocks'
-  | 'wireguard' | 'hysteria2' | 'tuic' | 'singbox';
+  | 'wireguard' | 'hysteria1' | 'hysteria2' | 'tuic' | 'singbox';
 
 export interface DetectionResult {
   /** Protocole détecté, ou null si non reconnu */
@@ -53,6 +55,7 @@ const PROTOCOL_ALIASES: Record<string, DetectableProtocol> = {
   'wireguard':   'wireguard',
   'wg':          'wireguard',
   // Hysteria
+  'hysteria1':   'hysteria1',
   'hysteria2':   'hysteria2',
   'hy2':         'hysteria2',
   'hysteria':    'hysteria2',
@@ -87,6 +90,18 @@ export class ProtocolDetector {
     }
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
       return { protocol: null, config: {}, certain: false, reason: 'Configuration nulle ou invalide' };
+    }
+
+    try {
+      const bundle = readProtocolBundle(input);
+      if (bundle) input = bundle.config;
+      if (hasXrayMarkers(input)) {
+        const translated = translateXrayToSingbox(input);
+        if (!translated.ok || !translated.singboxJson) throw new Error(translated.errors.join('; '));
+        input = { ...translated.singboxJson, protocol: 'singbox' };
+      }
+    } catch (error) {
+      return { protocol: null, config: {}, certain: false, reason: error instanceof Error ? error.message : 'Protocols: format invalide' };
     }
 
     // 0. Export SocksIP — traduit AVANT toute autre lecture.
@@ -165,6 +180,7 @@ export class ProtocolDetector {
         || outbounds.some((x: any) => x?.protocol === 'blackhole' || x?.protocol === 'freedom');
     };
     if (hasXrayMarkers(obj)) return 'vless';
+    if (hasWireguardEndpoints(obj) && (!obj.outbounds || Array.isArray(obj.outbounds) && obj.outbounds.every((x: any) => x && typeof x.type === 'string'))) return 'singbox';
     if (Array.isArray(obj.outbounds) && obj.outbounds.length > 0
       && obj.outbounds.every((x: any) => x && typeof x.type === 'string')
       && !hasXrayMarkers(obj)) return 'singbox';
@@ -202,6 +218,7 @@ export class ProtocolDetector {
     protocol: DetectableProtocol,
   ): Record<string, any> {
     const out: Record<string, any> = { ...raw, protocol };
+    if (protocol === 'singbox') return out;
 
     // Alias de champ "host"
     if (!out.host) out.host = raw.address ?? raw.add ?? raw.server ?? '';
@@ -220,6 +237,7 @@ export class ProtocolDetector {
     // Alias TLS
     if (out.tls === undefined) {
       out.tls =
+        protocol === 'hysteria1' || protocol === 'hysteria2' ||
         raw.tls === 'tls' || raw.tls === true ||
         raw.security === 'tls' || raw.security === 'reality' || false;
     }
@@ -259,6 +277,7 @@ export class ProtocolDetector {
       'shadowsocks': 'Shadowsocks',
       'wireguard':   'WireGuard',
       'hysteria2':   'Hysteria2 (QUIC)',
+      'hysteria1':   'Hysteria v1 (QUIC legacy)',
       'tuic':        'TUIC (QUIC)',
       'singbox':     'Sing-box (config native)',
     };
@@ -272,7 +291,7 @@ export class ProtocolDetector {
     return [
       'ssh', 'ssh+payload',
       'vless', 'vmess', 'trojan', 'shadowsocks',
-      'wireguard', 'hysteria2', 'tuic', 'singbox',
+      'wireguard', 'hysteria1', 'hysteria2', 'tuic', 'singbox',
     ];
   }
 }

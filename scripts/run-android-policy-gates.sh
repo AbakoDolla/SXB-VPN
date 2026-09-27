@@ -26,6 +26,8 @@ KOTLIN_ZIP="$CACHE/kotlin-compiler-2.1.20.zip"
 KOTLIN_SHA="a118197b0de55ffab2bc8d5cd03a5e39033cfb53383d6931bc761dec0784891a"
 JSON_JAR="$CACHE/json-20240303.jar"
 JSON_SHA="3cf6cd6892e32e2b4c1c39e0f52f5248a2f5b37646fdfbb79a66b46b618414ed"
+JSCH_JAR="$CACHE/jsch-0.2.21.jar"
+JSCH_SHA="2330df0841be84eefa7c6ba4b5a2c98faa153855c80a5af418fdedacc2a4bc5b"
 
 # Rend vrai quand le fichier existe ET porte l'empreinte attendue. Un fichier
 # tronqué par un build interrompu est ainsi retéléchargé plutôt que réutilisé.
@@ -52,8 +54,15 @@ else
 fi
 
 unzip -q "$KOTLIN_ZIP" -d "$HARNESS"
+if ! empreinte_ok "$JSCH_JAR" "$JSCH_SHA"; then
+  curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+    https://repo.maven.apache.org/maven2/com/github/mwiede/jsch/0.2.21/jsch-0.2.21.jar \
+    --output "$JSCH_JAR"
+  echo "$JSCH_SHA  $JSCH_JAR" | sha256sum --check --strict
+fi
 export KOTLINC="$HARNESS/kotlinc/bin/kotlinc"
 export SXB_JSON_JAR="$JSON_JAR"
+export SXB_JSCH_JAR="$JSCH_JAR"
 chmod +x "$KOTLINC"
 
 cd "$ROOT/app-mobile"
@@ -61,16 +70,24 @@ cd "$ROOT/app-mobile"
 # chiffrement qu'il vérifiait n'existe plus.
 node tests/run-access-policy.cjs
 node tests/run-stability-policy.cjs
+node tests/run-ssh-compatibility.cjs
 node scripts/prepare-geosite.cjs
 node --experimental-strip-types ../scripts/tests/xray-runtime-fixture.mjs "$HARNESS/xray"
 "$KOTLINC" "$HARNESS/xray/XrayRuntimeHarness.kt" modules/android-native/SxbTunnelPolicy.kt \
-  modules/android-native/SxbEngineSchema.kt -classpath "$SXB_JSON_JAR" \
+  modules/android-native/SxbEngineSchema.kt modules/android-native/SxbProtocolCompatibility.kt -classpath "$SXB_JSON_JAR" \
   -include-runtime -d "$HARNESS/xray/harness.jar"
 java -cp "$HARNESS/xray/harness.jar:$SXB_JSON_JAR" XrayRuntimeHarnessKt \
   "$HARNESS/xray/canonical.json" "$HARNESS/xray/runtime.json"
-go -C ../scripts/tests/singbox-engine-check run -mod=mod \
+go -C ../scripts/tests/singbox-engine-check build -mod=mod \
   -tags with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api,with_conntrack \
-  . "$HARNESS/xray/runtime.json" "$ROOT/app-mobile/build/engine-data"
+  -o "$HARNESS/engine-check" .
+"$HARNESS/engine-check" "$HARNESS/xray/runtime.json" "$ROOT/app-mobile/build/engine-data"
+for input in "$HARNESS/xray"/bundle-*.json; do
+  runtime="$HARNESS/xray/runtime-${input##*/}"
+  java -cp "$HARNESS/xray/harness.jar:$SXB_JSON_JAR" XrayRuntimeHarnessKt "$input" "$runtime"
+  node --experimental-strip-types ../scripts/tests/xray-runtime-fixture.mjs --check-bundle "$runtime"
+  "$HARNESS/engine-check" "$runtime" "$ROOT/app-mobile/build/engine-data"
+done
 go -C ../scripts/tests/singbox-engine-check build -mod=mod \
   -tags with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api,with_conntrack \
   -o "$HARNESS/sing-box" github.com/sagernet/sing-box/cmd/sing-box

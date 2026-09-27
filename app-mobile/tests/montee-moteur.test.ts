@@ -203,6 +203,15 @@ describe('la traduction est branchée là où TOUT passe', () => {
 });
 
 describe('le harnais prouve le chemin réel, pas une approximation', () => {
+  it('les parseurs partagés embarqués déclenchent aussi la construction Android', () => {
+    const push = lire('.github/workflows/build-android.yml').split('  workflow_dispatch:')[0];
+    for (const file of ['protocol-bundle.ts', 'protocol-uri.ts', 'xray-translate.ts']) {
+      assert.ok(push.includes(`      - "server/services/${file}"`), `${file} absent des chemins du déclencheur Android`);
+    }
+    const metro = lire('app-mobile/metro.config.js');
+    assert.match(metro, /path\.resolve\(__dirname, '\.\.', 'server', 'services'\)/);
+  });
+
   it('fait valider la sortie TRADUITE par le vrai moteur', () => {
     const fixture = lire('scripts/tests/xray-runtime-fixture.mjs');
     // Vérifier la sortie du seul générateur prouverait quelque chose que
@@ -213,7 +222,9 @@ describe('le harnais prouve le chemin réel, pas une approximation', () => {
     const portes = lire('scripts/run-android-policy-gates.sh');
     assert.match(portes, /modules\/android-native\/SxbEngineSchema\.kt/);
     // Et la sortie passe bien devant le moteur réel.
-    assert.match(portes, /singbox-engine-check run/);
+    assert.match(portes, /singbox-engine-check build/);
+    assert.match(portes, /"\$HARNESS\/engine-check" "\$HARNESS\/xray\/runtime\.json"/);
+    assert.match(portes, /"\$HARNESS\/engine-check" "\$runtime"/);
   });
 
   it('exécute les preuves Kotlin du module', () => {
@@ -249,9 +260,10 @@ describe('le module de traduction reste pur', () => {
     // qui fonctionne — la panne la plus difficile à diagnostiquer qui soit.
     const code = schema.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
     for (const interdit of [
-      'server_name', '"uuid"', '"password"', '"flow"', '"tls"', '"transport"', 'utls', 'fingerprint',
+      'server_name', 'uuid', 'password', 'flow', 'tls', 'transport', 'utls', 'fingerprint',
     ]) {
-      assert.ok(!code.includes(interdit), `le module ne doit jamais écrire ${interdit}`);
+      assert.doesNotMatch(code, new RegExp(`\\.(?:put(?:Opt)?|remove)\\(\\s*"${interdit}"`),
+        `le module ne doit jamais écrire ou supprimer ${interdit}`);
     }
   });
 });

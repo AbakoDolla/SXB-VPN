@@ -1,5 +1,6 @@
 import { isAdmin as isAdminRole } from '../lib/roles';
 import { brouillonDepuisProfil, MARQUEUR_SECRET } from '../lib/brouillonReimport';
+import { readProtocolBundle, validateProtocolOptions } from '../../../../server/services/protocol-bundle';
 import React, { useEffect, useRef, useState } from "react";
 import { useTranslation } from '../contexts/I18nContext';
 import { usePermissions } from '../contexts/PermissionsContext';
@@ -35,11 +36,12 @@ const PROTO_COLORS: Record<string, string> = {
   shadowsocks:  "text-purple-400 bg-purple-500/10",
   singbox:      "text-pink-400 bg-pink-500/10",
   wireguard:    "text-green-400 bg-green-500/10",
+  hysteria1:    "text-orange-400 bg-orange-500/10",
   hysteria2:    "text-orange-400 bg-orange-500/10",
   tuic:         "text-lime-400 bg-lime-500/10",
 };
 
-const PROTOCOLS = ['ssh', 'ssh+payload', 'vless', 'vmess', 'trojan', 'shadowsocks', 'singbox', 'wireguard', 'hysteria2', 'tuic'];
+const PROTOCOLS = ['ssh', 'ssh+payload', 'vless', 'vmess', 'trojan', 'shadowsocks', 'singbox', 'wireguard', 'hysteria1', 'hysteria2', 'tuic'];
 const NETWORKS  = ['ws', 'grpc', 'tcp', 'h2'];
 
 /** Formulaire administratif — champs NON techniques uniquement (mission §6.1) */
@@ -58,15 +60,18 @@ const DEFAULT_LEGACY_FORM = {
   slowDns: false, dns: '8.8.8.8', nameServer: '', slowDnsPublicKey: '', localPort: 2222,
   udpMode: 'none', udpGatewayHost: '127.0.0.1', udpGatewayPort: 7300,
   timeoutMs: 30000,
+  privateKeyBase64: '', privateKeyPassphrase: '',
+  privateKey: '', publicKey: '', address: '', presharedKey: '', persistentKeepalive: '', allowedIps: '', reserved: '', mtu: '',
+  upMbps: '', downMbps: '', obfs: '', obfsPassword: '',
 };
 
-// ── Import SSH : saisie manuelle uniquement ──────────────────────────────────
+// ── Import SSH : formulaire ou export Settings reconnu ──────────────────────
 //
 // Coller un JSON SSH produisait des profils que l'application ne savait pas
 // toujours ouvrir : champs d'une autre application, mode de connexion deviné,
 // payload tronqué. Le SSH passe donc par le formulaire, où chaque mode ne
-// demande que ses propres champs. Seul l'onglet de collage refuse le SSH : le
-// réimport des profils SSH existants reste possible.
+// demande que ses propres champs. L'export Settings a un lecteur strict et un
+// aperçu ; les autres formes ambiguës restent réservées au formulaire.
 const normalizedKeys = (entry: Record<string, unknown>) =>
   new Set(Object.keys(entry).map(key => key.toUpperCase().replace(/[^A-Z0-9]/g, '')));
 
@@ -88,6 +93,8 @@ function looksLikeSshImport(raw: string): boolean {
   if (!/^[{[]/.test(text)) return false;
   try {
     const parsed = JSON.parse(text);
+    const bundle = readProtocolBundle(parsed);
+    if (bundle) { validateProtocolOptions(bundle.config); return false; }
     // sing-box et Xray décrivent leurs sorties dans `outbounds` : ce ne sont
     // pas des profils SSH à saisir, même si l'une d'elles parle SSH.
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Array.isArray(parsed.outbounds)) return false;
@@ -114,6 +121,8 @@ function buildManualSshConfig(form: typeof DEFAULT_LEGACY_FORM, payload: string,
     password: form.password,
     tls,
   };
+  if (form.privateKeyBase64.trim()) config.privateKeyBase64 = form.privateKeyBase64.trim();
+  if (form.privateKeyPassphrase) config.privateKeyPassphrase = form.privateKeyPassphrase;
   if (tls) {
     const serverName = form.sni.trim() || sni;
     if (serverName) config.sni = serverName;
@@ -319,6 +328,15 @@ function inspectJsonEditor(raw: string, t: Translate): JsonEditorInfo {
   }
   try {
     const obj = JSON.parse(raw);
+    const bundle = readProtocolBundle(obj);
+    if (bundle) {
+      validateProtocolOptions(bundle.config);
+      return {
+        valid: true, lineCount,
+        label: t('configurations.bundle.recognized', { protocol: String(bundle.config.protocol ?? 'Xray') }),
+        detail: bundle.warnings.length ? bundle.warnings.join(' | ') : t('configurations.bundle.preview'),
+      };
+    }
     const configArray = !Array.isArray(obj) && obj && typeof obj === 'object'
       ? Object.entries(obj).find(([key, value]) =>
           key.toUpperCase().replace(/[^A-Z0-9]/g, '') === 'CONFIGS' && Array.isArray(value),
@@ -361,7 +379,7 @@ function inspectJsonEditor(raw: string, t: Translate): JsonEditorInfo {
     return {
       valid: false,
       label: t('configurations.ui.unrecognized'),
-      detail: t('configurations.editor.invalidFormat'),
+      detail: err instanceof Error && /^(Protocols|SSH|Hysteria|WireGuard):/.test(err.message) ? err.message : t('configurations.editor.invalidFormat'),
       lineCount,
     };
   }
@@ -808,7 +826,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
     const selectedPayload = candidatePayload && 'content' in candidatePayload ? candidatePayload : undefined;
     const payload = legacyForm.payload.trim() || selectedPayload?.content?.trim() || '';
     if (['ssh', 'ssh+payload'].includes(legacyForm.protocol)) {
-      if (!legacyForm.host.trim() || !Number(legacyForm.port) || !legacyForm.username.trim() || !legacyForm.password) {
+      if (!legacyForm.host.trim() || !Number(legacyForm.port) || !legacyForm.username.trim() || !(legacyForm.password || legacyForm.privateKeyBase64.trim())) {
         return { errorKey: 'configurations.ssh.incomplete' };
       }
       if (['payload', 'payload-tls'].includes(legacyForm.sshTransport) && !payload) {
@@ -823,6 +841,18 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
       return { config: buildManualSshConfig(legacyForm, payload, selectedPayload?.sni || undefined) };
     }
     if (!legacyForm.host || !legacyForm.port) return { errorKey: 'configurations.ui.requiredFields' };
+    if (legacyForm.protocol === 'wireguard') {
+      return { config: {
+        protocol: 'wireguard', privateKey: legacyForm.privateKey.trim(), publicKey: legacyForm.publicKey.trim(),
+        endpoint: `${legacyForm.host.includes(':') ? `[${legacyForm.host.trim()}]` : legacyForm.host.trim()}:${legacyForm.port}`,
+        address: legacyForm.address.split(',').map(value => value.trim()),
+        ...(legacyForm.allowedIps.trim() ? { allowedIps: legacyForm.allowedIps } : {}),
+        ...(legacyForm.presharedKey ? { presharedKey: legacyForm.presharedKey.trim() } : {}),
+        ...(legacyForm.persistentKeepalive ? { persistentKeepalive: Number(legacyForm.persistentKeepalive) } : {}),
+        ...(legacyForm.mtu ? { mtu: Number(legacyForm.mtu) } : {}),
+        ...(legacyForm.reserved ? { reserved: legacyForm.reserved.split(',').map(Number) } : {}),
+      } };
+    }
     const manualConfig: Record<string, any> = {
       protocol: legacyForm.protocol,
       host: legacyForm.host.trim(),
@@ -831,8 +861,8 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
       password: legacyForm.password || undefined,
       uuid: legacyForm.uuid.trim() || undefined,
       path: legacyForm.path.trim() || undefined,
-      network: legacyForm.network || undefined,
-      tls: legacyForm.tls,
+      network: ['hysteria1', 'hysteria2'].includes(legacyForm.protocol) ? undefined : legacyForm.network || undefined,
+      tls: ['hysteria1', 'hysteria2'].includes(legacyForm.protocol) ? true : legacyForm.tls,
       insecure: legacyForm.insecure,
       sni: legacyForm.sni.trim() || selectedPayload?.sni || undefined,
       // En-tête Host WebSocket — distinct de l'adresse TCP et du SNI. Sans
@@ -841,6 +871,11 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
       wsHost: legacyForm.wsHost.trim() || undefined,
       method: legacyForm.method || undefined,
     };
+    if (['hysteria1', 'hysteria2'].includes(legacyForm.protocol)) {
+      for (const field of ['upMbps', 'downMbps'] as const) if (legacyForm[field]) manualConfig[field] = Number(legacyForm[field]);
+      if (legacyForm.obfs) manualConfig.obfs = legacyForm.obfs;
+      if (legacyForm.obfsPassword) manualConfig.obfsPassword = legacyForm.obfsPassword;
+    }
     return { config: manualConfig };
   };
 
@@ -1668,6 +1703,8 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
     ? `${inputCls} opacity-60 cursor-not-allowed pointer-events-none select-none`
     : inputCls;
   const sshFamily = ['ssh', 'ssh+payload'].includes(form.protocol);
+  const quicFamily = ['hysteria1', 'hysteria2'].includes(form.protocol);
+  const streamFamily = ['vless', 'vmess', 'trojan', 'tuic'].includes(form.protocol);
   const sshMode = form.sshTransport || 'direct';
   // Le TLS d'un profil SSH découle du mode choisi ; seul le passage par proxy
   // le laisse au choix de l'exploitant.
@@ -1685,6 +1722,7 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
   const setProtocol = (protocol: string) => {
     if (protocol === 'ssh') { f('protocol', 'ssh'); setSshTransport('direct'); return; }
     f('protocol', protocol);
+    if (['hysteria1', 'hysteria2'].includes(protocol)) f('tls', true);
   };
   // Une seule entrée « SSH » : ssh et ssh+payload se distinguent par le mode.
   const protocolChoices = locked ? protocols : protocols.filter(p => p !== 'ssh+payload');
@@ -1726,6 +1764,16 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
       </div>
 
       {['ssh', 'ssh+payload'].includes(form.protocol) && <>
+        <div className="col-span-2">
+          <label className="block text-sm text-gray-400 mb-1.5" htmlFor="ssh-private-key">{t('configurations.bundle.sshKey')}</label>
+          <textarea id="ssh-private-key" value={form.privateKeyBase64} onChange={e => f('privateKeyBase64', e.target.value)}
+            rows={2} autoComplete="off" spellCheck={false} className={lockedCls} disabled={locked} />
+        </div>
+        <div className="col-span-2">
+          <label className="block text-sm text-gray-400 mb-1.5" htmlFor="ssh-key-passphrase">{t('configurations.bundle.passphrase')}</label>
+          <input id="ssh-key-passphrase" type="password" value={form.privateKeyPassphrase} onChange={e => f('privateKeyPassphrase', e.target.value)}
+            autoComplete="new-password" className={lockedCls} disabled={locked} />
+        </div>
         {locked && (
           <div className="col-span-2">
             <label className="block text-sm text-gray-400 mb-1.5"> {t('configurations.ui.sshTransport')} </label>
@@ -1863,7 +1911,7 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
         </div>
       )}
 
-      {['trojan', 'shadowsocks', 'hysteria2', 'tuic'].includes(form.protocol) && (
+      {['trojan', 'shadowsocks', 'hysteria1', 'hysteria2', 'tuic'].includes(form.protocol) && (
         <div>
           <label className="block text-sm text-gray-400 mb-1.5"> {t('configurations.ui.password')} </label>
           <input type="password" value={form.password} onChange={e => f('password', e.target.value)}
@@ -1871,7 +1919,31 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
         </div>
       )}
 
-      {!sshFamily && (
+      {form.protocol === 'wireguard' && (['privateKey', 'publicKey', 'address', 'allowedIps', 'presharedKey', 'persistentKeepalive', 'reserved', 'mtu'] as const).map(field => (
+        <div key={field} className="col-span-2">
+          <label htmlFor={`wg-${field}`} className="block text-sm text-gray-400 mb-1.5">{t(`configurations.bundle.${field}`)}</label>
+          <input id={`wg-${field}`} type={['privateKey', 'presharedKey'].includes(field) ? 'password' : 'text'}
+            value={form[field]} onChange={e => f(field, e.target.value)} autoComplete="off" spellCheck={false}
+            className={lockedCls} disabled={locked} />
+        </div>
+      ))}
+      {quicFamily && (['upMbps', 'downMbps', 'obfs', 'obfsPassword'] as const).filter(field => form.protocol === 'hysteria2' || field !== 'obfsPassword').map(field => (
+        <div key={field}>
+          <label htmlFor={`hy-${field}`} className="block text-sm text-gray-400 mb-1.5">{t(`configurations.bundle.${field}`)}</label>
+          <input id={`hy-${field}`} type={field.endsWith('Mbps') ? 'number' : field.includes('Password') ? 'password' : 'text'}
+            min={1} max={1000000} value={form[field]} onChange={e => f(field, e.target.value)}
+            className={lockedCls} disabled={locked} />
+        </div>
+      ))}
+      {form.protocol === 'shadowsocks' && (
+        <div>
+          <label htmlFor="ss-method" className="block text-sm text-gray-400 mb-1.5">{t('configurations.bundle.method')}</label>
+          <select id="ss-method" value={form.method} onChange={e => f('method', e.target.value)} className={lockedCls} disabled={locked}>
+            {['aes-128-gcm', 'aes-256-gcm', 'chacha20-ietf-poly1305', '2022-blake3-aes-128-gcm', '2022-blake3-aes-256-gcm', '2022-blake3-chacha20-poly1305'].map(method => <option key={method}>{method}</option>)}
+          </select>
+        </div>
+      )}
+      {streamFamily && (
         <div>
           <label className="block text-sm text-gray-400 mb-1.5"> {t('configurations.ui.network')} </label>
           <select value={form.network} onChange={e => f('network', e.target.value)} className={lockedCls} disabled={locked}>
@@ -1880,7 +1952,7 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
         </div>
       )}
 
-      {(!sshFamily || locked || sshTls) && (
+      {(streamFamily || quicFamily || locked || sshTls) && (
         <div>
           <label className="block text-sm text-gray-400 mb-1.5">SNI</label>
           <input value={form.sni} onChange={e => f('sni', e.target.value)}
@@ -1888,7 +1960,7 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
           {sshFamily && !locked && <p className="text-[11px] text-gray-500 mt-1"> {t('configurations.ssh.sniHint')} </p>}
         </div>
       )}
-      {!sshFamily && (
+      {streamFamily && (
         <div>
           <label className="block text-sm text-gray-400 mb-1.5"> {t('configurations.ui.wsHost')} <span className="ml-1.5 text-[11px] text-gray-600"> {t('configurations.ui.wsHostHint')} </span>
           </label>
@@ -1896,14 +1968,14 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
             placeholder={t('configurations.ui.reuseSni')} className={lockedCls} disabled={locked} readOnly={locked} />
         </div>
       )}
-      {(!sshFamily || locked) && (
+      {(streamFamily || locked) && (
         <div>
           <label className="block text-sm text-gray-400 mb-1.5"> {t('configurations.ui.path')} </label>
           <input value={form.path} onChange={e => f('path', e.target.value)}
             placeholder="/" className={lockedCls} disabled={locked} readOnly={locked} />
         </div>
       )}
-      {(!sshFamily || locked || sshMode === 'http-connect') && (
+      {(streamFamily || locked || sshFamily && sshMode === 'http-connect') && (
         <div>
           <button type="button" onClick={() => !locked && f('tls', !form.tls)}
             disabled={locked}

@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { xrayHttpChainFixture } from './fixtures/xray-http-chain.mjs';
+import { bundleXray } from './fixtures/protocol-bundle.mjs';
 
 const { parseImportedConfig, engineConfigFromCanonical } = await import('../../server/services/canonical-config.ts');
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -42,6 +43,7 @@ import java.io.File
 import java.util.Locale
 import com.sxbvpn.vpnmodule.SxbTunnelPolicy
 import com.sxbvpn.vpnmodule.SxbEngineSchema
+import com.sxbvpn.vpnmodule.SxbProtocolCompatibility
 
 private object SxbSecureLogger {
     fun warn(message: String) {}
@@ -80,13 +82,54 @@ export function syntheticCanonicalForRuntime() {
   return engineConfigFromCanonical(parsed.canonical);
 }
 
+export function bundleRuntimeInputs() {
+  return ['vless', 'vmess', 'trojan', 'shadowsocks', 'shadowsocks-legacy', 'socks', 'wireguard'].flatMap(protocol => {
+    const raw = bundleXray(protocol === 'shadowsocks-legacy' ? 'shadowsocks' : protocol);
+    const settings = raw.outbounds[0].settings;
+    if (settings.peers) settings.peers[0].endpoint = 'vpn.example.test:23456';
+    else (settings.servers ?? settings.vnext)[0].address = 'vpn.example.test';
+    if (protocol === 'shadowsocks-legacy') {
+      settings.servers[0].method = 'aes-256-gcm';
+      settings.servers[0].password = 'synthetic-password';
+    }
+    const parsed = parseImportedConfig(JSON.stringify({ tunnelType: 7, v2rayjson: raw }));
+    assert.ok(parsed.ok, parsed.errors.join(' | '));
+    return [
+      { name: `${protocol}-canonical`, config: engineConfigFromCanonical(parsed.canonical) },
+      { name: `${protocol}-legacy`, config: raw },
+    ];
+  });
+}
+
+export function checkBundleRuntime(runtime) {
+  assert.equal(runtime.route.default_domain_resolver, 'dns-bootstrap', 'VPN endpoint resolution must not select a hosts table');
+  assert.ok(runtime.dns.servers.some(server => server.type === 'hosts'
+    && server.predefined?.['only.example.test']?.includes('192.0.2.1')), 'Exact DNS hosts mappings must survive the real native builder');
+  const wireguard = runtime.endpoints?.find(endpoint => endpoint.type === 'wireguard');
+  if (wireguard) {
+    assert.equal(wireguard.system, false, 'No parallel system TUN');
+    assert.equal(wireguard.peers[0].persistent_keepalive_interval, 25);
+    assert.deepEqual(wireguard.peers[0].reserved, [0, 127, 255]);
+    assert.equal(wireguard.mtu, 1420);
+  }
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  assert.equal(process.argv.length, 3, 'Pass an output directory for synthetic CI artifacts');
-  const output = path.resolve(process.argv[2]);
-  const build = readFileSync(path.join(root, 'app-mobile', 'scripts', 'build-libbox.sh'), 'utf8');
-  assert.ok(build.includes(`SING_BOX_VERSION:-v${SING_BOX_VERSION}`), 'Harness must follow the app engine pin');
-  mkdirSync(output, { recursive: true });
-  writeFileSync(path.join(output, 'canonical.json'), JSON.stringify(syntheticCanonicalForRuntime(), null, 2));
-  writeFileSync(path.join(output, 'XrayRuntimeHarness.kt'), nativeCompatibilityHarnessSource());
-  console.log('Synthetic canonical and source-derived Kotlin runtime harness prepared; no engine was started.');
+  if (process.argv[2] === '--check-bundle') {
+    assert.equal(process.argv.length, 4);
+    checkBundleRuntime(JSON.parse(readFileSync(process.argv[3], 'utf8')));
+    console.log('Source-derived bundle graph preserves bootstrap DNS, exact hosts and WireGuard options.');
+  } else {
+    assert.equal(process.argv.length, 3, 'Pass an output directory for synthetic CI artifacts');
+    const output = path.resolve(process.argv[2]);
+    const build = readFileSync(path.join(root, 'app-mobile', 'scripts', 'build-libbox.sh'), 'utf8');
+    assert.ok(build.includes(`SING_BOX_VERSION:-v${SING_BOX_VERSION}`), 'Harness must follow the app engine pin');
+    mkdirSync(output, { recursive: true });
+    writeFileSync(path.join(output, 'canonical.json'), JSON.stringify(syntheticCanonicalForRuntime(), null, 2));
+    writeFileSync(path.join(output, 'XrayRuntimeHarness.kt'), nativeCompatibilityHarnessSource());
+    for (const { name, config } of bundleRuntimeInputs()) {
+      writeFileSync(path.join(output, `bundle-${name}.json`), JSON.stringify(config, null, 2));
+    }
+    console.log('Synthetic canonical and source-derived Kotlin runtime harness prepared; no engine was started.');
+  }
 }

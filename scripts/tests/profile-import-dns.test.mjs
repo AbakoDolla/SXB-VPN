@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { bundleXray } from './fixtures/protocol-bundle.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const require = createRequire(path.join(root, 'backend', 'package.json'));
@@ -52,6 +53,7 @@ function assertStoredDns(id, raw) {
   const decrypted = JSON.parse(decryptCanonical(stored.canonicalConfig));
   assert.deepEqual(decrypted.dns, expected.canonical.dns, 'Full DNS rules must survive encrypted storage unchanged');
   assert.deepEqual(decrypted.outbounds, expected.canonical.outbounds);
+  assert.deepEqual(decrypted.endpoints, expected.canonical.endpoints);
 }
 
 for (const [format, configuration] of [['Xray', xray], ['sing-box', singbox]]) {
@@ -69,6 +71,38 @@ for (const [format, configuration] of [['Xray', xray], ['sing-box', singbox]]) {
     assert.equal(response.body.profile.canonicalConfig, undefined);
   });
 }
+
+for (const protocol of ['vless', 'vmess', 'trojan', 'shadowsocks', 'socks', 'wireguard']) {
+  test(`Settings ${protocol} import preserves the full graph in encrypted API storage`, async () => {
+    const raw = JSON.stringify({ tunnelType: 7, v2rayjson: bundleXray(protocol) });
+    const response = await api('admin', 'POST', '/vpn-profiles', {
+      name: `${protocol} bundle fixture`, importConfig: raw, lockPassword,
+    });
+    ok(response, 201);
+    assertStoredDns(response.body.profile.id, raw);
+    assert.equal(response.body.profile.canonicalConfig, undefined);
+  });
+}
+
+test('Settings SSH and Hysteria V1 retain credentials only in the encrypted canonical', async () => {
+  for (const config of [
+    { tunnelType: 1, sshServer: 'ssh.example.test', sshPort: 22, sshUser: 'synthetic', sshPass: 'synthetic-password' },
+    { tunnelType: 6, udpserver: 'vpn.example.test', udpport: 443, udpauth: 'synthetic-password', udpup: 100, udpdown: 100 },
+  ]) {
+    const raw = JSON.stringify(config);
+    const expected = parseImportedConfig(raw);
+    assert.ok(expected.ok, expected.errors.join('; '));
+    const response = await api('admin', 'POST', '/vpn-profiles', {
+      name: `Settings ${config.tunnelType} fixture`, importConfig: raw, lockPassword,
+    });
+    ok(response, 201);
+    const stored = row('VpnProfile', response.body.profile.id);
+    assert.deepEqual(JSON.parse(decryptCanonical(stored.canonicalConfig)), expected.canonical);
+    assert.equal(stored.username, null);
+    assert.equal(stored.password, null);
+    assert.equal(response.body.profile.canonicalConfig, undefined);
+  }
+});
 
 test('the batch endpoint uses the same structured DNS storage contract', async () => {
   const raw = JSON.stringify(xray);

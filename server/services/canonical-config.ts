@@ -31,6 +31,9 @@ import { translateXrayToSingbox, isSingboxNativeJson, hasXrayMarkers } from './x
 // moderne choisit donc h2, et le WebSocket de sing-box — qui parle HTTP/1.1
 // Upgrade — ne peut plus établir sa liaison. Le TLS aboutit malgré tout, d'où
 // un tunnel « connecté » qui ne transporte rien.
+import { readProtocolBundle, validateShadowsocksKey, validateProtocolOptions, hasWireguardEndpoints } from './protocol-bundle';
+import { readProtocolUri, vmessShareProfile } from './protocol-uri';
+
 const TRANSPORTS_UPGRADE = new Set(['ws', 'websocket', 'httpupgrade', 'http-upgrade']);
 export const ALPN_UPGRADE = 'http/1.1';
 
@@ -66,7 +69,7 @@ export type SourceFormat =
   | 'vless-uri' | 'vmess-uri' | 'trojan-uri' | 'ss-uri'
   | 'wireguard-conf' | 'hysteria2-uri' | 'tuic-uri'
   | 'uri-list' | 'v2ray-subscription'
-  | 'singbox-json' | 'xray-json' | 'v2rayn-json' | 'http-tweak-json' | 'socksip-json' | 'sxb-canonical';
+  | 'singbox-json' | 'xray-json' | 'v2rayn-json' | 'http-tweak-json' | 'socksip-json' | 'sxb-canonical' | 'protocols-json';
 
 export interface ParseResult {
   ok: boolean;
@@ -137,7 +140,7 @@ export function decryptCanonical(blob: string): string | null {
 
 const VALID_PROTOCOLS = [
   'ssh', 'ssh+payload', 'vless', 'vmess', 'trojan', 'shadowsocks',
-  'wireguard', 'hysteria2', 'tuic', 'singbox',
+  'wireguard', 'hysteria1', 'hysteria2', 'tuic', 'singbox',
 ] as const;
 
 const VALID_SS_METHODS = [
@@ -179,6 +182,8 @@ export function validateTransportCoherence(cfg: Record<string, any>): { errors: 
   const errors: string[] = [];
   const warnings: string[] = [];
   const proto = String(cfg.protocol ?? '').toLowerCase();
+  try { validateProtocolOptions({ ...cfg, protocol: proto }); }
+  catch (error) { errors.push(error instanceof Error ? error.message : 'Options de protocole invalides'); }
 
   if (!VALID_PROTOCOLS.includes(proto as any)) {
     errors.push(`protocol inconnu : "${cfg.protocol}" (attendu: ${VALID_PROTOCOLS.join(', ')})`);
@@ -277,23 +282,33 @@ export function validateTransportCoherence(cfg: Record<string, any>): { errors: 
       req(['host', 'port', 'uuid', 'password']);
       break;
     case 'trojan':
+    case 'hysteria1':
     case 'hysteria2':
       req(['host', 'port', 'password']);
+      if (proto === 'hysteria1') {
+        req(['upMbps', 'downMbps']);
+        for (const field of ['upMbps', 'downMbps']) {
+          if (!Number.isSafeInteger(cfg[field]) || cfg[field] < 1) errors.push(`Hysteria1 : ${field} doit etre un entier positif`);
+        }
+        if (cfg.tls === false) errors.push('Hysteria1 : TLS requis');
+      }
       break;
     case 'shadowsocks':
       req(['host', 'port', 'method', 'password']);
+      try { validateShadowsocksKey(cfg.method, cfg.password); }
+      catch (error) { errors.push(error instanceof Error ? error.message : 'Shadowsocks : cle invalide'); }
       if (cfg.method && !VALID_SS_METHODS.includes(String(cfg.method).toLowerCase())) {
         warnings.push(`méthode Shadowsocks non standard : "${cfg.method}"`);
       }
       break;
     case 'wireguard':
-      req(['privateKey', 'publicKey', 'endpoint']);
+      req(['privateKey']);
       if (cfg.endpoint && !String(cfg.endpoint).includes(':')) {
         errors.push('wireguard "endpoint" attendu au format host:port');
       }
       break;
     case 'singbox':
-      if (!Array.isArray(cfg.outbounds) || cfg.outbounds.length === 0) {
+      if ((!Array.isArray(cfg.outbounds) || cfg.outbounds.length === 0) && !hasWireguardEndpoints(cfg)) {
         errors.push('singbox : "outbounds" doit être un tableau non vide');
       }
       if (!cfg.inbounds) warnings.push('singbox : inbounds fournis par l\'application mobile (TUN)');
@@ -445,113 +460,32 @@ function parseVlessUri(uri: string, errors: string[]): { cfg: Record<string, any
   return { cfg, name: m[5] ? safeDecodeURIComponent(m[5]) : undefined };
 }
 
-function parseTrojanUri(uri: string, errors: string[]): { cfg: Record<string, any>; name?: string } | null {
-  const m = uri.match(/^trojan:\/\/([^@]+)@(\[[^\]]+\]|[^:/?#]+):(\d+)(\?[^#]*)?(?:#(.*))?$/i);
-  if (!m) { errors.push('URI trojan malformée'); return null; }
-  const cfg: Record<string, any> = {
-    protocol: 'trojan',
-    password: safeDecodeURIComponent(m[1]),
-    host: nettoyerHoteUri(m[2]),
-    port: Number(m[3]),
-  };
-  applyCommonTransport(parseQuery((m[4] || '').slice(1)), cfg);
-  if (cfg.tls === undefined) cfg.tls = true; // trojan = TLS par nature
-  return { cfg, name: m[5] ? safeDecodeURIComponent(m[5]) : undefined };
-}
-
-function parseSsUri(uri: string, errors: string[]): { cfg: Record<string, any>; name?: string } | null {
-  // ss://base64(method:pass)@host:port#name  |  ss://method:pass@host:port#name
-  let body = uri.replace(/^ss:\/\//i, '');
-  let name: string | undefined;
-  const hash = body.indexOf('#');
-  if (hash >= 0) { name = safeDecodeURIComponent(body.slice(hash + 1)); body = body.slice(0, hash); }
-  let userinfo = '', server = '';
-  const at = body.lastIndexOf('@');
-  if (at >= 0) { userinfo = body.slice(0, at); server = body.slice(at + 1); }
-  else {
-    try { const dec = Buffer.from(body, 'base64').toString('utf8'); const at2 = dec.lastIndexOf('@');
-      if (at2 < 0) { errors.push('URI ss malformée'); return null; }
-      userinfo = dec.slice(0, at2); server = dec.slice(at2 + 1);
-    } catch { errors.push('URI ss : base64 illisible'); return null; }
-  }
-  // userinfo peut être base64(method:pass)
-  if (!userinfo.includes(':')) {
-    const decodedUserinfo = decodeBase64Flexible(userinfo);
-    if (decodedUserinfo) userinfo = decodedUserinfo;
-  }
-  const sep = userinfo.indexOf(':');
-  const method = userinfo.slice(0, sep), password = userinfo.slice(sep + 1);
-  const hm = server.match(/^([^:]+):(\d+)/);
-  if (!method || !password || !hm) { errors.push('URI ss : method/password/host:port introuvables'); return null; }
-  return {
-    cfg: { protocol: 'shadowsocks', method: safeDecodeURIComponent(method), password: safeDecodeURIComponent(password), host: hm[1], port: Number(hm[2]) },
-    name,
-  };
-}
-
-function parseVmessUri(uri: string, errors: string[]): { cfg: Record<string, any>; name?: string } | null {
-  // vmess://base64(json)
-  const b64 = uri.replace(/^vmess:\/\//i, '');
+function parseSharedUri(uri: string, errors: string[]): { cfg: Record<string, any>; name?: string } | null {
   try {
-    const decoded = decodeBase64Flexible(b64);
-    if (!decoded) throw new Error('base64');
-    const j = JSON.parse(decoded);
-    return parseVmessShareObject(j, errors);
-  } catch {
-    errors.push('vmess : JSON base64 illisible');
+    const parsed = readProtocolUri(uri);
+    if (!parsed) throw new Error('URI : protocole non reconnu');
+    return { cfg: parsed.config, name: parsed.name };
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : 'URI invalide');
     return null;
   }
 }
 
+
+
+
+
 function parseVmessShareObject(j: any, errors: string[]): { cfg: Record<string, any>; name?: string } | null {
-  const host = j.add ?? j.address ?? j.server;
-  const port = j.port ?? j.serverPort;
-  const uuid = j.id ?? j.uuid;
-  if (!host || !port || !uuid) { errors.push('vmess : champs add/address, port, id manquants'); return null; }
-  const network = String(j.net ?? j.network ?? 'tcp').toLowerCase();
-  const cfg: Record<string, any> = {
-    protocol: 'vmess',
-    host: String(host),
-    port: Number(port),
-    uuid: String(uuid),
-  };
-  const alterId = j.aid ?? j.alterId;
-  if (alterId !== undefined && alterId !== '') cfg.alterId = Number(alterId);
-  const security = j.scy ?? j.security;
-  if (security) cfg.security = String(security);
-  if (network) cfg.network = network;
-  const path = j.path ?? j.requestPath;
-  if (path) cfg.path = safeDecodeURIComponent(String(path));
-  const wsHost = j.requestHost ?? j.wsHost ?? j.host;
-  if (wsHost) cfg.wsHost = safeDecodeURIComponent(String(wsHost));
-  const headerType = j.type ?? j.headerType;
-  if (headerType && String(headerType).toLowerCase() !== 'none') cfg.headerType = String(headerType);
-  const tlsValue = j.tls ?? j.streamSecurity;
-  cfg.tls = tlsValue === true || String(tlsValue ?? '').toLowerCase() === 'tls';
-  if (j.sni) cfg.sni = safeDecodeURIComponent(String(j.sni));
-  const fp = j.fp ?? j.fingerprint;
-  if (fp) cfg.fingerprint = String(fp);
-  if (j.alpn) cfg.alpn = Array.isArray(j.alpn) ? j.alpn.map((v: any) => String(v)).join(',') : String(j.alpn);
-  return { cfg, name: j.ps ?? j.remarks ?? j.name };
+  try {
+    const parsed = vmessShareProfile(j);
+    return { cfg: parsed.config, name: parsed.name };
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : 'VMess invalide');
+    return null;
+  }
 }
 
-function parseHysteria2Uri(uri: string, errors: string[]): { cfg: Record<string, any>; name?: string } | null {
-  const m = uri.match(/^(?:hysteria2|hy2):\/\/([^@]+)@(\[[^\]]+\]|[^:/?#]+):(\d+)(\?[^#]*)?(?:#(.*))?$/i);
-  if (!m) { errors.push('URI hysteria2 malformée'); return null; }
-  const cfg: Record<string, any> = {
-    protocol: 'hysteria2',
-    password: decodeURIComponent(m[1]),
-    host: nettoyerHoteUri(m[2]),
-    port: Number(m[3]),
-  };
-  const q = parseQuery((m[4] || '').slice(1));
-  if (q.get('sni')) cfg.sni = q.get('sni');
-  const insecure = boolParam(q.get('insecure'));
-  if (insecure !== undefined) cfg.insecure = insecure;
-  if (q.get('obfs')) cfg.obfs = q.get('obfs');
-  if (q.get('obfs-password')) cfg.obfsPassword = q.get('obfs-password');
-  return { cfg, name: m[5] ? decodeURIComponent(m[5]) : undefined };
-}
+
 
 function parseTuicUri(uri: string, errors: string[]): { cfg: Record<string, any>; name?: string } | null {
   const m = uri.match(/^tuic:\/\/([^:@]+):([^@]+)@(\[[^\]]+\]|[^:/?#]+):(\d+)(\?[^#]*)?(?:#(.*))?$/i);
@@ -571,6 +505,10 @@ function parseTuicUri(uri: string, errors: string[]): { cfg: Record<string, any>
 }
 
 function parseWireguardConf(text: string, errors: string[]): Record<string, any> | null {
+  if ((text.match(/^\s*\[Peer\]\s*$/gim) ?? []).length !== 1) {
+    errors.push('WireGuard INI : un seul Peer requis; utilisez les endpoints JSON pour plusieurs pairs');
+    return null;
+  }
   // Format INI [Interface]/[Peer]
   const get = (section: string, key: string): string | null => {
     const re = new RegExp(`\\[${section}\\][^\\[]*?^\\s*${key}\\s*=\\s*(.+?)$`, 'ims');
@@ -1124,10 +1062,10 @@ function parseImportedConfigSingle(raw: string): ParseResult {
   let sourceFormat: SourceFormat | null = null;
 
   if (/^vless:\/\//i.test(text))       { parsed = parseVlessUri(text, errors);      sourceFormat = 'vless-uri'; }
-  else if (/^vmess:\/\//i.test(text))  { parsed = parseVmessUri(text, errors);      sourceFormat = 'vmess-uri'; }
-  else if (/^trojan:\/\//i.test(text)) { parsed = parseTrojanUri(text, errors);     sourceFormat = 'trojan-uri'; }
-  else if (/^ss:\/\//i.test(text))     { parsed = parseSsUri(text, errors);         sourceFormat = 'ss-uri'; }
-  else if (/^(hysteria2|hy2):\/\//i.test(text)) { parsed = parseHysteria2Uri(text, errors); sourceFormat = 'hysteria2-uri'; }
+  else if (/^vmess:\/\//i.test(text))  { parsed = parseSharedUri(text, errors);     sourceFormat = 'vmess-uri'; }
+  else if (/^trojan:\/\//i.test(text)) { parsed = parseSharedUri(text, errors);    sourceFormat = 'trojan-uri'; }
+  else if (/^ss:\/\//i.test(text))     { parsed = parseSharedUri(text, errors);    sourceFormat = 'ss-uri'; }
+  else if (/^(hysteria2|hy2):\/\//i.test(text)) { parsed = parseSharedUri(text, errors); sourceFormat = 'hysteria2-uri'; }
   else if (/^tuic:\/\//i.test(text))   { parsed = parseTuicUri(text, errors);       sourceFormat = 'tuic-uri'; }
   else if (/^\s*\[Interface\]/im.test(text)) {
     const cfg = parseWireguardConf(text, errors);
@@ -1138,6 +1076,15 @@ function parseImportedConfigSingle(raw: string): ParseResult {
     let obj: any;
     try { obj = JSON.parse(text); }
     catch { errors.push('format non reconnu : ni URI (vless://, vmess://, trojan://, ss://, tuic://, hy2://) ni JSON ni WireGuard conf'); return { ok: false, errors, warnings }; }
+    try {
+      const bundle = readProtocolBundle(obj);
+      if (bundle) {
+        const parsedBundle = parseImportedConfigSingle(JSON.stringify(bundle.config));
+        return { ...parsedBundle, sourceFormat: 'protocols-json', warnings: [...bundle.warnings, ...parsedBundle.warnings] };
+      }
+    } catch (error) {
+      return { ok: false, sourceFormat: 'protocols-json', errors: [error instanceof Error ? error.message : 'Protocols: format invalide'], warnings };
+    }
     if (Array.isArray(obj)) {
       const v2rayN = parseV2rayNJson(obj, warnings, errors);
       if (v2rayN) {

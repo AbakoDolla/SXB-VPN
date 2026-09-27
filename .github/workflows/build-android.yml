@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths:
       - "app-mobile/**"
+      - "server/services/protocol-bundle.ts"
+      - "server/services/protocol-uri.ts"
+      - "server/services/xray-translate.ts"
       - ".github/workflows/build-android.yml"
       - "scripts/run-android-policy-gates.sh"
   workflow_dispatch:

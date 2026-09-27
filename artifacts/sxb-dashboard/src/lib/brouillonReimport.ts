@@ -55,16 +55,19 @@ export function brouillonDepuisProfil(profil: VpnProfile | null | undefined): Br
   if (!profil || !present(profil.protocol) || !present(profil.host)) return null;
 
   const protocole = String(profil.protocol).toLowerCase();
+  // Le résumé public ne contient ni les clés, ni le graphe, ni tous les
+  // paramètres du transport. Ne pas fabriquer une URI partielle destructive.
+  if (!['vless', 'trojan'].includes(protocole)) return null;
   const aCompleter: string[] = [];
 
   // Ces protocoles portent un identifiant dans l'autorité de l'URI. Il n'est
   // jamais renvoyé par le serveur : on pose un marqueur voyant plutôt qu'une
   // valeur inventée.
-  const identifiant = ['vless', 'vmess', 'trojan'].includes(protocole)
+  const identifiant = protocole === 'vless'
     ? (present(profil.uuid) ? String(profil.uuid) : MARQUEUR_SECRET)
-    : (present(profil.username) ? String(profil.username) : MARQUEUR_SECRET);
+    : MARQUEUR_SECRET;
   if (identifiant === MARQUEUR_SECRET) {
-    aCompleter.push(['vless', 'vmess', 'trojan'].includes(protocole) ? 'uuid' : 'username');
+    aCompleter.push(protocole === 'vless' ? 'uuid' : 'password');
   }
 
   const parametres = new URLSearchParams();
@@ -78,7 +81,7 @@ export function brouillonDepuisProfil(profil: VpnProfile | null | undefined): Br
   const etiquette = present(profil.name) ? `#${encodeURIComponent(String(profil.name))}` : '';
 
   return {
-    texte: `${protocole}://${identifiant}@${profil.host}${port}${requete ? `?${requete}` : ''}${etiquette}`,
+    texte: `${protocole}://${identifiant}@${profil.host!.includes(':') ? `[${profil.host}]` : profil.host}${port}${requete ? `?${requete}` : ''}${etiquette}`,
     aCompleter,
   };
 }
