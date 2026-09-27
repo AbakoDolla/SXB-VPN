@@ -330,6 +330,93 @@ test('un verrou cache la configuration, jamais le verdict de son dernier test', 
   rmSync(path.join(root, 'backend', '.sxb-lock-serialize.cjs'), { force: true });
 });
 
+test('le SSH collé est renvoyé vers la saisie manuelle, qui produit une configuration propre', async () => {
+  const h = await fixture();
+  h.button('configurations.ui.import').props.onClick();
+  const input = name => h.nodes(h.render()).find(n => n?.type === 'input' && n.props.name === name);
+  input('lockPassword').props.onChange({ target: { value: 'configuration-password' } });
+  input('lockConfirmation').props.onChange({ target: { value: 'configuration-password' } });
+  const adminIndex = h.states.findIndex(value => value && typeof value === 'object' && 'offlineValidDays' in value && 'dns' in value);
+  h.states[adminIndex] = { ...h.states[adminIndex], name: 'SSH manuel', validityDays: '30' };
+  const form = () => h.nodes(h.render()).find(n => n?.type === 'form');
+
+  // 1. Un JSON SSH collé n'est plus importé : il renvoie vers le formulaire.
+  h.nodes(h.render()).find(n => n?.type === 'textarea').props.onChange({
+    target: { value: '{"host":"ssh.example.test","port":22,"username":"secret-user","password":"secret-pass"}' },
+  });
+  assert.match(h.text(), /Configuration SSH détectée/);
+  await form().props.onSubmit({ preventDefault() {} });
+  await h.flush();
+  assert.equal(h.calls.some(c => c.name === 'createVpnProfile'), false);
+  assert.match(h.text(), /uniquement dans l’onglet « SSH — Saisie manuelle »/);
+  // Un lien V2Ray, lui, reste importable par collage.
+  h.nodes(h.render()).find(n => n?.type === 'textarea').props.onChange({ target: { value: 'vless://x@host.test:443' } });
+  assert.doesNotMatch(h.text(), /Configuration SSH détectée/);
+  h.nodes(h.render()).find(n => n?.type === 'textarea').props.onChange({
+    target: { value: '{"CONFIGS":[{"ADDRESS":"ssh.example.test:22","USERNAME":"u","PASSWORD":"p","TYPE":"SSH"}]}' },
+  });
+  assert.match(h.text(), /Configuration SSH détectée/);
+  h.button('configurations.ssh.openManual').props.onClick();
+  await h.flush();
+  assert.match(h.text(), /Mode de connexion SSH/);
+
+  // 2. Le formulaire n'envoie que les champs du mode choisi.
+  const legacyIndex = h.states.findIndex(value => value && typeof value === 'object' && 'sshTransport' in value && 'udpMode' in value);
+  h.states[legacyIndex] = {
+    ...h.states[legacyIndex], protocol: 'ssh+payload', sshTransport: 'payload-tls', tls: true,
+    host: 'ssh.example.test', port: '443', username: 'vpn-user', password: 'vpn-pass', sni: 'front.example.test',
+    payload: 'GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf][crlf]',
+  };
+  await h.button('configurations.ssh.test').props.onClick();
+  await h.flush();
+  const tested = JSON.parse(h.calls.find(c => c.name === 'testImportedConfig').args[0]);
+  await form().props.onSubmit({ preventDefault() {} });
+  await h.flush();
+  const created = h.calls.find(c => c.name === 'createVpnProfile');
+  assert.ok(created, 'la saisie manuelle doit créer la configuration');
+  const sent = JSON.parse(created.args[0].importConfig);
+  assert.deepEqual(sent, {
+    protocol: 'ssh+payload', sshTransport: 'payload-tls', host: 'ssh.example.test', port: 443,
+    username: 'vpn-user', password: 'vpn-pass', tls: true, sni: 'front.example.test', insecure: false,
+    payload: 'GET / HTTP/1.1[crlf]Host: [host][crlf]Upgrade: websocket[crlf][crlf]',
+  });
+  assert.deepEqual(tested, sent, 'le test valide exactement ce qui sera enregistré');
+  assert.equal(created.args[0].validityDays, 30);
+});
+
+test('le temps restant se lit verrou fermé et se prolonge sans mot de passe', async () => {
+  const h = await fixture();
+  h.overrides.fetchVpnProfiles = () => [{ ...locked, expiresAt: '2026-09-18T12:00:00Z' }];
+  h.button('configurations.ui.refresh').props.onClick();
+  await h.flush();
+  assert.match(h.text(), /Temps restant : 10 j 0 h/);
+  assert.doesNotMatch(h.text(), /secret-/);
+
+  h.overrides.extendVpnProfile = (id, days) => ({ ...locked, id, expiresAt: new Date(Date.parse('2026-09-18T12:00:00Z') + days * 86_400_000).toISOString() });
+  h.button('configurations.validity.extend').props.onClick();
+  await h.flush();
+  assert.match(h.text(), /Prolonger « User supplied name »/);
+  assert.equal(h.dialog(), undefined, 'aucune demande de mot de passe');
+  assert.ok(!h.nodes(h.render()).some(n => n?.type === 'input' && n.props.type === 'password'));
+  const dialog = h.nodes(h.render()).find(n => n?.type === 'form' && n.props.role === 'dialog');
+  await dialog.props.onSubmit({ preventDefault() {} });
+  await h.flush();
+  assert.deepEqual(h.calls.find(c => c.name === 'extendVpnProfile').args, ['profile', 30]);
+  assert.equal(h.calls.some(c => c.name === 'unlockVpnProfile'), false);
+  assert.match(h.text(), /Temps restant : 40 j 0 h/);
+  assert.match(h.text(), /Durée prolongée jusqu’au/);
+
+  h.overrides.fetchVpnProfiles = () => [{ ...locked, expiresAt: '2026-09-06T12:00:00Z' }];
+  h.button('configurations.ui.refresh').props.onClick();
+  await h.flush();
+  assert.match(h.text(), /Expirée depuis 2 j 0 h/);
+  h.overrides.fetchVpnProfiles = () => [{ ...locked, expiresAt: null }];
+  h.button('configurations.ui.refresh').props.onClick();
+  await h.flush();
+  assert.match(h.text(), /Aucune échéance enregistrée/);
+  assert.ok(h.button('configurations.validity.define'));
+});
+
 test('la liste offre le préflight et affiche son verdict, sans ouvrir chaque configuration', () => {
   const vue = readFileSync(path.join(src, 'components', 'VpnProfilesView.tsx'), 'utf8');
   const liste = vue.slice(vue.indexOf("configurations.lock.expires"));

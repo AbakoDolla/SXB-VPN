@@ -199,6 +199,28 @@ async function probeWsTunnel(
 // ── Sonde WebSocket des proxys (VLESS / VMess / Trojan) ─────────────────────
 
 /**
+ * Chemin réellement demandé par le moteur mobile.
+ *
+ * Un lien de partage écrit souvent l'early data dans le chemin
+ * (`/relais?ed=2048`) : Xray et l'application le retirent avant la requête,
+ * le relais ne connaît que `/relais`. Sonder le chemin brut donnait donc un 404
+ * trompeur sur un profil qui fonctionne.
+ */
+export function websocketRequestPath(raw: string): string {
+  const value = String(raw || '/');
+  const path = value.startsWith('/') ? value : `/${value}`;
+  const question = path.indexOf('?');
+  if (question < 0) return path;
+  const params = path.slice(question + 1).split('&');
+  const early = params.find(part => part.split('=')[0].toLowerCase() === 'ed');
+  const size = Number(early?.split('=')[1]);
+  if (!early || !Number.isInteger(size) || size < 1 || size > 65_535) return path;
+  const kept = params.filter(part => !['ed', 'eh'].includes(part.split('=')[0].toLowerCase()) && part !== '');
+  const base = path.slice(0, question) || '/';
+  return kept.length ? `${base}?${kept.join('&')}` : base;
+}
+
+/**
  * Rejoue l'Upgrade WebSocket exactement comme le fera le moteur mobile.
  * L'authentification (UUID, mot de passe) n'est JAMAIS tentée : le dashboard
  * ne s'authentifie pas auprès d'un fournisseur. Seul le transport est jugé.
@@ -213,7 +235,7 @@ async function probeWebsocketUpgrade(
   timeoutMs: number,
   steps: ProbeStep[],
 ): Promise<number | null> {
-  const path = opts.path.startsWith('/') ? opts.path : `/${opts.path}`;
+  const path = websocketRequestPath(opts.path);
   const request =
     `GET ${path} HTTP/1.1\r\n` +
     `Host: ${opts.hostHeader}\r\n` +

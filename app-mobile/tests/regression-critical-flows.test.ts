@@ -3121,12 +3121,14 @@ describe('garde-fous contre les régressions Android', () => {
     assert.doesNotMatch(nativeModule, /REQUEST_IGNORE_BATTERY_OPTIMIZATIONS/);
   });
 
-  it('importe la gamme SSH HTTP Custom sans exposer les secrets', () => {
+  it('le SSH se saisit à la main ; le serveur sait toujours lire la gamme HTTP Custom', () => {
     const canonical = source('../server/services/canonical-config.ts');
     const routes = source('../server/routes/vpn-profiles.ts');
     const api = source('../artifacts/sxb-dashboard/src/api/vpn-profiles.ts');
     const vue = source('../artifacts/sxb-dashboard/src/components/VpnProfilesView.tsx');
 
+    // Le serveur conserve ses parseurs : les profils SSH existants se
+    // réimportent, et l'API reste compatible.
     assert.match(canonical, /'http-custom-json'/);
     for (const field of ['ADDRESS', 'PAYLOAD ENABLED', 'PROXY ENABLED', 'NSSERVER', 'PUBKEY', 'LOCALPORT']) {
       assert.match(canonical, new RegExp(field.replace(' ', '\\s')), `champ HTTP Custom absent : ${field}`);
@@ -3136,9 +3138,15 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(routes, /await prisma\.\$transaction/);
     assert.match(api, /export const importVpnProfiles/);
     assertDashboardLabel(vue, 'configurations.editor.httpCustom', /HTTP Custom.*\{\{count\}\} profil/);
-    assertDashboardLabel(vue, 'configurations.ui.sshSlowDns', /SSH \+ SlowDNS/);
-    assertDashboardLabel(vue, 'configurations.ui.sshUdp', /SSH \+ UDPGW/);
+
+    // DEMANDE : « import manuel uniquement » pour le SSH. Le collage d'un SSH
+    // (JSON, HTTP Custom, SocksIP) renvoie vers le formulaire, qui couvre tous
+    // les modes — SlowDNS et UDPGW compris.
+    assert.match(vue, /if \(looksLikeSshImport\(importConfig\)\) \{ setError\(message\('configurations\.ssh\.importRefused'\)\); return; \}/);
+    assertDashboardLabel(vue, 'configurations.ssh.detected', /SSH détectée.*uniquement à la main/);
+    assertDashboardLabel(vue, 'configurations.ui.sshDnstt', /SlowDNS \(DNSTT\)/);
     assertDashboardLabel(vue, 'configurations.ui.udpGw', /BadVPN UDPGW/);
+    assert.doesNotMatch(vue, /SSH_IMPORT_TEMPLATES/);
 
     // Les credentials restent exclusivement dans le canonique chiffré ; les
     // colonnes d'identification du profil n'en reçoivent jamais de copie.

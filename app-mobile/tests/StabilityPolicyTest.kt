@@ -982,6 +982,77 @@ fun main() {
         check(graph.chainEndServer("proxy1") == "198.51.100.1")
         check(graph.chainEndServer(plan.groupTag).isEmpty())
     }
+    checkCase("share-link early data, WebSocket ALPN and Xray fingerprints become sing-box options") {
+        fun vless(path: String, alpn: JSONArray? = null, fp: String? = null, type: String = "ws") = JSONObject()
+            .put("type", "vless").put("tag", "proxy").put("server", "front.example.test").put("server_port", 443)
+            .put("tls", JSONObject().put("enabled", true).put("server_name", "front.example.test").apply {
+                if (alpn != null) put("alpn", alpn)
+                if (fp != null) put("utls", JSONObject().put("enabled", true).put("fingerprint", fp))
+            })
+            .put("transport", JSONObject().put("type", type).put("path", path)
+                .put("headers", JSONObject().put("Host", "relay.example.test"))
+                .put("max_early_data", 0).put("early_data_header_name", ""))
+
+        val early = vless("/@relay?ed=2048")
+        check(SxbTunnelPolicy.normalizeStreamOutbound(early) == listOf("WS_EARLY_DATA_FROM_PATH"))
+        val transport = early.getJSONObject("transport")
+        check(transport.getString("path") == "/@relay")
+        check(transport.getInt("max_early_data") == 2048)
+        check(transport.getString("early_data_header_name") == SxbTunnelPolicy.EARLY_DATA_HEADER)
+        check(transport.getJSONObject("headers").getString("Host") == "relay.example.test")
+        check(SxbTunnelPolicy.normalizeStreamOutbound(early).isEmpty())
+
+        val kept = SxbTunnelPolicy.earlyDataFromPath("/ws?a=1&ed=4096&eh=X-Early&b=2") ?: error("ed ignored")
+        check(kept.path == "/ws?a=1&b=2" && kept.maxEarlyData == 4096 && kept.headerName == "X-Early")
+        check(SxbTunnelPolicy.earlyDataFromPath("/ws") == null)
+        check(SxbTunnelPolicy.earlyDataFromPath("/ws?token=ed") == null)
+        check(SxbTunnelPolicy.earlyDataFromPath("/ws?ed=abc") == null)
+        check(SxbTunnelPolicy.earlyDataFromPath("/ws?ed=0") == null)
+        check(SxbTunnelPolicy.earlyDataFromPath("/ws?ed=99999999") == null)
+        val grpc = vless("/svc?ed=2048", type = "grpc")
+        check(SxbTunnelPolicy.normalizeStreamOutbound(grpc).isEmpty())
+        check(grpc.getJSONObject("transport").getString("path") == "/svc?ed=2048")
+
+        val h2 = vless("/", alpn = JSONArray().put("h2").put("http/1.1"))
+        check(SxbTunnelPolicy.normalizeStreamOutbound(h2) == listOf("UPGRADE_ALPN_HTTP1"))
+        check(h2.getJSONObject("tls").getJSONArray("alpn").similar(JSONArray().put("http/1.1")))
+        val h2Only = vless("/", alpn = JSONArray().put("h2"))
+        SxbTunnelPolicy.normalizeStreamOutbound(h2Only)
+        check(h2Only.getJSONObject("tls").getJSONArray("alpn").similar(JSONArray().put("http/1.1")))
+        val grpcAlpn = vless("/", alpn = JSONArray().put("h2"), type = "grpc")
+        check(SxbTunnelPolicy.normalizeStreamOutbound(grpcAlpn).isEmpty())
+        check(grpcAlpn.getJSONObject("tls").getJSONArray("alpn").similar(JSONArray().put("h2")))
+
+        mapOf(
+            "Chrome" to "chrome", "HelloChrome_Auto" to "chrome", "randomizednoalpn" to "randomized",
+            "hellorandomizedalpn" to "randomized", "firefox" to "firefox", "chrome_pq" to "chrome_pq",
+            "iOS" to "ios", "unknown-browser" to "chrome", "none" to "", "golang" to "",
+        ).forEach { (declared, expected) ->
+            check(SxbTunnelPolicy.utlsFingerprint(declared) == expected) { "$declared -> ${SxbTunnelPolicy.utlsFingerprint(declared)}" }
+        }
+        val upper = vless("/", fp = "Chrome")
+        check(SxbTunnelPolicy.normalizeStreamOutbound(upper) == listOf("UTLS_FINGERPRINT_NORMALIZED"))
+        check(upper.getJSONObject("tls").getJSONObject("utls").getString("fingerprint") == "chrome")
+        val native = vless("/", fp = "golang")
+        check(SxbTunnelPolicy.normalizeStreamOutbound(native) == listOf("UTLS_NATIVE"))
+        check(!native.getJSONObject("tls").has("utls"))
+        val untouched = vless("/plain", alpn = JSONArray().put("http/1.1"), fp = "chrome")
+        val before = untouched.toString()
+        check(SxbTunnelPolicy.normalizeStreamOutbound(untouched).isEmpty() && untouched.toString() == before)
+
+        for (network in listOf("xhttp", "SplitHTTP", "kcp")) {
+            try {
+                SxbTunnelPolicy.rejectUnsupportedStreamTransport(network)
+                error("Unsupported transport accepted: $network")
+            } catch (refusal: IllegalArgumentException) {
+                check(refusal.message.orEmpty().startsWith("CONFIG_UNSUPPORTED")) { refusal.message.orEmpty() }
+                check(refusal.message.orEmpty().contains("non supporté"))
+            }
+        }
+        for (network in listOf("ws", "grpc", "tcp", "httpupgrade", "h2", "quic", "")) {
+            SxbTunnelPolicy.rejectUnsupportedStreamTransport(network)
+        }
+    }
     checkCase("provider headers are copied verbatim: nothing renamed, dropped or invented") {
         val source = JSONObject("""{"Host":"edge.example.test:443","x-op-bsid":"synthetic",
           "User-Agent":"Mozilla/5.0 (Linux; Android 13)","X-Multi":["first","second"]}""")

@@ -3425,6 +3425,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         )
 
         // Outbound proxy selon protocole
+        SxbTunnelPolicy.rejectUnsupportedStreamTransport(network)
         val proxyOutbound = when (protocol) {
             "vless" -> buildVlessOutbound(host, port, uuid, flow, packetEncoding, transport)
             "vmess" -> buildVmessOutbound(host, port, uuid, vmessSecurity, vmessAlterId, transport)
@@ -3434,6 +3435,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
             "hysteria2" -> buildHysteria2Outbound(host, port, password, sni, tls)
             "tuic" -> buildTuicOutbound(host, port, uuid, password, sni, tls)
             else -> JSONObject().put("type", "direct").put("tag", "proxy")
+        }
+        SxbTunnelPolicy.normalizeStreamOutbound(proxyOutbound).forEach {
+            broadcastLog("[CONFIG] adaptation moteur $it")
         }
 
         // Route — D3: carrier exclusion FIRST (if host resolves)
@@ -4433,6 +4437,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
             tags.add(tag)
             if (type !in specialTypes) {
                 o.optString("server", "").takeIf { it.isNotBlank() }?.let { outboundServerHosts.add(it) }
+                SxbTunnelPolicy.normalizeStreamOutbound(o).forEach {
+                    broadcastLog("[CONFIG] adaptation moteur $it (sortie $type)")
+                }
             }
             if (mainTag == null && type !in specialTypes) {
                 mainTag = tag

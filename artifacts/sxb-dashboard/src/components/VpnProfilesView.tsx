@@ -13,7 +13,7 @@ import { UserRole } from "../types";
 import {
   fetchVpnProfiles, createVpnProfile, updateVpnProfile, deleteVpnProfile,
   fetchVpnProfileStats, testImportedConfig, testProfileConfig, importVpnProfiles,
-  setProfileResellers, unlockVpnProfile, setVpnProfileLock,
+  setProfileResellers, unlockVpnProfile, setVpnProfileLock, extendVpnProfile,
   VpnProfile, ConfigTestResult,
 } from "../api/vpn-profiles";
 import { fetchResellers } from "../api/resellers";
@@ -21,7 +21,7 @@ import { fetchPayloads, SshPayload } from "../api/payload";
 import {
   ShieldCheck, Plus, Trash2, RefreshCw, Edit3, X, AlertTriangle,
   Check, Wifi, Activity, Lock, Globe, UploadCloud, FlaskConical,
-  FileKey2, RotateCcw, Info, Users,
+  FileKey2, RotateCcw, Info, Users, Clock,
 } from "lucide-react";
 
 interface Props { currentUserRole: UserRole }
@@ -46,6 +46,7 @@ const NETWORKS  = ['ws', 'grpc', 'tcp', 'h2'];
 const DEFAULT_ADMIN_FORM = {
   name: '', description: '', displayProtocol: '',
   offlineValidDays: 7, status: 'active', dns: '',
+  validityDays: '' as string | number,
 };
 /** Formulaire legacy (colonnes) — maintenu pour compat, déconseillé */
 const DEFAULT_LEGACY_FORM = {
@@ -59,54 +60,125 @@ const DEFAULT_LEGACY_FORM = {
   timeoutMs: 30000,
 };
 
-const sshImportTemplates = (t: Translate) => [
-  {
-    id: 'direct',
-    label: t('configurations.ui.sshDirect'),
-    value: {
-      protocol: 'ssh', sshTransport: 'direct',
-      host: 'ssh.example.com', port: 22, username: 'user', password: 'REMPLACEZ-MOI',
-    },
-  },
-  {
-    id: 'tls',
-    label: t('configurations.ui.sshTls'),
-    value: {
-      protocol: 'ssh', sshTransport: 'tls',
-      host: 'ssh.example.com', port: 443, username: 'user', password: 'REMPLACEZ-MOI',
-      tls: true, sni: 'cdn.example.com',
-    },
-  },
-  {
-    id: 'connect',
-    label: t('configurations.ui.sshConnect'),
-    value: {
-      protocol: 'ssh+payload', sshTransport: 'http-connect',
-      host: 'ssh.example.com', port: 443, username: 'user', password: 'REMPLACEZ-MOI',
-      tls: true, sni: 'www.example.com',
-      payload: 'CONNECT [host_port] HTTP/1.1[crlf]Host: www.example.com[crlf]Proxy-Connection: Keep-Alive[crlf]User-Agent: [ua][crlf][crlf]',
-    },
-  },
-  {
-    id: 'slowdns',
-    label: t('configurations.ui.sshSlowDns'),
-    value: {
-      protocol: 'ssh', sshTransport: 'slowdns',
-      host: 'ssh.example.com', port: 22, username: 'user', password: 'REMPLACEZ-MOI',
-      slowDns: true, dns: '8.8.8.8', nameServer: 't.example.com',
-      slowDnsPublicKey: 'REMPLACEZ-PAR-64-CARACTERES-HEX', localPort: 2222,
-    },
-  },
-  {
-    id: 'udp',
-    label: t('configurations.ui.sshUdp'),
-    value: {
-      protocol: 'ssh', sshTransport: 'direct',
-      host: 'ssh.example.com', port: 22, username: 'user', password: 'REMPLACEZ-MOI',
-      udpMode: 'udpgw', udpGatewayHost: '127.0.0.1', udpGatewayPort: 7300,
-    },
-  },
-] as const;
+// ── Import SSH : saisie manuelle uniquement ──────────────────────────────────
+//
+// Coller un JSON SSH produisait des profils que l'application ne savait pas
+// toujours ouvrir : champs d'une autre application, mode de connexion deviné,
+// payload tronqué. Le SSH passe donc par le formulaire, où chaque mode ne
+// demande que ses propres champs. Seul l'onglet de collage refuse le SSH : le
+// réimport des profils SSH existants reste possible.
+const normalizedKeys = (entry: Record<string, unknown>) =>
+  new Set(Object.keys(entry).map(key => key.toUpperCase().replace(/[^A-Z0-9]/g, '')));
+
+function isSshEntry(entry: unknown): boolean {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+  const record = entry as Record<string, any>;
+  if (typeof record.protocol === 'string') return /^ssh|slowdns/i.test(record.protocol.trim());
+  if (typeof record.type === 'string' && /^ssh/i.test(record.type.trim())) return true;
+  if (Array.isArray(record.outbounds) || record.uuid) return false;
+  const keys = normalizedKeys(record);
+  if (keys.has('SSHSERVER') || keys.has('SSHPAYLOAD')) return true;
+  const hasUser = keys.has('USERNAME') || keys.has('USER');
+  return (keys.has('ADDRESS') || keys.has('HOST')) && hasUser && (keys.has('PASSWORD') || keys.has('PASS'));
+}
+
+/** Vrai si le texte collé décrit une (ou plusieurs) configuration(s) SSH. */
+function looksLikeSshImport(raw: string): boolean {
+  const text = raw.trim();
+  if (!/^[{[]/.test(text)) return false;
+  try {
+    const parsed = JSON.parse(text);
+    // sing-box et Xray décrivent leurs sorties dans `outbounds` : ce ne sont
+    // pas des profils SSH à saisir, même si l'une d'elles parle SSH.
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Array.isArray(parsed.outbounds)) return false;
+    const candidates = Array.isArray(parsed)
+      ? parsed
+      : [parsed, ...Object.values(parsed ?? {}).filter(Array.isArray).flat()];
+    return candidates.some(isSshEntry);
+  } catch {
+    return false;
+  }
+}
+
+/** Configuration SSH envoyée au serveur : uniquement les champs du mode choisi. */
+function buildManualSshConfig(form: typeof DEFAULT_LEGACY_FORM, payload: string, sni?: string): Record<string, any> {
+  const mode = form.sshTransport || 'direct';
+  const usesPayload = ['payload', 'payload-tls', 'http-connect'].includes(mode);
+  const tls = mode === 'tls' || mode === 'payload-tls' || (mode === 'http-connect' && form.tls);
+  const config: Record<string, any> = {
+    protocol: usesPayload ? 'ssh+payload' : 'ssh',
+    sshTransport: mode,
+    host: form.host.trim(),
+    port: Number(form.port),
+    username: form.username.trim(),
+    password: form.password,
+    tls,
+  };
+  if (tls) {
+    const serverName = form.sni.trim() || sni;
+    if (serverName) config.sni = serverName;
+    config.insecure = form.insecure;
+  }
+  if (usesPayload && payload) config.payload = payload;
+  if (mode === 'http-connect') {
+    config.proxyEnabled = true;
+    if (form.proxyHost.trim()) config.proxyHost = form.proxyHost.trim();
+    if (Number(form.proxyPort) > 0) config.proxyPort = Number(form.proxyPort);
+  }
+  if (mode === 'slowdns') {
+    Object.assign(config, {
+      slowDns: true,
+      dns: form.dns.trim(),
+      nameServer: form.nameServer.trim(),
+      slowDnsPublicKey: form.slowDnsPublicKey.trim(),
+      localPort: Number(form.localPort || 2222),
+      timeoutMs: Number(form.timeoutMs || 30000),
+    });
+  }
+  if (form.udpMode === 'udpgw') {
+    Object.assign(config, {
+      udpMode: 'udpgw',
+      udpGatewayHost: form.udpGatewayHost.trim() || '127.0.0.1',
+      udpGatewayPort: Number(form.udpGatewayPort || 7300),
+    });
+  }
+  return config;
+}
+
+// ── Échéance du compte fournisseur ───────────────────────────────────────────
+const MAX_VALIDITY_DAYS = 3650;
+const VALIDITY_PRESETS = [7, 15, 30, 60, 90] as const;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function validDays(value: unknown): number | null {
+  const days = Number(value);
+  return Number.isInteger(days) && days >= 1 && days <= MAX_VALIDITY_DAYS ? days : null;
+}
+
+/** Même règle que le serveur : on prolonge ce qui reste, jamais une date passée. */
+function extendedExpiry(current: string | null | undefined, days: number, now = Date.now()): Date {
+  const previous = current ? Date.parse(current) : NaN;
+  return new Date((Number.isFinite(previous) && previous > now ? previous : now) + days * DAY_MS);
+}
+
+type ValidityState = { kind: 'none' } | { kind: 'active' | 'soon' | 'expired'; ms: number; date: Date };
+
+function validityState(expiresAt: string | null | undefined, now = Date.now()): ValidityState {
+  const end = expiresAt ? Date.parse(expiresAt) : NaN;
+  if (!Number.isFinite(end)) return { kind: 'none' };
+  const ms = end - now;
+  return { kind: ms <= 0 ? 'expired' : ms < 3 * DAY_MS ? 'soon' : 'active', ms: Math.abs(ms), date: new Date(end) };
+}
+
+function durationText(ms: number, t: Translate): string {
+  const totalMinutes = Math.max(1, Math.floor(ms / 60_000));
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  return days > 0
+    ? t('configurations.validity.daysHours', { days, hours })
+    : t('configurations.validity.hoursMinutes', { hours, minutes });
+}
 
 // ── Verdicts du préflight (taxonomie mission §7) ──────────────────────────────
 const verdictStyles = (t: Translate): Record<string, { label: string; cls: string }> => ({
@@ -296,16 +368,19 @@ function inspectJsonEditor(raw: string, t: Translate): JsonEditorInfo {
 }
 
 function JsonConfigEditor({
-  value, onChange, onTest, testing, result,
+  value, onChange, onTest, testing, result, onSwitchToManual,
 }: {
   value: string;
   onChange: (value: string) => void;
   onTest: () => void;
   testing: boolean;
   result: ConfigTestResult | null;
+  /** Présent à la création : le SSH collé renvoie vers la saisie manuelle. */
+  onSwitchToManual?: () => void;
 }) {
   const { t, locale } = useTranslation();
   const info = inspectJsonEditor(value, t);
+  const sshRefused = !!onSwitchToManual && looksLikeSshImport(value);
   const format = (minify: boolean) => {
     try {
       const parsed = JSON.parse(value);
@@ -348,8 +423,18 @@ function JsonConfigEditor({
         <span>{t('configurations.editor.size', { characters: value.length.toLocaleString(locale), lines: info.lineCount })}</span>
         <span> {t('configurations.ui.transportOnly')} </span>
       </div>
+      {sshRefused && (
+        <div role="alert" className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 space-y-2">
+          <p className="text-xs font-semibold text-amber-200">{t('configurations.ssh.detected')}</p>
+          <p className="text-[11px] text-amber-100/80">{t('configurations.ssh.detectedHint')}</p>
+          <button type="button" onClick={onSwitchToManual}
+            className="px-3 py-1.5 rounded-lg border border-amber-400/40 bg-amber-500/15 text-amber-100 text-xs font-medium hover:bg-amber-500/25">
+            {t('configurations.ssh.openManual')}
+          </button>
+        </div>
+      )}
       <div className="flex items-center gap-2">
-        <button type="button" onClick={onTest} disabled={testing || !value.trim() || !info.valid}
+        <button type="button" onClick={onTest} disabled={testing || !value.trim() || !info.valid || sshRefused}
           className="flex items-center gap-2 px-3 py-2 bg-sky-500/15 hover:bg-sky-500/25 text-sky-400 text-xs font-medium rounded-xl border border-sky-500/30 disabled:opacity-50">
           <FlaskConical className="w-3.5 h-3.5" /> {
             testing
@@ -416,10 +501,10 @@ function ProbeResultPanel({ result }: { result: ConfigTestResult }) {
 
 export default function VpnProfilesView({ currentUserRole }: Props) {
   const { t, locale, formatNumber, errorMessage, message, errorText } = useTranslation();
-  const SSH_IMPORT_TEMPLATES = sshImportTemplates(t);
   const isAdmin = isAdminRole(currentUserRole);
   const can = usePermissions();
   const canDelete = isAdmin && can('vpnprofile.manage');
+  const canManage = isAdmin && can('vpnprofile.manage');
   const { pending, run } = useActionLock();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [page, setPage] = useState(1);
@@ -463,6 +548,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
     id: p.id, name: p.name, description: p.description, displayProtocol: p.displayProtocol,
     status: p.status, offlineValidDays: p.offlineValidDays, createdAt: p.createdAt, updatedAt: p.updatedAt,
     _count: p._count, resellers: p.resellers, unrestricted: p.unrestricted, hasLock: true, isLocked: true,
+    expiresAt: p.expiresAt, validationStatus: p.validationStatus, validatedAt: p.validatedAt,
   } : p;
   const clearTechnicalState = () => {
     generation.current++;
@@ -524,6 +610,24 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
   const [assignProfile, setAssignProfile] = useState<VpnProfile | null>(null);
   const [assignSelected, setAssignSelected] = useState<Set<string>>(new Set());
   const [assignSaving, setAssignSaving] = useState(false);
+  // Prolongation de l'échéance — sans déverrouillage, donc sans mot de passe.
+  const [extendTarget, setExtendTarget] = useState<VpnProfile | null>(null);
+  const [notice, setNotice] = useState('');
+
+  const openExtend = (p: VpnProfile) => {
+    if (bulkDelete.isDeleting()) { setError(message('commerce.common.actionPending')); return; }
+    setNotice(''); setExtendTarget(p);
+  };
+  const submitExtend = async (days: number) => {
+    if (!extendTarget) return;
+    const target = extendTarget;
+    const updated = await extendVpnProfile(target.id, days);
+    setProfiles(previous => previous.map(p => p.id === target.id ? { ...p, expiresAt: updated.expiresAt ?? null } : p));
+    setExtendTarget(null);
+    if (updated.expiresAt) {
+      setNotice(t('configurations.validity.done', { date: new Date(updated.expiresAt).toLocaleString(locale) }));
+    }
+  };
 
   const load = async () => {
     if (bulkDelete.isDeleting()) { setError(message('commerce.common.actionPending')); return; }
@@ -594,6 +698,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
       displayProtocol: p.displayProtocol || '',
       offlineValidDays: p.offlineValidDays, status: p.status,
       dns: p.dns || '',
+      validityDays: '',
     });
     setLegacyForm({
       ...DEFAULT_LEGACY_FORM,
@@ -697,6 +802,54 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
     } finally { if (epoch === generation.current) { setTesting(false); setTestingId(null); } }
   };
 
+  // ── Saisie manuelle : une seule construction, pour le test et l'enregistrement ──
+  const manualDraft = (): { config: Record<string, any> } | { errorKey: string } => {
+    const candidatePayload = payloads.find(p => p.id === legacyForm.payloadId);
+    const selectedPayload = candidatePayload && 'content' in candidatePayload ? candidatePayload : undefined;
+    const payload = legacyForm.payload.trim() || selectedPayload?.content?.trim() || '';
+    if (['ssh', 'ssh+payload'].includes(legacyForm.protocol)) {
+      if (!legacyForm.host.trim() || !Number(legacyForm.port) || !legacyForm.username.trim() || !legacyForm.password) {
+        return { errorKey: 'configurations.ssh.incomplete' };
+      }
+      if (['payload', 'payload-tls'].includes(legacyForm.sshTransport) && !payload) {
+        return { errorKey: 'configurations.ui.payloadRequired' };
+      }
+      if (legacyForm.sshTransport === 'slowdns' && (!legacyForm.dns.trim() || !legacyForm.nameServer.trim() || !/^[0-9a-f]{64}$/i.test(legacyForm.slowDnsPublicKey.trim()))) {
+        return { errorKey: 'configurations.ui.slowDnsRequired' };
+      }
+      if (legacyForm.udpMode === 'udpgw' && (!legacyForm.udpGatewayHost.trim() || !Number(legacyForm.udpGatewayPort))) {
+        return { errorKey: 'configurations.ui.udpRequired' };
+      }
+      return { config: buildManualSshConfig(legacyForm, payload, selectedPayload?.sni || undefined) };
+    }
+    if (!legacyForm.host || !legacyForm.port) return { errorKey: 'configurations.ui.requiredFields' };
+    const manualConfig: Record<string, any> = {
+      protocol: legacyForm.protocol,
+      host: legacyForm.host.trim(),
+      port: Number(legacyForm.port),
+      username: legacyForm.username.trim() || undefined,
+      password: legacyForm.password || undefined,
+      uuid: legacyForm.uuid.trim() || undefined,
+      path: legacyForm.path.trim() || undefined,
+      network: legacyForm.network || undefined,
+      tls: legacyForm.tls,
+      insecure: legacyForm.insecure,
+      sni: legacyForm.sni.trim() || selectedPayload?.sni || undefined,
+      // En-tête Host WebSocket — distinct de l'adresse TCP et du SNI. Sans
+      // lui, un fournisseur qui route par le Host renvoie une 404 alors que
+      // le handshake TLS a réussi, panne indiscernable d'un serveur mort.
+      wsHost: legacyForm.wsHost.trim() || undefined,
+      method: legacyForm.method || undefined,
+    };
+    return { config: manualConfig };
+  };
+
+  const handleTestManual = async () => {
+    const draft = manualDraft();
+    if ('errorKey' in draft) { setTestResult(null); setError(message(draft.errorKey)); return; }
+    await handleTestImport(JSON.stringify(draft.config));
+  };
+
   // ── Soumission ──────────────────────────────────────────────────────────────
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -752,6 +905,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
       } else if (createTab === 'import') {
         if (!adminForm.name) { setError(message('configurations.ui.nameRequired')); setSaving(false); return; }
         if (!importConfig.trim()) { setError(message('configurations.ui.pasteProvider')); setSaving(false); return; }
+        if (looksLikeSshImport(importConfig)) { setError(message('configurations.ssh.importRefused')); return; }
         const editorInfo = inspectJsonEditor(importConfig, t);
         if ((editorInfo.profileCount || 0) > 1) {
           const batch = await importVpnProfiles({
@@ -762,6 +916,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
             displayProtocol: adminForm.displayProtocol,
             status: adminForm.status,
             offlineValidDays: Number(adminForm.offlineValidDays),
+            validityDays: validDays(adminForm.validityDays) ?? undefined,
           });
           savedProfile = batch.profiles[0] || null;
           if (epoch !== generation.current) return;
@@ -777,6 +932,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
             status: adminForm.status,
             offlineValidDays: Number(adminForm.offlineValidDays),
             dns: adminForm.dns || undefined,
+            validityDays: validDays(adminForm.validityDays) ?? undefined,
             importConfig,
             lockPassword,
           });
@@ -785,65 +941,17 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
         if (lockPassword === legacyForm.password) {
           setError(message('configurations.lock.mustDiffer')); return;
         }
-        if (!adminForm.name || !legacyForm.host || !legacyForm.port) {
-          setError(message('configurations.ui.requiredFields')); setSaving(false); return;
-        }
-        const candidatePayload = payloads.find(p => p.id === legacyForm.payloadId);
-        const selectedPayload = candidatePayload && 'content' in candidatePayload ? candidatePayload : undefined;
-        const payload = legacyForm.payload.trim() || selectedPayload?.content?.trim() || '';
-        if (legacyForm.protocol === 'ssh+payload' && !payload) {
-          setError(message('configurations.ui.payloadRequired')); setSaving(false); return;
-        }
-        if (legacyForm.slowDns && (!legacyForm.dns.trim() || !legacyForm.nameServer.trim() || !/^[0-9a-f]{64}$/i.test(legacyForm.slowDnsPublicKey.trim()))) {
-          setError(message('configurations.ui.slowDnsRequired'));
-          setSaving(false);
-          return;
-        }
-        if (legacyForm.udpMode === 'udpgw' && (!legacyForm.udpGatewayHost.trim() || !Number(legacyForm.udpGatewayPort))) {
-          setError(message('configurations.ui.udpRequired'));
-          setSaving(false);
-          return;
-        }
-        const manualConfig: Record<string, any> = {
-          protocol: legacyForm.protocol,
-          host: legacyForm.host.trim(),
-          port: Number(legacyForm.port),
-          username: legacyForm.username.trim() || undefined,
-          password: legacyForm.password || undefined,
-          uuid: legacyForm.uuid.trim() || undefined,
-          path: legacyForm.path.trim() || undefined,
-          network: legacyForm.network || undefined,
-          tls: legacyForm.tls,
-          insecure: legacyForm.insecure,
-          sni: legacyForm.sni.trim() || selectedPayload?.sni || undefined,
-          // En-tête Host WebSocket — distinct de l'adresse TCP et du SNI. Sans
-          // lui, un fournisseur qui route par le Host renvoie une 404 alors que
-          // le handshake TLS a réussi, panne indiscernable d'un serveur mort.
-          wsHost: legacyForm.wsHost.trim() || undefined,
-          method: legacyForm.method || undefined,
-          payload: payload || undefined,
-          sshTransport: legacyForm.sshTransport,
-          proxyEnabled: legacyForm.proxyEnabled,
-          proxyHost: legacyForm.proxyHost.trim() || undefined,
-          proxyPort: legacyForm.proxyPort ? Number(legacyForm.proxyPort) : undefined,
-          slowDns: legacyForm.slowDns,
-          dns: legacyForm.dns.trim() || undefined,
-          nameServer: legacyForm.nameServer.trim() || undefined,
-          slowDnsPublicKey: legacyForm.slowDnsPublicKey.trim() || undefined,
-          localPort: Number(legacyForm.localPort || 2222),
-          udpMode: legacyForm.udpMode,
-          udpGatewayHost: legacyForm.udpGatewayHost.trim() || undefined,
-          udpGatewayPort: legacyForm.udpMode === 'udpgw'
-            ? Number(legacyForm.udpGatewayPort || 7300)
-            : undefined,
-          timeoutMs: Number(legacyForm.timeoutMs || 30000),
-        };
+        if (!adminForm.name) { setError(message('configurations.ui.nameRequired')); return; }
+        const draft = manualDraft();
+        if ('errorKey' in draft) { setError(message(draft.errorKey)); return; }
+        const manualConfig = draft.config;
         savedProfile = await createVpnProfile({
           name: adminForm.name, description: adminForm.description,
           displayProtocol: adminForm.displayProtocol,
           status: adminForm.status,
           offlineValidDays: Number(adminForm.offlineValidDays),
           dns: adminForm.dns || undefined,
+          validityDays: validDays(adminForm.validityDays) ?? undefined,
           importConfig: JSON.stringify(manualConfig),
           lockPassword,
         });
@@ -909,10 +1017,10 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
       setProfiles(current => current.filter(profile => !ids.has(profile.id)));
     },
     afterDelete: async () => setStats(await fetchVpnProfileStats()),
-    pending, run, busy: loading || showForm || !!assignProfile || !!lockDialog || saving || testing || assignSaving,
+    pending, run, busy: loading || showForm || !!assignProfile || !!lockDialog || !!extendTarget || saving || testing || assignSaving,
     scopeKey: currentUserRole, filterKey: `${search}\0${filterProto}`,
   });
-  const controlsBusy = !!pending || !!bulkDelete.confirmation || showForm || !!assignProfile || !!lockDialog || saving || testing || assignSaving;
+  const controlsBusy = !!pending || !!bulkDelete.confirmation || showForm || !!assignProfile || !!lockDialog || !!extendTarget || saving || testing || assignSaving;
   const paginated = filtered.slice((page - 1) * pageSize, page * pageSize);
   useEffect(() => setPage(1), [search, filterProto]);
   useEffect(() => setPage(current => Math.max(1, Math.min(current, Math.ceil(filtered.length / pageSize)))), [filtered.length, pageSize]);
@@ -952,6 +1060,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
 
       {/* Stats */}
       {error && !showForm && <p role="alert" className="text-rose-400 text-sm">{error}</p>}
+      {notice && <p role="status" className="text-emerald-300 text-sm">{notice}</p>}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
           { label: t('configurations.ui.total'), value: stats.total,  color: 'text-white' },
@@ -1075,6 +1184,7 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
                 </span>
               )}
             </div>
+            <ValidityRow profile={p} canExtend={canManage} disabled={controlsBusy} onExtend={() => openExtend(p)} />
             {!p.isLocked && <div className="grid grid-cols-2 gap-2 text-xs">
               <div className="bg-[#07090e] rounded-lg p-2.5">
                 <p className="text-gray-500 mb-0.5 flex items-center gap-1"><Globe className="w-3 h-3" /> {t('configurations.ui.server')} </p>
@@ -1239,6 +1349,16 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
                   <input type="number" value={adminForm.offlineValidDays} onChange={e => fa('offlineValidDays', Number(e.target.value))}
                     min={1} max={365} className={inputCls} />
                 </div>
+                {!editId && (
+                  <div className="col-span-2">
+                    <label className="block text-sm text-gray-400 mb-1.5">{t('configurations.validity.label')}
+                      <input name="validityDays" type="number" inputMode="numeric" min={1} max={MAX_VALIDITY_DAYS} step={1}
+                        value={adminForm.validityDays} onChange={e => fa('validityDays', e.target.value)}
+                        placeholder={t('configurations.validity.placeholder')} className={`${inputCls} mt-1.5`} />
+                    </label>
+                    <p className="text-[11px] text-gray-500 mt-1">{t('configurations.validity.hint')}</p>
+                  </div>
+                )}
               </div>
 
               {/* ═══ CRÉATION : onglets Import / Manuel ═══ */}
@@ -1256,57 +1376,46 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
                     </label>
                   </div>
                   <div className="flex gap-2 mb-4">
-                    <button type="button" onClick={() => setCreateTab('import')}
+                    <button type="button" onClick={() => { setCreateTab('import'); setTestResult(null); }}
                       className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium border transition-colors ${createTab === 'import' ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-400' : 'border-[#1a1f2e] text-gray-500'}`}>
                       <UploadCloud className="w-3.5 h-3.5" /> {t('configurations.ui.importRecommended')} </button>
-                    <button type="button" onClick={() => setCreateTab('manual')}
-                      className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium border transition-colors ${createTab === 'manual' ? 'bg-white/5 border-white/20 text-gray-300' : 'border-[#1a1f2e] text-gray-500'}`}> {t('configurations.ui.manual')} </button>
+                    <button type="button" onClick={() => { setCreateTab('manual'); setTestResult(null); }}
+                      className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium border transition-colors ${createTab === 'manual' ? 'bg-cyan-500/15 border-cyan-500/30 text-cyan-300' : 'border-[#1a1f2e] text-gray-500'}`}>
+                      <Lock className="w-3.5 h-3.5" /> {t('configurations.ui.manual')} </button>
                   </div>
 
                   {createTab === 'import' && (
                     <div className="space-y-3">
-                      <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3 space-y-2">
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <p className="text-xs font-semibold text-cyan-300"> {t('configurations.ui.sshTemplates')} </p>
-                            <p className="text-[11px] text-gray-500 mt-0.5"> {t('configurations.ui.sshTemplatesHint')} </p>
-                          </div>
-                          <span className="text-[10px] text-gray-600"> {t('configurations.ui.encryptedSecrets')} </span>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          {SSH_IMPORT_TEMPLATES.map(template => (
-                            <button
-                              key={template.id}
-                              type="button"
-                              onClick={() => {
-                                setImportConfig(JSON.stringify(template.value, null, 2));
-                                setTestResult(null);
-                                if (!adminForm.name) fa('name', template.label);
-                              }}
-                              className="px-2.5 py-1.5 rounded-lg border border-cyan-500/25 bg-cyan-500/10 text-cyan-300 text-[11px] hover:bg-cyan-500/20"
-                            >
-                              {template.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
                       <JsonConfigEditor
                         value={importConfig}
                         onChange={setImportConfig}
                         onTest={() => handleTestImport(importConfig)}
                         testing={testing}
                         result={testResult}
+                        onSwitchToManual={() => {
+                          setCreateTab('manual'); setTestResult(null); setError('');
+                          setLegacyForm(previous => ['ssh', 'ssh+payload'].includes(previous.protocol)
+                            ? previous : { ...DEFAULT_LEGACY_FORM });
+                        }}
                       />
                     </div>
                   )}
 
                   {createTab === 'manual' && (
                     <div className="space-y-3">
-                      <div className="p-3 bg-emerald-500/5 border border-emerald-500/20 rounded-xl text-xs text-emerald-300"> {t('configurations.ui.manualHint')} </div>
-                          <ManualForm form={legacyForm} f={fl} payloads={payloads} inputCls={inputCls} networks={NETWORKS} protocols={PROTOCOLS} />
+                      <div className="p-3 bg-cyan-500/5 border border-cyan-500/20 rounded-xl text-xs text-cyan-200"> {t('configurations.ui.manualHint')} </div>
+                      <ManualForm form={legacyForm} f={fl} payloads={payloads} inputCls={inputCls} networks={NETWORKS} protocols={PROTOCOLS} />
                       {legacyForm.protocol === 'ssh+payload' && (
                         <p className="text-[11px] text-gray-500"> {t('configurations.ui.fullPayload')} </p>
                       )}
+                      <div className="flex items-center gap-2">
+                        <button type="button" onClick={() => { void handleTestManual(); }} disabled={testing}
+                          className="flex items-center gap-2 px-3 py-2 bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 text-xs font-medium rounded-xl border border-sky-500/30 disabled:opacity-50">
+                          <FlaskConical className="w-3.5 h-3.5" />
+                          {testing ? t('configurations.ui.testing') : ['ssh', 'ssh+payload'].includes(legacyForm.protocol) ? t('configurations.ssh.test') : t('configurations.ui.testTransport')}
+                        </button>
+                      </div>
+                      {testResult && <ProbeResultPanel result={testResult} />}
                     </div>
                   )}
                 </div>
@@ -1439,8 +1548,109 @@ export default function VpnProfilesView({ currentUserRole }: Props) {
           </div>
         </div>
       )}
+      {extendTarget && <ExtendValidityDialog profile={extendTarget} onSubmit={submitExtend} onClose={() => setExtendTarget(null)} />}
       {lockDialog && <ProfileLockDialog name={lockDialog.profile.name} mode={lockDialog.mode}
         onSubmit={submitLock} onClose={() => { generation.current++; setLockDialog(null); }} />}
+    </div>
+  );
+}
+
+// ── Échéance d'une configuration : lecture et prolongation sans mot de passe ──
+function ValidityRow({ profile, canExtend, disabled, onExtend }: {
+  profile: VpnProfile; canExtend: boolean; disabled: boolean; onExtend: () => void;
+}) {
+  const { t, locale } = useTranslation();
+  const state = validityState(profile.expiresAt);
+  const tone = state.kind === 'expired' ? 'text-rose-300 border-rose-500/30 bg-rose-500/10'
+    : state.kind === 'soon' ? 'text-amber-200 border-amber-500/30 bg-amber-500/10'
+      : state.kind === 'active' ? 'text-emerald-200 border-emerald-500/25 bg-emerald-500/10'
+        : 'text-gray-300 border-[#1a1f2e] bg-[#07090e]';
+  return (
+    <div className={`flex items-center justify-between gap-2 rounded-lg border px-2.5 py-2 text-xs ${tone}`}>
+      <div className="flex items-center gap-1.5 min-w-0">
+        <Clock className="w-3.5 h-3.5 shrink-0" />
+        {state.kind === 'none' ? (
+          <span>{t('configurations.validity.none')}</span>
+        ) : (
+          <span className="truncate" title={state.date.toLocaleString(locale)}>
+            {state.kind === 'expired'
+              ? t('configurations.validity.expiredSince', { time: durationText(state.ms, t) })
+              : t('configurations.validity.remaining', { time: durationText(state.ms, t) })}
+            <span className="opacity-75"> · {t('configurations.validity.until', { date: state.date.toLocaleDateString(locale) })}</span>
+          </span>
+        )}
+      </div>
+      {canExtend && (
+        <button type="button" onClick={onExtend} disabled={disabled}
+          className="shrink-0 rounded-md border border-current/30 px-2 py-1 font-medium hover:bg-white/5 disabled:opacity-40">
+          {state.kind === 'none' ? t('configurations.validity.define') : t('configurations.validity.extend')}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ExtendValidityDialog({ profile, onSubmit, onClose }: {
+  profile: VpnProfile; onSubmit: (days: number) => Promise<void>; onClose: () => void;
+}) {
+  const { t, locale, errorText } = useTranslation();
+  const [days, setDays] = useState<string>('30');
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<React.ReactNode>('');
+  const parsed = validDays(days);
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!parsed) { setFailure(t('configurations.validity.invalid')); return; }
+    setBusy(true); setFailure('');
+    try { await onSubmit(parsed); }
+    catch (error: any) {
+      const code = error?.code ?? error?.responseData?.code;
+      setFailure(['PROFILE_VALIDITY_INVALID', 'PROFILE_VALIDITY_CONFLICT', 'PROFILE_VALIDITY_UNAVAILABLE'].includes(code)
+        ? t(`configurations.validity.errors.${code}`)
+        : errorText(error, 'configurations.validity.errors.PROFILE_VALIDITY_UNAVAILABLE'));
+    } finally { setBusy(false); }
+  };
+  return (
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <form onSubmit={submit} role="dialog" aria-modal="true" aria-labelledby="extend-validity-title"
+        className="bg-[#0f1218] border border-[#1a1f2e] rounded-2xl w-full max-w-md p-5 space-y-4">
+        <div className="flex items-start justify-between gap-3">
+          <h2 id="extend-validity-title" className="text-white font-semibold">
+            {t('configurations.validity.dialogTitle', { name: profile.name })}
+          </h2>
+          <button type="button" onClick={onClose} aria-label={t('configurations.validity.cancel')}
+            className="p-1.5 text-gray-400 hover:text-white rounded-lg"><X className="w-4 h-4" /></button>
+        </div>
+        <p className="text-xs text-gray-400">{t('configurations.validity.dialogHint')}</p>
+        <div className="flex flex-wrap gap-2">
+          {VALIDITY_PRESETS.map(preset => (
+            <button key={preset} type="button" onClick={() => setDays(String(preset))} aria-pressed={parsed === preset}
+              className={`px-3 py-1.5 rounded-lg border text-xs font-medium ${parsed === preset ? 'border-emerald-400/50 bg-emerald-500/15 text-emerald-200' : 'border-[#1a1f2e] text-gray-300 hover:bg-white/5'}`}>
+              {t('configurations.validity.preset', { days: preset })}
+            </button>
+          ))}
+        </div>
+        <label className="block text-sm text-gray-400">{t('configurations.validity.days')}
+          <input name="extendDays" type="number" inputMode="numeric" min={1} max={MAX_VALIDITY_DAYS} step={1} value={days}
+            onChange={event => setDays(event.target.value)} autoFocus
+            className="mt-1.5 w-full px-3 py-2.5 bg-[#07090e] border border-[#1a1f2e] rounded-xl text-white text-sm focus:outline-none focus:border-emerald-500" />
+        </label>
+        {parsed && (
+          <p className="text-xs text-emerald-200">
+            {t('configurations.validity.preview', { date: extendedExpiry(profile.expiresAt, parsed).toLocaleString(locale) })}
+          </p>
+        )}
+        {failure && <p role="alert" className="text-xs text-rose-300">{failure}</p>}
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="px-4 py-2 text-gray-400 hover:text-white text-sm rounded-xl hover:bg-white/5">
+            {t('configurations.validity.cancel')}
+          </button>
+          <button type="submit" disabled={busy || !parsed}
+            className="px-4 py-2 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 text-sm font-medium rounded-xl border border-emerald-500/30 disabled:opacity-50">
+            {busy ? t('configurations.validity.busy') : t('configurations.validity.submit')}
+          </button>
+        </div>
+      </form>
     </div>
   );
 }
@@ -1458,25 +1668,52 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
     ? `${inputCls} opacity-60 cursor-not-allowed pointer-events-none select-none`
     : inputCls;
   const sshFamily = ['ssh', 'ssh+payload'].includes(form.protocol);
+  const sshMode = form.sshTransport || 'direct';
+  // Le TLS d'un profil SSH découle du mode choisi ; seul le passage par proxy
+  // le laisse au choix de l'exploitant.
+  const sshTls = sshMode === 'tls' || sshMode === 'payload-tls' || (sshMode === 'http-connect' && form.tls);
   const setSshTransport = (transport: string) => {
     f('sshTransport', transport);
     f('protocol', ['payload', 'payload-tls', 'http-connect'].includes(transport) ? 'ssh+payload' : 'ssh');
     f('tls', ['tls', 'payload-tls'].includes(transport));
     f('proxyEnabled', transport === 'http-connect');
     f('slowDns', transport === 'slowdns');
+    if (transport === 'slowdns' && !form.dns) f('dns', '8.8.8.8');
+    const defaultPort = transport === 'direct' || transport === 'slowdns' ? '22' : transport === 'payload' ? '80' : '443';
+    if (!form.port) f('port', defaultPort);
   };
+  const setProtocol = (protocol: string) => {
+    if (protocol === 'ssh') { f('protocol', 'ssh'); setSshTransport('direct'); return; }
+    f('protocol', protocol);
+  };
+  // Une seule entrée « SSH » : ssh et ssh+payload se distinguent par le mode.
+  const protocolChoices = locked ? protocols : protocols.filter(p => p !== 'ssh+payload');
   return (
     <div className="grid grid-cols-2 gap-4">
       {locked && (
         <div className="col-span-2 flex items-center gap-2 px-3 py-2 bg-zinc-800/60 border border-zinc-700/50 rounded-xl text-xs text-zinc-400">
           <Lock className="w-3.5 h-3.5 shrink-0" /> {t('configurations.ui.technicalFields')} <strong className="text-zinc-300"> {t('configurations.ui.lockedFields')} </strong> {t('configurations.ui.newImportHint')} </div>
       )}
-      <div>
+      <div className={sshFamily && !locked ? 'col-span-2' : ''}>
         <label className="block text-sm text-gray-400 mb-1.5"> {t('configurations.ui.protocol')} {!locked && '*'}</label>
-        <select value={form.protocol} onChange={e => f('protocol', e.target.value)} className={lockedCls} disabled={locked}>
-          {protocols.map(p => <option key={p} value={p}>{p.toUpperCase()}</option>)}
+        <select value={sshFamily && !locked ? 'ssh' : form.protocol} onChange={e => setProtocol(e.target.value)} className={lockedCls} disabled={locked}>
+          {protocolChoices.map(p => <option key={p} value={p}>{p === 'ssh' && !locked ? t('configurations.ssh.sshFamily') : p.toUpperCase()}</option>)}
         </select>
       </div>
+      {sshFamily && !locked && (
+        <div className="col-span-2">
+          <label className="block text-sm text-gray-400 mb-1.5"> {t('configurations.ssh.mode')} *</label>
+          <select value={sshMode} onChange={e => setSshTransport(e.target.value)} className={inputCls}>
+            <option value="direct"> {t('configurations.ui.directTcp')} </option>
+            <option value="tls"> {t('configurations.ui.sshOverTls')} </option>
+            <option value="payload"> {t('configurations.ui.sshPayload')} </option>
+            <option value="payload-tls"> {t('configurations.ui.sshPayloadTls')} </option>
+            <option value="http-connect"> {t('configurations.ui.sshProxy')} </option>
+            <option value="slowdns"> {t('configurations.ui.sshDnstt')} </option>
+          </select>
+          <p className="text-[11px] text-gray-500 mt-1"> {t('configurations.ssh.modeHint')} </p>
+        </div>
+      )}
       <div>
         <label className="block text-sm text-gray-400 mb-1.5"> {t('configurations.ui.host')} {!locked && '*'}</label>
         <input value={form.host} onChange={e => f('host', e.target.value)}
@@ -1489,19 +1726,21 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
       </div>
 
       {['ssh', 'ssh+payload'].includes(form.protocol) && <>
-        <div className="col-span-2">
-          <label className="block text-sm text-gray-400 mb-1.5"> {t('configurations.ui.sshTransport')} </label>
-          <select value={form.sshTransport} onChange={e => setSshTransport(e.target.value)}
-            className={lockedCls} disabled={locked}>
-            <option value="direct"> {t('configurations.ui.directTcp')} </option>
-            <option value="tls"> {t('configurations.ui.sshOverTls')} </option>
-            <option value="payload"> {t('configurations.ui.sshPayload')} </option>
-            <option value="payload-tls"> {t('configurations.ui.sshPayloadTls')} </option>
-            <option value="http-connect"> {t('configurations.ui.sshProxy')} </option>
-            <option value="slowdns"> {t('configurations.ui.sshDnstt')} </option>
-          </select>
-          <p className="text-[11px] text-gray-500 mt-1"> {t('configurations.ui.transportOrder')} </p>
-        </div>
+        {locked && (
+          <div className="col-span-2">
+            <label className="block text-sm text-gray-400 mb-1.5"> {t('configurations.ui.sshTransport')} </label>
+            <select value={form.sshTransport} onChange={e => setSshTransport(e.target.value)}
+              className={lockedCls} disabled={locked}>
+              <option value="direct"> {t('configurations.ui.directTcp')} </option>
+              <option value="tls"> {t('configurations.ui.sshOverTls')} </option>
+              <option value="payload"> {t('configurations.ui.sshPayload')} </option>
+              <option value="payload-tls"> {t('configurations.ui.sshPayloadTls')} </option>
+              <option value="http-connect"> {t('configurations.ui.sshProxy')} </option>
+              <option value="slowdns"> {t('configurations.ui.sshDnstt')} </option>
+            </select>
+            <p className="text-[11px] text-gray-500 mt-1"> {t('configurations.ui.transportOrder')} </p>
+          </div>
+        )}
         <div>
           <label className="block text-sm text-gray-400 mb-1.5"> {t('configurations.ui.sshUsername')} </label>
           <input value={form.username} onChange={e => f('username', e.target.value)}
@@ -1641,11 +1880,14 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
         </div>
       )}
 
-      <div>
-        <label className="block text-sm text-gray-400 mb-1.5">SNI</label>
-        <input value={form.sni} onChange={e => f('sni', e.target.value)}
-          placeholder="example.com" className={lockedCls} disabled={locked} readOnly={locked} />
-      </div>
+      {(!sshFamily || locked || sshTls) && (
+        <div>
+          <label className="block text-sm text-gray-400 mb-1.5">SNI</label>
+          <input value={form.sni} onChange={e => f('sni', e.target.value)}
+            placeholder="example.com" className={lockedCls} disabled={locked} readOnly={locked} />
+          {sshFamily && !locked && <p className="text-[11px] text-gray-500 mt-1"> {t('configurations.ssh.sniHint')} </p>}
+        </div>
+      )}
       {!sshFamily && (
         <div>
           <label className="block text-sm text-gray-400 mb-1.5"> {t('configurations.ui.wsHost')} <span className="ml-1.5 text-[11px] text-gray-600"> {t('configurations.ui.wsHostHint')} </span>
@@ -1654,19 +1896,23 @@ function ManualForm({ form, f, payloads, inputCls, networks, protocols, editId }
             placeholder={t('configurations.ui.reuseSni')} className={lockedCls} disabled={locked} readOnly={locked} />
         </div>
       )}
-      <div>
-        <label className="block text-sm text-gray-400 mb-1.5"> {t('configurations.ui.path')} </label>
-        <input value={form.path} onChange={e => f('path', e.target.value)}
-          placeholder="/" className={lockedCls} disabled={locked} readOnly={locked} />
-      </div>
-      <div>
-        <button type="button" onClick={() => !locked && f('tls', !form.tls)}
-          disabled={locked}
-          className={`flex items-center gap-2 px-3 py-2 rounded-xl text-sm border transition-colors ${locked ? 'opacity-60 cursor-not-allowed' : ''} ${form.tls ? 'bg-cyan-500/15 border-cyan-500/30 text-cyan-400' : 'bg-transparent border-[#1a1f2e] text-gray-500'}`}>
-          {form.tls ? <Check className="w-3.5 h-3.5" /> : <X className="w-3.5 h-3.5" />} TLS/SSL
-        </button>
-      </div>
-      {sshFamily && form.tls && (
+      {(!sshFamily || locked) && (
+        <div>
+          <label className="block text-sm text-gray-400 mb-1.5"> {t('configurations.ui.path')} </label>
+          <input value={form.path} onChange={e => f('path', e.target.value)}
+            placeholder="/" className={lockedCls} disabled={locked} readOnly={locked} />
+        </div>
+      )}
+      {(!sshFamily || locked || sshMode === 'http-connect') && (
+        <div>
+          <button type="button" onClick={() => !locked && f('tls', !form.tls)}
+            disabled={locked}
+            className={`flex items-center gap-2 px-3 py-2 rounded-xl text-sm border transition-colors ${locked ? 'opacity-60 cursor-not-allowed' : ''} ${form.tls ? 'bg-cyan-500/15 border-cyan-500/30 text-cyan-400' : 'bg-transparent border-[#1a1f2e] text-gray-500'}`}>
+            {form.tls ? <Check className="w-3.5 h-3.5" /> : <X className="w-3.5 h-3.5" />} TLS/SSL
+          </button>
+        </div>
+      )}
+      {sshFamily && sshTls && (
         <div>
           <button type="button" onClick={() => !locked && f('insecure', !form.insecure)}
             disabled={locked}

@@ -501,6 +501,9 @@ model VpnProfile {
   payloadId        String?
   payload          SshPayload?    @relation(fields: [payloadId], references: [id])
   offlineValidDays Int            @default(7)
+  // Échéance du compte chez le fournisseur (information d'exploitation, jamais
+  // technique) : null = sans échéance connue. Prolongeable sans déverrouillage.
+  expiresAt        DateTime?
   method           String?
   jsonConfig       String?        // LEGACY — ne plus écrire en clair ; voir canonicalConfig
   // ── Modèle « intermédiaire d'import » (canonique, chiffré, versionné) ────────

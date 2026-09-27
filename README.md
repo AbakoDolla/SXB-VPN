@@ -77,6 +77,15 @@ supprimé ni réactiver des identifiants expirés.
 
 Points notables du moteur :
 
+- **Liens de partage de fournisseur** — un VLESS/VMess/Trojan sur WebSocket
+  « fronté » (adresse et SNI sur un domaine banal, en-tête Host vers le relais)
+  garde ses trois noms distincts. Au démarrage, le moteur traduit aussi trois
+  écritures propres à Xray que sing-box ne lit pas telles quelles :
+  `path=/x?ed=2048` (early data, retirée du chemin), `alpn=h2,…` sur WebSocket
+  ou HTTPUpgrade (ramené à `http/1.1`) et les empreintes `fp=Chrome`,
+  `randomizednoalpn`… (ramenées au nom sing-box). Les transports `xhttp`,
+  `splithttp` et `kcp` ne sont pas pris en charge par le moteur embarqué :
+  l'import les signale et l'appareil affiche `CONFIG_UNSUPPORTED`.
 - **Résolution DNS d'amorçage** — joindre le serveur exige de résoudre son nom,
   ce qui exigerait le tunnel. Les résolveurs du réseau sont lus via
   `ConnectivityManager` : `address: "local"` échoue sous Android, faute de
@@ -376,6 +385,24 @@ L'attribution d'un profil à un client ou à un appareil, puis son provisionneme
 dans le mobile, **ne nécessitent pas de déverrouillage**. Les permissions,
 la propriété du client, la validité du forfait et les contrôles de quota
 continuent de s'appliquer.
+
+**Échéance du compte fournisseur.** Chaque configuration peut porter la date
+de fin du compte acheté chez le fournisseur (durée en jours à la création).
+La fiche affiche le temps restant, même verrouillée, et **Prolonger** ajoute
+des jours sans mot de passe (`POST /api/vpn-profiles/:id/extend`, `{ "days": 1‥3650 }`) :
+les jours s'ajoutent à ce qui reste, ou partent d'aujourd'hui si la date est
+passée. Rien d'autre ne change — ni les paramètres techniques, ni le verrou,
+ni l'empreinte de configuration : les appareils ne réimportent rien.
+L'échéance est informative ; elle ne coupe pas les forfaits en cours. Les
+configurations existantes n'ont pas d'échéance tant qu'aucune n'est fixée.
+
+**Configurations SSH : saisie manuelle uniquement.** L'onglet « SSH — Saisie
+manuelle » demande le mode (direct, TLS, payload, payload + TLS, proxy HTTP
+CONNECT, SlowDNS) puis seulement les champs de ce mode, et « Valider le
+transport SSH » teste exactement la configuration qui sera enregistrée. Un
+JSON SSH, HTTP Custom ou SocksIP collé dans l'onglet d'import est renvoyé vers
+ce formulaire. Le serveur continue de lire ces formats : les profils SSH
+existants restent réimportables.
 
 Les configurations historiques restent compatibles : la migration ne leur
 invente aucun mot de passe et ne coupe pas les appareils déjà provisionnés.
