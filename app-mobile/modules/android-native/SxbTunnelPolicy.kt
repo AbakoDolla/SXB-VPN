@@ -503,4 +503,120 @@ object SxbTunnelPolicy {
         }
         dns.put("rules", rules)
     }
+
+    // ── Liens de partage « comme les autres clients » ────────────────────────
+    //
+    // Trois écritures courantes dans les liens VLESS/VMess/Trojan de fournisseur
+    // sont comprises par Xray/v2rayNG mais pas telles quelles par sing-box.
+    // Chacune a été reproduite avec sing-box 1.12.9 sur un vrai compte Cloud Run
+    // derrière le front Google :
+    //
+    //  1. `path=/x?ed=2048` — Xray lit `ed` comme une demande d'early data et ne
+    //     l'envoie jamais au serveur. sing-box envoyait le chemin tel quel : le
+    //     relais ne connaît que `/x`, répond 404, et plus rien ne passe.
+    //  2. `alpn=h2,http/1.1` sur un WebSocket — le front choisit h2, alors qu'un
+    //     WebSocket (comme un HTTPUpgrade) ne sait parler que HTTP/1.1 Upgrade :
+    //     la connexion se ferme (EOF) juste après TLS.
+    //  3. `fp=Chrome`, `fp=randomizednoalpn` — valides pour Xray, mais sing-box
+    //     refuse de démarrer tout le tunnel sur une empreinte uTLS inconnue.
+    //
+    // Ces adaptations restent au démarrage du moteur : le profil stocké et son
+    // empreinte canonique ne changent pas.
+
+    const val EARLY_DATA_HEADER = "Sec-WebSocket-Protocol"
+    private const val MAX_EARLY_DATA = 65_535
+    private val upgradeOnlyAlpn = setOf("h2", "h3")
+    private val acceptedUtls = setOf(
+        "chrome", "chrome_psk", "chrome_psk_shuffle", "chrome_padding_psk_shuffle", "chrome_pq",
+        "firefox", "edge", "safari", "360", "qq", "ios", "android", "random", "randomized",
+    )
+    private val goTlsFingerprints = setOf("none", "golang", "hellogolang")
+    private val unsupportedStreamTransports = setOf("xhttp", "splithttp", "kcp", "mkcp")
+
+    /** `/x?ed=2048&a=b` → chemin `/x?a=b`, 2048 octets, en-tête éventuel (`eh=`). */
+    data class EarlyDataPath(val path: String, val maxEarlyData: Int, val headerName: String?)
+
+    fun earlyDataFromPath(path: String): EarlyDataPath? {
+        val question = path.indexOf('?')
+        if (question < 0) return null
+        val kept = mutableListOf<String>()
+        var size: Int? = null
+        var header: String? = null
+        for (part in path.substring(question + 1).split('&')) {
+            val key = part.substringBefore('=').lowercase()
+            val value = part.substringAfter('=', "")
+            when {
+                key == "ed" && size == null -> size = value.toIntOrNull()?.takeIf { it in 1..MAX_EARLY_DATA } ?: return null
+                key == "eh" && header == null && value.matches(Regex("^[A-Za-z0-9-]{1,64}$")) -> header = value
+                part.isNotEmpty() -> kept += part
+            }
+        }
+        val bytes = size ?: return null
+        val base = path.substring(0, question).ifEmpty { "/" }
+        return EarlyDataPath(if (kept.isEmpty()) base else base + "?" + kept.joinToString("&"), bytes, header)
+    }
+
+    /** Nom d'empreinte accepté par sing-box, `""` pour le TLS natif du moteur. */
+    fun utlsFingerprint(value: String): String {
+        val name = value.trim().lowercase()
+        if (name in acceptedUtls) return name
+        if (name.isEmpty() || name in goTlsFingerprints) return ""
+        val bare = name.removePrefix("hello")
+        if (bare.startsWith("randomized")) return "randomized"
+        val family = bare.substringBefore('_')
+        return if (family in acceptedUtls) family else "chrome"
+    }
+
+    fun rejectUnsupportedStreamTransport(network: String) {
+        val kind = network.trim().lowercase()
+        if (kind in unsupportedStreamTransports) {
+            throw IllegalArgumentException(
+                "CONFIG_UNSUPPORTED — transport « $kind » non supporté par le moteur sing-box de l'application",
+            )
+        }
+    }
+
+    /** Applique les trois adaptations à une sortie ; rend les codes des corrections faites. */
+    fun normalizeStreamOutbound(outbound: JSONObject): List<String> {
+        val applied = mutableListOf<String>()
+        val transport = outbound.optJSONObject("transport")
+        val transportType = transport?.optString("type", "")?.lowercase().orEmpty()
+
+        if (transportType == "ws" && transport != null && transport.optInt("max_early_data", 0) <= 0) {
+            earlyDataFromPath(transport.optString("path", ""))?.let { early ->
+                transport.put("path", early.path)
+                transport.put("max_early_data", early.maxEarlyData)
+                val existing = transport.optString("early_data_header_name", "")
+                transport.put("early_data_header_name", early.headerName ?: existing.ifBlank { EARLY_DATA_HEADER })
+                applied += "WS_EARLY_DATA_FROM_PATH"
+            }
+        }
+
+        val tls = outbound.optJSONObject("tls")
+        if (tls != null && transportType in upgradeTransports) {
+            val alpn = when (val raw = tls.opt("alpn")) {
+                is JSONArray -> (0 until raw.length()).map { raw.optString(it).trim() }
+                is String -> raw.split(',').map { it.trim() }
+                else -> emptyList()
+            }.filter { it.isNotEmpty() }
+            val kept = alpn.filterNot { it.lowercase() in upgradeOnlyAlpn }
+            if (kept.size != alpn.size) {
+                tls.put("alpn", JSONArray(kept.ifEmpty { listOf("http/1.1") }))
+                applied += "UPGRADE_ALPN_HTTP1"
+            }
+        }
+
+        tls?.optJSONObject("utls")?.let { utls ->
+            val declared = utls.optString("fingerprint", "")
+            val accepted = utlsFingerprint(declared)
+            if (accepted.isEmpty() && declared.isNotBlank()) {
+                tls.remove("utls")
+                applied += "UTLS_NATIVE"
+            } else if (accepted.isNotEmpty() && accepted != declared) {
+                utls.put("fingerprint", accepted)
+                applied += "UTLS_FINGERPRINT_NORMALIZED"
+            }
+        }
+        return applied
+    }
 }

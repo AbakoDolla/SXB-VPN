@@ -21,6 +21,8 @@ export interface VpnProfile {
   dns?: string;
   payloadId?: string;
   offlineValidDays: number;
+  /** Échéance du compte fournisseur ; `null` = sans échéance enregistrée. */
+  expiresAt?: string | null;
   method?: string;
   jsonConfig?: string;
   status: string;
@@ -139,10 +141,18 @@ export const setVpnProfileLock = (id: string, password: string, token?: string):
  * r.profile)` : un import strictement identique à un profil existant passait
  * donc totalement inaperçu.
  */
-export type ProfileWrite = Partial<VpnProfile> & { importConfig?: string };
+export type ProfileWrite = Partial<VpnProfile> & { importConfig?: string; validityDays?: number };
 export const createVpnProfile = (data: ProfileWrite & { lockPassword: string }): Promise<VpnProfile & { _warnings?: string[] }> =>
   apiRequest<any>('/vpn-profiles', { method: 'POST', body: data })
     .then(r => ({ ...r.profile, _warnings: r.warnings || [] }));
+
+/**
+ * Prolonge l'échéance du compte fournisseur, sans déverrouillage : aucune
+ * donnée technique n'est lue ni modifiée, les appareils ne réimportent rien.
+ */
+export const extendVpnProfile = (id: string, days: number): Promise<VpnProfile> =>
+  apiRequest<{ profile: VpnProfile }>(`/vpn-profiles/${id}/extend`, { method: 'POST', body: { days } })
+    .then(r => r.profile);
 
 export const importVpnProfiles = (data: {
   importConfig: string;
@@ -151,6 +161,7 @@ export const importVpnProfiles = (data: {
   description?: string;
   displayProtocol?: string;
   offlineValidDays?: number;
+  validityDays?: number;
   status?: string;
 }): Promise<{ profiles: VpnProfile[]; imported: number; warnings: string[] }> =>
   apiRequest<any>('/vpn-profiles/import-batch', { method: 'POST', body: data })

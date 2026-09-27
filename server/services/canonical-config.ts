@@ -311,6 +311,13 @@ export function validateTransportCoherence(cfg: Record<string, any>): { errors: 
   if (cfg.insecure !== undefined && typeof cfg.insecure !== 'boolean') {
     errors.push('"insecure" doit être un booléen (true/false)');
   }
+  // Signalé, jamais refusé : des profils existants portent déjà ce transport,
+  // et l'exploitant doit apprendre AVANT de le distribuer que l'appareil ne
+  // pourra pas l'ouvrir (le moteur embarqué est sing-box, pas Xray).
+  const network = String(cfg.network ?? '').trim().toLowerCase();
+  if (['xhttp', 'splithttp', 'kcp', 'mkcp'].includes(network)) {
+    warnings.push(`transport "${network}" non pris en charge par le moteur de l'application (sing-box) : choisissez ws, httpupgrade, grpc ou tcp chez le fournisseur`);
+  }
   return { errors, warnings };
 }
 

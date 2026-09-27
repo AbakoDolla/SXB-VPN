@@ -110,6 +110,10 @@ const metadataFields = [
   // détail de l'étape en échec, qui peut citer la bannière du serveur ou une
   // passerelle. C'est une description de la configuration, pas un verdict.
   'validationStatus', 'validatedAt',
+  // Échéance du compte fournisseur : une date, jamais un hôte ni un secret.
+  // Elle doit rester lisible verrou fermé, puisque la prolongation se fait
+  // précisément sans déverrouiller.
+  'expiresAt',
 ] as const;
 const technicalFields = [
   'protocol', 'host', 'port', 'username', 'uuid', 'path', 'network', 'tls', 'sni',

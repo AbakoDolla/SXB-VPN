@@ -20,6 +20,7 @@ import {
 } from '../services/profile-lock';
 import { prepareProfileEngineLock } from '../services/profile-engines';
 import { porteeProfils, porteeRevendeurs } from '../services/portee-donnees';
+import { extendedProfileExpiry, profileValidityDays } from '../services/profile-validity';
 
 // Plafond large plutôt qu'une contrainte métier réelle : il évite une valeur
 // aberrante (NaN, négative, des millions de jours) de produire une date
@@ -564,6 +565,9 @@ router.post('/import-batch', requireAuth, requirePermission('vpnprofile.manage')
     const displayProtocol = req.body?.displayProtocol ? String(req.body.displayProtocol).slice(0, 100) : null;
     const offlineValidDays = clampOfflineValidDays(req.body?.offlineValidDays, 7);
     const status = req.body?.status === 'inactive' ? 'inactive' : 'active';
+    const validityDays = profileValidityDays(req.body?.validityDays);
+    if (Number.isNaN(validityDays)) return res.status(400).json({ error: 'PROFILE_VALIDITY_INVALID', code: 'PROFILE_VALIDITY_INVALID' });
+    const expiresAt = validityDays ? extendedProfileExpiry(null, validityDays) : null;
     if (!rawImport) return res.status(400).json({ error: 'importConfig est requis' });
 
     const parsed = parseImportedConfigList(rawImport);
@@ -592,6 +596,7 @@ router.post('/import-batch', requireAuth, requirePermission('vpnprofile.manage')
           displayProtocol,
           offlineValidDays,
           status,
+          expiresAt,
           // Même règle qu'à l'unité : l'auteur est inscrit, c'est lui qui rend
           // à un administrateur son propre catalogue. Voir `porteeProfils`.
           createdBy: req.user?.userId ?? null,
@@ -637,6 +642,9 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
       payloadId, offlineValidDays, status,
       method, jsonConfig, importConfig,
     } = req.body;
+    const validityDays = profileValidityDays(req.body?.validityDays);
+    if (Number.isNaN(validityDays)) return res.status(400).json({ error: 'PROFILE_VALIDITY_INVALID', code: 'PROFILE_VALIDITY_INVALID' });
+    const expiresAt = validityDays ? extendedProfileExpiry(null, validityDays) : null;
 
     // ── FLUX CIBLE : import d'une configuration externe (URI/JSON) ────────────
     // jsonConfig legacy est traité comme un import (désormais chiffré, plus en clair).
@@ -687,6 +695,7 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
           dns: dns || null,
           offlineValidDays: clampOfflineValidDays(offlineValidDays, 7),
           status: status || 'active',
+          expiresAt,
           ...data,
           ...lock,
         },
@@ -726,6 +735,7 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
         method: method || null,
         jsonConfig: null, // plus jamais de clair — legacy jsonConfig a été redirigé vers l'import chiffré
         status: status || 'active',
+        expiresAt,
         ...lock,
       },
     });
@@ -746,6 +756,50 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
     }
     console.error('vpn-profile create failed');
     return res.status(500).json({ error: 'Failed to create VPN profile' });
+  }
+});
+
+// ─── POST /api/vpn-profiles/:id/extend ───────────────────────────────────────
+// Prolonge l'échéance du compte fournisseur SANS déverrouillage. Ce n'est pas
+// une modification de la configuration : aucun champ technique n'est lu ni
+// écrit, et `updatedAt` est conservé pour que l'empreinte d'un profil ancien
+// (qui l'inclut) ne change pas — les appareils ne réimportent donc rien.
+// La propriété, elle, reste contrôlée comme partout ailleurs.
+router.post('/:id/extend', requireAuth, requirePermission('vpnprofile.manage'), async (req: AuthenticatedRequest, res: Response) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    if (!prisma) return res.status(503).json({ error: 'errors.db.unavailable' });
+    if (!req.body || Object.keys(req.body).some(key => key !== 'days')) {
+      return res.status(400).json({ error: 'PROFILE_VALIDITY_INVALID', code: 'PROFILE_VALIDITY_INVALID' });
+    }
+    const days = profileValidityDays(req.body.days);
+    if (!days) return res.status(400).json({ error: 'PROFILE_VALIDITY_INVALID', code: 'PROFILE_VALIDITY_INVALID' });
+    const existing = await chargerProfilVisible(req, {
+      select: { id: true, name: true, expiresAt: true, updatedAt: true },
+    });
+    if (!existing) return res.status(404).json({ error: 'Profile not found' });
+    const expiresAt = extendedProfileExpiry(existing.expiresAt, days);
+    // Écriture conditionnelle : deux prolongations simultanées ne peuvent pas
+    // partir de la même échéance et en perdre une.
+    const written = await (prisma as any).vpnProfile.updateMany({
+      where: { id: existing.id, expiresAt: existing.expiresAt ?? null },
+      data: { expiresAt, updatedAt: existing.updatedAt },
+    });
+    if (written.count !== 1) return res.status(409).json({ error: 'PROFILE_VALIDITY_CONFLICT', code: 'PROFILE_VALIDITY_CONFLICT' });
+    const profile = await (prisma as any).vpnProfile.findUnique({
+      where: { id: existing.id },
+      include: { _count: { select: { subscriptions: true } } },
+    });
+    await logDbActivity(
+      req.user!.userId,
+      `VPN profile validity extended: ${existing.name} +${days}d → ${expiresAt.toISOString().slice(0, 10)}`,
+      'info',
+      req.ip || '',
+    );
+    return res.json({ success: true, profile: maskProfile(profile, req), expiresAt: expiresAt.toISOString(), days });
+  } catch (err) {
+    console.error('vpn-profile extend failed');
+    return res.status(500).json({ error: 'PROFILE_VALIDITY_UNAVAILABLE', code: 'PROFILE_VALIDITY_UNAVAILABLE' });
   }
 });
 
