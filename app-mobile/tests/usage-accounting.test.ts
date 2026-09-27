@@ -34,6 +34,7 @@ async function services() {
         const stubs: Record<string, string> = {
           'test:state': `export const state={storage:new Map(),failWrites:false,failReads:false,metadata:new Map()};`,
           'react-native': `export const AppRegistry={registerHeadlessTask(){}};`,
+          'expo-crypto': `export {randomUUID} from 'node:crypto';`,
           '@react-native-async-storage/async-storage': `
             import {state} from 'test:state'; export default {
               getItem:async k=>{if(state.failReads)throw Error('STORAGE_UNAVAILABLE');return state.storage.get(k)??null},
@@ -295,13 +296,36 @@ describe('durable byte accounting', () => {
     const h = await services();
     const original = JSON.stringify({ ...h.ledger.emptyLedger(),
       context: { subscriptionId: 'normal', sessionId: null },
-      entries: [{ subscriptionId: 'normal', sessionId: null, seq: 0, up: 17, down: 29 }],
+      entries: [{ subscriptionId: 'normal', sessionId: '', seq: 0, up: 17, down: 29 }],
     });
     h.state.storage.set('@sxb_usage_ledger', original);
     await assert.rejects(h.ledger.loadLedger(), error =>
-      error instanceof h.ledger.UsageLedgerReadError && error.detail === 'entries');
+      error instanceof h.ledger.UsageLedgerReadError && error.detail === 'entry_session');
     assert.equal(h.state.storage.get('@sxb_usage_ledger'), original);
     assert.equal(h.state.storage.has('@sxb_usage_ledger_recovery'), false);
+  });
+
+  it('repairs explicit null report IDs but never rewrites valid frozen receipts', async () => {
+    const h = await services();
+    const original = JSON.stringify({
+      initialized: true, counterUp: 10, counterDown: 18, nextSeq: 2,
+      context: { subscriptionId: 'trial', configId: 'trial', sessionId: null },
+      entries: [
+        { subscriptionId: 'normal', configId: 'normal', sessionId: 'accepted', seq: 0, up: 3, down: 7, frozen: true },
+        { subscriptionId: 'trial', configId: 'trial', sessionId: null, seq: 1, up: 7, down: 11, frozen: true },
+      ],
+    });
+    h.state.storage.set('@sxb_usage_ledger', original);
+    const recovered = await h.ledger.loadLedger();
+    assert.equal(recovered.entries[0].sessionId, 'accepted');
+    assert.match(recovered.entries[1].sessionId, /^sess_[0-9a-f-]{36}$/);
+    assert.equal(recovered.entries[1].subscriptionId, 'trial');
+    assert.equal(recovered.entries[1].seq, 1);
+    assert.equal(h.ledger.pendingBytes(recovered), 28);
+    assert.equal(recovered.counterUp, 10);
+    assert.equal(recovered.counterDown, 18);
+    assert.equal((await h.ledger.loadLedger()).entries[1].sessionId, recovered.entries[1].sessionId);
+    assert.deepEqual(JSON.parse(h.state.storage.get('@sxb_usage_ledger_recovery')!), [original]);
   });
 
   it('rejects an invalid writer snapshot before replacing a valid persisted ledger', async () => {
@@ -315,6 +339,17 @@ describe('durable byte accounting', () => {
     await assert.rejects(h.ledger.saveLedger(ledger), error =>
       error instanceof h.ledger.UsageLedgerReadError && error.detail === 'context');
     assert.equal(h.state.storage.get('@sxb_usage_ledger'), original);
+  });
+
+  it('does not turn duplicate null replay keys into two independently billable reports', async () => {
+    const h = await services();
+    const entry = { subscriptionId: 'normal', sessionId: null, seq: 0, up: 3, down: 7, frozen: true };
+    const original = JSON.stringify({ counterUp: 6, counterDown: 14, nextSeq: 1, entries: [entry, entry] });
+    h.state.storage.set('@sxb_usage_ledger', original);
+    await assert.rejects(h.ledger.loadLedger(), error =>
+      error instanceof h.ledger.UsageLedgerReadError && error.detail === 'entry_sequence');
+    assert.equal(h.state.storage.get('@sxb_usage_ledger'), original);
+    assert.equal(h.state.storage.has('@sxb_usage_ledger_recovery'), false);
   });
 
   it('does not hide measured over-quota bytes that the dashboard still counts', async () => {

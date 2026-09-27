@@ -210,9 +210,13 @@ ne provoque pas la refacturation de cet historique lors de la mise à jour.
 Un livre mobile illisible reste intact : sa relecture est retentée, et il
 n'est jamais remplacé silencieusement par une nouvelle ancre.
 Une ancienne course de déconnexion pouvait écrire une session `null` dans
-le contexte des futurs rapports. Ce seul défaut est récupéré automatiquement :
+le contexte puis dans un rapport. Ce défaut est récupéré automatiquement :
 l'original est archivé localement avant réparation, les compteurs et tous
-les rapports existants gardent leurs octets, propriétaires et clés de rejeu.
+les rapports gardent leurs octets et propriétaires. Les identifiants de reçu
+valides restent inchangés ; seuls les identifiants explicitement `null`, que
+les API refusent avant tout débit, reçoivent un UUID cryptographique durable.
+Un identifiant absent ou vide n'est pas réinventé : un ancien serveur pouvait
+l'avoir accepté sans clé de rejeu.
 La session est maintenant capturée avant les attentes et chaque écriture
 est validée pour ne plus produire ce défaut. Toute autre corruption reste
 conservée et signalée par une catégorie technique sans contenu sensible.

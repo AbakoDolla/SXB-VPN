@@ -41,10 +41,13 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { randomUUID } from 'expo-crypto';
 
 const STORAGE_KEY = '@sxb_usage_ledger';
 const RECOVERY_KEY = '@sxb_usage_ledger_recovery';
-type LedgerIssue = 'read' | 'json' | 'shape' | 'counters' | 'context' | 'entries' | 'quota' | 'recovery';
+type LedgerIssue = 'read' | 'json' | 'shape' | 'counters' | 'context' | 'entries' | 'quota' | 'recovery'
+  | 'entry_session' | 'entry_sequence' | 'entry_upload' | 'entry_download'
+  | 'entry_scope' | 'entry_attribution' | 'entry_empty' | 'entry_retry';
 
 export class UsageLedgerReadError extends Error {
   readonly code = 'VPN_USAGE_LEDGER_UNAVAILABLE';
@@ -126,7 +129,7 @@ export function emptyLedger(): UsageLedger {
 }
 
 export function newUsageSessionId(): string {
-  return 'sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
+  return 'sess_' + randomUUID();
 }
 
 function safeCount(value: unknown): number {
@@ -355,14 +358,16 @@ function sanitize(value: unknown): UsageLedger {
   for (const entry of entries) {
     if (!entry || typeof entry !== 'object') return corrupt('entries');
     const candidate = entry as Partial<UsageEntry>;
-    if (typeof candidate.sessionId !== 'string' || !candidate.sessionId ||
-        !isCount(candidate.seq) || !isCount(candidate.up) || !isCount(candidate.down) ||
-        !isOptionalId(candidate.subscriptionId) || !isOptionalId(candidate.configId) ||
-        !validAttribution(candidate)) return corrupt('entries');
+    if (typeof candidate.sessionId !== 'string' || !candidate.sessionId) return corrupt('entry_session');
+    if (!isCount(candidate.seq)) return corrupt('entry_sequence');
+    if (!isCount(candidate.up)) return corrupt('entry_upload');
+    if (!isCount(candidate.down)) return corrupt('entry_download');
+    if (!isOptionalId(candidate.subscriptionId) || !isOptionalId(candidate.configId)) return corrupt('entry_scope');
+    if (!validAttribution(candidate)) return corrupt('entry_attribution');
     const up = candidate.up;
     const down = candidate.down;
-    if (up + down <= 0) return corrupt('entries');
-    if (candidate.retryAfter !== undefined && !isCount(candidate.retryAfter)) return corrupt('entries');
+    if (up + down <= 0) return corrupt('entry_empty');
+    if (candidate.retryAfter !== undefined && !isCount(candidate.retryAfter)) return corrupt('entry_retry');
     clean.push({
       subscriptionId: typeof candidate.subscriptionId === 'string' ? candidate.subscriptionId : null,
       configId: typeof candidate.configId === 'string' ? candidate.configId : undefined,
@@ -437,17 +442,30 @@ export async function loadLedger(): Promise<UsageLedger> {
     throw new UsageLedgerReadError('corrupt', 'json');
   }
   const legacy = parsed && typeof parsed === 'object' ? parsed as Partial<UsageLedger> : null;
-  if (legacy?.context && legacy.context.sessionId === null) {
+  const repairContext = legacy?.context?.sessionId === null;
+  const repairEntries = Array.isArray(legacy?.entries) &&
+    legacy.entries.some(entry => entry && typeof entry === 'object' && entry.sessionId === null);
+  if (legacy && (repairContext || repairEntries)) {
     // An old stop could clear this mutable reference during a counter read.
-    // Only the context for FUTURE entries is repaired: existing receipts keep
-    // every byte, owner, session and sequence. Validate everything else first.
+    // Every historical traffic schema rejects an explicit null sessionId
+    // before any debit. Missing/empty IDs are NOT repairable: those could have
+    // been accepted without a replay key. Valid receipt identities never change.
+    const repairedSequences = new Set<number>();
+    const entries = Array.isArray(legacy.entries) ? legacy.entries.map(entry => {
+      if (!entry || typeof entry !== 'object' || entry.sessionId !== null) return entry;
+      // Duplicate null/sequence keys are not proof of independent traffic.
+      if (repairedSequences.has(entry.seq)) throw new UsageLedgerReadError('corrupt', 'entry_sequence');
+      repairedSequences.add(entry.seq);
+      return { ...entry, sessionId: newUsageSessionId() };
+    }) : legacy.entries;
     const recovered = sanitize({
       ...legacy,
-      context: { ...legacy.context, sessionId: newUsageSessionId() },
+      context: repairContext ? { ...legacy.context, sessionId: newUsageSessionId() } : legacy.context,
+      entries,
     });
     await archiveRecovery(raw);
     await saveLedger(recovered);
-    console.warn('[SXB] USAGE_LEDGER_CONTEXT_RECOVERED');
+    console.warn('[SXB] USAGE_LEDGER_IDENTITY_RECOVERED');
     return recovered;
   }
   return sanitize(parsed);
