@@ -40,6 +40,8 @@ await build({
     export { default as provision } from './server/routes/provision';
     export { default as consoleRoutes } from './server/routes/security';
     export { default as scopedSessions } from './server/routes/sessions';
+    export { default as users } from './server/routes/users';
+    export { default as auth } from './server/routes/auth';
     export { prisma } from './server/database';
     export * as sessions from './server/services/mobile-session-security';
     export * as proof from './server/services/mobile-proof';
@@ -56,7 +58,7 @@ await build({
     },
   }],
 });
-const { mobile, events, provision, consoleRoutes, scopedSessions, prisma, sessions, proof, gate } = require(output);
+const { mobile, events, provision, consoleRoutes, scopedSessions, users, auth, prisma, sessions, proof, gate } = require(output);
 const app = express();
 app.use(express.json({ verify: (req, _res, bytes) => { req.rawBody = Buffer.from(bytes); } }));
 app.use('/api/mobile', mobile);
@@ -64,6 +66,8 @@ app.use('/api/mobile-security', events);
 app.use('/api/provision', provision);
 app.use('/api/security', consoleRoutes);
 app.use('/api/sessions', scopedSessions);
+app.use('/api/users', users);
+app.use('/api/auth', auth);
 const server = app.listen(0, '127.0.0.1');
 await new Promise(resolve => server.once('listening', resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
@@ -253,9 +257,9 @@ try {
     { signals: { rooted: true, frida: true, xposed: true, signatureInvalid: true } }, a.tokens.accessToken)).status, 202);
   check('high observations do not suspend account', (await prisma.vpnClient.findUniqueOrThrow({ where: { id: a.client.id } })).status, 'active');
   const operators = [];
-  for (const roleName of ['OWNER', 'ADMIN', 'SUPPORT']) {
+  for (const roleName of ['OWNER', 'ADMIN', 'SUPPORT', 'SUPER_ADMIN']) {
     const operatorRole = await prisma.role.upsert({ where: { name: roleName }, create: { name: roleName }, update: {} });
-    for (const permissionName of ['clients.view', 'clients.manage']) {
+    for (const permissionName of ['clients.view', 'clients.manage', 'users.view', 'users.create']) {
       const permission = await prisma.permission.upsert({ where: { name: permissionName }, create: { name: permissionName }, update: {} });
       await prisma.rolePermission.upsert({
         where: { roleId_permissionId: { roleId: operatorRole.id, permissionId: permission.id } },
@@ -264,7 +268,7 @@ try {
     }
     const user = await prisma.user.create({ data: { name: `SYNTHETIC ${roleName}`, roleId: operatorRole.id,
       email: `${roleName}-${suffix}@example.invalid`, passwordHash: 'not-a-real-login-hash' } });
-    operators.push({ user, token: jwt.sign({ userId: user.id, role: roleName }, process.env.JWT_SECRET, { expiresIn: '15m' }) });
+    operators.push({ user, roleName, token: jwt.sign({ userId: user.id, role: roleName }, process.env.JWT_SECRET, { expiresIn: '15m' }) });
   }
   const [owner, admin, support] = operators;
   await prisma.vpnClient.update({ where: { id: a.client.id }, data: { managedById: admin.user.id } });
@@ -380,6 +384,43 @@ try {
   check('revoked refresh cannot resurrect family', (await request(a, refreshTarget, { refreshToken: a.tokens.refreshToken }, a.tokens.refreshToken)).status, 401);
   check('revoked observer ticket denied', (await request(a, '/api/mobile/access-state', undefined, ticket.data.ticket)).status, 401);
   check('revoked provisioning denied', (await request(a, '/api/provision/activate', { dataToken: sub.dataToken, deviceId: a.id }, a.tokens.accessToken)).status, 401);
+  const targetUser = await prisma.user.findUniqueOrThrow({ where: { id: ids[1].userId } });
+  for (const operator of operators.filter(value => value.roleName !== 'SUPPORT')) {
+    const privileged = device();
+    const client = await prisma.vpnClient.create({ data: { userId: operator.user.id,
+      token: `SXB-USER-PRIVILEGED-${operator.roleName}-${suffix}` } });
+    const activated = await request(privileged, '/api/mobile/auth/activate', {
+      token: client.token, deviceId: privileged.id, publicKey: privileged.encoded, activationRequestId: randomUUID(),
+    }, client.token);
+    check(`${operator.roleName} holder can activate a CLIENT device`, activated.status, 200);
+    const mobileTokens = activated.data;
+    for (const revoked of [false, true]) {
+      if (revoked) await prisma.$transaction(tx => sessions.revokeSecuritySession(tx,
+        mobileTokens.security.sessionId, mobileTokens.security.generation));
+      const stolenHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${mobileTokens.accessToken}` };
+      const edit = { name: 'SYNTHETIC UNAUTHORIZED CHANGE' };
+      check(`${operator.roleName} mobile bearer cannot PATCH users (revoked=${revoked})`,
+        (await request(privileged, `/api/users/${targetUser.id}`, edit, mobileTokens.accessToken,
+          { method: 'PATCH', headers: stolenHeaders })).status, 401);
+      check(`${operator.roleName} device header cannot elevate mobile authority (revoked=${revoked})`,
+        (await request(privileged, `/api/users/${targetUser.id}`, edit, mobileTokens.accessToken,
+          { method: 'PATCH', headers: { ...stolenHeaders, 'X-SXB-Device-ID': privileged.id } })).status, 401);
+      check(`${operator.roleName} mobile proof still cannot enter operator self-service (revoked=${revoked})`,
+        (await request(privileged, '/api/users/me', undefined, mobileTokens.accessToken)).status, revoked ? 401 : 403);
+      check(`${operator.roleName} rejected mobile requests persist no user mutation (revoked=${revoked})`,
+        (await prisma.user.findUniqueOrThrow({ where: { id: targetUser.id } })).name, targetUser.name);
+      const refreshed = await request(privileged, '/api/auth/refresh',
+        { refreshToken: mobileTokens.refreshToken }, mobileTokens.refreshToken);
+      check(`${operator.roleName} alternate refresh enforces mobile session (revoked=${revoked})`, refreshed.status, revoked ? 401 : 200);
+      if (!revoked) check(`${operator.roleName} alternate refresh never elevates CLIENT`,
+        jwt.decode(refreshed.data.accessToken).role, 'CLIENT');
+    }
+    check(`genuine ${operator.roleName} operator still accesses users`,
+      (await request(privileged, '/api/users/me', undefined, operator.token)).status, 200);
+  }
+  const ownerEdit = await request(a, `/api/users/${targetUser.id}`, { name: 'SYNTHETIC AUTHORIZED OWNER EDIT' }, owner.token, { method: 'PATCH' });
+  check('genuine owner can still PATCH another user', ownerEdit.status, 200);
+  check('genuine owner mutation persists', (await prisma.user.findUniqueOrThrow({ where: { id: targetUser.id } })).name, 'SYNTHETIC AUTHORIZED OWNER EDIT');
   console.log(`REAL_POSTGRES_SECURITY_CHECKS=${checks}`);
 } finally {
   globalThis.fetch = nativeFetch;
