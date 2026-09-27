@@ -209,6 +209,13 @@ Une ancienne version ayant sauvegardé un cumul inférieur au dernier rapport
 ne provoque pas la refacturation de cet historique lors de la mise à jour.
 Un livre mobile illisible reste intact : sa relecture est retentée, et il
 n'est jamais remplacé silencieusement par une nouvelle ancre.
+Une ancienne course de déconnexion pouvait écrire une session `null` dans
+le contexte des futurs rapports. Ce seul défaut est récupéré automatiquement :
+l'original est archivé localement avant réparation, les compteurs et tous
+les rapports existants gardent leurs octets, propriétaires et clés de rejeu.
+La session est maintenant capturée avant les attentes et chaque écriture
+est validée pour ne plus produire ce défaut. Toute autre corruption reste
+conservée et signalée par une catégorie technique sans contenu sensible.
 Un échec ou dépassement du délai de préparation de cette ancre interdit le
 nouveau départ ; il n'est plus converti en succès par le délai de connexion.
 Un appui sur la connexion suspend l'envoi HTTP de consommation en cours afin

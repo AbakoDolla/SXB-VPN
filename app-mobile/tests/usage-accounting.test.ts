@@ -247,6 +247,76 @@ describe('durable byte accounting', () => {
     assert.equal(h.ledger.pendingBytes(ledger), 18);
   });
 
+  it('recovers only a legacy null context session while preserving counters and frozen report identities', async () => {
+    const h = await services();
+    const queued = h.ledger.accumulate(h.ledger.emptyLedger(), { up: 17, down: 29 }, {
+      subscriptionId: 'normal', configId: 'normal', sessionId: 'already-sent',
+    });
+    const original = JSON.stringify({ ...queued,
+      context: { subscriptionId: 'trial', configId: 'trial', sessionId: null },
+    });
+    h.state.storage.set('@sxb_usage_ledger', original);
+    const recovered = await h.ledger.loadLedger();
+    assert.equal(recovered.counterUp, 17);
+    assert.equal(recovered.counterDown, 29);
+    assert.equal(recovered.nextSeq, queued.nextSeq);
+    assert.equal(recovered.context?.subscriptionId, 'trial');
+    assert.equal(recovered.context?.configId, 'trial');
+    assert.match(recovered.context!.sessionId, /^sess_/);
+    assert.equal(recovered.entries[0].frozen, true);
+    assert.deepEqual(h.ledger.nextReport(recovered)?.report, h.ledger.nextReport(queued)?.report);
+    assert.deepEqual(JSON.parse(h.state.storage.get('@sxb_usage_ledger_recovery')!), [original]);
+    const reloaded = await h.ledger.loadLedger();
+    assert.equal(reloaded.context?.sessionId, recovered.context?.sessionId);
+    assert.equal(h.ledger.pendingBytes(reloaded), 46);
+  });
+
+  for (const failedKey of ['@sxb_usage_ledger_recovery', '@sxb_usage_ledger']) {
+    it(`does not replace the legacy ledger when recovery cannot persist ${failedKey}`, async () => {
+      const h = await services();
+      const original = JSON.stringify({ ...h.ledger.emptyLedger(),
+        context: { subscriptionId: null, configId: 'manual', attribution: 'unlinked', sessionId: null },
+      });
+      h.state.storage.set('@sxb_usage_ledger', original);
+      h.state.beforeWrite = async key => {
+        if (key === failedKey) throw new Error('RECOVERY_WRITE_FAILED');
+      };
+      await assert.rejects(h.ledger.loadLedger(), /RECOVERY_WRITE_FAILED/);
+      assert.equal(h.state.storage.get('@sxb_usage_ledger'), original);
+      h.state.beforeWrite = undefined;
+      const recovered = await h.ledger.loadLedger();
+      assert.equal(recovered.context?.attribution, 'unlinked');
+      assert.equal(recovered.context?.subscriptionId, null);
+      assert.deepEqual(JSON.parse(h.state.storage.get('@sxb_usage_ledger_recovery')!), [original]);
+    });
+  }
+
+  it('does not repair a null context session if any pending receipt is invalid', async () => {
+    const h = await services();
+    const original = JSON.stringify({ ...h.ledger.emptyLedger(),
+      context: { subscriptionId: 'normal', sessionId: null },
+      entries: [{ subscriptionId: 'normal', sessionId: null, seq: 0, up: 17, down: 29 }],
+    });
+    h.state.storage.set('@sxb_usage_ledger', original);
+    await assert.rejects(h.ledger.loadLedger(), error =>
+      error instanceof h.ledger.UsageLedgerReadError && error.detail === 'entries');
+    assert.equal(h.state.storage.get('@sxb_usage_ledger'), original);
+    assert.equal(h.state.storage.has('@sxb_usage_ledger_recovery'), false);
+  });
+
+  it('rejects an invalid writer snapshot before replacing a valid persisted ledger', async () => {
+    const h = await services();
+    const ledger = h.ledger.accumulate(h.ledger.emptyLedger(), { up: 17, down: 29 }, {
+      subscriptionId: 'normal', sessionId: 'valid-session',
+    });
+    await h.ledger.saveLedger(ledger);
+    const original = h.state.storage.get('@sxb_usage_ledger');
+    Reflect.set(ledger.context!, 'sessionId', null);
+    await assert.rejects(h.ledger.saveLedger(ledger), error =>
+      error instanceof h.ledger.UsageLedgerReadError && error.detail === 'context');
+    assert.equal(h.state.storage.get('@sxb_usage_ledger'), original);
+  });
+
   it('does not hide measured over-quota bytes that the dashboard still counts', async () => {
     const h = await services();
     const quota = h.quota.deriveQuota({ totalQuota: 100, usedQuota: 113 });
@@ -352,6 +422,19 @@ describe('durable byte accounting', () => {
 });
 
 describe('provider traffic report lifecycle', () => {
+  it('does not persist a null session when a stop completes during the pre-connect counter read', async () => {
+    const h = await reporter();
+    h.env.SxbVpnNative.getTrafficStats = async () => {
+      h.env.sessionIdRef.current = null;
+      return h.state.stats;
+    };
+    await h.flushUsage({ beforeConnect: true });
+    const saved = await h.ledger.loadLedger();
+    assert.equal(saved.context?.sessionId, 'native-session-1');
+    assert.equal(saved.context?.subscriptionId, 'normal');
+    assert.equal(h.state.posts.length, 0);
+  });
+
   it('anchors a connection without waiting for a blocked HTTP report or losing its frozen receipt', async () => {
     const h = await reporter();
     const received = deferred();

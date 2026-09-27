@@ -54,7 +54,7 @@ import { deriveQuota, formatBytes, type DerivedQuota, type SessionCounters } fro
 import {
   accumulate as accumulateUsage, anchorLedger, isFreshLedger, loadLedger, nextReport, pendingBytes,
   pendingUsage, quotaProjection, recordQuota, saveLedger, settle as settleUsage, deferReport, nextAttemptDelay,
-  UsageLedgerReadError, type UsageContext, type UsageLedger, type UsageReport,
+  newUsageSessionId, UsageLedgerReadError, type UsageContext, type UsageLedger, type UsageReport,
 } from '@/services/usageLedger';
 import { useAuthContext } from './AuthContext';
 import type { VpnConnection } from '@/types/api';
@@ -1067,7 +1067,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         
         // Nouvelle session de rapport : les entrées déjà au livre gardent la
         // leur, seules les futures porteront cet identifiant.
-        sessionIdRef.current = 'sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
+        sessionIdRef.current = newUsageSessionId();
 
         // FIX — Capturer la baseline immédiatement pour que les compteurs UI 
         // et le premier rapport delta soient précis dès la première seconde.
@@ -1428,10 +1428,11 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       }
       const attribution = !subscriptionId && source === 'manual' ? 'unlinked' as const : undefined;
       const previous = options?.beforeConnect ? ledger.context : null;
-      if (!sessionIdRef.current) sessionIdRef.current = 'sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
+      if (!sessionIdRef.current) sessionIdRef.current = newUsageSessionId();
+      const sessionId = sessionIdRef.current;
       const context: UsageContext = previous ?? (running
-        ? { subscriptionId, configId: running.configId, attribution, sessionId: sessionIdRef.current }
-        : ledger.context ?? { subscriptionId: null, sessionId: sessionIdRef.current });
+        ? { subscriptionId, configId: running.configId, attribution, sessionId }
+        : ledger.context ?? { subscriptionId: null, sessionId });
       const seedQuota = async (owner: UsageContext) => {
         const pending = pendingUsage(ledger, owner);
         if (!owner.configId || pending.up + pending.down > 0) return;
@@ -1473,7 +1474,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       }
       ledger = { ...ledger, context };
       if (options?.beforeConnect && running) {
-        const next = { subscriptionId, configId: running.configId, attribution, sessionId: sessionIdRef.current };
+        const next = { subscriptionId, configId: running.configId, attribution, sessionId };
         await seedQuota(next);
         ledger = { ...ledger, context: next };
       }
@@ -1601,7 +1602,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       // En revanche un NOUVEAU tunnel attend son ancre durable.
       retryNeeded = true;
       console.warn('[SXB] USAGE_SYNC_DEFERRED', error instanceof UsageLedgerReadError
-        ? `${error.code}:${error.reason}` : 'VPN_USAGE_PREPARATION_FAILED');
+        ? `${error.code}:${error.reason}:${error.detail}` : 'VPN_USAGE_PREPARATION_FAILED');
       if (options?.beforeConnect) throw error;
     } finally {
       ledgerBusyRef.current = false;

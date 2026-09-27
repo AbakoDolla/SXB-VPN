@@ -43,11 +43,16 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const STORAGE_KEY = '@sxb_usage_ledger';
+const RECOVERY_KEY = '@sxb_usage_ledger_recovery';
+type LedgerIssue = 'read' | 'json' | 'shape' | 'counters' | 'context' | 'entries' | 'quota' | 'recovery';
 
 export class UsageLedgerReadError extends Error {
   readonly code = 'VPN_USAGE_LEDGER_UNAVAILABLE';
 
-  constructor(readonly reason: 'read' | 'corrupt') {
+  constructor(
+    readonly reason: 'read' | 'corrupt',
+    readonly detail: LedgerIssue = reason === 'read' ? 'read' : 'shape',
+  ) {
     super('VPN_USAGE_LEDGER_UNAVAILABLE');
     this.name = 'UsageLedgerReadError';
   }
@@ -118,6 +123,10 @@ export interface UsageReport {
 
 export function emptyLedger(): UsageLedger {
   return { counterUp: 0, counterDown: 0, nextSeq: 0, entries: [] };
+}
+
+export function newUsageSessionId(): string {
+  return 'sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
 }
 
 function safeCount(value: unknown): number {
@@ -331,29 +340,29 @@ function sanitize(value: unknown): UsageLedger {
   const isOptionalId = (id: unknown): boolean => id == null || typeof id === 'string';
   const validAttribution = (scope: Partial<UsageContext>): boolean =>
     scope.attribution === undefined || (scope.attribution === 'unlinked' && !scope.subscriptionId);
-  const corrupt = (): never => { throw new UsageLedgerReadError('corrupt'); };
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return corrupt();
+  const corrupt = (detail: LedgerIssue): never => { throw new UsageLedgerReadError('corrupt', detail); };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return corrupt('shape');
   const raw = value as Partial<UsageLedger>;
   if (!isCount(raw.counterUp) || !isCount(raw.counterDown) || !isCount(raw.nextSeq) ||
-      !Array.isArray(raw.entries)) return corrupt();
-  if (raw.initialized !== undefined && typeof raw.initialized !== 'boolean') return corrupt();
+      !Array.isArray(raw.entries)) return corrupt('counters');
+  if (raw.initialized !== undefined && typeof raw.initialized !== 'boolean') return corrupt('shape');
   if (raw.context !== undefined && (!raw.context || typeof raw.context !== 'object' ||
       typeof raw.context.sessionId !== 'string' || !raw.context.sessionId ||
       !isOptionalId(raw.context.subscriptionId) || !isOptionalId(raw.context.configId) ||
-      !validAttribution(raw.context))) return corrupt();
+      !validAttribution(raw.context))) return corrupt('context');
   const entries = raw.entries;
   const clean: UsageEntry[] = [];
   for (const entry of entries) {
-    if (!entry || typeof entry !== 'object') return corrupt();
+    if (!entry || typeof entry !== 'object') return corrupt('entries');
     const candidate = entry as Partial<UsageEntry>;
     if (typeof candidate.sessionId !== 'string' || !candidate.sessionId ||
         !isCount(candidate.seq) || !isCount(candidate.up) || !isCount(candidate.down) ||
         !isOptionalId(candidate.subscriptionId) || !isOptionalId(candidate.configId) ||
-        !validAttribution(candidate)) return corrupt();
+        !validAttribution(candidate)) return corrupt('entries');
     const up = candidate.up;
     const down = candidate.down;
-    if (up + down <= 0) return corrupt();
-    if (candidate.retryAfter !== undefined && !isCount(candidate.retryAfter)) return corrupt();
+    if (up + down <= 0) return corrupt('entries');
+    if (candidate.retryAfter !== undefined && !isCount(candidate.retryAfter)) return corrupt('entries');
     clean.push({
       subscriptionId: typeof candidate.subscriptionId === 'string' ? candidate.subscriptionId : null,
       configId: typeof candidate.configId === 'string' ? candidate.configId : undefined,
@@ -370,10 +379,10 @@ function sanitize(value: unknown): UsageLedger {
   }
   const highestSeq = clean.reduce((max, entry) => Math.max(max, entry.seq + 1), 0);
   const quotas: Record<string, UsageQuotaSnapshot> = {};
-  if (raw.quotas !== undefined && (!raw.quotas || typeof raw.quotas !== 'object' || Array.isArray(raw.quotas))) return corrupt();
+  if (raw.quotas !== undefined && (!raw.quotas || typeof raw.quotas !== 'object' || Array.isArray(raw.quotas))) return corrupt('quota');
   if (raw.quotas && typeof raw.quotas === 'object') {
     for (const [id, quota] of Object.entries(raw.quotas)) {
-      if (!quota || typeof quota !== 'object' || !isCount(quota.usedBytes) || !isCount(quota.totalBytes)) return corrupt();
+      if (!quota || typeof quota !== 'object' || !isCount(quota.usedBytes) || !isCount(quota.totalBytes)) return corrupt('quota');
       quotas[id] = { usedBytes: quota.usedBytes, totalBytes: quota.totalBytes };
     }
   }
@@ -396,6 +405,22 @@ function sanitize(value: unknown): UsageLedger {
   };
 }
 
+async function archiveRecovery(raw: string): Promise<void> {
+  const stored = await AsyncStorage.getItem(RECOVERY_KEY);
+  let archived: unknown;
+  try {
+    archived = stored === null ? [] : JSON.parse(stored);
+  } catch {
+    throw new UsageLedgerReadError('corrupt', 'recovery');
+  }
+  if (!Array.isArray(archived) || !archived.every(item => typeof item === 'string')) {
+    throw new UsageLedgerReadError('corrupt', 'recovery');
+  }
+  if (!archived.includes(raw)) {
+    await AsyncStorage.setItem(RECOVERY_KEY, JSON.stringify([...archived, raw]));
+  }
+}
+
 /** Seule l'absence réelle du livre autorise un nouvel ancrage. */
 export async function loadLedger(): Promise<UsageLedger> {
   let raw: string | null;
@@ -405,17 +430,34 @@ export async function loadLedger(): Promise<UsageLedger> {
     throw new UsageLedgerReadError('read');
   }
   if (raw === null) return emptyLedger();
+  let parsed: unknown;
   try {
-    return sanitize(JSON.parse(raw));
+    parsed = JSON.parse(raw);
   } catch {
-    throw new UsageLedgerReadError('corrupt');
+    throw new UsageLedgerReadError('corrupt', 'json');
   }
+  const legacy = parsed && typeof parsed === 'object' ? parsed as Partial<UsageLedger> : null;
+  if (legacy?.context && legacy.context.sessionId === null) {
+    // An old stop could clear this mutable reference during a counter read.
+    // Only the context for FUTURE entries is repaired: existing receipts keep
+    // every byte, owner, session and sequence. Validate everything else first.
+    const recovered = sanitize({
+      ...legacy,
+      context: { ...legacy.context, sessionId: newUsageSessionId() },
+    });
+    await archiveRecovery(raw);
+    await saveLedger(recovered);
+    console.warn('[SXB] USAGE_LEDGER_CONTEXT_RECOVERED');
+    return recovered;
+  }
+  return sanitize(parsed);
 }
 
 /** Écrit le livre. Appelé AVANT chaque envoi réseau : rien ne part sans trace sur disque. */
 export async function saveLedger(ledger: UsageLedger): Promise<void> {
   // Le reporter diffère l'envoi si cette écriture échoue. Masquer l'erreur
   // autoriserait un envoi sans clé de rejeu durable, donc une double facture.
+  sanitize(ledger);
   await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(ledger));
 }
 
