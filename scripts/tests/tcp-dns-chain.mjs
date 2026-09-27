@@ -58,10 +58,10 @@ function dnsAnswer(query) {
   const answer = Buffer.from([0xc0, 0x0c, 0, type, 0, 1, 0, 0, 0, 60, 0, address.length]);
   return Buffer.concat([header, query.subarray(12, questionEnd), answer, address]);
 }
-async function receiveDns(port, name, id, type = 1) {
+async function receiveDns(port, name, id, type = 1, timeoutMs = 4000) {
   const socket = dgram.createSocket('udp4');
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => { socket.close(); reject(new Error('Loopback DNS query timed out')); }, 4000);
+    const timeout = setTimeout(() => { socket.close(); reject(new Error('Loopback DNS query timed out')); }, timeoutMs);
     socket.once('error', error => { clearTimeout(timeout); socket.close(); reject(error); });
     socket.once('message', data => {
       clearTimeout(timeout);
@@ -135,6 +135,8 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
     'The dns outbound is removed in sing-box 1.13');
   assert.ok(runtime.route.rules.some(rule => rule.action === 'hijack-dns' && rule.protocol === 'dns'),
     'DNS interception must survive as a rule action');
+  assert.ok(!runtime.route.rules.some(rule => rule.outbound === 'direct' && rule.ip_cidr),
+    'Do not invent carrier IP bypasses: other applications must use the tunnel even to the carrier IP');
   assert.ok(runtime.route.rules.some(rule =>
     rule.action === 'reject' &&
     (rule.network === 'udp' || (Array.isArray(rule.network) && rule.network.includes('udp'))) &&
@@ -342,6 +344,20 @@ test('the real VLESS/WebSocket/HTTP chain resolves DNS over TCP and carries repe
     const deadline = Date.now() + 45000;
     while (Date.now() < deadline && acceptedVia.size === 0) await wait(100);
     assert.ok(acceptedVia.size >= 1, 'A declared alternate upstream must answer the engine health probe');
+    // CONNECT acceptance precedes TLS and the urltest selection update. Starting
+    // the assertions there raced the still-selected, deliberately broken branch.
+    const selectionDeadline = Date.now() + 12000;
+    let selected = false;
+    while (Date.now() < selectionDeadline && !selected) {
+      try {
+        const response = await receiveDns(ingressPort, 'ready.example.test', 0, 1, 1000);
+        selected = response.readUInt16BE(6) === 1;
+      } catch (error) {
+        if (error.message !== 'Loopback DNS query timed out') throw error;
+      }
+      if (!selected) await wait(50);
+    }
+    assert.ok(selected, 'The engine must actually select a working alternate before testing repeated streams');
   }
   for (let index = 1; index <= 5; index++) {
     const response = await receiveDns(ingressPort, `query${index}.example.test`, index);

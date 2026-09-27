@@ -1210,7 +1210,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
             SshTransportStrategy("tls_raw", true, normalized, sni),
             SshTransportStrategy("tls_ws", true, websocketPayload(normalized, host, port), sni),
             SshTransportStrategy("ws", false, websocketPayload(normalized, host, port), sni),
-        ).distinctBy { "${it.mode}|${it.tls}|${it.payload}" }
+        // Un échec TLS ne donne jamais l'autorisation d'envoyer le profil en clair.
+        ).filter { !tlsEnabled || it.tls }
+            .distinctBy { "${it.mode}|${it.tls}|${it.payload}" }
     }
 
     private fun attemptResult(error: Throwable): String {
@@ -1235,6 +1237,14 @@ class SxbVpnService : VpnService(), PlatformInterface {
             .lowercase(Locale.ROOT)
         return message.contains("auth fail") || message.contains("auth cancel") ||
             message.contains("authentication") || message.contains("userauth")
+    }
+
+    private fun isTlsIdentityFailure(error: Throwable): Boolean {
+        return generateSequence(error) { it.cause }.any {
+            it is java.security.cert.CertificateException ||
+                it is java.security.cert.CertPathValidatorException ||
+                it is javax.net.ssl.SSLPeerUnverifiedException
+        }
     }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -2111,7 +2121,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     } catch (attemptError: Throwable) {
                         if (attemptError is InterruptedException || !running.get()) throw attemptError
                         if (sshAccountExpired.get()) throw java.io.IOException("SSH_ACCOUNT_EXPIRED", attemptError)
-                        if (isAuthFailure(attemptError)) throw attemptError
+                        if (isAuthFailure(attemptError) || isTlsIdentityFailure(attemptError)) throw attemptError
                         if (strategy == allStrategies.first()) primaryFailure = attemptError
                         val result = attemptResult(attemptError)
                         results[strategy.mode] = result
@@ -3440,10 +3450,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
             broadcastLog("[CONFIG] adaptation moteur $it")
         }
 
-        // Route — D3: carrier exclusion FIRST (if host resolves)
-        val exclusion = carrierExclusionRule(host)
+        // Les sockets porteurs sont protégés individuellement par protect(fd).
+        // Une exclusion par IP ferait aussi sortir le trafic des autres apps en direct.
         val routeRules = JSONArray()
-        exclusion?.let { routeRules.put(it) }
         routeRules
             .put(JSONObject().put("protocol", "dns").put("outbound", "dns-out"))
             .put(JSONObject().put("ip_is_private", true).put("outbound", "direct"))
@@ -4506,9 +4515,6 @@ class SxbVpnService : VpnService(), PlatformInterface {
         }
         SxbTunnelPolicy.noteChainFailover(chainFailover)
 
-        // Chaque branche sort par un amont différent : toutes leurs adresses
-        // physiques doivent être exclues du TUN, pas seulement la première.
-        val chainServers = graph.chainEndServers(finalTag)
         val mtu = SxbTunnelPolicy.tunMtu(cfg, graph, JSONObject().put("final", finalTag).put("rules", storedRules))
 
         // DNS : celui du JSON stocké sinon celui de l'app
@@ -4547,9 +4553,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         }
         val dnsObj = applyDnsLoopGuard(reliableDns, outboundServerHosts)
 
-        val exclusion = carrierExclusionRule(chainServers)
         val routeRules = JSONArray()
-        exclusion?.let { routeRules.put(it) }
         routeRules
             .put(JSONObject().put("protocol", "dns").put("outbound", "dns-out"))
             .put(JSONObject().put("ip_is_private", true).put("outbound", "direct"))
@@ -4885,37 +4889,6 @@ class SxbVpnService : VpnService(), PlatformInterface {
     }
 
     /**
-     * Anti-boucle porteur : exclusion explicite des IPs du serveur de transport
-     * (SSH, VLESS, etc.) dans les règles de route TUN. Insérée EN PREMIÈRE.
-     * Résout une fois (IPv4) et retourne la règle ip_cidr ou null.
-     */
-    private fun carrierExclusionRule(host: String): JSONObject? = carrierExclusionRule(listOf(host))
-
-    /**
-     * Toutes les sorties physiques d'une chaîne, y compris chaque branche d'un
-     * groupe : n'exclure que la première laissait les alternatives composer par
-     * le tunnel qu'elles alimentent, donc reboucler dès la bascule.
-     */
-    private fun carrierExclusionRule(servers: Collection<String>): JSONObject? {
-        // La règle d'exclusion de l'opérateur s'applique désormais toujours :
-        // elle était retirée sous Play, où le contournement d'un TUN par IP
-        // publique était proscrit. Seul le canal direct subsiste, et il en a
-        // besoin pour joindre le serveur sans reboucler dans son propre tunnel.
-        val ips = LinkedHashSet<String>()
-        for (host in servers) {
-            if (host.isBlank()) continue
-            runCatching {
-                InetAddress.getAllByName(host)
-                    .filterIsInstance<java.net.Inet4Address>()
-                    .mapNotNull { it.hostAddress }
-                    .map { "$it/32" }
-            }.getOrDefault(emptyList()).forEach { ips.add(it) }
-        }
-        if (ips.isEmpty()) return null
-        return JSONObject().put("ip_cidr", JSONArray(ips.toList())).put("outbound", "direct")
-    }
-
-    /**
      * Config TUN → SOCKS5 : fait entrer tout le trafic du système dans le
      * tunnel SSH, en le relayant vers le serveur SOCKS5 local alimenté par JSch.
      *
@@ -4923,11 +4896,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
      * c'est openTun() qui fournit le TUN au moteur.
      */
     private fun buildSshSocksRelayConfig(host: String = "", relaisUdp: Boolean = false): String {
-        val exclusion = if (host.isNotBlank()) carrierExclusionRule(host) else null
-
-        // Build rules manually: exclusion FIRST (if any), then protocol-dns, ip_is_private
         val routeRules = JSONArray()
-        exclusion?.let { routeRules.put(it) }
         routeRules
             .put(JSONObject().put("protocol", "dns").put("outbound", "dns-out"))
             .put(JSONObject().put("ip_is_private", true).put("outbound", "direct"))

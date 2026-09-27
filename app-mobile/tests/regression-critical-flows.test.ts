@@ -796,12 +796,14 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(nativeService, /defaultDnsObject\(finalTag\)/);
     assert.match(nativeService, /SxbTunnelPolicy\.defaultProxyTag\(outbounds, null\)/);
     assert.match(tunnelPolicy, /val targets = items\.flatMap \{ references\(it\) \}\.toSet\(\)/);
-    // L'exclusion anti-boucle doit viser le serveur du BOUT de la chaîne :
-    // c'est lui que le socket physique contacte réellement. Sur un groupe de
-    // bascule, chaque branche a sa propre sortie : toutes doivent être exclues.
-    assert.match(nativeService, /val chainServers = graph\.chainEndServers\(finalTag\)/);
-    assert.match(nativeService, /val exclusion = carrierExclusionRule\(chainServers\)/);
-    assert.match(nativeService, /private fun carrierExclusionRule\(servers: Collection<String>\)/);
+    // L'anti-boucle protège le socket porteur, pas toute l'IP de destination :
+    // les autres apps qui contactent cette IP doivent rester dans le tunnel.
+    assert.doesNotMatch(nativeService, /carrierExclusionRule/);
+    const builder = nativeService.match(/private fun buildSingBoxConfig\([\s\S]*?\n    }/)?.[0];
+    assert.ok(builder);
+    assert.doesNotMatch(builder, /InetAddress\.getAllByName|InetAddress\.getByName/);
+    assert.match(nativeService, /override fun usePlatformAutoDetectInterfaceControl\(\): Boolean = true/);
+    assert.match(nativeService, /override fun autoDetectInterfaceControl\(fd: Int\) \{\s*val ok = protect\(fd\)/);
     assert.match(tunnelPolicy, /fun chainEndServers\(start: String\): Set<String>/);
     assert.match(tunnelPolicy, /TUNNEL_ROUTE_CYCLE/);
     assert.doesNotMatch(nativeService, /guard\+\+ < 8/);
@@ -1308,6 +1310,8 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(raw < tlsRaw || raw < 0, 'raw doit rester le premier mode quand TLS est désactivé');
     assert.ok(tlsRaw < tlsWs && tlsWs < ws, 'ordre de la ladder incorrect');
     assert.ok(nativeService.includes('candidate.connect(minOf(timeoutMs, 12_000))'));
+    assert.match(nativeService, /\.filter \{ !tlsEnabled \|\| it\.tls \}/);
+    assert.match(nativeService, /if \(isAuthFailure\(attemptError\) \|\| isTlsIdentityFailure\(attemptError\)\) throw attemptError/);
   });
 
   it('T-E1b chaque mode garde son budget ENTIER — le raccourcir perd un serveur lent', () => {
