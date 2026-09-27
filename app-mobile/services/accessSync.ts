@@ -68,6 +68,19 @@ const AUTO_IMPORT_RETRY_MS = [5_000, 15_000, 30_000, 60_000, 120_000, 300_000];
 let autoImportTimer: ReturnType<typeof setTimeout> | null = null;
 let autoImportAttempt = 0;
 
+/**
+ * Empreinte distante pour laquelle une mise à jour immédiate est déjà partie,
+ * par forfait.
+ *
+ * Un forfait déjà sur l'appareil dont le tableau de bord change la
+ * configuration est remis à jour dès que l'instantané d'accès l'annonce. Une
+ * même empreinte ne déclenche qu'UNE mise à jour immédiate : si le serveur
+ * rendait au provisionnement une empreinte différente de celle qu'il annonce,
+ * chaque instantané relancerait sinon un aller-retour, sans fin. Les échecs
+ * réseau, eux, sont repris à intervalles croissants par la reprise ordinaire.
+ */
+let majLancees = new Map<string, string>();
+
 function scheduleAutoImport(immediate = false): void {
   if (!runtime) return;
   if (autoImportTimer) {
@@ -222,7 +235,21 @@ export function reconcileAccess(): Promise<void> {
         const note = importNotes.get(item.id);
         return !note || (note.kind === 'cap' && placeLiberable);
       });
-      if (manquant) scheduleAutoImport(true);
+      // ── MISE À JOUR DÈS LA RÉATTRIBUTION ───────────────────────────────
+      // Le tableau de bord a changé la configuration d'un forfait DÉJÀ sur
+      // l'appareil : l'instantané annonce une empreinte que le coffre n'a pas.
+      // Seul un forfait ABSENT déclenchait un import : l'ancienne
+      // configuration restait donc en service, et la nouvelle n'arrivait
+      // qu'après un appui sur « Actualiser ». Le tunnel en cours n'est pas
+      // touché : la nouvelle version sert à la prochaine connexion.
+      const perimes = authority.snapshot.subscriptions.filter(item => {
+        if (item.status !== 'active' || !item.configHash || dismissed.has(item.id)) return false;
+        const detenu = entries.find(entry => managedProfile(entry) && (entry.subscriptionId || entry.configId) === item.id);
+        if (!detenu || detenu.configHash === item.configHash || majLancees.get(item.id) === item.configHash) return false;
+        return !profileRestriction(authority, { configId: item.id, subscriptionId: item.id, source: 'backend', configHash: item.configHash });
+      });
+      for (const item of perimes) majLancees.set(item.id, item.configHash!);
+      if (manquant || perimes.length > 0) scheduleAutoImport(true);
     }
     await currentRuntime?.changed();
   });
@@ -355,6 +382,7 @@ export function refreshMobileConfigs(): Promise<VpnConnection[]> {
         .map(meta => meta.configId),
     );
     const notes = new Map<string, ImportNote>();
+    let miseAJourEnEchec = false;
     for (const entry of connections) {
       if (epoch !== lifecycle || !currentIdentityRequest(identity)) return [];
       const current = getAccessState().authority;
@@ -402,8 +430,10 @@ export function refreshMobileConfigs(): Promise<VpnConnection[]> {
           if (error instanceof ProvisioningError) console.warn('[Access] Provisioning deferred:', error.diagnostic.code);
           else reportAccessSyncError(error);
           // Une mise à jour ratée laisse la version précédente en service :
-          // seul un forfait ABSENT de l'appareil attend un import.
+          // seul un forfait ABSENT de l'appareil attend un import. Elle est
+          // néanmoins reprise plus tard si l'échec est passager.
           if (!stored) notes.set(entry.id, importFailure(error));
+          else if (importFailure(error).retryable) miseAJourEnEchec = true;
         }
         // Le provisionnement construit sa fiche à partir de la réponse
         // `/provision/activate`, qui ne connaît pas les essais : le marqueur est
@@ -419,7 +449,7 @@ export function refreshMobileConfigs(): Promise<VpnConnection[]> {
     importNotes = notes;
     // Tant qu'un forfait attribué manque à cause d'un échec, une reprise est
     // programmée : l'utilisateur n'a jamais à relancer l'import lui-même.
-    if ([...notes.values()].some(note => note.kind === 'failed')) scheduleAutoImport();
+    if (miseAJourEnEchec || [...notes.values()].some(note => note.kind === 'failed')) scheduleAutoImport();
     else autoImportAttempt = 0;
     await reconcileAccess();
     return connections;
@@ -537,7 +567,7 @@ export function startAccessObservation(): () => void {
     stopped = true;
     if (epoch === lifecycle) {
       lifecycle++; connections = []; controlSupported = null; nativeHandoffUntil = 0; wakeObservation = null;
-      stopAutoImport(); importNotes = new Map();
+      stopAutoImport(); importNotes = new Map(); majLancees = new Map();
     }
     controller.abort();
     controlRequest?.controller.abort();

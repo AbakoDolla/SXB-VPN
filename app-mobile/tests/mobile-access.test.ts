@@ -875,6 +875,51 @@ describe('mobile access runtime with real encrypted store, auth and HTTP interce
     assert.ok(h.state.events.includes('ui:changed'));
   });
 
+  it('remplace de lui-même une configuration dont le tableau de bord a changé le profil, sans couper le tunnel', async () => {
+    const h = await harness();
+    const { cleanup } = await setup(h);
+    // Le propriétaire réattribue un autre profil au forfait « b », déjà sur
+    // l'appareil : seule l'empreinte annoncée change.
+    const s = withSubscriptions('reassigned-b', [['a', 'active'], ['b', 'active']]);
+    s.subscriptions[1].configHash = 'hash-b2';
+    const remote = remoteConnections(s);
+    remote.connections[1].dataToken = 'SXB-DATA-BBBB-BBBB-BBBB';
+    const importes: string[] = [];
+    let empreinteRendue = 'hash-b2';
+    serve(h, s, remote, id => { importes.push(id); return { ...provisionResponse(h, id), configHash: empreinteRendue }; });
+    await apply(h, s);
+    const attendre = async (fait: () => Promise<boolean>) => {
+      const limite = Date.now() + 3000;
+      while (!(await fait()) && Date.now() < limite) await new Promise(resolve => setTimeout(resolve, 10));
+    };
+    await attendre(async () => (await h.store.get('b')).value?.meta.configHash === 'hash-b2');
+    assert.equal((await h.store.get('b')).value?.meta.configHash, 'hash-b2');
+    equal(importes, ['b']);
+    // Aucune coupure : le tunnel de « a » continue, « a » reste sélectionné.
+    assert.equal(h.state.stopCount, 0);
+    assert.equal((await h.store.getActive()).value?.meta.configId, 'a');
+    assert.ok(h.state.events.includes('ui:changed'));
+
+    // Un nouvel instantané identique ne relance rien : la version est à jour.
+    await apply(h, { ...s, revision: 'reassigned-b-again' });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    equal(importes, ['b']);
+
+    // Serveur incohérent : l'empreinte rendue au provisionnement diffère de
+    // celle annoncée. Une seule mise à jour par empreinte annoncée — jamais
+    // une boucle d'allers-retours.
+    s.subscriptions[1].configHash = 'hash-b3';
+    remote.connections[1].configHash = 'hash-b3';
+    empreinteRendue = 'hash-b4';
+    await apply(h, { ...s, revision: 'reassigned-b3' });
+    await attendre(async () => (await h.store.get('b')).value?.meta.configHash === 'hash-b4');
+    for (const revision of ['reassigned-b3-1', 'reassigned-b3-2', 'reassigned-b3-3']) await apply(h, { ...s, revision });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    cleanup();
+    equal(importes, ['b', 'b']);
+    assert.equal(h.state.stopCount, 0);
+  });
+
   it('drains a legacy native service before first binding and keeps reconnect denial inside dispatch', () => {
     const nativeModule = readFileSync(path.join(mobile, 'modules/android-native/SxbVpnModule.kt'), 'utf8');
     const bind = nativeModule.slice(nativeModule.indexOf('fun bindAccessSession('), nativeModule.indexOf('fun getAccessControlState('));
