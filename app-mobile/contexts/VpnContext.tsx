@@ -54,7 +54,7 @@ import { deriveQuota, formatBytes, type DerivedQuota, type SessionCounters } fro
 import {
   accumulate as accumulateUsage, anchorLedger, isFreshLedger, loadLedger, nextReport, pendingBytes,
   pendingUsage, quotaProjection, recordQuota, saveLedger, settle as settleUsage, deferReport, nextAttemptDelay,
-  newUsageSessionId, UsageLedgerReadError, type UsageContext, type UsageLedger, type UsageReport,
+  newUsageSessionId, usageSubscriptionId, UsageLedgerReadError, type UsageContext, type UsageLedger, type UsageReport,
 } from '@/services/usageLedger';
 import { useAuthContext } from './AuthContext';
 import type { VpnConnection } from '@/types/api';
@@ -1423,8 +1423,11 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       if (!profiles) throw new Error('VPN_USAGE_PROFILES_UNAVAILABLE');
       const runningMeta = profiles.find(entry => entry.configId === running?.configId);
       const source = running?.source ?? runningMeta?.source;
-      const subscriptionId = running?.subscriptionId || runningMeta?.subscriptionId ||
-        (source === 'backend' ? running?.configId ?? runningMeta?.configId ?? null : null);
+      const subscriptionId = usageSubscriptionId({
+        subscriptionId: running?.subscriptionId || runningMeta?.subscriptionId,
+        configId: running?.configId ?? runningMeta?.configId,
+        source,
+      });
       if (running && runningProfileRef.current === running && subscriptionId) {
         runningProfileRef.current = { ...running, subscriptionId };
       }
@@ -2164,12 +2167,13 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         await usageDeadline(flushUsageRef.current({ beforeConnect: true }), DELAI_PREPARATION_MS);
         const { sessionSecurity } = await import('../services/deviceSecurity');
         const security = await sessionSecurity();
+        const subscriptionId = usageSubscriptionId(currentProfile.meta);
         const usageSessionId = newUsageSessionId();
         const connectionId = usageSessionId.slice('sess_'.length);
         if (security) {
           await apiClient.post('/mobile/vpn/session', {
             action: 'connect', connectionId, sessionId: usageSessionId,
-            subscriptionId: currentProfile.meta.subscriptionId ?? null,
+            subscriptionId,
             configId: selectedId,
           });
         }
@@ -2189,9 +2193,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         const optionsJson = JSON.stringify(sanitizeEngineConfig({
           ...configPresentee,
           configId: selectedId,
-          subscriptionId: currentProfile.meta.subscriptionId,
+          subscriptionId: subscriptionId ?? undefined,
           configHash: currentProfile.meta.configHash,
-          managedConfig: currentProfile.meta.source === 'backend' || !!currentProfile.meta.subscriptionId,
+          managedConfig: currentProfile.meta.source === 'backend' || !!subscriptionId,
           accessSession: getAccessState().authority?.session,
           securitySessionId: security?.sessionId,
           securityGeneration: security?.generation,
