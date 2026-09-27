@@ -16,6 +16,7 @@
  * indisponible. Toutes les écritures sont donc silencieusement absorbées.
  */
 import { prisma } from '../database';
+import type { Prisma, PrismaClient } from '@prisma/client';
 import { sendSecurityAlertPush } from './fcm';
 
 /** Gravités, de la plus faible à la plus forte. */
@@ -49,6 +50,10 @@ export const SECURITY_EVENT_TYPES = [
   'DEVICE_AUTO_BLOCKED',
   'DEVICE_DECOY_TOUCHED',
   'DEVICE_ATTESTATION_FAILED',
+  'VPN_STARTED', 'VPN_STOPPED', 'VPN_REVOKED', 'VPN_CONFLICT',
+  'ROOT_DETECTED', 'DEBUG_DETECTED', 'HOOKING_RISK', 'INSTRUMENTATION_RISK',
+  'APP_INTEGRITY_FAILED', 'TOKEN_REPLAY', 'DEVICE_MISMATCH', 'SESSION_REPLAY',
+  'CAPTURE_RISK_DETECTED', 'CONTROL_RISK_DETECTED', 'SECURITY_POLICY_BLOCK',
 ] as const;
 export type SecurityEventType = (typeof SECURITY_EVENT_TYPES)[number];
 
@@ -57,6 +62,12 @@ export interface SecurityEventInput {
   severity?: SecuritySeverity;
   userId?: string | null;
   deviceId?: string | null;
+  sessionId?: string | null;
+  sessionGeneration?: number | null;
+  connectionId?: string | null;
+  eventKey?: string | null;
+  policyVersion?: number | null;
+  riskLevel?: string | null;
   ipHash?: string | null;
   appVersion?: string | null;
   actionTaken?: string | null;
@@ -81,7 +92,7 @@ const METADATA_KEYS = new Set([
   // sortent que par la console propriétaire, qui est déjà cloisonnée.
   'ip', 'clientName', 'deviceModel', 'appVersion',
   'signals', 'riskScore', 'action', 'attestation',
-  'riskLevel', 'evidence', 'policyVersion',
+  'riskLevel', 'evidence', 'policyVersion', 'observedAt',
 ]);
 
 function nettoyerMetadata(metadata: Record<string, unknown> | null | undefined): string | null {
@@ -98,30 +109,37 @@ function nettoyerMetadata(metadata: Record<string, unknown> | null | undefined):
   return JSON.stringify(propre).slice(0, 2000);
 }
 
-/**
- * Enregistre un événement. Ne rejette JAMAIS.
- *
- * Renvoie `true` quand la ligne est écrite, afin que les tests puissent le
- * vérifier sans que l'appelant ait à s'en soucier.
- */
-export async function recordSecurityEvent(entree: SecurityEventInput): Promise<boolean> {
-  if (!prisma) return false;
-  try {
+/** Strict writer for durable client acknowledgments inside the caller's transaction. */
+export async function persistSecurityEvent(tx: Prisma.TransactionClient | PrismaClient, entree: SecurityEventInput) {
     const severity: SecuritySeverity = SECURITY_SEVERITIES.includes(entree.severity as any)
       ? entree.severity as SecuritySeverity
       : 'info';
-    const event = await (prisma as any).securityEvent.create({
-      data: {
+    const data = {
         eventType: entree.eventType,
         severity,
         userId: entree.userId ?? null,
         deviceId: entree.deviceId ?? null,
+        sessionId: entree.sessionId ?? null,
+        sessionGeneration: entree.sessionGeneration ?? null,
+        connectionId: entree.connectionId ?? null,
+        eventKey: entree.eventKey ?? null,
+        policyVersion: entree.policyVersion ?? null,
+        riskLevel: entree.riskLevel ?? null,
         ipHash: entree.ipHash ?? null,
         appVersion: entree.appVersion ?? null,
         actionTaken: entree.actionTaken ?? null,
         metadata: nettoyerMetadata(entree.metadata),
-      },
-    });
+      };
+    return entree.eventKey
+      ? tx.securityEvent.upsert({ where: { eventKey: entree.eventKey }, create: data, update: {} })
+      : tx.securityEvent.create({ data });
+}
+
+export async function recordSecurityEvent(entree: SecurityEventInput): Promise<boolean> {
+  if (!prisma) return false;
+  try {
+    const event = await persistSecurityEvent(prisma, entree);
+    const severity = event.severity as SecuritySeverity;
     if (severity === 'critical' || severity === 'warning') {
       void sendSecurityAlertPush({
         eventId: event.id,
@@ -133,6 +151,7 @@ export async function recordSecurityEvent(entree: SecurityEventInput): Promise<b
     }
     return true;
   } catch (error: any) {
+    if (error?.code === 'P2002' && entree.eventKey) return true;
     // Observer ne doit pas casser ce qui est observé.
     console.warn(`[security] événement non enregistré: ${error?.message || error}`);
     return false;
@@ -145,6 +164,11 @@ export interface SecurityEventQuery {
   acknowledged?: boolean;
   limit?: number;
   offset?: number;
+  userId?: string;
+  deviceId?: string;
+  sessionId?: string;
+  from?: string;
+  to?: string;
 }
 
 export function normaliserPagination(query: SecurityEventQuery) {
@@ -162,6 +186,13 @@ export function construireFiltre(query: SecurityEventQuery): Record<string, unkn
   if (SECURITY_SEVERITIES.includes(query.severity as any)) where.severity = query.severity;
   if (SECURITY_EVENT_TYPES.includes(query.eventType as any)) where.eventType = query.eventType;
   if (query.acknowledged === true || query.acknowledged === false) where.acknowledged = query.acknowledged;
+  for (const key of ['userId', 'deviceId', 'sessionId'] as const) {
+    if (query[key]) where[key] = query[key];
+  }
+  if (query.from || query.to) where.createdAt = {
+    ...(query.from ? { gte: new Date(query.from) } : {}),
+    ...(query.to ? { lte: new Date(query.to) } : {}),
+  };
   return where;
 }
 

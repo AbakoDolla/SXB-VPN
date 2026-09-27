@@ -6,6 +6,9 @@ import { requireAuth, type AuthenticatedRequest } from "../middleware/auth";
 import { issueAccessTicket, verifyAccessTicket } from "../services/access-ticket";
 import { deviceIdFromRequest, invalidMobileSession } from "../services/mobile-principal";
 import { deviceAccessFailure, MobileAccessError } from "../services/access-lifecycle";
+import { checkSession } from "../services/mobile-session-security";
+import { consumeProof, verifyMobileProof, proofFor } from "../services/mobile-proof";
+import { prisma } from "../database";
 import {
   readMobileAccessSnapshot, waitForMobileAccess, AccessWaitLimitError, AccessWaitTimeoutError,
   type AccessCredential,
@@ -43,6 +46,7 @@ function credential(req: Request): AccessCredential {
   return {
     userId: access.userId, clientId: access.clientId, deviceId, exp: access.exp,
     boundInToken: access.deviceId === deviceId, kind: "access",
+    sid: access.sid, sg: access.sg, kid: access.kid,
   };
 }
 
@@ -64,6 +68,12 @@ router.get("/access-state", async (req: Request, res: Response) => {
   res.once("close", close);
   try {
     const identity = credential(req);
+    const bound = await checkSession(identity);
+    if (bound) {
+      const proof = proofFor(req) ?? verifyMobileProof(req, bound.client.devicePublicKey!, req.headers.authorization!.slice(7), identity);
+      if (!prisma) throw new Error("SECURITY_DATABASE_REQUIRED");
+      await prisma.$transaction(tx => consumeProof(tx, proof));
+    }
     const query = querySchema.parse(req.query);
     const snapshot = query.revision && query.wait > 0
       ? await waitForMobileAccess(identity, query.revision, query.wait, abort.signal)
@@ -86,6 +96,7 @@ router.post("/access-ticket", requireAuth, async (req: AuthenticatedRequest, res
     if (snapshot.device.activationRequired) invalidMobileSession();
     return res.json(issueAccessTicket({
       userId: identity.userId, clientId: identity.clientId, deviceId: identity.deviceId,
+      sid: identity.sid, sg: identity.sg, kid: identity.kid,
     }, config.JWT_SECRET));
   } catch (error) {
     return failure(res, error);

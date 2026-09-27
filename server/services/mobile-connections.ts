@@ -1,0 +1,48 @@
+import type { Request } from 'express';
+import { z } from 'zod';
+import { prisma } from '../database';
+import { consumeSessionProof, type BoundClaims } from './mobile-session-security';
+import { proofFor, securityFailure } from './mobile-proof';
+import { subscriptionAccessStatus } from './access-lifecycle';
+
+const connectionSchema = z.object({
+  action: z.enum(['connect', 'disconnect']),
+  connectionId: z.string().uuid(),
+  sessionId: z.string().regex(/^sess_[0-9a-f-]{36}$/i),
+  subscriptionId: z.string().max(200).nullable(),
+  configId: z.string().max(200).nullable(),
+}).strict();
+
+export async function updateMobileConnection(req: Request, claims: BoundClaims) {
+  if (!prisma || !claims.sid || !claims.clientId || !claims.deviceId) securityFailure('SESSION_REQUIRED');
+  const input = connectionSchema.parse(req.body);
+  return prisma.$transaction(async tx => {
+    await consumeSessionProof(tx, claims, proofFor(req));
+    const previous = await tx.mobileConnection.findUnique({ where: { id: input.connectionId } });
+    if (previous) {
+      if (previous.clientId !== claims.clientId || previous.deviceId !== claims.deviceId ||
+          previous.authSessionId !== claims.sid || previous.authGeneration !== claims.sg ||
+          previous.usageSessionId !== input.sessionId || previous.subscriptionId !== input.subscriptionId ||
+          previous.configId !== input.configId) securityFailure('USAGE_ATTRIBUTION_CONFLICT', 409);
+      if (input.action === 'disconnect') {
+        await tx.mobileConnection.update({ where: { id: previous.id }, data: { closedAt: new Date(), closeReason: 'USER_STOP' } });
+      }
+      return previous;
+    }
+    if (input.action !== 'connect') securityFailure('CONNECTION_NOT_FOUND', 404);
+    if (input.subscriptionId) {
+      const subscription = await tx.subscription.findFirst({
+        where: { id: input.subscriptionId, clientId: claims.clientId }, include: { profile: { select: { status: true } } },
+      });
+      if (!subscription || subscriptionAccessStatus(subscription) !== 'active' ||
+          (subscription.deviceId && subscription.deviceId !== claims.deviceId)) securityFailure('OWNERSHIP_FORBIDDEN', 403);
+    }
+    // Explicit null denotes a manual profile. Once issued, it cannot be
+    // substituted for an existing managed connection's accounting identity.
+    return tx.mobileConnection.create({ data: {
+      id: input.connectionId, clientId: claims.clientId!, deviceId: claims.deviceId!,
+      authSessionId: claims.sid!, authGeneration: claims.sg!, usageSessionId: input.sessionId,
+      subscriptionId: input.subscriptionId, configId: input.configId,
+    } });
+  });
+}
