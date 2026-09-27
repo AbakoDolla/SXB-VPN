@@ -16,6 +16,7 @@ import {
   fetchSecurityEvents,
   fetchSecurityGate,
   fetchSecurityOverview,
+  fetchSecurityPolicy, updateSecurityPolicy, revokeSecuritySession, authorizeDeviceKey, type SecurityPolicy,
   resetSecurityPasskeys,
   setSecurityGatePassword,
   unlockSecurityGate,
@@ -144,11 +145,20 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
   const [overview, setOverview] = useState<SecurityOverviewResponse | null>(null);
   const [eventsPage, setEventsPage] = useState<SecurityEventsResponse | null>(null);
   const [audit, setAudit] = useState<SecurityAuditEntry[]>([]);
-  const [filters, setFilters] = useState<{ severity: string; eventType: string; acknowledged: AcknowledgedFilter }>({ severity: "", eventType: "", acknowledged: "" });
+  const [filters, setFilters] = useState({
+    severity: "", eventType: "", acknowledged: "" as AcknowledgedFilter,
+    userId: "", deviceId: "", sessionId: "", from: "", to: "",
+  });
+  const [policy, setPolicy] = useState<SecurityPolicy | null>(null);
+  const [certificateInput, setCertificateInput] = useState("");
+  const [keyGrant, setKeyGrant] = useState({ clientId: "", keyId: "", replaceExisting: false });
+  const [securityNotice, setSecurityNotice] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [passkeyLabel, setPasskeyLabel] = useState("");
   const [secondsLeft, setSecondsLeft] = useState(0);
   const notifiedSecurityEvents = useRef(new Set<string>());
+  const policyDirty = useRef(false);
+  const unlockAuthority = useRef<string | null>(null);
 
   const isOwner = currentUserRole === "OWNER";
   const isUnlocked = !!unlockToken && remainingSeconds(expiresAt) > 0;
@@ -166,6 +176,8 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
   }, []);
 
   const relock = useCallback(() => {
+    unlockAuthority.current = null;
+    policyDirty.current = false;
     setUnlockToken(null);
     setExpiresAt(null);
     setPendingChallenge(null);
@@ -174,18 +186,32 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
     setAudit([]);
     setSelected([]);
     setPassword("");
+    setPolicy(null);
+    setCertificateInput("");
+    setKeyGrant({ clientId: "", keyId: "", replaceExisting: false });
+    setSecurityNotice("");
   }, []);
 
   const loadConsole = useCallback(async (token: string) => {
     setActionError(null);
-    const [nextOverview, nextEvents, nextAudit] = await Promise.all([
+    const [nextOverview, nextEvents, nextAudit, nextPolicy] = await Promise.all([
       fetchSecurityOverview(token),
-      fetchSecurityEvents(token, { ...filters, limit: DEFAULT_LIMIT, offset: eventsPage?.offset ?? 0 }),
+      fetchSecurityEvents(token, {
+        ...filters, from: filters.from ? new Date(filters.from).toISOString() : undefined,
+        to: filters.to ? new Date(filters.to).toISOString() : undefined,
+        limit: DEFAULT_LIMIT, offset: eventsPage?.offset ?? 0,
+      }),
       fetchSecurityAudit(token, 50),
+      fetchSecurityPolicy(token),
     ]);
+    if (unlockAuthority.current !== token) return;
     setOverview(nextOverview);
     setEventsPage(nextEvents);
     setAudit(nextAudit.entries);
+    if (!policyDirty.current) {
+      setPolicy(nextPolicy);
+      setCertificateInput(nextPolicy.certificates.join("\n"));
+    }
     setSelected([]);
   }, [eventsPage?.offset, filters]);
 
@@ -229,6 +255,7 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
   };
 
   const finishUnlock = useCallback(async (result: { unlockToken: string; expiresAt: string }) => {
+    unlockAuthority.current = result.unlockToken;
     setUnlockToken(result.unlockToken);
     setExpiresAt(result.expiresAt);
     setPendingChallenge(null);
@@ -582,6 +609,94 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
             ))}
           </section>
 
+          {policy && <section className="rounded-xl border border-[#263149] bg-[#0a0d14] p-4">
+            <h2 className="text-lg font-semibold text-white">{t("operations.security.policyTitle", { version: policy.version })}</h2>
+            <p className="mt-1 text-sm text-slate-300">{t("operations.security.policySafety")}</p>
+            <form className="mt-4 grid grid-cols-2 items-end gap-4 lg:grid-cols-[7rem_7rem_minmax(0,1fr)_auto]" onSubmit={async event => {
+              event.preventDefault();
+              if (!unlockToken || busy) return;
+              setBusy("policy"); setSecurityNotice(""); setActionError(null);
+              try {
+                const saved = await updateSecurityPolicy(unlockToken, {
+                  ...policy, certificates: certificateInput.split(/\s+/).filter(Boolean), version: policy.version + 1,
+                });
+                if (unlockAuthority.current !== unlockToken) return;
+                policyDirty.current = false;
+                setPolicy(saved);
+                setCertificateInput(saved.certificates.join("\n"));
+                setSecurityNotice(t("operations.security.policySaved"));
+              } catch (cause) { setActionError({ cause, fallback: "operations.security.policyFailed" }); }
+              finally { setBusy(null); }
+            }}>
+              {(["medium", "high"] as const).map(level => <label key={level} className="grid gap-1 text-sm text-slate-200">
+                {t(`operations.security.threshold_${level}`)}
+                <input type="number" required disabled={busy !== null} min={level === "medium" ? 11 : 65} max={level === "medium" ? 64 : 89}
+                  value={policy[level]} onChange={event => { policyDirty.current = true; setPolicy({ ...policy, [level]: Number(event.target.value) }); }}
+                  className="w-full rounded-xl border border-[#263149] bg-[#07090e] p-2 text-white" />
+              </label>)}
+              <label className="col-span-2 grid min-w-0 gap-1 text-sm text-slate-200 lg:col-span-1">
+                {t("operations.security.certificates")}
+                <textarea required disabled={busy !== null} rows={2} value={certificateInput}
+                  onChange={event => { policyDirty.current = true; setCertificateInput(event.target.value); }}
+                  className="min-w-0 rounded-xl border border-[#263149] bg-[#07090e] p-2 text-xs text-white" />
+              </label>
+              <div className="col-span-2 flex flex-wrap gap-2 lg:col-span-1">
+              <button disabled={busy !== null} className="rounded-xl border border-[#263149] px-3 py-2 text-sm text-white disabled:opacity-50">
+                {t("operations.security.savePolicy")}
+              </button>
+              <button type="button" disabled={busy !== null}
+                className="rounded-xl border border-[#263149] px-3 py-2 text-sm text-slate-200 disabled:opacity-50"
+                onClick={async () => {
+                  if (!unlockToken || busy || (policyDirty.current && !window.confirm(t("operations.security.reloadPolicyConfirm")))) return;
+                  setBusy("policy-load"); setActionError(null);
+                  try {
+                    const fresh = await fetchSecurityPolicy(unlockToken);
+                    if (unlockAuthority.current !== unlockToken) return;
+                    policyDirty.current = false;
+                    setPolicy(fresh); setCertificateInput(fresh.certificates.join("\n"));
+                  } catch (cause) { setActionError({ cause, fallback: "operations.security.policyFailed" }); }
+                  finally { setBusy(null); }
+                }}>
+                {t("operations.security.reloadPolicy")}
+              </button>
+              </div>
+            </form>
+            <form className="mt-5 space-y-3 border-t border-[#263149] pt-4" onSubmit={async event => {
+              event.preventDefault();
+              if (!unlockToken || busy) return;
+              if (keyGrant.replaceExisting && !window.confirm(t("operations.security.keyReplaceConfirm"))) return;
+              setBusy("keyGrant"); setSecurityNotice(""); setActionError(null);
+              try {
+                await authorizeDeviceKey(unlockToken, keyGrant.clientId.trim(), keyGrant.keyId.trim().toLowerCase(), keyGrant.replaceExisting);
+                setSecurityNotice(t("operations.security.keyGrantSaved"));
+              } catch (cause) { setActionError({ cause, fallback: "operations.security.keyGrantFailed" }); }
+              finally { setBusy(null); }
+            }}>
+              <h3 className="text-sm font-semibold text-white">{t("operations.security.keyGrantTitle")}</h3>
+              <p className="text-xs text-slate-300">{t("operations.security.keyGrantHint")}</p>
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="grid gap-1 text-sm text-slate-200">{t("operations.security.keyGrantClient")}
+                  <input required maxLength={200} value={keyGrant.clientId}
+                    onChange={event => setKeyGrant({ ...keyGrant, clientId: event.target.value })}
+                    className="min-w-0 rounded-xl border border-[#263149] bg-[#07090e] p-2" />
+                </label>
+                <label className="grid gap-1 text-sm text-slate-200">{t("operations.security.keyFingerprint")}
+                  <input required pattern="[a-fA-F0-9]{64}" value={keyGrant.keyId}
+                    onChange={event => setKeyGrant({ ...keyGrant, keyId: event.target.value })}
+                    className="min-w-0 rounded-xl border border-[#263149] bg-[#07090e] p-2 font-mono text-xs" />
+                </label>
+              </div>
+              <label className="flex items-center gap-2 text-sm text-slate-200">
+                <input type="checkbox" checked={keyGrant.replaceExisting}
+                  onChange={event => setKeyGrant({ ...keyGrant, replaceExisting: event.target.checked })} />
+                {t("operations.security.keyReplace")}
+              </label>
+              <button disabled={busy !== null} className="rounded-xl border border-[#263149] px-3 py-2 text-sm text-white disabled:opacity-50">
+                {t("operations.security.keyGrantAction")}
+              </button>
+            </form>
+            {securityNotice && <p role="status" className="mt-2 text-sm text-slate-200">{securityNotice}</p>}
+          </section>}
           <section className="grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.65fr)]">
             <div className="overflow-hidden rounded-[1.5rem] border border-[#263149] bg-[#0a0d14]">
               <div className="border-b border-[#1a1f2e] p-4">
@@ -591,6 +706,12 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
                     <p className="mt-1 text-xs text-slate-500">{t("operations.security.eventsHint")}</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
+                    {(["userId", "deviceId", "sessionId", "from", "to"] as const).map(field => <label key={field} className="grid gap-1 text-xs text-slate-300">
+                      {t(`operations.security.filter_${field}`)}
+                      <input type={field === "from" || field === "to" ? "datetime-local" : "text"} value={filters[field]}
+                        maxLength={255} onChange={event => { setFilters(prev => ({ ...prev, [field]: event.target.value })); setEventsPage(null); }}
+                        className="min-w-0 rounded-xl border border-[#263149] bg-[#07090e] px-3 py-2 text-xs text-slate-200" />
+                    </label>)}
                     <select aria-label={t("operations.security.filterSeverity")} value={filters.severity} onChange={event => setFilters(prev => ({ ...prev, severity: event.target.value }))} className="rounded-xl border border-[#263149] bg-[#07090e] px-3 py-2 text-xs text-slate-200">
                       <option value="">{t("operations.security.filterSeverity")}</option>
                       {(overview?.severities ?? []).map(severity => <option key={severity} value={severity}>{vocabulary.severity(severity)}</option>)}
@@ -637,9 +758,26 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
                           <span>{t("operations.security.eventUser", { value: event.userId || "—" })}</span>
                           <span>{t("operations.security.eventDevice", { value: event.deviceId || "—" })}</span>
                           <span>{t("operations.security.eventVersion", { value: event.appVersion || "—" })}</span>
+                          {event.sessionId && <span className="break-all">{t("operations.security.eventSession", { value: event.sessionId, generation: event.sessionGeneration ?? 0 })}</span>}
+                          {event.riskLevel && <span>{t("operations.security.eventRisk", { value: event.riskLevel, version: event.policyVersion ?? 0 })}</span>}
                           <span>{t("operations.security.eventIp", { value: event.ipHash || "—" })}</span>
                         </div>
                         {event.actionTaken && <p className="mt-2 text-xs text-slate-300">{vocabulary.action(event.actionTaken)}</p>}
+                        {event.sessionId && event.sessionGeneration != null && <button type="button"
+                          disabled={busy === event.id}
+                          onClick={async () => {
+                            if (!unlockToken || !window.confirm(t("operations.security.revokeSessionConfirm"))) return;
+                            setBusy(event.id);
+                            try {
+                              const result = await revokeSecuritySession(unlockToken, event.sessionId!, event.sessionGeneration!);
+                              setSecurityNotice(t(result.revoked ? "operations.security.sessionRevoked" : "operations.security.staleSession"));
+                              await loadConsole(unlockToken);
+                            } catch (cause) { setActionError({ cause, fallback: "operations.security.revokeFailed" }); }
+                            finally { setBusy(null); }
+                          }}
+                          className="mt-2 rounded-xl border border-amber-400/40 px-3 py-2 text-xs text-amber-200 disabled:opacity-50">
+                          {t("operations.security.revokeSession")}
+                        </button>}
                         {parseMetadata(event.metadata).length > 0 && (
                           <dl className="mt-3 grid gap-2 rounded-xl border border-[#263149] bg-[#07090e]/60 p-3 text-[11px] sm:grid-cols-2">
                             {parseMetadata(event.metadata).map(([key, value]) => {

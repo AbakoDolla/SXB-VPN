@@ -79,9 +79,19 @@ export interface SecurityEvent {
   acknowledged: boolean;
   acknowledgedAt: string | null;
   createdAt: string;
+  sessionId: string | null;
+  sessionGeneration: number | null;
+  connectionId: string | null;
+  policyVersion: number | null;
+  riskLevel: string | null;
 }
 
 export interface SecurityEventsQuery {
+  userId?: string;
+  deviceId?: string;
+  sessionId?: string;
+  from?: string;
+  to?: string;
   severity?: string;
   eventType?: string;
   acknowledged?: "true" | "false" | "";
@@ -178,3 +188,24 @@ export const acknowledgeSecurityEvents = (unlockToken: string, ids: string[]): P
 
 export const fetchSecurityAudit = (unlockToken: string, limit = 50): Promise<SecurityAuditResponse> =>
   apiRequest<SecurityAuditResponse>(`/security/audit?limit=${encodeURIComponent(String(limit))}`, { headers: unlockHeaders(unlockToken) });
+
+export interface SecurityPolicy {
+  version: number;
+  medium: number;
+  high: number;
+  weights: Record<string, number>;
+  certificates: string[];
+  packageName: 'com.sxbvpn.mobile';
+}
+export const fetchSecurityPolicy = (token: string) =>
+  apiRequest<SecurityPolicy>('/security/policy', { headers: unlockHeaders(token) });
+export const updateSecurityPolicy = (token: string, policy: SecurityPolicy) =>
+  apiRequest<SecurityPolicy>('/security/policy', { method: 'PUT', body: policy, headers: unlockHeaders(token) });
+export const authorizeDeviceKey = (token: string, clientId: string, keyId: string, replaceExisting: boolean) =>
+  apiRequest<{ authorized: boolean; expiresInSeconds: number }>(`/security/devices/${encodeURIComponent(clientId)}/authorize-key`, {
+    method: 'POST', body: { keyId, replaceExisting }, headers: unlockHeaders(token),
+  });
+export const revokeSecuritySession = (token: string, id: string, generation: number) =>
+  apiRequest<{ revoked: boolean }>(`/security/sessions/${encodeURIComponent(id)}/revoke`, {
+    method: 'POST', body: { generation }, headers: unlockHeaders(token),
+  });
