@@ -84,6 +84,29 @@ rétablit aussi ce chemin pour les configurations héritées déjà présentes s
 les téléphones. Sans UDPGW, l'UDP/443 (QUIC) est refusé immédiatement pour que
 les navigateurs basculent aussitôt en TCP.
 
+### Capture réseau et confidentialité
+
+Voir des connexions dans PCAPdroid ou Wireshark ne prouve pas que TLS/SSH a été
+déchiffré : adresses IP, volumes, horaires et parfois DNS/SNI restent observables.
+L'application ne peut garantir l'invisibilité du trafic sur un appareil rooté
+ou contrôlé par un tiers, et ne bloque pas arbitrairement les outils de diagnostic.
+
+- Un profil **SSH exigeant TLS** ne retente jamais une stratégie en clair,
+  même si un ancien mode non-TLS est mémorisé. Un certificat rejeté arrête
+  la tentative ; il ne déclenche pas un contournement de la vérification.
+- Les sockets porteurs sont protégés individuellement par Android. Aucune
+  route directe vers toute l'IP du serveur n'est ajoutée automatiquement :
+  le trafic des autres applications vers cette IP reste soumis au routage
+  du tunnel. Les routes explicitement définies par le profil sont conservées.
+- La préparation VLESS ne résout plus les serveurs une première fois avec
+  un appel DNS Android synchrone non borné : libbox utilise le résolveur
+  d'amorçage, sans cette attente redondante avant son démarrage.
+- VLESS sans TLS/Reality, les en-têtes d'un proxy HTTP en clair et un profil
+  autorisant des certificats non vérifiés restent exposés selon leur transport.
+  Utiliser un serveur compatible avec TLS vérifié/Reality et, pour SSH,
+  une empreinte de clé hôte fournie par l'exploitant. Le client ne peut pas
+  ajouter un chiffrement que le serveur ne prend pas en charge.
+
 Points notables du moteur :
 
 - **Liens de partage de fournisseur** — un VLESS/VMess/Trojan sur WebSocket
@@ -121,9 +144,9 @@ La base de domaines SagerNet/v2fly `20260908094002` est embarquée pour les règ
 `geosite`, avec empreinte vérifiée et notice de licence dans
 `app-mobile/assets/engine/`. Le démarrage ne dépend pas d'un téléchargement
 de cette base. Les gates Android exécutent le vrai générateur Kotlin et le
-constructeur libbox `1.11.15` sur un graphe fictif équivalent, sans connexion VPN.
-Une configuration fournisseur avec `allowInsecure: true` reste explicitement
-non admissible au canal Play ; l'import ne contourne pas cette protection.
+constructeur libbox `1.12.9` sur un graphe fictif équivalent, sans connexion VPN.
+Une configuration fournisseur avec `allowInsecure: true` désactive la vérification
+du certificat : elle n'offre pas la même protection contre une interception active.
 
 Pour les chaînes VLESS/WebSocket passant par un proxy HTTP, le moteur utilise
 un MTU mobile conservateur plutôt que le MTU jumbo, sauf valeur explicite

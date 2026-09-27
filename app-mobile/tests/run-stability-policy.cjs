@@ -37,6 +37,39 @@ try {
   assert.ok(motifs.includes('MOTIFS_IDENTIFIANTS'), 'Production credential patterns missing: MOTIFS_IDENTIFIANTS');
   const maskHarness = path.join(temp, 'SecurityMaskHarness.kt');
   writeFileSync(maskHarness, `package com.sxbvpn.vpnmodule\nobject SecurityMaskHarness {\n${motifs}${masks.join('\n')}\n}\n`);
+  const service = readFileSync(path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbVpnService.kt'), 'utf8');
+  const sshMethods = ['extractPayloadHost', 'normalizePayload', 'websocketPayload', 'sshTransportStrategies', 'isTlsIdentityFailure'].map(name => {
+    const match = service.match(new RegExp(`^    private fun ${name}\\([\\s\\S]*?^    }`, 'm'));
+    assert.ok(match, `Production SSH method missing: ${name}`);
+    return match[0];
+  });
+  const sshTokens = service.slice(service.indexOf('private val sshSplitDirective'), service.indexOf('private fun sendSshPayload'));
+  const sshStrategy = service.match(/^    private data class SshTransportStrategy\([\s\S]*?^    \)/m)?.[0];
+  const stringHelper = service.match(/^private fun JSONObject\.optStringOrNull\([\s\S]*?^}/m)?.[0];
+  assert.ok(sshTokens.includes('expandSshPayloadTokens') && sshStrategy && stringHelper);
+  const sshHarness = path.join(temp, 'SshTransportHarness.kt');
+  writeFileSync(sshHarness, `package com.sxbvpn.vpnmodule
+import org.json.JSONObject
+import java.security.SecureRandom
+import java.util.Locale
+${sshTokens}
+${stringHelper}
+object SshTransportHarness {
+${sshStrategy}
+${sshMethods.join('\n')}
+    fun strategies(payload: String, tls: Boolean): List<Pair<String, Boolean>> =
+        sshTransportStrategies(JSONObject(), payload, "ssh.example.test", 443, tls, "ssh.example.test")
+            .map { it.mode to it.tls }
+    fun rejectsIdentityFailure(error: Throwable): Boolean = isTlsIdentityFailure(error)
+}
+`);
+  const base64Harness = path.join(temp, 'AndroidBase64Harness.kt');
+  writeFileSync(base64Harness, `package android.util
+object Base64 {
+    const val NO_WRAP = 2
+    fun encodeToString(bytes: ByteArray, flags: Int): String = java.util.Base64.getEncoder().encodeToString(bytes)
+}
+`);
   run(process.env.KOTLINC || 'kotlinc', [
     path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbTunnelPolicy.kt'),
     path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbEngineDiagnostics.kt'),
@@ -52,6 +85,8 @@ try {
     path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbEngineSchema.kt'),
     path.resolve(__dirname, 'StabilityPolicyTest.kt'),
     maskHarness,
+    sshHarness,
+    base64Harness,
     '-classpath', jsonJar, '-include-runtime', '-d', jar,
   ]);
   run(process.env.JAVA || 'java', ['-cp', `${jar}${path.delimiter}${jsonJar}`, 'com.sxbvpn.vpnmodule.StabilityPolicyTestKt']);

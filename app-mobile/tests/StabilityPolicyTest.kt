@@ -228,6 +228,34 @@ private class ReconnectSim(var connected: Boolean = true) {
 }
 
 fun main() {
+    checkCase("TLS-required SSH never selects a plaintext fallback, including old cached modes") {
+        for (prefix in listOf("", "[split]", "[instant_split]", "[delay_split]")) {
+            val payload = "${prefix}CONNECT [host_port] HTTP/1.1[crlf]Host: [host][crlf][crlf]"
+            val secured = SshTransportHarness.strategies(payload, true)
+            check(secured.isNotEmpty() && secured.all { it.second })
+            check(secured.map { it.first } == listOf("tls_raw", "tls_ws"))
+            check(secured.none { it.first == "ws" || it.first == "raw" })
+            val explicitPlaintext = SshTransportHarness.strategies(payload, false)
+            check(explicitPlaintext.first() == ("raw" to false))
+            check(explicitPlaintext.map { it.first } == listOf("raw", "tls_raw", "tls_ws", "ws"))
+        }
+        val get = "GET / HTTP/1.1[crlf]Host: [host][crlf][crlf]"
+        check(SshTransportHarness.strategies(get, true) == listOf("tls_raw" to true))
+        check(SshTransportHarness.strategies(get, false) == listOf("raw" to false))
+    }
+    checkCase("SSH certificate failures are terminal even when wrapped by JSch") {
+        for (cause in listOf(
+            java.security.cert.CertificateException("synthetic invalid chain"),
+            java.security.cert.CertPathValidatorException("synthetic untrusted issuer"),
+            javax.net.ssl.SSLPeerUnverifiedException("synthetic hostname mismatch"),
+        )) {
+            val handshake = javax.net.ssl.SSLHandshakeException("certificate rejected").apply { initCause(cause) }
+            check(SshTransportHarness.rejectsIdentityFailure(Exception("wrapped transport", handshake)))
+        }
+        check(!SshTransportHarness.rejectsIdentityFailure(java.net.SocketTimeoutException("timeout")))
+        check(!SshTransportHarness.rejectsIdentityFailure(java.io.IOException("HTTP 404")))
+    }
+
     // ══ Montée du moteur : sing-box 1.11 → 1.14 ═══════════════════════════════
     //
     // Entre ces deux versions, sing-box n'a pas seulement déprécié des options :
