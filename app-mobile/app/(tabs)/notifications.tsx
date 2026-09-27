@@ -7,6 +7,7 @@ import { Ionicons } from "@expo/vector-icons";
 import apiClient from "@/services/apiClient";
 import type { Notification } from "@/types/api";
 import { useColors } from "@/hooks/useColors";
+import { tintedSurface } from "@/constants/colors";
 import { useResponsive } from "@/hooks/useResponsive";
 import { useTranslation } from "@/localization";
 import { downloadAndInstallAppUpdate } from "@/services/appUpdate";
@@ -99,16 +100,12 @@ function NotifRow({ item, onMarkRead }: { item: Notification; onMarkRead: (id: s
       style={({ pressed }) => [
         styles.notifCard,
         {
-          backgroundColor: item.isRead ? colors.bgCard : color + alpha.f08,
+          backgroundColor: item.isRead ? colors.bgCard : tintedSurface(colors, color, 0.07),
           borderColor: item.isRead ? colors.border : color + alpha.f40,
         },
         pressed && styles.pressed,
       ]}
     >
-      {/* Barre latérale colorée : signale une notification non lue de façon
-          bien plus lisible qu'une pastille de 7 px dans un coin. */}
-      {!item.isRead && <View style={[styles.unreadBar, { backgroundColor: color }]} />}
-
       <View style={[styles.notifIcon, { backgroundColor: color + alpha.f16 }]}>
         <Ionicons name={(TYPE_ICONS[item.type] || TYPE_ICONS.info) as any} size={19} color={color} />
       </View>
@@ -125,7 +122,12 @@ function NotifRow({ item, onMarkRead }: { item: Notification; onMarkRead: (id: s
         <Text style={[type.caption, { color: colors.textMuted }]} numberOfLines={3}>
           {item.message}
         </Text>
-        <Text style={[type.micro, { color: colors.textMuted }]}>{timeAgo}</Text>
+        <View style={styles.timeRow}>
+          {/* Non lue : fond teinté, titre en gras et ce point, plutôt qu'une
+              barre latérale colorée qui alourdissait la liste. */}
+          {!item.isRead && <View style={[styles.unreadDot, { backgroundColor: color }]} />}
+          <Text style={[type.micro, { color: colors.textMuted }]}>{timeAgo}</Text>
+        </View>
 
         {item.appUpdate && item.downloadUrl && (
           <>
@@ -247,7 +249,7 @@ export default function NotificationsScreen() {
             accessibilityRole="button"
             style={({ pressed }) => [
               styles.markAllBtn,
-              { borderColor: colors.accents.ambre + alpha.f40, backgroundColor: colors.accents.ambre + alpha.f08 },
+              { borderColor: colors.accents.ambre + alpha.f40, backgroundColor: tintedSurface(colors, colors.accents.ambre, 0.08) },
               pressed && styles.pressed,
             ]}
           >
@@ -265,7 +267,7 @@ export default function NotificationsScreen() {
             marginHorizontal: responsive.screenPadding,
             maxWidth: responsive.contentMaxWidth ? responsive.contentMaxWidth - responsive.screenPadding * 2 : undefined,
             alignSelf: "center",
-            backgroundColor: connectionTone + alpha.f08,
+            backgroundColor: tintedSurface(colors, connectionTone, 0.07),
             borderColor: connectionTone + alpha.f40,
           },
         ]}
@@ -389,7 +391,8 @@ const styles = StyleSheet.create({
     padding: layout.cardPadding,
     overflow: "hidden",
   },
-  unreadBar: { position: "absolute", left: 0, top: 0, bottom: 0, width: 3 },
+  timeRow: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
+  unreadDot: { width: 7, height: 7, borderRadius: 4 },
   notifIcon: {
     width: 42,
     height: 42,

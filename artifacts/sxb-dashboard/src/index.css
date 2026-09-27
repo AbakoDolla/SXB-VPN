@@ -63,6 +63,71 @@ button { -webkit-tap-highlight-color: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(126,166,214,.22); border-radius: 999px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(78,217,255,.45); }
 
+/* ── Téléphone : chaque ligne de tableau devient une fiche ───────────────────
+   `lib/responsiveTables.ts` marque les tableaux (data-sxb-stack) et recopie
+   l'intitulé de chaque colonne sur ses cellules (data-label). Au-delà de
+   768 px, les tableaux restent exactement ceux du bureau. */
+@media (max-width: 767px) {
+  [data-sxb-stack="frame"] { border-color: transparent !important; background: transparent !important; box-shadow: none !important; backdrop-filter: none !important; overflow: visible !important; border-radius: 0 !important; }
+  [data-sxb-stack="table"] { display: block; width: 100% !important; min-width: 0 !important; border-collapse: separate !important; border-spacing: 0 !important; }
+  [data-sxb-stack="table"] thead { position: absolute !important; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+  [data-sxb-stack="table"] tbody, [data-sxb-stack="table"] tr { display: block; width: 100%; }
+  [data-sxb-stack="table"] tbody { border: 0 !important; }
+  [data-sxb-stack="table"] tbody tr {
+    margin: 0 0 .75rem; padding: .25rem .875rem;
+    border: 1px solid var(--sxb-border) !important; border-radius: 16px;
+    background: linear-gradient(145deg, rgba(18, 29, 47, 0.92), rgba(12, 19, 33, 0.94));
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.22);
+  }
+  [data-sxb-stack="table"] tbody tr:last-child { margin-bottom: 0; }
+  /* Grille à deux colonnes : l'intitulé à gauche, le CONTENU empilé à droite.
+     Une cellule qui contient deux éléments (nom et e-mail, jeton et nom du
+     forfait) les garde l'un sous l'autre, comme au bureau, au lieu de les
+     écraser côte à côte. */
+  [data-sxb-stack="table"] td {
+    display: grid; width: 100%; grid-template-columns: minmax(0, 38%) minmax(0, 1fr); grid-auto-flow: row;
+    column-gap: .75rem; row-gap: 0; align-items: start;
+    min-height: 2.75rem; padding: .5rem 0 !important; text-align: right !important;
+    border: 0 !important; white-space: normal !important; overflow-wrap: anywhere;
+  }
+  [data-sxb-stack="table"] td > * { grid-column: 2; justify-self: end; max-width: 100%; }
+  [data-sxb-stack="table"] td > * + * { margin-top: .25rem; }
+  [data-sxb-stack="table"] td + td { border-top: 1px solid rgba(126, 166, 214, 0.1) !important; }
+  [data-sxb-stack="table"] td::before {
+    content: attr(data-label); grid-column: 1; grid-row: 1 / span 12; align-self: start; padding-top: .2rem; text-align: left;
+    font-size: 11px; line-height: 1.35; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+    color: var(--sxb-muted); overflow-wrap: normal; word-break: normal; font-family: var(--font-sans);
+  }
+  /* Cellule sans intitulé (sélection, actions, ligne de regroupement) :
+     son contenu occupe toute la largeur. */
+  [data-sxb-stack="table"] td[data-label=""]::before, [data-sxb-stack="table"] td:not([data-label])::before { content: none; }
+  [data-sxb-stack="table"] td[data-label=""], [data-sxb-stack="table"] td:not([data-label]), [data-sxb-stack="table"] td[colspan] {
+    display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; text-align: left !important;
+  }
+  /* Un e-mail ou un identifiant tronqué (`truncate`) ne doit pas élargir la fiche. */
+  [data-sxb-stack="table"] td :where(div, p, span, a) { min-width: 0; }
+  /* Blocs composés (quota : valeurs + barre) : une largeur utile plutôt que la
+     largeur minimale de leur contenu, qui écrasait la barre à zéro. */
+  [data-sxb-stack="table"] td > div { min-width: min(100%, 11rem); }
+  [data-sxb-stack="table"] td .justify-end, [data-sxb-stack="table"] td .justify-center { justify-content: flex-end; }
+  [data-sxb-stack="table"] td .mx-auto { margin-right: 0; }
+  [data-sxb-stack="table"] td .justify-between { gap: .5rem; }
+}
+
+/* Écran tactile : des cibles qu'un doigt peut toucher sans viser. Dans la
+   couche ase, pour qu'une taille voulue par un composant (utilitaire
+   Tailwind) garde toujours le dernier mot. */
+@layer base {
+  /* Barre d'onglets défilante : sans cela, les onglets se compriment sous
+     leur texte et les libellés se chevauchent au lieu de défiler. */
+  :where(.overflow-x-auto) > :where(button, a) { flex-shrink: 0; }
+  @media (pointer: coarse) {
+    main input[type="checkbox"], main input[type="radio"] { width: 1.25rem; height: 1.25rem; }
+    main button, main select { min-height: 2.5rem; }
+    main button { min-width: 2.5rem; }
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; }
 }

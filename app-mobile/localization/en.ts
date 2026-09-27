@@ -199,7 +199,7 @@ export const en = {
   config_singular: 'profile',
   config_plural: 'profiles',
   config_delete_title: 'Delete profile',
-  config_delete_confirm: 'Remove "{name}" from this device? The VPN profile will be deleted locally.',
+  config_delete_confirm: 'Delete "{name}"? This plan will also be removed from your account and from the dashboard; it will have to be assigned to you again to get it back.',
   config_manage: 'Manage profiles',
   config_search: 'Search connections',
   config_clear_search: 'Clear search',

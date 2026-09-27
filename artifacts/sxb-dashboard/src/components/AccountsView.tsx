@@ -340,7 +340,8 @@ export default function AccountsView({
             }`}
           >
             <Icon className="h-4 w-4 shrink-0" />
-            <span className="truncate">{label}</span>
+            {/* Sur téléphone, le libellé passe à la ligne plutôt que d'être coupé. */}
+            <span className="min-w-0 text-center leading-tight sm:truncate">{label}</span>
           </button>
         ))}
       </div>

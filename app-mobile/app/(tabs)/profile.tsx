@@ -8,6 +8,7 @@ import Constants from "expo-constants";
 import { useAuthContext } from "@/contexts/AuthContext";
 import { useVpnContext } from "@/contexts/VpnContext";
 import { useColors } from "@/hooks/useColors";
+import { tintedSurface } from "@/constants/colors";
 import { useResponsive } from "@/hooks/useResponsive";
 import { useTranslation } from "@/localization";
 import { alpha, layout, radius, spacing, type } from "@/constants/theme";
@@ -161,7 +162,7 @@ export default function ProfileScreen() {
           accessibilityLabel={t("activate_plan")}
           style={({ pressed }) => [
             styles.planButton,
-            { backgroundColor: colors.purpleDim, borderColor: colors.purple + alpha.f40 },
+            { backgroundColor: tintedSurface(colors, colors.purple, 0.09), borderColor: colors.purple + alpha.f40 },
             pressed && styles.pressed,
           ]}
         >
@@ -176,7 +177,7 @@ export default function ProfileScreen() {
           accessibilityLabel={t("logout")}
           style={({ pressed }) => [
             styles.logoutButton,
-            { backgroundColor: colors.disconnectedDim, borderColor: colors.disconnected + alpha.f40 },
+            { backgroundColor: tintedSurface(colors, colors.disconnected, 0.07), borderColor: colors.disconnected + alpha.f40 },
             pressed && styles.pressed,
           ]}
         >

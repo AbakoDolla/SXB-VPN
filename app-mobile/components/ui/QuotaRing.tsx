@@ -83,7 +83,7 @@ export default function QuotaRing({
           cx={size / 2}
           cy={size / 2}
           r={rayon}
-          stroke={colors.bgInput}
+          stroke={colors.track}
           strokeWidth={stroke}
           fill="none"
         />

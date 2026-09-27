@@ -6,6 +6,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { useColors } from '@/hooks/useColors';
+import { surfaceShadow } from '@/constants/colors';
 import { useMotionPreference } from '@/hooks/useMotionPreference';
 import { useTranslation } from '@/localization';
 import { alpha, elevation, font, radius, spacing, type } from '@/constants/theme';
@@ -138,7 +139,7 @@ export default function TabDock({ state, descriptors, navigation }: TabBarProps)
         <View pointerEvents="none" style={[styles.plinth, { backgroundColor: colors.border }]} />
         <View accessibilityRole="tablist" style={[
           styles.dock,
-          elevation.md,
+          surfaceShadow(colors, 'md'),
           { backgroundColor: colors.bgCard, borderColor: colors.border2 },
         ]}>
           {state.routes.map((route, index) => {

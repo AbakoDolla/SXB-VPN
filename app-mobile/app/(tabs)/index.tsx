@@ -12,6 +12,7 @@ import apiClient from "@/services/apiClient";
 import { useAuthContext } from "@/contexts/AuthContext";
 import { useVpnContext, formatBytes, formatSpeed } from "@/contexts/VpnContext";
 import { useColors } from "@/hooks/useColors";
+import { tintedSurface } from "@/constants/colors";
 import { useResponsive } from "@/hooks/useResponsive";
 import UpdatePrompt from "@/components/UpdatePrompt";
 import AnnouncementModal from "@/components/AnnouncementModal";
@@ -1047,7 +1048,7 @@ export default function HomeScreen() {
                   minHeight: responsive.touchTarget + spacing['2xl'],
                   flexBasis: responsive.isLarge ? "23%" : "46%",
                 },
-                { borderColor: item.color + alpha.f24, backgroundColor: item.color + alpha.f08 },
+                { borderColor: item.color + alpha.f24, backgroundColor: tintedSurface(colors, item.color, 0.08) },
                 pressed && { opacity: 0.75, transform: [{ scale: 0.97 }] },
               ]}
             >

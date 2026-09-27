@@ -440,18 +440,18 @@ export default function DashboardView({
                 </p>
               </div>
             </div>
-            <div className="flex gap-2 shrink-0">
+            <div className="flex flex-col gap-2 shrink-0 sm:flex-row">
               <button
                 onClick={async () => { setMaintenanceBusy(true); try { await onMaintenanceToggle?.(true); } finally { setMaintenanceBusy(false); } }}
                 disabled={maintenanceBusy || maintenanceEnabled}
-                className="flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-rose-500/10 text-rose-400 border border-rose-500/25 hover:bg-rose-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
+                className="flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-rose-500/10 text-rose-400 border border-rose-500/25 hover:bg-rose-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
               >
                 <PauseCircle className="w-4 h-4" />
                 {t("operations.dashboard.pause")}</button>
               <button
                 onClick={async () => { setMaintenanceBusy(true); try { await onMaintenanceToggle?.(false); } finally { setMaintenanceBusy(false); } }}
                 disabled={maintenanceBusy || !maintenanceEnabled}
-                className="flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 hover:bg-emerald-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
+                className="flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 hover:bg-emerald-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
               >
                 <PlayCircle className="w-4 h-4" />
                 {t("operations.dashboard.resume")}</button>

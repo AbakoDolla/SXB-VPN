@@ -1,12 +1,31 @@
 export type AppColorScheme = "light" | "dark";
 
 export type ThemeColors = {
+  /** Schéma résolu : permet aux aides de teinte de choisir la bonne méthode. */
+  scheme: AppColorScheme;
   bg: string;
   bgCard: string;
   bgCard2: string;
   bgInput: string;
   border: string;
   border2: string;
+  /** Rail des barres de progression : visible sur une carte comme sur le fond. */
+  track: string;
+  /** Couleur et intensité des ombres portées. Noires sur fond nuit, bleu
+   *  ardoise et deux fois plus légères sur fond clair : une ombre noire sur du
+   *  blanc salit la carte au lieu de la détacher. */
+  shadow: string;
+  shadowScale: number;
+  /** Relief du bouton de connexion. Les dégradés noirs qui creusent l'embase
+   *  sur fond nuit deviennent un gris métallique terne sur fond clair : le
+   *  thème clair reçoit sa propre lumière, blanche et bleutée. */
+  depth: {
+    well: readonly [string, string, string];
+    bezel: readonly [string, string, string];
+    core: 'tinted' | 'porcelain';
+    coreShade: string;
+    gloss: readonly [string, string];
+  };
   primary: string;
   primaryDim: string;
   primaryGlow: string;
@@ -59,6 +78,7 @@ export type ThemeColors = {
 };
 
 const darkColors: ThemeColors = {
+  scheme: "dark",
   // Fond nettement plus profond et légèrement désaturé vers le bleu nuit : il
   // fait ressortir le halo du bouton de connexion, qui est le point focal de
   // l'écran d'accueil. L'ancien #07101F restait trop clair pour cela.
@@ -68,6 +88,16 @@ const darkColors: ThemeColors = {
   bgInput: "#0A1220",
   border: "#1D2C44",
   border2: "#294059",
+  track: "#1B2A42",
+  shadow: "#000000",
+  shadowScale: 1,
+  depth: {
+    well: ["rgba(0,0,0,0.55)", "rgba(0,0,0,0.12)", "rgba(255,255,255,0.05)"],
+    bezel: ["rgba(255,255,255,0.18)", "rgba(255,255,255,0.02)", "rgba(0,0,0,0.35)"],
+    core: "tinted",
+    coreShade: "rgba(0,0,0,0.30)",
+    gloss: ["rgba(255,255,255,0.30)", "rgba(255,255,255,0.05)"],
+  },
   primary: "#41D8FF",
   primaryDim: "rgba(65,216,255,0.14)",
   primaryGlow: "rgba(65,216,255,0.28)",
@@ -112,55 +142,121 @@ const darkColors: ThemeColors = {
 };
 
 const lightColors: ThemeColors = {
-  bg: "#F4F8FC",
+  scheme: "light",
+  // Fond clair légèrement bleuté, cartes blanches franches : l'ancien écart
+  // (#F4F8FC contre #FFFFFF) ne séparait plus les cartes du fond, et tout
+  // l'écran paraissait gris et délavé.
+  bg: "#EFF3F9",
   bgCard: "#FFFFFF",
-  bgCard2: "#EEF4FA",
-  bgInput: "#F7FAFD",
-  border: "#D7E2EE",
-  border2: "#B8CBE0",
+  bgCard2: "#F4F7FC",
+  bgInput: "#F1F5FA",
+  border: "#DAE3EE",
+  border2: "#BFCEE0",
+  track: "#E1E9F3",
+  shadow: "#1D3B5E",
+  shadowScale: 0.45,
+  depth: {
+    // Embase : un creux doux (ombre ardoise en haut, lumière en bas) au lieu
+    // du puits noir du thème nuit.
+    well: ["rgba(29,59,94,0.10)", "rgba(29,59,94,0.03)", "rgba(255,255,255,0.95)"],
+    // Couronne en relief : blanche, éclairée en haut à gauche.
+    bezel: ["#FFFFFF", "#F2F6FC", "rgba(29,59,94,0.14)"],
+    // Dôme en porcelaine : blanc éclairé, teinté par l'état vers le bas.
+    core: "porcelain",
+    coreShade: "rgba(29,59,94,0.10)",
+    gloss: ["rgba(255,255,255,0.85)", "rgba(255,255,255,0.10)"],
+  },
   primary: "#1769E8",
   primaryDim: "rgba(23,105,232,0.10)",
   primaryGlow: "rgba(23,105,232,0.18)",
-  connected: "#07966B",
-  connectedDim: "rgba(7,150,107,0.10)",
-  connectedGlow: "rgba(7,150,107,0.20)",
-  disconnected: "#D63B55",
-  disconnectedDim: "rgba(214,59,85,0.10)",
-  warning: "#A66A00",
-  warningDim: "rgba(166,106,0,0.10)",
+  // Teintes d'état assombries : sur blanc, les versions précédentes
+  // tombaient sous 4,5:1 et les montants en vert (« 1 GB restant ») comme les
+  // pastilles « Actif » se lisaient mal.
+  connected: "#067F5B",
+  connectedDim: "rgba(6,127,91,0.10)",
+  connectedGlow: "rgba(6,127,91,0.20)",
+  disconnected: "#C42F49",
+  disconnectedDim: "rgba(196,47,73,0.10)",
+  warning: "#8F5B00",
+  warningDim: "rgba(143,91,0,0.10)",
   purple: "#6D4BD2",
   purpleDim: "rgba(109,75,210,0.10)",
-  textPrimary: "#102033",
-  textSecondary: "#48627E",
-  textMuted: "#71869D",
+  textPrimary: "#0C1B2E",
+  textSecondary: "#3D5570",
+  // 5,5:1 sur blanc (l'ancien #71869D plafonnait à 3,7:1).
+  textMuted: "#566B84",
   textAccent: "#1769E8",
   tabActive: "#1769E8",
-  tabInactive: "#71869D",
-  overlay: "rgba(16,32,51,0.58)",
-  // Mêmes familles qu'en sombre, assombries : les teintes claires du thème
-  // sombre passeraient pour du pastel délavé sur un fond blanc, et un texte
-  // écrit avec ne serait plus lisible.
+  tabInactive: "#566B84",
+  overlay: "rgba(12,27,46,0.52)",
+  // Mêmes familles qu'en sombre, assombries jusqu'à 4,5:1 au moins sur blanc :
+  // les teintes claires du thème sombre passeraient pour du pastel délavé, et
+  // un texte écrit avec ne serait plus lisible.
   accents: {
-    cyan: "#0E86B8",
+    cyan: "#0A76A6",
     violet: "#6D4BD2",
-    emeraude: "#07966B",
-    ambre: "#A66A00",
+    emeraude: "#067F5B",
+    ambre: "#8F5B00",
     rose: "#C63C82",
     indigo: "#3C5FD0",
-    corail: "#CC5A33",
-    turquoise: "#0E8F86",
+    corail: "#B84A26",
+    turquoise: "#0B7A72",
   },
   gradients: {
-    bg: ["#F4F8FC", "#EAF2FB", "#F4F8FC"],
+    // Lumière douce derrière le bouton de connexion, sans voile gris.
+    bg: ["#F3F6FB", "#E6EEF9", "#F3F6FB"],
     primary: ["#1769E8", "#4E8DFF"],
-    connected: ["#07966B", "#20B989"],
-    shield: ["rgba(23,105,232,0.12)", "rgba(23,105,232,0)", "rgba(7,150,107,0.08)"],
-    card: ["#FFFFFF", "#EEF4FA"],
+    connected: ["#067F5B", "#1FAE83"],
+    shield: ["rgba(23,105,232,0.12)", "rgba(23,105,232,0)", "rgba(6,127,91,0.08)"],
+    card: ["#FFFFFF", "#F4F7FC"],
   },
 };
 
 export function getThemeColors(scheme: AppColorScheme): ThemeColors {
   return scheme === "light" ? lightColors : darkColors;
+}
+
+function channels(value: string): [number, number, number] | null {
+  const hex = value.trim().replace("#", "");
+  if (!/^[0-9a-f]{6}$/i.test(hex)) return null;
+  return [0, 2, 4].map(index => parseInt(hex.slice(index, index + 2), 16)) as [number, number, number];
+}
+
+/**
+ * Fond teinté d'une surface posée sur le fond de page.
+ *
+ * Sur fond nuit, une teinte translucide rayonne. Sur fond clair, la même
+ * teinte translucide se mélange au bleu-gris du fond et donne un gris sale :
+ * c'est ce qui rendait les alertes et les boutons du profil ternes. En clair,
+ * la teinte est donc mélangée à la couleur de carte et rendue opaque.
+ */
+export function tintedSurface(colors: ThemeColors, tone: string, amount = 0.08): string {
+  const from = channels(tone);
+  const base = channels(colors.bgCard);
+  if (colors.scheme === "dark" || !from || !base) {
+    return tone + Math.round(Math.min(1, Math.max(0, amount)) * 255).toString(16).padStart(2, "0").toUpperCase();
+  }
+  const mixed = from.map((channel, index) => Math.round(channel * amount + base[index] * (1 - amount)));
+  return "#" + mixed.map(channel => channel.toString(16).padStart(2, "0")).join("").toUpperCase();
+}
+
+type ShadowLevel = "sm" | "md" | "lg";
+const SHADOWS: Record<ShadowLevel, { opacity: number; radius: number; offset: number; elevation: number }> = {
+  sm: { opacity: 0.16, radius: 10, offset: 3, elevation: 3 },
+  md: { opacity: 0.22, radius: 18, offset: 7, elevation: 7 },
+  lg: { opacity: 0.3, radius: 28, offset: 12, elevation: 14 },
+};
+
+/** Ombre portée adaptée au thème (voir `shadow` et `shadowScale`). */
+export function surfaceShadow(colors: ThemeColors, level: ShadowLevel = "sm") {
+  const preset = SHADOWS[level];
+  return {
+    shadowColor: colors.shadow,
+    shadowOpacity: preset.opacity * colors.shadowScale,
+    shadowRadius: preset.radius,
+    shadowOffset: { width: 0, height: preset.offset },
+    elevation: colors.scheme === "dark" ? preset.elevation : Math.max(1, Math.round(preset.elevation / 2)),
+  };
 }
 
 // Compatibilité avec les écrans hérités : le rendu par défaut reste sombre.

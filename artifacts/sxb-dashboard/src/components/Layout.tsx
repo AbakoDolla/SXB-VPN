@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { User, UserRole } from '../types';
 import { useTranslation } from '../contexts/I18nContext';
 import { ResellerAccessBanner } from './ResellerAccessBanner';
@@ -13,6 +13,7 @@ import {
   HeartPulse, Wifi, ShieldAlert, Database,
 } from 'lucide-react';
 import { TrialGlyph } from './TrialBadge';
+import { installResponsiveTables } from '../lib/responsiveTables';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -56,6 +57,9 @@ export default function Layout({
   const { blocked } = useResellerAccess();
   const { t } = useTranslation();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const mainRef = useRef<HTMLElement>(null);
+  // Sur téléphone, chaque tableau de chaque section devient une pile de fiches.
+  useEffect(() => (mainRef.current ? installResponsiveTables(mainRef.current) : undefined), []);
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
     clients: true,
     monitoring: false,
@@ -419,7 +423,7 @@ export default function Layout({
           <div className="w-8" />
         </div>
 
-        <main className="flex-1 overflow-y-auto p-4 md:p-5 lg:p-6 animate-fadeIn">
+        <main ref={mainRef} className="flex-1 min-w-0 overflow-y-auto p-4 md:p-5 lg:p-6 animate-fadeIn">
           {/* Bannière persistante « MODE MAINTENANCE ACTIF » — OWNER uniquement */}
           {maintenanceEnabled && role === 'OWNER' && (
             <div className="mb-4 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs font-bold tracking-widest uppercase">

@@ -18,6 +18,7 @@ import { useVpnContext } from "@/contexts/VpnContext";
 import { useLanguageContext } from "@/contexts/LanguageContext";
 import { useTranslation } from "@/localization";
 import { useColors } from "@/hooks/useColors";
+import { surfaceShadow, tintedSurface } from "@/constants/colors";
 import { useThemeContext } from "@/contexts/ThemeContext";
 import {
   areAnnouncementNotificationsEnabled,
@@ -74,8 +75,10 @@ function Row({
         <Switch
           value={toggleValue}
           onValueChange={onToggle}
-          trackColor={{ false: colors.border, true: c + "60" }}
-          thumbColor={toggleValue ? c : colors.textMuted}
+          trackColor={{ false: colors.scheme === "light" ? colors.border2 : colors.border, true: c + "60" }}
+          // Désactivé : pouce blanc sur rail gris en clair (un pouce ardoise
+          // semblait « allumé » en sombre), pouce atténué en sombre.
+          thumbColor={toggleValue ? c : colors.scheme === "light" ? "#FFFFFF" : colors.textMuted}
           disabled={disabled}
           accessibilityLabel={label}
           accessibilityRole="switch"
@@ -735,7 +738,7 @@ function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useCol
   pageHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 4 },
   backBtn: { width: 36, height: 36, borderRadius: radius.lg, backgroundColor: colors.bgCard, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
   pageTitle: { fontSize: 18, fontWeight: "700", color: colors.textPrimary, fontFamily: "Inter_700Bold" },
-  accountCard: { flexDirection: "row", alignItems: "center", gap: spacing.lg, backgroundColor: colors.bgCard, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, padding: 16, shadowColor: "#000", shadowOpacity: 0.12, shadowRadius: 16, shadowOffset: { width: 0, height: 6 }, elevation: 4 },
+  accountCard: { flexDirection: "row", alignItems: "center", gap: spacing.lg, backgroundColor: colors.bgCard, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, padding: 16, ...surfaceShadow(colors, "sm") },
   accountAvatar: { width: 52, height: 52, borderRadius: radius.xl, backgroundColor: colors.primaryDim, borderWidth: 1.5, borderColor: colors.primary + "50", alignItems: "center", justifyContent: "center", flexShrink: 0 },
   accountInitials: { fontSize: 20, fontWeight: "700", color: colors.primary, fontFamily: "Inter_700Bold" },
   accountName: { fontSize: 16, fontWeight: "700", color: colors.textPrimary, fontFamily: "Inter_700Bold" },
@@ -763,7 +766,7 @@ function makeStyles(colors: ReturnType<typeof import("@/hooks/useColors").useCol
   themePicker: { flexDirection: "row", gap: spacing.sm, paddingVertical: 13 },
   themeChoice: { flex: 1, minHeight: 54, borderRadius: radius.md, borderWidth: 1, alignItems: "center", justifyContent: "center", gap: 5 },
   themeChoiceText: { fontSize: 10, fontFamily: "Inter_600SemiBold" },
-  logoutBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, paddingVertical: 14, borderRadius: radius.md, borderWidth: 1, borderColor: colors.disconnected + "40", backgroundColor: colors.disconnectedDim },
+  logoutBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, paddingVertical: 14, borderRadius: radius.md, borderWidth: 1, borderColor: colors.disconnected + "40", backgroundColor: tintedSurface(colors, colors.disconnected, 0.07) },
   logoutText: { fontSize: 15, fontWeight: "600", color: colors.disconnected, fontFamily: "Inter_600SemiBold" },
   footer: { textAlign: "center", fontSize: 10, color: colors.textMuted, fontFamily: "Inter_400Regular", letterSpacing: 2 },
   // Lang modal

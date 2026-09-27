@@ -164,7 +164,7 @@ export default function PowerButton({
         <View
           style={[
             styles.halo,
-            { backgroundColor: tone, opacity: active ? 0.18 : busy ? 0.11 : 0.05 },
+            { backgroundColor: tone, opacity: (active ? 0.18 : busy ? 0.11 : 0.05) * (colors.scheme === 'light' ? 0.7 : 1) },
           ]}
         />
 
@@ -181,7 +181,7 @@ export default function PowerButton({
                d'une surface en relief, ce qui creuse visuellement le logement. */}
         <View style={styles.well}>
           <LinearGradient
-            colors={['rgba(0,0,0,0.55)', 'rgba(0,0,0,0.12)', 'rgba(255,255,255,0.05)']}
+            colors={colors.depth.well as unknown as [string, string, string]}
             start={{ x: 0.25, y: 0 }}
             end={{ x: 0.75, y: 1 }}
             style={styles.fill}
@@ -191,7 +191,7 @@ export default function PowerButton({
         {/* 4. Couronne en relief + balayage lumineux. */}
         <View style={[styles.bezel, { borderColor: tone + alpha.f24 }]}>
           <LinearGradient
-            colors={['rgba(255,255,255,0.18)', 'rgba(255,255,255,0.02)', 'rgba(0,0,0,0.35)']}
+            colors={colors.depth.bezel as unknown as [string, string, string]}
             start={{ x: 0.2, y: 0 }}
             end={{ x: 0.8, y: 1 }}
             style={styles.fill}
@@ -224,7 +224,9 @@ export default function PowerButton({
             ]}
           >
             <LinearGradient
-              colors={[tone + alpha.f40, tone + alpha.f16, 'rgba(0,0,0,0.30)']}
+              colors={colors.depth.core === 'porcelain'
+                ? ['#FFFFFF', tone + alpha.f12, tone + alpha.f24]
+                : [tone + alpha.f40, tone + alpha.f16, colors.depth.coreShade]}
               start={{ x: 0.15, y: 0 }}
               end={{ x: 0.85, y: 1 }}
               style={styles.coreFill}
@@ -234,7 +236,7 @@ export default function PowerButton({
                      l'impression d'enfoncement. */}
               <Animated.View style={[styles.gloss, { opacity: glossOpacity }]} pointerEvents="none">
                 <LinearGradient
-                  colors={['rgba(255,255,255,0.30)', 'rgba(255,255,255,0.05)', 'transparent']}
+                  colors={[colors.depth.gloss[0], colors.depth.gloss[1], 'transparent']}
                   start={{ x: 0.3, y: 0 }}
                   end={{ x: 0.7, y: 1 }}
                   style={styles.fill}

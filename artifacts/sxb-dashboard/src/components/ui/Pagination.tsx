@@ -28,7 +28,7 @@ export default function Pagination({
       <p className="text-xs text-gray-500 shrink-0">
         {total === 0 ? t('core.pagination.empty') : t('core.pagination.range', { from: formatNumber(from), to: formatNumber(to), total: formatNumber(total) })}
       </p>
-      <div className="flex items-center gap-1.5">
+      <div className="flex flex-wrap items-center justify-center gap-1.5">
         {onPageSizeChange && (
           <select
             aria-label={t('core.pagination.pageSize')}
@@ -46,7 +46,7 @@ export default function Pagination({
           </select>
         )}
         <button aria-label={t('core.pagination.first')} onClick={() => go(1)} disabled={disabled || page <= 1}
-          className="p-1.5 rounded-lg text-gray-500 hover:text-white hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer">
+          className="hidden sm:inline-flex p-1.5 rounded-lg text-gray-500 hover:text-white hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer">
           <ChevronsLeft className="w-3.5 h-3.5" />
         </button>
         <button aria-label={t('core.pagination.previous')} onClick={() => go(page - 1)} disabled={disabled || page <= 1}
@@ -80,7 +80,7 @@ export default function Pagination({
           <ChevronRight className="w-3.5 h-3.5" />
         </button>
         <button aria-label={t('core.pagination.last')} onClick={() => go(totalPages)} disabled={disabled || page >= totalPages}
-          className="p-1.5 rounded-lg text-gray-500 hover:text-white hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer">
+          className="hidden sm:inline-flex p-1.5 rounded-lg text-gray-500 hover:text-white hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer">
           <ChevronsRight className="w-3.5 h-3.5" />
         </button>
       </div>

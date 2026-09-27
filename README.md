@@ -229,6 +229,15 @@ réconcilier les configurations gérées par le serveur. Un échec réseau, une
 limitation `429` ou un `403`/`404` sans motif de session explicite ne constitue
 pas une preuve de révocation de l'application.
 
+**Suppression depuis l'application.** Supprimer une configuration attribuée
+dans l'application supprime aussi **le forfait de cet utilisateur** dans le
+tableau de bord (`DELETE /api/mobile/connections/:id`), avec la même
+comptabilité revendeur qu'une suppression par l'exploitant. La configuration
+VPN elle-même (le profil) n'est jamais supprimée : elle reste attribuée aux
+autres utilisateurs qui la partagent. Hors réseau, la demande attend et repart
+à la synchronisation suivante ; un `404` signifie qu'il n'y a plus rien à
+supprimer. Pour retrouver le forfait, il faut qu'il soit attribué de nouveau.
+
 Les changements sont suivis par une attente HTTP bornée sur
 `/api/mobile/access-state`, avec une révision du contenu et une reprise après
 interruption. Pendant un VPN Android actif, un observateur natif maintient ce
@@ -263,6 +272,11 @@ Le revendeur ne voit que les configurations que l'administrateur lui a
 explicitement attribuées, et sous leur seul nom commercial. La restriction est
 appliquée par l'API, pas seulement par l'affichage : un appel direct avec une
 configuration non attribuée reçoit un `403`.
+
+**Sur téléphone** (moins de 768 px), chaque tableau devient une pile de fiches
+« intitulé : valeur » : `lib/responsiveTables.ts` recopie l'en-tête de chaque
+colonne sur ses cellules, et `index.css` les met en forme. Les tableaux du
+bureau sont inchangés ; un tableau peut s'en exclure avec `data-stack="off"`.
 
 ### Suivi des connectés
 
