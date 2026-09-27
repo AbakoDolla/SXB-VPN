@@ -1,6 +1,7 @@
 import { useTranslation } from '../contexts/I18nContext';
 
 import React, { useEffect, useState, useMemo } from "react";
+import { useQuotaPolling } from "../hooks/useQuotaPolling";
 import { fetchDevices, generateDeviceToken, revokeDevice, suspendDevice, resumeDevice, renewDevice, Device } from "../api/devices";
 import { convertFreeTrialRequests } from "../api/free-trial";
 import { ApiError } from "../api/client";
@@ -101,6 +102,10 @@ export default function DevicesView({ currentUserRole }: { currentUserRole?: Use
   };
 
   useEffect(() => { load(); }, []);
+  useQuotaPolling(async () => {
+    const devices = await fetchDevices();
+    return () => setDevices(devices);
+  }, !loading && !pending);
 
   const handleGenerate = async (e: React.FormEvent) => {
     e.preventDefault();

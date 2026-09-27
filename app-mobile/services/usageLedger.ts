@@ -69,6 +69,8 @@ export interface UsageCounters {
 export interface UsageContext {
   subscriptionId: string | null;
   configId?: string | null;
+  /** Explicitly manual/unlinked, unlike an unidentified legacy report. */
+  attribution?: 'unlinked';
   sessionId: string;
 }
 
@@ -81,12 +83,14 @@ export interface UsageEntry {
   /** Forfait qui a réellement porté ce trafic. */
   subscriptionId: string | null;
   configId?: string | null;
+  attribution?: 'unlinked';
   sessionId: string;
   seq: number;
   up: number;
   down: number;
   /** Tentée au moins une fois : montants et identifiants figés à jamais. */
   frozen: boolean;
+  retryAfter?: number;
 }
 
 export interface UsageLedger {
@@ -105,6 +109,7 @@ export interface UsageLedger {
 export interface UsageReport {
   subscriptionId: string | null;
   configId?: string | null;
+  attribution?: 'unlinked';
   sessionId: string;
   seq: number;
   bytesUp: number;
@@ -231,13 +236,15 @@ export function accumulate(
   };
   if (up <= 0 && down <= 0) return advanced;
   const last = advanced.entries[advanced.entries.length - 1];
-  if (last && !last.frozen && last.subscriptionId === context.subscriptionId && last.sessionId === context.sessionId) {
+  if (last && !last.frozen && last.subscriptionId === context.subscriptionId &&
+      last.configId === context.configId && last.attribution === context.attribution && last.sessionId === context.sessionId) {
     advanced.entries[advanced.entries.length - 1] = { ...last, up: last.up + up, down: last.down + down };
     return advanced;
   }
   advanced.entries.push({
     subscriptionId: context.subscriptionId,
     configId: context.configId,
+    attribution: context.attribution,
     sessionId: context.sessionId,
     seq: advanced.nextSeq,
     up,
@@ -257,7 +264,8 @@ export function accumulate(
  * serveur l'accepte ou la reconnaisse comme déjà comptée.
  */
 export function nextReport(ledger: UsageLedger): { ledger: UsageLedger; report: UsageReport } | null {
-  const head = ledger.entries[0];
+  const index = ledger.entries.findIndex(entry => !entry.retryAfter || entry.retryAfter <= Date.now());
+  const head = ledger.entries[index];
   if (!head) return null;
   if (head.up + head.down <= 0) return null;
 
@@ -269,14 +277,15 @@ export function nextReport(ledger: UsageLedger): { ledger: UsageLedger; report: 
     bytesDown = Math.min(head.down, MAX_REPORT_BYTES - bytesUp);
   }
   const next: UsageLedger = { ...ledger, entries };
-  entries[0] = { ...head, up: bytesUp, down: bytesDown, frozen: true };
+  entries[index] = { ...head, up: bytesUp, down: bytesDown, frozen: true };
 
   const remainderUp = head.up - bytesUp;
   const remainderDown = head.down - bytesDown;
   if (remainderUp > 0 || remainderDown > 0) {
-    entries.splice(1, 0, {
+    entries.splice(index + 1, 0, {
       subscriptionId: head.subscriptionId,
       configId: head.configId,
+      attribution: head.attribution,
       sessionId: head.sessionId,
       seq: next.nextSeq,
       up: remainderUp,
@@ -291,6 +300,7 @@ export function nextReport(ledger: UsageLedger): { ledger: UsageLedger; report: 
     report: {
       subscriptionId: head.subscriptionId,
       configId: head.configId,
+      attribution: head.attribution,
       sessionId: head.sessionId,
       seq: head.seq,
       bytesUp,
@@ -301,15 +311,26 @@ export function nextReport(ledger: UsageLedger): { ledger: UsageLedger; report: 
 
 /** Retire l'entrée que le serveur a acceptée — ou reconnue comme déjà comptée. */
 export function settle(ledger: UsageLedger, report: UsageReport): UsageLedger {
-  const head = ledger.entries[0];
-  if (!head || head.sessionId !== report.sessionId || head.seq !== report.seq) return ledger;
-  return { ...ledger, entries: ledger.entries.slice(1) };
+  return { ...ledger, entries: ledger.entries.filter(entry =>
+    entry.sessionId !== report.sessionId || entry.seq !== report.seq) };
+}
+
+/** A refusal is not a receipt: preserve it without blocking other plans. */
+export function deferReport(ledger: UsageLedger, report: UsageReport, retryAfter: number): UsageLedger {
+  return { ...ledger, entries: ledger.entries.map(entry =>
+    entry.sessionId === report.sessionId && entry.seq === report.seq ? { ...entry, retryAfter } : entry) };
+}
+
+export function nextAttemptDelay(ledger: UsageLedger, now = Date.now()): number {
+  return ledger.entries.length ? Math.max(0, Math.min(...ledger.entries.map(entry => entry.retryAfter || 0)) - now) : 0;
 }
 
 function sanitize(value: unknown): UsageLedger {
   const isCount = (count: unknown): count is number =>
     typeof count === 'number' && Number.isSafeInteger(count) && count >= 0;
   const isOptionalId = (id: unknown): boolean => id == null || typeof id === 'string';
+  const validAttribution = (scope: Partial<UsageContext>): boolean =>
+    scope.attribution === undefined || (scope.attribution === 'unlinked' && !scope.subscriptionId);
   const corrupt = (): never => { throw new UsageLedgerReadError('corrupt'); };
   if (!value || typeof value !== 'object' || Array.isArray(value)) return corrupt();
   const raw = value as Partial<UsageLedger>;
@@ -318,7 +339,8 @@ function sanitize(value: unknown): UsageLedger {
   if (raw.initialized !== undefined && typeof raw.initialized !== 'boolean') return corrupt();
   if (raw.context !== undefined && (!raw.context || typeof raw.context !== 'object' ||
       typeof raw.context.sessionId !== 'string' || !raw.context.sessionId ||
-      !isOptionalId(raw.context.subscriptionId) || !isOptionalId(raw.context.configId))) return corrupt();
+      !isOptionalId(raw.context.subscriptionId) || !isOptionalId(raw.context.configId) ||
+      !validAttribution(raw.context))) return corrupt();
   const entries = raw.entries;
   const clean: UsageEntry[] = [];
   for (const entry of entries) {
@@ -326,13 +348,16 @@ function sanitize(value: unknown): UsageLedger {
     const candidate = entry as Partial<UsageEntry>;
     if (typeof candidate.sessionId !== 'string' || !candidate.sessionId ||
         !isCount(candidate.seq) || !isCount(candidate.up) || !isCount(candidate.down) ||
-        !isOptionalId(candidate.subscriptionId) || !isOptionalId(candidate.configId)) return corrupt();
+        !isOptionalId(candidate.subscriptionId) || !isOptionalId(candidate.configId) ||
+        !validAttribution(candidate)) return corrupt();
     const up = candidate.up;
     const down = candidate.down;
     if (up + down <= 0) return corrupt();
+    if (candidate.retryAfter !== undefined && !isCount(candidate.retryAfter)) return corrupt();
     clean.push({
       subscriptionId: typeof candidate.subscriptionId === 'string' ? candidate.subscriptionId : null,
       configId: typeof candidate.configId === 'string' ? candidate.configId : undefined,
+      attribution: candidate.attribution,
       sessionId: candidate.sessionId,
       seq: candidate.seq,
       up,
@@ -340,6 +365,7 @@ function sanitize(value: unknown): UsageLedger {
       // Une entrée relue après un redémarrage a pu être reçue par le serveur
       // sans que la réponse nous parvienne : elle est donc gelée d'office.
       frozen: true,
+      ...(candidate.retryAfter !== undefined ? { retryAfter: candidate.retryAfter } : {}),
     });
   }
   const highestSeq = clean.reduce((max, entry) => Math.max(max, entry.seq + 1), 0);
@@ -356,6 +382,7 @@ function sanitize(value: unknown): UsageLedger {
       sessionId: raw.context.sessionId,
       subscriptionId: typeof raw.context.subscriptionId === 'string' ? raw.context.subscriptionId : null,
       configId: typeof raw.context.configId === 'string' ? raw.context.configId : undefined,
+      attribution: raw.context.attribution,
     }
     : undefined;
   return {

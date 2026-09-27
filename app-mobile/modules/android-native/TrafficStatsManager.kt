@@ -1,13 +1,14 @@
 package com.sxbvpn.vpnmodule
 
 /**
- * TrafficStatsManager — Statistiques de trafic réelles via Android TrafficStats
+ * TrafficStatsManager — Odomètre durable des octets du tunnel.
  *
- * Utilise android.net.TrafficStats pour lire les octets réels échangés
- * via l'interface VPN (UID du processus courant).
+ * SxbVpnService fournit les totaux libbox, sans dépendre des accès sysfs/UID
+ * restreints sur Android. Le chemin hérité reste disponible pour les anciens
+ * appelants, jamais additionné à la source moteur.
  *
- * Upload   = octets envoyés par l'UID depuis le démarrage VPN
- * Download = octets reçus par l'UID depuis le démarrage VPN
+ * Upload   = octets envoyés depuis le démarrage VPN
+ * Download = octets reçus depuis le démarrage VPN
  * Débit    = delta/seconde calculé sur fenêtre glissante de 1s
  *
  * DEUX COMPTEURS, DEUX RÔLES
@@ -35,7 +36,10 @@ import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
-class TrafficStatsManager {
+class TrafficStatsManager(
+    private val engineCounters: (() -> Pair<Long, Long>?)? = null,
+    private val usageTick: (() -> Unit)? = null,
+) {
 
     companion object {
         private const val TAG            = "SXB-TrafficStats"
@@ -104,6 +108,10 @@ class TrafficStatsManager {
     private var lastTx = 0L
     private var lastRx = 0L
     private var lastPollMs = 0L
+    private var lastEngineTx = 0L
+    private var lastEngineRx = 0L
+    private var engineReadable = false
+    private var lastUsageTickMs = 0L
 
     // Compteurs noyau de l’interface TUN. Ils sont préférés aux compteurs UID
     // du service, qui ne représentent pas le trafic des applications routées.
@@ -136,6 +144,10 @@ class TrafficStatsManager {
         lastTx     = baselineTx
         lastRx     = baselineRx
         lastPollMs = System.currentTimeMillis()
+        lastUsageTickMs = lastPollMs
+        lastEngineTx = 0L
+        lastEngineRx = 0L
+        engineReadable = false
         totalUpload.set(0L)
         totalDownload.set(0L)
         speedUpload.set(0L)
@@ -239,6 +251,12 @@ class TrafficStatsManager {
             // L'erreur est journalisée ; les deltas restent en mémoire et seront
             // retentés. Les baselines ont déjà avancé, sans recompter le poll.
         }
+        val now = System.currentTimeMillis()
+        if (now - lastUsageTickMs >= 20_000L) {
+            lastUsageTickMs = now
+            try { usageTick?.invoke() }
+            catch (error: Exception) { Log.e(TAG, "USAGE_TICK_DEFERRED", error) }
+        }
     }
 
     @Synchronized
@@ -249,6 +267,24 @@ class TrafficStatsManager {
     private fun sample() {
         val nowMs = System.currentTimeMillis()
         val deltaMs = (nowMs - lastPollMs).coerceAtLeast(1L)
+        if (engineCounters != null) {
+            val measured = engineCounters.invoke()
+            engineReadable = measured != null
+            if (measured == null) {
+                speedUpload.set(0L)
+                speedDownload.set(0L)
+            } else {
+                val up = SxbUsageOdometer.step(lastEngineTx, measured.first)
+                val down = SxbUsageOdometer.step(lastEngineRx, measured.second)
+                accumulate(up, down)
+                speedUpload.set(up * 1000L / deltaMs)
+                speedDownload.set(down * 1000L / deltaMs)
+                lastEngineTx = measured.first
+                lastEngineRx = measured.second
+            }
+            lastPollMs = nowMs
+            return
+        }
 
         // Dès que le TUN est attaché, ne jamais retomber sur TrafficStats UID :
         // le UID du service mesure surtout le contrôle/handshake et pas WhatsApp,
@@ -292,6 +328,7 @@ class TrafficStatsManager {
     @Synchronized
     fun attachTunInterface(name: String?) {
         if (!running.get()) return
+        if (engineCounters != null) return
         val clean = name?.trim().orEmpty()
         if (clean.isBlank()) {
             Log.w(TAG, "TUN attaché mais interface introuvable : compteurs TUN indisponibles")
@@ -339,7 +376,7 @@ class TrafficStatsManager {
     // ── Getters ───────────────────────────────────────────────────────────────
 
     @Synchronized
-    fun hasTunCounters(): Boolean = tunAttached && tunCountersReadable
+    fun hasTunCounters(): Boolean = if (engineCounters != null) engineReadable else tunAttached && tunCountersReadable
 
     @Synchronized
     fun getSessionStats(): SessionSnapshot = SessionSnapshot(

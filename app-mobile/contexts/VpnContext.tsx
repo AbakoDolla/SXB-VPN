@@ -5,7 +5,7 @@
  *   - requestVpnPermission → dialog système Android
  *   - startVpn(json)       → démarre le vrai tunnel VPN (SSH / sing-box)
  *   - stopVpn()            → arrête proprement le service
- *   - getTrafficStats()    → données réelles via Android TrafficStats
+ *   - getTrafficStats()    → totaux réels du moteur, odomètre durable
  *   - events : onVpnStateChange, onVpnLog
  *
  * Hors Android (dev web / iOS) : bridge stub sans crash
@@ -53,7 +53,7 @@ import {
 import { deriveQuota, formatBytes, type DerivedQuota, type SessionCounters } from '@/services/quotaState';
 import {
   accumulate as accumulateUsage, anchorLedger, isFreshLedger, loadLedger, nextReport, pendingBytes,
-  pendingUsage, quotaProjection, recordQuota, saveLedger, settle as settleUsage,
+  pendingUsage, quotaProjection, recordQuota, saveLedger, settle as settleUsage, deferReport, nextAttemptDelay,
   type UsageContext, type UsageLedger, type UsageReport,
 } from '@/services/usageLedger';
 import { useAuthContext } from './AuthContext';
@@ -66,6 +66,7 @@ import {
   MOBILE_HEALTH_HEARTBEAT_INTERVAL_MS,
 } from '@/services/mobileHealth';
 import { remonterIntegrite } from '@/services/securityReport';
+import { registerUsageReporter, usageDeadline, usageRetryDelay } from '@/services/usageReporting';
 
 export { formatBytes, deriveQuota, DerivedQuota };
 
@@ -592,6 +593,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   const ledgerFlushRef     = useRef<Promise<void> | null>(null);
   const usageRetryTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const usageMountedRef     = useRef(true);
+  const usageRetryAtRef     = useRef(0);
+  const usageFailuresRef    = useRef(0);
   const sessionBaselineRef = useRef<{ up: number; down: number }>({ up: 0, down: 0 });
   const sessionIdRef       = useRef<string | null>(null);
   /** Consommé serveur déjà affiché, par forfait : il ne doit jamais reculer. */
@@ -1411,16 +1414,32 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     try {
       let ledger = ledgerRef.current ?? await loadLedger();
       const running = runningProfileRef.current;
+      const profiles = storeValue(await configStore.list());
+      if (!profiles) throw new Error('VPN_USAGE_PROFILES_UNAVAILABLE');
+      const runningMeta = profiles.find(entry => entry.configId === running?.configId);
+      const source = running?.source ?? runningMeta?.source;
+      const subscriptionId = running?.subscriptionId || runningMeta?.subscriptionId ||
+        (source === 'backend' ? running?.configId ?? runningMeta?.configId ?? null : null);
+      if (running && runningProfileRef.current === running && subscriptionId) {
+        runningProfileRef.current = { ...running, subscriptionId };
+      }
+      const attribution = !subscriptionId && source === 'manual' ? 'unlinked' as const : undefined;
       const previous = options?.beforeConnect ? ledger.context : null;
       if (!sessionIdRef.current) sessionIdRef.current = 'sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
       const context: UsageContext = previous ?? (running
-        ? { subscriptionId: running.subscriptionId ?? null, configId: running.configId, sessionId: sessionIdRef.current }
+        ? { subscriptionId, configId: running.configId, attribution, sessionId: sessionIdRef.current }
         : ledger.context ?? { subscriptionId: null, sessionId: sessionIdRef.current });
       const seedQuota = async (owner: UsageContext) => {
         const pending = pendingUsage(ledger, owner);
         if (!owner.configId || pending.up + pending.down > 0) return;
         const cached = await loadQuotaData(owner.configId);
         if (cached) ledger = recordQuota(ledger, owner, { usedBytes: cached.usedQuota, totalBytes: cached.totalQuota });
+        else {
+          const meta = profiles.find(entry => entry.configId === owner.configId);
+          if (meta && Number.isSafeInteger(meta.quotaUsed) && Number.isSafeInteger(meta.quotaTotal)) {
+            ledger = recordQuota(ledger, owner, { usedBytes: meta.quotaUsed!, totalBytes: meta.quotaTotal! });
+          }
+        }
       };
       await seedQuota(context);
       const stats = IS_ANDROID && SxbVpnNative
@@ -1444,17 +1463,14 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         if (isFreshLedger(ledger)) {
           ledger = anchorLedger(ledger, counters);
         } else {
-          // SEUL un identifiant de forfait est envoyé. Envoyer un identifiant de
-          // configuration locale — ce que faisait la version précédente en repli —
-          // vaut « forfait inconnu » côté serveur, donc un refus, donc des octets
-          // perdus. Sans forfait connu, le serveur crédite le forfait actif et le
-          // NOMME dans sa réponse : rien ne se perd et rien n'est deviné ici.
+          // L'identité vient des métadonnées provisionnées, jamais de l'alias
+          // local ni du forfait le plus récent sur le compte.
           ledger = accumulateUsage(ledger, counters, context);
         }
       }
       ledger = { ...ledger, context };
       if (options?.beforeConnect && running) {
-        const next = { subscriptionId: running.subscriptionId ?? null, configId: running.configId, sessionId: sessionIdRef.current };
+        const next = { subscriptionId, configId: running.configId, attribution, sessionId: sessionIdRef.current };
         await seedQuota(next);
         ledger = { ...ledger, context: next };
       }
@@ -1464,6 +1480,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       await saveLedger(ledger);
       if (options?.beforeConnect) return;
       if (!pendingBytes(ledger)) return;
+      if (Date.now() < usageRetryAtRef.current) return;
 
       let exhaustedHandled = false;
       // Quelques rapports par passage suffisent : le reste attend le prochain
@@ -1477,32 +1494,46 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         await saveLedger(prepared.ledger);
         if (!currentIdentityRequest(stamp) || !usageMountedRef.current) break;
 
+        let scopeRefused = false;
         const result = await apiClient.post('/mobile/vpn/traffic', {
           bytesUp:   prepared.report.bytesUp,
           bytesDown: prepared.report.bytesDown,
           sessionId: prepared.report.sessionId,
           seq:       prepared.report.seq,
-          reportMode: 'delta',
+          reportMode: prepared.report.attribution === 'unlinked' ? 'unlinked' : 'delta',
           subscriptionId: prepared.report.subscriptionId || undefined,
           deviceId: deviceId || undefined,
         }).catch((error: any) => {
-          // 403 « forfait non possédé » : l'entrée ne sera jamais acceptée,
-          // la garder bloquerait toutes les suivantes derrière elle.
-          if (error?.response?.status === 403 && error?.response?.data?.code === 'OWNERSHIP_FORBIDDEN') {
-            return { data: { ok: false, rejected: true } } as any;
+          scopeRefused = (error?.response?.status === 403 && error?.response?.data?.code === 'OWNERSHIP_FORBIDDEN') ||
+            (error?.response?.status === 409 && error?.response?.data?.code === 'USAGE_SUBSCRIPTION_REQUIRED');
+          if (scopeRefused) {
+            console.warn('[SXB] USAGE_SUBSCRIPTION_DEFERRED');
+            return null;
           }
+          usageFailuresRef.current++;
+          usageRetryAtRef.current = Date.now() + usageRetryDelay(error, usageFailuresRef.current);
           retryNeeded = true;
-          console.warn('[SXB] USAGE_SYNC_DEFERRED');
+          console.warn('[SXB] USAGE_SYNC_DEFERRED', error?.response?.status ?? 'network');
           return null;
         });
-        if (!result) break; // Réseau indisponible : on rejouera à l'identique.
         if (!currentIdentityRequest(stamp) || !usageMountedRef.current) break;
-        if (!result.data?.rejected && result.data?.ok !== true && result.data?.duplicate !== true) break;
+        if (!result) {
+          if (!scopeRefused) break;
+          const deferred = deferReport(ledgerRef.current, prepared.report, Date.now() + 300_000);
+          ledgerRef.current = deferred;
+          setUsageLedger(deferred);
+          await saveLedger(deferred);
+          continue;
+        }
+        if (result.data?.ok !== true && result.data?.duplicate !== true) {
+          console.warn('[SXB] USAGE_ACK_INVALID');
+          break;
+        }
         if (prepared.report.subscriptionId && result.data?.subscriptionId &&
             prepared.report.subscriptionId !== result.data.subscriptionId) break;
 
         let settled = settleUsage(ledgerRef.current, prepared.report);
-        if (!result.data?.rejected && Number.isSafeInteger(result.data?.quotaUsedBytes) &&
+        if (Number.isSafeInteger(result.data?.quotaUsedBytes) &&
             Number.isSafeInteger(result.data?.quotaTotalBytes)) {
           settled = recordQuota(settled, prepared.report, {
             usedBytes: result.data.quotaUsedBytes, totalBytes: result.data.quotaTotalBytes,
@@ -1511,7 +1542,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         ledgerRef.current = settled;
         setUsageLedger(settled);
         await saveLedger(settled);
-        if (result.data?.rejected) continue;
+        usageFailuresRef.current = 0;
+        usageRetryAtRef.current = 0;
 
         // Le serveur a pris ces octets en compte : la ligne de base de
         // l'affichage avance d'autant, sinon ils seraient comptés deux fois.
@@ -1565,13 +1597,23 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         usageRetryTimerRef.current = setTimeout(() => {
           usageRetryTimerRef.current = null;
           if (currentIdentityRequest(stamp)) void flushUsageRef.current({ final: true });
-        }, USAGE_REPORT_INTERVAL_MS);
+        }, Math.max(USAGE_REPORT_INTERVAL_MS, usageRetryAtRef.current - Date.now(),
+          ledgerRef.current ? nextAttemptDelay(ledgerRef.current) : 0));
       }
     }
   }, [isAuthenticated, deviceId, applyServerQuota, addLog]);
 
   const flushUsageRef = useRef(flushUsage);
   useEffect(() => { flushUsageRef.current = flushUsage; });
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const unregister = registerUsageReporter(() => flushUsageRef.current());
+    SxbVpnNative?.setUsageReportingEnabled?.(true);
+    return () => {
+      unregister();
+      SxbVpnNative?.setUsageReportingEnabled?.(false);
+    };
+  }, [isAuthenticated]);
   useEffect(() => {
     usageMountedRef.current = true;
     return () => { usageMountedRef.current = false; };
@@ -1583,10 +1625,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
   // ── CADENCE DE REMONTÉE ─────────────────────────────────────────────────────
   //
-  // Le minuteur tournait UNIQUEMENT au premier plan : un VPN sert précisément
-  // quand l'application n'est pas à l'écran, donc plus rien ne remontait
-  // pendant toute la consommation réelle. Il suit désormais le TUNNEL, pas
-  // l'écran : armé tant que le tunnel est monté, démonté dès qu'il s'arrête.
+  // Android suspend les minuteurs JS avec l'activité. Le service déclenche
+  // donc une tâche HeadlessJS toutes les 20 s ; elle appelle le même reporter
+  // sérialisé. L'intervalle ci-dessous ne sert qu'aux anciens ponts / au web.
   //
   // Coût : un réveil toutes les 20 s (3 par minute) et une requête HTTPS de
   // quelques centaines d'octets, uniquement quand le tunnel tourne — le
@@ -1596,7 +1637,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!isConnected || !isAuthenticated) return;
     const report = () => { void flushUsageRef.current(); };
-    reportTimerRef.current = setInterval(report, USAGE_REPORT_INTERVAL_MS);
+    // Android ticks are driven by the service; JS timers stop on Activity pause.
+    if (!SxbVpnNative?.setUsageReportingEnabled) {
+      reportTimerRef.current = setInterval(report, USAGE_REPORT_INTERVAL_MS);
+    }
     const foregroundSub = AppState.addEventListener('change', (next) => {
       // Le retour à l'écran ne change pas la cadence ; il ne fait qu'avancer la
       // remontée suivante pour que l'utilisateur voie un chiffre à jour.
@@ -2092,11 +2136,9 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         if (!currentProfile) throw new Error('ACCESS_PROFILE_MISSING');
         requireProfileAccess(currentProfile.meta);
         runningProfileRef.current = currentProfile.meta;
-        // Une ancre durable existe AVANT les premiers paquets du nouveau
-        // tunnel, même si ses deux compteurs valent encore zéro. Même borne
-        // que ci-dessus : la remontée des compteurs ne doit jamais retarder
-        // indéfiniment l'ouverture du tunnel qu'elle est censée accompagner.
-        await avecDelai(flushUsageRef.current({ beforeConnect: true }), DELAI_PREPARATION_MS, undefined);
+        // Préparation locale uniquement : un refus de stockage ou un délai
+        // dépassé interdit ce départ, sans effacer le livre ni simuler l'ancre.
+        await usageDeadline(flushUsageRef.current({ beforeConnect: true }), DELAI_PREPARATION_MS);
         // ── Ce que le réseau va voir ──────────────────────────────────────
         //
         // Jusqu'ici, l'application n'avait qu'UNE façon de se présenter. Quand

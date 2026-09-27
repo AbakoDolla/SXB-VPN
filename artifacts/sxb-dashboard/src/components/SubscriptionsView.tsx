@@ -1,6 +1,7 @@
 import { useTranslation } from '../contexts/I18nContext';
 import { isAdmin as isAdminRole, isReseller as isResellerRole } from '../lib/roles';
 import React, { useEffect, useState, useMemo } from 'react';
+import { useQuotaPolling } from '../hooks/useQuotaPolling';
 import { UserRole } from '../types';
 import {
   fetchSubscriptions, fetchSubStats, createSubscription,
@@ -194,6 +195,10 @@ export default function SubscriptionsView({ currentUserRole }: Props) {
   };
 
   useEffect(() => { load(); }, []);
+  useQuotaPolling(async () => {
+    const [subscriptions, stats] = await Promise.all([fetchSubscriptions(), fetchSubStats()]);
+    return () => { setSubs(subscriptions); setStats(stats); };
+  }, !loading && !pending && !showModal && !bulkConfirm && !adjustment);
 
   const clientMap = useMemo(() => Object.fromEntries(clients.map(c => [c.id, c])), [clients]);
 

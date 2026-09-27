@@ -1162,7 +1162,11 @@ test("on voit et on gère les forfaits d'un client DEPUIS la liste des clients",
   // requêtes, et le regroupement redeviendrait quadratique à chaque rendu.
   assert.match(vue, /const forfaitsParClient = useMemo/);
   assert.match(vue, /table\.get\(sub\.clientId\)/);
-  assert.equal((vue.match(/fetchSubscriptions\(\)/g) || []).length, 1);
+  const polling = vue.slice(vue.indexOf('useQuotaPolling(async'), vue.indexOf('const handleCreate'));
+  assert.ok(polling.includes('Promise.all([fetchClients(), fetchSubscriptions()])'));
+  // Un chargement groupé au départ, un par cycle visible : jamais un par client.
+  assert.equal((polling.match(/fetchSubscriptions\(\)/g) || []).length, 1);
+  assert.equal((vue.replace(polling, '').match(/fetchSubscriptions\(\)/g) || []).length, 1);
 
   // ── 3. L'échec des forfaits n'emporte pas la liste des clients ──────────
   // Elle est l'objet de l'écran ; les forfaits n'en sont qu'un complément.

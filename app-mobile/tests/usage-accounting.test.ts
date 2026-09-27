@@ -76,6 +76,7 @@ async function reporter() {
   const state: any = {
     stats: { lifetimeUploadBytes: 1, lifetimeDownloadBytes: 1, uploadBytes: 0, downloadBytes: 0 },
     posts: [], quota: null, stops: 0, epoch: 0, retries: new Map(), timerId: 0,
+    profiles: ['normal', 'trial'].map(configId => ({ configId, subscriptionId: configId })),
   };
   const env: any = {
     ...h.ledger,
@@ -88,6 +89,8 @@ async function reporter() {
     ledgerBusyRef: ref(false), ledgerFlushRef: ref(null),
     usageRetryTimerRef: ref(null), USAGE_REPORT_INTERVAL_MS: 20_000,
     usageMountedRef: ref(true),
+    usageRetryAtRef: ref(0), usageFailuresRef: ref(0),
+    usageRetryDelay: () => 20_000,
     setTimeout: (callback: () => void, delay: number) => {
       const id = ++state.timerId;
       state.retries.set(id, { callback, delay });
@@ -111,7 +114,7 @@ async function reporter() {
     SxbVpnNative: { getTrafficStats: async () => ({ ...state.stats }) },
     getAccessState: () => ({ authority: { userId: 'fixture-user', deviceId: 'fixture-device' } }),
     configStore: {
-      list: async () => ({ status: 'ok', value: ['normal', 'trial'].map(configId => ({ configId, subscriptionId: configId })) }),
+      list: async () => ({ status: 'ok', value: state.profiles }),
     },
     storeValue: (result: any) => result.value,
     apiClient: { post: async (_url: string, body: any) => {
@@ -161,6 +164,29 @@ describe('durable byte accounting', () => {
     assert.equal(h.ledger.pendingBytes(ledger), 62);
   });
 
+  it('preserves explicit unlinking through frozen chunking and disk replay without rewriting legacy entries', async () => {
+    const h = await services();
+    const legacy = { subscriptionId: null, configId: 'old-manual', sessionId: 'one-app-session' };
+    let ledger = h.ledger.accumulate(h.ledger.emptyLedger(), { up: 2, down: 3 }, legacy);
+    const manual = { subscriptionId: null, configId: 'manual', attribution: 'unlinked' as const, sessionId: legacy.sessionId };
+    ledger = h.ledger.accumulate(ledger, { up: 2, down: h.ledger.MAX_REPORT_BYTES + 12 }, manual);
+    assert.equal(ledger.entries.length, 2, 'different manual configurations must not coalesce');
+    await h.ledger.saveLedger(ledger);
+    const first = h.ledger.nextReport(await h.ledger.loadLedger())!;
+    assert.equal(first.report.attribution, undefined, 'legacy identity is not rewritten');
+    ledger = h.ledger.settle(first.ledger, first.report);
+    const chunk = h.ledger.nextReport(ledger)!;
+    assert.equal(chunk.report.attribution, 'unlinked');
+    assert.equal(chunk.report.bytesDown, h.ledger.MAX_REPORT_BYTES);
+    await h.ledger.saveLedger(chunk.ledger);
+    const replay = h.ledger.nextReport(await h.ledger.loadLedger())!;
+    assert.deepEqual(replay.report, chunk.report);
+    const tail = h.ledger.nextReport(h.ledger.settle(replay.ledger, replay.report))!;
+    assert.equal(tail.report.attribution, 'unlinked');
+    assert.equal(tail.report.bytesDown, 9);
+    assert.notEqual(tail.report.seq, chunk.report.seq);
+  });
+
   it('does not acknowledge persistence when storage refused the write', async () => {
     const h = await services();
     h.state.failWrites = true;
@@ -183,6 +209,8 @@ describe('durable byte accounting', () => {
       '', '{', 'null', '{}', JSON.stringify({ ...saved, entries: [{}] }),
       JSON.stringify({ ...saved, entries: [{ ...saved.entries[0], subscriptionId: 17 }] }),
       JSON.stringify({ ...saved, context: { sessionId: 'saved', subscriptionId: {} } }),
+      JSON.stringify({ ...saved, entries: [{ ...saved.entries[0], attribution: 'unlinked' }] }),
+      JSON.stringify({ ...saved, context: { sessionId: 'saved', subscriptionId: null, attribution: 'invalid' } }),
       JSON.stringify({ ...saved, quotas: { normal: { usedBytes: 'bad', totalBytes: 100 } } }),
     ]) {
       h.state.storage.set(key, corrupt);
@@ -310,6 +338,73 @@ describe('durable byte accounting', () => {
 });
 
 describe('provider traffic report lifecycle', () => {
+  it('seeds the first offline display from provisioned metadata without a legacy quota key', async () => {
+    const h = await reporter();
+    h.state.profiles[0] = { configId: 'normal', subscriptionId: 'normal', quotaTotal: 1000, quotaUsed: 7 };
+    await h.flushUsage({ beforeConnect: true });
+    h.state.stats = { lifetimeUploadBytes: 11, lifetimeDownloadBytes: 21 };
+    h.state.respond = async () => { throw new Error('OFFLINE'); };
+    await h.flushUsage();
+    const projection = h.ledger.quotaProjection(h.env.ledgerRef.current, { subscriptionId: 'normal' });
+    assert.equal(projection.accountedUsedBytes, 7);
+    assert.equal(projection.pendingBytes, 30, 'real first bytes must be visible before the first acknowledgement');
+  });
+
+  it('uses the managed subscription identity rather than the local storage alias', async () => {
+    const h = await reporter();
+    h.env.runningProfileRef.current = { configId: 'local-alias', source: 'backend' };
+    h.state.profiles = [{ configId: 'local-alias', subscriptionId: 'normal', source: 'backend' }];
+    h.state.stats = { lifetimeUploadBytes: 11, lifetimeDownloadBytes: 21 };
+    await h.flushUsage();
+    assert.equal(h.state.posts[0].subscriptionId, 'normal');
+    assert.equal(h.env.runningProfileRef.current.subscriptionId, 'normal');
+  });
+
+  it('does not turn failure to persist the pre-connect anchor into permission to start', () => {
+    const source = readFileSync(path.join(mobile, 'contexts', 'VpnContext.tsx'), 'utf8');
+    assert.doesNotMatch(source, /avecDelai\(flushUsageRef\.current\(\{ beforeConnect: true \}\)/);
+  });
+
+  it('does not erase rejected ownership evidence as a success-shaped receipt', async () => {
+    const h = await reporter();
+    h.state.stats = { lifetimeUploadBytes: 11, lifetimeDownloadBytes: 21 };
+    h.state.respond = async () => { throw { response: { status: 403, data: { code: 'OWNERSHIP_FORBIDDEN' } } }; };
+    await h.flushUsage();
+    assert.equal(h.ledger.pendingBytes(await h.ledger.loadLedger()), 30);
+  });
+
+  it('keeps refused reports durable without blocking another owned subscription', async () => {
+    const h = await reporter();
+    h.env.ledgerRef.current = h.ledger.accumulate(h.env.ledgerRef.current, { up: 11, down: 21 }, {
+      configId: 'trial', subscriptionId: 'trial', sessionId: 'removed-trial',
+    });
+    h.state.stats = { lifetimeUploadBytes: 13, lifetimeDownloadBytes: 24 };
+    h.state.respond = async (body: any) => {
+      if (body.subscriptionId === 'trial') throw { response: { status: 403, data: { code: 'OWNERSHIP_FORBIDDEN' } } };
+      return { data: { ok: true, subscriptionId: 'normal', quotaUsedBytes: 5, quotaTotalBytes: 1000 } };
+    };
+    await h.flushUsage();
+    const saved = await h.ledger.loadLedger();
+    assert.equal(h.state.posts.length, 2);
+    assert.equal(h.ledger.pendingBytes(saved), 30);
+    assert.equal(saved.entries[0].subscriptionId, 'trial');
+    assert.equal(saved.entries[0].frozen, true);
+    assert.equal(h.ledger.nextReport(saved), null);
+    assert.equal((await h.offline.loadQuotaData('normal'))?.usedQuota, 5);
+    assert.ok(h.ledger.nextAttemptDelay(saved) > 250_000);
+  });
+
+  it('does not bypass reporting backoff on a native or foreground wake', async () => {
+    const h = await reporter();
+    h.state.stats = { lifetimeUploadBytes: 11, lifetimeDownloadBytes: 21 };
+    h.state.respond = async () => { throw { response: { status: 429 } }; };
+    await h.flushUsage();
+    h.state.stats = { lifetimeUploadBytes: 13, lifetimeDownloadBytes: 24 };
+    await h.flushUsage({ final: true });
+    assert.equal(h.state.posts.length, 1);
+    assert.equal(h.ledger.pendingBytes(await h.ledger.loadLedger()), 35);
+  });
+
   it('saves a replayed trial receipt to the trial, not the newly selected normal plan', async () => {
     const h = await reporter();
     await h.offline.saveQuotaData({ configId: 'normal', totalQuota: 1000, usedQuota: 7, expiryDate: null });
@@ -429,6 +524,49 @@ describe('provider traffic report lifecycle', () => {
     assert.equal(h.state.posts[0].bytesUp + h.state.posts[0].bytesDown, 5);
     assert.equal(h.state.posts[1].subscriptionId, 'normal');
     assert.equal(h.state.posts[1].bytesUp + h.state.posts[1].bytesDown, 9);
+  });
+
+  it('does not inherit a backend subscription when switching to an unlinked manual profile', async () => {
+    const h = await reporter();
+    h.env.ledgerRef.current = { ...h.env.ledgerRef.current, context: {
+      configId: 'normal', subscriptionId: 'normal', sessionId: 'old-backend',
+    } };
+    h.state.profiles.push({ configId: 'manual', source: 'manual' });
+    h.env.runningProfileRef.current = { configId: 'manual' };
+    h.env.activeConfigIdRef.current = 'manual';
+    h.state.stats = { lifetimeUploadBytes: 3, lifetimeDownloadBytes: 4 };
+    await h.flushUsage({ beforeConnect: true });
+    const anchored = await h.ledger.loadLedger();
+    assert.equal(anchored.context?.configId, 'manual');
+    assert.equal(anchored.context?.subscriptionId, null);
+    assert.equal(anchored.context?.attribution, 'unlinked');
+    h.state.respond = async (body: any) => {
+      if (!body.subscriptionId) {
+        throw new Error('OFFLINE');
+      }
+      return { data: { ok: true, subscriptionId: 'normal', quotaUsedBytes: 5, quotaTotalBytes: 1000 } };
+    };
+    h.state.stats = { lifetimeUploadBytes: 7, lifetimeDownloadBytes: 9 };
+    await h.flushUsage();
+    assert.equal(h.state.posts.length, 2);
+    assert.equal(h.state.posts[0].subscriptionId, 'normal');
+    assert.equal(h.state.posts[0].bytesUp + h.state.posts[0].bytesDown, 5);
+    assert.equal(h.state.posts[1].subscriptionId, undefined);
+    assert.equal(h.state.posts[1].reportMode, 'unlinked');
+    assert.equal(h.state.posts[1].bytesUp + h.state.posts[1].bytesDown, 9);
+    const persisted = await h.ledger.loadLedger();
+    assert.equal(persisted.entries.length, 1);
+    assert.equal(persisted.entries[0].configId, 'manual');
+    assert.equal(persisted.entries[0].subscriptionId, null);
+    assert.equal(persisted.entries[0].attribution, 'unlinked');
+    assert.equal(h.ledger.pendingBytes(persisted), 9);
+    h.env.ledgerRef.current = null;
+    h.env.usageRetryAtRef.current = 0;
+    h.state.respond = async () => ({ data: { ok: true, subscriptionId: null } });
+    await h.flushUsage();
+    assert.deepEqual(h.state.posts[2], h.state.posts[1]);
+    assert.equal(h.ledger.pendingBytes(await h.ledger.loadLedger()), 0);
+    assert.equal(h.state.stops, 0);
   });
 
   it('retains the accepted byte floor when a stale cached snapshot arrives later', async () => {

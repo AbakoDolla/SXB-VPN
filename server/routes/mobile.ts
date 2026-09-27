@@ -173,10 +173,12 @@ export async function applyUsageDelta(
   seq?: number,
   uploadBytes: bigint = 0n,
   deviceId: string | null = null,
+  attribution?: "unlinked",
 ): Promise<UsageDeltaResult> {
   // Garde anti-abus : rejet si <= 0 ou > 5 Go par appel
   const MAX_DELTA = BigInt(MAX_USAGE_REPORT_BYTES);
-  if (deltaBytes <= 0n || deltaBytes > MAX_DELTA || uploadBytes < 0n || uploadBytes > deltaBytes) {
+  if (deltaBytes <= 0n || deltaBytes > MAX_DELTA || uploadBytes < 0n || uploadBytes > deltaBytes ||
+      (attribution === "unlinked" && subscriptionId)) {
     return { applied: false, reason: "invalid_delta" };
   }
   if (!clientId) return { applied: false, reason: "client_required" };
@@ -199,6 +201,7 @@ export async function applyUsageDelta(
   try {
   let resolvedSubscriptionId = subscriptionId;
   let duplicate = false;
+  let ambiguousSubscription = false;
   if (prisma) {
     await (prisma as any).$transaction(async (tx: any) => {
       if (durableKey) {
@@ -212,12 +215,17 @@ export async function applyUsageDelta(
         }
       }
       let subId = resolvedSubscriptionId;
-      if (!subId && clientId) {
-        const activeSub = await tx.subscription.findFirst({
+      if (!subId && clientId && attribution !== "unlinked") {
+        const activeSubs = await tx.subscription.findMany({
           where: { clientId, status: "active" },
           orderBy: { createdAt: "desc" },
+          take: 2,
         });
-        subId = activeSub?.id;
+        if (activeSubs.length > 1) {
+          ambiguousSubscription = true;
+          return;
+        }
+        subId = activeSubs[0]?.id;
       }
 
       if (subId) {
@@ -264,14 +272,17 @@ export async function applyUsageDelta(
       }
     });
 
+    if (ambiguousSubscription) return { applied: false, reason: "subscription_required" };
     if (!duplicate && subscriptionId && !resolvedSubscriptionId) {
       return { applied: false, reason: "subscription_not_owned" };
     }
   } else {
     // In-memory fallback
-    if (!resolvedSubscriptionId) {
+    if (!resolvedSubscriptionId && attribution !== "unlinked") {
+      const activeSubs = inMemoryDb.subscriptions?.filter((sub: any) => sub.clientId === clientId && sub.status === "active") || [];
+      if (activeSubs.length > 1) return { applied: false, reason: "subscription_required" };
       resolvedSubscriptionId = selectMobileSubscription({
-        subscriptions: inMemoryDb.subscriptions?.filter((sub: any) => sub.clientId === clientId),
+        subscriptions: activeSubs,
       })?.id ?? null;
     }
     if (resolvedSubscriptionId) {
@@ -1327,11 +1338,12 @@ router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => 
       bytesDown: z.number().int().min(0).max(MAX_USAGE_REPORT_BYTES),
       sessionId: z.string().optional(),
       seq:       z.number().int().min(0).optional(),
-      reportMode: z.literal('delta').optional(),
+      reportMode: z.enum(['delta', 'unlinked']).optional(),
       subscriptionId: z.string().optional(),
       deviceId: z.string().min(5).optional(),
-    });
-    const { bytesUp, bytesDown, sessionId, seq, subscriptionId, deviceId } = schema.parse(req.body);
+    }).refine(value => value.reportMode !== 'unlinked' || !value.subscriptionId);
+    const { bytesUp, bytesDown, sessionId, seq, subscriptionId, deviceId, reportMode } = schema.parse(req.body);
+    const attribution = reportMode === 'unlinked' ? 'unlinked' : undefined;
     const totalBytes = BigInt(bytesUp) + BigInt(bytesDown);
     if (totalBytes > BigInt(MAX_USAGE_REPORT_BYTES)) return res.status(400).json({ ok: false, error: "errors.validation", code: "INVALID_USAGE_DELTA" });
 
@@ -1341,7 +1353,10 @@ router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => 
     let creditedSubscriptionId: string | null = subscriptionId || null;
     let duplicate = false;
     if (totalBytes > 0n) {
-      const applied = await applyUsageDelta(client.id, subscriptionId || null, totalBytes, sessionId, seq, BigInt(bytesUp), deviceId || null);
+      const applied = await applyUsageDelta(client.id, subscriptionId || null, totalBytes, sessionId, seq, BigInt(bytesUp), deviceId || null, attribution);
+      if (!applied.applied && applied.reason === "subscription_required") {
+        return res.status(409).json({ ok: false, error: "errors.validation", code: "USAGE_SUBSCRIPTION_REQUIRED" });
+      }
       if (!applied.applied && applied.reason === "subscription_not_owned") {
         return res.status(403).json({
           error: "errors.auth.forbidden",
@@ -1358,6 +1373,9 @@ router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => 
       if (applied.subscriptionId !== undefined) creditedSubscriptionId = applied.subscriptionId;
     }
 
+    if (!creditedSubscriptionId && (attribution === "unlinked" || totalBytes > 0n)) {
+      return res.json({ ok: true, duplicate, subscriptionId: null });
+    }
     const updatedClient: any = await findClientByUserId(req.user!.userId, req.user!.clientId, deviceIdFromRequest(req));
     const subscriptions = (updatedClient || client)?.subscriptions || [];
     const selectedSub = creditedSubscriptionId
@@ -1585,6 +1603,9 @@ router.post("/vpn/usage", async (req: AuthenticatedRequest, res: Response) => {
     let duplicate = false;
     if (totalBytes > 0n) {
       const applied = await applyUsageDelta(client.id, subscriptionId || null, totalBytes, sessionId, seq, BigInt(upload), deviceId || null);
+      if (!applied.applied && applied.reason === "subscription_required") {
+        return res.status(409).json({ success: false, error: "errors.validation", code: "USAGE_SUBSCRIPTION_REQUIRED" });
+      }
       if (!applied.applied && applied.reason === "subscription_not_owned") {
         return res.status(403).json({
           error: "errors.auth.forbidden",
@@ -1599,6 +1620,9 @@ router.post("/vpn/usage", async (req: AuthenticatedRequest, res: Response) => {
       if (applied.subscriptionId !== undefined) creditedSubscriptionId = applied.subscriptionId;
     }
 
+    if (!creditedSubscriptionId && totalBytes > 0n) {
+      return res.json({ success: true, duplicate, subscriptionId: null });
+    }
     const updatedClient: any = await findClientByUserId(req.user!.userId, req.user!.clientId, deviceIdFromRequest(req));
     const subscriptions = (updatedClient || client).subscriptions || [];
     const selectedSub = creditedSubscriptionId

@@ -19,6 +19,8 @@ import com.sxbvpn.vpnmodule.SxbSecureLogger
 import com.sxbvpn.vpnmodule.SxbSecureLogger.VpnEvent
 import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import com.facebook.react.jstasks.HeadlessJsTaskConfig
+import com.facebook.react.jstasks.HeadlessJsTaskContext
 import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.FirebaseApp
 import com.google.firebase.installations.FirebaseInstallations
@@ -50,6 +52,9 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
     private var statusReceiver: BroadcastReceiver? = null
     private var logReceiver: BroadcastReceiver? = null
     private var accessReceiver: BroadcastReceiver? = null
+    private var usageReceiver: BroadcastReceiver? = null
+    @Volatile private var usageReportingEnabled = false
+    private var usageTaskId: Int? = null
     private val accessExecutor = Executors.newSingleThreadExecutor { action ->
         Thread(action, "SXB-AccessBridge").apply { isDaemon = true }
     }
@@ -113,6 +118,10 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
     }
 
     override fun getName() = "SxbVpnNative"
+
+    @ReactMethod
+    fun setUsageReportingEnabled(enabled: Boolean) { usageReportingEnabled = enabled }
+
     override fun getConstants(): Map<String, Any> = mapOf(
         "distribution" to SxbPrivacyPolicy.distribution(reactApplicationContext),
     )
@@ -586,6 +595,17 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             }
         }
 
+        usageReceiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context?, i: Intent?) {
+                if (!usageReportingEnabled || !SxbPrivacyPolicy.vpnAllowed(ctx)) return
+                val tasks = HeadlessJsTaskContext.getInstance(ctx)
+                if (usageTaskId?.let { tasks.isTaskRunning(it) } == true) return
+                usageTaskId = tasks.startTask(HeadlessJsTaskConfig(
+                    "SxbUsageReport", Arguments.createMap(), 180_000L, true,
+                ))
+            }
+        }
+
         val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             Context.RECEIVER_NOT_EXPORTED
         } else 0
@@ -594,6 +614,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             ctx.registerReceiver(statusReceiver, IntentFilter(SxbVpnService.BROADCAST_STATUS), flags)
             ctx.registerReceiver(logReceiver,    IntentFilter(SxbVpnService.BROADCAST_LOG),    flags)
             ctx.registerReceiver(accessReceiver, IntentFilter(SxbAccessControl.BROADCAST), flags)
+            ctx.registerReceiver(usageReceiver, IntentFilter("com.sxbvpn.USAGE_TICK"), flags)
         } else {
             @Suppress("UnspecifiedRegisterReceiverFlag")
             ctx.registerReceiver(statusReceiver, IntentFilter(SxbVpnService.BROADCAST_STATUS))
@@ -601,6 +622,8 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             ctx.registerReceiver(logReceiver,    IntentFilter(SxbVpnService.BROADCAST_LOG))
             @Suppress("UnspecifiedRegisterReceiverFlag")
             ctx.registerReceiver(accessReceiver, IntentFilter(SxbAccessControl.BROADCAST))
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            ctx.registerReceiver(usageReceiver, IntentFilter("com.sxbvpn.USAGE_TICK"))
         }
 
         SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.SERVICE_STARTED)
@@ -610,8 +633,11 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
         try { reactApplicationContext.unregisterReceiver(statusReceiver) } catch (_: Exception) {}
         try { reactApplicationContext.unregisterReceiver(logReceiver)    } catch (_: Exception) {}
         try { reactApplicationContext.unregisterReceiver(accessReceiver) } catch (_: Exception) {}
+        try { reactApplicationContext.unregisterReceiver(usageReceiver) } catch (_: Exception) {}
         statusReceiver = null
         logReceiver    = null
         accessReceiver = null
+        usageReceiver = null
+        usageReportingEnabled = false
     }
 }
