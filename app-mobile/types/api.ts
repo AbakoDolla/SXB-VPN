@@ -87,6 +87,16 @@ export interface VpnConnection {
    * un libellé modifiable, et un forfait ordinaire peut le porter.
    */
   isFreeTrial: boolean;
+  /**
+   * Le compte acheté chez le fournisseur (échéance de la configuration VPN du
+   * tableau de bord) est-il arrivé à terme ?
+   *
+   * Le forfait peut rester « actif » alors que ce compte n'ouvre plus rien :
+   * l'échéance fournisseur est une information d'exploitation, elle ne bloque
+   * pas l'accès. L'application s'en sert pour ne jamais PROPOSER une telle
+   * configuration comme issue de secours. Absent d'un serveur plus ancien.
+   */
+  providerExpired?: boolean;
 }
 
 export interface ConnectionsResponse {

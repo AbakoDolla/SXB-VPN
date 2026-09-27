@@ -292,7 +292,7 @@ interface VpnContextType {
   activeConnection:   VpnConnection | null;
   stepLogs:           StepLogItem[];
   // Multi-config
-  savedConfigs:       Array<{ id: string; name: string; protocol: string; isActive: boolean; status?: ProfileStatus; isFreeTrial?: boolean }>;
+  savedConfigs:       Array<{ id: string; name: string; protocol: string; isActive: boolean; status?: ProfileStatus; isFreeTrial?: boolean; expiryDate?: string | null }>;
   activeConfigId:     string | null;
   switchConfig:       (configId: string) => Promise<void>;
   isSwitchingConfig:  boolean;
@@ -1776,6 +1776,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       // Marqueur d'essai tel que le serveur l'a établi, conservé au registre :
       // l'accueil s'y fie hors ligne, sans jamais relire le nom du forfait.
       isFreeTrial: entry.isFreeTrial === true,
+      // Échéance du registre : hors ligne, c'est la seule qui dise qu'une
+      // configuration encore marquée « active » a passé sa date. L'accueil
+      // s'en sert pour ne pas la proposer en secours.
+      expiryDate: entry.expiryDate ?? null,
     })));
     if (id && !selected?.isActive) storeValue(await configStore.setActive(id));
   }, [setSavedConfigs, setActiveConfigId]);
@@ -2333,6 +2337,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       protocol: entry.displayProtocol || entry.protocol || '',
       isActive: entry.isActive === true,
       isFreeTrial: entry.isFreeTrial === true,
+      expiryDate: entry.expiryDate ?? null,
     })));
 
     if (wasActive) {

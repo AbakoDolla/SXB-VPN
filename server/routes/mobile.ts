@@ -9,7 +9,7 @@ import { refreshMobileSession } from "../services/mobile-session-refresh";
 import { deviceIdFromRequest } from "../services/mobile-principal";
 import {
   deviceAccessStatus, deviceAccessFailure, subscriptionAccessStatus, subscriptionAccessFailure,
-  MobileAccessError, sessionInvalidFailure,
+  MobileAccessError, sessionInvalidFailure, accessDateExpired,
 } from "../services/access-lifecycle";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { generateTokens, requireAuth, AuthenticatedRequest } from "../middleware/auth";
@@ -1477,6 +1477,13 @@ router.get("/connections", async (req: AuthenticatedRequest, res: Response) => {
         configHash:    configHashForProfile(profile),
         /** Cet accès provient-il d'un essai gratuit déployé ? (marqueur structurel) */
         isFreeTrial:   forfaitsEssai.has(String(sub.id)),
+        // Échéance du compte fournisseur (configuration VPN du tableau de
+        // bord). Elle ne change pas `status` — c'est une information
+        // d'exploitation, le forfait reste accessible — mais l'application ne
+        // doit pas PROPOSER cette configuration en secours après un échec :
+        // ce compte n'ouvre plus rien. Un booléen seulement, jamais la date
+        // ni aucun champ technique du fournisseur.
+        providerExpired: accessDateExpired(profile?.expiresAt, now),
       };
     });
 

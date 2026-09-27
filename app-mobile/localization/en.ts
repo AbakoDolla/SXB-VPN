@@ -517,6 +517,8 @@ export const en = {
   stop_quota_epuise: "Data used up on this configuration",
   switch_suggestion: "Another configuration is available",
   switch_action: "Switch now",
+  switch_after_failure: "Connection failed — try another configuration",
+  switch_try_action: "Try now",
   journal_share: "Share this log",
   journal_open: "Activity journal",
   journal_open_hint: "Follow the connection steps",
