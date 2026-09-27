@@ -495,7 +495,7 @@ router.post("/auth/activate", async (req, res: Response) => {
       (decision.action === "bind" ||
         decision.action === "rebind" ||
         (decision.action === "already_bound" && !client.activatedAt));
-    if (doitConfirmerAppareil) {
+    if (doitConfirmerAppareil && prisma) {
       const porteeConflit = client.managedById
         ? { managedById: client.managedById }
         : client.resellerId

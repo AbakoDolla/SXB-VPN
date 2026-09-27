@@ -8,7 +8,8 @@ export const securityPolicySchema = z.object({
   version: z.number().int().positive(),
   medium: z.number().int().min(11).max(64),
   high: z.number().int().min(65).max(89),
-  weights: z.record(z.enum(SIGNAUX_MOBILES), z.number().int().min(0).max(89)),
+  weights: z.record(z.enum(SIGNAUX_MOBILES), z.number().int().min(0).max(89))
+    .refine(value => SIGNAUX_MOBILES.every(signal => typeof value[signal] === 'number'), 'SECURITY_POLICY_WEIGHTS_INCOMPLETE'),
   certificates: z.array(z.string().regex(/^[a-f0-9]{64}$/)).min(1).max(8),
   packageName: z.literal('com.sxbvpn.mobile'),
 }).strict();
@@ -27,10 +28,9 @@ export async function writeSecurityPolicy(value: unknown) {
   if (!prisma) throw new Error('SECURITY_DATABASE_REQUIRED');
   const next = securityPolicySchema.parse(value);
   return prisma.$transaction(async tx => {
-    await tx.setting.upsert({
-      where: { key: SECURITY_POLICY_KEY },
-      create: { key: SECURITY_POLICY_KEY, value: JSON.stringify(DEFAULT_SECURITY_POLICY) }, update: {},
-    });
+    await tx.$executeRaw`INSERT INTO settings (key, value)
+      VALUES (${SECURITY_POLICY_KEY}, ${JSON.stringify(DEFAULT_SECURITY_POLICY)})
+      ON CONFLICT (key) DO NOTHING`;
     await tx.$queryRaw`SELECT key FROM settings WHERE key = ${SECURITY_POLICY_KEY} FOR UPDATE`;
     const previous = await tx.setting.findUniqueOrThrow({ where: { key: SECURITY_POLICY_KEY } });
     const current = securityPolicySchema.parse(JSON.parse(previous.value));

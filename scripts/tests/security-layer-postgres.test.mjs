@@ -287,14 +287,24 @@ try {
   check('actual owner console unlock succeeds', unlock.status, 200);
   const policyHeaders = (method, target, value) => headers(a, method, target, value ? JSON.stringify(value) : '', owner.token,
     { 'X-SXB-Security-Unlock': unlock.data.unlockToken });
-  const policy = await request(a, '/api/security/policy', undefined, owner.token, { headers: policyHeaders('GET', '/api/security/policy') });
-  check('policy route is mounted independently of event reads', policy.status, 200);
-  const changedPolicy = { ...policy.data, version: policy.data.version + 1 };
-  const updates = await Promise.all(Array.from({ length: 4 }, () => request(a, '/api/security/policy', changedPolicy, owner.token, {
-    method: 'PUT', headers: policyHeaders('PUT', '/api/security/policy', changedPolicy),
-  })));
-  check('concurrent policy edit has one winner', updates.filter(item => item.status === 200).length, 1);
-  check('concurrent stale policy edits are explicit conflicts', updates.filter(item => item.status === 409).length, 3);
+  const policyKey = 'mobile.security.policy.v1';
+  await prisma.setting.deleteMany({ where: { key: policyKey } });
+  check('policy cold-start fixture really has no setting', await prisma.setting.count({ where: { key: policyKey } }), 0);
+  for (const state of ['absent', 'existing']) {
+    const policy = await request(a, '/api/security/policy', undefined, owner.token, { headers: policyHeaders('GET', '/api/security/policy') });
+    check(`policy route reads ${state} policy independently of events`, policy.status, 200);
+    const changedPolicy = { ...policy.data, version: policy.data.version + 1 };
+    const updates = await Promise.all(Array.from({ length: 4 }, () => request(a, '/api/security/policy', changedPolicy, owner.token, {
+      method: 'PUT', headers: policyHeaders('PUT', '/api/security/policy', changedPolicy),
+    })));
+    check(`concurrent ${state} policy edit has one winner`, updates.filter(item => item.status === 200).length, 1);
+    check(`concurrent ${state} policy stale edits are explicit conflicts`, updates.filter(item => item.status === 409).length, 3);
+    const persisted = await prisma.setting.findUniqueOrThrow({ where: { key: policyKey } });
+    check(`${state} policy advances exactly one version`, JSON.parse(persisted.value).version, changedPolicy.version);
+  }
+  const incompletePolicy = { ...JSON.parse((await prisma.setting.findUniqueOrThrow({ where: { key: policyKey } })).value), weights: {} };
+  check('incomplete policy weights cannot produce NaN risk scores', (await request(a, '/api/security/policy',
+    incompletePolicy, owner.token, { method: 'PUT', headers: policyHeaders('PUT', '/api/security/policy', incompletePolicy) })).status, 400);
   const invalidFilter = '/api/security/events?from=not-a-date';
   check('invalid console date filter rejected', (await request(a, invalidFilter, undefined, owner.token,
     { headers: policyHeaders('GET', invalidFilter) })).status, 400);

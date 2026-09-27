@@ -829,7 +829,8 @@ describe("gardes posées sur les routes", () => {
 
   it("confirme la première activation et transforme les collisions uniques en 409", () => {
     const mobile = lire("../routes/mobile.ts");
-    assert.ok(mobile.includes('import { CODES_ACTIVATION, evaluerActivation }'));
+    assert.ok(mobile.includes('import { CODES_ACTIVATION, evaluerActivation, lockActivationClaim }'));
+    assert.ok(mobile.includes('await lockActivationClaim(tx, client, decision.deviceId!)'));
     assert.ok(mobile.includes('decision.action === "already_bound" && !client.activatedAt'));
     assert.ok(mobile.includes('updateError?.code === "P2002"'));
     assert.ok(mobile.includes("CODES_ACTIVATION.DEVICE_CLAIMED"));
