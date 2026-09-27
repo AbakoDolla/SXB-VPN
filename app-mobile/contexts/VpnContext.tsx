@@ -292,7 +292,7 @@ interface VpnContextType {
   activeConnection:   VpnConnection | null;
   stepLogs:           StepLogItem[];
   // Multi-config
-  savedConfigs:       Array<{ id: string; name: string; protocol: string; isActive: boolean; status?: ProfileStatus; isFreeTrial?: boolean; expiryDate?: string | null }>;
+  savedConfigs:       Array<{ id: string; name: string; protocol: string; isActive: boolean; status?: ProfileStatus; isFreeTrial?: boolean; expiryDate?: string | null; subscriptionId?: string; source?: 'backend' | 'manual' }>;
   activeConfigId:     string | null;
   switchConfig:       (configId: string) => Promise<void>;
   isSwitchingConfig:  boolean;
@@ -1780,6 +1780,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       // configuration encore marquée « active » a passé sa date. L'accueil
       // s'en sert pour ne pas la proposer en secours.
       expiryDate: entry.expiryDate ?? null,
+      // Identité d'abonnement, en LECTURE seule : un alias local garde son
+      // forfait, une manuelle non liée n'en a aucun. Le secours y lit l'état
+      // serveur du bon forfait ; la sélection se fait toujours par `id`.
+      subscriptionId: entry.subscriptionId, source: entry.source,
     })));
     if (id && !selected?.isActive) storeValue(await configStore.setActive(id));
   }, [setSavedConfigs, setActiveConfigId]);
@@ -2338,6 +2342,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       isActive: entry.isActive === true,
       isFreeTrial: entry.isFreeTrial === true,
       expiryDate: entry.expiryDate ?? null,
+      subscriptionId: entry.subscriptionId, source: entry.source,
     })));
 
     if (wasActive) {

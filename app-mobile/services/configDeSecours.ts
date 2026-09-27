@@ -40,14 +40,37 @@ export interface ConfigCandidate {
   isActive: boolean;
   status?: string;
   expiryDate?: string | null;
+  /** Identité d'abonnement du registre, lue seulement (voir `forfaitDeLaConfig`). */
+  subscriptionId?: string;
+  source?: 'backend' | 'manual';
 }
 
-/** Ce que le serveur dit du forfait correspondant (`/mobile/connections`). */
+/**
+ * Ce que le serveur dit d'un forfait (`/mobile/connections`) : `id` est
+ * l'identifiant du FORFAIT, pas forcément celui de la configuration.
+ */
 export interface ConnexionServeur {
   id: string;
   status?: string;
   expiresAt?: string | null;
   providerExpired?: boolean;
+}
+
+/**
+ * Le forfait serveur dont une configuration tire ses droits, ou `null`.
+ *
+ * Même identité que le compteur de consommation : le forfait porté par la
+ * configuration, sinon son propre identifiant si elle vient du tableau de
+ * bord. Un ALIAS local — configuration dont l'identifiant diffère de celui de
+ * son forfait — lit donc l'état de SON forfait. Une configuration manuelle
+ * non liée n'en a aucun : elle n'hérite pas d'une entrée serveur qui
+ * porterait son identifiant par hasard.
+ *
+ * Lecture seule : rien n'est réécrit, et la sélection se fait toujours par
+ * `id`.
+ */
+export function forfaitDeLaConfig(config: Pick<ConfigCandidate, 'id' | 'subscriptionId' | 'source'>): string | null {
+  return config.subscriptionId || (config.source === 'backend' ? config.id : null);
 }
 
 /**
@@ -65,6 +88,9 @@ export interface ConnexionServeur {
  *   - un compte fournisseur arrivé à échéance : le serveur continue de dire
  *     le forfait « actif », mais le compte acheté chez le fournisseur n'ouvre
  *     plus rien. Le proposer, ce serait activer à coup sûr un échec.
+ *
+ * Ce que dit le serveur se lit sur le forfait de la configuration
+ * (`forfaitDeLaConfig`), alias compris.
  *
  * L'ordre du registre est conservé : c'est celui que l'utilisateur voit dans
  * le sélecteur, la suggestion reste donc prévisible.
@@ -84,7 +110,8 @@ export function choisirConfigDeSecours<T extends ConfigCandidate>(
     if (config.isActive || essayees.has(config.id)) return false;
     if (ETATS_BLOQUANTS.has(String(config.status ?? 'active'))) return false;
     if (profilEpuiseOuExpire({ expiryDate: config.expiryDate }, maintenant)) return false;
-    const distante = serveur.get(config.id);
+    const forfait = forfaitDeLaConfig(config);
+    const distante = forfait ? serveur.get(forfait) : undefined;
     if (!distante) return true;
     if (ETATS_BLOQUANTS.has(String(distante.status ?? 'active'))) return false;
     if (distante.providerExpired === true) return false;

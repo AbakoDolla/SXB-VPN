@@ -274,6 +274,32 @@ y compris avant activation du compte. Si les onglets de navigateur ne sont pas
 disponibles, il essaie le gestionnaire HTTPS de l'appareil, puis indique l'échec
 explicitement. Installer Telegram n'est pas requis.
 
+### Plusieurs configurations et secours après échec
+
+L'application garde plusieurs configurations mais n'en utilise **qu'une à la
+fois**. Si la connexion échoue sur la configuration active, l'accueil propose
+une autre configuration utilisable. Rien ne change sans l'appui de
+l'utilisateur sur « Essayer maintenant » : l'application bascule d'abord, puis
+connecte, sans jamais ouvrir deux tunnels.
+
+Ne sont jamais proposées :
+- la configuration qui vient d'échouer ;
+- une configuration retirée, suspendue ou épuisée ;
+- une configuration dont l'échéance est passée (connue de l'appareil hors ligne,
+  ou du serveur) ;
+- une configuration dont le compte fournisseur a expiré (`providerExpired` de
+  `GET /api/mobile/connections`).
+
+L'état serveur se lit sur le forfait de la configuration : son `subscriptionId`
+explicite, sinon son identifiant pour une configuration du dashboard. Une
+configuration manuelle non liée n'hérite d'aucune entrée serveur. Sans issue,
+le bandeau ne s'affiche pas ; une connexion réussie clôt l'épisode.
+
+Le secours ne change pas l'imputation : la configuration choisie consomme sur
+son propre forfait, ou en mode `unlinked` si elle est manuelle et non liée.
+Aucune identité de forfait n'est réécrite. Les tests se trouvent dans
+`app-mobile/tests/config-secours.test.ts` et `app-mobile/tests/mobile-access.test.ts`.
+
 ### Activation de l'appareil et droits des configurations
 
 L'activation de l'application et les droits de chaque configuration sont deux

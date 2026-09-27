@@ -8,7 +8,7 @@ import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import type { AccessAuthority, AccessSnapshot, DeviceStatus, ProfileStatus, ProfileIdentity } from '../services/accessPolicy';
 import type { NativeAccessRuntime } from '../services/nativeAccess';
 import type { IdentitySession } from '../services/identitySession';
-import { choisirConfigDeSecours, ETATS_BLOQUANTS, suivreEchecs } from '../services/configDeSecours';
+import { choisirConfigDeSecours, ETATS_BLOQUANTS, suivreEchecs, type ConnexionServeur } from '../services/configDeSecours';
 
 const mobile = path.resolve(__dirname, '..');
 const requireMobile = createRequire(path.join(mobile, 'package.json'));
@@ -1185,9 +1185,10 @@ describe('livre de comptes de la consommation', () => {
  * sortie de secours de l'accueil.
  *
  * Mêmes pièces que sur l'appareil : le magasin chiffré réel, l'état d'accès
- * réel, et des résumés qui prennent l'état et l'échéance comme
- * `reloadLocalConfigs`. Le choix est `choisirConfigDeSecours`, celui de
- * l'accueil ; `setActive` est l'écriture qu'opère `switchConfig`.
+ * réel, et des résumés qui prennent l'état, l'échéance et l'identité
+ * d'abonnement comme `reloadLocalConfigs`. Le choix est
+ * `choisirConfigDeSecours`, celui de l'accueil ; `setActive` est l'écriture
+ * qu'opère `switchConfig`.
  */
 describe('secours parmi plusieurs configurations, sur le vrai magasin', () => {
   const echec = { avant: 'connecting', apres: 'error', connecte: false };
@@ -1198,6 +1199,7 @@ describe('secours parmi plusieurs configurations, sur le vrai magasin', () => {
       id: entry.configId, isActive: entry.isActive === true,
       status: h.policy.profileRestriction(authority, entry)?.status ?? entry.accessStatus,
       expiryDate: entry.expiryDate ?? null,
+      subscriptionId: entry.subscriptionId, source: entry.source,
     }));
   }
   async function activer(h: Harness, id: string) {
@@ -1264,5 +1266,40 @@ describe('secours parmi plusieurs configurations, sur le vrai magasin', () => {
       choisirConfigDeSecours(await resumes(h), { dejaEssayees: ['a'], maintenant })?.id;
     assert.equal(await choix(new Date('2026-09-09T12:00:00.000Z')), 'b');
     assert.equal(await choix(new Date('2026-09-11T00:00:00.000Z')), 'manual');
+  });
+
+  it('un alias local lit l’état serveur de SON forfait, et le garde une fois choisi', async () => {
+    // Défaut relevé en revue : la configuration `local-alias`, liée au forfait
+    // `owned-plan`, était comparée au serveur par son propre identifiant — donc
+    // jamais — et restait proposée quand son forfait ne menait plus nulle part.
+    const h = await harness();
+    const { cleanup } = await setup(h);
+    assert.equal((await h.store.save('local-alias', { ...config, configId: 'local-alias' }, {
+      name: 'Alias local', source: 'backend', subscriptionId: 'owned-plan',
+      configHash: 'hash-owned', configVersion: 1, isActive: false,
+    })).status, 'ok');
+    const s = snapshot('alias');
+    s.subscriptions.push({ ...s.subscriptions[1], id: 'owned-plan', name: 'Owned plan', configHash: 'hash-owned' });
+    await apply(h, s);
+    cleanup();
+    const maintenant = new Date('2026-09-10T00:00:00.000Z');
+    const choix = async (connexions: ConnexionServeur[]) =>
+      choisirConfigDeSecours(await resumes(h), { connexions, dejaEssayees: ['a', 'b', 'manual'], maintenant })?.id;
+
+    const alias = (await resumes(h)).find(c => c.id === 'local-alias');
+    equal({ subscriptionId: alias?.subscriptionId, source: alias?.source }, { subscriptionId: 'owned-plan', source: 'backend' });
+    // Sur l'appareil, rien ne trahit le compte fournisseur expiré : seul le
+    // serveur le dit, sur l'entrée de `owned-plan`.
+    assert.equal(ETATS_BLOQUANTS.has(String(alias?.status ?? 'active')), false);
+    const fraiches: ConnexionServeur[] = remoteConnections(s).connections;
+    assert.equal(fraiches.some(c => c.id === 'local-alias'), false, 'le serveur ne connaît que le forfait');
+    assert.equal(await choix(fraiches.map(c => ({ ...c, providerExpired: c.id === 'owned-plan' }))), undefined,
+      'compte fournisseur expiré : le bandeau se tait');
+    assert.equal(await choix(fraiches.map(c => (c.id === 'owned-plan' ? { ...c, status: 'suspended' } : c))), undefined,
+      'forfait suspendu côté serveur');
+    assert.equal(await choix(fraiches), 'local-alias', 'forfait sain : l’alias est proposé, par son id');
+    // Choisi, l'alias se connecte avec SON forfait : rien n'a été réécrit.
+    const meta = await activer(h, 'local-alias');
+    equal({ source: meta.source, subscriptionId: meta.subscriptionId }, { source: 'backend', subscriptionId: 'owned-plan' });
   });
 });

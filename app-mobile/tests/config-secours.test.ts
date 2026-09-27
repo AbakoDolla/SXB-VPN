@@ -19,8 +19,9 @@
  *   3. la connexion ne part qu'APRÈS la bascule, jamais pendant une autre
  *      tentative : un seul tunnel à la fois ;
  *   4. l'accueil est câblé sur ces règles ;
- *   5. le secours ne touche jamais à l'imputation : il choisit une
- *      configuration, pas un forfait.
+ *   5. le secours ne touche jamais à l'imputation : il LIT le forfait d'une
+ *      configuration pour juger ses droits (alias local compris), choisit par
+ *      identifiant de configuration, et ne réécrit ni ne facture rien.
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -29,6 +30,7 @@ import { describe, it } from 'node:test';
 import {
   ETATS_BLOQUANTS,
   choisirConfigDeSecours,
+  forfaitDeLaConfig,
   suiteApresBascule,
   suivreEchecs,
   type ConfigCandidate,
@@ -46,9 +48,11 @@ const MAINTENANT = new Date('2026-06-15T12:00:00.000Z');
 const HIER = '2026-06-14T12:00:00.000Z';
 const DEMAIN = '2026-06-16T12:00:00.000Z';
 
-type Config = ConfigCandidate & { name: string; source?: 'backend' | 'manual'; subscriptionId?: string };
+// Par défaut, un forfait du tableau de bord : son identifiant est aussi celui
+// de son forfait, comme sur l'appareil.
+type Config = ConfigCandidate & { name: string };
 const config = (id: string, extra: Partial<Config> = {}): Config => ({
-  id, name: `Config ${id}`, isActive: false, status: 'active', expiryDate: DEMAIN, ...extra,
+  id, name: `Config ${id}`, isActive: false, status: 'active', expiryDate: DEMAIN, source: 'backend', ...extra,
 });
 const choisir = (configs: Config[], options: {
   connexions?: ConnexionServeur[]; dejaEssayees?: string[];
@@ -143,6 +147,56 @@ describe('la configuration proposée mène quelque part', () => {
   });
 });
 
+describe('l’état serveur se lit sur le forfait de la configuration', () => {
+  // Défaut relevé en revue : un alias local — la configuration `local-alias`,
+  // liée au forfait `owned-plan` — était comparé au serveur par son
+  // identifiant de CONFIGURATION, donc jamais. Son forfait suspendu, échu ou
+  // au compte fournisseur expiré passait inaperçu, et l'alias était proposé.
+  const echouee = config('a', { isActive: true });
+  const alias = config('local-alias', { subscriptionId: 'owned-plan' });
+  const manuelle = config('good-manual', { source: 'manual' });
+  const avec = (entree: ConnexionServeur, configs = [echouee, alias, manuelle]) =>
+    choisir(configs, { connexions: [entree], dejaEssayees: ['a'] });
+
+  it('le cas relevé : forfait suspendu dont le compte fournisseur a expiré', () => {
+    assert.equal(avec({ id: 'owned-plan', status: 'suspended', providerExpired: true }), 'good-manual');
+  });
+
+  it('un alias suit l’état, l’échéance et le compte fournisseur de SON forfait', () => {
+    assert.equal(avec({ id: 'owned-plan', status: 'suspended' }), 'good-manual', 'état');
+    assert.equal(avec({ id: 'owned-plan', status: 'active', expiresAt: HIER }), 'good-manual', 'échéance');
+    assert.equal(avec({ id: 'owned-plan', status: 'active', expiresAt: DEMAIN, providerExpired: true }), 'good-manual', 'fournisseur');
+    // Forfait sain : l'alias reste la première issue, désigné par SON id.
+    assert.equal(avec({ id: 'owned-plan', status: 'active', expiresAt: DEMAIN, providerExpired: false }), 'local-alias');
+    // Une entrée homonyme de la configuration ne décrit pas son forfait.
+    assert.equal(avec({ id: 'local-alias', status: 'suspended', providerExpired: true }), 'local-alias');
+  });
+
+  it('une manuelle non liée n’hérite d’aucune entrée serveur, même à son identifiant', () => {
+    for (const entree of [
+      { id: 'good-manual', status: 'suspended' },
+      { id: 'good-manual', status: 'active', expiresAt: HIER },
+      { id: 'good-manual', status: 'active', expiresAt: DEMAIN, providerExpired: true },
+    ]) {
+      assert.equal(avec(entree, [echouee, manuelle]), 'good-manual', JSON.stringify(entree));
+    }
+    // Liée explicitement à un forfait, une configuration manuelle en suit l'état.
+    const liee = config('manuelle-liee', { source: 'manual', subscriptionId: 'owned-plan' });
+    assert.equal(avec({ id: 'owned-plan', status: 'suspended' }, [echouee, liee, manuelle]), 'good-manual');
+  });
+
+  it('la règle d’identité est celle du compteur de consommation', () => {
+    assert.equal(forfaitDeLaConfig({ id: 'x', source: 'backend' }), 'x');
+    assert.equal(forfaitDeLaConfig({ id: 'x', source: 'backend', subscriptionId: 'plan' }), 'plan');
+    assert.equal(forfaitDeLaConfig({ id: 'x', source: 'manual', subscriptionId: 'plan' }), 'plan');
+    assert.equal(forfaitDeLaConfig({ id: 'x', source: 'manual' }), null);
+    assert.equal(forfaitDeLaConfig({ id: 'x' }), null);
+    // La même, dans le contexte VPN : forfait explicite, sinon l'identifiant
+    // d'une configuration du tableau de bord, sinon aucun.
+    assert.match(CONTEXTE, /running\?\.subscriptionId \|\| runningMeta\?\.subscriptionId \|\|\s*\(source === 'backend' \? running\?\.configId \?\? runningMeta\?\.configId \?\? null : null\)/);
+  });
+});
+
 /**
  * Essaie les configurations comme l'utilisateur qui appuie sur « Essayer
  * maintenant » après chaque échec : renvoie l'ordre des configurations
@@ -167,11 +221,32 @@ function parcourir(
 }
 
 describe('le secours n’emprunte aucun forfait', () => {
-  it('le choix ne manipule que des identifiants de configuration', () => {
-    // L'imputation de la consommation appartient au contexte VPN : la
-    // configuration choisie connecte avec SON forfait, ou sans forfait si elle
-    // n'en a pas. Jamais avec celui de la configuration qui vient d'échouer.
-    assert.doesNotMatch(SECOURS, /subscriptionId|ledger|usage|reportMode|attribution|unlinked/i);
+  it('le choix lit l’identité d’abonnement sans la réécrire ni rien facturer', () => {
+    // Lire le forfait d'une configuration sert à juger ses droits. L'imputation
+    // de la consommation appartient au contexte VPN : la configuration choisie
+    // connecte avec SON forfait, ou sans forfait si elle n'en a pas.
+    assert.doesNotMatch(SECOURS, /ledger|usage|reportMode|attribution|unlinked|flushUsage|updateMetadata|setActive/i);
+    assert.doesNotMatch(SECOURS, /\.subscriptionId\s*=(?!=)/, 'aucune réécriture du forfait');
+    // Toute tentative d'écriture sur les entrées est relevée, que le module
+    // tourne en mode strict ou non.
+    const ecritures: string[] = [];
+    const espion = <T extends object>(objet: T, nom: string): T => new Proxy(objet, {
+      set: (_cible, cle) => { ecritures.push(`${nom}.${String(cle)}`); return true; },
+      defineProperty: (_cible, cle) => { ecritures.push(`${nom}.${String(cle)}`); return true; },
+      deleteProperty: (_cible, cle) => { ecritures.push(`${nom}.${String(cle)}`); return true; },
+    });
+    const alias = espion(config('local-alias', { subscriptionId: 'owned-plan' }), 'alias');
+    const configs = espion([
+      espion(config('a', { isActive: true }), 'echouee'),
+      alias,
+      espion(config('good-manual', { source: 'manual' }), 'manuelle'),
+    ], 'configs');
+    const connexions = espion([espion({ id: 'owned-plan', status: 'active', expiresAt: DEMAIN }, 'forfait')], 'connexions');
+    const choisie = choisirConfigDeSecours(configs, { connexions, dejaEssayees: ['a'], maintenant: MAINTENANT });
+    assert.equal(choisie, alias, 'la même configuration, désignée par son id');
+    assert.equal(choisie?.subscriptionId, 'owned-plan');
+    assert.equal(choisie?.source, 'backend');
+    assert.deepEqual(ecritures, [], 'aucune écriture sur les configurations ni sur les forfaits');
   });
 
   it('le geste de l’accueil passe par la bascule et la connexion habituelles', () => {
@@ -280,11 +355,14 @@ describe('l’accueil est câblé sur ces règles', () => {
   });
 });
 
-describe('les échéances parviennent jusqu’au choix', () => {
-  it('l’échéance du registre accompagne chaque configuration résumée', () => {
-    assert.match(CONTEXTE, /savedConfigs: +Array<\{[^}]*expiryDate\?: string \| null \}>;/);
-    const resumes = CONTEXTE.match(/expiryDate: entry\.expiryDate \?\? null,/g) || [];
-    assert.equal(resumes.length, 2, 'rechargement ET suppression doivent porter l’échéance');
+describe('les échéances et le forfait parviennent jusqu’au choix', () => {
+  it('l’échéance et l’identité d’abonnement du registre accompagnent chaque configuration résumée', () => {
+    const type = CONTEXTE.match(/savedConfigs: +Array<\{([^}]*)\}>;/)?.[1] ?? '';
+    assert.match(type, /expiryDate\?: string \| null/);
+    assert.match(type, /subscriptionId\?: string; source\?: 'backend' \| 'manual'/);
+    for (const champ of [/expiryDate: entry\.expiryDate \?\? null,/g, /subscriptionId: entry\.subscriptionId, source: entry\.source,/g]) {
+      assert.equal((CONTEXTE.match(champ) || []).length, 2, `${champ} : rechargement ET suppression`);
+    }
   });
 
   it('le serveur signale le compte fournisseur expiré par un simple booléen', () => {
