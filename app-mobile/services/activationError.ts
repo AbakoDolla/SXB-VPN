@@ -11,6 +11,8 @@ export type ActivationErrorKey =
   | 'activation_rate_limited'
   | 'activation_response_invalid'
   | 'activation_local_failed'
+  | 'activation_device_key_required'
+  | 'activation_enrollment_flush'
   | 'error_no_network'
   | 'error_server'
   | 'error_generic';
@@ -78,6 +80,7 @@ export function activationErrorKey(error: unknown): ActivationErrorKey {
   if (!httpError.response) {
     const localCode = typeof httpError.code === 'string' ? httpError.code : '';
     const localMessage = typeof httpError.message === 'string' ? httpError.message : '';
+    if (localMessage === 'DEVICE_ENROLLMENT_FLUSH_REQUIRED') return 'activation_enrollment_flush';
     if (/^AUTH_(?:RESPONSE_INVALID|REFRESH_RESPONSE_INVALID)$/.test(localMessage)) return 'activation_response_invalid';
     if (localCode.startsWith('ACCESS_') || localCode.startsWith('ERR_SECURESTORE') ||
         /^(?:AUTH_|ACCESS_|PRIVACY_|privacy_)/.test(localMessage)) return 'activation_local_failed';
@@ -87,6 +90,7 @@ export function activationErrorKey(error: unknown): ActivationErrorKey {
     return 'activation_local_failed';
   }
 
+  if (containsAny(marker, ['device_enrollment_authorization_required'])) return 'activation_device_key_required';
   if (containsAny(marker, ['quota', 'capacity', 'capacite', 'limit_reached', 'limit reached'])) {
     return 'activation_quota_reached';
   }

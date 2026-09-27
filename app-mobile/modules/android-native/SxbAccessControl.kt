@@ -146,6 +146,9 @@ object SxbAccessControl {
         check(SxbPrivacyPolicy.vpnAllowed(context)) { "PRIVACY_CONSENT_REQUIRED" }
         load(context)
         check(!signedOut && !storageFailed) { "ACCESS_SESSION_REQUIRED" }
+        val denied = prefs(context)
+        check(config.optString("securitySessionId", "") != denied.getString("securityRevokedSession", null) ||
+            config.optInt("securityGeneration") != denied.getInt("securityRevokedGeneration", -1)) { "SECURITY_SESSION_REVOKED" }
         val current = authority
         if (current != null) {
             check(config.optString("accessSession") == current.getString("session")) { "ACCESS_SESSION_CHANGED" }
@@ -169,6 +172,18 @@ object SxbAccessControl {
     fun cancelStarts(context: Context) {
         allowedAttempt = null
         check(prefs(context).edit().remove("attempt").commit()) { "ACCESS_STORAGE_ERROR" }
+    }
+
+    @Synchronized
+    fun revokeSecurityGeneration(context: Context, sessionId: String, generation: Int, attempt: String) {
+        try {
+            check(prefs(context).edit().putString("securityRevokedSession", sessionId)
+                .putInt("securityRevokedGeneration", generation).commit()) { "ACCESS_STORAGE_ERROR" }
+            if (allowedAttempt == attempt) cancelStarts(context)
+        } catch (error: Exception) {
+            storageFailed = true
+            throw error
+        }
     }
 
     @Synchronized
@@ -238,6 +253,11 @@ object SxbAccessControl {
         ticketStatus = status
         check(prefs(context).edit().remove("ticket").commit()) { "ACCESS_STORAGE_ERROR" }
         signal(context)
+    }
+
+    @Synchronized
+    fun invalidateTicketIfCurrent(context: Context, expected: String, status: String) {
+        if (ticket?.optString("ticket") == expected) invalidateTicket(context, status)
     }
 
     fun clear(context: Context) {

@@ -6,8 +6,10 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.uimanager.ViewManager
 
 class SxbVpnPackage : ReactPackage {
-    override fun createNativeModules(ctx: ReactApplicationContext): List<NativeModule> =
-        listOf(SxbVpnModule(ctx))
+    override fun createNativeModules(ctx: ReactApplicationContext): List<NativeModule> {
+        SxbBackendTls.install(ctx)
+        return listOf(SxbVpnModule(ctx))
+    }
 
     override fun createViewManagers(ctx: ReactApplicationContext): List<ViewManager<*, *>> =
         emptyList()

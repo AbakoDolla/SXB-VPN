@@ -65,7 +65,7 @@ import {
   sendMobileHealthHeartbeat,
   MOBILE_HEALTH_HEARTBEAT_INTERVAL_MS,
 } from '@/services/mobileHealth';
-import { remonterIntegrite } from '@/services/securityReport';
+import { remonterIntegrite, flushSecurityEvents } from '@/services/securityReport';
 import { interruptibleUsageRequest, registerUsageReporter, usageDeadline, usageRetryDelay } from '@/services/usageReporting';
 
 export { formatBytes, deriveQuota, DerivedQuota };
@@ -1067,7 +1067,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         
         // Nouvelle session de rapport : les entrées déjà au livre gardent la
         // leur, seules les futures porteront cet identifiant.
-        sessionIdRef.current = newUsageSessionId();
+        if (!sessionIdRef.current) sessionIdRef.current = newUsageSessionId();
 
         // FIX — Capturer la baseline immédiatement pour que les compteurs UI 
         // et le premier rapport delta soient précis dès la première seconde.
@@ -1253,6 +1253,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
       if (connected || connecting) {
         const stats = await SxbVpnNative.getTrafficStats();
+        if (typeof stats.usageSessionId === 'string') sessionIdRef.current = stats.usageSessionId;
         setTrafficStats({
           uploadBytes: stats.uploadBytes || 0,
           downloadBytes: stats.downloadBytes || 0,
@@ -1415,6 +1416,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     ledgerFlushRef.current = new Promise<void>(resolve => { finish = resolve; });
     let retryNeeded = false;
     try {
+      const observedSessionId = sessionIdRef.current;
       let ledger = ledgerRef.current ?? await loadLedger();
       const running = runningProfileRef.current;
       const profiles = storeValue(await configStore.list());
@@ -1428,8 +1430,17 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       }
       const attribution = !subscriptionId && source === 'manual' ? 'unlinked' as const : undefined;
       const previous = options?.beforeConnect ? ledger.context : null;
-      if (!sessionIdRef.current) sessionIdRef.current = newUsageSessionId();
-      const sessionId = sessionIdRef.current;
+      const capturedSessionId = observedSessionId ?? ledger.context?.sessionId ?? newUsageSessionId();
+      const stats = IS_ANDROID && SxbVpnNative
+        ? await SxbVpnNative.getTrafficStats().catch(() => {
+          retryNeeded = true;
+          console.warn('[SXB] USAGE_COUNTERS_UNAVAILABLE');
+          return null;
+        })
+        : null;
+      if (!currentIdentityRequest(stamp) || !usageMountedRef.current) return;
+      const sessionId = typeof stats?.usageSessionId === 'string' ? stats.usageSessionId : capturedSessionId;
+      if (!sessionIdRef.current || stats?.usageSessionId) sessionIdRef.current = sessionId;
       const context: UsageContext = previous ?? (running
         ? { subscriptionId, configId: running.configId, attribution, sessionId }
         : ledger.context ?? { subscriptionId: null, sessionId });
@@ -1446,13 +1457,6 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         }
       };
       await seedQuota(context);
-      const stats = IS_ANDROID && SxbVpnNative
-        ? await SxbVpnNative.getTrafficStats().catch(() => {
-          retryNeeded = true;
-          console.warn('[SXB] USAGE_COUNTERS_UNAVAILABLE');
-          return null;
-        })
-        : null;
       if (!currentIdentityRequest(stamp) || !usageMountedRef.current) return;
       const validCounters = stats && Number.isSafeInteger(stats.lifetimeUploadBytes) && stats.lifetimeUploadBytes >= 0 &&
         Number.isSafeInteger(stats.lifetimeDownloadBytes) && stats.lifetimeDownloadBytes >= 0;
@@ -1623,7 +1627,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => { flushUsageRef.current = flushUsage; });
   useEffect(() => {
     if (!isAuthenticated) return;
-    const unregister = registerUsageReporter(() => flushUsageRef.current());
+    const unregister = registerUsageReporter(async () => {
+      await flushUsageRef.current();
+      await flushSecurityEvents();
+    });
     SxbVpnNative?.setUsageReportingEnabled?.(true);
     return () => {
       unregister();
@@ -2155,6 +2162,18 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         // Préparation locale uniquement : un refus de stockage ou un délai
         // dépassé interdit ce départ, sans effacer le livre ni simuler l'ancre.
         await usageDeadline(flushUsageRef.current({ beforeConnect: true }), DELAI_PREPARATION_MS);
+        const { sessionSecurity } = await import('../services/deviceSecurity');
+        const security = await sessionSecurity();
+        const usageSessionId = newUsageSessionId();
+        const connectionId = usageSessionId.slice('sess_'.length);
+        if (security) {
+          await apiClient.post('/mobile/vpn/session', {
+            action: 'connect', connectionId, sessionId: usageSessionId,
+            subscriptionId: currentProfile.meta.subscriptionId ?? null,
+            configId: selectedId,
+          });
+        }
+        sessionIdRef.current = usageSessionId;
         // ── Ce que le réseau va voir ──────────────────────────────────────
         //
         // Jusqu'ici, l'application n'avait qu'UNE façon de se présenter. Quand
@@ -2174,6 +2193,11 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           configHash: currentProfile.meta.configHash,
           managedConfig: currentProfile.meta.source === 'backend' || !!currentProfile.meta.subscriptionId,
           accessSession: getAccessState().authority?.session,
+          securitySessionId: security?.sessionId,
+          securityGeneration: security?.generation,
+          securityClientId: security?.clientId,
+          connectionId: security ? connectionId : undefined,
+          usageSessionId,
           protocol:      engineProtocol,
           killSwitch,
           autoReconnect,

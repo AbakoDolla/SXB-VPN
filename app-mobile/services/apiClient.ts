@@ -7,6 +7,7 @@ import { getPrivacyConsent, getPrivacySignal, requireVpnConsent } from './privac
 import { accessIssueFromError, isInvalidSession } from './accessPolicy';
 import { accessRequestStamp, currentIdentityRequest, publishAccessFailure } from './accessEvents';
 import { requireDeviceAccess } from './accessState';
+import { backendProof, saveSessionSecurity } from './deviceSecurity';
 
 /**
  * B7 — URL de l'API.
@@ -157,6 +158,15 @@ apiClient.interceptors.request.use(
       config.headers['X-SXB-App-Version-Code'] = String(INSTALLED_VERSION_CODE);
     }
     if (!removingPushToken) requireVpnConsent();
+    const body = config.data == null ? '' : typeof config.data === 'string' ? config.data : JSON.stringify(config.data);
+    const activation = config.url === '/mobile/auth/activate';
+    const refresh = config.url === '/mobile/auth/refresh';
+    const authBody = (activation || refresh) && typeof config.data === 'string' ? JSON.parse(config.data) : config.data;
+    const credential = activation && typeof authBody?.token === 'string' ? authBody.token
+      : refresh && typeof authBody?.refreshToken === 'string' ? authBody.refreshToken : token ?? '';
+    const proof = await backendProof(config.method ?? 'GET', apiClient.getUri(config), body, credential);
+    for (const [name, value] of Object.entries(proof)) config.headers.set(name, value);
+    if (body) config.data = body;
     return config;
   },
   (error) => Promise.reject(error),
@@ -219,15 +229,20 @@ apiClient.interceptors.response.use(
         requireVpnConsent();
         const deviceId = await AsyncStorage.getItem('@sxb_device_id');
         if (!deviceId) throw new Error('AUTH_DEVICE_BINDING_REQUIRED');
-        const res = await axios.post(`${API_BASE_URL}/mobile/auth/refresh`, {
-          refreshToken,
-        }, { signal: getPrivacySignal(), timeout: TIMEOUT, headers: { 'X-SXB-Device-ID': deviceId } });
+        const body = JSON.stringify({ refreshToken });
+        const url = `${API_BASE_URL}/mobile/auth/refresh`;
+        const proof = await backendProof('POST', url, body, refreshToken);
+        const res = await axios.post(url, body, {
+          signal: getPrivacySignal(), timeout: TIMEOUT,
+          headers: { 'Content-Type': 'application/json', 'X-SXB-Device-ID': deviceId, ...proof },
+        });
         const { accessToken, refreshToken: newRefresh } = res.data;
         requireVpnConsent();
         if (!currentIdentityRequest(stamp)) throw new Error('AUTH_SESSION_CHANGED');
         if (typeof accessToken !== 'string' || !accessToken || typeof newRefresh !== 'string' || !newRefresh) {
           throw new Error('AUTH_REFRESH_RESPONSE_INVALID');
         }
+        await saveSessionSecurity(res.data.security);
 
         // Stocker dans SecureStore ET migrer depuis AsyncStorage legacy
         await Promise.all([

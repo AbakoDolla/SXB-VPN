@@ -69,6 +69,7 @@ cd "$ROOT/app-mobile"
 # `run-play-encryption.cjs` a disparu avec la chaîne Google Play : la porte de
 # chiffrement qu'il vérifiait n'existe plus.
 node tests/run-access-policy.cjs
+node tests/run-device-security.cjs
 node tests/run-stability-policy.cjs
 node tests/run-ssh-compatibility.cjs
 node scripts/prepare-geosite.cjs

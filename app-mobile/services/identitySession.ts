@@ -6,6 +6,7 @@ import { accessRequestStamp, advanceAccessSession, currentIdentityRequest } from
 import { isInvalidSession, isRecord } from './accessPolicy';
 import { requireVpnConsent } from './privacyConsent';
 import type { User, AccountState } from '../types/api';
+import { saveSessionSecurity, clearSessionSecurity, completeActivationSecurity } from './deviceSecurity';
 
 const USER_KEY = '@sxb_user';
 export interface IdentitySession { user: User; accountState: AccountState | null; }
@@ -68,7 +69,7 @@ export async function validateIdentitySession(deviceId: string, subscriptionId?:
     await AsyncStorage.setItem(USER_KEY, JSON.stringify(next));
     if (request === requests) publish(next);
   } catch (error) {
-    if (request === requests && currentIdentityRequest(stamp) && isInvalidSession(error)) await clearIdentitySession();
+    if (request === requests && currentIdentityRequest(stamp) && isInvalidSession(error)) await clearIdentitySession(true);
     throw error;
   }
 }
@@ -83,12 +84,14 @@ export async function acceptActivatedIdentity(response: unknown, deviceId: strin
   // A renewed SXB-USER code for the same identity never erases its profiles.
   if (identity && identity.user.id !== next.user.id) await clearIdentitySession();
   await bindAccessState(next.user.id, deviceId);
+  await saveSessionSecurity(response.security);
   await Promise.all([
     setSecureToken(SEC_KEYS.ACCESS, response.accessToken),
     setSecureToken(SEC_KEYS.REFRESH, response.refreshToken),
     AsyncStorage.setItem(USER_KEY, JSON.stringify(next)),
   ]);
   requireVpnConsent();
+  await completeActivationSecurity();
   publish(next);
 }
 
@@ -99,7 +102,7 @@ export async function updateIdentityAccountState(accountState: AccountState): Pr
   publish(next);
 }
 
-export function clearIdentitySession(): Promise<void> {
+export function clearIdentitySession(preserveData = false): Promise<void> {
   if (clearing) return clearing;
   ++requests;
   advanceAccessSession();
@@ -107,8 +110,9 @@ export function clearIdentitySession(): Promise<void> {
     await clearAccessState(); // Native stop/barrier precedes removal of any profile.
     await Promise.all([
       removeSecureToken(SEC_KEYS.ACCESS), removeSecureToken(SEC_KEYS.REFRESH),
+      clearSessionSecurity(),
       AsyncStorage.multiRemove([USER_KEY, '@sxb_access_token', '@sxb_refresh_token', '@sxb_vpn_connected']),
-      clearAllOfflineData(),
+      ...(preserveData ? [] : [clearAllOfflineData()]),
     ]);
     publish(null);
   })();

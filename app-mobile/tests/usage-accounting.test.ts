@@ -470,6 +470,31 @@ describe('provider traffic report lifecycle', () => {
     assert.equal(h.state.posts.length, 0);
   });
 
+  it('does not overwrite a new identity session after a delayed native counter read', async () => {
+    const h = await reporter();
+    await h.flushUsage({ beforeConnect: true });
+    const saved = h.storageState.storage.get('@sxb_usage_ledger');
+    const reading = deferred(), counters = deferred<any>();
+    h.env.SxbVpnNative.getTrafficStats = () => { reading.resolve(); return counters.promise; };
+    const previous = h.flushUsage();
+    await reading.promise;
+    h.state.epoch++;
+    h.env.sessionIdRef.current = 'new-identity-session';
+    h.env.runningProfileRef.current = { configId: 'trial', subscriptionId: 'trial' };
+    counters.resolve({ lifetimeUploadBytes: 11, lifetimeDownloadBytes: 21, usageSessionId: 'native-session-1' });
+    await previous;
+    assert.equal(h.env.sessionIdRef.current, 'new-identity-session');
+    assert.equal(h.storageState.storage.get('@sxb_usage_ledger'), saved);
+    assert.equal(h.state.posts.length, 0);
+    h.env.SxbVpnNative.getTrafficStats = async () => ({ lifetimeUploadBytes: 11, lifetimeDownloadBytes: 21 });
+    await h.flushUsage({ beforeConnect: true });
+    const ledger = await h.ledger.loadLedger();
+    assert.equal(ledger.entries[0].sessionId, 'native-session-1');
+    assert.equal(ledger.entries[0].subscriptionId, 'normal');
+    assert.equal(ledger.entries[0].up + ledger.entries[0].down, 30);
+    assert.equal(ledger.context?.sessionId, 'new-identity-session');
+  });
+
   it('anchors a connection without waiting for a blocked HTTP report or losing its frozen receipt', async () => {
     const h = await reporter();
     const received = deferred();
@@ -877,6 +902,10 @@ describe('provider traffic report lifecycle', () => {
     response.resolve({ data: { ok: true, subscriptionId: 'normal', quotaTotalBytes: 1000, quotaUsedBytes: 10 } });
     await first;
     assert.equal(h.state.quota, null);
+    const persisted = await h.ledger.loadLedger();
+    assert.equal(persisted.entries[0].sessionId, 'native-session-1');
+    assert.equal(persisted.entries[0].frozen, true);
+    assert.equal(persisted.entries[0].up + persisted.entries[0].down, 10);
   });
 
   it('anchors before tunnel start and reports the first bytes, never the duration', async () => {

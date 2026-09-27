@@ -9,7 +9,7 @@ package com.sxbvpn.vpnmodule
  *  - Xposed (XposedBridge class, IXposedHookLoadPackage)
  *  - Emulateur (Build.FINGERPRINT, Build.MODEL, QEMU props)
  *
- * Les configurations VPN ne sont jamais envoyées si une menace est détectée.
+ * Ces observations locales sont contournables et ne bloquent pas le VPN.
  */
 
 import android.content.Context
@@ -48,8 +48,7 @@ object SecurityModule {
     /**
      * @param deep exécute également les sondes coûteuses (détection d'émulateur via
      *        `getprop`, qui lance un processus). L'audit est invoqué depuis
-     *        `onStartCommand()`, donc sur le thread principal : les sondes lentes
-     *        sont désactivées par défaut pour ne pas provoquer d'ANR.
+     *        les tâches de diagnostic, jamais pour refuser un démarrage.
      */
     fun audit(ctx: Context, deep: Boolean = false): SecurityReport {
         val rooted  = isRooted(ctx)
@@ -122,7 +121,7 @@ object SecurityModule {
             SignatureStatus.NOT_CONFIGURED
         } else {
             try {
-                if (verifySignature(ctx, expected)) SignatureStatus.VALID else SignatureStatus.INVALID
+                if (verifySignature(ctx, expected) && ctx.packageName == "com.sxbvpn.mobile") SignatureStatus.VALID else SignatureStatus.INVALID
             } catch (_: Exception) {
                 SignatureStatus.UNAVAILABLE
             }
@@ -159,6 +158,19 @@ object SecurityModule {
     @Volatile private var signatureCache: SignatureStatus? = null
     @Volatile private var emulatorCache: Boolean? = null
 
+    fun integrityMetadata(ctx: Context): org.json.JSONObject {
+        val info = ctx.packageManager.getPackageInfo(ctx.packageName,
+            if (Build.VERSION.SDK_INT >= 28) android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES
+            else @Suppress("DEPRECATION") android.content.pm.PackageManager.GET_SIGNATURES)
+        val signers = if (Build.VERSION.SDK_INT >= 28) info.signingInfo?.apkContentsSigners
+            else @Suppress("DEPRECATION") info.signatures
+        val debug = (ctx.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        return org.json.JSONObject().put("packageName", ctx.packageName).put("appVersion", info.versionName)
+            .put("buildType", if (debug) "debug" else "release")
+            .put("channel", if (debug) "INTERNAL" else if (checkSignature(ctx) == SignatureStatus.VALID) "OFFICIAL" else "UNKNOWN")
+            .put("certificateDigests", org.json.JSONArray(signers?.map { SxbDeviceProof.hash(it.toByteArray()) } ?: emptyList<String>()))
+    }
+
     fun verifySignature(ctx: Context, expectedSignatureHash: String): Boolean {
         // Une empreinte vide ne peut pas valider quoi que ce soit : ne jamais
         // renvoyer `true` par défaut (échec ouvert).
@@ -181,14 +193,12 @@ object SecurityModule {
             }
 
             if (signatures != null) {
-                val normalizedExpected = expectedSignatureHash.replace(":", "").trim()
-                for (sig in signatures) {
+                val allowed = expectedSignatureHash.split(",").map { it.replace(":", "").trim().lowercase() }
+                return signatures.isNotEmpty() && signatures.all { sig ->
                     val md = java.security.MessageDigest.getInstance("SHA-256")
                     md.update(sig.toByteArray())
                     val hash = md.digest().joinToString("") { "%02x".format(it) }
-                    if (hash.equals(normalizedExpected, ignoreCase = true)) {
-                        return true
-                    }
+                    hash.lowercase() in allowed
                 }
             }
         } catch (_: Exception) {}

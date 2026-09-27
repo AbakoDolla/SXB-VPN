@@ -91,7 +91,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [isAuthenticated, deviceId, access.ready]);
 
   useEffect(() => subscribeAccessFailures(({ issue }) => {
-    if (issue.scope === 'session') void clearIdentitySession().catch(reportAccessSyncError);
+    if (issue.scope === 'session') void clearIdentitySession(true).catch(reportAccessSyncError);
   }), []);
 
   const refreshAccountState = useCallback(async (subscriptionId?: string | null) => {
@@ -113,7 +113,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     requireVpnConsent();
     const id = await getOrCreateDeviceId();
     setDeviceId(id);
-    const response = await apiClient.post('/mobile/auth/activate', { token: normalizeActivationToken(token), deviceId: id });
+    const { activationSecurity } = await import('../services/deviceSecurity');
+    const normalized = normalizeActivationToken(token);
+    const response = await apiClient.post('/mobile/auth/activate', {
+      token: normalized, deviceId: id, ...await activationSecurity(normalized),
+    });
     await acceptActivatedIdentity(response.data, id);
     // Only a server snapshot lifts a known device block, never a UI route change.
     try { await refreshAccessState(); } catch (error) { reportAccessSyncError(error); }

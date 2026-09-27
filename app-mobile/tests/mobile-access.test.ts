@@ -86,9 +86,11 @@ async function harness(distribution = 'direct'): Promise<Harness> {
       export const getItemAsync=async k=>state.secure.get(k)??null;
       export const setItemAsync=async(k,v)=>{state.events.push('secure:'+k);state.secure.set(k,v)};
       export const deleteItemAsync=async k=>{state.events.push('secure-delete:'+k);state.secure.delete(k)};`,
-    'expo-crypto': `import {randomFillSync,randomUUID as uuid} from 'node:crypto';
+    'expo-crypto': `import {randomFillSync,randomUUID as uuid,createHash} from 'node:crypto';
       export const getRandomValues=x=>randomFillSync(x);
-      export const randomUUID=()=>uuid();`,
+      export const randomUUID=()=>uuid();
+      export const CryptoDigestAlgorithm={SHA256:'sha256'};
+      export const digestStringAsync=async(algorithm,value)=>createHash(algorithm).update(value).digest('hex');`,
     'expo-constants': `export default {expoConfig:{extra:{distribution:${JSON.stringify(distribution)}},version:'1',android:{versionCode:1}}};`,
     'expo-router': `export const router={push:()=>{},replace:()=>{}};`,
     'react-native-safe-area-context': `export const useSafeAreaInsets=()=>({top:0,bottom:0,left:0,right:0});`,
@@ -657,9 +659,15 @@ describe('mobile access runtime with real encrypted store, auth and HTTP interce
     } finally { axios.defaults.adapter = previous; }
   });
 
-  it('preserves typed config/device failures through real API and only clears a definite invalid session', async () => {
+  it('preserves config/device failures and clears invalid auth without deleting profiles', async () => {
     const h = await harness();
     await setup(h);
+    const pending = { counterUp: 15, counterDown: 40, nextSeq: 2, initialized: true,
+      context: { subscriptionId: 'a', configId: 'a', sessionId: 'sess-original' },
+      entries: [{ subscriptionId: 'a', configId: 'a', sessionId: 'sess-original', seq: 1, up: 15, down: 40, frozen: true }] };
+    await h.ledger.saveLedger(pending);
+    const ledgerBefore = h.state.storage.get('@sxb_usage_ledger');
+    const profileBefore = (await h.store.get('a')).value;
     const failures: string[] = [];
     const unsub = h.events.subscribeAccessFailures(({ issue }) => failures.push(issue.code));
     const previous = axios.defaults.adapter;
@@ -675,7 +683,12 @@ describe('mobile access runtime with real encrypted store, auth and HTTP interce
       await assert.rejects(h.auth.validateIdentitySession('hardware'));
       assert.equal(h.auth.getIdentitySession(), null);
       assert.equal(h.state.secure.has('sxb_access_token_v2'), false);
-      equal((await h.store.list()).value, []);
+      assert.equal(h.state.secure.has('sxb_refresh_token_v2'), false);
+      assert.equal(h.state.storage.get('@sxb_usage_ledger'), ledgerBefore);
+      equal((await h.store.get('a')).value, JSON.parse(JSON.stringify(profileBefore)));
+      assert.equal((await h.store.get('a')).status, 'ok');
+      assert.equal((await h.store.get('b')).status, 'ok');
+      assert.equal((await h.store.get('manual')).status, 'ok');
     } finally { unsub(); axios.defaults.adapter = previous; }
   });
 

@@ -90,6 +90,9 @@ class SxbAccessObserver(private val context: Context) {
                     http.setRequestProperty("Accept", "application/json")
                     http.setRequestProperty("Authorization", "Bearer " + ticket.getString("ticket"))
                     http.setRequestProperty("X-SXB-Device-ID", ticket.getString("deviceId"))
+                    SxbBackendTls.protect(context, http)
+                    val proof = SxbDeviceProof.headers(context, "GET", http.url.toString(), "", ticket.getString("ticket"))
+                    for (key in proof.keys()) http.setRequestProperty(key, proof.getString(key))
                     if (!running.get()) break
                     val status = http.responseCode
                     if (!running.get()) break
@@ -101,8 +104,15 @@ class SxbAccessObserver(private val context: Context) {
                             physicalFallback = false
                         }
                         401 -> {
-                            // Only the read-only ticket is invalid. Never clear identity/JWT.
-                            SxbAccessControl.invalidateTicket(context, "invalid")
+                            val body = if (http.contentType?.substringBefore(';')?.trim() == "application/json")
+                                JSONObject(readBody(http)) else null
+                            if (body?.optString("reason") in listOf("SESSION_REPLAY", "DEVICE_MISMATCH")) {
+                                val raw = ticket.getString("ticket").split('.')[1]
+                                val claims = JSONObject(String(android.util.Base64.decode(raw, android.util.Base64.URL_SAFE), Charsets.UTF_8))
+                                SxbVpnService.instance?.stopForSecurity(claims.optString("sid"), claims.optInt("sg"))
+                            }
+                            // Expired observer tickets alone are not logout or revoke orders.
+                            SxbAccessControl.invalidateTicketIfCurrent(context, ticket.getString("ticket"), "invalid")
                             break
                         }
                         403, 404, 405, 410, 501 -> {
