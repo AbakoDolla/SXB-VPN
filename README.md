@@ -75,6 +75,15 @@ si **SSH+Payload TLS** est requis. Un compte SSH expiré doit être renouvelé
 sur le serveur : l'application ne peut ni restaurer un service fournisseur
 supprimé ni réactiver des identifiants expirés.
 
+Le trafic des autres applications passe par le même relais SSH, **DNS
+compris** : le résolveur du relais porte un `detour` explicite vers le tunnel.
+Depuis sing-box 1.12, un serveur DNS sans détour sort en direct ; sur un
+forfait qui ne décompte que le tunnel, les applications ne résolvaient plus
+aucun nom alors que le VPN affichait « connecté ». La traduction de schéma
+rétablit aussi ce chemin pour les configurations héritées déjà présentes sur
+les téléphones. Sans UDPGW, l'UDP/443 (QUIC) est refusé immédiatement pour que
+les navigateurs basculent aussitôt en TCP.
+
 Points notables du moteur :
 
 - **Liens de partage de fournisseur** — un VLESS/VMess/Trojan sur WebSocket

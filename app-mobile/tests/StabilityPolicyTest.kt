@@ -497,6 +497,51 @@ fun main() {
         check(SxbEngineSchema.moderniser(impose).getJSONObject("route")
             .getString("default_domain_resolver") == "dns-remote")
     }
+    checkCase("un serveur DNS hérité sans détour reste dans le tunnel, comme en 1.11") {
+        // LE DÉFAUT : en 1.11, un serveur DNS sans `detour` passait par
+        // l'outbound par défaut, donc par le tunnel ; en 1.12, le même serveur
+        // sort EN DIRECT. Le relais SSH était écrit ainsi : son DNS partait vers
+        // 8.8.8.8 hors tunnel, et sur un forfait qui ne décompte que le tunnel,
+        // aucune application ne résolvait plus rien — VPN « connecté »,
+        // compteurs qui bougent, aucune donnée utilisable hors de l'app.
+        val relais = JSONObject("""{
+          "dns":{"servers":[{"tag":"dns-r","address":"tcp://8.8.8.8","strategy":"ipv4_only"},
+                            {"tag":"dns-l","address":"192.0.2.1","detour":"direct"},
+                            {"tag":"dns-block","address":"rcode://success"}],
+                 "final":"dns-r"},
+          "inbounds":[{"type":"tun","tag":"tun-in","sniff":true}],
+          "outbounds":[{"type":"socks","tag":"proxy","server":"127.0.0.1","server_port":1080},
+                       {"type":"direct","tag":"direct"},{"type":"dns","tag":"dns-out"}],
+          "route":{"rules":[{"protocol":"dns","outbound":"dns-out"}],"final":"proxy"}
+        }""")
+        val out = SxbEngineSchema.moderniser(relais)
+        val serveurs = out.getJSONObject("dns").getJSONArray("servers")
+        val parTag = (0 until serveurs.length()).map { serveurs.getJSONObject(it) }.associateBy { it.getString("tag") }
+        check(parTag.getValue("dns-r").getString("detour") == "proxy") { "le DNS du tunnel doit sortir par le tunnel" }
+        check(!parTag.getValue("dns-l").has("detour")) { "l'amorçage reste direct" }
+        // L'amorçage des noms de serveurs est bien le résolveur direct, jamais
+        // celui qui passe par le tunnel qu'il doit ouvrir.
+        check(out.getJSONObject("route").getString("default_domain_resolver") == "dns-l")
+
+        // Sans `route.final`, le défaut hérité est le premier outbound.
+        val sansFinal = JSONObject(relais.toString()).apply { getJSONObject("route").remove("final") }
+        val r2 = SxbEngineSchema.moderniser(sansFinal).getJSONObject("dns").getJSONArray("servers").getJSONObject(0)
+        check(r2.getString("detour") == "proxy")
+
+        // Un défaut hérité `direct` ne se traduit par aucun détour : c'était
+        // déjà la sortie directe, et un détour vers un direct nu est refusé.
+        val directParDefaut = JSONObject(relais.toString()).apply { getJSONObject("route").put("final", "direct") }
+        val r3 = SxbEngineSchema.moderniser(directParDefaut).getJSONObject("dns").getJSONArray("servers").getJSONObject(0)
+        check(!r3.has("detour"))
+
+        // fakeip et local n'ouvrent rien : aucun détour ne leur est posé.
+        val locaux = JSONObject("""{
+          "dns":{"servers":[{"tag":"f","address":"fakeip"},{"tag":"l","address":"local"}],"final":"l"},
+          "outbounds":[{"type":"vless","tag":"proxy","server":"a.example.test","server_port":443}]
+        }""")
+        val s = SxbEngineSchema.moderniser(locaux).getJSONObject("dns").getJSONArray("servers")
+        for (i in 0 until s.length()) check(!s.getJSONObject(i).has("detour")) { s.getJSONObject(i).toString() }
+    }
 
     checkCase("un critère geosite, supprimé en 1.12, ne fait pas refuser la config") {
         // On ne peut pas le traduire : il faudrait la liste des domaines de la

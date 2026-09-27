@@ -1,4 +1,4 @@
-﻿package com.sxbvpn.vpnmodule
+package com.sxbvpn.vpnmodule
 
 /**
  * SxbVpnService — Moteur VPN professionnel SXB v6 (libbox in-process)
@@ -2203,7 +2203,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             // openTun() au démarrage du moteur. On lui fournit simplement une
             // config dont l'outbound est notre SOCKS5 local alimenté par SSH.
             val label = if (usePayload) "SSH+PAYLOAD" else "SSH"
-            startLibboxService(buildSshSocksRelayConfig(host), label)
+            startLibboxService(buildSshSocksRelayConfig(host, relaisUdp = udpMode == "udpgw"), label)
 
             // ── Boucle de surveillance ────────────────────────────────────────
             // C'est le seul détecteur du transport SSH : il ne passe pas par le
@@ -4922,7 +4922,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
      * Comme pour buildSingBoxConfig(), le champ « file_descriptor » a disparu :
      * c'est openTun() qui fournit le TUN au moteur.
      */
-    private fun buildSshSocksRelayConfig(host: String = ""): String {
+    private fun buildSshSocksRelayConfig(host: String = "", relaisUdp: Boolean = false): String {
         val exclusion = if (host.isNotBlank()) carrierExclusionRule(host) else null
 
         // Build rules manually: exclusion FIRST (if any), then protocol-dns, ip_is_private
@@ -4931,6 +4931,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
         routeRules
             .put(JSONObject().put("protocol", "dns").put("outbound", "dns-out"))
             .put(JSONObject().put("ip_is_private", true).put("outbound", "direct"))
+        // Sans passerelle UDPGW, le relais SOCKS/SSH refuse tout UDP. Un refus
+        // IMMÉDIAT de l'UDP/443 fait basculer les navigateurs et les applis
+        // Google/Meta de QUIC vers TCP sans attendre l'expiration de QUIC —
+        // la même règle que le chemin sing-box (voir TRANSPORTS_SANS_UDP).
+        if (!relaisUdp) {
+            routeRules.put(JSONObject().put("network", "udp").put("port", JSONArray().put(443)).put("outbound", "block"))
+        }
 
         return JSONObject().apply {
             put("log", JSONObject().put("level", "warn").put("timestamp", true))
@@ -4946,7 +4953,14 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     // SSH retarderait la résolution du PREMIER nom de plusieurs
                     // allers-retours — pour un chiffrement que le tunnel assure
                     // déjà. Voir RESOLVEUR_TUNNEL.
-                    .put(JSONObject().put("tag", "dns-r").put("address", RESOLVEUR_TUNNEL).put("strategy", tunnelDnsStrategy()))
+                    .put(JSONObject().put("tag", "dns-r").put("address", RESOLVEUR_TUNNEL).put("strategy", tunnelDnsStrategy())
+                        // DÉTOUR EXPLICITE, indispensable depuis sing-box 1.12 :
+                        // sans lui, un serveur DNS sort EN DIRECT (en 1.11 il
+                        // prenait l'outbound par défaut, c'est-à-dire ce SOCKS).
+                        // Sur un forfait qui ne décompte que le tunnel, le DNS
+                        // des autres applications échouait : VPN « connecté »,
+                        // compteurs qui bougent, et aucune donnée hors de l'app.
+                        .put("detour", "proxy"))
                     .put(JSONObject().put("tag", "dns-l").put("address", bootstrapDnsAddress())
                         .put("strategy", dnsStrategy()).put("detour", "direct"))
                 )
@@ -4974,6 +4988,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 })
                 .put(JSONObject().put("type", "direct").put("tag", "direct"))
                 .put(JSONObject().put("type", "dns").put("tag", "dns-out"))
+                .put(JSONObject().put("type", "block").put("tag", "block"))
             )
             put("route", JSONObject().apply {
                 put("rules", routeRules)

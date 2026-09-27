@@ -60,6 +60,9 @@ object SxbEngineSchema {
     /** Stratégies de résolution acceptées par le moteur. */
     private val STRATEGIES = setOf("prefer_ipv4", "prefer_ipv6", "ipv4_only", "ipv6_only")
 
+    /** Serveurs DNS qui n'ouvrent aucune connexion : un détour n'a pas de sens. */
+    private val TYPES_SANS_DETOUR = setOf("fakeip", "local", "dhcp", "hosts")
+
     /**
      * Noms de code de réponse DNS, du format hérité vers celui du moteur.
      *
@@ -116,8 +119,11 @@ object SxbEngineSchema {
         // `reject`, et le DNS fournit le résolveur d'amorçage que la route doit
         // désigner. Les trois sont donc lus AVANT de réécrire la route.
         val sniffDemande = moderniserInbounds(config)
+        // Lu AVANT la réécriture des outbounds : c'est l'outbound « par défaut »
+        // du format hérité, celui qu'empruntait un serveur DNS sans détour.
+        val defautHerite = outboundParDefautHerite(config)
         val speciaux = moderniserOutbounds(config)
-        val dns = config.optJSONObject("dns")?.let { moderniserDns(it, speciaux) }
+        val dns = config.optJSONObject("dns")?.let { moderniserDns(it, speciaux, defautHerite) }
         if (dns != null) config.put("dns", dns)
         moderniserRoute(config, sniffDemande, speciaux, resolveurDAmorcage(dns))
         return config
@@ -147,6 +153,39 @@ object SxbEngineSchema {
     }
 
     // ── Inbounds ─────────────────────────────────────────────────────────────
+
+    /**
+     * Outbound qu'un serveur DNS SANS détour empruntait dans le format hérité.
+     *
+     * ═══════════════════════════════════════════════════════════════════════
+     * LE PIÈGE DE LA TRADUCTION
+     * ═══════════════════════════════════════════════════════════════════════
+     * En 1.11, un serveur DNS sans `detour` passait par l'outbound PAR DÉFAUT
+     * — `route.final`, sinon le premier outbound —, donc par le tunnel. Depuis
+     * 1.12, le même serveur sans détour sort EN DIRECT. Recopier l'absence de
+     * détour changeait donc silencieusement le chemin du DNS.
+     *
+     * Mesuré avec sing-box 1.12.9 : le DNS du relais SSH partait en direct
+     * vers 8.8.8.8. Sur un forfait qui ne décompte que le tunnel, il échouait,
+     * et avec lui toutes les applications : VPN « connecté », compteurs qui
+     * bougent, aucune donnée utilisable hors de l'application.
+     *
+     * `null` quand ce défaut était un `direct` (ou absent) : ne rien poser
+     * garde alors exactement le chemin d'avant.
+     */
+    private fun outboundParDefautHerite(config: JSONObject): String? {
+        val outbounds = config.optJSONArray("outbounds") ?: return null
+        val parTag = LinkedHashMap<String, JSONObject>()
+        for (i in 0 until outbounds.length()) {
+            val o = outbounds.optJSONObject(i) ?: continue
+            val tag = o.optString("tag", "")
+            if (tag.isNotEmpty() && tag !in parTag) parTag[tag] = o
+        }
+        val fin = config.optJSONObject("route")?.optString("final", "").orEmpty()
+        val tag = fin.takeIf { it in parTag } ?: parTag.keys.firstOrNull() ?: return null
+        val type = parTag[tag]?.optString("type", "").orEmpty()
+        return tag.takeIf { type !in setOf("direct", "dns", "block") }
+    }
 
     /**
      * Retire les champs d'inbound supprimés et rend `true` si l'un d'eux
@@ -320,7 +359,7 @@ object SxbEngineSchema {
      * URL mélangeait : le TRANSPORT d'un côté (`type`), l'ADRESSE de l'autre
      * (`server`, `server_port`).
      */
-    private fun moderniserDns(source: JSONObject, speciaux: Speciaux): JSONObject {
+    private fun moderniserDns(source: JSONObject, speciaux: Speciaux, defautHerite: String? = null): JSONObject {
         val dns = JSONObject(source.toString())
         // La mémoire est désormais indexée par transport : le champ ne veut
         // plus rien dire, et le moteur refuse ce qu'il ne connaît pas.
@@ -390,6 +429,10 @@ object SxbEngineSchema {
                 val detour = serveur.optString("detour", "")
                 if (detour.isNotEmpty() && detour !in speciaux.directsNus) {
                     traduit.put("detour", detour)
+                } else if (detour.isEmpty() && defautHerite != null && traduit.optString("type") !in TYPES_SANS_DETOUR) {
+                    // Sans détour, le format hérité passait par l'outbound par
+                    // défaut : on l'écrit, sinon 1.12 sortirait en direct.
+                    traduit.put("detour", defautHerite)
                 }
             }
             // `client_subnet` n'est plus une propriété du serveur : il se pose
