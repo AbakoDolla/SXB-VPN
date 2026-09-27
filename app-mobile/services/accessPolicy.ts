@@ -298,12 +298,33 @@ export function accessNotices(before: AccessAuthority | null, after: AccessAutho
   for (const entry of after.snapshot?.subscriptions ?? []) {
     const previous = before?.snapshot?.subscriptions.find(item => item.id === entry.id);
     const wasRestricted = before?.restrictions.some(item => item.id === entry.id);
-    if (entry.status === 'active' && (wasRestricted || (previous && previous.status !== 'active'))) add('config_restored', entry.id, entry.name);
+    const restored = entry.status === 'active' && (wasRestricted || (!!previous && previous.status !== 'active'));
+    if (restored) add('config_restored', entry.id, entry.name);
     else if ((entry.status === 'expired' || entry.status === 'exhausted') && previous?.status !== entry.status) add(`config_${entry.status}`, entry.id, entry.name);
-    if (previous?.expireAt && (entry.expireAt === null || Date.parse(entry.expireAt) > Date.parse(previous.expireAt))) add('config_extended', entry.id, entry.name);
+    // Prolonger un profil expiré le rend « de nouveau disponible » : afficher
+    // aussi « a été prolongée » doublait le bandeau pour un seul geste.
+    if (!restored && previous?.expireAt && (entry.expireAt === null || Date.parse(entry.expireAt) > Date.parse(previous.expireAt))) add('config_extended', entry.id, entry.name);
     if (previous && entry.quotaTotalBytes !== previous.quotaTotalBytes) add('config_quota_updated', entry.id, entry.name);
   }
   return notices;
+}
+
+/** Sujet d'un avis : `device` ou l'identifiant de l'abonnement concerné. */
+export function accessNoticeSubject(notice: AccessNotice): string {
+  const parts = notice.id.split(':');
+  return parts.length >= 2 ? parts[parts.length - 2] : notice.id;
+}
+
+/**
+ * Les avis décrivent l'état courant d'un profil, pas un historique : un avis
+ * plus récent sur le même sujet remplace les précédents. Sans cela « la durée
+ * est écoulée » restait affiché à côté de « de nouveau disponible » après une
+ * prolongation, et la liste ne faisait que grossir.
+ */
+export function mergeAccessNotices(existing: AccessNotice[], incoming: AccessNotice[]): AccessNotice[] {
+  if (!incoming.length) return existing;
+  const subjects = new Set(incoming.map(accessNoticeSubject));
+  return [...existing.filter(item => !subjects.has(accessNoticeSubject(item))), ...incoming].slice(-12);
 }
 
 export function retryDelay(attempt: number, retryAfter?: unknown, now = Date.now()): number {

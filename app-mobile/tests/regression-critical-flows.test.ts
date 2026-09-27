@@ -875,13 +875,36 @@ describe('garde-fous contre les régressions Android', () => {
 
   it('bloque les appareils suspendus ou supprimés sans invalider leur identité', () => {
     assert.match(authContext, /deviceAccess: selectDeviceAccess\(access\.authority\)/);
-    assert.match(vpnContext, /stop: stopForAccess/);
+    assert.match(vpnContext, /stop: \(\) => stopForAccessRef\.current\?\.\(motifArretCourant\(runningProfileRef\.current\)\)/);
+    assert.match(vpnContext, /if \(blocksDevice\(selectDeviceAccess\(authority\)\)\) return 'appareil_bloque';/);
     assert.match(accessSync, /blocksDevice\(deviceAccess\(authority\)\)/);
     assert.match(accessSync, /currentRuntime\.stop\(\)/);
     assert.match(rootLayout, /accessRedirect\(isAuthenticated, accessReady, deviceAccess/);
     assert.match(nativeService, /restartAccessObserver/);
     assert.doesNotMatch(vpnContext, /invalidateRemoteAccess|clearAllOfflineData|verifyRemoteAccess/);
     assert.match(identitySession, /isInvalidSession\(error\)/);
+  });
+
+  it('enregistre le runtime d’accès une seule fois : plus de boucle de rendu après l’activation', () => {
+    // CAUSE RACINE (constatée dans un navigateur : ~660 réenregistrements par
+    // seconde, interface figée). `t` était recréée à chaque rendu, donc
+    // `stopForAccess` aussi, donc l'effet réenregistrait le runtime à chaque
+    // rendu. Chaque enregistrement relançait la réconciliation, qui rechargeait
+    // les configurations, qui provoquait un rendu. Le nettoyage annulait en
+    // plus la reprise programmée des imports : rien n'arrivait sur l'appareil
+    // et le changement de configuration ne répondait plus.
+    const localization = source('localization/index.ts');
+    const languageContext = source('contexts/LanguageContext.tsx');
+    assert.match(vpnContext,
+      /useEffect\(\(\) => registerAccessRuntime\(\{[\s\S]{0,400}?changed: \(\) => reloadLocalConfigsRef\.current\(\),\s*\}\), \[\]\);/,
+      'le runtime doit être enregistré une seule fois, via des références');
+    assert.doesNotMatch(vpnContext, /\}\), \[stopForAccess, reloadLocalConfigs\]\);/);
+    assert.match(vpnContext, /useEffect\(\(\) => \{ reloadLocalConfigsRef\.current = reloadLocalConfigs; \}\);/);
+    // `t` garde son identité tant que la langue ne change pas.
+    assert.match(localization, /const t = useCallback\(\(key: TranslationKey\): string => \{[\s\S]{0,200}?\}, \[language\]\);/);
+    assert.match(languageContext, /const setLanguage = useCallback\(/);
+    assert.match(languageContext, /useMemo\(\(\) => \(\{ language, setLanguage \}\), \[language, setLanguage\]\)/);
+    assert.match(languageContext, /<LanguageContext\.Provider value=\{value\}>/);
   });
 
   it('protège le cycle Foreground Android contre la désynchronisation', () => {

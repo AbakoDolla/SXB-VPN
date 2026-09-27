@@ -439,6 +439,28 @@ describe('mobile access runtime with real encrypted store, auth and HTTP interce
     assert.equal((await h.store.get('a')).value?.meta.accessStatus, 'active');
   });
 
+  it('an extension replaces the stale "expired" notice with a single "available again" one', async () => {
+    // Constaté dans un navigateur : après une prolongation, « la durée est
+    // écoulée » restait affiché à côté de « de nouveau disponible » ET de
+    // « a été prolongée » — trois bandeaux contradictoires pour un geste.
+    const h = await harness();
+    await setup(h);
+    await h.access.dismissAccessNotices();
+    await apply(h, snapshot('elapsed', 'active', 'expired', 'exhausted'));
+    equal(h.access.getAccessState().notices.map(item => item.kind), ['config_expired', 'config_exhausted']);
+    const extended = snapshot('extended', 'active', 'active', 'exhausted');
+    extended.subscriptions[0].expireAt = '2027-06-01T00:00:00.000Z';
+    await apply(h, extended);
+    const notices = h.access.getAccessState().notices;
+    equal(notices.map(item => [item.name, item.kind]), [['Profile B', 'config_exhausted'], ['Profile A', 'config_restored']]);
+    // Une prolongation d'un profil resté actif reste annoncée comme telle.
+    const again = snapshot('extended-again', 'active', 'active', 'exhausted');
+    again.subscriptions[0].expireAt = '2028-06-01T00:00:00.000Z';
+    await apply(h, again);
+    equal(h.access.getAccessState().notices.map(item => [item.name, item.kind]),
+      [['Profile B', 'config_exhausted'], ['Profile A', 'config_extended']]);
+  });
+
   it('only a validated complete snapshot can remove an orphan; manual imports are not orphans', async () => {
     const h = await harness();
     await setup(h, null);
