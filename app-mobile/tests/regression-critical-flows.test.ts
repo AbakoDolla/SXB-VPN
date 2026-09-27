@@ -1731,6 +1731,33 @@ describe('garde-fous contre les régressions Android', () => {
     assert.ok(authContext.includes('configStore.restore(provisioned.meta.subscriptionId)'));
   });
 
+  it('supprime aussi le forfait du tableau de bord, sans toucher la configuration partagée', () => {
+    // DEMANDE : une configuration supprimée dans l'application doit aussi
+    // disparaître du tableau de bord. Seul le forfait de CE compte est visé :
+    // la route ne cherche que parmi les forfaits de l'appelant, et ne supprime
+    // jamais le profil VPN que d'autres utilisateurs partagent.
+    const mobileRoutes = source('../server/routes/mobile.ts');
+    const route = mobileRoutes.slice(mobileRoutes.indexOf('router.delete("/connections/:id"'));
+    const corps = route.slice(0, route.indexOf('\nrouter.'));
+    assert.match(corps, /subscription\.findFirst\(\{ where: \{ id, clientId: client\.id \} \}\)/);
+    assert.match(corps, /subscription\.deleteMany\(\{ where: \{ id, clientId: client\.id \} \}\)/);
+    assert.doesNotMatch(corps, /vpnProfile\.(delete|update)/);
+    // Même comptabilité revendeur et même invalidation que l'exploitant.
+    assert.match(corps, /executerMutationQuota\(prisma/);
+    assert.match(corps, /accessStateHub\.invalidate\(\{ clientId: client\.id \}\)/);
+    assert.match(corps, /status\(404\)\.json\(subscriptionAccessFailure\("deleted", id\)\)/);
+
+    // L'application met la demande en file AVANT d'appeler le serveur : hors
+    // réseau, elle repart à la prochaine synchronisation, avant la relecture.
+    assert.ok(vpnContext.includes('configStore.queueRemoteDeletion(forfaitServeur)'));
+    assert.ok(accessSync.includes("apiClient.delete(`/mobile/connections/${encodeURIComponent(id)}`)"));
+    assert.ok(accessSync.indexOf('await flushRemoteDeletions()') < accessSync.indexOf("apiClient.get('/mobile/connections')"));
+    // Un 404 clôt la demande ; toute autre erreur la garde pour plus tard.
+    assert.match(accessSync, /if \(responseInfo\(error\)\.status !== 404\) \{\s*reportAccessSyncError\(error\);\s*continue;/);
+    assert.match(configStore, /export async function queueRemoteDeletion\(/);
+    assert.doesNotMatch(configStore, /removeItem\(REMOTE_DELETION_KEY\)/);
+  });
+
   it('retire la configuration de l’écran sans attendre le coffre ni la coupure', () => {
     // L'entrée disparaissait seulement après disconnect() + écritures chiffrées,
     // donc le bouton paraissait sans effet pendant plusieurs secondes.

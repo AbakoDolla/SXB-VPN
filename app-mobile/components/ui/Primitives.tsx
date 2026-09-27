@@ -14,7 +14,8 @@ import { Pressable, StyleSheet, Text, View, type ViewStyle, type StyleProp } fro
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useColors } from '@/hooks/useColors';
-import { alpha, elevation, glow, layout, radius, spacing, type } from '@/constants/theme';
+import { surfaceShadow, tintedSurface } from '@/constants/colors';
+import { alpha, glow, layout, radius, spacing, type } from '@/constants/theme';
 
 // ── Surface ──────────────────────────────────────────────────────────────────
 
@@ -45,7 +46,7 @@ interface SurfaceProps {
 export function Surface({ children, variant = 'flat', tone, style, padded = true }: SurfaceProps) {
   const colors = useColors();
   const toned = tone
-    ? { borderColor: tone + alpha.f40, backgroundColor: tone + alpha.f08 }
+    ? { borderColor: tone + alpha.f40, backgroundColor: tintedSurface(colors, tone, 0.08) }
     : { borderColor: colors.border, backgroundColor: variant === 'outline' ? 'transparent' : colors.bgCard };
 
   return (
@@ -53,10 +54,10 @@ export function Surface({ children, variant = 'flat', tone, style, padded = true
       style={[
         styles.surface,
         toned,
-        variant === 'raised' && elevation.md,
+        variant === 'raised' && surfaceShadow(colors, 'md'),
         // Une carte teintée porte le halo de sa propre teinte : c'est ce qui la
         // détache du fond sans l'éclaircir.
-        tone ? glow(tone, 'sm') : null,
+        tone && colors.scheme === 'dark' ? glow(tone, 'sm') : null,
         style,
       ]}
     >
@@ -179,7 +180,7 @@ export function ProgressBar({ progress, tone, warnTone, height = 7 }: ProgressBa
   const clamped = Math.max(0, Math.min(1, Number.isFinite(progress) ? progress : 0));
   const fill = clamped > 0.8 && warnTone ? warnTone : tone || colors.primary;
   return (
-    <View style={[styles.progressTrack, { height, borderRadius: height / 2, backgroundColor: colors.bgInput }]}>
+    <View style={[styles.progressTrack, { height, borderRadius: height / 2, backgroundColor: colors.track }]}>
       <View
         style={{
           width: `${clamped * 100}%`,
@@ -278,7 +279,7 @@ export function AccentCard({ children, tone, icon, title, subtitle, trailing, st
       style={[
         styles.surface,
         { borderColor: tone + alpha.f24, backgroundColor: colors.bgCard, overflow: 'hidden' },
-        elevation.sm,
+        surfaceShadow(colors, 'sm'),
         style,
       ]}
       // Le padding vit sur le corps, pour que le dégradé touche les bords.

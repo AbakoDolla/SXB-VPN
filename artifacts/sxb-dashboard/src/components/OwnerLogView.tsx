@@ -89,18 +89,18 @@ export default function OwnerLogView() {
               </p>
             </div>
           </div>
-          <div className="flex gap-2 shrink-0">
+          <div className="flex flex-col gap-2 shrink-0 sm:flex-row">
             <button
               onClick={() => toggle(true)}
               disabled={maintenance.loading || maintenance.enabled}
-              className="flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-rose-500/10 text-rose-400 border border-rose-500/25 hover:bg-rose-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
+              className="flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-rose-500/10 text-rose-400 border border-rose-500/25 hover:bg-rose-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
             >
               <PauseCircle className="w-4 h-4" />
               {t("operations.dashboard.pause")}</button>
             <button
               onClick={() => toggle(false)}
               disabled={maintenance.loading || !maintenance.enabled}
-              className="flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 hover:bg-emerald-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
+              className="flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 hover:bg-emerald-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
             >
               <PlayCircle className="w-4 h-4" />
               {t("operations.dashboard.resume")}</button>

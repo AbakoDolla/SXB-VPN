@@ -165,6 +165,33 @@ export function storeValue<T>(result: configStore.StoreResult<T>): T | undefined
   return result.value;
 }
 
+// ── Suppression côté serveur des configurations retirées dans l'application ──
+// Le forfait de CE compte est supprimé du tableau de bord ; la configuration
+// VPN partagée par d'autres utilisateurs n'est jamais touchée (le serveur ne
+// connaît de toute façon que les forfaits de l'appelant). Une réponse 404 veut
+// dire « plus rien à supprimer » : la demande est alors close.
+let remoteDeletionFlight: Promise<void> | null = null;
+
+export function flushRemoteDeletions(): Promise<void> {
+  if (remoteDeletionFlight) return remoteDeletionFlight;
+  const flight = (async () => {
+    const pending = storeValue(await configStore.listRemoteDeletions()) ?? [];
+    for (const id of pending) {
+      try {
+        await apiClient.delete(`/mobile/connections/${encodeURIComponent(id)}`);
+      } catch (error) {
+        if (responseInfo(error).status !== 404) {
+          reportAccessSyncError(error);
+          continue;
+        }
+      }
+      storeValue(await configStore.clearRemoteDeletion(id));
+    }
+  })();
+  remoteDeletionFlight = flight.finally(() => { remoteDeletionFlight = null; });
+  return remoteDeletionFlight;
+}
+
 export function registerAccessRuntime(next: Runtime): () => void {
   runtime = next;
   void reconcileAccess().catch(reportAccessSyncError);
@@ -360,6 +387,10 @@ export function refreshMobileConfigs(): Promise<VpnConnection[]> {
     try { await refreshAccessState(); }
     catch (error) { reportAccessSyncError(error); }
     requireDeviceAccess();
+    // Les suppressions faites dans l'application partent avant la relecture :
+    // un forfait supprimé ne doit pas revenir dans la liste du serveur.
+    try { await flushRemoteDeletions(); }
+    catch (error) { reportAccessSyncError(error); }
     const requestStamp = accessRequestStamp();
     const response = await apiClient.get('/mobile/connections');
     if (epoch !== lifecycle || !currentIdentityRequest(identity)) return [];

@@ -161,9 +161,10 @@ function mutate<T>(action: () => Promise<T>): Promise<T> {
 // ── Suppressions locales (« pierres tombales ») ──────────────────────────────
 // Une configuration supprimée depuis l'application doit le RESTER. Sans trace
 // persistante, le rafraîchissement suivant la reprovisionnait depuis
-// /mobile/connections et elle réapparaissait aussitôt dans la liste.
-// L'abonnement reste intact côté dashboard : la suppression est volontairement
-// limitée à cet appareil, et une réactivation explicite du jeton la relève.
+// /mobile/connections et elle réapparaissait aussitôt dans la liste. La
+// suppression du forfait côté tableau de bord (voir plus bas) peut attendre le
+// réseau : la trace couvre cet intervalle. Une réactivation explicite du jeton
+// la relève.
 const DISMISSED_KEY = 'sxb_cfg_dismissed_v1';
 
 async function dismissedIds(): Promise<string[]> {
@@ -198,6 +199,47 @@ export async function restore(id: string): Promise<StoreResult<void>> {
       requireProfileAccess({ configId: id });
       const ids = await dismissedIds();
       if (ids.includes(id)) await AsyncStorage.setItem(DISMISSED_KEY, JSON.stringify(ids.filter(x => x !== id)));
+    });
+    return { status: 'ok' };
+  } catch (error: any) { return { status: 'error', error }; }
+}
+
+// ── Suppressions à confirmer auprès du serveur ───────────────────────────────
+// Supprimer une configuration dans l'application retire aussi son forfait du
+// tableau de bord. Hors réseau, la demande attend ici et repart à chaque
+// synchronisation, jusqu'à ce que le serveur confirme (ou réponde qu'il n'y a
+// plus rien à supprimer). Seul l'identifiant du forfait est conservé.
+const REMOTE_DELETION_KEY = 'sxb_cfg_remote_deletion_v1';
+
+async function remoteDeletionIds(): Promise<string[]> {
+  const raw = await AsyncStorage.getItem(REMOTE_DELETION_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((x: any) => typeof x === 'string' && x) : [];
+  } catch { return []; }
+}
+
+export async function listRemoteDeletions(): Promise<StoreResult<string[]>> {
+  try { return { status: 'ok', value: await remoteDeletionIds() }; }
+  catch (error: any) { return { status: 'error', error }; }
+}
+
+export async function queueRemoteDeletion(id: string): Promise<StoreResult<void>> {
+  try {
+    await mutate(async () => {
+      const ids = await remoteDeletionIds();
+      if (!ids.includes(id)) await AsyncStorage.setItem(REMOTE_DELETION_KEY, JSON.stringify([...ids, id]));
+    });
+    return { status: 'ok' };
+  } catch (error: any) { return { status: 'error', error }; }
+}
+
+export async function clearRemoteDeletion(id: string): Promise<StoreResult<void>> {
+  try {
+    await mutate(async () => {
+      const ids = await remoteDeletionIds();
+      if (ids.includes(id)) await AsyncStorage.setItem(REMOTE_DELETION_KEY, JSON.stringify(ids.filter(x => x !== id)));
     });
     return { status: 'ok' };
   } catch (error: any) { return { status: 'error', error }; }
@@ -294,6 +336,9 @@ export async function clearAll(): Promise<StoreResult<void>> {
     // n'ont plus d'objet, sinon un profil resterait invisible après un nouvel
     // enrôlement de l'appareil.
     await AsyncStorage.removeItem(DISMISSED_KEY);
+    // Les suppressions à confirmer, elles, survivent : un forfait supprimé hors
+    // réseau doit encore disparaître du tableau de bord. Rejouée par un autre
+    // compte, la demande reçoit simplement 404 et s'efface.
     await Promise.all([
       AsyncStorage.removeItem(LEGACY_CONFIG),
       AsyncStorage.removeItem(LEGACY_META),

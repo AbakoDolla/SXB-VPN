@@ -17,7 +17,7 @@ import { configHashForProfile, configVersionForProfile } from "../services/confi
 import { compterConnectes, PRESENCE_WINDOW_MINUTES } from "../services/vpn-presence";
 import { getActiveAnnouncements } from "./announcements";
 import { getMobileAppUpdate, installedVersionCodeFromHeaders, toMobileAppVersion } from "../services/app-update";
-import { PlafondQuotaDepasse } from "../services/reseller-quota";
+import { executerMutationQuota, PlafondQuotaDepasse } from "../services/reseller-quota";
 import { CODES_ACTIVATION, evaluerActivation } from "../services/device-activation";
 import {
   chargerFicheProprietaireClient,
@@ -1518,6 +1518,44 @@ router.post("/connections/:id/status", async (req: AuthenticatedRequest, res: Re
     if (err instanceof z.ZodError) return res.status(400).json({ error: "errors.validation" });
     console.error("Mobile configuration state update failed:", err);
     return res.status(503).json({ error: "errors.server", message: "Etat de configuration temporairement indisponible." });
+  }
+});
+
+// DELETE /api/mobile/connections/:id — l'utilisateur supprime une configuration
+// depuis l'application : son forfait disparaît aussi du tableau de bord.
+//
+// SEUL le forfait de CE compte est supprimé. La configuration VPN (le profil
+// du tableau de bord) est partagée entre tous les forfaits qui la citent : elle
+// n'est jamais touchée, les autres utilisateurs gardent leur accès. C'est la
+// même opération que la suppression d'un forfait par l'exploitant — même
+// comptabilité revendeur, même invalidation des appareils — limitée ici aux
+// forfaits de l'appelant. Un forfait déjà absent répond comme un forfait
+// supprimé : l'application peut rejouer la demande sans risque.
+router.delete("/connections/:id", async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const id = String(req.params.id || "");
+    if (!id || id.length > 128) return res.status(400).json({ error: "errors.validation" });
+    const client: any = await findClientByUserId(req.user!.userId, req.user!.clientId, deviceIdFromRequest(req));
+    if (!client) return res.status(404).json({ error: "errors.mobile.no_account" });
+    if (!prisma) return res.status(503).json({ error: "errors.db.unavailable" });
+
+    const sub: any = await (prisma as any).subscription.findFirst({ where: { id, clientId: client.id } });
+    if (!sub) return res.status(404).json(subscriptionAccessFailure("deleted", id));
+
+    await executerMutationQuota(prisma, {
+      resellerId: client.resellerId ?? null,
+      auteur: { userId: req.user!.userId, email: req.user!.email },
+      reason: `Suppression du forfait ${sub.name} depuis l'application`,
+      referenceType: "subscription",
+      referenceId: id,
+      autoriserReductionAuDessusDuPlafond: true,
+    }, (tx) => (tx as any).subscription.deleteMany({ where: { id, clientId: client.id } }));
+    accessStateHub.invalidate({ clientId: client.id });
+    await logDbActivity(req.user!.userId, `Forfait supprimé depuis l'application : ${sub.name}`, "warning", req.ip || "");
+    return res.json({ success: true, id, deleted: true });
+  } catch (err) {
+    console.error("Mobile configuration deletion failed:", (err as any)?.code || (err as any)?.name || "UNKNOWN");
+    return res.status(503).json({ error: "errors.server", message: "Suppression temporairement indisponible." });
   }
 });
 

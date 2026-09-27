@@ -32,6 +32,7 @@ import { accessIssueFromError, blocksDevice, deviceAccess as selectDeviceAccess,
 import { getAccessState, requireDeviceAccess, requireProfileAccess, syncNativeAccessState } from '@/services/accessState';
 import { accessRequestStamp, currentAccessRequest, currentIdentityRequest } from '@/services/accessEvents';
 import {
+  flushRemoteDeletions,
   getImportNotes, getRemoteConnections, prepareNativeAccess, reconcileAccess, refreshAccessState, refreshMobileConfigs,
   registerAccessRuntime, reportAccessSyncError, storeValue, wakeAccessObservation, type ImportNote,
 } from '@/services/accessSync';
@@ -2239,6 +2240,13 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
    */
   const deleteConfig = useCallback(async (configId: string) => {
     const wasActive = configId === activeConfigId;
+    // Forfait attribué par le tableau de bord : sa suppression doit aussi y
+    // être faite. On lit l'identifiant du forfait AVANT d'effacer l'entrée.
+    const registre = await configStore.list();
+    const meta = registre.status === 'ok' ? registre.value?.find(entry => entry.configId === configId) : undefined;
+    const forfaitServeur = meta
+      ? (meta.source === 'backend' ? (meta.subscriptionId || meta.configId) : null)
+      : (getRemoteConnections().some(entry => entry.id === configId) ? configId : null);
 
     // Retrait IMMÉDIAT de l'affichage : l'entrée disparaît au doigt levé, sans
     // attendre la coupure du tunnel ni les écritures chiffrées du coffre, qui
@@ -2262,13 +2270,18 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       return false;
     }
 
-    // Trace persistante : l'abonnement existe toujours côté dashboard, donc
-    // sans elle le prochain /mobile/connections reprovisionnerait le profil.
+    // Trace persistante : tant que le serveur n'a pas confirmé la suppression
+    // du forfait, le prochain /mobile/connections le reprovisionnerait.
     await configStore.dismiss(configId);
     // Le sélecteur ne doit pas le réafficher « en attente » : il ne serait
     // plus jamais importé, et l'appui échouait sur « Configuration absente ».
     setDismissedConfigIds(prev => prev.includes(configId) ? prev : [...prev, configId]);
     await clearQuotaData(configId).catch(() => {});
+    if (forfaitServeur) {
+      // Hors réseau, la demande attend et repart à la prochaine synchronisation.
+      await configStore.queueRemoteDeletion(forfaitServeur);
+      void flushRemoteDeletions().catch(reportAccessSyncError);
+    }
 
     const remaining = await configStore.list();
     const entries = remaining.status === 'ok' && remaining.value ? remaining.value : [];
@@ -2295,7 +2308,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       }
     }
 
-    addLog('🗑️ Profil supprimé de cet appareil');
+    addLog(forfaitServeur ? '🗑️ Profil supprimé de cet appareil et du compte' : '🗑️ Profil supprimé de cet appareil');
     return true;
   }, [activeConfigId, isConnected, isConnecting, disconnect, addLog]);
 

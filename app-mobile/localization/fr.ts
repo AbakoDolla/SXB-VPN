@@ -208,7 +208,7 @@ export const fr = {
   config_singular: 'profil',
   config_plural: 'profils',
   config_delete_title: 'Supprimer le profil',
-  config_delete_confirm: 'Retirer « {name} » de cet appareil ? Le profil VPN sera supprimé localement.',
+  config_delete_confirm: 'Supprimer « {name} » ? Ce forfait sera aussi retiré de votre compte et du tableau de bord ; pour le retrouver, il faudra qu’il vous soit attribué de nouveau.',
   config_manage: 'Gérer les profils',
   config_search: 'Rechercher une connexion',
   config_clear_search: 'Effacer la recherche',
