@@ -1417,15 +1417,17 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       const profiles = storeValue(await configStore.list());
       if (!profiles) throw new Error('VPN_USAGE_PROFILES_UNAVAILABLE');
       const runningMeta = profiles.find(entry => entry.configId === running?.configId);
+      const source = running?.source ?? runningMeta?.source;
       const subscriptionId = running?.subscriptionId || runningMeta?.subscriptionId ||
-        (runningMeta?.source === 'backend' ? runningMeta.configId : null);
+        (source === 'backend' ? running?.configId ?? runningMeta?.configId ?? null : null);
       if (running && runningProfileRef.current === running && subscriptionId) {
         runningProfileRef.current = { ...running, subscriptionId };
       }
+      const attribution = !subscriptionId && source === 'manual' ? 'unlinked' as const : undefined;
       const previous = options?.beforeConnect ? ledger.context : null;
       if (!sessionIdRef.current) sessionIdRef.current = 'sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
       const context: UsageContext = previous ?? (running
-        ? { subscriptionId, configId: running.configId, sessionId: sessionIdRef.current }
+        ? { subscriptionId, configId: running.configId, attribution, sessionId: sessionIdRef.current }
         : ledger.context ?? { subscriptionId: null, sessionId: sessionIdRef.current });
       const seedQuota = async (owner: UsageContext) => {
         const pending = pendingUsage(ledger, owner);
@@ -1468,7 +1470,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       }
       ledger = { ...ledger, context };
       if (options?.beforeConnect && running) {
-        const next = { subscriptionId, configId: running.configId, sessionId: sessionIdRef.current };
+        const next = { subscriptionId, configId: running.configId, attribution, sessionId: sessionIdRef.current };
         await seedQuota(next);
         ledger = { ...ledger, context: next };
       }
@@ -1498,7 +1500,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
           bytesDown: prepared.report.bytesDown,
           sessionId: prepared.report.sessionId,
           seq:       prepared.report.seq,
-          reportMode: 'delta',
+          reportMode: prepared.report.attribution === 'unlinked' ? 'unlinked' : 'delta',
           subscriptionId: prepared.report.subscriptionId || undefined,
           deviceId: deviceId || undefined,
         }).catch((error: any) => {

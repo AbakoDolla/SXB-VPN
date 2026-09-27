@@ -3278,7 +3278,7 @@ describe('comptage de la consommation data', () => {
     // Le livre gèle une entrée dès sa première tentative : les octets suivants
     // vont ailleurs, et un rejeu porte donc exactement le même contenu.
     assert.match(ledger, /frozen: true/);
-    assert.match(ledger, /if \(last && !last\.frozen && last\.subscriptionId === context\.subscriptionId && last\.sessionId === context\.sessionId\)/);
+    assert.match(ledger, /if \(last && !last\.frozen && last\.subscriptionId === context\.subscriptionId &&\s+last\.configId === context\.configId && last\.attribution === context\.attribution && last\.sessionId === context\.sessionId\)/);
   });
 
   it('affiche le consommé du forfait crédité, sans jamais le recalculer ni le faire reculer', () => {

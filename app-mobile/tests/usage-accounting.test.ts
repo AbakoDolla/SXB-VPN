@@ -164,6 +164,29 @@ describe('durable byte accounting', () => {
     assert.equal(h.ledger.pendingBytes(ledger), 62);
   });
 
+  it('preserves explicit unlinking through frozen chunking and disk replay without rewriting legacy entries', async () => {
+    const h = await services();
+    const legacy = { subscriptionId: null, configId: 'old-manual', sessionId: 'one-app-session' };
+    let ledger = h.ledger.accumulate(h.ledger.emptyLedger(), { up: 2, down: 3 }, legacy);
+    const manual = { subscriptionId: null, configId: 'manual', attribution: 'unlinked' as const, sessionId: legacy.sessionId };
+    ledger = h.ledger.accumulate(ledger, { up: 2, down: h.ledger.MAX_REPORT_BYTES + 12 }, manual);
+    assert.equal(ledger.entries.length, 2, 'different manual configurations must not coalesce');
+    await h.ledger.saveLedger(ledger);
+    const first = h.ledger.nextReport(await h.ledger.loadLedger())!;
+    assert.equal(first.report.attribution, undefined, 'legacy identity is not rewritten');
+    ledger = h.ledger.settle(first.ledger, first.report);
+    const chunk = h.ledger.nextReport(ledger)!;
+    assert.equal(chunk.report.attribution, 'unlinked');
+    assert.equal(chunk.report.bytesDown, h.ledger.MAX_REPORT_BYTES);
+    await h.ledger.saveLedger(chunk.ledger);
+    const replay = h.ledger.nextReport(await h.ledger.loadLedger())!;
+    assert.deepEqual(replay.report, chunk.report);
+    const tail = h.ledger.nextReport(h.ledger.settle(replay.ledger, replay.report))!;
+    assert.equal(tail.report.attribution, 'unlinked');
+    assert.equal(tail.report.bytesDown, 9);
+    assert.notEqual(tail.report.seq, chunk.report.seq);
+  });
+
   it('does not acknowledge persistence when storage refused the write', async () => {
     const h = await services();
     h.state.failWrites = true;
@@ -186,6 +209,8 @@ describe('durable byte accounting', () => {
       '', '{', 'null', '{}', JSON.stringify({ ...saved, entries: [{}] }),
       JSON.stringify({ ...saved, entries: [{ ...saved.entries[0], subscriptionId: 17 }] }),
       JSON.stringify({ ...saved, context: { sessionId: 'saved', subscriptionId: {} } }),
+      JSON.stringify({ ...saved, entries: [{ ...saved.entries[0], attribution: 'unlinked' }] }),
+      JSON.stringify({ ...saved, context: { sessionId: 'saved', subscriptionId: null, attribution: 'invalid' } }),
       JSON.stringify({ ...saved, quotas: { normal: { usedBytes: 'bad', totalBytes: 100 } } }),
     ]) {
       h.state.storage.set(key, corrupt);
@@ -499,6 +524,49 @@ describe('provider traffic report lifecycle', () => {
     assert.equal(h.state.posts[0].bytesUp + h.state.posts[0].bytesDown, 5);
     assert.equal(h.state.posts[1].subscriptionId, 'normal');
     assert.equal(h.state.posts[1].bytesUp + h.state.posts[1].bytesDown, 9);
+  });
+
+  it('does not inherit a backend subscription when switching to an unlinked manual profile', async () => {
+    const h = await reporter();
+    h.env.ledgerRef.current = { ...h.env.ledgerRef.current, context: {
+      configId: 'normal', subscriptionId: 'normal', sessionId: 'old-backend',
+    } };
+    h.state.profiles.push({ configId: 'manual', source: 'manual' });
+    h.env.runningProfileRef.current = { configId: 'manual' };
+    h.env.activeConfigIdRef.current = 'manual';
+    h.state.stats = { lifetimeUploadBytes: 3, lifetimeDownloadBytes: 4 };
+    await h.flushUsage({ beforeConnect: true });
+    const anchored = await h.ledger.loadLedger();
+    assert.equal(anchored.context?.configId, 'manual');
+    assert.equal(anchored.context?.subscriptionId, null);
+    assert.equal(anchored.context?.attribution, 'unlinked');
+    h.state.respond = async (body: any) => {
+      if (!body.subscriptionId) {
+        throw new Error('OFFLINE');
+      }
+      return { data: { ok: true, subscriptionId: 'normal', quotaUsedBytes: 5, quotaTotalBytes: 1000 } };
+    };
+    h.state.stats = { lifetimeUploadBytes: 7, lifetimeDownloadBytes: 9 };
+    await h.flushUsage();
+    assert.equal(h.state.posts.length, 2);
+    assert.equal(h.state.posts[0].subscriptionId, 'normal');
+    assert.equal(h.state.posts[0].bytesUp + h.state.posts[0].bytesDown, 5);
+    assert.equal(h.state.posts[1].subscriptionId, undefined);
+    assert.equal(h.state.posts[1].reportMode, 'unlinked');
+    assert.equal(h.state.posts[1].bytesUp + h.state.posts[1].bytesDown, 9);
+    const persisted = await h.ledger.loadLedger();
+    assert.equal(persisted.entries.length, 1);
+    assert.equal(persisted.entries[0].configId, 'manual');
+    assert.equal(persisted.entries[0].subscriptionId, null);
+    assert.equal(persisted.entries[0].attribution, 'unlinked');
+    assert.equal(h.ledger.pendingBytes(persisted), 9);
+    h.env.ledgerRef.current = null;
+    h.env.usageRetryAtRef.current = 0;
+    h.state.respond = async () => ({ data: { ok: true, subscriptionId: null } });
+    await h.flushUsage();
+    assert.deepEqual(h.state.posts[2], h.state.posts[1]);
+    assert.equal(h.ledger.pendingBytes(await h.ledger.loadLedger()), 0);
+    assert.equal(h.state.stops, 0);
   });
 
   it('retains the accepted byte floor when a stale cached snapshot arrives later', async () => {

@@ -224,6 +224,13 @@ de souscription. Avec plusieurs forfaits actifs, un rapport sans identité
 reçoit `409 USAGE_SUBSCRIPTION_REQUIRED` plutôt qu'un débit arbitraire.
 Un refus d'attribution reste au livre, différé cinq minutes sans bloquer les
 autres forfaits ; ni ses octets ni sa clé de rejeu ne sont réécrits.
+Une configuration manuelle explicitement non liée envoie le mode `unlinked`,
+distinct d'un ancien rapport sans identifiant : ses octets alimentent le total
+client, jamais un forfait backend. Ce marqueur survit au gel, au découpage et
+au rejeu. La réponse ne porte aucun quota ni ordre d'arrêt d'un autre forfait.
+Les anciens rapports conservent leur imputation historique non ambiguë.
+Déployer le backend avant cette APK : l'ancien backend refuse `unlinked`
+sans débit et le mobile conserve alors les octets à rejouer.
 
 Le dashboard ne peut connaître un retard hors ligne avant réception. La
 cadence normale est de 20 secondes, déclenchée par le service Android via
@@ -243,6 +250,10 @@ Les tests isolés
 et les agrégats. Le contrôle JVM `NativeUsageTest.kt` exécute le vrai gestionnaire
 de compteurs avec un stockage Android simulé, y compris ses échecs et la
 concurrence. Il ne remplace pas une mesure sur appareil de l'interface TUN.
+`NativeUsageReportingTest.kt` exécute les vraies méthodes d'initialisation,
+d'abonnement aux broadcasts et de nettoyage du pont, avec Android/React
+simulés : le premier tick fonctionne sans événement d'accès préalable, les
+rapports ne se chevauchent pas et les receivers sont retirés à l'arrêt.
 Un arrêt brutal peut perdre une fin de trafic qui n'a pas encore été relevée
 ou sauvegardée ; les compteurs déjà exportés par cette version sont durables.
 

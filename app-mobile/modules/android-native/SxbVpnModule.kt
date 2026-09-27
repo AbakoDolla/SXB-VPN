@@ -591,17 +591,18 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                     putString("session", i?.getStringExtra("session") ?: "")
                     putDouble("sequence", (i?.getLongExtra("sequence", 0) ?: 0).toDouble())
                 }
-                usageReceiver = object : BroadcastReceiver() {
-                    override fun onReceive(c: Context?, i: Intent?) {
-                        if (!usageReportingEnabled || !SxbPrivacyPolicy.vpnAllowed(ctx)) return
-                        val tasks = HeadlessJsTaskContext.getInstance(ctx)
-                        if (usageTaskId?.let { tasks.isTaskRunning(it) } == true) return
-                        usageTaskId = tasks.startTask(HeadlessJsTaskConfig(
-                            "SxbUsageReport", Arguments.createMap(), 180_000L, true,
-                        ))
-                    }
-                }
                 sendEvent("onAccessStateChange", p)
+            }
+        }
+
+        usageReceiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context?, i: Intent?) {
+                if (!usageReportingEnabled || !SxbPrivacyPolicy.vpnAllowed(ctx)) return
+                val tasks = HeadlessJsTaskContext.getInstance(ctx)
+                if (usageTaskId?.let { tasks.isTaskRunning(it) } == true) return
+                usageTaskId = tasks.startTask(HeadlessJsTaskConfig(
+                    "SxbUsageReport", Arguments.createMap(), 180_000L, true,
+                ))
             }
         }
 

@@ -69,6 +69,8 @@ export interface UsageCounters {
 export interface UsageContext {
   subscriptionId: string | null;
   configId?: string | null;
+  /** Explicitly manual/unlinked, unlike an unidentified legacy report. */
+  attribution?: 'unlinked';
   sessionId: string;
 }
 
@@ -81,6 +83,7 @@ export interface UsageEntry {
   /** Forfait qui a réellement porté ce trafic. */
   subscriptionId: string | null;
   configId?: string | null;
+  attribution?: 'unlinked';
   sessionId: string;
   seq: number;
   up: number;
@@ -106,6 +109,7 @@ export interface UsageLedger {
 export interface UsageReport {
   subscriptionId: string | null;
   configId?: string | null;
+  attribution?: 'unlinked';
   sessionId: string;
   seq: number;
   bytesUp: number;
@@ -232,13 +236,15 @@ export function accumulate(
   };
   if (up <= 0 && down <= 0) return advanced;
   const last = advanced.entries[advanced.entries.length - 1];
-  if (last && !last.frozen && last.subscriptionId === context.subscriptionId && last.sessionId === context.sessionId) {
+  if (last && !last.frozen && last.subscriptionId === context.subscriptionId &&
+      last.configId === context.configId && last.attribution === context.attribution && last.sessionId === context.sessionId) {
     advanced.entries[advanced.entries.length - 1] = { ...last, up: last.up + up, down: last.down + down };
     return advanced;
   }
   advanced.entries.push({
     subscriptionId: context.subscriptionId,
     configId: context.configId,
+    attribution: context.attribution,
     sessionId: context.sessionId,
     seq: advanced.nextSeq,
     up,
@@ -279,6 +285,7 @@ export function nextReport(ledger: UsageLedger): { ledger: UsageLedger; report: 
     entries.splice(index + 1, 0, {
       subscriptionId: head.subscriptionId,
       configId: head.configId,
+      attribution: head.attribution,
       sessionId: head.sessionId,
       seq: next.nextSeq,
       up: remainderUp,
@@ -293,6 +300,7 @@ export function nextReport(ledger: UsageLedger): { ledger: UsageLedger; report: 
     report: {
       subscriptionId: head.subscriptionId,
       configId: head.configId,
+      attribution: head.attribution,
       sessionId: head.sessionId,
       seq: head.seq,
       bytesUp,
@@ -321,6 +329,8 @@ function sanitize(value: unknown): UsageLedger {
   const isCount = (count: unknown): count is number =>
     typeof count === 'number' && Number.isSafeInteger(count) && count >= 0;
   const isOptionalId = (id: unknown): boolean => id == null || typeof id === 'string';
+  const validAttribution = (scope: Partial<UsageContext>): boolean =>
+    scope.attribution === undefined || (scope.attribution === 'unlinked' && !scope.subscriptionId);
   const corrupt = (): never => { throw new UsageLedgerReadError('corrupt'); };
   if (!value || typeof value !== 'object' || Array.isArray(value)) return corrupt();
   const raw = value as Partial<UsageLedger>;
@@ -329,7 +339,8 @@ function sanitize(value: unknown): UsageLedger {
   if (raw.initialized !== undefined && typeof raw.initialized !== 'boolean') return corrupt();
   if (raw.context !== undefined && (!raw.context || typeof raw.context !== 'object' ||
       typeof raw.context.sessionId !== 'string' || !raw.context.sessionId ||
-      !isOptionalId(raw.context.subscriptionId) || !isOptionalId(raw.context.configId))) return corrupt();
+      !isOptionalId(raw.context.subscriptionId) || !isOptionalId(raw.context.configId) ||
+      !validAttribution(raw.context))) return corrupt();
   const entries = raw.entries;
   const clean: UsageEntry[] = [];
   for (const entry of entries) {
@@ -337,7 +348,8 @@ function sanitize(value: unknown): UsageLedger {
     const candidate = entry as Partial<UsageEntry>;
     if (typeof candidate.sessionId !== 'string' || !candidate.sessionId ||
         !isCount(candidate.seq) || !isCount(candidate.up) || !isCount(candidate.down) ||
-        !isOptionalId(candidate.subscriptionId) || !isOptionalId(candidate.configId)) return corrupt();
+        !isOptionalId(candidate.subscriptionId) || !isOptionalId(candidate.configId) ||
+        !validAttribution(candidate)) return corrupt();
     const up = candidate.up;
     const down = candidate.down;
     if (up + down <= 0) return corrupt();
@@ -345,6 +357,7 @@ function sanitize(value: unknown): UsageLedger {
     clean.push({
       subscriptionId: typeof candidate.subscriptionId === 'string' ? candidate.subscriptionId : null,
       configId: typeof candidate.configId === 'string' ? candidate.configId : undefined,
+      attribution: candidate.attribution,
       sessionId: candidate.sessionId,
       seq: candidate.seq,
       up,
@@ -369,6 +382,7 @@ function sanitize(value: unknown): UsageLedger {
       sessionId: raw.context.sessionId,
       subscriptionId: typeof raw.context.subscriptionId === 'string' ? raw.context.subscriptionId : null,
       configId: typeof raw.context.configId === 'string' ? raw.context.configId : undefined,
+      attribution: raw.context.attribution,
     }
     : undefined;
   return {
