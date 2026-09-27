@@ -3515,9 +3515,18 @@ describe('configurations attribuées : import automatique, jamais de déconnexio
 
   it('importe dès l’attribution et retente de lui-même un import raté', () => {
     assert.match(accessSync, /AUTO_IMPORT_RETRY_MS = \[5_000, 15_000, 30_000, 60_000, 120_000, 300_000\]/);
-    assert.match(accessSync, /if \(manquant\) scheduleAutoImport\(true\)/);
+    assert.match(accessSync, /if \(manquant \|\| perimes\.length > 0\) scheduleAutoImport\(true\)/);
     assert.match(accessSync, /libererPlaceInutilisable\(importsConnus, current\)/);
     // Fin de session : aucune reprise ne survit à la déconnexion.
-    assert.match(accessSync, /stopAutoImport\(\); importNotes = new Map\(\);/);
+    assert.match(accessSync, /stopAutoImport\(\); importNotes = new Map\(\); majLancees = new Map\(\);/);
+  });
+
+  it('remet à jour d’elle-même une configuration dont le profil a été réattribué', () => {
+    // Seul un forfait ABSENT déclenchait un import : un profil changé depuis le
+    // tableau de bord n'arrivait qu'après un appui sur « Actualiser ».
+    assert.match(accessSync, /detenu\.configHash === item\.configHash \|\| majLancees\.get\(item\.id\) === item\.configHash/);
+    // Une mise à jour ratée pour une cause passagère est reprise, pas oubliée.
+    assert.match(accessSync, /else if \(importFailure\(error\)\.retryable\) miseAJourEnEchec = true;/);
+    assert.match(accessSync, /if \(miseAJourEnEchec \|\| \[\.\.\.notes\.values\(\)\]\.some\(note => note\.kind === 'failed'\)\) scheduleAutoImport\(\);/);
   });
 });
