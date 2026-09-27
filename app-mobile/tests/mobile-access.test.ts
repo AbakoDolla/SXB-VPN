@@ -434,6 +434,57 @@ describe('identity persistence with controlled storage promises (synthetic nativ
     });
     assert.equal(h.state.storage.has(key), false);
   });
+
+  for (const stage of ['quota', 'payload', 'legacy'] as const) {
+    it(`drains nested ${stage} cleanup after a sibling failure before B can reuse a manual ID`, { timeout: 10_000 }, async () => {
+      const h = await harness();
+      await h.auth.acceptActivatedIdentity(activated('A'), 'hardware');
+      for (const id of ['shared', 'failed']) {
+        assert.equal((await h.store.save(id, config, { source: 'manual' })).status, 'ok');
+      }
+      await h.offline.saveQuotaData({ configId: 'shared', totalQuota: 100, usedQuota: 10, expiryDate: null });
+      const blocked = deferred(), release = deferred();
+      let held = false, failed = false;
+      h.state.beforeWrite = async (store, key, value) => {
+        if (value !== null) return;
+        const delayedKey = stage === 'quota' ? 'sxb_quota_shared'
+          : stage === 'payload' ? 'sxb_cfg_payload_shared' : 'sxb_prov_config_v2';
+        const failureKey = stage === 'quota' ? 'sxb_offline_quota_v2'
+          : stage === 'payload' ? 'sxb_cfg_payload_failed' : 'sxb_prov_meta_v2';
+        if (!failed && store === 'async' && key === failureKey) {
+          failed = true;
+          throw new Error('SYNTHETIC_CLEAR_FAILURE');
+        }
+        if (!held && key === delayedKey && store === (stage === 'legacy' ? 'secure' : 'async')) {
+          held = true;
+          blocked.resolve();
+          await release.promise;
+        }
+      };
+      let clearSettled = false, replacementStored = false;
+      const cleared = assert.rejects(h.auth.clearIdentitySession(), /SYNTHETIC_CLEAR_FAILURE/)
+        .then(() => { clearSettled = true; });
+      try {
+        await blocked.promise;
+        const replacement = (async () => {
+          await h.auth.acceptActivatedIdentity(activated('B'), 'hardware');
+          assert.equal((await h.store.save('shared', { ...config, host: 'vpn-b.example.test' }, { source: 'manual' })).status, 'ok');
+          await h.offline.saveQuotaData({ configId: 'shared', totalQuota: 100, usedQuota: 20, expiryDate: null });
+          replacementStored = true;
+        })();
+        await nextTurn();
+        assert.equal(failed, true);
+        assert.equal(clearSettled, false, 'nested cleanup must drain before rejecting');
+        assert.equal(replacementStored, false);
+        release.resolve();
+        await cleared;
+        await replacement;
+        assertStoredIdentity(h, 'B');
+        assert.equal((await h.offline.loadQuotaData('shared'))?.usedQuota, 20);
+        assert.equal((await h.store.get('shared')).value?.config.host, 'vpn-b.example.test');
+      } finally { release.resolve(); }
+    });
+  }
 });
 
 describe('mobile access runtime with real encrypted store, auth and HTTP interceptors', () => {
