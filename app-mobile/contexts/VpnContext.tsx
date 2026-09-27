@@ -197,6 +197,17 @@ function motifPourRestriction(statut: string | undefined): MotifArretAcces {
     default:          return 'profil_retire';
   }
 }
+
+/**
+ * Motif d'un arrêt décidé par la réconciliation d'accès, hors de tout
+ * événement natif : même règle que les autres chemins — l'appareil bloqué
+ * d'abord, puis l'état du profil en cours.
+ */
+function motifArretCourant(profile: ProfileIdentity | null): MotifArretAcces {
+  const authority = getAccessState().authority;
+  if (blocksDevice(selectDeviceAccess(authority))) return 'appareil_bloque';
+  return motifPourRestriction(profile ? profileRestriction(authority, profile)?.status : undefined);
+}
 const SxbVpnNative = IS_ANDROID ? (NativeModules.SxbVpnNative as any) : null;
 const vpnEmitter   = SxbVpnNative ? new NativeEventEmitter(SxbVpnNative) : null;
 
@@ -1732,11 +1743,23 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     await reloadLocalConfigs();
   }, [isAuthenticated, accessReady, reloadLocalConfigs]);
 
+  const reloadLocalConfigsRef = useRef(reloadLocalConfigs);
+  useEffect(() => { reloadLocalConfigsRef.current = reloadLocalConfigs; });
+
+  // ── UN SEUL ENREGISTREMENT POUR TOUTE LA VIE DU FOURNISSEUR ──────────────
+  //
+  // Le runtime était réenregistré dès que `stopForAccess` changeait
+  // d'identité — c'est-à-dire à chaque rendu. Chaque enregistrement relançait
+  // la réconciliation, qui rechargeait les configurations, qui provoquait un
+  // rendu : une boucle sans fin juste après l'activation. L'interface se
+  // figeait, et le nettoyage annulait à chaque tour la reprise programmée des
+  // imports — les forfaits attribués n'arrivaient jamais sur l'appareil.
+  // Les références portent toujours la version courante des fonctions.
   useEffect(() => registerAccessRuntime({
     activeProfile: () => runningProfileRef.current,
-    stop: stopForAccess,
-    changed: reloadLocalConfigs,
-  }), [stopForAccess, reloadLocalConfigs]);
+    stop: () => stopForAccessRef.current?.(motifArretCourant(runningProfileRef.current)) ?? Promise.resolve(),
+    changed: () => reloadLocalConfigsRef.current(),
+  }), []);
 
   useEffect(() => {
     if (!isAuthenticated || !accessReady) return;

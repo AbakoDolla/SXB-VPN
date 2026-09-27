@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
-  AccessDeniedError, accessNotices, blocksDevice, deviceAccess, isRecord, parseAccessIssue,
+  AccessDeniedError, accessNotices, blocksDevice, deviceAccess, isRecord, mergeAccessNotices, parseAccessIssue,
   parseAccessSnapshot, profileIssue, profileRestriction, reduceIssue, reduceSnapshot,
   type AccessAuthority, type AccessIssue, type AccessNotice, type AccessSnapshot, type ProfileIdentity,
 } from './accessPolicy';
@@ -70,7 +70,7 @@ async function adopt(authority: AccessAuthority, runtime = state.native): Promis
   if (previous && (previous.userId !== authority.userId || previous.deviceId !== authority.deviceId ||
       previous.session !== authority.session || previous.sequence > authority.sequence)) return;
   const changed = !previous || previous.sequence !== authority.sequence;
-  const notices = changed ? [...state.notices, ...accessNotices(previous, authority)].slice(-12) : state.notices;
+  const notices = changed ? mergeAccessNotices(state.notices, accessNotices(previous, authority)) : state.notices;
   if (changed) advanceAccessRevision();
   // Publish the barrier before any asynchronous disk operation or payload purge.
   publish({ ready: true, authority, notices, native: runtime });
@@ -103,7 +103,7 @@ export async function bindAccessState(userId: string, deviceId: string): Promise
       userId, deviceId, session: `${Date.now()}:${userId}`, sequence: 0, snapshot: null, deviceIssue: null, restrictions: [],
     };
     if (cachedAuthority && authority.sequence > cachedAuthority.sequence) {
-      notices = [...notices, ...accessNotices(cachedAuthority, authority)].slice(-12);
+      notices = mergeAccessNotices(notices, accessNotices(cachedAuthority, authority));
     }
     advanceAccessSession();
     publish({ ready: true, authority, notices, native: runtime });
