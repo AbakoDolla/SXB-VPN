@@ -81,6 +81,7 @@ const METADATA_KEYS = new Set([
   // sortent que par la console propriétaire, qui est déjà cloisonnée.
   'ip', 'clientName', 'deviceModel', 'appVersion',
   'signals', 'riskScore', 'action', 'attestation',
+  'riskLevel', 'evidence', 'policyVersion',
 ]);
 
 function nettoyerMetadata(metadata: Record<string, unknown> | null | undefined): string | null {

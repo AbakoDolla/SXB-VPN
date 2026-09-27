@@ -2779,11 +2779,9 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(contexte, /if \(estLeurre\(configToUse\)\)/);
     assert.match(contexte, /import \{ estLeurre \} from '@\/services\/decoy'/);
 
-    // Sous instrumentation active, les traces natives décrivent un faux serveur.
-    assert.match(securite, /fun leurreEndpoint/);
-    assert.match(securite, /fun leurreUuid/);
-    assert.match(serviceNatif, /val leurre = SecurityModule\.leurreEndpoint\(packageName\)/);
-    assert.match(serviceNatif, /stage=ENDPOINT_RESOLVED remote=\$leurre/);
+    // Local heuristics must not fabricate endpoints or block legitimate root.
+    assert.match(securite, /fun shouldBlock\(report: SecurityReport\): Boolean = false/);
+    assert.doesNotMatch(serviceNatif, /val leurre = SecurityModule\.leurreEndpoint/);
   });
 
   it('n’attribue aucun quota aux comptes qui pilotent la plateforme', () => {

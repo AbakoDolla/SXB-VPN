@@ -24,6 +24,7 @@ import { config } from '../config';
 export type ResultatAttestation =
   | { statut: 'not_configured' }
   | { statut: 'valid'; verdicts: Record<string, string> }
+  | { statut: 'not_evaluated'; verdicts: Record<string, string> }
   | { statut: 'refused'; raison: string }
   | { statut: 'unavailable'; raison: string };
 
@@ -97,13 +98,10 @@ export async function verifierAttestation(jeton: string): Promise<ResultatAttest
     licensing: compte || 'unknown',
   };
 
-  // Le binaire n'est pas celui que Google a signé : c'est un remballage.
-  if (appIntegrity && appIntegrity !== 'PLAY_RECOGNIZED') {
-    return { statut: 'refused', raison: `app_${appIntegrity.toLowerCase()}` };
-  }
-  // Aucun verdict d'appareil : l'installation tourne hors d'un Android intègre.
-  if (deviceIntegrity.length === 0) {
-    return { statut: 'refused', raison: 'device_unrecognized' };
+  // Direct APK distribution, root and missing Play licensing are supported.
+  // Recognition is not authenticity proof for a sideloaded installation.
+  if (appIntegrity !== 'PLAY_RECOGNIZED' || compte !== 'LICENSED' || deviceIntegrity.length === 0) {
+    return { statut: 'not_evaluated', verdicts };
   }
 
   return { statut: 'valid', verdicts };

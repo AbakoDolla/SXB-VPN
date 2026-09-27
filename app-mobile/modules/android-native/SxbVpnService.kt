@@ -1410,25 +1410,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
         Log.i(TAG, "[SXB_DEBUG] START_COMMAND_RECEIVED action=" + intent?.action)
         broadcastLog("[SXB_DEBUG] ▶ START_COMMAND_RECEIVED (onStartCommand a démarré)")
 
-        // Vérifications de sécurité — OK to run after startForeground()
-        val secReport = SecurityModule.audit(this)
-        if (SecurityModule.shouldBlock(secReport)) {
-            // La configuration réelle n'est ni lue ni transmise au moteur. Les
-            // traces exposées à l'outil d'instrumentation décrivent un serveur
-            // factice : ce qu'il capture ne mène nulle part.
-            val leurre = SecurityModule.leurreEndpoint(packageName)
-            Log.e("SXB_DEBUG", "[SXB_DEBUG] SECURITY_BLOCK hasFrida=${secReport.hasFrida} hasXposed=${secReport.hasXposed} isHooked=${secReport.isHooked}")
-            broadcastLog("[SXB_TRACE] stage=ENDPOINT_RESOLVED remote=$leurre id=${SecurityModule.leurreUuid(packageName)}")
-            broadcastLog("[SXB] ❌ Connexion refusée")
-            broadcastStatus("error")
-            stopSelf()
-            return START_NOT_STICKY
-        }
-        if (secReport.isRooted) {
-            Log.w("SXB_DEBUG", "[SXB_DEBUG] SECURITY_WARN isRooted=true")
-            broadcastLog("[SXB_DEBUG] ⚠️ SECURITY_WARN: appareil rooté")
-            broadcastLog("[SXB] ⚠️ Appareil rooté — risque de sécurité")
-        }
+        // Runtime probes are scheduled by the existing background reporter,
+        // never on Android's main-thread start path and never as a local ban.
         // C8 — Contrôle d'intégrité de la signature APK. Informatif tant que
         // l'empreinte attendue n'est pas injectée dans le manifeste de release :
         // une signature invalide ne coupe pas le service pour ne pas rendre

@@ -15,8 +15,7 @@
  *
  *  • LA DÉCISION. Le score et l'action sont calculés côté serveur.
  *
- *  • LA SANCTION. Au-delà du seuil, l'accès de l'appareil est coupé — de façon
- *    réversible et tracée, jamais silencieuse.
+ *  • LA PORTEE. Une observation locale ne suspend jamais un compte.
  *
  * La réponse ne dit PAS à l'appelant ce qui a été retenu contre lui. Renvoyer
  * le score reviendrait à offrir un banc d'essai : il suffirait d'itérer jusqu'à
@@ -89,25 +88,6 @@ async function attribuerAppareil(deviceId: string, req: AuthenticatedRequest) {
   }
 }
 
-/**
- * Coupe l'accès de l'appareil.
- *
- * Réversible : le compte passe en `suspended`, rien n'est supprimé. Un faux
- * positif se répare d'un clic, ce qui ne serait pas vrai d'une suppression.
- */
-async function couperAcces(clientId: string): Promise<boolean> {
-  if (!prisma) return false;
-  try {
-    await (prisma as any).vpnClient.update({
-      where: { id: clientId },
-      data: { status: 'suspended' },
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 router.post('/report', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   // Seule une session mobile parle ici. Un compte d'exploitation qui posterait
   // sur cette route fabriquerait des alertes contre un appareil qui n'est pas
@@ -155,6 +135,9 @@ router.post('/report', requireAuth, async (req: AuthenticatedRequest, res: Respo
     signals: evaluation.signaux.join(','),
     riskScore: evaluation.score,
     action: evaluation.action,
+    riskLevel: evaluation.level,
+    evidence: evaluation.evidence,
+    policyVersion: evaluation.policyVersion,
     attestation,
   };
 
@@ -173,22 +156,6 @@ router.post('/report', requireAuth, async (req: AuthenticatedRequest, res: Respo
     appVersion: analyse.data.appVersion || null,
     metadata: contexte,
   });
-
-  // La sanction est une seconde entrée, distincte de l'observation : on doit
-  // pouvoir lire ce qui a été vu même si la coupure échoue.
-  if (evaluation.action === 'block' && fiche?.id && fiche.status !== 'suspended') {
-    const coupe = await couperAcces(fiche.id);
-    await recordSecurityEvent({
-      eventType: 'DEVICE_AUTO_BLOCKED' as any,
-      severity: 'critical',
-      userId: fiche.userId,
-      deviceId,
-      ipHash: hashIp(adresseSource(req)),
-      appVersion: analyse.data.appVersion || null,
-      actionTaken: coupe ? 'ACCESS_SUSPENDED' : 'SUSPEND_FAILED',
-      metadata: { ...contexte, status: coupe ? 'suspended' : 'failed' },
-    });
-  }
 
   // Réponse volontairement muette : ni score, ni seuil, ni signal retenu.
   return res.status(202).json({ accepted: true });

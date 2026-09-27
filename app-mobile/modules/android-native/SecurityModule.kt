@@ -70,15 +70,11 @@ object SecurityModule {
     /**
      * Politique d'application des détections, explicite et unique.
      *
-     * Instrumentation active (Frida, Xposed, Substrate) : blocage. Ces outils
-     * permettent d'extraire en direct les identifiants VPN du processus.
-     *
-     * Root seul : avertissement. Un appareil rooté n'implique pas une
-     * compromission et bloquer ces utilisateurs constituerait une régression
-     * fonctionnelle pour une partie du parc installé.
+     * Les sondes locales sont des observations, jamais une autorite de
+     * revocation. Le serveur applique la politique a la session concernee.
      */
-    fun shouldBlock(report: SecurityReport): Boolean =
-        report.hasFrida || report.hasXposed || report.isHooked
+    @Suppress("UNUSED_PARAMETER")
+    fun shouldBlock(report: SecurityReport): Boolean = false
 
     // ── Détection de hook (analyse de la stack trace) ─────────────────────────
     fun isHooked(): Boolean {
