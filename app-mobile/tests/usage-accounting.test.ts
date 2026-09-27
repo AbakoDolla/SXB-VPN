@@ -21,6 +21,7 @@ async function services() {
     stdin: {
       contents: `
         export * as ledger from './services/usageLedger';
+        export * as reporting from './services/usageReporting';
         export * as quota from './services/quotaState';
         export * as offline from './services/offlineStorage';
         export { state } from 'test:state';`,
@@ -32,10 +33,15 @@ async function services() {
       setup(plugin: any) {
         const stubs: Record<string, string> = {
           'test:state': `export const state={storage:new Map(),failWrites:false,failReads:false,metadata:new Map()};`,
+          'react-native': `export const AppRegistry={registerHeadlessTask(){}};`,
           '@react-native-async-storage/async-storage': `
             import {state} from 'test:state'; export default {
               getItem:async k=>{if(state.failReads)throw Error('STORAGE_UNAVAILABLE');return state.storage.get(k)??null},
-              setItem:async(k,v)=>{if(state.failWrites)throw Error('STORAGE_UNAVAILABLE');state.storage.set(k,v)},
+              setItem:async(k,v)=>{
+                if(state.failWrites)throw Error('STORAGE_UNAVAILABLE');
+                if(state.beforeWrite)await state.beforeWrite(k,v);
+                state.storage.set(k,v);
+              },
               removeItem:async k=>state.storage.delete(k),
               getAllKeys:async()=>[...state.storage.keys()],
             };`,
@@ -56,12 +62,16 @@ async function services() {
     }],
   });
   const module = { exports: {} as any };
-  runInNewContext(output.outputFiles[0].text, { module, exports: module.exports, require: requireMobile });
+  runInNewContext(output.outputFiles[0].text, { module, exports: module.exports, require: requireMobile, setTimeout, clearTimeout });
   return module.exports as {
     ledger: typeof import('../services/usageLedger');
+    reporting: typeof import('../services/usageReporting');
     quota: typeof import('../services/quotaState');
     offline: typeof import('../services/offlineStorage');
-    state: { storage: Map<string, string>; failWrites: boolean; failReads: boolean; metadata: Map<string, unknown> };
+    state: {
+      storage: Map<string, string>; failWrites: boolean; failReads: boolean; metadata: Map<string, unknown>;
+      beforeWrite?: (key: string, value: string) => Promise<void>;
+    };
   };
 }
 
@@ -75,11 +85,13 @@ async function reporter() {
   const ref = (current: any) => ({ current });
   const state: any = {
     stats: { lifetimeUploadBytes: 1, lifetimeDownloadBytes: 1, uploadBytes: 0, downloadBytes: 0 },
-    posts: [], quota: null, stops: 0, epoch: 0, retries: new Map(), timerId: 0,
+    posts: [], signals: [], quota: null, stops: 0, epoch: 0, retries: new Map(), timerId: 0,
     profiles: ['normal', 'trial'].map(configId => ({ configId, subscriptionId: configId })),
   };
   const env: any = {
     ...h.ledger,
+    ...h.reporting,
+    AbortController,
     accumulateUsage: h.ledger.accumulate,
     settleUsage: h.ledger.settle,
     ...h.offline,
@@ -87,6 +99,7 @@ async function reporter() {
     useCallback: (callback: any) => callback,
     ledgerRef: ref(h.ledger.anchorLedger(h.ledger.emptyLedger(), { up: 1, down: 1 })),
     ledgerBusyRef: ref(false), ledgerFlushRef: ref(null),
+    usagePreparationPendingRef: ref(0), usageRequestAbortRef: ref(null),
     usageRetryTimerRef: ref(null), USAGE_REPORT_INTERVAL_MS: 20_000,
     usageMountedRef: ref(true),
     usageRetryAtRef: ref(0), usageFailuresRef: ref(0),
@@ -117,8 +130,9 @@ async function reporter() {
       list: async () => ({ status: 'ok', value: state.profiles }),
     },
     storeValue: (result: any) => result.value,
-    apiClient: { post: async (_url: string, body: any) => {
+    apiClient: { post: async (_url: string, body: any, options?: { signal?: AbortSignal }) => {
       state.posts.push(body);
+      state.signals.push(options?.signal);
       return state.respond(body);
     } },
     legacyDebugLog: () => {}, addLog: () => {}, wakeAccessObservation: () => {},
@@ -338,6 +352,227 @@ describe('durable byte accounting', () => {
 });
 
 describe('provider traffic report lifecycle', () => {
+  it('anchors a connection without waiting for a blocked HTTP report or losing its frozen receipt', async () => {
+    const h = await reporter();
+    const received = deferred();
+    const response = deferred<any>();
+    h.state.stats = { lifetimeUploadBytes: 11, lifetimeDownloadBytes: 21 };
+    h.state.respond = async () => { received.resolve(); return response.promise; };
+    const first = h.flushUsage();
+    await received.promise;
+    const sent = { ...h.state.posts[0] };
+    h.env.runningProfileRef.current = { configId: 'trial', subscriptionId: 'trial' };
+    h.env.sessionIdRef.current = 'new-session';
+    const preparation = h.flushUsage({ beforeConnect: true });
+    try {
+      await h.reporting.usageDeadline(preparation, 1_000);
+      await first;
+      const saved = await h.ledger.loadLedger();
+      assert.equal(saved.context?.subscriptionId, 'trial');
+      assert.equal(saved.context?.sessionId, 'new-session');
+      assert.equal(h.ledger.pendingBytes(saved), 30);
+      assert.equal(saved.entries[0].frozen, true);
+      assert.equal(h.state.signals[0].aborted, true);
+      assert.equal(h.state.posts.length, 1, 'preparation must not send a second HTTP report');
+      response.resolve({ data: { ok: true, subscriptionId: 'trial', quotaExhausted: true } });
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(h.state.stops, 0, 'a cancelled request must not stop the new connection on late completion');
+      assert.equal(h.ledger.pendingBytes(await h.ledger.loadLedger()), 30);
+      h.state.respond = async () => ({ data: { duplicate: true, subscriptionId: 'normal' } });
+      await h.flushUsage();
+      assert.deepEqual({ ...h.state.posts[1] }, sent, 'retry the identical frozen report after an uncertain receipt');
+      assert.equal(h.ledger.pendingBytes(await h.ledger.loadLedger()), 0);
+    } finally {
+      response.resolve({ data: { ok: true, subscriptionId: 'normal' } });
+      await Promise.allSettled([first, preparation]);
+    }
+  });
+
+  it('does not start an HTTP report when connection preparation arrives during a local counter read', async () => {
+    const h = await reporter();
+    const reading = deferred();
+    const counters = deferred<any>();
+    let reads = 0;
+    h.state.stats = { lifetimeUploadBytes: 11, lifetimeDownloadBytes: 21 };
+    h.env.SxbVpnNative.getTrafficStats = async () => {
+      if (++reads === 1) { reading.resolve(); return counters.promise; }
+      return h.state.stats;
+    };
+    const first = h.flushUsage();
+    await reading.promise;
+    const preparation = h.flushUsage({ beforeConnect: true });
+    counters.resolve(h.state.stats);
+    await Promise.all([first, preparation]);
+    assert.equal(h.state.posts.length, 0);
+    assert.equal(h.ledger.pendingBytes(await h.ledger.loadLedger()), 30);
+    assert.equal(h.env.usagePreparationPendingRef.current, 0);
+  });
+
+  it('yields after persisting a frozen report if preparation arrived during that write', async () => {
+    const h = await reporter();
+    const writing = deferred();
+    const release = deferred();
+    let writes = 0;
+    h.state.stats = { lifetimeUploadBytes: 11, lifetimeDownloadBytes: 21 };
+    h.storageState.beforeWrite = async (key: string) => {
+      if (key === '@sxb_usage_ledger' && ++writes === 2) {
+        writing.resolve();
+        await release.promise;
+      }
+    };
+    const first = h.flushUsage();
+    await writing.promise;
+    const preparation = h.flushUsage({ beforeConnect: true });
+    release.resolve();
+    await Promise.all([first, preparation]);
+    assert.equal(h.state.posts.length, 0);
+    assert.equal((await h.ledger.loadLedger()).entries[0].frozen, true);
+  });
+
+  async function stoppingProvider() {
+    const source = readFileSync(path.join(mobile, 'contexts', 'VpnContext.tsx'), 'utf8');
+    const disconnect = source.slice(source.indexOf('  const disconnect = useCallback'), source.indexOf('  const deleteConfig ='));
+    const accessStop = source.slice(source.indexOf('  const stopForAccess = useCallback'), source.indexOf('  const stopForAccessRef ='));
+    const runtimeStart = source.indexOf('  const syncNativeRuntime = useCallback');
+    const runtimeSync = source.slice(runtimeStart, source.indexOf('  useEffect(() => {', runtimeStart));
+    const ref = <T,>(current: T) => ({ current });
+    const state = {
+      vpnState: 'connected', connected: true, connecting: false,
+      stop: async () => {}, report: async () => {}, persist: async () => {},
+      control: async () => ({ activeProfile: { configId: 'old-profile' } }),
+    };
+    const env = {
+      useCallback: <T,>(callback: T) => callback,
+      isConnected: true, isConnecting: false, IS_ANDROID: true,
+      connectionAttemptRef: ref(0), pendingAutoConnectRef: ref<string | null>(null),
+      disconnectInFlightRef: ref(false), lastStopAttemptRef: ref(0), acceptNativeConnectedRef: ref(true),
+      basculeEnCoursRef: ref(false), reportTimerRef: ref(null),
+      runningProfileRef: ref<{ configId: string } | null>({ configId: 'old-profile' }),
+      sessionBaselineRef: ref({ up: 10, down: 20 }), sessionIdRef: ref<string | null>('old-session'),
+      stopWatchdog: () => {}, stopEchelon: () => {}, stopTrafficPolling: () => {},
+      startTrafficPolling: () => {}, setTrafficStats: () => {}, DEFAULT_STATS: {},
+      getAccessState: () => ({ authority: null }), selectDeviceAccess: () => null,
+      blocksDevice: () => false, profileRestriction: () => null,
+      syncNativeAccessState: () => state.control(),
+      addLog: () => {}, addStepLog: () => {}, t: (key: string) => key,
+      CLE_MOTIF_ARRET: {}, clearInterval,
+      setIsConnected: (value: boolean) => { state.connected = value; },
+      setIsConnecting: (value: boolean) => { state.connecting = value; },
+      setVpnState: (value: string) => { state.vpnState = value; },
+      SxbVpnNative: { stopVpn: () => state.stop(), getVpnState: async () => 'disconnected' },
+      flushUsageRef: ref(() => state.report()),
+      AsyncStorage: { setItem: () => state.persist() },
+    };
+    const compiled = await transform(`
+      export function create(env) {
+        const { ${Object.keys(env).join(',')} } = env;
+        ${disconnect}
+        ${accessStop}
+        ${runtimeSync}
+        return {disconnect,stopForAccess,syncNativeRuntime};
+      }`, { loader: 'ts', format: 'cjs' });
+    const module = { exports: {} as any };
+    runInNewContext(compiled.code, { module, exports: module.exports });
+    const api = module.exports.create(env) as {
+      disconnect: () => Promise<void>; stopForAccess: () => Promise<void>; syncNativeRuntime: () => Promise<void>;
+    };
+    const startNext = () => {
+      env.connectionAttemptRef.current++;
+      env.runningProfileRef.current = { configId: 'new-profile' };
+      env.sessionBaselineRef.current = { up: 30, down: 40 };
+      env.sessionIdRef.current = 'new-session';
+      state.vpnState = 'connecting';
+      state.connecting = true;
+    };
+    return { ...api, env, state, startNext };
+  }
+
+  describe('connection generation during an asynchronous stop', () => {
+    it('preserves normal stop cleanup and releases its guard even when persistence fails', async () => {
+      const normal = await stoppingProvider();
+      await normal.disconnect();
+      assert.equal(normal.state.vpnState, 'disconnected');
+      assert.equal(normal.env.runningProfileRef.current, null);
+      assert.equal(normal.env.sessionIdRef.current, null);
+      assert.equal(normal.env.disconnectInFlightRef.current, false);
+      const failed = await stoppingProvider();
+      failed.state.persist = async () => { throw new Error('STORAGE_UNAVAILABLE'); };
+      await assert.rejects(failed.disconnect(), /STORAGE_UNAVAILABLE/);
+      assert.equal(failed.env.disconnectInFlightRef.current, false);
+    });
+
+    it('ignores a stale native profile snapshot after a newer attempt has started', async () => {
+      const h = await stoppingProvider();
+      const entered = deferred();
+      const release = deferred();
+      h.state.control = async () => {
+        entered.resolve();
+        await release.promise;
+        return { activeProfile: { configId: 'old-profile' } };
+      };
+      const sync = h.syncNativeRuntime();
+      await entered.promise;
+      h.startNext();
+      release.resolve();
+      await sync;
+      assert.equal(h.env.runningProfileRef.current?.configId, 'new-profile');
+      assert.equal(h.state.vpnState, 'connecting');
+    });
+
+    for (const phase of ['report', 'persist', 'stop'] as const) {
+      it(`does not reset a new connection when the old ${phase} finishes`, async () => {
+        const h = await stoppingProvider();
+        const entered = deferred();
+        const release = deferred();
+        h.state[phase] = async () => { entered.resolve(); await release.promise; };
+        const stopping = phase === 'stop' ? h.stopForAccess() : h.disconnect();
+        await entered.promise;
+        h.startNext();
+        release.resolve();
+        await stopping;
+        assert.equal(h.state.vpnState, 'connecting');
+        assert.equal(h.state.connecting, true);
+        assert.equal(h.env.runningProfileRef.current?.configId, 'new-profile');
+        assert.equal(h.env.sessionIdRef.current, 'new-session');
+        assert.equal(h.env.sessionBaselineRef.current.up, 30);
+        assert.equal(h.env.disconnectInFlightRef.current, false);
+      });
+    }
+
+    it('keeps a newer stop guarded when an older stop completes', async () => {
+      const h = await stoppingProvider();
+      const firstEntered = deferred();
+      const firstRelease = deferred();
+      h.state.stop = async () => { firstEntered.resolve(); await firstRelease.promise; };
+      const first = h.stopForAccess();
+      await firstEntered.promise;
+      h.startNext();
+      h.state.stop = async () => {};
+      const secondEntered = deferred();
+      const secondRelease = deferred();
+      h.state.report = async () => { secondEntered.resolve(); await secondRelease.promise; };
+      const second = h.disconnect();
+      await secondEntered.promise;
+      firstRelease.resolve();
+      await first;
+      assert.equal(h.env.disconnectInFlightRef.current, true);
+      secondRelease.resolve();
+      await second;
+      assert.equal(h.env.disconnectInFlightRef.current, false);
+    });
+  });
+
+  it('keeps a late HTTP rejection handled after releasing the cancelled reporter', async () => {
+    const h = await services();
+    const response = deferred();
+    const controller = new AbortController();
+    const request = h.reporting.interruptibleUsageRequest(response.promise, controller.signal);
+    controller.abort();
+    await assert.rejects(request, /VPN_USAGE_PREPARING/);
+    response.reject(new Error('LATE_NETWORK_FAILURE'));
+    await new Promise(resolve => setImmediate(resolve));
+  });
+
   it('seeds the first offline display from provisioned metadata without a legacy quota key', async () => {
     const h = await reporter();
     h.state.profiles[0] = { configId: 'normal', subscriptionId: 'normal', quotaTotal: 1000, quotaUsed: 7 };

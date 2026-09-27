@@ -24,6 +24,22 @@ export function usageDeadline<T>(operation: Promise<T>, delay: number): Promise<
   });
 }
 
+/** Release the reporter even if the native HTTP adapter never acknowledges abort. */
+export function interruptibleUsageRequest<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const interrupted = () => {
+      signal.removeEventListener('abort', interrupted);
+      reject(new Error('VPN_USAGE_PREPARING'));
+    };
+    signal.addEventListener('abort', interrupted, { once: true });
+    operation.then(
+      value => { signal.removeEventListener('abort', interrupted); resolve(value); },
+      error => { signal.removeEventListener('abort', interrupted); reject(error); },
+    );
+    if (signal.aborted) interrupted();
+  });
+}
+
 export function usageRetryDelay(error: unknown, failures: number, now = Date.now()): number {
   const response = (error as { response?: { status?: number; headers?: Record<string, unknown>; data?: { retryAfterSeconds?: unknown } } })?.response;
   const header = response?.headers?.['retry-after'];

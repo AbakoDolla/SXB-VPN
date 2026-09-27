@@ -211,6 +211,13 @@ Un livre mobile illisible reste intact : sa relecture est retentée, et il
 n'est jamais remplacé silencieusement par une nouvelle ancre.
 Un échec ou dépassement du délai de préparation de cette ancre interdit le
 nouveau départ ; il n'est plus converti en succès par le délai de connexion.
+Un appui sur la connexion suspend l'envoi HTTP de consommation en cours afin
+que cette préparation locale n'attende pas le retour du réseau. Le rapport
+déjà figé reste sur disque et sera rejoué avec les mêmes octets et la même
+clé, même si le serveur l'avait reçu avant l'annulation. Une réponse tardive
+à cet envoi annulé ne modifie pas la nouvelle session.
+De même, la fin asynchrone d'un ancien arrêt ne remet plus à zéro l'état,
+le profil ou les références de consommation d'une connexion plus récente.
 
 Les octets en attente restent visibles après déconnexion, puis sont rejoués
 tant que la file n'est pas vide. Le forfait d'essai et le forfait ordinaire
