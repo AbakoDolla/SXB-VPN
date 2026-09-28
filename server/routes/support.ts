@@ -5,6 +5,7 @@
  */
 import { Router, Response } from "express";
 import { z } from "zod";
+import type { Prisma } from "@prisma/client";
 import { prisma, logDbActivity } from "../database";
 import { requireAuth, AuthenticatedRequest } from "../middleware/auth";
 import { porteeComptes } from "../services/portee-donnees";
@@ -33,15 +34,18 @@ const updateTicketSchema = z.object({
 // y est donc structurellement impossible. Seul `findFirst` sait joindre
 // l'identifiant ET le périmètre — c'est ce qui retire à un administrateur le
 // pouvoir de lire, modifier et surtout SUPPRIMER le ticket d'un autre.
-async function cibler(req: AuthenticatedRequest, id: string): Promise<any> {
+async function porteeTickets(req: AuthenticatedRequest): Promise<Prisma.SupportTicketWhereInput> {
   const portee = await porteeComptes(prisma, req.user);
-  const conditions: any[] = [{ id }];
-  if (isSupportStaff(req)) {
-    if (portee) conditions.push({ user: portee });
-  } else {
-    conditions.push({ userId: req.user?.userId || '__no_user__' });
-  }
-  return { AND: conditions };
+  if (!isSupportStaff(req)) return { userId: req.user?.userId || '__no_user__' };
+  if (!portee) return {};
+  // Public intake has no account relation and remains a platform-staff queue.
+  return req.user?.role === "SUPER_ADMIN" || req.user?.role === "SUPPORT"
+    ? { OR: [{ userId: null }, { user: portee }] }
+    : { user: portee };
+}
+
+async function cibler(req: AuthenticatedRequest, id: string): Promise<Prisma.SupportTicketWhereInput> {
+  return { AND: [{ id }, await porteeTickets(req)] };
 }
 
 // GET /api/support — liste tous les tickets (filtrable par status)
@@ -57,10 +61,7 @@ router.get("/", requireAuth, async (req: AuthenticatedRequest, res: Response) =>
     // toute la plateforme, avec le nom du client, son adresse et sa panne.
     // Mesuré en production sur un administrateur créé à l'instant.
     // ═══════════════════════════════════════════════════════════════════════
-    const portee = await porteeComptes(prisma, req.user);
-    const baseWhere = isSupportStaff(req)
-      ? (portee ? { user: portee } : {})
-      : { userId: req.user?.userId || '__no_user__' };
+    const baseWhere = await porteeTickets(req);
     const where = status ? { ...baseWhere, status: String(status) } : baseWhere;
 
     const tickets = await prisma.supportTicket.findMany({

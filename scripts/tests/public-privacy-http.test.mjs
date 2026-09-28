@@ -62,7 +62,13 @@ async function fixture(t, settings = {}, { rootAlias = false } = {}) {
   const db = {
     fail: false,
     failSession: false,
-    user: { findUnique: async ({ where }) => users.find(user => user.id === where.id) },
+    user: {
+      findUnique: async ({ where }) => users.find(user => user.id === where.id),
+      findMany: async ({ where }) => {
+        assert.equal(where.role.name, "OWNER");
+        return users.filter(user => user.role.name === where.role.name).map(user => ({ id: user.id }));
+      },
+    },
     permission: { findMany: async () => [] },
     securityEvent: { create: async ({ data }) => ({ id: "fixture-security-event", ...data }) },
     vpnClient: {

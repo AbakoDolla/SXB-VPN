@@ -44,6 +44,40 @@ function fixture() {
   return { headers, publicEvent, privateEvents };
 }
 
+test('owner privacy: support keeps its anonymous intake without exposing private owner tickets', async () => {
+  fixture();
+  const privateIds = ['root', 'direct-user', 'r2', 'u2'];
+  for (const userId of [null, 'u1', ...privateIds]) {
+    db.state.SupportTicket.push({
+      id: `ticket-${userId ?? 'public'}`, userId, title: 'Synthetic support request',
+      clientName: 'Synthetic client', status: 'open', priority: 'medium', createdAt: new Date(),
+    });
+  }
+  for (const actor of ['super', 'support']) {
+    const result = await api(actor, 'GET', '/support');
+    ok(result);
+    assert.deepEqual(result.body.tickets.map(ticket => ticket.id).sort(), ['ticket-public', 'ticket-u1']);
+    ok(await api(actor, 'GET', '/support/ticket-public'));
+  }
+  const tenant = await api('admin', 'GET', '/support');
+  ok(tenant);
+  assert.ok(!tenant.body.tickets.some(ticket => ticket.id === 'ticket-public'));
+  ok(await api('admin', 'GET', '/support/ticket-public'), 404);
+  const before = structuredClone(db.state.SupportTicket);
+  for (const actor of ['super', 'support', 'admin']) {
+    for (const userId of privateIds) {
+      const route = `/support/ticket-${userId}`;
+      ok(await api(actor, 'GET', route), 404);
+      ok(await api(actor, 'PATCH', route, { status: 'closed' }), 404);
+      ok(await api(actor, 'DELETE', route), actor === 'support' ? 403 : 404);
+    }
+  }
+  assert.deepEqual(db.state.SupportTicket, before);
+  const owner = await api('root', 'GET', '/support');
+  ok(owner);
+  assert.equal(owner.body.tickets.length, 6);
+});
+
 test('owner privacy: events, counts, search and batch mutations share one server boundary', async () => {
   const { headers, publicEvent, privateEvents } = fixture();
   const ownerPage = await api('root', 'GET', '/security/events', undefined, headers('root'));

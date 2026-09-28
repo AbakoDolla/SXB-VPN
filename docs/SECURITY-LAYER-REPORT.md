@@ -88,7 +88,10 @@ tous les anciens comptes.
 
 **Limites de confidentialite.** Les effets metier necessaires restent visibles
 aux interesses (quota courant, abonnement, fermeture de leur session), sans
-exposer le journal prive de l'auteur. Les comptes ADMIN n'ont pas de colonne
+exposer le journal prive de l'auteur. Le support conserve sa file de demandes
+anonymes pour OWNER, SUPER_ADMIN et SUPPORT ; les tickets rattaches au compte
+ou au parc prive OWNER restent exclus des lectures et mutations des autres roles.
+Les comptes ADMIN n'ont pas de colonne
 d'auteur : on n'invente pas un rattachement OWNER absent du schema. Les anciens
 evenements orphelins sans aucune attribution fiable ne permettent pas de
 reconstituer retrospectivement leur proprietaire. Les comptes de role OWNER
