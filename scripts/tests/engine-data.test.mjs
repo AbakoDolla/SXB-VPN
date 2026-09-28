@@ -31,7 +31,10 @@ test('both build channels validate a synthetic graph using the real native build
   const gate = read('scripts/run-android-policy-gates.sh');
   assert.match(gate, /xray-runtime-fixture\.mjs/);
   assert.match(gate, /XrayRuntimeHarnessKt/);
-  assert.match(gate, /singbox-engine-check run/);
+  assert.match(gate, /go -C \.\.\/scripts\/tests\/singbox-engine-check build -mod=mod/);
+  assert.match(gate, /-o "\$HARNESS\/engine-check" \./);
+  assert.match(gate, /"\$HARNESS\/engine-check" "\$HARNESS\/xray\/runtime\.json" "\$ROOT\/app-mobile\/build\/engine-data"/);
+  assert.match(gate, /for input in "\$HARNESS\/xray"\/bundle-\*\.json; do[\s\S]*?"\$HARNESS\/engine-check" "\$runtime" "\$ROOT\/app-mobile\/build\/engine-data"[\s\S]*?done/);
   const check = read('scripts/tests/singbox-engine-check/main.go');
   assert.match(check, /libbox\.CheckConfig/);
   // La version n'est pas recopiée ici : elle est LUE du script de compilation,

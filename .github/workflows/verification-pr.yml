@@ -142,6 +142,8 @@ jobs:
         run: |
           set -euo pipefail
           export DATABASE_URL="$SXB_SECURITY_TEST_DATABASE_URL"
+          export SXB_SECURITY_SCHEMA="$(mktemp "$GITHUB_WORKSPACE/backend/.sxb-security-schema.XXXXXX.prisma")"
+          trap 'rm -f "$SXB_SECURITY_SCHEMA"' EXIT
           node <<'PREPARE'
           const fs = require('node:fs');
           const path = require('node:path');
@@ -153,10 +155,14 @@ jobs:
           const generator = /provider\s*=\s*"prisma-client-js"/;
           if (!generator.test(schema)) throw new Error('Prisma generator missing');
           const output = path.dirname(process.env.SXB_SECURITY_PRISMA_CLIENT);
-          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'sxb-security-schema.prisma'),
+          const schemaPath = path.resolve(process.env.SXB_SECURITY_SCHEMA);
+          if (path.dirname(schemaPath) !== path.resolve('backend')) {
+            throw new Error('Schema must resolve the installed backend Prisma generator');
+          }
+          fs.writeFileSync(schemaPath,
             schema.replace(generator, match => `${match}\n  output = ${JSON.stringify(output)}`));
           PREPARE
-          node backend/node_modules/prisma/build/index.js db push --skip-generate --schema "$RUNNER_TEMP/sxb-security-schema.prisma"
-          node backend/node_modules/prisma/build/index.js db execute --schema "$RUNNER_TEMP/sxb-security-schema.prisma" --file prisma/security-layer.sql
-          node backend/node_modules/prisma/build/index.js generate --schema "$RUNNER_TEMP/sxb-security-schema.prisma"
+          node backend/node_modules/prisma/build/index.js db push --skip-generate --schema "$SXB_SECURITY_SCHEMA"
+          node backend/node_modules/prisma/build/index.js db execute --schema "$SXB_SECURITY_SCHEMA" --file prisma/security-layer.sql
+          node backend/node_modules/prisma/build/index.js generate --schema "$SXB_SECURITY_SCHEMA"
           node scripts/tests/security-layer-postgres.integration.mjs

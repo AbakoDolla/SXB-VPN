@@ -273,6 +273,7 @@
     "recheckStatus": "Relire l'état de l'opération",
     "productionScope": "Mode production : tous les revendeurs, comptes support et clients, licences VPN, appareils, activations, forfaits, configurations et données de trafic sont concernés.",
     "previewCounts": "Enregistrements à supprimer",
+    "countNotRecorded": "Non mesuré",
     "usersScope": "Le compteur des utilisateurs ne concerne que les comptes de connexion non administrateurs. Les licences VPN et leurs données sont supprimées même si leur titulaire est administrateur ; son compte de connexion est conservé.",
     "retainedAccounts": "Comptes de connexion conservés",
     "projectFilesPreserved": "Aucun fichier projet, code, clé de déploiement ou APK n'est supprimé. L'infrastructure serveur reste en place.",
@@ -342,7 +343,9 @@
       "supportTickets": "Tickets support",
       "adminTokens": "Jetons d'accès des comptes supprimés",
       "freeTrialTokens": "Jetons d'essai gratuit",
-      "freeTrialRequests": "Demandes d'essai gratuit"
+      "freeTrialRequests": "Demandes d'essai gratuit",
+      "mobileConnections": "Connexions VPN liées",
+      "proofNonces": "Nonces de preuve consommés"
     }
   },
   "bulkDelete": {

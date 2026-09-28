@@ -2,9 +2,11 @@
 
 Base conservee : `5ba8f701eff6d560c6a95aff1e07cb0119ee582d`, branche
 `princeevanceabah-pixel-compatibilite-du-paquet-protocoles` (PR #89), incluant
-la stabilite de PR #88. Code fige pour revue :
-`2b83e4a89848073baa1d01f81bb46c9e59eb434d`. Les changements suivants de ce lot
-sont documentaires. Ce rapport ne constitue pas une autorisation de publication.
+la stabilite de PR #88. Implementation initiale revue :
+`2b83e4a89848073baa1d01f81bb46c9e59eb434d`, premier candidat documente
+`a29e0cd65276181cedd07605c1db179eb0e7fdb3`. Les corrections bornees apres
+la premiere execution CI sont detaillees en O. Ce rapport ne constitue pas
+une autorisation de publication.
 
 ## A. Resume
 
@@ -58,6 +60,8 @@ app-mobile\tests\regression-critical-flows.test.ts
 app-mobile\tests\usage-accounting.test.ts
 artifacts\sxb-dashboard\src\api\security.ts
 artifacts\sxb-dashboard\src\api\sessions.ts
+artifacts\sxb-dashboard\src\api\reset.ts
+artifacts\sxb-dashboard\src\components\OwnerResetSection.tsx
 artifacts\sxb-dashboard\src\components\SecurityCenterView.tsx
 artifacts\sxb-dashboard\src\components\SessionsView.tsx
 artifacts\sxb-dashboard\src\locales\en\operations.json
@@ -65,8 +69,15 @@ artifacts\sxb-dashboard\src\locales\fr\operations.json
 backend\prisma\schema.prisma
 prisma\schema.prisma
 scripts\run-android-policy-gates.sh
+scripts\tests\application-reset.test.mjs
+scripts\tests\build-caches.test.mjs
+scripts\tests\dashboard-profile-lock.test.mjs
 scripts\tests\durcissement-mobile.test.mjs
+scripts\tests\engine-data.test.mjs
 scripts\tests\provision-e2e.test.mjs
+scripts\tests\public-privacy-http.test.mjs
+scripts\tests\reset-dashboard-api.test.mjs
+scripts\tests\reset-dashboard-ui.test.mjs
 scripts\tests\security-center.test.mjs
 server.ts
 server\middleware\auth.ts
@@ -78,6 +89,7 @@ server\routes\security.ts
 server\routes\sessions.ts
 server\services\access-lifecycle.ts
 server\services\access-ticket.ts
+server\services\application-reset.ts
 server\services\device-activation.ts
 server\services\mobile-access-state.ts
 server\services\mobile-principal.ts
@@ -102,6 +114,7 @@ backend\prisma\security-layer.sql
 docs\SECURITY-LAYER-REPORT.md
 prisma\security-layer.sql
 scripts\tests\security-dashboard-preview.mjs
+scripts\tests\security-ci-harness.test.mjs
 scripts\tests\security-layer-postgres.integration.mjs
 server\services\mobile-connections.ts
 server\services\mobile-proof.ts
@@ -148,6 +161,14 @@ La migration a ete verifiee sur une base locale peuplee, avec preservation et
 reexecution idempotente, par le parent. Le nouveau job CI initialise uniquement
 son PostgreSQL jetable a partir du schema courant puis execute le SQL additif ;
 ce bootstrap CI n'est pas, a lui seul, une preuve de migration d'un parc ancien.
+
+Le reset global OWNER inclut les deux nouvelles tables sans FK dans ses
+verrous, inventaire, purge transactionnelle et compteurs apres purge.
+Les changements de cle/generation rendent un ancien apercu caduc ; connexions,
+nonces et refresh ordinaires restent des deltas transitoires couverts par
+le verrou. Les anciens recus ne sont pas reecrits : les deux compteurs absents
+restent absents et s'affichent « Non mesure / Not measured », jamais comme zero.
+Un nouvel apercu exige les 26 compteurs et refuse une reponse incomplete.
 
 ## E. API
 
@@ -431,7 +452,14 @@ promesse d'invisibilite/anti-capture a 100 %.
 | Graphes derives du builder Kotlin | 14 graphes acceptes par sing-box desktop 1.12.9 |
 | Revue navigateur locale | FR/EN, 390/1440 px, conflits/CAS, brouillons, polling, permissions ; vrais tableaux responsives, mots non fragmentes |
 | Typecheck strict global backend | Non vert : erreurs preexistantes hors nouveau code ; bundle/syntaxe du vrai serveur verifies par le parent |
-| Workflow GitHub / APK final | Non execute pour ce SHA au moment du rapport |
+| Premiere verification GitHub | Execution parent 36362254165 sur a29 : builds serveur/dashboard verts, suite generique 1177 tests / 6 echecs, etape PG non atteinte |
+| Premier Android GitHub | Execution parent 36362254183 sur a29 : mobile 813 + types, access 20 et lifecycle JVM 18 verts ; echec de resolution esbuild, avant prebuild/APK/libbox final |
+| Regressions ciblees apres corrections CI | 132 tests verts, dont reset avec donnees non vides/rollback, recus historiques FR/EN et generation Prisma exacte sans DB |
+| Suite generique complete apres corrections CI | 1183 tests, 32 suites, zero echec/skip ; glob complet, quatre workers, aucune connexion DB |
+| Mobile apres corrections CI | 813 tests, 108 suites, zero echec/skip |
+| Harness natif apres correction CI | 18 contrats JVM + 18 signatures, copie isolee ne disposant que de app-mobile/node_modules, aucun backend |
+| PostgreSQL apres corrections CI | 149 checks a nouveau verts sur la base isolee reelle |
+| Types/build apres corrections CI | Types dashboard et graphe strict du service reset (vrais types Prisma) verts ; bundles dashboard et vrai server.ts construits |
 
 Les lignes se recouvrent : ne pas additionner leurs nombres comme des tests
 independants. Le gate desktop local des 14 graphes a utilise
@@ -444,17 +472,51 @@ drainage imbrique, attribution legacy, polling et boutons mobiles) ont leurs
 corrections et regressions correspondantes. Une tentative de revue native
 distante a echoue par reseau/modele ; ce n'est pas une revue reussie.
 
+### Corrections des premieres executions CI
+
+Les six assertions generiques echouees ont ete reproduites avant correction.
+L'omission du reset etait une regression metier : les deux tables sans FK
+n'etaient ni verrouillees ni purgees. Les fixtures contiennent maintenant des
+lignes non vides, controlent comptage/purge atomiques, conservation au rollback,
+relecture/retry des anciens recus et absence de compteurs inventes.
+
+Le 503 de confidentialite venait du fixture CLIENT sans `vpnClient.findUnique`,
+requis par la verification de session. Le delegate manquant est implemente
+dans ce fixture ; aucun middleware ou droit metier n'est assoupli. Le test
+exige encore 200/liste vide pour les clients legitimes, 404 pour le ticket
+public inaccessible, 503 lors d'une vraie panne simulee et 401 pour une
+identite enrolee sans preuve.
+
+Les autres contrats obsoletes visent maintenant les trois telechargements
+epingles Kotlin/JSON/JSch, le message SSH distinguant formulaire et export
+Settings reconnu, la compilation puis execution du verificateur libbox pour
+chaque graphe, et l'ordre public-privacy avant `express.json({ verify })`.
+Aucune assertion n'est supprimee ni remplacee par une tolerance d'echec.
+
+Le runner Kotlin-vers-Node charge les vraies sources serveur avec
+`tsx/cjs/api`, dependance declaree de l'application, au lieu d'esbuild
+resolu depuis un backend absent du job Android. La verification a utilise une
+copie source sans dossier backend ni node_modules racine.
+
+Un bloqueur CI supplementaire a ete reproduit par le parent avant relance :
+Prisma ne resolvait pas `@prisma/client` depuis le schema dans RUNNER_TEMP.
+Le schema de travail est maintenant un fichier temporaire sous backend,
+nettoye par trap, et le client genere reste dans RUNNER_TEMP. Le nouveau
+test execute exactement PREPARE puis le vrai generateur, autoinstall
+desactive et URL synthetique loopback port 1, sans connexion DB.
+
 ## P. Limites et prerequis restants
 
 Pas de SDK Android complet ni de Go local disponible pour le gate exact.
 Aucun ADB, emulator, telephone, installation APK, R8 execute, manifeste APK
 final ou signataire de l'APK nouvellement construit n'est atteste ici.
-Ces controles restent a lancer dans le workflow parent autorise, puis sur
-des appareils de recette. Aucun dispatch n'a ete effectue par ce lot.
+Ces controles restent a achever dans le workflow parent autorise, puis sur
+des appareils de recette. Les deux premiers dispatchs ont ete effectues par
+le parent uniquement ; aucune relance n'est effectuee par la session enfant.
 
 Le service PostgreSQL et les etapes CI sont cables et leurs contrats/YAML
-verifies localement ; leur execution dans GitHub n'est pas encore une preuve
-acquise. Le controle SQL peuple/idempotent local reste distinct du bootstrap CI.
+verifies localement ; l'etape PG dediee n'a pas ete atteinte lors de la premiere
+CI. Le controle SQL peuple/idempotent local reste distinct du bootstrap CI.
 Les pins publics de production et leur rotation restent a fournir.
 
 La securite suppose que serveur, secrets serveur et Keystore ne sont pas
@@ -512,8 +574,16 @@ node scripts\verify-prisma-runtime.cjs
 ```
 
 Avec des dependances partagees, copier le schema dans un repertoire temporaire
-et lui donner un `generator.output` absolu isole, comme l'etape CI ; ne pas
+situe sous backend pour resoudre le generateur installe, et lui donner un
+`generator.output` absolu isole hors node_modules, comme l'etape CI ; ne pas
 executer ces generations normales sur les junctions de cette session.
+
+Rejouer les regressions generiques, sans DB (le test de preparation Prisma
+genere seulement un client temporaire et interdit l'autoinstall) :
+
+```powershell
+node --experimental-strip-types --test --test-concurrency=4 'scripts/tests/*.test.mjs'
+```
 
 Build et preview de console sans proxy production :
 

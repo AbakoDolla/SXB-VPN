@@ -273,6 +273,7 @@
     "recheckStatus": "Recheck operation status",
     "productionScope": "Production mode: all resellers, support and client accounts, VPN licences, devices, activations, plans, configurations and traffic are in scope.",
     "previewCounts": "Records to delete",
+    "countNotRecorded": "Not measured",
     "usersScope": "Users counts only non-administrative login accounts. VPN licences and associated data are deleted even when their holder is an administrator; the administrator's login account is kept.",
     "retainedAccounts": "Login accounts retained",
     "projectFilesPreserved": "No project file, code, deployment key or APK is deleted. Server infrastructure remains in place.",
@@ -342,7 +343,9 @@
       "supportTickets": "Support tickets",
       "adminTokens": "Access tokens of removed accounts",
       "freeTrialTokens": "Free-trial tokens",
-      "freeTrialRequests": "Free-trial requests"
+      "freeTrialRequests": "Free-trial requests",
+      "mobileConnections": "Bound VPN connections",
+      "proofNonces": "Consumed proof nonces"
     }
   },
   "bulkDelete": {

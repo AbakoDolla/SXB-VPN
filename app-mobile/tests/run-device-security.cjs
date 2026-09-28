@@ -4,7 +4,7 @@ const { spawnSync } = require('node:child_process');
 const { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
-const { createRequire } = require('node:module');
+const { require: requireTypescript } = require('tsx/cjs/api');
 
 const jsonJar = process.env.SXB_JSON_JAR;
 assert.ok(jsonJar && existsSync(jsonJar), 'Set SXB_JSON_JAR to the real org.json JVM jar');
@@ -140,13 +140,9 @@ ${revoke}
   ]);
   run(process.env.JAVA || 'java', ['-cp', `${jar}${path.delimiter}${jsonJar}`, 'com.sxbvpn.vpnmodule.DeviceSecurityTestKt', samples]);
 
-  const backendRequire = createRequire(path.resolve(__dirname, '..', '..', 'backend', 'package.json'));
-  const compiled = path.join(temp, 'verifier.cjs');
-  backendRequire('esbuild').buildSync({
-    entryPoints: [path.resolve(__dirname, '..', '..', 'server', 'services', 'mobile-proof.ts')],
-    outfile: compiled, bundle: true, platform: 'node', format: 'cjs', logLevel: 'silent',
-  });
-  const { verifyMobileProof } = require(compiled);
+  const { verifyMobileProof } = requireTypescript(
+    path.resolve(__dirname, '..', '..', 'server', 'services', 'mobile-proof.ts'), __filename,
+  );
   const request = sample => ({
     method: sample.method, originalUrl: sample.path,
     rawBody: Buffer.from(sample.body), body: sample.body ? { present: true } : {},
