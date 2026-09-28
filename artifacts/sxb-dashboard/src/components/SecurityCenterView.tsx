@@ -142,6 +142,7 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
   const [pendingChallenge, setPendingChallenge] = useState<SecurityUnlockPasskeyStep | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<LocalError>(null);
+  const [consoleError, setConsoleError] = useState<LocalError>(null);
   const [overview, setOverview] = useState<SecurityOverviewResponse | null>(null);
   const [eventsPage, setEventsPage] = useState<SecurityEventsResponse | null>(null);
   const [audit, setAudit] = useState<SecurityAuditEntry[]>([]);
@@ -190,29 +191,37 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
     setCertificateInput("");
     setKeyGrant({ clientId: "", keyId: "", replaceExisting: false });
     setSecurityNotice("");
+    setActionError(null);
+    setConsoleError(null);
   }, []);
 
   const loadConsole = useCallback(async (token: string) => {
-    setActionError(null);
-    const [nextOverview, nextEvents, nextAudit, nextPolicy] = await Promise.all([
-      fetchSecurityOverview(token),
-      fetchSecurityEvents(token, {
-        ...filters, from: filters.from ? new Date(filters.from).toISOString() : undefined,
-        to: filters.to ? new Date(filters.to).toISOString() : undefined,
-        limit: DEFAULT_LIMIT, offset: eventsPage?.offset ?? 0,
-      }),
-      fetchSecurityAudit(token, 50),
-      fetchSecurityPolicy(token),
-    ]);
-    if (unlockAuthority.current !== token) return;
-    setOverview(nextOverview);
-    setEventsPage(nextEvents);
-    setAudit(nextAudit.entries);
-    if (!policyDirty.current) {
-      setPolicy(nextPolicy);
-      setCertificateInput(nextPolicy.certificates.join("\n"));
+    try {
+      const [nextOverview, nextEvents, nextAudit, nextPolicy] = await Promise.all([
+        fetchSecurityOverview(token),
+        fetchSecurityEvents(token, {
+          ...filters, from: filters.from ? new Date(filters.from).toISOString() : undefined,
+          to: filters.to ? new Date(filters.to).toISOString() : undefined,
+          limit: DEFAULT_LIMIT, offset: eventsPage?.offset ?? 0,
+        }),
+        fetchSecurityAudit(token, 50),
+        fetchSecurityPolicy(token),
+      ]);
+      if (unlockAuthority.current !== token) return;
+      setOverview(nextOverview);
+      setEventsPage(nextEvents);
+      setAudit(nextAudit.entries);
+      if (!policyDirty.current) {
+        setPolicy(nextPolicy);
+        setCertificateInput(nextPolicy.certificates.join("\n"));
+      }
+      setSelected([]);
+      setConsoleError(null);
+    } catch (cause) {
+      if (unlockAuthority.current === token) {
+        setConsoleError({ cause, fallback: "operations.security.errors.console" });
+      }
     }
-    setSelected([]);
   }, [eventsPage?.offset, filters]);
 
   useEffect(() => { void loadGate(); }, [loadGate]);
@@ -231,7 +240,7 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
 
   useEffect(() => {
     if (!unlockToken || !isUnlocked) return;
-    void loadConsole(unlockToken).catch(cause => setActionError({ cause, fallback: "operations.security.errors.console" }));
+    void loadConsole(unlockToken);
   }, [filters, isUnlocked, loadConsole, unlockToken]);
 
   const handleConfigure = async (event: React.FormEvent) => {
@@ -284,7 +293,7 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
   useEffect(() => {
     if (!unlockToken || !isUnlocked) return;
     const timer = window.setInterval(() => {
-      void loadConsole(unlockToken).catch(cause => setActionError({ cause, fallback: "operations.security.errors.console" }));
+      void loadConsole(unlockToken);
     }, 30_000);
     return () => window.clearInterval(timer);
   }, [isUnlocked, loadConsole, unlockToken]);
@@ -526,6 +535,7 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
       </header>
 
       <ErrorNotice error={actionError} />
+      <ErrorNotice error={consoleError} />
 
       {!configured ? (
         <section className="grid gap-5 lg:grid-cols-[1.2fr_0.8fr]">

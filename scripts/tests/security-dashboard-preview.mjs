@@ -1,7 +1,7 @@
 // Synthetic UI fixture only: no account, proxy, database or production network.
 import http from 'node:http';
 import { createRequire } from 'node:module';
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -11,18 +11,20 @@ const dashboard = path.join(root, 'artifacts', 'sxb-dashboard');
 const buildRoot = process.env.SXB_SECURITY_DASHBOARD_BUILD;
 if (!buildRoot) throw new Error('Set SXB_SECURITY_DASHBOARD_BUILD to a local dashboard build output');
 const assetRoot = path.join(buildRoot, 'assets');
-const css = (await readdir(assetRoot)).find(file => /^index-.*\.css$/.test(file));
+const html = await readFile(path.join(buildRoot, 'index.html'), 'utf8');
+const css = html.match(/href="[^"]*\/assets\/([^"/]+\.css)"/)?.[1];
 if (!css) throw new Error('Dashboard CSS build is missing');
 const bundle = await require('esbuild').build({
   absWorkingDir: dashboard, bundle: true, platform: 'browser', format: 'esm',
   jsx: 'automatic', write: false, logLevel: 'silent',
   stdin: { resolveDir: dashboard, loader: 'tsx', contents: `
-    import React, { useState } from "react";
+    import React, { useEffect, useRef, useState } from "react";
     import { createRoot } from "react-dom/client";
     import { Toaster } from "sonner";
     import SecurityCenterView from "./src/components/SecurityCenterView";
     import SessionsView from "./src/components/SessionsView";
     import { I18nProvider, useTranslation } from "./src/contexts/I18nContext";
+    import { installResponsiveTables } from "./src/lib/responsiveTables";
     const interval = window.setInterval.bind(window);
     window.setInterval = (callback, delay, ...args) => {
       if (delay === 30000) window.fixtureSecurityPoll = callback;
@@ -32,7 +34,9 @@ const bundle = await require('esbuild').build({
       const { language, setLanguage } = useTranslation();
       const [view, setView] = useState("security");
       const [role, setRole] = useState("OWNER");
-      return <main style={{ padding: 20, maxWidth: 1600, margin: "auto" }}>
+      const mainRef = useRef(null);
+      useEffect(() => mainRef.current ? installResponsiveTables(mainRef.current) : undefined, []);
+      return <main ref={mainRef} style={{ padding: 20, maxWidth: 1600, margin: "auto" }}>
         <header style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 24 }}>
           <strong>LOCAL SYNTHETIC TEST FIXTURE - NO PRODUCTION API</strong>
           <button onClick={() => setView(view === "security" ? "sessions" : "security")}>Security / Sessions</button>

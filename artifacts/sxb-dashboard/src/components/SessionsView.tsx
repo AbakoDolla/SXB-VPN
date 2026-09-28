@@ -220,15 +220,15 @@ export default function SessionsView() {
                       {s.authRevokedAt && <p className="mt-1 text-xs text-amber-300">{t("operations.security.sessionRevoked")}</p>}
                     </td>
                     <td className="px-4 py-3">
-                      <div className="flex items-center gap-1">
+                      <div className="flex flex-wrap items-center gap-1 md:flex-nowrap">
                         <button type="button" onClick={() => { setEventTarget(s); setEventPage(1); }}
-                          className="px-2 py-1.5 rounded-lg text-cyan-300 hover:bg-cyan-400/10"
+                          className="max-w-full shrink-0 break-normal px-2 py-1.5 rounded-lg text-cyan-300 hover:bg-cyan-400/10 md:shrink"
                           aria-label={`${t("operations.security.eventsTitle")} — ${s.clientName}`}>
                           {t("operations.security.eventsTitle")}
                         </button>
                         {s.canRevokeSecurity && !!s.authGeneration && !s.authRevokedAt &&
                           <button type="button" onClick={() => handleSecurityRevoke(s)} disabled={securityBusy !== null}
-                            className="px-2 py-1.5 rounded-lg text-amber-300 hover:bg-amber-400/10 disabled:opacity-50">
+                            className="max-w-full shrink-0 break-normal px-2 py-1.5 rounded-lg text-amber-300 hover:bg-amber-400/10 disabled:opacity-50 md:shrink">
                             {t("operations.security.revokeSession")}
                           </button>}
                         {s.status === "active" && (
