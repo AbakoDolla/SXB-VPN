@@ -198,15 +198,17 @@ jobs:
               echo "❌ git fetch a échoué — déploiement interrompu"
               exit 1
             fi
-            git reset --hard FETCH_HEAD
-
             # Garde-fou : la version déployée DOIT être celle qui a déclenché ce
             # workflow. Sans ce contrôle, toute divergence repasse inaperçue.
-            DEPLOYED_SHA=$(git rev-parse HEAD)
+            DEPLOYED_SHA=$(git rev-parse FETCH_HEAD)
             if [ "$DEPLOYED_SHA" != "${{ github.sha }}" ]; then
               echo "❌ Version déployée ($DEPLOYED_SHA) ≠ version attendue (${{ github.sha }})"
               exit 1
             fi
+            # Lire le cron root avant de remplacer le checkout. Le helper vient
+            # du SHA vérifié ; aucune ligne de cron ni aucun secret n'est logué.
+            git show FETCH_HEAD:scripts/check-backend-cron.cjs | node
+            git reset --hard FETCH_HEAD
             echo "✅ Code à jour : $DEPLOYED_SHA"
 
             # Le pseudonyme de santé doit rester stable après redémarrage. Si le
@@ -233,15 +235,9 @@ jobs:
             export MOBILE_HEALTH_PSEUDONYM_SECRET
 
             echo "📦 Install backend dependencies..."
+            export PRISMA_SKIP_POSTINSTALL_GENERATE=true
             cd backend
             npm install --legacy-peer-deps --no-audit 2>&1 | tail -3
-            # Generate the client in backend/node_modules, which is the directory
-            # PM2 resolves through NODE_PATH at runtime. Generating from /tmp
-            # leaves the deployed client without runtime/library.js.
-            NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
-              node /var/www/sxb-vpn/backend/node_modules/prisma/build/index.js generate \
-              --schema=/var/www/sxb-vpn/backend/prisma/schema.prisma
-            test -f /var/www/sxb-vpn/backend/node_modules/@prisma/client/runtime/library.js
             cd /var/www/sxb-vpn
 
             echo "🔑 Fix permissions complètes (évite EACCES pnpm)..."
@@ -249,15 +245,6 @@ jobs:
             echo "📦 Sync deps (lockfile may differ from VPS)..."
             pnpm config set ignore-build-scripts true 2>/dev/null || true
             pnpm install --no-frozen-lockfile --ignore-scripts 2>&1 | tail -5
-
-            # Node cherche d'abord dans node_modules/ avant NODE_PATH. Le bundle
-            # dist/server.cjs peut donc charger le client racine, même si celui
-            # de backend/ vient d'être généré. Générer les deux après installation.
-            NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
-              node backend/node_modules/prisma/build/index.js generate \
-              --schema=prisma/schema.prisma
-            NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
-              node scripts/verify-prisma-runtime.cjs
 
             echo "🎨 Build Dashboard..."
             sudo chown -R ubuntu:ubuntu /var/www/sxb-vpn/artifacts/ 2>/dev/null || true
@@ -302,163 +289,23 @@ jobs:
             NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
               node scripts/verify-public-privacy.cjs
 
-            # ── Sauvegarde AVANT toute migration ──────────────────────────────
-            #
-            # `db push --accept-data-loss` autorise Prisma à supprimer colonnes et
-            # tables pour aligner la base sur le schéma. C'est commode, mais sans
-            # filet : un champ renommé par mégarde emporte ses données, et rien ne
-            # permet de revenir en arrière.
-            #
-            # Le dump est pris avant la migration et conservé 14 jours. Si la
-            # sauvegarde échoue, le déploiement s'arrête : mieux vaut ne pas
-            # déployer que migrer une base qu'on ne saurait pas restaurer.
-            echo "💾 Sauvegarde de la base avant migration..."
-            DB_URL=$(grep DATABASE_URL .env | cut -d= -f2-)
-            DB_URL=$(printf '%s' "$DB_URL" | sed 's/^"\(.*\)"$/\1/; s/^'"'"'\(.*\)'"'"'$/\1/')
-            # Prisma accepte `?schema=public` dans l'URL ; libpq, sur lequel
-            # repose pg_dump, refuse ce paramètre. On ne le passe donc qu'à
-            # Prisma et on donne à pg_dump l'URL débarrassée de sa requête.
-            PG_URL="${DB_URL%%\?*}"
-            # /var/backups appartient à root : le compte de déploiement ne peut
-            # pas y écrire sans qu'on lui en donne le droit une première fois.
-            REP_SAUVEGARDE=/var/backups/sxb-vpn
-            if [ ! -w "$REP_SAUVEGARDE" ]; then
-              sudo mkdir -p "$REP_SAUVEGARDE" 2>/dev/null || mkdir -p "$REP_SAUVEGARDE" 2>/dev/null || true
-              sudo chown "$(id -u):$(id -g)" "$REP_SAUVEGARDE" 2>/dev/null || true
-            fi
-            if [ ! -w "$REP_SAUVEGARDE" ]; then
-              # Repli sur un chemin que le compte de déploiement possède déjà :
-              # une sauvegarde ailleurs vaut mieux que pas de sauvegarde.
-              REP_SAUVEGARDE=/var/www/sxb-vpn/.sauvegardes
-              mkdir -p "$REP_SAUVEGARDE"
-            fi
-            HORODATAGE=$(date +%Y%m%d-%H%M%S)
-            DUMP="$REP_SAUVEGARDE/avant-migration-$HORODATAGE.sql.gz"
-            if command -v pg_dump >/dev/null 2>&1; then
-              # Sans pipefail, l'échec de pg_dump serait masqué par le succès de gzip.
-              set -o pipefail
-              if ! pg_dump "$PG_URL" | gzip > "$DUMP"; then
-                echo "::error::pg_dump a échoué — migration annulée"
-                exit 1
-              fi
-              set +o pipefail
-              TAILLE=$(stat -c %s "$DUMP" 2>/dev/null || echo 0)
-              # Un dump vide ou minuscule signale un échec que le code de retour
-              # de `gzip` masquerait : on le refuse explicitement.
-              if [ "$TAILLE" -lt 1024 ]; then
-                echo "::error::Sauvegarde suspecte ($TAILLE octets) — migration annulée"
-                exit 1
-              fi
-              echo "✅ Sauvegarde : $DUMP ($(du -h "$DUMP" | cut -f1))"
-              # Rotation : au-delà de 14 jours, la place compte plus que l'archive.
-              find "$REP_SAUVEGARDE" -name 'avant-migration-*.sql.gz' -mtime +14 -delete 2>/dev/null || true
-            else
-              echo "::error::pg_dump introuvable — impossible de sauvegarder avant une migration destructive"
-              exit 1
-            fi
+            # Dump privé vérifié, DDL explicites (dont security-layer.sql),
+            # puis comparaison READ-ONLY avec backend/prisma/schema.prisma.
+            # Aucun rattrapage destructif ni publication en cas d'écart.
+            export SXB_MIGRATION_BACKUP_DIR="${SXB_MIGRATION_BACKUP_DIR:-$HOME/sxb-backups}"
+            node scripts/backend-migrate.cjs prepare
 
-            # Le SQL additif passe AVANT `db push`.
-            #
-            # `db push` refuse de poser un index unique sur une colonne qu'il
-            # vient de créer : il ne peut pas savoir qu'elle est vide, et
-            # réclame `--accept-data-loss`. Ce drapeau autoriserait aussi, sur
-            # une autre exécution, la suppression d'une colonne portant de
-            # vraies données : on ne l'emploie pas.
-            #
-            # `migrations_manual.sql` est idempotent (IF NOT EXISTS partout) et
-            # strictement additif. Appliqué d'abord, la colonne et son index
-            # existent déjà, et `db push` n'a plus rien à créer — donc plus
-            # d'avertissement, et aucune donnée exposée.
-            MANUAL_SQL="backend/prisma/migrations_manual.sql"
-            if [ -f "$MANUAL_SQL" ]; then
-              if ! command -v psql >/dev/null 2>&1; then
-                echo "::error::psql introuvable — migrations additives non installables"
-                exit 1
-              fi
-              psql "${DB_URL%%\?*}" -v ON_ERROR_STOP=1 -f "$MANUAL_SQL" >/tmp/sxb-manual-migration.log
-              echo "✅ Migrations additives appliquées"
-            fi
-
-            VPN_CLIENT_DEVICE_SCOPE_SQL="backend/prisma/migrations/20260920185000_vpn_client_device_scope/migration.sql"
-            if [ -f "$VPN_CLIENT_DEVICE_SCOPE_SQL" ]; then
-              if ! command -v psql >/dev/null 2>&1; then
-                echo "::error::psql introuvable — cloisonnement deviceId non installable"
-                exit 1
-              fi
-              psql "${DB_URL%%\?*}" -1 -v ON_ERROR_STOP=1 -f "$VPN_CLIENT_DEVICE_SCOPE_SQL" \
-                >/tmp/sxb-vpn-client-device-scope-migration.log
-              echo "✅ Unicité des appareils VPN cloisonnée"
-            fi
-
-            # Même défaut, transposé aux configurations VPN : `uuid` portait une
-            # unicité GLOBALE, si bien que deux exploitants important la même
-            # configuration fournisseur se bloquaient mutuellement sans rien
-            # voir l'un de l'autre. Le SQL est idempotent et ne peut pas échouer
-            # sur les données en place : l'unicité globale qu'il remplace
-            # implique déjà l'unicité du couple ("createdBy", "uuid").
-            VPN_PROFILE_UUID_SCOPE_SQL="backend/prisma/migrations/20260920220000_vpn_profile_uuid_scope/migration.sql"
-            if [ -f "$VPN_PROFILE_UUID_SCOPE_SQL" ]; then
-              if ! command -v psql >/dev/null 2>&1; then
-                echo "::error::psql introuvable — cloisonnement uuid des configurations non installable"
-                exit 1
-              fi
-              psql "${DB_URL%%\?*}" -1 -v ON_ERROR_STOP=1 -f "$VPN_PROFILE_UUID_SCOPE_SQL" \
-                >/tmp/sxb-vpn-profile-uuid-scope-migration.log
-              echo "✅ Unicité des configurations VPN cloisonnée"
-            fi
-
-            echo "🗄️ Push Prisma schema..."
-            set -o pipefail
+            # Générer les DEUX clients seulement après le gate : Node cherche
+            # à la racine avant NODE_PATH, utilisé par PM2 pour backend/.
             NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
-              node /var/www/sxb-vpn/backend/node_modules/prisma/build/index.js db push \
-              --schema=backend/prisma/schema.prisma \
-              --skip-generate 2>&1 | tail -5
-
-            # `db push` crée les colonnes mais n'exécute pas la reprise de
-            # propriété des clients historiques. Cette migration additive et
-            # idempotente rend leur revendeur explicite sans déplacer ni
-            # supprimer aucune donnée.
-            RESELLER_LIFECYCLE_SQL="backend/prisma/migrations/20260907120000_reseller_access_and_client_ownership/migration.sql"
-            if [ -f "$RESELLER_LIFECYCLE_SQL" ]; then
-              if ! command -v psql >/dev/null 2>&1; then
-                echo "::error::psql introuvable — rattachement revendeur non installable"
-                exit 1
-              fi
-              PSQL_URL="${DB_URL%%\?*}"
-              psql "$PSQL_URL" -v ON_ERROR_STOP=1 -f "$RESELLER_LIFECYCLE_SQL" >/tmp/sxb-reseller-lifecycle-migration.log
-              echo "✅ Validité et propriété revendeur migrées"
-            fi
-
-            for SQL in \
-              backend/prisma/migrations/20260907130000_token_revoke_permission/migration.sql \
-              backend/prisma/migrations/20260907140000_voucher_ownership_and_lifecycle/migration.sql \
-              backend/prisma/migrations/20260908220000_profile_password_lock/migration.sql; do
-              test -f "$SQL"
-              psql "${DB_URL%%\?*}" -1 -v ON_ERROR_STOP=1 -f "$SQL" >/tmp/sxb-commercial-migration.log
-            done
-            echo "✅ Jetons et vouchers migrés sans suppression de données"
-
-            # Prisma ne sait pas représenter un trigger append-only ni le CHECK
-            # des types de mouvement. `db push` crée les colonnes, puis ce SQL
-            # idempotent installe et vérifie les protections PostgreSQL.
-            LEDGER_SQL="backend/prisma/migrations/20260907050730_reseller_quota_ledger/migration.sql"
-            if [ -f "$LEDGER_SQL" ]; then
-              if ! command -v psql >/dev/null 2>&1; then
-                echo "::error::psql introuvable — protection append-only non installable"
-                exit 1
-              fi
-              PSQL_URL="${DB_URL%%\?*}"
-              psql "$PSQL_URL" -v ON_ERROR_STOP=1 -f "$LEDGER_SQL" >/tmp/sxb-ledger-migration.log
-              TRIGGER_OK=$(psql "$PSQL_URL" -Atc \
-                "SELECT count(*) FROM pg_trigger WHERE tgname='reseller_quota_movements_append_only' AND NOT tgisinternal")
-              CHECK_OK=$(psql "$PSQL_URL" -Atc \
-                "SELECT count(*) FROM pg_constraint WHERE conname='reseller_quota_movements_kind_check'")
-              if [ "$TRIGGER_OK" != "1" ] || [ "$CHECK_OK" != "1" ]; then
-                echo "::error::Protections du grand livre absentes (trigger=$TRIGGER_OK check=$CHECK_OK)"
-                exit 1
-              fi
-              echo "✅ Grand livre quota protégé en append-only"
-            fi
+              node backend/node_modules/prisma/build/index.js generate \
+              --schema=backend/prisma/schema.prisma
+            test -f backend/node_modules/@prisma/client/runtime/library.js
+            NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
+              node backend/node_modules/prisma/build/index.js generate \
+              --schema=prisma/schema.prisma
+            NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
+              node scripts/verify-prisma-runtime.cjs
 
             # Amorçage du compte propriétaire racine. `POST /api/users` refuse de
             # créer un OWNER si le demandeur n'en est pas un : le tout premier ne
@@ -469,11 +316,9 @@ jobs:
               $ESBUILD backend/prisma/seed-owner.ts \
                 --bundle --platform=node --format=cjs --packages=external \
                 --outfile=dist/seed-owner.cjs
-              # PrismaClient ne lit pas .env depuis un bundle CJS : on l'exporte.
-              # DB_URL a déjà été nettoyé de ses guillemets plus haut.
-              export DATABASE_URL="$DB_URL"
+              # Même parseur .env que le gate ; aucun secret dans les arguments.
               NODE_PATH=/var/www/sxb-vpn/backend/node_modules \
-                node dist/seed-owner.cjs
+                DOTENV_CONFIG_QUIET=true node -r dotenv/config dist/seed-owner.cjs
             else
               echo "ℹ️ Amorçage OWNER ignoré (secrets OWNER_EMAIL/OWNER_PASSWORD absents)."
             fi

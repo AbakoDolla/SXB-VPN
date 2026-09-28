@@ -10,7 +10,9 @@ une autorisation de publication.
 
 **Code effectivement construit et verifie en CI :
 `4a17c218c65dbd2f83c931f612ced593df54bc5c`.** Le commit documentaire
-ulterieur de ce rapport ne modifie pas le code ni l'identite de l'APK candidat.
+`1911ab6c0adf79266326c9dcf2a6ce4a29df0d92` a consigne cette preuve sans changer
+le code. La preparation backend ulterieure decrite ci-dessous modifie les
+gates de migration, pas l'identite ni le contenu de cet APK historique.
 Le candidat est disponible en artefact GitHub, mais n'est ni publie en release
 ni installe. Un backend compatible est obligatoire avant son usage.
 
@@ -41,7 +43,9 @@ Inventaire relatif a la base ci-dessus, hors caches d'outils et preuves temporai
 
 ```text
 .github\workflows\build-android.yml
+.github\workflows\deploy-vps.yml
 .github\workflows\verification-pr.yml
+README.md
 app-mobile\app\activate.tsx
 app-mobile\contexts\AuthContext.tsx
 app-mobile\contexts\VpnContext.tsx
@@ -74,17 +78,22 @@ artifacts\sxb-dashboard\src\locales\en\operations.json
 artifacts\sxb-dashboard\src\locales\fr\operations.json
 backend\prisma\schema.prisma
 prisma\schema.prisma
+scripts\deploy.sh
+scripts\post-merge.sh
 scripts\run-android-policy-gates.sh
 scripts\tests\application-reset.test.mjs
 scripts\tests\build-caches.test.mjs
+scripts\tests\configuration-delivery.test.mjs
 scripts\tests\dashboard-profile-lock.test.mjs
 scripts\tests\durcissement-mobile.test.mjs
 scripts\tests\engine-data.test.mjs
+scripts\tests\parite-schemas-prisma.test.mjs
 scripts\tests\provision-e2e.test.mjs
 scripts\tests\public-privacy-http.test.mjs
 scripts\tests\reset-dashboard-api.test.mjs
 scripts\tests\reset-dashboard-ui.test.mjs
 scripts\tests\security-center.test.mjs
+scripts\update.sh
 server.ts
 server\middleware\auth.ts
 server\routes\mobile-access.ts
@@ -102,6 +111,7 @@ server\services\mobile-principal.ts
 server\services\mobile-risk.ts
 server\services\mobile-session-refresh.ts
 server\services\play-integrity.ts
+server\services\reset-backup.ts
 server\services\security-events.ts
 server\tests\reseller-lifecycle.test.ts
 ```
@@ -117,12 +127,18 @@ app-mobile\services\identityPersistence.ts
 app-mobile\tests\DeviceSecurityTest.kt
 app-mobile\tests\run-device-security.cjs
 backend\prisma\security-layer.sql
+backend\prisma\backend-rollout-compat.sql
 docs\SECURITY-LAYER-REPORT.md
 prisma\security-layer.sql
+scripts\backend-migrate.cjs
+scripts\check-backend-cron.cjs
+scripts\tests\backend-migration.test.mjs
+scripts\tests\backend-migration-postgres.integration.mjs
 scripts\tests\security-dashboard-preview.mjs
 scripts\tests\security-ci-harness.test.mjs
 scripts\tests\security-layer-postgres.integration.mjs
 server\services\mobile-connections.ts
+server\services\backend-migration.ts
 server\services\mobile-proof.ts
 server\services\mobile-session-security.ts
 server\services\security-policy.ts
@@ -132,6 +148,8 @@ Le runner PostgreSQL a ete renomme de `.test.mjs` en `.integration.mjs`
 pendant ce lot. Il ne doit pas entrer dans les globs sans base de donnees du
 deploiement. Ses donnees sont des fixtures explicitement synthetiques ; son
 stockage et ses transactions sont du vrai PostgreSQL.
+Le runner de migration backend utilise egalement `.integration.mjs` et une
+base dediee explicite ; les globs ordinaires n'ouvrent aucune connexion DB.
 
 ## D. Schema Prisma et migration
 
@@ -139,6 +157,77 @@ Les deux schemas Prisma et les deux fichiers SQL sont identiques entre racine
 et `backend\prisma`. `security-layer.sql` est un script additif transactionnel,
 pas une migration automatiquement decouverte par `prisma migrate deploy`.
 Ne pas utiliser `db push` pour mettre a jour la production.
+
+### Gate backend ajoute apres le candidat APK
+
+Le workflow deploy-vps utilisait encore `db push` et omettait security-layer.sql.
+Il appelle maintenant `scripts\backend-migrate.cjs prepare` : sauvegarde custom
+verifiee, SQL explicites dans l'ordre ci-dessous, comparaison readonly du
+schema reel, puis verification des protections du ledger. Toute erreur bloque
+la generation explicite des clients, le seed OWNER, le remplacement des bundles
+et le restart. La generation automatique postinstall est desactivee.
+
+L'ordre est : `backend-rollout-compat.sql`, `migrations_manual.sql`, scopes
+device puis profil, propriete/validite revendeur, permission tokens.revoke,
+vouchers, verrouillage des profils, ledger append-only, `security-layer.sql`.
+Chaque fichier est transactionnel : sa propre transaction lorsqu'il en declare
+une, sinon `psql --single-transaction`, toujours avec ON_ERROR_STOP=1 et sans
+chargement de psqlrc. Il ne s'agit pas d'une transaction globale de tous les
+fichiers : un fichier deja termine peut rester applique si le suivant echoue.
+Aucun rollback de donnees automatique n'est tente.
+
+Le retrait de db push a revele trois divergences historiques, reproduites sur
+la baseline 5ba peuplee. Aucun fichier de migration historique ni le SQL de
+securite initial n'a ete reecrit :
+
+- Les scopes cherchaient des contraintes, alors que Prisma avait cree des
+  indexes uniques homonymes : erreur 42P07. Le nouveau SQL prealable adopte
+  les deux indexes via UNIQUE USING INDEX, sans changer leur OID ni recreer
+  leurs donnees. Il verifie table, colonnes/ordre, btree, unicite, validite,
+  disponibilite, NULLS DISTINCT, absence de predicat/expression/colonnes
+  incluses, tri, collation et classe d'operateur par defaut. Un homonyme
+  incompatible est refuse. Si l'index est absent, l'ancien SQL le cree.
+- Le SQL manuel conserve `vpn_profiles.json_config`. Cette colonne distincte
+  est representee par `legacyJsonConfig String? @map("json_config") @ignore`
+  dans les deux schemas. Elle reste nullable et preserve ses valeurs, sans
+  copie, renommage, suppression ni repli vers jsonConfig. Le client genere
+  n'expose pas ce champ ni son contenu ; canonicalConfig reste inchange.
+- Les indexes existants `xray_accounts_createdBy_idx` et
+  `singbox_accounts_createdBy_idx` sont representes par @@index([createdBy])
+  dans les deux modeles, sans suppression des indexes du SQL historique.
+
+Le gate exige le datasource PostgreSQL DATABASE_URL des deux schemas coherents,
+le schema public et tous les fichiers DDL attendus. Il utilise
+`prisma migrate diff --from-schema-datasource ... --to-schema-datamodel ...
+--exit-code` : code 2 signifie BACKEND_SCHEMA_DRIFT, toute erreur reste bloquante.
+Aucun URL ni parametre d'authentification PG ne passe dans les arguments/logs.
+Les options TLS libpq reconnues sont preservees ; parametres inconnus, doubles,
+schema different, overrides host/hostaddr ou options de session ambigues sont
+refuses, pas supprimes : la sauvegarde et le diff doivent cibler la meme autorite.
+Les diagnostics bruts Prisma/psql ne sont pas publies. Les codes d'erreur et
+l'etape identifient le controle a diagnostiquer dans un environnement prive.
+
+Le provider de sauvegarde existant est reutilise : archive compressee custom
+PGDMP, taille minimale, pg_restore --list, SHA256 et creation exclusive, droits
+700/600 sous POSIX et hors repertoire applicatif. Le nom `reset-<uuid>.dump`
+est historique ; aucune operation de reset applicatif n'a lieu. Le recu
+id/taille/hash est egalement conserve dans l'erreur si une etape ulterieure
+echoue. Les archives ne sont ni ecrasees ni purgees automatiquement. Le delai
+borne est de 120 secondes par outil, y compris la sauvegarde ; un volume plus
+important demande une politique de sauvegarde revue, jamais un contournement.
+
+Avant remplacement du checkout, le futur workflow execute le helper cron
+autonome depuis FETCH_HEAD verifie, via `git show ... | node` sous pipefail.
+La lecture `sudo -n crontab -u root -l` est bloquante si impossible ou si le
+cron legacy connu git pull/docker-compose up est trouve. Aucune ligne de cron
+ni aucun secret n'est imprime ; aucune suppression automatique n'a lieu.
+Ce controle cible le job connu, pas tous les ordonnanceurs possibles.
+La presence d'un tel cron sur le VPS n'a PAS ete inspectee pendant ce lot.
+
+Les anciens scripts Docker deploy.sh/update.sh echouent explicitement avant
+toute action, et post-merge.sh ne pousse plus le schema Drizzle. Le packaging
+Docker n'est pas refondu. Une recette isolee reussie n'autorise toujours ni
+fusion, deploiement, activation des clients enroles ou publication.
 
 | Modele/table | Ajout |
 | --- | --- |
@@ -155,7 +244,8 @@ cle n'est attribuee ni aucun appareil automatiquement enrole par la migration.
 comptable par connexion, pas une autre session d'authentification. La relation
 d'autorite et sa mutation sont controlees dans les transactions applicatives.
 
-Ordre de deploiement : sauvegarde et verification du schema, SQL additif,
+Ordre de deploiement : controle hote readonly, sauvegarde, SQL explicites
+avec compatibilites additives et verification du schema reel,
 generation du client Prisma, mise a niveau de **tous** les noeuds backend,
 puis activation des nouveaux clients/enrolements. Les anciens clients restent
 dans la cohorte explicitement non enrolee. Un ancien backend ignorant les
@@ -473,6 +563,48 @@ promesse d'invisibilite/anti-capture a 100 %.
 | Manifeste release reel | Decode depuis l'APK telecharge avec la librairie Android SDK preexistante ; assertions package/version/SDK/service/signer passees |
 | R8 / publication / installation | Aucune tache minifyReleaseWithR8 ; mergeDexRelease observe. Etapes de publication Release/SCP/installVPS/purge ignorees ; aucune installation sur appareil |
 
+### Preparation backend ulterieure : preuve locale, pas un nouvel APK
+
+Les controles suivants concernent uniquement le lot backend posterieur au
+candidat 477 et au commit documentaire 1911. Ils ne remplacent pas les
+identifiants de source, de CI et d'APK historiques ci-dessus.
+
+| Controle du lot backend | Resultat observe |
+| --- | --- |
+| Suite generique complete, sans DB | 1194 tests, 32 suites, aucun echec/skip apres restauration des dependances de test |
+| Contrats directement concernes | 197 tests mobile depuis app-mobile et 69 tests backend depuis la racine ; 266 succes, 20 suites |
+| Ancien schema peuple, vrai PostgreSQL isole | 19 checks ; baseline 5ba8f701, huit enregistrements synthetiques dans huit tables, preparation complete deux fois |
+| Sauvegarde/restauration reelle | Deux archives PGDMP independantes, empreintes verifiees ; premiere archive effectivement restauree avant les scenarios suivants |
+| Compatibilite additive | OID des index adoptes conserve, donnees et metadonnees RBAC stables, SQL securite rejoue deux fois sans enrollment legacy |
+| Refus verifies sur vraie DB | Neuf variantes d'index incompatibles, absence du DDL, drift inconnu, unicite nonce manquante et trigger ledger desactive ; erreur backup sans DDL ni travail aval |
+| Ancien champ plaintext | Client Prisma 5.22 genere dans un repertoire isole : valeur absente du resultat reel et champ ignore refuse dans VpnProfileSelect |
+| Types et bundles | Graphe strict migration/backup avec vrais types Prisma vert ; bundles du vrai server.ts et du gate construits |
+| Guard cron et scripts | Pipeline exact git show vers node sous pipefail teste avec depot synthetique : cron dangereux, absent, lecture refusee et fichier absent ; bash -n sur script SSH extrait, jamais execute |
+| Actions exclues | Aucun workflow dispatch, acces production, SSH, deploiement, redemarrage VPS, nouvelle construction APK ou installation sur appareil |
+
+Les recus, les deux dumps synthetiques, le client genere et sa fixture de types
+ont ete copies du temporaire vers les fichiers persistants prives de la session ;
+les empreintes des copies ont ete reverifiees. Premiere archive : 83151 octets,
+SHA256 `3c59152cb65c89e99d801543ceef85a70c0588aead75096956ce81eade5a0541`.
+Deuxieme archive : 91497 octets,
+SHA256 `8de3df15d877932762a2058c3d661ffa4860d33b65912fed9c316c785e0a5d21`.
+Ces archives ne sont ni des sauvegardes de production ni des fichiers du depot.
+
+Limite de reproductibilite de l'environnement : des dependances partagees ont
+disparu pendant la recette, sans cause etablie. Apres echecs explicites de
+resolution, le parent a restaure une capsule backend isolee, sans modifier les
+manifestes ni locks du depot. Le catalogue/lock historique ne permettait pas
+une installation frozen : la capsule a son propre lock resolu, SHA256
+`1046e94b8b2eef999953518f475b89d41a4c35acff84cbefd8590ab55c1ee454`.
+Versions verifiees : Prisma/client/engines 5.22.0, TypeScript 5.8.3,
+@types/node 22.20.1, esbuild 0.27.3, tsx 4.23.1 et dotenv 17.4.2.
+Le complement yaml 2.9.0, deja declare dans app-mobile, a ete restaure
+separement apres son propre echec de resolution, avec pnpm 10.34.5,
+minimumReleaseAge 1440, scripts desactives et store prive. Son lock persistant
+a pour SHA256 `8ddbc373050ecdad2345acc6e9b0146782bba264c39901771c8386865bf0d5b0`.
+Les derniers runs complets sont verts ; ce n'est pas une reproduction frozen
+du lock original ni une execution GitHub au nouveau SHA backend.
+
 Les lignes se recouvrent : ne pas additionner leurs nombres comme des tests
 independants. Le gate desktop local des 14 graphes a utilise
 `ENABLE_DEPRECATED_TUN_ADDRESS_X=true`. Le parent les a aussi acceptes sur
@@ -595,6 +727,60 @@ installees et possedees par ce checkout. Ne jamais installer/generer a travers
 une junction `node_modules` appartenant a un autre worktree. Le desaccord
 preexistant du catalogue pnpm n'a pas ete corrige en regenerant le lockfile.
 
+Preparation backend (uniquement apres autorisation explicite de l'operateur ;
+ces commandes de deploiement n'ont pas ete executees contre la production) :
+
+```powershell
+# Lecture seule ; DATABASE_URL vient de l'environnement ou du .env du checkout.
+node scripts\backend-migrate.cjs check
+# Ecritures DB : sauvegarde obligatoire hors du checkout, DDL et gate readonly.
+$env:SXB_MIGRATION_BACKUP_DIR='<repertoire prive absolu hors checkout>'
+node scripts\backend-migrate.cjs prepare
+```
+
+Le workflow utilise `$HOME/sxb-backups`. Node et les dependances backend
+declarees (tsx, dotenv, Prisma 5.22) ainsi que psql, pg_dump et pg_restore
+compatibles doivent deja etre disponibles. PSQL_BIN, PG_DUMP_BIN et
+PG_RESTORE_BIN permettent des chemins explicites. Une erreur d'outil,
+permission, archive, migration, drift ou protection ledger arrete le gate.
+La restauration reste une decision operateur : arreter les ecritures,
+verifier le recu et les donnees depuis le dump, evaluer les ecritures survenues
+depuis la sauvegarde et la compatibilite des sessions avant tout retour arriere.
+
+Contrats de migration et regressions directement concernees, sans DB :
+
+```powershell
+node --test scripts\tests\backend-migration.test.mjs scripts\tests\reset-backup.test.mjs scripts\tests\parite-schemas-prisma.test.mjs scripts\tests\configuration-delivery.test.mjs
+Push-Location app-mobile
+node ..\backend\node_modules\tsx\dist\cli.mjs --test tests\regression-critical-flows.test.ts
+Pop-Location
+node backend\node_modules\tsx\dist\cli.mjs --test server\tests\reseller-lifecycle.test.ts
+```
+
+Le contrat mobile lit ses fichiers relativement a app-mobile : ne pas combiner
+ces deux commandes en un lancement depuis la racine. Si les dependances de
+test sont isolees, NODE_PATH doit inclure leurs repertoires node_modules
+(backend et complement YAML dans cette recette), sans installation dans
+les junctions partagees.
+
+Recette PG REELLE, avec outils deja presents et base synthetique dediee :
+
+```powershell
+$env:SXB_ROLLOUT_TEST_RESET='1'
+$env:SXB_ROLLOUT_TEST_CONNECTION_FILE='<JSON prive contenant url, cible 127.0.0.1 et base sxb_rollout_child_<hex> ou sxb_rollout_parent_<hex>>'
+$env:SXB_ROLLOUT_BASELINE_SQL='<baseline SQL historique 5ba8f701>'
+$env:SXB_ROLLOUT_PG_BIN='<repertoire des outils PostgreSQL existants>'
+node scripts\tests\backend-migration-postgres.integration.mjs
+```
+
+Ce runner reinitialise UNIQUEMENT le schema de cette base explicitement
+autorisee ; il ne charge aucun .env de production. Les sauvegardes et le recu
+sont gardes dans le repertoire temporaire indique ; copier les preuves utiles
+vers les artefacts persistants prives avant nettoyage de ce temporaire, puis
+reverifier les empreintes des archives. Il genere son client dans ce repertoire
+et supprime son schema temporaire sous backend, sans installer ni generer dans
+les dependances partagees. Ne jamais employer une base metier.
+
 Verification mobile :
 
 ```powershell
@@ -646,8 +832,19 @@ Rejouer les regressions generiques, sans DB (le test de preparation Prisma
 genere seulement un client temporaire et interdit l'autoinstall) :
 
 ```powershell
+$env:SXB_SECURITY_TEST_DATABASE_URL=''
+$env:SXB_SECURITY_PRISMA_CLIENT=''
+$env:PRISMA_SKIP_POSTINSTALL_GENERATE='true'
+$env:PRISMA_GENERATE_SKIP_AUTOINSTALL='1'
+$env:CHECKPOINT_DISABLE='1'
 node --experimental-strip-types --test --test-concurrency=4 'scripts/tests/*.test.mjs'
 ```
+
+Dans cette recette a dependances restaurees, NODE_PATH fournit la capsule
+backend et le complement YAML ; NODE_OPTIONS charge le preload Prisma prive
+avec `--require="<chemin absolu du preload>"`. Ce preload ne simule pas Prisma :
+il redirige la resolution vers le vrai client 5.22 genere hors des dependances
+partagees. Un checkout avec son propre client genere n'en a pas besoin.
 
 Build et preview de console sans proxy production :
 
@@ -735,7 +932,7 @@ ne sont pas modifiees. La proposition empilee cible PR #89 ; le workflow
 `verification-pr` filtre toujours les PR vers `main`, donc son execution sur
 cette branche reste a coordonner manuellement avec le parent.
 Les executions effectuees et leur SHA source sont consignes en O ; le commit
-documentaire de ce rapport ne pretend pas etre un nouveau build.
+ulterieur de preparation backend ne pretend pas etre un nouveau build APK.
 
 ## S. Android / Expo
 

@@ -2562,27 +2562,25 @@ describe('garde-fous contre les régressions Android', () => {
   it('protège la production : sauvegarde avant migration et tests avant déploiement', () => {
     const deploy = source('../.github/workflows/deploy-vps.yml');
 
-    // `db push --accept-data-loss` autorise Prisma à supprimer colonnes et
-    // tables : sans dump préalable, un champ renommé par mégarde emporte ses
-    // données sans retour possible.
-    assert.match(deploy, /pg_dump/);
-    assert.match(deploy, /avant-migration-/);
-    // La sauvegarde doit précéder la migration, pas la suivre. On vise la
-    // commande réelle : le drapeau apparaît aussi dans le commentaire qui
-    // l'explique, plus haut dans le fichier.
-    assert.ok(
-      deploy.indexOf('pg_dump') < deploy.indexOf('--skip-generate 2>&1'),
-      'la sauvegarde doit précéder la migration',
-    );
-    assert.doesNotMatch(deploy, /--accept-data-loss 2>&1/);
-    // Un dump vide passerait inaperçu : gzip renvoie 0 même sans données.
-    assert.match(deploy, /Sauvegarde suspecte/);
-    // …et sans pipefail, l'échec de pg_dump lui-même serait masqué par le
-    // succès du gzip placé derrière le tube.
-    assert.match(deploy, /set -o pipefail/);
-    // libpq refuse le `?schema=public` que Prisma exige : passer l'URL brute
-    // à pg_dump le fait échouer avant même de se connecter.
-    assert.match(deploy, /PG_URL="\$\{DB_URL%%\\\?\*\}"/);
+    const gate = source('../server/services/backend-migration.ts');
+    const backup = source('../server/services/reset-backup.ts');
+    const gateIndex = deploy.indexOf('node scripts/backend-migrate.cjs prepare');
+    assert.ok(gateIndex > 0);
+    assert.ok(gateIndex < deploy.indexOf('mv .sxb-release/server.cjs dist/server.cjs'));
+    assert.ok(gateIndex < deploy.indexOf('$ESBUILD backend/prisma/seed-owner.ts'));
+    assert.ok(gate.indexOf('await createPostgresResetBackup') < gate.indexOf('for (const migration of BACKEND_MIGRATIONS)'));
+    assert.match(gate, /backend\/prisma\/security-layer\.sql/);
+    assert.match(gate, /"--from-schema-datasource"/);
+    assert.match(gate, /"--to-schema-datamodel"/);
+    assert.match(gate, /BACKEND_SCHEMA_DRIFT/);
+    assert.doesNotMatch(deploy, /db\s+push|accept-data-loss/);
+    assert.match(backup, /pg_dump/);
+    assert.match(backup, /pg_restore/);
+    assert.match(backup, /info\.size < 1024/);
+    assert.match(backup, /PGDMP/);
+    assert.match(backup, /sslmode: "PGSSLMODE"/);
+    assert.match(backup, /PGPASSWORD: decodeURIComponent/);
+    assert.match(deploy, /set -eo pipefail/);
 
     // Les garde-fous ne protégeaient que la construction Android : le serveur
     // partait en production sans qu'aucun test ne s'exécute.

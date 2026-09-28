@@ -413,6 +413,7 @@ model XrayAccount {
   updatedAt  DateTime   @updatedAt
 
   @@map("xray_accounts")
+  @@index([createdBy])
 }
 
 model SingboxAccount {
@@ -441,6 +442,7 @@ model SingboxAccount {
   updatedAt  DateTime   @updatedAt
 
   @@map("singbox_accounts")
+  @@index([createdBy])
 }
 
 model TrafficUsage {
@@ -511,6 +513,7 @@ model VpnProfile {
   expiresAt        DateTime?
   method           String?
   jsonConfig       String?        // LEGACY — ne plus écrire en clair ; voir canonicalConfig
+  legacyJsonConfig String?        @map("json_config") @ignore // Preserve the historical column; never expose it in the client.
   // ── Modèle « intermédiaire d'import » (canonique, chiffré, versionné) ────────
   // Règle : quand canonicalConfig est présent, il est LA SEULE source de vérité
   // technique du profil. Les colonnes host/port/protocol/tls... restent pour
