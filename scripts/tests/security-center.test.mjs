@@ -39,6 +39,95 @@ const lireSource = (relatif) => readFileSync(path.join(racine, relatif), 'utf8')
 const sortie = path.join(racine, 'backend', '.sxb-security-test.cjs');
 const { build, transform } = require('esbuild');
 
+test('audit writer keeps owner and unresolved actor visibility fail-closed', async () => {
+  const source = lireSource('server/database.ts');
+  const start = source.indexOf('export async function logDbActivity(');
+  assert.ok(start > 0);
+  const compiled = await transform(source.slice(start).replace('export async function', 'async function') +
+    '\nmodule.exports = logDbActivity;', { loader: 'ts', format: 'cjs' });
+  const written = [], warnings = [];
+  const memory = { users: [], roles: [], auditLogs: [] };
+  let actor = { role: { name: 'OWNER' } }, failLookup = false;
+  const prisma = {
+    user: { findUnique: async () => { if (failLookup) throw new Error('synthetic lookup failure'); return actor; } },
+    auditLog: { create: async ({ data }) => { written.push(data); } },
+  };
+  const module = { exports: null };
+  runInNewContext(compiled.code, { module, prisma, inMemoryDb: memory, console: { warn: message => warnings.push(message) } });
+  for (const value of [{ role: { name: 'OWNER' } }, null, { role: null }]) {
+    actor = value;
+    await module.exports('synthetic-actor', 'synthetic action', 'info', undefined, { visibleOwnerOnly: false });
+    assert.equal(written.at(-1).visibleOwnerOnly, true);
+  }
+  failLookup = true;
+  await module.exports('synthetic-actor', 'synthetic action', 'info');
+  assert.equal(written.at(-1).visibleOwnerOnly, true);
+  assert.equal(warnings.length, 1);
+  failLookup = false; actor = { role: { name: 'ADMIN' } };
+  await module.exports('synthetic-actor', 'synthetic action', 'info');
+  assert.equal(written.at(-1).visibleOwnerOnly, false);
+});
+
+test('a delayed unlock cannot reopen a console after identity change or manual locking', async () => {
+  const source = lireSource('artifacts/sxb-dashboard/src/components/SecurityCenterView.tsx');
+  const start = source.indexOf('  const finishUnlock = useCallback(');
+  const callback = source.slice(start, source.indexOf('\n  useEffect(', start));
+  const epoch = { current: 2 }, authority = { current: null }, unlocked = [];
+  const env = {
+    useCallback: fn => fn, interactionEpoch: epoch, unlockAuthority: authority,
+    setUnlockToken: value => unlocked.push(value), setExpiresAt() {}, setPendingChallenge() {}, setPassword() {},
+    loadGate: async () => {}, loadConsole: async () => {}, window: {},
+  };
+  const compiled = await transform(`module.exports = env => {
+    const { ${Object.keys(env).join(',')} } = env;
+    ${callback}
+    return finishUnlock;
+  };`, { loader: 'ts', format: 'cjs' });
+  const module = { exports: null };
+  runInNewContext(compiled.code, { module });
+  const finish = module.exports(env);
+  const result = { unlockToken: 'synthetic-unlock', expiresAt: new Date(Date.now() + 60000).toISOString() };
+  await finish(result, 1); assert.equal(unlocked.length, 0);
+  await finish(result, 2); assert.deepEqual(unlocked, ['synthetic-unlock']);
+  epoch.current++; authority.current = null;
+  await finish(result, 2); assert.equal(authority.current, null); assert.equal(unlocked.length, 1);
+});
+
+test('Android notification constructor refusal never crashes the unlocked security console', async () => {
+  const source = lireSource('artifacts/sxb-dashboard/src/components/SecurityCenterView.tsx');
+  const marker = source.indexOf('    if (!isUnlocked || !eventsPage?.events');
+  assert.ok(marker > 0);
+  const start = source.lastIndexOf('  useEffect(', marker);
+  const effect = source.slice(start, source.indexOf('\n  useEffect(', marker));
+  class AndroidNotification {
+    static permission = 'granted';
+    constructor() { throw new TypeError('Illegal constructor. Use ServiceWorkerRegistration.showNotification() instead.'); }
+  }
+  const warnings = [], notices = [];
+  const failed = { current: false };
+  const env = {
+    useEffect: fn => fn(), isUnlocked: true,
+    eventsPage: { events: [{ id: 'synthetic-alert', severity: 'critical', eventType: 'TOKEN_REPLAY', acknowledged: false }] },
+    notifiedSecurityEvents: { current: new Set() }, systemNotificationsUnavailable: failed,
+    setNotificationWarning: value => notices.push(value),
+    t: key => key, vocabulary: { eventType: code => code },
+    window: { Notification: AndroidNotification }, Notification: AndroidNotification,
+    console: { warn: message => warnings.push(message) },
+  };
+  const compiled = await transform(`module.exports = env => {
+    const { ${Object.keys(env).join(',')} } = env;
+    ${effect}
+  };`, { loader: 'ts', format: 'cjs' });
+  const module = { exports: null };
+  runInNewContext(compiled.code, { module });
+  assert.doesNotThrow(() => module.exports(env));
+  assert.equal(failed.current, true);
+  assert.deepEqual(notices, ['operations.security.notifications.browserUnavailable']);
+  assert.equal(warnings.length, 1);
+  module.exports(env);
+  assert.equal(warnings.length, 1, 'unsupported notifications must not be retried on every poll');
+});
+
 test('console polling preserves mutation errors, recovers load errors, and ignores obsolete unlocks', async () => {
   const source = lireSource('artifacts/sxb-dashboard/src/components/SecurityCenterView.tsx');
   const start = source.indexOf('  const loadConsole = useCallback(');
@@ -57,13 +146,13 @@ test('console polling preserves mutation errors, recovers load errors, and ignor
     fetchSecurityEvents: async () => ({ events: [] }),
     fetchSecurityAudit: async () => ({ entries: [] }),
     fetchSecurityPolicy: async () => ({ ...draft, version: 2 }),
-    filters: {}, DEFAULT_LIMIT: 50, eventsPage: null, unlockAuthority: authority,
+    filters: {}, DEFAULT_LIMIT: 50, eventsPage: null, unlockAuthority: authority, consoleSequence: { current: 0 },
     policyDirty: { current: true },
     setActionError: error => { state.action = error; },
     setConsoleError: error => { state.loading = error; },
     setPolicy: value => { state.policy = value; },
     setOverview: () => {}, setEventsPage: () => {}, setAudit: () => {},
-    setCertificateInput: () => {}, setSelected: () => {},
+    setCertificateInput: () => {}, setSelected: () => {}, setLastLoadedAt: () => {}, setLoadingConsole: () => {},
   };
   const compiled = await transform(`module.exports = env => {
     const { ${Object.keys(env).join(',')} } = env;

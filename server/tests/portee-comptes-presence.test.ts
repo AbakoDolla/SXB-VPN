@@ -63,9 +63,12 @@ describe("portée des comptes de connexion", () => {
     return source.slice(debut, suite === -1 ? source.length : suite);
   })();
 
-  it("ne cloisonne que l'administrateur", () => {
-    assert.match(corps, /!== ROLE_ADMIN\) return null/,
-      "Propriétaire, super-administrateur et support doivent voir ce qu'ils voyaient");
+  it("réserve la vue complète au propriétaire et protège son parc des autres rôles", () => {
+    assert.match(corps, /if \(voitTout\(requerant\?\.role\)\) return null/);
+    assert.match(corps, /nonOwnerAccountScope\(await ownerIds\(prisma\)\)/);
+    assert.match(corps, /!== ROLE_ADMIN\) return privacy/);
+    assert.match(corps, /AND: \[privacy, \{ OR:/,
+      "Le rattachement ADMIN ne doit pas contourner la confidentialité OWNER");
   });
 
   it("rattache le compte par ses RELATIONS", () => {

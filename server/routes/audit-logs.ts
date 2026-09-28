@@ -11,6 +11,7 @@ import { Router, Response } from "express";
 import { prisma, inMemoryDb } from "../database";
 import { requireAuth, AuthenticatedRequest } from "../middleware/auth";
 import { requireOwner, isOwnerRequest } from "../middleware/rbac/owner";
+import { auditVisibility } from "../services/owner-privacy";
 
 const router = Router();
 
@@ -27,13 +28,12 @@ router.get("/", requireAuth, async (req: AuthenticatedRequest, res: Response) =>
     const limit = Math.min(Number(req.query.limit) || 50, 500);
     const type = req.query.type as string | undefined;
     const requesterIsOwner = isOwnerRequest(req);
-    const isReseller = req.user?.role === "RESELLER";
+    if (!prisma && !requesterIsOwner) return res.status(503).json({ error: "errors.db.unavailable" });
     // Compartiment : un revendeur ne lit que sa propre activité, et un
     // administrateur la sienne. Sans cela, l'écran d'accueil d'un
     // administrateur racontait les connexions et les créations du
     // super-administrateur.
-    const cloisonne = isReseller || req.user?.role === "ADMIN";
-    const ownScope = cloisonne ? { userId: req.user?.userId } : {};
+    const cloisonne = !requesterIsOwner && req.user?.role !== "SUPER_ADMIN";
 
     let logs: any[] = [];
 
@@ -42,8 +42,7 @@ router.get("/", requireAuth, async (req: AuthenticatedRequest, res: Response) =>
         // Non-OWNER : les entrées visibleOwnerOnly sont invisibles (filtre dur serveur).
         where: {
           ...(type ? { type } : {}),
-          ...(requesterIsOwner ? {} : { visibleOwnerOnly: false }),
-          ...ownScope,
+          ...await auditVisibility(prisma, req.user),
         },
         include: {
           user: { select: { id: true, name: true, email: true } },
@@ -54,6 +53,11 @@ router.get("/", requireAuth, async (req: AuthenticatedRequest, res: Response) =>
     } else {
       logs = inMemoryDb.auditLogs
         .filter((log) => requesterIsOwner || !log.visibleOwnerOnly)
+        .filter((log) => {
+          const actor = inMemoryDb.users.find(user => user.id === log.userId);
+          const role = inMemoryDb.roles.find(role => role.id === actor?.roleId);
+          return requesterIsOwner || role?.name !== "OWNER";
+        })
         .filter((log) => !cloisonne || log.userId === req.user?.userId)
         .filter((log) => !type || log.type === type)
         .slice(0, limit);
@@ -86,7 +90,7 @@ router.get("/owner", requireAuth, requireOwner, async (req: AuthenticatedRequest
     let logs: any[] = [];
     if (prisma) {
       logs = await prisma.auditLog.findMany({
-        where: { visibleOwnerOnly: true },
+        where: { OR: [{ visibleOwnerOnly: true }, { user: { role: { name: "OWNER" } } }] },
         include: {
           user: { select: { id: true, name: true, email: true } },
         },

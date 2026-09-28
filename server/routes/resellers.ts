@@ -5,7 +5,8 @@ import crypto from "crypto";
 import { prisma, inMemoryDb, logDbActivity } from "../database";
 import { requireAuth, requirePermission, requireRole, AuthenticatedRequest } from "../middleware/auth";
 import { canSeeUser } from "../middleware/rbac/owner";
-import { auteurAInscrire, porteeRevendeurs } from "../services/portee-donnees";
+import { auteurAInscrire, porteeComptes, porteeRevendeurs } from "../services/portee-donnees";
+import { ownerIds } from "../services/owner-privacy";
 import {
   AccesHistoriqueQuotaRefuse,
   calculerAllocation,
@@ -176,6 +177,7 @@ router.get("/", requireAuth, gestionRevendeurs, requirePermission("reseller.mana
   try {
     let resellers: any[] = [];
     if (prisma) {
+      const db = prisma;
       // Un administrateur ne voit que les revendeurs QU'IL A CRÉÉS. Sans ce
       // filtre, un compte créé à l'instant recevait les cinq revendeurs de la
       // maison — mesuré en production avant correction.
@@ -189,7 +191,7 @@ router.get("/", requireAuth, gestionRevendeurs, requirePermission("reseller.mana
           // Stealth : revendeur lié à un compte OWNER invisible pour les non-OWNER.
           .filter((r) => canSeeUser(req, r.user))
           .map(async (r) => {
-            const clientsCount = await prisma.vpnClient.count({ where: porteeClientsRevendeur(r) as any });
+            const clientsCount = await db.vpnClient.count({ where: porteeClientsRevendeur(r) as any });
             // Le cumul ne portait que sur les forfaits : les clients créés via
             // /:id/create-client, qui portent leur quota en propre, restaient
             // invisibles du décompte. calculerAllocation() couvre les deux.
@@ -249,7 +251,7 @@ router.get("/quota-history", requireAuth, async (req: AuthenticatedRequest, res:
     const query = historyQuerySchema.parse(req.query);
     // L'ADMINISTRATEUR est cloisonné à ses propres revendeurs : il recevait
     // auparavant l'historique de toute la plateforme (fuite mesurée à l'écran).
-    const where = req.user?.role === "ADMIN"
+    const scope = req.user?.role === "ADMIN" || req.user?.role === "SUPER_ADMIN"
       ? await porteeHistoriqueQuotaAdmin(
           prisma,
           req.user,
@@ -257,7 +259,12 @@ router.get("/quota-history", requireAuth, async (req: AuthenticatedRequest, res:
           query.resellerId,
         )
       : porteeHistoriqueQuota(req.user?.role, req.user?.userId, query.resellerId);
-    if (!prisma) return res.json({ movements: [] });
+    if (!prisma) return res.status(503).json({ error: "errors.db.unavailable" });
+    const owners = req.user?.role === "OWNER" ? [] : await ownerIds(prisma);
+    const where = { AND: [scope, ...(req.user?.role !== "OWNER" ? [
+      { actorUserId: { not: null, notIn: owners } },
+      { resellerUserId: { notIn: owners } },
+    ] : [])] };
     const movements = await (prisma as any).resellerQuotaMovement.findMany({
       where,
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -462,15 +469,18 @@ router.get(
   requirePermission("reseller.manage"),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
-      if (!prisma) return res.json({ orphanRoleUsers: [], resellersWithoutRole: [], totals: { roleUsers: 0, resellerRecords: 0 } });
+      if (!prisma) return res.status(503).json({ error: "errors.db.unavailable" });
 
+      const [accountScope, resellerScope] = await Promise.all([
+        porteeComptes(prisma, req.user), porteeRevendeurs(prisma, req.user),
+      ]);
       const [utilisateursRole, fiches] = await Promise.all([
         prisma.user.findMany({
-          where: { role: { name: "RESELLER" } },
+          where: { AND: [{ role: { name: "RESELLER" } }, accountScope ?? {}] },
           include: { role: true, resellerInfo: true },
           orderBy: { createdAt: "desc" },
         }),
-        prisma.reseller.findMany({ include: { user: { include: { role: true } } } }),
+        prisma.reseller.findMany({ where: { AND: [resellerScope ?? {}, { user: accountScope ?? {} }] }, include: { user: { include: { role: true } } } }),
       ]);
 
       const visibles = utilisateursRole.filter((u) => canSeeUser(req, u));

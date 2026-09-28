@@ -21,6 +21,7 @@
 import { FURTIVITE_OWNER, OWNER_ROLE } from '../middleware/rbac/owner';
 import { chargerFicheRevendeur } from './reseller-access';
 import { porteeClientsRevendeur } from './reseller-state';
+import { nonOwnerAccountScope, ownerIds } from './owner-privacy';
 
 export const ROLE_ADMIN = 'ADMIN';
 export const ROLE_SUPER_ADMIN = 'SUPER_ADMIN';
@@ -64,19 +65,23 @@ export async function porteeClients(
 ): Promise<Record<string, unknown> | null> {
   const role = requerant?.role ?? null;
   if (voitTout(role)) return null;
+  if (!requerant?.userId) return AUCUN_CLIENT;
 
   if (role === ROLE_RESELLER) {
     const fiche = await chargerFicheRevendeur(prisma, requerant?.userId ?? undefined);
     return porteeClientsRevendeur(fiche) as Record<string, unknown>;
   }
 
-  if (role === ROLE_ADMIN) {
-    // Sans identité exploitable, on refuse plutôt que d'ouvrir le parc.
-    if (!requerant?.userId) return AUCUN_CLIENT;
-    return { AND: [FURTIVITE_OWNER, { managedById: requerant.userId }] };
-  }
-
-  return FURTIVITE_OWNER;
+  if (role === 'CLIENT') return { userId: requerant.userId };
+  const owners = await ownerIds(prisma);
+  return { AND: [
+    FURTIVITE_OWNER,
+    { OR: [
+      { resellerId: null },
+      { reseller: { userId: { notIn: owners }, OR: [{ createdBy: null }, { createdBy: { notIn: owners } }] } },
+    ] },
+    ...(role === ROLE_ADMIN ? [{ managedById: requerant.userId }] : []),
+  ] };
 }
 
 /**
@@ -191,7 +196,7 @@ async function porteeParAuteur(
   const proprietaires = await prisma.user.findMany({
     where: { role: { name: OWNER_ROLE } },
     select: { id: true },
-  }).catch(() => [] as Array<{ id: string }>);
+  });
   const identifiants = proprietaires.map((u: { id: string }) => u.id);
   if (identifiants.length === 0) return null;
   return { OR: [{ [champ]: null }, { [champ]: { notIn: identifiants } }] };
@@ -307,23 +312,33 @@ export async function porteeCharges(
  * aligner sur `SshAccount`, qui le portait déjà. Un compte appartient donc à
  * son auteur OU au compartiment du client qu'il sert.
  *
- * On ne restreint QUE les rôles cloisonnés : le propriétaire, le
- * super-administrateur et le support continuent de voir exactement ce qu'ils
- * voyaient, y compris les comptes historiques dont l'auteur est resté nul.
+ * Le propriétaire conserve la vue complète. Les autres rôles n'accèdent pas
+ * au parc privé OWNER ; les comptes historiques sans auteur restent visibles
+ * dans le compartiment autorisé.
  */
 export async function porteeComptesMoteur(
   prisma: any,
   requerant: Requerant | null | undefined,
 ): Promise<Record<string, unknown> | null> {
-  if (!estCloisonne(requerant?.role ?? null)) return null;
+  if (voitTout(requerant?.role)) return null;
+  const privacyRequester = { ...requerant, role: ROLE_SUPER_ADMIN };
+  const auteurs = await porteeParAuteur(prisma, privacyRequester);
+  const clients = await porteeClients(prisma, privacyRequester);
+  const prive = {
+    AND: [
+      ...(auteurs ? [auteurs] : []),
+      { OR: [{ clientId: null }, ...(clients ? [{ client: clients }] : [])] },
+    ],
+  };
+  if (!estCloisonne(requerant?.role ?? null)) return prive;
   // Sans identité exploitable, on refuse plutôt que d'ouvrir le catalogue.
   if (!requerant?.userId) return { id: { in: [] } };
   const porteeDesClients = await porteeClients(prisma, requerant);
   return {
-    OR: [
+    AND: [prive, { OR: [
       { createdBy: requerant.userId },
       ...(porteeDesClients ? [{ client: porteeDesClients }] : []),
-    ],
+    ] }],
   };
 }
 
@@ -346,26 +361,29 @@ export async function porteeComptesMoteur(
  * `porteeClients` ni par `porteeParAuteur`. Son rattachement s'exprime par ses
  * RELATIONS — le client VPN qu'il incarne, ou la fiche revendeur qu'il porte.
  *
- * Renvoie `null` pour tout rôle autre qu'ADMIN, afin de ne rien changer à ce
- * que voient le propriétaire, le super-administrateur et le support.
+ * Seul OWNER lit l'annuaire complet. Les autres rôles ne reçoivent ni son
+ * compte, ni ceux de son parc privé, même en visant directement un identifiant.
  */
 export async function porteeComptes(
-  _prisma: any,
+  prisma: any,
   requerant: Requerant | null | undefined,
 ): Promise<Record<string, unknown> | null> {
-  if ((requerant?.role ?? null) !== ROLE_ADMIN) return null;
+  if (voitTout(requerant?.role)) return null;
   // Sans identité exploitable, on refuse plutôt que d'ouvrir l'annuaire.
   if (!requerant?.userId) return { id: { in: [] } };
   const moi = requerant.userId;
+  if (requerant.role === ROLE_RESELLER || requerant.role === 'CLIENT') return { id: moi };
+  const privacy = nonOwnerAccountScope(await ownerIds(prisma));
+  if (requerant.role !== ROLE_ADMIN) return privacy;
   return {
-    OR: [
+    AND: [privacy, { OR: [
       // Son propre compte : il doit toujours se voir lui-même.
       { id: moi },
       // Les comptes des clients VPN qu'il gère.
       { vpnClients: { some: { managedById: moi } } },
       // Les comptes des revendeurs qu'il a créés.
       { resellerInfo: { createdBy: moi } },
-    ],
+    ] }],
   };
 }
 

@@ -351,17 +351,18 @@ export async function logDbActivity(
     if (prisma) {
       try {
         const u = await prisma.user.findUnique({ where: { id: userId }, include: { role: true } });
-        if (u?.role?.name === "OWNER") {
+        if (!u?.role || u.role.name === "OWNER") {
           visibleOwnerOnly = true;
         }
-      } catch {}
+      } catch {
+        visibleOwnerOnly = true;
+        console.warn("[audit] ACTOR_VISIBILITY_UNAVAILABLE: entry restricted to owner");
+      }
     } else {
       const u = inMemoryDb.users.find((usr) => usr.id === userId);
-      if (u) {
-        const r = inMemoryDb.roles.find((rol) => rol.id === u.roleId);
-        if (r?.name === "OWNER") {
-          visibleOwnerOnly = true;
-        }
+      const r = inMemoryDb.roles.find((rol) => rol.id === u?.roleId);
+      if (!r || r.name === "OWNER") {
+        visibleOwnerOnly = true;
       }
     }
   }

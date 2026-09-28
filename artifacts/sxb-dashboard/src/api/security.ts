@@ -97,6 +97,8 @@ export interface SecurityEventsQuery {
   acknowledged?: "true" | "false" | "";
   limit?: number;
   offset?: number;
+  riskLevel?: string;
+  search?: string;
 }
 
 export interface SecurityEventsResponse {
@@ -112,12 +114,56 @@ export interface SecurityAuditEntry {
   type: string;
   timestamp: string;
   user: { name: string | null; email: string | null } | null;
+  ipAddress?: string | null;
+  visibleOwnerOnly?: boolean;
 }
 
 export interface SecurityAuditResponse {
   entries: SecurityAuditEntry[];
   total: number;
   limit: number;
+  offset: number;
+}
+
+export interface SecuritySession {
+  id: string;
+  clientId: string;
+  deviceId: string;
+  activationDate: string;
+  lastSync: string;
+  authGeneration: number;
+  authExpiresAt: string | null;
+  authRevokedAt: string | null;
+  ipAddress: string | null;
+  state: "active" | "revoked" | "expired" | "legacy";
+  client: {
+    deviceKeyId: string | null;
+    enrollmentGrantExpiresAt: string | null;
+    user: { id: string; name: string };
+  };
+}
+
+export interface SecuritySessionsResponse {
+  sessions: SecuritySession[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface SecurityAuditQuery {
+  limit?: number;
+  offset?: number;
+  search?: string;
+  type?: string;
+  ownerOnly?: "true" | "false" | "";
+}
+
+function queryString(query: Record<string, string | number | undefined>) {
+  const params = new URLSearchParams();
+  Object.entries(query).forEach(([key, value]) => {
+    if (value !== undefined && value !== "") params.set(key, String(value));
+  });
+  return params.toString();
 }
 
 const unlockHeaders = (unlockToken?: string): Record<string, string> =>
@@ -183,11 +229,14 @@ export const fetchSecurityEvents = (unlockToken: string, query: SecurityEventsQu
   return apiRequest<SecurityEventsResponse>(`/security/events${suffix}`, { headers: unlockHeaders(unlockToken) });
 };
 
-export const acknowledgeSecurityEvents = (unlockToken: string, ids: string[]): Promise<{ acknowledged: number }> =>
-  apiRequest<{ acknowledged: number }>("/security/events/acknowledge", { method: "POST", body: { ids }, headers: unlockHeaders(unlockToken) });
+export const acknowledgeSecurityEvents = (unlockToken: string, ids: string[], acknowledged = true): Promise<{ acknowledged: number }> =>
+  apiRequest<{ acknowledged: number }>("/security/events/acknowledge", { method: "POST", body: { ids, acknowledged }, headers: unlockHeaders(unlockToken) });
 
-export const fetchSecurityAudit = (unlockToken: string, limit = 50): Promise<SecurityAuditResponse> =>
-  apiRequest<SecurityAuditResponse>(`/security/audit?limit=${encodeURIComponent(String(limit))}`, { headers: unlockHeaders(unlockToken) });
+export const fetchSecurityAudit = (unlockToken: string, query: SecurityAuditQuery | number = {}): Promise<SecurityAuditResponse> =>
+  apiRequest<SecurityAuditResponse>(`/security/audit?${queryString(typeof query === "number" ? { limit: query } : { ...query })}`, { headers: unlockHeaders(unlockToken) });
+
+export const fetchSecuritySessions = (token: string, query: { search?: string; state?: string; offset?: number; limit?: number }) =>
+  apiRequest<SecuritySessionsResponse>(`/security/sessions?${queryString(query)}`, { headers: unlockHeaders(token) });
 
 export interface SecurityPolicy {
   version: number;

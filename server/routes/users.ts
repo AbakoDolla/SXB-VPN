@@ -13,6 +13,10 @@ import { sessionUser } from "../services/session-user";
 
 const router = Router();
 router.use(requireAuth, requireRole(["SUPER_ADMIN", "ADMIN", "SUPPORT", "RESELLER"]));
+router.use((req: AuthenticatedRequest, res: Response, next) => {
+  if (!prisma && !isOwnerRequest(req)) return res.status(503).json({ error: "errors.db.unavailable" });
+  next();
+});
 
 // Génère un mot de passe aléatoire lisible (12 chars)
 function generatePassword(): string {

@@ -26,7 +26,7 @@ process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'synthetic-security-test-access-secret-not-production-0123456789';
 process.env.REFRESH_SECRET = 'synthetic-security-test-refresh-secret-not-production-0123456789';
 process.env.ENCRYPTION_KEY = 'synthetic-test-key'.padEnd(32, 'x');
-process.env.NODE_PATH = path.join(root, 'backend', 'node_modules');
+process.env.NODE_PATH = [path.join(root, 'backend', 'node_modules'), process.env.NODE_PATH].filter(Boolean).join(path.delimiter);
 Module._initPaths();
 const require = createRequire(path.join(root, 'backend', 'package.json'));
 const { build } = require('esbuild');
@@ -45,6 +45,7 @@ await build({
     export { default as users } from './server/routes/users';
     export { default as auth } from './server/routes/auth';
     export { prisma } from './server/database';
+    export { logDbActivity } from './server/database';
     export * as sessions from './server/services/mobile-session-security';
     export * as proof from './server/services/mobile-proof';
     export * as gate from './server/services/security-gate';
@@ -60,7 +61,7 @@ await build({
     },
   }],
 });
-const { mobile, events, provision, consoleRoutes, scopedSessions, users, auth, prisma, sessions, proof, gate } = require(output);
+const { mobile, events, provision, consoleRoutes, scopedSessions, users, auth, prisma, sessions, proof, gate, logDbActivity } = require(output);
 const app = express();
 app.use(express.json({ verify: (req, _res, bytes) => { req.rawBody = Buffer.from(bytes); } }));
 app.use('/api/mobile', mobile);
@@ -293,6 +294,66 @@ try {
   check('actual owner console unlock succeeds', unlock.status, 200);
   const policyHeaders = (method, target, value) => headers(a, method, target, value ? JSON.stringify(value) : '', owner.token,
     { 'X-SXB-Security-Unlock': unlock.data.unlockToken });
+  const superOperator = operators.find(operator => operator.roleName === 'SUPER_ADMIN');
+  const superUnlock = await request(a, '/api/security/gate/unlock', { password: 'synthetic-local-gate-password' }, superOperator.token);
+  check('SUPER_ADMIN can unlock its own scoped console', superUnlock.status, 200);
+  const investigate = (operator, target, body, method = body === undefined ? 'GET' : 'POST') => request(a, target, body, operator.token, {
+    method, headers: headers(a, method, target, body ? JSON.stringify(body) : '', operator.token,
+      { 'X-SXB-Security-Unlock': operator === owner ? unlock.data.unlockToken : superUnlock.data.unlockToken }),
+  });
+  const marker = `privacy-${suffix}`;
+  const privateTime = new Date(Date.now() + 120_000);
+  const privateEvents = [
+    { userId: owner.user.id },
+    { userId: b.client.userId },
+    { deviceId: b.id },
+    { sessionId: b.tokens.security.sessionId },
+    { userId: a.client.userId, acknowledged: true, acknowledgedById: owner.user.id },
+    { userId: a.client.userId, sessionId: live.id, metadata: JSON.stringify({ marker, role: 'OWNER' }) },
+  ].map(data => ({ id: randomUUID(), eventType: 'DEVICE_MISMATCH', severity: 'critical', createdAt: privateTime,
+    metadata: JSON.stringify({ marker }), ...data }));
+  const publicEvent = { id: randomUUID(), eventType: 'DEVICE_MISMATCH', severity: 'warning',
+    userId: a.client.userId, sessionId: live.id, riskLevel: 'HIGH', metadata: JSON.stringify({ marker }) };
+  await prisma.securityEvent.createMany({ data: [publicEvent, ...privateEvents] });
+  const privateSearch = `/api/security/events?search=${marker}`;
+  const ownerEvents = await investigate(owner, privateSearch);
+  const superEvents = await investigate(superOperator, privateSearch);
+  check('OWNER sees every synthetic privacy event in real PostgreSQL', ownerEvents.data.total, 7);
+  check('SUPER_ADMIN excludes every private attribution before count', superEvents.data.total, 1);
+  check('SUPER_ADMIN sees only the public event ID', superEvents.data.events[0].id, publicEvent.id);
+  const ownerOverview = await investigate(owner, '/api/security/overview');
+  const superOverview = await investigate(superOperator, '/api/security/overview');
+  check('private latest event timestamp is not exposed by overview', superOverview.data.overview.latestAt === privateTime.toISOString(), false);
+  check('private critical events are excluded from overview counts', ownerOverview.data.overview.critical - superOverview.data.overview.critical >= 6, true);
+  const ackPath = '/api/security/events/acknowledge';
+  const privateBefore = await prisma.securityEvent.findMany({ where: { id: { in: privateEvents.map(event => event.id) } }, orderBy: { id: 'asc' } });
+  const acknowledged = await investigate(superOperator, ackPath, { ids: [publicEvent.id, ...privateEvents.map(event => event.id)] });
+  check('real PG batch acknowledgement modifies only authorized IDs', acknowledged.data.acknowledged, 1);
+  assert.deepEqual(await prisma.securityEvent.findMany({ where: { id: { in: privateEvents.map(event => event.id) } }, orderBy: { id: 'asc' } }), privateBefore);
+  checks++;
+  check('real PG acknowledgement can be reopened', (await investigate(superOperator, ackPath, { ids: [publicEvent.id], acknowledged: false })).data.acknowledged, 1);
+  await prisma.auditLog.createMany({ data: [
+    { userId: owner.user.id, action: `${marker} legacy owner`, type: 'info', visibleOwnerOnly: false },
+    { userId: b.client.userId, action: `${marker} private client`, type: 'info', visibleOwnerOnly: false },
+    { userId: superOperator.user.id, action: `${marker} public operator`, type: 'info', visibleOwnerOnly: false },
+    { userId: null, action: `${marker} unassignable legacy entry`, type: 'info', visibleOwnerOnly: false },
+  ] });
+  await logDbActivity(owner.user.id, `${marker} real owner writer`, 'info', undefined, { visibleOwnerOnly: false });
+  check('real audit writer prevents caller override of owner privacy',
+    (await prisma.auditLog.findFirstOrThrow({ where: { action: `${marker} real owner writer` } })).visibleOwnerOnly, true);
+  const auditPage = await investigate(superOperator, `/api/security/audit?search=${marker}&limit=1`);
+  check('real PG audit scope hides owner, private clients and unassignable historical entries', auditPage.data.total, 1);
+  check('real PG audit search preserves public actions', auditPage.data.entries[0].user.email, superOperator.user.email);
+  const inventory = await investigate(superOperator, '/api/security/sessions?limit=1');
+  const nextInventory = await investigate(superOperator, '/api/security/sessions?limit=1&offset=1');
+  check('real PG session inventory excludes refresh material', JSON.stringify(inventory.data).includes('refreshJti'), false);
+  check('real PG session pagination is applied', inventory.data.sessions[0].id !== nextInventory.data.sessions[0].id, true);
+  check('real PG inventory search cannot recover a private session',
+    (await investigate(superOperator, `/api/security/sessions?search=${b.tokens.security.sessionId}`)).data.total, 0);
+  check('real PG direct account query hides owner clients',
+    (await request(a, `/api/users/${b.client.userId}`, undefined, superOperator.token)).status, 404);
+  check('SUPER_ADMIN cannot edit global security policy',
+    (await investigate(superOperator, '/api/security/policy', {}, 'PUT')).status, 403);
   const policyKey = 'mobile.security.policy.v1';
   await prisma.setting.deleteMany({ where: { key: policyKey } });
   check('policy cold-start fixture really has no setting', await prisma.setting.count({ where: { key: policyKey } }), 0);

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity, AlertTriangle, CheckCircle2, Clock3, Fingerprint, KeyRound, LockKeyhole,
-  RefreshCw, ShieldAlert, ShieldCheck, Trash2, UnlockKeyhole,
+  Download, RefreshCw, ShieldAlert, ShieldCheck, Trash2, UnlockKeyhole,
 } from "lucide-react";
+import SecurityInvestigationPanel, { exportSecurityPage } from "./SecurityInvestigationPanel";
 import { useTranslation } from "../contexts/I18nContext";
 import { resolveTranslation } from "../lib/i18n";
 import type { Language } from "../lib/language";
@@ -12,7 +13,6 @@ import {
   createSecurityPasskey,
   createSecurityPasskeyChallenge,
   deleteSecurityPasskey,
-  fetchSecurityAudit,
   fetchSecurityEvents,
   fetchSecurityGate,
   fetchSecurityOverview,
@@ -21,7 +21,6 @@ import {
   setSecurityGatePassword,
   unlockSecurityGate,
   unlockSecurityGateWithPasskey,
-  type SecurityAuditEntry,
   type SecurityChallenge,
   type SecurityEvent,
   type SecurityEventsResponse,
@@ -112,7 +111,7 @@ function parseMetadata(metadata: string | null): Array<[string, string]> {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [["metadata", metadata]];
     // Une alerte d'intégrité porte sept champs de contexte : couper à six en
     // escamotait un, et c'était la décision prise par le serveur.
-    return Object.entries(parsed).slice(0, 10).map(([key, value]) => [key, typeof value === "string" ? value : JSON.stringify(value)]);
+    return Object.entries(parsed).map(([key, value]) => [key, typeof value === "string" ? value : JSON.stringify(value)]);
   } catch {
     return [["metadata", metadata]];
   }
@@ -145,86 +144,115 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
   const [consoleError, setConsoleError] = useState<LocalError>(null);
   const [overview, setOverview] = useState<SecurityOverviewResponse | null>(null);
   const [eventsPage, setEventsPage] = useState<SecurityEventsResponse | null>(null);
-  const [audit, setAudit] = useState<SecurityAuditEntry[]>([]);
   const [filters, setFilters] = useState({
     severity: "", eventType: "", acknowledged: "" as AcknowledgedFilter,
-    userId: "", deviceId: "", sessionId: "", from: "", to: "",
+    userId: "", deviceId: "", sessionId: "", from: "", to: "", riskLevel: "", search: "",
   });
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [loadingConsole, setLoadingConsole] = useState(false);
+  const [lastLoadedAt, setLastLoadedAt] = useState<string | null>(null);
   const [policy, setPolicy] = useState<SecurityPolicy | null>(null);
   const [certificateInput, setCertificateInput] = useState("");
   const [keyGrant, setKeyGrant] = useState({ clientId: "", keyId: "", replaceExisting: false });
   const [securityNotice, setSecurityNotice] = useState("");
+  const [notificationWarning, setNotificationWarning] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [passkeyLabel, setPasskeyLabel] = useState("");
   const [secondsLeft, setSecondsLeft] = useState(0);
   const notifiedSecurityEvents = useRef(new Set<string>());
+  const systemNotificationsUnavailable = useRef(false);
   const policyDirty = useRef(false);
   const unlockAuthority = useRef<string | null>(null);
+  const consoleSequence = useRef(0);
+  const gateSequence = useRef(0);
+  const interactionEpoch = useRef(0);
+  const identity = `${currentUser.id}:${currentUserRole}`;
+  const identityAuthority = useRef(identity);
 
   const isOwner = currentUserRole === "OWNER";
   const isUnlocked = !!unlockToken && remainingSeconds(expiresAt) > 0;
 
   const loadGate = useCallback(async () => {
+    const request = ++gateSequence.current;
     setLoadingGate(true);
     setGateError(null);
     try {
-      setGate(await fetchSecurityGate());
+      const result = await fetchSecurityGate();
+      if (request === gateSequence.current) setGate(result);
     } catch (cause) {
-      setGateError({ cause, fallback: "operations.security.errors.gate" });
+      if (request === gateSequence.current) setGateError({ cause, fallback: "operations.security.errors.gate" });
     } finally {
-      setLoadingGate(false);
+      if (request === gateSequence.current) setLoadingGate(false);
     }
   }, []);
 
   const relock = useCallback(() => {
     unlockAuthority.current = null;
+    interactionEpoch.current += 1;
+    consoleSequence.current += 1;
     policyDirty.current = false;
     setUnlockToken(null);
     setExpiresAt(null);
     setPendingChallenge(null);
     setOverview(null);
     setEventsPage(null);
-    setAudit([]);
     setSelected([]);
     setPassword("");
+    setCurrentPassword("");
+    setNewPassword("");
+    setBusy(null);
     setPolicy(null);
     setCertificateInput("");
     setKeyGrant({ clientId: "", keyId: "", replaceExisting: false });
     setSecurityNotice("");
+    setNotificationWarning("");
+    systemNotificationsUnavailable.current = false;
+    notifiedSecurityEvents.current.clear();
     setActionError(null);
     setConsoleError(null);
+    setLoadingConsole(false);
+    setLastLoadedAt(null);
   }, []);
 
   const loadConsole = useCallback(async (token: string) => {
+    if (unlockAuthority.current !== token) return;
+    const request = ++consoleSequence.current;
+    setLoadingConsole(true);
     try {
-      const [nextOverview, nextEvents, nextAudit, nextPolicy] = await Promise.all([
+      const [nextOverview, nextEvents, nextPolicy] = await Promise.all([
         fetchSecurityOverview(token),
         fetchSecurityEvents(token, {
           ...filters, from: filters.from ? new Date(filters.from).toISOString() : undefined,
           to: filters.to ? new Date(filters.to).toISOString() : undefined,
           limit: DEFAULT_LIMIT, offset: eventsPage?.offset ?? 0,
         }),
-        fetchSecurityAudit(token, 50),
         fetchSecurityPolicy(token),
       ]);
-      if (unlockAuthority.current !== token) return;
+      if (unlockAuthority.current !== token || request !== consoleSequence.current) return;
       setOverview(nextOverview);
       setEventsPage(nextEvents);
-      setAudit(nextAudit.entries);
       if (!policyDirty.current) {
         setPolicy(nextPolicy);
         setCertificateInput(nextPolicy.certificates.join("\n"));
       }
-      setSelected([]);
+      setSelected(previous => previous.filter(id => nextEvents.events.some(event => event.id === id)));
+      setLastLoadedAt(new Date().toISOString());
       setConsoleError(null);
     } catch (cause) {
-      if (unlockAuthority.current === token) {
+      if (unlockAuthority.current === token && request === consoleSequence.current) {
         setConsoleError({ cause, fallback: "operations.security.errors.console" });
       }
+    } finally {
+      if (unlockAuthority.current === token && request === consoleSequence.current) setLoadingConsole(false);
     }
   }, [eventsPage?.offset, filters]);
 
-  useEffect(() => { void loadGate(); }, [loadGate]);
+  useEffect(() => {
+    identityAuthority.current = identity;
+    relock();
+    void loadGate();
+    return () => { unlockAuthority.current = null; interactionEpoch.current += 1; consoleSequence.current += 1; gateSequence.current += 1; };
+  }, [identity, loadGate, relock]);
 
   useEffect(() => {
     if (!unlockToken || !expiresAt) return;
@@ -245,6 +273,8 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
 
   const handleConfigure = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (busy || !isOwner) return;
+    const operation = interactionEpoch.current;
     if (newPassword.length < 12) {
       setActionError({ fallback: "operations.security.errors.passwordLength" });
       return;
@@ -253,24 +283,35 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
     setActionError(null);
     try {
       await setSecurityGatePassword({ currentPassword: gate?.configured ? currentPassword : undefined, newPassword });
+      if (operation !== interactionEpoch.current) return;
+      relock();
       setCurrentPassword("");
       setNewPassword("");
       await loadGate();
     } catch (cause) {
-      setActionError({ cause, fallback: "operations.security.errors.configure" });
+      if (operation === interactionEpoch.current) setActionError({ cause, fallback: "operations.security.errors.configure" });
     } finally {
-      setBusy(null);
+      if (operation === interactionEpoch.current) setBusy(null);
     }
   };
 
-  const finishUnlock = useCallback(async (result: { unlockToken: string; expiresAt: string }) => {
+  const finishUnlock = useCallback(async (result: { unlockToken: string; expiresAt: string }, operation: number) => {
+    if (operation !== interactionEpoch.current) return;
     unlockAuthority.current = result.unlockToken;
     setUnlockToken(result.unlockToken);
     setExpiresAt(result.expiresAt);
     setPendingChallenge(null);
     setPassword("");
     if ("Notification" in window && Notification.permission === "default") {
-      void Notification.requestPermission();
+      try {
+        void Notification.requestPermission().catch(() => {
+          console.warn("[security] NOTIFICATION_PERMISSION_UNAVAILABLE");
+          if (operation === interactionEpoch.current) setNotificationWarning("operations.security.notifications.browserUnavailable");
+        });
+      } catch {
+        console.warn("[security] NOTIFICATION_PERMISSION_UNAVAILABLE");
+        if (operation === interactionEpoch.current) setNotificationWarning("operations.security.notifications.browserUnavailable");
+      }
     }
     await loadGate();
     await loadConsole(result.unlockToken);
@@ -278,64 +319,81 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
 
   useEffect(() => {
     if (!isUnlocked || !eventsPage?.events || !("Notification" in window)) return;
+    if (systemNotificationsUnavailable.current) return;
     if (Notification.permission !== "granted") return;
     for (const event of eventsPage.events) {
       if (event.acknowledged || (event.severity !== "critical" && event.severity !== "warning")) continue;
       if (notifiedSecurityEvents.current.has(event.id)) continue;
-      notifiedSecurityEvents.current.add(event.id);
-      new Notification(
-        event.severity === "critical" ? t("operations.security.notifications.critical") : t("operations.security.notifications.suspicious"),
-        { body: `${vocabulary.eventType(event.eventType)} — ${t("operations.security.notifications.openCenter")}` },
-      );
+      try {
+        new Notification(
+          event.severity === "critical" ? t("operations.security.notifications.critical") : t("operations.security.notifications.suspicious"),
+          { body: `${vocabulary.eventType(event.eventType)} — ${t("operations.security.notifications.openCenter")}` },
+        );
+        notifiedSecurityEvents.current.add(event.id);
+      } catch {
+        // Android exposes Notification but can reject its desktop constructor.
+        console.warn("[security] SYSTEM_NOTIFICATION_UNAVAILABLE");
+        systemNotificationsUnavailable.current = true;
+        setNotificationWarning("operations.security.notifications.browserUnavailable");
+        break;
+      }
     }
   }, [eventsPage, isUnlocked, t, vocabulary]);
 
   useEffect(() => {
-    if (!unlockToken || !isUnlocked) return;
+    if (!unlockToken || !isUnlocked || !autoRefresh) return;
     const timer = window.setInterval(() => {
       void loadConsole(unlockToken);
     }, 30_000);
     return () => window.clearInterval(timer);
-  }, [isUnlocked, loadConsole, unlockToken]);
+  }, [autoRefresh, isUnlocked, loadConsole, unlockToken]);
 
   const handlePasswordUnlock = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (busy) return;
+    const operation = interactionEpoch.current;
     setBusy("unlock");
     setActionError(null);
     try {
       const result = await unlockSecurityGate(password);
+      if (operation !== interactionEpoch.current) return;
       if (result.step === "passkey") {
         setPendingChallenge(result);
       } else {
-        await finishUnlock(result);
+        await finishUnlock(result, operation);
       }
     } catch (cause) {
-      setActionError({ cause, fallback: "operations.security.errors.unlock" });
+      if (operation === interactionEpoch.current) setActionError({ cause, fallback: "operations.security.errors.unlock" });
     } finally {
-      setBusy(null);
+      if (operation === interactionEpoch.current) setBusy(null);
     }
   };
 
   const handlePasskeyRecovery = async () => {
+    if (busy) return;
+    const operation = interactionEpoch.current;
     // Le geste est irréversible et retire toutes les empreintes : il se confirme.
     if (!window.confirm(t("operations.security.passkeyRecoveryConfirm"))) return;
     setBusy("recovery");
     setActionError(null);
     try {
       await resetSecurityPasskeys(password);
+      if (operation !== interactionEpoch.current) return;
       // La porte revient au mot de passe seul : on relit son état, et le
       // propriétaire réenrôle ensuite l'empreinte de son choix.
       setPendingChallenge(null);
       setPassword("");
       await loadGate();
     } catch (cause) {
-      setActionError({ cause, fallback: "operations.security.errors.passkeyRecovery" });
+      if (operation === interactionEpoch.current) setActionError({ cause, fallback: "operations.security.errors.passkeyRecovery" });
     } finally {
-      setBusy(null);
+      if (operation === interactionEpoch.current) setBusy(null);
     }
   };
 
   const authenticatePasskey = async (challenge: SecurityChallenge) => {
+    if (busy) return;
+    const operation = interactionEpoch.current;
     if (!webAuthnAvailable()) {
       setActionError({ fallback: "operations.security.errors.webauthnUnavailable" });
       return;
@@ -359,6 +417,7 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
           })),
         },
       });
+      if (operation !== interactionEpoch.current) return;
       if (!(credential instanceof PublicKeyCredential) || !(credential.response instanceof AuthenticatorAssertionResponse)) {
         setActionError({ fallback: "operations.security.errors.webauthnInvalid" });
         return;
@@ -370,16 +429,17 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
         authenticatorData: encodeBase64Url(credential.response.authenticatorData),
         signature: encodeBase64Url(credential.response.signature),
       });
-      await finishUnlock(result);
+      await finishUnlock(result, operation);
     } catch (cause) {
-      setActionError({ cause, fallback: "operations.security.errors.passkey" });
+      if (operation === interactionEpoch.current) setActionError({ cause, fallback: "operations.security.errors.passkey" });
     } finally {
-      setBusy(null);
+      if (operation === interactionEpoch.current) setBusy(null);
     }
   };
 
   const registerPasskey = async () => {
-    if (!unlockToken) return;
+    if (!unlockToken || busy) return;
+    const operation = interactionEpoch.current;
     if (!webAuthnAvailable()) {
       setActionError({ fallback: "operations.security.errors.webauthnUnavailable" });
       return;
@@ -388,6 +448,7 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
     setActionError(null);
     try {
       const challenge = await createSecurityPasskeyChallenge(unlockToken);
+      if (operation !== interactionEpoch.current) return;
       const userId = new TextEncoder().encode(currentUser.id);
       const credential = await navigator.credentials.create({
         publicKey: {
@@ -407,6 +468,7 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
           timeout: challenge.timeoutMs,
         },
       });
+      if (operation !== interactionEpoch.current) return;
       if (!(credential instanceof PublicKeyCredential) || !(credential.response instanceof AuthenticatorAttestationResponse)) {
         setActionError({ fallback: "operations.security.errors.webauthnInvalid" });
         return;
@@ -427,40 +489,48 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
         signCount: typeof signCount === "number" ? signCount : undefined,
         label: passkeyLabel.trim() || undefined,
       });
+      if (operation !== interactionEpoch.current) return;
       setPasskeyLabel("");
       await loadGate();
     } catch (cause) {
-      setActionError({ cause, fallback: "operations.security.errors.register" });
+      if (operation === interactionEpoch.current) setActionError({ cause, fallback: "operations.security.errors.register" });
     } finally {
-      setBusy(null);
+      if (operation === interactionEpoch.current) setBusy(null);
     }
   };
 
   const removePasskey = async (id: string) => {
-    if (!unlockToken) return;
+    if (!unlockToken || busy || !window.confirm(t("operations.security.removePasskeyConfirm"))) return;
+    const operation = interactionEpoch.current;
     setBusy(id);
     setActionError(null);
     try {
       await deleteSecurityPasskey(unlockToken, id);
+      if (operation !== interactionEpoch.current) return;
       await loadGate();
     } catch (cause) {
-      setActionError({ cause, fallback: "operations.security.errors.removePasskey" });
+      if (operation === interactionEpoch.current) setActionError({ cause, fallback: "operations.security.errors.removePasskey" });
     } finally {
-      setBusy(null);
+      if (operation === interactionEpoch.current) setBusy(null);
     }
   };
 
-  const acknowledgeSelected = async () => {
-    if (!unlockToken || selected.length === 0) return;
+  const acknowledgeSelected = async (acknowledged = true) => {
+    if (!unlockToken || busy || selected.length === 0) return;
+    const operation = interactionEpoch.current;
+    if (!window.confirm(t(acknowledged ? "operations.security.ackConfirm" : "operations.security.reopenConfirm", { count: selected.length }))) return;
     setBusy("ack");
     setActionError(null);
     try {
-      await acknowledgeSecurityEvents(unlockToken, selected);
+      const result = await acknowledgeSecurityEvents(unlockToken, selected, acknowledged);
+      if (operation !== interactionEpoch.current || unlockAuthority.current !== unlockToken) return;
+      setSelected([]);
+      setSecurityNotice(t("operations.security.eventsUpdated", { count: result.acknowledged }));
       await loadConsole(unlockToken);
     } catch (cause) {
-      setActionError({ cause, fallback: "operations.security.errors.ack" });
+      if (operation === interactionEpoch.current) setActionError({ cause, fallback: "operations.security.errors.ack" });
     } finally {
-      setBusy(null);
+      if (operation === interactionEpoch.current) setBusy(null);
     }
   };
 
@@ -473,7 +543,7 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
     return t("operations.security.remainingValue", { minutes: formatNumber(minutes), seconds: formatNumber(seconds) });
   }, [formatNumber, secondsLeft, t]);
 
-  if (loadingGate) {
+  if (loadingGate || identityAuthority.current !== identity) {
     return (
       <div className="flex min-h-[55vh] items-center justify-center">
         <div className="flex flex-col items-center gap-3 text-sm text-gray-500">
@@ -602,6 +672,19 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
         </section>
       ) : (
         <>
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#263149] bg-[#0a0d14] p-4">
+            <p className="max-w-3xl text-sm leading-6 text-slate-300">{t(isOwner ? "operations.security.ownerPrivacy" : "operations.security.scopedPrivacy")}</p>
+            <div className="flex flex-wrap items-center gap-3 text-sm text-slate-300">
+              <label className="flex items-center gap-2"><input type="checkbox" checked={autoRefresh} onChange={event => setAutoRefresh(event.target.checked)} />{t("operations.security.autoRefresh")}</label>
+              <button type="button" onClick={relock} className="rounded-xl border border-[#263149] px-3 py-2 hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400">{t("operations.security.lockNow")}</button>
+            </div>
+            {lastLoadedAt && <p className="w-full text-xs text-slate-400">{t("operations.security.lastLoaded", { value: formatDate(lastLoadedAt, { timeStyle: "medium" }) })}</p>}
+            {notificationWarning && <p role="status" className="w-full text-sm text-slate-300">{t(notificationWarning)}</p>}
+          </div>
+          <nav aria-label={t("operations.security.investigationTitle")} className="flex flex-wrap gap-2 text-sm text-slate-200">
+            {[["security-events", "eventsTitle"], ["security-investigation", "investigationTitle"], ["security-policy", "policyNavigation"], ["security-passkeys", "passkeysTitle"]].map(([id, label]) =>
+              <a key={id} href={`#${id}`} className="rounded-xl border border-[#263149] px-3 py-2 hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400">{t(`operations.security.${label}`)}</a>)}
+          </nav>
           <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {[
               ["critical", overview?.overview.critical ?? 0, "operations.security.metrics.critical"],
@@ -614,81 +697,109 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
                   <span>{t(String(label))}</span>
                   <Activity className={`h-4 w-4 ${key === "critical" ? "text-rose-300" : key === "warning" ? "text-amber-300" : "text-cyan-300"}`} />
                 </div>
-                <div className={`mt-3 text-3xl font-bold ${key === "critical" ? "text-rose-200" : "text-white"}`}>{formatNumber(Number(value))}</div>
+                <div className={`mt-3 text-3xl font-bold ${key === "critical" ? "text-rose-200" : "text-white"}`}>{overview ? formatNumber(Number(value)) : "—"}</div>
               </div>
             ))}
           </section>
 
-          {policy && <section className="rounded-xl border border-[#263149] bg-[#0a0d14] p-4">
+          <SecurityInvestigationPanel key={unlockToken} token={unlockToken!} owner={isOwner}
+            onInspect={sessionId => {
+              setFilters({ severity: "", eventType: "", acknowledged: "", userId: "", deviceId: "", sessionId, from: "", to: "", riskLevel: "", search: "" });
+              setEventsPage(null);
+              document.getElementById("security-events")?.scrollIntoView({ block: "start" });
+            }}
+            onAuthorize={clientId => {
+              setKeyGrant({ clientId, keyId: "", replaceExisting: false });
+              document.getElementById("security-key-grant")?.scrollIntoView({ block: "start" });
+            }} />
+
+          {policy && <section id="security-policy" className="rounded-xl border border-[#263149] bg-[#0a0d14] p-4">
             <h2 className="text-lg font-semibold text-white">{t("operations.security.policyTitle", { version: policy.version })}</h2>
             <p className="mt-1 text-sm text-slate-300">{t("operations.security.policySafety")}</p>
             <form className="mt-4 grid grid-cols-2 items-end gap-4 lg:grid-cols-[7rem_7rem_minmax(0,1fr)_auto]" onSubmit={async event => {
               event.preventDefault();
-              if (!unlockToken || busy) return;
+              if (!unlockToken || busy || !isOwner) return;
+              const operation = interactionEpoch.current;
               setBusy("policy"); setSecurityNotice(""); setActionError(null);
               try {
                 const saved = await updateSecurityPolicy(unlockToken, {
                   ...policy, certificates: certificateInput.split(/\s+/).filter(Boolean), version: policy.version + 1,
                 });
-                if (unlockAuthority.current !== unlockToken) return;
+                if (operation !== interactionEpoch.current || unlockAuthority.current !== unlockToken) return;
                 policyDirty.current = false;
                 setPolicy(saved);
                 setCertificateInput(saved.certificates.join("\n"));
                 setSecurityNotice(t("operations.security.policySaved"));
-              } catch (cause) { setActionError({ cause, fallback: "operations.security.policyFailed" }); }
-              finally { setBusy(null); }
+              } catch (cause) { if (operation === interactionEpoch.current) setActionError({ cause, fallback: "operations.security.policyFailed" }); }
+              finally { if (operation === interactionEpoch.current) setBusy(null); }
             }}>
               {(["medium", "high"] as const).map(level => <label key={level} className="grid gap-1 text-sm text-slate-200">
                 {t(`operations.security.threshold_${level}`)}
-                <input type="number" required disabled={busy !== null} min={level === "medium" ? 11 : 65} max={level === "medium" ? 64 : 89}
+                <input type="number" required disabled={!isOwner || busy !== null} min={level === "medium" ? 11 : 65} max={level === "medium" ? 64 : 89}
                   value={policy[level]} onChange={event => { policyDirty.current = true; setPolicy({ ...policy, [level]: Number(event.target.value) }); }}
                   className="w-full rounded-xl border border-[#263149] bg-[#07090e] p-2 text-white" />
               </label>)}
               <label className="col-span-2 grid min-w-0 gap-1 text-sm text-slate-200 lg:col-span-1">
                 {t("operations.security.certificates")}
-                <textarea required disabled={busy !== null} rows={2} value={certificateInput}
+                <textarea required disabled={!isOwner || busy !== null} rows={2} value={certificateInput}
                   onChange={event => { policyDirty.current = true; setCertificateInput(event.target.value); }}
                   className="min-w-0 rounded-xl border border-[#263149] bg-[#07090e] p-2 text-xs text-white" />
               </label>
               <div className="col-span-2 flex flex-wrap gap-2 lg:col-span-1">
-              <button disabled={busy !== null} className="rounded-xl border border-[#263149] px-3 py-2 text-sm text-white disabled:opacity-50">
+              <button disabled={!isOwner || busy !== null} className="rounded-xl border border-[#263149] px-3 py-2 text-sm text-white disabled:opacity-50">
                 {t("operations.security.savePolicy")}
               </button>
               <button type="button" disabled={busy !== null}
                 className="rounded-xl border border-[#263149] px-3 py-2 text-sm text-slate-200 disabled:opacity-50"
                 onClick={async () => {
                   if (!unlockToken || busy || (policyDirty.current && !window.confirm(t("operations.security.reloadPolicyConfirm")))) return;
+                  const operation = interactionEpoch.current;
                   setBusy("policy-load"); setActionError(null);
                   try {
                     const fresh = await fetchSecurityPolicy(unlockToken);
-                    if (unlockAuthority.current !== unlockToken) return;
+                    if (operation !== interactionEpoch.current || unlockAuthority.current !== unlockToken) return;
                     policyDirty.current = false;
                     setPolicy(fresh); setCertificateInput(fresh.certificates.join("\n"));
-                  } catch (cause) { setActionError({ cause, fallback: "operations.security.policyFailed" }); }
-                  finally { setBusy(null); }
+                  } catch (cause) { if (operation === interactionEpoch.current) setActionError({ cause, fallback: "operations.security.policyFailed" }); }
+                  finally { if (operation === interactionEpoch.current) setBusy(null); }
                 }}>
                 {t("operations.security.reloadPolicy")}
               </button>
               </div>
+              <fieldset className="col-span-full grid gap-3 border-t border-[#263149] pt-4 sm:grid-cols-3">
+                <legend className="px-1 text-sm font-semibold text-slate-200">{t("operations.security.signalWeights")}</legend>
+                {Object.entries(policy.weights).map(([signal, weight]) => <label key={signal} className="grid gap-1 text-sm text-slate-300">
+                  {vocabulary.signalList(signal)}
+                  <input type="number" min={0} max={89} required disabled={!isOwner || busy !== null} value={weight}
+                    onChange={event => { policyDirty.current = true; setPolicy({ ...policy, weights: { ...policy.weights, [signal]: Number(event.target.value) } }); }}
+                    className="w-full rounded-xl border border-[#263149] bg-[#07090e] p-2 text-white disabled:opacity-60" />
+                </label>)}
+              </fieldset>
             </form>
-            <form className="mt-5 space-y-3 border-t border-[#263149] pt-4" onSubmit={async event => {
+            {!isOwner && <p className="mt-3 text-sm text-slate-300">{t("operations.security.policyReadOnly")}</p>}
+            <form id="security-key-grant" className="mt-5 space-y-3 border-t border-[#263149] pt-4" onSubmit={async event => {
               event.preventDefault();
               if (!unlockToken || busy) return;
+              const operation = interactionEpoch.current;
               if (keyGrant.replaceExisting && !window.confirm(t("operations.security.keyReplaceConfirm"))) return;
               setBusy("keyGrant"); setSecurityNotice(""); setActionError(null);
               try {
                 await authorizeDeviceKey(unlockToken, keyGrant.clientId.trim(), keyGrant.keyId.trim().toLowerCase(), keyGrant.replaceExisting);
+                if (operation !== interactionEpoch.current || unlockAuthority.current !== unlockToken) return;
                 setSecurityNotice(t("operations.security.keyGrantSaved"));
-              } catch (cause) { setActionError({ cause, fallback: "operations.security.keyGrantFailed" }); }
-              finally { setBusy(null); }
+              } catch (cause) { if (operation === interactionEpoch.current) setActionError({ cause, fallback: "operations.security.keyGrantFailed" }); }
+              finally { if (operation === interactionEpoch.current) setBusy(null); }
             }}>
               <h3 className="text-sm font-semibold text-white">{t("operations.security.keyGrantTitle")}</h3>
               <p className="text-xs text-slate-300">{t("operations.security.keyGrantHint")}</p>
               <div className="grid gap-3 md:grid-cols-2">
                 <label className="grid gap-1 text-sm text-slate-200">{t("operations.security.keyGrantClient")}
                   <input required maxLength={200} value={keyGrant.clientId}
+                    aria-describedby="security-key-client-help"
                     onChange={event => setKeyGrant({ ...keyGrant, clientId: event.target.value })}
                     className="min-w-0 rounded-xl border border-[#263149] bg-[#07090e] p-2" />
+                  <span id="security-key-client-help" className="text-xs leading-5 text-slate-300">{t("operations.security.keyGrantClientHelp")}</span>
+                  <a href="#security-investigation" className="w-fit text-xs text-cyan-200 underline underline-offset-4">{t("operations.security.keyGrantFindClient")}</a>
                 </label>
                 <label className="grid gap-1 text-sm text-slate-200">{t("operations.security.keyFingerprint")}
                   <input required pattern="[a-fA-F0-9]{64}" value={keyGrant.keyId}
@@ -707,54 +818,64 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
             </form>
             {securityNotice && <p role="status" className="mt-2 text-sm text-slate-200">{securityNotice}</p>}
           </section>}
-          <section className="grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.65fr)]">
-            <div className="overflow-hidden rounded-[1.5rem] border border-[#263149] bg-[#0a0d14]">
+          <section className="grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.65fr)]">
+            <div id="security-events" className="min-w-0 overflow-hidden rounded-[1.5rem] border border-[#263149] bg-[#0a0d14]" aria-busy={loadingConsole}>
               <div className="border-b border-[#1a1f2e] p-4">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
                   <div>
                     <h2 className="text-lg font-semibold text-white">{t("operations.security.eventsTitle")}</h2>
                     <p className="mt-1 text-xs text-slate-500">{t("operations.security.eventsHint")}</p>
                   </div>
-                  <div className="flex flex-wrap gap-2">
-                    {(["userId", "deviceId", "sessionId", "from", "to"] as const).map(field => <label key={field} className="grid gap-1 text-xs text-slate-300">
+                  <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+                    {(["search", "userId", "deviceId", "sessionId", "from", "to"] as const).map(field => <label key={field} className="grid min-w-0 gap-1 text-xs text-slate-300">
                       {t(`operations.security.filter_${field}`)}
                       <input type={field === "from" || field === "to" ? "datetime-local" : "text"} value={filters[field]}
                         maxLength={255} onChange={event => { setFilters(prev => ({ ...prev, [field]: event.target.value })); setEventsPage(null); }}
                         className="min-w-0 rounded-xl border border-[#263149] bg-[#07090e] px-3 py-2 text-xs text-slate-200" />
                     </label>)}
-                    <select aria-label={t("operations.security.filterSeverity")} value={filters.severity} onChange={event => setFilters(prev => ({ ...prev, severity: event.target.value }))} className="rounded-xl border border-[#263149] bg-[#07090e] px-3 py-2 text-xs text-slate-200">
+                    <select aria-label={t("operations.security.filterSeverity")} value={filters.severity} onChange={event => { setFilters(prev => ({ ...prev, severity: event.target.value })); setEventsPage(null); }} className="min-w-0 rounded-xl border border-[#263149] bg-[#07090e] px-3 py-2 text-xs text-slate-200">
                       <option value="">{t("operations.security.filterSeverity")}</option>
                       {(overview?.severities ?? []).map(severity => <option key={severity} value={severity}>{vocabulary.severity(severity)}</option>)}
                     </select>
-                    <select aria-label={t("operations.security.filterType")} value={filters.eventType} onChange={event => setFilters(prev => ({ ...prev, eventType: event.target.value }))} className="rounded-xl border border-[#263149] bg-[#07090e] px-3 py-2 text-xs text-slate-200">
+                    <select aria-label={t("operations.security.filterType")} value={filters.eventType} onChange={event => { setFilters(prev => ({ ...prev, eventType: event.target.value })); setEventsPage(null); }} className="min-w-0 rounded-xl border border-[#263149] bg-[#07090e] px-3 py-2 text-xs text-slate-200">
                       <option value="">{t("operations.security.filterType")}</option>
                       {(overview?.eventTypes ?? []).map(type => <option key={type} value={type}>{vocabulary.eventType(type)}</option>)}
                     </select>
-                    <select aria-label={t("operations.security.filterAcknowledged")} value={filters.acknowledged} onChange={event => setFilters(prev => ({ ...prev, acknowledged: event.target.value as AcknowledgedFilter }))} className="rounded-xl border border-[#263149] bg-[#07090e] px-3 py-2 text-xs text-slate-200">
+                    <select aria-label={t("operations.security.filterAcknowledged")} value={filters.acknowledged} onChange={event => { setFilters(prev => ({ ...prev, acknowledged: event.target.value as AcknowledgedFilter })); setEventsPage(null); }} className="min-w-0 rounded-xl border border-[#263149] bg-[#07090e] px-3 py-2 text-xs text-slate-200">
                       <option value="">{t("operations.security.filterAcknowledged")}</option>
                       <option value="false">{t("operations.security.unacknowledged")}</option>
                       <option value="true">{t("operations.security.acknowledged")}</option>
                     </select>
+                    <select aria-label={t("operations.security.riskFilter")} value={filters.riskLevel}
+                      onChange={event => { setFilters(prev => ({ ...prev, riskLevel: event.target.value })); setEventsPage(null); }}
+                      className="min-w-0 rounded-xl border border-[#263149] bg-[#07090e] px-3 py-2 text-xs text-slate-200">
+                      <option value="">{t("operations.security.riskFilter")}</option>
+                      {["NORMAL", "LOW", "MEDIUM", "HIGH", "CRITICAL"].map(level => <option key={level} value={level}>{t(`operations.security.risk_${level}`)}</option>)}
+                    </select>
                   </div>
                 </div>
                 <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-                  <button type="button" onClick={() => void acknowledgeSelected()} disabled={!selected.length || busy === "ack"} className="inline-flex items-center gap-2 rounded-xl border border-emerald-400/25 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-50">
+                  <button type="button" onClick={() => void acknowledgeSelected()} disabled={!selected.length || busy !== null || loadingConsole} className="inline-flex items-center gap-2 rounded-xl border border-emerald-400/25 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-50">
                     {busy === "ack" ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
                     {t("operations.security.ackSelected", { count: formatNumber(selected.length) })}
                   </button>
-                  <button type="button" onClick={() => unlockToken && void loadConsole(unlockToken)} className="inline-flex items-center gap-2 rounded-xl border border-[#263149] px-3 py-2 text-xs font-semibold text-slate-300 hover:border-cyan-400/40">
+                  <button type="button" disabled={!selected.length || busy !== null || loadingConsole} onClick={() => void acknowledgeSelected(false)} className="rounded-xl border border-[#263149] px-3 py-2 text-xs text-slate-200 disabled:opacity-50">{t("operations.security.reopen")}</button>
+                  <button type="button" disabled={!eventsPage?.events.length || loadingConsole} onClick={() => setSelected(eventsPage?.events.map(event => event.id) ?? [])} className="rounded-xl border border-[#263149] px-3 py-2 text-xs text-slate-200 disabled:opacity-50">{t("operations.security.selectPage")}</button>
+                  <button type="button" disabled={!eventsPage || loadingConsole || !!consoleError} onClick={() => exportSecurityPage("events", { ...eventsPage, filters, exportedAt: new Date().toISOString() })} className="inline-flex items-center gap-2 rounded-xl border border-[#263149] px-3 py-2 text-xs text-slate-200 disabled:opacity-50"><Download className="h-3.5 w-3.5" />{t("operations.security.exportPage")}</button>
+                  <button type="button" onClick={() => { setFilters({ severity: "", eventType: "", acknowledged: "", userId: "", deviceId: "", sessionId: "", from: "", to: "", riskLevel: "", search: "" }); setEventsPage(null); setSelected([]); }} className="rounded-xl border border-[#263149] px-3 py-2 text-xs text-slate-200">{t("operations.security.resetFilters")}</button>
+                  <button type="button" disabled={loadingConsole} onClick={() => unlockToken && void loadConsole(unlockToken)} className="inline-flex items-center gap-2 rounded-xl border border-[#263149] px-3 py-2 text-xs font-semibold text-slate-300 hover:border-cyan-400/40 disabled:opacity-50">
                     <RefreshCw className="h-3.5 w-3.5" />
                     {t("operations.common.refresh")}
                   </button>
                 </div>
               </div>
               {!eventsPage?.events.length ? (
-                <div className="p-10 text-center text-sm text-slate-500">{t("operations.security.eventsEmpty")}</div>
+                <div className="p-10 text-center text-sm text-slate-300">{t(loadingConsole ? "operations.security.loading" : consoleError ? "operations.security.errors.console" : "operations.security.eventsEmpty")}</div>
               ) : (
                 <div className="divide-y divide-[#1a1f2e]">
                   {eventsPage.events.map(event => (
                     <article key={event.id} className="grid gap-3 p-4 hover:bg-white/[0.02] md:grid-cols-[auto_minmax(0,1fr)_auto]">
-                      <input type="checkbox" aria-label={t("operations.security.selectEvent", { id: event.id })} checked={selected.includes(event.id)} disabled={event.acknowledged} onChange={change => setSelected(prev => change.target.checked ? [...prev, event.id] : prev.filter(id => id !== event.id))} className="mt-1 h-4 w-4 rounded border-[#263149] bg-[#07090e]" />
+                      <input type="checkbox" aria-label={t("operations.security.selectEvent", { id: event.id })} checked={selected.includes(event.id)} onChange={change => setSelected(prev => change.target.checked ? [...prev, event.id] : prev.filter(id => id !== event.id))} className="mt-1 h-4 w-4 rounded border-[#263149] bg-[#07090e]" />
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
                           <span title={vocabulary.severityExplain(event.severity)} className={`rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${severityStyle(event.severity)}`}>{vocabulary.severity(event.severity)}</span>
@@ -764,26 +885,31 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
                         {vocabulary.eventExplain(event.eventType) && (
                           <p className="mt-1.5 text-xs leading-relaxed text-slate-400">{vocabulary.eventExplain(event.eventType)}</p>
                         )}
-                        <div className="mt-2 grid gap-1 text-xs text-slate-500 sm:grid-cols-2">
+                        <div className="mt-2 grid gap-1 break-all text-xs text-slate-300 sm:grid-cols-2">
                           <span>{t("operations.security.eventUser", { value: event.userId || "—" })}</span>
                           <span>{t("operations.security.eventDevice", { value: event.deviceId || "—" })}</span>
                           <span>{t("operations.security.eventVersion", { value: event.appVersion || "—" })}</span>
                           {event.sessionId && <span className="break-all">{t("operations.security.eventSession", { value: event.sessionId, generation: event.sessionGeneration ?? 0 })}</span>}
                           {event.riskLevel && <span>{t("operations.security.eventRisk", { value: event.riskLevel, version: event.policyVersion ?? 0 })}</span>}
                           <span>{t("operations.security.eventIp", { value: event.ipHash || "—" })}</span>
+                          <span>{t("operations.security.eventIdentifier", { value: event.id })}</span>
+                          {event.connectionId && <span>{t("operations.security.eventConnection", { value: event.connectionId })}</span>}
+                          {event.acknowledgedAt && <span>{t("operations.security.acknowledgedAt", { value: formatDate(event.acknowledgedAt, { dateStyle: "short", timeStyle: "medium" }) })}</span>}
                         </div>
                         {event.actionTaken && <p className="mt-2 text-xs text-slate-300">{vocabulary.action(event.actionTaken)}</p>}
                         {event.sessionId && event.sessionGeneration != null && <button type="button"
-                          disabled={busy === event.id}
+                          disabled={busy !== null}
                           onClick={async () => {
-                            if (!unlockToken || !window.confirm(t("operations.security.revokeSessionConfirm"))) return;
-                            setBusy(event.id);
+                            if (!unlockToken || busy || !window.confirm(t("operations.security.revokeSessionConfirm"))) return;
+                            const operation = interactionEpoch.current;
+                            setBusy(event.id); setActionError(null); setSecurityNotice("");
                             try {
                               const result = await revokeSecuritySession(unlockToken, event.sessionId!, event.sessionGeneration!);
+                              if (operation !== interactionEpoch.current || unlockAuthority.current !== unlockToken) return;
                               setSecurityNotice(t(result.revoked ? "operations.security.sessionRevoked" : "operations.security.staleSession"));
                               await loadConsole(unlockToken);
-                            } catch (cause) { setActionError({ cause, fallback: "operations.security.revokeFailed" }); }
-                            finally { setBusy(null); }
+                            } catch (cause) { if (operation === interactionEpoch.current) setActionError({ cause, fallback: "operations.security.revokeFailed" }); }
+                            finally { if (operation === interactionEpoch.current) setBusy(null); }
                           }}
                           className="mt-2 rounded-xl border border-amber-400/40 px-3 py-2 text-xs text-amber-200 disabled:opacity-50">
                           {t("operations.security.revokeSession")}
@@ -795,7 +921,7 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
                               return (
                                 <div key={key} className="min-w-0">
                                   <dt className="text-slate-500">{vocabulary.metaKey(key)}</dt>
-                                  <dd className="truncate text-slate-300" title={lisible}>{lisible}</dd>
+                                  <dd className="whitespace-pre-wrap break-words text-slate-300 [overflow-wrap:anywhere]">{lisible}</dd>
                                 </div>
                               );
                             })}
@@ -810,14 +936,14 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
               <div className="flex items-center justify-between border-t border-[#1a1f2e] p-4 text-xs text-slate-500">
                 <span>{t("operations.security.eventCount", { total: formatNumber(eventsPage?.total ?? 0) })}</span>
                 <div className="flex gap-2">
-                  <button type="button" disabled={!canPrevious} onClick={() => unlockToken && fetchSecurityEvents(unlockToken, { ...filters, limit: DEFAULT_LIMIT, offset: Math.max(0, pageOffset - DEFAULT_LIMIT) }).then(setEventsPage)} className="rounded-lg border border-[#263149] px-3 py-1.5 text-slate-300 disabled:opacity-40">{t("operations.security.previous")}</button>
-                  <button type="button" disabled={!canNext} onClick={() => unlockToken && fetchSecurityEvents(unlockToken, { ...filters, limit: DEFAULT_LIMIT, offset: pageOffset + DEFAULT_LIMIT }).then(setEventsPage)} className="rounded-lg border border-[#263149] px-3 py-1.5 text-slate-300 disabled:opacity-40">{t("operations.security.next")}</button>
+                  <button type="button" disabled={!canPrevious || loadingConsole} onClick={() => setEventsPage(page => page && { ...page, offset: Math.max(0, pageOffset - DEFAULT_LIMIT) })} className="rounded-lg border border-[#263149] px-3 py-1.5 text-slate-300 disabled:opacity-40">{t("operations.security.previous")}</button>
+                  <button type="button" disabled={!canNext || loadingConsole} onClick={() => setEventsPage(page => page && { ...page, offset: pageOffset + DEFAULT_LIMIT })} className="rounded-lg border border-[#263149] px-3 py-1.5 text-slate-300 disabled:opacity-40">{t("operations.security.next")}</button>
                 </div>
               </div>
             </div>
 
             <aside className="space-y-5">
-              <section className="rounded-[1.5rem] border border-cyan-400/20 bg-[#0d1422] p-5">
+              <section id="security-passkeys" className="rounded-[1.5rem] border border-cyan-400/20 bg-[#0d1422] p-5">
                 <div className="flex items-start gap-3">
                   <Fingerprint className="h-6 w-6 text-cyan-300" />
                   <div>
@@ -835,8 +961,9 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
                   {gate?.passkeys.length ? gate.passkeys.map(passkey => (
                     <div key={passkey.id} className="flex items-center justify-between gap-3 rounded-xl border border-[#263149] bg-[#07090e]/70 p-3">
                       <div className="min-w-0">
-                        <p className="truncate text-sm font-semibold text-white">{passkey.label || t("operations.security.unnamedPasskey")}</p>
+                        <p className="break-words text-sm font-semibold text-white">{passkey.label || t("operations.security.unnamedPasskey")}</p>
                         <p className="mt-0.5 text-[11px] text-slate-500">{t("operations.security.passkeyCreated", { date: formatDate(passkey.createdAt, { dateStyle: "short" }) })}</p>
+                        <p className="mt-1 text-xs text-slate-300">{t("operations.security.passkeyLastUsed", { value: passkey.lastUsedAt ? formatDate(passkey.lastUsedAt, { dateStyle: "short", timeStyle: "short" }) : t("operations.security.neverUsed") })}</p>
                       </div>
                       <button type="button" onClick={() => void removePasskey(passkey.id)} disabled={busy === passkey.id} aria-label={t("operations.security.removePasskey")} className="rounded-lg border border-rose-400/20 p-2 text-rose-200 hover:bg-rose-500/10 disabled:opacity-50">
                         <Trash2 className="h-4 w-4" />
@@ -861,21 +988,6 @@ export default function SecurityCenterView({ currentUser, currentUserRole }: Pro
                 </form>
               </section>
 
-              <section className="rounded-[1.5rem] border border-[#263149] bg-[#0a0d14] p-5">
-                <h2 className="font-semibold text-white">{t("operations.security.auditTitle")}</h2>
-                <div className="mt-4 space-y-3">
-                  {audit.length ? audit.map(entry => (
-                    <div key={entry.id} className="rounded-xl border border-[#263149] bg-[#07090e]/60 p-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="text-xs font-semibold uppercase text-cyan-200">{vocabulary.auditType(entry.type)}</span>
-                        <time className="text-[11px] text-slate-500">{formatDate(entry.timestamp, { dateStyle: "short", timeStyle: "short" })}</time>
-                      </div>
-                      <p className="mt-2 text-sm text-slate-200">{entry.action}</p>
-                      <p className="mt-1 text-[11px] text-slate-500">{entry.user?.name || entry.user?.email || t("operations.common.unknown")}</p>
-                    </div>
-                  )) : <div className="rounded-xl border border-dashed border-[#263149] p-4 text-center text-sm text-slate-500">{t("operations.security.auditEmpty")}</div>}
-                </div>
-              </section>
             </aside>
           </section>
         </>
