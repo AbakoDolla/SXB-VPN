@@ -98,3 +98,113 @@ Network evidence uses synthetic loopback peers only. Engine configuration
 acceptance is not a successful VPN connection, and desktop loopback traffic is
 not Android device validation. No ADB, phone access, production calls, deployment,
 or account/quota traffic is part of this work.
+
+## SSH data-path and local configuration hardening
+
+The SSH regression runner now uses an authenticated, loopback-only `ssh2` peer
+with random credentials and ports. It exercises the production JSch/SOCKS relay:
+channel refusal, immediate binary data, 256 KiB transfers, TCP half-close in
+both directions, byte counters and disconnection of an idle client. A refused
+channel must never receive a SOCKS success reply. JSch streams must exist before
+opening the channel, and an upload EOF must not truncate the download.
+
+Explicitly chained HTTP payloads can consume intermediate redirects without
+following their Location. A final redirect alone is still refused. The parser
+bounds time, response count (16), headers (8 KiB), each body (64 KiB) and total
+input (128 KiB), rejects ambiguous framing/captive portals, and preserves SSH
+bytes. A short idle period after an accepted tunnel allows client-first SSH
+banners. An explicit WebSocket handshake on the final request remains framed.
+Failed socket protection aborts before dialing; TLS failures close the physical
+socket, with no downgrade to cleartext.
+
+On Android binaries exposing `encryptVpnConfig`/`decryptVpnConfig`, profile
+encryption happens in Android Keystore without exporting its AES key to JS.
+Existing `gcm:` profiles migrate lazily under the configuration mutation queue;
+failed migrations retain the previous copy, and deletion/update wins over a
+stale migration. Web, iOS and older native binaries retain their existing
+storage path. A `v1:` profile cannot fall back to that older decryption path.
+Hardware-backed protection depends on the device, not just the API used.
+
+Each native start now receives the path to its own encrypted handoff file, not
+the full configuration as an Intent extra. Native restart storage uses atomic,
+verified encrypted writes. Legacy plaintext is accepted for migration only
+when there is no encrypted restart vault; a damaged vault fails explicitly.
+Revocation deletes only the encrypted version it actually checked, preserving
+a concurrently replaced profile. Transport-cache fingerprints no longer
+contain plaintext SNI/configuration fields.
+
+Native reconnect already reuses the authorized in-memory configuration.
+Access checks/session proofs are separate from full provisioning. DNS stays
+tunneled and UDPGW remains an explicit profile option.
+
+**Limits:** storage encryption does not hide the IP of a directly contacted
+SSH server or a plaintext HTTP payload. Nor can these changes guarantee
+secrecy on a fully compromised/rooted device.
+The software bridge fixtures and loopback transfers are not proof of Android
+Keystore hardware isolation or successful traffic on a carrier network.
+
+## Opt-in SSH gateway
+
+The gateway keeps provider credentials, destination, payload and host-key
+fingerprint on the backend. A capable Android binary advertises
+`X-SXB-SSH-Relay: 1`; only profiles explicitly listed in
+`SXB_SSH_RELAY_PROFILE_IDS` (comma-separated profile IDs) receive the relay
+configuration. Empty/unset means disabled. Other protocols, profiles and
+older binaries retain the direct path. Migrating an existing direct cache
+requires one successful provisioning; failed provisioning does not prove that
+the old destination has disappeared from that device.
+
+Requirements before opting in a profile:
+
+- Authenticated device session and enrolled proof key, current subscription.
+- Encrypted canonical profile with verified hash and a supplier-confirmed
+  OpenSSH SHA256 host-key fingerprint; never learn the fingerprint blindly.
+- SSH destination reachable from the VPS, not merely from the mobile carrier.
+  Direct SSH, TLS and supported HTTP payloads are accepted. SlowDNS,
+  insecure TLS, real WebSocket framing, split/rotating templates and conflicting
+  port overrides are refused rather than silently reinterpreted.
+- TLS ingress at the fixed backend URL. The deployment adds only an exact
+  `/api/mobile/ssh-relay` location to the site's TLS vhost, using the backend
+  port from `.env`. Other sites and API routes are preserved. The candidate
+  configuration is backed up, checked with `nginx -t` and restored on rejection.
+  An ambiguous/conflicting vhost requires manual review; it is not guessed.
+
+The mobile opens a protected, hostname-verified TLS socket with optional
+compiled backend pins, then requests an authenticated HTTP Upgrade. Its
+ticket has a distinct signing key derivation/audience and is unusable without
+a fresh device proof and an immutable connection binding. Internal SSH offers
+only forwarding, never shell, exec or SFTP. Supplier fingerprint verification
+precedes password authentication. Private/local upstream addresses are refused.
+The gateway itself remains visible to network observers.
+
+Tickets last at most seven days, bounded by the activation session and initial
+configuration validity. Before starting a new connection, the app renews a
+near-expired ticket at `POST /api/provision/ssh-relay/refresh`; the response
+contains only `ticket` and `expiresAt`, not the provider configuration.
+Refresh requires the same valid session, device, subscription and profile hash.
+Native reconnect reuses its current ticket; it does not extend an expired
+activation session or renew an expired credential independently of JS.
+
+The server meters forwarded plaintext channel bytes transactionally before
+delivery, applies backpressure and prevents concurrent quota overspend. Mobile
+usage receipts do not debit them again. Connections are revalidated every
+30 seconds and close on expiry/revocation. Limits are 128 connections, two per
+client, 32 pending handshakes per ingress peer and 64 channels per connection.
+Accounting currently uses a transaction per chunk; no high-load throughput
+claim is made. The nullable `mobile_connections.relayConfigHash` migration is
+additive and runs through the existing backup/migration gate.
+
+Roll out only after a candidate APK, real device traffic and the chosen
+supplier have been verified. Removing a profile from the allowlist and
+restarting the backend disables its relay access; existing relay caches do
+not silently downgrade to direct connections. Retain the database column on
+rollback. Reprovisioning a direct profile is an explicit operational decision
+that exposes the provider destination again.
+
+Coverage includes real loopback SSH transfers, TLS hostname rejection,
+cancellation, provider fingerprint refusal, half-closes, proof replay,
+configuration replacement and quota concurrency. The PostgreSQL integration
+runner also exercises encrypted provisioning, immutable registration,
+credential renewal and anti-double-accounting through real HTTP handlers.
+JVM fixtures stub Android Keystore/proof APIs; they are not a substitute for
+an APK/device/carrier acceptance test.

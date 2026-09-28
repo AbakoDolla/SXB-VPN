@@ -5,7 +5,11 @@ import { MobileAccessError, sessionInvalidFailure } from './access-lifecycle';
 
 export interface SecurityClaims { sid?: string; sg?: number; kid?: string; jti?: string; rg?: number; }
 export interface VerifiedProof { keyId: string; nonce: string; expiresAt: Date; }
-const proofs = new WeakMap<Request, VerifiedProof>();
+export interface ProofRequest {
+  method: string; originalUrl: string; body?: unknown; rawBody?: Buffer;
+  get(name: string): string | undefined;
+}
+const proofs = new WeakMap<ProofRequest, VerifiedProof>();
 let lastPrunedAt = 0;
 export const proofFor = (req: Request) => proofs.get(req);
 export const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
@@ -28,7 +32,7 @@ export function publicDeviceKey(encoded: string) {
 }
 
 export function verifyMobileProof(
-  req: Request, publicKey: string, credential: string, claims: SecurityClaims,
+  req: ProofRequest, publicKey: string, credential: string, claims: SecurityClaims,
 ): VerifiedProof {
   const cached = proofs.get(req);
   if (cached) return cached;
@@ -42,7 +46,7 @@ export function verifyMobileProof(
   const { key, keyId } = publicDeviceKey(publicKey);
   if (claims.kid && claims.kid !== keyId) securityFailure('DEVICE_MISMATCH');
   // Hash the exact bytes, not a parsed/re-serialized approximation.
-  const raw = (req as Request & { rawBody?: Buffer }).rawBody;
+  const raw = req.rawBody;
   if (raw === undefined && req.body && Object.keys(req.body).length > 0) {
     throw new Error('MOBILE_PROOF_RAW_BODY_REQUIRED');
   }

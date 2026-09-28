@@ -64,7 +64,7 @@ async function magasin() {
             export const getRandomValues=a=>{for(let i=0;i<a.length;i++)a[i]=(i*7+3)&255;return a};
             export const digestStringAsync=async()=>'0'.repeat(64);
             export const CryptoDigestAlgorithm={SHA256:'SHA-256'};`,
-          'react-native': `export const Platform={OS:'android'};`,
+          'react-native': `export const Platform={OS:'android'};export const NativeModules={};`,
           './accessState': `
             export const requireProfileAccess=()=>{};
             export const getAccessState=()=>({authority:null});`,

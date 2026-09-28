@@ -683,6 +683,7 @@ model MobileConnection {
   usageSessionId String
   subscriptionId String?
   configId       String?
+  relayConfigHash String?
   createdAt      DateTime @default(now())
   closedAt       DateTime?
   closeReason    String?

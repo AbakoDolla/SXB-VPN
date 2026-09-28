@@ -6,7 +6,7 @@
  */
 import assert from 'node:assert/strict';
 import { createRequire, Module } from 'node:module';
-import { generateKeyPairSync, createHash, randomBytes, randomUUID, sign } from 'node:crypto';
+import { generateKeyPairSync, createHash, createDecipheriv, randomBytes, randomUUID, sign } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -49,6 +49,8 @@ await build({
     export * as sessions from './server/services/mobile-session-security';
     export * as proof from './server/services/mobile-proof';
     export * as gate from './server/services/security-gate';
+    export * as relay from './server/services/ssh-relay-auth';
+    export * as canonical from './server/services/canonical-config';
   `, resolveDir: root, loader: 'ts' },
   outfile: output, platform: 'node', format: 'cjs', bundle: true, packages: 'external',
   nodePaths: [path.join(root, 'backend', 'node_modules')], logLevel: 'silent',
@@ -61,7 +63,7 @@ await build({
     },
   }],
 });
-const { mobile, events, provision, consoleRoutes, scopedSessions, users, auth, prisma, sessions, proof, gate, logDbActivity } = require(output);
+const { mobile, events, provision, consoleRoutes, scopedSessions, users, auth, prisma, sessions, proof, gate, relay, canonical, logDbActivity } = require(output);
 const app = express();
 app.use(express.json({ verify: (req, _res, bytes) => { req.rawBody = Buffer.from(bytes); } }));
 app.use('/api/mobile', mobile);
@@ -197,6 +199,88 @@ try {
     deviceId: a.id,
   } });
   ids.subscriptionId = sub.id;
+  const provider = { protocol: 'ssh', host: 'provider.invalid', port: 22, username: 'synthetic-provider',
+    password: 'synthetic-provider-password', fingerprint: 'SHA256:' + Buffer.alloc(32, 1).toString('base64') };
+  const providerFields = value => ({
+    canonicalConfig: canonical.encryptCanonical(JSON.stringify(value)),
+    canonicalConfigHash: canonical.computeCanonicalHash(value),
+  });
+  await prisma.vpnProfile.update({ where: { id: profile.id }, data: providerFields(provider) });
+  process.env.SXB_SSH_RELAY_PROFILE_IDS = profile.id;
+  const provisionTarget = '/api/provision/activate';
+  const provisionBody = { dataToken: sub.dataToken, deviceId: a.id };
+  async function provisionWithCapability() {
+    return request(a, provisionTarget, provisionBody, a.tokens.accessToken, {
+      headers: headers(a, 'POST', provisionTarget, JSON.stringify(provisionBody), a.tokens.accessToken, { 'X-SXB-SSH-Relay': '1' }),
+    });
+  }
+  function decryptProvision(response) {
+    check('real encrypted provisioning succeeded', response.status, 200);
+    const { encryptedBlob, configKey } = response.data.config;
+    const [iv, ciphertext, tag] = encryptedBlob.slice(4).split(':').map(value => Buffer.from(value, 'hex'));
+    const decipher = createDecipheriv('aes-256-gcm', Buffer.from(configKey, 'hex'), iv);
+    decipher.setAuthTag(tag);
+    return JSON.parse(Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString());
+  }
+  check('old native capability preserves direct provider configuration',
+    decryptProvision(await request(a, provisionTarget, provisionBody, a.tokens.accessToken)).host, provider.host);
+  const gateway = decryptProvision(await provisionWithCapability());
+  check('new native receives only gateway host', gateway.host, 'sxb-gateway');
+  check('metadata endpoint does not expose provider URI or SNI',
+    (await request(a, `/api/mobile/vpn/config?subscriptionId=${sub.id}`, undefined, a.tokens.accessToken)).data.connectionUri, null);
+  check('provider secrets never occur inside decrypted relay provision',
+    /provider\.invalid|synthetic-provider/.test(JSON.stringify(gateway)), false);
+  delete process.env.SXB_SSH_RELAY_PROFILE_IDS;
+  check('capable native outside allowlist remains direct', decryptProvision(await provisionWithCapability()).host, provider.host);
+  process.env.SXB_SSH_RELAY_PROFILE_IDS = profile.id;
+  const { fingerprint, ...unpinned } = provider;
+  await prisma.vpnProfile.update({ where: { id: profile.id }, data: providerFields(unpinned) });
+  check('unverified upstream is explicitly refused', (await provisionWithCapability()).data.code, 'RELAY_PROFILE_NOT_READY');
+  await prisma.vpnProfile.update({ where: { id: profile.id }, data: providerFields(provider) });
+  const relayConnection = { action: 'connect', connectionId: randomUUID(), sessionId: `sess_${randomUUID()}`,
+    subscriptionId: sub.id, configId: profile.id, relayTicket: gateway.sshRelay.ticket };
+  check('relay connection registered', (await request(a, '/api/mobile/vpn/session', relayConnection, a.tokens.accessToken)).status, 200);
+  check('relay registration retry remains valid', (await request(a, '/api/mobile/vpn/session', relayConnection, a.tokens.accessToken)).status, 200);
+  const { relayTicket, ...directRetry } = relayConnection;
+  check('relay registration cannot silently become direct', (await request(a, '/api/mobile/vpn/session', directRetry, a.tokens.accessToken)).status, 409);
+  const upgradeUrl = `/api/mobile/ssh-relay?connectionId=${relayConnection.connectionId}`;
+  const upgradeHeaders = headers(a, 'GET', upgradeUrl, '', relayTicket);
+  const relayGrant = await relay.authorizeSshRelay({
+    method: 'GET', url: upgradeUrl, socket: { remoteAddress: '127.0.0.1' },
+    headers: Object.fromEntries(Object.entries(upgradeHeaders).map(([key, value]) => [key.toLowerCase(), value])),
+  });
+  await prisma.subscription.update({ where: { id: sub.id }, data: { quotaBytes: 1000n } });
+  const reservations = await Promise.allSettled([relayGrant.account(600, 0), relayGrant.account(0, 600)]);
+  check('real PostgreSQL quota locks allow only one concurrent reservation',
+    reservations.filter(value => value.status === 'fulfilled').length, 1);
+  check('real gateway debits exactly delivered allowance', (await prisma.subscription.findUniqueOrThrow({ where: { id: sub.id } })).quotaUsed, 600n);
+  const relayReport = { bytesUp: 500, bytesDown: 400, sessionId: relayConnection.sessionId, seq: 0,
+    reportMode: 'delta', subscriptionId: sub.id, deviceId: a.id };
+  const trafficTarget = '/api/mobile/vpn/traffic';
+  const relayReportHeaders = headers(a, 'POST', trafficTarget, JSON.stringify(relayReport), a.tokens.accessToken);
+  const receipt = await request(a, trafficTarget, relayReport, a.tokens.accessToken, { headers: relayReportHeaders });
+  check('mobile receipt returns authoritative gateway usage', receipt.data.quotaUsedBytes, 600);
+  check('relay telemetry still consumes its nonce', (await request(a, trafficTarget, relayReport, a.tokens.accessToken,
+    { headers: relayReportHeaders })).status, 409);
+  check('legacy provision accounting cannot double charge a bound relay', (await request(a, '/api/provision/sync',
+    { subscriptionId: sub.id, deviceId: a.id, downloadBytes: 100 }, a.tokens.accessToken)).status, 409);
+  check('legacy usage alias cannot double charge a bound relay', (await request(a, '/api/mobile/vpn/usage',
+    { subscriptionId: sub.id, download: 100, upload: 0 }, a.tokens.accessToken)).status, 409);
+  check('mobile reports never double debit gateway bytes', (await prisma.subscription.findUniqueOrThrow({ where: { id: sub.id } })).quotaUsed, 600n);
+  const refreshRelayTarget = '/api/provision/ssh-relay/refresh', refreshRelayBody = { ticket: relayTicket };
+  const refreshRelayHeaders = headers(a, 'POST', refreshRelayTarget, JSON.stringify(refreshRelayBody), a.tokens.accessToken);
+  const refreshed = await request(a, refreshRelayTarget, refreshRelayBody, a.tokens.accessToken, { headers: refreshRelayHeaders });
+  check('credential renewal endpoint succeeds', refreshed.status, 200);
+  check('renewal returns no configuration', Object.keys(refreshed.data).sort().join(','), 'expiresAt,ticket');
+  check('renewal consumes its proof exactly once', (await request(a, refreshRelayTarget, refreshRelayBody,
+    a.tokens.accessToken, { headers: refreshRelayHeaders })).status, 409);
+  await request(a, '/api/mobile/vpn/session', { ...directRetry, action: 'disconnect' }, a.tokens.accessToken);
+  await assert.rejects(relayGrant.account(1, 0));
+  check('closed gateway binding cannot be reopened by retry', (await request(a, '/api/mobile/vpn/session', relayConnection, a.tokens.accessToken)).status, 409);
+  await prisma.trafficUsage.deleteMany({ where: { reportKey: `relay:${relayConnection.connectionId}` } });
+  await prisma.subscription.update({ where: { id: sub.id }, data: { quotaBytes: 1073741824n, quotaUsed: 0n } });
+  await prisma.vpnClient.update({ where: { id: a.client.id }, data: { quotaUsed: { decrement: 600n } } });
+  delete process.env.SXB_SSH_RELAY_PROFILE_IDS;
   const connection = { action: 'connect', connectionId: randomUUID(), sessionId: `sess_${randomUUID()}`,
     subscriptionId: sub.id, configId: profile.id };
   check('server authorizes managed attribution', (await request(a, '/api/mobile/vpn/session', connection, a.tokens.accessToken)).status, 200);

@@ -4,6 +4,7 @@ import { prisma } from '../database';
 import { consumeSessionProof, type BoundClaims } from './mobile-session-security';
 import { proofFor, securityFailure } from './mobile-proof';
 import { subscriptionAccessStatus } from './access-lifecycle';
+import { authorizeRelayBinding } from './ssh-relay-auth';
 
 const connectionSchema = z.object({
   action: z.enum(['connect', 'disconnect']),
@@ -11,6 +12,7 @@ const connectionSchema = z.object({
   sessionId: z.string().regex(/^sess_[0-9a-f-]{36}$/i),
   subscriptionId: z.string().max(200).nullable(),
   configId: z.string().max(200).nullable(),
+  relayTicket: z.string().max(4096).optional(),
 }).strict();
 
 export async function updateMobileConnection(req: Request, claims: BoundClaims) {
@@ -24,12 +26,21 @@ export async function updateMobileConnection(req: Request, claims: BoundClaims) 
           previous.authSessionId !== claims.sid || previous.authGeneration !== claims.sg ||
           previous.usageSessionId !== input.sessionId || previous.subscriptionId !== input.subscriptionId ||
           previous.configId !== input.configId) securityFailure('USAGE_ATTRIBUTION_CONFLICT', 409);
+      if (input.action === 'connect') {
+        const requestedHash = input.relayTicket
+          ? await authorizeRelayBinding(tx, input.relayTicket, claims, input.subscriptionId) : null;
+        if (previous.closedAt || (previous.relayConfigHash ?? null) !== requestedHash) {
+          securityFailure('USAGE_ATTRIBUTION_CONFLICT', 409);
+        }
+      }
       if (input.action === 'disconnect') {
         await tx.mobileConnection.update({ where: { id: previous.id }, data: { closedAt: new Date(), closeReason: 'USER_STOP' } });
       }
       return previous;
     }
     if (input.action !== 'connect') securityFailure('CONNECTION_NOT_FOUND', 404);
+    const relayConfigHash = input.relayTicket
+      ? await authorizeRelayBinding(tx, input.relayTicket, claims, input.subscriptionId) : null;
     if (input.subscriptionId) {
       const subscription = await tx.subscription.findFirst({
         where: { id: input.subscriptionId, clientId: claims.clientId }, include: { profile: { select: { status: true } } },
@@ -43,6 +54,7 @@ export async function updateMobileConnection(req: Request, claims: BoundClaims) 
       id: input.connectionId, clientId: claims.clientId!, deviceId: claims.deviceId!,
       authSessionId: claims.sid!, authGeneration: claims.sg!, usageSessionId: input.sessionId,
       subscriptionId: input.subscriptionId, configId: input.configId,
+      relayConfigHash,
     } });
   });
 }

@@ -50,6 +50,18 @@ const REQUIRED_FIELDS: Record<SupportedProtocol, string[]> = {
   'singbox':     [],   // outbounds ou endpoints, valides ci-dessous
 };
 
+export function isSshRelayConfig(cfg: Record<string, unknown>): boolean {
+  const relay = cfg.sshRelay;
+  if (!relay || typeof relay !== 'object' || Array.isArray(relay)) return false;
+  const value = relay as Record<string, unknown>;
+  return cfg.protocol === 'ssh' && cfg.host === 'sxb-gateway' && cfg.port === 443 && cfg.username === 'sxb' &&
+    value.version === 1 && typeof value.ticket === 'string' && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value.ticket) &&
+    value.ticket.length <= 4096 && typeof value.expiresAt === 'string' && Number.isFinite(Date.parse(value.expiresAt)) &&
+    ['password', 'privateKeyBase64', 'payload', 'privateKey', 'sni', 'slowDns', 'sshTransport', 'usePayload',
+      'proxyHost', 'proxyPort', 'proxyEnabled', 'tls', 'tlsEnabled', 'insecure', 'allowInsecure', 'fingerprint']
+      .every(key => cfg[key] === undefined);
+}
+
 // ── Détection stricte du format JSON (PARTIE 1 — miroir du backend) ───────────
 
 /**
@@ -171,7 +183,8 @@ function extraValidation(
     case 'ssh':
     case 'ssh+payload':
       if (obj.port !== undefined) validatePort(obj.port, errors);
-      if (!obj.password && !obj.privateKeyBase64) {
+      if (obj.sshRelay !== undefined && !isSshRelayConfig(obj)) errors.push('SSH : passerelle invalide');
+      if (!isSshRelayConfig(obj) && !obj.password && !obj.privateKeyBase64) {
         errors.push('SSH : "password" ou "privateKeyBase64" requis');
       }
       {
@@ -560,7 +573,7 @@ export function isCompleteOfflineConfig(cfg: Record<string, any> | null | undefi
   if (embeddedXray) {
     hasCreds = true;
   } else if (protocol === 'ssh' || protocol === 'ssh+payload') {
-    hasCreds = !!(cfg.username && (cfg.password || cfg.privateKeyBase64));
+    hasCreds = cfg.sshRelay !== undefined ? isSshRelayConfig(cfg) : !!(cfg.username && (cfg.password || cfg.privateKeyBase64));
   } else if (protocol === 'vless' || protocol === 'vmess' || protocol === 'tuic') {
     hasCreds = !!(cfg.uuid);
   } else if (protocol === 'trojan' || protocol === 'hysteria1' || protocol === 'hysteria2') {

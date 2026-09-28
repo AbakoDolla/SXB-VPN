@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
+import { randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
 import { describe, it } from 'node:test';
 import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import type { AccessAuthority, AccessSnapshot, DeviceStatus, ProfileStatus, ProfileIdentity } from '../services/accessPolicy';
@@ -215,6 +216,169 @@ function deferred() {
   return { promise, resolve };
 }
 const nextTurn = () => new Promise<void>(resolve => setImmediate(resolve));
+
+// Software cipher fixture: exercises the bridge/storage contract, not Android Keystore.
+function installConfigVault(h: Harness) {
+  const key = randomBytes(32);
+  const encrypt = async (value: string) => {
+    const iv = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', key, iv);
+    const ciphertext = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+    return `v1:${Buffer.concat([iv, ciphertext, cipher.getAuthTag()]).toString('base64')}`;
+  };
+  h.state.native.encryptVpnConfig = encrypt;
+  h.state.native.decryptVpnConfig = async (value: string) => {
+    const blob = Buffer.from(value.slice(3), 'base64');
+    const cipher = createDecipheriv('aes-256-gcm', key, blob.subarray(0, 12));
+    cipher.setAuthTag(blob.subarray(-16));
+    return Buffer.concat([cipher.update(blob.subarray(12, -16)), cipher.final()]).toString('utf8');
+  };
+  return encrypt;
+}
+
+describe('native configuration vault and lossless migration', () => {
+  it('renews only the relay ticket and cannot resurrect or overwrite a replaced profile', async () => {
+    const h = await harness();
+    installConfigVault(h);
+    const { cleanup } = await setup(h);
+    const relay = { protocol: 'ssh', host: 'sxb-gateway', port: 443, username: 'sxb',
+      sshRelay: { version: 1, ticket: 'aaa.bbb.ccc', expiresAt: new Date(Date.now() + 60000).toISOString() } };
+    try {
+      assert.equal((await h.store.save('a', relay, { subscriptionId: 'a', configHash: 'hash-a' })).status, 'ok');
+      const requests: string[] = [];
+      const credential = { ticket: 'ddd.eee.fff', expiresAt: new Date(Date.now() + 3600000).toISOString() };
+      h.api.default.defaults.adapter = async request => {
+        requests.push(request.url!);
+        assert.equal(JSON.parse(request.data).ticket, relay.sshRelay.ticket);
+        return { data: credential, status: 200, statusText: 'OK', headers: {}, config: request };
+      };
+      const updated = await h.provision.refreshRelayCredential('a', relay);
+      equal(updated.sshRelay, { version: 1, ...credential });
+      equal(requests, ['/provision/ssh-relay/refresh']);
+      await h.provision.refreshRelayCredential('a', updated);
+      assert.equal(requests.length, 1);
+      await assert.rejects(h.store.replaceRelayCredential('a', relay.sshRelay.ticket, credential), /CHANGED/);
+      await h.store.remove('a');
+      await assert.rejects(h.store.replaceRelayCredential('a', credential.ticket, credential), /CHANGED/);
+      assert.equal((await h.store.get('a')).status, 'missing');
+    } finally { cleanup(); }
+  });
+
+  it('keeps the Android handoff encrypted, atomic, attempt-specific and free of raw Intent credentials', () => {
+    const native = (name: string) => readFileSync(path.join(mobile, 'modules', 'android-native', name), 'utf8');
+    const module = native('SxbVpnModule.kt');
+    const service = native('SxbVpnService.kt');
+    const keystore = native('KeystoreManager.kt');
+    assert.ok(module.includes('KeystoreManager.writeEncrypted(configFile, guardedOptions)'));
+    assert.ok(module.includes('sxb_pending_${java.util.UUID.randomUUID()}.enc'));
+    assert.doesNotMatch(module, /putExtra\("configJson"/);
+    assert.ok(service.includes('file.parentFile == filesDir.canonicalFile'));
+    assert.ok(service.includes('KeystoreManager.decrypt(KeystoreManager.readEncoded(credsFile))'));
+    assert.doesNotMatch(service, /fallback plaintext/);
+    assert.match(keystore, /@Synchronized\s+fun writeEncrypted/);
+    assert.ok(keystore.includes('atomic.startWrite()') && keystore.includes('atomic.failWrite(stream)'));
+    assert.ok(keystore.includes('check(readEncoded(file) == encrypted.toString(Charsets.UTF_8))'));
+    const decrypt = keystore.slice(keystore.indexOf('fun decrypt('), keystore.indexOf('fun writeEncrypted('));
+    assert.ok(decrypt.includes('getKey(createIfMissing = false)'));
+    assert.ok(native('SxbAccessControl.kt').includes('KeystoreManager.deleteIfUnchanged(vault, encoded)'));
+  });
+
+  it('uses native operations without creating an exportable JS key', async () => {
+    const h = await harness();
+    installConfigVault(h);
+    const { cleanup } = await setup(h);
+    try {
+      const sealed = h.state.storage.get('sxb_cfg_payload_a')!;
+      assert.match(sealed, /^v1:/);
+      assert.equal(sealed.includes(config.host), false);
+      assert.equal(h.state.secure.has('sxb_cfg_master_key_v1'), false);
+      equal((await h.store.get('a')).value?.config, { ...config, configId: 'a' });
+    } finally { cleanup(); }
+  });
+
+  it('migrates legacy GCM only after successful encryption and leaves metadata unchanged', async () => {
+    const h = await harness();
+    const { cleanup } = await setup(h);
+    try {
+      const previous = h.state.storage.get('sxb_cfg_payload_a');
+      const registry = h.state.storage.get('sxb_cfg_registry_v1');
+      assert.match(previous!, /^gcm:/);
+      const encrypt = installConfigVault(h);
+      h.state.native.encryptVpnConfig = async () => { throw new Error('SYNTHETIC_KEYSTORE_UNAVAILABLE'); };
+      assert.equal((await h.store.get('a')).status, 'error');
+      assert.equal(h.state.storage.get('sxb_cfg_payload_a'), previous);
+      h.state.native.encryptVpnConfig = encrypt;
+      equal((await h.store.get('a')).value?.config, { ...config, configId: 'a' });
+      assert.match(h.state.storage.get('sxb_cfg_payload_a')!, /^v1:/);
+      assert.equal(h.state.storage.get('sxb_cfg_registry_v1'), registry);
+    } finally { cleanup(); }
+  });
+
+  it('reports corrupted or unavailable native storage without falling back to legacy decryption', async () => {
+    const h = await harness();
+    installConfigVault(h);
+    const { cleanup } = await setup(h);
+    try {
+      const before = h.state.storage.get('sxb_cfg_payload_a')!;
+      const damaged = Buffer.from(before.slice(3), 'base64');
+      damaged[damaged.length - 1] ^= 1;
+      h.state.storage.set('sxb_cfg_payload_a', `v1:${damaged.toString('base64')}`);
+      assert.equal((await h.store.get('a')).status, 'error');
+      h.state.storage.set('sxb_cfg_payload_a', before);
+      delete h.state.native.decryptVpnConfig;
+      assert.equal((await h.store.get('a')).status, 'error');
+      assert.equal(h.state.secure.has('sxb_cfg_master_key_v1'), false);
+      assert.equal(h.state.storage.get('sxb_cfg_payload_a'), before);
+    } finally { cleanup(); }
+  });
+
+  it('retains the only legacy copy when saving its migration fails', async () => {
+    const h = await harness();
+    const { cleanup } = await setup(h);
+    try {
+      h.state.storage.delete('sxb_cfg_registry_v1');
+      const legacy = JSON.stringify({ config, configId: 'a' });
+      h.state.storage.set('sxb_offline_vpn_config_v2', legacy);
+      const encrypt = installConfigVault(h);
+      h.state.native.encryptVpnConfig = async () => { throw new Error('SYNTHETIC_KEYSTORE_UNAVAILABLE'); };
+      assert.equal((await h.store.migrateLegacy()).status, 'error');
+      assert.equal(h.state.storage.get('sxb_offline_vpn_config_v2'), legacy);
+      assert.equal(h.state.storage.has('sxb_cfg_registry_v1'), false);
+      h.state.native.encryptVpnConfig = encrypt;
+      assert.equal((await h.store.migrateLegacy()).status, 'ok');
+      assert.equal(h.state.storage.has('sxb_offline_vpn_config_v2'), false);
+      equal((await h.store.get('a')).value?.config, config);
+    } finally { cleanup(); }
+  });
+
+  for (const action of ['remove', 'update'] as const) {
+    it(`does not resurrect or overwrite a profile during concurrent ${action}`, async () => {
+      const h = await harness();
+      const { cleanup } = await setup(h);
+      const entered = deferred(), release = deferred();
+      try {
+        const encrypt = installConfigVault(h);
+        h.state.native.encryptVpnConfig = async (value: string) => {
+          entered.resolve();
+          await release.promise;
+          return encrypt(value);
+        };
+        const reading = h.store.get('a');
+        await entered.promise;
+        const change = action === 'remove' ? h.store.remove('a') : h.store.save('a', { ...config, port: 8443 });
+        release.resolve();
+        await Promise.all([reading, change]);
+        if (action === 'remove') {
+          assert.equal(h.state.storage.has('sxb_cfg_payload_a'), false);
+          assert.equal((await h.store.get('a')).status, 'missing');
+        } else {
+          assert.equal((await h.store.get('a')).value?.config.port, 8443);
+        }
+      } finally { release.resolve(); cleanup(); }
+    });
+  }
+});
+
 const securityFor = (owner: string, generation = 1) => ({
   version: 1, sessionId: `synthetic-authority-${owner}`, generation,
   clientId: `synthetic-client-${owner}`, keyId: 'a'.repeat(64),

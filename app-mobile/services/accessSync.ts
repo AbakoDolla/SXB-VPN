@@ -308,6 +308,7 @@ function parseConnections(data: unknown): VpnConnection[] {
       expiresAt: typeof entry.expiresAt === 'string' ? entry.expiresAt : null,
       createdAt: typeof entry.createdAt === 'string' ? entry.createdAt : '',
       configVersion: typeof entry.configVersion === 'number' ? entry.configVersion : 1,
+      sshRelayAvailable: entry.sshRelayAvailable === true,
       configHash: typeof entry.configHash === 'string' ? entry.configHash : null,
       // Un serveur antérieur à cette correction n'envoie rien : l'absence vaut
       // « accès ordinaire », jamais un essai supposé.
@@ -442,7 +443,9 @@ export function refreshMobileConfigs(): Promise<VpnConnection[]> {
         if (!stored) notes.set(entry.id, { kind: 'failed', code: 'PVN_TOKEN_MISSING', retryable: false });
         continue;
       }
-      const changed = stored && (entry.configHash ? stored.meta.configHash !== entry.configHash : stored.meta.configVersion !== entry.configVersion);
+      const relayUpgrade = entry.sshRelayAvailable && NativeModules.SxbVpnNative?.sshRelayVersion === 1 && !stored?.config.sshRelay;
+      const changed = stored && (relayUpgrade ||
+        (entry.configHash ? stored.meta.configHash !== entry.configHash : stored.meta.configVersion !== entry.configVersion));
       if (!stored && !importsConnus.has(entry.id) && importsConnus.size >= MAX_IMPORTED_BACKEND_CONFIGS) {
         // Plafond atteint : une place tenue par une configuration qui ne peut
         // plus servir revient à ce forfait actif, au lieu de le laisser « à

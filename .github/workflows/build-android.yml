@@ -477,7 +477,11 @@ jobs:
               echo "[gradle.properties] + $KEY"
             fi
           }
-          add_prop 'org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=512m -XX:+UseParallelGC'
+          # Expo already sets a smaller heap: add-only kept that value and
+          # Jetifier exhausted it when transforming the React Native debug AAR.
+          sed -i '/^org\.gradle\.jvmargs=/d; /^org\.gradle\.workers\.max=/d' "$GPROPS"
+          add_prop 'org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+UseParallelGC'
+          add_prop 'org.gradle.workers.max=2'
           add_prop 'org.gradle.daemon=false'
           add_prop 'org.gradle.parallel=true'
           add_prop 'org.gradle.caching=true'

@@ -3,8 +3,8 @@ package com.sxbvpn.vpnmodule
 /**
  * KeystoreManager — Chiffrement AES-256-GCM avec Android Keystore
  *
- * Toutes les configurations VPN sont chiffrées avec une clé matérielle
- * stockée dans l'Android Keystore. La clé ne quitte jamais le hardware.
+ * Les configurations sont chiffrées avec une clé non exportable du Keystore.
+ * La protection matérielle dépend des capacités de l'appareil.
  *
  * Algorithme : AES-256-GCM (AEAD — authentifié + chiffré)
  * Clé        : 256 bits dans Android Keystore (TEE ou StrongBox si disponible)
@@ -14,9 +14,11 @@ package com.sxbvpn.vpnmodule
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import android.util.AtomicFile
 import com.sxbvpn.vpnmodule.SxbSecureLogger
 import com.sxbvpn.vpnmodule.SxbSecureLogger.VpnEvent
 import java.security.KeyStore
+import java.io.File
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -32,13 +34,15 @@ object KeystoreManager {
     private const val GCM_IV_BYTES     = 12
 
     // ── Obtenir ou créer la clé secrète dans l'Android Keystore ───────────────
-    private fun getOrCreateKey(): SecretKey {
+    @Synchronized
+    private fun getKey(createIfMissing: Boolean): SecretKey {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).also { it.load(null) }
 
         if (keyStore.containsAlias(KEYSTORE_ALIAS)) {
             val entry = keyStore.getEntry(KEYSTORE_ALIAS, null) as? KeyStore.SecretKeyEntry
-            if (entry != null) return entry.secretKey
+            return entry?.secretKey ?: throw IllegalStateException("CONFIG_VAULT_KEY_INVALID")
         }
+        check(createIfMissing) { "CONFIG_VAULT_KEY_MISSING" }
 
         // Créer une nouvelle clé AES-256 dans le Keystore
         val keyGen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
@@ -65,7 +69,7 @@ object KeystoreManager {
      */
     fun encrypt(plaintext: String): String {
         return try {
-            val key    = getOrCreateKey()
+            val key    = getKey(createIfMissing = true)
             val cipher = Cipher.getInstance(CIPHER_ALGO)
             cipher.init(Cipher.ENCRYPT_MODE, key)
 
@@ -80,7 +84,7 @@ object KeystoreManager {
             "v1:" + Base64.encodeToString(blob, Base64.NO_WRAP)
         } catch (e: Exception) {
             SxbSecureLogger.error(SxbSecureLogger.VpnEvent.KEYSTORE_ENCRYPT_FAILED)
-            throw RuntimeException("KeystoreManager.encrypt failed: ${e.message}", e)
+            throw RuntimeException("CONFIG_VAULT_ENCRYPT_FAILED", e)
         }
     }
 
@@ -91,11 +95,12 @@ object KeystoreManager {
         return try {
             if (!encoded.startsWith("v1:")) throw IllegalArgumentException("Format invalide")
             val blob = Base64.decode(encoded.removePrefix("v1:"), Base64.NO_WRAP)
+            require(blob.size >= GCM_IV_BYTES + GCM_TAG_BITS / 8) { "CONFIG_VAULT_TRUNCATED" }
 
             val iv         = blob.copyOfRange(0, GCM_IV_BYTES)
             val ciphertext = blob.copyOfRange(GCM_IV_BYTES, blob.size)
 
-            val key    = getOrCreateKey()
+            val key    = getKey(createIfMissing = false)
             val spec   = GCMParameterSpec(GCM_TAG_BITS, iv)
             val cipher = Cipher.getInstance(CIPHER_ALGO)
             cipher.init(Cipher.DECRYPT_MODE, key, spec)
@@ -103,8 +108,35 @@ object KeystoreManager {
             String(cipher.doFinal(ciphertext), Charsets.UTF_8)
         } catch (e: Exception) {
             SxbSecureLogger.error(SxbSecureLogger.VpnEvent.KEYSTORE_DECRYPT_FAILED)
-            throw RuntimeException("KeystoreManager.decrypt failed: ${e.message}", e)
+            throw RuntimeException("CONFIG_VAULT_DECRYPT_FAILED", e)
         }
+    }
+
+    @Synchronized
+    fun writeEncrypted(file: File, plaintext: String) {
+        val encrypted = encrypt(plaintext).toByteArray(Charsets.UTF_8)
+        val atomic = AtomicFile(file)
+        val stream = atomic.startWrite()
+        try {
+            stream.write(encrypted)
+            atomic.finishWrite(stream)
+            check(readEncoded(file) == encrypted.toString(Charsets.UTF_8)) { "CONFIG_VAULT_WRITE_FAILED" }
+        } catch (error: Exception) {
+            atomic.failWrite(stream)
+            throw error
+        }
+    }
+
+    @Synchronized
+    fun readEncoded(file: File): String = AtomicFile(file).readFully().toString(Charsets.UTF_8)
+
+    fun exists(file: File): Boolean = file.exists() || File("${file.path}.bak").exists() || File("${file.path}.new").exists()
+
+    @Synchronized
+    fun deleteIfUnchanged(file: File, expected: String) {
+        if (!exists(file) || readEncoded(file) != expected) return
+        AtomicFile(file).delete()
+        check(!exists(file)) { "ACCESS_CONFIG_PURGE_FAILED" }
     }
 
     /**

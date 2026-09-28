@@ -124,6 +124,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
 
     override fun getConstants(): Map<String, Any> = mapOf(
         "distribution" to SxbPrivacyPolicy.distribution(reactApplicationContext),
+        "sshRelayVersion" to 1,
     )
 
     @ReactMethod
@@ -198,6 +199,28 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
         accessExecutor.execute { startGuardedVpn(optionsJson, promise) }
     }
 
+    @ReactMethod
+    fun encryptVpnConfig(value: String, promise: Promise) {
+        accessExecutor.execute {
+            try {
+                promise.resolve(KeystoreManager.encrypt(value))
+            } catch (error: Exception) {
+                promise.reject("CONFIG_VAULT_ENCRYPT_FAILED", "Configuration encryption failed", error)
+            }
+        }
+    }
+
+    @ReactMethod
+    fun decryptVpnConfig(value: String, promise: Promise) {
+        accessExecutor.execute {
+            try {
+                promise.resolve(KeystoreManager.decrypt(value))
+            } catch (error: Exception) {
+                promise.reject("CONFIG_VAULT_DECRYPT_FAILED", "Configuration decryption failed", error)
+            }
+        }
+    }
+
     private fun startGuardedVpn(optionsJson: String, promise: Promise) {
         try {
             val ctx  = reactApplicationContext
@@ -219,21 +242,19 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
             // FIX — TransactionTooLargeException : les Intent extras sont limités à ~1MB
             // par le Binder IPC Android. Les configs VPN (sing-box JSON, payloads base64)
             // peuvent dépasser cette limite. On écrit la config dans un fichier temporaire
-            // et on passe uniquement le chemin via l'extra, jamais le JSON complet.
-            val configFile = java.io.File(ctx.filesDir, "sxb_pending_config.json")
+            // chiffré et on passe uniquement le chemin, jamais le JSON complet.
+            val configFile = java.io.File(ctx.filesDir, "sxb_pending_${java.util.UUID.randomUUID()}.enc")
             try {
-                configFile.writeText(guardedOptions, Charsets.UTF_8)
+                KeystoreManager.writeEncrypted(configFile, guardedOptions)
                 SxbSecureLogger.vpn(SxbSecureLogger.VpnEvent.CONFIG_LOADED)
             } catch (e: Exception) {
                 SxbSecureLogger.error(SxbSecureLogger.VpnEvent.CONFIG_WRITE_FAILED)
-                // Fallback : passer via intent (risque uniquement si > 1MB)
+                throw e
             }
 
             val intent = Intent(ctx, SxbVpnService::class.java).apply {
                 action = SxbVpnService.ACTION_START
-                // Passer le chemin du fichier config ET l'extra (fallback pour compatibilité)
                 putExtra("configFilePath", configFile.absolutePath)
-                putExtra("configJson",     guardedOptions)
                 putExtra("protocol",       proto)
                 putExtra("killSwitch",     opts.optBoolean("killSwitch", false))
                 putExtra("autoReconnect",  opts.optBoolean("autoReconnect", false))

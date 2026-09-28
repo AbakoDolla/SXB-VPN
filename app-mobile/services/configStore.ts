@@ -1,9 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Crypto from 'expo-crypto';
 import * as SecureStore from 'expo-secure-store';
-import { Platform } from 'react-native';
+import { NativeModules, Platform } from 'react-native';
 import { encryptAes256Gcm, decryptAes256Gcm, hexToBytes, bytesToHex, utf8Decode, utf8Encode } from './aesGcm';
-import { genererLeurre, semerAppats } from './decoy';
+import { estLeurre, genererLeurre, semerAppats } from './decoy';
 import { requireProfileAccess } from './accessState';
 import { reprendLeProfilActif } from './activeProfile';
 import type { ProfileStatus } from './accessPolicy';
@@ -51,7 +51,7 @@ function randomBytes(length: number): Uint8Array {
 }
 function encode(s: string) { return utf8Encode(s); }
 /**
- * Clé de chiffrement du stockage local, retenue pour la durée de la session.
+ * Clé historique, nécessaire aux migrations et aux plateformes sans coffre natif.
  *
  * ═══════════════════════════════════════════════════════════════════════════
  * POURQUOI ELLE EST MÉMORISÉE
@@ -66,9 +66,8 @@ function encode(s: string) { return utf8Encode(s); }
  * d'autres. C'est ce qui rendait le changement de profil poussif quand
  * plusieurs configurations coexistent.
  *
- * La mémoriser ne l'expose pas davantage : les configurations DÉCHIFFRÉES
- * vivent déjà dans l'état de l'application pendant toute la session. La clé
- * reste dans le coffre ; seule sa relecture est évitée.
+ * Cette ancienne clé est lisible en JavaScript. Les nouvelles configurations
+ * Android passent par le coffre natif, dont la clé n'est jamais exportée.
  *
  * La mémoire est effacée par `oublierCleMaitresse()`, que `clearAll` appelle :
  * une remise à zéro génère une nouvelle clé, et servir l'ancienne rendrait
@@ -107,6 +106,24 @@ async function masterKey(): Promise<Uint8Array> {
 function encrypt(value: Record<string, any>, key: Uint8Array) {
   const iv = randomBytes(12); const result = encryptAes256Gcm(key, iv, encode(JSON.stringify(value)));
   return `gcm:${bytesToHex(iv)}:${bytesToHex(result.ciphertext)}:${bytesToHex(result.authTag)}`;
+}
+
+function nativeVault() {
+  const bridge: {
+    encryptVpnConfig?: (value: string) => Promise<string>;
+    decryptVpnConfig?: (value: string) => Promise<string>;
+  } | undefined = Platform.OS === 'android' ? NativeModules?.SxbVpnNative : undefined;
+  const encrypt = bridge?.encryptVpnConfig;
+  const decrypt = bridge?.decryptVpnConfig;
+  return typeof encrypt === 'function' && typeof decrypt === 'function' ? { encrypt, decrypt } : null;
+}
+
+async function sealConfig(value: Record<string, any>): Promise<string> {
+  const vault = nativeVault();
+  if (!vault) return encrypt(value, await masterKey());
+  const sealed = await vault.encrypt(JSON.stringify(value));
+  if (!sealed.startsWith('v1:')) throw new Error('CONFIG_VAULT_FORMAT_INVALID');
+  return sealed;
 }
 /**
  * Déchiffre un payload, ou rend un leurre.
@@ -254,14 +271,16 @@ export async function migrateLegacy(): Promise<StoreResult<void>> {
     let config: any; let meta: any = {};
     if (legacyOffline) { const parsed = JSON.parse(legacyOffline); config = parsed.config; meta = { configId: parsed.configId, protocol: parsed.protocol, expiryDate: parsed.expiresAt, savedAt: parsed.savedAt }; }
     else if (legacyConfig && legacyMeta) { config = JSON.parse(legacyConfig); const m = JSON.parse(legacyMeta); meta = { configId: m.subscriptionId, name: m.profileName, protocol: m.protocol, displayProtocol: m.displayProtocol, subscriptionId: m.subscriptionId, quotaTotal: Math.round((m.quotaGB || 0) * 1024 ** 3), quotaUsed: Math.round((m.quotaUsedGB || 0) * 1024 ** 3), expiryDate: m.expireAt, configVersion: m.configVersion, configHash: m.configHash, savedAt: m.provisionedAt }; }
-    if (config) await save(String(meta.configId || config.configId || `legacy_${Date.now()}`), config, meta);
+    if (config) {
+      const saved = await save(String(meta.configId || config.configId || `legacy_${Date.now()}`), config, meta);
+      if (saved.status !== 'ok') return { status: 'error', error: saved.error ?? new Error('CONFIG_MIGRATION_FAILED') };
+    }
     if (config) await Promise.all([AsyncStorage.removeItem(LEGACY_CONFIG), AsyncStorage.removeItem(LEGACY_META), Platform.OS === 'web' ? AsyncStorage.removeItem(`@secure_${LEGACY_PROV}`) : SecureStore.deleteItemAsync(LEGACY_PROV), Platform.OS === 'web' ? AsyncStorage.removeItem(`@secure_${LEGACY_CONFIG}`) : SecureStore.deleteItemAsync(LEGACY_CONFIG)]);
     return { status: 'ok' };
   } catch (error: any) { return { status: 'error', error }; }
 }
 export async function save(id: string, config: Record<string, any>, meta: Partial<ConfigMeta> = {}): Promise<StoreResult<StoredConfig>> {
   try { return await mutate(async () => {
-    const key = await masterKey();
     const entries = await registry();
     // Equal payload hashes are not equal entitlements: A and B can share a server.
     const old = entries.find(x => x.configId === id);
@@ -278,7 +297,7 @@ export async function save(id: string, config: Record<string, any>, meta: Partia
       subscriptionId: finalMeta.subscriptionId || (typeof config.subscriptionId === 'string' ? config.subscriptionId : undefined),
       configHash: finalMeta.configHash || (typeof config.configHash === 'string' ? config.configHash : undefined),
     });
-    await AsyncStorage.setItem(payloadKey(id), encrypt(config, key));
+    await AsyncStorage.setItem(payloadKey(id), await sealConfig(config));
     // Un seul profil actif à la fois : sans ce déclassement, `getActive()`
     // rendrait la première entrée marquée active, c'est-à-dire l'ancienne.
     const nextEntries = [...(finalMeta.isActive ? autres.map(x => ({ ...x, isActive: false })) : autres), finalMeta];
@@ -301,7 +320,34 @@ export async function save(id: string, config: Record<string, any>, meta: Partia
     return { status: 'ok' as const, value: { config, meta: finalMeta } };
   }); } catch (error: any) { return { status: 'error', error }; }
 }
-export async function get(id: string): Promise<StoreResult<StoredConfig>> { try { await migrateLegacy(); const meta = (await registry()).find(x => x.configId === id); if (!meta) return { status: 'missing' }; const raw = await AsyncStorage.getItem(payloadKey(id)); if (!raw) return { status: 'error', error: new Error('Payload absent') }; return { status: 'ok', value: { config: decrypt(raw, await masterKey(), id), meta } }; } catch (error:any) { return { status:'error', error }; } }
+export async function get(id: string): Promise<StoreResult<StoredConfig>> {
+  try {
+    const migration = await migrateLegacy();
+    if (migration.status === 'error') return { status: 'error', error: migration.error };
+    const meta = (await registry()).find(x => x.configId === id);
+    if (!meta) return { status: 'missing' };
+    const raw = await AsyncStorage.getItem(payloadKey(id));
+    if (!raw) return { status: 'error', error: new Error('Payload absent') };
+    const vault = nativeVault();
+    if (raw.startsWith('v1:')) {
+      if (!vault) throw new Error('CONFIG_VAULT_UNAVAILABLE');
+      const config = JSON.parse(await vault.decrypt(raw));
+      if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('CONFIG_VAULT_FORMAT_INVALID');
+      return { status: 'ok', value: { config, meta } };
+    }
+    const config = decrypt(raw, await masterKey(), id);
+    if (vault && !estLeurre(config)) {
+      await mutate(async () => {
+        // Never resurrect a removed profile or overwrite a concurrent update.
+        if (!(await registry()).some(entry => entry.configId === id) ||
+            await AsyncStorage.getItem(payloadKey(id)) !== raw) return;
+        requireProfileAccess(meta);
+        await AsyncStorage.setItem(payloadKey(id), await sealConfig(config));
+      });
+    }
+    return { status: 'ok', value: { config, meta } };
+  } catch (error) { return { status: 'error', error: error instanceof Error ? error : new Error('CONFIG_VAULT_FAILED') }; }
+}
 export async function getActive(): Promise<StoreResult<StoredConfig>> { const migration = await migrateLegacy(); if (migration.status === 'error') return migration as StoreResult<StoredConfig>; try { const entries = await registry(); const active = entries.find(x => x.isActive) || entries[0]; return active ? get(active.configId) : { status: 'missing' }; } catch (error: any) { return { status: 'error', error }; } }
 export async function list(): Promise<StoreResult<ConfigMeta[]>> { try { await migrateLegacy(); return { status:'ok', value: await registry() }; } catch(error:any) { return {status:'error', error}; } }
 export async function setActive(id: string): Promise<StoreResult<void>> {
@@ -366,6 +412,26 @@ export async function updateMetadata(id: string, update: Partial<Pick<ConfigMeta
     await putRegistry(entries.map(x => x.configId === id ? meta : x));
     return { status: 'ok' as const, value: meta };
   }); } catch (error: any) { return { status: 'error', error }; }
+}
+
+export async function replaceRelayCredential(
+  id: string, expectedTicket: string, credential: { ticket: string; expiresAt: string },
+): Promise<StoredConfig> {
+  return mutate(async () => {
+    const meta = (await registry()).find(entry => entry.configId === id);
+    if (!meta) throw new Error('RELAY_PROFILE_CHANGED');
+    requireProfileAccess(meta);
+    const raw = await AsyncStorage.getItem(payloadKey(id));
+    if (!raw) throw new Error('RELAY_PROFILE_MISSING');
+    const vault = nativeVault();
+    const config = raw.startsWith('v1:')
+      ? JSON.parse(await (vault ? vault.decrypt(raw) : Promise.reject(new Error('CONFIG_VAULT_UNAVAILABLE'))))
+      : decrypt(raw, await masterKey(), id);
+    if (config?.sshRelay?.ticket !== expectedTicket) throw new Error('RELAY_PROFILE_CHANGED');
+    const updated = { ...config, sshRelay: { version: 1, ...credential } };
+    await AsyncStorage.setItem(payloadKey(id), await sealConfig(updated));
+    return { config: updated, meta };
+  });
 }
 
 export const updateQuota = (id: string, usedBytes: number) => updateMetadata(id, { quotaUsed: Math.max(0, usedBytes) });

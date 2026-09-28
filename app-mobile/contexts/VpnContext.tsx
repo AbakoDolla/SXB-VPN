@@ -27,7 +27,7 @@ import {
   isQuotaExhausted, isConfigExpired,
 } from '@/services/offlineStorage';
 import type { QuotaData } from '@/services/offlineStorage';
-import { ProvisioningError, provisionAndStore } from '@/services/provisionClient';
+import { ProvisioningError, provisionAndStore, refreshRelayCredential } from '@/services/provisionClient';
 import { accessIssueFromError, blocksDevice, deviceAccess as selectDeviceAccess, profileRestriction, type ProfileIdentity, type ProfileStatus } from '@/services/accessPolicy';
 import { getAccessState, requireDeviceAccess, requireProfileAccess, syncNativeAccessState } from '@/services/accessState';
 import { accessRequestStamp, currentAccessRequest, currentIdentityRequest } from '@/services/accessEvents';
@@ -1993,6 +1993,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
             if (vpnConfig?.configId)        configToUse.configId        = vpnConfig.configId;
             addLog('✅ Configuration sécurisée chargée — mode hors-ligne, aucun provisionnement requis');
           }
+          if (configToUse?.sshRelay) configToUse = await refreshRelayCredential(selectedId, configToUse);
         }
 
         // Une configuration complète en cache est autonome : ne jamais appeler
@@ -2175,6 +2176,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
             action: 'connect', connectionId, sessionId: usageSessionId,
             subscriptionId,
             configId: selectedId,
+            ...(configToUse.sshRelay ? { relayTicket: configToUse.sshRelay.ticket } : {}),
           });
         }
         sessionIdRef.current = usageSessionId;
