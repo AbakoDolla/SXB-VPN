@@ -11,7 +11,7 @@ import { logDbActivity } from '../database';
 import crypto from 'crypto';
 import {
   parseImportedConfig, parseImportedConfigList, canonicalJson, computeCanonicalHash, encryptCanonical,
-  type ParseResult,
+  decryptCanonical, CANONICAL_HASH_PREFIX, type ParseResult,
 } from '../services/canonical-config';
 import {
   assertProfileUnlocked, createProfileLock, handleProfileLockError, issueProfileUnlock,
@@ -21,6 +21,7 @@ import {
 import { prepareProfileEngineLock } from '../services/profile-engines';
 import { porteeProfils, porteeRevendeurs } from '../services/portee-donnees';
 import { extendedProfileExpiry, profileValidityDays } from '../services/profile-validity';
+import { parseEndpoint } from '../services/protocol-bundle';
 
 // Plafond large plutôt qu'une contrainte métier réelle : il évite une valeur
 // aberrante (NaN, négative, des millions de jours) de produire une date
@@ -112,20 +113,20 @@ function buildImportDataFromParsed(parsed: ParseResult, opts: { bumpVersion?: nu
   let host = canon.host ?? null;
   let port: number = canon.port ?? 0;
   if (!host && proto === 'wireguard' && canon.endpoint) {
-    const [h, p] = String(canon.endpoint).split(':');
-    host = h; port = Number(p) || 0;
+    const endpoint = parseEndpoint(canon.endpoint);
+    host = endpoint.host; port = endpoint.port;
   }
   if (!host && proto === 'singbox') {
-    const outbounds = Array.isArray(canon.outbounds) ? canon.outbounds : [];
+    const outbounds = [...(Array.isArray(canon.outbounds) ? canon.outbounds : []), ...(Array.isArray(canon.endpoints) ? canon.endpoints : [])];
     // sing-box natif : server/server_port. Xray : settings.vnext[0].
     // On ignore direct/dns/block et les outbounds de contrôle éventuels.
     const out0 = outbounds.find((o: any) => {
       const p = String(o?.protocol || o?.type || '').toLowerCase();
-      return !['direct', 'freedom', 'dns', 'block', 'blackhole'].includes(p);
+      return !['direct', 'freedom', 'dns', 'block', 'blackhole', 'selector', 'urltest'].includes(p);
     }) || outbounds[0];
-    const xrayServer = out0?.settings?.vnext?.[0];
-    host = out0?.server ?? xrayServer?.address ?? 'singbox-json';
-    port = Number(out0?.server_port ?? xrayServer?.port ?? 0) || 0;
+    const xrayServer = out0?.settings?.vnext?.[0] ?? out0?.settings?.servers?.[0];
+    host = out0?.server ?? out0?.peers?.[0]?.address ?? xrayServer?.address ?? 'singbox-json';
+    port = Number(out0?.server_port ?? out0?.peers?.[0]?.port ?? xrayServer?.port ?? 0) || 0;
   }
 
   return {
@@ -676,10 +677,45 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
       // pour que l'opérateur décide en connaissance de cause.
       const duplicateWarnings: string[] = [];
       if (data.canonicalConfigHash) {
-        const twin = await (prisma as any).vpnProfile.findFirst({
+        let twin = await prisma.vpnProfile.findFirst({
           where: { canonicalConfigHash: data.canonicalConfigHash, status: { not: 'archived' } },
           select: { id: true, name: true },
         });
+        // Existing SHA-256 identities remain unchanged; compare their authenticated
+        // contents without producing another unkeyed digest of the new credentials.
+        let cursor: string | undefined;
+        while (!twin) {
+          const legacy = await prisma.vpnProfile.findMany({
+            where: { canonicalConfigHash: { not: { startsWith: CANONICAL_HASH_PREFIX } },
+              canonicalConfig: { not: null }, status: { not: 'archived' },
+              ...(cursor ? { id: { gt: cursor } } : {}) },
+            select: { id: true, name: true, canonicalConfig: true },
+            orderBy: { id: 'asc' }, take: 100,
+          });
+          for (const candidate of legacy) {
+            const plain = candidate.canonicalConfig && decryptCanonical(candidate.canonicalConfig);
+            if (!plain) {
+              console.warn(`[vpn-profiles/import] Legacy canonical unreadable: ${candidate.id}`);
+              continue;
+            }
+            let canonical: unknown;
+            try { canonical = JSON.parse(plain); } catch (error) {
+              if (!(error instanceof SyntaxError)) throw error;
+              console.warn(`[vpn-profiles/import] Legacy canonical invalid JSON: ${candidate.id}`);
+              continue;
+            }
+            if (!canonical || typeof canonical !== 'object' || Array.isArray(canonical)) {
+              console.warn(`[vpn-profiles/import] Legacy canonical invalid shape: ${candidate.id}`);
+              continue;
+            }
+            if (computeCanonicalHash(canonical) === data.canonicalConfigHash) {
+              twin = { id: candidate.id, name: candidate.name };
+              break;
+            }
+          }
+          if (legacy.length < 100) break;
+          cursor = legacy[legacy.length - 1].id;
+        }
         if (twin) {
           duplicateWarnings.push(
             `Configuration technique identique au profil « ${twin.name} » — vérifiez qu'un doublon est bien voulu.`,

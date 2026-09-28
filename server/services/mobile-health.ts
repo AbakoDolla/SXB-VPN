@@ -21,6 +21,7 @@ const protocols = [
   "vmess",
   "trojan",
   "shadowsocks",
+  "hysteria1",
   "hysteria2",
   "ssh",
   "ssh+payload",

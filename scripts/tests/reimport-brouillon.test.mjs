@@ -91,10 +91,13 @@ describe('brouillon de réimport — repartir de ce qui existe', () => {
     assert.deepEqual(b.aCompleter, ['uuid']);
   });
 
-  it('nomme « username » pour les protocoles qui en portent un', () => {
-    const b = brouillonDepuisProfil({ name: 'SSH', protocol: 'ssh', host: '5.75.179.98', port: 443 });
-    assert.deepEqual(b.aCompleter, ['username']);
-    assert.ok(b.texte.startsWith('ssh://'));
+  it('ne fabrique pas une URI quand le résumé ne suffit pas', () => {
+    for (const protocol of ['ssh', 'ssh+payload', 'vmess', 'shadowsocks', 'hysteria1', 'hysteria2', 'wireguard', 'singbox']) {
+      assert.equal(brouillonDepuisProfil({ name: 'synthetic', protocol, host: '127.0.0.1', port: 443 }), null);
+    }
+    const trojan = brouillonDepuisProfil({ protocol: 'trojan', host: '::1', port: 443 });
+    assert.deepEqual(trojan.aCompleter, ['password']);
+    assert.ok(trojan.texte.includes('@[::1]:443'));
   });
 
   it('ne produit RIEN plutôt qu’un brouillon faux', () => {

@@ -41,6 +41,7 @@ type Harness = {
     stopCount: number;
     foreground(next: string): void;
     native: Record<string, unknown>;
+    beforeWrite?: (store: 'async' | 'secure', key: string, value: string | null) => Promise<void>;
   };
 };
 
@@ -77,18 +78,21 @@ async function harness(distribution = 'direct'): Promise<Harness> {
       }`,
     '@react-native-async-storage/async-storage': `import {state} from 'test:state';export default{
       getItem:async k=>state.storage.get(k)??null,
-      setItem:async(k,v)=>{state.events.push('write:'+k);state.storage.set(k,v)},
-      removeItem:async k=>{if(state.failRemove===k)throw Error('IO unavailable');state.events.push('remove:'+k);state.storage.delete(k)},
-      multiRemove:async keys=>{for(const k of keys){if(state.failRemove===k)throw Error('IO unavailable');state.events.push('remove:'+k);state.storage.delete(k)}},
+      setItem:async(k,v)=>{await state.beforeWrite?.('async',k,v);state.events.push('write:'+k);state.storage.set(k,v)},
+      multiSet:async entries=>{for(const [k,v] of entries){await state.beforeWrite?.('async',k,v);state.storage.set(k,v)}},
+      removeItem:async k=>{await state.beforeWrite?.('async',k,null);if(state.failRemove===k)throw Error('IO unavailable');state.events.push('remove:'+k);state.storage.delete(k)},
+      multiRemove:async keys=>{for(const k of keys){await state.beforeWrite?.('async',k,null);if(state.failRemove===k)throw Error('IO unavailable');state.events.push('remove:'+k);state.storage.delete(k)}},
       getAllKeys:async()=>[...state.storage.keys()],
     };`,
     'expo-secure-store': `import {state} from 'test:state';
       export const getItemAsync=async k=>state.secure.get(k)??null;
-      export const setItemAsync=async(k,v)=>{state.events.push('secure:'+k);state.secure.set(k,v)};
-      export const deleteItemAsync=async k=>{state.events.push('secure-delete:'+k);state.secure.delete(k)};`,
-    'expo-crypto': `import {randomFillSync,randomUUID as uuid} from 'node:crypto';
+      export const setItemAsync=async(k,v)=>{await state.beforeWrite?.('secure',k,v);state.events.push('secure:'+k);state.secure.set(k,v)};
+      export const deleteItemAsync=async k=>{await state.beforeWrite?.('secure',k,null);state.events.push('secure-delete:'+k);state.secure.delete(k)};`,
+    'expo-crypto': `import {randomFillSync,randomUUID as uuid,createHash} from 'node:crypto';
       export const getRandomValues=x=>randomFillSync(x);
-      export const randomUUID=()=>uuid();`,
+      export const randomUUID=()=>uuid();
+      export const CryptoDigestAlgorithm={SHA256:'sha256'};
+      export const digestStringAsync=async(algorithm,value)=>createHash(algorithm).update(value).digest('hex');`,
     'expo-constants': `export default {expoConfig:{extra:{distribution:${JSON.stringify(distribution)}},version:'1',android:{versionCode:1}}};`,
     'expo-router': `export const router={push:()=>{},replace:()=>{}};`,
     'react-native-safe-area-context': `export const useSafeAreaInsets=()=>({top:0,bottom:0,left:0,right:0});`,
@@ -205,8 +209,295 @@ function remoteConnections(value: AccessSnapshot) {
   })) };
 }
 const equal = (actual: unknown, expected: unknown) => assert.deepEqual(JSON.parse(JSON.stringify(actual)), expected);
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
+}
+const nextTurn = () => new Promise<void>(resolve => setImmediate(resolve));
+const securityFor = (owner: string, generation = 1) => ({
+  version: 1, sessionId: `synthetic-authority-${owner}`, generation,
+  clientId: `synthetic-client-${owner}`, keyId: 'a'.repeat(64),
+});
+const activated = (owner: string) => ({
+  accessToken: `synthetic-${owner}-access`, refreshToken: `synthetic-${owner}-refresh`,
+  user: { id: owner, name: `Synthetic ${owner}`, email: '' }, accountState, security: securityFor(owner),
+});
+function assertStoredIdentity(h: Harness, owner: string | null) {
+  assert.equal(h.state.secure.get('sxb_access_token_v2'), owner ? activated(owner).accessToken : undefined);
+  assert.equal(h.state.secure.get('sxb_refresh_token_v2'), owner ? activated(owner).refreshToken : undefined);
+  assert.equal(h.state.storage.get('@sxb_user'), owner ? JSON.stringify({ user: activated(owner).user, accountState }) : undefined);
+  assert.equal(h.state.storage.get('@sxb_session_security_v1'), owner ? JSON.stringify(securityFor(owner)) : undefined);
+  assert.equal(h.auth.getIdentitySession()?.user.id ?? null, owner);
+  assert.equal(h.access.getAccessState().authority?.userId ?? null, owner);
+  assert.equal(h.state.storage.get('@sxb_device_proof_enrolled'), '1');
+}
+
+describe('identity persistence with controlled storage promises (synthetic native IO only)', () => {
+  for (const stage of ['metadata', 'access-token', 'parallel-failure', 'invalid-cleanup'] as const) {
+    for (const successor of ['B', null]) {
+      it(`drains A ${stage} before ${successor ?? 'clear'} and never retries queued A as another owner`, { timeout: 10_000 }, async () => {
+        const h = await harness();
+        h.state.storage.set('@sxb_device_id', 'hardware');
+        h.state.native.signBackendRequest = async () => '{}';
+        await h.auth.acceptActivatedIdentity(activated('A'), 'hardware');
+        const blocked = deferred(), release = deferred(), refreshStarted = deferred(), answerRefresh = deferred();
+        let held = false;
+        h.state.beforeWrite = async (store, key, value) => {
+          if (stage === 'parallel-failure' && store === 'secure' && key === 'sxb_refresh_token_v2' && value === 'A-refreshed-refresh') {
+            throw new Error('SYNTHETIC_STORAGE_FAILURE');
+          }
+          const target = stage === 'metadata'
+            ? key === '@sxb_session_security_v1' && value === JSON.stringify(securityFor('A', 2))
+            : store === 'secure' && key === 'sxb_access_token_v2' &&
+              value === (stage === 'invalid-cleanup' ? null : 'A-refreshed-access');
+          if (!held && target) {
+            held = true;
+            blocked.resolve();
+            await release.promise;
+          }
+        };
+        const previous = axios.defaults.adapter;
+        const requests: string[] = [];
+        let refreshes = 0;
+        h.api.default.defaults.adapter = async request => {
+          requests.push(`${request.url}:${request.headers.get('Authorization')}`);
+          throw httpError(request, 401, { error: 'errors.auth.invalid_token' });
+        };
+        axios.defaults.adapter = async request => {
+          refreshes++;
+          refreshStarted.resolve();
+          await answerRefresh.promise;
+          if (stage === 'invalid-cleanup') {
+            throw httpError(request, 401, { code: 'SESSION_INVALID', scope: 'session', temporary: false });
+          }
+          return { status: 200, statusText: 'OK', config: request, headers: {}, data: {
+            accessToken: 'A-refreshed-access', refreshToken: 'A-refreshed-refresh', security: securityFor('A', 2),
+          } };
+        };
+        try {
+          const pending = Promise.allSettled([
+            h.api.default.get('/mobile/me?request=A-first'), h.api.default.get('/mobile/me?request=A-queued'),
+          ]);
+          await refreshStarted.promise;
+          await nextTurn();
+          assert.equal(requests.length, 2);
+          answerRefresh.resolve();
+          await blocked.promise;
+          const oldStamp = h.events.accessRequestStamp();
+          let successorStored = false;
+          const changing = (successor ? h.auth.acceptActivatedIdentity(activated(successor), 'hardware') : h.auth.clearIdentitySession())
+            .then(() => { successorStored = true; });
+          assert.equal(h.events.currentIdentityRequest(oldStamp), false);
+          await nextTurn();
+          assert.equal(successorStored, false, 'the new owner waits for every old write, including failed parallel groups');
+          release.resolve();
+          const outcomes = await pending;
+          await changing;
+          assert.ok(outcomes.every(result => result.status === 'rejected'));
+          assert.equal(requests.length, 2, 'neither the original nor queued request was sent again');
+          assert.ok(requests.every(request => request.endsWith(`Bearer ${activated('A').accessToken}`)));
+          assert.equal(refreshes, 1);
+          assertStoredIdentity(h, successor);
+        } finally {
+          release.resolve();
+          answerRefresh.resolve();
+          axios.defaults.adapter = previous;
+        }
+      });
+    }
+  }
+
+  it('keeps the original stamp even when identity changes inside the replay interceptor', { timeout: 10_000 }, async () => {
+    const h = await harness();
+    h.state.storage.set('@sxb_device_id', 'hardware');
+    h.state.native.signBackendRequest = async () => '{}';
+    await h.auth.acceptActivatedIdentity(activated('A'), 'hardware');
+    const previous = axios.defaults.adapter;
+    const started = deferred(), release = deferred();
+    let changing: Promise<void> | undefined;
+    const sent: string[] = [];
+    h.api.default.interceptors.request.use(async config => {
+      if ((config as InternalAxiosRequestConfig & { _retry?: boolean })._retry) {
+        changing ??= h.auth.acceptActivatedIdentity(activated('B'), 'hardware');
+        await changing;
+      }
+      return config;
+    });
+    h.api.default.defaults.adapter = async config => {
+      sent.push(String(config.headers.get('Authorization')));
+      if (config.headers.get('Authorization') === `Bearer ${activated('A').accessToken}`) {
+        throw httpError(config, 401, { error: 'errors.auth.invalid_token' });
+      }
+      return { status: 200, statusText: 'OK', config, headers: {}, data: {} };
+    };
+    axios.defaults.adapter = async config => {
+      started.resolve();
+      await release.promise;
+      return { status: 200, statusText: 'OK', config, headers: {}, data: {
+        ...activated('A'), accessToken: 'A-refreshed-access', security: securityFor('A', 2),
+      } };
+    };
+    try {
+      const pending = Promise.allSettled([h.api.default.get('/mobile/me'), h.api.default.get('/mobile/me')]);
+      await started.promise;
+      await nextTurn();
+      release.resolve();
+      const outcomes = await pending;
+      await changing;
+      assert.ok(outcomes.every(result => result.status === 'rejected'));
+      assert.equal(sent.length, 2);
+      assertStoredIdentity(h, 'B');
+    } finally { release.resolve(); axios.defaults.adapter = previous; }
+  });
+
+  it('preserves the exact signed body bytes through Axios transformations', async () => {
+    const h = await harness();
+    await h.auth.acceptActivatedIdentity(activated('A'), 'hardware');
+    let signed = '';
+    h.state.native.signBackendRequest = async (_method: string, _url: string, body: string) => {
+      signed = body;
+      return '{}';
+    };
+    const body = ' \n{"synthetic":"body"} \n';
+    h.api.default.defaults.adapter = async config => {
+      assert.equal(config.data, signed);
+      assert.equal(config.data, body);
+      return { status: 200, statusText: 'OK', config, headers: {}, data: {} };
+    };
+    await h.api.default.post('/mobile/me', body);
+  });
+
+  it('does not accept an old activation response or account-state response after a newer login', async () => {
+    const h = await harness();
+    await h.auth.acceptActivatedIdentity(activated('A'), 'hardware');
+    const stamp = h.events.accessRequestStamp();
+    await h.auth.acceptActivatedIdentity(activated('B'), 'hardware');
+    await assert.rejects(h.auth.acceptActivatedIdentity(activated('A'), 'hardware', { stamp }), /AUTH_SESSION_CHANGED/);
+    await assert.rejects(h.auth.updateIdentityAccountState({ ...h.auth.getIdentitySession()!.accountState!, state: 'expired' }, stamp), /AUTH_SESSION_CHANGED/);
+    assertStoredIdentity(h, 'B');
+  });
+
+  for (const writer of ['activation', 'validation', 'account-state', 'legacy-restore'] as const) {
+    it(`fences delayed ${writer} persistence against activation B`, { timeout: 10_000 }, async () => {
+      const h = await harness();
+      h.state.native.signBackendRequest = async () => '{}';
+      await h.auth.acceptActivatedIdentity(activated('A'), 'hardware');
+      const blocked = deferred(), release = deferred();
+      let held = false;
+      h.state.beforeWrite = async (store, key, value) => {
+        if (!held && (writer === 'legacy-restore'
+          ? store === 'secure' && key === 'sxb_access_token_v2' && value === 'A-legacy-access'
+          : key === '@sxb_user')) {
+          held = true;
+          blocked.resolve();
+          await release.promise;
+        }
+      };
+      h.api.default.defaults.adapter = async config => ({
+        status: 200, statusText: 'OK', config, headers: {}, data: activated('A'),
+      });
+      if (writer === 'legacy-restore') {
+        h.state.secure.delete('sxb_access_token_v2');
+        h.state.storage.set('@sxb_access_token', 'A-legacy-access');
+        h.state.storage.set('@sxb_refresh_token', 'A-legacy-refresh');
+      }
+      const writing = writer === 'activation' ? h.auth.acceptActivatedIdentity(activated('A'), 'hardware')
+        : writer === 'validation' ? h.auth.validateIdentitySession('hardware')
+          : writer === 'legacy-restore' ? h.auth.restoreIdentitySession('hardware')
+            : h.auth.updateIdentityAccountState(h.auth.getIdentitySession()!.accountState!, h.events.accessRequestStamp());
+      const completed = Promise.allSettled([writing]);
+      try {
+        await blocked.promise;
+        const changing = h.auth.acceptActivatedIdentity(activated('B'), 'hardware');
+        release.resolve();
+        await completed;
+        await changing;
+        assertStoredIdentity(h, 'B');
+        assert.equal(h.state.storage.has('@sxb_access_token'), false);
+        assert.equal(h.state.storage.has('@sxb_refresh_token'), false);
+      } finally { release.resolve(); }
+    });
+  }
+
+  it('clears only the acknowledged activation retry ID', async () => {
+    const h = await harness();
+    const key = '@sxb_security_activation_request';
+    const pending = JSON.stringify({ accountHash: 'synthetic-account-hash', requestId: 'synthetic-request-B' });
+    h.state.storage.set(key, pending);
+    await h.auth.acceptActivatedIdentity(activated('A'), 'hardware', {
+      stamp: h.events.accessRequestStamp(), activationRequestId: 'synthetic-request-A',
+    });
+    assert.equal(h.state.storage.get(key), pending);
+    await h.auth.acceptActivatedIdentity(activated('B'), 'hardware', {
+      stamp: h.events.accessRequestStamp(), activationRequestId: 'synthetic-request-B',
+    });
+    assert.equal(h.state.storage.has(key), false);
+  });
+
+  for (const stage of ['quota', 'payload', 'legacy'] as const) {
+    it(`drains nested ${stage} cleanup after a sibling failure before B can reuse a manual ID`, { timeout: 10_000 }, async () => {
+      const h = await harness();
+      await h.auth.acceptActivatedIdentity(activated('A'), 'hardware');
+      for (const id of ['shared', 'failed']) {
+        assert.equal((await h.store.save(id, config, { source: 'manual' })).status, 'ok');
+      }
+      await h.offline.saveQuotaData({ configId: 'shared', totalQuota: 100, usedQuota: 10, expiryDate: null });
+      const blocked = deferred(), release = deferred();
+      let held = false, failed = false;
+      h.state.beforeWrite = async (store, key, value) => {
+        if (value !== null) return;
+        const delayedKey = stage === 'quota' ? 'sxb_quota_shared'
+          : stage === 'payload' ? 'sxb_cfg_payload_shared' : 'sxb_prov_config_v2';
+        const failureKey = stage === 'quota' ? 'sxb_offline_quota_v2'
+          : stage === 'payload' ? 'sxb_cfg_payload_failed' : 'sxb_prov_meta_v2';
+        if (!failed && store === 'async' && key === failureKey) {
+          failed = true;
+          throw new Error('SYNTHETIC_CLEAR_FAILURE');
+        }
+        if (!held && key === delayedKey && store === (stage === 'legacy' ? 'secure' : 'async')) {
+          held = true;
+          blocked.resolve();
+          await release.promise;
+        }
+      };
+      let clearSettled = false, replacementStored = false;
+      const cleared = assert.rejects(h.auth.clearIdentitySession(), /SYNTHETIC_CLEAR_FAILURE/)
+        .then(() => { clearSettled = true; });
+      try {
+        await blocked.promise;
+        const replacement = (async () => {
+          await h.auth.acceptActivatedIdentity(activated('B'), 'hardware');
+          assert.equal((await h.store.save('shared', { ...config, host: 'vpn-b.example.test' }, { source: 'manual' })).status, 'ok');
+          await h.offline.saveQuotaData({ configId: 'shared', totalQuota: 100, usedQuota: 20, expiryDate: null });
+          replacementStored = true;
+        })();
+        await nextTurn();
+        assert.equal(failed, true);
+        assert.equal(clearSettled, false, 'nested cleanup must drain before rejecting');
+        assert.equal(replacementStored, false);
+        release.resolve();
+        await cleared;
+        await replacement;
+        assertStoredIdentity(h, 'B');
+        assert.equal((await h.offline.loadQuotaData('shared'))?.usedQuota, 20);
+        assert.equal((await h.store.get('shared')).value?.config.host, 'vpn-b.example.test');
+      } finally { release.resolve(); }
+    });
+  }
+});
 
 describe('mobile access runtime with real encrypted store, auth and HTTP interceptors', () => {
+  it('accepts keyed and historical config fingerprints as opaque cache identities', async () => {
+    const h = await harness();
+    const state = snapshot('fingerprint-formats');
+    state.subscriptions[0].configHash = `hmac-sha256-v1:${'a'.repeat(64)}`;
+    state.subscriptions[1].configHash = 'b'.repeat(64);
+    const parsed = h.policy.parseAccessSnapshot(state);
+    assert.equal(parsed.subscriptions[0].configHash, state.subscriptions[0].configHash);
+    assert.equal(parsed.subscriptions[1].configHash, state.subscriptions[1].configHash);
+  });
+
   /**
    * Passage d'un ESSAI GRATUIT à un compte normal activé par jeton.
    *
@@ -506,6 +797,56 @@ describe('mobile access runtime with real encrypted store, auth and HTTP interce
     });
   }
 
+  it('prepares a cached native ticket without waiting for a cancelled access poll', async () => {
+    const h = await harness();
+    await setup(h);
+    const native: NativeAccessRuntime = {
+      authority: h.access.getAccessState().authority, observing: false, activeProfile: null,
+      ticketStatus: 'ready', ticketExpiresAt: new Date(Date.now() + 2 * 3600_000).toISOString(),
+    };
+    let applied = 0;
+    Object.assign(h.state.native, {
+      bindAccessSession: async () => JSON.stringify(native),
+      getAccessControlState: async () => JSON.stringify(native),
+      applyAccessSnapshot: async () => { applied++; return JSON.stringify(native); },
+    });
+    let entered!: (request: InternalAxiosRequestConfig) => void;
+    const received = new Promise<InternalAxiosRequestConfig>(resolve => { entered = resolve; });
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    let requests = 0;
+    h.api.default.defaults.adapter = async request => {
+      requests++;
+      entered(request);
+      await blocked;
+      return { config: request, status: 200, statusText: 'OK', headers: {},
+        data: snapshot('cancelled-response', 'suspended') };
+    };
+    const pending = h.sync.refreshAccessState(true).catch(() => false);
+    const request = await received;
+    const revision = h.access.getAccessState().authority?.snapshot?.revision;
+    const preparing = h.sync.prepareNativeAccess();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const ready = await Promise.race([
+        preparing.then(() => true),
+        new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), 250); }),
+      ]);
+      assert.equal(ready, true, 'a cancelled 25-second poll must not delay native startup');
+      assert.equal(request.signal?.aborted, true);
+      assert.equal(requests, 1, 'a valid cached ticket requires no new network request');
+      release();
+      await pending;
+      assert.equal(applied, 0, 'the cancelled poll must never apply its late response');
+      assert.equal(h.access.getAccessState().authority?.snapshot?.revision, revision);
+      h.access.requireDeviceAccess();
+    } finally {
+      if (timer) clearTimeout(timer);
+      release();
+      await Promise.allSettled([pending, preparing]);
+    }
+  });
+
   it('hands observation to native and rejects late JS snapshots after a native restriction', async () => {
     const h = await harness();
     const native: NativeAccessRuntime = {
@@ -607,9 +948,15 @@ describe('mobile access runtime with real encrypted store, auth and HTTP interce
     } finally { axios.defaults.adapter = previous; }
   });
 
-  it('preserves typed config/device failures through real API and only clears a definite invalid session', async () => {
+  it('preserves config/device failures and clears invalid auth without deleting profiles', async () => {
     const h = await harness();
     await setup(h);
+    const pending = { counterUp: 15, counterDown: 40, nextSeq: 2, initialized: true,
+      context: { subscriptionId: 'a', configId: 'a', sessionId: 'sess-original' },
+      entries: [{ subscriptionId: 'a', configId: 'a', sessionId: 'sess-original', seq: 1, up: 15, down: 40, frozen: true }] };
+    await h.ledger.saveLedger(pending);
+    const ledgerBefore = h.state.storage.get('@sxb_usage_ledger');
+    const profileBefore = (await h.store.get('a')).value;
     const failures: string[] = [];
     const unsub = h.events.subscribeAccessFailures(({ issue }) => failures.push(issue.code));
     const previous = axios.defaults.adapter;
@@ -625,7 +972,12 @@ describe('mobile access runtime with real encrypted store, auth and HTTP interce
       await assert.rejects(h.auth.validateIdentitySession('hardware'));
       assert.equal(h.auth.getIdentitySession(), null);
       assert.equal(h.state.secure.has('sxb_access_token_v2'), false);
-      equal((await h.store.list()).value, []);
+      assert.equal(h.state.secure.has('sxb_refresh_token_v2'), false);
+      assert.equal(h.state.storage.get('@sxb_usage_ledger'), ledgerBefore);
+      equal((await h.store.get('a')).value, JSON.parse(JSON.stringify(profileBefore)));
+      assert.equal((await h.store.get('a')).status, 'ok');
+      assert.equal((await h.store.get('b')).status, 'ok');
+      assert.equal((await h.store.get('manual')).status, 'ok');
     } finally { unsub(); axios.defaults.adapter = previous; }
   });
 

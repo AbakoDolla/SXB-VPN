@@ -5,8 +5,10 @@ import { prisma, inMemoryDb } from "../database";
 import { refusPourEtatAcces, resumerAccesRevendeur } from "../services/reseller-state";
 import { deviceIdFromRequest, loadMobileClient, mobileClientOwner } from "../services/mobile-principal";
 import { deviceAccessStatus, deviceAccessFailure, sessionInvalidFailure, MobileAccessError } from "../services/access-lifecycle";
+import { checkSession, consumeSessionProof, recordMobileSecurityRefusal } from "../services/mobile-session-security";
+import { verifyMobileProof, type SecurityClaims } from "../services/mobile-proof";
 
-export interface TokenPayload {
+export interface TokenPayload extends SecurityClaims {
   userId: string;
   email: string;
   role: string;
@@ -36,6 +38,7 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
   }
 
   const token = authHeader.split(" ")[1];
+  let verifiedClaims: TokenPayload | undefined;
   try {
     const decoded = jwt.verify(token, config.JWT_SECRET, { algorithms: ["HS256"] }) as TokenPayload;
     if (!decoded || typeof decoded !== "object" || typeof decoded.userId !== "string" ||
@@ -45,9 +48,11 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
       return res.status(401).json(sessionInvalidFailure());
     }
     if (decoded.role === "CLIENT") {
+      verifiedClaims = decoded;
       const client = await loadMobileClient(decoded, deviceIdFromRequest(req));
       const state = deviceAccessStatus(client, mobileClientOwner(client));
       if (state !== "active") return res.status(403).json(deviceAccessFailure(state));
+      await authorizeDeviceProof(req, { ...decoded, clientId: client!.id }, token);
       req.user = { ...decoded, role: "CLIENT", permissions: [] };
       return next();
     }
@@ -132,6 +137,21 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
       const client = await loadMobileClient({ ...decoded, role: "CLIENT" }, deviceIdFromRequest(req));
       const state = deviceAccessStatus(client, mobileClientOwner(client));
       if (state !== "active") return res.status(403).json(deviceAccessFailure(state));
+      await authorizeDeviceProof(req, { ...decoded, clientId: client!.id }, token);
+    }
+
+    async function authorizeDeviceProof(req: Request, claims: TokenPayload, token: string) {
+      const bound = await checkSession(claims);
+      if (!bound) return;
+      const proof = verifyMobileProof(req, bound.client.devicePublicKey!, token, claims);
+      // These handlers consume inside their accounting/session transaction.
+      if (["/api/mobile/vpn/traffic", "/api/mobile/vpn/usage", "/api/mobile/vpn/session",
+           "/api/mobile-security/events", "/api/provision/activate", "/api/provision/sync"].includes(req.originalUrl.split("?")[0]) ||
+          ["/vpn/traffic", "/vpn/usage", "/vpn/session"].includes(req.path) ||
+          (req.baseUrl.endsWith("/provision") && ["/activate", "/sync"].includes(req.path)) ||
+          (req.baseUrl.endsWith("/mobile-security") && req.path === "/events")) return;
+      if (!prisma) throw new Error("SECURITY_DATABASE_REQUIRED");
+      await prisma.$transaction(tx => consumeSessionProof(tx, claims, proof));
     }
 
     if (dbRoleName === "RESELLER" && !["GET", "HEAD", "OPTIONS"].includes(req.method)) {
@@ -148,7 +168,10 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
     };
     next();
   } catch (err) {
-    if (err instanceof MobileAccessError) return res.status(err.status).json(err.body);
+    if (err instanceof MobileAccessError) {
+      await recordMobileSecurityRefusal(err, verifiedClaims);
+      return res.status(err.status).json(err.body);
+    }
     if (err instanceof jwt.JsonWebTokenError) {
       return res.status(401).json({ ...sessionInvalidFailure(), error: "errors.auth.invalid_token", message: "Invalid or expired session token" });
     }

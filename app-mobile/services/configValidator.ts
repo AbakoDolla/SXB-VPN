@@ -3,7 +3,7 @@
  *
  * Protocoles supportés :
  *   SSH, SSH+Payload, VLESS, VMess, Trojan, Shadowsocks,
- *   WireGuard, Hysteria2, TUIC, Sing-box JSON natif
+ *   WireGuard, Hysteria1/2, TUIC, Sing-box JSON natif
  *
  * Usage :
  *   const result = validateVpnConfig(raw);
@@ -13,11 +13,13 @@
 import { parseVpnUri } from './vlessUri';
 import { lireProfilSocksIp } from './socksIpProfile';
 import { lireProfilV2rayN } from './v2rayNProfile';
+import { readProtocolBundle, validateShadowsocksKey, validateProtocolOptions, hasWireguardEndpoints } from '../../server/services/protocol-bundle';
+import { translateXrayToSingbox } from '../../server/services/xray-translate';
 
 export type SupportedProtocol =
   | 'ssh' | 'ssh+payload'
   | 'vless' | 'vmess' | 'trojan' | 'shadowsocks'
-  | 'wireguard' | 'hysteria2' | 'tuic'
+  | 'wireguard' | 'hysteria1' | 'hysteria2' | 'tuic'
   | 'singbox';
 
 export interface ValidationResult {
@@ -41,10 +43,11 @@ const REQUIRED_FIELDS: Record<SupportedProtocol, string[]> = {
   'vmess':       ['host', 'port', 'uuid'],
   'trojan':      ['host', 'port', 'password'],
   'shadowsocks': ['host', 'port', 'method', 'password'],
-  'wireguard':   ['privateKey', 'publicKey', 'endpoint'],
+  'wireguard':   ['privateKey'],
   'hysteria2':   ['host', 'port', 'password'],
+  'hysteria1':   ['host', 'port', 'password', 'upMbps', 'downMbps'],
   'tuic':        ['host', 'port', 'uuid', 'password'],
-  'singbox':     ['outbounds'],   // sing-box JSON natif
+  'singbox':     [],   // outbounds ou endpoints, valides ci-dessous
 };
 
 // ── Détection stricte du format JSON (PARTIE 1 — miroir du backend) ───────────
@@ -78,6 +81,7 @@ export function hasXrayMarkers(obj: Record<string, any>): boolean {
  */
 export function isSingboxNativeJson(obj: Record<string, any>): boolean {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
+  if (hasWireguardEndpoints(obj) && (!obj.outbounds || Array.isArray(obj.outbounds) && obj.outbounds.every((o: any) => o && typeof o.type === 'string'))) return true;
   if (!Array.isArray(obj.outbounds) || obj.outbounds.length === 0) return false;
   if (!obj.outbounds.every((o: any) => o && typeof o.type === 'string')) return false;
   return !hasXrayMarkers(obj);
@@ -111,6 +115,7 @@ function detectProtocol(obj: Record<string, any>): SupportedProtocol | null {
   if (raw === 'shadowsocks' || raw === 'ss') return 'shadowsocks';
   if (raw === 'wireguard' || raw === 'wg')   return 'wireguard';
   if (raw === 'hysteria2' || raw === 'hy2')  return 'hysteria2';
+  if (raw === 'hysteria1') return 'hysteria1';
   if (raw === 'tuic')             return 'tuic';
 
   if (hasXrayMarkers(obj)) return 'vless';
@@ -260,6 +265,8 @@ function extraValidation(
 
     case 'shadowsocks':
       validatePort(obj.port, errors);
+      try { validateShadowsocksKey(obj.method, obj.password); }
+      catch (error) { errors.push(error instanceof Error ? error.message : 'Shadowsocks : cle invalide'); }
       if (!VALID_SS_METHODS.includes(String(obj.method).toLowerCase())) {
         warnings.push(`Méthode Shadowsocks non standard : "${obj.method}"`);
       }
@@ -269,11 +276,18 @@ function extraValidation(
       if (!obj.privateKey || obj.privateKey.length < 40) {
         errors.push('WireGuard : "privateKey" invalide (trop court)');
       }
-      if (!obj.endpoint || !obj.endpoint.includes(':')) {
+      if ((!obj.endpoint || !obj.endpoint.includes(':')) && !(obj.host && obj.port)) {
         errors.push('WireGuard : "endpoint" doit être au format "host:port"');
       }
       break;
 
+    case 'hysteria1':
+      for (const field of ['upMbps', 'downMbps']) {
+        if (!Number.isSafeInteger(obj[field]) || obj[field] < 1) errors.push(`Hysteria1 : ${field} doit etre un entier positif`);
+      }
+      if (obj.tls === false) errors.push('Hysteria1 : TLS requis');
+      validatePort(obj.port, errors);
+      break;
     case 'hysteria2':
       validatePort(obj.port, errors);
       if (!obj.password || obj.password.length < 4) {
@@ -282,9 +296,9 @@ function extraValidation(
       break;
 
     case 'singbox':
-      if (!Array.isArray(obj.outbounds) || obj.outbounds.length === 0) {
+      if ((!Array.isArray(obj.outbounds) || obj.outbounds.length === 0) && !hasWireguardEndpoints(obj)) {
         errors.push('Sing-box : "outbounds" doit être un tableau non vide');
-      } else if (!hasXrayMarkers(obj) && !obj.outbounds.every((o: any) => o && typeof o.type === 'string')) {
+      } else if (obj.outbounds && !hasXrayMarkers(obj) && !obj.outbounds.every((o: any) => o && typeof o.type === 'string')) {
         errors.push('Sing-box : chaque outbound doit avoir un champ "type" (string)');
       }
       if (!obj.inbounds && !hasXrayMarkers(obj)) {
@@ -307,19 +321,19 @@ export function validateVpnConfig(raw: string | Record<string, any>): Validation
     if (!trimmed) {
       return { valid: false, protocol: null, errors: ['La configuration est vide'], warnings, config: null };
     }
-    // Les URI VLESS sont converties vers le même modèle plat que les JSON
+    // Les URI de partage sont converties vers le même modèle plat que les JSON
     // canoniques. Ainsi, l’interface mobile, le cache offline et le moteur
     // Android utilisent exactement les mêmes champs techniques.
-    if (/^vless:\/\//i.test(trimmed)) {
+    if (/^(vless|vmess|ss|trojan|hysteria2|hy2):\/\//i.test(trimmed)) {
       try {
         const parsed = parseVpnUri(trimmed);
-        if (!parsed) throw new Error('URI VLESS non reconnue');
+        if (!parsed) throw new Error('URI VPN non reconnue');
         obj = parsed.config;
         if (parsed.name) obj.name = parsed.name;
       } catch (error: any) {
         return {
           valid: false, protocol: null,
-          errors: [error?.message || 'URI VLESS invalide'],
+          errors: [error?.message || 'URI VPN invalide'],
           warnings, config: null,
         };
       }
@@ -329,7 +343,7 @@ export function validateVpnConfig(raw: string | Record<string, any>): Validation
       } catch {
         return {
           valid: false, protocol: null,
-          errors: ['Format invalide — utilisez un JSON ou une URI VLESS vless://…'],
+          errors: ['Format invalide — utilisez un JSON ou une URI VLESS, VMess, Trojan, Shadowsocks ou Hysteria2'],
           warnings, config: null,
         };
       }
@@ -338,7 +352,23 @@ export function validateVpnConfig(raw: string | Record<string, any>): Validation
     obj = raw;
   }
 
-  // 2. Doit être un objet
+  try {
+    const bundle = readProtocolBundle(obj);
+    if (bundle) {
+      obj = bundle.config;
+      warnings.push(...bundle.warnings);
+    }
+    if (hasXrayMarkers(obj)) {
+      const translated = translateXrayToSingbox(obj);
+      if (!translated.ok || !translated.singboxJson) throw new Error(translated.errors.join('; '));
+      obj = { ...translated.singboxJson, protocol: 'singbox' };
+      warnings.push(...translated.warnings);
+    }
+  } catch (error) {
+    return { valid: false, protocol: null, errors: [error instanceof Error ? error.message : 'Protocols: format invalide'], warnings, config: null };
+  }
+
+  // Le lecteur partagé diagnostique d'abord les catalogues sans configuration choisie.
   if (typeof obj !== 'object' || Array.isArray(obj) || obj === null) {
     return { valid: false, protocol: null, errors: ['La configuration doit être un objet JSON'], warnings, config: null };
   }
@@ -466,6 +496,8 @@ export function validateVpnConfig(raw: string | Record<string, any>): Validation
 
   // 6. Validations spécifiques
   extraValidation(protocol, obj, errors, warnings);
+  try { validateProtocolOptions({ ...obj, protocol }); }
+  catch (error) { errors.push(error instanceof Error ? error.message : 'Options de protocole invalides'); }
 
   // 7. Avertissements généraux
   if (!obj.host && protocol !== 'wireguard' && protocol !== 'singbox') {
@@ -531,14 +563,14 @@ export function isCompleteOfflineConfig(cfg: Record<string, any> | null | undefi
     hasCreds = !!(cfg.username && (cfg.password || cfg.privateKeyBase64));
   } else if (protocol === 'vless' || protocol === 'vmess' || protocol === 'tuic') {
     hasCreds = !!(cfg.uuid);
-  } else if (protocol === 'trojan' || protocol === 'hysteria2') {
+  } else if (protocol === 'trojan' || protocol === 'hysteria1' || protocol === 'hysteria2') {
     hasCreds = !!(cfg.password);
   } else if (protocol === 'shadowsocks') {
     hasCreds = !!(cfg.password && cfg.method);
   } else if (protocol === 'wireguard') {
-    hasCreds = !!(cfg.privateKey && cfg.endpoint);
+    hasCreds = !!(cfg.privateKey && (cfg.publicKey || cfg.peerPublicKey) && (cfg.endpoint || cfg.host && cfg.port));
   } else if (protocol === 'singbox') {
-    hasCreds = Array.isArray(cfg.outbounds) && cfg.outbounds.length > 0;
+    hasCreds = Array.isArray(cfg.outbounds) && cfg.outbounds.length > 0 || hasWireguardEndpoints(cfg);
   } else {
     // Protocole inconnu — accepter username/uuid/password comme credentials génériques
     hasCreds = !!(cfg.username || cfg.uuid || cfg.password);

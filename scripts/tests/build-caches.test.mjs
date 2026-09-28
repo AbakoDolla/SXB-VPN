@@ -64,17 +64,24 @@ describe('ce qui rend ces caches sûrs', () => {
     // Un fichier tronqué par un build interrompu doit être retéléchargé.
     assert.match(SCRIPT, /if empreinte_ok "\$KOTLIN_ZIP" "\$KOTLIN_SHA"; then/);
     assert.match(SCRIPT, /if empreinte_ok "\$JSON_JAR" "\$JSON_SHA"; then/);
+    assert.match(SCRIPT, /if ! empreinte_ok "\$JSCH_JAR" "\$JSCH_SHA"; then/);
   });
 
   it('un téléchargement neuf reste vérifié strictement', () => {
     const strictes = SCRIPT.match(/sha256sum --check --strict/g) || [];
-    assert.equal(strictes.length, 2, 'les deux téléchargements doivent rester vérifiés');
+    assert.equal(strictes.length, 3, 'Kotlin, JSON et JSch doivent rester vérifiés');
+    for (const name of ['KOTLIN', 'JSON', 'JSCH']) {
+      const file = name === 'KOTLIN' ? 'ZIP' : 'JAR';
+      assert.ok(SCRIPT.includes(`echo "$${name}_SHA  $${name}_${file}" | sha256sum --check --strict`));
+    }
   });
 
   it('les versions et empreintes restent épinglées', () => {
     assert.match(SCRIPT, /kotlin-compiler-2\.1\.20\.zip/);
     assert.match(SCRIPT, /KOTLIN_SHA="a118197b0de55ffab2bc8d5cd03a5e39033cfb53383d6931bc761dec0784891a"/);
     assert.match(SCRIPT, /JSON_SHA="3cf6cd6892e32e2b4c1c39e0f52f5248a2f5b37646fdfbb79a66b46b618414ed"/);
+    assert.match(SCRIPT, /jsch-0\.2\.21\.jar/);
+    assert.match(SCRIPT, /JSCH_SHA="2330df0841be84eefa7c6ba4b5a2c98faa153855c80a5af418fdedacc2a4bc5b"/);
   });
 
   it('sans cache désigné, le comportement d’origine est conservé', () => {

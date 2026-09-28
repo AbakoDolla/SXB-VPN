@@ -336,6 +336,7 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                 // Durée détenue par le service : elle continue de courir quand
                 // l'application est fermée, contrairement à un compteur JS.
                 putDouble("connectedSeconds", (stats["connectedSeconds"] ?: 0L).toDouble())
+                service?.usageSessionId()?.let { putString("usageSessionId", it) }
             }
             promise.resolve(map)
         } catch (e: Exception) {
@@ -481,6 +482,34 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
     }
 
     // ── checkSecurity ─────────────────────────────────────────────────────────
+    @ReactMethod
+    fun deviceSecurityIdentity(promise: Promise) {
+        accessExecutor.execute {
+            try { promise.resolve(SxbDeviceProof.identity().toString()) }
+            catch (error: Exception) { promise.reject("DEVICE_KEY_UNAVAILABLE", error) }
+        }
+    }
+
+    @ReactMethod
+    fun signBackendRequest(method: String, url: String, body: String, credential: String, promise: Promise) {
+        accessExecutor.execute {
+            try { promise.resolve(SxbDeviceProof.headers(reactApplicationContext, method, url, body, credential).toString()) }
+            catch (error: Exception) { promise.reject("DEVICE_PROOF_UNAVAILABLE", error) }
+        }
+    }
+
+    @ReactMethod
+    fun pendingSecurityEvents(promise: Promise) {
+        try { promise.resolve(SxbSecurityMonitor.pending(reactApplicationContext)) }
+        catch (error: Exception) { promise.reject("SECURITY_EVENT_STORAGE_FAILED", error) }
+    }
+
+    @ReactMethod
+    fun acknowledgeSecurityEvents(ids: String, promise: Promise) {
+        try { SxbSecurityMonitor.acknowledge(reactApplicationContext, org.json.JSONArray(ids)); promise.resolve(null) }
+        catch (error: Exception) { promise.reject("SECURITY_EVENT_STORAGE_FAILED", error) }
+    }
+
     /**
      * Observations d'intégrité destinées a la remontée serveur.
      *
@@ -506,6 +535,13 @@ class SxbVpnModule(reactContext: ReactApplicationContext)
                 putBoolean("isHooked",   report.isHooked)
                 putBoolean("isSafe",     report.isSafe)
                 putString("signatureStatus", signature.name)
+                putBoolean("debugger", android.os.Debug.isDebuggerConnected())
+                val identity = SecurityModule.integrityMetadata(reactApplicationContext)
+                for (key in listOf("packageName", "appVersion", "buildType", "channel")) putString(key, identity.optString(key))
+                val digests = Arguments.createArray()
+                val values = identity.getJSONArray("certificateDigests")
+                for (i in 0 until values.length()) digests.pushString(values.getString(i))
+                putArray("certificateDigests", digests)
             }
             promise.resolve(map)
         } catch (e: Exception) {

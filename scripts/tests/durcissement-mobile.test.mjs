@@ -11,7 +11,8 @@
  * Les invariants tenus :
  *  • la décision appartient au serveur, jamais au client ;
  *  • un signal isolé et ambigu ne coupe l'accès de personne ;
- *  • un remballage ou un leurre touché coupe, seul ;
+ *  • un remballage déclaré demande revalidation, un leurre touché surveillance ;
+ *  • aucune observation locale ne suspend automatiquement le compte ;
  *  • chaque alerte porte l'adresse source et le nom enregistré du client ;
  *  • la réponse ne renvoie ni score ni seuil, qui serviraient de banc d'essai ;
  *  • une sonde qui échoue ne prive jamais l'utilisateur de son VPN.
@@ -44,23 +45,22 @@ await build({
 const risque = require(sortie);
 process.on('exit', () => { if (existsSync(sortie)) rmSync(sortie, { force: true }); });
 
-test('un remballage coupe l’accès à lui seul', () => {
-  // Une signature d'APK qui ne correspond pas n'a aucune cause légitime : elle
-  // prouve que le binaire installé n'est pas celui qui a été publié.
+test('une signature locale suspecte demande une revalidation, pas une suspension', () => {
   const verdict = risque.evaluerRisque(['signatureInvalid']);
-  assert.equal(verdict.action, 'block');
-  assert.equal(verdict.severity, 'critical');
+  assert.equal(verdict.action, 'revalidate');
+  assert.equal(verdict.level, 'HIGH');
+  assert.equal(verdict.evidence, 'client_observation');
 });
 
-test('un leurre touché coupe l’accès à lui seul', () => {
+test('un leurre declare reste une observation', () => {
   // Une valeur appât n'est jamais lue par une application intacte.
   const verdict = risque.evaluerRisque(['decoyTouched']);
-  assert.equal(verdict.action, 'block');
+  assert.equal(verdict.action, 'watch');
 });
 
-test('une instrumentation active coupe l’accès', () => {
+test('une instrumentation locale demande une surveillance', () => {
   for (const signal of ['hooked', 'frida']) {
-    assert.equal(risque.evaluerRisque([signal]).action, 'block', `${signal} doit couper`);
+    assert.equal(risque.evaluerRisque([signal]).action, 'watch');
   }
 });
 
@@ -68,7 +68,8 @@ test('un appareil rooté n’est pas un coupable', () => {
   // Beaucoup d'utilisateurs honnêtes rootent leur téléphone. Le signal pèse,
   // il n'accuse pas : couper là-dessus reviendrait à punir une préférence.
   const verdict = risque.evaluerRisque(['rooted']);
-  assert.equal(verdict.action, 'watch');
+  assert.equal(verdict.action, 'none');
+  assert.equal(verdict.level, 'LOW');
   assert.notEqual(verdict.action, 'block');
 });
 
@@ -78,11 +79,12 @@ test('un émulateur seul ne déclenche rien de plus qu’une trace', () => {
   assert.equal(verdict.severity, 'info');
 });
 
-test('les signaux faibles finissent par se cumuler', () => {
+test('les observations correlees ne fabriquent pas des preuves independantes', () => {
   // Rooté + émulateur + débogueur : aucun ne prouve rien seul, les trois
   // ensemble décrivent un banc d'analyse.
   const verdict = risque.evaluerRisque(['rooted', 'emulator', 'debugger']);
-  assert.equal(verdict.action, 'block');
+  assert.equal(verdict.action, 'watch');
+  assert.equal(verdict.score, 30);
 });
 
 test('un appareil sain ne remplit pas le flux d’alertes', () => {
@@ -101,7 +103,17 @@ test('un signal inventé par le client est ignoré', () => {
 
 test('le score ne dépasse jamais cent', () => {
   const tout = risque.SIGNAUX_MOBILES.slice();
-  assert.equal(risque.evaluerRisque(tout).score, 100);
+  assert.ok(risque.evaluerRisque(tout).score < 90);
+  assert.equal(risque.evaluerRisque(tout).level, 'HIGH');
+});
+
+test('seule une violation verifiee serveur revoque la session', () => {
+  for (const violation of ['TOKEN_REPLAY', 'DEVICE_MISMATCH', 'SESSION_REPLAY']) {
+    const result = risque.evaluerRisque([], undefined, violation);
+    assert.equal(result.level, 'CRITICAL');
+    assert.equal(result.action, 'revoke_session');
+    assert.equal(result.evidence, 'server_verified');
+  }
 });
 
 test('le client n’envoie aucun verdict, et n’en reçoit aucun', () => {
@@ -139,15 +151,14 @@ test('aucun jeton de client n’entre dans une alerte', () => {
   assert.ok(!evenements.includes("'clientToken'"), 'un jeton n’a rien à faire dans un journal');
 });
 
-test('la coupure est réversible et tracée', () => {
+test('les observations ne suspendent jamais le compte', () => {
   const route = lireSource('server/routes/mobile-security.ts');
   // Suspension, jamais suppression : un faux positif doit se réparer.
-  assert.match(route, /status: 'suspended'/);
+  assert.doesNotMatch(route, /status: 'suspended'/);
   assert.doesNotMatch(route, /vpnClient\.delete/);
   // L'observation et la sanction sont deux entrées distinctes : on doit lire ce
   // qui a été vu même si la coupure échoue.
-  assert.match(route, /DEVICE_AUTO_BLOCKED/);
-  assert.match(route, /SUSPEND_FAILED/);
+  assert.doesNotMatch(route, /couperAcces|vpnClient\.update/);
 });
 
 test('les nouveaux types d’alerte existent et se lisent dans les deux langues', () => {

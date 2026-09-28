@@ -47,6 +47,10 @@ async function loadRoutes(db) {
         plugin.onResolve({ filter: /^@react-native-async-storage\/async-storage$/ }, () => ({
           path: path.join(root, "scripts", "tests", "stubs", "async-storage.mjs"),
         }));
+        plugin.onResolve({ filter: /^expo-crypto$/ }, () => ({ path: "crypto", namespace: "fixture" }));
+        plugin.onLoad({ filter: /^crypto$/, namespace: "fixture" }, () => ({
+          contents: `export {randomUUID} from 'node:crypto';`, loader: "js",
+        }));
         plugin.onLoad({ filter: /.*/, namespace: "fixture" }, () => ({
           contents: `export const config={jwtSecret:'fixture',refreshSecret:'fixture',accessTokenExpiry:'15m'};`,
           loader: "js",
@@ -227,6 +231,43 @@ test("usage: a cross-process unique-key race rolls back and returns the committe
   assert.equal(db.state.subscriptions[1].quotaUsed, 37n);
   assert.equal(db.state.client.quotaUsed, 37n);
   assert.equal(db.state.traffic.length, 1);
+});
+
+test("usage: recovering rejected null replay IDs never rebills an accepted receipt", async () => {
+  const db = database();
+  let api = await loadRoutes(db);
+  const accepted = { subscriptionId: "normal", bytesUp: 3, bytesDown: 7, sessionId: "accepted", seq: 0, reportMode: "delta", deviceId };
+  assert.equal((await route(api.mobile, "post", "/vpn/traffic", accepted)).status, 200);
+  const rejected = { subscriptionId: "trial", bytesUp: 7, bytesDown: 11, sessionId: null, seq: 1, reportMode: "delta", deviceId };
+  assert.equal((await route(api.mobile, "post", "/vpn/traffic", rejected)).status, 400);
+  assert.equal(db.state.client.quotaUsed, 10n, "a null ID must be rejected before any debit");
+  const original = JSON.stringify({
+    initialized: true, counterUp: 10, counterDown: 18, nextSeq: 2,
+    context: { subscriptionId: "trial", configId: "trial", sessionId: null },
+    entries: [
+      { subscriptionId: "normal", configId: "normal", sessionId: "accepted", seq: 0, up: 3, down: 7, frozen: true },
+      { subscriptionId: "trial", configId: "trial", sessionId: null, seq: 1, up: 7, down: 11, frozen: true },
+    ],
+  });
+  await api.storage.setItem("@sxb_usage_ledger", original);
+  let ledger = await api.usage.loadLedger();
+  assert.deepEqual(JSON.parse(await api.storage.getItem("@sxb_usage_ledger_recovery")), [original]);
+  const old = api.usage.nextReport(ledger);
+  assert.equal((await route(api.mobile, "post", "/vpn/traffic", { ...old.report, deviceId, reportMode: "delta" })).body.duplicate, true);
+  ledger = api.usage.settle(old.ledger, old.report);
+  const repaired = api.usage.nextReport(ledger);
+  await api.usage.saveLedger(repaired.ledger);
+  const body = { ...repaired.report, deviceId, reportMode: "delta" };
+  assert.equal((await route(api.mobile, "post", "/vpn/traffic", body)).body.subscriptionId, "trial");
+  const persisted = await api.storage.getItem("@sxb_usage_ledger");
+  api = await loadRoutes(db);
+  await api.storage.setItem("@sxb_usage_ledger", persisted);
+  const retry = api.usage.nextReport(await api.usage.loadLedger());
+  assert.deepEqual({ ...retry.report }, { ...repaired.report });
+  assert.equal((await route(api.mobile, "post", "/vpn/traffic", { ...retry.report, deviceId, reportMode: "delta" })).body.duplicate, true);
+  assert.equal(db.state.client.quotaUsed, 28n);
+  assert.equal(db.state.subscriptions[0].quotaUsed, 10n);
+  assert.equal(db.state.subscriptions[1].quotaUsed, 18n);
 });
 
 test("usage: an unidentified report cannot silently debit the newest of four subscriptions", async () => {

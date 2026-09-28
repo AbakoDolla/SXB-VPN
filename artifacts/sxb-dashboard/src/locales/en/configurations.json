@@ -1,4 +1,23 @@
 {
+  "bundle": {
+    "recognized": "Recognized Protocols export: {{protocol}}",
+    "preview": "Recognized format. Access control, DNS and connection lifecycle remain managed by SXB.",
+    "sshKey": "Base64 SSH private key (alternative to a password)",
+    "passphrase": "SSH key passphrase (if encrypted)",
+    "privateKey": "WireGuard private key (base64)",
+    "publicKey": "WireGuard peer public key (base64)",
+    "address": "Tunnel CIDR addresses, comma separated",
+    "allowedIps": "Allowed CIDR networks (empty: all destinations)",
+    "presharedKey": "Pre-shared key (optional)",
+    "persistentKeepalive": "Keepalive interval in seconds (0: disabled)",
+    "reserved": "Reserved bytes (optional, e.g. 0,0,0)",
+    "mtu": "MTU (optional)",
+    "upMbps": "Upload rate in Mbit/s (required for Hysteria1)",
+    "downMbps": "Download rate in Mbit/s (required for Hysteria1)",
+    "obfs": "Obfuscation (Hysteria1: secret; Hysteria2: salamander)",
+    "obfsPassword": "Salamander secret (when enabled)",
+    "method": "Shadowsocks method"
+  },
   "lock": {
     "unlock": "Unlock \"{{name}}\"",
     "set": "Protect \"{{name}}\"",
@@ -253,15 +272,15 @@
     "reimportSecretsPending": "The draft still contains a “to re-enter” placeholder. Fill in the real value: saving it as-is would break the configuration."
   },
   "ssh": {
-    "detected": "SSH configuration detected: SSH is entered manually only.",
+    "detected": "Ambiguous SSH format: use the form or a recognized Settings export.",
     "detectedHint": "Open manual entry and fill in the host, port, user, password and, if needed, the payload. You then validate exactly what the app will use.",
     "openManual": "Open SSH entry",
-    "importRefused": "SSH configurations are entered only in the “SSH — Manual entry” tab.",
+    "importRefused": "This SSH format is not recognized. Use “SSH — Manual entry” or a complete Protocols Settings export.",
     "mode": "SSH connection mode",
     "modeHint": "Direct: open SSH port (22). TLS: SSL tunnel (443). Payload: HTTP/WebSocket header before SSH. Proxy: through an HTTP CONNECT proxy. SlowDNS: DNS tunnel (DNSTT).",
     "sshFamily": "SSH (all modes)",
     "test": "Validate SSH transport",
-    "incomplete": "Fill in the SSH host, port, user and password.",
+    "incomplete": "Fill in the SSH host, port, user and a password or private key.",
     "sniHint": "Name presented during TLS; empty = server name."
   },
   "validity": {

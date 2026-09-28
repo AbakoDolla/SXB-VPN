@@ -8,6 +8,7 @@ export type VpnProtocolType =
   | 'trojan'
   | 'shadowsocks'
   | 'wireguard'
+  | 'hysteria1'
   | 'hysteria2'
   | 'tuic';
 
@@ -18,6 +19,8 @@ export interface VpnProfile {
   // SSH
   username?: string;
   password?: string;
+  privateKeyBase64?: string;
+  privateKeyPassphrase?: string;
   sni?: string;
   // VLESS / VMess / Trojan
   uuid?: string;
@@ -31,6 +34,18 @@ export interface VpnProfile {
   privateKey?: string;
   peerPublicKey?: string;
   localAddress?: string;
+  publicKey?: string;
+  endpoint?: string;
+  address?: string | string[];
+  persistentKeepalive?: number;
+  presharedKey?: string;
+  reserved?: number[];
+  mtu?: number;
+  upMbps?: number;
+  downMbps?: number;
+  obfs?: string;
+  obfsPassword?: string;
+  certificate?: string;
   // Hysteria2 / TUIC
   // (uses password + sni above)
 }

@@ -8,14 +8,16 @@ export const RESET_COUNT_KEYS = [
   "subscriptionDevices", "tokens", "vouchers", "profiles", "profileAssignments",
   "sshAccounts", "xrayAccounts", "singboxAccounts", "payloads", "traffic", "vpnLogs",
   "pushTokens", "healthReports", "healthDevices", "supportTickets", "adminTokens",
-  "freeTrialTokens", "freeTrialRequests",
+  "freeTrialTokens", "freeTrialRequests", "mobileConnections", "proofNonces",
 ] as const;
+const LEGACY_COUNT_KEYS = RESET_COUNT_KEYS.filter(key => key !== "mobileConnections" && key !== "proofNonces");
 export const RESET_RETAINED_ROLES = ["OWNER", "ADMIN", "SUPER_ADMIN"] as const;
 export const RESET_PRESERVED_KEYS = [
   "roles", "permissions", "servers", "serverConfigs", "auditLogs", "quotaMovements", "settings",
 ] as const;
 
 export type ResetCounts = Record<typeof RESET_COUNT_KEYS[number], number>;
+type ReceiptCounts = ResetCounts | Omit<ResetCounts, "mobileConnections" | "proofNonces">;
 export type RetainedUsers = Record<typeof RESET_RETAINED_ROLES[number], number>;
 export interface ResetPreview {
   mode: "production";
@@ -34,8 +36,8 @@ export interface ResetResult {
   status: "completed";
   resetId: string;
   completedAt: string;
-  deletedCounts: ResetCounts;
-  countsAfter: ResetCounts;
+  deletedCounts: ReceiptCounts;
+  countsAfter: ReceiptCounts;
   retainedUsersByRole: RetainedUsers;
   backup: { id: string; bytes: number; sha256: string };
   maintenanceRestored: boolean;
@@ -94,6 +96,10 @@ function counts<K extends string>(value: unknown, keys: readonly K[]): value is 
 function date(value: unknown): value is string {
   return typeof value === "string" && Number.isFinite(Date.parse(value));
 }
+function receiptCounts(value: unknown): value is ReceiptCounts {
+  return counts(value, RESET_COUNT_KEYS) || counts(value, LEGACY_COUNT_KEYS)
+    && !("mobileConnections" in value) && !("proofNonces" in value);
+}
 function isPreview(value: unknown): value is ResetPreview {
   return record(value) && value.mode === "production" && value.confirmationText === RESET_CONFIRMATION
     && nonempty(value.challenge) && date(value.expiresAt) && value.backupRequired === true
@@ -104,7 +110,7 @@ function isPreview(value: unknown): value is ResetPreview {
 }
 function isResult(value: unknown): value is ResetResult {
   return record(value) && value.status === "completed" && nonempty(value.resetId) && date(value.completedAt)
-    && counts(value.deletedCounts, RESET_COUNT_KEYS) && counts(value.countsAfter, RESET_COUNT_KEYS)
+    && receiptCounts(value.deletedCounts) && receiptCounts(value.countsAfter)
     && counts(value.retainedUsersByRole, RESET_RETAINED_ROLES) && record(value.backup)
     && nonempty(value.backup.id) && count(value.backup.bytes) && value.backup.bytes > 0
     && typeof value.backup.sha256 === "string" && /^[a-f0-9]{64}$/i.test(value.backup.sha256)

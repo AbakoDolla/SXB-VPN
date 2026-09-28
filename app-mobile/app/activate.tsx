@@ -30,6 +30,7 @@ export default function ActivateScreen() {
   const [token, setToken] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [errorKey, setErrorKey] = useState<TranslationKey | "">("");
+  const [keyFingerprint, setKeyFingerprint] = useState("");
   const [success, setSuccess] = useState(false);
   const successScale = useRef(new Animated.Value(0.86)).current;
   const shakeAnim = useRef(new Animated.Value(0)).current;
@@ -65,7 +66,14 @@ export default function ActivateScreen() {
     } catch (err: any) {
       if (Platform.OS !== "web") await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       shake();
-      setErrorKey(activationErrorKey(err));
+      const key = activationErrorKey(err);
+      setErrorKey(key);
+      if (key === "activation_device_key_required") {
+        try {
+          const { deviceKeyFingerprint } = await import("@/services/deviceSecurity");
+          setKeyFingerprint(await deviceKeyFingerprint());
+        } catch { console.warn("[SXB] DEVICE_KEY_FINGERPRINT_UNAVAILABLE"); }
+      }
     } finally {
       setIsLoading(false);
     }
@@ -158,6 +166,9 @@ export default function ActivateScreen() {
               <Text style={styles.secureHint}><Ionicons name="lock-closed-outline" size={12} color={colors.textMuted} />  {t("activate_token_secure")}</Text>
             )}
 
+            {keyFingerprint && errorKey === "activation_device_key_required" ? <View style={styles.errorWrap}>
+              <Text selectable style={styles.errorText}>{t("activation_key_fingerprint")}: {keyFingerprint}</Text>
+            </View> : null}
             <Pressable
               onPress={handleActivate}
               disabled={isLoading}

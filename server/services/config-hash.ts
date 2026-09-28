@@ -1,8 +1,8 @@
 /**
  * config-hash.ts — Hash de configuration exposé au mobile (invalidation de cache, §6.4)
  *
- * - Profil IMPORTÉ (modèle « intermédiaire ») : hash du canonique — exact,
- *   stable, calculé une seule fois à l'import, prouve la non-altération.
+ * - Profil IMPORTÉ : empreinte opaque stockée à l'import (HMAC versionné pour
+ *   les nouveaux imports, SHA-256 historique conservé pour les anciens).
  * - Profil LEGACY (colonnes) : hash déterministe sur les colonnes techniques
  *   NON secrètes + updatedAt — tout changement de profil change le hash.
  *

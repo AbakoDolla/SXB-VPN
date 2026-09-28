@@ -145,7 +145,7 @@ object SxbEngineSchema {
         val serveurs = dns?.optJSONArray("servers") ?: return null
         for (i in 0 until serveurs.length()) {
             val serveur = serveurs.optJSONObject(i) ?: continue
-            if (serveur.optString("type") == "fakeip") continue
+            if (serveur.optString("type") !in setOf("udp", "tcp", "tls", "https", "quic", "h3", "local", "dhcp")) continue
             val tag = serveur.optString("tag", "")
             if (tag.isNotEmpty() && !serveur.has("detour")) return tag
         }
@@ -174,7 +174,10 @@ object SxbEngineSchema {
      * garde alors exactement le chemin d'avant.
      */
     private fun outboundParDefautHerite(config: JSONObject): String? {
-        val outbounds = config.optJSONArray("outbounds") ?: return null
+        val outbounds = JSONArray(config.optJSONArray("outbounds")?.toString() ?: "[]")
+        config.optJSONArray("endpoints")?.let { endpoints ->
+            for (i in 0 until endpoints.length()) outbounds.put(endpoints.getJSONObject(i))
+        }
         val parTag = LinkedHashMap<String, JSONObject>()
         for (i in 0 until outbounds.length()) {
             val o = outbounds.optJSONObject(i) ?: continue

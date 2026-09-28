@@ -140,6 +140,9 @@ private fun expandSshPayloadTokens(
     val randomToken = ByteArray(8).also { random.nextBytes(it) }
         .joinToString("") { "%02x".format(it) }
     val replacements = linkedMapOf(
+        "[method]" to "CONNECT",
+        "[protocol]" to "HTTP/1.0",
+        "[ssh]" to "$targetHost:$targetPort",
         "[host_port]" to "$targetHost:$targetPort",
         "[crlf]" to "\r\n",
         "[lfcr]" to "\n\r",
@@ -352,6 +355,7 @@ private class SxbPayloadProxy(
      * doit être appelé tant que le socket n'est pas encore connecté.
      */
     private val protectSocket: (Socket) -> Boolean,
+    private val expectHttpResponse: Boolean = true,
     private val onEvent: (String) -> Unit,
 ) : com.jcraft.jsch.Proxy {
     private var socket: Socket? = null
@@ -450,6 +454,13 @@ private class SxbPayloadProxy(
         val sentBytes = sendSshPayload(payload, rawOut, onEvent)
         Log.i("SXB_DEBUG", "[SXB_DEBUG] PAYLOAD_SENT bytes=$sentBytes")
         onEvent("[SXB_TRACE] stage=PAYLOAD_SENT bytes=$sentBytes flush=true")
+
+        if (!expectHttpResponse) {
+            inputStream = rawIn
+            outputStream = rawOut
+            onEvent("[SXB_TRACE] stage=PAYLOAD_DIRECT_SSH no_http_wait=true")
+            return
+        }
 
         // ── 2. Lire la réponse HTTP du serveur (headers jusqu'à \r\n\r\n) ────
         transportSocket.soTimeout = 10_000
@@ -1196,6 +1207,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
         tlsEnabled: Boolean,
         configuredSni: String,
     ): List<SshTransportStrategy> {
+        if (cfg.optStringOrNull("payloadDialect", "") == "protocols-v1") {
+            val exact = expandSshPayloadTokens(rawPayload, host, port, cfg.optStringOrNull("userAgent", "SXB-VPN/Android"), configuredSni)
+            return listOf(SshTransportStrategy(if (tlsEnabled) "tls_raw" else "raw", tlsEnabled, exact, configuredSni.ifBlank { host }))
+        }
         val normalized = normalizePayload(
             rawPayload,
             host,
@@ -1395,25 +1410,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
         Log.i(TAG, "[SXB_DEBUG] START_COMMAND_RECEIVED action=" + intent?.action)
         broadcastLog("[SXB_DEBUG] ▶ START_COMMAND_RECEIVED (onStartCommand a démarré)")
 
-        // Vérifications de sécurité — OK to run after startForeground()
-        val secReport = SecurityModule.audit(this)
-        if (SecurityModule.shouldBlock(secReport)) {
-            // La configuration réelle n'est ni lue ni transmise au moteur. Les
-            // traces exposées à l'outil d'instrumentation décrivent un serveur
-            // factice : ce qu'il capture ne mène nulle part.
-            val leurre = SecurityModule.leurreEndpoint(packageName)
-            Log.e("SXB_DEBUG", "[SXB_DEBUG] SECURITY_BLOCK hasFrida=${secReport.hasFrida} hasXposed=${secReport.hasXposed} isHooked=${secReport.isHooked}")
-            broadcastLog("[SXB_TRACE] stage=ENDPOINT_RESOLVED remote=$leurre id=${SecurityModule.leurreUuid(packageName)}")
-            broadcastLog("[SXB] ❌ Connexion refusée")
-            broadcastStatus("error")
-            stopSelf()
-            return START_NOT_STICKY
-        }
-        if (secReport.isRooted) {
-            Log.w("SXB_DEBUG", "[SXB_DEBUG] SECURITY_WARN isRooted=true")
-            broadcastLog("[SXB_DEBUG] ⚠️ SECURITY_WARN: appareil rooté")
-            broadcastLog("[SXB] ⚠️ Appareil rooté — risque de sécurité")
-        }
+        // Runtime probes are scheduled by the existing background reporter,
+        // never on Android's main-thread start path and never as a local ban.
         // C8 — Contrôle d'intégrité de la signature APK. Informatif tant que
         // l'empreinte attendue n'est pas injectée dans le manifeste de release :
         // une signature invalide ne coupe pas le service pour ne pas rendre
@@ -1554,12 +1552,27 @@ class SxbVpnService : VpnService(), PlatformInterface {
         foregroundStarted.set(false); instance = null; super.onDestroy()
     }
     override fun onRevoke()  {
+        if (android.net.VpnService.prepare(this) == null) return
+        val revokedConfig = configJson
+        val revokedStartId = derniereCommandeStartId
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+        SxbSecurityMonitor.record(this, "VPN_REVOKED", revokedConfig)
+        // A delayed binder callback must not undo an explicit new permission grant.
+        if (instance !== this || android.net.VpnService.prepare(this) == null ||
+            configJson != revokedConfig || derniereCommandeStartId != revokedStartId) return@post
+        // Cancel the original attempt before workers can schedule another start.
+        // Permission loss is not logout, account suspension or profile deletion.
+        if (::autoReconnect.isInitialized) autoReconnect.markStopped("system_vpn_revoke")
+        try { SxbAccessControl.cancelStarts(this) }
+        catch (error: Exception) { Log.e(TAG, "ACCESS_CANCEL_STARTS_FAILED", error) }
         broadcastLog("[SXB] ⚠️ VPN révoqué par le système")
         broadcastStatus("disconnected")
         cleanup()
         // Le système a repris la main sur l'interface VPN : ne pas la réinstaller.
         removeKillSwitchBlackhole()
-        super.onRevoke()
+        // cleanup uses stopSelf(startId); the base's unconditional stopSelf
+        // could destroy a newly queued start command.
+        }
     }
 
     // ── Dispatch protocole ────────────────────────────────────────────────────
@@ -1595,7 +1608,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             "ssh+payload+tls", "ssh+payload+ssl", "ssh+http", "ssh+proxy",
             "ssh+http-connect", "ssh+slowdns", "slowdns", "ssh+udp"    -> startSshTunnel(json)
             "vless", "vmess", "trojan", "shadowsocks",
-            "wireguard", "hysteria2", "tuic"                            -> startSingBoxTunnel(json, proto)
+            "wireguard", "hysteria1", "hysteria2", "tuic"               -> startSingBoxTunnel(json, proto)
             "singbox"                                                   -> startSingBoxTunnelRaw(json)
             else -> {
                 Log.e("SXB_DEBUG", "[SXB_DEBUG] DISPATCH_ERROR proto_inconnu=$proto")
@@ -1801,6 +1814,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
         dnsttProtectFile = null
     }
 
+    private val legacyPayloadSequence = SxbProtocolCompatibility.LegacyPayloadSequence()
+
     private fun startSshTunnel(configJsonStr: String) {
         val sshAccountExpired = AtomicBoolean(false)
         try {
@@ -1813,6 +1828,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
             val host       = cfg.optStringOrNull("host", "")
             val port       = cfg.optInt("port", 22)
+            val payloadTargetPort = cfg.optInt("payloadTargetPort", port)
+            require(payloadTargetPort in 1..65535) { "SSH_PAYLOAD_TARGET_PORT_INVALID" }
             // optStringOrNull : jamais la chaîne "null" (AOSP) — correctif APK #165
             val protocol   = cfg.optStringOrNull("protocol", "ssh").lowercase(Locale.ROOT)
             val transport  = cfg.optStringOrNull("sshTransport", "").lowercase(Locale.ROOT)
@@ -1846,6 +1863,11 @@ class SxbVpnService : VpnService(), PlatformInterface {
             val proxyPort = cfg.optInt("proxyPort", 0)
             val effectiveProxyHost = proxyHost.ifBlank { host }
             val effectiveProxyPort = if (proxyPort in 1..65535) proxyPort else port
+            require(cfg.optStringOrNull("payloadResponse", "http") in setOf("http", "none")) { "SSH_PAYLOAD_RESPONSE_INVALID" }
+            require(cfg.optStringOrNull("payloadResponse", "http") != "none" ||
+                (cfg.optStringOrNull("payloadDialect", "") == "protocols-v1" && transport == "payload" && !tlsEnabled && !proxyEnabled)) {
+                "SSH_PAYLOAD_RESPONSE_INVALID"
+            }
             val userAgent = cfg.optStringOrNull("userAgent", "SXB-VPN/Android")
             val udpMode = cfg.optStringOrNull("udpMode", "none").lowercase(Locale.ROOT)
             val udpGatewayHost = cfg.optStringOrNull("udpGatewayHost", "127.0.0.1")
@@ -1874,7 +1896,11 @@ class SxbVpnService : VpnService(), PlatformInterface {
             // on utilise un payload WebSocket par défaut pour éviter le timeout sur port 443.
             // optStringOrNull : payload=null côté backend ne doit JAMAIS
             // devenir la chaîne "null" (payload_len=4 — incident APK #165)
-            val rawPayload = cfg.optStringOrNull("payload", "")
+            val rawPayload = cfg.optStringOrNull("payload", "").let {
+                if (cfg.optStringOrNull("payloadDialect", "") == "protocols-v1") {
+                    legacyPayloadSequence.expand(cfg, it)
+                } else it
+            }
             val payload = when {
                 rawPayload.isNotEmpty() -> rawPayload   // payload réel reçu du backend
                 transport == "http-connect" || protocol == "ssh+http-connect" ->
@@ -1925,6 +1951,19 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
             // ── Session JSch et ladder de transport ───────────────────────────
             val jsch = JSch()
+            val privateKeyBase64 = cfg.optStringOrNull("privateKeyBase64", "")
+            if (privateKeyBase64.isNotEmpty()) {
+                require(privateKeyBase64.length <= 262144) { "SSH_PRIVATE_KEY_TOO_LARGE" }
+                val keyBytes = android.util.Base64.decode(privateKeyBase64, android.util.Base64.DEFAULT)
+                val passphrase = cfg.optStringOrNull("privateKeyPassphrase", "")
+                    .takeIf { it.isNotEmpty() }?.toByteArray(Charsets.UTF_8)
+                try {
+                    jsch.addIdentity("sxb-profile", keyBytes, null, passphrase)
+                } finally {
+                    keyBytes.fill(0)
+                    passphrase?.fill(0)
+                }
+            }
 
             // C5 — La clé d'hôte est contrôlée pendant l'échange de clés, donc avant
             // que JSch ne transmette le mot de passe. `StrictHostKeyChecking=yes` n'est
@@ -1944,7 +1983,11 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
             val commonProps = Properties().apply {
                 set("StrictHostKeyChecking", if (hostKeyVerifier.strict) "yes" else "no")
-                set("PreferredAuthentications", "password")
+                set("PreferredAuthentications", when {
+                    privateKeyBase64.isEmpty() -> "password"
+                    password.isEmpty() -> "publickey"
+                    else -> "password,publickey"
+                })
                 // NE PAS remettre "ServerAliveInterval"/"ServerAliveCountMax" ici :
                 // JSch ne lit ces clés que depuis un ConfigRepository (fichier façon
                 // OpenSSH), jamais depuis les Properties d'une session. Elles y
@@ -1986,11 +2029,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
                                 payloadConnectHost,
                                 payloadConnectPort,
                                 host,
-                                port,
+                                payloadTargetPort,
                                 userAgent,
                                 tlsInsecure,
                                 ::protectSocket,
-                            ) { event -> broadcastLog(event) }
+                                onEvent = { event -> broadcastLog(event) },
+                                expectHttpResponse = cfg.optStringOrNull("payloadResponse", "http") != "none",
+                            )
                         )
                     } else if (tlsEnabled) {
                         // SSH over TLS (« SSL Tunnel ») : pas de payload HTTP, mais
@@ -2050,7 +2095,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     broadcastLog("[SXB_TRACE] TRANSPORT_MODE_CACHE_PURGED reason=config_changed")
                 }
                 val cachedMode = preferences.getString(cacheKey, null)
-                val allStrategies = sshTransportStrategies(cfg, payload, host, port, tlsEnabled, sni)
+                val allStrategies = sshTransportStrategies(cfg, payload, host, payloadTargetPort, tlsEnabled, sni)
                 val cachedStrategy = cachedMode?.let { mode -> allStrategies.firstOrNull { it.mode == mode } }
                 if (cachedStrategy != null) {
                     broadcastLog("[SXB_TRACE] TRANSPORT_MODE_CACHED mode=${cachedStrategy.mode}")
@@ -2571,6 +2616,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // On s'assure que l'état est bien "connected" (déjà fait normalement dans openTun)
         if (currentState != "connected") {
             broadcastStatus("connected"); setCurrentState("connected")
+            SxbSecurityMonitor.record(this, "VPN_STARTED", configJson)
             tunnelEverUp = true
             autoReconnect.onConnected()
             updateNotification("SXB VPN — $label connecté")
@@ -3198,6 +3244,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             broadcastLog("[SXB] ✅ Handshake réussi — Données en transit")
             setCurrentState("connected")
             broadcastStatus("connected")
+            SxbSecurityMonitor.record(this, "VPN_STARTED", configJson)
             tunnelEverUp = true
             updateNotification("SXB VPN — Connecté")
             startNotificationUpdater()
@@ -3344,6 +3391,14 @@ class SxbVpnService : VpnService(), PlatformInterface {
     // ═════════════════════════════════════════════════════════════════════════
 
     private fun buildSingBoxConfig(cfg: JSONObject, protocol: String): String {
+        if (protocol == "wireguard") {
+            return buildRawSingBoxConfig(JSONObject().apply {
+                put("endpoints", JSONArray().put(SxbProtocolCompatibility.canonicalWireguard(cfg)))
+                put("outbounds", JSONArray())
+                put("route", JSONObject().put("final", "proxy"))
+                put("dns", profileDnsObject(cfg.optStringOrNull("dns", "")) ?: defaultDnsObject())
+            })
+        }
         // optStringOrNull : jamais la chaîne "null" (AOSP) — correctif APK #165
         val host     = cfg.optStringOrNull("host", "")
         val port     = cfg.optInt("port", 443)
@@ -3448,7 +3503,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
             "trojan" -> buildTrojanOutbound(host, port, password, transport)
             "shadowsocks" -> buildShadowsocksOutbound(host, port, password, method)
             "wireguard" -> buildWireGuardOutbound(host, port, privKey, peerPub, localAddr)
-            "hysteria2" -> buildHysteria2Outbound(host, port, password, sni, tls)
+            "hysteria1" -> SxbProtocolCompatibility.hysteria(cfg, 1)
+            "hysteria2" -> SxbProtocolCompatibility.hysteria(cfg, 2)
             "tuic" -> buildTuicOutbound(host, port, uuid, password, sni, tls)
             else -> JSONObject().put("type", "direct").put("tag", "proxy")
         }
@@ -3940,6 +3996,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         }
         if (!isXray) return stripUnsupportedSingBoxVlessFields(cfg)
         val newOutbounds = JSONArray()
+        val endpoints = JSONArray(cfg.optJSONArray("endpoints")?.toString() ?: "[]")
         for (i in 0 until rawOutbounds.length()) {
             val o = rawOutbounds.optJSONObject(i) ?: continue
             val proto = o.optString("protocol", "").lowercase()
@@ -4022,7 +4079,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                                 put("tls", JSONObject().apply {
                                     put("enabled", true)
                                     put("server_name", tlsObj?.optString("serverName", address) ?: address)
-                                    put("insecure", tlsObj?.optBoolean("allowInsecure", true) ?: true)
+                                    put("insecure", tlsObj?.optBoolean("allowInsecure", false) ?: false)
                                     if (fp.isNotEmpty()) {
                                         put("utls", JSONObject().apply {
                                             put("enabled", true)
@@ -4079,7 +4136,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                         put("tls", JSONObject().apply {
                             put("enabled", true)
                             put("server_name", tlsSettings?.optString("serverName", address) ?: address)
-                            put("insecure", tlsSettings?.optBoolean("allowInsecure", true) ?: true)
+                            put("insecure", tlsSettings?.optBoolean("allowInsecure", false) ?: false)
                         })
                         when (stream?.optString("network", "tcp")) {
                             "ws", "websocket" -> {
@@ -4169,6 +4226,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     preserveXrayDetour(sbOut)
                     newOutbounds.put(sbOut)
                 }
+                "wireguard" -> {
+                    require(settings != null && stream == null && proxySettings == null) { "XRAY_WIREGUARD_OPTIONS_UNSUPPORTED" }
+                    endpoints.put(SxbProtocolCompatibility.wireguard(settings, tag))
+                }
                 "freedom" -> {
                     newOutbounds.put(JSONObject().put("type", "direct").put("tag", tag))
                 }
@@ -4188,6 +4249,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
         return JSONObject(cfg.toString()).apply {
             put("outbounds", newOutbounds)
+            if (endpoints.length() > 0) put("endpoints", endpoints)
 
             // Les règles Xray utilisent outboundTag/inboundTag/ip alors que
             // sing-box attend outbound/inbound/ip_cidr.
@@ -4239,12 +4301,16 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 put("route", JSONObject().put("rules", convertedRules))
             }
 
-            val dnsDetour = SxbTunnelPolicy.defaultProxyTag(newOutbounds, optJSONObject("route")) ?: "direct"
+            val dnsNodes = JSONArray(newOutbounds.toString())
+            for (i in 0 until endpoints.length()) dnsNodes.put(endpoints.getJSONObject(i))
+            val dnsDetour = SxbTunnelPolicy.defaultProxyTag(dnsNodes, optJSONObject("route")) ?: "direct"
 
             // Conversion DNS Xray vers le schéma sing-box. Les champs Xray
             // queryStrategy/serveStale/tag ne sont pas des champs DNS sing-box
             // modernes et peuvent faire refuser toute la configuration.
-            val xrayDns = optJSONObject("dns")
+            val wireguardDns = (0 until rawOutbounds.length()).mapNotNull { rawOutbounds.optJSONObject(it) }
+                .firstOrNull { it.optString("protocol") == "wireguard" }?.optJSONObject("settings")?.optJSONArray("remoteDNS")
+            val xrayDns = optJSONObject("dns") ?: wireguardDns?.let { JSONObject().put("servers", it) }
             if (xrayDns != null) {
                 val sourceServers = xrayDns.optJSONArray("servers") ?: JSONArray()
                 val newServers = JSONArray()
@@ -4261,7 +4327,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                         is JSONObject -> JSONObject(source.toString()).apply {
                             // Les DNS distants suivent le proxy VLESS ; `local`
                             // reste le seul resolver explicitement direct.
-                            if (!has("detour")) {
+                            if (!has("detour") && optString("type") != "hosts") {
                                 val address = optString("address", "")
                                 put("detour", if (address.equals("local", ignoreCase = true) || address.startsWith("local://", ignoreCase = true)) "direct" else dnsDetour)
                             }
@@ -4286,6 +4352,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     xrayDns.optString("final", "").takeIf { it.isNotBlank() }?.let { put("final", it) }
                     if (xrayDns.optBoolean("independent_cache", false)) put("independent_cache", true)
                 }
+                xrayDns.optJSONObject("hosts")?.let { SxbProtocolCompatibility.dnsHosts(normalizedDns, it) { code -> SxbSecureLogger.warn(code) } }
                 put("dns", normalizedDns)
             }
         }
@@ -4299,9 +4366,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private fun normalizeRawSingBoxCompatibility(cfg: JSONObject): JSONObject {
         cfg.remove("protocol")
 
-        val dnsDetour = SxbTunnelPolicy.defaultProxyTag(
-            cfg.optJSONArray("outbounds") ?: JSONArray(), cfg.optJSONObject("route"),
-        ) ?: "proxy"
+        val dnsNodes = JSONArray((cfg.optJSONArray("outbounds") ?: JSONArray()).toString())
+        cfg.optJSONArray("endpoints")?.let { for (i in 0 until it.length()) dnsNodes.put(it.getJSONObject(i)) }
+        val dnsDetour = SxbTunnelPolicy.defaultProxyTag(dnsNodes, cfg.optJSONObject("route")) ?: "proxy"
 
         // Les anciens imports acceptaient `dns.servers: ["8.8.8.8"]`.
         // sing-box 1.11 attend des objets DNSServerOptions.
@@ -4319,7 +4386,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                             put("detour", if (address.equals("local", ignoreCase = true) || address.startsWith("local://", ignoreCase = true)) "direct" else dnsDetour)
                         })
                         is JSONObject -> normalizedDnsServers.put(JSONObject(source.toString()).apply {
-                            if (!has("detour")) {
+                            if (!has("detour") && optString("type") != "hosts") {
                                 val address = optString("address", "")
                                 put("detour", if (address.equals("local", ignoreCase = true) || address.startsWith("local://", ignoreCase = true)) "direct" else dnsDetour)
                             }
@@ -4328,11 +4395,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 }
                 dns.put("servers", normalizedDnsServers)
             }
-            // `dns.hosts` appartient aux anciens imports/Xray et n’existe pas
-            // dans le schéma sing-box 1.11. La retirer évite un rejet global.
+            // Les anciens imports conservent la forme Xray ; le moteur 1.12
+            // attend un serveur hosts et une règle DNS explicite.
             if (dns.has("hosts")) {
+                val hosts = dns.getJSONObject("hosts")
                 dns.remove("hosts")
-                SxbSecureLogger.warn("SINGBOX_DNS_HOSTS_IGNORED_VERSION")
+                SxbProtocolCompatibility.dnsHosts(dns, hosts) { code -> SxbSecureLogger.warn(code) }
             }
         }
 
@@ -4430,8 +4498,18 @@ class SxbVpnService : VpnService(), PlatformInterface {
         )
         val specialTypes = setOf("direct", "dns", "block")
 
-        val rawOutbounds = cfg.optJSONArray("outbounds")
-            ?: throw Exception("Configuration sing-box vide : champ \"outbounds\" manquant")
+        val rawOutbounds = cfg.optJSONArray("outbounds") ?: JSONArray()
+        val endpointTags = HashSet<String>()
+        val endpoints = cfg.optJSONArray("endpoints") ?: JSONArray()
+        for (i in 0 until endpoints.length()) {
+            val endpoint = endpoints.getJSONObject(i)
+            require(endpoint.optString("type") == "wireguard" && !endpoint.optBoolean("system", false)) {
+                "ENDPOINT_UNSUPPORTED_OR_SYSTEM_TUN"
+            }
+            val tag = endpoint.getString("tag")
+            require(tag.isNotBlank() && endpointTags.add(tag)) { "ENDPOINT_TAG_INVALID" }
+            rawOutbounds.put(endpoint)
+        }
         if (rawOutbounds.length() == 0) throw Exception("Configuration sing-box vide : aucun outbound")
 
         val outbounds = JSONArray()
@@ -4452,6 +4530,13 @@ class SxbVpnService : VpnService(), PlatformInterface {
             tags.add(tag)
             if (type !in specialTypes) {
                 o.optString("server", "").takeIf { it.isNotBlank() }?.let { outboundServerHosts.add(it) }
+                if (tag in endpointTags) {
+                    val peers = o.getJSONArray("peers")
+                    for (n in 0 until peers.length()) {
+                        peers.getJSONObject(n).optString("address", "").takeIf { it.isNotBlank() }
+                            ?.let { outboundServerHosts.add(it) }
+                    }
+                }
                 SxbTunnelPolicy.normalizeStreamOutbound(o).forEach {
                     broadcastLog("[CONFIG] adaptation moteur $it (sortie $type)")
                 }
@@ -4596,8 +4681,15 @@ class SxbVpnService : VpnService(), PlatformInterface {
             put("log", JSONObject().put("level", "warn").put("timestamp", true))
             put("dns", dnsObj)
             put("inbounds", JSONArray().put(tunInbound(mtu)))
-            put("outbounds", outbounds)
+            put("outbounds", JSONArray().apply {
+                for (i in 0 until outbounds.length()) {
+                    val outbound = outbounds.getJSONObject(i)
+                    if (outbound.optString("tag") !in endpointTags) put(outbound)
+                }
+            })
+            if (endpoints.length() > 0) put("endpoints", endpoints)
             put("route", JSONObject().apply {
+                routeObj?.opt("default_domain_resolver")?.let { put("default_domain_resolver", it) }
                 put("rules", routeRules)
                 put("final", finalTag)
                 // true → autoDetectInterfaceControl() → VpnService.protect() (anti-boucle)
@@ -5638,6 +5730,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         if (stopService) autoReconnect.reset()
 
         if (stopService) {
+            SxbSecurityMonitor.record(this, "VPN_STOPPED", configJson)
             setCurrentState("disconnected")
             trace("CLEANUP_COMPLETE", "state=$currentState")
             broadcastStatus("disconnected")
@@ -5681,6 +5774,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
     fun stopVpn() = cleanup()
 
+    fun usageSessionId(): String? =
+        if (configJson.isEmpty()) null else JSONObject(configJson).optString("usageSessionId").takeIf { it.isNotEmpty() }
+
     fun stopAccessObserver() {
         accessObserver?.stop()
         accessObserver = null
@@ -5713,6 +5809,21 @@ class SxbVpnService : VpnService(), PlatformInterface {
         interruptForAccess()
         try { SxbAccessControl.cancelStarts(this) }
         finally { stopAndDrain("PRIVACY_STOP_PENDING") }
+    }
+
+    fun stopForSecurity(sessionId: String, generation: Int) {
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+        if (instance !== this || configJson.isEmpty()) return@post
+        val active = JSONObject(configJson)
+        if (active.optString("securitySessionId") != sessionId ||
+            active.optInt("securityGeneration") != generation) return@post
+        try {
+            SxbAccessControl.revokeSecurityGeneration(this, sessionId, generation, active.optString("accessAttempt"))
+        } catch (error: Exception) { Log.e(TAG, "SECURITY_REVOKE_STORAGE_FAILED", error) }
+        if (::autoReconnect.isInitialized) autoReconnect.markStopped("security_session_revoke")
+        cleanup()
+        removeKillSwitchBlackhole()
+        }
     }
 
     private fun stopAndDrain(pendingCode: String) {

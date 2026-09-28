@@ -4,6 +4,8 @@ import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { describe, it } from 'node:test';
+import { sanitizeEngineConfig } from '../services/configValidator';
+import type { ProfileIdentity } from '../services/accessPolicy';
 
 const mobile = path.resolve(__dirname, '..');
 const requireMobile = createRequire(path.join(mobile, 'package.json'));
@@ -21,6 +23,7 @@ async function services() {
     stdin: {
       contents: `
         export * as ledger from './services/usageLedger';
+        export * as reporting from './services/usageReporting';
         export * as quota from './services/quotaState';
         export * as offline from './services/offlineStorage';
         export { state } from 'test:state';`,
@@ -32,10 +35,16 @@ async function services() {
       setup(plugin: any) {
         const stubs: Record<string, string> = {
           'test:state': `export const state={storage:new Map(),failWrites:false,failReads:false,metadata:new Map()};`,
+          'react-native': `export const AppRegistry={registerHeadlessTask(){}};`,
+          'expo-crypto': `export {randomUUID} from 'node:crypto';`,
           '@react-native-async-storage/async-storage': `
             import {state} from 'test:state'; export default {
               getItem:async k=>{if(state.failReads)throw Error('STORAGE_UNAVAILABLE');return state.storage.get(k)??null},
-              setItem:async(k,v)=>{if(state.failWrites)throw Error('STORAGE_UNAVAILABLE');state.storage.set(k,v)},
+              setItem:async(k,v)=>{
+                if(state.failWrites)throw Error('STORAGE_UNAVAILABLE');
+                if(state.beforeWrite)await state.beforeWrite(k,v);
+                state.storage.set(k,v);
+              },
               removeItem:async k=>state.storage.delete(k),
               getAllKeys:async()=>[...state.storage.keys()],
             };`,
@@ -56,12 +65,16 @@ async function services() {
     }],
   });
   const module = { exports: {} as any };
-  runInNewContext(output.outputFiles[0].text, { module, exports: module.exports, require: requireMobile });
+  runInNewContext(output.outputFiles[0].text, { module, exports: module.exports, require: requireMobile, setTimeout, clearTimeout });
   return module.exports as {
     ledger: typeof import('../services/usageLedger');
+    reporting: typeof import('../services/usageReporting');
     quota: typeof import('../services/quotaState');
     offline: typeof import('../services/offlineStorage');
-    state: { storage: Map<string, string>; failWrites: boolean; failReads: boolean; metadata: Map<string, unknown> };
+    state: {
+      storage: Map<string, string>; failWrites: boolean; failReads: boolean; metadata: Map<string, unknown>;
+      beforeWrite?: (key: string, value: string) => Promise<void>;
+    };
   };
 }
 
@@ -75,11 +88,13 @@ async function reporter() {
   const ref = (current: any) => ({ current });
   const state: any = {
     stats: { lifetimeUploadBytes: 1, lifetimeDownloadBytes: 1, uploadBytes: 0, downloadBytes: 0 },
-    posts: [], quota: null, stops: 0, epoch: 0, retries: new Map(), timerId: 0,
+    posts: [], signals: [], quota: null, stops: 0, epoch: 0, retries: new Map(), timerId: 0,
     profiles: ['normal', 'trial'].map(configId => ({ configId, subscriptionId: configId })),
   };
   const env: any = {
     ...h.ledger,
+    ...h.reporting,
+    AbortController,
     accumulateUsage: h.ledger.accumulate,
     settleUsage: h.ledger.settle,
     ...h.offline,
@@ -87,6 +102,7 @@ async function reporter() {
     useCallback: (callback: any) => callback,
     ledgerRef: ref(h.ledger.anchorLedger(h.ledger.emptyLedger(), { up: 1, down: 1 })),
     ledgerBusyRef: ref(false), ledgerFlushRef: ref(null),
+    usagePreparationPendingRef: ref(0), usageRequestAbortRef: ref(null),
     usageRetryTimerRef: ref(null), USAGE_REPORT_INTERVAL_MS: 20_000,
     usageMountedRef: ref(true),
     usageRetryAtRef: ref(0), usageFailuresRef: ref(0),
@@ -117,8 +133,9 @@ async function reporter() {
       list: async () => ({ status: 'ok', value: state.profiles }),
     },
     storeValue: (result: any) => result.value,
-    apiClient: { post: async (_url: string, body: any) => {
+    apiClient: { post: async (_url: string, body: any, options?: { signal?: AbortSignal }) => {
       state.posts.push(body);
+      state.signals.push(options?.signal);
       return state.respond(body);
     } },
     legacyDebugLog: () => {}, addLog: () => {}, wakeAccessObservation: () => {},
@@ -233,6 +250,110 @@ describe('durable byte accounting', () => {
     assert.equal(h.ledger.pendingBytes(ledger), 18);
   });
 
+  it('recovers only a legacy null context session while preserving counters and frozen report identities', async () => {
+    const h = await services();
+    const queued = h.ledger.accumulate(h.ledger.emptyLedger(), { up: 17, down: 29 }, {
+      subscriptionId: 'normal', configId: 'normal', sessionId: 'already-sent',
+    });
+    const original = JSON.stringify({ ...queued,
+      context: { subscriptionId: 'trial', configId: 'trial', sessionId: null },
+    });
+    h.state.storage.set('@sxb_usage_ledger', original);
+    const recovered = await h.ledger.loadLedger();
+    assert.equal(recovered.counterUp, 17);
+    assert.equal(recovered.counterDown, 29);
+    assert.equal(recovered.nextSeq, queued.nextSeq);
+    assert.equal(recovered.context?.subscriptionId, 'trial');
+    assert.equal(recovered.context?.configId, 'trial');
+    assert.match(recovered.context!.sessionId, /^sess_/);
+    assert.equal(recovered.entries[0].frozen, true);
+    assert.deepEqual(h.ledger.nextReport(recovered)?.report, h.ledger.nextReport(queued)?.report);
+    assert.deepEqual(JSON.parse(h.state.storage.get('@sxb_usage_ledger_recovery')!), [original]);
+    const reloaded = await h.ledger.loadLedger();
+    assert.equal(reloaded.context?.sessionId, recovered.context?.sessionId);
+    assert.equal(h.ledger.pendingBytes(reloaded), 46);
+  });
+
+  for (const failedKey of ['@sxb_usage_ledger_recovery', '@sxb_usage_ledger']) {
+    it(`does not replace the legacy ledger when recovery cannot persist ${failedKey}`, async () => {
+      const h = await services();
+      const original = JSON.stringify({ ...h.ledger.emptyLedger(),
+        context: { subscriptionId: null, configId: 'manual', attribution: 'unlinked', sessionId: null },
+      });
+      h.state.storage.set('@sxb_usage_ledger', original);
+      h.state.beforeWrite = async key => {
+        if (key === failedKey) throw new Error('RECOVERY_WRITE_FAILED');
+      };
+      await assert.rejects(h.ledger.loadLedger(), /RECOVERY_WRITE_FAILED/);
+      assert.equal(h.state.storage.get('@sxb_usage_ledger'), original);
+      h.state.beforeWrite = undefined;
+      const recovered = await h.ledger.loadLedger();
+      assert.equal(recovered.context?.attribution, 'unlinked');
+      assert.equal(recovered.context?.subscriptionId, null);
+      assert.deepEqual(JSON.parse(h.state.storage.get('@sxb_usage_ledger_recovery')!), [original]);
+    });
+  }
+
+  it('does not repair a null context session if any pending receipt is invalid', async () => {
+    const h = await services();
+    const original = JSON.stringify({ ...h.ledger.emptyLedger(),
+      context: { subscriptionId: 'normal', sessionId: null },
+      entries: [{ subscriptionId: 'normal', sessionId: '', seq: 0, up: 17, down: 29 }],
+    });
+    h.state.storage.set('@sxb_usage_ledger', original);
+    await assert.rejects(h.ledger.loadLedger(), error =>
+      error instanceof h.ledger.UsageLedgerReadError && error.detail === 'entry_session');
+    assert.equal(h.state.storage.get('@sxb_usage_ledger'), original);
+    assert.equal(h.state.storage.has('@sxb_usage_ledger_recovery'), false);
+  });
+
+  it('repairs explicit null report IDs but never rewrites valid frozen receipts', async () => {
+    const h = await services();
+    const original = JSON.stringify({
+      initialized: true, counterUp: 10, counterDown: 18, nextSeq: 2,
+      context: { subscriptionId: 'trial', configId: 'trial', sessionId: null },
+      entries: [
+        { subscriptionId: 'normal', configId: 'normal', sessionId: 'accepted', seq: 0, up: 3, down: 7, frozen: true },
+        { subscriptionId: 'trial', configId: 'trial', sessionId: null, seq: 1, up: 7, down: 11, frozen: true },
+      ],
+    });
+    h.state.storage.set('@sxb_usage_ledger', original);
+    const recovered = await h.ledger.loadLedger();
+    assert.equal(recovered.entries[0].sessionId, 'accepted');
+    assert.match(recovered.entries[1].sessionId, /^sess_[0-9a-f-]{36}$/);
+    assert.equal(recovered.entries[1].subscriptionId, 'trial');
+    assert.equal(recovered.entries[1].seq, 1);
+    assert.equal(h.ledger.pendingBytes(recovered), 28);
+    assert.equal(recovered.counterUp, 10);
+    assert.equal(recovered.counterDown, 18);
+    assert.equal((await h.ledger.loadLedger()).entries[1].sessionId, recovered.entries[1].sessionId);
+    assert.deepEqual(JSON.parse(h.state.storage.get('@sxb_usage_ledger_recovery')!), [original]);
+  });
+
+  it('rejects an invalid writer snapshot before replacing a valid persisted ledger', async () => {
+    const h = await services();
+    const ledger = h.ledger.accumulate(h.ledger.emptyLedger(), { up: 17, down: 29 }, {
+      subscriptionId: 'normal', sessionId: 'valid-session',
+    });
+    await h.ledger.saveLedger(ledger);
+    const original = h.state.storage.get('@sxb_usage_ledger');
+    Reflect.set(ledger.context!, 'sessionId', null);
+    await assert.rejects(h.ledger.saveLedger(ledger), error =>
+      error instanceof h.ledger.UsageLedgerReadError && error.detail === 'context');
+    assert.equal(h.state.storage.get('@sxb_usage_ledger'), original);
+  });
+
+  it('does not turn duplicate null replay keys into two independently billable reports', async () => {
+    const h = await services();
+    const entry = { subscriptionId: 'normal', sessionId: null, seq: 0, up: 3, down: 7, frozen: true };
+    const original = JSON.stringify({ counterUp: 6, counterDown: 14, nextSeq: 1, entries: [entry, entry] });
+    h.state.storage.set('@sxb_usage_ledger', original);
+    await assert.rejects(h.ledger.loadLedger(), error =>
+      error instanceof h.ledger.UsageLedgerReadError && error.detail === 'entry_sequence');
+    assert.equal(h.state.storage.get('@sxb_usage_ledger'), original);
+    assert.equal(h.state.storage.has('@sxb_usage_ledger_recovery'), false);
+  });
+
   it('does not hide measured over-quota bytes that the dashboard still counts', async () => {
     const h = await services();
     const quota = h.quota.deriveQuota({ totalQuota: 100, usedQuota: 113 });
@@ -338,6 +459,358 @@ describe('durable byte accounting', () => {
 });
 
 describe('provider traffic report lifecycle', () => {
+  const profiles: { label: string; meta: ProfileIdentity; subscriptionId: string | null }[] = [
+    { label: 'legacy backend without subscriptionId', meta: { configId: 'plan-id', source: 'backend' }, subscriptionId: 'plan-id' },
+    { label: 'manual alias explicitly linked', meta: { configId: 'local-alias', source: 'manual', subscriptionId: 'plan-id' }, subscriptionId: 'plan-id' },
+    { label: 'unlinked manual ID equal to a plan ID', meta: { configId: 'plan-id', source: 'manual' }, subscriptionId: null },
+  ];
+  for (const { label, meta, subscriptionId } of profiles) {
+    it(`uses the same read-only connection/native/ledger attribution for ${label}`, async () => {
+      const h = await reporter();
+      const original = JSON.stringify(meta);
+      Object.freeze(meta);
+      const source = readFileSync(path.join(mobile, 'contexts', 'VpnContext.tsx'), 'utf8');
+      const start = source.indexOf('        const security = await sessionSecurity();');
+      assert.ok(start > 0);
+      const connection = source.slice(start, source.indexOf('        requireVpnConsent();', start));
+      assert.ok(connection.includes("apiClient.post('/mobile/vpn/session'"));
+      assert.ok(connection.includes('sanitizeEngineConfig'));
+      const posts: { subscriptionId: string | null; sessionId: string; configId: string }[] = [];
+      const env = {
+        usageSubscriptionId: h.ledger.usageSubscriptionId,
+        currentProfile: { meta }, selectedId: meta.configId,
+        sessionSecurity: async () => ({ sessionId: 'synthetic-authority', generation: 1, clientId: 'synthetic-client' }),
+        newUsageSessionId: () => 'sess_synthetic-connection',
+        apiClient: { post: async (_url: string, body: typeof posts[number]) => { posts.push(body); } },
+        sessionIdRef: { current: '' }, configMoteurRef: { current: null },
+        configToUse: { protocol: 'vless', host: 'vpn.example.test', port: 443, uuid: 'synthetic-uuid', tls: true },
+        appliquerPresentationTls: (config: unknown) => config,
+        presentationEssaiRef: { current: 0 }, echelleApplicable: () => false,
+        sanitizeEngineConfig, getAccessState: () => ({ authority: { session: 'synthetic-access' } }),
+        engineProtocol: 'vless', killSwitch: true, autoReconnect: true,
+      };
+      const compiled = await transform(`export async function run(env) {
+        const {${Object.keys(env).join(',')}} = env;
+        ${connection}
+        return JSON.parse(optionsJson);
+      }`, { loader: 'ts', format: 'cjs' });
+      const module = { exports: {} as { run: (input: typeof env) => Promise<Record<string, unknown>> } };
+      runInNewContext(compiled.code, { module, exports: module.exports });
+      const options = await module.exports.run(env);
+      assert.equal(posts.length, 1);
+      assert.equal(posts[0].subscriptionId, subscriptionId);
+      assert.equal(posts[0].configId, meta.configId);
+      assert.equal(options.subscriptionId ?? null, subscriptionId);
+      assert.equal(options.managedConfig, subscriptionId !== null);
+      h.env.runningProfileRef.current = meta;
+      h.env.sessionIdRef.current = posts[0].sessionId;
+      h.state.profiles = [meta];
+      h.state.stats.lifetimeUploadBytes += 10;
+      h.state.stats.lifetimeDownloadBytes += 20;
+      h.state.respond = async () => { throw new Error('synthetic offline'); };
+      await h.flushUsage();
+      assert.equal(h.state.posts.length, 1);
+      assert.equal(h.state.posts[0].subscriptionId ?? null, subscriptionId);
+      assert.equal(h.state.posts[0].reportMode, subscriptionId ? 'delta' : 'unlinked');
+      assert.equal(h.state.posts[0].sessionId, posts[0].sessionId);
+      const persisted = await h.ledger.loadLedger();
+      assert.equal(persisted.entries[0].subscriptionId, subscriptionId);
+      assert.equal(persisted.entries[0].configId, meta.configId);
+      assert.equal(h.ledger.pendingBytes(persisted), 30);
+      assert.equal(JSON.stringify(meta), original, 'no metadata or ID rewrite');
+    });
+  }
+
+  it('does not persist a null session when a stop completes during the pre-connect counter read', async () => {
+    const h = await reporter();
+    h.env.SxbVpnNative.getTrafficStats = async () => {
+      h.env.sessionIdRef.current = null;
+      return h.state.stats;
+    };
+    await h.flushUsage({ beforeConnect: true });
+    const saved = await h.ledger.loadLedger();
+    assert.equal(saved.context?.sessionId, 'native-session-1');
+    assert.equal(saved.context?.subscriptionId, 'normal');
+    assert.equal(h.state.posts.length, 0);
+  });
+
+  it('does not overwrite a new identity session after a delayed native counter read', async () => {
+    const h = await reporter();
+    await h.flushUsage({ beforeConnect: true });
+    const saved = h.storageState.storage.get('@sxb_usage_ledger');
+    const reading = deferred(), counters = deferred<any>();
+    h.env.SxbVpnNative.getTrafficStats = () => { reading.resolve(); return counters.promise; };
+    const previous = h.flushUsage();
+    await reading.promise;
+    h.state.epoch++;
+    h.env.sessionIdRef.current = 'new-identity-session';
+    h.env.runningProfileRef.current = { configId: 'trial', subscriptionId: 'trial' };
+    counters.resolve({ lifetimeUploadBytes: 11, lifetimeDownloadBytes: 21, usageSessionId: 'native-session-1' });
+    await previous;
+    assert.equal(h.env.sessionIdRef.current, 'new-identity-session');
+    assert.equal(h.storageState.storage.get('@sxb_usage_ledger'), saved);
+    assert.equal(h.state.posts.length, 0);
+    h.env.SxbVpnNative.getTrafficStats = async () => ({ lifetimeUploadBytes: 11, lifetimeDownloadBytes: 21 });
+    await h.flushUsage({ beforeConnect: true });
+    const ledger = await h.ledger.loadLedger();
+    assert.equal(ledger.entries[0].sessionId, 'native-session-1');
+    assert.equal(ledger.entries[0].subscriptionId, 'normal');
+    assert.equal(ledger.entries[0].up + ledger.entries[0].down, 30);
+    assert.equal(ledger.context?.sessionId, 'new-identity-session');
+  });
+
+  it('anchors a connection without waiting for a blocked HTTP report or losing its frozen receipt', async () => {
+    const h = await reporter();
+    const received = deferred();
+    const response = deferred<any>();
+    h.state.stats = { lifetimeUploadBytes: 11, lifetimeDownloadBytes: 21 };
+    h.state.respond = async () => { received.resolve(); return response.promise; };
+    const first = h.flushUsage();
+    await received.promise;
+    const sent = { ...h.state.posts[0] };
+    h.env.runningProfileRef.current = { configId: 'trial', subscriptionId: 'trial' };
+    h.env.sessionIdRef.current = 'new-session';
+    const preparation = h.flushUsage({ beforeConnect: true });
+    try {
+      await h.reporting.usageDeadline(preparation, 1_000);
+      await first;
+      const saved = await h.ledger.loadLedger();
+      assert.equal(saved.context?.subscriptionId, 'trial');
+      assert.equal(saved.context?.sessionId, 'new-session');
+      assert.equal(h.ledger.pendingBytes(saved), 30);
+      assert.equal(saved.entries[0].frozen, true);
+      assert.equal(h.state.signals[0].aborted, true);
+      assert.equal(h.state.posts.length, 1, 'preparation must not send a second HTTP report');
+      response.resolve({ data: { ok: true, subscriptionId: 'trial', quotaExhausted: true } });
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(h.state.stops, 0, 'a cancelled request must not stop the new connection on late completion');
+      assert.equal(h.ledger.pendingBytes(await h.ledger.loadLedger()), 30);
+      h.state.respond = async () => ({ data: { duplicate: true, subscriptionId: 'normal' } });
+      await h.flushUsage();
+      assert.deepEqual({ ...h.state.posts[1] }, sent, 'retry the identical frozen report after an uncertain receipt');
+      assert.equal(h.ledger.pendingBytes(await h.ledger.loadLedger()), 0);
+    } finally {
+      response.resolve({ data: { ok: true, subscriptionId: 'normal' } });
+      await Promise.allSettled([first, preparation]);
+    }
+  });
+
+  it('does not start an HTTP report when connection preparation arrives during a local counter read', async () => {
+    const h = await reporter();
+    const reading = deferred();
+    const counters = deferred<any>();
+    let reads = 0;
+    h.state.stats = { lifetimeUploadBytes: 11, lifetimeDownloadBytes: 21 };
+    h.env.SxbVpnNative.getTrafficStats = async () => {
+      if (++reads === 1) { reading.resolve(); return counters.promise; }
+      return h.state.stats;
+    };
+    const first = h.flushUsage();
+    await reading.promise;
+    const preparation = h.flushUsage({ beforeConnect: true });
+    counters.resolve(h.state.stats);
+    await Promise.all([first, preparation]);
+    assert.equal(h.state.posts.length, 0);
+    assert.equal(h.ledger.pendingBytes(await h.ledger.loadLedger()), 30);
+    assert.equal(h.env.usagePreparationPendingRef.current, 0);
+  });
+
+  it('yields after persisting a frozen report if preparation arrived during that write', async () => {
+    const h = await reporter();
+    const writing = deferred();
+    const release = deferred();
+    let writes = 0;
+    h.state.stats = { lifetimeUploadBytes: 11, lifetimeDownloadBytes: 21 };
+    h.storageState.beforeWrite = async (key: string) => {
+      if (key === '@sxb_usage_ledger' && ++writes === 2) {
+        writing.resolve();
+        await release.promise;
+      }
+    };
+    const first = h.flushUsage();
+    await writing.promise;
+    const preparation = h.flushUsage({ beforeConnect: true });
+    release.resolve();
+    await Promise.all([first, preparation]);
+    assert.equal(h.state.posts.length, 0);
+    assert.equal((await h.ledger.loadLedger()).entries[0].frozen, true);
+  });
+
+  async function stoppingProvider() {
+    const source = readFileSync(path.join(mobile, 'contexts', 'VpnContext.tsx'), 'utf8');
+    const disconnect = source.slice(source.indexOf('  const disconnect = useCallback'), source.indexOf('  const deleteConfig ='));
+    const accessStop = source.slice(source.indexOf('  const stopForAccess = useCallback'), source.indexOf('  const stopForAccessRef ='));
+    const runtimeStart = source.indexOf('  const syncNativeRuntime = useCallback');
+    const runtimeSync = source.slice(runtimeStart, source.indexOf('  useEffect(() => {', runtimeStart));
+    const ref = <T,>(current: T) => ({ current });
+    const state = {
+      vpnState: 'connected', connected: true, connecting: false,
+      stop: async () => {}, report: async () => {}, persist: async () => {},
+      control: async () => ({ activeProfile: { configId: 'old-profile' } }),
+    };
+    const env = {
+      useCallback: <T,>(callback: T) => callback,
+      isConnected: true, isConnecting: false, IS_ANDROID: true,
+      connectionAttemptRef: ref(0), pendingAutoConnectRef: ref<string | null>(null),
+      disconnectInFlightRef: ref(false), lastStopAttemptRef: ref(0), acceptNativeConnectedRef: ref(true),
+      basculeEnCoursRef: ref(false), reportTimerRef: ref(null),
+      runningProfileRef: ref<{ configId: string } | null>({ configId: 'old-profile' }),
+      sessionBaselineRef: ref({ up: 10, down: 20 }), sessionIdRef: ref<string | null>('old-session'),
+      stopWatchdog: () => {}, stopEchelon: () => {}, stopTrafficPolling: () => {},
+      startTrafficPolling: () => {}, setTrafficStats: () => {}, DEFAULT_STATS: {},
+      getAccessState: () => ({ authority: null }), selectDeviceAccess: () => null,
+      blocksDevice: () => false, profileRestriction: () => null,
+      syncNativeAccessState: () => state.control(),
+      addLog: () => {}, addStepLog: () => {}, t: (key: string) => key,
+      CLE_MOTIF_ARRET: {}, clearInterval,
+      setIsConnected: (value: boolean) => { state.connected = value; },
+      setIsConnecting: (value: boolean) => { state.connecting = value; },
+      setVpnState: (value: string) => { state.vpnState = value; },
+      SxbVpnNative: { stopVpn: () => state.stop(), getVpnState: async () => 'disconnected' },
+      flushUsageRef: ref(() => state.report()),
+      AsyncStorage: { setItem: () => state.persist() },
+    };
+    const compiled = await transform(`
+      export function create(env) {
+        const { ${Object.keys(env).join(',')} } = env;
+        ${disconnect}
+        ${accessStop}
+        ${runtimeSync}
+        return {disconnect,stopForAccess,syncNativeRuntime};
+      }`, { loader: 'ts', format: 'cjs' });
+    const module = { exports: {} as any };
+    runInNewContext(compiled.code, { module, exports: module.exports });
+    const api = module.exports.create(env) as {
+      disconnect: () => Promise<void>; stopForAccess: () => Promise<void>; syncNativeRuntime: () => Promise<void>;
+    };
+    const startNext = () => {
+      env.connectionAttemptRef.current++;
+      env.runningProfileRef.current = { configId: 'new-profile' };
+      env.sessionBaselineRef.current = { up: 30, down: 40 };
+      env.sessionIdRef.current = 'new-session';
+      state.vpnState = 'connecting';
+      state.connecting = true;
+    };
+    return { ...api, env, state, startNext };
+  }
+
+  describe('connection generation during an asynchronous stop', () => {
+    it('preserves normal stop cleanup and releases its guard even when persistence fails', async () => {
+      const normal = await stoppingProvider();
+      await normal.disconnect();
+      assert.equal(normal.state.vpnState, 'disconnected');
+      assert.equal(normal.env.runningProfileRef.current, null);
+      assert.equal(normal.env.sessionIdRef.current, null);
+      assert.equal(normal.env.disconnectInFlightRef.current, false);
+      const failed = await stoppingProvider();
+      failed.state.persist = async () => { throw new Error('STORAGE_UNAVAILABLE'); };
+      await assert.rejects(failed.disconnect(), /STORAGE_UNAVAILABLE/);
+      assert.equal(failed.env.disconnectInFlightRef.current, false);
+    });
+
+    it('ignores a stale native profile snapshot after a newer attempt has started', async () => {
+      const h = await stoppingProvider();
+      const entered = deferred();
+      const release = deferred();
+      h.state.control = async () => {
+        entered.resolve();
+        await release.promise;
+        return { activeProfile: { configId: 'old-profile' } };
+      };
+      const sync = h.syncNativeRuntime();
+      await entered.promise;
+      h.startNext();
+      release.resolve();
+      await sync;
+      assert.equal(h.env.runningProfileRef.current?.configId, 'new-profile');
+      assert.equal(h.state.vpnState, 'connecting');
+    });
+
+    for (const phase of ['report', 'persist', 'stop'] as const) {
+      it(`does not reset a new connection when the old ${phase} finishes`, async () => {
+        const h = await stoppingProvider();
+        const entered = deferred();
+        const release = deferred();
+        h.state[phase] = async () => { entered.resolve(); await release.promise; };
+        const stopping = phase === 'stop' ? h.stopForAccess() : h.disconnect();
+        await entered.promise;
+        h.startNext();
+        release.resolve();
+        await stopping;
+        assert.equal(h.state.vpnState, 'connecting');
+        assert.equal(h.state.connecting, true);
+        assert.equal(h.env.runningProfileRef.current?.configId, 'new-profile');
+        assert.equal(h.env.sessionIdRef.current, 'new-session');
+        assert.equal(h.env.sessionBaselineRef.current.up, 30);
+        assert.equal(h.env.disconnectInFlightRef.current, false);
+      });
+    }
+
+    it('preserves thirty successive connection generations across delayed stop completions', async () => {
+      const h = await stoppingProvider();
+      const phases = ['report', 'persist', 'stop'] as const;
+      for (let cycle = 0; cycle < 30; cycle++) {
+        const phase = phases[cycle % phases.length];
+        const entered = deferred();
+        const release = deferred();
+        h.state[phase] = async () => { entered.resolve(); await release.promise; };
+        const stopping = phase === 'stop' ? h.stopForAccess() : h.disconnect();
+        await entered.promise;
+        h.startNext();
+        const sessionId = `session-${cycle}`;
+        const configId = `vless-${cycle}`;
+        h.env.sessionIdRef.current = sessionId;
+        h.env.runningProfileRef.current = { configId };
+        release.resolve();
+        await stopping;
+        assert.equal(h.state.vpnState, 'connecting', `cycle ${cycle}: ${phase}`);
+        assert.equal(h.state.connecting, true);
+        assert.equal(h.env.sessionIdRef.current, sessionId);
+        assert.equal(h.env.runningProfileRef.current?.configId, configId);
+        assert.equal(h.env.disconnectInFlightRef.current, false);
+        h.state[phase] = async () => {};
+      }
+      await h.disconnect();
+      assert.equal(h.state.vpnState, 'disconnected');
+      assert.equal(h.env.sessionIdRef.current, null);
+      assert.equal(h.env.runningProfileRef.current, null);
+      assert.equal(h.env.disconnectInFlightRef.current, false);
+    });
+
+    it('keeps a newer stop guarded when an older stop completes', async () => {
+      const h = await stoppingProvider();
+      const firstEntered = deferred();
+      const firstRelease = deferred();
+      h.state.stop = async () => { firstEntered.resolve(); await firstRelease.promise; };
+      const first = h.stopForAccess();
+      await firstEntered.promise;
+      h.startNext();
+      h.state.stop = async () => {};
+      const secondEntered = deferred();
+      const secondRelease = deferred();
+      h.state.report = async () => { secondEntered.resolve(); await secondRelease.promise; };
+      const second = h.disconnect();
+      await secondEntered.promise;
+      firstRelease.resolve();
+      await first;
+      assert.equal(h.env.disconnectInFlightRef.current, true);
+      secondRelease.resolve();
+      await second;
+      assert.equal(h.env.disconnectInFlightRef.current, false);
+    });
+  });
+
+  it('keeps a late HTTP rejection handled after releasing the cancelled reporter', async () => {
+    const h = await services();
+    const response = deferred();
+    const controller = new AbortController();
+    const request = h.reporting.interruptibleUsageRequest(response.promise, controller.signal);
+    controller.abort();
+    await assert.rejects(request, /VPN_USAGE_PREPARING/);
+    response.reject(new Error('LATE_NETWORK_FAILURE'));
+    await new Promise(resolve => setImmediate(resolve));
+  });
+
   it('seeds the first offline display from provisioned metadata without a legacy quota key', async () => {
     const h = await reporter();
     h.state.profiles[0] = { configId: 'normal', subscriptionId: 'normal', quotaTotal: 1000, quotaUsed: 7 };
@@ -493,6 +966,10 @@ describe('provider traffic report lifecycle', () => {
     response.resolve({ data: { ok: true, subscriptionId: 'normal', quotaTotalBytes: 1000, quotaUsedBytes: 10 } });
     await first;
     assert.equal(h.state.quota, null);
+    const persisted = await h.ledger.loadLedger();
+    assert.equal(persisted.entries[0].sessionId, 'native-session-1');
+    assert.equal(persisted.entries[0].frozen, true);
+    assert.equal(persisted.entries[0].up + persisted.entries[0].down, 10);
   });
 
   it('anchors before tunnel start and reports the first bytes, never the duration', async () => {

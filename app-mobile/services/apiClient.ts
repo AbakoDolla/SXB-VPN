@@ -7,6 +7,8 @@ import { getPrivacyConsent, getPrivacySignal, requireVpnConsent } from './privac
 import { accessIssueFromError, isInvalidSession } from './accessPolicy';
 import { accessRequestStamp, currentIdentityRequest, publishAccessFailure } from './accessEvents';
 import { requireDeviceAccess } from './accessState';
+import { backendProof, saveSessionSecurity, clearSessionSecurity } from './deviceSecurity';
+import { assertIdentityRequest, serializeIdentityPersistence, settleIdentityWrites, waitForIdentityPersistence } from './identityPersistence';
 
 /**
  * B7 — URL de l'API.
@@ -60,27 +62,21 @@ const SEC_KEYS = {
 } as const;
 
 async function getSecureToken(key: string): Promise<string | null> {
-  try {
-    if (Platform.OS !== 'web') return await SecureStore.getItemAsync(key);
-    return await AsyncStorage.getItem('@' + key);
-  } catch { return null; }
+  if (Platform.OS !== 'web') return SecureStore.getItemAsync(key);
+  return AsyncStorage.getItem('@' + key);
 }
 
 async function setSecureToken(key: string, value: string): Promise<void> {
-  try {
-    if (Platform.OS !== 'web') {
-      await SecureStore.setItemAsync(key, value);
-    } else {
-      await AsyncStorage.setItem('@' + key, value);
-    }
-  } catch { /* ignore */ }
+  if (Platform.OS !== 'web') {
+    await SecureStore.setItemAsync(key, value);
+  } else {
+    await AsyncStorage.setItem('@' + key, value);
+  }
 }
 
 async function removeSecureToken(key: string): Promise<void> {
-  try {
-    if (Platform.OS !== 'web') await SecureStore.deleteItemAsync(key);
-    else await AsyncStorage.removeItem('@' + key);
-  } catch { /* ignore */ }
+  if (Platform.OS !== 'web') await SecureStore.deleteItemAsync(key);
+  else await AsyncStorage.removeItem('@' + key);
 }
 
 export const apiClient = axios.create({
@@ -101,7 +97,9 @@ type AccessRequestConfig = InternalAxiosRequestConfig & {
 // --- Request interceptor: attach JWT ---
 apiClient.interceptors.request.use(
   async (config: AccessRequestConfig) => {
-    config._sxbStamp = accessRequestStamp();
+    const stamp = config._sxbStamp ?? accessRequestStamp();
+    config._sxbStamp = stamp;
+    await waitForIdentityPersistence(stamp);
     config._sxbCleanupSignal?.();
     const removingPushToken = config.method === 'delete' && config.url === '/mobile/push-tokens';
     if (!removingPushToken) {
@@ -141,12 +139,10 @@ apiClient.interceptors.request.use(
     if (token && config.headers) {
       config.headers['Authorization'] = `Bearer ${token}`;
     }
-    try {
-      const deviceId = await AsyncStorage.getItem('@sxb_device_id');
-      if (deviceId && config.headers) {
-        config.headers['X-SXB-Device-ID'] = deviceId;
-      }
-    } catch {}
+    const deviceId = await AsyncStorage.getItem('@sxb_device_id');
+    if (deviceId && config.headers) {
+      config.headers['X-SXB-Device-ID'] = deviceId;
+    }
     // VERSION INSTALLÉE — le serveur ne peut pas la deviner.
     //
     // Sans elle, une mise à jour publiée était annoncée à TOUS les appareils
@@ -157,28 +153,46 @@ apiClient.interceptors.request.use(
       config.headers['X-SXB-App-Version-Code'] = String(INSTALLED_VERSION_CODE);
     }
     if (!removingPushToken) requireVpnConsent();
+    const body = config.data == null ? '' : typeof config.data === 'string' ? config.data : JSON.stringify(config.data);
+    const activation = config.url === '/mobile/auth/activate';
+    const refresh = config.url === '/mobile/auth/refresh';
+    const authBody = (activation || refresh) && typeof config.data === 'string' ? JSON.parse(config.data) : config.data;
+    const credential = activation && typeof authBody?.token === 'string' ? authBody.token
+      : refresh && typeof authBody?.refreshToken === 'string' ? authBody.refreshToken : token ?? '';
+    const proof = await backendProof(config.method ?? 'GET', apiClient.getUri(config), body, credential);
+    assertIdentityRequest(stamp);
+    for (const [name, value] of Object.entries(proof)) config.headers.set(name, value);
+    if (config.data != null) {
+      config.data = body;
+      config.transformRequest = [value => value];
+    }
     return config;
   },
   (error) => Promise.reject(error),
 );
 
 // --- Response interceptor: refresh on 401 ---
-let isRefreshing = false;
-let refreshQueue: Array<{ resolve: (token: string) => void; reject: (error: unknown) => void }> = [];
+type RefreshFlight = {
+  epoch: number;
+  queue: Array<{ resolve: (token: string) => void; reject: (error: unknown) => void }>;
+};
+let refreshing: RefreshFlight | null = null;
 
-function processQueue(token: string) {
-  refreshQueue.forEach(({ resolve }) => resolve(token));
-  refreshQueue = [];
+function processQueue(flight: RefreshFlight, token: string) {
+  flight.queue.forEach(({ resolve }) => resolve(token));
+  flight.queue = [];
 }
 
-function rejectQueue(error: unknown) {
-  refreshQueue.forEach(({ reject }) => reject(error));
-  refreshQueue = [];
+function rejectQueue(flight: RefreshFlight, error: unknown) {
+  flight.queue.forEach(({ reject }) => reject(error));
+  flight.queue = [];
 }
 
 apiClient.interceptors.response.use(
   (response) => {
-    (response.config as AccessRequestConfig)._sxbCleanupSignal?.();
+    const config = response.config as AccessRequestConfig;
+    config._sxbCleanupSignal?.();
+    if (config._sxbStamp) assertIdentityRequest(config._sxbStamp);
     return response;
   },
   async (error: AxiosError) => {
@@ -197,10 +211,13 @@ apiClient.interceptors.response.use(
     if (original && error.response?.status === 401 && !original._retry &&
         (!issue || issue.scope === 'session') && !original.url?.startsWith('/mobile/auth/')) {
       original._retry = true;
-      if (isRefreshing) {
+      assertIdentityRequest(stamp);
+      if (refreshing?.epoch === stamp.epoch) {
+        const flight = refreshing;
         return new Promise<string>((resolve, reject) => {
-          refreshQueue.push({ resolve, reject });
+          flight.queue.push({ resolve, reject });
         }).then((newToken) => {
+          assertIdentityRequest(stamp);
           if (original.headers) {
             original.headers['Authorization'] = `Bearer ${newToken}`;
           }
@@ -208,9 +225,11 @@ apiClient.interceptors.response.use(
         });
       }
 
-      isRefreshing = true;
+      const flight: RefreshFlight = { epoch: stamp.epoch, queue: [] };
+      refreshing = flight;
 
       try {
+        await waitForIdentityPersistence(stamp);
         // Lire depuis SecureStore avec fallback legacy AsyncStorage
         let refreshToken = await getSecureToken(SEC_KEYS.REFRESH);
         if (!refreshToken) refreshToken = await AsyncStorage.getItem('@sxb_refresh_token');
@@ -219,46 +238,62 @@ apiClient.interceptors.response.use(
         requireVpnConsent();
         const deviceId = await AsyncStorage.getItem('@sxb_device_id');
         if (!deviceId) throw new Error('AUTH_DEVICE_BINDING_REQUIRED');
-        const res = await axios.post(`${API_BASE_URL}/mobile/auth/refresh`, {
-          refreshToken,
-        }, { signal: getPrivacySignal(), timeout: TIMEOUT, headers: { 'X-SXB-Device-ID': deviceId } });
+        const body = JSON.stringify({ refreshToken });
+        const url = `${API_BASE_URL}/mobile/auth/refresh`;
+        const proof = await backendProof('POST', url, body, refreshToken);
+        assertIdentityRequest(stamp);
+        const res = await axios.post(url, body, {
+          signal: getPrivacySignal(), timeout: TIMEOUT,
+          headers: { 'Content-Type': 'application/json', 'X-SXB-Device-ID': deviceId, ...proof },
+        });
         const { accessToken, refreshToken: newRefresh } = res.data;
         requireVpnConsent();
         if (!currentIdentityRequest(stamp)) throw new Error('AUTH_SESSION_CHANGED');
         if (typeof accessToken !== 'string' || !accessToken || typeof newRefresh !== 'string' || !newRefresh) {
           throw new Error('AUTH_REFRESH_RESPONSE_INVALID');
         }
+        await serializeIdentityPersistence(async () => {
+          assertIdentityRequest(stamp);
+          await saveSessionSecurity(res.data.security);
+          assertIdentityRequest(stamp);
+          // Stocker dans SecureStore ET migrer depuis AsyncStorage legacy
+          await settleIdentityWrites([
+            setSecureToken(SEC_KEYS.ACCESS, accessToken),
+            setSecureToken(SEC_KEYS.REFRESH, newRefresh),
+            AsyncStorage.removeItem('@sxb_access_token'),
+            AsyncStorage.removeItem('@sxb_refresh_token'),
+          ]);
+          assertIdentityRequest(stamp);
+        });
 
-        // Stocker dans SecureStore ET migrer depuis AsyncStorage legacy
-        await Promise.all([
-          setSecureToken(SEC_KEYS.ACCESS, accessToken),
-          setSecureToken(SEC_KEYS.REFRESH, newRefresh),
-          AsyncStorage.removeItem('@sxb_access_token').catch(() => {}),
-          AsyncStorage.removeItem('@sxb_refresh_token').catch(() => {}),
-        ]);
-
-        processQueue(accessToken);
+        assertIdentityRequest(stamp);
+        processQueue(flight, accessToken);
         if (original.headers) {
           original.headers['Authorization'] = `Bearer ${accessToken}`;
         }
         return apiClient(original);
-      } catch (_err: any) {
+      } catch (_err: unknown) {
         // Retrait du consentement, limitation ou panne réseau ne rendent pas
         // les identifiants invalides. Toutes les requêtes en attente reçoivent
         // cependant un rejet pour que le retrait puisse finir hors ligne.
-        rejectQueue(_err);
+        rejectQueue(flight, _err);
         const invalidSession = isInvalidSession(_err) && currentIdentityRequest(stamp);
         if (invalidSession) {
-          await Promise.all([
-            removeSecureToken(SEC_KEYS.ACCESS),
-            removeSecureToken(SEC_KEYS.REFRESH),
-            AsyncStorage.multiRemove(['@sxb_access_token', '@sxb_refresh_token', '@sxb_user']),
-          ]);
+          await serializeIdentityPersistence(async () => {
+            assertIdentityRequest(stamp);
+            await settleIdentityWrites([
+              removeSecureToken(SEC_KEYS.ACCESS),
+              removeSecureToken(SEC_KEYS.REFRESH),
+              clearSessionSecurity(),
+              AsyncStorage.multiRemove(['@sxb_access_token', '@sxb_refresh_token', '@sxb_user']),
+            ]);
+            assertIdentityRequest(stamp);
+          });
         }
         publishFailure(_err);
         return Promise.reject(_err);
       } finally {
-        isRefreshing = false;
+        if (refreshing === flight) refreshing = null;
       }
     }
 

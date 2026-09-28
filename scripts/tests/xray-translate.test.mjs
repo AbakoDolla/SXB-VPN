@@ -277,7 +277,9 @@ test('the CI fixture exercises the actual Kotlin raw-config builder with only ph
   assert.match(harness, /SxbTunnelPolicy\.tunMtu/);
   assert.match(harness, /SxbTunnelPolicy\.reliableDns\(sourceDns, graph[,)]/);
   assert.match(harness, /val dnsObj = applyDnsLoopGuard\(/);
-  assert.match(harness, /put\("outbounds", outbounds\)/);
+  assert.match(harness, /put\("outbounds", JSONArray\(\)\.apply/);
+  assert.match(harness, /if \(outbound\.optString\("tag"\) !in endpointTags\) put\(outbound\)/);
+  assert.match(harness, /put\("endpoints", endpoints\)/);
   assert.match(harness, /routeRules\.put\(r\)/);
   const canonical = syntheticCanonicalForRuntime();
   assert.equal(canonical.outbounds.length, 15);

@@ -47,10 +47,10 @@ Monorepo **pnpm**. Les paquets sont déclarés dans `pnpm-workspace.yaml`.
 | `lib/` | Bibliothèques partagées (`db`, `api-zod`, `api-client-react`) |
 | `.github/workflows/` | Construction Android, déploiement VPS, audit |
 
-> **Attention :** le déploiement pousse `backend/prisma/schema.prisma`, **pas**
-> celui de la racine. Une modification faite uniquement à la racine n'atteint
-> jamais la base. Un test de régression vérifie que les deux fichiers sont
-> identiques.
+> **Attention :** le déploiement applique les SQL explicites puis compare la
+> base réelle à `backend/prisma/schema.prisma` avec `prisma migrate diff`, sans
+> `db push`. Le schéma racine doit rester identique au miroir backend ; une
+> modification du seul modèle ne remplace pas une migration SQL vérifiée.
 
 ---
 
@@ -209,8 +209,31 @@ Une ancienne version ayant sauvegardé un cumul inférieur au dernier rapport
 ne provoque pas la refacturation de cet historique lors de la mise à jour.
 Un livre mobile illisible reste intact : sa relecture est retentée, et il
 n'est jamais remplacé silencieusement par une nouvelle ancre.
+Une ancienne course de déconnexion pouvait écrire une session `null` dans
+le contexte puis dans un rapport. Ce défaut est récupéré automatiquement :
+l'original est archivé localement avant réparation, les compteurs et tous
+les rapports gardent leurs octets et propriétaires. Les identifiants de reçu
+valides restent inchangés ; seuls les identifiants explicitement `null`, que
+les API refusent avant tout débit, reçoivent un UUID cryptographique durable.
+Un identifiant absent ou vide n'est pas réinventé : un ancien serveur pouvait
+l'avoir accepté sans clé de rejeu.
+La session est maintenant capturée avant les attentes et chaque écriture
+est validée pour ne plus produire ce défaut. Toute autre corruption reste
+conservée et signalée par une catégorie technique sans contenu sensible.
 Un échec ou dépassement du délai de préparation de cette ancre interdit le
 nouveau départ ; il n'est plus converti en succès par le délai de connexion.
+Un appui sur la connexion suspend l'envoi HTTP de consommation en cours afin
+que cette préparation locale n'attende pas le retour du réseau. Le rapport
+déjà figé reste sur disque et sera rejoué avec les mêmes octets et la même
+clé, même si le serveur l'avait reçu avant l'annulation. Une réponse tardive
+à cet envoi annulé ne modifie pas la nouvelle session.
+De même, la fin asynchrone d'un ancien arrêt ne remet plus à zéro l'état,
+le profil ou les références de consommation d'une connexion plus récente.
+Au démarrage du tunnel, le relais vers l'observation native n'attend plus
+qu'une ancienne lecture HTTP des droits termine son annulation. Avec un
+ticket natif encore valide, cette attente réseau disparaît aussi du départ
+VLESS. Les réponses annulées restent ignorées et les contrôles d'accès
+locaux et natifs restent obligatoires.
 
 Les octets en attente restent visibles après déconnexion, puis sont rejoués
 tant que la file n'est pas vide. Le forfait d'essai et le forfait ordinaire
@@ -553,6 +576,23 @@ Workflows GitHub Actions :
 Le déploiement ne se déclenche que sur certains chemins : un changement dans
 `pnpm-workspace.yaml` ou dans les tests demande un lancement manuel
 (`gh workflow run deploy-vps.yml --ref main`).
+
+Le futur déploiement refuse de continuer si la lecture du cron root échoue ou
+si l'ancien job `git pull` suivi de `docker-compose up` est présent. Il ne
+supprime aucun cron automatiquement. Ensuite, `node scripts/backend-migrate.cjs
+prepare` exige un dump privé vérifié avant les migrations transactionnelles,
+dont `backend-rollout-compat.sql` et `security-layer.sql`, puis un schéma sans
+dérive et les protections du grand livre. Les clients Prisma, l'amorçage OWNER,
+le remplacement des bundles et le redémarrage ne suivent qu'après ce gate.
+La commande `node scripts/backend-migrate.cjs check` ne fait qu'une vérification
+en lecture seule ; elle n'autorise ni déploiement ni enrôlement.
+
+Les anciens scripts Docker `scripts/deploy.sh` et `scripts/update.sh` sont
+bloqués explicitement : ils ne partageaient pas les garanties du chemin PM2.
+Le hook post-merge ne pousse plus le schéma Drizzle. Aucune présence de cron
+n'a été constatée sur un VPS pendant ce travail et aucun déploiement n'a été
+exécuté. Voir le [rapport de sécurité, sections D et Q](docs/SECURITY-LAYER-REPORT.md)
+pour les prérequis, sauvegardes, erreurs bloquantes et commandes de recette.
 
 Le numéro de publication de l'APK est **distinct** du `versionCode` Android : ce
 dernier doit rester strictement croissant, sans quoi Android refuse d'installer

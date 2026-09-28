@@ -105,6 +105,16 @@ function withVpnManifest(config) {
       throw new Error('SXB access control requires a fixed HTTPS API origin');
     }
     setMetadata('com.sxbvpn.api_base_url', apiBase);
+    const pins = JSON.parse(process.env.EXPO_PUBLIC_BACKEND_SPKI_PINS || '[]');
+    if (!Array.isArray(pins) || pins.length > 8 ||
+        pins.some(pin => typeof pin !== 'string' || !/^sha256\/[A-Za-z0-9+/]{43}=$/.test(pin))) {
+      throw new Error('EXPO_PUBLIC_BACKEND_SPKI_PINS must contain reviewed SHA-256 SPKI pins');
+    }
+    setMetadata('com.sxbvpn.BACKEND_SPKI_PINS', JSON.stringify(pins));
+    const signers = (process.env.EXPO_PUBLIC_APK_SIGNERS ||
+      '0140c97e6ba6e9bab0d0ce86935562fbdedd80a026de49642764c49dce56f726').split(',').map(value => value.trim().toLowerCase());
+    if (!signers.length || signers.some(value => !/^[a-f0-9]{64}$/.test(value))) throw new Error('APK_SIGNERS_INVALID');
+    setMetadata('com.sxbvpn.EXPECTED_SIGNATURE_SHA256', signers.join(','));
     const firebaseMetadata = [
       'firebase_messaging_auto_init_enabled',
       'firebase_analytics_collection_enabled',

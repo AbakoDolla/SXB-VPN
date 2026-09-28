@@ -33,7 +33,8 @@ export const RESET_WARNINGS = [
 export const RESET_TABLE_LOCK_SQL = `LOCK TABLE
   "activation_sessions", "admin_tokens", "app_registrations", "audit_logs", "data_additions",
   "free_trial_requests", "free_trial_tokens",
-  "mobile_health_devices", "mobile_health_reports", "permissions", "push_tokens",
+  "mobile_connections", "mobile_health_devices", "mobile_health_reports", "mobile_proof_nonces",
+  "permissions", "push_tokens",
   "reseller_quota_movements", "resellers", "role_permissions", "roles",
   "security_events", "security_passkeys", "servers",
   "settings", "singbox_accounts", "ssh_accounts", "ssh_payloads", "subscription_devices",
@@ -48,8 +49,12 @@ const countsSchema = z.object({
   profiles: count, profileAssignments: count, sshAccounts: count, xrayAccounts: count,
   singboxAccounts: count, payloads: count, traffic: count, vpnLogs: count, pushTokens: count,
   healthReports: count, healthDevices: count, supportTickets: count, adminTokens: count,
-  freeTrialTokens: count, freeTrialRequests: count,
+  freeTrialTokens: count, freeTrialRequests: count, mobileConnections: count, proofNonces: count,
 }).strict();
+// Older durable receipts did not measure these tables; missing is not zero.
+const receiptCountsSchema = z.union([
+  countsSchema, countsSchema.omit({ mobileConnections: true, proofNonces: true }),
+]);
 const retainedRolesSchema = z.object({ OWNER: count, ADMIN: count, SUPER_ADMIN: count }).strict();
 const backupSchema = z.object({
   id: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/),
@@ -60,8 +65,8 @@ const receiptSchema = z.object({
   status: z.literal("completed"),
   resetId: z.string().uuid(),
   completedAt: z.string().datetime(),
-  deletedCounts: countsSchema,
-  countsAfter: countsSchema,
+  deletedCounts: receiptCountsSchema,
+  countsAfter: receiptCountsSchema,
   retainedUsersByRole: retainedRolesSchema,
   backup: backupSchema,
   maintenanceRestored: z.boolean(),
@@ -186,6 +191,8 @@ async function counts(tx: Tx): Promise<ResetCounts> {
     adminTokens: await tx.adminToken.count({ where: unprotectedAdminTokens }),
     freeTrialTokens: await tx.freeTrialToken.count(),
     freeTrialRequests: await tx.freeTrialRequest.count(),
+    mobileConnections: await tx.mobileConnection.count(),
+    proofNonces: await tx.mobileProofNonce.count(),
   };
 }
 
@@ -208,13 +215,17 @@ async function structuralDigest(tx: Tx): Promise<string> {
     orderBy: { id: "asc" }, select: {
       id: true, userId: true, resellerId: true, deviceId: true, activatedAt: true,
       status: true, expireAt: true, quotaTotal: true, deviceLimit: true,
+      deviceKeyId: true, enrollmentGrantHash: true, enrollmentGrantExpiresAt: true,
     },
   }));
   await add("registrations", tx.appRegistration.findMany({
     orderBy: { id: "asc" }, select: { id: true, clientId: true, deviceId: true, status: true },
   }));
   await add("activations", tx.activationSession.findMany({
-    orderBy: { id: "asc" }, select: { id: true, clientId: true, deviceId: true, status: true, expirationDate: true },
+    orderBy: { id: "asc" }, select: {
+      id: true, clientId: true, deviceId: true, status: true, expirationDate: true,
+      authGeneration: true, authRevokedAt: true, authExpiresAt: true,
+    },
   }));
   await add("subscriptions", tx.subscription.findMany({
     orderBy: { id: "asc" }, select: {
@@ -278,8 +289,8 @@ async function structuralDigest(tx: Tx): Promise<string> {
   await add("adminTokens", tx.adminToken.findMany({
     where: unprotectedAdminTokens, orderBy: { id: "asc" }, select: { id: true, userId: true },
   }));
-  // Traffic, health telemetry, lastSeen/lastSync and consumed-byte counters are
-  // deliberately absent. Confirmation covers their deltas up to the table lock.
+  // Traffic, connections, proof nonces, refresh rotation and health telemetry
+  // are transient. Confirmation covers their deltas up to the table lock.
   return hash.digest("hex");
 }
 
@@ -292,6 +303,8 @@ async function purge(tx: Tx): Promise<ResetCounts> {
   // dont elles dépendent.
   const freeTrialRequests = (await tx.freeTrialRequest.deleteMany()).count;
   const freeTrialTokens = (await tx.freeTrialToken.deleteMany()).count;
+  const mobileConnections = (await tx.mobileConnection.deleteMany()).count;
+  const proofNonces = (await tx.mobileProofNonce.deleteMany()).count;
   const subscriptionDevices = (await tx.subscriptionDevice.deleteMany()).count;
   const activations = (await tx.activationSession.deleteMany()).count;
   const registrations = (await tx.appRegistration.deleteMany()).count;
@@ -318,7 +331,7 @@ async function purge(tx: Tx): Promise<ResetCounts> {
     users, resellers, clients, registrations, activations, subscriptions, subscriptionDevices,
     tokens, vouchers, profiles, profileAssignments, sshAccounts, xrayAccounts, singboxAccounts,
     payloads, traffic, vpnLogs, pushTokens, healthReports, healthDevices, supportTickets, adminTokens,
-    freeTrialTokens, freeTrialRequests,
+    freeTrialTokens, freeTrialRequests, mobileConnections, proofNonces,
   };
 }
 

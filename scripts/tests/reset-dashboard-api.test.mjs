@@ -123,6 +123,25 @@ test("a malformed 2xx completion is uncertain and cannot provide a success recei
   }
 });
 
+test("legacy receipts preserve unmeasured counts but current previews require all security counts", async () => {
+  const f = fixture();
+  const receipt = structuredClone(resetResult);
+  for (const counts of [receipt.deletedCounts, receipt.countsAfter]) {
+    delete counts.mobileConnections;
+    delete counts.proofNonces;
+  }
+  f.respond(200, receipt);
+  const legacy = await f.api.executeReset("OWNER", body);
+  assert.equal("mobileConnections" in legacy.deletedCounts, false);
+  assert.equal("proofNonces" in legacy.countsAfter, false);
+  f.respond(200, { ...resetPreview, counts: receipt.deletedCounts });
+  await assert.rejects(f.api.fetchResetPreview("OWNER"), /errors.reset.invalidResponse/);
+  for (const changed of [{ mobileConnections: 0 }, { mobileConnections: -1, proofNonces: 0 }]) {
+    f.respond(200, { ...receipt, deletedCounts: { ...receipt.deletedCounts, ...changed } });
+    await assert.rejects(f.api.executeReset("OWNER", body), /errors.reset.invalidResponse/);
+  }
+});
+
 test("lost-response replay retains the same nonce and body with no automatic preview or extra execution", async () => {
   const f = fixture();
   let commits = 0;

@@ -343,6 +343,32 @@ test("status in progress or unavailable cannot silently turn into a preview or d
   assert.equal(posts(f).length, 0);
 });
 
+test("historical security counts render as not measured in FR/EN, never fabricated zeroes", async () => {
+  for (const language of ["fr", "en"]) {
+    const receipt = plain(resetResult);
+    for (const counts of [receipt.deletedCounts, receipt.countsAfter]) {
+      delete counts.mobileConnections;
+      delete counts.proofNonces;
+    }
+    const status = { ...recoveryStatus(), status: "completed", recoveryAvailable: false, receipt };
+    const f = fixture("SettingsView", { role: "OWNER", data: { resetStatus: status } });
+    f.setLanguage(language);
+    await open(f);
+    for (const key of ["mobileConnections", "proofNonces"]) {
+      const rows = nodes(dialog(f)).filter(node => node.type === "div" &&
+        node.children?.some(child => child?.type === "dt" && text(child) === f.t(`operations.reset.counts.${key}`)));
+      assert.equal(rows.length, 2, "Both historical deleted/remaining counts are visible");
+      for (const row of rows) {
+        const value = row.children.find(child => child?.type === "dd");
+        assert.equal(text(value), f.t("operations.reset.countNotRecorded"));
+        assert.notEqual(text(value), "0");
+      }
+    }
+    assert.equal(posts(f).length, 0);
+    assert.equal(previews(f).length, 0);
+  }
+});
+
 test("a saved owner submit handler cannot make requests after that owner view is unmounted", async () => {
   const f = fixture("SettingsView", { role: "OWNER" }); await open(f); fill(f);
   const saved = form(f);

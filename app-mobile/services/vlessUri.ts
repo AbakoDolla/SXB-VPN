@@ -10,6 +10,7 @@
  * vless://uuid@server:443?path=%2Fvless&security=tls&encryption=none&host=ws.example&type=ws&sni=ws.example#Nom
  */
 import { alpnPourTransport } from './alpnPolicy';
+import { readProtocolUri } from '../../server/services/protocol-uri';
 
 export interface ParsedVlessUri {
   config: Record<string, any>;
@@ -186,8 +187,14 @@ export function parseVlessUri(rawUri: string): ParsedVlessUri {
  */
 export function parseVpnUri(raw: string): ParsedVlessUri | null {
   const text = String(raw ?? '').trim();
-  if (!/^vless:\/\//i.test(text)) return null;
-  return parseVlessUri(text);
+  if (/^vless:\/\//i.test(text)) return parseVlessUri(text);
+  const result = readProtocolUri(text);
+  if (!result) return null;
+  const { config } = result;
+  if (!config.sni && config.tls) config.sni = estAdresseLitterale(config.host) ? config.wsHost || config.host : config.host;
+  const alpn = alpnPourTransport(config.network, config.tls === true, config.alpn);
+  if (alpn) config.alpn = alpn;
+  return result;
 }
 
 export function vlessUriToJson(raw: string): string {

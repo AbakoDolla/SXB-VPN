@@ -22,6 +22,18 @@
  * Aucune comparaison de chaînes de dates : uniquement des `Date`.
  */
 import { calculerEtatAcces, estDateDepassee } from "./reseller-state";
+import type { Prisma, VpnClient } from "@prisma/client";
+
+export async function lockActivationClaim(
+  tx: Prisma.TransactionClient, client: VpnClient, deviceId: string,
+): Promise<void> {
+  const scope = client.managedById ? ["manager", client.managedById]
+    : client.resellerId ? ["reseller", client.resellerId] : ["user", client.userId];
+  // The legacy nullable unique key does not serialize owner-only device claims.
+  await tx.$queryRawUnsafe("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))::text",
+    JSON.stringify([...scope, deviceId]));
+  await tx.$queryRawUnsafe("SELECT id FROM vpn_clients WHERE id = $1 FOR UPDATE", client.id);
+}
 
 export const CODES_ACTIVATION = {
   TOKEN_NOT_FOUND: "TOKEN_NOT_FOUND",

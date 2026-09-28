@@ -26,7 +26,7 @@
  *   - dns tcp+local:// ou https+local:// + payload [crlf] → warning explicite.
  */
 
-import { isIP } from 'node:net';
+import { wireguardEndpoint, validateShadowsocksKey, validateVmessSecurity, hasWireguardEndpoints, ipVersion as isIP } from './protocol-bundle';
 
 export interface TranslationResult {
   ok: boolean;
@@ -60,6 +60,7 @@ export function hasXrayMarkers(obj: any): boolean {
 /** sing-box natif : outbounds[] d'objets ayant un champ type (string) ET absence de markers Xray. */
 export function isSingboxNativeJson(obj: any): boolean {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
+  if (hasWireguardEndpoints(obj) && (!obj.outbounds || Array.isArray(obj.outbounds) && obj.outbounds.every((o: any) => o && typeof o.type === 'string'))) return true;
   if (!Array.isArray(obj.outbounds) || obj.outbounds.length === 0) return false;
   if (!obj.outbounds.every((o: any) => o && typeof o.type === 'string')) return false;
   return !hasXrayMarkers(obj);
@@ -257,6 +258,10 @@ function translateDns(xrayDns: any, warnings: string[], errors: string[], mainOu
     return null;
   }
   if (xrayDns.servers.length === 0) {
+    if (xrayDns.hosts && Object.keys(xrayDns.hosts).length) {
+      errors.push('Xray : dns.hosts exige dns.servers non vide; fournir un resolveur explicite');
+      return null;
+    }
     warnings.push('Xray : dns.servers vide - DNS fourni par le moteur mobile');
     return null;
   }
@@ -288,16 +293,28 @@ function translateDns(xrayDns: any, warnings: string[], errors: string[], mainOu
   if (operatorTrick) {
     warnings.push('astuce DNS opérateur perdue à la conversion (dns.servers tcp+local:// / https+local:// avec payload [crlf]) — DNS du moteur mobile utilisé');
   }
-  if (xrayDns.hosts && typeof xrayDns.hosts === 'object' && Object.keys(xrayDns.hosts).length > 0) {
-    // Le moteur embarqué est sing-box 1.11.15 ; le serveur DNS `hosts` avec
-    // `predefined` n’existe qu’à partir de 1.12. On refuse la fausse promesse
-    // de l’appliquer et on laisse le DNS du moteur résoudre normalement.
-    warnings.push(`dns.hosts contient ${Object.keys(xrayDns.hosts).length} entrée(s), conservées dans le diagnostic mais ignorées par sing-box 1.11.15 (fonction hosts introduite en 1.12)`);
-  }
   if (servers.length === 0) return null;
 
   servers.forEach((s, i) => { s.tag = i === 0 ? 'dns-remote' : `dns-remote-${i + 1}`; });
   const dns: Record<string, any> = { servers, final: 'dns-remote' };
+  if (xrayDns.hosts !== undefined) {
+    if (!xrayDns.hosts || typeof xrayDns.hosts !== 'object' || Array.isArray(xrayDns.hosts)) {
+      errors.push('Xray : dns.hosts doit etre un objet');
+    } else if (Object.keys(xrayDns.hosts).length) {
+      const predefined: Record<string, string[]> = {};
+      for (const [domain, value] of Object.entries(xrayDns.hosts)) {
+        const addresses = Array.isArray(value) ? value : [value];
+        if (!/^[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.?$/i.test(domain) || !addresses.length ||
+          addresses.some(ip => typeof ip !== 'string' || !isIP(ip))) {
+          warnings.push('Xray : alias/matcher dns.hosts non traduit; comportement historique conserve. Utiliser des noms exacts vers des IP pour une equivalence.');
+        } else predefined[domain] = addresses;
+      }
+      if (Object.keys(predefined).length) {
+        dns.servers.push({ type: 'hosts', tag: 'dns-hosts', predefined });
+        dns.rules = [{ domain: Object.keys(predefined), server: 'dns-hosts' }];
+      }
+    }
+  }
   if (xrayDns.queryStrategy === 'UseIPv4') dns.strategy = 'ipv4_only';
   else if (xrayDns.queryStrategy === 'UseIPv6') dns.strategy = 'ipv6_only';
   else if (xrayDns.queryStrategy !== undefined && xrayDns.queryStrategy !== 'UseIP') {
@@ -478,6 +495,7 @@ export function translateXrayToSingbox(xray: Record<string, any>): TranslationRe
   const warnings: string[] = [];
   const errors: string[] = [];
   const outbounds: Record<string, any>[] = [];
+  const endpoints: Record<string, any>[] = [];
   const generatedTags = new Set<string>();
   let mainOutboundTag: string | null = null;
 
@@ -576,7 +594,9 @@ export function translateXrayToSingbox(xray: Record<string, any>): TranslationRe
         out.uuid = uuid;
         if (proto === 'vmess') {
           out.alter_id = alterId;
-          out.security = 'auto';
+          out.security = String(settings.vnext?.[0]?.users?.[0]?.security ?? 'auto');
+          try { validateVmessSecurity(out.security); }
+          catch (error) { errors.push(error instanceof Error ? error.message : 'VMess: security invalide'); }
         }
       }
 
@@ -584,6 +604,60 @@ export function translateXrayToSingbox(xray: Record<string, any>): TranslationRe
       applyProxySettings(ob, out, rawByTag, warnings, errors);
       addOutbound(out);
       if (!mainOutboundTag) mainOutboundTag = tag;
+    } else if (proto === 'shadowsocks' || proto === 'socks') {
+      const s = settings.servers?.[0];
+      if (!Array.isArray(settings.servers) || settings.servers.length !== 1 || !validServer(s?.address, s?.port)) {
+        errors.push(`Xray : ${proto} exige un seul serveur avec address/port valides`);
+        continue;
+      }
+      const out: Record<string, any> = { type: proto, tag, server: s.address, server_port: Number(s.port) };
+      if (proto === 'shadowsocks') {
+        if (typeof s.method !== 'string' || !s.method || typeof s.password !== 'string' || !s.password) {
+          errors.push('Xray : Shadowsocks method/password requis');
+          continue;
+        }
+        out.method = s.method === 'chacha20-poly1305' ? 'chacha20-ietf-poly1305' : s.method;
+        out.password = s.password;
+        try { validateShadowsocksKey(out.method, out.password); }
+        catch (error) { errors.push(error instanceof Error ? error.message : 'Shadowsocks: cle invalide'); }
+        if (ob.streamSettings?.security && ob.streamSettings.security !== 'none'
+          || ob.streamSettings?.network && ob.streamSettings.network !== 'tcp') {
+          errors.push('Xray : transport Shadowsocks non traduisible');
+        }
+      } else {
+        if (s.users !== undefined) {
+          if (!Array.isArray(s.users) || s.users.length > 1
+            || s.users.length === 1 && (typeof s.users[0]?.user !== 'string' || typeof s.users[0]?.pass !== 'string')) {
+            errors.push('Xray : authentification SOCKS ambigue ou invalide');
+          } else if (s.users.length === 1) {
+            const user = s.users[0];
+            if (Boolean(user.user) !== Boolean(user.pass)) errors.push('Xray : SOCKS user/pass doivent etre fournis ensemble');
+            else if (user.user) { out.username = user.user; out.password = user.pass; }
+          }
+        }
+        if (ob.streamSettings?.network && ob.streamSettings.network !== 'tcp') errors.push('Xray : transport SOCKS non traduisible');
+        else translateStreamSettings(ob, out, s.address, warnings, errors);
+      }
+      applyProxySettings(ob, out, rawByTag, warnings, errors);
+      addOutbound(out);
+      if (!mainOutboundTag) mainOutboundTag = tag;
+    } else if (proto === 'wireguard') {
+      try {
+        if (ob.streamSettings || ob.proxySettings || ob.mux?.enabled === true) {
+          throw new Error('Xray : WireGuard ne peut pas utiliser streamSettings/proxySettings/mux');
+        }
+        const endpoint = wireguardEndpoint(settings, tag);
+        endpoints.push(endpoint);
+        generatedTags.add(tag);
+        if (!mainOutboundTag) mainOutboundTag = tag;
+        if (settings.noKernelTun !== undefined) warnings.push('WireGuard : interface utilisateur libbox utilisee; aucun TUN supplementaire');
+        if (settings.remoteDNS !== undefined) {
+          if (!Array.isArray(settings.remoteDNS) || settings.remoteDNS.some((address: unknown) => typeof address !== 'string' || !isIP(address))) {
+            throw new Error('WireGuard : remoteDNS doit contenir des adresses IP');
+          }
+          if (xray.dns) warnings.push('WireGuard : dns global explicite prioritaire sur remoteDNS');
+        }
+      } catch (error) { errors.push(error instanceof Error ? error.message : 'WireGuard: configuration invalide'); }
     } else if (proto === 'http') {
       const s = settings.servers?.[0];
       if (!Array.isArray(settings.servers) || settings.servers.length !== 1 || !validServer(s?.address, s?.port)) {
@@ -666,7 +740,8 @@ export function translateXrayToSingbox(xray: Record<string, any>): TranslationRe
   }
 
   // ── DNS ───────────────────────────────────────────────────────────────────
-  const dns = translateDns(xray.dns, warnings, errors, mainOutboundTag);
+  const wireguardDns = rawOutbounds.find((ob: any) => ob.protocol === 'wireguard')?.settings?.remoteDNS;
+  const dns = translateDns(xray.dns ?? (wireguardDns?.length ? { servers: wireguardDns } : undefined), warnings, errors, mainOutboundTag);
 
   // ── Routing ───────────────────────────────────────────────────────────────
   const route = translateRouting(xray.routing, mainOutboundTag, generatedTags, warnings, errors);
@@ -678,6 +753,7 @@ export function translateXrayToSingbox(xray: Record<string, any>): TranslationRe
     outbounds,
   };
   if (dns) singboxJson.dns = dns;
+  if (endpoints.length) singboxJson.endpoints = endpoints;
   if (route) singboxJson.route = route;
 
   return { ok: true, singboxJson, warnings, errors: [] };

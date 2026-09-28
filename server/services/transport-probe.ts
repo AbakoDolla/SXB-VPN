@@ -442,7 +442,7 @@ export async function probeConfig(
   }
 
   // Protocoles non sondables en v1 (validation syntaxique seule, hors transport)
-  if (!isWsProxy && ['wireguard', 'shadowsocks', 'vmess', 'vless', 'trojan', 'hysteria2', 'tuic'].includes(proto)) {
+  if (!isWsProxy && ['wireguard', 'shadowsocks', 'vmess', 'vless', 'trojan', 'hysteria1', 'hysteria2', 'tuic'].includes(proto)) {
     return finish('unsupported', `sonde transport v1 non applicable à ${proto} — validation syntaxique stricte effectuée à l'import`);
   }
   if (!isWsProxy && proto !== 'ssh' && proto !== 'ssh+payload') {

@@ -71,7 +71,7 @@ function fidelityRoundtrip(label, raw) {
   const h1 = computeCanonicalHash(canonical);
   const h2 = computeCanonicalHash(canonical);
   assert.equal(h1, h2, `${label} — hash non déterministe`);
-  assert.match(h1, /^[0-9a-f]{64}$/, `${label} — hash non sha256`);
+  assert.match(h1, /^hmac-sha256-v1:[0-9a-f]{64}$/, `${label} — empreinte non HMAC versionnée`);
 
   // Stockage chiffré : JAMAIS de clair
   const blob = encryptCanonical(canonicalJson(canonical));
