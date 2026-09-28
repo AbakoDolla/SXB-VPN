@@ -267,9 +267,13 @@ try {
   check('legacy usage alias cannot double charge a bound relay', (await request(a, '/api/mobile/vpn/usage',
     { subscriptionId: sub.id, download: 100, upload: 0 }, a.tokens.accessToken)).status, 409);
   check('mobile reports never double debit gateway bytes', (await prisma.subscription.findUniqueOrThrow({ where: { id: sub.id } })).quotaUsed, 600n);
-  const refreshed = await request(a, '/api/provision/ssh-relay/refresh', { ticket: relayTicket }, a.tokens.accessToken);
+  const refreshRelayTarget = '/api/provision/ssh-relay/refresh', refreshRelayBody = { ticket: relayTicket };
+  const refreshRelayHeaders = headers(a, 'POST', refreshRelayTarget, JSON.stringify(refreshRelayBody), a.tokens.accessToken);
+  const refreshed = await request(a, refreshRelayTarget, refreshRelayBody, a.tokens.accessToken, { headers: refreshRelayHeaders });
   check('credential renewal endpoint succeeds', refreshed.status, 200);
   check('renewal returns no configuration', Object.keys(refreshed.data).sort().join(','), 'expiresAt,ticket');
+  check('renewal consumes its proof exactly once', (await request(a, refreshRelayTarget, refreshRelayBody,
+    a.tokens.accessToken, { headers: refreshRelayHeaders })).status, 409);
   await request(a, '/api/mobile/vpn/session', { ...directRetry, action: 'disconnect' }, a.tokens.accessToken);
   await assert.rejects(relayGrant.account(1, 0));
   check('closed gateway binding cannot be reopened by retry', (await request(a, '/api/mobile/vpn/session', relayConnection, a.tokens.accessToken)).status, 409);

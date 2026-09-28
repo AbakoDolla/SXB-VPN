@@ -146,9 +146,10 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
       const proof = verifyMobileProof(req, bound.client.devicePublicKey!, token, claims);
       // These handlers consume inside their accounting/session transaction.
       if (["/api/mobile/vpn/traffic", "/api/mobile/vpn/usage", "/api/mobile/vpn/session",
-           "/api/mobile-security/events", "/api/provision/activate", "/api/provision/sync"].includes(req.originalUrl.split("?")[0]) ||
+           "/api/mobile-security/events", "/api/provision/activate", "/api/provision/sync",
+           "/api/provision/ssh-relay/refresh"].includes(req.originalUrl.split("?")[0]) ||
           ["/vpn/traffic", "/vpn/usage", "/vpn/session"].includes(req.path) ||
-          (req.baseUrl.endsWith("/provision") && ["/activate", "/sync"].includes(req.path)) ||
+          (req.baseUrl.endsWith("/provision") && ["/activate", "/sync", "/ssh-relay/refresh"].includes(req.path)) ||
           (req.baseUrl.endsWith("/mobile-security") && req.path === "/events")) return;
       if (!prisma) throw new Error("SECURITY_DATABASE_REQUIRED");
       await prisma.$transaction(tx => consumeSessionProof(tx, claims, proof));
