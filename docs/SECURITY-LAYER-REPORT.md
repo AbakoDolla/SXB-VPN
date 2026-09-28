@@ -1,0 +1,634 @@
+# Rapport A-T : couche de securite additive SXB VPN
+
+Base conservee : `5ba8f701eff6d560c6a95aff1e07cb0119ee582d`, branche
+`princeevanceabah-pixel-compatibilite-du-paquet-protocoles` (PR #89), incluant
+la stabilite de PR #88. Code fige pour revue :
+`2b83e4a89848073baa1d01f81bb46c9e59eb434d`. Les changements suivants de ce lot
+sont documentaires. Ce rapport ne constitue pas une autorisation de publication.
+
+## A. Resume
+
+La couche conserve le service/TUN unique, libbox, JSch, DNSTT, les formats de
+protocoles, le coffre chiffre, le ledger, les generations de connexion, les
+essais, quotas, facturation et portees revendeur/RBAC. Elle etend les routes,
+modeles et consoles existants au lieu de creer un second systeme de securite.
+
+Les changements principaux sont la preuve de possession d'une cle Android,
+les generations d'authentification et rotations de refresh persistantes,
+l'association immuable des rapports de consommation, les evenements de
+revocation Android differes et une politique de risque graduee non punitive.
+Les ecritures locales d'identite et leurs nettoyages imbriques sont serialises :
+un refresh ou une suppression A ne peut finir apres la persistance de B.
+Une requete A en attente conserve son autorite et ne repart pas avec les jetons B.
+
+Le constat d'audit sur `reportMode: unlinked` est corrige pour une association
+de connexion geree deja autorisee par le serveur. Il ne s'agit **pas d'une
+mesure independante du trafic** : un client completement hostile peut encore
+mentir sur les octets ou ne pas les rapporter. Les identifiants fournisseur
+peuvent rester persistants ; aucune rotation distante inexistante n'est promise.
+
+## B. Fichiers existants modifies
+
+Inventaire relatif a la base ci-dessus, hors caches d'outils et preuves temporaires.
+
+```text
+.github\workflows\build-android.yml
+.github\workflows\verification-pr.yml
+app-mobile\app\activate.tsx
+app-mobile\contexts\AuthContext.tsx
+app-mobile\contexts\VpnContext.tsx
+app-mobile\localization\en.ts
+app-mobile\localization\fr.ts
+app-mobile\modules\android-native\SecurityModule.kt
+app-mobile\modules\android-native\SxbAccessControl.kt
+app-mobile\modules\android-native\SxbAccessObserver.kt
+app-mobile\modules\android-native\SxbVpnModule.kt
+app-mobile\modules\android-native\SxbVpnPackage.kt
+app-mobile\modules\android-native\SxbVpnService.kt
+app-mobile\plugins\withSxbVpn.js
+app-mobile\services\activationError.ts
+app-mobile\services\apiClient.ts
+app-mobile\services\configStore.ts
+app-mobile\services\identitySession.ts
+app-mobile\services\offlineStorage.ts
+app-mobile\services\securityReport.ts
+app-mobile\services\usageLedger.ts
+app-mobile\tests\mobile-access.test.ts
+app-mobile\tests\regression-critical-flows.test.ts
+app-mobile\tests\usage-accounting.test.ts
+artifacts\sxb-dashboard\src\api\security.ts
+artifacts\sxb-dashboard\src\api\sessions.ts
+artifacts\sxb-dashboard\src\components\SecurityCenterView.tsx
+artifacts\sxb-dashboard\src\components\SessionsView.tsx
+artifacts\sxb-dashboard\src\locales\en\operations.json
+artifacts\sxb-dashboard\src\locales\fr\operations.json
+backend\prisma\schema.prisma
+prisma\schema.prisma
+scripts\run-android-policy-gates.sh
+scripts\tests\durcissement-mobile.test.mjs
+scripts\tests\provision-e2e.test.mjs
+scripts\tests\security-center.test.mjs
+server.ts
+server\middleware\auth.ts
+server\routes\mobile-access.ts
+server\routes\mobile-security.ts
+server\routes\mobile.ts
+server\routes\provision.ts
+server\routes\security.ts
+server\routes\sessions.ts
+server\services\access-lifecycle.ts
+server\services\access-ticket.ts
+server\services\device-activation.ts
+server\services\mobile-access-state.ts
+server\services\mobile-principal.ts
+server\services\mobile-risk.ts
+server\services\mobile-session-refresh.ts
+server\services\play-integrity.ts
+server\services\security-events.ts
+server\tests\reseller-lifecycle.test.ts
+```
+
+## C. Nouveaux fichiers
+
+```text
+app-mobile\modules\android-native\SxbBackendTls.kt
+app-mobile\modules\android-native\SxbDeviceProof.kt
+app-mobile\modules\android-native\SxbSecurityMonitor.kt
+app-mobile\services\deviceSecurity.ts
+app-mobile\services\identityPersistence.ts
+app-mobile\tests\DeviceSecurityTest.kt
+app-mobile\tests\run-device-security.cjs
+backend\prisma\security-layer.sql
+docs\SECURITY-LAYER-REPORT.md
+prisma\security-layer.sql
+scripts\tests\security-dashboard-preview.mjs
+scripts\tests\security-layer-postgres.integration.mjs
+server\services\mobile-connections.ts
+server\services\mobile-proof.ts
+server\services\mobile-session-security.ts
+server\services\security-policy.ts
+```
+
+Le runner PostgreSQL a ete renomme de `.test.mjs` en `.integration.mjs`
+pendant ce lot. Il ne doit pas entrer dans les globs sans base de donnees du
+deploiement. Ses donnees sont des fixtures explicitement synthetiques ; son
+stockage et ses transactions sont du vrai PostgreSQL.
+
+## D. Schema Prisma et migration
+
+Les deux schemas Prisma et les deux fichiers SQL sont identiques entre racine
+et `backend\prisma`. `security-layer.sql` est un script additif transactionnel,
+pas une migration automatiquement decouverte par `prisma migrate deploy`.
+Ne pas utiliser `db push` pour mettre a jour la production.
+
+| Modele/table | Ajout |
+| --- | --- |
+| `VpnClient` / `vpn_clients` | Cle publique SPKI, empreinte, date d'enrolement, autorisation temporaire d'enrolement/remplacement |
+| `ActivationSession` / `activation_sessions` | Generation, dates d'emission/expiration/revocation, ID de retry d'activation, generation/JTI refresh courant et precedent, limite de retry |
+| `MobileProofNonce` / `mobile_proof_nonces` | Unicite `(keyId, nonce)`, expiration indexee |
+| `MobileConnection` / `mobile_connections` | Connexion, autorite d'origine, device, session comptable, forfait/configuration immuables, cloture |
+| `SecurityEvent` / `security_events` | Correlations nullable session/generation/connexion, cle d'idempotence, version de politique, niveau de risque |
+
+`ActivationSession` conserve sa cardinalite `(clientId, deviceId)` : ce n'est
+pas une ligne par reconnexion VPN. La generation historique vaut 0. Aucune
+cle n'est attribuee ni aucun appareil automatiquement enrole par la migration.
+`MobileConnection`, unique par `(clientId, usageSessionId)`, est une association
+comptable par connexion, pas une autre session d'authentification. La relation
+d'autorite et sa mutation sont controlees dans les transactions applicatives.
+
+Ordre de deploiement : sauvegarde et verification du schema, SQL additif,
+generation du client Prisma, mise a niveau de **tous** les noeuds backend,
+puis activation des nouveaux clients/enrolements. Les anciens clients restent
+dans la cohorte explicitement non enrolee. Un ancien backend ignorant les
+nouvelles colonnes/claims ne protege pas un client enrole : le routage mixte
+ou un rollback vers cet ancien code doit etre bloque operationnellement.
+Il n'y a ni date-butoir implicite ni bascule globale destructive.
+
+La migration a ete verifiee sur une base locale peuplee, avec preservation et
+reexecution idempotente, par le parent. Le nouveau job CI initialise uniquement
+son PostgreSQL jetable a partir du schema courant puis execute le SQL additif ;
+ce bootstrap CI n'est pas, a lui seul, une preuve de migration d'un parc ancien.
+
+## E. API
+
+| Surface | Contrat |
+| --- | --- |
+| `POST /api/mobile/auth/activate` | Existant etendu : cle publique et `activationRequestId`, autorite d'enrolement, retour `security` |
+| `POST /api/mobile/auth/refresh` | Existant etendu : rotation persistante, preuve, retries bornes |
+| `POST /api/auth/refresh` | Chemin historique controle aussi pour une autorite mobile ; aucune elevation vers le role operateur |
+| `POST /api/mobile/vpn/session` | Existant etendu : autorisation/idempotence de l'association connexion-comptabilite |
+| `POST /api/mobile/vpn/traffic` | Existant etendu : association immuable, retries et rapport manuel explicite conserves |
+| `POST /api/mobile-security/report` | Existant etendu : integrite locale, politique versionnee, jamais de suspension heuristique automatique |
+| `POST /api/mobile-security/events` | Nouveau : lot de 1 a 25 evenements durables, acquittement apres commit |
+| `GET`, `PUT /api/security/policy` | Nouveaux : lecture et CAS de version ; owner/super-admin et console deverrouillee |
+| `POST /api/security/devices/:id/authorize-key` | Nouveau : autorisation explicite de cle publique, duree 10 minutes |
+| `POST /api/security/sessions/:id/revoke` | Nouveau : revocation de generation precise, console protegee |
+| `GET /api/sessions/:id/security-events` | Nouveau : projection bornee selon permissions et portee existantes |
+| `POST /api/sessions/:id/security-revoke` | Nouveau : action de generation avec `clients.manage`, interdite au SUPPORT |
+| Provisionnement, principal mobile, access-ticket et observation | Existants renforces par cle/generation/revocation |
+
+Le champ `generation` des revocations est obligatoire. Une generation obsolete
+ne revoque pas la suivante. Le vieux `/api/sessions/:id/revoke`, action metier
+suspendant le client, reste distinct et n'est jamais utilise pour `VPN_REVOKED`.
+Les enveloppes d'erreur compatibles utilisent notamment `SESSION_INVALID`
+avec une `reason` precise (`DEVICE_MISMATCH`, `SESSION_REPLAY`, etc.) ;
+un nonce reutilise est refuse en 409. Ces refus ne livrent aucune configuration.
+
+## F. Evenements et console
+
+Vocabulaire ajoute : `VPN_STARTED`, `VPN_STOPPED`, `VPN_REVOKED`, `VPN_CONFLICT`,
+`ROOT_DETECTED`, `DEBUG_DETECTED`, `HOOKING_RISK`, `INSTRUMENTATION_RISK`,
+`APP_INTEGRITY_FAILED`, `TOKEN_REPLAY`, `DEVICE_MISMATCH`, `SESSION_REPLAY`,
+`CAPTURE_RISK_DETECTED`, `CONTROL_RISK_DETECTED`, `SECURITY_POLICY_BLOCK`.
+L'inscription d'un nom au vocabulaire ne prouve pas l'existence d'un detecteur
+capable de confirmer toutes les captures ou tous les conflits.
+
+Les producteurs effectifs comprennent les transitions VPN natives, les
+observations root/debug/hooks/signature et les refus d'autorite/replay serveur.
+Les observations client sont etiquetees comme telles. Les nouvelles donnees
+de cycle de vie ne contiennent ni paquet, payload VPN, jeton, mot de passe ni
+cle privee. Les metadonnees sont allowlistees et bornees. Les anciens champs
+`ip` et `clientName` de la console owner existent toujours : ne pas presenter
+l'ensemble de l'historique comme ne contenant que des IP hachees.
+
+Les acquittements durables utilisent l'ecrivain strict dans la transaction ;
+un echec de stockage donne un echec explicite, pas un faux acquittement. Les
+observations facultatives restent non fatales et leurs echecs sont journalises.
+
+La console existante conserve son verrou court et ses passkeys. Filtres :
+utilisateur, appareil, session, gravite, type, dates et etat d'acquittement ;
+la vue Sessions garde le filtre d'etat metier. ADMIN/SUPPORT ne recoivent
+qu'une projection autorisee, sans configuration privee ni metadonnees owner.
+SUPPORT n'a pas le nouveau bouton de revocation. Aucune console owner n'est
+ouverte au CLIENT ; les routes d'identite existantes suffisent pour son compte.
+
+Le polling conserve les brouillons et les erreurs de mutation. Les erreurs
+de chargement sont separees et disparaissent a la recuperation du chargement.
+Le rechargement volontaire d'une politique modifiee demande confirmation.
+Les actions de session passent a la ligne sur mobile sans fragmenter les mots ;
+la fixture utilise le vrai `installResponsiveTables`, comme le layout.
+
+## G. Politique de risque
+
+Stockage : `Setting.key = mobile.security.policy.v1`. Version initiale 1 ;
+mise a jour stricte avec `version courante + 1`, creation initiale et CAS
+serialises en PostgreSQL, y compris lorsque la ligne Setting n'existe pas.
+
+| Niveau | Politique par defaut |
+| --- | --- |
+| NORMAL | Score 0, aucune action |
+| LOW | Sous MEDIUM, aucune action ; root seul reste LOW/autorise |
+| MEDIUM | A partir de 30, surveillance |
+| HIGH | A partir de 65, revalidation, sans suspension du compte |
+| CRITICAL | Branche reservee a une violation confirmee cote serveur, jamais construite en additionnant des declarations client |
+
+Poids initiaux : signature invalide 75, leurre touche 40, hooked 50, Frida 50,
+Xposed 40, attestation refusee 40, debugger 30, root 10, emulateur 10.
+Le score des observations est leur **maximum**, borne a 89, pas leur somme.
+Les seuils configurables sont MEDIUM 11-64 et HIGH 65-89 ; les poids doivent
+tous etre presents. Une erreur de lecture de politique est explicite (503).
+
+Un bearer vole accompagne d'une mauvaise preuve ne doit pas offrir un moyen
+de revoquer la victime. Les refus de requetes sont donc journalises/refuses,
+sans assimiler automatiquement leur emetteur au detenteur legitime de la cle.
+La revocation persistante de session est une action autorisee et generationnelle.
+Aucune suppression, interdiction de compte ou suspension de forfait n'est ajoutee.
+
+## H. Root
+
+Root seul : ALLOW, sans condition Play ni blocage local automatique.
+Root avec plusieurs detecteurs de hooks n'est pas une preuve independante
+de compromission. Root avec une signature declaree invalide atteint HIGH
+par le signal de signature, pas CRITICAL par addition. Les declarations locales
+et leurs detecteurs peuvent etre neutralises sur un appareil compromis.
+
+## I. Conflits VPN et `onRevoke`
+
+Trois identites sont distinctes :
+
+| Identite | Usage |
+| --- | --- |
+| `ActivationSession.id + authGeneration` | Autorite de connexion au backend, famille de refresh |
+| Tentative/start natif et `MobileConnection.id` | Tentative et connexion VPN d'origine |
+| `usageSessionId + seq` | Rejeu comptable, jamais credential d'authentification |
+
+`onRevoke` capture l'autorite originale avant le travail asynchrone, interdit
+la reconnexion, arrete descripteurs/workers et fige la consommation finale.
+L'evenement est persiste pour livraison ulterieure, avec l'autorite de cette
+connexion. Une callback ancienne ne coupe pas une tentative/service plus recent.
+
+La perte de permission peut etre une decision normale d'Android. Elle ferme
+la connexion originale, pas le login, l'activation, les profils chiffres ou
+le ledger. L'application ne lutte pas pour reprendre automatiquement la
+permission VPN. Un evenement ancien ne revoque ni nouveau login ni nouvelle
+connexion ; le serveur verifie l'association avant de clore la connexion.
+Les files sont bornees et privilegient les pertes de permission. Une panne
+de stockage reste signalee : aucune durabilite impossible n'est promise.
+
+## J. Integrite APK et HTTPS
+
+Package attendu : `com.sxbvpn.mobile`. Empreinte publique du signataire release
+verifie avant ce lot :
+
+```text
+0140c97e6ba6e9bab0d0ce86935562fbdedd80a026de49642764c49dce56f726
+```
+
+La liste autorise 1 a 8 certificats officiels pour preparer une rotation.
+Package, certificat, version/build et canal sont observes localement.
+Un APK officiel sideloade reste admis. Play est facultatif ; absence,
+indisponibilite, non-reconnaissance, `UNLICENSED`, `UNEVALUATED` et canal inconnu
+ne prouvent pas une attaque. L'adaptateur Play existant est reutilise.
+Un digest auto-declare n'est pas une attestation serveur authentique.
+
+Le plumbing TLS natif couvre la pile React Native utilisee par JS ainsi que
+les appels HTTP natifs de fond. Il valide la chaine avec le trust manager
+systeme puis applique l'allowlist SPKI a la chaine validee. Pas de trust-all,
+TOFU, faux pin de secours ni fallback sur un mismatch configure.
+
+Configuration publique :
+`EXPO_PUBLIC_BACKEND_SPKI_PINS` est un tableau JSON de pins `sha256/...` revus ;
+`EXPO_PUBLIC_APK_SIGNERS` est une liste de digests separee par virgules.
+L'origine HTTPS configuree reste selectionnable. Les controles natifs ne
+promettent pas un nouveau support de backend Android HTTP en clair.
+
+**Aucun pin TLS reel de production n'a ete fourni ou recolte.** La valeur
+non configuree `[]` n'active pas le pinning. Avant activation il faut obtenir
+hors de cette intervention les SPKI publics approuves et le materiel public
+de rotation, puis verifier un vrai handshake. L'enforcement production du
+pinning n'est donc pas demontre par ce lot.
+
+## K. Device binding
+
+Cle EC P-256 non exportable dans Android Keystore, sans obligation StrongBox,
+root ou Google Play. Le serveur conserve la cle publique SPKI et son empreinte.
+L'enrolement est rattache a l'activation et au principal existants. Sur un
+appareil deja active, un upgrade/remplacement exige une autorisation explicite
+liee a l'empreinte publique verifiee, valable 10 minutes. Un bearer et un
+en-tete `deviceId` falsifie ne permettent pas d'ecraser une cle existante.
+
+Avant premier enrolement, VPN arrete et ledger synchronise : pas d'abandon
+de consommation historique non liee. Le marqueur local d'enrolement est
+persistant ; une reponse security manquante ou un bridge indisponible ne
+declenchent pas un downgrade silencieux. Les retries d'activation conservent
+leur ID ; seul l'ID effectivement acquitte est nettoye.
+
+La preuve couvre, dans cet ordre et separe par des sauts de ligne :
+
+```text
+SXB-PROOF-1
+METHODE
+chemin et query exacts
+SHA256(octets exacts du corps)
+sessionId ou -
+generation ou 0
+SHA256(credential utilise)
+timestamp
+nonce
+```
+
+Signature `SHA256withECDSA`, identite de cle associee au principal. Le credential
+est celui de l'operation (activation, refresh, bearer ou ticket observeur).
+JS signe les octets qu'Axios envoie effectivement, y compris une string JSON
+avec blancs. Les chemins bridge/natifs de fond ne passent pas sans preuve ;
+le reporter headless conserve son chemin JS signe.
+
+## L. Replay et persistance d'identite
+
+Fenetre de preuve : 90 secondes, nonce aleatoire, unicite PostgreSQL par cle.
+Consommation, revalidation de session et mutation protegee partagent la
+transaction ; un rollback ne consomme pas artificiellement la preuve.
+Il n'y a pas de dependance Redis inventee.
+
+Access JWT : au plus 15 minutes. Famille de refresh : sept jours fixes apres
+activation, sans glissement indefini. Rotation par JTI/generation persistants ;
+le precedent JTI a une fenetre de retry de 120 secondes et rend le meme
+successeur. Huit refresh paralleles legitimes produisent un seul successeur.
+Un ancien retry hors fenetre est refuse sans revoquer le successeur legitime.
+Access, refresh, provisioning et observer appliquent la generation revoquee.
+Les tickets d'observation restent limites a leur audience, sans droit de provisionner.
+
+La barriere locale commune couvre activation, refresh, restauration legacy,
+validation, mise a jour d'etat et nettoyage. Les suppressions internes du coffre
+et des quotas attendent aussi **toutes** leurs promesses avant de propager
+un echec. L'arret natif reste immediat au clear. Les tests retardent vraiment
+les ecritures, changent l'identite, puis liberent A ; ils ne remplacent pas
+ce controle par un simple check avant `await`.
+
+## M. Configurations privees et consommation
+
+Le principal serveur, l'appartenance, la validite du forfait, le quota,
+l'appareil et les droits de profil precedents restent controles. Le contenu
+canonique reste enveloppe en AES-GCM. Aucune cle fournisseur n'est ajoutee
+au dashboard ou aux evenements.
+
+Tests effectifs : user B ne peut provisionner A ; bearer A + cle B + header A
+ne donne aucune configuration ; un corps `deviceId=B` signe par A est refuse.
+Ni le client ni le forfait ne changent de device et aucun device B n'est inscrit.
+
+La resolution de forfait partagee est : `subscriptionId` explicite, sinon
+`configId` seulement pour une source backend, sinon `null`. Un alias manuel
+explicitement lie conserve son forfait ; une configuration manuelle non liee
+homonyme d'un forfait ne lui est jamais imputee. Connexion serveur, options
+natives et ledger utilisent cette meme lecture, sans reecriture des IDs/meta.
+Retries, chunks, redemarrages et rapports retardes gardent l'association originale.
+Cette garantie d'attribution ne transforme pas un compteur client en compteur reseau fiable.
+
+## N. Tests effectues et matrice des 24 scenarios
+
+Les suites utilisent les vraies fonctions/routes et, pour l'integration, un
+vrai PostgreSQL local. Les frontieres Android, materiel, stockage mobile et
+donnees de console sont explicitement synthetiques lorsqu'un harness les remplace.
+Elles ne sont pas presentees comme un test sur telephone.
+
+| Scenario | Preuve automatique obtenue | Preuve physique |
+| --- | --- | --- |
+| 01 Telephone normal | Activation/provision/usage et moteurs de politique | Non effectuee |
+| 02 Telephone roote | Politique root autorisee | Non effectuee |
+| 03 Root + APK officiel | Absence de suspension pour root seul | Non effectuee |
+| 04 Autre VpnService | Contrats source/JVM d'autorite de revoke | Non effectuee |
+| 05 `onRevoke` | Arret/generation/evenement ancien/file durable, source et JVM | Non effectuee |
+| 06 APK modifie | Signal `APP_INTEGRITY_FAILED`, revalidation et politique | APK repacke non execute |
+| 07 Sideload officiel | Semantique certificats/direct et Play neutre | Installation non effectuee |
+| 08 Play absent | Adapter absent/non configure neutre | Non effectuee |
+| 09 Integrity indisponible | Adapter indisponible neutre | Non effectuee |
+| 10 Token mauvais appareil | Principal, preuve et vrais handlers refuses | Non necessaire pour la decision serveur ; Keystore reel non teste |
+| 11 Ancienne session | Ancienne generation/refresh refuses ; nouvelle autorite preservee | Non effectuee sur telephone |
+| 12 Nonce reutilise | Concurrence PostgreSQL, une consommation, rollback et replay provisioning | Serveur reel uniquement, pas de telephone |
+| 13 JWT expire | Access JWT reellement expire + PoP fraiche : 401 ; token courant : 200 | Serveur reel uniquement, pas de telephone |
+| 14 Config privee user A/B | Provisionnement croise refuse | Serveur reel uniquement, pas de telephone |
+| 15 Config privee device A/B | Cle B/bearer A/header A et corps B signe A refuses, aucune config/reassociation | Serveur reel uniquement, pas de telephone |
+| 16 Root seul ALLOW | Decision et route de rapport, compte conserve | Non effectuee |
+| 17 Root + APK modifie | HIGH par defaut, pas CRITICAL fabrique par correlation | Non effectuee |
+| 18 Root + anomalie token | Refus cryptographique et politique separes des heuristiques | Non effectuee |
+| 19 Backend indisponible | 503 explicite, autorite preservee, retries/ledger durables | Coupure physique non effectuee |
+| 20 Wi-Fi vers mobile | Politiques de recuperation/stabilite sur JVM | Transition radio non effectuee |
+| 21 Mobile vers Wi-Fi | Memes invariants de generation/recuperation | Transition radio non effectuee |
+| 22 Mode avion | Attente/retry/offline simules aux frontieres | Non effectuee |
+| 23 Reboot | Restauration du ledger/autorite et snapshots dans les harnesses | Reboot non effectue |
+| 24 Arret puis relance | Rejeu persistant, ancienne generation et stockage retarde | Mort/reprise Android reelle non effectuee |
+
+PCAPdroid sans root : conflit de VpnService et revoke couverts par les
+contrats, mais aucun lancement de PCAPdroid ni test Android reel n'a eu lieu.
+PCAPdroid avec root : politique root seule autorisee et controles serveur
+maintenus ; aucune capture root executee. Aucune detection exhaustive ou
+promesse d'invisibilite/anti-capture a 100 %.
+
+## O. Resultats
+
+| Controle | Resultat observe |
+| --- | --- |
+| Regression mobile complete, incluant les contrats CI | 813 tests, 108 suites, aucun echec/skip |
+| Courses d'identite et drainage pilote | 19 tests, vrais modules, frontieres I/O synthetiques |
+| Usage/attribution | 58 tests dont les trois resolutions connexion/native/ledger |
+| HTTP + PostgreSQL isole | 149 checks, dont JWT expire et provisioning par mauvais appareil |
+| Backend cible historique | 130 tests reussis avant les derniers ajouts documentaires/CI |
+| Dashboard securite/langues | 27 tests reussis |
+| TypeScript mobile et dashboard | Reussite |
+| Build Vite dashboard | Reussite ; avertissement de gros chunk existant |
+| Securite source/JVM | 18 contrats de cycle de vie/file + 18 signatures Kotlin-vers-Node et alterations |
+| Autres gates JVM | Access 20 ; stabilite 61, recuperation/protocoles, usage natif 9 ; SSH avec JSch et fixtures localhost |
+| Graphes derives du builder Kotlin | 14 graphes acceptes par sing-box desktop 1.12.9 |
+| Revue navigateur locale | FR/EN, 390/1440 px, conflits/CAS, brouillons, polling, permissions ; vrais tableaux responsives, mots non fragmentes |
+| Typecheck strict global backend | Non vert : erreurs preexistantes hors nouveau code ; bundle/syntaxe du vrai serveur verifies par le parent |
+| Workflow GitHub / APK final | Non execute pour ce SHA au moment du rapport |
+
+Les lignes se recouvrent : ne pas additionner leurs nombres comme des tests
+independants. Le gate desktop local des 14 graphes a utilise
+`ENABLE_DEPRECATED_TUN_ADDRESS_X=true`. Le parent les a aussi acceptes sur
+son banc avec substitution explicite de la frontiere TUN, sans ce flag.
+**Aucun de ces deux resultats n'est un appel direct a `libbox.CheckConfig`.**
+
+Les erreurs intermediaires detectees (CAS initial, ecritures d'identite,
+drainage imbrique, attribution legacy, polling et boutons mobiles) ont leurs
+corrections et regressions correspondantes. Une tentative de revue native
+distante a echoue par reseau/modele ; ce n'est pas une revue reussie.
+
+## P. Limites et prerequis restants
+
+Pas de SDK Android complet ni de Go local disponible pour le gate exact.
+Aucun ADB, emulator, telephone, installation APK, R8 execute, manifeste APK
+final ou signataire de l'APK nouvellement construit n'est atteste ici.
+Ces controles restent a lancer dans le workflow parent autorise, puis sur
+des appareils de recette. Aucun dispatch n'a ete effectue par ce lot.
+
+Le service PostgreSQL et les etapes CI sont cables et leurs contrats/YAML
+verifies localement ; leur execution dans GitHub n'est pas encore une preuve
+acquise. Le controle SQL peuple/idempotent local reste distinct du bootstrap CI.
+Les pins publics de production et leur rotation restent a fournir.
+
+La securite suppose que serveur, secrets serveur et Keystore ne sont pas
+compromis. Une application compromise peut tenter d'utiliser la cle sur place,
+falsifier ses observations/compteurs ou omettre des rapports. Aucun secret
+embarque ne rend magiquement l'application inviolable.
+
+## Q. Commandes locales
+
+PowerShell, depuis la racine du checkout. Utiliser des dependances deja
+installees et possedees par ce checkout. Ne jamais installer/generer a travers
+une junction `node_modules` appartenant a un autre worktree. Le desaccord
+preexistant du catalogue pnpm n'a pas ete corrige en regenerant le lockfile.
+
+Verification mobile :
+
+```powershell
+Push-Location app-mobile
+node node_modules\typescript\bin\tsc --noEmit --pretty false
+npm run test:regression
+Pop-Location
+node --test scripts\tests\security-center.test.mjs scripts\tests\dashboard-i18n.test.mjs
+```
+
+La suite complete importe aussi le backend et exige un client Prisma genere.
+Sur ce poste, un preload prive de session redirige vers le client genere
+isole ; aucun changement dans les dependances du parent n'est necessaire.
+
+PostgreSQL : fournir dans l'environnement, sans les afficher, une URL de
+test dediee `SXB_SECURITY_TEST_DATABASE_URL` et le chemin absolu du client
+genere `SXB_SECURITY_PRISMA_CLIENT`. Le runner refuse une cible non loopback
+ou dont le nom ne contient pas `security_impl`/`security_upgrade`, ainsi que
+l'absence de configuration. Il ne transforme jamais cette absence en skip.
+
+```powershell
+node scripts\tests\security-layer-postgres.integration.mjs
+```
+
+Pour appliquer le SQL sur une base locale prealablement preparee avec le
+schema historique, configurer `DATABASE_URL` uniquement vers cette base :
+
+```powershell
+if (-not $env:DATABASE_URL -or ([Uri]$env:DATABASE_URL).Host -notin @('127.0.0.1', 'localhost')) {
+  throw 'Base locale isolee obligatoire'
+}
+node backend\node_modules\prisma\build\index.js db execute --schema prisma\schema.prisma --file prisma\security-layer.sql
+```
+
+Sur un checkout a dependances propres, la regeneration normale est :
+
+```powershell
+node backend\node_modules\prisma\build\index.js generate --schema prisma\schema.prisma
+node backend\node_modules\prisma\build\index.js generate --schema backend\prisma\schema.prisma
+node scripts\verify-prisma-runtime.cjs
+```
+
+Avec des dependances partagees, copier le schema dans un repertoire temporaire
+et lui donner un `generator.output` absolu isole, comme l'etape CI ; ne pas
+executer ces generations normales sur les junctions de cette session.
+
+Build et preview de console sans proxy production :
+
+```powershell
+$Artifacts = Join-Path $env:TEMP ('sxb-security-ui-' + [guid]::NewGuid().ToString('N'))
+$env:SXB_API_PROXY_TARGET = 'http://127.0.0.1:65529'
+Push-Location artifacts\sxb-dashboard
+node node_modules\typescript\bin\tsc --noEmit --pretty false
+node node_modules\vite\bin\vite.js build --configLoader runner --outDir $Artifacts
+Pop-Location
+$env:SXB_SECURITY_DASHBOARD_BUILD = $Artifacts
+node scripts\tests\security-dashboard-preview.mjs
+```
+
+URL de cette fixture : `http://127.0.0.1:4189`, mot de passe de fixture
+`synthetic-fixture`. Elle affiche son statut synthetique, ne contacte aucune
+base et ne simule pas une preuve PostgreSQL. Le proxy Vite historique vise
+la production par defaut : ne pas demarrer le dashboard sans override local.
+
+Demarrage du vrai backend pour une recette deja configuree localement :
+
+```powershell
+$Repo = (Get-Location).Path
+$env:NODE_PATH = Join-Path $Repo 'backend\node_modules'
+$env:NODE_ENV = 'development'
+$env:PORT = '3000'
+# DATABASE_URL, JWT_SECRET, REFRESH_SECRET, ENCRYPTION_KEY et services annexes
+# doivent deja designer uniquement des ressources/secrets de recette locale.
+if (-not $env:DATABASE_URL -or ([Uri]$env:DATABASE_URL).Host -notin @('127.0.0.1', 'localhost')) {
+  throw 'Base locale isolee obligatoire'
+}
+foreach ($Name in @('JWT_SECRET', 'REFRESH_SECRET', 'ENCRYPTION_KEY')) {
+  if (-not [Environment]::GetEnvironmentVariable($Name)) { throw "Configuration locale manquante : $Name" }
+}
+node app-mobile\node_modules\tsx\dist\cli.mjs server.ts
+```
+
+L'entree renforcee est **`server.ts` a la racine**. Le `backend\server.ts`
+historique n'est pas un simple alias : `cd backend; npm run dev` ne doit pas
+etre presente comme demarrant automatiquement cette implementation.
+Pour Metro, depuis `app-mobile`, apres configuration d'une origine API HTTPS
+de recette avec certificat systeme valide :
+`node node_modules\expo\bin\cli start --offline`.
+Ces recettes de demarrage ne constituent pas un test de connexion en production.
+
+Gate JVM de securite, avec chemins vers les outils deja disponibles :
+
+```powershell
+# KOTLINC : chemin absolu de kotlinc.bat ; SXB_JSON_JAR : org.json 20240303.
+# JAVA : chemin absolu de java.exe si java n'est pas dans PATH.
+Push-Location app-mobile
+node tests\run-device-security.cjs
+Pop-Location
+```
+
+## R. Commandes APK et gate de livraison
+
+Prerequis non installes par ce lot : JDK 17, SDK Android 36/build-tools 36.0.0,
+NDK 27.1.12297006, moteurs/ressources natifs approuves de la chaine existante,
+et configuration de signature release securisee. Ne pas utiliser les binaires
+ou scripts de `protocols.zip`.
+
+Dans un checkout de recette possedant son dossier Android et ses dependances :
+
+```powershell
+Push-Location app-mobile
+node node_modules\expo\bin\cli prebuild --platform android --no-install
+.\android\gradlew.bat -p .\android :app:assembleDebug :app:assembleRelease --no-daemon
+& "$env:ANDROID_HOME\build-tools\36.0.0\apksigner.bat" verify --verbose --print-certs .\android\app\build\outputs\apk\release\app-release.apk
+& "$env:ANDROID_HOME\build-tools\36.0.0\aapt.exe" dump xmltree .\android\app\build\outputs\apk\release\app-release.apk AndroidManifest.xml
+Pop-Location
+```
+
+Un succes Gradle seul ne prouve ni le bon signataire release, ni l'execution
+de R8. Verifier les sorties/manifeste, les ABI/librairies, le certificat attendu,
+le versionCode et la configuration effective de minification/mapping.
+Le workflow existant reste la recette complete de signature, packaging et
+validation ; les commandes courtes ci-dessus n'en remplacent pas les prerequis.
+
+Le job Android ajoute `assembleDebug`, verification de signature et rapport
+de manifeste **uniquement hors `main`**. `assembleRelease` et ses controles
+existants restent en place. Les conditions de publication/deploiement `main`
+ne sont pas modifiees. La proposition empilee cible PR #89 ; le workflow
+`verification-pr` filtre toujours les PR vers `main`, donc son execution sur
+cette branche reste a coordonner manuellement avec le parent.
+
+## S. Android / Expo
+
+Le plugin installe les nouveaux helpers natifs, les metadonnees publiques de
+certificats/pins/origine, le constructeur HTTP React Native et les regles R8
+necessaires. Le bridge expose l'identite publique, la signature des requetes
+et les evenements durables. Le service existant et son ordonnancement restent
+les seuls responsables du tunnel. Aucun nouveau VpnService, package blacklist,
+permission de capture, obligation Play ou contournement TLS n'est introduit.
+
+Un debug APK a son propre certificat : sa construction reussie ne prouve pas
+qu'il est signe par la cle officielle release. Un test physique de Keystore,
+pinning, revoke, reboot et reseau reste necessaire avant revendication device.
+
+## T. Backend / exploitation
+
+`server.ts` capture les octets bruts du JSON pour la verification de signature.
+Le middleware/principal ne confond pas un token mobile avec le role operateur
+du titulaire en base. Les routes montees sont celles reellement testees :
+notamment `server\routes\users.ts`, pas l'ancien repertoire `users\index.ts`.
+
+Nonce, generation, enrolement, refresh, connexion et mutation protegee utilisent
+les transactions PostgreSQL existantes avec ordre de verrouillage coherent.
+La console reutilise Setting, SecurityEvent, AuditLog et ses protections.
+Le nettoyage des nonces expires est borne/indexe ; aucune infrastructure Redis
+ni nouveau service externe n'est impose.
+
+Le nouveau service PostgreSQL de `verification-pr` est jetable, loopback, avec
+identifiants synthetiques sans autorite de production. Son etape genere un
+client dans `runner.temp` et execute le runner d'integration explicitement.
+Les globs de tests ordinaires et `deploy-vps.yml` restent sans ce besoin de DB.
+Aucune migration ni ecriture en production/VPS, fusion, publication ou
+installation sur appareil n'a ete effectuee pendant cette intervention.

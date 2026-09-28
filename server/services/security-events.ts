@@ -7,13 +7,12 @@
  * plusieurs milliers d'entrées de routine.
  *
  * RÈGLE ABSOLUE : aucun secret n'entre ici. Ni identifiant VPN, ni jeton, ni
- * mot de passe, ni clé. Une adresse source n'est conservée que sous forme
- * d'empreinte non réversible, suffisante pour regrouper des tentatives sans
- * jamais désigner une personne.
+ * mot de passe, ni clé privée. Le champ ipHash regroupe les tentatives ; les
+ * métadonnées historiques ip/clientName restent réservées à la console owner.
  *
- * L'enregistrement ne doit JAMAIS faire échouer l'action qu'il observe : une
- * connexion refusée doit être refusée même si la base de journalisation est
- * indisponible. Toutes les écritures sont donc silencieusement absorbées.
+ * Une observation facultative ne doit pas casser l'action observée ; son
+ * échec est journalisé. En revanche, l'acquittement d'un événement durable
+ * utilise l'écrivain transactionnel strict et exige une persistance réussie.
  */
 import { prisma } from '../database';
 import type { Prisma, PrismaClient } from '@prisma/client';

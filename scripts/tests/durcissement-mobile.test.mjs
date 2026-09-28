@@ -11,7 +11,8 @@
  * Les invariants tenus :
  *  • la décision appartient au serveur, jamais au client ;
  *  • un signal isolé et ambigu ne coupe l'accès de personne ;
- *  • un remballage ou un leurre touché coupe, seul ;
+ *  • un remballage déclaré demande revalidation, un leurre touché surveillance ;
+ *  • aucune observation locale ne suspend automatiquement le compte ;
  *  • chaque alerte porte l'adresse source et le nom enregistré du client ;
  *  • la réponse ne renvoie ni score ni seuil, qui serviraient de banc d'essai ;
  *  • une sonde qui échoue ne prive jamais l'utilisateur de son VPN.

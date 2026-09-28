@@ -1030,7 +1030,7 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
   }
 });
 
-// POST /api/mobile/vpn/session — audit trail only; the actual tunnel is managed natively on-device
+// POST /api/mobile/vpn/session — authorize immutable attribution for bound sessions; the tunnel stays native.
 const sessionSchema = z.object({ action: z.enum(["connect", "disconnect"]) });
 router.post("/vpn/session", async (req: AuthenticatedRequest, res: Response) => {
   try {
