@@ -1,4 +1,5 @@
 /**
+ * Dedicated integration runner, deliberately outside the database-free *.test.mjs glob.
  * Real PostgreSQL + real Express handlers. All records below are synthetic TEST fixtures.
  * Requires SXB_SECURITY_TEST_DATABASE_URL (loopback *_security_* DB) and an isolated generated
  * SXB_SECURITY_PRISMA_CLIENT. Never loads production credentials or starts the full server.
@@ -12,7 +13,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const url = new URL(process.env.SXB_SECURITY_TEST_DATABASE_URL ?? 'http://invalid');
+assert.ok(process.env.SXB_SECURITY_TEST_DATABASE_URL, 'An explicitly isolated loopback PostgreSQL test database is required');
+const url = new URL(process.env.SXB_SECURITY_TEST_DATABASE_URL);
 assert.ok(['127.0.0.1', 'localhost'].includes(url.hostname) && /security_(impl|upgrade)/.test(url.pathname),
   'An explicitly isolated loopback PostgreSQL test database is required');
 assert.ok(process.env.SXB_SECURITY_PRISMA_CLIENT, 'Generate the test Prisma client outside shared node_modules');
@@ -374,6 +376,29 @@ try {
   check('provisioned content retains authenticated GCM envelope', provisioned.data.config.encryptedBlob.startsWith('gcm:'), true);
   check('provisioning replay cannot reuse its nonce', (await request(a, '/api/provision/activate',
     provisioningBody, a.tokens.accessToken, { headers: provisioningHeaders })).status, 409);
+  const expiredAccess = jwt.sign({
+    ...jwt.decode(a.tokens.accessToken), exp: Math.floor(Date.now() / 1000) - 1,
+  }, process.env.JWT_SECRET, { algorithm: 'HS256' });
+  check('expired access JWT with fresh valid device proof is rejected',
+    (await request(a, me, undefined, expiredAccess)).status, 401);
+  check('current access JWT still works after expired JWT refusal',
+    (await request(a, me, undefined, a.tokens.accessToken)).status, 200);
+  const stolenProvision = await request(b, '/api/provision/activate', provisioningBody, a.tokens.accessToken, {
+    headers: headers(b, 'POST', '/api/provision/activate', JSON.stringify(provisioningBody), a.tokens.accessToken,
+      { 'X-SXB-Device-ID': a.id }),
+  });
+  check('provisioning rejects bearer A with device B key and forged device A header', stolenProvision.status, 401);
+  check('stolen bearer provisioning returns no configuration', 'config' in stolenProvision.data, false);
+  const bodyDeviceMismatch = await request(a, '/api/provision/activate',
+    { ...provisioningBody, deviceId: b.id }, a.tokens.accessToken);
+  check('valid key A cannot provision a body claiming device B', bodyDeviceMismatch.status, 401);
+  check('body device mismatch returns no configuration', 'config' in bodyDeviceMismatch.data, false);
+  check('provisioning attacks leave subscription bound to A',
+    (await prisma.subscription.findUniqueOrThrow({ where: { id: activeSub.id } })).deviceId, a.id);
+  check('provisioning attacks leave client bound to A',
+    (await prisma.vpnClient.findUniqueOrThrow({ where: { id: a.client.id } })).deviceId, a.id);
+  check('provisioning attacks register no subscription device B',
+    await prisma.subscriptionDevice.count({ where: { subscriptionId: activeSub.id, deviceId: b.id } }), 0);
   check('session-only revoke ignores stale generation', (await request(a,
     `/api/sessions/${live.id}/security-revoke`, { generation: live.authGeneration - 1 }, admin.token)).data.revoked, false);
   const ticket = await request(a, '/api/mobile/access-ticket', {}, a.tokens.accessToken);

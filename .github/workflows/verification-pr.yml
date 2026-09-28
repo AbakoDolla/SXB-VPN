@@ -3,7 +3,8 @@
 # n'était donc vérifiée qu'une fois fusionnée, c'est-à-dire en production.
 #
 # Ce workflow rejoue exactement les contrôles de construction du déploiement,
-# mais sans jamais toucher au VPS : ni secret, ni connexion SSH, ni migration.
+# mais sans jamais toucher au VPS : ni secret, ni connexion SSH, ni migration
+# de production. Le test PostgreSQL utilise uniquement son conteneur jetable.
 # Il n'a besoin que de lire le dépôt.
 name: Vérification des propositions — SXB VPN
 
@@ -26,6 +27,20 @@ jobs:
   verifier:
     name: Tests et construction
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sxb_security_test
+          POSTGRES_PASSWORD: synthetic-ci-only
+          POSTGRES_DB: sxb_security_impl
+        ports:
+          - '127.0.0.1:5432:5432'
+        options: >-
+          --health-cmd "pg_isready -U sxb_security_test -d sxb_security_impl"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
 
     steps:
       - name: Récupérer le dépôt
@@ -117,3 +132,31 @@ jobs:
           node backend/node_modules/prisma/build/index.js generate --schema prisma/schema.prisma
           node scripts/verify-prisma-runtime.cjs
           node --experimental-strip-types --test scripts/tests/*.test.mjs
+
+      - name: Preuves transactionnelles PostgreSQL isolees
+        env:
+          # Identifiants synthetiques, valables uniquement pour ce conteneur CI.
+          SXB_SECURITY_TEST_DATABASE_URL: postgresql://sxb_security_test:synthetic-ci-only@127.0.0.1:5432/sxb_security_impl
+          SXB_SECURITY_PRISMA_CLIENT: ${{ runner.temp }}/sxb-security-prisma/index.js
+          PRISMA_GENERATE_SKIP_AUTOINSTALL: '1'
+        run: |
+          set -euo pipefail
+          export DATABASE_URL="$SXB_SECURITY_TEST_DATABASE_URL"
+          node <<'PREPARE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const url = new URL(process.env.DATABASE_URL);
+          if (url.hostname !== '127.0.0.1' || url.pathname !== '/sxb_security_impl') {
+            throw new Error('Isolated CI database required');
+          }
+          const schema = fs.readFileSync('prisma/schema.prisma', 'utf8');
+          const generator = /provider\s*=\s*"prisma-client-js"/;
+          if (!generator.test(schema)) throw new Error('Prisma generator missing');
+          const output = path.dirname(process.env.SXB_SECURITY_PRISMA_CLIENT);
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'sxb-security-schema.prisma'),
+            schema.replace(generator, match => `${match}\n  output = ${JSON.stringify(output)}`));
+          PREPARE
+          node backend/node_modules/prisma/build/index.js db push --skip-generate --schema "$RUNNER_TEMP/sxb-security-schema.prisma"
+          node backend/node_modules/prisma/build/index.js db execute --schema "$RUNNER_TEMP/sxb-security-schema.prisma" --file prisma/security-layer.sql
+          node backend/node_modules/prisma/build/index.js generate --schema "$RUNNER_TEMP/sxb-security-schema.prisma"
+          node scripts/tests/security-layer-postgres.integration.mjs

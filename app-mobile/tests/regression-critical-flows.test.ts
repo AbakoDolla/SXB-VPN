@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { describe, it } from 'node:test';
+import { spawnSync } from 'node:child_process';
+import { parse as parseYaml } from 'yaml';
 import {
   bytesToHex,
   decryptAes256Gcm,
@@ -2633,6 +2635,56 @@ describe('garde-fous contre les régressions Android', () => {
       "aucun environnement GitHub, sinon les secrets de production redeviennent accessibles",
     );
     assert.match(pr, /permissions:\s*[\r\n]+\s+contents:\s+read/, 'jeton en lecture seule');
+  });
+
+  it('runs PostgreSQL security integration explicitly, never through database-free deployment globs', () => {
+    const workflow = parseYaml(source('../.github/workflows/verification-pr.yml')) as {
+      jobs: { verifier: {
+        services: { postgres: { image: string; ports: string[]; options: string } };
+        steps: { name: string; run?: string; env?: Record<string, string> }[];
+      } };
+    };
+    const job = workflow.jobs.verifier;
+    assert.equal(job.services.postgres.image, 'postgres:16-alpine');
+    assert.ok(job.services.postgres.ports.includes('127.0.0.1:5432:5432'));
+    assert.match(job.services.postgres.options, /pg_isready/);
+    const integration = job.steps.find(step => step.run?.includes('security-layer-postgres.integration.mjs'));
+    assert.ok(integration?.run && integration.env);
+    const database = new URL(integration.env.SXB_SECURITY_TEST_DATABASE_URL);
+    assert.equal(database.hostname, '127.0.0.1');
+    assert.equal(database.pathname, '/sxb_security_impl');
+    assert.match(integration.env.SXB_SECURITY_PRISMA_CLIENT, /runner\.temp.*sxb-security-prisma\/index\.js/);
+    assert.match(integration.run, /db push --skip-generate/);
+    assert.match(integration.run, /db execute .*--file prisma\/security-layer\.sql/);
+    assert.match(integration.run, /generate --schema/);
+    const runner = '../scripts/tests/security-layer-postgres.integration.mjs';
+    assert.ok(existsSync(runner));
+    assert.equal(existsSync('../scripts/tests/security-layer-postgres.test.mjs'), false);
+    const unconfigured = spawnSync(process.execPath, [runner], {
+      encoding: 'utf8',
+      env: { ...process.env, SXB_SECURITY_TEST_DATABASE_URL: '', SXB_SECURITY_PRISMA_CLIENT: '' },
+    });
+    assert.equal(unconfigured.status, 1, 'missing isolated DB is an explicit failure, not a skipped proof');
+    assert.match(unconfigured.stderr, /explicitly isolated loopback PostgreSQL test database/);
+    assert.doesNotMatch(source('../.github/workflows/deploy-vps.yml'), /security-layer-postgres\.integration/);
+  });
+
+  it('builds debug only for non-main candidates while keeping publication restricted to main', () => {
+    const workflow = parseYaml(source('../.github/workflows/build-android.yml')) as {
+      jobs: Record<string, { steps: { name: string; if?: string; run?: string }[] }>;
+    };
+    const steps = workflow.jobs['build-android'].steps;
+    const debug = steps.find(step => step.run?.includes(':app:assembleDebug'));
+    assert.ok(debug?.run);
+    assert.equal(debug.if, "github.ref != 'refs/heads/main'");
+    assert.match(debug.run, /apksigner.*verify/);
+    assert.match(debug.run, /aapt.*AndroidManifest\.xml/);
+    const release = steps.find(step => step.run?.includes(':app:assembleRelease'));
+    assert.ok(release);
+    assert.ok(steps.indexOf(debug) < steps.indexOf(release));
+    for (const name of ['GitHub Release', 'Déployer APK sur VPS (scp)', 'Installer APK dans dossier distribution VPS']) {
+      assert.equal(steps.find(step => step.name === name)?.if, "github.ref == 'refs/heads/main'", name);
+    }
   });
 
   it('ne laisse pas les publications APK périmées s\'accumuler', () => {
