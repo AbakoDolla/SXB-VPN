@@ -132,11 +132,12 @@ object SxbAccessControl {
         // The encrypted native restart file is a separate copy of the last profile.
         // Never erase B just because inactive A was revoked.
         val vault = File(context.filesDir, "sxb_creds.enc")
-        if (vault.exists()) {
-            val config = JSONObject(KeystoreManager.decrypt(vault.readText(Charsets.UTF_8)))
+        if (KeystoreManager.exists(vault)) {
+            val encoded = KeystoreManager.readEncoded(vault)
+            val config = JSONObject(KeystoreManager.decrypt(encoded))
             val code = synchronized(this) { authority?.let { SxbAccessPolicy.profileBlock(it, config) } }
             if (code == "CONFIG_REVOKED" || code == "CONFIG_DELETED") {
-                check(vault.delete() || !vault.exists()) { "ACCESS_CONFIG_PURGE_FAILED" }
+                KeystoreManager.deleteIfUnchanged(vault, encoded)
             }
         }
     }

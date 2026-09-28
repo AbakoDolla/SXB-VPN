@@ -190,6 +190,123 @@ private fun sendSshPayload(payload: String, rawOut: OutputStream, onEvent: (Stri
     return totalBytes
 }
 
+private fun readSshPayloadChain(
+    input: java.io.PushbackInputStream,
+    socket: Socket,
+    timeoutMs: Int,
+    onEvent: (String) -> Unit,
+): String {
+    val deadline = System.nanoTime() + timeoutMs.toLong() * 1_000_000
+    var totalBytes = 0
+    fun readByte(maxWaitMs: Int = Int.MAX_VALUE): Int {
+        val remaining = (deadline - System.nanoTime()) / 1_000_000
+        if (remaining <= 0) throw SocketTimeoutException("HTTP_CHAIN_TIMEOUT")
+        socket.soTimeout = remaining.coerceAtMost(maxWaitMs.toLong()).toInt().coerceAtLeast(1)
+        val value = input.read()
+        if (value < 0) throw java.io.EOFException("HTTP_CHAIN_TRUNCATED")
+        if (++totalBytes > 131072) throw java.io.IOException("HTTP_CHAIN_TOO_LARGE")
+        return value
+    }
+    fun line(): String {
+        val value = StringBuilder()
+        while (value.length < 8192) {
+            value.append(readByte().toChar())
+            if (value.endsWith("\r\n")) return value.dropLast(2).toString()
+        }
+        throw java.io.IOException("HTTP_CHAIN_HEADER_TOO_LARGE")
+    }
+    fun body(headers: String): String {
+        val lengths = Regex("(?im)^Content-Length\\s*:\\s*([^\\r\\n]+)").findAll(headers).toList()
+        val encodings = Regex("(?im)^Transfer-Encoding\\s*:\\s*([^\\r\\n]+)").findAll(headers).toList()
+        if (lengths.size > 1 || encodings.size > 1 || (lengths.isNotEmpty() && encodings.isNotEmpty())) {
+            throw java.io.IOException("HTTP_CHAIN_FRAMING_INVALID")
+        }
+        val result = StringBuilder()
+        fun take(count: Int) {
+            if (count < 0 || count > 65536 - result.length) throw java.io.IOException("HTTP_CHAIN_BODY_TOO_LARGE")
+            repeat(count) { result.append(readByte().toChar()) }
+        }
+        if (encodings.isNotEmpty()) {
+            if (!encodings.single().groupValues[1].trim().equals("chunked", true)) {
+                throw java.io.IOException("HTTP_CHAIN_FRAMING_INVALID")
+            }
+            while (true) {
+                val size = line().substringBefore(';').trim()
+                if (!size.matches(Regex("[0-9a-fA-F]+"))) throw java.io.IOException("HTTP_CHAIN_FRAMING_INVALID")
+                val count = size.toIntOrNull(16)
+                    ?: throw java.io.IOException("HTTP_CHAIN_FRAMING_INVALID")
+                if (count == 0) {
+                    var trailerBytes = 0
+                    while (true) {
+                        val trailer = line()
+                        trailerBytes += trailer.length + 2
+                        if (trailerBytes > 8192) throw java.io.IOException("HTTP_CHAIN_HEADER_TOO_LARGE")
+                        if (trailer.isEmpty()) break
+                        if (':' !in trailer) throw java.io.IOException("HTTP_CHAIN_FRAMING_INVALID")
+                    }
+                    break
+                }
+                take(count)
+                if (readByte() != 13 || readByte() != 10) throw java.io.IOException("HTTP_CHAIN_FRAMING_INVALID")
+            }
+        } else if (lengths.isNotEmpty()) {
+            val size = lengths.single().groupValues[1].trim()
+            if (!size.matches(Regex("[0-9]+"))) throw java.io.IOException("HTTP_CHAIN_FRAMING_INVALID")
+            val count = size.toIntOrNull()
+                ?: throw java.io.IOException("HTTP_CHAIN_FRAMING_INVALID")
+            take(count)
+        }
+        return result.toString()
+    }
+    var previous = ""
+    var previousCode = 0
+    var count = 0
+    while (true) {
+        val accepted = previousCode == 101 || previousCode in 200..299
+        val first = try { readByte(if (accepted) 250 else Int.MAX_VALUE) }
+        catch (error: SocketTimeoutException) {
+            if (!accepted) throw error
+            // Some tunnels wait for the client's SSH banner before sending theirs.
+            onEvent("[SXB_TRACE] stage=HTTP_CHAIN_IDLE status=$previousCode")
+            return if (previousCode == 101) previous else ""
+        }
+        input.unread(first)
+        totalBytes--
+        if (first != 'H'.code) {
+            if (first == 'S'.code && (previous.isEmpty() || accepted)) {
+                // Leave the SSH banner and binary key exchange untouched.
+                return ""
+            }
+            if (previousCode == 101 && first in setOf(0x81, 0x82)) return previous
+            throw java.io.IOException("TUNNEL_REFUSED")
+        }
+        if (++count > 16) throw java.io.IOException("HTTP_CHAIN_TOO_MANY_RESPONSES")
+        val headers = StringBuilder(line()).append("\r\n")
+        while (true) {
+            val next = line()
+            headers.append(next).append("\r\n")
+            if (headers.length > 8192) throw java.io.IOException("HTTP_CHAIN_HEADER_TOO_LARGE")
+            if (next.isEmpty()) break
+        }
+        val response = headers.toString()
+        val code = Regex("^HTTP/\\d(?:\\.\\d)?\\s+(\\d{3})(?:\\s|\\r)").find(response)
+            ?.groupValues?.get(1)?.toInt() ?: throw java.io.IOException("HTTP_CHAIN_INVALID")
+        val location = Regex("(?im)^Location\\s*:\\s*([^\\r\\n]+)").find(response)?.groupValues?.get(1).orEmpty()
+        if (listOf("nointernet", "captive", "portal").any { location.contains(it, true) }) {
+            throw java.io.IOException("CAPTIVE_PORTAL")
+        }
+        // Only an explicitly pipelined payload reaches this parser. Never follow a redirect.
+        if (code !in 100..299 && code !in setOf(301, 302, 303, 307, 308)) return response
+        val content = body(response)
+        if (content.contains("<html", true) && listOf("nointernet", "captive", "portal").any { content.contains(it, true) }) {
+            throw java.io.IOException("CAPTIVE_PORTAL")
+        }
+        onEvent("[SXB_TRACE] stage=HTTP_CHAIN_RESPONSE n=$count status=$code body_bytes=${content.length}")
+        previous = response
+        previousCode = code
+    }
+}
+
 // ── WsOutputStream — Encode chaque write() en frame WebSocket binaire (client→server, masqué) ──
 private class WsOutputStream(
     private val raw: OutputStream,
@@ -363,8 +480,18 @@ private class SxbPayloadProxy(
     private var outputStream: OutputStream? = null
 
     override fun connect(sf: SocketFactory?, host: String, port: Int, timeout: Int) {
+        try {
+            openTransport(timeout)
+        } catch (error: Exception) {
+            close()
+            throw error
+        }
+    }
+
+    private fun openTransport(timeout: Int) {
         val connectTimeout = timeout.coerceIn(5_000, 30_000)
         val rawSocket = Socket()
+        socket = rawSocket
         onEvent("[SXB_TRACE] stage=SOCKET_CREATED timeout_ms=$connectTimeout tls=$tlsEnabled sni_present=${sni.isNotBlank()}")
         // Socket() seul n'a pas forcément de descripteur natif. Créer le socket
         // local avant protect() est indispensable : sinon VpnService.protect()
@@ -377,6 +504,7 @@ private class SxbPayloadProxy(
         val protectedOk = protectSocket(rawSocket)
         Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_SOCKET_PROTECTED result=$protectedOk fd_ready=$fdReady")
         onEvent("[SXB_TRACE] stage=SOCKET_PROTECT result=$protectedOk fd_ready=$fdReady")
+        if (!protectedOk || !fdReady) throw java.io.IOException("SSH_SOCKET_PROTECT_FAILED")
         // Résolution DNS visible (diagnostic données cellulaires / split-DNS)
         val dnsT0 = System.currentTimeMillis()
         val dnsResolved = runCatching {
@@ -389,7 +517,8 @@ private class SxbPayloadProxy(
         val transportSocket: Socket = if (tlsEnabled) {
             val serverName = sni.ifBlank { connectHost }
             val tlsSocket = (SSLSocketFactory.getDefault() as SSLSocketFactory)
-                .createSocket(rawSocket, serverName, connectPort, false) as SSLSocket
+                .createSocket(rawSocket, serverName, connectPort, true) as SSLSocket
+            socket = tlsSocket
             tlsSocket.useClientMode = true
             tlsSocket.soTimeout = connectTimeout
             val sslParams = SSLParameters()
@@ -408,14 +537,15 @@ private class SxbPayloadProxy(
         }
         socket = transportSocket
         val rawOut = transportSocket.getOutputStream()
-        val rawIn  = transportSocket.getInputStream()
+        val rawIn  = java.io.PushbackInputStream(transportSocket.getInputStream(), 1)
 
         // ── 1. Substitutions dans le payload ─────────────────────────────────
         var payload = expandSshPayloadTokens(rawPayload, targetHost, targetPort, userAgent, sni)
 
         onEvent("[SXB_TRACE] stage=PAYLOAD_NORMALIZED bytes=${payload.length} has_connect=${payload.trimStart().startsWith("CONNECT ", ignoreCase = true)} has_upgrade=${payload.contains("upgrade", ignoreCase = true)} crlf_count=${payload.windowed(2).count { it == "\r\n" }} placeholder_removed=${rawPayload.contains("…") || rawPayload.contains("...")}")
-        val connectPayload = sshSplitDirective.replace(payload, "").trimStart()
-            .startsWith("CONNECT ", ignoreCase = true)
+        val requests = sshSplitDirective.replace(payload, "").split("\r\n\r\n")
+            .filter { sshRequestLine.matches(it.substringBefore("\r\n").trim()) }
+        val connectPayload = requests.lastOrNull().orEmpty().trimStart().startsWith("CONNECT ", ignoreCase = true)
 
         // ── 1b. Compléter uniquement un vrai handshake WS — PARITÉ sonde backend ────
         // RFC 6455 §4.1 : Sec-WebSocket-Key + Version sont OBLIGATOIRES. Sans eux,
@@ -433,7 +563,7 @@ private class SxbPayloadProxy(
             .containsMatchIn(firstRequestHeaders)
         val wantsWebsocket = Regex("(?im)^Upgrade\\s*:\\s*websocket\\s*$")
             .containsMatchIn(firstRequestHeaders)
-        if (!connectPayload && wantsWebsocket && !keyPresent) {
+        if (requests.size <= 1 && !connectPayload && wantsWebsocket && !keyPresent) {
             val wsKey = android.util.Base64.encodeToString(
                 ByteArray(16).also { java.security.SecureRandom().nextBytes(it) },
                 android.util.Base64.NO_WRAP)
@@ -462,14 +592,29 @@ private class SxbPayloadProxy(
             return
         }
 
+        if (requests.size > 1) {
+            val response = readSshPayloadChain(rawIn, transportSocket, timeout.coerceIn(1000, 30000), onEvent)
+            if (response.isEmpty()) {
+                inputStream = rawIn
+                outputStream = rawOut
+                transportSocket.soTimeout = 28_000
+                onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=SSH_RAW reason=http_chain")
+                return
+            }
+            val prefix = response.toByteArray(Charsets.ISO_8859_1)
+            inputStream = SequenceInputStream(ByteArrayInputStream(prefix), rawIn)
+        }
+
         // ── 2. Lire la réponse HTTP du serveur (headers jusqu'à \r\n\r\n) ────
         transportSocket.soTimeout = 10_000
         val headerBuf = StringBuilder()
         var responseClosed = false
+        val responseInput = inputStream ?: rawIn
+        inputStream = null
         try {
             var b3 = 0; var b2 = 0; var b1 = 0; var limit = 8192
             while (limit-- > 0) {
-                val b = rawIn.read()
+                val b = responseInput.read()
                 if (b == -1) { responseClosed = true; break }
                 headerBuf.append(b.toChar())
                 if (b3 == '\r'.code && b2 == '\n'.code && b1 == '\r'.code && b == '\n'.code) break
@@ -496,13 +641,14 @@ private class SxbPayloadProxy(
             .joinToString(",")
         Log.i("SXB_DEBUG", "[SXB_DEBUG] SERVER_RESPONSE=${logSafeStatus} bytes=${response.length}")
         onEvent("[SXB_TRACE] stage=HTTP_RESPONSE status=$logSafeStatus header_count=${headerNames.split(',').count { it.isNotBlank() }} body_bytes=unknown")
-        onEvent("[SXB_TRACE] stage=HTTP_HEADERS names=$headerNames raw_bytes=${response.length} terminator=${response.endsWith("\r\n\r\n")}")
+        onEvent("[SXB_TRACE] stage=HTTP_HEADERS count=${headerNames.split(',').count { it.isNotBlank() }} raw_bytes=${response.length} terminator=${response.endsWith("\r\n\r\n")}")
 
         // ── 3. Détecter le mode transport ─────────────────────────────────────
         //   HTTP 101 = WebSocket si trames, sinon façade cosmétique et SSH brut
         //   HTTP 200 = CONNECT tunnel     → SSH direct sur le même socket
         //   Réponse vide / "SSH-"         → SSH direct (pas de proxy HTTP)
-        val payloadHeaders = sshSplitDirective.replace(payload.substringBefore("\r\n\r\n"), "")
+        val payloadHeaders = if (requests.size > 1) requests.last()
+            else sshSplitDirective.replace(payload.substringBefore("\r\n\r\n"), "")
         val hasWsUpgradeHeader = Regex("(?im)^Upgrade\\s*:\\s*websocket\\s*$").containsMatchIn(payloadHeaders)
         val hasWsKey = Regex("(?im)^Sec-WebSocket-Key\\s*:").containsMatchIn(payloadHeaders)
         val isWs        = statusCode == 101 &&
@@ -513,6 +659,13 @@ private class SxbPayloadProxy(
                           response.contains("Connection established", ignoreCase = true)
         val isSshBanner = response.startsWith("SSH-")
         val isEmpty     = response.isBlank()
+        if (isSshBanner) {
+            inputStream = SequenceInputStream(ByteArrayInputStream(response.toByteArray(Charsets.ISO_8859_1)), rawIn)
+            outputStream = rawOut
+            transportSocket.soTimeout = 28_000
+            onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=SSH_RAW reason=SSH_BANNER")
+            return
+        }
         if (isEmpty && responseClosed && connectPort == 443 && !tlsEnabled) {
             onEvent("[SXB_TRACE] stage=HTTP_PLAINTEXT_CLOSED_443 tls=false")
             throw java.io.IOException("HTTP_PLAINTEXT_CLOSED_443")
@@ -659,7 +812,7 @@ private class SxbPayloadProxy(
                         rawIn
                     )
                 } else {
-                    inputStream = rawIn
+                    inputStream = if (peekLen > 0) SequenceInputStream(ByteArrayInputStream(peekBuf, 0, peekLen), rawIn) else rawIn
                 }
                 outputStream = rawOut
             }
@@ -766,8 +919,10 @@ private class SxbLoggingSocketFactory(
     private val protectSocket: (Socket) -> Boolean,
     private val onBanner: () -> Unit,
 ) : SocketFactory {
-    override fun createSocket(host: String, port: Int): Socket =
-        Socket().apply {
+    override fun createSocket(host: String, port: Int): Socket {
+        val rawSocket = Socket()
+        try {
+            return rawSocket.apply {
             // Garantit un FD exploitable par VpnService.protect() avant connect().
             // La liaison éphémère n'impose aucune adresse distante et évite qu'un
             // socket SSH direct soit inclus dans le TUN qu'il doit alimenter.
@@ -777,8 +932,14 @@ private class SxbLoggingSocketFactory(
             }.getOrDefault(false)
             val ok = protectSocket(this)
             Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_SOCKET_PROTECTED result=$ok fd_ready=$fdReady")
+            if (!ok || !fdReady) throw java.io.IOException("SSH_SOCKET_PROTECT_FAILED")
             connect(InetSocketAddress(connectHost, connectPort), timeoutMs)
+            }
+        } catch (error: Exception) {
+            runCatching { rawSocket.close() }
+            throw error
         }
+    }
 
     override fun getInputStream(socket: Socket): InputStream =
         SxbBannerInputStream(socket.getInputStream(), onBanner)
@@ -809,6 +970,8 @@ private class SxbTlsSocketFactory(
 ) : SocketFactory {
     override fun createSocket(host: String, port: Int): Socket {
         val rawSocket = Socket()
+        var ownedSocket: Socket = rawSocket
+        try {
         // Même précaution qu'en SSH direct : protéger le socket AVANT connect(),
         // sinon il repasserait par le TUN qu'il est censé alimenter.
         val fdReady = runCatching {
@@ -818,6 +981,7 @@ private class SxbTlsSocketFactory(
         val ok = protectSocket(rawSocket)
         Log.i("SXB_DEBUG", "[SXB_DEBUG] SSH_SOCKET_PROTECTED result=$ok fd_ready=$fdReady")
         onEvent("[SXB_TRACE] stage=SOCKET_PROTECT result=$ok fd_ready=$fdReady")
+        if (!ok || !fdReady) throw java.io.IOException("SSH_SOCKET_PROTECT_FAILED")
 
         val t0 = System.currentTimeMillis()
         rawSocket.connect(InetSocketAddress(connectHost, connectPort), timeoutMs)
@@ -826,6 +990,7 @@ private class SxbTlsSocketFactory(
         val serverName = sni.ifBlank { host }
         val tlsSocket = (SSLSocketFactory.getDefault() as SSLSocketFactory)
             .createSocket(rawSocket, serverName, connectPort, true) as SSLSocket
+        ownedSocket = tlsSocket
         tlsSocket.useClientMode = true
         tlsSocket.soTimeout = timeoutMs
         val sslParams = SSLParameters()
@@ -847,6 +1012,11 @@ private class SxbTlsSocketFactory(
         // un timeout de lecture hérité de la phase TLS le couperait à tort.
         tlsSocket.soTimeout = 0
         return tlsSocket
+        } catch (error: Exception) {
+            runCatching { ownedSocket.close() }
+            runCatching { rawSocket.close() }
+            throw error
+        }
     }
 
     private fun isIpLiteral(value: String): Boolean =
@@ -1034,6 +1204,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private val foregroundStarted = AtomicBoolean(false)
     private var tunPfd          : ParcelFileDescriptor? = null
     private var sshSession      : Session? = null
+    @Volatile private var gatewaySocketFactory: SxbGatewaySocketFactory? = null
     private var socks5Server    : ServerSocket? = null
     private var dnsttProcess    : Process? = null
     private var dnsttProtectServer: LocalServerSocket? = null
@@ -1430,24 +1601,39 @@ class SxbVpnService : VpnService(), PlatformInterface {
         Log.i(TAG, "[SXB_DEBUG] CONFIG_LOADING")
 
         // FIX — TransactionTooLargeException : lire depuis le fichier temporaire en priorité.
-        // SxbVpnModule écrit la config dans filesDir/sxb_pending_config.json AVANT de démarrer
+        // SxbVpnModule écrit une copie chiffrée propre à chaque demande AVANT de démarrer
         // le service, évitant la limite ~1MB du Binder IPC pour les Intent extras.
         val pendingConfigFile = File(filesDir, "sxb_pending_config.json")
         val configFilePath    = intent?.getStringExtra("configFilePath")
-        var json = when {
-            configFilePath != null && File(configFilePath).exists() -> {
-                val content = File(configFilePath).readText(Charsets.UTF_8)
-                Log.i(TAG, "[SXB_DEBUG] CONFIG_FROM_FILE path=$configFilePath size=${content.length}")
-                broadcastLog("[SXB_DEBUG] CONFIG_FROM_FILE size=${content.length}")
-                content
+        var loadedPendingFile: File? = null
+        var json = try {
+            val content = when {
+                configFilePath != null -> {
+                    val file = File(configFilePath).canonicalFile
+                    require(file.parentFile == filesDir.canonicalFile &&
+                        (file.name == pendingConfigFile.name || file.name.matches(Regex("sxb_pending_[a-f0-9-]{36}\\.enc")))) { "CONFIG_PATH_INVALID" }
+                    loadedPendingFile = file
+                    val content = KeystoreManager.readEncoded(file)
+                    require(file.name == pendingConfigFile.name || content.startsWith("v1:")) { "CONFIG_VAULT_FORMAT_INVALID" }
+                    Log.i(TAG, "[SXB_DEBUG] CONFIG_FROM_FILE size=${content.length}")
+                    broadcastLog("[SXB_DEBUG] CONFIG_FROM_FILE size=${content.length}")
+                    content
+                }
+                KeystoreManager.exists(pendingConfigFile) -> {
+                    loadedPendingFile = pendingConfigFile
+                    val content = KeystoreManager.readEncoded(pendingConfigFile)
+                    Log.i(TAG, "[SXB_DEBUG] CONFIG_FROM_PENDING_FILE size=${content.length}")
+                    broadcastLog("[SXB_DEBUG] CONFIG_FROM_PENDING_FILE size=${content.length}")
+                    content
+                }
+                else -> intent?.getStringExtra("configJson") ?: ""
             }
-            pendingConfigFile.exists() && pendingConfigFile.length() > 10 -> {
-                val content = pendingConfigFile.readText(Charsets.UTF_8)
-                Log.i(TAG, "[SXB_DEBUG] CONFIG_FROM_PENDING_FILE size=${content.length}")
-                broadcastLog("[SXB_DEBUG] CONFIG_FROM_PENDING_FILE size=${content.length}")
-                content
-            }
-            else -> intent?.getStringExtra("configJson") ?: ""
+            if (content.startsWith("v1:")) KeystoreManager.decrypt(content) else content
+        } catch (error: Exception) {
+            broadcastLog("CONFIG_VAULT_READ_FAILED")
+            broadcastStatus("error", "CONFIG_VAULT_READ_FAILED")
+            stopSelf(startId)
+            return START_NOT_STICKY
         }
         var proto = if (json.isNotEmpty()) {
             try { org.json.JSONObject(json).optString("protocol", intent?.getStringExtra("protocol") ?: "").lowercase() }
@@ -1459,21 +1645,16 @@ class SxbVpnService : VpnService(), PlatformInterface {
         Log.i("SXB_DEBUG", "[SXB_DEBUG] CONFIG_FROM_INTENT proto=$proto json_empty=${json.isEmpty()}")
         broadcastLog("[SXB_DEBUG] ▶ CONFIG_FROM_INTENT proto='$proto' empty=${json.isEmpty()}")
 
-        if (json.isEmpty() || proto.isEmpty()) {
+        if (json.isEmpty()) {
             try {
-                // P1 — Lecture config chiffrée (AES-256-GCM) ou plaintext fallback
+                // Plaintext is accepted only for migration when no encrypted vault exists.
                 val credsFile = File(filesDir, "sxb_creds.enc")
                 val confFile  = File(filesDir, "sb_config.json")
                 Log.i("SXB_DEBUG", "[SXB_DEBUG] CONFIG_FALLBACK credsExists=${credsFile.exists()} confExists=${confFile.exists()}")
                 broadcastLog("[SXB_DEBUG] ▶ CONFIG_FALLBACK credsExists=${credsFile.exists()} confExists=${confFile.exists()}")
-                if (credsFile.exists()) {
-                    try {
-                        json = KeystoreManager.decrypt(credsFile.readText(Charsets.UTF_8))
-                        Log.i(TAG, "[P1] Config VPN déchiffrée depuis sxb_creds.enc")
-                    } catch (e: Exception) {
-                        Log.w(TAG, "[P1] Déchiffrement échoué — fallback plaintext: ${e.message}")
-                        if (confFile.exists()) json = confFile.readText(Charsets.UTF_8)
-                    }
+                if (KeystoreManager.exists(credsFile)) {
+                    json = KeystoreManager.decrypt(KeystoreManager.readEncoded(credsFile))
+                    Log.i(TAG, "[P1] Config VPN déchiffrée depuis sxb_creds.enc")
                 } else if (confFile.exists()) {
                     json = confFile.readText(Charsets.UTF_8)
                 }
@@ -1481,7 +1662,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     val cfg = org.json.JSONObject(json)
                     proto = cfg.optString("protocol", "").lowercase()
                 }
-            } catch (_: Exception) {}
+            } catch (error: Exception) {
+                broadcastLog("CONFIG_VAULT_READ_FAILED")
+                broadcastStatus("error", "CONFIG_VAULT_READ_FAILED")
+                stopSelf(startId)
+                return START_NOT_STICKY
+            }
         }
 
         if (json.isEmpty() || proto.isEmpty()) {
@@ -1507,9 +1693,14 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // P1 — Persister config chiffrée pour démarrage hors-ligne
         // S1 — puis purger immédiatement les copies en clair (voir purgePlaintextConfigArtifacts).
         if (json.isNotEmpty()) {
-            val vaulted = try { persistEncryptedConfig(json) } catch (_: Exception) { false }
+            val vaulted = persistEncryptedConfig(json)
             if (vaulted) {
-                try { purgePlaintextConfigArtifacts(configFilePath) } catch (_: Exception) {}
+                purgePlaintextConfigArtifacts(loadedPendingFile)
+            } else {
+                broadcastLog("CONFIG_VAULT_WRITE_FAILED")
+                broadcastStatus("error", "CONFIG_VAULT_WRITE_FAILED")
+                stopSelf(startId)
+                return START_NOT_STICKY
             }
         }
         killSwitchEnabled = intent?.getBooleanExtra("killSwitch", false) ?: false
@@ -1826,6 +2017,17 @@ class SxbVpnService : VpnService(), PlatformInterface {
             trace("SSH_TUNNEL_START", "state=$currentState")
             val cfg = JSONObject(configJsonStr)
 
+            val relay = cfg.optJSONObject("sshRelay")
+            if (relay != null) {
+                require(relay.optInt("version") == 1 && cfg.optString("host") == "sxb-gateway" &&
+                    cfg.optString("username") == "sxb" && cfg.optString("protocol") == "ssh" &&
+                    cfg.optInt("port") == 443 &&
+                    listOf("password", "privateKeyBase64", "payload", "privateKey", "sni", "slowDns",
+                        "sshTransport", "usePayload", "proxyHost", "proxyPort", "proxyEnabled",
+                        "tls", "tlsEnabled", "insecure", "allowInsecure", "fingerprint")
+                        .none { cfg.has(it) }) { "SSH_RELAY_CONFIG_INVALID" }
+                broadcastLog("[SXB] Connexion à la passerelle SSH sécurisée")
+            }
             val host       = cfg.optStringOrNull("host", "")
             val port       = cfg.optInt("port", 22)
             val payloadTargetPort = cfg.optInt("payloadTargetPort", port)
@@ -1971,8 +2173,11 @@ class SxbVpnService : VpnService(), PlatformInterface {
             // comportement historique est conservé pour ne pas rompre les connexions
             // existantes (voir SxbHostKeyVerifier).
             val hostKeyVerifier = SxbHostKeyVerifier(this, fingerprint) { event -> broadcastLog(event) }
-            jsch.hostKeyRepository = hostKeyVerifier
-            if (hostKeyVerifier.ignoredFingerprint) {
+            if (relay == null) jsch.hostKeyRepository = hostKeyVerifier
+            if (relay != null) {
+                // The gateway identity is verified by outer TLS; upstream SSH is pinned server-side.
+                broadcastLog("[SXB_TRACE] stage=SSH_GATEWAY_TLS_REQUIRED")
+            } else if (hostKeyVerifier.ignoredFingerprint) {
                 // Le champ `fingerprint` sert aussi de profil uTLS pour sing-box
                 // (« chrome », « firefox »…) : une telle valeur n'est pas une
                 // empreinte de clé et ne doit pas bloquer la connexion SSH.
@@ -2013,7 +2218,15 @@ class SxbVpnService : VpnService(), PlatformInterface {
                         }
                     })
                     s.setConfig(commonProps)
-                    if (strategy != null) {
+                    if (relay != null) {
+                        val factory = SxbGatewaySocketFactory(
+                            this, relay.getString("ticket"), cfg.getString("deviceId"),
+                            cfg.getString("connectionId"), ::protectSocket,
+                        )
+                        gatewaySocketFactory = factory
+                        if (!running.get()) { factory.close(); throw java.io.IOException("SSH_RELAY_CANCELLED") }
+                        s.setSocketFactory(factory)
+                    } else if (strategy != null) {
                         val strategyTlsServerName = sni.ifBlank {
                             when {
                                 dnsttPort != null -> host
@@ -2081,15 +2294,22 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
                 val cacheKey = transportCacheKey(cfg)
                 val preferences = transportPreferences()
-                val cacheFingerprint = listOf(
+                val cacheIdentity = listOf(
                     cfg.optStringOrNull("configVersion", ""),
                     cfg.optStringOrNull("configHash", ""),
                     payload.hashCode().toString(),
                     tlsEnabled.toString(),
                     sni,
                 ).joinToString("|")
+                fun digest(value: String) = "sha256:" + java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(value.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+                val cacheFingerprint = digest(cacheIdentity)
                 val fingerprintKey = "${cacheKey}_fingerprint"
-                val previousFingerprint = preferences.getString(fingerprintKey, null)
+                val previousFingerprint = preferences.getString(fingerprintKey, null)?.let {
+                    if (it.startsWith("sha256:")) it else digest(it).also { hashed ->
+                        preferences.edit().putString(fingerprintKey, hashed).apply()
+                    }
+                }
                 if (previousFingerprint != null && previousFingerprint != cacheFingerprint) {
                     preferences.edit().remove(cacheKey).remove(fingerprintKey).apply()
                     broadcastLog("[SXB_TRACE] TRANSPORT_MODE_CACHE_PURGED reason=config_changed")
@@ -5104,6 +5324,10 @@ class SxbVpnService : VpnService(), PlatformInterface {
         udpGatewayHost: String,
         udpGatewayPort: Int,
     ) {
+        var activeChannel: ChannelDirectTCPIP? = null
+        var downstream: Thread? = null
+        var connectRequested = false
+        var connectReplySent = false
         try {
             client.soTimeout = 30_000
             val din  = DataInputStream(client.inputStream)
@@ -5143,6 +5367,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 Log.w(TAG, "[SXB_DEBUG] SOCKS5_COMMAND_NOT_SUPPORTED cmd=$command")
                 dout.write(byteArrayOf(5, 7, 0, 1, 0, 0, 0, 0, 0, 0)); client.close(); return
             }
+            connectRequested = true
 
             val atyp = cmd[3].toInt()
             val destHost: String
@@ -5159,13 +5384,18 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
             // Ouvrir canal SSH direct-tcpip
             val channel = session.openChannel("direct-tcpip") as ChannelDirectTCPIP
+            activeChannel = channel
             channel.setHost(destHost)
             channel.setPort(destPort)
             channel.setOrgIPAddress("127.0.0.1")
             channel.setOrgPort(SOCKS5_PORT)
 
-            dout.write(byteArrayOf(5, 0, 0, 1, 0, 0, 0, 0, 0, 0)); dout.flush()
+            // JSch must have its streams before the peer can send channel data.
+            val chIn = channel.inputStream
+            val chOut = channel.outputStream
             channel.connect(15_000)
+            dout.write(byteArrayOf(5, 0, 0, 1, 0, 0, 0, 0, 0, 0)); dout.flush()
+            connectReplySent = true
             traceConnexion("[SXB_TRACE] stage=SSH_DIRECT_TCPIP_CONNECTED port=$destPort")
 
             // ═════════════════════════════════════════════════════════════════
@@ -5201,42 +5431,59 @@ class SxbVpnService : VpnService(), PlatformInterface {
             // donc deux fils au lieu de trois — une page web en ouvre des
             // dizaines à la fois.
             val threadB = Thread({
+                var receivedEof = false
                 try {
-                    val buf = ByteArray(8192); val chIn = channel.inputStream; var n: Int
-                    while (channel.isConnected && !client.isClosed) {
-                        n = chIn.read(buf); if (n == -1) break
+                    val buf = ByteArray(8192); var n: Int
+                    while (!client.isClosed) {
+                        n = chIn.read(buf)
+                        if (n == -1) { receivedEof = true; break }
                         dout.write(buf, 0, n); dout.flush()
                         downloadBytes.addAndGet(n.toLong())
                     }
-                } catch (_: Exception) {}
-                runCatching { client.close() }
+                } catch (error: Exception) {
+                    if (!client.isClosed) broadcastLog("[SXB_TRACE] stage=SOCKS5_ERROR type=${error.javaClass.simpleName}")
+                } finally {
+                    if (receivedEof && channel.isConnected && session.isConnected && running.get()) {
+                        runCatching { client.shutdownOutput() }
+                    } else {
+                        runCatching { client.close() }
+                    }
+                }
             }, "Socks5-Down").apply { isDaemon = true; start() }
+            downstream = threadB
 
             try {
-                val buf = ByteArray(8192); val chOut = channel.outputStream; var n: Int
+                val buf = ByteArray(8192); var n: Int
                 while (channel.isConnected && !client.isClosed) {
                     n = client.inputStream.read(buf); if (n == -1) break
                     chOut.write(buf, 0, n); chOut.flush()
                     uploadBytes.addAndGet(n.toLong())
                 }
-            } catch (_: Exception) {}
+            } finally {
+                // A TCP half-close ends uploads, not the response/download.
+                chOut.close()
+            }
 
-            // Fermer le canal débloque la lecture du sens descendant : c'est ce
-            // qui met fin au fil, sans plafond de durée arbitraire. L'ancien
-            // `join(300_000)` coupait en prime toute connexion vivant plus de
-            // cinq minutes.
-            runCatching { channel.disconnect() }
-            threadB.join(5_000)
+            threadB.join()
             // Celle-ci reste inconditionnelle : c'est la SEULE des cinq que le
             // journal technique affiche (`tech_relay_closed`). Les quatre
             // autres sont ignorées par le journal — les taire ne retire donc
             // rien à ce que vous voyez, et les retire du chemin des données.
             broadcastLog("[SXB_TRACE] stage=SOCKS5_RELAY_CLOSED upload_bytes=${uploadBytes.get()} download_bytes=${downloadBytes.get()}")
         } catch (e: Exception) {
+            if (connectRequested && !connectReplySent) {
+                runCatching {
+                    client.outputStream.write(byteArrayOf(5, 1, 0, 1, 0, 0, 0, 0, 0, 0))
+                    client.outputStream.flush()
+                }
+            }
             broadcastLog("[SXB_TRACE] stage=SOCKS5_ERROR type=${e.javaClass.simpleName}")
-            Log.d(TAG, "SOCKS5 fin: ${e.message?.take(60)}")
+            Log.d(TAG, "SOCKS5 fin: ${e.javaClass.simpleName}")
         } finally {
             runCatching { client.close() }
+            runCatching { activeChannel?.disconnect() }
+            try { downstream?.join(5_000) }
+            catch (_: InterruptedException) { Thread.currentThread().interrupt() }
         }
     }
 
@@ -5613,11 +5860,11 @@ class SxbVpnService : VpnService(), PlatformInterface {
      */
     private fun persistEncryptedConfig(originalConfigJson: String): Boolean {
         return try {
-            File(filesDir, "sxb_creds.enc").writeText(KeystoreManager.encrypt(originalConfigJson), Charsets.UTF_8)
+            KeystoreManager.writeEncrypted(File(filesDir, "sxb_creds.enc"), originalConfigJson)
             Log.i(TAG, "[P1] Config VPN chiffrée et persistée (AES-256-GCM) ✅")
             true
         } catch (e: Exception) {
-            Log.w(TAG, "[P1] Chiffrement config échoué (Keystore non disponible?): ${e.message}")
+            Log.w(TAG, "[P1] Chiffrement config échoué: ${e.javaClass.simpleName}")
             false
         }
     }
@@ -5625,37 +5872,28 @@ class SxbVpnService : VpnService(), PlatformInterface {
     /**
      * S1 — Purge des copies en clair des identifiants VPN.
      *
-     * `SxbVpnModule.startVpn()` doit écrire la configuration complète (host, port,
-     * username, password, uuid, clés privées) dans `sxb_pending_config.json` pour
-     * contourner la limite ~1 Mo du Binder IPC. Ce fichier — ainsi que l'ancien
-     * `sb_config.json` — restait ensuite indéfiniment en clair dans le stockage
-     * privé de l'application, ce qui annulait le chiffrement AES-GCM ci-dessus.
+     * Le fichier de transfert est désormais chiffré. Les anciennes copies en
+     * clair restent migrables, puis sont supprimées avec leurs sauvegardes.
      *
      * La purge n'est déclenchée qu'une fois `sxb_creds.enc` écrit et non vide :
      * un redémarrage START_STICKY dispose ainsi toujours d'une source de config.
      */
-    private fun purgePlaintextConfigArtifacts(vararg extraPaths: String?) {
+    private fun purgePlaintextConfigArtifacts(loadedPendingFile: File? = null) {
         val vault = File(filesDir, "sxb_creds.enc")
         if (!vault.exists() || vault.length() <= 0L) {
             Log.w(TAG, "[S1] Purge des copies en clair ignorée — coffre chiffré indisponible")
             return
         }
-        val targets = mutableListOf(
+        val targets = listOfNotNull(
             File(filesDir, "sxb_pending_config.json"),
             File(filesDir, "sb_config.json"),
+            loadedPendingFile,
         )
-        extraPaths.filterNotNull().filter { it.isNotBlank() }.forEach { targets.add(File(it)) }
-
-        targets.distinctBy { it.absolutePath }
-            .filter { it.exists() && it.absolutePath != vault.absolutePath }
-            .forEach { file ->
-                val erased = runCatching {
-                    // Écraser avant suppression : sur certains systèmes de fichiers un
-                    // simple delete() laisse le contenu récupérable.
-                    file.writeText("", Charsets.UTF_8)
-                    file.delete()
-                }.getOrDefault(false)
-                Log.i(TAG, "[S1] Copie en clair purgée=${erased} name=${file.name}")
+        targets.distinct().forEach { file ->
+                android.util.AtomicFile(file).delete()
+                val erased = !KeystoreManager.exists(file)
+                if (!erased) broadcastLog("CONFIG_LEGACY_CLEANUP_FAILED")
+                Log.i(TAG, "[S1] Copie obsolète purgée=$erased")
             }
     }
 
@@ -5712,6 +5950,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         boxService = null
         engineLogThrottle.reset().forEach(::broadcastEngineLogSummary)
 
+        runCatching { gatewaySocketFactory?.close() }; gatewaySocketFactory = null
         runCatching { sshSession?.disconnect() }; sshSession     = null
 
         runCatching { trafficManager.stop() }
@@ -5833,6 +6072,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // Unlike the best-effort normal shutdown, withdrawal surfaces failures.
         boxService?.close()
         boxService = null
+        gatewaySocketFactory?.close()
         sshSession?.disconnect()
         socks5Server?.close()
         tunPfd?.close()
@@ -5852,6 +6092,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
         boxService = null
         sshSession?.disconnect()
         sshSession = null
+        gatewaySocketFactory?.close()
+        gatewaySocketFactory = null
         socks5Server?.close()
         socks5Server = null
         tunPfd?.close()

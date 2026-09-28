@@ -66,7 +66,7 @@ describe('rapidité du relais SSH', () => {
     // trouvait celui de la branche UDP, situé plus haut, et le jugeait donc
     // « avant la boucle ». Vérifié à l'envers — d'où ce découpage strict.
     const ouvertureCanal = code.indexOf('session.openChannel("direct-tcpip")');
-    const boucle = code.indexOf('val chOut = channel.outputStream');
+    const boucle = code.indexOf('while (channel.isConnected && !client.isClosed)');
     assert.ok(ouvertureCanal > 0, 'le canal direct-tcpip doit être ouvert');
     assert.ok(boucle > ouvertureCanal, 'la boucle montante doit suivre le canal');
 
@@ -80,7 +80,7 @@ describe('rapidité du relais SSH', () => {
   it('désactive Nagle sur la socket du relais', () => {
     const code = relaisSansCommentaires();
     const ouvertureCanal = code.indexOf('session.openChannel("direct-tcpip")');
-    const boucle = code.indexOf('val chOut = channel.outputStream');
+    const boucle = code.indexOf('while (channel.isConnected && !client.isClosed)');
     assert.ok(/client\.tcpNoDelay = true/.test(code.slice(ouvertureCanal, boucle)),
       'sans TCP_NODELAY posé avant le relais, chaque petit envoi est retenu ' +
       'jusqu’à ~40 ms, ce qui rend la navigation poussive sur un tunnel latent');
@@ -156,8 +156,12 @@ describe('rapidité du relais SSH', () => {
     assert.ok(code.includes('uploadBytes.addAndGet'), 'le sens montant doit compter ses octets');
     assert.ok(code.includes('downloadBytes.addAndGet'), 'le sens descendant doit compter ses octets');
     assert.ok(code.includes('"Socks5-Down"'), 'le fil descendant doit subsister');
-    assert.ok(/runCatching \{ channel\.disconnect\(\) \}/.test(code),
+    assert.ok(/runCatching \{ activeChannel\?\.disconnect\(\) \}/.test(code),
       'la fermeture du canal doit débloquer le fil descendant');
+    assert.ok(code.indexOf('channel.inputStream') < code.indexOf('channel.connect(15_000)'),
+      'les premiers octets doivent avoir un destinataire avant l’ouverture distante');
+    assert.ok(code.includes('chOut.close()') && code.includes('threadB.join()'),
+      'un EOF montant ne doit pas interrompre le téléchargement');
   });
 
   it('laisse la branche UDP inchangée', () => {

@@ -24,6 +24,12 @@ import javax.net.ssl.X509TrustManager
 
 /** Optional public SPKI pins, compiled from reviewed rotation material. Normal TLS always applies. */
 object SxbBackendTls {
+    fun socketFactory(context: Context): javax.net.ssl.SSLSocketFactory {
+        val template = java.net.URL(base(context)).openConnection() as HttpsURLConnection
+        protect(context, template)
+        return template.sslSocketFactory
+    }
+
     private fun metadata(context: Context) = context.packageManager.getApplicationInfo(
         context.packageName, PackageManager.GET_META_DATA).metaData
     fun base(context: Context): String = metadata(context)?.getString("com.sxbvpn.api_base_url")

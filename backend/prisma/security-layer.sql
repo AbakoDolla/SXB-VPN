@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS mobile_connections (
   "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "closedAt" TIMESTAMP(3), "closeReason" TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS "mobile_connections_clientId_usageSessionId_key" ON mobile_connections ("clientId", "usageSessionId");
+ALTER TABLE mobile_connections ADD COLUMN IF NOT EXISTS "relayConfigHash" TEXT;
 CREATE INDEX IF NOT EXISTS "mobile_connections_clientId_authSessionId_authGeneration_idx" ON mobile_connections ("clientId", "authSessionId", "authGeneration");
 ALTER TABLE security_events ADD COLUMN IF NOT EXISTS "sessionId" TEXT,
   ADD COLUMN IF NOT EXISTS "sessionGeneration" INTEGER,

@@ -7,6 +7,8 @@ import helmet from "helmet";
 import { createApiRateLimiter } from "./server/middleware/rate-limit";
 import { createServer as createViteServer } from "vite";
 import { config } from "./server/config";
+import { installSshRelay } from "./server/services/ssh-relay";
+import { authorizeSshRelay } from "./server/services/ssh-relay-auth";
 
 // Import Routers
 import authRouter from "./server/routes/auth";
@@ -253,13 +255,16 @@ app.use("/api/free-trial", freeTrialRouter);
   }
 
   // 4. Listen on Host
-  app.listen(PORT, "0.0.0.0", () => {
+  const httpServer = app.listen(PORT, "0.0.0.0", () => {
     console.log(`=============================================================`);
     console.log(`🛡️ SXB VPN SaaS PRO Backend online and listening on PORT ${PORT}`);
     console.log(`🌐 Local Gateway Router: http://localhost:${PORT}`);
     console.log(`📚 Interactive Swagger API Docs: http://localhost:${PORT}/api/docs`);
     console.log(`=============================================================`);
   });
+  if (process.env.SXB_SSH_RELAY_PROFILE_IDS?.trim()) {
+    installSshRelay(httpServer, { authorize: authorizeSshRelay });
+  }
 }
 
 // ── Fix 5 : Gestionnaires globaux pour éviter les crashes PM2 silencieux ────────

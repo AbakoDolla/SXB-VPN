@@ -9,7 +9,18 @@ private fun readHeaders(input: InputStream): String {
     return value.toString()
 }
 
-private fun payloadScenario(response: String, http: Boolean, tls: Boolean, serverName: String = "localhost", expectFailure: Boolean = false) {
+private fun payloadScenario(
+    response: String,
+    http: Boolean,
+    tls: Boolean,
+    serverName: String = "localhost",
+    expectFailure: Boolean = false,
+    payload: String = "CONNECT [host_port] [protocol][crlf][crlf]",
+    expectedTunnel: String = "SSH-2.0-Synthetic\r\n",
+    waitForClient: Boolean = false,
+    responseDelayMs: Long = 0,
+) {
+    val expectedRequest = expandSshPayloadTokens(payload, "ssh.example.test", 22, "synthetic-agent", serverName)
     val server = if (tls) {
         val store = KeyStore.getInstance("PKCS12")
         FileInputStream(System.getProperty("sxb.test.store")).use { store.load(it, "synthetic-test-only".toCharArray()) }
@@ -25,27 +36,45 @@ private fun payloadScenario(response: String, http: Boolean, tls: Boolean, serve
         try {
             server.accept().use { socket ->
                 socket.soTimeout = 5000
-                received.set(readHeaders(socket.getInputStream()))
+                val request = ByteArray(expectedRequest.toByteArray(Charsets.ISO_8859_1).size)
+                DataInputStream(socket.getInputStream()).readFully(request)
+                received.set(String(request, Charsets.ISO_8859_1))
+                if (responseDelayMs > 0) Thread.sleep(responseDelayMs)
                 socket.getOutputStream().write(response.toByteArray(Charsets.ISO_8859_1))
                 socket.getOutputStream().flush()
+                if (waitForClient) {
+                    val clientBanner = StringBuilder()
+                    while (!clientBanner.endsWith("\n")) clientBanner.append(socket.getInputStream().read().also { check(it >= 0) }.toChar())
+                    check(clientBanner.toString() == "SSH-2.0-Client\r\n")
+                    socket.getOutputStream().write(expectedTunnel.toByteArray(Charsets.ISO_8859_1))
+                }
             }
         } catch (error: Exception) { failure.set(error) }
     }
     worker.start()
     var protected = 0
+    var physicalSocket: Socket? = null
+    val events = mutableListOf<String>()
     val proxy = SxbPayloadProxy(
-        "CONNECT [host_port] [protocol][crlf][crlf]", tls, serverName,
+        payload, tls, serverName,
         "127.0.0.1", server.localPort, "ssh.example.test", 22, "synthetic-agent", false,
-        { socket -> check(!socket.isConnected); protected++; true },
-        expectHttpResponse = http, onEvent = {},
+        { socket -> check(!socket.isConnected); physicalSocket = socket; protected++; true },
+        expectHttpResponse = http, onEvent = { events.add(it) },
     )
     try {
         var rejected = false
         try {
             proxy.connect(null, "ignored", 22, 3000)
-            if (!expectFailure) check(proxy.inputStream.bufferedReader().readLine() == "SSH-2.0-Synthetic")
+            if (waitForClient) {
+                proxy.outputStream.write("SSH-2.0-Client\r\n".toByteArray())
+                proxy.outputStream.flush()
+            }
+            if (!expectFailure) check(proxy.inputStream.readBytes().contentEquals(expectedTunnel.toByteArray(Charsets.ISO_8859_1))) {
+                "The transport changed the SSH byte stream"
+            }
         } catch (error: IOException) {
             if (!expectFailure) throw error
+            check(physicalSocket?.isClosed == true) { "Failed transport leaked its physical socket" }
             rejected = true
         }
         check(rejected == expectFailure)
@@ -58,13 +87,110 @@ private fun payloadScenario(response: String, http: Boolean, tls: Boolean, serve
     }
     if (!expectFailure) {
         failure.get()?.let { throw AssertionError("Loopback peer failed", it) }
-        check(received.get() == "CONNECT ssh.example.test:22 HTTP/1.0\r\n\r\n")
+        check(received.get() == expectedRequest)
     }
     if (tls && expectFailure) check(received.get() == null) { "Payload escaped before TLS identity verification" }
+    check(events.none { it.contains("ssh.example.test") || it.contains("X-Synthetic-Secret") || it.contains("private-marker") })
+}
+
+private const val chainPayload = "GET / HTTP/1.1[crlf]Host: public.example.test[crlf][crlf]" +
+    "CONNECT [host_port] HTTP/1.1[crlf][crlf]"
+
+private fun chainFramingScenarios() {
+    val banner = "SSH-2.0-Synthetic\r\n\u0000\u0081"
+    fun checkChain(prefix: String, error: String? = null) {
+        Socket().use { socket ->
+            val input = java.io.PushbackInputStream(ByteArrayInputStream((prefix + banner).toByteArray(Charsets.ISO_8859_1)), 1)
+            try {
+                check(readSshPayloadChain(input, socket, 1000) {}.isEmpty())
+                check(error == null) { "Expected $error" }
+                check(input.readBytes().contentEquals(banner.toByteArray(Charsets.ISO_8859_1)))
+            } catch (failure: IOException) {
+                check(error != null && failure.message == error) { "Unexpected chain error: ${failure.message}, expected $error" }
+            }
+        }
+    }
+    val ok = "HTTP/1.1 200 OK\r\n\r\n"
+    checkChain("HTTP/1.1 301 Redirect\r\nContent-Length: 4\r\n\r\nbody" + ok)
+    checkChain("HTTP/1.1 302 Redirect\r\nTransfer-Encoding: chunked\r\n\r\n4;ext=yes\r\nbody\r\n0\r\nTrailer: ok\r\n\r\n" + ok)
+    checkChain(ok.repeat(16))
+    checkChain(ok.repeat(17), "HTTP_CHAIN_TOO_MANY_RESPONSES")
+    checkChain("HTTP/1.1 302 Redirect\r\n\r\n", "TUNNEL_REFUSED")
+    checkChain("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nTransfer-Encoding: chunked\r\n\r\n", "HTTP_CHAIN_FRAMING_INVALID")
+    checkChain("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nContent-Length: 0\r\n\r\n", "HTTP_CHAIN_FRAMING_INVALID")
+    checkChain("HTTP/1.1 200 OK\r\nContent-Length: +1\r\n\r\n", "HTTP_CHAIN_FRAMING_INVALID")
+    checkChain("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n-1\r\n", "HTTP_CHAIN_FRAMING_INVALID")
+    checkChain("HTTP/1.1 200 OK\r\nContent-Length: 65537\r\n\r\n", "HTTP_CHAIN_BODY_TOO_LARGE")
+    checkChain("HTTP/1.1 200 OK\r\nContent-Length: 300\r\n\r\nshort", "HTTP_CHAIN_TRUNCATED")
+    checkChain("HTTP/1.1 302 Redirect\r\nLocation: https://captive.example.test/\r\n\r\n", "CAPTIVE_PORTAL")
+    val portal = "<html>captive portal</html>"
+    checkChain("HTTP/1.1 200 OK\r\nContent-Length: ${portal.length}\r\n\r\n$portal", "CAPTIVE_PORTAL")
+    checkChain("HTTP/1.1 200 OK\r\nX: ${"x".repeat(8192)}\r\n\r\n", "HTTP_CHAIN_HEADER_TOO_LARGE")
+    checkChain("garbage", "TUNNEL_REFUSED")
+    for (code in listOf(301, 400, 403, 404)) {
+        payloadScenario("HTTP/1.1 $code Rejected\r\nX-Synthetic-Secret: private-marker\r\n\r\n", true, false,
+            expectFailure = true, payload = chainPayload)
+    }
+    payloadScenario("HTTP/1.1 301 Redirect\r\n\r\n", true, false, expectFailure = true)
+    payloadScenario(ok + ok, true, false, payload = chainPayload, waitForClient = true)
+    // An empty HTTP read used to discard the first byte arriving during the later peek.
+    payloadScenario("SSH-2.0-Synthetic\r\n", true, false, responseDelayMs = 10_100)
+    val websocketPayload = "GET / HTTP/1.1[crlf]Host: public.example.test[crlf][crlf]" +
+        "GET /ssh HTTP/1.1[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf]" +
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==[crlf]Sec-WebSocket-Version: 13[crlf][crlf]"
+    val ssh = "SSH-2.0-Synthetic\r\n"
+    payloadScenario(ok + "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n" +
+        "\u0082${ssh.length.toChar()}$ssh", true, false, payload = websocketPayload)
+    println("PASS: HTTP framing, rejection, portal/size/count bounds, client-first, delayed banner and chained WebSocket")
+}
+
+private fun protectFailureScenarios() {
+    for (mode in listOf("direct", "tls", "payload")) {
+        var physicalSocket: Socket? = null
+        val protect: (Socket) -> Boolean = { physicalSocket = it; false }
+        try {
+            when (mode) {
+                "direct" -> SxbLoggingSocketFactory(1000, "127.0.0.1", 1, protect) {}.createSocket("ignored", 1)
+                "tls" -> SxbTlsSocketFactory(1000, "localhost", "127.0.0.1", 1, false, protect) {}.createSocket("ignored", 1)
+                else -> SxbPayloadProxy(chainPayload, false, "", "127.0.0.1", 1, "ssh.example.test", 22, "", false, protect, onEvent = {})
+                    .connect(null, "ignored", 1, 1000)
+            }
+            error("Unprotected $mode socket was accepted")
+        } catch (failure: IOException) {
+            check(failure.message == "SSH_SOCKET_PROTECT_FAILED")
+            check(physicalSocket?.isClosed == true && physicalSocket?.isConnected == false)
+        }
+    }
+    println("PASS: protection failure closes direct, TLS and payload sockets before dialing")
 }
 
 fun main(args: Array<String>) {
-    System.setProperty("sxb.test.store", args.single())
+    System.setProperty("sxb.test.store", args[0])
+    val regressions = linkedMapOf<String, () -> Unit>(
+        "SSH banner preserves the first key-exchange byte" to {
+            val bytes = "SSH-2.0-Synthetic\r\n\u0000\u0000\u0082\u00ffbinary"
+            payloadScenario(bytes, true, false, expectedTunnel = bytes)
+        },
+        "Pipelined HTTP responses reach the SSH stream" to {
+            payloadScenario(
+                "HTTP/1.1 301 Moved Permanently\r\nContent-Length: 0\r\n\r\n" +
+                    "HTTP/1.1 200 OK\r\n\r\nHTTP/1.1 101 Switching Protocols\r\n\r\n" +
+                    "HTTP/1.1 200 OK\r\n\r\nSSH-2.0-Synthetic\r\n",
+                true, false,
+                payload = "GET / HTTP/1.1[crlf]Host: public.example.test[crlf][crlf]" +
+                    "X / HTTP/1.1[crlf]Host: [host][crlf][crlf]" +
+                    "GET / HTTP/1.1[crlf]Host: gateway.example.test[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]",
+            )
+        },
+    )
+    val failed = mutableListOf<String>()
+    for ((name, run) in regressions) {
+        try { run(); println("PASS: $name") }
+        catch (error: Exception) { failed.add(name); System.err.println("FAIL: $name: ${error.message}") }
+    }
+    check(failed.isEmpty()) { "SSH transport regressions: ${failed.joinToString()}" }
+    chainFramingScenarios()
+    protectFailureScenarios()
     payloadScenario("SSH-2.0-Synthetic\r\n", false, false)
     payloadScenario("HTTP/1.1 200 Connection established\r\n\r\nSSH-2.0-Synthetic\r\n", true, false)
     payloadScenario("HTTP/1.1 403 Forbidden\r\n\r\n", true, false, expectFailure = true)
@@ -86,5 +212,106 @@ fun main(args: Array<String>) {
             check(identities.size == 1 && !identities[0].isEncrypted)
         }
     } finally { pair.dispose() }
+    sshDataScenarios(JSONObject(File(args[1]).readText()))
     println("SSH production JVM: Dropbear/no HTTP wait, CONNECT, HTTP rejection, verified TLS ordering/identity, split timing and memory key import passed")
+}
+
+private fun sshDataScenarios(peer: JSONObject) {
+    for (payloadMode in listOf(false, true)) {
+        val jsch = JSch()
+        jsch.setKnownHosts(ByteArrayInputStream("fixture-key ssh-rsa ${peer.getString("hostKey")}\n".toByteArray()))
+        val session = jsch.getSession(peer.getString("username"), "127.0.0.1", peer.getInt("sshPort"))
+        session.setHostKeyAlias("fixture-key")
+        session.setConfig("StrictHostKeyChecking", "yes")
+        session.setConfig("PreferredAuthentications", "password")
+        session.setPassword(peer.getString("password"))
+        if (payloadMode) session.setProxy(SxbPayloadProxy(
+            "GET / HTTP/1.1[crlf]Host: public.example.test[crlf][crlf]" +
+                "X / HTTP/1.1[crlf]Host: [host][crlf][crlf]" +
+                "GET / HTTP/1.1[crlf]Host: gateway.example.test[crlf][crlf]",
+            false, "", "127.0.0.1", peer.getInt("payloadPort"), "ssh.example.test", 22,
+            "fixture-agent", false, { true }, onEvent = {},
+        ))
+        session.connect(10000)
+        val harness = SocksHarness()
+        val server = harness.start(session)
+        fun request(port: Int, action: (Socket, InputStream, Int) -> Unit) {
+            Socket("127.0.0.1", server.localPort).use { client ->
+                client.soTimeout = 10000
+                val out = client.outputStream
+                val input = DataInputStream(client.inputStream)
+                out.write(byteArrayOf(5, 1, 0)); out.flush()
+                check(input.readUnsignedByte() == 5 && input.readUnsignedByte() == 0)
+                out.write(byteArrayOf(5, 1, 0, 1, 127, 0, 0, 1, (port ushr 8).toByte(), port.toByte()))
+                out.flush()
+                val reply = ByteArray(10); input.readFully(reply)
+                action(client, input, reply[1].toInt())
+            }
+        }
+        val failures = mutableListOf<String>()
+        try {
+            try {
+                request(1) { _, _, code -> check(code != 0) { "SOCKS must not claim an SSH channel was opened when it was refused" } }
+            } catch (error: Exception) { failures.add("rejection: ${error.message}") }
+            try {
+                request(peer.getInt("greetingPort")) { _, input, code ->
+                    check(code == 0)
+                    check(input.readBytes().contentEquals(byteArrayOf(0, 1, 2, 0x80.toByte(), 0xff.toByte()))) {
+                        "Lost immediate downstream bytes"
+                    }
+                }
+            } catch (error: Exception) { failures.add("greeting: ${error.message}") }
+            try {
+                request(peer.getInt("downloadPort")) { client, input, code ->
+                    check(code == 0)
+                    client.outputStream.write("GET / HTTP/1.1\r\nHost: fixture\r\n\r\n".toByteArray())
+                    client.outputStream.flush()
+                    client.shutdownOutput()
+                    val received = input.readBytes()
+                    val prefix = "HTTP/1.1 200 OK\r\nContent-Length: 262144\r\n\r\n".toByteArray()
+                    check(received.size == prefix.size + 262144 && received.take(prefix.size).toByteArray().contentEquals(prefix)) {
+                        "SSH download truncated after client half-close: ${received.size}"
+                    }
+                    check(received.drop(prefix.size).all { it == 0x61.toByte() })
+                    check(harness.uploadBytes.get() > 0 && harness.downloadBytes.get() >= received.size)
+                }
+            } catch (error: Exception) { failures.add("download: ${error.message}") }
+            try {
+                var before = 0
+                request(peer.getInt("uploadReportPort")) { _, input, code ->
+                    check(code == 0); before = String(input.readBytes()).toInt()
+                }
+                request(peer.getInt("uploadPort")) { client, input, code ->
+                    check(code == 0 && String(input.readBytes()) == "ready")
+                    client.outputStream.write(ByteArray(262144) { 0x62.toByte() })
+                    client.outputStream.flush()
+                    client.shutdownOutput()
+                    var received = 0
+                    val deadline = System.nanoTime() + 5_000_000_000L
+                    while (received < before + 262144 && System.nanoTime() < deadline) {
+                        request(peer.getInt("uploadReportPort")) { _, report, status ->
+                            check(status == 0); received = String(report.readBytes()).toInt()
+                        }
+                        if (received < before + 262144) Thread.sleep(10)
+                    }
+                    check(received == before + 262144) { "Remote half-close truncated upload: ${received - before}" }
+                }
+            } catch (error: Exception) { failures.add("upload: ${error.message}") }
+            try {
+                request(peer.getInt("downloadPort")) { client, input, code ->
+                    check(code == 0)
+                    session.disconnect()
+                    client.soTimeout = 3000
+                    val closed = try { input.read() == -1 } catch (_: SocketException) { true }
+                    check(closed) { "Disconnect did not release an idle SOCKS client" }
+                }
+            } catch (error: Exception) { failures.add("shutdown: ${error.message}") }
+        } finally {
+            harness.running.set(false)
+            server.close()
+            session.disconnect()
+        }
+        check(failures.isEmpty()) { "SSH data path (payload=$payloadMode): ${failures.joinToString("; ")}" }
+        println("PASS: real SSH/SOCKS payload=$payloadMode rejection, immediate data, 256 KiB upload/download, both half-closes and disconnect")
+    }
 }

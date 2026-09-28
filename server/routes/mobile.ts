@@ -31,6 +31,7 @@ import {
 import { forfaitsEssaiDuClient } from "../services/free-trial-marks";
 import { activateBoundSession, consumeSessionProof } from "../services/mobile-session-security";
 import { updateMobileConnection } from "../services/mobile-connections";
+import { relayProfileEnabled } from "../services/ssh-relay-ticket";
 import { consumeProof, proofFor, securityFailure, type VerifiedProof } from "../services/mobile-proof";
 
 // ── AES-256-CBC decrypt (same key as vpn-profiles.ts) ─────────────────────────
@@ -942,6 +943,7 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
       return res.status(selectedStatus === "deleted" ? 404 : 403).json(subscriptionAccessFailure(selectedStatus, sub.id));
     }
     const profile = subscriptionState === 'active' ? (sub?.profile || null) : null;
+    const privateRelay = !!profile?.id && relayProfileEnabled(profile.id);
     const proto = (profile?.protocol || "ssh").toLowerCase(); // "ssh" | "ssh+payload" | "vless" …
 
     // ── Charger le payload SSH (via JOIN Prisma d'abord, puis requête séparée) ─
@@ -969,12 +971,14 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
     // ── Déchiffrer le mot de passe avant envoi au mobile ─────────────────
     const decryptedPassword = decryptField(profile?.password);
 
-    const protocols = profile
+    const protocols = privateRelay
+      ? [{ name: "SSH", port: 443, transport: "TCP", security: "TLS", description: "Actif — " + profile.name }]
+      : profile
       ? [{ name: proto === "ssh+payload" ? "SSH+Payload" : proto.toUpperCase(), port: profile.port, transport: (profile.network || "tcp").toUpperCase(), security: profile.tls ? "TLS" : "Bypass", description: "Actif — " + profile.name }]
       : FALLBACK;
 
     let connectionUri: string | null = null;
-    if (profile) {
+    if (profile && !privateRelay) {
       if (proto === "ssh" || proto === "ssh+payload") {
         connectionUri = "ssh://" + (profile.username || "user") + "@" + profile.host + ":" + profile.port;
         if (profile.sni) connectionUri += "?sni=" + encodeURIComponent(profile.sni);
@@ -1373,6 +1377,7 @@ router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => 
     if (!client) return res.status(404).json({ error: "errors.mobile.no_account" });
 
     let creditedSubscriptionId: string | null = subscriptionId || null;
+    let relayMetered = false;
     if (req.user!.sid) {
       if (!Number.isSafeInteger(seq)) securityFailure('USAGE_SEQUENCE_REQUIRED', 409);
       const binding = sessionId && prisma ? await prisma.mobileConnection.findUnique({
@@ -1382,10 +1387,11 @@ router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => 
       if ((subscriptionId ?? null) !== binding.subscriptionId ||
           (reportMode === 'unlinked') !== (binding.subscriptionId === null)) securityFailure('USAGE_ATTRIBUTION_CONFLICT', 409);
       creditedSubscriptionId = binding.subscriptionId;
+      relayMetered = !!binding.relayConfigHash;
       attribution = binding.subscriptionId === null ? 'unlinked' : undefined;
     }
     let duplicate = false;
-    if (totalBytes > 0n) {
+    if (totalBytes > 0n && !relayMetered) {
       const applied = await applyUsageDelta(client.id, creditedSubscriptionId, totalBytes, sessionId, seq,
         BigInt(bytesUp), req.user!.deviceId || deviceId || null, attribution, proofFor(req), req.user);
       if (!applied.applied && applied.reason === "subscription_required") {
@@ -1511,6 +1517,7 @@ router.get("/connections", async (req: AuthenticatedRequest, res: Response) => {
         dataToken:  sub.dataToken,
         createdAt:  sub.createdAt ? new Date(sub.createdAt).toISOString() : new Date().toISOString(),
         configVersion: configVersionForProfile(profile),
+        sshRelayAvailable: !!profile?.id && relayProfileEnabled(profile.id),
         configHash:    configHashForProfile(profile),
         /** Cet accès provient-il d'un essai gratuit déployé ? (marqueur structurel) */
         isFreeTrial:   forfaitsEssai.has(String(sub.id)),

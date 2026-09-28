@@ -24,7 +24,10 @@ import { deviceIdFromRequest } from '../services/mobile-principal';
 import {
   deviceAccessStatus, deviceAccessFailure, subscriptionAccessStatus, subscriptionAccessFailure, sessionInvalidFailure, MobileAccessError,
 } from '../services/access-lifecycle';
-import { consumeSessionProof } from '../services/mobile-session-security';
+import { checkSession, consumeSessionProof } from '../services/mobile-session-security';
+import { config } from '../config';
+import { issueRelayTicket, relayClientConfig, relayProfileEnabled } from '../services/ssh-relay-ticket';
+import { readRelayProfile, renewRelayTicket } from '../services/ssh-relay-auth';
 import { proofFor, securityFailure } from '../services/mobile-proof';
 import crypto               from 'crypto';
 import {
@@ -35,6 +38,25 @@ import {
 } from '../services/config-hash';
 
 const router = Router();
+
+router.post('/ssh-relay/refresh', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { ticket } = z.object({ ticket: z.string().min(1).max(4096) }).strict().parse(req.body);
+    if (!prisma || req.user?.role !== 'CLIENT' || !req.user.sid) {
+      return res.status(403).json({ code: 'RELAY_BOUND_SESSION_REQUIRED' });
+    }
+    const credential = await prisma.$transaction(async tx => {
+      await consumeSessionProof(tx, req.user!, proofFor(req));
+      return renewRelayTicket(tx, ticket, req.user!);
+    }, { maxWait: 2000, timeout: 5000 });
+    return res.json(credential);
+  } catch (error) {
+    if (error instanceof z.ZodError) return res.status(400).json({ code: 'RELAY_REQUEST_INVALID' });
+    if (error instanceof MobileAccessError) return res.status(error.status).json(error.body);
+    console.warn('[SSH_RELAY] RENEWAL_REFUSED');
+    return res.status(503).json({ code: 'RELAY_RENEWAL_REFUSED' });
+  }
+});
 
 async function refusProvision(req: AuthenticatedRequest, sub: any, db: PrismaClient | Prisma.TransactionClient | null = prisma) {
   const requestedId = typeof req.params.subscriptionId === 'string' ? req.params.subscriptionId
@@ -359,8 +381,26 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
 
     // 7. Calcul de l'expiration de la configuration locale
     const offlineDays    = profile?.offlineValidDays || 7;
-    const configExpiresAt = new Date(Date.now() + offlineDays * 86_400_000).toISOString();
+    let configExpiresAt = new Date(Date.now() + offlineDays * 86_400_000).toISOString();
     const provisionedAt   = new Date().toISOString();
+
+    if (req.get('X-SXB-SSH-Relay') === '1' && profile && relayProfileEnabled(profile.id)) {
+      const bound = req.user ? await checkSession(req.user) : null;
+      if (!bound || !req.user?.clientId || !req.user.deviceId || !bound.session.authExpiresAt) {
+        return res.status(409).json({ code: 'RELAY_BOUND_SESSION_REQUIRED', error: 'Une activation sécurisée est requise pour cette passerelle.' });
+      }
+      try { readRelayProfile(profile); }
+      catch {
+        return res.status(503).json({ code: 'RELAY_PROFILE_NOT_READY', error: 'La passerelle de ce forfait doit être vérifiée par son gestionnaire.' });
+      }
+      const credential = issueRelayTicket({
+        userId: req.user.userId, clientId: req.user.clientId, deviceId: req.user.deviceId,
+        sid: req.user.sid, sg: req.user.sg, kid: req.user.kid,
+        subscriptionId: sub.id, configHash: configHashForProfile(profile)!,
+      }, config.JWT_SECRET, Math.min(Date.parse(configExpiresAt), bound.session.authExpiresAt.getTime()));
+      configExpiresAt = credential.expiresAt;
+      rawConfig = relayClientConfig(rawConfig, profile.id, credential);
+    }
 
     // 8. Chiffrement AES-256-GCM lié à l'appareil
     const token = sub.dataToken;

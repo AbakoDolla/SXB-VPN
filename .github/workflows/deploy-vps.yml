@@ -397,6 +397,24 @@ jobs:
                 sudo nginx -t
               fi
             fi
+            # Exact TLS vhost only; retain the existing API port from .env.
+            # No profile is activated by installing this dormant location.
+            test -n "$NGINX_CONF"
+            RELAY_CANDIDATE=$(mktemp)
+            node scripts/configure-ssh-relay-nginx.cjs "$NGINX_CONF" "$RELAY_CANDIDATE"
+            if ! cmp -s "$NGINX_CONF" "$RELAY_CANDIDATE"; then
+              RELAY_BACKUP="$NGINX_BACKUP_DIR/$(basename "$NGINX_CONF").relay.$(date +%s)"
+              sudo cp "$NGINX_CONF" "$RELAY_BACKUP"
+              sudo cp "$RELAY_CANDIDATE" "$NGINX_CONF"
+              if ! sudo nginx -t; then
+                sudo cp "$RELAY_BACKUP" "$NGINX_CONF"
+                rm -f "$RELAY_CANDIDATE"
+                sudo nginx -t
+                echo "Relay ingress rejected; original configuration restored" >&2
+                exit 1
+              fi
+            fi
+            rm -f "$RELAY_CANDIDATE"
             sudo nginx -t && sudo systemctl reload nginx
 
             echo "✅ Deployment complete!"

@@ -15,8 +15,9 @@
 import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
+import { NativeModules, Platform } from 'react-native';
 import * as configStore from './configStore';
-import { isCompleteOfflineConfig } from './configValidator';
+import { isCompleteOfflineConfig, isSshRelayConfig } from './configValidator';
 import apiClient from './apiClient';
 import { decryptSxbBlob, utf8Decode } from './aesGcm';
 import { accessIssueFromError, type AccessIssue } from './accessPolicy';
@@ -27,6 +28,25 @@ import { requireVpnConsent } from './privacyConsent';
 const PROV_KEY = 'sxb_prov_config_v2';
 const PROV_META_KEY = 'sxb_prov_meta_v2';
 const PROVISION_MAX_ATTEMPTS = 3;
+
+/** Refresh only the short-lived gateway credential, never the provider configuration. */
+export async function refreshRelayCredential(id: string, config: Record<string, unknown>) {
+  if (!isSshRelayConfig(config)) throw new Error('RELAY_CONFIG_INVALID');
+  const previous = config.sshRelay as { ticket: string; expiresAt: string };
+  if (Date.parse(previous.expiresAt) - Date.now() > 300_000) return config;
+  const identity = accessRequestStamp();
+  requireVpnConsent();
+  requireProfileAccess({ configId: id });
+  const response = await apiClient.post('/provision/ssh-relay/refresh', { ticket: previous.ticket }, { timeout: 15000 });
+  if (!currentIdentityRequest(identity)) throw new Error('AUTH_SESSION_CHANGED');
+  requireVpnConsent();
+  const credential = response.data;
+  if (!credential || !isSshRelayConfig({ ...config, sshRelay: { ...credential, version: 1 } }) ||
+      Date.parse(credential.expiresAt) <= Date.now()) throw new Error('RELAY_CREDENTIAL_INVALID');
+  return (await configStore.replaceRelayCredential(id, previous.ticket, {
+    ticket: credential.ticket, expiresAt: credential.expiresAt,
+  })).config;
+}
 
 type ProvisionStage = 'request' | 'response' | 'decrypt' | 'parse' | 'store';
 
@@ -100,7 +120,10 @@ async function requestProvision(dataToken: string, deviceId: string) {
   let lastError: unknown;
   for (let attempt = 1; attempt <= PROVISION_MAX_ATTEMPTS; attempt += 1) {
     try {
-      return await apiClient.post('/provision/activate', { dataToken, deviceId }, { timeout: 15_000 });
+      const relay = Platform.OS === 'android' && NativeModules.SxbVpnNative?.sshRelayVersion === 1;
+      return await apiClient.post('/provision/activate', { dataToken, deviceId }, {
+        timeout: 15_000, ...(relay ? { headers: { 'X-SXB-SSH-Relay': '1' } } : {}),
+      });
     } catch (error) {
       lastError = error;
       const diagnostic = toProvisioningError(error, attempt).diagnostic;
