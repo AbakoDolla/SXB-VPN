@@ -2316,7 +2316,12 @@ describe('garde-fous contre les régressions Android', () => {
     const db = source('../server/database.ts');
     assert.match(db, /visibleOwnerOnly = true/);
     const auditLogs = source('../server/routes/audit-logs.ts');
-    assert.match(auditLogs, /requesterIsOwner \? \{\} : \{ visibleOwnerOnly: false \}/);
+    assert.match(auditLogs, /\.\.\.await auditVisibility\(prisma, req\.user\)/);
+    const privacy = source('../server/services/owner-privacy.ts');
+    assert.match(privacy, /if \(requester\?\.role === OWNER_ROLE\) return \{\}/);
+    assert.match(privacy, /visibleOwnerOnly: false/);
+    assert.match(privacy, /user: nonOwnerAccountScope\(owners\)/);
+    assert.match(privacy, /role: \{ name: \{ not: OWNER_ROLE \} \}/);
     const auth = source('../server/routes/auth.ts');
     assert.match(auth, /visibleOwnerOnly: isOwnerLogin|isOwnerLogin/);
   });
@@ -2426,13 +2431,13 @@ describe('garde-fous contre les régressions Android', () => {
     // journal complet — connexions des administrateurs, jetons émis, noms des
     // clients des autres revendeurs.
     const logs = source('../server/routes/audit-logs.ts');
-    assert.match(logs, /const isReseller = req\.user\?\.role === "RESELLER"/);
+    assert.match(logs, /\.\.\.await auditVisibility\(prisma, req\.user\)/);
     // Le compartiment couvre désormais aussi l'administrateur : sans cela, son
     // écran d'accueil racontait les connexions et les créations du
     // super-administrateur.
-    assert.match(logs, /const cloisonne = isReseller \|\| req\.user\?\.role === "ADMIN"/);
-    assert.match(logs, /ownScope = cloisonne \? \{ userId: req\.user\?\.userId \} : \{\}/);
-    assert.match(logs, /\.\.\.ownScope/);
+    const privacy = source('../server/services/owner-privacy.ts');
+    assert.match(privacy, /requester\?\.role === 'SUPER_ADMIN' \? \{\} : \{ userId: requester\?\.userId \?\? '__none__' \}/);
+    assert.match(logs, /!prisma && !requesterIsOwner[\s\S]{0,40}res\.status\(503\)/);
 
     // La carte disparaît aussi du tableau de bord, et les journaux ne sont
     // même plus demandés.
