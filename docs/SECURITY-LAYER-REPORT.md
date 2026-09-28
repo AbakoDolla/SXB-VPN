@@ -161,6 +161,24 @@ et `backend\prisma`. `security-layer.sql` est un script additif transactionnel,
 pas une migration automatiquement decouverte par `prisma migrate deploy`.
 Ne pas utiliser `db push` pour mettre a jour la production.
 
+### Empreintes de configuration et compatibilite historique
+
+Le controle CodeQL de l'integration a signale l'empreinte SHA-256 non secrete
+du canonique, qui peut contenir des identifiants fournisseur. Les nouveaux
+imports utilisent `hmac-sha256-v1:<hex>`, avec une sous-cle derivee et separee
+de la cle AES-GCM existante ENCRYPTION_KEY. Une empreinte seule ne permet donc
+plus de verifier hors ligne une supposition sur les identifiants sans cette cle.
+Les mots de passe de connexion et de verrouillage restent geres par bcrypt.
+
+Les blobs GCM, les empreintes SHA-256 deja stockees, les versions et les
+identifiants de profils ne sont pas reecrits. Le provisionnement reconnait
+explicitement les deux formats apres dechiffrement GCM authentifie et refuse
+les formats inconnus ou contenus modifies. Les doublons d'anciens imports
+restent detectes par comparaison de leur contenu dechiffre avec la nouvelle
+empreinte, par pages, sans migration ni nouveau digest non secret. Le mobile
+traite ces valeurs comme des identifiants opaques ; aucune reimportation de
+profil existant n'est provoquee par le seul deploiement.
+
 ### Gate backend ajoute apres le candidat APK
 
 Le workflow deploy-vps utilisait encore `db push` et omettait security-layer.sql.

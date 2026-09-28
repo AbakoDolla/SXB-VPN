@@ -9,7 +9,8 @@
  * Ce module est la SEULE source de vérité d'un profil importé :
  *   - parseImportedConfig(raw)   → URI/JSON externe → config canonique plate
  *   - normalizeCanonical(cfg)    → JSON déterministe (clés triées récursivement)
- *   - computeCanonicalHash(cfg)  → sha256 hex du JSON normalisé
+ *   - computeCanonicalHash(cfg)  → empreinte HMAC versionnée du JSON normalisé
+ *   - verifyCanonicalHash       → accepte aussi les empreintes SHA-256 historiques
  *   - encryptCanonical / decryptCanonical → AES-256-GCM (ENCRYPTION_KEY)
  *   - validateTransportCoherence → règles moteur (SSH/TLS/Payload/SlowDNS/UDPGW)
  *
@@ -104,8 +105,27 @@ export function canonicalJson(cfg: Record<string, any>): string {
   return JSON.stringify(normalizeCanonical(cfg));
 }
 
+export const CANONICAL_HASH_PREFIX = 'hmac-sha256-v1:';
+
 export function computeCanonicalHash(cfg: Record<string, any>): string {
-  return crypto.createHash('sha256').update(canonicalJson(cfg), 'utf8').digest('hex');
+  // A public config fingerprint must not be an offline oracle for its credentials.
+  const key = crypto.createHmac('sha256', dbKey())
+    .update('sxb/canonical-config/fingerprint/v1', 'utf8').digest();
+  return CANONICAL_HASH_PREFIX +
+    crypto.createHmac('sha256', key).update(canonicalJson(cfg), 'utf8').digest('hex');
+}
+
+export function verifyCanonicalHash(cfg: Record<string, any>, stored: string): boolean {
+  let expected: string;
+  if (/^hmac-sha256-v1:[0-9a-f]{64}$/.test(stored)) {
+    expected = computeCanonicalHash(cfg);
+  } else if (/^[0-9a-f]{64}$/.test(stored)) {
+    // Read compatibility only, after authenticated GCM decryption in provisioning.
+    expected = crypto.createHash('sha256').update(canonicalJson(cfg), 'utf8').digest('hex');
+  } else {
+    return false;
+  }
+  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(stored));
 }
 
 // ── Chiffrement AES-256-GCM (même format que provision.ts : gcm:iv:ct:tag) ──

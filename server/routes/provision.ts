@@ -28,7 +28,7 @@ import { consumeSessionProof } from '../services/mobile-session-security';
 import { proofFor, securityFailure } from '../services/mobile-proof';
 import crypto               from 'crypto';
 import {
-  decryptCanonical, computeCanonicalHash, engineConfigFromCanonical,
+  decryptCanonical, verifyCanonicalHash, engineConfigFromCanonical,
 } from '../services/canonical-config';
 import {
   configHashForProfile, configVersionForProfile,
@@ -299,7 +299,7 @@ router.post('/activate', requireAuth, async (req: AuthenticatedRequest, res: Res
       // Preuve de NON-ALTÉRATION : le hash déterministe stocké à l'import doit
       // correspondre exactement au contenu déchiffré (§6.3).
       if (profile.canonicalConfigHash &&
-          computeCanonicalHash(canonical) !== profile.canonicalConfigHash) {
+          !verifyCanonicalHash(canonical, profile.canonicalConfigHash)) {
         console.error(`[provision/activate] Hash canonique mismatch — profil ${profile.id}`);
         return res.status(500).json({
           error: 'Configuration importée altérée — réimportez le profil ou contactez un administrateur',

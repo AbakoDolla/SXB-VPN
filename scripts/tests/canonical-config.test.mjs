@@ -4,6 +4,7 @@
  */
 import './register-hooks.mjs';
 import { strict as assert } from 'node:assert';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -14,7 +15,7 @@ process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'e2e-encryption-key-3
 
 const svc = await import(pathToFileURL(path.join(ROOT, 'server/services/canonical-config.ts')).href);
 const {
-  parseImportedConfig, normalizeCanonical, computeCanonicalHash,
+  parseImportedConfig, normalizeCanonical, computeCanonicalHash, verifyCanonicalHash,
   encryptCanonical, decryptCanonical, validateTransportCoherence, canonicalJson,
 } = svc;
 
@@ -71,8 +72,37 @@ console.log('\n══ canonical-config — parse, normalisation, hash, chiffreme
   const c = computeCanonicalHash({ b: 2, a: { d: 4, c: 3 }, arr: [2, 1] });
   assert.equal(a, b, 'hash stable quel que soit l\'ordre des clés');
   assert.notEqual(a, c, 'ordre des tableaux = sémantique → hash différent');
-  assert.match(a, /^[0-9a-f]{64}$/);
-  ok('hash sha256 déterministe (clés triées, ordre des tableaux significatif)');
+  assert.match(a, /^hmac-sha256-v1:[0-9a-f]{64}$/);
+  ok('empreinte HMAC déterministe (clés triées, ordre des tableaux significatif)');
+}
+
+{
+  const canonical = { protocol: 'ssh', host: 'fixture.invalid', port: 22,
+    username: 'synthetic', password: 'synthetic-guessable-password' };
+  const key = process.env.ENCRYPTION_KEY;
+  const fingerprint = computeCanonicalHash(canonical);
+  const legacy = crypto.createHash('sha256').update(canonicalJson(canonical)).digest('hex');
+  assert.equal(verifyCanonicalHash(canonical, fingerprint), true);
+  assert.equal(verifyCanonicalHash(canonical, legacy), true);
+  assert.equal(verifyCanonicalHash({ ...canonical, password: 'different' }, fingerprint), false);
+  assert.equal(verifyCanonicalHash({ ...canonical, password: 'different' }, legacy), false);
+  for (const invalid of ['', 'hmac-sha256-v2:' + '0'.repeat(64), fingerprint.slice(0, -1),
+    'hmac-sha256-v1:' + legacy, '0'.repeat(64)]) {
+    assert.equal(verifyCanonicalHash(canonical, invalid), false);
+  }
+  try {
+    process.env.ENCRYPTION_KEY = 'a-different-synthetic-encryption-key';
+    assert.notEqual(computeCanonicalHash(canonical), fingerprint);
+    assert.equal(verifyCanonicalHash(canonical, fingerprint), false);
+    delete process.env.ENCRYPTION_KEY;
+    assert.throws(() => computeCanonicalHash(canonical), /ENCRYPTION_KEY/);
+  } finally {
+    process.env.ENCRYPTION_KEY = key;
+  }
+  const stored = encryptCanonical(canonicalJson(canonical));
+  assert.equal(verifyCanonicalHash(JSON.parse(decryptCanonical(stored)), legacy), true);
+  assert.equal(verifyCanonicalHash(JSON.parse(decryptCanonical(stored)), fingerprint), true);
+  ok('empreinte secrète, formats stricts et compatibilité des profils GCM/SHA-256 historiques');
 }
 
 // 5. Chiffrement GCM roundtrip (aucune valeur en clair)

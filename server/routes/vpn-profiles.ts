@@ -11,7 +11,7 @@ import { logDbActivity } from '../database';
 import crypto from 'crypto';
 import {
   parseImportedConfig, parseImportedConfigList, canonicalJson, computeCanonicalHash, encryptCanonical,
-  type ParseResult,
+  decryptCanonical, CANONICAL_HASH_PREFIX, type ParseResult,
 } from '../services/canonical-config';
 import {
   assertProfileUnlocked, createProfileLock, handleProfileLockError, issueProfileUnlock,
@@ -677,10 +677,45 @@ router.post('/', requireAuth, requirePermission('vpnprofile.manage'), async (req
       // pour que l'opérateur décide en connaissance de cause.
       const duplicateWarnings: string[] = [];
       if (data.canonicalConfigHash) {
-        const twin = await (prisma as any).vpnProfile.findFirst({
+        let twin = await prisma.vpnProfile.findFirst({
           where: { canonicalConfigHash: data.canonicalConfigHash, status: { not: 'archived' } },
           select: { id: true, name: true },
         });
+        // Existing SHA-256 identities remain unchanged; compare their authenticated
+        // contents without producing another unkeyed digest of the new credentials.
+        let cursor: string | undefined;
+        while (!twin) {
+          const legacy = await prisma.vpnProfile.findMany({
+            where: { canonicalConfigHash: { not: { startsWith: CANONICAL_HASH_PREFIX } },
+              canonicalConfig: { not: null }, status: { not: 'archived' },
+              ...(cursor ? { id: { gt: cursor } } : {}) },
+            select: { id: true, name: true, canonicalConfig: true },
+            orderBy: { id: 'asc' }, take: 100,
+          });
+          for (const candidate of legacy) {
+            const plain = candidate.canonicalConfig && decryptCanonical(candidate.canonicalConfig);
+            if (!plain) {
+              console.warn(`[vpn-profiles/import] Legacy canonical unreadable: ${candidate.id}`);
+              continue;
+            }
+            let canonical: unknown;
+            try { canonical = JSON.parse(plain); } catch (error) {
+              if (!(error instanceof SyntaxError)) throw error;
+              console.warn(`[vpn-profiles/import] Legacy canonical invalid JSON: ${candidate.id}`);
+              continue;
+            }
+            if (!canonical || typeof canonical !== 'object' || Array.isArray(canonical)) {
+              console.warn(`[vpn-profiles/import] Legacy canonical invalid shape: ${candidate.id}`);
+              continue;
+            }
+            if (computeCanonicalHash(canonical) === data.canonicalConfigHash) {
+              twin = { id: candidate.id, name: candidate.name };
+              break;
+            }
+          }
+          if (legacy.length < 100) break;
+          cursor = legacy[legacy.length - 1].id;
+        }
         if (twin) {
           duplicateWarnings.push(
             `Configuration technique identique au profil « ${twin.name} » — vérifiez qu'un doublon est bien voulu.`,

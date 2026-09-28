@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID, createHmac } from "node:crypto";
+import { randomUUID, createHmac, createHash } from "node:crypto";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const require = createRequire(path.join(root, "backend", "package.json"));
@@ -86,13 +86,16 @@ class Database {
         if (op === "equals") return current === operand;
         if (op === "in") return operand.includes(current);
         if (op === "notIn") return !operand.includes(current);
-        if (op === "not") return current !== operand;
+        if (op === "not") return operand && typeof operand === "object"
+          ? current !== null && !this.matches(name, row, { [key]: operand }, state)
+          : current !== operand;
         if (op === "gt") return current > operand;
         if (op === "gte") return current >= operand;
         if (op === "lt") return current < operand;
         if (op === "lte") return current <= operand;
         if (op === "mode") return true;
         if (op === "contains") return String(current).includes(operand);
+        if (op === "startsWith") return typeof current === "string" && current.startsWith(operand);
         throw new Error(`Unsupported filter ${op}`);
       });
     });
@@ -304,6 +307,7 @@ await build({
     contents: routeNames.map(name => `export { default as ${routeKey(name)} } from "./server/routes/${name}";`).join("\n") +
       '\nexport { applyUsageDelta } from "./server/routes/mobile";\nexport * from "./server/services/profile-lock";' +
       '\nexport * from "./server/services/mobile-access-state";\nexport * from "./server/services/access-ticket";' +
+      '\nexport { parseImportedConfig, canonicalJson, encryptCanonical, computeCanonicalHash } from "./server/services/canonical-config";' +
       '\nexport { createApiRateLimiter } from "./server/middleware/rate-limit";',
     resolveDir: root,
     loader: "ts",
@@ -511,6 +515,68 @@ test("profile lock: creation, duplicate import and batch import are immediately 
     const list = await api("root", "GET", endpoint);
     ok(list);
     (list.body.profiles ?? list.body.configs).filter(p => p.id !== "p1").forEach(metadataOnly);
+  }
+});
+
+test("keyed canonical imports preserve legacy duplicate warnings across pages without rewriting profiles", async () => {
+  const raw = JSON.stringify({ protocol: "ssh", host: "fingerprint.example.test", port: 22,
+    username: "synthetic-user", password: "synthetic-password", tls: false });
+  const parsed = routes.parseImportedConfig(raw);
+  assert.equal(parsed.ok, true);
+  for (let index = 0; index <= 100; index++) {
+    const canonical = { ...parsed.canonical, password: index === 100
+      ? parsed.canonical.password : `different-synthetic-${index}` };
+    const json = routes.canonicalJson(canonical);
+    db.create("VpnProfile", {
+      id: `legacy-${String(index).padStart(3, "0")}`, name: `Legacy ${index}`,
+      protocol: "ssh", host: canonical.host, port: 22, createdBy: "admin",
+      canonicalConfig: routes.encryptCanonical(json),
+      canonicalConfigHash: createHash("sha256").update(json).digest("hex"),
+    }, db.state);
+  }
+  const original = structuredClone(db.state.VpnProfile);
+  const first = await api("admin", "POST", "/vpn-profiles", {
+    name: "Keyed import", importConfig: raw, lockPassword,
+  });
+  ok(first, 201);
+  assert.ok(first.body.warnings.some(value => value.includes("Legacy 100")));
+  const stored = row("VpnProfile", first.body.profile.id);
+  assert.match(stored.canonicalConfigHash, /^hmac-sha256-v1:[0-9a-f]{64}$/);
+  assert.ok(stored.canonicalConfig.startsWith("gcm:"));
+  metadataOnly(first.body.profile);
+  assert.deepEqual(db.state.VpnProfile.slice(0, original.length), original);
+  const second = await api("admin", "POST", "/vpn-profiles", {
+    name: "Repeated keyed import", importConfig: raw, lockPassword,
+  });
+  ok(second, 201);
+  assert.ok(second.body.warnings.some(value => value.includes("Keyed import")));
+  assert.equal(row("VpnProfile", second.body.profile.id).canonicalConfigHash, stored.canonicalConfigHash);
+});
+
+test("encrypted provisioning accepts historical and keyed fingerprints but rejects changed or unknown ones", async () => {
+  const canonical = { protocol: "ssh", host: "fingerprint.example.test", port: 22,
+    username: "synthetic", password: "private-synthetic-password", tls: false };
+  const json = routes.canonicalJson(canonical);
+  const encrypted = routes.encryptCanonical(json);
+  const profile = row("VpnProfile", "p1");
+  profile.canonicalConfig = encrypted;
+  const created = await createSub();
+  ok(created, 201);
+  const body = { dataToken: created.body.subscription.dataToken, deviceId: "HASH-COMPATIBILITY" };
+  const legacy = createHash("sha256").update(json).digest("hex");
+  const keyed = routes.computeCanonicalHash(canonical);
+  for (const hash of [legacy, keyed]) {
+    row("VpnProfile", "p1").canonicalConfigHash = hash;
+    const response = await api("u1", "POST", "/provision/activate", body);
+    ok(response);
+    assert.equal(response.body.configHash, hash);
+    assert.ok(!JSON.stringify(response.body).includes(canonical.password));
+    assert.equal(row("VpnProfile", "p1").canonicalConfig, encrypted);
+    assert.equal(row("VpnProfile", "p1").canonicalConfigHash, hash);
+  }
+  for (const hash of ["0".repeat(64), "hmac-sha256-v1:" + "0".repeat(64), "unknown:" + keyed]) {
+    row("VpnProfile", "p1").canonicalConfigHash = hash;
+    ok(await api("u1", "POST", "/provision/activate", body), 500);
   }
 });
 

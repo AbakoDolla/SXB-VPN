@@ -488,6 +488,16 @@ describe('identity persistence with controlled storage promises (synthetic nativ
 });
 
 describe('mobile access runtime with real encrypted store, auth and HTTP interceptors', () => {
+  it('accepts keyed and historical config fingerprints as opaque cache identities', async () => {
+    const h = await harness();
+    const state = snapshot('fingerprint-formats');
+    state.subscriptions[0].configHash = `hmac-sha256-v1:${'a'.repeat(64)}`;
+    state.subscriptions[1].configHash = 'b'.repeat(64);
+    const parsed = h.policy.parseAccessSnapshot(state);
+    assert.equal(parsed.subscriptions[0].configHash, state.subscriptions[0].configHash);
+    assert.equal(parsed.subscriptions[1].configHash, state.subscriptions[1].configHash);
+  });
+
   /**
    * Passage d'un ESSAI GRATUIT à un compte normal activé par jeton.
    *
