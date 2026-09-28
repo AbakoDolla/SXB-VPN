@@ -8,6 +8,12 @@ la stabilite de PR #88. Implementation initiale revue :
 la premiere execution CI sont detaillees en O. Ce rapport ne constitue pas
 une autorisation de publication.
 
+**Code effectivement construit et verifie en CI :
+`4a17c218c65dbd2f83c931f612ced593df54bc5c`.** Le commit documentaire
+ulterieur de ce rapport ne modifie pas le code ni l'identite de l'APK candidat.
+Le candidat est disponible en artefact GitHub, mais n'est ni publie en release
+ni installe. Un backend compatible est obligatoire avant son usage.
+
 ## A. Resume
 
 La couche conserve le service/TUN unique, libbox, JSch, DNSTT, les formats de
@@ -460,12 +466,20 @@ promesse d'invisibilite/anti-capture a 100 %.
 | Harness natif apres correction CI | 18 contrats JVM + 18 signatures, copie isolee ne disposant que de app-mobile/node_modules, aucun backend |
 | PostgreSQL apres corrections CI | 149 checks a nouveau verts sur la base isolee reelle |
 | Types/build apres corrections CI | Types dashboard et graphe strict du service reset (vrais types Prisma) verts ; bundles dashboard et vrai server.ts construits |
+| Verification GitHub corrigee | Run 36365634711 SUCCESS au 4a17 : builds serveur/dashboard, suite generique 1183 et etape PostgreSQL dediee executee, REAL_POSTGRES_SECURITY_CHECKS=149 |
+| Android GitHub corrige | Run 36365634614 SUCCESS au 4a17 : mobile 813, JVM, prebuild, DNSTT, compileDebugKotlin/assembleDebug et compileReleaseKotlin/assembleRelease, signature et upload |
+| Verificateur libbox exact en CI | 15 succes reels de libbox.CheckConfig : 14 graphes du bundle et le graphe synthetique de base |
+| APK release telecharge | Empreinte, certificat officiel, 38 librairies natives et geodata verifies independamment par le parent |
+| Manifeste release reel | Decode depuis l'APK telecharge avec la librairie Android SDK preexistante ; assertions package/version/SDK/service/signer passees |
+| R8 / publication / installation | Aucune tache minifyReleaseWithR8 ; mergeDexRelease observe. Etapes de publication Release/SCP/installVPS/purge ignorees ; aucune installation sur appareil |
 
 Les lignes se recouvrent : ne pas additionner leurs nombres comme des tests
 independants. Le gate desktop local des 14 graphes a utilise
 `ENABLE_DEPRECATED_TUN_ADDRESS_X=true`. Le parent les a aussi acceptes sur
 son banc avec substitution explicite de la frontiere TUN, sans ce flag.
-**Aucun de ces deux resultats n'est un appel direct a `libbox.CheckConfig`.**
+Ces deux anciens resultats desktop n'etaient pas des appels directs a
+`libbox.CheckConfig`. La preuve exacte est desormais fournie separement par
+les 15 succes du gate CI au SHA 4a17 ; elle n'est pas une preuve sur telephone.
 
 Les erreurs intermediaires detectees (CAS initial, ecritures d'identite,
 drainage imbrique, attribution legacy, polling et boutons mobiles) ont leurs
@@ -505,19 +519,69 @@ nettoye par trap, et le client genere reste dans RUNNER_TEMP. Le nouveau
 test execute exactement PREPARE puis le vrai generateur, autoinstall
 desactive et URL synthetique loopback port 1, sans connexion DB.
 
+### Identite et preuves du candidat APK 477
+
+[Artefact candidat GitHub, non publie : sxb-vpn-android-apk-477](https://github.com/AbakoDolla/SXB-VPN/actions/runs/36365634614/artifacts/10946688898).
+Ce lien designe une archive d'artefact CI, pas le lien de distribution officiel.
+Son acces peut exiger une connexion GitHub ; il reste soumis a la retention
+des artefacts. Aucune installation sur la production actuelle n'est recommandee.
+
+| Propriete | Valeur verifiee |
+| --- | --- |
+| SHA du code construit | `4a17c218c65dbd2f83c931f612ced593df54bc5c` |
+| Run Android / artefact | `36365634614` / `10946688898` |
+| versionName / versionCode | `1.2.1` / `212721743` (precedent publie : `212679036`) |
+| Taille de l'APK extrait | 65 283 421 octets |
+| SHA256 de l'APK extrait | `2b0be5e4436a8b820cdb92a6ae147a45b59da71b2476cbb72ef9c20bcf23a46b` |
+| SHA256 du certificat officiel | `0140c97e6ba6e9bab0d0ce86935562fbdedd80a026de49642764c49dce56f726` |
+| Taille de l'archive GitHub | 61 757 336 octets |
+| SHA256 de l'archive GitHub | `b412588d184d67a9a0f00bf793f8de50a810d549a50057ccbbb0a1179da00f93` |
+| ABI / librairies natives | `arm64-v8a`, `armeabi-v7a` ; 38 librairies controlees |
+| Geodata embarquee | Version `20260908094002`, SHA256 `03cbdc0ceab1aa8f0620af77d32e990a3850acb653ffdced8efac137277930b2` |
+| Package / minSdk / targetSdk | `com.sxbvpn.mobile` / `24` / `36` |
+| Release debuggable | `false` par absence de l'attribut dans le manifeste |
+| Service VPN | Unique, non exporte, permission `android.permission.BIND_VPN_SERVICE`, foreground type `specialUse` |
+| Certificat embarque | Correspond au signataire officiel attendu |
+| BACKEND_SPKI_PINS | `[]` : pinning INACTIF |
+| allowBackup | `true`, valeur heritee ; ne pas annoncer une sauvegarde desactivee |
+| usesCleartextTraffic / networkSecurityConfig | Attributs absents ; aucun booleen explicite invente |
+
+La signature V1 a ete verifiee localement avec jarsigner et le certificat avec
+keytool. La CI a aussi verifie V1 explicitement avec `--min-sdk-version 23`,
+puis V2/V3 pour la plateforme du candidat. Le rapport apksigner final indique
+V1=false sur ce dernier chemin minSdk 24 : ce resultat ne doit pas etre
+confondu avec la verification V1 distincte. Les empreintes de l'archive et
+de l'APK extrait sont differentes et ne sont pas interchangeables.
+
+Les recus independants du parent sont `local-verification.json` et
+`local-manifest-verification.json`, rapproches de `report\validation.json`,
+des rapports de signature et des journaux CI. Le manifeste a ete decode
+directement depuis le binaire AndroidManifest.xml de l'APK, sans installation
+de SDK supplementaire ; le CLI aapt local etait absent.
+
 ## P. Limites et prerequis restants
 
-Pas de SDK Android complet ni de Go local disponible pour le gate exact.
-Aucun ADB, emulator, telephone, installation APK, R8 execute, manifeste APK
-final ou signataire de l'APK nouvellement construit n'est atteste ici.
-Ces controles restent a achever dans le workflow parent autorise, puis sur
-des appareils de recette. Les deux premiers dispatchs ont ete effectues par
-le parent uniquement ; aucune relance n'est effectuee par la session enfant.
+Les compilations APK, signatures, contenu et manifeste sont maintenant attestes
+pour le candidat 477 au SHA 4a17. Aucun ADB, emulateur, telephone ou installation
+APK n'a ete utilise. Keystore, handshake TLS/pinning, revoke, radio, reboot et
+PCAP restent sans preuve physique. Les outils lourds Go/SDK n'ont pas ete
+installes sur le poste enfant ; le gate exact a tourne dans la CI autorisee.
 
-Le service PostgreSQL et les etapes CI sont cables et leurs contrats/YAML
-verifies localement ; l'etape PG dediee n'a pas ete atteinte lors de la premiere
-CI. Le controle SQL peuple/idempotent local reste distinct du bootstrap CI.
-Les pins publics de production et leur rotation restent a fournir.
+R8 n'a pas ete execute : aucune obfuscation renforcee n'est revendiquee.
+Le manifeste conserve allowBackup=true et confirme des pins vides.
+Les SPKI publics approuves et leur rotation restent a fournir puis verifier.
+Ces limites ne sont pas masquees par le succes de compilation.
+
+L'etape PostgreSQL ignoree au premier essai a ete effectivement executee et
+reussie lors du run 36365634711. La migration locale peuplee/idempotente reste
+une preuve distincte du bootstrap CI. Tous les dispatchs ont ete effectues par
+le parent ; la session enfant n'a effectue aucun dispatch manuel GitHub.
+
+Le candidat n'est pas une publication : aucun deploiement backend, fusion,
+release officielle ou installation VPS/appareil n'a eu lieu. La migration
+additive, le backend compatible sur tous les noeuds et l'autorisation
+d'enrolement sont requis avant usage de la nouvelle securite. Ne pas installer
+ce candidat contre la production actuelle sans cette preparation.
 
 La securite suppose que serveur, secrets serveur et Keystore ne sont pas
 compromis. Une application compromise peut tenter d'utiliser la cle sur place,
@@ -641,7 +705,8 @@ Pop-Location
 
 ## R. Commandes APK et gate de livraison
 
-Prerequis non installes par ce lot : JDK 17, SDK Android 36/build-tools 36.0.0,
+Prerequis pour reproduire localement (non installes sur le poste enfant) :
+JDK 17, SDK Android 36/build-tools 36.0.0,
 NDK 27.1.12297006, moteurs/ressources natifs approuves de la chaine existante,
 et configuration de signature release securisee. Ne pas utiliser les binaires
 ou scripts de `protocols.zip`.
@@ -669,6 +734,8 @@ existants restent en place. Les conditions de publication/deploiement `main`
 ne sont pas modifiees. La proposition empilee cible PR #89 ; le workflow
 `verification-pr` filtre toujours les PR vers `main`, donc son execution sur
 cette branche reste a coordonner manuellement avec le parent.
+Les executions effectuees et leur SHA source sont consignes en O ; le commit
+documentaire de ce rapport ne pretend pas etre un nouveau build.
 
 ## S. Android / Expo
 
@@ -680,7 +747,10 @@ les seuls responsables du tunnel. Aucun nouveau VpnService, package blacklist,
 permission de capture, obligation Play ou contournement TLS n'est introduit.
 
 Un debug APK a son propre certificat : sa construction reussie ne prouve pas
-qu'il est signe par la cle officielle release. Un test physique de Keystore,
+qu'il est signe par la cle officielle release. Le certificat du candidat
+release 477 a, lui, ete verifie. La presence de regles R8 dans le plugin ne
+signifie pas que R8 a tourne : le build observe utilise mergeDexRelease.
+Un test physique de Keystore,
 pinning, revoke, reboot et reseau reste necessaire avant revendication device.
 
 ## T. Backend / exploitation
