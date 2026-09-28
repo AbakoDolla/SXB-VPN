@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo } from "react";
-import { fetchSessions, revokeSession, resetSession, deleteSession, ActivationSession } from "../api/sessions";
+import { fetchSessions, revokeSession, resetSession, deleteSession, ActivationSession,
+  fetchSessionSecurityEvents, revokeSessionGeneration, SessionSecurityEvent } from "../api/sessions";
 import { Smartphone, RefreshCcw, XCircle, Trash2, Search, Clock, CheckCircle, AlertCircle, ShieldOff } from "lucide-react";
 import Pagination from "./ui/Pagination";
 import { toast } from "sonner";
@@ -11,20 +12,48 @@ export default function SessionsView() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [loadError, setLoadError] = useState<React.ReactNode>(null);
+  const [eventTarget, setEventTarget] = useState<ActivationSession | null>(null);
+  const [eventPage, setEventPage] = useState(1);
+  const [sessionEvents, setSessionEvents] = useState<{ events: SessionSecurityEvent[]; total: number } | null>(null);
+  const [eventError, setEventError] = useState<React.ReactNode>(null);
+  const [securityBusy, setSecurityBusy] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
+    setLoadError("");
     try {
       const data = await fetchSessions();
       setSessions(data);
     } catch (err) {
-      console.error("Error loading sessions:", err);
+      setLoadError(errorText(err, "operations.security.errors.console"));
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => { load(); }, []);
+  useEffect(() => {
+    if (!eventTarget) return;
+    let active = true;
+    setSessionEvents(null);
+    setEventError("");
+    void fetchSessionSecurityEvents(eventTarget.id, (eventPage - 1) * 50)
+      .then(value => { if (active) setSessionEvents(value); })
+      .catch(error => { if (active) setEventError(errorText(error, "operations.security.errors.console")); });
+    return () => { active = false; };
+  }, [eventTarget, eventPage]);
+
+  const handleSecurityRevoke = async (session: ActivationSession) => {
+    if (!session.authGeneration || securityBusy || !window.confirm(t("operations.security.revokeSessionConfirm"))) return;
+    setSecurityBusy(session.id);
+    try {
+      const result = await revokeSessionGeneration(session.id, session.authGeneration);
+      toast.success(t(result.revoked ? "operations.security.sessionRevoked" : "operations.security.staleSession"));
+      await load();
+    } catch (error) { toast.error(errorText(error, "operations.security.revokeFailed")); }
+    finally { setSecurityBusy(null); }
+  };
 
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
@@ -121,6 +150,31 @@ export default function SessionsView() {
         </select>
       </div>
 
+      {loadError && <p role="alert" className="text-sm text-red-300">{loadError}</p>}
+      {eventTarget && (
+        <section aria-label={t("operations.security.eventsTitle")} className="rounded-xl border border-[#1a1f2e] bg-[#0f1218] p-4 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-sm text-white">{t("operations.security.eventsTitle")} — {eventTarget.clientName}</h2>
+            <button type="button" onClick={() => setEventTarget(null)} className="px-3 py-2 text-sm text-cyan-300">
+              {t("operations.common.close")}
+            </button>
+          </div>
+          {eventError ? <p role="alert" className="text-sm text-red-300">{eventError}</p>
+            : !sessionEvents ? <p role="status">{t("operations.sessions.loading")}</p>
+            : sessionEvents.events.length === 0 ? <p>{t("operations.security.eventsEmpty")}</p>
+            : <ul className="divide-y divide-[#1a1f2e]">
+              {sessionEvents.events.map(event => <li key={event.id} className="py-2 text-sm text-gray-300">
+                <span>{t(`operations.security.eventLabels.${event.eventType}`)}</span>
+                {" · "}<span>{t(`operations.security.severityLabels.${event.severity}`)}</span>
+                {" · "}<time dateTime={event.createdAt}>{formatDate(event.createdAt)}</time>
+                {" · "}<span>{t("operations.security.eventSession", { value: eventTarget.id, generation: event.sessionGeneration ?? 0 })}</span>
+              </li>)}
+            </ul>}
+          {sessionEvents && <Pagination page={eventPage} pageSize={50} total={sessionEvents.total}
+            onPageChange={setEventPage} onPageSizeChange={() => {}} />}
+        </section>
+      )}
+
       {/* Table */}
       <div className="bg-[#0f1218] border border-[#1a1f2e] rounded-xl overflow-hidden">
         {loading ? (
@@ -162,9 +216,21 @@ export default function SessionsView() {
                         {formatDate(s.lastSync)}
                       </div>
                     </td>
-                    <td className="px-4 py-3">{statusBadge(s.status)}</td>
+                    <td className="px-4 py-3">{statusBadge(s.status)}
+                      {s.authRevokedAt && <p className="mt-1 text-xs text-amber-300">{t("operations.security.sessionRevoked")}</p>}
+                    </td>
                     <td className="px-4 py-3">
-                      <div className="flex items-center gap-1">
+                      <div className="flex flex-wrap items-center gap-1 md:flex-nowrap">
+                        <button type="button" onClick={() => { setEventTarget(s); setEventPage(1); }}
+                          className="max-w-full shrink-0 break-normal px-2 py-1.5 rounded-lg text-cyan-300 hover:bg-cyan-400/10 md:shrink"
+                          aria-label={`${t("operations.security.eventsTitle")} — ${s.clientName}`}>
+                          {t("operations.security.eventsTitle")}
+                        </button>
+                        {s.canRevokeSecurity && !!s.authGeneration && !s.authRevokedAt &&
+                          <button type="button" onClick={() => handleSecurityRevoke(s)} disabled={securityBusy !== null}
+                            className="max-w-full shrink-0 break-normal px-2 py-1.5 rounded-lg text-amber-300 hover:bg-amber-400/10 disabled:opacity-50 md:shrink">
+                            {t("operations.security.revokeSession")}
+                          </button>}
                         {s.status === "active" && (
                           <button
                             onClick={() => handleRevoke(s.id)}

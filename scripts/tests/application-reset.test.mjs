@@ -71,6 +71,11 @@ function seed() {
   });
   add("SubscriptionDevice", { id: "sd", subscriptionId: "sub", deviceId });
   add("ActivationSession", { id: "activation", clientId: "c1", deviceId, activationDate: new Date(), expirationDate: tomorrow() });
+  add("MobileConnection", {
+    id: "connection", clientId: "c1", deviceId, authSessionId: "activation",
+    authGeneration: 0, usageSessionId: "usage-fixture", subscriptionId: "sub", configId: "p1",
+  });
+  add("MobileProofNonce", { id: "proof-nonce", keyId: "fixture-key", nonce: "fixture-nonce", expiresAt: tomorrow() });
   add("AppRegistration", { id: "registration", clientId: "c1", deviceId, status: "matched" });
   add("PushToken", { id: "push", userId: "admin", deviceId: "ADMIN-PUSH", token: secretCanary });
   add("TokenSXB", { id: "token", clientId: "c1", token: "SXB-DATA-DDDD-EEEE-FFFF", quota: 123n, expiration: tomorrow() });
@@ -292,7 +297,9 @@ test("reset: preview is read-only, structural, private, complete and has no memo
   assert.equal(preview.body.mode, "production");
   assert.equal(preview.body.confirmationText, "RESET SXB VPN");
   assert.equal(preview.body.backupRequired, true);
-  assert.equal(Object.keys(preview.body.counts).length, 24);
+  assert.equal(Object.keys(preview.body.counts).length, 26);
+  assert.equal(preview.body.counts.mobileConnections, 1);
+  assert.equal(preview.body.counts.proofNonces, 1);
   assert.ok(Object.values(preview.body.counts).every(value => Number.isInteger(value) && value > 0));
   assert.equal(preview.body.counts.users, 6);
   assert.equal(preview.body.counts.adminTokens, 1);
@@ -368,6 +375,8 @@ test("reset: atomic FK-ordered purge retains all admin fields/tokens, audit, led
   assert.equal(result.body.maintenanceRestored, true);
   assert.deepEqual(result.body.deletedCounts, preview.counts);
   assert.ok(Object.values(result.body.countsAfter).every(value => value === 0));
+  assert.equal(db.state.MobileConnection.length, 0);
+  assert.equal(db.state.MobileProofNonce.length, 0);
   assert.deepEqual(db.state.User, original.User.filter(user => ["OWNER", "ADMIN", "SUPER_ADMIN"].includes(user.roleId)));
   assert.deepEqual(db.state.AdminToken, original.AdminToken.filter(token => ["root", "admin", "super"].includes(token.userId)));
   for (const name of ["Role", "Permission", "RolePermission", "VPSServer", "ServerConfig", "ResellerQuotaMovement"]) {
@@ -392,6 +401,8 @@ test("reset: snapshot rejects new users, bindings, role promotions and configura
     () => { row("User", "r1").roleId = "ADMIN"; },
     () => { row("VpnProfile", "p1").lockVersion++; },
     () => { row("Subscription", "sub").profileId = "changed-profile"; },
+    () => { row("VpnClient", "c1").deviceKeyId = "new-fixture-key"; },
+    () => { row("ActivationSession", "activation").authGeneration++; },
     () => db.state.VpnProfileReseller.push({ profileId: "p1", resellerId: "res-r2" }),
   ];
   for (const mutate of mutations) {
@@ -417,9 +428,19 @@ test("reset: traffic and ephemeral health/lastSeen/quota deltas do not stale the
   row("Reseller", "res-r1").quotaUsedBytes += 42n;
   db.create("TrafficUsage", { clientId: "c1", download: 31n }, db.state);
   db.create("MobileHealthReport", { reportId: "new-report", deviceId: "health-device", tunnelState: "connected" }, db.state);
+  db.create("MobileConnection", {
+    id: "late-connection", clientId: "c1", deviceId, authSessionId: "activation",
+    authGeneration: 0, usageSessionId: "late-usage",
+  }, db.state);
+  db.create("MobileProofNonce", { keyId: "fixture-key", nonce: "late-nonce", expiresAt: tomorrow() }, db.state);
+  row("ActivationSession", "activation").refreshGeneration++;
   const receipt = await service.execute("root", bodyFor(preview));
   assert.equal(receipt.deletedCounts.traffic, preview.counts.traffic + 1);
   assert.equal(receipt.deletedCounts.healthReports, preview.counts.healthReports + 1);
+  assert.equal(receipt.deletedCounts.mobileConnections, preview.counts.mobileConnections + 1);
+  assert.equal(receipt.deletedCounts.proofNonces, preview.counts.proofNonces + 1);
+  assert.equal(db.state.MobileConnection.length, 0);
+  assert.equal(db.state.MobileProofNonce.length, 0);
   assert.ok(Object.values(receipt.countsAfter).every(count => count === 0));
 });
 
@@ -435,6 +456,11 @@ test("reset: failed backup and transaction rollback leave business untouched and
   assert.deepEqual(business(), before);
   assert.equal(state.events.includes("MobileHealthReport.deleteMany"), false);
   failBackup = false;
+  for (const table of ["MobileConnection", "MobileProofNonce"]) {
+    state.failDelete = table;
+    await assert.rejects(service.execute("root", body), failure("RESET_FAILED"));
+    assert.deepEqual(business(), before);
+  }
   state.failDelete = "SshPayload";
   await assert.rejects(service.execute("root", body), failure("RESET_FAILED"));
   assert.deepEqual(business(), before);
@@ -596,6 +622,26 @@ test("reset: lost COMMIT response is resolved using the durable receipt, not a r
   assert.equal(state.backupCalls, 1);
   assert.equal(state.invalidations, 1);
   assert.deepEqual(await service.execute("root", body), receipt);
+});
+
+test("reset: historical receipts remain readable without inventing unmeasured security counts", async t => {
+  const { service, state } = await harness(t);
+  const preview = await service.preview("root");
+  await service.execute("root", bodyFor(preview));
+  const stored = db.state.Setting.find(row => row.key.startsWith(reset.RESET_RECEIPT_PREFIX));
+  const record = JSON.parse(stored.value);
+  for (const counts of [record.receipt.deletedCounts, record.receipt.countsAfter]) {
+    delete counts.mobileConnections;
+    delete counts.proofNonces;
+  }
+  stored.value = JSON.stringify(record);
+  const status = await service.status("root");
+  assert.equal(status.status, "completed");
+  assert.equal("mobileConnections" in status.receipt.deletedCounts, false);
+  assert.equal("proofNonces" in status.receipt.countsAfter, false);
+  assert.deepEqual(await service.execute("root", bodyFor(preview)), record.receipt);
+  assert.equal(state.backupCalls, 1);
+  assert.equal(state.invalidations, 1);
 });
 
 test("reset: original absent/enabled maintenance values are restored and invalidation failure cannot strand maintenance", async t => {

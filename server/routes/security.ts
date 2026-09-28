@@ -21,6 +21,10 @@ import { z } from 'zod';
 import { logDbActivity, prisma } from '../database';
 import { AuthenticatedRequest, requireAuth } from '../middleware/auth';
 import { isOwnerRequest } from '../middleware/rbac/owner';
+import { readSecurityPolicy, writeSecurityPolicy } from '../services/security-policy';
+import { revokeSecuritySession, notifySessionRevoked } from '../services/mobile-session-security';
+import { porteeSousClient, porteeClients } from '../services/portee-donnees';
+import { digest } from '../services/mobile-proof';
 import {
   SECURITY_UNLOCK_SECONDS,
   SecurityGateError,
@@ -346,9 +350,14 @@ router.get('/overview', exigerOuverture, async (_req: AuthenticatedRequest, res:
 
 router.get('/events', exigerOuverture, async (req: AuthenticatedRequest, res: Response) => {
   try {
+    const filters = z.object({
+      userId: z.string().max(200).optional(), deviceId: z.string().max(255).optional(),
+      sessionId: z.string().max(200).optional(), from: z.string().datetime().optional(), to: z.string().datetime().optional(),
+    }).parse(req.query);
     const acknowledged = req.query.acknowledged === 'true' ? true
       : req.query.acknowledged === 'false' ? false : undefined;
     const page = await listSecurityEvents({
+      ...filters,
       severity: typeof req.query.severity === 'string' ? req.query.severity : undefined,
       eventType: typeof req.query.eventType === 'string' ? req.query.eventType : undefined,
       acknowledged,
@@ -356,11 +365,70 @@ router.get('/events', exigerOuverture, async (req: AuthenticatedRequest, res: Re
       offset: Number(req.query.offset),
     });
     return res.json(page);
-  } catch {
+  } catch (error) {
+    if (error instanceof z.ZodError) return res.status(400).json({ error: 'INVALID_SECURITY_FILTER' });
     return res.status(503).json({ error: 'DB_UNAVAILABLE', code: 'DB_UNAVAILABLE' });
   }
 });
 
+router.get('/policy', exigerOuverture, async (_req, res) => {
+      try { return res.json(await readSecurityPolicy()); }
+      catch { return res.status(503).json({ error: 'SECURITY_POLICY_UNAVAILABLE' }); }
+    });
+    router.put('/policy', exigerOuverture, async (req: AuthenticatedRequest, res) => {
+      try {
+        const policy = await writeSecurityPolicy(req.body);
+        await logDbActivity(req.user!.userId, `Security policy version ${policy.version}`, 'warning', req.ip);
+        return res.json(policy);
+      } catch (error) {
+        if (error instanceof z.ZodError) return res.status(400).json({ error: 'SECURITY_POLICY_INVALID' });
+        if (error instanceof Error && error.message === 'SECURITY_POLICY_VERSION_CONFLICT') {
+          return res.status(409).json({ error: 'SECURITY_POLICY_VERSION_CONFLICT' });
+        }
+        console.warn('[security] POLICY_UPDATE_FAILED', error instanceof Error ? error.message : 'unknown');
+        return res.status(503).json({ error: 'SECURITY_POLICY_UNAVAILABLE' });
+      }
+    });
+    router.post('/sessions/:id/revoke', exigerOuverture, async (req: AuthenticatedRequest, res) => {
+      try {
+        if (!prisma) throw new Error('DATABASE_REQUIRED');
+        const { generation } = z.object({ generation: z.number().int().positive() }).strict().parse(req.body);
+        const session = await prisma.activationSession.findFirst({
+          where: { id: req.params.id, ...await porteeSousClient(prisma, req.user) },
+        });
+        if (!session) return res.status(404).json({ error: 'NOT_FOUND' });
+        const revoked = await prisma.$transaction(tx => revokeSecuritySession(tx, session.id, generation));
+        if (revoked) notifySessionRevoked(session.clientId);
+        await recordSecurityEvent({
+          eventType: 'SESSION_REVOKED', severity: 'warning', sessionId: session.id, sessionGeneration: generation,
+          deviceId: session.deviceId, actionTaken: revoked ? 'SESSION_REVOKED' : 'STALE_GENERATION_IGNORED',
+          metadata: { role: req.user!.role, evidence: 'server_verified' },
+        });
+        return res.json({ revoked });
+      } catch (error) {
+        if (error instanceof z.ZodError) return res.status(400).json({ error: 'VALIDATION' });
+        return res.status(503).json({ error: 'SECURITY_UNAVAILABLE' });
+      }
+    });
+    router.post('/devices/:id/authorize-key', exigerOuverture, async (req: AuthenticatedRequest, res) => {
+      try {
+        if (!prisma) throw new Error('DATABASE_REQUIRED');
+        const { keyId, replaceExisting } = z.object({
+          keyId: z.string().regex(/^[a-f0-9]{64}$/), replaceExisting: z.boolean().default(false),
+        }).strict().parse(req.body);
+        const result = await prisma.vpnClient.updateMany({
+          where: { id: req.params.id, ...await porteeClients(prisma, req.user),
+            ...(replaceExisting ? {} : { OR: [{ deviceKeyId: null }, { deviceKeyId: keyId }] }) },
+          data: { enrollmentGrantHash: digest(keyId), enrollmentGrantExpiresAt: new Date(Date.now() + 10 * 60_000) },
+        });
+        if (!result.count) return res.status(404).json({ error: 'NOT_FOUND' });
+        await logDbActivity(req.user!.userId, 'Device key enrollment authorized', 'warning', req.ip);
+        return res.json({ authorized: true, expiresInSeconds: 600 });
+      } catch (error) {
+        if (error instanceof z.ZodError) return res.status(400).json({ error: 'VALIDATION' });
+        return res.status(503).json({ error: 'SECURITY_UNAVAILABLE' });
+      }
+    });
 const acknowledgeSchema = z.object({ ids: z.array(z.string().uuid()).min(1).max(200) });
 
 router.post('/events/acknowledge', exigerOuverture, async (req: AuthenticatedRequest, res: Response) => {

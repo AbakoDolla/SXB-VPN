@@ -88,6 +88,11 @@ model VpnClient {
   deviceLimit     Int        @default(1)
   deviceId        String?
   activatedAt     DateTime?
+  devicePublicKey String?
+  deviceKeyId     String?
+  keyEnrolledAt   DateTime?
+  enrollmentGrantHash String?
+  enrollmentGrantExpiresAt DateTime?
   lastSeenAt      DateTime?
   appRegisteredAt DateTime?
   // Propriété commerciale du client, indépendante du compte utilisateur porteur.
@@ -408,6 +413,7 @@ model XrayAccount {
   updatedAt  DateTime   @updatedAt
 
   @@map("xray_accounts")
+  @@index([createdBy])
 }
 
 model SingboxAccount {
@@ -436,6 +442,7 @@ model SingboxAccount {
   updatedAt  DateTime   @updatedAt
 
   @@map("singbox_accounts")
+  @@index([createdBy])
 }
 
 model TrafficUsage {
@@ -506,6 +513,7 @@ model VpnProfile {
   expiresAt        DateTime?
   method           String?
   jsonConfig       String?        // LEGACY — ne plus écrire en clair ; voir canonicalConfig
+  legacyJsonConfig String?        @map("json_config") @ignore // Preserve the historical column; never expose it in the client.
   // ── Modèle « intermédiaire d'import » (canonique, chiffré, versionné) ────────
   // Règle : quand canonicalConfig est présent, il est LA SEULE source de vérité
   // technique du profil. Les colonnes host/port/protocol/tls... restent pour
@@ -636,11 +644,51 @@ model ActivationSession {
   status         String    @default("active")
   ipAddress      String?
   userAgent      String?
+  authGeneration Int       @default(0)
+  authIssuedAt   DateTime?
+  authExpiresAt  DateTime?
+  authRevokedAt  DateTime?
+  activationRequestId String?
+  refreshGeneration Int    @default(0)
+  refreshJti     String?
+  refreshIssuedAt DateTime?
+  previousRefreshJti String?
+  refreshRetryUntil DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
   @@unique([clientId, deviceId])
   @@map("activation_sessions")
+}
+
+/// Durable replay exclusion; expired rows can be pruned without weakening validation.
+model MobileProofNonce {
+  id        String   @id @default(uuid())
+  keyId     String
+  nonce     String
+  expiresAt DateTime
+  @@unique([keyId, nonce])
+  @@index([expiresAt])
+  @@map("mobile_proof_nonces")
+}
+
+/// Immutable accounting attribution, not authentication or one row per reconnect.
+/// No subscription FK: late reports retain the original ID after deletion.
+model MobileConnection {
+  id             String   @id
+  clientId       String
+  deviceId       String
+  authSessionId  String
+  authGeneration Int
+  usageSessionId String
+  subscriptionId String?
+  configId       String?
+  createdAt      DateTime @default(now())
+  closedAt       DateTime?
+  closeReason    String?
+  @@unique([clientId, usageSessionId])
+  @@index([clientId, authSessionId, authGeneration])
+  @@map("mobile_connections")
 }
 
 // Identité volontairement pseudonymisée : aucune FK client/appareil et aucun
@@ -823,6 +871,12 @@ model SecurityEvent {
   userId      String?
   /// Identifiant d'appareil, jamais une adresse IP en clair.
   deviceId    String?
+  sessionId   String?
+  sessionGeneration Int?
+  connectionId String?
+  eventKey    String? @unique
+  policyVersion Int?
+  riskLevel   String?
   /// Empreinte non réversible de l'adresse source, pour regrouper sans exposer.
   ipHash      String?
   appVersion  String?
@@ -840,6 +894,7 @@ model SecurityEvent {
   @@index([severity, createdAt])
   @@index([eventType, createdAt])
   @@index([acknowledged, createdAt])
+  @@index([sessionId, createdAt])
   @@map("security_events")
 }
 

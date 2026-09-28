@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths:
       - "app-mobile/**"
+      - "server/services/protocol-bundle.ts"
+      - "server/services/protocol-uri.ts"
+      - "server/services/xray-translate.ts"
       - ".github/workflows/build-android.yml"
       - "scripts/run-android-policy-gates.sh"
   workflow_dispatch:
@@ -536,6 +539,24 @@ jobs:
           done
           echo "::error::Distribution Gradle indisponible après 5 tentatives"
           exit 1
+
+      - name: Build APK debug pour candidature uniquement
+        if: github.ref != 'refs/heads/main'
+        working-directory: app-mobile/android
+        env:
+          EXPO_NO_TELEMETRY: "1"
+          EXPO_PUBLIC_API_URL: https://vpnsxb.afrihall.com/api
+          ANDROID_HOME: /usr/local/lib/android/sdk
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --no-daemon --build-cache --parallel
+          DEBUG_APK="app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$DEBUG_APK"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "$DEBUG_APK"
+          mkdir -p ../build/report
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$DEBUG_APK" > ../build/report/debug-badging.txt
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump xmltree "$DEBUG_APK" AndroidManifest.xml > ../build/report/debug-manifest.txt
 
       # ── Build APK release (Optimized) ─────────────────────────────────────────
       - name: Build APK (release)

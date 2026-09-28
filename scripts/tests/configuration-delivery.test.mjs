@@ -87,8 +87,13 @@ test("the additive lock migration is mirrored and runs before publishing a relea
   assert.match(migration, /profile_matches = 1 AND m\.account_matches = 1/);
   assert.doesNotMatch(migration, /SET\s+"lockPasswordHash"/);
   const workflow = readFileSync(path.join(root, ".github", "workflows", "deploy-vps.yml"), "utf8");
-  const migrationIndex = workflow.indexOf(migrationPath);
-  assert.ok(migrationIndex > workflow.indexOf('pg_dump "$PG_URL"'));
+  const gate = readFileSync(path.join(root, "server", "services", "backend-migration.ts"), "utf8");
+  assert.ok(gate.includes(`{ file: "${migrationPath}", transaction: "command" }`));
+  assert.ok(gate.indexOf("await createPostgresResetBackup") < gate.indexOf("for (const migration of BACKEND_MIGRATIONS)"));
+  assert.match(gate, /"ON_ERROR_STOP=1"/);
+  assert.match(gate, /"--single-transaction"/);
+  const migrationIndex = workflow.indexOf("node scripts/backend-migrate.cjs prepare");
+  assert.ok(migrationIndex > 0);
   assert.ok(migrationIndex < workflow.indexOf("mv .sxb-release/server.cjs dist/server.cjs"));
-  assert.match(workflow, /psql "\$\{DB_URL%%\\\?\*\}" -1 -v ON_ERROR_STOP=1 -f "\$SQL"/);
+  assert.doesNotMatch(workflow, /db\s+push|accept-data-loss/);
 });

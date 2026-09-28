@@ -1,4 +1,23 @@
 {
+  "bundle": {
+    "recognized": "Export Protocols reconnu : {{protocol}}",
+    "preview": "Format reconnu. Les accès, le DNS et le cycle de connexion restent gérés par SXB.",
+    "sshKey": "Clé privée SSH en base64 (alternative au mot de passe)",
+    "passphrase": "Phrase secrète de la clé SSH (si chiffrée)",
+    "privateKey": "Clé privée WireGuard (base64)",
+    "publicKey": "Clé publique du pair WireGuard (base64)",
+    "address": "Adresses du tunnel en CIDR, séparées par des virgules",
+    "allowedIps": "Réseaux autorisés en CIDR (vide : toutes les destinations)",
+    "presharedKey": "Clé prépartagée (facultative)",
+    "persistentKeepalive": "Intervalle keepalive en secondes (0 : désactivé)",
+    "reserved": "Octets réservés (facultatifs, ex. 0,0,0)",
+    "mtu": "MTU (facultative)",
+    "upMbps": "Débit montant en Mbit/s (requis pour Hysteria1)",
+    "downMbps": "Débit descendant en Mbit/s (requis pour Hysteria1)",
+    "obfs": "Obfuscation (Hysteria1 : secret ; Hysteria2 : salamander)",
+    "obfsPassword": "Secret salamander (si activé)",
+    "method": "Méthode Shadowsocks"
+  },
   "lock": {
     "unlock": "Déverrouiller « {{name}} »",
     "set": "Protéger « {{name}} »",
@@ -253,15 +272,15 @@
     "reimportSecretsPending": "Le brouillon contient encore un marqueur « à ressaisir ». Renseignez la valeur réelle : l’enregistrer tel quel casserait la configuration."
   },
   "ssh": {
-    "detected": "Configuration SSH détectée : le SSH se saisit uniquement à la main.",
+    "detected": "Format SSH ambigu : utilisez le formulaire ou un export Settings reconnu.",
     "detectedHint": "Ouvrez la saisie manuelle et reportez l’hôte, le port, l’utilisateur, le mot de passe et, si besoin, le payload. Vous validez ainsi exactement ce que l’application utilisera.",
     "openManual": "Ouvrir la saisie SSH",
-    "importRefused": "Les configurations SSH se saisissent uniquement dans l’onglet « SSH — Saisie manuelle ».",
+    "importRefused": "Ce format SSH n’est pas reconnu. Utilisez « SSH — Saisie manuelle » ou un export Settings Protocols complet.",
     "mode": "Mode de connexion SSH",
     "modeHint": "Direct : port SSH ouvert (22). TLS : tunnel SSL (443). Payload : en-tête HTTP/WebSocket avant SSH. Proxy : passage par un proxy HTTP CONNECT. SlowDNS : tunnel DNS (DNSTT).",
     "sshFamily": "SSH (tous les modes)",
     "test": "Valider le transport SSH",
-    "incomplete": "Renseignez l’hôte, le port, l’utilisateur et le mot de passe SSH.",
+    "incomplete": "Renseignez l’hôte, le port, l’utilisateur et un mot de passe ou une clé privée SSH.",
     "sniHint": "Nom présenté pendant TLS ; vide = nom du serveur."
   },
   "validity": {

@@ -344,18 +344,18 @@ test('le SSH collé est renvoyé vers la saisie manuelle, qui produit une config
   h.nodes(h.render()).find(n => n?.type === 'textarea').props.onChange({
     target: { value: '{"host":"ssh.example.test","port":22,"username":"secret-user","password":"secret-pass"}' },
   });
-  assert.match(h.text(), /Configuration SSH détectée/);
+  assert.match(h.text(), /Format SSH ambigu : utilisez le formulaire ou un export Settings reconnu/);
   await form().props.onSubmit({ preventDefault() {} });
   await h.flush();
   assert.equal(h.calls.some(c => c.name === 'createVpnProfile'), false);
-  assert.match(h.text(), /uniquement dans l’onglet « SSH — Saisie manuelle »/);
+  assert.match(h.text(), /Ce format SSH n’est pas reconnu\. Utilisez « SSH — Saisie manuelle » ou un export Settings Protocols complet/);
   // Un lien V2Ray, lui, reste importable par collage.
   h.nodes(h.render()).find(n => n?.type === 'textarea').props.onChange({ target: { value: 'vless://x@host.test:443' } });
-  assert.doesNotMatch(h.text(), /Configuration SSH détectée/);
+  assert.doesNotMatch(h.text(), /Format SSH ambigu/);
   h.nodes(h.render()).find(n => n?.type === 'textarea').props.onChange({
     target: { value: '{"CONFIGS":[{"ADDRESS":"ssh.example.test:22","USERNAME":"u","PASSWORD":"p","TYPE":"SSH"}]}' },
   });
-  assert.match(h.text(), /Configuration SSH détectée/);
+  assert.match(h.text(), /Format SSH ambigu/);
   h.button('configurations.ssh.openManual').props.onClick();
   await h.flush();
   assert.match(h.text(), /Mode de connexion SSH/);

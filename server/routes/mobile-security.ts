@@ -15,8 +15,7 @@
  *
  *  • LA DÉCISION. Le score et l'action sont calculés côté serveur.
  *
- *  • LA SANCTION. Au-delà du seuil, l'accès de l'appareil est coupé — de façon
- *    réversible et tracée, jamais silencieuse.
+ *  • LA PORTEE. Une observation locale ne suspend jamais un compte.
  *
  * La réponse ne dit PAS à l'appelant ce qui a été retenu contre lui. Renvoyer
  * le score reviendrait à offrir un banc d'essai : il suffirait d'itérer jusqu'à
@@ -25,19 +24,74 @@
 import { Router, Response } from 'express';
 import { z } from 'zod';
 import { prisma } from '../database';
+import { MobileAccessError } from '../services/access-lifecycle';
+import { proofFor, securityFailure } from '../services/mobile-proof';
+import { consumeSessionProof } from '../services/mobile-session-security';
 import { AuthenticatedRequest, requireAuth } from '../middleware/auth';
 import { hashIp } from '../services/security-passkey';
-import { recordSecurityEvent } from '../services/security-events';
+import { recordSecurityEvent, persistSecurityEvent } from '../services/security-events';
 import {
   evaluerRisque,
   meriteUneTrace,
   normaliserSignaux,
   SIGNAUX_MOBILES,
   type SignalMobile,
+  type EvaluationRisque,
 } from '../services/mobile-risk';
 import { signalDepuisAttestation, verifierAttestation } from '../services/play-integrity';
+import { readSecurityPolicy } from '../services/security-policy';
 
 const router = Router();
+
+const eventSchema = z.object({
+  id: z.string().uuid(), eventType: z.enum(['VPN_STARTED', 'VPN_STOPPED', 'VPN_REVOKED', 'VPN_CONFLICT']),
+  timestamp: z.number().int().nonnegative().refine(value => value <= Date.now() + 90_000),
+  securitySessionId: z.string().max(200).optional(), securityGeneration: z.number().int().positive().optional(),
+  connectionId: z.string().uuid().optional(), usageSessionId: z.string().max(200).optional(),
+  accessAttempt: z.string().uuid().optional(),
+}).strict();
+router.post('/events', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (req.user?.role !== 'CLIENT' || !req.user.clientId) securityFailure('MOBILE_CLIENT_ONLY', 403);
+    const principal = req.user;
+    if (!prisma) throw new Error('SECURITY_DATABASE_REQUIRED');
+    const body = z.object({ events: z.array(eventSchema).min(1).max(25) }).strict().parse(req.body);
+    const acceptedIds = await prisma.$transaction(async tx => {
+      await consumeSessionProof(tx, req.user!, proofFor(req));
+      const accepted: string[] = [];
+      for (const event of body.events) {
+      const connection = event.connectionId ? await tx.mobileConnection.findUnique({ where: { id: event.connectionId } }) : null;
+      if (req.user!.sid && !connection) securityFailure('EVENT_CONNECTION_REQUIRED', 409);
+      if (event.connectionId && (!connection || connection.clientId !== principal.clientId ||
+          connection.deviceId !== principal.deviceId || connection.authSessionId !== event.securitySessionId ||
+          connection.authGeneration !== event.securityGeneration)) securityFailure('EVENT_AUTHORITY_MISMATCH', 403);
+      if (connection && ['VPN_REVOKED', 'VPN_STOPPED'].includes(event.eventType)) {
+        await tx.mobileConnection.updateMany({
+          where: { id: connection.id, closedAt: null },
+          data: { closedAt: new Date(), closeReason: event.eventType },
+        });
+      }
+      await persistSecurityEvent(tx, {
+        eventType: event.eventType, severity: event.eventType === 'VPN_REVOKED' ? 'warning' : 'info',
+        userId: principal.userId, deviceId: principal.deviceId,
+        sessionId: connection?.authSessionId, sessionGeneration: connection?.authGeneration,
+        connectionId: connection?.id, eventKey: `${principal.clientId}:${event.id}`,
+        actionTaken: event.eventType === 'VPN_REVOKED' ? 'CONNECTION_CLOSED' : null,
+        metadata: { reason: event.eventType === 'VPN_REVOKED' ? 'SYSTEM_VPN_REVOKE' : event.eventType,
+          evidence: 'client_observation', observedAt: new Date(event.timestamp).toISOString() },
+      });
+      accepted.push(event.id);
+      }
+      return accepted;
+    });
+    return res.status(202).json({ acceptedIds });
+  } catch (error) {
+    if (error instanceof MobileAccessError) return res.status(error.status).json(error.body);
+    if (error instanceof z.ZodError) return res.status(400).json({ error: 'INVALID_SECURITY_EVENT' });
+    console.warn('[security] EVENT_DELIVERY_DEFERRED');
+    return res.status(503).json({ error: 'SECURITY_EVENT_STORAGE_UNAVAILABLE' });
+  }
+});
 
 const rapportSchema = z.object({
   signals: z.record(z.string(), z.boolean()).optional(),
@@ -47,6 +101,12 @@ const rapportSchema = z.object({
   decoy: z.string().max(120).optional(),
   /** Jeton Play Integrity, quand l'application a pu en obtenir un. */
   integrityToken: z.string().max(8000).optional(),
+  integrity: z.object({
+    packageName: z.string().max(100).optional(),
+    buildType: z.enum(['debug', 'release']).optional(),
+    channel: z.enum(['OFFICIAL', 'BETA', 'INTERNAL', 'UNKNOWN']).optional(),
+    certificateDigests: z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(8).optional(),
+  }).strict().optional(),
 }).strict();
 
 function lireIdAppareil(req: AuthenticatedRequest): string | null {
@@ -89,25 +149,6 @@ async function attribuerAppareil(deviceId: string, req: AuthenticatedRequest) {
   }
 }
 
-/**
- * Coupe l'accès de l'appareil.
- *
- * Réversible : le compte passe en `suspended`, rien n'est supprimé. Un faux
- * positif se répare d'un clic, ce qui ne serait pas vrai d'une suppression.
- */
-async function couperAcces(clientId: string): Promise<boolean> {
-  if (!prisma) return false;
-  try {
-    await (prisma as any).vpnClient.update({
-      where: { id: clientId },
-      data: { status: 'suspended' },
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 router.post('/report', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   // Seule une session mobile parle ici. Un compte d'exploitation qui posterait
   // sur cette route fabriquerait des alertes contre un appareil qui n'est pas
@@ -139,7 +180,19 @@ router.post('/report', requireAuth, async (req: AuthenticatedRequest, res: Respo
     }
   }
 
-  const evaluation = evaluerRisque(signaux);
+  let evaluation: EvaluationRisque;
+  try {
+    const policy = await readSecurityPolicy();
+    const integrity = analyse.data.integrity;
+    if (integrity && ((integrity.packageName && integrity.packageName !== policy.packageName) ||
+        (integrity.certificateDigests?.length && integrity.certificateDigests.some(cert => !policy.certificates.includes(cert))))) {
+      if (!signaux.includes('signatureInvalid')) signaux.push('signatureInvalid');
+    }
+    evaluation = evaluerRisque(signaux, policy);
+  } catch {
+    console.warn('[security] POLICY_UNAVAILABLE');
+    return res.status(503).json({ error: 'SECURITY_POLICY_UNAVAILABLE' });
+  }
 
   // Un appareil sain n'a rien à raconter : le flux d'alertes doit rester lisible.
   if (!meriteUneTrace(evaluation)) {
@@ -155,6 +208,9 @@ router.post('/report', requireAuth, async (req: AuthenticatedRequest, res: Respo
     signals: evaluation.signaux.join(','),
     riskScore: evaluation.score,
     action: evaluation.action,
+    riskLevel: evaluation.level,
+    evidence: evaluation.evidence,
+    policyVersion: evaluation.policyVersion,
     attestation,
   };
 
@@ -172,23 +228,20 @@ router.post('/report', requireAuth, async (req: AuthenticatedRequest, res: Respo
     ipHash: hashIp(adresseSource(req)),
     appVersion: analyse.data.appVersion || null,
     metadata: contexte,
+    sessionId: req.user.sid, sessionGeneration: req.user.sg,
+    policyVersion: evaluation.policyVersion, riskLevel: evaluation.level,
   });
-
-  // La sanction est une seconde entrée, distincte de l'observation : on doit
-  // pouvoir lire ce qui a été vu même si la coupure échoue.
-  if (evaluation.action === 'block' && fiche?.id && fiche.status !== 'suspended') {
-    const coupe = await couperAcces(fiche.id);
-    await recordSecurityEvent({
-      eventType: 'DEVICE_AUTO_BLOCKED' as any,
-      severity: 'critical',
-      userId: fiche.userId,
-      deviceId,
-      ipHash: hashIp(adresseSource(req)),
-      appVersion: analyse.data.appVersion || null,
-      actionTaken: coupe ? 'ACCESS_SUSPENDED' : 'SUSPEND_FAILED',
-      metadata: { ...contexte, status: coupe ? 'suspended' : 'failed' },
-    });
-  }
+  const signalEvents = {
+    rooted: 'ROOT_DETECTED', debugger: 'DEBUG_DETECTED', hooked: 'HOOKING_RISK',
+    frida: 'INSTRUMENTATION_RISK', xposed: 'INSTRUMENTATION_RISK', signatureInvalid: 'APP_INTEGRITY_FAILED',
+  } as const;
+  const types = new Set(evaluation.signaux.flatMap(signal => signal in signalEvents
+    ? [signalEvents[signal as keyof typeof signalEvents]] : []));
+  for (const eventType of types) await recordSecurityEvent({
+    eventType, severity: evaluation.severity, userId: req.user.userId, deviceId,
+    sessionId: req.user.sid, sessionGeneration: req.user.sg, policyVersion: evaluation.policyVersion,
+    riskLevel: evaluation.level, metadata: { evidence: 'client_observation', action: evaluation.action },
+  });
 
   // Réponse volontairement muette : ni score, ni seuil, ni signal retenu.
   return res.status(202).json({ accepted: true });

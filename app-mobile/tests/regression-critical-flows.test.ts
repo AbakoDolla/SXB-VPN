@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { describe, it } from 'node:test';
+import { spawnSync } from 'node:child_process';
+import { parse as parseYaml } from 'yaml';
 import {
   bytesToHex,
   decryptAes256Gcm,
@@ -555,9 +557,10 @@ describe('compatibilité URI VLESS / JSON complète', () => {
     const validation = validateVpnConfig(XRAY_VLESS_D2L);
     assert.equal(validation.valid, true, validation.errors.join(' | '));
     assert.equal(validation.protocol, 'singbox');
-    assert.equal(validation.config?.outbounds?.[0]?.streamSettings?.wsSettings?.headers?.Host, 'ss.alphaeconet.co.zw');
-    assert.equal(validation.config?.outbounds?.[0]?.streamSettings?.tlsSettings?.serverName, 'ss.alphaeconet.co.zw');
-    assert.equal(validation.config?.outbounds?.[0]?.mux?.concurrency, 8);
+    assert.equal(validation.config?.outbounds?.[0]?.transport?.headers?.Host, 'ss.alphaeconet.co.zw');
+    assert.equal(validation.config?.outbounds?.[0]?.tls?.server_name, 'ss.alphaeconet.co.zw');
+    assert.ok(validation.warnings.some(message => message.includes('mux')));
+    assert.ok(validation.warnings.some(message => message.includes('dns.hosts')));
     assert.equal(isCompleteOfflineConfig(validation.config).complete, true);
   });
 
@@ -2559,27 +2562,25 @@ describe('garde-fous contre les régressions Android', () => {
   it('protège la production : sauvegarde avant migration et tests avant déploiement', () => {
     const deploy = source('../.github/workflows/deploy-vps.yml');
 
-    // `db push --accept-data-loss` autorise Prisma à supprimer colonnes et
-    // tables : sans dump préalable, un champ renommé par mégarde emporte ses
-    // données sans retour possible.
-    assert.match(deploy, /pg_dump/);
-    assert.match(deploy, /avant-migration-/);
-    // La sauvegarde doit précéder la migration, pas la suivre. On vise la
-    // commande réelle : le drapeau apparaît aussi dans le commentaire qui
-    // l'explique, plus haut dans le fichier.
-    assert.ok(
-      deploy.indexOf('pg_dump') < deploy.indexOf('--skip-generate 2>&1'),
-      'la sauvegarde doit précéder la migration',
-    );
-    assert.doesNotMatch(deploy, /--accept-data-loss 2>&1/);
-    // Un dump vide passerait inaperçu : gzip renvoie 0 même sans données.
-    assert.match(deploy, /Sauvegarde suspecte/);
-    // …et sans pipefail, l'échec de pg_dump lui-même serait masqué par le
-    // succès du gzip placé derrière le tube.
-    assert.match(deploy, /set -o pipefail/);
-    // libpq refuse le `?schema=public` que Prisma exige : passer l'URL brute
-    // à pg_dump le fait échouer avant même de se connecter.
-    assert.match(deploy, /PG_URL="\$\{DB_URL%%\\\?\*\}"/);
+    const gate = source('../server/services/backend-migration.ts');
+    const backup = source('../server/services/reset-backup.ts');
+    const gateIndex = deploy.indexOf('node scripts/backend-migrate.cjs prepare');
+    assert.ok(gateIndex > 0);
+    assert.ok(gateIndex < deploy.indexOf('mv .sxb-release/server.cjs dist/server.cjs'));
+    assert.ok(gateIndex < deploy.indexOf('$ESBUILD backend/prisma/seed-owner.ts'));
+    assert.ok(gate.indexOf('await createPostgresResetBackup') < gate.indexOf('for (const migration of BACKEND_MIGRATIONS)'));
+    assert.match(gate, /backend\/prisma\/security-layer\.sql/);
+    assert.match(gate, /"--from-schema-datasource"/);
+    assert.match(gate, /"--to-schema-datamodel"/);
+    assert.match(gate, /BACKEND_SCHEMA_DRIFT/);
+    assert.doesNotMatch(deploy, /db\s+push|accept-data-loss/);
+    assert.match(backup, /pg_dump/);
+    assert.match(backup, /pg_restore/);
+    assert.match(backup, /info\.size < 1024/);
+    assert.match(backup, /PGDMP/);
+    assert.match(backup, /sslmode: "PGSSLMODE"/);
+    assert.match(backup, /PGPASSWORD: decodeURIComponent/);
+    assert.match(deploy, /set -eo pipefail/);
 
     // Les garde-fous ne protégeaient que la construction Android : le serveur
     // partait en production sans qu'aucun test ne s'exécute.
@@ -2632,6 +2633,56 @@ describe('garde-fous contre les régressions Android', () => {
       "aucun environnement GitHub, sinon les secrets de production redeviennent accessibles",
     );
     assert.match(pr, /permissions:\s*[\r\n]+\s+contents:\s+read/, 'jeton en lecture seule');
+  });
+
+  it('runs PostgreSQL security integration explicitly, never through database-free deployment globs', () => {
+    const workflow = parseYaml(source('../.github/workflows/verification-pr.yml')) as {
+      jobs: { verifier: {
+        services: { postgres: { image: string; ports: string[]; options: string } };
+        steps: { name: string; run?: string; env?: Record<string, string> }[];
+      } };
+    };
+    const job = workflow.jobs.verifier;
+    assert.equal(job.services.postgres.image, 'postgres:16-alpine');
+    assert.ok(job.services.postgres.ports.includes('127.0.0.1:5432:5432'));
+    assert.match(job.services.postgres.options, /pg_isready/);
+    const integration = job.steps.find(step => step.run?.includes('security-layer-postgres.integration.mjs'));
+    assert.ok(integration?.run && integration.env);
+    const database = new URL(integration.env.SXB_SECURITY_TEST_DATABASE_URL);
+    assert.equal(database.hostname, '127.0.0.1');
+    assert.equal(database.pathname, '/sxb_security_impl');
+    assert.match(integration.env.SXB_SECURITY_PRISMA_CLIENT, /runner\.temp.*sxb-security-prisma\/index\.js/);
+    assert.match(integration.run, /db push --skip-generate/);
+    assert.match(integration.run, /db execute .*--file prisma\/security-layer\.sql/);
+    assert.match(integration.run, /generate --schema/);
+    const runner = '../scripts/tests/security-layer-postgres.integration.mjs';
+    assert.ok(existsSync(runner));
+    assert.equal(existsSync('../scripts/tests/security-layer-postgres.test.mjs'), false);
+    const unconfigured = spawnSync(process.execPath, [runner], {
+      encoding: 'utf8',
+      env: { ...process.env, SXB_SECURITY_TEST_DATABASE_URL: '', SXB_SECURITY_PRISMA_CLIENT: '' },
+    });
+    assert.equal(unconfigured.status, 1, 'missing isolated DB is an explicit failure, not a skipped proof');
+    assert.match(unconfigured.stderr, /explicitly isolated loopback PostgreSQL test database/);
+    assert.doesNotMatch(source('../.github/workflows/deploy-vps.yml'), /security-layer-postgres\.integration/);
+  });
+
+  it('builds debug only for non-main candidates while keeping publication restricted to main', () => {
+    const workflow = parseYaml(source('../.github/workflows/build-android.yml')) as {
+      jobs: Record<string, { steps: { name: string; if?: string; run?: string }[] }>;
+    };
+    const steps = workflow.jobs['build-android'].steps;
+    const debug = steps.find(step => step.run?.includes(':app:assembleDebug'));
+    assert.ok(debug?.run);
+    assert.equal(debug.if, "github.ref != 'refs/heads/main'");
+    assert.match(debug.run, /apksigner.*verify/);
+    assert.match(debug.run, /aapt.*AndroidManifest\.xml/);
+    const release = steps.find(step => step.run?.includes(':app:assembleRelease'));
+    assert.ok(release);
+    assert.ok(steps.indexOf(debug) < steps.indexOf(release));
+    for (const name of ['GitHub Release', 'Déployer APK sur VPS (scp)', 'Installer APK dans dossier distribution VPS']) {
+      assert.equal(steps.find(step => step.name === name)?.if, "github.ref == 'refs/heads/main'", name);
+    }
   });
 
   it('ne laisse pas les publications APK périmées s\'accumuler', () => {
@@ -2778,11 +2829,9 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(contexte, /if \(estLeurre\(configToUse\)\)/);
     assert.match(contexte, /import \{ estLeurre \} from '@\/services\/decoy'/);
 
-    // Sous instrumentation active, les traces natives décrivent un faux serveur.
-    assert.match(securite, /fun leurreEndpoint/);
-    assert.match(securite, /fun leurreUuid/);
-    assert.match(serviceNatif, /val leurre = SecurityModule\.leurreEndpoint\(packageName\)/);
-    assert.match(serviceNatif, /stage=ENDPOINT_RESOLVED remote=\$leurre/);
+    // Local heuristics must not fabricate endpoints or block legitimate root.
+    assert.match(securite, /fun shouldBlock\(report: SecurityReport\): Boolean = false/);
+    assert.doesNotMatch(serviceNatif, /val leurre = SecurityModule\.leurreEndpoint/);
   });
 
   it('n’attribue aucun quota aux comptes qui pilotent la plateforme', () => {
@@ -3152,7 +3201,7 @@ describe('garde-fous contre les régressions Android', () => {
     assert.doesNotMatch(nativeModule, /REQUEST_IGNORE_BATTERY_OPTIMIZATIONS/);
   });
 
-  it('le SSH se saisit à la main ; le serveur sait toujours lire la gamme HTTP Custom', () => {
+  it('le SSH ambigu reste manuel ; seuls les Settings reconnus peuvent être importés', () => {
     const canonical = source('../server/services/canonical-config.ts');
     const routes = source('../server/routes/vpn-profiles.ts');
     const api = source('../artifacts/sxb-dashboard/src/api/vpn-profiles.ts');
@@ -3170,11 +3219,11 @@ describe('garde-fous contre les régressions Android', () => {
     assert.match(api, /export const importVpnProfiles/);
     assertDashboardLabel(vue, 'configurations.editor.httpCustom', /HTTP Custom.*\{\{count\}\} profil/);
 
-    // DEMANDE : « import manuel uniquement » pour le SSH. Le collage d'un SSH
-    // (JSON, HTTP Custom, SocksIP) renvoie vers le formulaire, qui couvre tous
-    // les modes — SlowDNS et UDPGW compris.
+    // L'exception Settings est explicite et validée, pas une levée générale du refus SSH.
+    assert.match(vue, /const bundle = readProtocolBundle\(parsed\)/);
+    assert.match(vue, /if \(bundle\) \{ validateProtocolOptions\(bundle\.config\); return false; \}/);
     assert.match(vue, /if \(looksLikeSshImport\(importConfig\)\) \{ setError\(message\('configurations\.ssh\.importRefused'\)\); return; \}/);
-    assertDashboardLabel(vue, 'configurations.ssh.detected', /SSH détectée.*uniquement à la main/);
+    assertDashboardLabel(vue, 'configurations.ssh.detected', /SSH ambigu.*Settings reconnu/);
     assertDashboardLabel(vue, 'configurations.ui.sshDnstt', /SlowDNS \(DNSTT\)/);
     assertDashboardLabel(vue, 'configurations.ui.udpGw', /BadVPN UDPGW/);
     assert.doesNotMatch(vue, /SSH_IMPORT_TEMPLATES/);

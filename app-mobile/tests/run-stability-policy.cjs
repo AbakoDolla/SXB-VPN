@@ -83,6 +83,8 @@ object Base64 {
     // Traduction de schéma du moteur : sing-box 1.13 et 1.14 ont SUPPRIMÉ des
     // options que chaque configuration SXB porte. Pure, donc prouvable ici.
     path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbEngineSchema.kt'),
+    path.resolve(__dirname, '..', 'modules', 'android-native', 'SxbProtocolCompatibility.kt'),
+    path.resolve(__dirname, 'ProtocolCompatibilityTest.kt'),
     path.resolve(__dirname, 'StabilityPolicyTest.kt'),
     maskHarness,
     sshHarness,
@@ -90,6 +92,7 @@ object Base64 {
     '-classpath', jsonJar, '-include-runtime', '-d', jar,
   ]);
   run(process.env.JAVA || 'java', ['-cp', `${jar}${path.delimiter}${jsonJar}`, 'com.sxbvpn.vpnmodule.StabilityPolicyTestKt']);
+  run(process.env.JAVA || 'java', ['-cp', `${jar}${path.delimiter}${jsonJar}`, 'com.sxbvpn.vpnmodule.ProtocolCompatibilityTestKt']);
   run(process.execPath, [path.resolve(__dirname, 'run-reconnect-recovery.cjs')]);
 } finally {
   rmSync(temp, { recursive: true, force: true });

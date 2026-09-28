@@ -20,6 +20,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as configStore from './configStore';
+import { settleIdentityWrites } from './identityPersistence';
 
 // ── Clés de stockage ──────────────────────────────────────────────────────────
 
@@ -218,7 +219,7 @@ export async function getOfflineStatus(): Promise<{
 export async function clearAllOfflineData(): Promise<void> {
   const keys = await AsyncStorage.getAllKeys();
   const quotaKeys = keys.filter(key => key.startsWith('sxb_quota_'));
-  await Promise.all([
+  await settleIdentityWrites([
     configStore.clearAll().then(result => { if (result.status === 'error') throw result.error; }),
     ...quotaKeys.map(key => AsyncStorage.removeItem(key)),
     AsyncStorage.removeItem(KEYS.VPN_CONFIG),

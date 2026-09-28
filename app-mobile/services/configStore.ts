@@ -7,6 +7,7 @@ import { genererLeurre, semerAppats } from './decoy';
 import { requireProfileAccess } from './accessState';
 import { reprendLeProfilActif } from './activeProfile';
 import type { ProfileStatus } from './accessPolicy';
+import { settleIdentityWrites } from './identityPersistence';
 
 /** The only owner of locally provisioned VPN credentials. Registry is deliberately non-sensitive. */
 const REGISTRY_KEY = 'sxb_cfg_registry_v1';
@@ -329,7 +330,7 @@ export async function remove(id: string): Promise<StoreResult<void>> {
 export async function clearAll(): Promise<StoreResult<void>> {
   try { return await mutate(async () => {
     const entries = await registry();
-    await Promise.all(entries.map(entry => AsyncStorage.removeItem(payloadKey(entry.configId))));
+    await settleIdentityWrites(entries.map(entry => AsyncStorage.removeItem(payloadKey(entry.configId))));
     await putRegistry([]);
     await AsyncStorage.removeItem('@sxb_active_config_id');
     // Réinitialisation complète (déconnexion/révocation) : les pierres tombales
@@ -339,7 +340,7 @@ export async function clearAll(): Promise<StoreResult<void>> {
     // Les suppressions à confirmer, elles, survivent : un forfait supprimé hors
     // réseau doit encore disparaître du tableau de bord. Rejouée par un autre
     // compte, la demande reçoit simplement 404 et s'efface.
-    await Promise.all([
+    await settleIdentityWrites([
       AsyncStorage.removeItem(LEGACY_CONFIG),
       AsyncStorage.removeItem(LEGACY_META),
       AsyncStorage.removeItem(LEGACY_PROV),

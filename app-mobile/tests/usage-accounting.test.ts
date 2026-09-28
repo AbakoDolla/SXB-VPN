@@ -4,6 +4,8 @@ import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { describe, it } from 'node:test';
+import { sanitizeEngineConfig } from '../services/configValidator';
+import type { ProfileIdentity } from '../services/accessPolicy';
 
 const mobile = path.resolve(__dirname, '..');
 const requireMobile = createRequire(path.join(mobile, 'package.json'));
@@ -457,6 +459,68 @@ describe('durable byte accounting', () => {
 });
 
 describe('provider traffic report lifecycle', () => {
+  const profiles: { label: string; meta: ProfileIdentity; subscriptionId: string | null }[] = [
+    { label: 'legacy backend without subscriptionId', meta: { configId: 'plan-id', source: 'backend' }, subscriptionId: 'plan-id' },
+    { label: 'manual alias explicitly linked', meta: { configId: 'local-alias', source: 'manual', subscriptionId: 'plan-id' }, subscriptionId: 'plan-id' },
+    { label: 'unlinked manual ID equal to a plan ID', meta: { configId: 'plan-id', source: 'manual' }, subscriptionId: null },
+  ];
+  for (const { label, meta, subscriptionId } of profiles) {
+    it(`uses the same read-only connection/native/ledger attribution for ${label}`, async () => {
+      const h = await reporter();
+      const original = JSON.stringify(meta);
+      Object.freeze(meta);
+      const source = readFileSync(path.join(mobile, 'contexts', 'VpnContext.tsx'), 'utf8');
+      const start = source.indexOf('        const security = await sessionSecurity();');
+      assert.ok(start > 0);
+      const connection = source.slice(start, source.indexOf('        requireVpnConsent();', start));
+      assert.ok(connection.includes("apiClient.post('/mobile/vpn/session'"));
+      assert.ok(connection.includes('sanitizeEngineConfig'));
+      const posts: { subscriptionId: string | null; sessionId: string; configId: string }[] = [];
+      const env = {
+        usageSubscriptionId: h.ledger.usageSubscriptionId,
+        currentProfile: { meta }, selectedId: meta.configId,
+        sessionSecurity: async () => ({ sessionId: 'synthetic-authority', generation: 1, clientId: 'synthetic-client' }),
+        newUsageSessionId: () => 'sess_synthetic-connection',
+        apiClient: { post: async (_url: string, body: typeof posts[number]) => { posts.push(body); } },
+        sessionIdRef: { current: '' }, configMoteurRef: { current: null },
+        configToUse: { protocol: 'vless', host: 'vpn.example.test', port: 443, uuid: 'synthetic-uuid', tls: true },
+        appliquerPresentationTls: (config: unknown) => config,
+        presentationEssaiRef: { current: 0 }, echelleApplicable: () => false,
+        sanitizeEngineConfig, getAccessState: () => ({ authority: { session: 'synthetic-access' } }),
+        engineProtocol: 'vless', killSwitch: true, autoReconnect: true,
+      };
+      const compiled = await transform(`export async function run(env) {
+        const {${Object.keys(env).join(',')}} = env;
+        ${connection}
+        return JSON.parse(optionsJson);
+      }`, { loader: 'ts', format: 'cjs' });
+      const module = { exports: {} as { run: (input: typeof env) => Promise<Record<string, unknown>> } };
+      runInNewContext(compiled.code, { module, exports: module.exports });
+      const options = await module.exports.run(env);
+      assert.equal(posts.length, 1);
+      assert.equal(posts[0].subscriptionId, subscriptionId);
+      assert.equal(posts[0].configId, meta.configId);
+      assert.equal(options.subscriptionId ?? null, subscriptionId);
+      assert.equal(options.managedConfig, subscriptionId !== null);
+      h.env.runningProfileRef.current = meta;
+      h.env.sessionIdRef.current = posts[0].sessionId;
+      h.state.profiles = [meta];
+      h.state.stats.lifetimeUploadBytes += 10;
+      h.state.stats.lifetimeDownloadBytes += 20;
+      h.state.respond = async () => { throw new Error('synthetic offline'); };
+      await h.flushUsage();
+      assert.equal(h.state.posts.length, 1);
+      assert.equal(h.state.posts[0].subscriptionId ?? null, subscriptionId);
+      assert.equal(h.state.posts[0].reportMode, subscriptionId ? 'delta' : 'unlinked');
+      assert.equal(h.state.posts[0].sessionId, posts[0].sessionId);
+      const persisted = await h.ledger.loadLedger();
+      assert.equal(persisted.entries[0].subscriptionId, subscriptionId);
+      assert.equal(persisted.entries[0].configId, meta.configId);
+      assert.equal(h.ledger.pendingBytes(persisted), 30);
+      assert.equal(JSON.stringify(meta), original, 'no metadata or ID rewrite');
+    });
+  }
+
   it('does not persist a null session when a stop completes during the pre-connect counter read', async () => {
     const h = await reporter();
     h.env.SxbVpnNative.getTrafficStats = async () => {
@@ -468,6 +532,31 @@ describe('provider traffic report lifecycle', () => {
     assert.equal(saved.context?.sessionId, 'native-session-1');
     assert.equal(saved.context?.subscriptionId, 'normal');
     assert.equal(h.state.posts.length, 0);
+  });
+
+  it('does not overwrite a new identity session after a delayed native counter read', async () => {
+    const h = await reporter();
+    await h.flushUsage({ beforeConnect: true });
+    const saved = h.storageState.storage.get('@sxb_usage_ledger');
+    const reading = deferred(), counters = deferred<any>();
+    h.env.SxbVpnNative.getTrafficStats = () => { reading.resolve(); return counters.promise; };
+    const previous = h.flushUsage();
+    await reading.promise;
+    h.state.epoch++;
+    h.env.sessionIdRef.current = 'new-identity-session';
+    h.env.runningProfileRef.current = { configId: 'trial', subscriptionId: 'trial' };
+    counters.resolve({ lifetimeUploadBytes: 11, lifetimeDownloadBytes: 21, usageSessionId: 'native-session-1' });
+    await previous;
+    assert.equal(h.env.sessionIdRef.current, 'new-identity-session');
+    assert.equal(h.storageState.storage.get('@sxb_usage_ledger'), saved);
+    assert.equal(h.state.posts.length, 0);
+    h.env.SxbVpnNative.getTrafficStats = async () => ({ lifetimeUploadBytes: 11, lifetimeDownloadBytes: 21 });
+    await h.flushUsage({ beforeConnect: true });
+    const ledger = await h.ledger.loadLedger();
+    assert.equal(ledger.entries[0].sessionId, 'native-session-1');
+    assert.equal(ledger.entries[0].subscriptionId, 'normal');
+    assert.equal(ledger.entries[0].up + ledger.entries[0].down, 30);
+    assert.equal(ledger.context?.sessionId, 'new-identity-session');
   });
 
   it('anchors a connection without waiting for a blocked HTTP report or losing its frozen receipt', async () => {
@@ -877,6 +966,10 @@ describe('provider traffic report lifecycle', () => {
     response.resolve({ data: { ok: true, subscriptionId: 'normal', quotaTotalBytes: 1000, quotaUsedBytes: 10 } });
     await first;
     assert.equal(h.state.quota, null);
+    const persisted = await h.ledger.loadLedger();
+    assert.equal(persisted.entries[0].sessionId, 'native-session-1');
+    assert.equal(persisted.entries[0].frozen, true);
+    assert.equal(persisted.entries[0].up + persisted.entries[0].down, 10);
   });
 
   it('anchors before tunnel start and reports the first bytes, never the duration', async () => {

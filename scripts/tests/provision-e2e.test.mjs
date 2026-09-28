@@ -195,7 +195,7 @@ console.log('\n══ 3. Protocoles multiples (ÉTAPE 3 & 8 — rien ne dispara�
     { name: 'shadowsocks', cfg: { protocol: 'shadowsocks', host: 's.sxb.cm', port: 8388, method: 'aes-256-gcm', password: 'ss-pass' } },
     { name: 'hysteria2', cfg: { protocol: 'hysteria2', host: 'h2.sxb.cm', port: 443, password: 'hy2-pass', sni: 'h2.sxb.cm', tls: true } },
     { name: 'tuic', cfg: { protocol: 'tuic', host: 'tu.sxb.cm', port: 443, uuid: '8b6f3f5e-1234-4abc-9def-0123456789ab', password: 'tuic-pass', tls: true } },
-    { name: 'wireguard', cfg: { protocol: 'wireguard', host: 'wg.sxb.cm', port: 51820, privateKey: 'WGprivkey+/base64/ABCDEFGHIJKLMNOPQRSTUVWXYZ0000=', publicKey: 'WGpeerpubkeybase64/ABCDEFGHIJKLMNOPQRSTUVWXYZ1=', endpoint: 'wg.sxb.cm:51820' } },
+    { name: 'wireguard', cfg: { protocol: 'wireguard', host: 'wg.sxb.cm', port: 51820, privateKey: Buffer.alloc(32, 1).toString('base64'), publicKey: Buffer.alloc(32, 2).toString('base64'), endpoint: 'wg.sxb.cm:51820' } },
   ];
 
   for (const { name, cfg } of profiles) {

@@ -1,12 +1,13 @@
 import { createHmac } from "node:crypto";
 import jwt from "jsonwebtoken";
+import type { SecurityClaims } from "./mobile-proof";
 
 export const ACCESS_TICKET_MAX_SECONDS = 7 * 24 * 60 * 60;
 export const ACCESS_TICKET_ISSUER = "sxb-vpn:access-control";
 export const ACCESS_TICKET_AUDIENCE = "sxb-vpn:mobile-access-state";
 const ACCESS_TICKET_KEY_LABEL = "SXB-VPN/mobile-access-state-ticket/v1";
 
-export interface MobileIdentity {
+export interface MobileIdentity extends SecurityClaims {
   userId: string;
   clientId: string;
   deviceId: string;
@@ -43,5 +44,6 @@ export function verifyAccessTicket(token: string, secret: string, deviceId: stri
       payload.exp - payload.iat > ACCESS_TICKET_MAX_SECONDS) {
     throw new jwt.JsonWebTokenError("Invalid access-state ticket claims");
   }
-  return { userId: payload.userId, clientId: payload.clientId, deviceId: payload.deviceId, exp: payload.exp };
+  return { userId: payload.userId, clientId: payload.clientId, deviceId: payload.deviceId, exp: payload.exp,
+    sid: payload.sid, sg: payload.sg, kid: payload.kid };
 }

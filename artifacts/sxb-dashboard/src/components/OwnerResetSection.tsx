@@ -49,13 +49,17 @@ const DATE_WITH_TIME: Intl.DateTimeFormatOptions = {
   year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
 };
 
-function Counts({ counts }: { counts: ResetCounts }) {
+function Counts({ counts }: { counts: ResetResult["deletedCounts"] }) {
   const { t, formatNumber } = useTranslation();
+  const recorded: Partial<ResetCounts> = counts;
   return <dl className="grid grid-cols-1 gap-x-6 gap-y-1 text-xs sm:grid-cols-2">
-    {RESET_COUNT_KEYS.map(key => <div key={key} className="flex justify-between gap-3">
-      <dt className="text-gray-400">{t(`operations.reset.counts.${key}`)}</dt>
-      <dd className="font-mono text-gray-200">{formatNumber(counts[key])}</dd>
-    </div>)}
+    {RESET_COUNT_KEYS.map(key => {
+      const value = recorded[key];
+      return <div key={key} className="flex justify-between gap-3">
+        <dt className="text-gray-400">{t(`operations.reset.counts.${key}`)}</dt>
+        <dd className="font-mono text-gray-200">{value === undefined ? t("operations.reset.countNotRecorded") : formatNumber(value)}</dd>
+      </div>;
+    })}
   </dl>;
 }
 function RetainedAccounts({ users }: { users: RetainedUsers }) {

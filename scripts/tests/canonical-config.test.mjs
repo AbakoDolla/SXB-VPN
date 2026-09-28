@@ -99,7 +99,7 @@ console.log('\n══ canonical-config — parse, normalisation, hash, chiffreme
   assert.equal(r2.canonical.method, 'aes-256-gcm');
   assert.equal(r2.canonical.host, '1.2.3.4');
 
-  const wg = `[Interface]\nPrivateKey = AAAAprivate\nAddress = 10.0.0.2/32\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = BBBBpublic\nEndpoint = wg.example.com:51820\nAllowedIPs = 0.0.0.0/0\nPersistentKeepalive = 25`;
+  const wg = `[Interface]\nPrivateKey = ${Buffer.alloc(32, 1).toString('base64')}\nAddress = 10.0.0.2/32\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = ${Buffer.alloc(32, 2).toString('base64')}\nEndpoint = wg.example.com:51820\nAllowedIPs = 0.0.0.0/0\nPersistentKeepalive = 25`;
   const r3 = parseImportedConfig(wg);
   assert.equal(r3.ok, true, r3.errors.join('|'));
   assert.equal(r3.sourceFormat, 'wireguard-conf');

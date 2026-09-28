@@ -11,6 +11,8 @@ export interface AccessFailure {
   subscriptionId?: string;
   error: string;
   message: string;
+  reason?: string;
+  preserveLocalData?: boolean;
 }
 
 type DatedAccess = { status?: string; expireAt?: Date | string | null };

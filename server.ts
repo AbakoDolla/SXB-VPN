@@ -89,7 +89,9 @@ async function startServer() {
   // available without an account, including during application maintenance.
   app.use(publicPrivacyRouter);
   app.use("/api/public", publicPrivacyRouter);
-  app.use(express.json());
+  app.use(express.json({ verify: (req, _res, body) => {
+    (req as typeof req & { rawBody?: Buffer }).rawBody = Buffer.from(body);
+  } }));
   app.use(express.urlencoded({ extended: true }));
 
   // Journal de diagnostic corrélé : aucun corps, jeton ni identifiant VPN n’est enregistré.

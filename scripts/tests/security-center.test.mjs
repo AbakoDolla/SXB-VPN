@@ -21,6 +21,7 @@ import { existsSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+import { runInNewContext } from 'node:vm';
 
 process.env.JWT_SECRET ||= 'secret-de-test-pour-le-centre-de-securite-0123456789';
 process.env.DASHBOARD_ORIGIN = 'https://vpnsxb.afrihall.com';
@@ -36,7 +37,69 @@ const lireSource = (relatif) => readFileSync(path.join(racine, relatif), 'utf8')
  * VRAI code plutôt qu'une réécriture de sa logique.
  */
 const sortie = path.join(racine, 'backend', '.sxb-security-test.cjs');
-const { build } = require('esbuild');
+const { build, transform } = require('esbuild');
+
+test('console polling preserves mutation errors, recovers load errors, and ignores obsolete unlocks', async () => {
+  const source = lireSource('artifacts/sxb-dashboard/src/components/SecurityCenterView.tsx');
+  const start = source.indexOf('  const loadConsole = useCallback(');
+  assert.ok(start > 0);
+  const callback = source.slice(start, source.indexOf('\n  useEffect(', start));
+  const draft = { version: 1, medium: 37, certificates: ['synthetic-certificate'] };
+  const state = { action: null, loading: null, policy: draft, offline: false, pending: undefined };
+  const authority = { current: 'synthetic-unlock' };
+  const env = {
+    useCallback: fn => fn,
+    fetchSecurityOverview: async () => {
+      await state.pending;
+      if (state.offline) throw new Error('synthetic offline');
+      return {};
+    },
+    fetchSecurityEvents: async () => ({ events: [] }),
+    fetchSecurityAudit: async () => ({ entries: [] }),
+    fetchSecurityPolicy: async () => ({ ...draft, version: 2 }),
+    filters: {}, DEFAULT_LIMIT: 50, eventsPage: null, unlockAuthority: authority,
+    policyDirty: { current: true },
+    setActionError: error => { state.action = error; },
+    setConsoleError: error => { state.loading = error; },
+    setPolicy: value => { state.policy = value; },
+    setOverview: () => {}, setEventsPage: () => {}, setAudit: () => {},
+    setCertificateInput: () => {}, setSelected: () => {},
+  };
+  const compiled = await transform(`module.exports = env => {
+    const { ${Object.keys(env).join(',')} } = env;
+    ${callback}
+    return loadConsole;
+  };`, { loader: 'ts', format: 'cjs' });
+  const module = { exports: null };
+  runInNewContext(compiled.code, { module });
+  const poll = module.exports(env);
+  for (const fallback of ['policyFailed', 'keyGrantFailed', 'revokeFailed']) {
+    const mutation = { fallback: `operations.security.${fallback}`, cause: new Error('synthetic mutation refusal') };
+    state.action = mutation;
+    await poll(authority.current);
+    assert.equal(state.action, mutation);
+    assert.equal(state.policy, draft);
+    state.offline = true;
+    await poll(authority.current);
+    assert.equal(state.action, mutation);
+    assert.equal(state.loading.cause.message, 'synthetic offline');
+    state.offline = false;
+    await poll(authority.current);
+    assert.equal(state.loading, null);
+    assert.equal(state.action, mutation);
+  }
+  let release;
+  state.pending = new Promise(resolve => { release = resolve; });
+  const delayed = poll(authority.current);
+  authority.current = 'synthetic-next-unlock';
+  const nextError = { fallback: 'synthetic-next-session-error' };
+  state.loading = nextError;
+  state.offline = true;
+  release();
+  await delayed;
+  assert.equal(state.loading, nextError);
+});
+
 await build({
   stdin: {
     contents: `

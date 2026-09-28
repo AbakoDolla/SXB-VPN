@@ -10,6 +10,7 @@ import {
   type DeviceAccessStatus, type SubscriptionAccessStatus,
 } from "./access-lifecycle";
 import type { MobileIdentity } from "./access-ticket";
+import { checkSession } from "./mobile-session-security";
 import { ACCESS_STATE_LIMITS, AccessStateHub, accessStateHub } from "./access-state-events";
 export { ACCESS_STATE_LIMITS, AccessWaitLimitError, AccessStateHub, accessStateHub } from "./access-state-events";
 
@@ -46,6 +47,7 @@ const subscriptionSelect = {
 
 export async function readMobileAccessSnapshot(identity: AccessCredential): Promise<MobileAccessSnapshot> {
   if (identity.exp * 1000 <= Date.now()) invalidMobileSession();
+  await checkSession(identity);
   const client = prisma
     ? await prisma.vpnClient.findUnique({
         where: { id: identity.clientId },

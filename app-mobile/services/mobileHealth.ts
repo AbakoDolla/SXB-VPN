@@ -77,7 +77,7 @@ export const MOBILE_HEALTH_HEARTBEAT_INTERVAL_MS = (() => {
 
 const STORAGE_KEY = '@sxb_mobile_health_pending_v1';
 const ALLOWED_PROTOCOLS = new Set([
-  'vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria2',
+  'vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria1', 'hysteria2',
   'ssh', 'ssh+payload', 'wireguard', 'tuic', 'singbox',
 ]);
 const SxbVpnNative = Platform.OS === 'android' ? NativeModules.SxbVpnNative as {
