@@ -172,9 +172,10 @@ describe('portée des comptes de moteur — auteur ou client servi', () => {
       'le client servi doit rester un rattachement valide, en plus de l’auteur',
     );
 
-    // Seuls les rôles cloisonnés sont restreints : le propriétaire, le
-    // super-administrateur et le support ne doivent rien perdre.
-    assert.match(portee, /if \(!estCloisonne\(requerant\?\.role \?\? null\)\) return null/);
+    assert.match(portee, /if \(voitTout\(requerant\?\.role\)\) return null/);
+    assert.match(portee, /if \(!estCloisonne\(requerant\?\.role \?\? null\)\) return prive/);
+    assert.match(portee, /AND: \[prive, \{ OR:/,
+      'auteur ou client servi reste soumis à la confidentialité OWNER');
   });
 
   it('les deux tables de moteur portent un auteur dans le schéma', () => {

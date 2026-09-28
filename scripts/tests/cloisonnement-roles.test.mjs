@@ -47,6 +47,7 @@ const OWNER = { userId: 'u-owner', role: 'OWNER' };
 const SUPER = { userId: 'u-super', role: 'SUPER_ADMIN' };
 const ADMIN_A = { userId: 'u-admin-a', role: 'ADMIN' };
 const ADMIN_B = { userId: 'u-admin-b', role: 'ADMIN' };
+const privacyDb = { user: { findMany: async () => [{ id: OWNER.userId }] } };
 
 /** Parc simulé : un client par provenance. */
 const PARC = [
@@ -89,23 +90,32 @@ test('le propriétaire voit tout, sans exception', async () => {
 });
 
 test('le filtre posé en base exclut le propriétaire pour les autres', async () => {
-  const filtreSuper = await portee.porteeClients(null, SUPER);
-  assert.deepEqual(filtreSuper, portee.FURTIVITE_OWNER);
+  const filtreSuper = await portee.porteeClients(privacyDb, SUPER);
+  assert.deepEqual(filtreSuper.AND[0], portee.FURTIVITE_OWNER);
   const serialise = JSON.stringify(filtreSuper);
   // Les deux rattachements sont bien exprimés côté base, et pas seulement en
   // mémoire : un `count()` ne passe jamais par un filtre appliqué après coup.
   assert.match(serialise, /"managedById":null/);
   assert.match(serialise, /"managedBy"/);
   assert.match(serialise, /"user"/);
+  assert.match(serialise, /"createdBy":\{"notIn":\["u-owner"\]\}/);
 });
 
 test('le filtre d’un administrateur porte son identifiant et la furtivité', async () => {
-  const filtre = await portee.porteeClients(null, ADMIN_A);
+  const filtre = await portee.porteeClients(privacyDb, ADMIN_A);
   const serialise = JSON.stringify(filtre);
   assert.match(serialise, /"managedById":"u-admin-a"/);
   // La furtivité reste posée même pour l'administrateur : elle ne dépend pas
   // du hasard qui veut que son identifiant diffère de celui du propriétaire.
   assert.match(serialise, /"not":"OWNER"/);
+});
+
+test('un échec de recherche OWNER ne retourne jamais une portée globale', async () => {
+  const db = { user: { findMany: async () => { throw new Error('lookup unavailable'); } } };
+  for (const identity of [SUPER, ADMIN_A]) {
+    await assert.rejects(portee.porteeClients(db, identity), /lookup unavailable/);
+    await assert.rejects(portee.porteeComptes(db, identity), /lookup unavailable/);
+  }
 });
 
 test('une identité sans compte n’ouvre jamais le parc', async () => {
@@ -126,7 +136,7 @@ test('seuls l’administrateur et le propriétaire estampillent leurs créations
 });
 
 test('la portée d’un forfait passe par son client', async () => {
-  const filtre = await portee.porteeClientsForfait(null, ADMIN_A);
+  const filtre = await portee.porteeClientsForfait(privacyDb, ADMIN_A);
   assert.ok(filtre && typeof filtre === 'object');
   assert.ok('client' in filtre, 'un forfait n’a pas de gestionnaire : il hérite de celui de son client');
   assert.equal(await portee.porteeClientsForfait(null, OWNER), null);
@@ -161,8 +171,10 @@ test('le journal d’activité suit le même compartiment', () => {
   const source = lireSource('server/routes/audit-logs.ts');
   // Sans cela, l'accueil d'un administrateur racontait les connexions et les
   // créations du super-administrateur.
-  assert.match(source, /role === "ADMIN"/);
-  assert.match(source, /visibleOwnerOnly: false/);
+  assert.match(source, /auditVisibility\(prisma, req\.user\)/);
+  const privacy = lireSource('server/services/owner-privacy.ts');
+  assert.match(privacy, /visibleOwnerOnly: false/);
+  assert.match(privacy, /requester\?\.role === 'SUPER_ADMIN' \? \{\} : \{ userId:/);
 });
 
 test('aucun rôle inférieur n’apprend que le propriétaire existe', () => {

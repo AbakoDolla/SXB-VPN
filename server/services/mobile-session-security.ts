@@ -175,9 +175,11 @@ export async function rotateBoundSession(req: Request, claims: BoundClaims & { e
   });
 }
 
-export async function revokeSecuritySession(tx: Prisma.TransactionClient, id: string, generation: number) {
+export async function revokeSecuritySession(
+  tx: Prisma.TransactionClient, id: string, generation: number, scope: Prisma.ActivationSessionWhereInput = {},
+) {
   const result = await tx.activationSession.updateMany({
-    where: { id, authGeneration: generation, authRevokedAt: null },
+    where: { id, authGeneration: generation, authRevokedAt: null, AND: scope },
     data: { authRevokedAt: new Date() },
   });
   return result.count === 1;

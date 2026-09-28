@@ -94,7 +94,8 @@ class Database {
         if (op === "lt") return current < operand;
         if (op === "lte") return current <= operand;
         if (op === "mode") return true;
-        if (op === "contains") return String(current).includes(operand);
+        if (op === "contains") return value.mode === "insensitive"
+          ? String(current).toLowerCase().includes(String(operand).toLowerCase()) : String(current).includes(operand);
         if (op === "startsWith") return typeof current === "string" && current.startsWith(operand);
         throw new Error(`Unsupported filter ${op}`);
       });
@@ -139,6 +140,7 @@ class Database {
       }
       return 0;
     });
+    if (args.skip) result = result.slice(args.skip);
     if (args.take != null) result = result.slice(0, args.take);
     return result.map(row => this.project(name, row, args, state));
   }
@@ -300,7 +302,7 @@ process.env.DATABASE_URL = "";
 const temporary = await mkdtemp(path.join(root, "backend", ".sxb-http-"));
 const bundlePath = path.join(temporary, "routes.cjs");
 const routeNames = ["devices", "clients", "subscriptions", "tokens", "vouchers", "mobile", "resellers", "users", "rbac", "auth", "sessions", "dashboard", "provision",
-  "vpn-profiles", "config-test", "ssh", "xray", "singbox", "payload", "app-register", "free-trial", "data-additions"];
+  "vpn-profiles", "config-test", "ssh", "xray", "singbox", "payload", "app-register", "free-trial", "data-additions", "security", "audit-logs"];
 const routeKey = name => name.replaceAll("-", "_");
 await build({
   stdin: {
@@ -308,7 +310,8 @@ await build({
       '\nexport { applyUsageDelta } from "./server/routes/mobile";\nexport * from "./server/services/profile-lock";' +
       '\nexport * from "./server/services/mobile-access-state";\nexport * from "./server/services/access-ticket";' +
       '\nexport { parseImportedConfig, canonicalJson, encryptCanonical, computeCanonicalHash } from "./server/services/canonical-config";' +
-      '\nexport { createApiRateLimiter } from "./server/middleware/rate-limit";',
+      '\nexport { createApiRateLimiter } from "./server/middleware/rate-limit";' +
+      '\nexport { issueSecurityUnlock } from "./server/services/security-gate";',
     resolveDir: root,
     loader: "ts",
   },

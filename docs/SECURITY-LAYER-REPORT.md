@@ -37,6 +37,72 @@ mesure independante du trafic** : un client completement hostile peut encore
 mentir sur les octets ou ne pas les rapporter. Les identifiants fournisseur
 peuvent rester persistants ; aucune rotation distante inexistante n'est promise.
 
+### Extension du Centre : investigation et confidentialite OWNER
+
+Cette evolution dashboard/backend n'exige ni migration SQL ni nouvelle APK.
+La preuve de livraison historique ci-dessus ne constitue pas une preuve de
+publication de cette evolution.
+
+- OWNER dispose de la vue complete. SUPER_ADMIN ouvre le Centre avec sa propre
+  preuve courte, mais ne recoit ni le compte OWNER, ni ses clients prives, ni les
+  revendeurs crees par OWNER et leur parc dans les listes de gestion.
+  ADMIN conserve son compartiment ; SUPPORT, RESELLER et CLIENT n'accedent pas
+  au Centre. Les revendeurs conservent leurs propres clients et leur acces
+  metier, meme lorsque leur agrement a ete cree par OWNER.
+- Le filtrage serveur precede recherche, pagination, compteurs, derniere date
+  d'alerte et acquittement. Les evenements lies uniquement par appareil ou
+  session sont egalement exclus. Les actions OWNER sur une session publique
+  restent privees grace au role enregistre dans les metadonnees.
+- Les anciens audits non marques mais rattaches a OWNER sont exclus des
+  lectures non-OWNER. Les audits et mouvements de quota sans auteur
+  attribuable sont reserves a OWNER par precaution. Un echec de resolution
+  d'appartenance retourne une erreur, pas une portee globale. Les journaux
+  sont conserves, jamais effaces pour masquer une action.
+- L'inventaire affiche et filtre les sessions, generations, appareils,
+  empreintes publiques, dates et IP observees, sans tokens, cles privees ni
+  etat de refresh. Il permet de consulter les alertes, de preparer une
+  autorisation de cle et de revoquer la generation courante apres confirmation.
+  La portee est recontrolee dans la mise a jour atomique de revocation.
+- Le journal et le flux d'alertes disposent de recherche, filtres et pagination.
+  L'export JSON contient uniquement la page affichee, pas l'ensemble du parc.
+  Les alertes peuvent etre acquittees puis rouvertes ; les identifiants
+  hors perimetre ne sont pas modifies.
+- Seul OWNER modifie la politique globale (seuils, poids, certificats).
+  SUPER_ADMIN la consulte en lecture seule. Root seul reste autorise,
+  Play reste facultatif, et les signaux locaux ne suspendent pas les comptes.
+- Le verrouillage manuel, l'expiration et le changement d'identite invalident
+  les reponses asynchrones de la console. Un refus du constructeur Notification
+  sur Android ne fait plus tomber la section : un message indique que les
+  notifications systeme sont indisponibles, et les alertes restent consultables.
+
+**Migration des appareils existants.** Un compte jamais active enregistre sa
+cle lors de sa premiere activation. Une activation avec la meme cle ne demande
+pas une nouvelle autorisation. Un compte deja active, sans cle ou presentant
+une cle differente, exige une autorisation de dix minutes liee a l'empreinte
+publique exacte. Dans le Centre, utiliser l'identifiant interne du client VPN,
+pas son token. Le remplacement d'une cle existante doit etre explicitement
+confirme apres verification de l'identite. Arreter le VPN et synchroniser
+la consommation avant le premier enrolement ; ne pas effacer les donnees.
+Cette evolution ne retire pas cette protection ni n'autorise automatiquement
+tous les anciens comptes.
+
+**Limites de confidentialite.** Les effets metier necessaires restent visibles
+aux interesses (quota courant, abonnement, fermeture de leur session), sans
+exposer le journal prive de l'auteur. Les comptes ADMIN n'ont pas de colonne
+d'auteur : on n'invente pas un rattachement OWNER absent du schema. Les anciens
+evenements orphelins sans aucune attribution fiable ne permettent pas de
+reconstituer retrospectivement leur proprietaire. Les comptes de role OWNER
+partagent la vue racine existante ; il ne s'agit pas d'un cloisonnement entre
+plusieurs OWNER. Cette protection applicative ne masque pas les traces aux
+operateurs disposant d'un acces direct a la base ou au serveur.
+
+Validation ciblee : routes HTTP reelles sur fixtures isolees, tests
+`owner-security-http.test.mjs`, `security-center.test.mjs`, contrats de portee,
+de quota et FR/EN ; runner PostgreSQL `security-layer-postgres.integration.mjs`
+sur une base dediee loopback ; preview locale `security-dashboard-preview.mjs`
+avec `?notification=android` pour reproduire le refus de l'API desktop.
+La preview ne contacte aucune API de production.
+
 ## B. Fichiers existants modifies
 
 Inventaire relatif a la base ci-dessus, hors caches d'outils et preuves temporaires.

@@ -17,6 +17,7 @@
  * lieu de tomber : le reste du tableau de bord continue de fonctionner.
  */
 import { Router, Response } from 'express';
+import type { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { logDbActivity, prisma } from '../database';
 import { AuthenticatedRequest, requireAuth } from '../middleware/auth';
@@ -25,6 +26,7 @@ import { readSecurityPolicy, writeSecurityPolicy } from '../services/security-po
 import { revokeSecuritySession, notifySessionRevoked } from '../services/mobile-session-security';
 import { porteeSousClient, porteeClients } from '../services/portee-donnees';
 import { digest } from '../services/mobile-proof';
+import { auditVisibility, securityEventVisibility } from '../services/owner-privacy';
 import {
   SECURITY_UNLOCK_SECONDS,
   SecurityGateError,
@@ -113,7 +115,7 @@ router.get('/gate', async (req: AuthenticatedRequest, res: Response) => {
       passkeys,
       rpId: relyingPartyId(),
       unlockSeconds: SECURITY_UNLOCK_SECONDS,
-      updatedAt: gate?.updatedAt ?? null,
+      updatedAt: isOwnerRequest(req) ? gate?.updatedAt ?? null : null,
     });
   } catch (error) {
     if (handleSecurityGateError(error, res)) return;
@@ -336,10 +338,11 @@ router.delete('/passkeys/:id', exigerOuverture, async (req: AuthenticatedRequest
 
 // ── Données du Centre ────────────────────────────────────────────────────────
 
-router.get('/overview', exigerOuverture, async (_req: AuthenticatedRequest, res: Response) => {
+router.get('/overview', exigerOuverture, async (req: AuthenticatedRequest, res: Response) => {
   try {
+    if (!prisma) throw new Error('DATABASE_REQUIRED');
     return res.json({
-      overview: await securityOverview(),
+      overview: await securityOverview(await securityEventVisibility(prisma, req.user)),
       severities: [...SECURITY_SEVERITIES],
       eventTypes: [...SECURITY_EVENT_TYPES],
     });
@@ -350,24 +353,76 @@ router.get('/overview', exigerOuverture, async (_req: AuthenticatedRequest, res:
 
 router.get('/events', exigerOuverture, async (req: AuthenticatedRequest, res: Response) => {
   try {
+    if (!prisma) throw new Error('DATABASE_REQUIRED');
     const filters = z.object({
       userId: z.string().max(200).optional(), deviceId: z.string().max(255).optional(),
       sessionId: z.string().max(200).optional(), from: z.string().datetime().optional(), to: z.string().datetime().optional(),
-    }).parse(req.query);
-    const acknowledged = req.query.acknowledged === 'true' ? true
-      : req.query.acknowledged === 'false' ? false : undefined;
+      search: z.string().trim().max(200).optional(),
+      riskLevel: z.enum(['NORMAL', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).optional(),
+      severity: z.enum(SECURITY_SEVERITIES).optional(), eventType: z.enum(SECURITY_EVENT_TYPES).optional(),
+      acknowledged: z.enum(['true', 'false']).optional(),
+      limit: z.coerce.number().int().min(1).max(200).default(25),
+      offset: z.coerce.number().int().min(0).max(1000000).default(0),
+    }).refine(value => !value.from || !value.to || Date.parse(value.from) <= Date.parse(value.to), 'INVALID_DATE_RANGE').parse(req.query);
     const page = await listSecurityEvents({
       ...filters,
-      severity: typeof req.query.severity === 'string' ? req.query.severity : undefined,
-      eventType: typeof req.query.eventType === 'string' ? req.query.eventType : undefined,
-      acknowledged,
-      limit: Number(req.query.limit),
-      offset: Number(req.query.offset),
-    });
+      acknowledged: filters.acknowledged === undefined ? undefined : filters.acknowledged === 'true',
+    }, await securityEventVisibility(prisma, req.user));
     return res.json(page);
   } catch (error) {
     if (error instanceof z.ZodError) return res.status(400).json({ error: 'INVALID_SECURITY_FILTER' });
     return res.status(503).json({ error: 'DB_UNAVAILABLE', code: 'DB_UNAVAILABLE' });
+  }
+});
+
+router.get('/sessions', exigerOuverture, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (!prisma) throw new Error('DATABASE_REQUIRED');
+    const { search, state, limit, offset } = z.object({
+      search: z.string().trim().max(200).optional(),
+      state: z.enum(['active', 'revoked', 'expired', 'legacy']).optional(),
+      limit: z.coerce.number().int().min(1).max(100).default(25),
+      offset: z.coerce.number().int().min(0).max(1000000).default(0),
+    }).parse(req.query);
+    const now = new Date();
+    const states: Record<string, Prisma.ActivationSessionWhereInput> = {
+      active: { authRevokedAt: null, authExpiresAt: { gt: now } },
+      revoked: { authRevokedAt: { not: null } },
+      expired: { authRevokedAt: null, authExpiresAt: { lte: now } },
+      legacy: { authRevokedAt: null, authExpiresAt: null },
+    };
+    const where: Prisma.ActivationSessionWhereInput = { AND: [
+      await porteeSousClient(prisma, req.user) ?? {},
+      ...(state ? [states[state]] : []),
+      ...(search ? [{ OR: [
+        { id: { contains: search, mode: 'insensitive' as const } },
+        { deviceId: { contains: search, mode: 'insensitive' as const } },
+        { client: { user: { name: { contains: search, mode: 'insensitive' as const } } } },
+      ] }] : []),
+    ] };
+    const [sessions, total] = await Promise.all([
+      prisma.activationSession.findMany({
+        where, take: limit, skip: offset, orderBy: [{ lastSync: 'desc' }, { id: 'desc' }],
+        select: {
+          id: true, deviceId: true, clientId: true, activationDate: true, lastSync: true,
+          authGeneration: true, authExpiresAt: true, authRevokedAt: true, ipAddress: true,
+          client: { select: {
+            deviceKeyId: true, enrollmentGrantExpiresAt: true,
+            user: { select: { id: true, name: true } },
+          } },
+        },
+      }),
+      prisma.activationSession.count({ where }),
+    ]);
+    return res.json({ sessions: sessions.map(session => ({
+      ...session,
+      state: session.authRevokedAt ? 'revoked' : !session.authExpiresAt ? 'legacy'
+        : session.authExpiresAt > now ? 'active' : 'expired',
+    })), total, limit, offset });
+  } catch (error) {
+    if (error instanceof z.ZodError) return res.status(400).json({ error: 'INVALID_SECURITY_FILTER' });
+    console.warn('[security] SESSION_INVENTORY_UNAVAILABLE');
+    return res.status(503).json({ error: 'SECURITY_UNAVAILABLE' });
   }
 });
 
@@ -376,6 +431,7 @@ router.get('/policy', exigerOuverture, async (_req, res) => {
       catch { return res.status(503).json({ error: 'SECURITY_POLICY_UNAVAILABLE' }); }
     });
     router.put('/policy', exigerOuverture, async (req: AuthenticatedRequest, res) => {
+      if (!isOwnerRequest(req)) return res.status(403).json({ error: 'errors.auth.forbidden', code: 'OWNER_ONLY' });
       try {
         const policy = await writeSecurityPolicy(req.body);
         await logDbActivity(req.user!.userId, `Security policy version ${policy.version}`, 'warning', req.ip);
@@ -393,11 +449,12 @@ router.get('/policy', exigerOuverture, async (_req, res) => {
       try {
         if (!prisma) throw new Error('DATABASE_REQUIRED');
         const { generation } = z.object({ generation: z.number().int().positive() }).strict().parse(req.body);
+        const scope = await porteeSousClient(prisma, req.user) ?? {};
         const session = await prisma.activationSession.findFirst({
-          where: { id: req.params.id, ...await porteeSousClient(prisma, req.user) },
+          where: { id: req.params.id, ...scope },
         });
         if (!session) return res.status(404).json({ error: 'NOT_FOUND' });
-        const revoked = await prisma.$transaction(tx => revokeSecuritySession(tx, session.id, generation));
+        const revoked = await prisma.$transaction(tx => revokeSecuritySession(tx, session.id, generation, scope));
         if (revoked) notifySessionRevoked(session.clientId);
         await recordSecurityEvent({
           eventType: 'SESSION_REVOKED', severity: 'warning', sessionId: session.id, sessionGeneration: generation,
@@ -429,12 +486,17 @@ router.get('/policy', exigerOuverture, async (_req, res) => {
         return res.status(503).json({ error: 'SECURITY_UNAVAILABLE' });
       }
     });
-const acknowledgeSchema = z.object({ ids: z.array(z.string().uuid()).min(1).max(200) });
+const acknowledgeSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(200),
+  acknowledged: z.boolean().default(true),
+}).strict();
 
 router.post('/events/acknowledge', exigerOuverture, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { ids } = acknowledgeSchema.parse(req.body);
-    const acknowledged = await acknowledgeSecurityEvents(ids, req.user!.userId);
+    if (!prisma) throw new Error('DATABASE_REQUIRED');
+    const { ids, acknowledged: nextState } = acknowledgeSchema.parse(req.body);
+    const acknowledged = await acknowledgeSecurityEvents(ids, req.user!.userId, await securityEventVisibility(prisma, req.user), nextState);
+    if (acknowledged) await logDbActivity(req.user!.userId, `Security events ${nextState ? 'acknowledged' : 'reopened'}: ${acknowledged}`, 'info', req.ip);
     return res.json({ acknowledged });
   } catch (error) {
     if (error instanceof z.ZodError) {
@@ -446,27 +508,38 @@ router.post('/events/acknowledge', exigerOuverture, async (req: AuthenticatedReq
 
 /** Journal d'audit — ce que les administrateurs ont FAIT. */
 router.get('/audit', exigerOuverture, async (req: AuthenticatedRequest, res: Response) => {
-  if (!prisma) return res.json({ entries: [], total: 0 });
+  if (!prisma) return res.status(503).json({ error: 'DB_UNAVAILABLE' });
   try {
-    const limitBrut = Number(req.query.limit);
-    const limit = Number.isSafeInteger(limitBrut) && limitBrut > 0 ? Math.min(limitBrut, 200) : 50;
+    const { limit, offset, search, type, ownerOnly } = z.object({
+      limit: z.coerce.number().int().min(1).max(200).default(25),
+      offset: z.coerce.number().int().min(0).max(1000000).default(0),
+      search: z.string().trim().max(200).optional(), type: z.enum(['info', 'warning', 'danger', 'success']).optional(),
+      ownerOnly: z.enum(['true', 'false']).optional(),
+    }).parse(req.query);
     // Les entrées réservées au propriétaire restent invisibles au
     // super-administrateur, exactement comme ailleurs dans le produit.
-    const where = isOwnerRequest(req) ? {} : { visibleOwnerOnly: false };
+    const where = { AND: [
+      await auditVisibility(prisma, req.user),
+      ...(search ? [{ action: { contains: search, mode: 'insensitive' as const } }] : []),
+      ...(type ? [{ type }] : []),
+      ...(ownerOnly === 'true' ? [{ OR: [{ visibleOwnerOnly: true }, { user: { role: { name: 'OWNER' } } }] }] : []),
+    ] };
     const [entries, total] = await Promise.all([
-      (prisma as any).auditLog.findMany({
+      prisma.auditLog.findMany({
         where,
-        orderBy: { timestamp: 'desc' },
-        take: limit,
+        orderBy: [{ timestamp: 'desc' }, { id: 'desc' }],
+        take: limit, skip: offset,
         select: {
-          id: true, action: true, type: true, timestamp: true,
+          id: true, action: true, type: true, timestamp: true, ipAddress: true,
+          ...(isOwnerRequest(req) ? { visibleOwnerOnly: true } : {}),
           user: { select: { name: true, email: true } },
         },
       }),
-      (prisma as any).auditLog.count({ where }),
+      prisma.auditLog.count({ where }),
     ]);
-    return res.json({ entries, total, limit });
-  } catch {
+    return res.json({ entries, total, limit, offset });
+  } catch (error) {
+    if (error instanceof z.ZodError) return res.status(400).json({ error: 'INVALID_SECURITY_FILTER' });
     return res.status(503).json({ error: 'DB_UNAVAILABLE', code: 'DB_UNAVAILABLE' });
   }
 });

@@ -12,6 +12,7 @@ import { porteeSousClient } from "../services/portee-donnees";
 import { dissocierAccesClient, synchroniserEtatAccesClient } from "../services/client-access-state";
 import { revokeSecuritySession, notifySessionRevoked } from "../services/mobile-session-security";
 import { recordSecurityEvent } from "../services/security-events";
+import { securityEventVisibility } from "../services/owner-privacy";
 
 const router = Router();
 
@@ -87,7 +88,7 @@ router.get("/:id/security-events", requireAuth, requirePermission("clients.view"
       where: { id: req.params.id, ...await porteeSessions(req) }, select: { id: true },
     });
     if (!session) return res.status(404).json({ error: "Session introuvable" });
-    const where = { sessionId: session.id };
+    const where = { AND: [{ sessionId: session.id }, await securityEventVisibility(prisma, req.user)] };
     const [events, total] = await Promise.all([
       prisma.securityEvent.findMany({
         where, orderBy: { createdAt: "desc" }, take: 50, skip: offset,
@@ -115,7 +116,7 @@ router.post("/:id/security-revoke", requireAuth, interdireMutationSupport(), req
         where: { id: req.params.id, ...scope }, include: { client: { select: { userId: true } } },
       });
       if (!session) return null;
-      return { session, revoked: await revokeSecuritySession(tx, session.id, generation) };
+      return { session, revoked: await revokeSecuritySession(tx, session.id, generation, scope) };
     });
     if (!result) return res.status(404).json({ error: "Session introuvable" });
     if (result.revoked) notifySessionRevoked(result.session.clientId);

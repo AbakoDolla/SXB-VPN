@@ -22,10 +22,18 @@ const bundle = await require('esbuild').build({
     import { createRoot } from "react-dom/client";
     import { Toaster } from "sonner";
     import SecurityCenterView from "./src/components/SecurityCenterView";
+    import ErrorBoundary from "./src/components/ErrorBoundary";
     import SessionsView from "./src/components/SessionsView";
     import { I18nProvider, useTranslation } from "./src/contexts/I18nContext";
     import { installResponsiveTables } from "./src/lib/responsiveTables";
     const interval = window.setInterval.bind(window);
+    if (new URLSearchParams(location.search).get("notification") === "android") {
+      class AndroidNotification {
+        static permission = "granted";
+        constructor() { throw new TypeError("Illegal constructor. Use ServiceWorkerRegistration.showNotification() instead."); }
+      }
+      Object.defineProperty(window, "Notification", { configurable: true, value: AndroidNotification });
+    }
     window.setInterval = (callback, delay, ...args) => {
       if (delay === 30000) window.fixtureSecurityPoll = callback;
       return interval(callback, delay, ...args);
@@ -45,11 +53,11 @@ const bundle = await require('esbuild').build({
             const value = event.target.value;
             const response = await fetch("/fixture/role", {method:"POST",body:JSON.stringify({role:value})});
             if (!response.ok) throw new Error("Fixture role failed"); setRole(value);
-          }}>{["OWNER","ADMIN","SUPPORT"].map(value => <option key={value}>{value}</option>)}</select>
+          }}>{["OWNER","SUPER_ADMIN","ADMIN","SUPPORT"].map(value => <option key={value}>{value}</option>)}</select>
         </header>
-        {view === "security" ? <SecurityCenterView key={role} currentUserRole={role}
-          currentUser={{id:"synthetic-owner",name:"Synthetic operator",email:"synthetic@example.invalid",role}} /> :
-          <SessionsView key={role} />}
+        <ErrorBoundary resetKey={role + view}>{view === "security" ? <SecurityCenterView key={role} currentUserRole={role}
+          currentUser={{id:"synthetic-" + role.toLowerCase(),name:"Synthetic operator",email:"synthetic@example.invalid",role}} /> :
+          <SessionsView key={role} />}</ErrorBoundary>
         <Toaster theme="dark" />
       </main>;
     }
@@ -69,6 +77,29 @@ const event = { id: 'synthetic-event', eventType: 'VPN_REVOKED', severity: 'info
   sessionGeneration: 7, connectionId: 'synthetic-connection', policyVersion: 1, riskLevel: 'LOW',
   actionTaken: 'CONNECTION_CLOSED', metadata: null, ipHash: null, appVersion: 'test',
   acknowledged: false, acknowledgedAt: null, createdAt: now };
+const securityEvents = Array.from({ length: 56 }, (_, index) => ({
+  ...event, id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+  userId: index >= 50 ? 'synthetic-owner' : event.userId,
+  severity: index % 3 === 0 ? 'critical' : index % 3 === 1 ? 'warning' : 'info',
+  riskLevel: index % 3 === 0 ? 'CRITICAL' : index % 3 === 1 ? 'HIGH' : 'LOW',
+  metadata: JSON.stringify({ evidence: 'server_authorized', reason: `SYNTHETIC investigation ${index + 1}`, role: index >= 50 ? 'OWNER' : 'CLIENT' }),
+  createdAt: new Date(Date.now() - index * 60_000).toISOString(),
+}));
+const securitySessions = Array.from({ length: 31 }, (_, index) => ({
+  id: index === 0 ? 'synthetic-session' : `synthetic-session-${index}`,
+  clientId: `synthetic-client-${index}`, deviceId: `SYNTHETIC-DEVICE-${index}`,
+  activationDate: now, lastSync: now, authGeneration: 7, authRevokedAt: null,
+  authExpiresAt: new Date(Date.now() + 600_000).toISOString(), ipAddress: '192.0.2.1',
+  client: { deviceKeyId: signer, enrollmentGrantExpiresAt: null,
+    user: { id: index >= 27 ? 'synthetic-owner' : `synthetic-client-user-${index}`, name: `SYNTHETIC ${index >= 27 ? 'PRIVATE OWNER' : 'client'} ${index + 1}` } },
+}));
+const auditEntries = Array.from({ length: 38 }, (_, index) => ({
+  id: `synthetic-audit-${index}`, action: `SYNTHETIC ${index >= 30 ? 'PRIVATE OWNER' : 'operator'} action ${index + 1}`,
+  user: { id: index >= 30 ? 'synthetic-owner' : 'synthetic-super', name: index >= 30 ? 'PRIVATE OWNER' : 'Synthetic operator', email: 'synthetic@example.invalid' },
+  timestamp: new Date(Date.now() - index * 60_000).toISOString(), type: index % 2 ? 'warning' : 'info',
+  ipAddress: '192.0.2.1', visibleOwnerOnly: index >= 30,
+}));
+let failReads = false;
 const assets = new Map([
   ['/', ['text/html', '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Local synthetic security fixture</title><link rel="stylesheet" href="/preview.css"></head><body style="background:#07090e;color:#eee"><div id="root"></div><script type="module" src="/preview.js"></script></body></html>']],
   ['/preview.js', ['text/javascript', bundle.outputFiles[0].contents]],
@@ -94,36 +125,81 @@ const server = http.createServer(async (request, response) => {
       if (Buffer.byteLength(raw) > 65536) return send(413, { error: 'FIXTURE_BODY_TOO_LARGE' });
     }
     const body = raw ? JSON.parse(raw) : {};
+    if (route === '/fixture/reset') {
+      role = 'OWNER'; failReads = false; revoked = false;
+      securityEvents.forEach(item => { item.acknowledged = false; item.acknowledgedAt = null; });
+      securitySessions.forEach(item => { item.authRevokedAt = null; });
+      return send(200, { synthetic: true });
+    }
     if (route === '/fixture/role') { role = body.role; return send(200, { synthetic: true }); }
-    if (route.startsWith('/xapi/security/') && role !== 'OWNER') return send(404, { error: 'errors.not_found' });
+    if (route === '/fixture/failure') { failReads = body.enabled === true; return send(200, { synthetic: true }); }
+    if (route.startsWith('/xapi/security/') && !['OWNER', 'SUPER_ADMIN'].includes(role)) return send(404, { error: 'errors.not_found' });
     if (route === '/xapi/security/gate') return send(200, {
-      configured: true, canConfigure: true, unlocked: false, unlockExpiresAt: null,
+      configured: true, canConfigure: role === 'OWNER', unlocked: false, unlockExpiresAt: null,
       passkeyVerified: false, passkeyRequired: false, passkeys: [], rpId: '127.0.0.1', unlockSeconds: 900, updatedAt: now,
     });
     if (route === '/xapi/security/gate/unlock') return body.password === 'synthetic-fixture'
       ? send(200, { step: 'unlocked', unlockToken: 'local-test-unlock', expiresAt: new Date(Date.now() + 900000).toISOString(), passkeyVerified: false })
       : send(403, { error: 'errors.auth.forbidden' });
     if (route.startsWith('/xapi/security/') && request.headers['x-sxb-security-unlock'] !== 'local-test-unlock') return send(423, { error: 'SECURITY_LOCKED' });
+    if (failReads && route.startsWith('/xapi/security/') && request.method === 'GET') return send(503, { error: 'SECURITY_UNAVAILABLE' });
+    const visibleEvents = securityEvents.filter(item => role === 'OWNER' || item.userId !== 'synthetic-owner');
+    const page = items => {
+      const limit = Number(url.searchParams.get('limit') || 25), offset = Number(url.searchParams.get('offset') || 0);
+      return { items: items.slice(offset, offset + limit), total: items.length, limit, offset };
+    };
     if (route === '/xapi/security/overview') return send(200, {
-      overview: { total: 1, critical: 0, warning: 0, info: 1, unacknowledged: event.acknowledged ? 0 : 1, last24h: 1, latestAt: now },
+      overview: { total: visibleEvents.length, critical: visibleEvents.filter(item => item.severity === 'critical').length,
+        warning: visibleEvents.filter(item => item.severity === 'warning').length, info: visibleEvents.filter(item => item.severity === 'info').length,
+        unacknowledged: visibleEvents.filter(item => !item.acknowledged).length, last24h: visibleEvents.length, latestAt: now },
       severities: ['info', 'warning', 'critical'], eventTypes: ['VPN_REVOKED', 'APP_INTEGRITY_FAILED', 'DEVICE_MISMATCH', 'TOKEN_REPLAY'],
     });
     if (route === '/xapi/security/policy') {
       if (request.method === 'PUT') {
+        if (role !== 'OWNER') return send(403, { error: 'errors.auth.forbidden' });
         if (body.version !== policy.version + 1) return send(409, { error: 'SECURITY_POLICY_VERSION_CONFLICT' });
         policy = body;
       }
       return send(200, policy);
     }
-    if (route === '/xapi/security/audit') return send(200, { entries: [], total: 0, limit: 50 });
-    if (route === '/xapi/security/events/acknowledge') { event.acknowledged = true; return send(200, { acknowledged: 1 }); }
+    if (route === '/xapi/security/audit') {
+      const result = page(auditEntries.filter(item => (role === 'OWNER' || !item.visibleOwnerOnly)
+        && (url.searchParams.get('ownerOnly') !== 'true' || item.visibleOwnerOnly)
+        && (!url.searchParams.get('type') || item.type === url.searchParams.get('type'))
+        && JSON.stringify(item).toLowerCase().includes((url.searchParams.get('search') || '').toLowerCase())));
+      const { items, ...meta } = result;
+      return send(200, { entries: items, ...meta });
+    }
+    if (route === '/xapi/security/sessions') {
+      const rows = securitySessions.filter(item => role === 'OWNER' || item.client.user.id !== 'synthetic-owner')
+        .map(item => ({ ...item, state: item.authRevokedAt ? 'revoked' : 'active' }))
+        .filter(item => (!url.searchParams.get('state') || item.state === url.searchParams.get('state'))
+          && JSON.stringify(item).toLowerCase().includes((url.searchParams.get('search') || '').toLowerCase()));
+      const { items, ...meta } = page(rows);
+      return send(200, { sessions: items, ...meta });
+    }
+    if (route === '/xapi/security/events/acknowledge') {
+      const changed = visibleEvents.filter(item => body.ids.includes(item.id));
+      changed.forEach(item => { item.acknowledged = body.acknowledged !== false; });
+      return send(200, { acknowledged: changed.length });
+    }
     if (route === '/xapi/security/events') {
-      const matches = ['sessionId', 'deviceId', 'userId', 'eventType', 'severity'].every(key => !url.searchParams.get(key) || event[key] === url.searchParams.get(key));
-      return send(200, { events: matches ? [event] : [], total: matches ? 1 : 0, limit: 25, offset: 0 });
+      const matches = visibleEvents.filter(item =>
+        ['sessionId', 'deviceId', 'userId', 'eventType', 'severity', 'riskLevel', 'acknowledged'].every(key => !url.searchParams.get(key) || String(item[key]) === url.searchParams.get(key))
+        && (!url.searchParams.get('from') || Date.parse(item.createdAt) >= Date.parse(url.searchParams.get('from')))
+        && (!url.searchParams.get('to') || Date.parse(item.createdAt) <= Date.parse(url.searchParams.get('to')))
+        && JSON.stringify(item).toLowerCase().includes((url.searchParams.get('search') || '').toLowerCase()));
+      const { items, ...meta } = page(matches);
+      return send(200, { events: items, ...meta });
     }
     if (/\/authorize-key$/.test(route)) return route.includes('/missing/')
       ? send(404, { error: 'errors.not_found' }) : send(200, { authorized: true, expiresInSeconds: 600 });
-    if (/\/(revoke|security-revoke)$/.test(route)) { revoked = body.generation === 7; return send(200, { revoked }); }
+    if (/\/(revoke|security-revoke)$/.test(route)) {
+      const session = securitySessions.find(item => route.includes(`/${item.id}/`));
+      revoked = !!session && body.generation === session.authGeneration && (role === 'OWNER' || session.client.user.id !== 'synthetic-owner');
+      if (revoked) session.authRevokedAt = new Date().toISOString();
+      return send(200, { revoked });
+    }
     if (route === '/xapi/sessions') return send(200, { sessions: [{
       id: 'synthetic-session', clientId: 'synthetic-client', clientName: 'SYNTHETIC client',
       clientToken: 'SXB-USER-SYNTHETIC', deviceId: 'synthetic-device', activationDate: now, expirationDate: null,

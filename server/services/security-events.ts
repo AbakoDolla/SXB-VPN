@@ -168,6 +168,8 @@ export interface SecurityEventQuery {
   sessionId?: string;
   from?: string;
   to?: string;
+  riskLevel?: string;
+  search?: string;
 }
 
 export function normaliserPagination(query: SecurityEventQuery) {
@@ -180,8 +182,8 @@ export function normaliserPagination(query: SecurityEventQuery) {
   return { limit, offset };
 }
 
-export function construireFiltre(query: SecurityEventQuery): Record<string, unknown> {
-  const where: Record<string, unknown> = {};
+export function construireFiltre(query: SecurityEventQuery): Prisma.SecurityEventWhereInput {
+  const where: Prisma.SecurityEventWhereInput = {};
   if (SECURITY_SEVERITIES.includes(query.severity as any)) where.severity = query.severity;
   if (SECURITY_EVENT_TYPES.includes(query.eventType as any)) where.eventType = query.eventType;
   if (query.acknowledged === true || query.acknowledged === false) where.acknowledged = query.acknowledged;
@@ -192,6 +194,10 @@ export function construireFiltre(query: SecurityEventQuery): Record<string, unkn
     ...(query.from ? { gte: new Date(query.from) } : {}),
     ...(query.to ? { lte: new Date(query.to) } : {}),
   };
+  if (query.riskLevel) where.riskLevel = query.riskLevel;
+  if (query.search) where.OR = ['id', 'userId', 'deviceId', 'sessionId', 'connectionId', 'actionTaken', 'metadata'].map(key => ({
+    [key]: { contains: query.search, mode: 'insensitive' },
+  }));
   return where;
 }
 
@@ -207,15 +213,15 @@ const ACTIONS_HERITEES = new Map<string, string>([
 ]);
 
 /** Page d'événements, la plus récente d'abord, avec son total filtré. */
-export async function listSecurityEvents(query: SecurityEventQuery) {
-  if (!prisma) return { events: [], total: 0, limit: SECURITY_EVENTS_PAGE_SIZE, offset: 0 };
+export async function listSecurityEvents(query: SecurityEventQuery, visibility: Prisma.SecurityEventWhereInput = {}) {
+  if (!prisma) throw new Error('SECURITY_DATABASE_REQUIRED');
   const { limit, offset } = normaliserPagination(query);
-  const where = construireFiltre(query);
+  const where = { AND: [visibility, construireFiltre(query)] };
   const [events, total] = await Promise.all([
-    (prisma as any).securityEvent.findMany({
-      where, orderBy: { createdAt: 'desc' }, take: limit, skip: offset,
+    prisma.securityEvent.findMany({
+      where, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: limit, skip: offset,
     }),
-    (prisma as any).securityEvent.count({ where }),
+    prisma.securityEvent.count({ where }),
   ]);
   const lisibles = events.map((evenement: any) => (
     evenement?.actionTaken && ACTIONS_HERITEES.has(evenement.actionTaken)
@@ -226,16 +232,14 @@ export async function listSecurityEvents(query: SecurityEventQuery) {
 }
 
 /** Compteurs de l'aperçu. Une seule lecture groupée, pas une par carte. */
-export async function securityOverview() {
-  if (!prisma) {
-    return { total: 0, critical: 0, warning: 0, info: 0, unacknowledged: 0, last24h: 0, latestAt: null };
-  }
+export async function securityOverview(visibility: Prisma.SecurityEventWhereInput = {}) {
+  if (!prisma) throw new Error('SECURITY_DATABASE_REQUIRED');
   const depuis24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
   const [parGravite, unacknowledged, last24h, dernier] = await Promise.all([
-    (prisma as any).securityEvent.groupBy({ by: ['severity'], _count: { _all: true } }),
-    (prisma as any).securityEvent.count({ where: { acknowledged: false } }),
-    (prisma as any).securityEvent.count({ where: { createdAt: { gte: depuis24h } } }),
-    (prisma as any).securityEvent.findFirst({ orderBy: { createdAt: 'desc' }, select: { createdAt: true } }),
+    prisma.securityEvent.groupBy({ by: ['severity'], where: visibility, _count: { _all: true } }),
+    prisma.securityEvent.count({ where: { AND: [visibility, { acknowledged: false }] } }),
+    prisma.securityEvent.count({ where: { AND: [visibility, { createdAt: { gte: depuis24h } }] } }),
+    prisma.securityEvent.findFirst({ where: visibility, orderBy: { createdAt: 'desc' }, select: { createdAt: true } }),
   ]);
   const compte = (gravite: string) =>
     Number(parGravite.find((ligne: any) => ligne.severity === gravite)?._count?._all ?? 0);
@@ -251,11 +255,13 @@ export async function securityOverview() {
 }
 
 /** Marque des alertes comme traitées. Rend le nombre réellement modifié. */
-export async function acknowledgeSecurityEvents(ids: string[], adminId: string): Promise<number> {
-  if (!prisma || ids.length === 0) return 0;
-  const result = await (prisma as any).securityEvent.updateMany({
-    where: { id: { in: ids.slice(0, SECURITY_EVENTS_MAX_PAGE_SIZE) }, acknowledged: false },
-    data: { acknowledged: true, acknowledgedAt: new Date(), acknowledgedById: adminId },
+export async function acknowledgeSecurityEvents(
+  ids: string[], adminId: string, visibility: Prisma.SecurityEventWhereInput = {}, acknowledged = true,
+): Promise<number> {
+  if (!prisma) throw new Error('SECURITY_DATABASE_REQUIRED');
+  const result = await prisma.securityEvent.updateMany({
+    where: { AND: [visibility, { id: { in: ids.slice(0, SECURITY_EVENTS_MAX_PAGE_SIZE) }, acknowledged: !acknowledged }] },
+    data: { acknowledged, acknowledgedAt: acknowledged ? new Date() : null, acknowledgedById: acknowledged ? adminId : null },
   });
   return result.count;
 }
