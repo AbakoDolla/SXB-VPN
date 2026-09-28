@@ -45,6 +45,7 @@ Inventaire relatif a la base ci-dessus, hors caches d'outils et preuves temporai
 .github\workflows\build-android.yml
 .github\workflows\deploy-vps.yml
 .github\workflows\verification-pr.yml
+.github\workflows\vps-audit.yml
 README.md
 app-mobile\app\activate.tsx
 app-mobile\contexts\AuthContext.tsx
@@ -131,9 +132,11 @@ backend\prisma\backend-rollout-compat.sql
 docs\SECURITY-LAYER-REPORT.md
 prisma\security-layer.sql
 scripts\backend-migrate.cjs
+scripts\backend-preflight.cjs
 scripts\check-backend-cron.cjs
 scripts\tests\backend-migration.test.mjs
 scripts\tests\backend-migration-postgres.integration.mjs
+scripts\tests\backend-preflight.test.mjs
 scripts\tests\security-dashboard-preview.mjs
 scripts\tests\security-ci-harness.test.mjs
 scripts\tests\security-layer-postgres.integration.mjs
@@ -729,6 +732,9 @@ preexistant du catalogue pnpm n'a pas ete corrige en regenerant le lockfile.
 
 Preparation backend (uniquement apres autorisation explicite de l'operateur ;
 ces commandes de deploiement n'ont pas ete executees contre la production) :
+
+Preflight MANUEL : `gh workflow run vps-audit.yml --ref <SHA-approuve> -f mode=backend-preflight`.
+Lecture seule, sans audit historique/DB/installation : SHA checkout (pas preuve du bundle actif), outils, espace, permissions du repertoire existant et daemon PM2 (pas sante backend), puis guard cron exact ; observations uniquement, readiness non evaluee, aucune sauvegarde creee.
 
 ```powershell
 # Lecture seule ; DATABASE_URL vient de l'environnement ou du .env du checkout.
