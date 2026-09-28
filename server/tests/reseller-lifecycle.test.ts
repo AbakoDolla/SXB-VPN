@@ -523,11 +523,16 @@ describe("unicité cloisonnée des configurations VPN", () => {
     assert.ok(sql.includes("IF NOT EXISTS ("));
   });
 
-  it("applique la migration au déploiement, avant db push", () => {
+  it("applique la migration au déploiement avant le contrôle readonly et la publication", () => {
     const workflow = readFileSync(new URL("../../.github/workflows/deploy-vps.yml", import.meta.url), "utf8");
-    const etape = workflow.indexOf("20260920220000_vpn_profile_uuid_scope");
+    const gate = readFileSync(new URL("../services/backend-migration.ts", import.meta.url), "utf8");
+    assert.ok(gate.includes("20260920220000_vpn_profile_uuid_scope"));
+    assert.ok(gate.indexOf("for (const migration of BACKEND_MIGRATIONS)") <
+      gate.indexOf("await checkBackendSchema(options)"));
+    const etape = workflow.indexOf("node scripts/backend-migrate.cjs prepare");
     assert.ok(etape > 0);
-    assert.ok(etape < workflow.indexOf("prisma/build/index.js db push"));
+    assert.ok(etape < workflow.indexOf("mv .sxb-release/server.cjs dist/server.cjs"));
+    assert.doesNotMatch(workflow, /db\s+push/);
   });
 
   it("rend la collision d'identifiant explicite au lieu d'un 500 opaque", () => {
@@ -829,7 +834,8 @@ describe("gardes posées sur les routes", () => {
 
   it("confirme la première activation et transforme les collisions uniques en 409", () => {
     const mobile = lire("../routes/mobile.ts");
-    assert.ok(mobile.includes('import { CODES_ACTIVATION, evaluerActivation }'));
+    assert.ok(mobile.includes('import { CODES_ACTIVATION, evaluerActivation, lockActivationClaim }'));
+    assert.ok(mobile.includes('await lockActivationClaim(tx, client, decision.deviceId!)'));
     assert.ok(mobile.includes('decision.action === "already_bound" && !client.activatedAt'));
     assert.ok(mobile.includes('updateError?.code === "P2002"'));
     assert.ok(mobile.includes("CODES_ACTIVATION.DEVICE_CLAIMED"));

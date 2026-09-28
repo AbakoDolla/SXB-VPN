@@ -18,7 +18,7 @@ import { compterConnectes, PRESENCE_WINDOW_MINUTES } from "../services/vpn-prese
 import { getActiveAnnouncements } from "./announcements";
 import { getMobileAppUpdate, installedVersionCodeFromHeaders, toMobileAppVersion } from "../services/app-update";
 import { executerMutationQuota, PlafondQuotaDepasse } from "../services/reseller-quota";
-import { CODES_ACTIVATION, evaluerActivation } from "../services/device-activation";
+import { CODES_ACTIVATION, evaluerActivation, lockActivationClaim } from "../services/device-activation";
 import {
   chargerFicheProprietaireClient,
   chargerFicheRevendeur,
@@ -29,6 +29,9 @@ import {
   VoucherRedemptionError,
 } from "../services/voucher-redemption";
 import { forfaitsEssaiDuClient } from "../services/free-trial-marks";
+import { activateBoundSession, consumeSessionProof } from "../services/mobile-session-security";
+import { updateMobileConnection } from "../services/mobile-connections";
+import { consumeProof, proofFor, securityFailure, type VerifiedProof } from "../services/mobile-proof";
 
 // ── AES-256-CBC decrypt (same key as vpn-profiles.ts) ─────────────────────────
 const ENC_ALGO = "aes-256-cbc";
@@ -174,6 +177,8 @@ export async function applyUsageDelta(
   uploadBytes: bigint = 0n,
   deviceId: string | null = null,
   attribution?: "unlinked",
+  proof?: VerifiedProof,
+  authority?: import('../services/mobile-session-security').BoundClaims,
 ): Promise<UsageDeltaResult> {
   // Garde anti-abus : rejet si <= 0 ou > 5 Go par appel
   const MAX_DELTA = BigInt(MAX_USAGE_REPORT_BYTES);
@@ -185,7 +190,7 @@ export async function applyUsageDelta(
 
   // Idempotence : déduplication sur (sessionId, seq)
   const reportKey = sessionId && seq !== undefined ? `${clientId}:${sessionId}:${seq}` : null;
-  if (reportKey) {
+  if (reportKey && !proof) {
     const pending = pendingReports.get(reportKey);
     if (pending) {
       const result = await pending;
@@ -204,6 +209,8 @@ export async function applyUsageDelta(
   let ambiguousSubscription = false;
   if (prisma) {
     await (prisma as any).$transaction(async (tx: any) => {
+      if (authority?.sid) await consumeSessionProof(tx, authority, proof);
+      else await consumeProof(tx, proof);
       if (durableKey) {
         const receipt = await tx.trafficUsage.findUnique?.({
           where: { reportKey: durableKey }, select: { accountId: true },
@@ -237,7 +244,7 @@ export async function applyUsageDelta(
           where: { id: subId, clientId },
           data: { quotaUsed: { increment: deltaBytes } },
         });
-        if (updated.count !== 1) {
+        if (updated.count !== 1 && !authority?.sid) {
           resolvedSubscriptionId = null;
           return;
         }
@@ -315,6 +322,10 @@ export async function applyUsageDelta(
         where: { reportKey: durableKey }, select: { accountId: true },
       });
       if (receipt) {
+        if (proof) await prisma!.$transaction(async tx => {
+          if (authority?.sid) await consumeSessionProof(tx, authority, proof);
+          else await consumeProof(tx, proof);
+        });
         rememberReport(reportKey, receipt.accountId);
         return { applied: false, reason: "duplicate_report", subscriptionId: receipt.accountId };
       }
@@ -435,10 +446,14 @@ export function computeAccountState(client: any, selectedSubscription?: any | nu
 const activateSchema = z.object({ 
   token: z.string().min(5),
   deviceId: z.string().optional(),
+  publicKey: z.string().max(256).optional(),
+  activationRequestId: z.string().uuid().optional(),
+  enrollmentGrant: z.string().max(100).optional(),
 });
 router.post("/auth/activate", async (req, res: Response) => {
   try {
-    const { token, deviceId: incomingDeviceId } = activateSchema.parse(req.body);
+    const activationBody = activateSchema.parse(req.body);
+    const { token, deviceId: incomingDeviceId } = activationBody;
     const client: any = await findClientByAccountToken(token);
 
     // Fiche du revendeur propriétaire : sa validité conditionne l'activation
@@ -463,6 +478,14 @@ router.post("/auth/activate", async (req, res: Response) => {
       });
     }
 
+    if (activationBody.publicKey || client.deviceKeyId) {
+      const tokens = await activateBoundSession(req, client, activationBody);
+      return res.json({
+        message: "Compte active", accountState: computeAccountState(client),
+        idempotent: decision.idempotent, user: { id: client.user.id, name: client.user.name }, ...tokens,
+      });
+    }
+
     // Liaison de l'appareil. Une pré-affectation portant déjà le même
     // deviceId doit elle aussi confirmer `activatedAt`, sinon le jeton reste
     // indéfiniment réassignable à un autre téléphone.
@@ -472,43 +495,16 @@ router.post("/auth/activate", async (req, res: Response) => {
       (decision.action === "bind" ||
         decision.action === "rebind" ||
         (decision.action === "already_bound" && !client.activatedAt));
-    if (doitConfirmerAppareil) {
+    if (doitConfirmerAppareil && prisma) {
       const porteeConflit = client.managedById
         ? { managedById: client.managedById }
         : client.resellerId
           ? { managedById: null, resellerId: client.resellerId }
           : { managedById: null, resellerId: null, userId: client.userId };
-      const conflit = await (prisma as any).vpnClient.findFirst({
-        where: {
-          deviceId: decision.deviceId,
-          id: { not: client.id },
-          ...porteeConflit,
-        },
-        select: { id: true },
-      });
-      if (conflit) {
-        return res.status(409).json({
-          error: "errors.mobile.device_claimed",
-          code: CODES_ACTIVATION.DEVICE_CLAIMED,
-          message: "Cet appareil est déjà lié à un autre compte",
-        });
-      }
-
       try {
-        const claimed = await (prisma as any).vpnClient.updateMany({
-          where: {
-            id: client.id,
-            activatedAt: null,
-            deviceId: client.deviceId ?? null,
-            status: "active",
-          },
-          data: {
-            deviceId: decision.deviceId,
-            activatedAt: client.activatedAt ?? new Date(),
-          },
-        });
-        if (claimed.count !== 1) {
-          const current = await (prisma as any).vpnClient.findUnique({
+        const outcome = await prisma.$transaction(async tx => {
+          await lockActivationClaim(tx, client, decision.deviceId!);
+          const current = await tx.vpnClient.findUnique({
             where: { id: client.id },
             include: mobileAccountInclude,
           });
@@ -517,15 +513,33 @@ router.post("/auth/activate", async (req, res: Response) => {
             deviceId: decision.deviceId,
             reseller: ficheRevendeur,
           });
-          if (!concurrent.ok || !current?.activatedAt) {
-            return res.status(concurrent.ok ? 409 : concurrent.status).json({
-              error: concurrent.error || "errors.mobile.activation_conflict",
-              code: concurrent.ok ? "ACTIVATION_CONFLICT" : concurrent.code,
-              message: concurrent.message || "Activation modifiée par une autre requête. Réessayez.",
-            });
+          if (!concurrent.ok || !current) return { decision: concurrent, client: null };
+          if (current.managedById !== client.managedById || current.resellerId !== client.resellerId ||
+              current.userId !== client.userId || current.deviceKeyId) {
+            return { decision: { ...concurrent, status: 409, error: "errors.mobile.activation_conflict",
+              code: current.deviceKeyId ? "DEVICE_ENROLLMENT_REQUIRED" : "ACTIVATION_CONFLICT",
+              message: "Activation modifiée par une autre requête. Réessayez." }, client: null };
           }
-          Object.assign(client, current);
+          const conflict = await tx.vpnClient.findFirst({
+            where: { ...porteeConflit, deviceId: decision.deviceId, id: { not: client.id } },
+            select: { id: true },
+          });
+          if (conflict) return { decision: { ...concurrent, status: 409,
+            error: "errors.mobile.device_claimed", code: CODES_ACTIVATION.DEVICE_CLAIMED,
+            message: "Cet appareil est déjà lié à un autre compte" }, client: null };
+          const bound = await tx.vpnClient.update({
+            where: { id: current.id },
+            data: { deviceId: decision.deviceId, activatedAt: current.activatedAt ?? new Date() },
+            include: mobileAccountInclude,
+          });
+          return { decision: concurrent, client: bound };
+        });
+        if (!outcome.client) {
+          return res.status(outcome.decision.status).json({
+            error: outcome.decision.error, code: outcome.decision.code, message: outcome.decision.message,
+          });
         }
+        Object.assign(client, outcome.client);
       } catch (updateError: any) {
         if (updateError?.code === "P2002") {
           return res.status(409).json({
@@ -595,6 +609,7 @@ router.post("/auth/activate", async (req, res: Response) => {
       ...tokens,
     });
   } catch (err: any) {
+    if (err instanceof MobileAccessError) return res.status(err.status).json(err.body);
     if (err?.issues) {
       return res.status(400).json({ error: "errors.validation", code: "VALIDATION", message: "Format de token invalide" });
     }
@@ -615,6 +630,7 @@ router.post("/auth/refresh", async (req, res: Response) => {
     const tokens = await refreshMobileSession(req, {
       userId: decoded.userId, role: decoded.role, clientId: decoded.clientId,
       deviceId: decoded.deviceId, exp: decoded.exp,
+      sid: decoded.sid, sg: decoded.sg, kid: decoded.kid, jti: decoded.jti, rg: decoded.rg,
     });
     return res.json(tokens);
   } catch (err) {
@@ -1014,10 +1030,13 @@ router.get("/vpn/config", async (req: AuthenticatedRequest, res: Response) => {
   }
 });
 
-// POST /api/mobile/vpn/session — audit trail only; the actual tunnel is managed natively on-device
+// POST /api/mobile/vpn/session — authorize immutable attribution for bound sessions; the tunnel stays native.
 const sessionSchema = z.object({ action: z.enum(["connect", "disconnect"]) });
 router.post("/vpn/session", async (req: AuthenticatedRequest, res: Response) => {
   try {
+    if (req.user?.sid) {
+      return res.json({ message: "ok", connection: await updateMobileConnection(req, req.user) });
+    }
     const { action } = sessionSchema.parse(req.body);
     const client: any = await findClientByUserId(req.user!.userId, req.user!.clientId, deviceIdFromRequest(req));
     if (!client) {
@@ -1029,7 +1048,10 @@ router.post("/vpn/session", async (req: AuthenticatedRequest, res: Response) => 
     await logDbActivity(req.user!.userId, `Mobile VPN session ${action}`, "success", req.ip);
     return res.json({ message: "ok" });
   } catch (err) {
-    return res.status(400).json({ error: "errors.validation", message: "Action invalide" });
+    if (err instanceof MobileAccessError) return res.status(err.status).json(err.body);
+    if (err instanceof z.ZodError) return res.status(400).json({ error: "errors.validation", message: "Action invalide" });
+    console.warn("[security] CONNECTION_REGISTRATION_UNAVAILABLE");
+    return res.status(503).json({ error: "CONNECTION_REGISTRATION_UNAVAILABLE" });
   }
 });
 
@@ -1343,7 +1365,7 @@ router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => 
       deviceId: z.string().min(5).optional(),
     }).refine(value => value.reportMode !== 'unlinked' || !value.subscriptionId);
     const { bytesUp, bytesDown, sessionId, seq, subscriptionId, deviceId, reportMode } = schema.parse(req.body);
-    const attribution = reportMode === 'unlinked' ? 'unlinked' : undefined;
+    let attribution: "unlinked" | undefined = reportMode === 'unlinked' ? 'unlinked' : undefined;
     const totalBytes = BigInt(bytesUp) + BigInt(bytesDown);
     if (totalBytes > BigInt(MAX_USAGE_REPORT_BYTES)) return res.status(400).json({ ok: false, error: "errors.validation", code: "INVALID_USAGE_DELTA" });
 
@@ -1351,9 +1373,21 @@ router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => 
     if (!client) return res.status(404).json({ error: "errors.mobile.no_account" });
 
     let creditedSubscriptionId: string | null = subscriptionId || null;
+    if (req.user!.sid) {
+      if (!Number.isSafeInteger(seq)) securityFailure('USAGE_SEQUENCE_REQUIRED', 409);
+      const binding = sessionId && prisma ? await prisma.mobileConnection.findUnique({
+        where: { clientId_usageSessionId: { clientId: client.id, usageSessionId: sessionId } },
+      }) : null;
+      if (!binding || binding.deviceId !== req.user!.deviceId) securityFailure('USAGE_BINDING_REQUIRED', 409);
+      if ((subscriptionId ?? null) !== binding.subscriptionId ||
+          (reportMode === 'unlinked') !== (binding.subscriptionId === null)) securityFailure('USAGE_ATTRIBUTION_CONFLICT', 409);
+      creditedSubscriptionId = binding.subscriptionId;
+      attribution = binding.subscriptionId === null ? 'unlinked' : undefined;
+    }
     let duplicate = false;
     if (totalBytes > 0n) {
-      const applied = await applyUsageDelta(client.id, subscriptionId || null, totalBytes, sessionId, seq, BigInt(bytesUp), deviceId || null, attribution);
+      const applied = await applyUsageDelta(client.id, creditedSubscriptionId, totalBytes, sessionId, seq,
+        BigInt(bytesUp), req.user!.deviceId || deviceId || null, attribution, proofFor(req), req.user);
       if (!applied.applied && applied.reason === "subscription_required") {
         return res.status(409).json({ ok: false, error: "errors.validation", code: "USAGE_SUBSCRIPTION_REQUIRED" });
       }
@@ -1371,6 +1405,8 @@ router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => 
       // Le forfait crédité est celui que la transaction a réellement débité,
       // jamais « le premier actif » trouvé au hasard de l'ordre du tableau.
       if (applied.subscriptionId !== undefined) creditedSubscriptionId = applied.subscriptionId;
+    } else if (proofFor(req) && prisma) {
+      await prisma.$transaction(tx => consumeSessionProof(tx, req.user!, proofFor(req)));
     }
 
     if (!creditedSubscriptionId && (attribution === "unlinked" || totalBytes > 0n)) {
@@ -1402,6 +1438,7 @@ router.post("/vpn/traffic", async (req: AuthenticatedRequest, res: Response) => 
       state: state.state,
     });
   } catch (err) {
+    if (err instanceof MobileAccessError) return res.status(err.status).json(err.body);
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: "errors.validation" });
     }
@@ -1589,6 +1626,7 @@ const usageSchema = z.object({
 });
 
 router.post("/vpn/usage", async (req: AuthenticatedRequest, res: Response) => {
+  if (req.user?.sid) return res.status(409).json({ error: "USAGE_BOUND_ENDPOINT_REQUIRED", code: "USAGE_BOUND_ENDPOINT_REQUIRED" });
   try {
     const { download, upload, duration, deviceId, subscriptionId, sessionId, seq } = usageSchema.parse(req.body);
     const totalBytes = BigInt(download + upload);

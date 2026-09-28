@@ -33,7 +33,7 @@ const libpqParameters: Record<string, string> = {
   options: "PGOPTIONS",
 };
 
-function postgresEnvironment(databaseUrl: string | undefined): NodeJS.ProcessEnv {
+export function postgresEnvironment(databaseUrl: string | undefined): NodeJS.ProcessEnv {
   if (!databaseUrl) throw new ResetError("RESET_BACKUP_FAILED");
   const url = new URL(databaseUrl);
   if (!["postgres:", "postgresql:"].includes(url.protocol) || !url.pathname || url.pathname === "/" || url.hash) {

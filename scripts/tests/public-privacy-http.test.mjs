@@ -18,7 +18,10 @@ test("public privacy routing precedes body parsing and maintenance on the produc
   const entry = readFileSync(path.join(root, "server.ts"), "utf8");
   const mounted = entry.indexOf('app.use("/api/public", publicPrivacyRouter)');
   assert.ok(mounted >= 0, "Canonical public API routes must be mounted");
-  assert.ok(mounted < entry.indexOf("app.use(express.json())"));
+  const bodyParser = entry.indexOf("app.use(express.json(");
+  assert.ok(bodyParser >= 0, "The JSON parser must remain installed");
+  assert.ok(mounted < bodyParser);
+  assert.match(entry.slice(bodyParser, entry.indexOf("app.use(express.urlencoded")), /rawBody.*Buffer\.from\(body\)/);
   assert.ok(mounted < entry.indexOf('app.use("/api/", maintenanceGuard)'));
   const workflow = readFileSync(path.join(root, ".github", "workflows", "deploy-vps.yml"), "utf8");
   assert.ok(workflow.indexOf("node scripts/verify-public-privacy.cjs") > 0);
@@ -54,15 +57,21 @@ async function fixture(t, settings = {}, { rootAlias = false } = {}) {
   }));
   const mobileClients = users.filter(user => user.role.name === "CLIENT").map(user => ({
     id: `vpn-${user.id}`, userId: user.id, user, status: "active",
-    deviceId: null, activatedAt: null, expireAt: null, reseller: null,
+    deviceId: null, activatedAt: null, expireAt: null, reseller: null, deviceKeyId: null,
   }));
   const db = {
     fail: false,
+    failSession: false,
     user: { findUnique: async ({ where }) => users.find(user => user.id === where.id) },
     permission: { findMany: async () => [] },
+    securityEvent: { create: async ({ data }) => ({ id: "fixture-security-event", ...data }) },
     vpnClient: {
       findMany: async ({ where }) => mobileClients.filter(client =>
         client.userId === where.userId && (!where.id || client.id === where.id)),
+      findUnique: async ({ where }) => {
+        if (db.failSession) throw new Error("fixture session storage unavailable");
+        return mobileClients.find(client => client.id === where.id) ?? null;
+      },
     },
     reseller: { findUnique: async () => ({ status: "active", quotaBytes: 10n, quotaUsedBytes: 0n, accessExpiresAt: null }) },
     supportTicket: {
@@ -219,7 +228,7 @@ test("platform staff read the public intake; tenants, clients, resellers and ano
   // exploitent la plateforme entière y ont affaire.
   for (const role of ["OWNER", "SUPER_ADMIN", "SUPPORT"]) {
     const list = await f.staff("/api/support", role);
-    assert.equal(list.status, 200);
+    assert.equal(list.status, 200, f.logs.join("\n"));
     assert.equal((await list.json()).tickets.length, 1);
     assert.equal((await f.staff("/api/support/ticket-1", role)).status, 200);
   }
@@ -238,6 +247,21 @@ test("platform staff read the public intake; tenants, clients, resellers and ano
     assert.equal((await f.staff("/api/support/ticket-1", role)).status, 404);
   }
   assert.equal((await f.get("/api/support/ticket-1")).status, 401);
+  assert.deepEqual(f.logs, [], "Allowed legacy clients must traverse the real session check without errors");
+});
+
+test("public intake stays private when client session storage fails or an enrolled client omits proof", async t => {
+  const f = await fixture(t);
+  assert.equal((await f.post(await f.form())).status, 202);
+  f.db.failSession = true;
+  assert.equal((await f.staff("/api/support", "CLIENT")).status, 503);
+  assert.ok(f.logs.some(log => log.includes("fixture session storage unavailable")));
+  f.db.failSession = false;
+  assert.equal((await f.staff("/api/support", "CLIENT")).status, 200);
+  const client = await f.db.vpnClient.findUnique({ where: { id: "vpn-client" } });
+  client.deviceKeyId = "enrolled-test-key";
+  assert.equal((await f.staff("/api/support/ticket-1", "CLIENT")).status, 401);
+  assert.equal((await f.staff("/api/support/ticket-1", "OWNER")).status, 200);
 });
 
 test("receipt is identical for unknown device, omitted device and different contact addresses", async t => {

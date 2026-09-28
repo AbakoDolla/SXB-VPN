@@ -47,10 +47,10 @@ Monorepo **pnpm**. Les paquets sont déclarés dans `pnpm-workspace.yaml`.
 | `lib/` | Bibliothèques partagées (`db`, `api-zod`, `api-client-react`) |
 | `.github/workflows/` | Construction Android, déploiement VPS, audit |
 
-> **Attention :** le déploiement pousse `backend/prisma/schema.prisma`, **pas**
-> celui de la racine. Une modification faite uniquement à la racine n'atteint
-> jamais la base. Un test de régression vérifie que les deux fichiers sont
-> identiques.
+> **Attention :** le déploiement applique les SQL explicites puis compare la
+> base réelle à `backend/prisma/schema.prisma` avec `prisma migrate diff`, sans
+> `db push`. Le schéma racine doit rester identique au miroir backend ; une
+> modification du seul modèle ne remplace pas une migration SQL vérifiée.
 
 ---
 
@@ -576,6 +576,23 @@ Workflows GitHub Actions :
 Le déploiement ne se déclenche que sur certains chemins : un changement dans
 `pnpm-workspace.yaml` ou dans les tests demande un lancement manuel
 (`gh workflow run deploy-vps.yml --ref main`).
+
+Le futur déploiement refuse de continuer si la lecture du cron root échoue ou
+si l'ancien job `git pull` suivi de `docker-compose up` est présent. Il ne
+supprime aucun cron automatiquement. Ensuite, `node scripts/backend-migrate.cjs
+prepare` exige un dump privé vérifié avant les migrations transactionnelles,
+dont `backend-rollout-compat.sql` et `security-layer.sql`, puis un schéma sans
+dérive et les protections du grand livre. Les clients Prisma, l'amorçage OWNER,
+le remplacement des bundles et le redémarrage ne suivent qu'après ce gate.
+La commande `node scripts/backend-migrate.cjs check` ne fait qu'une vérification
+en lecture seule ; elle n'autorise ni déploiement ni enrôlement.
+
+Les anciens scripts Docker `scripts/deploy.sh` et `scripts/update.sh` sont
+bloqués explicitement : ils ne partageaient pas les garanties du chemin PM2.
+Le hook post-merge ne pousse plus le schéma Drizzle. Aucune présence de cron
+n'a été constatée sur un VPS pendant ce travail et aucun déploiement n'a été
+exécuté. Voir le [rapport de sécurité, sections D et Q](docs/SECURITY-LAYER-REPORT.md)
+pour les prérequis, sauvegardes, erreurs bloquantes et commandes de recette.
 
 Le numéro de publication de l'APK est **distinct** du `versionCode` Android : ce
 dernier doit rester strictement croissant, sans quoi Android refuse d'installer

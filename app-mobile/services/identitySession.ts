@@ -6,12 +6,15 @@ import { accessRequestStamp, advanceAccessSession, currentIdentityRequest } from
 import { isInvalidSession, isRecord } from './accessPolicy';
 import { requireVpnConsent } from './privacyConsent';
 import type { User, AccountState } from '../types/api';
+import { saveSessionSecurity, clearSessionSecurity, completeActivationSecurity } from './deviceSecurity';
+import { assertIdentityRequest, serializeIdentityPersistence, settleIdentityWrites } from './identityPersistence';
 
 const USER_KEY = '@sxb_user';
 export interface IdentitySession { user: User; accountState: AccountState | null; }
 let identity: IdentitySession | null = null;
 let requests = 0;
-let clearing: Promise<void> | null = null;
+let identityVersion = 0;
+let clearing: { version: number; operation: Promise<void> } | null = null;
 const listeners = new Set<() => void>();
 export const getIdentitySession = () => identity;
 export const subscribeIdentitySession = (listener: () => void) => {
@@ -37,25 +40,30 @@ function parseIdentity(value: unknown): IdentitySession {
 export async function restoreIdentitySession(deviceId: string): Promise<void> {
   requireVpnConsent();
   const request = ++requests;
-  let accessToken = await getSecureToken(SEC_KEYS.ACCESS);
-  if (!accessToken) {
-    accessToken = await AsyncStorage.getItem('@sxb_access_token');
-    const refresh = await AsyncStorage.getItem('@sxb_refresh_token');
-    if (accessToken) await setSecureToken(SEC_KEYS.ACCESS, accessToken);
-    if (refresh) await setSecureToken(SEC_KEYS.REFRESH, refresh);
-    await AsyncStorage.multiRemove(['@sxb_access_token', '@sxb_refresh_token']);
-  }
-  const raw = await AsyncStorage.getItem(USER_KEY);
-  requireVpnConsent();
-  if (request !== requests || !accessToken || !raw) return;
-  const cached = parseIdentity(JSON.parse(raw));
-  await bindAccessState(cached.user.id, deviceId);
-  if (request === requests) publish(cached);
+  const version = identityVersion;
+  return serializeIdentityPersistence(async () => {
+    if (request !== requests || version !== identityVersion) return;
+    let accessToken = await getSecureToken(SEC_KEYS.ACCESS);
+    if (!accessToken) {
+      accessToken = await AsyncStorage.getItem('@sxb_access_token');
+      const refresh = await AsyncStorage.getItem('@sxb_refresh_token');
+      if (accessToken) await setSecureToken(SEC_KEYS.ACCESS, accessToken);
+      if (refresh) await setSecureToken(SEC_KEYS.REFRESH, refresh);
+      await AsyncStorage.multiRemove(['@sxb_access_token', '@sxb_refresh_token']);
+    }
+    const raw = await AsyncStorage.getItem(USER_KEY);
+    requireVpnConsent();
+    if (request !== requests || version !== identityVersion || !accessToken || !raw) return;
+    const cached = parseIdentity(JSON.parse(raw));
+    await bindAccessState(cached.user.id, deviceId);
+    if (request === requests && version === identityVersion) publish(cached);
+  });
 }
 
 export async function validateIdentitySession(deviceId: string, subscriptionId?: string | null): Promise<void> {
   requireVpnConsent();
   const request = ++requests;
+  const version = identityVersion;
   const stamp = accessRequestStamp();
   try {
     const query = subscriptionId ? `?subscriptionId=${encodeURIComponent(subscriptionId)}` : '';
@@ -63,56 +71,98 @@ export async function validateIdentitySession(deviceId: string, subscriptionId?:
     requireVpnConsent();
     if (request !== requests || !currentIdentityRequest(stamp)) return;
     const next = parseIdentity(response.data);
-    await bindAccessState(next.user.id, deviceId);
-    if (request !== requests) return;
-    await AsyncStorage.setItem(USER_KEY, JSON.stringify(next));
-    if (request === requests) publish(next);
+    await serializeIdentityPersistence(async () => {
+      if (request !== requests || version !== identityVersion || !currentIdentityRequest(stamp)) return;
+      await bindAccessState(next.user.id, deviceId);
+      if (request !== requests || version !== identityVersion) return;
+      await AsyncStorage.setItem(USER_KEY, JSON.stringify(next));
+      if (request === requests && version === identityVersion) publish(next);
+    });
   } catch (error) {
-    if (request === requests && currentIdentityRequest(stamp) && isInvalidSession(error)) await clearIdentitySession();
+    if (request !== requests || !currentIdentityRequest(stamp)) return;
+    if (isInvalidSession(error)) await clearIdentitySession(true);
     throw error;
   }
 }
 
-export async function acceptActivatedIdentity(response: unknown, deviceId: string): Promise<void> {
+export async function acceptActivatedIdentity(
+  response: unknown, deviceId: string,
+  authority?: { stamp: ReturnType<typeof accessRequestStamp>; activationRequestId?: string },
+): Promise<void> {
   requireVpnConsent();
   if (!isRecord(response) || typeof response.accessToken !== 'string' || !response.accessToken ||
       typeof response.refreshToken !== 'string' || !response.refreshToken) throw new Error('AUTH_RESPONSE_INVALID');
   const next = parseIdentity(response);
+  const { accessToken, refreshToken } = response;
+  if (authority) assertIdentityRequest(authority.stamp);
+  const version = ++identityVersion;
   ++requests;
   advanceAccessSession();
-  // A renewed SXB-USER code for the same identity never erases its profiles.
-  if (identity && identity.user.id !== next.user.id) await clearIdentitySession();
-  await bindAccessState(next.user.id, deviceId);
-  await Promise.all([
-    setSecureToken(SEC_KEYS.ACCESS, response.accessToken),
-    setSecureToken(SEC_KEYS.REFRESH, response.refreshToken),
-    AsyncStorage.setItem(USER_KEY, JSON.stringify(next)),
-  ]);
-  requireVpnConsent();
-  publish(next);
-}
-
-export async function updateIdentityAccountState(accountState: AccountState): Promise<void> {
-  if (!identity) throw new Error('AUTH_SESSION_REQUIRED');
-  const next = { ...identity, accountState };
-  await AsyncStorage.setItem(USER_KEY, JSON.stringify(next));
-  publish(next);
-}
-
-export function clearIdentitySession(): Promise<void> {
-  if (clearing) return clearing;
-  ++requests;
-  advanceAccessSession();
-  const operation = (async () => {
-    await clearAccessState(); // Native stop/barrier precedes removal of any profile.
-    await Promise.all([
-      removeSecureToken(SEC_KEYS.ACCESS), removeSecureToken(SEC_KEYS.REFRESH),
-      AsyncStorage.multiRemove([USER_KEY, '@sxb_access_token', '@sxb_refresh_token', '@sxb_vpn_connected']),
-      clearAllOfflineData(),
+  const current = () => {
+    requireVpnConsent();
+    if (version !== identityVersion) throw new Error('AUTH_SESSION_CHANGED');
+  };
+  return serializeIdentityPersistence(async () => {
+    current();
+    // A renewed SXB-USER code for the same identity never erases its profiles.
+    if (identity && identity.user.id !== next.user.id) {
+      await clearAccessState();
+      await clearStoredIdentity(false);
+    }
+    current();
+    await bindAccessState(next.user.id, deviceId);
+    current();
+    await saveSessionSecurity(response.security);
+    current();
+    await settleIdentityWrites([
+      setSecureToken(SEC_KEYS.ACCESS, accessToken),
+      setSecureToken(SEC_KEYS.REFRESH, refreshToken),
+      AsyncStorage.setItem(USER_KEY, JSON.stringify(next)),
     ]);
-    publish(null);
-  })();
-  clearing = operation;
-  void operation.finally(() => { if (clearing === operation) clearing = null; }).catch(() => { /* Caller reports the failure. */ });
+    current();
+    await completeActivationSecurity(authority?.activationRequestId);
+    current();
+    publish(next);
+  });
+}
+
+export async function updateIdentityAccountState(
+  accountState: AccountState, stamp: ReturnType<typeof accessRequestStamp>,
+): Promise<void> {
+  if (!identity) throw new Error('AUTH_SESSION_REQUIRED');
+  return serializeIdentityPersistence(async () => {
+    assertIdentityRequest(stamp);
+    if (!identity) throw new Error('AUTH_SESSION_REQUIRED');
+    const next = { ...identity, accountState };
+    await AsyncStorage.setItem(USER_KEY, JSON.stringify(next));
+    assertIdentityRequest(stamp);
+    publish(next);
+  });
+}
+
+async function clearStoredIdentity(preserveData: boolean): Promise<void> {
+  await settleIdentityWrites([
+    removeSecureToken(SEC_KEYS.ACCESS), removeSecureToken(SEC_KEYS.REFRESH),
+    clearSessionSecurity(),
+    AsyncStorage.multiRemove([USER_KEY, '@sxb_access_token', '@sxb_refresh_token', '@sxb_vpn_connected']),
+    ...(preserveData ? [] : [clearAllOfflineData()]),
+  ]);
+}
+
+export function clearIdentitySession(preserveData = false): Promise<void> {
+  if (clearing?.version === identityVersion) return clearing.operation;
+  const version = ++identityVersion;
+  ++requests;
+  advanceAccessSession();
+  // Stop immediately, even while an older storage operation is draining.
+  const stopping = clearAccessState();
+  void stopping.catch(() => { /* Awaited inside the persistence barrier below. */ });
+  const operation = serializeIdentityPersistence(async () => {
+    await stopping;
+    await clearStoredIdentity(preserveData);
+    if (version === identityVersion) publish(null);
+  });
+  clearing = { version, operation };
+  void operation.finally(() => { if (clearing?.operation === operation) clearing = null; }).catch(() => { /* Caller reports the failure. */ });
   return operation;
 }

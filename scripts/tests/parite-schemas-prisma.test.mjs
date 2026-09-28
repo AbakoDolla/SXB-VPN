@@ -7,8 +7,8 @@
  *   - prisma/schema.prisma          (racine)
  *   - backend/prisma/schema.prisma  (miroir)
  *
- * Et c'est le MIROIR qui est appliqué à la base de production :
- *   .github/workflows/deploy-vps.yml — `db push --schema=backend/prisma/schema.prisma`
+ * Et c'est le MIROIR qui est comparé à la base de production :
+ *   scripts/backend-migrate.cjs — DDL explicites puis migrate diff readonly.
  * La racine ne sert qu'à `prisma generate`.
  *
  * Conséquence : une modification portée sur la SEULE racine n'atteint jamais
@@ -97,7 +97,7 @@ test('le schéma racine et le schéma déployé sont strictement identiques', ()
         `  Premières lignes divergentes :\n${ecarts.join('\n')}\n\n` +
         `  POURQUOI C'EST BLOQUANT\n` +
         `    Le déploiement applique « ${SCHEMA_DEPLOYE} » à la base\n` +
-        `    (${WORKFLOW}, \`db push --schema=\`).\n` +
+        `    (${WORKFLOW}, gate backend-migrate et comparaison readonly).\n` +
         `    Une modification portée sur la seule racine n'atteint JAMAIS la production :\n` +
         `    le déploiement réussit, la CI passe, et la contrainte n'existe pas en base.\n\n` +
         `  MARCHE À SUIVRE\n` +
@@ -108,49 +108,22 @@ test('le schéma racine et le schéma déployé sont strictement identiques', ()
   assert.equal(empreinteRacine, empreinteDeploye);
 });
 
-test('le schéma surveillé est bien celui que le déploiement applique à la base', () => {
+test('le schéma surveillé est bien celui que le déploiement compare à la base réelle', () => {
   const workflow = lire(WORKFLOW);
-
-  // On ancre le contrôle sur la commande `db push` elle-même : c'est elle, et
-  // elle seule, qui écrit dans la base. Le workflow contient d'autres
-  // `--schema=` (pour `prisma generate`) qui ne touchent pas la production et
-  // ne doivent donc pas être pris pour la cible déployée.
-  // Les lignes de commentaire sont retirées au préalable : le workflow
-  // mentionne `db push` en prose à plusieurs endroits.
   const executable = workflow
     .split('\n')
     .filter((ligne) => !/^\s*#/.test(ligne))
     .join('\n');
-
-  const cibles = [];
-  const motif = /db\s+push/g;
-  let occurrence;
-  while ((occurrence = motif.exec(executable)) !== null) {
-    const suite = executable.slice(occurrence.index, occurrence.index + 600);
-    const argument = suite.match(/--schema=(\S+?)(?=\s|\\|$)/);
-    cibles.push(argument ? argument[1].trim() : '<aucun --schema=>');
-  }
-
-  assert.ok(
-    cibles.length > 0,
-    `\n\n  ⛔ Aucune commande \`db push\` trouvée dans ${WORKFLOW}.\n` +
-      `  Ce banc ne peut plus vérifier quel schéma atteint la base de production.\n`,
-  );
-
-  for (const cible of cibles) {
-    assert.equal(
-      cible.replace(/\\/g, '/'),
-      SCHEMA_DEPLOYE,
-      `\n\n  ⛔ \`db push\` applique « ${cible} », et non « ${SCHEMA_DEPLOYE} ».\n\n` +
-        `  Ce banc surveille la parité de « ${SCHEMA_DEPLOYE} » : si le déploiement\n` +
-        `  pousse un autre fichier, l'alarme garde un schéma inerte pendant qu'un\n` +
-        `  schéma non surveillé atteint la production.\n\n` +
-        `  MARCHE À SUIVRE\n` +
-        `    Soit rétablissez « ${SCHEMA_DEPLOYE} » comme cible du \`db push\`,\n` +
-        `    soit mettez à jour SCHEMA_DEPLOYE dans\n` +
-        `    scripts/tests/parite-schemas-prisma.test.mjs pour suivre la nouvelle cible.\n`,
-    );
-  }
+  assert.match(executable, /^\s*node scripts\/backend-migrate\.cjs prepare\s*$/m);
+  assert.doesNotMatch(executable, /db\s+push|accept-data-loss/);
+  const cli = lire('scripts/backend-migrate.cjs');
+  assert.match(cli, /"server", "services", "backend-migration\.ts"/);
+  const gate = lire('server/services/backend-migration.ts');
+  const cible = gate.match(/export const BACKEND_SCHEMA = "([^"]+)"/)?.[1];
+  assert.equal(cible, SCHEMA_DEPLOYE, 'Le gate doit comparer le schema backend surveille, pas un fichier inerte');
+  assert.match(gate, /const schema = path\.join\(options\.root, BACKEND_SCHEMA\)/);
+  assert.match(gate, /"--from-schema-datasource", schema, "--to-schema-datamodel", schema, "--exit-code"/);
+  assert.match(gate, /result\.code === 2.*BACKEND_SCHEMA_DRIFT/);
 });
 
 test('les contraintes d’unicité critiques figurent dans le schéma déployé', () => {

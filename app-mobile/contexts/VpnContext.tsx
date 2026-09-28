@@ -54,7 +54,7 @@ import { deriveQuota, formatBytes, type DerivedQuota, type SessionCounters } fro
 import {
   accumulate as accumulateUsage, anchorLedger, isFreshLedger, loadLedger, nextReport, pendingBytes,
   pendingUsage, quotaProjection, recordQuota, saveLedger, settle as settleUsage, deferReport, nextAttemptDelay,
-  newUsageSessionId, UsageLedgerReadError, type UsageContext, type UsageLedger, type UsageReport,
+  newUsageSessionId, usageSubscriptionId, UsageLedgerReadError, type UsageContext, type UsageLedger, type UsageReport,
 } from '@/services/usageLedger';
 import { useAuthContext } from './AuthContext';
 import type { VpnConnection } from '@/types/api';
@@ -65,7 +65,7 @@ import {
   sendMobileHealthHeartbeat,
   MOBILE_HEALTH_HEARTBEAT_INTERVAL_MS,
 } from '@/services/mobileHealth';
-import { remonterIntegrite } from '@/services/securityReport';
+import { remonterIntegrite, flushSecurityEvents } from '@/services/securityReport';
 import { interruptibleUsageRequest, registerUsageReporter, usageDeadline, usageRetryDelay } from '@/services/usageReporting';
 
 export { formatBytes, deriveQuota, DerivedQuota };
@@ -1067,7 +1067,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         
         // Nouvelle session de rapport : les entrées déjà au livre gardent la
         // leur, seules les futures porteront cet identifiant.
-        sessionIdRef.current = newUsageSessionId();
+        if (!sessionIdRef.current) sessionIdRef.current = newUsageSessionId();
 
         // FIX — Capturer la baseline immédiatement pour que les compteurs UI 
         // et le premier rapport delta soient précis dès la première seconde.
@@ -1253,6 +1253,7 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
 
       if (connected || connecting) {
         const stats = await SxbVpnNative.getTrafficStats();
+        if (typeof stats.usageSessionId === 'string') sessionIdRef.current = stats.usageSessionId;
         setTrafficStats({
           uploadBytes: stats.uploadBytes || 0,
           downloadBytes: stats.downloadBytes || 0,
@@ -1415,21 +1416,34 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
     ledgerFlushRef.current = new Promise<void>(resolve => { finish = resolve; });
     let retryNeeded = false;
     try {
+      const observedSessionId = sessionIdRef.current;
       let ledger = ledgerRef.current ?? await loadLedger();
       const running = runningProfileRef.current;
       const profiles = storeValue(await configStore.list());
       if (!profiles) throw new Error('VPN_USAGE_PROFILES_UNAVAILABLE');
       const runningMeta = profiles.find(entry => entry.configId === running?.configId);
       const source = running?.source ?? runningMeta?.source;
-      const subscriptionId = running?.subscriptionId || runningMeta?.subscriptionId ||
-        (source === 'backend' ? running?.configId ?? runningMeta?.configId ?? null : null);
+      const subscriptionId = usageSubscriptionId({
+        subscriptionId: running?.subscriptionId || runningMeta?.subscriptionId,
+        configId: running?.configId ?? runningMeta?.configId,
+        source,
+      });
       if (running && runningProfileRef.current === running && subscriptionId) {
         runningProfileRef.current = { ...running, subscriptionId };
       }
       const attribution = !subscriptionId && source === 'manual' ? 'unlinked' as const : undefined;
       const previous = options?.beforeConnect ? ledger.context : null;
-      if (!sessionIdRef.current) sessionIdRef.current = newUsageSessionId();
-      const sessionId = sessionIdRef.current;
+      const capturedSessionId = observedSessionId ?? ledger.context?.sessionId ?? newUsageSessionId();
+      const stats = IS_ANDROID && SxbVpnNative
+        ? await SxbVpnNative.getTrafficStats().catch(() => {
+          retryNeeded = true;
+          console.warn('[SXB] USAGE_COUNTERS_UNAVAILABLE');
+          return null;
+        })
+        : null;
+      if (!currentIdentityRequest(stamp) || !usageMountedRef.current) return;
+      const sessionId = typeof stats?.usageSessionId === 'string' ? stats.usageSessionId : capturedSessionId;
+      if (!sessionIdRef.current || stats?.usageSessionId) sessionIdRef.current = sessionId;
       const context: UsageContext = previous ?? (running
         ? { subscriptionId, configId: running.configId, attribution, sessionId }
         : ledger.context ?? { subscriptionId: null, sessionId });
@@ -1446,13 +1460,6 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         }
       };
       await seedQuota(context);
-      const stats = IS_ANDROID && SxbVpnNative
-        ? await SxbVpnNative.getTrafficStats().catch(() => {
-          retryNeeded = true;
-          console.warn('[SXB] USAGE_COUNTERS_UNAVAILABLE');
-          return null;
-        })
-        : null;
       if (!currentIdentityRequest(stamp) || !usageMountedRef.current) return;
       const validCounters = stats && Number.isSafeInteger(stats.lifetimeUploadBytes) && stats.lifetimeUploadBytes >= 0 &&
         Number.isSafeInteger(stats.lifetimeDownloadBytes) && stats.lifetimeDownloadBytes >= 0;
@@ -1623,7 +1630,10 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => { flushUsageRef.current = flushUsage; });
   useEffect(() => {
     if (!isAuthenticated) return;
-    const unregister = registerUsageReporter(() => flushUsageRef.current());
+    const unregister = registerUsageReporter(async () => {
+      await flushUsageRef.current();
+      await flushSecurityEvents();
+    });
     SxbVpnNative?.setUsageReportingEnabled?.(true);
     return () => {
       unregister();
@@ -2155,6 +2165,19 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         // Préparation locale uniquement : un refus de stockage ou un délai
         // dépassé interdit ce départ, sans effacer le livre ni simuler l'ancre.
         await usageDeadline(flushUsageRef.current({ beforeConnect: true }), DELAI_PREPARATION_MS);
+        const { sessionSecurity } = await import('../services/deviceSecurity');
+        const security = await sessionSecurity();
+        const subscriptionId = usageSubscriptionId(currentProfile.meta);
+        const usageSessionId = newUsageSessionId();
+        const connectionId = usageSessionId.slice('sess_'.length);
+        if (security) {
+          await apiClient.post('/mobile/vpn/session', {
+            action: 'connect', connectionId, sessionId: usageSessionId,
+            subscriptionId,
+            configId: selectedId,
+          });
+        }
+        sessionIdRef.current = usageSessionId;
         // ── Ce que le réseau va voir ──────────────────────────────────────
         //
         // Jusqu'ici, l'application n'avait qu'UNE façon de se présenter. Quand
@@ -2170,10 +2193,15 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         const optionsJson = JSON.stringify(sanitizeEngineConfig({
           ...configPresentee,
           configId: selectedId,
-          subscriptionId: currentProfile.meta.subscriptionId,
+          subscriptionId: subscriptionId ?? undefined,
           configHash: currentProfile.meta.configHash,
-          managedConfig: currentProfile.meta.source === 'backend' || !!currentProfile.meta.subscriptionId,
+          managedConfig: currentProfile.meta.source === 'backend' || !!subscriptionId,
           accessSession: getAccessState().authority?.session,
+          securitySessionId: security?.sessionId,
+          securityGeneration: security?.generation,
+          securityClientId: security?.clientId,
+          connectionId: security ? connectionId : undefined,
+          usageSessionId,
           protocol:      engineProtocol,
           killSwitch,
           autoReconnect,

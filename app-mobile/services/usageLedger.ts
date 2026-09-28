@@ -82,6 +82,12 @@ export interface UsageContext {
   sessionId: string;
 }
 
+export function usageSubscriptionId(profile: {
+  subscriptionId?: string | null; configId?: string | null; source?: 'backend' | 'manual';
+}): string | null {
+  return profile.subscriptionId || (profile.source === 'backend' ? profile.configId || null : null);
+}
+
 export interface UsageQuotaSnapshot {
   usedBytes: number;
   totalBytes: number;

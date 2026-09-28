@@ -1410,25 +1410,8 @@ class SxbVpnService : VpnService(), PlatformInterface {
         Log.i(TAG, "[SXB_DEBUG] START_COMMAND_RECEIVED action=" + intent?.action)
         broadcastLog("[SXB_DEBUG] ▶ START_COMMAND_RECEIVED (onStartCommand a démarré)")
 
-        // Vérifications de sécurité — OK to run after startForeground()
-        val secReport = SecurityModule.audit(this)
-        if (SecurityModule.shouldBlock(secReport)) {
-            // La configuration réelle n'est ni lue ni transmise au moteur. Les
-            // traces exposées à l'outil d'instrumentation décrivent un serveur
-            // factice : ce qu'il capture ne mène nulle part.
-            val leurre = SecurityModule.leurreEndpoint(packageName)
-            Log.e("SXB_DEBUG", "[SXB_DEBUG] SECURITY_BLOCK hasFrida=${secReport.hasFrida} hasXposed=${secReport.hasXposed} isHooked=${secReport.isHooked}")
-            broadcastLog("[SXB_TRACE] stage=ENDPOINT_RESOLVED remote=$leurre id=${SecurityModule.leurreUuid(packageName)}")
-            broadcastLog("[SXB] ❌ Connexion refusée")
-            broadcastStatus("error")
-            stopSelf()
-            return START_NOT_STICKY
-        }
-        if (secReport.isRooted) {
-            Log.w("SXB_DEBUG", "[SXB_DEBUG] SECURITY_WARN isRooted=true")
-            broadcastLog("[SXB_DEBUG] ⚠️ SECURITY_WARN: appareil rooté")
-            broadcastLog("[SXB] ⚠️ Appareil rooté — risque de sécurité")
-        }
+        // Runtime probes are scheduled by the existing background reporter,
+        // never on Android's main-thread start path and never as a local ban.
         // C8 — Contrôle d'intégrité de la signature APK. Informatif tant que
         // l'empreinte attendue n'est pas injectée dans le manifeste de release :
         // une signature invalide ne coupe pas le service pour ne pas rendre
@@ -1569,12 +1552,27 @@ class SxbVpnService : VpnService(), PlatformInterface {
         foregroundStarted.set(false); instance = null; super.onDestroy()
     }
     override fun onRevoke()  {
+        if (android.net.VpnService.prepare(this) == null) return
+        val revokedConfig = configJson
+        val revokedStartId = derniereCommandeStartId
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+        SxbSecurityMonitor.record(this, "VPN_REVOKED", revokedConfig)
+        // A delayed binder callback must not undo an explicit new permission grant.
+        if (instance !== this || android.net.VpnService.prepare(this) == null ||
+            configJson != revokedConfig || derniereCommandeStartId != revokedStartId) return@post
+        // Cancel the original attempt before workers can schedule another start.
+        // Permission loss is not logout, account suspension or profile deletion.
+        if (::autoReconnect.isInitialized) autoReconnect.markStopped("system_vpn_revoke")
+        try { SxbAccessControl.cancelStarts(this) }
+        catch (error: Exception) { Log.e(TAG, "ACCESS_CANCEL_STARTS_FAILED", error) }
         broadcastLog("[SXB] ⚠️ VPN révoqué par le système")
         broadcastStatus("disconnected")
         cleanup()
         // Le système a repris la main sur l'interface VPN : ne pas la réinstaller.
         removeKillSwitchBlackhole()
-        super.onRevoke()
+        // cleanup uses stopSelf(startId); the base's unconditional stopSelf
+        // could destroy a newly queued start command.
+        }
     }
 
     // ── Dispatch protocole ────────────────────────────────────────────────────
@@ -2618,6 +2616,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         // On s'assure que l'état est bien "connected" (déjà fait normalement dans openTun)
         if (currentState != "connected") {
             broadcastStatus("connected"); setCurrentState("connected")
+            SxbSecurityMonitor.record(this, "VPN_STARTED", configJson)
             tunnelEverUp = true
             autoReconnect.onConnected()
             updateNotification("SXB VPN — $label connecté")
@@ -3245,6 +3244,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             broadcastLog("[SXB] ✅ Handshake réussi — Données en transit")
             setCurrentState("connected")
             broadcastStatus("connected")
+            SxbSecurityMonitor.record(this, "VPN_STARTED", configJson)
             tunnelEverUp = true
             updateNotification("SXB VPN — Connecté")
             startNotificationUpdater()
@@ -5730,6 +5730,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         if (stopService) autoReconnect.reset()
 
         if (stopService) {
+            SxbSecurityMonitor.record(this, "VPN_STOPPED", configJson)
             setCurrentState("disconnected")
             trace("CLEANUP_COMPLETE", "state=$currentState")
             broadcastStatus("disconnected")
@@ -5773,6 +5774,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
 
     fun stopVpn() = cleanup()
 
+    fun usageSessionId(): String? =
+        if (configJson.isEmpty()) null else JSONObject(configJson).optString("usageSessionId").takeIf { it.isNotEmpty() }
+
     fun stopAccessObserver() {
         accessObserver?.stop()
         accessObserver = null
@@ -5805,6 +5809,21 @@ class SxbVpnService : VpnService(), PlatformInterface {
         interruptForAccess()
         try { SxbAccessControl.cancelStarts(this) }
         finally { stopAndDrain("PRIVACY_STOP_PENDING") }
+    }
+
+    fun stopForSecurity(sessionId: String, generation: Int) {
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+        if (instance !== this || configJson.isEmpty()) return@post
+        val active = JSONObject(configJson)
+        if (active.optString("securitySessionId") != sessionId ||
+            active.optInt("securityGeneration") != generation) return@post
+        try {
+            SxbAccessControl.revokeSecurityGeneration(this, sessionId, generation, active.optString("accessAttempt"))
+        } catch (error: Exception) { Log.e(TAG, "SECURITY_REVOKE_STORAGE_FAILED", error) }
+        if (::autoReconnect.isInitialized) autoReconnect.markStopped("security_session_revoke")
+        cleanup()
+        removeKillSwitchBlackhole()
+        }
     }
 
     private fun stopAndDrain(pendingCode: String) {

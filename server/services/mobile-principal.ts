@@ -2,6 +2,7 @@ import type { Request } from "express";
 import type { Prisma } from "@prisma/client";
 import { prisma, inMemoryDb } from "../database";
 import { MobileAccessError, sessionInvalidFailure } from "./access-lifecycle";
+import type { SecurityClaims } from "./mobile-proof";
 
 const ownerSelect = {
   status: true, accessExpiresAt: true, user: { select: { id: true, status: true } },
@@ -13,7 +14,7 @@ export const mobileClientSelect = {
   reseller: { select: ownerSelect },
 } satisfies Prisma.VpnClientSelect;
 
-export interface MobileClaims {
+export interface MobileClaims extends SecurityClaims {
   userId: string;
   role: string;
   clientId?: string;
