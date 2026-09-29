@@ -271,7 +271,9 @@ with only their IDs, states and subscription counts; rerun with the intended
 `profile_id`, never automatically enable all copies. It then exercises the
 deployed gateway code
 on a one-shot loopback listener: pinned supplier authentication, SSH forwarding,
-a bounded public test page and both byte counters. It also checks the public TLS
+the SXB public health API over hostname-verified HTTPS, its fresh service response
+and both byte counters. This avoids depending on a third-party example page.
+It also checks the public TLS
 ingress rejects anonymous access. This is not a substitute for observing traffic
 from the real mobile device, and does not create a mobile session or debit a
 customer's quota.
