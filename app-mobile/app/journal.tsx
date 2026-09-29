@@ -84,6 +84,7 @@ function apparence(statut: StepLogItem["status"], colors: ReturnType<typeof useC
     case "error":   return { icon: "close-circle", color: colors.disconnected };
     case "warning": return { icon: "alert-circle", color: colors.accents.ambre ?? colors.textSecondary };
     case "active":  return { icon: "ellipse", color: colors.primary };
+    case "info":    return { icon: "information-circle-outline", color: colors.textSecondary };
     default:        return { icon: "ellipse-outline", color: colors.textMuted };
   }
 }

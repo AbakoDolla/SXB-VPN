@@ -252,7 +252,7 @@ export interface AppTrafficStat {
 export interface StepLogItem {
   key: string;
   translationKey: string;
-  status: 'pending' | 'active' | 'done' | 'error' | 'warning';
+  status: 'pending' | 'active' | 'done' | 'error' | 'warning' | 'info';
   timestamp?: string;
   detail?: string;
   /**
@@ -732,7 +732,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
       return [...prev, {
         key: cle,
         translationKey: fait.cle,
-        status: fait.niveau === 'echec' ? 'error' : fait.niveau === 'attention' ? 'warning' : 'done',
+        status: fait.niveau === 'echec' ? 'error' : fait.niveau === 'attention' ? 'warning'
+          : fait.niveau === 'ok' ? 'done' : 'info',
         timestamp: new Date().toISOString(),
         technique: fait.valeurs,
       }];

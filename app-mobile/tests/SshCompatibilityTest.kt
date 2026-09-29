@@ -69,7 +69,8 @@ private fun payloadScenario(
                 proxy.outputStream.write("SSH-2.0-Client\r\n".toByteArray())
                 proxy.outputStream.flush()
             }
-            if (!expectFailure) check(proxy.inputStream.readBytes().contentEquals(expectedTunnel.toByteArray(Charsets.ISO_8859_1))) {
+            val receivedTunnel = proxy.inputStream.readBytes()
+            if (!expectFailure) check(receivedTunnel.contentEquals(expectedTunnel.toByteArray(Charsets.ISO_8859_1))) {
                 "The transport changed the SSH byte stream"
             }
         } catch (error: IOException) {
@@ -102,7 +103,7 @@ private fun chainFramingScenarios() {
         Socket().use { socket ->
             val input = java.io.PushbackInputStream(ByteArrayInputStream((prefix + banner).toByteArray(Charsets.ISO_8859_1)), 1)
             try {
-                check(readSshPayloadChain(input, socket, 1000) {}.isEmpty())
+                check(readSshPayloadChain(input, socket, 1000, {}).isEmpty())
                 check(error == null) { "Expected $error" }
                 check(input.readBytes().contentEquals(banner.toByteArray(Charsets.ISO_8859_1)))
             } catch (failure: IOException) {
@@ -217,10 +218,12 @@ fun main(args: Array<String>) {
 }
 
 private fun sshDataScenarios(peer: JSONObject) {
-    for (payloadMode in listOf(false, true)) {
+    for (mode in listOf("direct", "payloadPort", "delayedPayloadPort", "slowAuth")) {
+        val payloadMode = mode != "direct"
         val jsch = JSch()
         jsch.setKnownHosts(ByteArrayInputStream("fixture-key ssh-rsa ${peer.getString("hostKey")}\n".toByteArray()))
-        val session = jsch.getSession(peer.getString("username"), "127.0.0.1", peer.getInt("sshPort"))
+        val session = jsch.getSession(if (mode == "slowAuth") "fixture-slow" else peer.getString("username"),
+            "127.0.0.1", peer.getInt("sshPort"))
         session.setHostKeyAlias("fixture-key")
         session.setConfig("StrictHostKeyChecking", "yes")
         session.setConfig("PreferredAuthentications", "password")
@@ -229,10 +232,12 @@ private fun sshDataScenarios(peer: JSONObject) {
             "GET / HTTP/1.1[crlf]Host: public.example.test[crlf][crlf]" +
                 "X / HTTP/1.1[crlf]Host: [host][crlf][crlf]" +
                 "GET / HTTP/1.1[crlf]Host: gateway.example.test[crlf][crlf]",
-            false, "", "127.0.0.1", peer.getInt("payloadPort"), "ssh.example.test", 22,
+            false, "", "127.0.0.1", peer.getInt(if (mode == "slowAuth") "delayedPayloadPort" else mode), "ssh.example.test", 22,
             "fixture-agent", false, { true }, onEvent = {},
         ))
-        session.connect(10000)
+        val started = System.nanoTime()
+        connectCandidate(session, if (mode == "slowAuth") 20000 else 10000)
+        if (mode == "slowAuth") check((System.nanoTime() - started) / 1_000_000 >= 13000)
         val harness = SocksHarness()
         val server = harness.start(session)
         fun request(port: Int, action: (Socket, InputStream, Int) -> Unit) {
@@ -311,7 +316,7 @@ private fun sshDataScenarios(peer: JSONObject) {
             server.close()
             session.disconnect()
         }
-        check(failures.isEmpty()) { "SSH data path (payload=$payloadMode): ${failures.joinToString("; ")}" }
-        println("PASS: real SSH/SOCKS payload=$payloadMode rejection, immediate data, 256 KiB upload/download, both half-closes and disconnect")
+        check(failures.isEmpty()) { "SSH data path ($mode): ${failures.joinToString("; ")}" }
+        println("PASS: real SSH/SOCKS $mode rejection, immediate data, 256 KiB upload/download, both half-closes and disconnect")
     }
 }

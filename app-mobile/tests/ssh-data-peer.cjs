@@ -39,6 +39,10 @@ const ssh = new Server({ hostKeys: [key] }, client => {
   client.on('error', () => client.end());
   client.on('authentication', auth => {
     if (auth.method === 'password' && auth.username === 'fixture-client' && auth.password === password) auth.accept();
+    else if (auth.method === 'password' && auth.username === 'fixture-slow' && auth.password === password) {
+      const timer = setTimeout(() => auth.accept(), 13000);
+      client.once('close', () => clearTimeout(timer));
+    }
     else auth.reject(['password']);
   });
   client.on('tcpip', (accept, reject, info) => {
@@ -77,11 +81,15 @@ const payload = net.createServer(socket => {
     received = Buffer.concat([received, chunk]);
     if (received.length > 8192) { socket.destroy(); return; }
     if (received.toString('latin1').split('\r\n\r\n').length < 4) return;
+    const parts = received.toString('latin1').split('\r\n\r\n');
+    const httpBytes = Buffer.byteLength(parts.slice(0, 3).join('\r\n\r\n') + '\r\n\r\n', 'latin1');
+    const pending = received.subarray(httpBytes);
     socket.off('data', read);
     socket.pause();
     const target = net.connect(ssh.address().port, '127.0.0.1', () => {
       socket.write('HTTP/1.1 301 Moved Permanently\r\nContent-Length: 0\r\n\r\n' +
         'HTTP/1.1 200 OK\r\n\r\nHTTP/1.1 101 Switching Protocols\r\n\r\nHTTP/1.1 200 OK\r\n\r\n');
+      if (pending.length) target.write(pending);
       socket.pipe(target); target.pipe(socket); socket.resume();
     });
     target.on('error', () => socket.destroy());
@@ -90,9 +98,40 @@ const payload = net.createServer(socket => {
   socket.on('data', read);
 });
 
+// Mobile networks can separate cosmetic HTTP replies by much more than 250 ms.
+const delayedPayload = net.createServer(socket => {
+  socket.on('error', () => socket.destroy());
+  let received = Buffer.alloc(0);
+  const read = chunk => {
+    received = Buffer.concat([received, chunk]);
+    if (received.length > 8192) { socket.destroy(); return; }
+    const text = received.toString('latin1');
+    const parts = text.split('\r\n\r\n');
+    if (parts.length < 4) return;
+    socket.off('data', read);
+    socket.pause();
+    const httpBytes = Buffer.byteLength(parts.slice(0, 3).join('\r\n\r\n') + '\r\n\r\n', 'latin1');
+    const pending = received.subarray(httpBytes);
+    socket.write('HTTP/1.1 301 Moved Permanently\r\nContent-Length: 0\r\n\r\nHTTP/1.1 200 OK\r\n\r\n');
+    const timer = setTimeout(() => {
+      if (socket.destroyed) return;
+      const target = net.connect(ssh.address().port, '127.0.0.1', () => {
+        socket.write('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\n\r\n' +
+          'HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbody');
+        if (pending.length) target.write(pending);
+        socket.pipe(target); target.pipe(socket); socket.resume();
+      });
+      target.on('error', () => socket.destroy());
+      socket.on('close', () => target.destroy());
+    }, 800);
+    socket.on('close', () => clearTimeout(timer));
+  };
+  socket.on('data', read);
+});
+
 (async () => {
   await listen(download); await listen(greeting); await listen(upload); await listen(uploadReport);
-  await listen(ssh); await listen(payload);
+  await listen(ssh); await listen(payload); await listen(delayedPayload);
   const parsedKey = utils.parseKey(key);
   if (parsedKey instanceof Error) throw parsedKey;
   const output = require('esbuild').buildSync({
@@ -124,7 +163,7 @@ const payload = net.createServer(socket => {
   const gatewayReport = net.createServer(socket => socket.end(gatewayHeaders));
   await listen(gatewayReport);
   writeFileSync(process.argv[2], JSON.stringify({
-    sshPort: ssh.address().port, payloadPort: payload.address().port,
+    sshPort: ssh.address().port, payloadPort: payload.address().port, delayedPayloadPort: delayedPayload.address().port,
     downloadPort: download.address().port, greetingPort: greeting.address().port,
     uploadPort: upload.address().port, uploadReportPort: uploadReport.address().port,
     gatewayPort: gateway.address().port, gatewayReportPort: gatewayReport.address().port,

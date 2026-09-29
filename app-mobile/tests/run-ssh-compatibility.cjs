@@ -44,6 +44,8 @@ object SxbSecureLogger { fun debug(message: String) {} ; fun warn(message: Strin
 `;
   const harness = path.join(temp, 'SshCompatibilityHarness.kt');
   const tests = readFileSync(path.join(__dirname, 'SshCompatibilityTest.kt'), 'utf8');
+  const candidateConnect = service.match(/^\s*candidate\.connect\([^\r\n]+\)$/gm);
+  assert.equal(candidateConnect?.length, 1, 'Extract the exact production ladder connect call');
   const socksStart = service.indexOf('    private fun startLocalSocks5Server(');
   const socksEnd = service.indexOf('    private fun startTrafficAccounting()', socksStart);
   assert.ok(socksStart > end && socksEnd > socksStart);
@@ -62,6 +64,9 @@ private fun importedIdentity(cfg: JSONObject): JSch {
     val jsch = JSch()
 ${service.slice(keyStart, keyEnd)}
     return jsch
+}
+private fun connectCandidate(candidate: Session, timeoutMs: Int) {
+${candidateConnect[0]}
 }
 ` + tests);
   const base64 = path.join(temp, 'AndroidBase64.kt');

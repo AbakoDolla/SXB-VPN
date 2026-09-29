@@ -169,8 +169,13 @@ const ETAPES: Record<string, Etape> = {
   },
   HTTP_RESPONSE: {
     cle: 'tech_http_response',
-    niveau: 'ok',
+    niveau: 'info',
     champs: { status: statutHttp },
+  },
+  HTTP_CHAIN_RESPONSE: {
+    cle: 'tech_http_response',
+    niveau: 'info',
+    champs: { status: v => /^[1-5]\d{2}$/.test(v) ? `HTTP ${v}` : null },
   },
   TRANSPORT_SELECTED: {
     cle: 'tech_transport',
@@ -295,6 +300,12 @@ const ETAPES: Record<string, Etape> = {
 };
 
 const ERREURS_SSH = new Map([
+  ['AUTH_FAILED', 'log_auth_failed'],
+  ['TCP_TIMEOUT', 'log_timeout'],
+  ['SSH_TIMEOUT', 'log_timeout'],
+  ['SSH_BANNER_MISSING', 'log_handshake_failed'],
+  ['TUNNEL_REFUSED', 'log_refused'],
+  ['CAPTIVE_PORTAL', 'log_captive_portal'],
   ['SSH_ACCOUNT_EXPIRED', 'log_ssh_account_expired'],
   ['HTTP_ENDPOINT_MISSING', 'log_http_endpoint_missing'],
   ['HTTP_BAD_REQUEST', 'log_http_bad_request'],
@@ -367,7 +378,11 @@ export function analyserTrace(ligne: string): FaitTechnique | null {
     if (sure) valeurs.push(sure);
   }
 
-  return { cle: etape.cle, valeurs, niveau: etape.niveau, etape: tete[1] };
+  // Retain each bounded response in a chain, not just its first (often 301).
+  const numero = tete[1] === 'HTTP_CHAIN_RESPONSE'
+    ? reste.match(/(?:^|\s)n=(1[0-6]|[1-9])(?=\s|$)/)?.[1] : undefined;
+  const identifiant = numero && valeurs.length ? `${tete[1]}:${numero}:${valeurs[0]}` : tete[1];
+  return { cle: etape.cle, valeurs, niveau: etape.niveau, etape: identifiant };
 }
 
 /**

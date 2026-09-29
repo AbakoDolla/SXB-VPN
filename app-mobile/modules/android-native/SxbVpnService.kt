@@ -195,13 +195,14 @@ private fun readSshPayloadChain(
     socket: Socket,
     timeoutMs: Int,
     onEvent: (String) -> Unit,
+    stopAtWebsocketUpgrade: Boolean = false,
 ): String {
     val deadline = System.nanoTime() + timeoutMs.toLong() * 1_000_000
     var totalBytes = 0
-    fun readByte(maxWaitMs: Int = Int.MAX_VALUE): Int {
+    fun readByte(): Int {
         val remaining = (deadline - System.nanoTime()) / 1_000_000
         if (remaining <= 0) throw SocketTimeoutException("HTTP_CHAIN_TIMEOUT")
-        socket.soTimeout = remaining.coerceAtMost(maxWaitMs.toLong()).toInt().coerceAtLeast(1)
+        socket.soTimeout = remaining.toInt().coerceAtLeast(1)
         val value = input.read()
         if (value < 0) throw java.io.EOFException("HTTP_CHAIN_TRUNCATED")
         if (++totalBytes > 131072) throw java.io.IOException("HTTP_CHAIN_TOO_LARGE")
@@ -263,13 +264,7 @@ private fun readSshPayloadChain(
     var count = 0
     while (true) {
         val accepted = previousCode == 101 || previousCode in 200..299
-        val first = try { readByte(if (accepted) 250 else Int.MAX_VALUE) }
-        catch (error: SocketTimeoutException) {
-            if (!accepted) throw error
-            // Some tunnels wait for the client's SSH banner before sending theirs.
-            onEvent("[SXB_TRACE] stage=HTTP_CHAIN_IDLE status=$previousCode")
-            return if (previousCode == 101) previous else ""
-        }
+        val first = readByte()
         input.unread(first)
         totalBytes--
         if (first != 'H'.code) {
@@ -277,7 +272,6 @@ private fun readSshPayloadChain(
                 // Leave the SSH banner and binary key exchange untouched.
                 return ""
             }
-            if (previousCode == 101 && first in setOf(0x81, 0x82)) return previous
             throw java.io.IOException("TUNNEL_REFUSED")
         }
         if (++count > 16) throw java.io.IOException("HTTP_CHAIN_TOO_MANY_RESPONSES")
@@ -296,12 +290,20 @@ private fun readSshPayloadChain(
             throw java.io.IOException("CAPTIVE_PORTAL")
         }
         // Only an explicitly pipelined payload reaches this parser. Never follow a redirect.
-        if (code !in 100..299 && code !in setOf(301, 302, 303, 307, 308)) return response
+        onEvent("[SXB_TRACE] stage=HTTP_CHAIN_RESPONSE n=$count status=$code")
+        if (code !in 100..299 && code !in setOf(301, 302, 303, 307, 308)) {
+            val errorCode = when (code) {
+                400 -> "HTTP_BAD_REQUEST"
+                404, 410 -> "HTTP_ENDPOINT_MISSING"
+                else -> "TUNNEL_REFUSED"
+            }
+            throw java.io.IOException("$errorCode HTTP $code")
+        }
         val content = body(response)
         if (content.contains("<html", true) && listOf("nointernet", "captive", "portal").any { content.contains(it, true) }) {
             throw java.io.IOException("CAPTIVE_PORTAL")
         }
-        onEvent("[SXB_TRACE] stage=HTTP_CHAIN_RESPONSE n=$count status=$code body_bytes=${content.length}")
+        if (code == 101 && stopAtWebsocketUpgrade) return response
         previous = response
         previousCode = code
     }
@@ -593,11 +595,46 @@ private class SxbPayloadProxy(
         }
 
         if (requests.size > 1) {
-            val response = readSshPayloadChain(rawIn, transportSocket, timeout.coerceIn(1000, 30000), onEvent)
+            val finalHeaders = requests.last()
+            val explicitWebsocket = !connectPayload &&
+                Regex("(?im)^Upgrade\\s*:\\s*websocket\\s*$").containsMatchIn(finalHeaders) &&
+                Regex("(?im)^Sec-WebSocket-Key\\s*:").containsMatchIn(finalHeaders)
+            if (!explicitWebsocket) {
+                // JSch writes its banner before reading. Defer HTTP parsing until
+                // that read so client-first servers work without an idle handoff
+                // that could leak late HTTP headers/body into the SSH exchange.
+                inputStream = object : InputStream() {
+                    private var ready = false
+                    private fun prepare() {
+                        if (ready) return
+                        val readTimeout = transportSocket.soTimeout
+                        try {
+                            readSshPayloadChain(rawIn, transportSocket, timeout.coerceIn(1000, 120000), onEvent)
+                            transportSocket.soTimeout = readTimeout
+                            ready = true
+                            onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=SSH_RAW reason=http_chain")
+                        } catch (error: Exception) {
+                            this@SxbPayloadProxy.close()
+                            throw error
+                        }
+                    }
+                    override fun read(): Int { prepare(); return rawIn.read() }
+                    override fun read(b: ByteArray, off: Int, len: Int): Int {
+                        if (len == 0) return rawIn.read(b, off, len)
+                        prepare()
+                        return rawIn.read(b, off, len)
+                    }
+                    override fun close() = this@SxbPayloadProxy.close()
+                }
+                outputStream = rawOut
+                return
+            }
+            val response = readSshPayloadChain(rawIn, transportSocket, timeout.coerceIn(1000, 120000), onEvent,
+                stopAtWebsocketUpgrade = true)
             if (response.isEmpty()) {
                 inputStream = rawIn
                 outputStream = rawOut
-                transportSocket.soTimeout = 28_000
+                transportSocket.soTimeout = timeout
                 onEvent("[SXB_TRACE] stage=TRANSPORT_SELECTED mode=SSH_RAW reason=http_chain")
                 return
             }
@@ -2373,9 +2410,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
                         trace("SSH_ATTEMPT_START", "n=$attemptNumber transport=${strategy.mode} tls=${strategy.tls}")
                         candidate = newSession(strategy)
                         sshSession = candidate
-                        trace("SSH_HANDSHAKE_START", "n=$attemptNumber transport=${strategy.mode} timeout_ms=12000")
+                        trace("SSH_HANDSHAKE_START", "n=$attemptNumber transport=${strategy.mode} timeout_ms=$timeoutMs")
                         broadcastLog("[SXB_DEBUG] SSH_HANDSHAKE_START n=$attemptNumber transport=${strategy.mode}")
-                        candidate.connect(minOf(timeoutMs, 12_000))
+                        candidate.connect(timeoutMs)
                         if (!candidate.isConnected) throw java.io.IOException("SSH session not connected")
                         results[strategy.mode] = "banner_ok"
                         selectedStrategy = strategy
@@ -2401,6 +2438,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 }
 
                 if (selectedStrategy == null) {
+                    if (strategies.size == 1) throw primaryFailure ?: java.io.IOException("SSH_MODE_UNKNOWN")
                     val primaryMessage = generateSequence(primaryFailure) { it.cause }
                         .joinToString(" ") { it.message.orEmpty() }.lowercase(Locale.ROOT)
                     val specificError = when {
@@ -2427,7 +2465,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                 }
                 session = newSession()
                 sshSession = session
-                trace("SSH_HANDSHAKE_START", "payload=false tls=$tlsEnabled timeout_ms=30000")
+                trace("SSH_HANDSHAKE_START", "payload=false tls=$tlsEnabled timeout_ms=$timeoutMs")
                 broadcastLog("[SXB_DEBUG] SSH_HANDSHAKE_START payload=false tls=$tlsEnabled")
                 broadcastLog("[SXB] Handshake SSH en cours...")
                 session.connect(timeoutMs)
