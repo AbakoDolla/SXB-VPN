@@ -166,6 +166,41 @@ private fun protectFailureScenarios() {
 }
 
 fun main(args: Array<String>) {
+    val journal = LogHarness()
+    repeat(40) { journal.log("[JSch:INF] evenement SSH") }
+    journal.log("[SXB_TRACE] stage=SOCKET_CREATED timeout_ms=30000 tls=false")
+    journal.log("[SXB_TRACE] stage=SOCKET_PROTECT result=false fd_ready=true")
+    journal.log("[SXB_TRACE] seq=8 elapsed_ms=1200 stage=VPN_FAILED code=SSH_SOCKET_PROTECT_FAILED")
+    check(journal.sent.any { it.contains("stage=SOCKET_PROTECT") } &&
+        journal.sent.any { it.contains("stage=VPN_FAILED") }) { "Startup log burst swallowed transport steps and final failure" }
+    check(journal.classify("SSH_SOCKET_PROTECT_FAILED") == "SSH_SOCKET_PROTECT_FAILED")
+    check(journal.classify("Session.connect: SSH_SOCKET_PROTECT_FAILED") == "SSH_SOCKET_PROTECT_FAILED")
+    check(journal.classify(IOException("Transport failed", IOException("SSH_SOCKET_PROTECT_FAILED"))) == "SSH_SOCKET_PROTECT_FAILED")
+    check(journal.classify(IOException("Connection failed", java.net.UnknownHostException("synthetic.example"))) == "SERVER_UNREACHABLE")
+    check(journal.classify("reject HostKey: synthetic.example") == "SSH_HOST_KEY_FAILED")
+    check(journal.classify("Algorithm negotiation fail") == "SSH_ALGORITHM_FAILED")
+    check(journal.classify("connection is closed by foreign host") == "SSH_PEER_CLOSED")
+    check(journal.classify("Auth fail") == "AUTH_FAILED")
+    check(journal.classify("Read timed out") == "TCP_TIMEOUT")
+    check(journal.classify("SSLHandshakeException: certificate rejected") == "TLS_FAILED")
+    check(journal.classify("HTTP_BAD_REQUEST") == "HTTP_BAD_REQUEST")
+    check(journal.classify("something unknown") == "VPN_FAILED")
+    val beforeDuplicates = journal.sent.size
+    repeat(1000) { journal.log("[SXB_TRACE] stage=SOCKET_PROTECT result=false fd_ready=true") }
+    check(journal.sent.size == beforeDuplicates) { "Duplicate stages bypassed the log limit" }
+    for (n in 1..1000) journal.log("[SXB_TRACE] stage=HTTP_CHAIN_RESPONSE n=$n status=200")
+    check(journal.sent.size == beforeDuplicates + 16) { "HTTP response priority must be bounded at 16" }
+    val policy = SxbConnectionTracePolicy()
+    for (mode in listOf("raw", "tls_raw", "tls_ws", "ws")) {
+        check(policy.admit("[SXB_TRACE] seq=1 elapsed_ms=10 stage=SSH_HANDSHAKE_START transport=$mode timeout_ms=30000"))
+        check(!policy.admit("[SXB_TRACE] stage=SSH_HANDSHAKE_START transport=$mode timeout_ms=30000"))
+    }
+    check(!policy.admit("[SXB_TRACE] stage=ENDPOINT_RESOLVED remote=synthetic.example"))
+    check(!policy.admit("[SXB_TRACE] stage=SSH_HANDSHAKE_START transport=synthetic.example"))
+    check(policy.admit("[SXB_TRACE] seq=2 elapsed_ms=20 stage=SSH_HANDSHAKE_START payload=false tls=true timeout_ms=30000"))
+    policy.reset()
+    check(policy.admit("[SXB_TRACE] stage=SSH_HANDSHAKE_START transport=raw timeout_ms=30000"))
+    println("PASS: startup burst retains connection diagnostics and precise socket-protection failure")
     System.setProperty("sxb.test.store", args[0])
     val regressions = linkedMapOf<String, () -> Unit>(
         "SSH banner preserves the first key-exchange byte" to {

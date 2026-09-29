@@ -21,7 +21,10 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 
-import { analyserTrace, formaterFait } from '../services/journalTechnique';
+import { analyserErreurVpn, analyserTrace, formaterFait } from '../services/journalTechnique';
+import { fr } from '../localization/fr';
+import { en } from '../localization/en';
+import { traduireLigne } from '../services/logTranslator';
 
 /** Tout ce qui ne doit JAMAIS ressortir, quelle que soit la trace. */
 const SECRETS = [
@@ -43,6 +46,37 @@ function neDivulgueRien(rendu: string, origine: string) {
 }
 
 describe('faits techniques — ce que le journal doit enfin montrer', () => {
+  it('conserve la cause du statut natif sans dépendre des lignes de journal', () => {
+    for (const [code, cle] of [
+      ['SSH_SOCKET_PROTECT_FAILED', 'log_socket_protect_failed'],
+      ['SSH_HOST_KEY_FAILED', 'log_ssh_host_key_failed'],
+      ['SSH_ALGORITHM_FAILED', 'log_ssh_algorithm_failed'],
+      ['SSH_PEER_CLOSED', 'log_ssh_peer_closed'],
+      ['AUTH_FAILED', 'log_auth_failed'],
+      ['TCP_TIMEOUT', 'log_timeout'],
+      ['PLAY_ENCRYPTION_REQUIRED', 'privacy_encryption_error'],
+    ]) {
+      assert.deepEqual(analyserErreurVpn(code), { cle, code });
+      assert.equal(analyserTrace(`[SXB_TRACE] stage=VPN_FAILED code=${code}`)?.cle, cle);
+      assert.deepEqual(traduireLigne(`[SXB] ${code} message=private.example`), { cle, niveau: 'echec' });
+      assert.deepEqual(traduireLigne(`[SXB_DEBUG] SSH_EXCEPTION code=${code}`), { cle, niveau: 'echec' });
+      assert.ok(Object.hasOwn(fr, cle) && Object.hasOwn(en, cle), cle);
+    }
+    assert.deepEqual(analyserErreurVpn('CONFIG_INVALID'), { cle: 'tech_vpn_failed', code: 'CONFIG_INVALID' });
+    for (const value of [undefined, null, 42, {}, 'SYNTHETIC_PRIVATE_TOKEN', 'constructor', 'toString', ...SECRETS]) {
+      assert.deepEqual(analyserErreurVpn(value), { cle: 'tech_vpn_failed' });
+      assert.deepEqual(analyserTrace(`[SXB_TRACE] stage=VPN_FAILED code=${value}`)?.valeurs, []);
+    }
+  });
+
+  it('un refus de protection Android est un échec et non une étape vide', () => {
+    const f = analyserTrace('[SXB_TRACE] stage=SOCKET_PROTECT result=false fd_ready=true host=private.example');
+    assert.equal(f?.cle, 'log_socket_protect_failed');
+    assert.equal(f?.niveau, 'echec');
+    assert.deepEqual(f?.valeurs, []);
+    assert.deepEqual(analyserTrace('[SXB_TRACE] stage=SOCKET_PROTECT result=true')?.valeurs, ['OK']);
+  });
+
   it('lit le code de réponse HTTP, que l’utilisateur réclamait', () => {
     const f = analyserTrace('[SXB_TRACE] stage=HTTP_RESPONSE status=HTTP/1.1 200 OK header_count=6 body_bytes=unknown');
     assert.ok(f, 'la trace doit être reconnue');
@@ -219,6 +253,12 @@ describe('câblage — le champ technique n’a qu’une seule source', () => {
 
   it('une même étape ne s’empile pas à chaque tentative', () => {
     assert.match(CONTEXTE, /if \(prev\.some\(s => s\.key === cle\)\) return prev;/);
+  });
+
+  it('le statut erreur conserve son code par la même liste fermée que les traces', () => {
+    assert.match(CONTEXTE, /const erreur = analyserErreurVpn\(e\.errorCode\);/);
+    assert.match(CONTEXTE, /addStepLog\('error', erreur\.cle, 'error', erreur\.code\)/);
+    assert.doesNotMatch(CONTEXTE, /addStepLog\('error',[^\n]+, e\.errorCode\)/);
   });
 
   it('seul un succès confirmé reçoit une coche, les débuts restent des informations', () => {

@@ -9,6 +9,34 @@ import {
 import { substitutePayload } from "../services/transport-probe";
 
 describe("imports et transports de la gamme SSH", () => {
+  it("conserve le transport explicite et le budget d'un export SSH Custom v92", () => {
+    const payload = "GET / HTTP/1.1[crlf]Host: public.example.test[crlf][crlf]" +
+      "X / HTTP/1.1[crlf]Host: [host][crlf][crlf]" +
+      "GET / HTTP/1.1[crlf]Host: edge.example.test[crlf]Backend: synthetic[crlf]" +
+      "Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]";
+    const parsed = parseImportedConfigList(JSON.stringify({
+      CONFIGS: [{
+        CONFIGS: 18719, NOTE: "synthetic", d: true, CONFIGNAME: "Synthetic SSC",
+        "PAYLOAD ENABLED": true, TYPE: "TLS", PORT: 80, TIMEOUT: 58875,
+        PROTOCOL: 1, VERSION: 92, ENCRYPTION: 0, COMPRESSIONLEVEL: 0,
+        LOCALPORT: 2222, PAYLOAD: payload, ADDRESS: "public.example.test",
+        USERNAME: "synthetic", PASSWORD: "synthetic-test-only", DNS: "8.8.8.8",
+      }], d: 92,
+    }));
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].ok, true, parsed[0].errors.join(" | "));
+    const config = parsed[0].canonical;
+    assert.equal(config?.protocol, "ssh+payload");
+    assert.equal(config?.sshTransport, "payload-tls");
+    assert.equal(config?.tls, true);
+    assert.equal(config?.port, 80);
+    assert.equal(config?.timeoutMs, 58875);
+    assert.equal(config?.payload, payload);
+    assert.equal(config?.dns, "8.8.8.8");
+    assert.notEqual(config?.slowDns, true);
+    assert.notEqual(config?.proxyEnabled, true);
+  });
+
   it("importe atomiquement les exports HTTP Custom CONFIGS[]", () => {
     const source = {
       CONFIGS: [

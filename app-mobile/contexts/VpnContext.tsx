@@ -42,7 +42,7 @@ import { estLeurre } from '@/services/decoy';
 import {
   appliquerPresentationTls, echelleApplicable, essaiSuivant, presentationPourEssai, refusDePresentation,
 } from '@/services/tlsPresentation';
-import { analyserTrace } from '@/services/journalTechnique';
+import { analyserErreurVpn, analyserTrace } from '@/services/journalTechnique';
 import {
   isCompleteOfflineConfig,
   mergeConnectionMetadata,
@@ -1115,7 +1115,8 @@ export function VpnProvider({ children }: { children: React.ReactNode }) {
         stopEchelon();
         setVpnState('error');
         acceptNativeConnectedRef.current = false;
-        addStepLog('error', e.errorCode === 'PLAY_ENCRYPTION_REQUIRED' ? 'privacy_encryption_error' : 'step_error', 'error');
+        const erreur = analyserErreurVpn(e.errorCode);
+        addStepLog('error', erreur.cle, 'error', erreur.code);
         legacyDebugLog('VPN_FAILED status=error');
         addLog(e.errorCode === 'PLAY_ENCRYPTION_REQUIRED' ? privacyEncryptionMessage : '❌ Erreur VPN — connexion perdue');
         setIsConnecting(false);
