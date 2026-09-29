@@ -20,7 +20,7 @@ import * as configStore from './configStore';
 import { isCompleteOfflineConfig, isSshRelayConfig } from './configValidator';
 import apiClient from './apiClient';
 import { decryptSxbBlob, utf8Decode } from './aesGcm';
-import { accessIssueFromError, type AccessIssue } from './accessPolicy';
+import { accessIssueFromError, isRecord, type AccessIssue } from './accessPolicy';
 import { requireDeviceAccess, requireProfileAccess } from './accessState';
 import { accessRequestStamp, currentIdentityRequest } from './accessEvents';
 import { requireVpnConsent } from './privacyConsent';
@@ -48,9 +48,10 @@ export async function refreshRelayCredential(id: string, config: Record<string, 
   const previous = config.sshRelay as { ticket: string; expiresAt: string };
   if (Date.parse(previous.expiresAt) - Date.now() > 300_000) return config;
   const identity = accessRequestStamp();
-  let response: Awaited<ReturnType<typeof apiClient.post>>;
+  let credential: unknown;
   try {
-    response = await apiClient.post('/provision/ssh-relay/refresh', { ticket: previous.ticket }, { timeout: 15000 });
+    const response = await apiClient.post('/provision/ssh-relay/refresh', { ticket: previous.ticket }, { timeout: 15000 });
+    credential = response.data;
   } catch (error) {
     if (!currentIdentityRequest(identity)) throw new Error('AUTH_SESSION_CHANGED');
     requireVpnConsent();
@@ -74,8 +75,8 @@ export async function refreshRelayCredential(id: string, config: Record<string, 
   }
   if (!currentIdentityRequest(identity)) throw new Error('AUTH_SESSION_CHANGED');
   requireVpnConsent();
-  const credential = response.data;
-  if (!credential || !isSshRelayConfig({ ...config, sshRelay: { ...credential, version: 1 } }) ||
+  if (!isRecord(credential) || typeof credential.ticket !== 'string' || typeof credential.expiresAt !== 'string' ||
+      !isSshRelayConfig({ ...config, sshRelay: { ...credential, version: 1 } }) ||
       Date.parse(credential.expiresAt) <= Date.now()) throw new Error('RELAY_CREDENTIAL_INVALID');
   return (await configStore.replaceRelayCredential(id, previous.ticket, {
     ticket: credential.ticket, expiresAt: credential.expiresAt,
