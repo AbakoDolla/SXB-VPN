@@ -1086,6 +1086,43 @@ private fun JSONObject.optStringOrNull(name: String, fallback: String = ""): Str
     return if (s == "null") fallback else s
 }
 
+private class SxbConnectionTracePolicy {
+    private val delivered = mutableSetOf<String>()
+    private val stages = setOf(
+        "SSH_TUNNEL_START", "SOCKET_CREATED", "SOCKET_PROTECT", "DNS_RESOLVE",
+        "TCP_CONNECTED", "TLS_HANDSHAKE_SUCCESS", "PAYLOAD_SENT", "HTTP_RESPONSE",
+        "TRANSPORT_SELECTED", "SSH_BANNER_WAIT", "SSH_OVER_TLS_START",
+        "SSH_HANDSHAKE_SUCCESS", "SOCKS5_READY", "TUN_CREATE_START", "TUN_CREATED",
+        "LIBBOX_STARTED", "VPN_FAILED", "CLEANUP_START", "CLEANUP_COMPLETE",
+    )
+    private val stagePattern = Regex("""^\[SXB_TRACE\] (?:seq=\d+ elapsed_ms=\d+ )?stage=([A-Z_0-9]+)(?: |$)""")
+    private val responseNumber = Regex("""(?:^| )n=(1[0-6]|[1-9])(?: |$)""")
+    private val attemptNumber = Regex("""(?:^| )n=([1-4])(?: |$)""")
+    private val transport = Regex("""(?:^| )transport=(raw|tls_raw|tls_ws|ws)(?: |$)""")
+    private val directHandshake = Regex("""^payload=false tls=(true|false)(?: |$)""")
+
+    @Synchronized fun reset() = delivered.clear()
+
+    // A bounded first occurrence per connection survives the general log throttle.
+    @Synchronized fun admit(message: String): Boolean {
+        val match = stagePattern.find(message) ?: return false
+        val stage = match.groupValues[1]
+        val detail = message.substring(match.range.last + 1)
+        val key = when (stage) {
+            "HTTP_CHAIN_RESPONSE" -> "$stage:${responseNumber.find(detail)?.groupValues?.get(1) ?: return false}"
+            "SSH_ATTEMPT_START" -> "$stage:${attemptNumber.find(detail)?.groupValues?.get(1) ?: return false}"
+            "SSH_HANDSHAKE_START" -> {
+                val mode = transport.find(detail)?.groupValues?.get(1)
+                    ?: directHandshake.find(detail)?.let { "direct" } ?: return false
+                "$stage:$mode"
+            }
+            in stages -> stage
+            else -> return false
+        }
+        return delivered.add(key)
+    }
+}
+
 class SxbVpnService : VpnService(), PlatformInterface {
 
     companion object {
@@ -1312,6 +1349,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private val logRateWindowStart = AtomicLong(0L)
     private val logRateCount = java.util.concurrent.atomic.AtomicInteger(0)
     private val traceSequence = AtomicLong(0)
+    private val connectionTracePolicy = SxbConnectionTracePolicy()
 
     private val engineLogThrottle = SxbEngineLogThrottle(SystemClock::elapsedRealtime)
     private val outboundDiagnostics = SxbOutboundDiagnostics(SystemClock::elapsedRealtime)
@@ -1749,6 +1787,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         configJson  = json
 
         cleanupStarted.set(false)  // FIX — Réinitialiser le guard cleanup pour cette nouvelle connexion
+        connectionTracePolicy.reset()
         running.set(true)
         restartAccessObserver()
         if (!startTrafficAccounting()) return START_NOT_STICKY
@@ -2045,6 +2084,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
     private val legacyPayloadSequence = SxbProtocolCompatibility.LegacyPayloadSequence()
 
     private fun startSshTunnel(configJsonStr: String) {
+        connectionTracePolicy.reset()
         val sshAccountExpired = AtomicBoolean(false)
         try {
             isSshRelay = true
@@ -2171,10 +2211,9 @@ class SxbVpnService : VpnService(), PlatformInterface {
             SxbSecureLogger.debug("SSH_SOCKET_CONNECT_START payload=$usePayload tls=$tlsEnabled ws=$websocketEnabled bytes=${payload.length}")
             broadcastLog("[SXB_DEBUG] SSH_SOCKET_CONNECT_START payload=$usePayload tls=$tlsEnabled ws=$websocketEnabled")
 
-            // ── Télémétrie JSch (kex/auth visible) — SANS secrets : JSch consigne
-            // les méthodes, drapeaux et paquets, jamais le mot de passe.
+            // Connection stages carry the diagnostic; generic library chatter must not flood the bridge.
             JSch.setLogger(object : com.jcraft.jsch.Logger {
-                override fun isEnabled(level: Int): Boolean = true
+                override fun isEnabled(level: Int): Boolean = level >= com.jcraft.jsch.Logger.WARN
                 override fun log(level: Int, message: String?) {
                     val tag = when (level) {
                         com.jcraft.jsch.Logger.DEBUG -> "DBG"
@@ -2596,7 +2635,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
             Log.e("SXB_DEBUG", "[SXB_DEBUG] SSH_EXCEPTION at currentState=$currentState msg=$safeException")
             val msg = if (sshAccountExpired.get()) "SSH_ACCOUNT_EXPIRED" else e.message ?: "erreur inconnue"
             val stack = e.stackTrace.take(10).joinToString("\n  ") { "at ${it.className}.${it.methodName}(${it.fileName}:${it.lineNumber})" }
-            val code = classifyVpnError(msg)
+            val code = if (sshAccountExpired.get()) "SSH_ACCOUNT_EXPIRED" else classifyVpnError(e)
             broadcastLog("[SXB_DEBUG] SSH_EXCEPTION code=$code")
             broadcastLog("[SXB_DEBUG] STACKTRACE:\n  ${SecurityModule.maskSensitive(stack)}")
             // Chaîne de causes complète — c'est elle qui nomme le blocage exact
@@ -2903,6 +2942,11 @@ class SxbVpnService : VpnService(), PlatformInterface {
         val lower = message.lowercase(Locale.ROOT)
         return when {
             lower.contains("privacy_consent_required") -> "PRIVACY_CONSENT_REQUIRED"
+            lower.contains("ssh_socket_protect_failed") -> "SSH_SOCKET_PROTECT_FAILED"
+            lower.contains("reject hostkey") || lower.contains("hostkey has been changed") ||
+                lower.contains("unknownhostkey") -> "SSH_HOST_KEY_FAILED"
+            lower.contains("algorithm negotiation fail") -> "SSH_ALGORITHM_FAILED"
+            lower.contains("connection is closed by foreign host") -> "SSH_PEER_CLOSED"
             lower.contains("ssh_account_expired") -> "SSH_ACCOUNT_EXPIRED"
             lower.contains("http_endpoint_missing") -> "HTTP_ENDPOINT_MISSING"
             lower.contains("http_bad_request") -> "HTTP_BAD_REQUEST"
@@ -2953,6 +2997,12 @@ class SxbVpnService : VpnService(), PlatformInterface {
             lower.contains("tun") || lower.contains("establish") -> "VPN_TUN_FAILED"
             else -> "VPN_FAILED"
         }
+    }
+
+    private fun classifyVpnError(error: Throwable): String {
+        return generateSequence(error) { it.cause }.take(4).toList().asReversed()
+            .map { classifyVpnError("${it.javaClass.simpleName}: ${it.message.orEmpty()}") }
+            .firstOrNull { it != "VPN_FAILED" } ?: "VPN_FAILED"
     }
 
     private fun failVpn(code: String, displayMessage: String) {
@@ -5843,7 +5893,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
         }
         // Les rares diagnostics déjà admis par le limiteur par catégorie ne
         // doivent pas perdre leur première occurrence dans une rafale de traces.
-        if (priority) {
+        if (priority || connectionTracePolicy.admit(message)) {
             sendLogBroadcast(safeMessage)
             return
         }

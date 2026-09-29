@@ -38,6 +38,8 @@
  * restent disponibles côté natif pour un diagnostic d'exploitant.
  */
 
+import { analyserErreurVpn } from './journalTechnique';
+
 export type NiveauJournal = 'ok' | 'info' | 'attention' | 'echec';
 
 export interface LigneJournal {
@@ -102,6 +104,9 @@ const REGLES: Array<{ motif: RegExp; cle: string; niveau: NiveauJournal }> = [
  */
 export function traduireLigne(brute: string): LigneJournal {
   const texte = String(brute ?? '');
+  const code = texte.match(/(?:^|\bcode=|^\[SXB\]\s+)([A-Z][A-Z0-9_]{2,31})(?=\s|$)/)?.[1];
+  const erreur = analyserErreurVpn(code);
+  if (erreur.code) return { cle: erreur.cle, niveau: 'echec' };
   for (const regle of REGLES) {
     if (regle.motif.test(texte)) return { cle: regle.cle, niveau: regle.niveau };
   }

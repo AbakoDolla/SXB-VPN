@@ -127,6 +127,15 @@ authentication, followed by real bidirectional transfers. A single-strategy
 failure retains its actual cause instead of claiming the transport is unknown.
 The mobile journal distinguishes negotiation start from confirmed success and
 shows each bounded HTTP response without hosts, payloads or credentials.
+Startup milestones bypass the general 12-lines/second bridge throttle only
+once per bounded stage, transport or HTTP-chain position. Repeated traffic
+logs remain throttled. The source-derived JVM harness floods that exact
+production broadcaster before socket protection and failure events.
+The independent native error-state event also supplies a closed-list,
+localized cause and code to the journal, even when no log event arrives.
+Socket-protection refusal, SSH host-key rejection, algorithm mismatch and
+early peer closure retain distinct codes; none relax socket protection,
+host-key checks or TLS verification.
 These loopback checks do not certify the supplied provider on a mobile network.
 
 On Android binaries exposing `encryptVpnConfig`/`decryptVpnConfig`, profile

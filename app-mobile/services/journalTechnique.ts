@@ -105,13 +105,10 @@ const siVrai = (rendu: string) => (v: string): string | null =>
 /**
  * Code d'erreur symbolique du moteur — `SSH_TIMEOUT`, `CONFIG_UNSUPPORTED`.
  *
- * La forme est close des deux côtés : capitales, chiffres et soulignés, trente
- * caractères au plus. Un hôte, une adresse ou une clé ne peuvent pas la
- * satisfaire, car tous portent un caractère qu'elle refuse — point, deux-points
- * ou minuscule.
+ * Liste fermée : une chaîne en capitales peut elle aussi être un secret.
  */
 const codeSymbolique = (v: string): string | null =>
-  (/^[A-Z][A-Z0-9_]{2,31}$/.test(v) ? v : null);
+  (ERREURS_VPN.has(v) || CODES_VPN.has(v) ? v : null);
 
 /**
  * Nom de classe d'exception Java — `SocketTimeoutException`.
@@ -299,7 +296,7 @@ const ETAPES: Record<string, Etape> = {
   },
 };
 
-const ERREURS_SSH = new Map([
+const ERREURS_VPN = new Map([
   ['AUTH_FAILED', 'log_auth_failed'],
   ['TCP_TIMEOUT', 'log_timeout'],
   ['SSH_TIMEOUT', 'log_timeout'],
@@ -310,7 +307,29 @@ const ERREURS_SSH = new Map([
   ['HTTP_ENDPOINT_MISSING', 'log_http_endpoint_missing'],
   ['HTTP_BAD_REQUEST', 'log_http_bad_request'],
   ['HTTP_PLAINTEXT_CLOSED_443', 'log_http_plaintext_443'],
+  ['SSH_SOCKET_PROTECT_FAILED', 'log_socket_protect_failed'],
+  ['SSH_HOST_KEY_FAILED', 'log_ssh_host_key_failed'],
+  ['SSH_ALGORITHM_FAILED', 'log_ssh_algorithm_failed'],
+  ['SSH_PEER_CLOSED', 'log_ssh_peer_closed'],
+  ['DNS_FAILED', 'log_dns_failed'],
+  ['SERVER_UNREACHABLE', 'log_refused'],
+  ['PLAY_ENCRYPTION_REQUIRED', 'privacy_encryption_error'],
 ]);
+
+const CODES_VPN = new Set([
+  'VPN_FAILED', 'VPN_TUN_FAILED', 'CONFIG_INVALID', 'CONFIG_UNSUPPORTED',
+  'TLS_FAILED', 'HTTP_UNEXPECTED', 'TRANSPORT_ERROR', 'SSH_MODE_UNKNOWN',
+  'PRIVACY_CONSENT_REQUIRED', 'USAGE_CHECKPOINT_UNAVAILABLE',
+]);
+
+/** L'état natif reste exploitable même si aucune ligne de journal n'arrive. */
+export function analyserErreurVpn(value: unknown): { cle: string; code?: string } {
+  const code = typeof value === 'string' ? codeSymbolique(value) : null;
+  return {
+    cle: code ? ERREURS_VPN.get(code) ?? 'tech_vpn_failed' : 'tech_vpn_failed',
+    ...(code ? { code } : {}),
+  };
+}
 
 /**
  * `stage=NAME` dans une trace du moteur.
@@ -364,8 +383,15 @@ export function analyserTrace(ligne: string): FaitTechnique | null {
   const reste = ligne.slice(tete.index! + tete[0].length);
   if (tete[1] === 'VPN_FAILED') {
     const code = reste.match(/(?:^|\s)code=([A-Z][A-Z0-9_]{2,31})(?=\s|$)/)?.[1];
-    const cle = code ? ERREURS_SSH.get(code) : undefined;
-    if (cle) return { cle, valeurs: [], niveau: 'echec', etape: tete[1] };
+    const erreur = analyserErreurVpn(code);
+    return {
+      cle: erreur.cle,
+      valeurs: erreur.code && !ERREURS_VPN.has(erreur.code) ? [erreur.code] : [],
+      niveau: 'echec', etape: tete[1],
+    };
+  }
+  if (tete[1] === 'SOCKET_PROTECT' && /(?:^|\s)result=false(?=\s|$)/.test(reste)) {
+    return { cle: 'log_socket_protect_failed', valeurs: [], niveau: 'echec', etape: tete[1] };
   }
 
   const valeurs: string[] = [];

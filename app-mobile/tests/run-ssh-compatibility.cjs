@@ -40,7 +40,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import com.sxbvpn.vpnmodule.SxbUdpGateway
 object Log { fun i(tag: String, message: String) {} ; fun w(tag: String, message: String) {}; fun d(tag: String, message: String) {} }
-object SxbSecureLogger { fun debug(message: String) {} ; fun warn(message: String) {} }
+object SxbSecureLogger { fun debug(message: String) {} ; fun warn(message: String) {}; fun isDiagnosticEnabled() = false }
+object SystemClock { fun elapsedRealtime() = 1000L }
 `;
   const harness = path.join(temp, 'SshCompatibilityHarness.kt');
   const tests = readFileSync(path.join(__dirname, 'SshCompatibilityTest.kt'), 'utf8');
@@ -49,7 +50,33 @@ object SxbSecureLogger { fun debug(message: String) {} ; fun warn(message: Strin
   const socksStart = service.indexOf('    private fun startLocalSocks5Server(');
   const socksEnd = service.indexOf('    private fun startTrafficAccounting()', socksStart);
   assert.ok(socksStart > end && socksEnd > socksStart);
+  const logStart = service.indexOf('    private fun broadcastLog(message:');
+  const logEnd = service.indexOf('    private fun sendLogBroadcast(', logStart);
+  const classifyStart = service.indexOf('    private fun classifyVpnError(');
+  const classifyEnd = service.indexOf('    private fun failVpn(', classifyStart);
+  const security = readFileSync(path.resolve(__dirname, '..', 'modules', 'android-native', 'SecurityModule.kt'), 'utf8');
+  const maskStart = security.indexOf('    private val MOTIF_IPV4');
+  const maskEnd = security.indexOf('    // ── Leurres', maskStart);
+  assert.ok(logStart > end && logEnd > logStart && classifyStart > end && classifyEnd > classifyStart && maskStart > 0 && maskEnd > maskStart);
   writeFileSync(harness, declarations + service.slice(start, end) + `
+object SecurityModule {
+${security.slice(maskStart, maskEnd)}
+}
+class LogHarness {
+    companion object { const val TAG = "fixture"; const val LOG_RATE_WINDOW_MS = 1000L; const val LOG_RATE_MAX_PER_WINDOW = 12 }
+    val fullLogBuffer = StringBuilder()
+    val sent = mutableListOf<String>()
+    val logRateWindowStart = AtomicLong(1000L)
+    val logRateCount = java.util.concurrent.atomic.AtomicInteger(0)
+    private val connectionTracePolicy = SxbConnectionTracePolicy()
+    fun trimLogBufferLocked() {}
+    fun sendLogBroadcast(message: String) { sent.add(message) }
+    fun log(message: String) = broadcastLog(message)
+    fun classify(message: String) = classifyVpnError(message)
+    fun classify(error: Throwable) = classifyVpnError(error)
+${service.slice(logStart, logEnd)}
+${service.slice(classifyStart, classifyEnd)}
+}
 class SocksHarness {
     val running = AtomicBoolean(true)
     val uploadBytes = AtomicLong(0)
