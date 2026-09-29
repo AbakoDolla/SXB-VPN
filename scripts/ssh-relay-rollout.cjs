@@ -28,17 +28,32 @@ function parseRequest(encoded, parseTransport) {
   return { ...parseTransport(Buffer.from(JSON.stringify(transport)).toString('base64')), username };
 }
 
+function decodeProfile(profile, api) {
+  if (!['ssh', 'ssh+payload'].includes(profile.protocol) || !profile.canonicalConfig || !profile.canonicalConfigHash) {
+    throw new Error('ROLLOUT_CANONICAL_INVALID');
+  }
+  const plain = api.decryptCanonical(profile.canonicalConfig);
+  if (!plain) throw new Error('ROLLOUT_CANONICAL_INVALID');
+  const canonical = JSON.parse(plain);
+  if (!api.verifyCanonicalHash(canonical, profile.canonicalConfigHash)) throw new Error('ROLLOUT_CANONICAL_INVALID');
+  return { profile, canonical, engine: api.engineConfigFromCanonical(canonical) };
+}
+
+function requestFromProfile(profile, expectedFingerprint, api, parseTransport) {
+  const { engine } = decodeProfile(profile, api);
+  return parseRequest(Buffer.from(JSON.stringify({
+    host: engine.host, port: Number(engine.port), username: engine.username,
+    payload: engine.payload ?? '', expectedFingerprint,
+  })).toString('base64'), parseTransport);
+}
+
 function selectProfile(rows, request, api) {
   const matches = [];
   for (const profile of rows) {
     if (!['ssh', 'ssh+payload'].includes(profile.protocol) || !profile.canonicalConfig || !profile.canonicalConfigHash) continue;
-    const plain = api.decryptCanonical(profile.canonicalConfig);
-    if (!plain) throw new Error('ROLLOUT_CANONICAL_INVALID');
-    const canonical = JSON.parse(plain);
-    if (!api.verifyCanonicalHash(canonical, profile.canonicalConfigHash)) throw new Error('ROLLOUT_CANONICAL_INVALID');
-    const engine = api.engineConfigFromCanonical(canonical);
+    const { canonical, engine } = decodeProfile(profile, api);
     if (engine.host === request.host && Number(engine.port) === request.port &&
-        engine.username === request.username && engine.payload === request.payload) {
+        engine.username === request.username && (engine.payload ?? '') === request.payload) {
       matches.push({ profile, canonical, engine });
     }
   }
@@ -298,8 +313,13 @@ async function main() {
     validateFuturePolicy(process.env[FUTURE_KEY]);
     stage = 'REQUEST';
     const preflight = require(path.join(root, 'scripts', 'ssh-relay-preflight.cjs'));
-    const request = parseRequest(process.env.SXB_SSH_RELAY_ROLLOUT_CONFIG, preflight.parseConfig);
+    const encodedRequest = process.env.SXB_SSH_RELAY_ROLLOUT_CONFIG;
     delete process.env.SXB_SSH_RELAY_ROLLOUT_CONFIG;
+    const profileId = process.env.SXB_RELAY_PROFILE_ID;
+    const expectedFingerprint = process.env.SXB_RELAY_EXPECTED_FINGERPRINT;
+    if (encodedRequest && expectedFingerprint) throw new Error('ROLLOUT_CONFIG_AMBIGUOUS');
+    let request = encodedRequest ? parseRequest(encodedRequest, preflight.parseConfig) : null;
+    if (!request && (!ID.test(profileId || '') || !expectedFingerprint)) throw new Error('ROLLOUT_SELECTOR_REQUIRED');
     const requiredFrom = process.env.SXB_RELAY_FUTURE_SSH_FROM || '';
     validateFuturePolicy(requiredFrom);
     if (requiredFrom && process.env.SXB_RELAY_MODE !== 'enable') throw new Error('ROLLOUT_FUTURE_POLICY_ENABLE_ONLY');
@@ -318,19 +338,26 @@ async function main() {
     const api = mod.exports, { Client } = backend('ssh2');
     stage = 'DATABASE';
     db = new (backend('@prisma/client').PrismaClient)({ log: [] });
+    const profiles = id => {
+      stage = 'PROFILE_READ';
+      return db.vpnProfile.findMany({
+        where: { protocol: { in: ['ssh', 'ssh+payload'] }, ...(id ? { id } : {}) }, take: 101, select: PROFILE_SELECT,
+      });
+    };
+    let selectedRows;
+    if (!request) {
+      selectedRows = await profiles(profileId);
+      if (selectedRows.length !== 1) throw new Error('ROLLOUT_PROFILE_NOT_FOUND');
+      request = requestFromProfile(selectedRows[0], expectedFingerprint, api, preflight.parseConfig);
+    }
     const plan = await prepareRollout({
       mode: process.env.SXB_RELAY_MODE,
-      profileId: process.env.SXB_RELAY_PROFILE_ID,
+      profileId,
       expectedHash: process.env.SXB_RELAY_EXPECTED_HASH,
       confirmed: process.env.SXB_RELAY_CONFIRMED === 'true',
     }, request, {
       api, requiredFrom: env[FUTURE_KEY],
-      profiles: id => {
-        stage = 'PROFILE_READ';
-        return db.vpnProfile.findMany({
-          where: { protocol: { in: ['ssh', 'ssh+payload'] }, ...(id ? { id } : {}) }, take: 101, select: PROFILE_SELECT,
-        });
-      },
+      profiles: id => selectedRows || profiles(id),
       verifyHost: input => {
         stage = 'HOST_KEY';
         return preflight.probeRelayHost(input, { open: api.openRelayUpstream, Client });
@@ -433,6 +460,6 @@ async function main() {
   }
 }
 
-module.exports = { PROFILE_SELECT, parseRequest, selectProfile, selectionMetadata, editAllowlist, rolloutEnvironment,
+module.exports = { PROFILE_SELECT, parseRequest, requestFromProfile, selectProfile, selectionMetadata, editAllowlist, rolloutEnvironment,
   restartEnvironment, prepareRollout, verifyTransfer, replaceFile, applyRollout };
 if (require.main === module || !module.parent) main();

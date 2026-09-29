@@ -49,6 +49,18 @@ test('rollout input contains no password and cannot broaden the transport select
   assert.throws(() => rollout.parseRequest('!!' + encode(request), parseConfig));
 });
 
+test('an explicit profile and separately trusted pin need no transport or credential secret', () => {
+  assert.deepEqual(rollout.requestFromProfile(profile, fingerprint, api, parseConfig), request);
+  assert.throws(() => rollout.requestFromProfile(profile, 'untrusted', api, parseConfig), /CONFIG_INVALID/);
+  assert.throws(() => rollout.requestFromProfile(profile, fingerprint,
+    { ...api, verifyCanonicalHash: () => false }, parseConfig), /CANONICAL_INVALID/);
+  assert.throws(() => rollout.requestFromProfile({ ...profile, protocol: 'vless' }, fingerprint, api, parseConfig), /CANONICAL_INVALID/);
+  const directApi = { ...api, decryptCanonical: () => JSON.stringify({ ...canonical, payload: undefined }) };
+  const directRequest = rollout.requestFromProfile(profile, fingerprint, directApi, parseConfig);
+  assert.equal(directRequest.payload, '');
+  assert.equal(rollout.selectProfile([profile], directRequest, directApi).profile.id, profile.id);
+});
+
 test('selection is unique, exact and SSH-only; corrupt canonical material fails closed', () => {
   assert.equal(rollout.selectProfile([profile], request, api).profile.id, profile.id);
   assert.throws(() => rollout.selectProfile([profile, { ...profile, id: 'another' }], request, api), error => {

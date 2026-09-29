@@ -258,6 +258,12 @@ its `enable` and `disable` modes deliberately change production and restart only
 base64 JSON containing `host`, `port`, `username`, `payload`, and a previously
 trusted `expectedFingerprint`. Do not put a password or private key in this
 request: the operation reads the existing encrypted canonical profile on the VPS.
+If the exact profile ID is already known, supply `profile_id` and a separately
+trusted `expected_fingerprint` instead of that secret. The transport is then read
+only inside the VPS from the authenticated canonical profile; no provider host,
+payload or credentials need to travel through the workflow inputs. The optional
+`operation_id` appears in the run title to locate an uncertain dispatch without
+starting a duplicate operation. Do not supply both selector forms.
 
 Run `inspect` first. It requires a unique exact SSH profile match, verifies the
 supplier key without authentication. If several copies match, inspection stops
