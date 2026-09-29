@@ -69,6 +69,7 @@ test('a matching RSA key is found without sending even an SSH authentication req
   assert.equal(result.status, 'host_key_matched');
   assert.equal(result.attempts.at(-1).result, 'matched');
   assert.equal(result.credentialsSent, false);
+  assert.equal(result.verifiedFingerprint, sha256);
   assert.equal(f.authentications(), 0);
 });
 
@@ -77,6 +78,7 @@ test('a mismatched pinned key never authenticates or claims success', { timeout:
   const result = await probeRelayHost({ ...config, expectedFingerprint: 'MD5:' + '00:'.repeat(15) + '00' }, f);
   assert.equal(result.status, 'host_key_unverified');
   assert.equal(result.attempts.some(attempt => attempt.result === 'mismatch'), true);
+  assert.equal(result.verifiedFingerprint, undefined);
   assert.equal(f.authentications(), 0);
 });
 
