@@ -34,6 +34,13 @@ const deps = {
 };
 const enable = { mode: 'enable', profileId: profile.id, expectedHash: hash, confirmed: true };
 
+test('rollout projection uses real Prisma fields; the supplier pin exists only inside the encrypted canonical', () => {
+  const fields = new Set(require('@prisma/client').Prisma.dmmf.datamodel.models
+    .find(model => model.name === 'VpnProfile').fields.map(field => field.name));
+  for (const field of Object.keys(rollout.PROFILE_SELECT)) assert.ok(fields.has(field), `unknown field ${field}`);
+  assert.equal(fields.has('fingerprint'), false);
+});
+
 test('rollout input contains no password and cannot broaden the transport selector', () => {
   assert.deepEqual(rollout.parseRequest(encode(request), parseConfig), request);
   for (const change of [{ password: 'private' }, { username: '' }, { command: 'anything' }, { port: 0 }]) {
@@ -138,7 +145,10 @@ test('successful enable and disable scope every write to the selected profile an
       updateProfile: async (value, update) => {
         assert.equal(value, profile);
         assert.deepEqual(update, { canonicalConfig: 'new-encrypted', canonicalConfigHash: 'b'.repeat(64),
-          fingerprint, configVersion: 3 });
+          configVersion: 3 });
+        const fields = require('@prisma/client').Prisma.dmmf.datamodel.models
+          .find(model => model.name === 'VpnProfile').fields.map(field => field.name);
+        for (const field of Object.keys(update)) assert.ok(fields.includes(field), `unknown write field ${field}`);
         calls.push('update');
       },
       assertProfile: async value => { assert.equal(value, profile); calls.push('assert'); },
