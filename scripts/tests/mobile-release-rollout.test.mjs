@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import rolloutModule from '../mobile-release-rollout.cjs';
-const { rollout, validateBuild, digest } = rolloutModule;
+const { rollout, validateBuild, digest, failureCode } = rolloutModule;
 const build = { versionCode: 123, versionName: '1.2.1', apkUrl: 'https://vpnsxb.afrihall.com/download/sxbvpn-latest.apk',
   apkSha256: 'a'.repeat(64), sizeBytes: 64 };
 function fixture() {
@@ -44,4 +44,12 @@ test('publication requires exact build, confirmation and unchanged publication; 
   assert.equal((await rollout(f.db, options)).status, 'already-published');
   assert.equal(f.writes(), 1);
   assert.throws(() => validateBuild({ ...build, apkUrl: 'http://evil.invalid' }, 123, build.apkSha256), /BUILD_INVALID/);
+});
+
+test('publication failures expose only bounded business or database codes', () => {
+  assert.equal(failureCode(new Error('MOBILE_PUBLICATION_CHANGED')), 'MOBILE_PUBLICATION_CHANGED');
+  assert.equal(failureCode({ code: 'P2010', message: 'private query and connection details' }), 'MOBILE_DATABASE_P2010');
+  assert.equal(failureCode({ code: 'P2010 private', message: 'private' }), 'MOBILE_ROLLOUT_FAILED');
+  assert.equal(failureCode(new Error('private connection details')), 'MOBILE_ROLLOUT_FAILED');
+  assert.equal(failureCode(null), 'MOBILE_ROLLOUT_FAILED');
 });

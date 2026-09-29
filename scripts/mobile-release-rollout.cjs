@@ -7,6 +7,12 @@ const SETTING = 'sxb.app-update.v1';
 const APK_URL = 'https://vpnsxb.afrihall.com/download/sxbvpn-latest.apk';
 const digest = value => createHash('sha256').update(value).digest('hex');
 
+function failureCode(error) {
+  if (/^MOBILE_[A-Z_]+$/.test(error?.message)) return error.message;
+  if (/^P\d{4}$/.test(error?.code)) return `MOBILE_DATABASE_${error.code}`;
+  return 'MOBILE_ROLLOUT_FAILED';
+}
+
 function validateBuild(build, expectedVersion, expectedSha) {
   if (!build || !Number.isSafeInteger(build.versionCode) || build.versionCode <= 0 ||
       typeof build.versionName !== 'string' || !build.versionName ||
@@ -48,7 +54,7 @@ async function rollout(db, options) {
   }
   if (options.expectedPublication !== previous) throw Error('MOBILE_PUBLICATION_CHANGED');
   await db.$transaction(async tx => {
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext('sxb-mobile-release-rollout'))`;
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext('sxb-mobile-release-rollout'))::text`;
     const latest = await tx.setting.findUnique({ where: { key: SETTING } });
     if ((latest ? digest(latest.value) : 'absent') !== previous) throw Error('MOBILE_PUBLICATION_CHANGED');
     if (latest) {
@@ -86,9 +92,8 @@ async function main() {
   } finally { await db.$disconnect(); }
 }
 
-module.exports = { rollout, validateBuild, digest };
+module.exports = { rollout, validateBuild, digest, failureCode };
 if (require.main === module) main().catch(error => {
-  const code = /^MOBILE_[A-Z_]+$/.test(error.message) ? error.message : 'MOBILE_ROLLOUT_FAILED';
-  console.error(code);
+  console.error(failureCode(error));
   process.exitCode = 1;
 });
