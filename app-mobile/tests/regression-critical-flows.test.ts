@@ -2008,7 +2008,8 @@ describe('garde-fous contre les régressions Android', () => {
     // enchaîner ajoutait une attente juste avant l'ouverture du tunnel.
     assert.match(vpnContext, /isConfigExpired\(\)/);
     assert.match(vpnContext, /Promise\.all\(\[isQuotaExhausted\(\), isConfigExpired\(\)\]\)/);
-    assert.match(vpnContext, /Date d’expiration locale atteinte — tentative de connexion/);
+    assert.match(vpnContext, /if \(exhausted \|\| expired\) await verificationDroits/);
+    assert.match(vpnContext, /exhausted \|\| expired \? 'step_quota_pending' : 'step_quota_ok'/);
     assert.match(accessSync, /expiryDate: remote\.expireAt/);
     assert.match(accessPolicy, /config_restored/);
   });
@@ -2265,9 +2266,10 @@ describe('garde-fous contre les régressions Android', () => {
     assert.doesNotMatch(nativeService, /put\("max_connections", xudpConcurrency\)/);
   });
 
-  it('évite le provisionnement réseau avec une configuration complète hors-ligne', () => {
+  it('préserve le cache hors-ligne et réconcilie les profils SSH gérés', () => {
     assert.ok(vpnContext.includes('hasCompleteOfflineConfig'));
-    assert.ok(vpnContext.includes('mode hors-ligne, aucun provisionnement requis'));
+    assert.match(vpnContext, /await prepareSshConnection\(selectedId, localResult\.value\)/);
+    assert.match(accessSync, /if \(!managedProfile\(stored\.meta\) \|\| !\['ssh', 'ssh\+payload'\]\.includes\(protocol\)\) return stored\.config/);
     assert.ok(vpnContext.includes('if (!configToUse)'));
   });
 
@@ -3650,7 +3652,7 @@ describe('configurations attribuées : import automatique, jamais de déconnexio
     // tableau de bord n'arrivait qu'après un appui sur « Actualiser ».
     assert.match(accessSync, /detenu\.configHash === item\.configHash \|\| majLancees\.get\(item\.id\) === item\.configHash/);
     // Une mise à jour ratée pour une cause passagère est reprise, pas oubliée.
-    assert.match(accessSync, /else if \(importFailure\(error\)\.retryable\) miseAJourEnEchec = true;/);
+    assert.match(accessSync, /if \(stored && importFailure\(error\)\.retryable\) miseAJourEnEchec = true;/);
     assert.match(accessSync, /if \(miseAJourEnEchec \|\| \[\.\.\.notes\.values\(\)\]\.some\(note => note\.kind === 'failed'\)\) scheduleAutoImport\(\);/);
   });
 });

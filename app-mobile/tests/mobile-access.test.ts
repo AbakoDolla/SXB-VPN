@@ -302,7 +302,7 @@ describe('native configuration vault and lossless migration', () => {
       await assert.rejects(h.sync.prepareSshConnection('a', (await h.store.get('a')).value!),
         (error: unknown) => error instanceof h.provision.ProvisioningError && error.diagnostic.code === 'RELAY_BOUND_SESSION_REQUIRED');
       assert.equal(h.sync.getImportNotes().get('a')?.code, 'RELAY_BOUND_SESSION_REQUIRED');
-      equal((await h.store.get('a')).value?.config, direct, 'failed migration preserves storage but cannot be dialled');
+      equal((await h.store.get('a')).value?.config, direct);
       assert.equal((await h.store.get('a')).value?.meta.sshRelayRequired, true);
       h.api.default.defaults.adapter = async () => { throw new Error('offline'); };
       await assert.rejects(h.sync.prepareSshConnection('a', (await h.store.get('a')).value!), /offline/);

@@ -406,7 +406,7 @@ export async function clearAll(): Promise<StoreResult<void>> {
 }
 
 export async function updateMetadata(id: string, update: Partial<Pick<ConfigMeta,
-  'name' | 'quotaTotal' | 'quotaUsed' | 'expiryDate' | 'accessStatus' | 'isFreeTrial'>>): Promise<StoreResult<ConfigMeta>> {
+  'name' | 'quotaTotal' | 'quotaUsed' | 'expiryDate' | 'accessStatus' | 'isFreeTrial' | 'sshRelayRequired'>>): Promise<StoreResult<ConfigMeta>> {
   try { return await mutate(async () => {
     const entries = await registry();
     const old = entries.find(x => x.configId === id);
