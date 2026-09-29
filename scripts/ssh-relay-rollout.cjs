@@ -9,6 +9,8 @@ const { execFileSync } = require('node:child_process');
 const ENV_KEY = 'SXB_SSH_RELAY_PROFILE_IDS';
 const ID = /^[a-zA-Z0-9_-]{1,200}$/;
 const HASH = /^(?:hmac-sha256-v1:)?[a-f0-9]{64}$/;
+const PROFILE_SELECT = { id: true, protocol: true, status: true, canonicalConfig: true,
+  canonicalConfigHash: true, configVersion: true, updatedAt: true };
 
 function parseRequest(encoded, parseTransport) {
   if (typeof encoded !== 'string' || encoded.length > 65536 ||
@@ -180,7 +182,7 @@ async function applyRollout(plan, deps) {
   const nextHash = enabled ? deps.api.computeCanonicalHash(plan.canonical) : plan.profile.canonicalConfigHash;
   const update = enabled && nextHash !== plan.profile.canonicalConfigHash ? {
     canonicalConfig: deps.api.encryptCanonical(deps.api.canonicalJson(plan.canonical)),
-    canonicalConfigHash: nextHash, fingerprint: plan.verifiedFingerprint,
+    canonicalConfigHash: nextHash,
     configVersion: plan.profile.configVersion + 1,
   } : null;
   const env = deps.environment(plan.profile.id, enabled);
@@ -207,22 +209,25 @@ async function applyRollout(plan, deps) {
 }
 
 async function main() {
-  let db;
+  let db, stage = 'REVISION';
   try {
     const root = process.cwd();
     if (root !== '/var/www/sxb-vpn' || !/^[a-f0-9]{40}$/.test(process.env.SXB_RELAY_EXPECTED_SHA || '') ||
         execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() !== process.env.SXB_RELAY_EXPECTED_SHA) {
       throw new Error('ROLLOUT_DEPLOYED_REVISION_MISMATCH');
     }
+    stage = 'ENVIRONMENT';
     const backend = createRequire(path.join(root, 'backend', 'package.json'));
     const envPath = path.join(root, '.env');
     const source = fs.readFileSync(envPath, 'utf8'), env = backend('dotenv').parse(source);
     if (!env.DATABASE_URL || !env.ENCRYPTION_KEY) throw new Error('ROLLOUT_ENV_INCOMPLETE');
     process.env.DATABASE_URL = env.DATABASE_URL;
     process.env.ENCRYPTION_KEY = env.ENCRYPTION_KEY;
+    stage = 'REQUEST';
     const preflight = require(path.join(root, 'scripts', 'ssh-relay-preflight.cjs'));
     const request = parseRequest(process.env.SXB_SSH_RELAY_ROLLOUT_CONFIG, preflight.parseConfig);
     delete process.env.SXB_SSH_RELAY_ROLLOUT_CONFIG;
+    stage = 'BUNDLE';
     const output = backend('esbuild').buildSync({
       stdin: { contents: [
         "export * from './server/services/canonical-config.ts';",
@@ -234,6 +239,7 @@ async function main() {
     const mod = { exports: {} };
     new Function('require', 'module', 'exports', output.outputFiles[0].text)(backend, mod, mod.exports);
     const api = mod.exports, { Client } = backend('ssh2');
+    stage = 'DATABASE';
     db = new (backend('@prisma/client').PrismaClient)({ log: [] });
     const plan = await prepareRollout({
       mode: process.env.SXB_RELAY_MODE,
@@ -242,15 +248,20 @@ async function main() {
       confirmed: process.env.SXB_RELAY_CONFIRMED === 'true',
     }, request, {
       api,
-      profiles: id => db.vpnProfile.findMany({
-        where: { protocol: { in: ['ssh', 'ssh+payload'] }, ...(id ? { id } : {}) }, take: 101,
-        select: { id: true, protocol: true, status: true, fingerprint: true, canonicalConfig: true,
-          canonicalConfigHash: true, configVersion: true, updatedAt: true },
-      }),
-      verifyHost: input => preflight.probeRelayHost(input, { open: api.openRelayUpstream, Client }),
-      verifyTransfer: upstream => verifyTransfer(upstream, api, Client),
+      profiles: id => {
+        stage = 'PROFILE_READ';
+        return db.vpnProfile.findMany({
+          where: { protocol: { in: ['ssh', 'ssh+payload'] }, ...(id ? { id } : {}) }, take: 101, select: PROFILE_SELECT,
+        });
+      },
+      verifyHost: input => {
+        stage = 'HOST_KEY';
+        return preflight.probeRelayHost(input, { open: api.openRelayUpstream, Client });
+      },
+      verifyTransfer: upstream => { stage = 'TRANSFER'; return verifyTransfer(upstream, api, Client); },
     });
     if (plan.mode === 'inspect') {
+      stage = 'INGRESS';
       await verifyIngress();
       console.log(JSON.stringify({
         status: 'ready', profileId: plan.profile.id, configHash: plan.profile.canonicalConfigHash,
@@ -260,6 +271,7 @@ async function main() {
       }));
       return;
     }
+    stage = 'APPLY';
     const result = await applyRollout(plan, {
       api,
       environment(id, enabled) {
@@ -290,7 +302,7 @@ async function main() {
           where: { id: profile.id, canonicalConfig: update.canonicalConfig, canonicalConfigHash: update.canonicalConfigHash,
             configVersion: update.configVersion },
           data: { canonicalConfig: profile.canonicalConfig, canonicalConfigHash: profile.canonicalConfigHash,
-            fingerprint: profile.fingerprint, configVersion: profile.configVersion },
+            configVersion: profile.configVersion },
         });
         if (result.count !== 1) throw new Error('ROLLOUT_ROLLBACK_CONFLICT');
       },
@@ -326,7 +338,7 @@ async function main() {
     });
     console.log(JSON.stringify({ status: 'applied', ...result, isolatedRelayTransfer: plan.transfer }));
   } catch (error) {
-    console.error(/^(?:ROLLOUT|PREFLIGHT|RELAY)_[A-Z_]+$/.test(error?.message || '') ? error.message : 'ROLLOUT_EXECUTION_FAILED');
+    console.error(/^(?:ROLLOUT|PREFLIGHT|RELAY)_[A-Z_]+$/.test(error?.message || '') ? error.message : `ROLLOUT_EXECUTION_FAILED_${stage}`);
     process.exitCode = 1;
   } finally {
     if (db) {
@@ -336,5 +348,5 @@ async function main() {
   }
 }
 
-module.exports = { parseRequest, selectProfile, editAllowlist, prepareRollout, verifyTransfer, replaceFile, applyRollout };
+module.exports = { PROFILE_SELECT, parseRequest, selectProfile, editAllowlist, prepareRollout, verifyTransfer, replaceFile, applyRollout };
 if (require.main === module || !module.parent) main();
