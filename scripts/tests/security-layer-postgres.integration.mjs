@@ -44,6 +44,7 @@ await build({
     export { default as scopedSessions } from './server/routes/sessions';
     export { default as users } from './server/routes/users';
     export { default as auth } from './server/routes/auth';
+    export { default as presence } from './server/routes/presence';
     export { prisma } from './server/database';
     export { logDbActivity } from './server/database';
     export * as sessions from './server/services/mobile-session-security';
@@ -63,7 +64,7 @@ await build({
     },
   }],
 });
-const { mobile, events, provision, consoleRoutes, scopedSessions, users, auth, prisma, sessions, proof, gate, relay, canonical, logDbActivity } = require(output);
+const { mobile, events, provision, consoleRoutes, scopedSessions, users, auth, presence, prisma, sessions, proof, gate, relay, canonical, logDbActivity } = require(output);
 const app = express();
 app.use(express.json({ verify: (req, _res, bytes) => { req.rawBody = Buffer.from(bytes); } }));
 app.use('/api/mobile', mobile);
@@ -73,6 +74,7 @@ app.use('/api/security', consoleRoutes);
 app.use('/api/sessions', scopedSessions);
 app.use('/api/users', users);
 app.use('/api/auth', auth);
+app.use('/api/presence', presence);
 const server = app.listen(0, '127.0.0.1');
 await new Promise(resolve => server.once('listening', resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
@@ -270,6 +272,12 @@ try {
   check('real PostgreSQL quota locks allow only one concurrent reservation',
     reservations.filter(value => value.status === 'fulfilled').length, 1);
   check('real gateway debits exactly delivered allowance', (await prisma.subscription.findUniqueOrThrow({ where: { id: sub.id } })).quotaUsed, 600n);
+  await prisma.subscription.update({ where: { id: sub.id }, data: { quotaBytes: 600n } });
+  const spentBinding = await request(a, '/api/mobile/vpn/session',
+    { ...relayConnection, connectionId: randomUUID() }, a.tokens.accessToken);
+  check('exhausted plan returns an explicit recoverable access failure', spentBinding.data.code, 'CONFIG_EXHAUSTED');
+  check('exhausted plan never opens a new binding', spentBinding.status, 403);
+  await prisma.subscription.update({ where: { id: sub.id }, data: { quotaBytes: 1000n } });
   const relayReport = { bytesUp: 500, bytesDown: 400, sessionId: relayConnection.sessionId, seq: 0,
     reportMode: 'delta', subscriptionId: sub.id, deviceId: a.id };
   const trafficTarget = '/api/mobile/vpn/traffic';
@@ -377,6 +385,21 @@ try {
   const [owner, admin, support] = operators;
   await prisma.vpnClient.update({ where: { id: a.client.id }, data: { managedById: admin.user.id } });
   await prisma.vpnClient.update({ where: { id: b.client.id }, data: { managedById: owner.user.id } });
+  await prisma.trafficUsage.create({ data: { clientId: b.client.id, deviceId: b.id,
+    accountId: b.client.id, accountType: 'account', upload: 1n, download: 1n } });
+  for (const operator of operators.filter(item => ['OWNER', 'SUPER_ADMIN', 'ADMIN'].includes(item.roleName))) {
+    const result = await request(a, '/api/presence/connected', undefined, operator.token);
+    check(`${operator.roleName} presence accepts clients.view without analytics.read`, result.status, 200);
+    check(`${operator.roleName} sees the ordinary managed client`,
+      result.data.users.some(row => row.clientId === a.client.id), true);
+    check(`${operator.roleName} owner privacy is preserved`,
+      result.data.users.some(row => row.clientId === b.client.id), operator.roleName === 'OWNER');
+    if (operator.roleName === 'ADMIN') {
+      check('ADMIN presence is restricted to its managed activations',
+        result.data.users.every(row => row.clientId === a.client.id), true);
+      check('ADMIN presence labels its scope', result.data.scope, 'own');
+    } else check(`${operator.roleName} presence labels platform scope`, result.data.scope, 'platform');
+  }
   const scopedPath = `/api/sessions/${live.id}/security-events`;
   const ownEvents = await request(a, scopedPath, undefined, admin.token);
   check('scoped ADMIN can read own session events', ownEvents.status, 200);

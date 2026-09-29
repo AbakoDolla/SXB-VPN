@@ -2311,7 +2311,7 @@ class SxbVpnService : VpnService(), PlatformInterface {
                     if (relay != null) {
                         val factory = SxbGatewaySocketFactory(
                             this, relay.getString("ticket"), cfg.getString("deviceId"),
-                            cfg.getString("connectionId"), ::protectSocket,
+                            cfg.getString("connectionId"), ::protectSocket, { message -> broadcastLog(message) },
                         )
                         gatewaySocketFactory = factory
                         if (!running.get()) { factory.close(); throw java.io.IOException("SSH_RELAY_CANCELLED") }

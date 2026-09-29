@@ -253,7 +253,7 @@ export default function ConfigPicker({
                             <Pill label={assignmentLabel} tone={assignmentTone ?? colors.accents.indigo} dot />
                           )}
                           {isActive && <Pill label={t('config_active')} tone={colors.accents.emeraude} dot />}
-                          {entry.enAttente && !hasNotice && (() => {
+                          {(entry.enAttente || importNotes?.[entry.id]) && !hasNotice && (() => {
                             // L'import est automatique : l'étiquette dit où il
                             // en est, jamais « faites-le vous-même ».
                             const note = importNotes?.[entry.id];
@@ -267,6 +267,13 @@ export default function ConfigPicker({
                           {hasNotice && <Pill label={t(status === 'suspended' ? 'connection_suspended' :
                             status === 'expired' ? 'expired' : status === 'exhausted' ? 'quota_exhausted' : 'connection_revoked')} tone={colors.accents.corail} />}
                         </View>
+                        {!hasNotice && (() => {
+                          const code = importNotes?.[entry.id]?.code;
+                          const message = code === 'RELAY_CLIENT_UPDATE_REQUIRED' ? 'ssh_update_required' :
+                            code === 'RELAY_BOUND_SESSION_REQUIRED' ? 'ssh_activation_required' :
+                              code === 'RELAY_PROFILE_NOT_READY' ? 'ssh_profile_not_ready' : null;
+                          return message ? <Text style={[type.caption, { color: colors.accents.corail }]}>{t(message)}</Text> : null;
+                        })()}
 
                         {/* Le quota de CETTE connexion. Il ne figurait nulle
                             part dans le sélecteur : on choisissait donc un

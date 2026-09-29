@@ -3,14 +3,15 @@ import apiClient, { API_BASE_URL } from './apiClient';
 import * as configStore from './configStore';
 import { MAX_IMPORTED_BACKEND_CONFIGS } from './configStore';
 import { saveQuotaData } from './offlineStorage';
-import { provisionAndStore, ProvisioningError } from './provisionClient';
+import { currentRelaySession, provisionAndStore, ProvisioningError, refreshRelayCredential } from './provisionClient';
+import { isSshRelayConfig } from './configValidator';
 import {
   accessIssueFromError, blocksDevice, blocksProfile, deviceAccess, isRecord, managedProfile,
   profileRestriction, responseInfo, retryDelay, type AccessAuthority, type ProfileIdentity,
 } from './accessPolicy';
 import {
   applyAccessIssue, applyAccessSnapshot, captureAccessAuthority, getAccessState,
-  subscribeAccessState, syncNativeAccessState, requireDeviceAccess,
+  subscribeAccessState, syncNativeAccessState, requireDeviceAccess, requireProfileAccess,
 } from './accessState';
 import { accessRequestStamp, currentAccessRequest, currentIdentityRequest, subscribeAccessFailures } from './accessEvents';
 import { getPrivacyConsent, requireVpnConsent, subscribePrivacyConsent } from './privacyConsent';
@@ -324,8 +325,9 @@ async function reconcileLegacyConnections(remote: VpnConnection[], authority: Ac
     if (blocksProfile(entry.status)) {
       const stamp = captureAccessAuthority();
       if (stamp) await applyAccessIssue({
-        code: entry.status === 'suspended' ? 'CONFIG_SUSPENDED' : entry.status === 'revoked' ? 'CONFIG_REVOKED' : 'CONFIG_DELETED',
-        scope: 'subscription', temporary: entry.status === 'suspended', subscriptionId: entry.id,
+        code: entry.status === 'suspended' ? 'CONFIG_SUSPENDED' : entry.status === 'revoked' ? 'CONFIG_REVOKED'
+          : entry.status === 'expired' ? 'CONFIG_EXPIRED' : entry.status === 'exhausted' ? 'CONFIG_EXHAUSTED' : 'CONFIG_DELETED',
+        scope: 'subscription', temporary: !['revoked', 'deleted'].includes(entry.status), subscriptionId: entry.id,
       }, stamp, storeValue(await configStore.list()) ?? []);
     }
     // Only the new authoritative snapshot can lift a previously known block.
@@ -437,13 +439,17 @@ export function refreshMobileConfigs(): Promise<VpnConnection[]> {
       // elle est simplement réimportée, ce qui la répare.
       const lecture = await configStore.get(entry.id);
       const stored = lecture.status === 'ok' ? lecture.value : undefined;
+      if (stored && entry.sshRelayAvailable && !stored.meta.sshRelayRequired) {
+        storeValue(await configStore.updateMetadata(entry.id, { sshRelayRequired: true }));
+      }
       if (!entry.dataToken) {
         // Rien à provisionner sans jeton : on le note, pour que cette absence
         // ne relance pas un import à chaque instantané d'accès.
         if (!stored) notes.set(entry.id, { kind: 'failed', code: 'PVN_TOKEN_MISSING', retryable: false });
         continue;
       }
-      const relayUpgrade = entry.sshRelayAvailable && NativeModules.SxbVpnNative?.sshRelayVersion === 1 && !stored?.config.sshRelay;
+      const relayUpgrade = entry.sshRelayAvailable && (!stored?.config.sshRelay ||
+        stored.meta.relaySession !== await currentRelaySession());
       const changed = stored && (relayUpgrade ||
         (entry.configHash ? stored.meta.configHash !== entry.configHash : stored.meta.configVersion !== entry.configVersion));
       if (!stored && !importsConnus.has(entry.id) && importsConnus.size >= MAX_IMPORTED_BACKEND_CONFIGS) {
@@ -463,11 +469,8 @@ export function refreshMobileConfigs(): Promise<VpnConnection[]> {
         catch (error) {
           if (error instanceof ProvisioningError) console.warn('[Access] Provisioning deferred:', error.diagnostic.code);
           else reportAccessSyncError(error);
-          // Une mise à jour ratée laisse la version précédente en service :
-          // seul un forfait ABSENT de l'appareil attend un import. Elle est
-          // néanmoins reprise plus tard si l'échec est passager.
-          if (!stored) notes.set(entry.id, importFailure(error));
-          else if (importFailure(error).retryable) miseAJourEnEchec = true;
+          notes.set(entry.id, importFailure(error));
+          if (stored && importFailure(error).retryable) miseAJourEnEchec = true;
         }
         // Le provisionnement construit sa fiche à partir de la réponse
         // `/provision/activate`, qui ne connaît pas les essais : le marqueur est
@@ -495,6 +498,36 @@ export function refreshMobileConfigs(): Promise<VpnConnection[]> {
   // attendrait le prochain geste de l'utilisateur.
   void operation.catch(() => { if (epoch === lifecycle) scheduleAutoImport(); });
   return operation;
+}
+
+/** A managed SSH cache must follow gateway rollout and the current device session. */
+export async function prepareSshConnection(id: string, stored: configStore.StoredConfig): Promise<Record<string, unknown>> {
+  const protocol = String(stored.config.protocol || stored.meta.protocol || '').toLowerCase();
+  if (!managedProfile(stored.meta) || !['ssh', 'ssh+payload'].includes(protocol)) return stored.config;
+  try { await refreshMobileConfigs(); }
+  catch (error) {
+    const current = storeValue(await configStore.get(id));
+    const info = responseInfo(error);
+    const knownRelay = current?.meta.sshRelayRequired || current?.config.sshRelay ||
+      connections.find(entry => entry.id === id)?.sshRelayAvailable;
+    if (knownRelay || !current || accessIssueFromError(error) || info.status) throw error;
+    reportAccessSyncError(error);
+    requireDeviceAccess();
+    requireProfileAccess(current.meta);
+    return current.config;
+  }
+  const current = storeValue(await configStore.get(id));
+  if (!current) throw new Error('ACCESS_PROFILE_MISSING');
+  const remote = connections.find(entry => entry.id === id);
+  const requiresRelay = remote?.sshRelayAvailable || current.meta.sshRelayRequired || !!current.config.sshRelay;
+  if (requiresRelay && (!isSshRelayConfig(current.config) ||
+      !current.meta.relaySession || current.meta.relaySession !== await currentRelaySession())) {
+    const note = importNotes.get(id);
+    throw new ProvisioningError('La configuration SSH doit être synchronisée avec cette session.', {
+      code: note?.code || 'RELAY_BOUND_SESSION_REQUIRED', stage: 'request', attempts: 1, retryable: note?.retryable ?? false,
+    });
+  }
+  return isSshRelayConfig(current.config) ? refreshRelayCredential(id, current.config) : current.config;
 }
 
 async function refreshNativeTicket(): Promise<void> {

@@ -24,10 +24,20 @@ import { accessIssueFromError, type AccessIssue } from './accessPolicy';
 import { requireDeviceAccess, requireProfileAccess } from './accessState';
 import { accessRequestStamp, currentIdentityRequest } from './accessEvents';
 import { requireVpnConsent } from './privacyConsent';
+import { sessionSecurity } from './deviceSecurity';
 
 const PROV_KEY = 'sxb_prov_config_v2';
 const PROV_META_KEY = 'sxb_prov_meta_v2';
 const PROVISION_MAX_ATTEMPTS = 3;
+
+export async function currentRelaySession(): Promise<string | undefined> {
+  const security = await sessionSecurity();
+  return security ? JSON.stringify([security.sessionId, security.generation, security.keyId, security.clientId]) : undefined;
+}
+
+export const RELAY_PROVISION_CODES = new Set([
+  'RELAY_CLIENT_UPDATE_REQUIRED', 'RELAY_BOUND_SESSION_REQUIRED', 'RELAY_PROFILE_NOT_READY',
+]);
 
 /** Refresh only the short-lived gateway credential, never the provider configuration. */
 export async function refreshRelayCredential(id: string, config: Record<string, unknown>) {
@@ -94,7 +104,7 @@ function toProvisioningError(error: unknown, attempts: number): ProvisioningErro
     const body = error.response?.data;
     const rawCode = body && typeof body === 'object' ? (body as Record<string, unknown>).code : undefined;
     const serverCode = typeof rawCode === 'string' && /^[A-Z][A-Z0-9_]{2,63}$/.test(rawCode) ? rawCode : null;
-    const code = httpStatus
+    const code = serverCode && RELAY_PROVISION_CODES.has(serverCode) ? serverCode : httpStatus
       ? `PVN_HTTP_${httpStatus}`
       : error.code === 'ECONNABORTED' || /timeout/i.test(error.message || '')
         ? 'PVN_TIMEOUT'
@@ -243,6 +253,7 @@ export async function provisionAndStore(
   storageId?: string,
 ): Promise<ProvisionResult> {
   const identity = accessRequestStamp();
+  const relaySession = await currentRelaySession();
   requireVpnConsent();
   requireDeviceAccess();
   const res = await requestProvision(dataToken, deviceId);
@@ -372,6 +383,7 @@ export async function provisionAndStore(
     subscriptionId: meta.subscriptionId, quotaTotal: Math.round(meta.quotaGB * 1024 ** 3),
     quotaUsed: Math.round(meta.quotaUsedGB * 1024 ** 3), expiryDate: meta.expireAt,
     configVersion: meta.configVersion, configHash: meta.configHash,
+    relaySession: isSshRelayConfig(vpnConfig) ? relaySession : undefined,
   });
   if (stored.status !== 'ok') {
     if (stored.error && accessIssueFromError(stored.error)) throw stored.error;

@@ -72,7 +72,8 @@ async function fixture(t, changes = {}) {
     authorize: async request => {
       if (request.headers.authorization !== 'Bearer synthetic') throw Error('denied');
       return {
-        clientId: 'fixture-client', upstream: { ...upstream, ...changes.upstream },
+        clientId: changes.multipleClients ? new URL(request.url, 'http://localhost').searchParams.get('fixtureClient') : 'fixture-client',
+        upstream: { ...upstream, ...changes.upstream },
         expiresAt: Date.now() + 60000, revalidate: async () => valid,
         account: async (up, down) => {
           await new Promise(resolve => setTimeout(resolve, 1));
@@ -97,10 +98,11 @@ async function fixture(t, changes = {}) {
     for (const peer of peers) peer.end();
     await Promise.all([new Promise(resolve => httpServer.close(resolve)), new Promise(resolve => provider.close(resolve))]);
   });
-  async function connect() {
+  async function connect(clientId = 'fixture-client') {
     const socket = await new Promise((resolve, reject) => {
       const request = http.get({
-        hostname: '127.0.0.1', port: gatewayPort, path: '/api/mobile/ssh-relay?connectionId=' + randomUUID(),
+        hostname: '127.0.0.1', port: gatewayPort,
+        path: '/api/mobile/ssh-relay?connectionId=' + randomUUID() + '&fixtureClient=' + encodeURIComponent(clientId),
         headers: { Connection: 'Upgrade', Upgrade: 'sxb-ssh-relay', Authorization: 'Bearer synthetic' },
       });
       request.on('upgrade', (_response, socket, head) => { if (head.length) socket.unshift(head); resolve(socket); });
@@ -124,6 +126,26 @@ async function fixture(t, changes = {}) {
 
 const forward = (client, host) => new Promise((resolve, reject) =>
   client.forwardOut('127.0.0.1', 0, host, 80, (error, channel) => error ? reject(error) : resolve(channel)));
+
+test('different activated clients share one provider without sharing the per-client connection limit', { timeout: 30000 }, async t => {
+  const f = await fixture(t, { multipleClients: true });
+  const first = await f.connect('client-a');
+  await f.connect('client-a');
+  await assert.rejects(f.connect('client-a'), /refused 403/);
+  const second = await f.connect('client-b');
+  const third = await f.connect('client-c');
+  for (const client of [first, second, third]) {
+    const channel = await forward(client, 'download.test');
+    const data = [];
+    channel.on('data', bytes => data.push(bytes));
+    const ended = once(channel, 'end');
+    channel.end('request');
+    await ended;
+    assert.deepEqual(Buffer.concat(data), body);
+  }
+  assert.equal(f.counters().passwordSent, 4);
+  assert.equal(f.counters().accountedDown, 3 * body.length);
+});
 
 test('gateway delivers a full download after upload EOF and meters exactly once', { timeout: 15000 }, async t => {
   const f = await fixture(t);

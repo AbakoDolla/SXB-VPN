@@ -237,6 +237,91 @@ function installConfigVault(h: Harness) {
 }
 
 describe('native configuration vault and lossless migration', () => {
+  for (const previous of ['direct', 'older-session'] as const) {
+    it(`upgrades ${previous} SSH cache to the current session without exposing provider credentials`, async () => {
+      const h = await harness();
+      const { cleanup } = await setup(h, null);
+      try {
+        h.state.native.sshRelayVersion = 1;
+        h.state.storage.set('@sxb_session_security_v1', JSON.stringify({
+          version: 1, sessionId: 'new-session', generation: 2, keyId: 'key', clientId: 'client',
+        }));
+        const relay = { protocol: 'ssh', host: 'sxb-gateway', port: 443, username: 'sxb',
+          sshRelay: { version: 1, ticket: 'aaa.bbb.ccc', expiresAt: new Date(Date.now() + 3600000).toISOString() } };
+        const oldConfig = previous === 'direct'
+          ? { protocol: 'ssh', host: 'provider.invalid', port: 80, username: 'synthetic', password: 'fixture-only' } : relay;
+        await h.store.save('a', oldConfig, { source: 'backend', subscriptionId: 'a', configHash: 'hash-a', relaySession: 'old-session' });
+        const key = new Uint8Array(32).fill(7), iv = new Uint8Array(12).fill(3);
+        const sealed = h.aes.encryptAes256Gcm(key, iv, Buffer.from(JSON.stringify(relay)));
+        const hex = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex');
+        let requests = 0;
+        h.api.default.defaults.adapter = async request => {
+          let data: unknown;
+          if (request.url === '/mobile/access-state') data = snapshot('ssh-rollout');
+          else if (request.url === '/mobile/connections') {
+            const remote = remoteConnections(snapshot('ssh-rollout'));
+            data = { connections: remote.connections.map(entry => entry.id === 'a'
+              ? { ...entry, dataToken: 'synthetic-token', sshRelayAvailable: true, technicalProtocol: 'ssh' } : entry) };
+          } else if (request.url === '/provision/activate') {
+            requests++;
+            assert.equal(request.headers['X-SXB-SSH-Relay'], '1');
+            assert.equal(JSON.parse(request.data).deviceId, 'hardware');
+            data = { deviceId: 'hardware', subscriptionId: 'a', profileName: 'Profile A', protocol: 'ssh',
+              configHash: 'hash-a', configVersion: 1, configKey: hex(key),
+              encryptedBlob: `gcm:${hex(iv)}:${hex(sealed.ciphertext)}:${hex(sealed.authTag)}` };
+          } else throw new Error('Unexpected request');
+          return { status: 200, statusText: 'OK', config: request, headers: {}, data };
+        };
+        const result = await h.sync.prepareSshConnection('a', (await h.store.get('a')).value!);
+        equal(result, relay);
+        assert.equal(result.password, undefined);
+        assert.equal(requests, 1);
+        assert.equal((await h.store.get('a')).value?.meta.relaySession, await h.provision.currentRelaySession());
+        await h.sync.prepareSshConnection('a', (await h.store.get('a')).value!);
+        assert.equal(requests, 1, 'a current relay credential does not reprovision on every connect');
+      } finally { cleanup(); }
+    });
+  }
+
+  it('shows an existing SSH cache migration refusal and never dials its old direct credentials', async () => {
+    const h = await harness();
+    const { cleanup } = await setup(h, null);
+    try {
+      const direct = { protocol: 'ssh', host: 'provider.invalid', port: 80, username: 'synthetic', password: 'fixture-only' };
+      await h.store.save('a', direct, { source: 'backend', subscriptionId: 'a', configHash: 'hash-a' });
+      h.api.default.defaults.adapter = async request => {
+        let data: unknown;
+        if (request.url === '/mobile/access-state') data = snapshot('ssh-rollout');
+        else if (request.url === '/mobile/connections') {
+          const remote = remoteConnections(snapshot('ssh-rollout'));
+          data = { connections: remote.connections.map(entry => entry.id === 'a'
+            ? { ...entry, dataToken: 'synthetic-token', sshRelayAvailable: true } : entry) };
+        } else throw httpError(request, 409, { code: 'RELAY_BOUND_SESSION_REQUIRED' });
+        return { status: 200, statusText: 'OK', config: request, headers: {}, data };
+      };
+      await assert.rejects(h.sync.prepareSshConnection('a', (await h.store.get('a')).value!),
+        (error: unknown) => error instanceof h.provision.ProvisioningError && error.diagnostic.code === 'RELAY_BOUND_SESSION_REQUIRED');
+      assert.equal(h.sync.getImportNotes().get('a')?.code, 'RELAY_BOUND_SESSION_REQUIRED');
+      equal((await h.store.get('a')).value?.config, direct);
+      assert.equal((await h.store.get('a')).value?.meta.sshRelayRequired, true);
+      h.api.default.defaults.adapter = async () => { throw new Error('offline'); };
+      await assert.rejects(h.sync.prepareSshConnection('a', (await h.store.get('a')).value!), /offline/);
+    } finally { cleanup(); }
+  });
+
+  it('keeps the offline path of an unprotected managed SSH profile without ignoring HTTP denial', async () => {
+    const h = await harness();
+    const { cleanup } = await setup(h, null);
+    try {
+      const direct = { protocol: 'ssh', host: 'provider.invalid', port: 80, username: 'synthetic', password: 'fixture-only' };
+      await h.store.save('a', direct, { source: 'backend', subscriptionId: 'a', configHash: 'hash-a' });
+      h.api.default.defaults.adapter = async () => { throw new Error('offline'); };
+      equal(await h.sync.prepareSshConnection('a', (await h.store.get('a')).value!), direct);
+      h.api.default.defaults.adapter = async request => { throw httpError(request, 403, { code: 'CONFIG_EXHAUSTED' }); };
+      await assert.rejects(h.sync.prepareSshConnection('a', (await h.store.get('a')).value!));
+    } finally { cleanup(); }
+  });
+
   it('renews only the relay ticket and cannot resurrect or overwrite a replaced profile', async () => {
     const h = await harness();
     installConfigVault(h);
@@ -887,11 +972,31 @@ describe('mobile access runtime with real encrypted store, auth and HTTP interce
     await apply(h, snapshot('spent', 'active', 'expired', 'exhausted'));
     assert.equal((await h.store.get('a')).status, 'ok');
     assert.equal((await h.store.get('b')).status, 'ok');
-    assert.doesNotThrow(() => h.access.requireProfileAccess({ configId: 'a' }));
-    assert.equal(h.state.stopCount, 0);
+    assert.throws(() => h.access.requireProfileAccess({ configId: 'a' }), /CONFIG_EXPIRED/);
+    assert.throws(() => h.access.requireProfileAccess({ configId: 'b' }), /CONFIG_EXHAUSTED/);
+    assert.equal(h.state.stopCount, 1);
     await apply(h, snapshot('topped-up'));
+    assert.doesNotThrow(() => h.access.requireProfileAccess({ configId: 'a' }));
+    assert.doesNotThrow(() => h.access.requireProfileAccess({ configId: 'b' }));
     assert.ok(h.access.getAccessState().notices.some(item => item.kind === 'config_restored'));
     assert.equal((await h.store.get('a')).value?.meta.accessStatus, 'active');
+  });
+
+  it('an exhausted inactive plan does not stop another plan using the same SSH provider', async () => {
+    const h = await harness();
+    const { cleanup } = await setup(h);
+    try {
+      await h.store.save('a', config, { source: 'backend', subscriptionId: 'a', configHash: 'shared' });
+      await h.store.save('b', config, { source: 'backend', subscriptionId: 'b', configHash: 'shared' });
+      const next = snapshot('quota-b', 'active', 'active', 'exhausted');
+      next.subscriptions.forEach(entry => { entry.configHash = 'shared'; });
+      await apply(h, next);
+      assert.equal(h.state.stopCount, 0);
+      assert.doesNotThrow(() => h.access.requireProfileAccess({ configId: 'a', subscriptionId: 'a', configHash: 'shared' }));
+      assert.throws(() => h.access.requireProfileAccess({ configId: 'b', subscriptionId: 'b' }), /CONFIG_EXHAUSTED/);
+      const restored = h.access.parseAuthority(JSON.parse(JSON.stringify(h.access.getAccessState().authority)));
+      assert.equal(h.policy.profileRestriction(restored, { configId: 'b' })?.status, 'exhausted');
+    } finally { cleanup(); }
   });
 
   it('an extension replaces the stale "expired" notice with a single "available again" one', async () => {

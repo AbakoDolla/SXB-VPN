@@ -24,6 +24,9 @@ export interface ConfigMeta {
   quotaTotal?: number; quotaUsed?: number; expiryDate?: string | null; configVersion?: number;
   configHash?: string | null; isActive?: boolean; savedAt?: string; dataToken?: string;
   source?: 'backend' | 'manual'; accessStatus?: ProfileStatus;
+  /** Cache freshness only; the server still authenticates every relay binding. */
+  relaySession?: string;
+  sshRelayRequired?: boolean;
   /**
    * Accès issu d'un ESSAI GRATUIT, recopié depuis `/mobile/connections`.
    *
@@ -403,7 +406,7 @@ export async function clearAll(): Promise<StoreResult<void>> {
 }
 
 export async function updateMetadata(id: string, update: Partial<Pick<ConfigMeta,
-  'name' | 'quotaTotal' | 'quotaUsed' | 'expiryDate' | 'accessStatus' | 'isFreeTrial'>>): Promise<StoreResult<ConfigMeta>> {
+  'name' | 'quotaTotal' | 'quotaUsed' | 'expiryDate' | 'accessStatus' | 'isFreeTrial' | 'sshRelayRequired'>>): Promise<StoreResult<ConfigMeta>> {
   try { return await mutate(async () => {
     const entries = await registry();
     const old = entries.find(x => x.configId === id);

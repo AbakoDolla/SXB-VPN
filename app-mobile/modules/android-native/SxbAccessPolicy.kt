@@ -12,7 +12,7 @@ import java.util.TimeZone
 object SxbAccessPolicy {
     private val deviceStatuses = setOf("active", "suspended", "disabled", "expired", "revoked", "deleted")
     private val profileStatuses = setOf("active", "suspended", "revoked", "deleted", "expired", "exhausted")
-    private val blockedProfiles = setOf("suspended", "revoked", "deleted")
+    private val blockedProfiles = setOf("suspended", "revoked", "deleted", "expired", "exhausted")
 
     fun dateMillis(value: String): Long {
         for (pattern in listOf("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", "yyyy-MM-dd'T'HH:mm:ssXXX")) {
@@ -246,7 +246,8 @@ object SxbAccessPolicy {
             // Hash matching closes reimport bypasses only for unidentified/manual files.
             // Two separately managed subscriptions may intentionally use the same payload.
             var match = configId == id || (subscriptionId.isNotEmpty() && subscriptionId == id)
-            if (!match && subscriptionId.isEmpty() && config.optString("source") != "backend" && !config.optBoolean("managedConfig") && hash.isNotEmpty()) {
+            if (!match && entry.getString("status") !in setOf("expired", "exhausted") &&
+                subscriptionId.isEmpty() && config.optString("source") != "backend" && !config.optBoolean("managedConfig") && hash.isNotEmpty()) {
                 val hashes = entry.getJSONArray("hashes")
                 for (j in 0 until hashes.length()) if (hashes.getString(j) == hash) match = true
             }

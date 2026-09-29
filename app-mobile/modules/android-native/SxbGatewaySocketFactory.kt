@@ -18,6 +18,7 @@ class SxbGatewaySocketFactory(
     private val deviceId: String,
     private val connectionId: String,
     private val protectSocket: (Socket) -> Boolean,
+    private val trace: (String) -> Unit = {},
 ) : SocketFactory, java.io.Closeable {
     private var current: Socket? = null
     private var closed = false
@@ -47,11 +48,15 @@ class SxbGatewaySocketFactory(
         val targetPort = if (base.port < 0) 443 else base.port
         val raw = Socket()
         var owned: Socket = raw
+        var phase = "TCP"
         try {
+            trace("[SXB_TRACE] stage=SSH_GATEWAY_START timeout_ms=15000")
             own(raw)
             raw.bind(null)
             check(protectSocket(raw)) { "SSH_SOCKET_PROTECT_FAILED" }
             raw.connect(InetSocketAddress(base.host, targetPort), 15000)
+            trace("[SXB_TRACE] stage=SSH_GATEWAY_TCP")
+            phase = "TLS"
             val tls = SxbBackendTls.socketFactory(context).createSocket(raw, base.host, targetPort, true) as SSLSocket
             owned = tls
             own(tls)
@@ -65,7 +70,10 @@ class SxbGatewaySocketFactory(
                 }
             }
             tls.startHandshake()
+            trace("[SXB_TRACE] stage=SSH_GATEWAY_TLS protocol=${tls.session.protocol}")
+            phase = "PROOF"
             val proof = SxbDeviceProof.headers(context, "GET", endpoint.toString(), "", credential)
+            phase = "HTTP"
             val request = buildString {
                 append("GET ${endpoint.rawPath}?${endpoint.rawQuery} HTTP/1.1\r\nHost: ${base.rawAuthority}\r\n")
                 append("Connection: Upgrade\r\nUpgrade: sxb-ssh-relay\r\n")
@@ -85,12 +93,16 @@ class SxbGatewaySocketFactory(
                 check(next >= 0) { "RELAY_RESPONSE_TRUNCATED" }
                 response.append(next.toChar())
             }
+            val status = Regex("^HTTP/1\\.[01] ([0-9]{3}) ").find(response)?.groupValues?.get(1)
+            if (status != null) trace("[SXB_TRACE] stage=SSH_GATEWAY_RESPONSE status=$status")
             check(response.startsWith("HTTP/1.1 101 ") &&
                 Regex("(?im)^Connection:\\s*Upgrade\\s*$").containsMatchIn(response) &&
                 Regex("(?im)^Upgrade:\\s*sxb-ssh-relay\\s*$").containsMatchIn(response)) { "RELAY_ACCESS_REFUSED" }
             tls.soTimeout = 20000
+            trace("[SXB_TRACE] stage=SSH_GATEWAY_READY")
             return tls
         } catch (error: Exception) {
+            trace("[SXB_TRACE] stage=SSH_GATEWAY_FAILED phase=$phase error_type=${error.javaClass.simpleName}")
             runCatching { owned.close() }
             runCatching { raw.close() }
             throw IOException("SSH_RELAY_CONNECTION_FAILED", error)

@@ -48,7 +48,7 @@ export interface ProfileIdentity {
 
 export interface ProfileRestriction {
   id: string;
-  status: 'revoked' | 'deleted' | 'suspended';
+  status: 'revoked' | 'deleted' | 'suspended' | 'expired' | 'exhausted';
   hashes: string[];
   name: string;
 }
@@ -209,7 +209,8 @@ export function accessRedirect(authenticated: boolean, ready: boolean, device: D
   return segment === 'access-blocked' ? '/(tabs)' : null;
 }
 export function blocksProfile(status: string | undefined): boolean {
-  return status === 'revoked' || status === 'deleted' || status === 'suspended';
+  return status === 'revoked' || status === 'deleted' || status === 'suspended' ||
+    status === 'expired' || status === 'exhausted';
 }
 export function managedProfile(profile: ProfileIdentity): boolean {
   return profile.source === 'backend' || (profile.source !== 'manual' && !!profile.subscriptionId);
@@ -219,7 +220,8 @@ export function profileRestriction(authority: AccessAuthority | null, profile: P
   if (!authority) return null;
   const ids = [profile.configId, profile.subscriptionId].filter(Boolean);
   const known = authority.restrictions.find(item =>
-    ids.includes(item.id) || (!managedProfile(profile) && !profile.subscriptionId &&
+    ids.includes(item.id) || (item.status !== 'expired' && item.status !== 'exhausted' &&
+      !managedProfile(profile) && !profile.subscriptionId &&
       !!profile.configHash && item.hashes.includes(profile.configHash)));
   if (known) return known;
   const remote = authority.snapshot?.subscriptions.find(item => ids.includes(item.id));
@@ -231,7 +233,8 @@ export function profileRestriction(authority: AccessAuthority | null, profile: P
 export function profileIssue(restriction: ProfileRestriction): AccessIssue {
   return {
     code: `CONFIG_${restriction.status.toUpperCase()}` as AccessCode,
-    scope: 'subscription', temporary: restriction.status === 'suspended', subscriptionId: restriction.id,
+    scope: 'subscription', temporary: restriction.status !== 'revoked' && restriction.status !== 'deleted',
+    subscriptionId: restriction.id,
   };
 }
 
@@ -268,7 +271,7 @@ export function reduceIssue(current: AccessAuthority, issue: AccessIssue, profil
   if (issue.scope === 'session') return current;
   if (issue.scope === 'device') return { ...current, sequence: current.sequence + 1, deviceIssue: issue };
   const status = issue.code.slice(7).toLowerCase();
-  if (!blocksProfile(status)) return current; // Expiry/quota are advisory, not a revocation.
+  if (!blocksProfile(status)) return current;
   const id = issue.subscriptionId!;
   const previous = current.restrictions.find(item => item.id === id);
   const local = profiles.filter(item => item.configId === id || item.subscriptionId === id);
@@ -300,7 +303,6 @@ export function accessNotices(before: AccessAuthority | null, after: AccessAutho
     const wasRestricted = before?.restrictions.some(item => item.id === entry.id);
     const restored = entry.status === 'active' && (wasRestricted || (!!previous && previous.status !== 'active'));
     if (restored) add('config_restored', entry.id, entry.name);
-    else if ((entry.status === 'expired' || entry.status === 'exhausted') && previous?.status !== entry.status) add(`config_${entry.status}`, entry.id, entry.name);
     // Prolonger un profil expiré le rend « de nouveau disponible » : afficher
     // aussi « a été prolongée » doublait le bandeau pour un seul geste.
     if (!restored && previous?.expireAt && (entry.expireAt === null || Date.parse(entry.expireAt) > Date.parse(previous.expireAt))) add('config_extended', entry.id, entry.name);

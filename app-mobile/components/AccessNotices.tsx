@@ -4,7 +4,9 @@ import { useAuthContext } from '@/contexts/AuthContext';
 import { useColors } from '@/hooks/useColors';
 import { useTranslation } from '@/localization';
 import { dismissAccessNotices } from '@/services/accessState';
-import { reportAccessSyncError } from '@/services/accessSync';
+import { router } from 'expo-router';
+import { reportAccessSyncError } from '@/services/accessSync';
+
 import { radius, spacing } from "@/constants/theme";
 
 export default function AccessNotices() {
@@ -19,6 +21,12 @@ export default function AccessNotices() {
           {t(`access_${notice.kind}`).replace('{name}', notice.name || 'VPN')}
         </Text>
       ))}
+      {accessNotices.some(notice => notice.kind === 'config_exhausted' || notice.kind === 'config_expired') && (
+        <Pressable accessibilityRole="button" onPress={() => router.push('/plan')}
+          style={{ paddingVertical: spacing.sm, minHeight: 44, justifyContent: 'center' }}>
+          <Text style={{ color: colors.primary }}>{t('renew_plan')}</Text>
+        </Pressable>
+      )}
       <Pressable accessibilityRole="button" onPress={() => { void dismissAccessNotices().catch(reportAccessSyncError); }}>
         <Text style={{ color: colors.primary }}>{t('close')}</Text>
       </Pressable>
