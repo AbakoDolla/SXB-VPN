@@ -99,11 +99,11 @@ private const val chainPayload = "GET / HTTP/1.1[crlf]Host: public.example.test[
 
 private fun chainFramingScenarios() {
     val banner = "SSH-2.0-Synthetic\r\n\u0000\u0081"
-    fun checkChain(prefix: String, error: String? = null) {
+    fun checkChain(prefix: String, error: String? = null, requestCount: Int = 1) {
         Socket().use { socket ->
             val input = java.io.PushbackInputStream(ByteArrayInputStream((prefix + banner).toByteArray(Charsets.ISO_8859_1)), 1)
             try {
-                check(readSshPayloadChain(input, socket, 1000, {}).isEmpty())
+                check(readSshPayloadChain(input, socket, 1000, {}, requestCount = requestCount).isEmpty())
                 check(error == null) { "Expected $error" }
                 check(input.readBytes().contentEquals(banner.toByteArray(Charsets.ISO_8859_1)))
             } catch (failure: IOException) {
@@ -112,6 +112,28 @@ private fun chainFramingScenarios() {
         }
     }
     val ok = "HTTP/1.1 200 OK\r\n\r\n"
+    val forbidden = "HTTP/1.1 403 Forbidden\r\nContent-Length: 4\r\n\r\nbody"
+    checkChain(ok + forbidden + ok, requestCount = 3)
+    checkChain("HTTP/1.1 100 Continue\r\n\r\n" + ok + forbidden + ok, requestCount = 3)
+    checkChain(forbidden, "TUNNEL_REFUSED HTTP 403", 3)
+    checkChain(ok + forbidden + ok, "TUNNEL_REFUSED HTTP 403", 2)
+    checkChain(ok + ok + forbidden + ok, "TUNNEL_REFUSED HTTP 403", 3)
+    checkChain("HTTP/1.1 403 Forbidden\r\n\r\n" + ok, "TUNNEL_REFUSED HTTP 403", 3)
+    checkChain("HTTP/1.0 403 Forbidden\r\nContent-Length: 0\r\n\r\n" + ok, "TUNNEL_REFUSED HTTP 403", 3)
+    checkChain("HTTP/1.1 403 Forbidden\r\nConnection: keep-alive, close\r\nContent-Length: 0\r\n\r\n" + ok,
+        "TUNNEL_REFUSED HTTP 403", 3)
+    checkChain("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nTransfer-Encoding: chunked\r\n\r\n" + ok,
+        "HTTP_CHAIN_FRAMING_INVALID", 3)
+    val fabricatedTunnel = ok + banner
+    checkChain("HTTP/1.1 403 Forbidden\r\nContent-Length: ${fabricatedTunnel.length}\r\n\r\n$fabricatedTunnel",
+        "TUNNEL_REFUSED HTTP 403", 3)
+    checkChain("HTTP/1.1 403 Forbidden\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nbody\r\n0\r\n\r\n" + ok,
+        requestCount = 2)
+    Socket().use { socket ->
+        val input = java.io.PushbackInputStream(ByteArrayInputStream(forbidden.toByteArray()), 1)
+        check(runCatching { readSshPayloadChain(input, socket, 1000, {}, requestCount = 3) }
+            .exceptionOrNull()?.message == "TUNNEL_REFUSED HTTP 403")
+    }
     checkChain("HTTP/1.1 301 Redirect\r\nContent-Length: 4\r\n\r\nbody" + ok)
     checkChain("HTTP/1.1 302 Redirect\r\nTransfer-Encoding: chunked\r\n\r\n4;ext=yes\r\nbody\r\n0\r\nTrailer: ok\r\n\r\n" + ok)
     checkChain(ok.repeat(16))
@@ -218,6 +240,19 @@ fun main(args: Array<String>) {
                     "GET / HTTP/1.1[crlf]Host: gateway.example.test[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]",
             )
         },
+        "An intermediate method refusal does not discard the later accepted tunnel" to {
+            val rejectionBody = "<html>Method not allowed</html>"
+            payloadScenario(
+                "HTTP/1.1 301 Moved\r\nContent-Length: 0\r\n\r\n" +
+                    "HTTP/1.1 403 Forbidden\r\nContent-Length: ${rejectionBody.length}\r\n\r\n$rejectionBody" +
+                    "HTTP/1.1 101 Switching Protocols\r\n\r\n" +
+                    "HTTP/1.1 200 OK\r\n\r\nSSH-2.0-Synthetic\r\n",
+                true, false,
+                payload = "GET / HTTP/1.1[crlf]Host: public.example.test[crlf][crlf]" +
+                    "X / HTTP/1.1[crlf]Host: [host][crlf][crlf]" +
+                    "GET / HTTP/1.1[crlf]Host: gateway.example.test[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf][crlf]",
+            )
+        },
     )
     val failed = mutableListOf<String>()
     for ((name, run) in regressions) {
@@ -253,7 +288,7 @@ fun main(args: Array<String>) {
 }
 
 private fun sshDataScenarios(peer: JSONObject) {
-    for (mode in listOf("direct", "payloadPort", "delayedPayloadPort", "slowAuth")) {
+    for (mode in listOf("direct", "payloadPort", "delayedPayloadPort", "methodRefusalPayloadPort", "slowAuth")) {
         val payloadMode = mode != "direct"
         val jsch = JSch()
         jsch.setKnownHosts(ByteArrayInputStream("fixture-key ssh-rsa ${peer.getString("hostKey")}\n".toByteArray()))

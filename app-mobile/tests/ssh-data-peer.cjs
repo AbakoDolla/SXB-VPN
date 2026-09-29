@@ -99,39 +99,47 @@ const payload = net.createServer(socket => {
 });
 
 // Mobile networks can separate cosmetic HTTP replies by much more than 250 ms.
-const delayedPayload = net.createServer(socket => {
-  socket.on('error', () => socket.destroy());
-  let received = Buffer.alloc(0);
-  const read = chunk => {
-    received = Buffer.concat([received, chunk]);
-    if (received.length > 8192) { socket.destroy(); return; }
-    const text = received.toString('latin1');
-    const parts = text.split('\r\n\r\n');
-    if (parts.length < 4) return;
-    socket.off('data', read);
-    socket.pause();
-    const httpBytes = Buffer.byteLength(parts.slice(0, 3).join('\r\n\r\n') + '\r\n\r\n', 'latin1');
-    const pending = received.subarray(httpBytes);
-    socket.write('HTTP/1.1 301 Moved Permanently\r\nContent-Length: 0\r\n\r\nHTTP/1.1 200 OK\r\n\r\n');
-    const timer = setTimeout(() => {
-      if (socket.destroyed) return;
-      const target = net.connect(ssh.address().port, '127.0.0.1', () => {
-        socket.write('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\n\r\n' +
-          'HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbody');
-        if (pending.length) target.write(pending);
-        socket.pipe(target); target.pipe(socket); socket.resume();
-      });
-      target.on('error', () => socket.destroy());
-      socket.on('close', () => target.destroy());
-    }, 800);
-    socket.on('close', () => clearTimeout(timer));
-  };
-  socket.on('data', read);
-});
+function delayedPayloadServer(refuseIntermediateMethod = false) {
+  return net.createServer(socket => {
+    socket.on('error', () => socket.destroy());
+    let received = Buffer.alloc(0);
+    const read = chunk => {
+      received = Buffer.concat([received, chunk]);
+      if (received.length > 8192) { socket.destroy(); return; }
+      const text = received.toString('latin1');
+      const parts = text.split('\r\n\r\n');
+      if (parts.length < 4) return;
+      socket.off('data', read);
+      socket.pause();
+      const httpBytes = Buffer.byteLength(parts.slice(0, 3).join('\r\n\r\n') + '\r\n\r\n', 'latin1');
+      const pending = received.subarray(httpBytes);
+      const body = '<html>Method not allowed</html>';
+      const intermediate = refuseIntermediateMethod
+        ? `HTTP/1.1 403 Forbidden\r\nContent-Length: ${body.length}\r\n\r\n${body}`
+        : 'HTTP/1.1 200 OK\r\n\r\n';
+      socket.write('HTTP/1.1 301 Moved Permanently\r\nContent-Length: 0\r\n\r\n' + intermediate);
+      const timer = setTimeout(() => {
+        if (socket.destroyed) return;
+        const target = net.connect(ssh.address().port, '127.0.0.1', () => {
+          socket.write('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\n\r\n' +
+            'HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbody');
+          if (pending.length) target.write(pending);
+          socket.pipe(target); target.pipe(socket); socket.resume();
+        });
+        target.on('error', () => socket.destroy());
+        socket.on('close', () => target.destroy());
+      }, 800);
+      socket.on('close', () => clearTimeout(timer));
+    };
+    socket.on('data', read);
+  });
+}
+const delayedPayload = delayedPayloadServer();
+const methodRefusalPayload = delayedPayloadServer(true);
 
 (async () => {
   await listen(download); await listen(greeting); await listen(upload); await listen(uploadReport);
-  await listen(ssh); await listen(payload); await listen(delayedPayload);
+  await listen(ssh); await listen(payload); await listen(delayedPayload); await listen(methodRefusalPayload);
   const parsedKey = utils.parseKey(key);
   if (parsedKey instanceof Error) throw parsedKey;
   const output = require('esbuild').buildSync({
@@ -164,6 +172,7 @@ const delayedPayload = net.createServer(socket => {
   await listen(gatewayReport);
   writeFileSync(process.argv[2], JSON.stringify({
     sshPort: ssh.address().port, payloadPort: payload.address().port, delayedPayloadPort: delayedPayload.address().port,
+    methodRefusalPayloadPort: methodRefusalPayload.address().port,
     downloadPort: download.address().port, greetingPort: greeting.address().port,
     uploadPort: upload.address().port, uploadReportPort: uploadReport.address().port,
     gatewayPort: gateway.address().port, gatewayReportPort: gatewayReport.address().port,

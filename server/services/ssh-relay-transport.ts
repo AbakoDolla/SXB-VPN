@@ -90,8 +90,11 @@ export async function openRelayUpstream(config: RelayUpstream, signal: AbortSign
       await once(socket, 'secureConnect', { signal });
     }
     if (config.payload) {
-      socket.write(substitutePayload(config.payload, config.host, config.sni, config.port));
-      await stripRelayHttp(socket, signal);
+      const payload = substitutePayload(config.payload, config.host, config.sni, config.port);
+      const requestCount = payload.split('\r\n\r\n')
+        .filter(request => /^[A-Z]+\s+\S+\s+HTTP\/\d(?:\.\d)?$/i.test(request.split('\r\n')[0].trim())).length;
+      socket.write(payload);
+      await stripRelayHttp(socket, signal, Math.max(1, requestCount));
     }
     clearTimeout(deadline);
     return socket;
@@ -103,8 +106,10 @@ export async function openRelayUpstream(config: RelayUpstream, signal: AbortSign
 }
 
 /** Bounded HTTP facade parsing. A real WebSocket is rejected, never treated as SSH. */
-export async function stripRelayHttp(socket: net.Socket, signal: AbortSignal): Promise<void> {
+export async function stripRelayHttp(socket: net.Socket, signal: AbortSignal, requestCount = 1): Promise<void> {
+  if (!Number.isInteger(requestCount) || requestCount < 1 || requestCount > 16) throw new Error('RELAY_REQUEST_COUNT_INVALID');
   let bytes = 0, responses = 0;
+  let answeredRequests = 0, pendingRejection: Error | undefined;
   const deadline = Date.now() + 15000;
   function readable(timeout: number): Promise<boolean> {
     return new Promise((resolve, reject) => {
@@ -115,7 +120,7 @@ export async function stripRelayHttp(socket: net.Socket, signal: AbortSignal): P
         signal.removeEventListener('abort', cancelled);
       };
       const ready = () => { cleanup(); resolve(true); };
-      const ended = () => { cleanup(); reject(new Error('RELAY_RESPONSE_TRUNCATED')); };
+      const ended = () => { cleanup(); reject(pendingRejection ?? new Error('RELAY_RESPONSE_TRUNCATED')); };
       const failed = (error: Error) => { cleanup(); reject(error); };
       const cancelled = () => { cleanup(); reject(new Error('RELAY_ABORTED')); };
       const timer = setTimeout(() => { cleanup(); resolve(false); }, timeout);
@@ -137,9 +142,9 @@ export async function stripRelayHttp(socket: net.Socket, signal: AbortSignal): P
         chunks.push(value); remainingBytes -= value.length;
         continue;
       }
-      if (socket.destroyed || socket.readableEnded) throw new Error('RELAY_RESPONSE_TRUNCATED');
+      if (socket.destroyed || socket.readableEnded) throw pendingRejection ?? new Error('RELAY_RESPONSE_TRUNCATED');
       const remaining = deadline - Date.now();
-      if (remaining <= 0 || !await readable(remaining)) throw new Error('RELAY_RESPONSE_TIMEOUT');
+      if (remaining <= 0 || !await readable(remaining)) throw pendingRejection ?? new Error('RELAY_RESPONSE_TIMEOUT');
     }
     return Buffer.concat(chunks, count);
   }
@@ -157,15 +162,22 @@ export async function stripRelayHttp(socket: net.Socket, signal: AbortSignal): P
     const first = await read(1);
     socket.unshift(first); bytes--;
     if (first[0] === 83 && accepted) return;
-    if (first[0] !== 72 || ++responses > 16) throw new Error('RELAY_RESPONSE_INVALID');
+    if (first[0] !== 72) throw pendingRejection ?? new Error('RELAY_RESPONSE_INVALID');
+    if (++responses > 16) throw new Error('RELAY_RESPONSE_INVALID');
     let headers = (await line()) + '\r\n';
     while (!headers.endsWith('\r\n\r\n')) {
       headers += (await line()) + '\r\n';
       if (headers.length > 8192) throw new Error('RELAY_HEADERS_TOO_LARGE');
     }
     const code = Number(/^HTTP\/1\.[01] (\d{3})(?: |\r)/.exec(headers)?.[1]);
+    if (code === 101 || code >= 200) answeredRequests++;
     accepted = code === 101 || (code >= 200 && code <= 299);
-    if (!accepted && ![100, 301, 302, 303, 307, 308].includes(code)) throw new Error('RELAY_HTTP_REJECTED');
+    const rejection = !accepted && ![100, 301, 302, 303, 307, 308].includes(code)
+      ? new Error('RELAY_HTTP_REJECTED') : undefined;
+    const intermediateRefusal = code === 403 && answeredRequests < requestCount &&
+      headers.startsWith('HTTP/1.1 ') && !/^connection:\s*[^\r\n]*\bclose\b/im.test(headers) &&
+      /^(?:content-length|transfer-encoding)\s*:/im.test(headers);
+    if (rejection && !intermediateRefusal) throw rejection;
     if (/^location:[^\r\n]*(?:captive|portal|nointernet)/im.test(headers)) throw new Error('RELAY_PORTAL');
     if (/^sec-websocket-accept:/im.test(headers)) throw new Error('RELAY_WEBSOCKET_UNSUPPORTED');
     const lengths = [...headers.matchAll(/^content-length:\s*(.*?)\r$/gim)];
@@ -197,6 +209,7 @@ export async function stripRelayHttp(socket: net.Socket, signal: AbortSignal): P
       body = Buffer.concat(chunks);
     }
     if (/<html/i.test(body.toString()) && /captive|portal|nointernet/i.test(body.toString())) throw new Error('RELAY_PORTAL');
+    pendingRejection = rejection;
   }
 }
 export const SSH_RELAY_PATH = '/api/mobile/ssh-relay';

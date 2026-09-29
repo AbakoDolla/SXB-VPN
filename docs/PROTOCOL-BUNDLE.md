@@ -138,6 +138,16 @@ early peer closure retain distinct codes; none relax socket protection,
 host-key checks or TLS verification.
 These loopback checks do not certify the supplied provider on a mobile network.
 
+For explicitly pipelined payloads, a persistent HTTP/1.1 `403` can be the
+response to an intermediate unsupported method rather than the final tunnel
+request. Android and the private relay consume that response only when its
+body is explicitly framed and another emitted request remains. They still
+require a later successful response before handing bytes to SSH. Final,
+unframed, closing or malformed refusals remain fatal; response-looking text
+inside the error body cannot establish a tunnel. EOF/timeout after an
+intermediate refusal retains the refusal code. This does not change the
+payload, follow redirects, or bypass SSH identity/authentication checks.
+
 On Android binaries exposing `encryptVpnConfig`/`decryptVpnConfig`, profile
 encryption happens in Android Keystore without exporting its AES key to JS.
 Existing `gcm:` profiles migrate lazily under the configuration mutation queue;
